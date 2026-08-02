@@ -1,0 +1,21 @@
+# Build directories
+build/
+.cache/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+
+# Compiled binary & assembly outputs
+*.elf
+*.bin
+*.asm
+*.o
+*.obj
+
+# Editor & OS temporary files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,60 @@
+#include "arch/trap.h"
+#include "arch/csr.h"
+#include "kernel/printk.h"
+#include "kernel/ipc.h"
+
+void trap_init(void) {
+    /* Trap initialization performed in entry.S setup */
+}
+
+void trap_handler(trap_frame_t *frame) {
+    uintptr_t cause = frame->cause;
+    uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
+    uintptr_t code = cause & ~((uintptr_t)1 << (__riscv_xlen - 1));
+
+    if (is_interrupt) {
+        /* Timer or Software interrupt */
+        printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
+    } else {
+        /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
+        if (code == 8 || code == 9 || code == 11) {
+            uintptr_t sys_nr = frame->a0;
+            int target_pid = (int)frame->a1;
+            ipc_msg_t *msg_in = (ipc_msg_t *)frame->a2;
+            ipc_msg_t *msg_out = (ipc_msg_t *)frame->a3;
+
+            long ret = 0;
+            switch (sys_nr) {
+                case SYS_IPC_CALL:
+                    ret = sys_ipc_call(target_pid, msg_in, msg_out);
+                    break;
+                case SYS_IPC_REPLY:
+                    ret = sys_ipc_reply(target_pid, msg_in);
+                    break;
+                case SYS_IPC_SEND:
+                    ret = sys_ipc_send(target_pid, msg_in);
+                    break;
+                case SYS_IPC_RECV:
+                    ret = sys_ipc_recv(target_pid, msg_in);
+                    break;
+                default:
+                    printk("[Syscall] Unknown syscall nr %ld requested\n", (long)sys_nr);
+                    ret = -1;
+                    break;
+            }
+
+            frame->a0 = (uintptr_t)ret;
+            /* Advance EPC past 4-byte ecall instruction */
+            frame->epc += 4;
+            return;
+        }
+
+        /* Fatal exception hang */
+        printk("\n[Trap Exception] Cause: 0x%lx, epc=0x%lx, tval=0x%lx\n",
+               (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval);
+        printk("[Fatal] System halted due to unhandled exception.\n");
+        while (1) {
+            __asm__ __volatile__("wfi");
+        }
+    }
+}
