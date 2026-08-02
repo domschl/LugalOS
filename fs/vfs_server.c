@@ -77,17 +77,16 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
     } else if (type == 2) { // /proc/ synthetic metrics
         char *sbuf = (char *)buf;
         if (strcmp(rel, "ps") == 0) {
-            int len = 0;
-            len += printk("PID  State    Name\n---  -------  ------------\n 0   RUNNING  kernel_idle\n 1   READY    lsh_console\n 2   READY    lisp_engine\n 3   READY    vfs_server (FAT32)\n");
-            sbuf[0] = '\0';
+            int len = printk("PID  State    Name\n---  -------  ------------\n 0   RUNNING  kernel_idle\n 1   READY    lsh_console\n 2   READY    lisp_engine\n 3   READY    vfs_server (FAT32)\n");
+            if (sbuf && max_len > 0) sbuf[0] = '\0';
             return len;
         } else if (strcmp(rel, "meminfo") == 0) {
             printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /ram0/ FAT32 Volume (512 KB)\n");
-            sbuf[0] = '\0';
+            if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         } else if (strcmp(rel, "version") == 0) {
             printk("LugalOS v0.3.0 (Plan 9 Universal Namespace Core)\n");
-            sbuf[0] = '\0';
+            if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         }
         return -1;

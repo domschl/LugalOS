@@ -28,7 +28,8 @@ static void cmd_help(void) {
 }
 
 static void cmd_uname(void) {
-    vfs_read("/proc/version", NULL, 0);
+    char buf[128];
+    vfs_read("/proc/version", buf, sizeof(buf));
 #if defined(CONFIG_TARGET_RV32)
     printk("Architecture: RISC-V 32-bit (RV32IMAC)\n");
 #elif defined(CONFIG_TARGET_RV64)
@@ -77,9 +78,11 @@ void shell_run(void) {
         } else if (strcmp(buf, "uname") == 0) {
             cmd_uname();
         } else if (strcmp(buf, "ps") == 0) {
-            vfs_read("/proc/ps", NULL, 0);
+            char pbuf[256];
+            vfs_read("/proc/ps", pbuf, sizeof(pbuf));
         } else if (strcmp(buf, "meminfo") == 0) {
-            vfs_read("/proc/meminfo", NULL, 0);
+            char mbuf[256];
+            vfs_read("/proc/meminfo", mbuf, sizeof(mbuf));
         } else if (strcmp(buf, "ls") == 0) {
             vfs_ls("/ram0/");
         } else if (strncmp(buf, "ls ", 3) == 0) {
