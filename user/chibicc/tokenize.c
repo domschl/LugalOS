@@ -184,19 +184,21 @@ Token *tokenize(char *p) {
             else if (cur->len == 3 && strncmp(start, "int", 3) == 0) cur->kind = TK_KEYWORD;
             else if (cur->len == 4 && strncmp(start, "long", 4) == 0) cur->kind = TK_KEYWORD;
             else if (cur->len == 6 && strncmp(start, "struct", 6) == 0) cur->kind = TK_KEYWORD;
+            else if (cur->len == 5 && strncmp(start, "break", 5) == 0) cur->kind = TK_KEYWORD;
             continue;
         }
 
         // Multi-character punctuation
         if (startswith(p, "==") || startswith(p, "!=") || startswith(p, "<=") ||
-            startswith(p, ">=") || startswith(p, "->")) {
+            startswith(p, ">=") || startswith(p, "->") || startswith(p, "++") ||
+            startswith(p, "--")) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 2);
             p += 2;
             continue;
         }
 
         // Single-character punctuation
-        if (strchr("+-*/%()={};<>&[],.", *p)) {
+        if (strchr("+-*/%()={};<>&[],.#", *p)) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 1);
             p++;
             continue;

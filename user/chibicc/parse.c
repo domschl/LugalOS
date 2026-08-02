@@ -9,23 +9,23 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-#define MAX_NODES 256
+#define MAX_NODES 2048
 static Node node_pool[MAX_NODES];
 static int node_pool_idx = 0;
 
-#define MAX_OBJS 128
+#define MAX_OBJS 512
 static Obj obj_pool[MAX_OBJS];
 static int obj_pool_idx = 0;
 
-#define MAX_FNS 16
+#define MAX_FNS 64
 static Function fn_pool[MAX_FNS];
 static int fn_pool_idx = 0;
 
-#define MAX_TYPES 64
+#define MAX_TYPES 256
 static Type type_pool[MAX_TYPES];
 static int type_pool_idx = 0;
 
-#define MAX_MEMBERS 64
+#define MAX_MEMBERS 128
 static Member member_pool[MAX_MEMBERS];
 static int member_pool_idx = 0;
 
@@ -243,6 +243,10 @@ static Type *struct_decl(Token **rest, Token *tok) {
 }
 
 static Type *typespec(Token **rest, Token *tok) {
+    if (equal(tok, "void")) {
+        *rest = tok->next;
+        return ty_int;
+    }
     if (equal(tok, "char")) {
         *rest = tok->next;
         return ty_char;
@@ -273,7 +277,7 @@ static Node *funcall(Token **rest, Token *tok) {
     Node head = {0};
     Node *cur = &head;
 
-    while (!equal(tok, ")")) {
+    while (!equal(tok, ")") && tok->kind != TK_EOF) {
         if (cur != &head) tok = skip(tok, ",");
         cur = cur->next = expr(&tok, tok);
     }
@@ -391,6 +395,21 @@ static Node *primary(Token **rest, Token *tok) {
                 continue;
             }
 
+            if (equal(tok, "++")) {
+                tok = tok->next;
+                Node *one = new_num(1);
+                Node *add_node = new_binary(ND_ADD, node, one);
+                node = new_binary(ND_ASSIGN, node, add_node);
+                continue;
+            }
+            if (equal(tok, "--")) {
+                tok = tok->next;
+                Node *one = new_num(1);
+                Node *sub_node = new_binary(ND_SUB, node, one);
+                node = new_binary(ND_ASSIGN, node, sub_node);
+                continue;
+            }
+
             break;
         }
 
@@ -404,6 +423,18 @@ static Node *primary(Token **rest, Token *tok) {
 }
 
 static Node *unary(Token **rest, Token *tok) {
+    if (equal(tok, "++")) {
+        Node *target = unary(rest, tok->next);
+        Node *one = new_num(1);
+        Node *add_node = new_binary(ND_ADD, target, one);
+        return new_binary(ND_ASSIGN, target, add_node);
+    }
+    if (equal(tok, "--")) {
+        Node *target = unary(rest, tok->next);
+        Node *one = new_num(1);
+        Node *sub_node = new_binary(ND_SUB, target, one);
+        return new_binary(ND_ASSIGN, target, sub_node);
+    }
     if (equal(tok, "+")) return unary(rest, tok->next);
     if (equal(tok, "-")) return new_binary(ND_NEG, unary(rest, tok->next), new_num(0));
     if (equal(tok, "&")) return new_binary(ND_ADDR, unary(rest, tok->next), NULL);
@@ -514,6 +545,12 @@ static Node *stmt(Token **rest, Token *tok) {
         return node;
     }
 
+    if (equal(tok, "break")) {
+        Node *node = new_node(ND_BREAK);
+        *rest = skip(tok->next, ";");
+        return node;
+    }
+
     if (equal(tok, "if")) {
         Node *node = new_node(ND_IF);
         tok = skip(tok->next, "(");
@@ -607,10 +644,15 @@ static Node *stmt(Token **rest, Token *tok) {
 static Node *compound_stmt(Token **rest, Token *tok) {
     Node head = {0};
     Node *cur = &head;
-    while (!equal(tok, "}")) {
+    while (!equal(tok, "}") && tok->kind != TK_EOF) {
+        Token *old_tok = tok;
         cur = cur->next = stmt(&tok, tok);
+        if (tok == old_tok && tok->kind != TK_EOF) {
+            tok = tok->next;
+        }
     }
-    *rest = tok->next;
+    if (equal(tok, "}")) tok = tok->next;
+    *rest = tok;
     Node *node = new_node(ND_BLOCK);
     node->body = head.next;
     return node;
@@ -631,7 +673,7 @@ static Function *function(Token **rest, Token *tok) {
     Obj head = {0};
     Obj *cur_param = &head;
 
-    while (!equal(tok, ")")) {
+    while (!equal(tok, ")") && tok->kind != TK_EOF) {
         if (cur_param != &head) tok = skip(tok, ",");
         Type *ty = typespec(&tok, tok);
         while (equal(tok, "*")) {
@@ -690,6 +732,7 @@ Function *parse(Token *tok) {
     Function *cur = &head;
 
     while (tok->kind != TK_EOF) {
+        Token *old_tok = tok;
         if (equal(tok, "struct")) {
             Token *start = tok;
             Token *t = tok->next;
@@ -702,6 +745,9 @@ Function *parse(Token *tok) {
         }
         Function *fn = function(&tok, tok);
         if (fn) cur = cur->next = fn;
+        if (tok == old_tok && tok->kind != TK_EOF) {
+            tok = tok->next;
+        }
     }
     return head.next;
 }

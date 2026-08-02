@@ -38,30 +38,15 @@ static uint32_t encode_sub(int rd, int rs1, int rs2) {
 }
 
 static uint32_t encode_mul(int rd, int rs1, int rs2) {
-#if defined(CONFIG_TARGET_RV64)
-    uint8_t opcode = 0x3B;
-#else
-    uint8_t opcode = 0x33;
-#endif
-    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | opcode;
+    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | 0x33;
 }
 
 static uint32_t encode_div(int rd, int rs1, int rs2) {
-#if defined(CONFIG_TARGET_RV64)
-    uint8_t opcode = 0x3B;
-#else
-    uint8_t opcode = 0x33;
-#endif
-    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x4 << 12) | (rd << 7) | opcode;
+    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x4 << 12) | (rd << 7) | 0x33;
 }
 
 static uint32_t encode_rem(int rd, int rs1, int rs2) {
-#if defined(CONFIG_TARGET_RV64)
-    uint8_t opcode = 0x3B;
-#else
-    uint8_t opcode = 0x33;
-#endif
-    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x6 << 12) | (rd << 7) | opcode;
+    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0x6 << 12) | (rd << 7) | 0x33;
 }
 
 static uint32_t encode_store(int rs2, int rs1, int16_t imm, int sz) {
@@ -152,6 +137,9 @@ static void gen_addr(Node *node, uint8_t *code_buf) {
 }
 
 static Function *global_prog = NULL;
+static int break_jals[16];
+static int break_cnt = 0;
+static int loop_depth = 0;
 
 static void gen_expr(Node *node, uint8_t *code_buf) {
     if (!node) return;
@@ -380,11 +368,22 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
         return;
     }
 
+    if (node->kind == ND_BREAK) {
+        if (loop_depth > 0 && break_cnt < 16) {
+            break_jals[break_cnt++] = code_idx;
+            code_idx = emit_word(code_buf, code_idx, 0x00000013); // NOP placeholder for JAL to loop end
+        }
+        return;
+    }
+
     if (node->kind == ND_FOR) {
         if (node->init) gen_stmt(node->init, code_buf);
 
         int loop_begin = code_idx;
         int beqz_idx = -1;
+
+        int prev_break_cnt = break_cnt;
+        loop_depth++;
 
         if (node->cond) {
             gen_expr(node->cond, code_buf);
@@ -404,6 +403,15 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
             int loop_end = code_idx - beqz_idx;
             emit_word(code_buf, beqz_idx, encode_beqz(10, (int16_t)loop_end));
         }
+
+        /* Patch break statements to jump to loop_end */
+        for (int i = prev_break_cnt; i < break_cnt; i++) {
+            int b_idx = break_jals[i];
+            int b_off = code_idx - b_idx;
+            emit_word(code_buf, b_idx, encode_jal(0, b_off));
+        }
+        break_cnt = prev_break_cnt;
+        loop_depth--;
         return;
     }
 
@@ -439,12 +447,15 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         }
     }
 
-    // 1. Pass 1a & 1b: Run dry runs to converge function offsets and calculate .rodata section
-    for (int pass = 0; pass < 2; pass++) {
+    // 1. Pass 1: Run dry runs to converge function offsets and calculate .rodata section
+    int rodata_offset = 0;
+    for (int pass = 0; pass < 3; pass++) {
         code_idx = 0;
+        break_cnt = 0;
+        loop_depth = 0;
         for (int i = 0; i < fn_cnt; i++) {
             Function *fn = order[i];
-            code_idx = (code_idx + 3) & ~3; // Enforce 4-byte function alignment
+            code_idx = (code_idx + 3) & ~3;
             fn->code_offset = code_idx;
             int stack_sz = fn->stack_size > 64 ? fn->stack_size : 64;
             stack_sz = (stack_sz + 15) & ~15;
@@ -469,20 +480,21 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
             code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
             code_idx = emit_word(code_buf, code_idx, encode_ret());
         }
-    }
 
-    int code_pass1 = code_idx;
-    int rodata_offset = (code_pass1 + 7) & ~7;
-    for (Obj *var = globals; var; var = var->next) {
-        if (var->is_global && var->init_data) {
-            var->offset = rodata_offset;
-            int len = strlen(var->init_data) + 1;
-            rodata_offset += len;
+        rodata_offset = (code_idx + 7) & ~7;
+        for (Obj *var = globals; var; var = var->next) {
+            if (var->is_global && var->init_data) {
+                var->offset = rodata_offset;
+                int len = strlen(var->init_data) + 1;
+                rodata_offset += len;
+            }
         }
     }
 
     // 2. Pass 2: Final Machine Code Generation with resolved function and string offsets
     code_idx = 0;
+    break_cnt = 0;
+    loop_depth = 0;
     for (int i = 0; i < fn_cnt; i++) {
         Function *fn = order[i];
         code_idx = (code_idx + 3) & ~3;
@@ -511,17 +523,14 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         code_idx = emit_word(code_buf, code_idx, encode_ret());
     }
 
-    // Pad text section up to rodata_offset
-    while (code_idx < rodata_offset) {
-        code_buf[code_idx++] = 0;
-    }
-
     // Copy string literal payloads into .rodata section
     for (Obj *var = globals; var; var = var->next) {
         if (var->is_global && var->init_data) {
             int len = strlen(var->init_data) + 1;
             memcpy(code_buf + var->offset, var->init_data, len);
-            code_idx = var->offset + len;
+            if (var->offset + len > code_idx) {
+                code_idx = var->offset + len;
+            }
         }
     }
 

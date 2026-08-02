@@ -36,6 +36,7 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
 
     printk("[chibicc] Parsing C AST...\n");
     Function *prog = parse(tok);
+    printk("[chibicc] AST parsed successfully!\n");
     if (!prog) {
         printk("[chibicc Error] Parsing failed\n");
         return -1;
@@ -100,8 +101,8 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     phdr->p_memsz = code_len;
 
     /* Write generated ELF binary to disk via VFS */
+    printk("[chibicc] Writing ELF binary to VFS...\n");
     vfs_write(dst_elf_path, elf_buf, total_elf_size);
-
     printk("[chibicc] Build clean: generated %d-byte RISC-V ELF binary at '%s'\n",
            total_elf_size, dst_elf_path);
     return 0;

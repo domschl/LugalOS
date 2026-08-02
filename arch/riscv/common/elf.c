@@ -4,10 +4,14 @@
 #include "arch/vmm.h"
 #include <string.h>
 
-static uint8_t exec_page[4096] __attribute__((aligned(4096)));
-
 int elf_load_and_run(const char *path) {
     if (!path) return -1;
+
+    static uint8_t *exec_page = NULL;
+    if (!exec_page) {
+        exec_page = (uint8_t *)vmm_alloc_page();
+        if (!exec_page) return -1;
+    }
 
     uint8_t file_buf[4096];
     int bytes = vfs_read(path, file_buf, sizeof(file_buf));
@@ -87,24 +91,54 @@ int elf_load_and_run(const char *path) {
     /* Memory fence (rw, rw) and I-cache flush (fence.i) for RISC-V JIT execution */
     __asm__ __volatile__("fence rw, rw; .option push; .option arch, +zifencei; fence.i; .option pop" ::: "memory");
 
+    uintptr_t run_target = (uintptr_t)exec_page;
+
     /* Dedicated 64KB user stack aligned to 16 bytes for deep recursion support */
     static uint8_t user_stack[65536] __attribute__((aligned(16)));
     uintptr_t stack_top = (uintptr_t)user_stack + sizeof(user_stack);
 
     volatile int ret_code = 0;
+
+#if defined(CONFIG_TARGET_RV32)
     __asm__ __volatile__(
-        "mv t0, sp\n\t"
+        "addi sp, sp, -8\n\t"
+        "sw ra, 4(sp)\n\t"
+        "sw s0, 0(sp)\n\t"
+        "mv s0, sp\n\t"
         "mv sp, %1\n\t"
-        "jalr ra, %2\n\t"
-        "mv sp, t0\n\t"
+        "lla ra, 1f\n\t"
+        "jr %2\n\t"
+        "1:\n\t"
+        "mv sp, s0\n\t"
         "mv %0, a0\n\t"
+        "lw ra, 4(sp)\n\t"
+        "lw s0, 0(sp)\n\t"
+        "addi sp, sp, 8\n\t"
         : "=r"(ret_code)
-        : "r"(stack_top), "r"(exec_page)
-        : "ra", "t0", "a0", "memory"
+        : "r"(stack_top), "r"(run_target)
+        : "ra", "a0", "memory"
     );
+#else
+    __asm__ __volatile__(
+        "addi sp, sp, -16\n\t"
+        "sd ra, 8(sp)\n\t"
+        "sd s0, 0(sp)\n\t"
+        "mv s0, sp\n\t"
+        "mv sp, %1\n\t"
+        "lla ra, 1f\n\t"
+        "jr %2\n\t"
+        "1:\n\t"
+        "mv sp, s0\n\t"
+        "mv %0, a0\n\t"
+        "ld ra, 8(sp)\n\t"
+        "ld s0, 0(sp)\n\t"
+        "addi sp, sp, 16\n\t"
+        : "=r"(ret_code)
+        : "r"(stack_top), "r"(run_target)
+        : "ra", "a0", "memory"
+    );
+#endif
 
     printk("[ELF] Executable '%s' returned: %d\n", path, ret_code);
     return ret_code;
-    printk("[ELF] Native RISC-V binary '%s' exited with return code: %d\n", path, (int)ret_code);
-    return (int)ret_code;
 }

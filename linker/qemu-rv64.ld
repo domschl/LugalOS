@@ -28,13 +28,13 @@ SECTIONS
         _bss_end = .;
     } > RAM
 
-    . = ALIGN(4096);
-    _kernel_end = .;
-
-    /* 64KB Boot Stack */
+    /* 64KB Boot Stack (placed BEFORE _kernel_end so VMM heap starts safely above it) */
     .stack (NOLOAD) : {
-        . = ALIGN(16);
+        . = ALIGN(4096);
         . += 0x10000;
         _stack_top = .;
     } > RAM
+
+    . = ALIGN(4096);
+    _kernel_end = .;
 }

@@ -133,7 +133,7 @@ void vfs_server_init(void) {
     vfs_register_service("lisp", 2);
 
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
-    printk("[VFS Server] Mounted: /ram0/ (FAT32), /proc/ (Metrics), /dev/ (Devices), /srv/ (IPC)\n");
+    printk("[VFS Server] Mounted: /ram0/ & /sd0/ (FAT32), /proc/ (Metrics), /dev/ (Devices), /srv/ (IPC)\n");
 }
 
 int vfs_register_service(const char *service_name, int target_pid) {
@@ -157,6 +157,12 @@ static int parse_prefix(const char *path, const char **rel_path) {
 
     if (strncmp(path, "/ram0/", 6) == 0) {
         *rel_path = path + 6;
+        return 1;
+    } else if (strncmp(path, "/sd0/", 5) == 0) {
+        *rel_path = path + 5;
+        return 1;
+    } else if (strcmp(path, "/ram0") == 0 || strcmp(path, "/sd0") == 0) {
+        *rel_path = "";
         return 1;
     } else if (strncmp(path, "/proc/", 6) == 0) {
         *rel_path = path + 6;

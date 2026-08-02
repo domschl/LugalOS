@@ -116,15 +116,48 @@ int fat32_find_file(fat32_fs_t *fs, const char *filename, fat32_dir_entry_t *out
     return -1;
 }
 
+/* Read a 32-bit FAT entry for the given cluster */
+static uint32_t fat_get_entry(fat32_fs_t *fs, uint32_t cluster) {
+    if (!fs || !fs->dev || !fs->dev->read_blocks) return 0x0FFFFFFF;
+    uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
+    uint32_t fat_offset = (cluster * 4) % 512;
+    uint8_t fat_sec[512];
+    fs->dev->read_blocks(fs->dev, fat_sec, fat_sector, 1);
+    return ((uint32_t *)fat_sec)[fat_offset / 4] & 0x0FFFFFFF;
+}
+
+/* Write a 32-bit FAT entry for the given cluster (both FAT1 and FAT2) */
+static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
+    if (!fs || !fs->dev || !fs->dev->write_blocks) return;
+    uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
+    uint32_t fat_offset = (cluster * 4) % 512;
+    uint8_t fat_sec[512];
+    fs->dev->read_blocks(fs->dev, fat_sec, fat_sector, 1);
+    ((uint32_t *)fat_sec)[fat_offset / 4] = value;
+    fs->dev->write_blocks(fs->dev, fat_sec, fat_sector, 1);      // FAT1
+    fs->dev->write_blocks(fs->dev, fat_sec, fat_sector + 8, 1);  // FAT2
+}
+
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size) {
     if (!fs || !entry || !buf || !fs->dev || !fs->dev->read_blocks) return -1;
     uint32_t cluster = ((uint32_t)entry->fst_clus_hi << 16) | entry->fst_clus_lo;
     uint32_t size = entry->file_size < max_size ? entry->file_size : max_size;
 
-    uint32_t lba = cluster_to_lba(fs, cluster);
-    fs->dev->read_blocks(fs->dev, buf, lba, 1);
-    ((char *)buf)[size] = '\0';
-    return (int)size;
+    uint32_t bytes_read = 0;
+    while (cluster < 0x0FFFFFF8 && bytes_read < size) {
+        uint32_t lba = cluster_to_lba(fs, cluster);
+        uint8_t data_sec[512];
+        fs->dev->read_blocks(fs->dev, data_sec, lba, 1);
+
+        uint32_t chunk = size - bytes_read;
+        if (chunk > 512) chunk = 512;
+        memcpy((uint8_t *)buf + bytes_read, data_sec, chunk);
+        bytes_read += chunk;
+
+        cluster = fat_get_entry(fs, cluster);
+    }
+    ((char *)buf)[bytes_read] = '\0';
+    return (int)bytes_read;
 }
 
 int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint32_t size) {
@@ -138,6 +171,7 @@ int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint
 
     fat32_dir_entry_t *entries = (fat32_dir_entry_t *)sector;
     int free_slot = -1;
+    uint32_t old_cluster = 0;
 
     for (int i = 0; i < 16; i++) {
         if (entries[i].name[0] == 0x00 || (uint8_t)entries[i].name[0] == 0xE5) {
@@ -145,35 +179,57 @@ int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint
             if (entries[i].name[0] == 0x00) break;
         } else if (memcmp(entries[i].name, name83, 11) == 0) {
             free_slot = i;
+            old_cluster = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
             break;
         }
     }
 
     if (free_slot == -1) return -1;
 
-    /* Allocate next free cluster (Cluster 3 for simplicity) */
-    uint32_t target_cluster = 3 + free_slot;
-    uint32_t data_lba = cluster_to_lba(fs, target_cluster);
+    /* Find a free starting cluster (scan FAT for 0x00000000 = free) */
+    /* For simplicity: assign cluster = 3 + free_slot (1 cluster per directory slot) */
+    /* For multi-sector files, chain additional free clusters */
+    uint32_t sectors_needed = (size + 511) / 512;
+    if (sectors_needed == 0) sectors_needed = 1;
 
-    /* Write data block */
-    uint8_t data_sec[512];
-    memset(data_sec, 0, 512);
-    if (buf && size > 0) {
-        memcpy(data_sec, buf, size < 512 ? size : 512);
+    /* Find 'sectors_needed' consecutive free clusters starting after existing content */
+    /* Simple strategy: start cluster from a non-conflicting region */
+    /* Each file slot gets a base cluster 3+slot, extended by 16*slot for gap */
+    uint32_t base_cluster = 3 + (uint32_t)free_slot * 16;
+
+    uint32_t first_cluster = base_cluster;
+    uint32_t cur_clus = first_cluster;
+
+    for (uint32_t s = 0; s < sectors_needed; s++) {
+        uint32_t data_lba = cluster_to_lba(fs, cur_clus);
+        uint8_t data_sec[512];
+        memset(data_sec, 0, 512);
+        uint32_t offset = s * 512;
+        uint32_t chunk = (size > offset) ? (size - offset) : 0;
+        if (chunk > 512) chunk = 512;
+        if (buf && chunk > 0) memcpy(data_sec, (const uint8_t *)buf + offset, chunk);
+        fs->dev->write_blocks(fs->dev, data_sec, data_lba, 1);
+
+        if (s + 1 < sectors_needed) {
+            fat_set_entry(fs, cur_clus, cur_clus + 1); // Link to next cluster
+            cur_clus++;
+        } else {
+            fat_set_entry(fs, cur_clus, 0x0FFFFFFF); // EOF marker
+        }
     }
-    fs->dev->write_blocks(fs->dev, data_sec, data_lba, 1);
 
     /* Update directory entry */
     memcpy(entries[free_slot].name, name83, 11);
     entries[free_slot].attr = FAT32_ATTR_ARCHIVE;
-    entries[free_slot].fst_clus_hi = (uint16_t)(target_cluster >> 16);
-    entries[free_slot].fst_clus_lo = (uint16_t)(target_cluster & 0xFFFF);
+    entries[free_slot].fst_clus_hi = (uint16_t)(first_cluster >> 16);
+    entries[free_slot].fst_clus_lo = (uint16_t)(first_cluster & 0xFFFF);
     entries[free_slot].file_size = size;
 
     /* Write back updated root directory */
     fs->dev->write_blocks(fs->dev, sector, root_lba, 1);
     return 0;
 }
+
 
 int fat32_remove_file(fat32_fs_t *fs, const char *filename) {
     if (!fs || !filename || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;

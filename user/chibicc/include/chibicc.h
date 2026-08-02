@@ -54,6 +54,7 @@ typedef enum {
     ND_BLOCK,
     ND_FUNCALL,
     ND_RETURN,
+    ND_BREAK,
     ND_EXPR_STMT,
 } NodeKind;
 

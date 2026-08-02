@@ -27,6 +27,9 @@ void trap_handler(trap_frame_t *frame) {
 
             long ret = 0;
             switch (sys_nr) {
+                case 0: /* SYS_EXIT / yield */
+                    ret = 0;
+                    break;
                 case SYS_IPC_CALL:
                     ret = sys_ipc_call(target_pid, msg_in, msg_out);
                     break;
