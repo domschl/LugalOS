@@ -85,7 +85,7 @@ int elf_load_and_run(const char *path) {
            path, (unsigned long)entry_point, code_size);
 
     /* Memory fence (rw, rw) and I-cache flush (fence.i) for RISC-V JIT execution */
-    __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
+    __asm__ __volatile__("fence rw, rw; .option push; .option arch, +zifencei; fence.i; .option pop" ::: "memory");
 
     /* Dedicated 64KB user stack aligned to 16 bytes for deep recursion support */
     static uint8_t user_stack[65536] __attribute__((aligned(16)));
