@@ -18,10 +18,115 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
+static void populate_initial_files(void) {
+    fat32_dir_entry_t entry;
+    if (fat32_find_file(&g_fat32, "lugal.h", &entry) < 0) {
+        static const char *lugal_h_src =
+            "#ifndef _LUGAL_H\n"
+            "#define _LUGAL_H\n"
+            "#define SYS_IPC_CALL   1\n"
+            "#define SYS_IPC_REPLY  2\n"
+            "#define SYS_IPC_SEND   3\n"
+            "#define SYS_IPC_RECV   4\n"
+            "#define SYS_PRINT      10\n"
+            "#define SYS_PUTNUM     11\n"
+            "#define SYS_PUTCHAR    12\n"
+            "#define SYS_READ_FILE  13\n"
+            "#define SYS_WRITE_FILE 14\n"
+            "#define IPC_ANY       -1\n"
+            "struct ipc_msg {\n"
+            "    long tag;\n"
+            "    long d0;\n"
+            "    long d1;\n"
+            "    long d2;\n"
+            "    long d3;\n"
+            "    long d4;\n"
+            "};\n"
+            "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
+            "int print(char *s);\n"
+            "int puts(char *s);\n"
+            "int printf(char *s);\n"
+            "int putnum(long n);\n"
+            "int putchar(char c);\n"
+            "int read_file(char *path, void *buf, int max_len);\n"
+            "int write_file(char *path, void *buf, int len);\n"
+            "#endif\n";
+        fat32_write_file(&g_fat32, "lugal.h", lugal_h_src, strlen(lugal_h_src));
+    }
+
+    if (fat32_find_file(&g_fat32, "hello.c", &entry) < 0) {
+        static const char *hello_c_src =
+            "#include <lugal.h>\n"
+            "main() {\n"
+            "    printf(\"Hello from LugalOS FAT32 Storage!\\n\");\n"
+            "}\n";
+        fat32_write_file(&g_fat32, "hello.c", hello_c_src, strlen(hello_c_src));
+    }
+
+    if (fat32_find_file(&g_fat32, "prime.c", &entry) < 0) {
+        static const char *prime_c_src =
+            "#include <lugal.h>\n"
+            "main() {\n"
+            "    print(\"Prime numbers up to 30:\\n\");\n"
+            "    int i = 2;\n"
+            "    while (i <= 30) {\n"
+            "        int is_p = 1;\n"
+            "        int j = 2;\n"
+            "        while (j * j <= i) {\n"
+            "            if (i % j == 0) { is_p = 0; break; }\n"
+            "            j++;\n"
+            "        }\n"
+            "        if (is_p) {\n"
+            "            putnum(i);\n"
+            "            putchar(' ');\n"
+            "        }\n"
+            "        i++;\n"
+            "    }\n"
+            "    putchar('\\n');\n"
+            "}\n";
+        fat32_write_file(&g_fat32, "prime.c", prime_c_src, strlen(prime_c_src));
+    }
+
+    if (fat32_find_file(&g_fat32, "fib.c", &entry) < 0) {
+        static const char *fib_c_src =
+            "#include <lugal.h>\n"
+            "fib(n) {\n"
+            "    if (n <= 1) return n;\n"
+            "    return fib(n - 1) + fib(n - 2);\n"
+            "}\n"
+            "main() {\n"
+            "    print(\"Fibonacci sequence:\\n\");\n"
+            "    int i = 0;\n"
+            "    while (i <= 10) {\n"
+            "        putnum(fib(i));\n"
+            "        putchar(' ');\n"
+            "        i++;\n"
+            "    }\n"
+            "    putchar('\\n');\n"
+            "}\n";
+        fat32_write_file(&g_fat32, "fib.c", fib_c_src, strlen(fib_c_src));
+    }
+
+    if (fat32_find_file(&g_fat32, "cat.c", &entry) < 0) {
+        static const char *cat_c_src =
+            "#include <lugal.h>\n"
+            "main() {\n"
+            "    char buf[256];\n"
+            "    int bytes = read_file(\"/proc/ps\", buf, 255);\n"
+            "    if (bytes > 0) {\n"
+            "        buf[bytes] = 0;\n"
+            "        print(buf);\n"
+            "    }\n"
+            "}\n";
+        fat32_write_file(&g_fat32, "cat.c", cat_c_src, strlen(cat_c_src));
+    }
+}
+
 void vfs_server_init(void) {
     block_dev_t *ramdisk = ramdisk_get_device();
     if (ramdisk) {
         fat32_init(&g_fat32, ramdisk);
+        populate_initial_files();
     }
 
     g_num_services = 0;

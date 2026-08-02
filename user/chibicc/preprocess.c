@@ -250,34 +250,39 @@ static void preprocess_internal(const char *src, int depth) {
                 hdr_path[hidx] = '\0';
 
                 /* Check for built-in or VFS header file */
-                if (strcmp(hdr_path, "lugal.h") == 0 || strcmp(hdr_path, "include/lugal.h") == 0) {
-                    static char hdr_buf[2048];
-                    int r = vfs_read("/ram0/lugal.h", hdr_buf, sizeof(hdr_buf) - 1);
-                    if (r > 0) {
-                        hdr_buf[r] = '\0';
-                        preprocess_internal(hdr_buf, depth + 1);
-                    } else {
-                        preprocess_internal(builtin_lugal_h, depth + 1);
-                    }
+                static char hdr_buf[2048];
+                char vfs_path[64];
+
+                if (hdr_path[0] == '/') {
+                    strncpy(vfs_path, hdr_path, 63);
+                    vfs_path[63] = '\0';
                 } else {
-                    char full_path[128];
-                    if (hdr_path[0] == '/') {
-                        strncpy(full_path, hdr_path, sizeof(full_path) - 1);
-                        full_path[sizeof(full_path) - 1] = '\0';
-                    } else {
-                        int path_len = strlen(hdr_path);
-                        memcpy(full_path, "/ram0/", 6);
-                        memcpy(full_path + 6, hdr_path, path_len < 120 ? path_len : 120);
-                        full_path[6 + (path_len < 120 ? path_len : 120)] = '\0';
-                    }
-                    static char hdr_buf[4096];
-                    int r = vfs_read(full_path, hdr_buf, sizeof(hdr_buf) - 1);
-                    if (r > 0) {
-                        hdr_buf[r] = '\0';
-                        preprocess_internal(hdr_buf, depth + 1);
-                    } else {
-                        printk("[preproc Warning] Header file '%s' not found\n", full_path);
-                    }
+                    int vlen = 0;
+                    const char *prefix = "/ram0/";
+                    while (*prefix && vlen < 63) vfs_path[vlen++] = *prefix++;
+                    const char *hp = hdr_path;
+                    while (*hp && vlen < 63) vfs_path[vlen++] = *hp++;
+                    vfs_path[vlen] = '\0';
+                }
+
+                int r = vfs_read(vfs_path, hdr_buf, sizeof(hdr_buf) - 1);
+                if (r <= 0 && hdr_path[0] != '/') {
+                    int vlen = 0;
+                    const char *prefix = "/ram0/include/";
+                    while (*prefix && vlen < 63) vfs_path[vlen++] = *prefix++;
+                    const char *hp = hdr_path;
+                    while (*hp && vlen < 63) vfs_path[vlen++] = *hp++;
+                    vfs_path[vlen] = '\0';
+                    r = vfs_read(vfs_path, hdr_buf, sizeof(hdr_buf) - 1);
+                }
+
+                if (r > 0) {
+                    hdr_buf[r] = '\0';
+                    preprocess_internal(hdr_buf, depth + 1);
+                } else if (strcmp(hdr_path, "lugal.h") == 0 || strcmp(hdr_path, "include/lugal.h") == 0) {
+                    preprocess_internal(builtin_lugal_h, depth + 1);
+                } else {
+                    printk("[preproc Error] Header file '%s' not found on VFS!\n", hdr_path);
                 }
                 continue;
             }

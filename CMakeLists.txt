@@ -93,9 +93,10 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 
-# Generate Raw Binary & Disassembly
+# Generate Raw Binary, Disassembly, and SD Disk Image
 add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
-    COMMENT "Generated lugalos.bin and lugalos.asm"
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_CURRENT_BINARY_DIR}/lugalos_sd.img
+    COMMENT "Generated lugalos.bin, lugalos.asm, and lugalos_sd.img"
 )
