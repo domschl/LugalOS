@@ -54,6 +54,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/fs/include
     ${CMAKE_CURRENT_SOURCE_DIR}/libc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/lisp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/chibicc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
 )
 
@@ -74,6 +75,10 @@ set(SOURCES
     libc/string.c
     user/lisp/lisp.c
     user/lisp/lisp_compile.c
+    user/chibicc/main.c
+    user/chibicc/tokenize.c
+    user/chibicc/parse.c
+    user/chibicc/codegen.c
     user/ed/ed.c
 )
 

@@ -79,12 +79,11 @@ int elf_load_and_run(const char *path) {
     printk("[ELF] Executing binary '%s' (Entry offset: 0x%lx, Size: %u bytes)...\n",
            path, (unsigned long)entry_point, code_size);
 
-    /* Cast execution buffer or entry point to function pointer */
+    /* Execute native RISC-V binary */
     typedef int (*entry_fn_t)(void);
     entry_fn_t entry = (entry_fn_t)(uintptr_t)exec_page;
 
-    /* Execute native RISC-V binary */
-    int ret_code = entry();
-    printk("[ELF] Native RISC-V binary '%s' exited with return code: %d\n", path, ret_code);
-    return ret_code;
+    volatile int ret_code = entry();
+    printk("[ELF] Native RISC-V binary '%s' exited with return code: %d\n", path, (int)ret_code);
+    return (int)ret_code;
 }

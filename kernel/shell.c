@@ -4,6 +4,7 @@
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "arch/elf.h"
+#include "chibicc.h"
 #include "lisp.h"
 #include "ed.h"
 #include <string.h>
@@ -23,6 +24,7 @@ static void cmd_help(void) {
     printk("  touch <file>    - Create a new empty file in /ram0/\n");
     printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
+    printk("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
     printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
@@ -123,6 +125,14 @@ void shell_run(void) {
                 printk("File '%s' removed.\n", &buf[3]);
             } else {
                 printk("rm: failed to remove '%s'\n", &buf[3]);
+            }
+        } else if (strncmp(buf, "cc ", 3) == 0) {
+            char *space = strchr(&buf[3], ' ');
+            if (space) {
+                *space = '\0';
+                chibicc_compile(&buf[3], space + 1);
+            } else {
+                printk("Usage: cc <src.c> <dst.elf>\n");
             }
         } else if (strncmp(buf, "exec ", 5) == 0) {
             elf_load_and_run(&buf[5]);
