@@ -241,6 +241,11 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 16));
             }
 
+            if (strcmp(node->funcname, "lugal_syscall") == 0 || strcmp(node->funcname, "syscall") == 0) {
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // RISC-V ecall instruction
+                return;
+            }
+
             int target_offset = 0;
             for (Function *fn = global_prog; fn; fn = fn->next) {
                 if (strcmp(fn->name, node->funcname) == 0) {

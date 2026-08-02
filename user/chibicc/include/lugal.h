@@ -28,32 +28,7 @@ typedef struct ipc_msg {
     uintptr_t d4;
 } ipc_msg_t;
 
-/* Direct ecall inline assembly for RISC-V LugalOS Syscalls */
-static inline long lugal_syscall(long sys_nr, long a1, long a2, long a3) {
-    register long a0 __asm__("a0") = sys_nr;
-    register long r_a1 __asm__("a1") = a1;
-    register long r_a2 __asm__("a2") = a2;
-    register long r_a3 __asm__("a3") = a3;
-
-    __asm__ __volatile__(
-        "ecall"
-        : "+r"(a0)
-        : "r"(r_a1), "r"(r_a2), "r"(r_a3)
-        : "memory"
-    );
-    return a0;
-}
-
-static inline long ipc_call(int target_pid, ipc_msg_t *msg_in, ipc_msg_t *msg_out) {
-    return lugal_syscall(SYS_IPC_CALL, (long)target_pid, (long)msg_in, (long)msg_out);
-}
-
-static inline long ipc_send(int target_pid, ipc_msg_t *msg_in) {
-    return lugal_syscall(SYS_IPC_SEND, (long)target_pid, (long)msg_in, 0);
-}
-
-static inline long ipc_recv(int src_pid, ipc_msg_t *msg_out) {
-    return lugal_syscall(SYS_IPC_RECV, (long)src_pid, (long)msg_out, 0);
-}
+/* Intrinsic LugalOS RISC-V System Call (emits hardware ecall instruction) */
+long lugal_syscall(long sys_nr, long a1, long a2, long a3);
 
 #endif /* _LUGAL_H */

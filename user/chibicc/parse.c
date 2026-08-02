@@ -651,6 +651,10 @@ static Function *function(Token **rest, Token *tok) {
         cur_param = cur_param->next = p_var;
     }
     tok = skip(tok, ")");
+    if (equal(tok, ";")) {
+        *rest = tok->next;
+        return NULL;
+    }
     tok = skip(tok, "{");
 
     if (fn_pool_idx >= MAX_FNS) fn_pool_idx = 0;
@@ -697,7 +701,8 @@ Function *parse(Token *tok) {
                 continue;
             }
         }
-        cur = cur->next = function(&tok, tok);
+        Function *fn = function(&tok, tok);
+        if (fn) cur = cur->next = fn;
     }
     return head.next;
 }

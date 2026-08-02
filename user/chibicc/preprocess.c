@@ -38,6 +38,7 @@ static const char *builtin_lugal_h =
     "    long d3;\n"
     "    long d4;\n"
     "};\n"
+    "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
     "#endif\n";
 
 static void define_macro(const char *name, const char *val) {
