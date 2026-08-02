@@ -12,7 +12,13 @@ ninja -C "$BUILD_DIR"
 
 if command -v qemu-system-riscv64 >/dev/null 2>&1; then
     echo "==> Launching QEMU RV64 (Press Ctrl+A then X to exit)..."
-    qemu-system-riscv64 -M virt -nographic -bios none -kernel "$BUILD_DIR/lugalos.elf"
+    qemu-system-riscv64 -M virt -nographic -bios none \
+        -d guest_errors,unimp \
+        -drive file="$ROOT_DIR/build/lugalos_sd.img",if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
+        -kernel "$BUILD_DIR/lugalos.elf"
+
+
 else
     echo "[!] qemu-system-riscv64 binary not found. Install 'qemu-system-riscv' package to execute."
     echo "[+] Binary built successfully at: $BUILD_DIR/lugalos.elf"

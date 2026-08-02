@@ -20,6 +20,11 @@ int vfs_open(const char *path);
 int vfs_read(const char *path, void *buf, uint32_t max_len);
 int vfs_write(const char *path, const void *buf, uint32_t len);
 int vfs_remove(const char *path);
+int vfs_mkdir(const char *path);
+int vfs_rmdir(const char *path);
+int vfs_cp(const char *src_path, const char *dst_path);
 void vfs_ls(const char *path);
 
 #endif /* LUGALOS_FS_VFS_H */
+
+

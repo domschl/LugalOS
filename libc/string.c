@@ -85,3 +85,36 @@ char *strchr(const char *s, int c) {
     }
     return (c == '\0') ? (char *)s : NULL;
 }
+
+char *strcat(char *dst, const char *src) {
+    if (!dst || !src) return dst;
+    char *p = dst + strlen(dst);
+    while ((*p++ = *src++) != '\0');
+    return dst;
+}
+
+char *strncat(char *dst, const char *src, size_t n) {
+    if (!dst || !src || n == 0) return dst;
+    char *p = dst + strlen(dst);
+    size_t i = 0;
+    while (i < n && src[i] != '\0') {
+        p[i] = src[i];
+        i++;
+    }
+    p[i] = '\0';
+    return dst;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    if (*needle == '\0') return (char *)haystack;
+    size_t needle_len = strlen(needle);
+    while (*haystack != '\0') {
+        if (strncmp(haystack, needle, needle_len) == 0) {
+            return (char *)haystack;
+        }
+        haystack++;
+    }
+    return NULL;
+}
+

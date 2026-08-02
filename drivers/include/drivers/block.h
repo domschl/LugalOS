@@ -12,5 +12,6 @@ typedef struct block_dev {
 } block_dev_t;
 
 block_dev_t *ramdisk_get_device(void);
+block_dev_t *virtio_blk_get_device(void);
 
 #endif /* LUGALOS_DRIVERS_BLOCK_H */

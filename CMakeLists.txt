@@ -58,6 +58,12 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
 )
 
+option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
+
+if(ENABLE_SANITIZERS)
+    add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all)
+endif()
+
 # Core Sources
 set(SOURCES
     kernel/main.c
@@ -65,11 +71,14 @@ set(SOURCES
     kernel/ipc.c
     kernel/sched.c
     kernel/shell.c
+    kernel/ubsan.c
     arch/riscv/common/entry.S
+
     arch/riscv/common/trap.c
     arch/riscv/common/elf.c
     drivers/uart_16550.c
     drivers/ramdisk.c
+    drivers/virtio_blk.c
     fs/fat32.c
     fs/vfs_server.c
     libc/string.c
@@ -93,10 +102,23 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 
-# Generate Raw Binary, Disassembly, and SD Disk Image
+# Generate Raw Binary, Disassembly, and Shared SD Disk Image
 add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_CURRENT_BINARY_DIR}/lugalos_sd.img
-    COMMENT "Generated lugalos.bin, lugalos.asm, and lugalos_sd.img"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
+    COMMENT "Generated lugalos.bin, lugalos.asm, and shared disk image build/lugalos_sd.img"
 )
+
+# Automated Test Suite Target
+enable_testing()
+add_test(NAME LugalOS_Suite COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/runner.py)
+
+add_custom_target(test-all
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/runner.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Running LugalOS Automated Test Suite"
+)
+
+

@@ -74,10 +74,14 @@ typedef struct {
 
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev);
 int fat32_format(block_dev_t *dev);
-int fat32_find_file(fat32_fs_t *fs, const char *filename, fat32_dir_entry_t *out_entry);
+int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry);
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size);
-int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint32_t size);
-int fat32_remove_file(fat32_fs_t *fs, const char *filename);
-void fat32_list_dir(fat32_fs_t *fs);
+int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size);
+int fat32_mkdir(fat32_fs_t *fs, const char *path);
+int fat32_rmdir(fat32_fs_t *fs, const char *path);
+int fat32_remove_file(fat32_fs_t *fs, const char *path);
+void fat32_list_dir(fat32_fs_t *fs, const char *path);
+
 
 #endif /* LUGALOS_FS_FAT32_H */
+

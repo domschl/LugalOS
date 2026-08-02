@@ -6,8 +6,12 @@
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include <string.h>
+#include <stdbool.h>
 
-static fat32_fs_t g_fat32;
+static fat32_fs_t g_fat32_sd;
+static fat32_fs_t g_fat32_ram;
+static bool g_sd_mounted = false;
+static bool g_ram_mounted = false;
 
 typedef struct {
     char name[32];
@@ -18,122 +22,31 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
-static void populate_initial_files(void) {
-    fat32_dir_entry_t entry;
-    if (fat32_find_file(&g_fat32, "lugal.h", &entry) < 0) {
-        static const char *lugal_h_src =
-            "#ifndef _LUGAL_H\n"
-            "#define _LUGAL_H\n"
-            "#define SYS_IPC_CALL   1\n"
-            "#define SYS_IPC_REPLY  2\n"
-            "#define SYS_IPC_SEND   3\n"
-            "#define SYS_IPC_RECV   4\n"
-            "#define SYS_PRINT      10\n"
-            "#define SYS_PUTNUM     11\n"
-            "#define SYS_PUTCHAR    12\n"
-            "#define SYS_READ_FILE  13\n"
-            "#define SYS_WRITE_FILE 14\n"
-            "#define IPC_ANY       -1\n"
-            "struct ipc_msg {\n"
-            "    long tag;\n"
-            "    long d0;\n"
-            "    long d1;\n"
-            "    long d2;\n"
-            "    long d3;\n"
-            "    long d4;\n"
-            "};\n"
-            "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
-            "int print(char *s);\n"
-            "int puts(char *s);\n"
-            "int printf(char *s);\n"
-            "int putnum(long n);\n"
-            "int putchar(char c);\n"
-            "int read_file(char *path, void *buf, int max_len);\n"
-            "int write_file(char *path, void *buf, int len);\n"
-            "#endif\n";
-        fat32_write_file(&g_fat32, "lugal.h", lugal_h_src, strlen(lugal_h_src));
-    }
-
-    if (fat32_find_file(&g_fat32, "hello.c", &entry) < 0) {
-        static const char *hello_c_src =
-            "#include <lugal.h>\n"
-            "main() {\n"
-            "    printf(\"Hello from LugalOS FAT32 Storage!\\n\");\n"
-            "}\n";
-        fat32_write_file(&g_fat32, "hello.c", hello_c_src, strlen(hello_c_src));
-    }
-
-    if (fat32_find_file(&g_fat32, "prime.c", &entry) < 0) {
-        static const char *prime_c_src =
-            "#include <lugal.h>\n"
-            "main() {\n"
-            "    print(\"Prime numbers up to 30:\\n\");\n"
-            "    int i = 2;\n"
-            "    while (i <= 30) {\n"
-            "        int is_p = 1;\n"
-            "        int j = 2;\n"
-            "        while (j * j <= i) {\n"
-            "            if (i % j == 0) { is_p = 0; break; }\n"
-            "            j++;\n"
-            "        }\n"
-            "        if (is_p) {\n"
-            "            putnum(i);\n"
-            "            putchar(' ');\n"
-            "        }\n"
-            "        i++;\n"
-            "    }\n"
-            "    putchar('\\n');\n"
-            "}\n";
-        fat32_write_file(&g_fat32, "prime.c", prime_c_src, strlen(prime_c_src));
-    }
-
-    if (fat32_find_file(&g_fat32, "fib.c", &entry) < 0) {
-        static const char *fib_c_src =
-            "#include <lugal.h>\n"
-            "fib(n) {\n"
-            "    if (n <= 1) return n;\n"
-            "    return fib(n - 1) + fib(n - 2);\n"
-            "}\n"
-            "main() {\n"
-            "    print(\"Fibonacci sequence:\\n\");\n"
-            "    int i = 0;\n"
-            "    while (i <= 10) {\n"
-            "        putnum(fib(i));\n"
-            "        putchar(' ');\n"
-            "        i++;\n"
-            "    }\n"
-            "    putchar('\\n');\n"
-            "}\n";
-        fat32_write_file(&g_fat32, "fib.c", fib_c_src, strlen(fib_c_src));
-    }
-
-    if (fat32_find_file(&g_fat32, "cat.c", &entry) < 0) {
-        static const char *cat_c_src =
-            "#include <lugal.h>\n"
-            "main() {\n"
-            "    char buf[256];\n"
-            "    int bytes = read_file(\"/proc/ps\", buf, 255);\n"
-            "    if (bytes > 0) {\n"
-            "        buf[bytes] = 0;\n"
-            "        print(buf);\n"
-            "    }\n"
-            "}\n";
-        fat32_write_file(&g_fat32, "cat.c", cat_c_src, strlen(cat_c_src));
-    }
-}
-
 void vfs_server_init(void) {
-    block_dev_t *ramdisk = ramdisk_get_device();
-    if (ramdisk) {
-        fat32_init(&g_fat32, ramdisk);
-        populate_initial_files();
+    g_sd_mounted = false;
+    g_ram_mounted = false;
+
+    block_dev_t *sd_dev = virtio_blk_get_device();
+    if (sd_dev) {
+        if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
+            g_sd_mounted = true;
+        }
+    }
+
+    block_dev_t *ram_dev = ramdisk_get_device();
+    if (ram_dev) {
+        if (fat32_init(&g_fat32_ram, ram_dev) == 0) {
+            g_ram_mounted = true;
+        }
     }
 
     g_num_services = 0;
     vfs_register_service("lisp", 2);
 
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
-    printk("[VFS Server] Mounted: /ram0/ & /sd0/ (FAT32), /proc/ (Metrics), /dev/ (Devices), /srv/ (IPC)\n");
+    printk("[VFS Server] Mount points: /sd0/ (%s), /ram0/ (%s), /proc/ (Metrics), /dev/ (Devices), /srv/ (IPC)\n",
+           g_sd_mounted ? "SD VirtIO" : "unmounted",
+           g_ram_mounted ? "RAMDisk" : "unmounted");
 }
 
 int vfs_register_service(const char *service_name, int target_pid) {
@@ -145,34 +58,53 @@ int vfs_register_service(const char *service_name, int target_pid) {
     return 0;
 }
 
-/* Parse prefix: returns prefix type (1: ram0, 2: proc, 3: dev, 4: srv) */
+/* Parse prefix:
+ * 0: Root "/"
+ * 1: "/sd0/" (VirtIO SD Card Storage)
+ * 2: "/ram0/" (In-Memory RAMDisk Storage)
+ * 3: "/proc/" (Metrics)
+ * 4: "/dev/" (Hardware Devices)
+ * 5: "/srv/" (IPC Services)
+ */
 static int parse_prefix(const char *path, const char **rel_path) {
     static const char *empty_str = "";
     if (!rel_path) rel_path = &empty_str;
 
-    if (!path) {
+    if (!path || strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
         *rel_path = empty_str;
-        return 1;
+        return 0; // Root mount table
     }
 
-    if (strncmp(path, "/ram0/", 6) == 0) {
-        *rel_path = path + 6;
-        return 1;
-    } else if (strncmp(path, "/sd0/", 5) == 0) {
+    if (strncmp(path, "/sd0/", 5) == 0) {
         *rel_path = path + 5;
         return 1;
-    } else if (strcmp(path, "/ram0") == 0 || strcmp(path, "/sd0") == 0) {
-        *rel_path = "";
+    } else if (strcmp(path, "/sd0") == 0) {
+        *rel_path = empty_str;
         return 1;
-    } else if (strncmp(path, "/proc/", 6) == 0) {
+    } else if (strncmp(path, "/ram0/", 6) == 0) {
         *rel_path = path + 6;
         return 2;
+    } else if (strcmp(path, "/ram0") == 0) {
+        *rel_path = empty_str;
+        return 2;
+    } else if (strncmp(path, "/proc/", 6) == 0) {
+        *rel_path = path + 6;
+        return 3;
+    } else if (strcmp(path, "/proc") == 0) {
+        *rel_path = empty_str;
+        return 3;
     } else if (strncmp(path, "/dev/", 5) == 0) {
         *rel_path = path + 5;
-        return 3;
+        return 4;
+    } else if (strcmp(path, "/dev") == 0) {
+        *rel_path = empty_str;
+        return 4;
     } else if (strncmp(path, "/srv/", 5) == 0) {
         *rel_path = path + 5;
-        return 4;
+        return 5;
+    } else if (strcmp(path, "/srv") == 0) {
+        *rel_path = empty_str;
+        return 5;
     }
 
     if (path[0] == '/') {
@@ -180,7 +112,7 @@ static int parse_prefix(const char *path, const char **rel_path) {
     } else {
         *rel_path = path;
     }
-    return 1; // Default to /ram0/
+    return 1; // Default un-prefixed paths to /sd0/
 }
 
 int vfs_read(const char *path, void *buf, uint32_t max_len) {
@@ -190,20 +122,29 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
     int type = parse_prefix(path, &rel);
     if (!rel) rel = "";
 
-    if (type == 1) { // FAT32 /ram0/
+    if (type == 1) { // /sd0/ (or un-prefixed fallback)
         fat32_dir_entry_t entry;
-        if (fat32_find_file(&g_fat32, rel, &entry) < 0) {
-            return -1;
+        if (g_sd_mounted && fat32_find_file(&g_fat32_sd, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_sd, &entry, buf, max_len);
         }
-        return fat32_read_file(&g_fat32, &entry, buf, max_len);
-    } else if (type == 2) { // /proc/ synthetic metrics
+        if (g_ram_mounted && fat32_find_file(&g_fat32_ram, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_ram, &entry, buf, max_len);
+        }
+        return -1;
+    } else if (type == 2) { // /ram0/
+        fat32_dir_entry_t entry;
+        if (g_ram_mounted && fat32_find_file(&g_fat32_ram, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_ram, &entry, buf, max_len);
+        }
+        return -1;
+    } else if (type == 3) { // /proc/ synthetic metrics
         char *sbuf = (char *)buf;
         if (strcmp(rel, "ps") == 0) {
             int len = printk("PID  State    Name\n---  -------  ------------\n 0   RUNNING  kernel_idle\n 1   READY    lsh_console\n 2   READY    lisp_engine\n 3   READY    vfs_server (FAT32)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return len;
         } else if (strcmp(rel, "meminfo") == 0) {
-            printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /ram0/ FAT32 Volume (512 KB)\n");
+            printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         } else if (strcmp(rel, "version") == 0) {
@@ -212,7 +153,7 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             return 0;
         }
         return -1;
-    } else if (type == 3) { // /dev/ hardware devices
+    } else if (type == 4) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {
             if (buf && max_len > 0) {
                 char *sbuf = (char *)buf;
@@ -224,7 +165,7 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
         } else if (strcmp(rel, "null") == 0 || strcmp(rel, "zero") == 0) {
             return 0;
         }
-    } else if (type == 4) { // /srv/ IPC channels
+    } else if (type == 5) { // /srv/ IPC channels
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
                 printk("[VFS Router] IPC Channel '/srv/%s' read routed to PID %d\n",
@@ -243,9 +184,17 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     int type = parse_prefix(path, &rel);
     if (!rel) rel = "";
 
-    if (type == 1) { // FAT32 /ram0/
-        return fat32_write_file(&g_fat32, rel, buf, len);
-    } else if (type == 3) { // /dev/ hardware devices
+    if (type == 1) { // /sd0/
+        if (g_sd_mounted) {
+            return fat32_write_file(&g_fat32_sd, rel, buf, len);
+        }
+        return -1;
+    } else if (type == 2) { // /ram0/
+        if (g_ram_mounted) {
+            return fat32_write_file(&g_fat32_ram, rel, buf, len);
+        }
+        return -1;
+    } else if (type == 4) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {
             if (buf) {
                 const char *str = (const char *)buf;
@@ -257,7 +206,7 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
         } else if (strcmp(rel, "null") == 0) {
             return 0; // Bit bucket
         }
-    } else if (type == 4) { // /srv/ IPC channels
+    } else if (type == 5) { // /srv/ IPC channels
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
                 printk("[VFS Router] Forwarding %d byte payload to /srv/%s (PID %d) over IPC...\n",
@@ -277,30 +226,96 @@ int vfs_remove(const char *path) {
     if (!path) return -1;
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
-    if (type == 1 && rel) {
-        return fat32_remove_file(&g_fat32, rel);
+    if (type == 1 && rel && g_sd_mounted) {
+        return fat32_remove_file(&g_fat32_sd, rel);
+    } else if (type == 2 && rel && g_ram_mounted) {
+        return fat32_remove_file(&g_fat32_ram, rel);
     }
     return -1;
 }
+
+int vfs_mkdir(const char *path) {
+    if (!path) return -1;
+    const char *rel = NULL;
+    int type = parse_prefix(path, &rel);
+    if (type == 1 && rel && g_sd_mounted) {
+        return fat32_mkdir(&g_fat32_sd, rel);
+    } else if (type == 2 && rel && g_ram_mounted) {
+        return fat32_mkdir(&g_fat32_ram, rel);
+    }
+    return -1;
+}
+
+int vfs_rmdir(const char *path) {
+    if (!path) return -1;
+    const char *rel = NULL;
+    int type = parse_prefix(path, &rel);
+    if (type == 1 && rel && g_sd_mounted) {
+        return fat32_rmdir(&g_fat32_sd, rel);
+    } else if (type == 2 && rel && g_ram_mounted) {
+        return fat32_rmdir(&g_fat32_ram, rel);
+    }
+    return -1;
+}
+
+int vfs_cp(const char *src_path, const char *dst_path) {
+    if (!src_path || !dst_path) return -1;
+
+    static uint8_t copy_buf[4096];
+    int bytes_read = vfs_read(src_path, copy_buf, sizeof(copy_buf));
+    if (bytes_read < 0) {
+        printk("cp: cannot read source path '%s'\n", src_path);
+        return -1;
+    }
+
+    int write_res = vfs_write(dst_path, copy_buf, (uint32_t)bytes_read);
+    if (write_res < 0) {
+        printk("cp: failed to write to destination path '%s'\n", dst_path);
+        return -1;
+    }
+
+    return 0;
+}
+
 
 void vfs_ls(const char *path) {
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
 
-    if (type == 2) { // /proc/
+    if (type == 0) { // Root "/"
+        printk("\nDirectory Listing (/):\n");
+        printk("Name        Type                        Status\n");
+        printk("----------  --------------------------  ---------\n");
+        printk("sd0         FAT32 VirtIO Persistent SD  %s\n", g_sd_mounted ? "mounted" : "unmounted");
+        printk("ram0        FAT32 In-Memory RAMDisk     %s\n", g_ram_mounted ? "mounted" : "unmounted");
+        printk("proc        Synthetic Metrics System    active\n");
+        printk("dev         Hardware Device Nodes       active\n");
+        printk("srv         IPC Service Registry        active\n\n");
+    } else if (type == 1) { // /sd0/
+        if (g_sd_mounted) {
+            fat32_list_dir(&g_fat32_sd, rel);
+        } else {
+            printk("ls: /sd0/ is not mounted\n");
+        }
+    } else if (type == 2) { // /ram0/
+        if (g_ram_mounted) {
+            fat32_list_dir(&g_fat32_ram, rel);
+        } else {
+            printk("ls: /ram0/ is not mounted\n");
+        }
+    } else if (type == 3) { // /proc/
         printk("\nDirectory Listing (/proc/):\n");
         printk("Name        Type\n----------  ----\nps          synthetic\nmeminfo     synthetic\nversion     synthetic\n\n");
-    } else if (type == 3) { // /dev/
+    } else if (type == 4) { // /dev/
         printk("\nDirectory Listing (/dev/):\n");
         printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\n\n");
-    } else if (type == 4) { // /srv/
+    } else if (type == 5) { // /srv/
         printk("\nDirectory Listing (/srv/):\n");
         printk("Service Name  Target PID\n------------  ----------\n");
         for (int i = 0; i < g_num_services; i++) {
             printk("%s            %d\n", g_services[i].name, g_services[i].target_pid);
         }
         printk("\n");
-    } else { // /ram0/ default
-        fat32_list_dir(&g_fat32);
     }
 }
+

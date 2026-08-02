@@ -21,9 +21,13 @@ static void cmd_help(void) {
     printk("  meminfo         - Alias for 'cat /proc/meminfo'\n");
     printk("  ls [path]       - List directory (/ram0/, /proc/, /dev/, /srv/)\n");
     printk("  cat <path>      - Read and display path (/ram0/file, /proc/ps, /dev/uart)\n");
-    printk("  touch <file>    - Create a new empty file in /ram0/\n");
+    printk("  touch <file>    - Create a new empty file\n");
+    printk("  mkdir <path>    - Create a new directory\n");
+    printk("  rmdir <path>    - Remove an empty directory\n");
+    printk("  cp <src> <dst>  - Copy file from source path to destination path\n");
     printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
+
     printk("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
     printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
     printk("  ed [file]       - Launch teletype line editor\n");
@@ -88,7 +92,7 @@ void shell_run(void) {
             char mbuf[256];
             vfs_read("/proc/meminfo", mbuf, sizeof(mbuf));
         } else if (strcmp(buf, "ls") == 0) {
-            vfs_ls("/ram0/");
+            vfs_ls("/");
         } else if (strncmp(buf, "ls ", 3) == 0) {
             vfs_ls(&buf[3]);
         } else if (strncmp(buf, "cat ", 4) == 0) {
@@ -134,7 +138,33 @@ void shell_run(void) {
             } else {
                 printk("Usage: write <path> <text>\n");
             }
+        } else if (strncmp(buf, "mkdir ", 6) == 0) {
+            if (vfs_mkdir(&buf[6]) == 0) {
+                printk("Directory '%s' created.\n", &buf[6]);
+            } else {
+                printk("mkdir: failed to create directory '%s'\n", &buf[6]);
+            }
+        } else if (strncmp(buf, "rmdir ", 6) == 0) {
+            if (vfs_rmdir(&buf[6]) == 0) {
+                printk("Directory '%s' removed.\n", &buf[6]);
+            } else {
+                printk("rmdir: failed to remove directory '%s'\n", &buf[6]);
+            }
+        } else if (strncmp(buf, "cp ", 3) == 0) {
+            char *space = strchr(&buf[3], ' ');
+            if (space) {
+                *space = '\0';
+                if (vfs_cp(&buf[3], space + 1) == 0) {
+                    printk("Copied '%s' -> '%s'\n", &buf[3], space + 1);
+                } else {
+                    printk("cp: failed to copy '%s' to '%s'\n", &buf[3], space + 1);
+                }
+            } else {
+                printk("Usage: cp <src_path> <dst_path>\n");
+            }
         } else if (strncmp(buf, "rm ", 3) == 0) {
+
+
             if (vfs_remove(&buf[3]) == 0) {
                 printk("File '%s' removed.\n", &buf[3]);
             } else {
