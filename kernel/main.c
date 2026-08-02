@@ -6,6 +6,7 @@
 #include "arch/trap.h"
 #include "arch/vmm.h"
 #include "drivers/uart.h"
+#include "fs/vfs.h"
 #include "lisp.h"
 
 void kernel_main(void) {
@@ -13,7 +14,7 @@ void kernel_main(void) {
     uart_init(0x10000000);
 
     printk("\n==================================================\n");
-    printk("       LugalOS Microkernel Engine v0.2.0\n");
+    printk("       LugalOS Microkernel Storage Engine v0.3.0\n");
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)
@@ -38,6 +39,7 @@ void kernel_main(void) {
     trap_init();
     vmm_init();
     ipc_init();
+    vfs_server_init();
     sched_init();
     lisp_init();
     shell_init();

@@ -51,7 +51,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/arch/riscv/include
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
     ${CMAKE_CURRENT_SOURCE_DIR}/drivers/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/fs/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/lisp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
 )
 
 # Core Sources
@@ -64,7 +67,12 @@ set(SOURCES
     kernel/ipc.c
     kernel/shell.c
     drivers/uart_16550.c
+    drivers/ramdisk.c
+    fs/fat32.c
+    fs/vfs_server.c
+    libc/string.c
     user/lisp/lisp.c
+    user/ed/ed.c
 )
 
 # Architecture-specific memory management source

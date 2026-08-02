@@ -36,6 +36,7 @@ int printk(const char *fmt, ...) {
         }
 
         p++; // Skip '%'
+        while (*p >= '0' && *p <= '9') p++; // Skip width specifier digits (e.g., %12u)
         if (*p == 'l') p++; // Handle %ld / %lx / %lu
 
         switch (*p) {
