@@ -14,12 +14,12 @@
 #define VFS_TAG_RM      0x15
 
 void vfs_server_init(void);
-void vfs_server_run(void);
+int vfs_register_service(const char *service_name, int target_pid);
 
 int vfs_open(const char *path);
-int vfs_read(const char *filename, void *buf, uint32_t max_len);
-int vfs_write(const char *filename, const void *buf, uint32_t len);
-int vfs_remove(const char *filename);
-void vfs_ls(void);
+int vfs_read(const char *path, void *buf, uint32_t max_len);
+int vfs_write(const char *path, const void *buf, uint32_t len);
+int vfs_remove(const char *path);
+void vfs_ls(const char *path);
 
 #endif /* LUGALOS_FS_VFS_H */

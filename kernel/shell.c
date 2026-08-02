@@ -8,19 +8,19 @@
 #include <string.h>
 
 void shell_init(void) {
-    printk("[Shell] Interactive Lugal Shell (lsh) initialized with File System & Editor support.\n");
+    printk("[Shell] Interactive Lugal Shell (lsh) initialized with Plan 9 Universal Namespace.\n");
 }
 
 static void cmd_help(void) {
-    printk("\nAvailable LugalOS Shell Commands:\n");
+    printk("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
     printk("  help            - Display command manual\n");
     printk("  uname           - Show OS build target and architecture details\n");
-    printk("  ps              - Show active processes and scheduler state\n");
-    printk("  meminfo         - Show memory heap allocation info\n");
-    printk("  ls              - List files in FAT32 directory\n");
-    printk("  cat <file>      - Read and display contents of a text file\n");
-    printk("  touch <file>    - Create a new empty file\n");
-    printk("  write <f> <txt> - Write text string to file\n");
+    printk("  ps              - Alias for 'cat /proc/ps'\n");
+    printk("  meminfo         - Alias for 'cat /proc/meminfo'\n");
+    printk("  ls [path]       - List directory (/ram0/, /proc/, /dev/, /srv/)\n");
+    printk("  cat <path>      - Read and display path (/ram0/file, /proc/ps, /dev/uart)\n");
+    printk("  touch <file>    - Create a new empty file in /ram0/\n");
+    printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
@@ -28,7 +28,7 @@ static void cmd_help(void) {
 }
 
 static void cmd_uname(void) {
-    printk("LugalOS v0.3.0 (Microkernel VFS Core)\n");
+    vfs_read("/proc/version", NULL, 0);
 #if defined(CONFIG_TARGET_RV32)
     printk("Architecture: RISC-V 32-bit (RV32IMAC)\n");
 #elif defined(CONFIG_TARGET_RV64)
@@ -40,30 +40,13 @@ static void cmd_uname(void) {
 #elif defined(CONFIG_MMU)
     printk("Memory Mode: Sv39 Virtual Memory Page Tables\n");
 #endif
-    printk("Storage Driver: FAT32 RAMDisk / Block Device\n");
-}
-
-static void cmd_ps(void) {
-    printk("PID  State    Name\n");
-    printk("---  -------  ------------\n");
-    printk(" 0   RUNNING  kernel_idle\n");
-    printk(" 1   READY    lsh_console\n");
-    printk(" 2   READY    lisp_engine\n");
-    printk(" 3   READY    vfs_server (FAT32)\n");
-}
-
-static void cmd_meminfo(void) {
-    printk("Heap & Storage Status:\n");
-    printk("  System Architecture: RISC-V Bare-Metal\n");
-    printk("  Page Size: 4096 bytes\n");
-    printk("  Storage Driver: FAT32 Volume\n");
-    printk("  VFS Status: Active (PID %d)\n", VFS_PID);
+    printk("Namespace: Universal Path Resolver (/ram0/, /proc/, /dev/, /srv/)\n");
 }
 
 void shell_run(void) {
     char buf[128];
     printk("\nLugalOS Interactive Console Shell (`lsh`)\n");
-    printk("Type 'help' for commands, 'ls' for files, 'ed' for editor, 'lisp' for Scheme REPL.\n");
+    printk("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
     while (1) {
         printk("lsh> ");
@@ -94,18 +77,21 @@ void shell_run(void) {
         } else if (strcmp(buf, "uname") == 0) {
             cmd_uname();
         } else if (strcmp(buf, "ps") == 0) {
-            cmd_ps();
+            vfs_read("/proc/ps", NULL, 0);
         } else if (strcmp(buf, "meminfo") == 0) {
-            cmd_meminfo();
+            vfs_read("/proc/meminfo", NULL, 0);
         } else if (strcmp(buf, "ls") == 0) {
-            vfs_ls();
+            vfs_ls("/ram0/");
+        } else if (strncmp(buf, "ls ", 3) == 0) {
+            vfs_ls(&buf[3]);
         } else if (strncmp(buf, "cat ", 4) == 0) {
             char file_data[512];
+            file_data[0] = '\0';
             int read_len = vfs_read(&buf[4], file_data, 512);
-            if (read_len >= 0) {
+            if (read_len > 0) {
                 printk("%s\n", file_data);
-            } else {
-                printk("cat: '%s': No such file\n", &buf[4]);
+            } else if (read_len < 0) {
+                printk("cat: '%s': Cannot read path\n", &buf[4]);
             }
         } else if (strncmp(buf, "touch ", 6) == 0) {
             if (vfs_write(&buf[6], "", 0) == 0) {
@@ -125,7 +111,7 @@ void shell_run(void) {
                     printk("write: failed to write '%s'\n", filename);
                 }
             } else {
-                printk("Usage: write <filename> <text>\n");
+                printk("Usage: write <path> <text>\n");
             }
         } else if (strncmp(buf, "rm ", 3) == 0) {
             if (vfs_remove(&buf[3]) == 0) {

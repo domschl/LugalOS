@@ -1,6 +1,8 @@
 #include "lisp.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
+#include "fs/vfs.h"
+#include <string.h>
 
 #define NODE_POOL_SIZE 512
 
@@ -13,7 +15,6 @@ static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
 
 static lisp_val_t *global_env = &nil_val;
 
-/* Minimal string helpers */
 static int streq(const char *s1, const char *s2) {
     while (*s1 && (*s1 == *s2)) {
         s1++;
@@ -149,6 +150,15 @@ static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+static lisp_val_t *prim_cat(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR || args->u.pair.car->type != LISP_SYMBOL) return &nil_val;
+    char buf[512];
+    buf[0] = '\0';
+    vfs_read(args->u.pair.car->u.sym, buf, 512);
+    return &nil_val;
+}
+
 void lisp_init(void) {
     node_pool_idx = 0;
     global_env = &nil_val;
@@ -159,6 +169,7 @@ void lisp_init(void) {
     env_set(&global_env, "=", make_prim(prim_eq));
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
+    env_set(&global_env, "cat", make_prim(prim_cat));
 
     printk("[Lisp] Scheme / S-Expression REPL Engine initialized.\n");
 }
@@ -363,7 +374,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
 void lisp_repl(void) {
     printk("\n==================================================\n");
     printk("       LugalOS Scheme / S-Expression REPL         \n");
-    printk("  Type expressions like (+ 10 20) or (define x 42) \n");
+    printk("  Type expressions like (+ 10 20) or (cat /proc/ps)\n");
     printk("  Type 'exit' to return to lugal shell.            \n");
     printk("==================================================\n");
 
