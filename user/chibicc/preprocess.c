@@ -29,6 +29,11 @@ static const char *builtin_lugal_h =
     "#define SYS_IPC_REPLY  2\n"
     "#define SYS_IPC_SEND   3\n"
     "#define SYS_IPC_RECV   4\n"
+    "#define SYS_PRINT      10\n"
+    "#define SYS_PUTNUM     11\n"
+    "#define SYS_PUTCHAR    12\n"
+    "#define SYS_READ_FILE  13\n"
+    "#define SYS_WRITE_FILE 14\n"
     "#define IPC_ANY       -1\n"
     "struct ipc_msg {\n"
     "    long tag;\n"
@@ -39,6 +44,12 @@ static const char *builtin_lugal_h =
     "    long d4;\n"
     "};\n"
     "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
+    "int print(char *s);\n"
+    "int puts(char *s);\n"
+    "int putnum(long n);\n"
+    "int putchar(char c);\n"
+    "int read_file(char *path, void *buf, int max_len);\n"
+    "int write_file(char *path, void *buf, int len);\n"
     "#endif\n";
 
 static void define_macro(const char *name, const char *val) {

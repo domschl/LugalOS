@@ -2,6 +2,8 @@
 #include "arch/csr.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
+#include "fs/vfs.h"
+#include "drivers/uart.h"
 
 void trap_init(void) {
     /* Trap initialization performed in entry.S setup */
@@ -36,6 +38,24 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 case SYS_IPC_RECV:
                     ret = sys_ipc_recv(target_pid, msg_in);
+                    break;
+                case 10: /* SYS_PRINT */
+                    if (frame->a1) printk("%s", (const char *)frame->a1);
+                    ret = 0;
+                    break;
+                case 11: /* SYS_PUTNUM */
+                    printk("%ld", (long)frame->a1);
+                    ret = 0;
+                    break;
+                case 12: /* SYS_PUTCHAR */
+                    uart_putc((char)frame->a1);
+                    ret = 0;
+                    break;
+                case 13: /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
+                    ret = vfs_read((const char *)frame->a1, (void *)frame->a2, (uint32_t)frame->a3);
+                    break;
+                case 14: /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
+                    ret = vfs_write((const char *)frame->a1, (const void *)frame->a2, (uint32_t)frame->a3);
                     break;
                 default:
                     printk("[Syscall] Unknown syscall nr %ld requested\n", (long)sys_nr);

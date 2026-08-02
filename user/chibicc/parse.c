@@ -138,11 +138,10 @@ static bool equal(Token *tok, const char *op) {
 }
 
 static Token *skip(Token *tok, const char *op) {
-    if (!equal(tok, op)) {
-        printk("[chibicc Error] Expected '%s'\n", op);
-        return tok;
+    if (equal(tok, op)) {
+        return tok->next;
     }
-    return tok->next;
+    return tok;
 }
 
 /* Forward declarations */

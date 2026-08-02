@@ -147,6 +147,28 @@ Token *tokenize(char *p) {
             continue;
         }
 
+        // Character Literals ('...')
+        if (*p == '\'') {
+            char *start = p;
+            p++;
+            int c = *p;
+            if (*p == '\\') {
+                p++;
+                if (*p == 'n') c = '\n';
+                else if (*p == 't') c = '\t';
+                else if (*p == 'r') c = '\r';
+                else if (*p == '0') c = '\0';
+                else if (*p == '\\') c = '\\';
+                else if (*p == '\'') c = '\'';
+                else c = *p;
+            }
+            p++;
+            if (*p == '\'') p++;
+            cur = cur->next = new_token(TK_NUM, start, p);
+            cur->val = c;
+            continue;
+        }
+
         // Keywords & Identifiers
         if (is_alpha(*p)) {
             char *start = p;

@@ -245,6 +245,40 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // RISC-V ecall instruction
                 return;
             }
+            if (strcmp(node->funcname, "print") == 0 || strcmp(node->funcname, "puts") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 10)); // a0 = 10 (SYS_PRINT)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "putnum") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 11)); // a0 = 11 (SYS_PUTNUM)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "putchar") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 12)); // a0 = 12 (SYS_PUTCHAR)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "read_file") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(13, 12, 0)); // a3 = a2
+                code_idx = emit_word(code_buf, code_idx, encode_addi(12, 11, 0)); // a2 = a1
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 13)); // a0 = 13 (SYS_READ_FILE)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "write_file") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(13, 12, 0)); // a3 = a2
+                code_idx = emit_word(code_buf, code_idx, encode_addi(12, 11, 0)); // a2 = a1
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 14)); // a0 = 14 (SYS_WRITE_FILE)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
 
             int target_offset = 0;
             for (Function *fn = global_prog; fn; fn = fn->next) {
