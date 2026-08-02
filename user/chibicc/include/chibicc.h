@@ -41,6 +41,8 @@ typedef enum {
     ND_LT,
     ND_LE,
     ND_ASSIGN,
+    ND_ADDR,
+    ND_DEREF,
     ND_VAR,
     ND_NUM,
     ND_IF,
@@ -56,9 +58,23 @@ typedef struct Node Node;
 typedef struct Obj Obj;
 typedef struct Function Function;
 
+typedef enum {
+    TY_INT,
+    TY_PTR,
+    TY_ARRAY,
+} TypeKind;
+
+struct Type {
+    TypeKind kind;
+    int size;
+    Type *base;
+    int array_len;
+};
+
 struct Obj {
     Obj *next;
     char name[32];
+    Type *ty;
     int offset;
 };
 
@@ -80,6 +96,7 @@ struct Node {
     char funcname[32];
     Node *args;
 
+    Type *ty;
     Obj *var;
     long val;
 };
@@ -92,6 +109,9 @@ struct Function {
     Obj *locals;
     int stack_size;
 };
+
+/* Global Types */
+extern Type *ty_int;
 
 /* Function Prototypes */
 Token *tokenize(char *input);

@@ -121,7 +121,7 @@ Token *tokenize(char *p) {
         }
 
         // Single-character punctuation
-        if (strchr("+-*/%()={};<>", *p)) {
+        if (strchr("+-*/%()={};<>&[]", *p)) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 1);
             p++;
             continue;

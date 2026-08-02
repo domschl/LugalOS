@@ -1,5 +1,5 @@
 /*
- * chibicc - RISC-V Machine Code Generator with Control Flow & Function Calls
+ * chibicc - RISC-V Machine Code Generator with Pointers, Arrays, Control Flow & Function Calls
  * Copyright (c) 2020 Rui Ueyama
  * License: MIT License
  * Adapted for LugalOS Freestanding RISC-V Microkernel Architecture
@@ -25,21 +25,11 @@ static uint32_t encode_addi(int rd, int rs1, int16_t imm) {
 }
 
 static uint32_t encode_add(int rd, int rs1, int rs2) {
-#if defined(CONFIG_TARGET_RV64)
-    uint8_t opcode = 0x3B; // addw
-#else
-    uint8_t opcode = 0x33; // add
-#endif
-    return (0x00 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | opcode;
+    return (0x00 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | 0x33; // add
 }
 
 static uint32_t encode_sub(int rd, int rs1, int rs2) {
-#if defined(CONFIG_TARGET_RV64)
-    uint8_t opcode = 0x3B; // subw
-#else
-    uint8_t opcode = 0x33; // sub
-#endif
-    return (0x20 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | opcode;
+    return (0x20 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) | (rd << 7) | 0x33; // sub
 }
 
 static uint32_t encode_mul(int rd, int rs1, int rs2) {
@@ -127,6 +117,18 @@ static uint32_t encode_jal(int rd, int32_t offset) {
 static void gen_expr(Node *node, uint8_t *code_buf);
 static void gen_stmt(Node *node, uint8_t *code_buf);
 
+static void gen_addr(Node *node, uint8_t *code_buf) {
+    if (node->kind == ND_VAR) {
+        code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, (int16_t)node->var->offset));
+        return;
+    }
+    if (node->kind == ND_DEREF) {
+        gen_expr(node->lhs, code_buf);
+        return;
+    }
+    printk("[chibicc Error] Not an lvalue for address-of operator\n");
+}
+
 static void gen_expr(Node *node, uint8_t *code_buf) {
     if (!node) return;
 
@@ -135,28 +137,51 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
             code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, (int16_t)node->val));
             return;
         case ND_VAR:
-            code_idx = emit_word(code_buf, code_idx, encode_ld(10, 8, (int16_t)node->var->offset));
+            if (node->var->ty && node->var->ty->kind == TY_ARRAY) {
+                // Array name evaluates to its base address s0 + offset
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, (int16_t)node->var->offset));
+            } else {
+                code_idx = emit_word(code_buf, code_idx, encode_ld(10, 8, (int16_t)node->var->offset));
+            }
+            return;
+        case ND_ADDR:
+            gen_addr(node->lhs, code_buf);
+            return;
+        case ND_DEREF:
+            gen_expr(node->lhs, code_buf);
+            code_idx = emit_word(code_buf, code_idx, encode_ld(10, 10, 0));
             return;
         case ND_ASSIGN:
-            gen_expr(node->rhs, code_buf);
-            code_idx = emit_word(code_buf, code_idx, encode_sd(10, 8, (int16_t)node->lhs->var->offset));
+            if (node->lhs->kind == ND_VAR) {
+                gen_expr(node->rhs, code_buf);
+                code_idx = emit_word(code_buf, code_idx, encode_sd(10, 8, (int16_t)node->lhs->var->offset));
+            } else if (node->lhs->kind == ND_DEREF) {
+                // Evaluate target address into a0, push to stack
+                gen_expr(node->lhs->lhs, code_buf);
+                code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -8));
+                code_idx = emit_word(code_buf, code_idx, encode_sd(10, 2, 0));
+
+                // Evaluate rhs value into a0
+                gen_expr(node->rhs, code_buf);
+
+                // Pop target address into a1, store a0 to 0(a1)
+                code_idx = emit_word(code_buf, code_idx, encode_ld(11, 2, 0));
+                code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 8));
+                code_idx = emit_word(code_buf, code_idx, encode_sd(10, 11, 0));
+            }
             return;
         case ND_FUNCALL: {
             int arg_cnt = 0;
             for (Node *arg = node->args; arg; arg = arg->next) {
                 gen_expr(arg, code_buf);
-                // Push arg to stack
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -8));
                 code_idx = emit_word(code_buf, code_idx, encode_sd(10, 2, 0));
                 arg_cnt++;
             }
-            // Pop arguments into a0..a7
             for (int i = arg_cnt - 1; i >= 0; i--) {
                 code_idx = emit_word(code_buf, code_idx, encode_ld(10 + i, 2, 0));
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 8));
             }
-            // For simplicity, function calls call entry point directly or jal offset
-            // We emit jal ra, func_offset (placeholder 0 for recursion)
             code_idx = emit_word(code_buf, code_idx, encode_jal(1, 0));
             return;
         }
@@ -189,12 +214,12 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
             }
             if (node->kind == ND_EQ) {
                 code_idx = emit_word(code_buf, code_idx, encode_sub(10, 10, 11));
-                code_idx = emit_word(code_buf, code_idx, encode_slt(10, 0, 10)); // a0 = (a0 == 0)
+                code_idx = emit_word(code_buf, code_idx, encode_slt(10, 0, 10));
                 code_idx = emit_word(code_buf, code_idx, encode_xori(10, 10, 1));
             }
             if (node->kind == ND_NE) {
                 code_idx = emit_word(code_buf, code_idx, encode_sub(10, 10, 11));
-                code_idx = emit_word(code_buf, code_idx, encode_slt(10, 0, 10)); // a0 = (a0 != 0)
+                code_idx = emit_word(code_buf, code_idx, encode_slt(10, 0, 10));
             }
             return;
         default:
@@ -202,14 +227,16 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
     }
 }
 
+static int current_stack_sz = 64;
+
 static void gen_stmt(Node *node, uint8_t *code_buf) {
     if (!node) return;
 
     if (node->kind == ND_RETURN) {
         gen_expr(node->lhs, code_buf);
-        code_idx = emit_word(code_buf, code_idx, encode_ld(8, 2, 48));
-        code_idx = emit_word(code_buf, code_idx, encode_ld(1, 2, 56));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 64));
+        code_idx = emit_word(code_buf, code_idx, encode_ld(8, 2, (int16_t)(current_stack_sz - 16)));
+        code_idx = emit_word(code_buf, code_idx, encode_ld(1, 2, (int16_t)(current_stack_sz - 8)));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)current_stack_sz));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
         return;
     }
@@ -218,13 +245,13 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
         gen_expr(node->cond, code_buf);
 
         int beqz_idx = code_idx;
-        code_idx += 4; // Reserve space for beqz
+        code_idx += 4;
 
         gen_stmt(node->then, code_buf);
 
         if (node->els) {
             int j_idx = code_idx;
-            code_idx += 4; // Reserve space for jump
+            code_idx += 4;
 
             int else_offset = code_idx - beqz_idx;
             emit_word(code_buf, beqz_idx, encode_beqz(10, (int16_t)else_offset));
@@ -281,13 +308,16 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
     code_idx = 0;
 
     for (Function *fn = prog; fn; fn = fn->next) {
-        // Prologue: addi sp, sp, -64; sd ra, 56(sp); sd s0, 48(sp); addi s0, sp, 64
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -64));
-        code_idx = emit_word(code_buf, code_idx, encode_sd(1, 2, 56));
-        code_idx = emit_word(code_buf, code_idx, encode_sd(8, 2, 48));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, 64));
+        int stack_sz = fn->stack_size > 64 ? fn->stack_size : 64;
+        stack_sz = (stack_sz + 15) & ~15;
+        current_stack_sz = stack_sz;
 
-        // Save parameter registers (a0..a7) to stack slots
+        // Prologue
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)-stack_sz));
+        code_idx = emit_word(code_buf, code_idx, encode_sd(1, 2, (int16_t)(stack_sz - 8)));
+        code_idx = emit_word(code_buf, code_idx, encode_sd(8, 2, (int16_t)(stack_sz - 16)));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
+
         int param_idx = 0;
         for (Obj *param = fn->params; param; param = param->next) {
             code_idx = emit_word(code_buf, code_idx, encode_sd(10 + param_idx, 8, (int16_t)param->offset));
@@ -297,9 +327,9 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         gen_stmt(fn->body, code_buf);
 
         // Fallthrough Epilogue
-        code_idx = emit_word(code_buf, code_idx, encode_ld(8, 2, 48));
-        code_idx = emit_word(code_buf, code_idx, encode_ld(1, 2, 56));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 64));
+        code_idx = emit_word(code_buf, code_idx, encode_ld(8, 2, (int16_t)(stack_sz - 16)));
+        code_idx = emit_word(code_buf, code_idx, encode_ld(1, 2, (int16_t)(stack_sz - 8)));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
     }
     return code_idx;
