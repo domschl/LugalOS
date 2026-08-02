@@ -1,18 +1,24 @@
-# LugalOS (`lugalos`)
+# LugalOS: Bare-Metal RISC-V Microkernel Operating System
 
-A scalable bare-metal operating system written from scratch in C for RISC-V architectures. Designed to scale seamlessly across **nommu** microcontrollers (like RP2350) and **MMU** application processors (like Kendryte K210 and VisionFive 2).
+**LugalOS** is a bare-metal, dependency-free microkernel operating system written in pure freestanding C11 and RISC-V assembly.
+
+It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (like the **Kendryte K210** and **VisionFive 2**).
 
 ---
 
-## Key Features
+## Key Features & Architecture
 
-* **Pure C11 & RISC-V Assembly Core**: Zero external SDKs or vendor HAL dependencies.
-* **Dual Architecture & Privilege Abstraction**:
-  * **RV32 NOMMU (M-mode)**: Direct physical memory execution for microcontroller-class chips.
-  * **RV64 MMU (S-mode & Sv39 Paging)**: Virtual memory page table management for application-class chips.
-* **Build System**: Built using **CMake** and **Ninja**.
-* **Serial Diagnostic Logging**: MMIO 16550 UART driver with formatted `printk`.
-* **Process Management**: Basic round-robin process scheduler and context-switching framework.
+* **Microkernel Core & Fast IPC**: L4/seL4-style zero-copy register IPC rendezvous (`sys_ipc_call`, `sys_ipc_reply`) using RISC-V `ecall`.
+* **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
+  * `/ram0/` — FAT32 RAMDisk storage volume (`/ram0/notes.txt`).
+  * `/proc/` — Synthetic process and kernel metrics (`/proc/ps`, `/proc/meminfo`, `/proc/version`).
+  * `/dev/` — Hardware device nodes (`/dev/uart`, `/dev/null`, `/dev/zero`).
+  * `/srv/` — Named process IPC channel registry (`/srv/lisp` $\rightarrow$ PID 2).
+* **Storage & FAT32 Engine**: Native FAT32 filesystem engine supporting 32-bit cluster allocation, BPB formatting, file read/write, deletion, and volume listing.
+* **Embedded Scheme / S-Expression Engine (`lugal-lisp`)**: Pure C S-expression parser, environment frames, closures, arithmetic/logic primitives, hardware `peek`/`poke`, and a `(compile-file)` S-expression compiler!
+* **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
+* **Teletype Line Editor (`ed`)**: Classic Unix teletype line editor supporting append (`a`), print (`p`), numbered print (`n`), delete (`d`), and write (`w`) modes over serial I/O.
+* **Interactive Console Shell (`lsh`)**: Feature-rich shell supporting file management, Plan 9 `/proc/` introspection, Scheme REPL, `ed` editor, and native `exec` binary execution.
 
 ---
 
@@ -20,66 +26,70 @@ A scalable bare-metal operating system written from scratch in C for RISC-V arch
 
 ```
 lugalos/
-├── CMakeLists.txt              # Root CMake configuration
-├── README.md                   # Project documentation
-├── cmake/
-│   ├── toolchain-rv32-nommu.cmake # Toolchain for 32-bit NOMMU target
-│   └── toolchain-rv64-mmu.cmake   # Toolchain for 64-bit MMU target
-├── arch/
-│   └── riscv/
-│       ├── common/             # Boot assembly (_start), trap vectors, handlers
-│       ├── include/arch/       # Abstraction headers (csr.h, trap.h, vmm.h)
-│       ├── rv32_nommu/         # NOMMU memory manager implementation
-│       └── rv64_mmu/           # Sv39 MMU memory manager implementation
-├── kernel/
-│   ├── include/kernel/         # Kernel headers (printk.h, sched.h)
-│   ├── main.c                  # Kernel entry point
-│   ├── printk.c                # Serial console formatter
-│   └── sched.c                 # Process scheduler
-├── drivers/
-│   ├── include/drivers/        # Device driver interfaces (uart.h)
-│   ├── uart_16550.c            # QEMU / K210 / VF2 16550 UART driver
-│   └── uart_rp2350.c           # RP2350 hardware UART driver stub
-├── linker/
-│   ├── qemu-rv32.ld            # Linker script for 32-bit targets
-│   └── qemu-rv64.ld            # Linker script for 64-bit targets
-└── scripts/
-    ├── run-qemu-rv32.sh        # Build & launch script for RV32 NOMMU
-    └── run-qemu-rv64.sh        # Build & launch script for RV64 MMU
+├── arch/riscv/
+│   ├── common/              # RISC-V assembly entry point, traps, ELF loader
+│   ├── include/arch/        # CSRs, Trap frames, VMM, ELF headers
+│   ├── rv32_nommu/          # 32-bit physical identity memory mapping
+│   └── rv64_mmu/            # 64-bit Sv39 3-level page table manager
+├── cmake/                   # Cross-compilation toolchains (RV32 & RV64)
+├── drivers/                 # MMIO 16550 UART driver & 512KB RAMDisk driver
+├── fs/                      # FAT32 filesystem engine & Plan 9 VFS Server
+├── kernel/                  # Microkernel main, scheduler, IPC, shell, printk
+├── libc/                    # Freestanding C string library
+├── user/
+│   ├── ed/                  # Teletype line editor (`ed`)
+│   └── lisp/                # Scheme REPL & RISC-V S-expression ELF compiler
+├── linker/                  # QEMU virt linker scripts
+└── scripts/                 # QEMU launcher scripts
 ```
 
 ---
 
-## Building & Verification
+## Building and Running in QEMU
 
 ### Prerequisites
-Ensure you have CMake, Ninja, and a RISC-V cross-compiler (`riscv64-elf-gcc` or `riscv-none-elf-gcc`) installed.
+* `riscv64-elf-gcc` or `riscv32-elf-gcc`
+* `cmake` and `ninja`
+* `qemu-system-riscv32` and `qemu-system-riscv64`
 
+### Build & Run RV32 (NOMMU) Target
 ```bash
-# Build RV32 NOMMU Target
 cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake
 ninja -C build/rv32
-
-# Build RV64 MMU Target
-cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake
-ninja -C build/rv64
+./scripts/run-qemu-rv32.sh
 ```
 
-### Running in QEMU
-
+### Build & Run RV64 (Sv39 MMU) Target
 ```bash
-# RV32 Target
-qemu-system-riscv32 -M virt -nographic -bios none -kernel build/rv32/lugalos.elf
-
-# RV64 Target
-qemu-system-riscv64 -M virt -nographic -bios none -kernel build/rv64/lugalos.elf
+cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake
+ninja -C build/rv64
+./scripts/run-qemu-rv64.sh
 ```
 
 ---
 
-## Development Roadmap
+## Interactive Workflow Example
 
-1. **Phase 1**: Bare-metal microkernel with UART, basic interrupts, and scheduling on RP2350.
-2. **Phase 2**: Sv39 Virtual Memory, kernel/user isolation (`ecall` syscalls), page tables on K210.
-3. **Phase 3**: Embedded RAMDisk, POSIX syscall subset (`read`, `write`, `open`, `sbrk`, `execve`).
-4. **Phase 4**: Self-hosting (embedding TinyCC to compile and install itself).
+```bash
+LugalOS Interactive Console Shell (`lsh`)
+
+# 1. Write Lisp program using ed line editor
+lsh> ed /ram0/prog.lisp
+:a
+(+ 100 200)
+.
+:w
+:q
+
+# 2. Compile S-expression to native RISC-V ELF binary
+lsh> lisp
+lisp> (compile-file "/ram0/prog.lisp" "/ram0/prog.elf")
+[Lisp Compiler] Successfully compiled S-expression to native RISC-V ELF binary (128 bytes)
+=> #t
+lisp> exit
+
+# 3. Execute native RISC-V ELF binary directly from shell
+lsh> exec /ram0/prog.elf
+[ELF] Executing binary '/ram0/prog.elf'...
+[ELF] Native RISC-V binary '/ram0/prog.elf' exited with return code: 300
+```

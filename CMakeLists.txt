@@ -59,19 +59,21 @@ include_directories(
 
 # Core Sources
 set(SOURCES
-    arch/riscv/common/entry.S
-    arch/riscv/common/trap.c
     kernel/main.c
     kernel/printk.c
-    kernel/sched.c
     kernel/ipc.c
+    kernel/sched.c
     kernel/shell.c
+    arch/riscv/common/entry.S
+    arch/riscv/common/trap.c
+    arch/riscv/common/elf.c
     drivers/uart_16550.c
     drivers/ramdisk.c
     fs/fat32.c
     fs/vfs_server.c
     libc/string.c
     user/lisp/lisp.c
+    user/lisp/lisp_compile.c
     user/ed/ed.c
 )
 

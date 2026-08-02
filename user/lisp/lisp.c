@@ -1,4 +1,5 @@
 #include "lisp.h"
+#include "lisp_compile.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
@@ -170,6 +171,7 @@ void lisp_init(void) {
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
     env_set(&global_env, "cat", make_prim(prim_cat));
+    env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     printk("[Lisp] Scheme / S-Expression REPL Engine initialized.\n");
 }
@@ -331,6 +333,10 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
         /* Evaluate Operator */
         lisp_val_t *fn = lisp_eval(op, env);
         if (!fn) return &nil_val;
+
+        if (fn->type == LISP_PRIMITIVE && fn->u.prim == prim_compile_file) {
+            return fn->u.prim(args, env);
+        }
 
         /* Evaluate Arguments */
         lisp_val_t *eval_args_head = &nil_val;

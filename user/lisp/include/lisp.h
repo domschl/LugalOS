@@ -37,6 +37,11 @@ typedef struct lisp_val {
 } lisp_val_t;
 
 void lisp_init(void);
+lisp_val_t *make_int(long val);
+lisp_val_t *make_sym(const char *sym);
+lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr);
+lisp_val_t *make_prim(lisp_prim_fn fn);
+
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env);
 lisp_val_t *lisp_read(const char **str);
 void lisp_print(lisp_val_t *val);

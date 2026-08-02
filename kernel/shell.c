@@ -3,6 +3,7 @@
 #include "kernel/sched.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
+#include "arch/elf.h"
 #include "lisp.h"
 #include "ed.h"
 #include <string.h>
@@ -22,6 +23,7 @@ static void cmd_help(void) {
     printk("  touch <file>    - Create a new empty file in /ram0/\n");
     printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
+    printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     printk("  clear           - Clear terminal screen\n\n");
@@ -122,6 +124,8 @@ void shell_run(void) {
             } else {
                 printk("rm: failed to remove '%s'\n", &buf[3]);
             }
+        } else if (strncmp(buf, "exec ", 5) == 0) {
+            elf_load_and_run(&buf[5]);
         } else if (strcmp(buf, "ed") == 0) {
             ed_main(NULL);
         } else if (strncmp(buf, "ed ", 3) == 0) {
