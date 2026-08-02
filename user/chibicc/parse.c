@@ -1,5 +1,5 @@
 /*
- * chibicc - Recursive Descent Parser with Data Types (char, short, int, long, struct)
+ * chibicc - Recursive Descent Parser with String Literal Support
  * Copyright (c) 2020 Rui Ueyama
  * License: MIT License
  * Adapted for LugalOS Freestanding RISC-V Microkernel Architecture
@@ -13,7 +13,7 @@
 static Node node_pool[MAX_NODES];
 static int node_pool_idx = 0;
 
-#define MAX_OBJS 64
+#define MAX_OBJS 128
 static Obj obj_pool[MAX_OBJS];
 static int obj_pool_idx = 0;
 
@@ -38,6 +38,8 @@ Type *ty_char  = &ty_char_obj;
 Type *ty_short = &ty_short_obj;
 Type *ty_int   = &ty_int_obj;
 Type *ty_long  = &ty_long_obj;
+
+Obj *globals = NULL;
 
 static Type *pointer_to(Type *base) {
     if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
@@ -101,8 +103,29 @@ static Obj *new_var(const char *name, Type *ty) {
     return var;
 }
 
+static Obj *new_gvar(const char *name, Type *ty) {
+    if (obj_pool_idx >= MAX_OBJS) {
+        printk("[chibicc Error] Obj pool exhausted!\n");
+        obj_pool_idx = 0;
+    }
+    Obj *var = &obj_pool[obj_pool_idx++];
+    memset(var, 0, sizeof(Obj));
+    strncpy(var->name, name, 31);
+    var->name[31] = '\0';
+    var->ty = ty;
+    var->is_global = true;
+    var->next = globals;
+    globals = var;
+    return var;
+}
+
 static Obj *find_var(Token *tok) {
     for (Obj *var = locals; var; var = var->next) {
+        if ((int)strlen(var->name) == tok->len && strncmp(tok->loc, var->name, tok->len) == 0) {
+            return var;
+        }
+    }
+    for (Obj *var = globals; var; var = var->next) {
         if ((int)strlen(var->name) == tok->len && strncmp(tok->loc, var->name, tok->len) == 0) {
             return var;
         }
@@ -155,8 +178,13 @@ static Type *struct_decl(Token **rest, Token *tok) {
 
     if (tag && !equal(tok, "{")) {
         *rest = tok;
+        char tag_name[32];
+        int tlen = tag->len < 31 ? tag->len : 31;
+        strncpy(tag_name, tag->loc, tlen);
+        tag_name[tlen] = '\0';
+
         for (int i = 0; i < type_pool_idx; i++) {
-            if (type_pool[i].kind == TY_STRUCT) {
+            if (type_pool[i].kind == TY_STRUCT && strcmp(type_pool[i].name, tag_name) == 0) {
                 return &type_pool[i];
             }
         }
@@ -164,6 +192,7 @@ static Type *struct_decl(Token **rest, Token *tok) {
         Type *ty = &type_pool[type_pool_idx++];
         memset(ty, 0, sizeof(Type));
         ty->kind = TY_STRUCT;
+        strncpy(ty->name, tag_name, 31);
         ty->size = 16;
         return ty;
     }
@@ -174,6 +203,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
     Type *ty = &type_pool[type_pool_idx++];
     memset(ty, 0, sizeof(Type));
     ty->kind = TY_STRUCT;
+    if (tag) {
+        int tlen = tag->len < 31 ? tag->len : 31;
+        strncpy(ty->name, tag->loc, tlen);
+        ty->name[tlen] = '\0';
+    }
 
     Member head = {0};
     Member *cur = &head;
@@ -192,7 +226,6 @@ static Type *struct_decl(Token **rest, Token *tok) {
         m->name[len] = '\0';
         m->ty = m_ty;
 
-        // Align offset
         int align = m_ty->size < 8 ? m_ty->size : 8;
         if (align > 1) {
             offset = (offset + align - 1) & ~(align - 1);
@@ -206,7 +239,7 @@ static Type *struct_decl(Token **rest, Token *tok) {
 
     *rest = skip(tok, "}");
     ty->members = head.next;
-    ty->size = (offset + 7) & ~7; // align total struct size to 8 bytes
+    ty->size = (offset + 7) & ~7;
     return ty;
 }
 
@@ -255,6 +288,8 @@ static Node *funcall(Token **rest, Token *tok) {
     return node;
 }
 
+static int str_label_idx = 0;
+
 static Node *primary(Token **rest, Token *tok) {
     if (equal(tok, "(")) {
         Node *node = expr(&tok, tok->next);
@@ -264,6 +299,22 @@ static Node *primary(Token **rest, Token *tok) {
 
     if (tok->kind == TK_NUM) {
         Node *node = new_num(tok->val);
+        *rest = tok->next;
+        return node;
+    }
+
+    if (tok->kind == TK_STR) {
+        char labelbuf[32];
+        labelbuf[0] = '.'; labelbuf[1] = 'L'; labelbuf[2] = 's'; labelbuf[3] = 't'; labelbuf[4] = 'r';
+        labelbuf[5] = '0' + (str_label_idx % 10); labelbuf[6] = '\0';
+        str_label_idx++;
+
+        int len = strlen(tok->str) + 1;
+        Obj *var = new_gvar(labelbuf, array_of(ty_char, len));
+        var->init_data = tok->str;
+
+        Node *node = new_node(ND_STR);
+        node->var = var;
         *rest = tok->next;
         return node;
     }
@@ -504,7 +555,6 @@ static Node *stmt(Token **rest, Token *tok) {
     if (is_typename(tok)) {
         Type *ty = typespec(&tok, tok);
 
-        // If it was just a struct declaration without a variable name: struct Point { int x; int y; };
         if (equal(tok, ";")) {
             *rest = tok->next;
             return new_node(ND_EXPR_STMT);
@@ -518,7 +568,6 @@ static Node *stmt(Token **rest, Token *tok) {
         Token *var_tok = tok;
         tok = tok->next;
 
-        // Array declaration int a[10]
         if (equal(tok, "[")) {
             tok = tok->next;
             int len = tok->val;
@@ -631,6 +680,9 @@ Function *parse(Token *tok) {
     fn_pool_idx = 0;
     type_pool_idx = 0;
     member_pool_idx = 0;
+    globals = NULL;
+    str_label_idx = 0;
+
     Function head = {0};
     Function *cur = &head;
 

@@ -17,6 +17,7 @@ typedef enum {
     TK_PUNCT,
     TK_KEYWORD,
     TK_NUM,
+    TK_STR,
     TK_EOF,
 } TokenKind;
 
@@ -27,6 +28,7 @@ struct Token {
     long val;
     char *loc;
     int len;
+    char *str;
 };
 
 typedef enum {
@@ -46,6 +48,7 @@ typedef enum {
     ND_MEMBER,
     ND_VAR,
     ND_NUM,
+    ND_STR,
     ND_IF,
     ND_FOR,
     ND_BLOCK,
@@ -83,6 +86,7 @@ struct Type {
     Type *base;
     int array_len;
     Member *members;
+    char name[32];
 };
 
 struct Obj {
@@ -90,6 +94,8 @@ struct Obj {
     char name[32];
     Type *ty;
     int offset;
+    bool is_global;
+    char *init_data;
 };
 
 struct Node {
@@ -125,15 +131,19 @@ struct Function {
     Obj *params;
     Obj *locals;
     int stack_size;
+    int code_offset;
 };
 
-/* Global Types */
+/* Global Variables & Types */
 extern Type *ty_char;
 extern Type *ty_short;
 extern Type *ty_int;
 extern Type *ty_long;
 
+extern Obj *globals;
+
 /* Function Prototypes */
+char *preprocess(const char *input);
 Token *tokenize(char *input);
 Function *parse(Token *tok);
 int codegen(Function *prog, uint8_t *code_buf, int max_size);

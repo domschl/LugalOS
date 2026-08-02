@@ -111,9 +111,23 @@ void shell_run(void) {
             if (space) {
                 *space = '\0';
                 const char *filename = &buf[6];
-                const char *text = space + 1;
-                if (vfs_write(filename, text, strlen(text)) == 0) {
-                    printk("'%s': %d bytes written.\n", filename, (int)strlen(text));
+                char text[512];
+                const char *src = space + 1;
+                int tidx = 0;
+                while (*src && tidx < 511) {
+                    if (*src == '\\' && *(src + 1) == 'n') {
+                        text[tidx++] = '\n';
+                        src += 2;
+                    } else if (*src == '\\' && *(src + 1) == 't') {
+                        text[tidx++] = '\t';
+                        src += 2;
+                    } else {
+                        text[tidx++] = *src++;
+                    }
+                }
+                text[tidx] = '\0';
+                if (vfs_write(filename, text, tidx) == 0) {
+                    printk("'%s': %d bytes written.\n", filename, tidx);
                 } else {
                     printk("write: failed to write '%s'\n", filename);
                 }

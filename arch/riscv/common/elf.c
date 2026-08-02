@@ -72,18 +72,39 @@ int elf_load_and_run(const char *path) {
         code_size = bytes - code_offset;
     }
 
-    /* Copy code segment to executable page */
-    memset(exec_page, 0, sizeof(exec_page));
-    memcpy(exec_page, file_buf + code_offset, code_size < 4096 ? code_size : 4096);
+    /* Copy code segment to executable page using volatile writes */
+    volatile uint8_t *dst = (volatile uint8_t *)exec_page;
+    const uint8_t *src = (const uint8_t *)(file_buf + code_offset);
+    uint32_t copy_len = code_size < 4096 ? code_size : 4096;
+
+    for (uint32_t i = 0; i < copy_len; i++) {
+        dst[i] = src[i];
+    }
 
     printk("[ELF] Executing binary '%s' (Entry offset: 0x%lx, Size: %u bytes)...\n",
            path, (unsigned long)entry_point, code_size);
 
-    /* Execute native RISC-V binary */
-    typedef int (*entry_fn_t)(void);
-    entry_fn_t entry = (entry_fn_t)(uintptr_t)exec_page;
+    /* Memory fence (rw, rw) and I-cache flush (fence.i) for RISC-V JIT execution */
+    __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
 
-    volatile int ret_code = entry();
+    /* Dedicated 64KB user stack aligned to 16 bytes for deep recursion support */
+    static uint8_t user_stack[65536] __attribute__((aligned(16)));
+    uintptr_t stack_top = (uintptr_t)user_stack + sizeof(user_stack);
+
+    volatile int ret_code = 0;
+    __asm__ __volatile__(
+        "mv t0, sp\n\t"
+        "mv sp, %1\n\t"
+        "jalr ra, %2\n\t"
+        "mv sp, t0\n\t"
+        "mv %0, a0\n\t"
+        : "=r"(ret_code)
+        : "r"(stack_top), "r"(exec_page)
+        : "ra", "t0", "a0", "memory"
+    );
+
+    printk("[ELF] Executable '%s' returned: %d\n", path, ret_code);
+    return ret_code;
     printk("[ELF] Native RISC-V binary '%s' exited with return code: %d\n", path, (int)ret_code);
     return (int)ret_code;
 }

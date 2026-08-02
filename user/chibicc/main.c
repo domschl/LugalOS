@@ -24,8 +24,11 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     }
     src_buf[bytes] = '\0';
 
+    printk("[chibicc] Preprocessing '%s'...\n", src_path);
+    char *preprocessed_src = preprocess(src_buf);
+
     printk("[chibicc] Tokenizing '%s'...\n", src_path);
-    Token *tok = tokenize(src_buf);
+    Token *tok = tokenize(preprocessed_src);
     if (!tok) {
         printk("[chibicc Error] Tokenization failed\n");
         return -1;
