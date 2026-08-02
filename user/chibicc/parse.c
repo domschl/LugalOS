@@ -1,5 +1,5 @@
 /*
- * chibicc - Recursive Descent Parser with Pointers, Arrays, Control Flow & Function Calls
+ * chibicc - Recursive Descent Parser with Data Types (char, short, int, long, struct)
  * Copyright (c) 2020 Rui Ueyama
  * License: MIT License
  * Adapted for LugalOS Freestanding RISC-V Microkernel Architecture
@@ -25,8 +25,19 @@ static int fn_pool_idx = 0;
 static Type type_pool[MAX_TYPES];
 static int type_pool_idx = 0;
 
-Type ty_int_obj = {TY_INT, 8, NULL, 0};
-Type *ty_int = &ty_int_obj;
+#define MAX_MEMBERS 64
+static Member member_pool[MAX_MEMBERS];
+static int member_pool_idx = 0;
+
+Type ty_char_obj  = {TY_CHAR, 1, NULL, 0, NULL};
+Type ty_short_obj = {TY_SHORT, 2, NULL, 0, NULL};
+Type ty_int_obj   = {TY_INT, 4, NULL, 0, NULL};
+Type ty_long_obj  = {TY_LONG, 8, NULL, 0, NULL};
+
+Type *ty_char  = &ty_char_obj;
+Type *ty_short = &ty_short_obj;
+Type *ty_int   = &ty_int_obj;
+Type *ty_long  = &ty_long_obj;
 
 static Type *pointer_to(Type *base) {
     if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
@@ -112,6 +123,7 @@ static Token *skip(Token *tok, const char *op) {
 }
 
 /* Forward declarations */
+static Type *typespec(Token **rest, Token *tok);
 static Node *compound_stmt(Token **rest, Token *tok);
 static Node *stmt(Token **rest, Token *tok);
 static Node *expr(Token **rest, Token *tok);
@@ -122,6 +134,105 @@ static Node *add(Token **rest, Token *tok);
 static Node *mul(Token **rest, Token *tok);
 static Node *unary(Token **rest, Token *tok);
 static Node *primary(Token **rest, Token *tok);
+
+static Member *find_member(Type *ty, Token *tok) {
+    for (Member *m = ty->members; m; m = m->next) {
+        if ((int)strlen(m->name) == tok->len && strncmp(tok->loc, m->name, tok->len) == 0) {
+            return m;
+        }
+    }
+    return NULL;
+}
+
+static Type *struct_decl(Token **rest, Token *tok) {
+    tok = skip(tok, "struct");
+
+    Token *tag = NULL;
+    if (tok->kind == TK_IDENT) {
+        tag = tok;
+        tok = tok->next;
+    }
+
+    if (tag && !equal(tok, "{")) {
+        *rest = tok;
+        for (int i = 0; i < type_pool_idx; i++) {
+            if (type_pool[i].kind == TY_STRUCT) {
+                return &type_pool[i];
+            }
+        }
+        if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+        Type *ty = &type_pool[type_pool_idx++];
+        memset(ty, 0, sizeof(Type));
+        ty->kind = TY_STRUCT;
+        ty->size = 16;
+        return ty;
+    }
+
+    tok = skip(tok, "{");
+
+    if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+    Type *ty = &type_pool[type_pool_idx++];
+    memset(ty, 0, sizeof(Type));
+    ty->kind = TY_STRUCT;
+
+    Member head = {0};
+    Member *cur = &head;
+    int offset = 0;
+
+    while (!equal(tok, "}")) {
+        Type *m_ty = typespec(&tok, tok);
+        Token *m_tok = tok;
+        tok = tok->next;
+
+        if (member_pool_idx >= MAX_MEMBERS) member_pool_idx = 0;
+        Member *m = &member_pool[member_pool_idx++];
+        memset(m, 0, sizeof(Member));
+        int len = m_tok->len < 31 ? m_tok->len : 31;
+        strncpy(m->name, m_tok->loc, len);
+        m->name[len] = '\0';
+        m->ty = m_ty;
+
+        // Align offset
+        int align = m_ty->size < 8 ? m_ty->size : 8;
+        if (align > 1) {
+            offset = (offset + align - 1) & ~(align - 1);
+        }
+        m->offset = offset;
+        offset += m_ty->size;
+
+        cur = cur->next = m;
+        tok = skip(tok, ";");
+    }
+
+    *rest = skip(tok, "}");
+    ty->members = head.next;
+    ty->size = (offset + 7) & ~7; // align total struct size to 8 bytes
+    return ty;
+}
+
+static Type *typespec(Token **rest, Token *tok) {
+    if (equal(tok, "char")) {
+        *rest = tok->next;
+        return ty_char;
+    }
+    if (equal(tok, "short")) {
+        *rest = tok->next;
+        return ty_short;
+    }
+    if (equal(tok, "int")) {
+        *rest = tok->next;
+        return ty_int;
+    }
+    if (equal(tok, "long")) {
+        *rest = tok->next;
+        return ty_long;
+    }
+    if (equal(tok, "struct")) {
+        return struct_decl(rest, tok);
+    }
+    *rest = tok;
+    return ty_int;
+}
 
 static Node *funcall(Token **rest, Token *tok) {
     Token *start = tok;
@@ -174,25 +285,63 @@ static Node *primary(Token **rest, Token *tok) {
         node->var = var;
         tok = tok->next;
 
-        // Array indexing arr[idx] -> *(arr + idx * elem_size)
-        if (equal(tok, "[")) {
-            tok = tok->next;
-            Node *idx = expr(&tok, tok);
-            tok = skip(tok, "]");
+        while (1) {
+            // Array indexing arr[idx] -> *(arr + idx * elem_size)
+            if (equal(tok, "[")) {
+                tok = tok->next;
+                Node *idx = expr(&tok, tok);
+                tok = skip(tok, "]");
 
-            int elem_size = 8;
-            if (node->var && node->var->ty) {
-                if (node->var->ty->kind == TY_ARRAY && node->var->ty->base) {
-                    elem_size = node->var->ty->base->size;
-                } else if (node->var->ty->kind == TY_PTR && node->var->ty->base) {
-                    elem_size = node->var->ty->base->size;
+                int elem_size = 8;
+                if (node->var && node->var->ty) {
+                    if (node->var->ty->kind == TY_ARRAY && node->var->ty->base) {
+                        elem_size = node->var->ty->base->size;
+                    } else if (node->var->ty->kind == TY_PTR && node->var->ty->base) {
+                        elem_size = node->var->ty->base->size;
+                    }
                 }
+                if (elem_size > 1) {
+                    idx = new_binary(ND_MUL, idx, new_num(elem_size));
+                }
+                Node *add_node = new_binary(ND_ADD, node, idx);
+                node = new_binary(ND_DEREF, add_node, NULL);
+                continue;
             }
-            if (elem_size > 1) {
-                idx = new_binary(ND_MUL, idx, new_num(elem_size));
+
+            // Member access struct.member
+            if (equal(tok, ".")) {
+                tok = tok->next;
+                Token *m_tok = tok;
+                tok = tok->next;
+                Member *m = NULL;
+                if (node->var && node->var->ty && node->var->ty->kind == TY_STRUCT) {
+                    m = find_member(node->var->ty, m_tok);
+                }
+                Node *m_node = new_node(ND_MEMBER);
+                m_node->lhs = node;
+                m_node->member = m;
+                node = m_node;
+                continue;
             }
-            Node *add_node = new_binary(ND_ADD, node, idx);
-            node = new_binary(ND_DEREF, add_node, NULL);
+
+            // Pointer member access struct_ptr->member -> (*struct_ptr).member
+            if (equal(tok, "->")) {
+                tok = tok->next;
+                Token *m_tok = tok;
+                tok = tok->next;
+                Node *deref = new_binary(ND_DEREF, node, NULL);
+                Member *m = NULL;
+                if (node->var && node->var->ty && node->var->ty->kind == TY_PTR && node->var->ty->base) {
+                    m = find_member(node->var->ty->base, m_tok);
+                }
+                Node *m_node = new_node(ND_MEMBER);
+                m_node->lhs = deref;
+                m_node->member = m;
+                node = m_node;
+                continue;
+            }
+
+            break;
         }
 
         *rest = tok;
@@ -301,6 +450,12 @@ static Node *expr(Token **rest, Token *tok) {
     return assign(rest, tok);
 }
 
+static bool is_typename(Token *tok) {
+    return equal(tok, "char") || equal(tok, "short") ||
+           equal(tok, "int")  || equal(tok, "long") ||
+           equal(tok, "struct");
+}
+
 static Node *stmt(Token **rest, Token *tok) {
     if (equal(tok, "return")) {
         Node *node = new_node(ND_RETURN);
@@ -346,9 +501,15 @@ static Node *stmt(Token **rest, Token *tok) {
         return node;
     }
 
-    if (equal(tok, "int")) {
-        Type *ty = ty_int;
-        tok = tok->next; // skip "int"
+    if (is_typename(tok)) {
+        Type *ty = typespec(&tok, tok);
+
+        // If it was just a struct declaration without a variable name: struct Point { int x; int y; };
+        if (equal(tok, ";")) {
+            *rest = tok->next;
+            return new_node(ND_EXPR_STMT);
+        }
+
         while (equal(tok, "*")) {
             ty = pointer_to(ty);
             tok = tok->next;
@@ -410,10 +571,11 @@ static Node *compound_stmt(Token **rest, Token *tok) {
 static Function *function(Token **rest, Token *tok) {
     node_pool_idx = 0;
     obj_pool_idx = 0;
-    type_pool_idx = 0;
     locals = NULL;
 
-    tok = skip(tok, "int");
+    Type *ret_ty = typespec(&tok, tok);
+    (void)ret_ty;
+
     Token *fn_tok = tok;
     tok = tok->next;
     tok = skip(tok, "(");
@@ -423,8 +585,7 @@ static Function *function(Token **rest, Token *tok) {
 
     while (!equal(tok, ")")) {
         if (cur_param != &head) tok = skip(tok, ",");
-        Type *ty = ty_int;
-        tok = skip(tok, "int");
+        Type *ty = typespec(&tok, tok);
         while (equal(tok, "*")) {
             ty = pointer_to(ty);
             tok = tok->next;
@@ -468,9 +629,22 @@ static Function *function(Token **rest, Token *tok) {
 
 Function *parse(Token *tok) {
     fn_pool_idx = 0;
+    type_pool_idx = 0;
+    member_pool_idx = 0;
     Function head = {0};
     Function *cur = &head;
+
     while (tok->kind != TK_EOF) {
+        if (equal(tok, "struct")) {
+            Token *start = tok;
+            Token *t = tok->next;
+            if (t->kind == TK_IDENT) t = t->next;
+            if (equal(t, "{")) {
+                typespec(&tok, start);
+                tok = skip(tok, ";");
+                continue;
+            }
+        }
         cur = cur->next = function(&tok, tok);
     }
     return head.next;

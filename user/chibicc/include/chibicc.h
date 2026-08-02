@@ -43,6 +43,7 @@ typedef enum {
     ND_ASSIGN,
     ND_ADDR,
     ND_DEREF,
+    ND_MEMBER,
     ND_VAR,
     ND_NUM,
     ND_IF,
@@ -54,21 +55,34 @@ typedef enum {
 } NodeKind;
 
 typedef struct Type Type;
+typedef struct Member Member;
 typedef struct Node Node;
 typedef struct Obj Obj;
 typedef struct Function Function;
 
 typedef enum {
+    TY_CHAR,
+    TY_SHORT,
     TY_INT,
+    TY_LONG,
     TY_PTR,
     TY_ARRAY,
+    TY_STRUCT,
 } TypeKind;
+
+struct Member {
+    Member *next;
+    Type *ty;
+    char name[32];
+    int offset;
+};
 
 struct Type {
     TypeKind kind;
     int size;
     Type *base;
     int array_len;
+    Member *members;
 };
 
 struct Obj {
@@ -92,6 +106,9 @@ struct Node {
     Node *init;
     Node *inc;
 
+    // Struct Member Access
+    Member *member;
+
     // Function Call
     char funcname[32];
     Node *args;
@@ -111,7 +128,10 @@ struct Function {
 };
 
 /* Global Types */
+extern Type *ty_char;
+extern Type *ty_short;
 extern Type *ty_int;
+extern Type *ty_long;
 
 /* Function Prototypes */
 Token *tokenize(char *input);

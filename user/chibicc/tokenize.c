@@ -114,14 +114,15 @@ Token *tokenize(char *p) {
         }
 
         // Multi-character punctuation
-        if (startswith(p, "==") || startswith(p, "!=") || startswith(p, "<=") || startswith(p, ">=")) {
+        if (startswith(p, "==") || startswith(p, "!=") || startswith(p, "<=") ||
+            startswith(p, ">=") || startswith(p, "->")) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 2);
             p += 2;
             continue;
         }
 
         // Single-character punctuation
-        if (strchr("+-*/%()={};<>&[]", *p)) {
+        if (strchr("+-*/%()={};<>&[].", *p)) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 1);
             p++;
             continue;
