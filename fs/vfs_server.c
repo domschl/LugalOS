@@ -20,7 +20,9 @@ static int g_num_services = 0;
 
 void vfs_server_init(void) {
     block_dev_t *ramdisk = ramdisk_get_device();
-    fat32_init(&g_fat32, ramdisk);
+    if (ramdisk) {
+        fat32_init(&g_fat32, ramdisk);
+    }
 
     g_num_services = 0;
     vfs_register_service("lisp", 2);
@@ -30,7 +32,7 @@ void vfs_server_init(void) {
 }
 
 int vfs_register_service(const char *service_name, int target_pid) {
-    if (g_num_services >= MAX_SERVICES) return -1;
+    if (!service_name || g_num_services >= MAX_SERVICES) return -1;
     strncpy(g_services[g_num_services].name, service_name, 31);
     g_services[g_num_services].name[31] = '\0';
     g_services[g_num_services].target_pid = target_pid;
@@ -40,7 +42,13 @@ int vfs_register_service(const char *service_name, int target_pid) {
 
 /* Parse prefix: returns prefix type (1: ram0, 2: proc, 3: dev, 4: srv) */
 static int parse_prefix(const char *path, const char **rel_path) {
-    if (!path) return 1;
+    static const char *empty_str = "";
+    if (!rel_path) rel_path = &empty_str;
+
+    if (!path) {
+        *rel_path = empty_str;
+        return 1;
+    }
 
     if (strncmp(path, "/ram0/", 6) == 0) {
         *rel_path = path + 6;
@@ -65,8 +73,11 @@ static int parse_prefix(const char *path, const char **rel_path) {
 }
 
 int vfs_read(const char *path, void *buf, uint32_t max_len) {
+    if (!path) return -1;
+
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
+    if (!rel) rel = "";
 
     if (type == 1) { // FAT32 /ram0/
         fat32_dir_entry_t entry;
@@ -92,10 +103,13 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
         return -1;
     } else if (type == 3) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {
-            char *sbuf = (char *)buf;
-            sbuf[0] = uart_getc();
-            sbuf[1] = '\0';
-            return 1;
+            if (buf && max_len > 0) {
+                char *sbuf = (char *)buf;
+                sbuf[0] = uart_getc();
+                sbuf[1] = '\0';
+                return 1;
+            }
+            return 0;
         } else if (strcmp(rel, "null") == 0 || strcmp(rel, "zero") == 0) {
             return 0;
         }
@@ -112,16 +126,21 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
 }
 
 int vfs_write(const char *path, const void *buf, uint32_t len) {
+    if (!path) return -1;
+
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
+    if (!rel) rel = "";
 
     if (type == 1) { // FAT32 /ram0/
         return fat32_write_file(&g_fat32, rel, buf, len);
     } else if (type == 3) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {
-            const char *str = (const char *)buf;
-            for (uint32_t i = 0; i < len; i++) {
-                uart_putc(str[i]);
+            if (buf) {
+                const char *str = (const char *)buf;
+                for (uint32_t i = 0; i < len; i++) {
+                    uart_putc(str[i]);
+                }
             }
             return 0;
         } else if (strcmp(rel, "null") == 0) {
@@ -144,9 +163,10 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
 }
 
 int vfs_remove(const char *path) {
+    if (!path) return -1;
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
-    if (type == 1) {
+    if (type == 1 && rel) {
         return fat32_remove_file(&g_fat32, rel);
     }
     return -1;

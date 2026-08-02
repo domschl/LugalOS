@@ -16,11 +16,13 @@ void uart_init(uintptr_t base_addr) {
 }
 
 void uart_putc(char c) {
+    if (!uart_base) return;
     while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
     uart_base[UART_THR] = (uint8_t)c;
 }
 
 bool uart_has_char(void) {
+    if (!uart_base) return false;
     return (uart_base[UART_LSR] & UART_LSR_DR) != 0;
 }
 
@@ -30,6 +32,7 @@ char uart_getc(void) {
 }
 
 void uart_puts(const char *s) {
+    if (!s) return;
     while (*s) {
         if (*s == '\n') {
             uart_putc('\r');

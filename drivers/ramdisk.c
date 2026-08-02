@@ -9,14 +9,14 @@ static uint8_t ramdisk_storage[RAMDISK_NUM_BLOCKS * RAMDISK_BLOCK_SIZE];
 
 static int ramdisk_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
     (void)dev;
-    if (lba + count > RAMDISK_NUM_BLOCKS) return -1;
+    if (!buf || lba + count > RAMDISK_NUM_BLOCKS) return -1;
     memcpy(buf, &ramdisk_storage[lba * RAMDISK_BLOCK_SIZE], count * RAMDISK_BLOCK_SIZE);
     return 0;
 }
 
 static int ramdisk_write(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
     (void)dev;
-    if (lba + count > RAMDISK_NUM_BLOCKS) return -1;
+    if (!buf || lba + count > RAMDISK_NUM_BLOCKS) return -1;
     memcpy(&ramdisk_storage[lba * RAMDISK_BLOCK_SIZE], buf, count * RAMDISK_BLOCK_SIZE);
     return 0;
 }

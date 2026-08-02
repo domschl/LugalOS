@@ -12,6 +12,7 @@ static int line_count = 0;
 static char current_file[32];
 
 static void ed_read_line(char *out_buf, int max_len) {
+    if (!out_buf || max_len <= 0) return;
     int idx = 0;
     while (1) {
         char c = uart_getc();
@@ -34,6 +35,12 @@ static void ed_read_line(char *out_buf, int max_len) {
 }
 
 static void ed_load_file(const char *filename) {
+    if (!filename || filename[0] == '\0') {
+        printk("[New Buffer]\n");
+        line_count = 0;
+        return;
+    }
+
     char raw_buf[512];
     int bytes = vfs_read(filename, raw_buf, 512);
     if (bytes < 0) {
@@ -65,15 +72,22 @@ static void ed_load_file(const char *filename) {
 }
 
 static void ed_save_file(const char *filename) {
+    if (!filename || filename[0] == '\0') {
+        printk("No file name specified\n");
+        return;
+    }
+
     char out_buf[1024];
     out_buf[0] = '\0';
     int total_len = 0;
 
     for (int i = 0; i < line_count; i++) {
         int len = strlen(ed_buf[i]);
-        memcpy(&out_buf[total_len], ed_buf[i], len);
-        total_len += len;
-        out_buf[total_len++] = '\n';
+        if (total_len + len + 1 < (int)sizeof(out_buf)) {
+            memcpy(&out_buf[total_len], ed_buf[i], len);
+            total_len += len;
+            out_buf[total_len++] = '\n';
+        }
     }
     out_buf[total_len] = '\0';
 
@@ -129,6 +143,7 @@ void ed_main(const char *filename) {
             }
         } else if (cmd[0] == 'w' && cmd[1] == ' ') {
             strncpy(current_file, &cmd[2], 31);
+            current_file[31] = '\0';
             ed_save_file(current_file);
         } else if (cmd[0] == 'd') {
             if (line_count > 0) {

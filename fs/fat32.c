@@ -3,6 +3,7 @@
 #include <string.h>
 
 static void filename_to_83(const char *src, char *dst) {
+    if (!src || !dst) return;
     memset(dst, ' ', 11);
     int i = 0;
     while (*src && *src != '.' && i < 8) {
@@ -22,11 +23,12 @@ static void filename_to_83(const char *src, char *dst) {
 }
 
 static uint32_t cluster_to_lba(fat32_fs_t *fs, uint32_t cluster) {
+    if (!fs) return 0;
     return fs->data_start_sector + (cluster - 2) * fs->bpb.sec_per_clus;
 }
 
 int fat32_format(block_dev_t *dev) {
-    if (!dev) return -1;
+    if (!dev || !dev->write_blocks) return -1;
     uint8_t sector[512];
     memset(sector, 0, 512);
 
@@ -68,7 +70,7 @@ int fat32_format(block_dev_t *dev) {
 }
 
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
-    if (!fs || !dev) return -1;
+    if (!fs || !dev || !dev->read_blocks) return -1;
     fs->dev = dev;
 
     uint8_t sector[512];
@@ -93,6 +95,7 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
 }
 
 int fat32_find_file(fat32_fs_t *fs, const char *filename, fat32_dir_entry_t *out_entry) {
+    if (!fs || !filename || !fs->dev || !fs->dev->read_blocks) return -1;
     char name83[11];
     filename_to_83(filename, name83);
 
@@ -114,7 +117,7 @@ int fat32_find_file(fat32_fs_t *fs, const char *filename, fat32_dir_entry_t *out
 }
 
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size) {
-    if (!fs || !entry || !buf) return -1;
+    if (!fs || !entry || !buf || !fs->dev || !fs->dev->read_blocks) return -1;
     uint32_t cluster = ((uint32_t)entry->fst_clus_hi << 16) | entry->fst_clus_lo;
     uint32_t size = entry->file_size < max_size ? entry->file_size : max_size;
 
@@ -125,6 +128,7 @@ int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_
 }
 
 int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint32_t size) {
+    if (!fs || !filename || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char name83[11];
     filename_to_83(filename, name83);
 
@@ -154,7 +158,9 @@ int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint
     /* Write data block */
     uint8_t data_sec[512];
     memset(data_sec, 0, 512);
-    memcpy(data_sec, buf, size < 512 ? size : 512);
+    if (buf && size > 0) {
+        memcpy(data_sec, buf, size < 512 ? size : 512);
+    }
     fs->dev->write_blocks(fs->dev, data_sec, data_lba, 1);
 
     /* Update directory entry */
@@ -170,6 +176,7 @@ int fat32_write_file(fat32_fs_t *fs, const char *filename, const void *buf, uint
 }
 
 int fat32_remove_file(fat32_fs_t *fs, const char *filename) {
+    if (!fs || !filename || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     fat32_dir_entry_t entry;
     int idx = fat32_find_file(fs, filename, &entry);
     if (idx < 0) return -1;
@@ -186,6 +193,7 @@ int fat32_remove_file(fat32_fs_t *fs, const char *filename) {
 }
 
 void fat32_list_dir(fat32_fs_t *fs) {
+    if (!fs || !fs->dev || !fs->dev->read_blocks) return;
     uint8_t sector[512];
     uint32_t root_lba = cluster_to_lba(fs, fs->root_dir_cluster);
     fs->dev->read_blocks(fs->dev, sector, root_lba, 1);

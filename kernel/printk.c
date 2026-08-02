@@ -23,6 +23,8 @@ static void print_num(unsigned long num, int base) {
 }
 
 int printk(const char *fmt, ...) {
+    if (!fmt) return -1;
+
     va_list args;
     va_start(args, fmt);
 

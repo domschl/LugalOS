@@ -26,12 +26,12 @@ int task_create(const char *name, void (*entry)(void)) {
 
     int slot = num_tasks;
     task_table[slot].pid = slot;
-    task_table[slot].name = name;
+    task_table[slot].name = name ? name : "unnamed";
     task_table[slot].state = TASK_READY;
     num_tasks++;
 
     printk("[Sched] Created Task #%d: '%s' (entry at 0x%lx)\n",
-           slot, name, (unsigned long)entry);
+           slot, task_table[slot].name, (unsigned long)entry);
     return slot;
 }
 
@@ -42,8 +42,9 @@ void sched_yield(void) {
     current_task_idx = (current_task_idx + 1) % num_tasks;
 
     if (prev != current_task_idx) {
+        const char *prev_name = task_table[prev].name ? task_table[prev].name : "unnamed";
+        const char *curr_name = task_table[current_task_idx].name ? task_table[current_task_idx].name : "unnamed";
         printk("[Sched] Context Switch: Task #%d ('%s') -> Task #%d ('%s')\n",
-               prev, task_table[prev].name,
-               current_task_idx, task_table[current_task_idx].name);
+               prev, prev_name, current_task_idx, curr_name);
     }
 }

@@ -1,6 +1,7 @@
 #include "string.h"
 
 void *memcpy(void *dst, const void *src, size_t n) {
+    if (!dst || !src) return dst;
     char *d = (char *)dst;
     const char *s = (const char *)src;
     for (size_t i = 0; i < n; i++) {
@@ -10,6 +11,7 @@ void *memcpy(void *dst, const void *src, size_t n) {
 }
 
 void *memset(void *s, int c, size_t n) {
+    if (!s) return s;
     unsigned char *p = (unsigned char *)s;
     for (size_t i = 0; i < n; i++) {
         p[i] = (unsigned char)c;
@@ -18,6 +20,7 @@ void *memset(void *s, int c, size_t n) {
 }
 
 int memcmp(const void *s1, const void *s2, size_t n) {
+    if (!s1 || !s2) return s1 ? 1 : (s2 ? -1 : 0);
     const unsigned char *p1 = (const unsigned char *)s1;
     const unsigned char *p2 = (const unsigned char *)s2;
     for (size_t i = 0; i < n; i++) {
@@ -29,6 +32,7 @@ int memcmp(const void *s1, const void *s2, size_t n) {
 }
 
 size_t strlen(const char *s) {
+    if (!s) return 0;
     size_t len = 0;
     while (s[len]) {
         len++;
@@ -37,6 +41,7 @@ size_t strlen(const char *s) {
 }
 
 int strcmp(const char *s1, const char *s2) {
+    if (!s1 || !s2) return s1 ? 1 : (s2 ? -1 : 0);
     while (*s1 && (*s1 == *s2)) {
         s1++;
         s2++;
@@ -45,6 +50,7 @@ int strcmp(const char *s1, const char *s2) {
 }
 
 int strncmp(const char *s1, const char *s2, size_t n) {
+    if (!s1 || !s2) return s1 ? 1 : (s2 ? -1 : 0);
     for (size_t i = 0; i < n; i++) {
         if (s1[i] != s2[i] || s1[i] == '\0' || s2[i] == '\0') {
             return (unsigned char)s1[i] - (unsigned char)s2[i];
@@ -54,6 +60,11 @@ int strncmp(const char *s1, const char *s2, size_t n) {
 }
 
 char *strncpy(char *dst, const char *src, size_t n) {
+    if (!dst) return NULL;
+    if (!src) {
+        if (n > 0) dst[0] = '\0';
+        return dst;
+    }
     size_t i;
     for (i = 0; i < n && src[i] != '\0'; i++) {
         dst[i] = src[i];
@@ -65,6 +76,7 @@ char *strncpy(char *dst, const char *src, size_t n) {
 }
 
 char *strchr(const char *s, int c) {
+    if (!s) return NULL;
     while (*s != '\0') {
         if (*s == (char)c) {
             return (char *)s;
