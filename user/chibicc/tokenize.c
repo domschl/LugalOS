@@ -9,7 +9,7 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-#define MAX_TOKENS 1024
+#define MAX_TOKENS 512
 static Token token_pool[MAX_TOKENS];
 static int token_pool_idx = 0;
 
@@ -121,7 +121,7 @@ Token *tokenize(char *p) {
         }
 
         // Single-character punctuation
-        if (strchr("+-*/()={};<>", *p)) {
+        if (strchr("+-*/%()={};<>", *p)) {
             cur = cur->next = new_token(TK_PUNCT, p, p + 1);
             p++;
             continue;

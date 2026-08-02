@@ -1,5 +1,5 @@
 /*
- * chibicc - Recursive Descent Parser
+ * chibicc - Recursive Descent Parser with Control Flow & Function Calls
  * Copyright (c) 2020 Rui Ueyama
  * License: MIT License
  * Adapted for LugalOS Freestanding RISC-V Microkernel Architecture
@@ -9,13 +9,17 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-#define MAX_NODES 1024
+#define MAX_NODES 256
 static Node node_pool[MAX_NODES];
 static int node_pool_idx = 0;
 
-#define MAX_OBJS 256
+#define MAX_OBJS 64
 static Obj obj_pool[MAX_OBJS];
 static int obj_pool_idx = 0;
+
+#define MAX_FNS 16
+static Function fn_pool[MAX_FNS];
+static int fn_pool_idx = 0;
 
 static Obj *locals = NULL;
 
@@ -25,6 +29,7 @@ static Node *new_node(NodeKind kind) {
         node_pool_idx = 0;
     }
     Node *node = &node_pool[node_pool_idx++];
+    memset(node, 0, sizeof(Node));
     node->kind = kind;
     return node;
 }
@@ -48,6 +53,7 @@ static Obj *new_var(const char *name) {
         obj_pool_idx = 0;
     }
     Obj *var = &obj_pool[obj_pool_idx++];
+    memset(var, 0, sizeof(Obj));
     strncpy(var->name, name, 31);
     var->name[31] = '\0';
     var->next = locals;
@@ -88,6 +94,27 @@ static Node *mul(Token **rest, Token *tok);
 static Node *unary(Token **rest, Token *tok);
 static Node *primary(Token **rest, Token *tok);
 
+static Node *funcall(Token **rest, Token *tok) {
+    Token *start = tok;
+    tok = tok->next->next; // skip name and '('
+
+    Node head = {0};
+    Node *cur = &head;
+
+    while (!equal(tok, ")")) {
+        if (cur != &head) tok = skip(tok, ",");
+        cur = cur->next = expr(&tok, tok);
+    }
+    *rest = skip(tok, ")");
+
+    Node *node = new_node(ND_FUNCALL);
+    int len = start->len < 31 ? start->len : 31;
+    strncpy(node->funcname, start->loc, len);
+    node->funcname[len] = '\0';
+    node->args = head.next;
+    return node;
+}
+
 static Node *primary(Token **rest, Token *tok) {
     if (equal(tok, "(")) {
         Node *node = expr(&tok, tok->next);
@@ -102,6 +129,10 @@ static Node *primary(Token **rest, Token *tok) {
     }
 
     if (tok->kind == TK_IDENT) {
+        if (equal(tok->next, "(")) {
+            return funcall(rest, tok);
+        }
+
         Obj *var = find_var(tok);
         if (!var) {
             char namebuf[32];
@@ -136,6 +167,10 @@ static Node *mul(Token **rest, Token *tok) {
         }
         if (equal(tok, "/")) {
             node = new_binary(ND_DIV, node, unary(&tok, tok->next));
+            continue;
+        }
+        if (equal(tok, "%")) {
+            node = new_binary(ND_MOD, node, unary(&tok, tok->next));
             continue;
         }
         *rest = tok;
@@ -220,6 +255,43 @@ static Node *stmt(Token **rest, Token *tok) {
         return node;
     }
 
+    if (equal(tok, "if")) {
+        Node *node = new_node(ND_IF);
+        tok = skip(tok->next, "(");
+        node->cond = expr(&tok, tok);
+        tok = skip(tok, ")");
+        node->then = stmt(&tok, tok);
+        if (equal(tok, "else")) {
+            node->els = stmt(&tok, tok->next);
+        }
+        *rest = tok;
+        return node;
+    }
+
+    if (equal(tok, "while")) {
+        Node *node = new_node(ND_FOR);
+        tok = skip(tok->next, "(");
+        node->cond = expr(&tok, tok);
+        tok = skip(tok, ")");
+        node->then = stmt(&tok, tok);
+        *rest = tok;
+        return node;
+    }
+
+    if (equal(tok, "for")) {
+        Node *node = new_node(ND_FOR);
+        tok = skip(tok->next, "(");
+        if (!equal(tok, ";")) node->init = stmt(&tok, tok);
+        else tok = skip(tok, ";");
+        if (!equal(tok, ";")) node->cond = expr(&tok, tok);
+        tok = skip(tok, ";");
+        if (!equal(tok, ")")) node->inc = expr(&tok, tok);
+        tok = skip(tok, ")");
+        node->then = stmt(&tok, tok);
+        *rest = tok;
+        return node;
+    }
+
     if (equal(tok, "int")) {
         tok = tok->next; // skip "int"
         Token *var_tok = tok;
@@ -261,7 +333,7 @@ static Node *compound_stmt(Token **rest, Token *tok) {
         cur = cur->next = stmt(&tok, tok);
     }
     *rest = tok->next;
-    Node *node = new_node(ND_EXPR_STMT);
+    Node *node = new_node(ND_BLOCK);
     node->body = head.next;
     return node;
 }
@@ -275,16 +347,36 @@ static Function *function(Token **rest, Token *tok) {
     Token *fn_tok = tok;
     tok = tok->next;
     tok = skip(tok, "(");
+
+    Obj head = {0};
+    Obj *cur_param = &head;
+
+    while (!equal(tok, ")")) {
+        if (cur_param != &head) tok = skip(tok, ",");
+        tok = skip(tok, "int");
+        Token *param_tok = tok;
+        tok = tok->next;
+
+        char p_name[32];
+        int len = param_tok->len < 31 ? param_tok->len : 31;
+        strncpy(p_name, param_tok->loc, len);
+        p_name[len] = '\0';
+
+        Obj *p_var = new_var(p_name);
+        cur_param = cur_param->next = p_var;
+    }
     tok = skip(tok, ")");
     tok = skip(tok, "{");
 
-    Function *fn = &((Function){0});
-    char fn_name[32];
-    int len = fn_tok->len < 31 ? fn_tok->len : 31;
-    strncpy(fn_name, fn_tok->loc, len);
-    fn_name[len] = '\0';
-    fn->name = fn_name;
+    if (fn_pool_idx >= MAX_FNS) fn_pool_idx = 0;
+    Function *fn = &fn_pool[fn_pool_idx++];
+    memset(fn, 0, sizeof(Function));
 
+    int len = fn_tok->len < 31 ? fn_tok->len : 31;
+    strncpy(fn->name, fn_tok->loc, len);
+    fn->name[len] = '\0';
+
+    fn->params = head.next;
     fn->body = compound_stmt(rest, tok);
     fn->locals = locals;
 
@@ -298,6 +390,7 @@ static Function *function(Token **rest, Token *tok) {
 }
 
 Function *parse(Token *tok) {
+    fn_pool_idx = 0;
     Function head = {0};
     Function *cur = &head;
     while (tok->kind != TK_EOF) {

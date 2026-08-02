@@ -34,6 +34,7 @@ typedef enum {
     ND_SUB,
     ND_MUL,
     ND_DIV,
+    ND_MOD,
     ND_NEG,
     ND_EQ,
     ND_NE,
@@ -42,6 +43,10 @@ typedef enum {
     ND_ASSIGN,
     ND_VAR,
     ND_NUM,
+    ND_IF,
+    ND_FOR,
+    ND_BLOCK,
+    ND_FUNCALL,
     ND_RETURN,
     ND_EXPR_STMT,
 } NodeKind;
@@ -63,14 +68,27 @@ struct Node {
     Node *lhs;
     Node *rhs;
     Node *body;
+
+    // If or For statement
+    Node *cond;
+    Node *then;
+    Node *els;
+    Node *init;
+    Node *inc;
+
+    // Function Call
+    char funcname[32];
+    Node *args;
+
     Obj *var;
     long val;
 };
 
 struct Function {
     Function *next;
-    char *name;
+    char name[32];
     Node *body;
+    Obj *params;
     Obj *locals;
     int stack_size;
 };

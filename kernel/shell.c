@@ -49,7 +49,7 @@ static void cmd_uname(void) {
 }
 
 void shell_run(void) {
-    char buf[128];
+    char buf[512];
     printk("\nLugalOS Interactive Console Shell (`lsh`)\n");
     printk("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
@@ -68,7 +68,7 @@ void shell_run(void) {
                     uart_puts("\b \b");
                 }
             } else if (c >= 32 && c <= 126) {
-                if (idx < 127) {
+                if (idx < 511) {
                     buf[idx++] = c;
                     uart_putc(c);
                 }
