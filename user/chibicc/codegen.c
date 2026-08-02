@@ -245,7 +245,7 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // RISC-V ecall instruction
                 return;
             }
-            if (strcmp(node->funcname, "print") == 0 || strcmp(node->funcname, "puts") == 0) {
+            if (strcmp(node->funcname, "print") == 0 || strcmp(node->funcname, "puts") == 0 || strcmp(node->funcname, "printf") == 0) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 10)); // a0 = 10 (SYS_PRINT)
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
@@ -280,12 +280,16 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 return;
             }
 
-            int target_offset = 0;
+            int target_offset = -1;
             for (Function *fn = global_prog; fn; fn = fn->next) {
                 if (strcmp(fn->name, node->funcname) == 0) {
                     target_offset = fn->code_offset;
                     break;
                 }
+            }
+            if (target_offset < 0) {
+                printk("[chibicc Error] Undefined function '%s'\n", node->funcname);
+                return;
             }
             int jal_pc = code_idx;
             int diff = target_offset - jal_pc;

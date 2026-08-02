@@ -37,6 +37,7 @@ typedef struct ipc_msg {
 long lugal_syscall(long sys_nr, long a1, long a2, long a3);
 int print(const char *s);
 int puts(const char *s);
+int printf(const char *s);
 int putnum(long n);
 int putchar(char c);
 int read_file(const char *path, void *buf, int max_len);

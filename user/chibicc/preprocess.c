@@ -46,6 +46,7 @@ static const char *builtin_lugal_h =
     "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
     "int print(char *s);\n"
     "int puts(char *s);\n"
+    "int printf(char *s);\n"
     "int putnum(long n);\n"
     "int putchar(char c);\n"
     "int read_file(char *path, void *buf, int max_len);\n"
