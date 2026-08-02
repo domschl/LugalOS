@@ -83,8 +83,8 @@ lsh> ed /ram0/prog.lisp
 
 # 2. Compile S-expression to native RISC-V ELF binary
 lsh> lisp
-lisp> (compile-file "/ram0/prog.lisp" "/ram0/prog.elf")
-[Lisp Compiler] Successfully compiled S-expression to native RISC-V ELF binary (128 bytes)
+lisp> (compile-file /ram0/prog.lisp /ram0/prog.elf)
+[Lisp Compiler] Successfully compiled S-expression to native RISC-V ELF binary (136 bytes)
 => #t
 lisp> exit
 
@@ -93,3 +93,13 @@ lsh> exec /ram0/prog.elf
 [ELF] Executing binary '/ram0/prog.elf'...
 [ELF] Native RISC-V binary '/ram0/prog.elf' exited with return code: 300
 ```
+
+---
+
+## License & Acknowledgments
+
+LugalOS is licensed under the [MIT License](LICENSE).
+
+Special thanks to:
+* **Rui Ueyama** for [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
+* **Bell Labs** for the Plan 9 Operating System architectural model.
