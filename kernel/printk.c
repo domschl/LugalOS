@@ -38,6 +38,15 @@ int printk(const char *fmt, ...) {
         }
 
         p++; // Skip '%'
+        int max_len = -1;
+        if (*p == '.') {
+            p++;
+            max_len = 0;
+            while (*p >= '0' && *p <= '9') {
+                max_len = max_len * 10 + (*p - '0');
+                p++;
+            }
+        }
         while (*p >= '0' && *p <= '9') p++; // Skip width specifier digits (e.g., %12u)
         if (*p == 'l') p++; // Handle %ld / %lx / %lu
 
@@ -48,7 +57,13 @@ int printk(const char *fmt, ...) {
             case 's': {
                 const char *s = va_arg(args, const char *);
                 if (!s) s = "(null)";
-                uart_puts(s);
+                if (max_len >= 0) {
+                    for (int i = 0; i < max_len && s[i] != '\0'; i++) {
+                        uart_putc(s[i]);
+                    }
+                } else {
+                    uart_puts(s);
+                }
                 break;
             }
             case 'd':
