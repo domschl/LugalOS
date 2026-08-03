@@ -34,23 +34,24 @@ def create_picobin_header() -> bytearray:
     # 0x00: PicoBIN Block Marker Magic (0xFFFFDED3)
     struct.pack_into('<I', header, 0x00, 0xFFFFDED3)
     
-    # 0x04: IMAGE_TYPE Item (ID 0x02): Executable=1, Arch=RISC-V (1) => (0x0110 << 8) | 0x02 = 0x011002
-    struct.pack_into('<I', header, 0x04, 0x00011002)
+    # 0x04: IMAGE_TYPE Item (ID 0x42): Executable=1, Arch=RISC-V (1) => 0x10210042
+    struct.pack_into('<I', header, 0x04, 0x10210042)
     
-    # 0x08: VECTOR_TABLE Item (ID 0x03): Offset 0x100 => (0x100 << 8) | 0x03 = 0x00010003
-    struct.pack_into('<I', header, 0x08, 0x00010003)
+    # 0x08: VECTOR_TABLE Item (ID 0x43): Offset 0x100 => (0x100 << 8) | 0x43 = 0x00000143
+    struct.pack_into('<I', header, 0x08, 0x00000143)
 
-    # 0x0C: ENTRY_POINT Item (ID 0x04): Offset 0x100 => (0x100 << 8) | 0x04 = 0x00010004
-    struct.pack_into('<I', header, 0x0C, 0x00010004)
+    # 0x0C: ENTRY_POINT Item (ID 0x04): Offset 0x100 => (0x100 << 8) | 0x44 = 0x00000144
+    struct.pack_into('<I', header, 0x0C, 0x00000144)
 
-    # 0x10: END_ITEM (ID 0xFF) => 0x000000FF
-    struct.pack_into('<I', header, 0x10, 0x000000FF)
+    # 0x10: LAST_ITEM (ID 0xAB) => 0x000000AB
+    struct.pack_into('<I', header, 0x10, 0x000000AB)
 
     # 0xFC: Compute CRC32 over bytes 0..251 using MPEG-2 polynomial (0x04C11DB7)
     crc = crc32_mpeg2(header[:252])
     struct.pack_into('<I', header, 252, crc)
     
     return header
+
 
 
 def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int = FLASH_BASE_ADDR) -> None:
