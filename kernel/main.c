@@ -10,8 +10,12 @@
 #include "lisp.h"
 
 void kernel_main(void) {
-    /* Initialize UART 16550 serial console */
+#if defined(CONFIG_BOARD_RP2350)
+    uart_init(0x40034000);
+#else
     uart_init(0x10000000);
+#endif
+
 
     printk("\n==================================================\n");
     printk("       LugalOS Microkernel Lisp Machine v0.4.0\n");

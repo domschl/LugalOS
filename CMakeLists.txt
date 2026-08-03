@@ -79,7 +79,6 @@ set(SOURCES
 
     arch/riscv/common/trap.c
     arch/riscv/common/elf.c
-    drivers/uart_16550.c
     drivers/ramdisk.c
     drivers/virtio_blk.c
     fs/fat32.c
@@ -94,6 +93,13 @@ set(SOURCES
     user/chibicc/codegen.c
     user/ed/ed.c
 )
+
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    list(APPEND SOURCES drivers/uart_rp2350.c)
+else()
+    list(APPEND SOURCES drivers/uart_16550.c)
+endif()
+
 
 # Architecture-specific memory management source
 if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350")
