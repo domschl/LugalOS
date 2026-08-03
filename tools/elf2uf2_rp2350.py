@@ -65,34 +65,32 @@ def read_elf_symbols(elf_path: str) -> dict[str, int]:
 
 def make_picobin_block(entry_pc: int, entry_sp: int) -> bytes:
     """
-    Build a minimal valid PICOBIN IMAGE_DEF block.
-    Layout (7 words = 28 bytes):
-      [0] MAGIC
-      [1] IMAGE_TYPE item (1-word, id=0x42)
-      [2] ENTRY_POINT item header (3-word item, id=0x44, word_count=3)
-      [3] initial PC
-      [4] initial SP
-      [5] LAST item (id=0xFF, word_count=4? — matches reference)
-      [6] block_total_words (= 7)
-      [7] next_block = loop-back sentinel
-    Total: 8 words = 32 bytes. Padded to 256 bytes with 0xEF.
+    Constructs the 256-byte boot2 block for Flash 0x10000000.
+    RP2350 BootROM expects:
+      - 5 prefix words at 0x10000000
+      - PICOBIN IMAGE_DEF block starting at offset 0x10000014
     """
-    words = [
+    prefix = [
+        0x7188EBF2,
+        0x10014454,
+        0x10014474,
+        0x100000A8,
+        0xE71AA390,
+    ]
+    picobin_items = [
         PICOBIN_MAGIC,
         PICOBIN_IMAGE_TYPE_WORD,
-        # ENTRY_POINT: id=0x44, word_count=3 (header + PC + SP)
         (0x0000 << 16) | (0x03 << 8) | PICOBIN_ITEM_ENTRY_POINT,
         entry_pc,
         entry_sp,
-        # LAST item: id=0xFF, word_count=4 (matches pico-sdk output)
         (0x0000 << 16) | (0x04 << 8) | PICOBIN_ITEM_LAST,
     ]
-    total_words = len(words) + 2  # +2 for the two trailing block fields
-    words.append(total_words)
-    words.append(PICOBIN_BLOCK_LOOP_NEXT)
+    total_words = len(picobin_items) + 1  # 7 words in PICOBIN block before sentinel
+    picobin_items.append(total_words)
+    picobin_items.append(PICOBIN_BLOCK_LOOP_NEXT)
 
+    words = prefix + picobin_items
     raw = struct.pack(f'<{len(words)}I', *words)
-    # Pad to 256 bytes with 0xEF (pico-sdk style)
     raw = raw + bytes([0xEF] * (256 - len(raw)))
     return raw
 
