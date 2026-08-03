@@ -9,9 +9,14 @@
 #include "fs/vfs.h"
 #include "lisp.h"
 
+#if defined(CONFIG_BOARD_RP2350)
+extern void led_blink_phase(int count);
+#endif
+
 void kernel_main(void) {
 #if defined(CONFIG_BOARD_RP2350)
     uart_init(0x40034000);
+    led_blink_phase(3);  /* 3 blinks = kernel_main reached */
 #else
     uart_init(0x10000000);
 #endif

@@ -1,44 +1,48 @@
 /*
- * LugalOS Hardware Driver: PL011 UART Engine for RP2350 (Raspberry Pi Pico 2)
- * Controls UART0 on GPIO0 (TXD, Pico Pin 1) and GPIO1 (RXD, Pico Pin 2) at 115,200 baud.
+ * LugalOS Hardware Driver: PL011 UART + LED Boot Indicator for RP2350
+ * UART0: GPIO0 (TX, Pin 1) / GPIO1 (RX, Pin 2) at 115,200 baud
+ * LED:   GPIO25 (onboard Pico 2 LED) — blinks boot phase codes
  *
- * Clock strategy: We explicitly set CLK_PERI source to XOSC (12 MHz crystal) so the
- * baud rate is independent of any PLL configuration done (or not done) by the BootROM.
- *   IBRD = 12,000,000 / (16 * 115200) = 6.510 => 6
- *   FBRD = round(0.510 * 64)                   = 33
+ * Boot LED codes (blinks separated by a long pause):
+ *   1 blink  = entered uart_init
+ *   2 blinks = UART fully configured and enabled
+ *   3 blinks = kernel_main reached (printed from main.c)
+ *
+ * Clock note: RP2350 BootROM configures PLL_SYS → 150 MHz, CLK_PERI = 150 MHz.
+ *   IBRD = 150,000,000 / (16 * 115200) = 81.38 → 81
+ *   FBRD = round(0.38 * 64)                    = 24
  */
 
 #include "drivers/uart.h"
+#include <stdint.h>
+#include <stdbool.h>
 
-/* RP2350 Peripheral Reset Controller */
+/* --- Peripheral Reset Controller ---------------------------------------- */
 #define RESETS_BASE        0x40020000UL
 #define RESETS_RESET       (*(volatile uint32_t *)(RESETS_BASE + 0x00))
 #define RESETS_RESET_DONE  (*(volatile uint32_t *)(RESETS_BASE + 0x08))
+#define RESET_BIT_UART0      22
+#define RESET_BIT_IO_BANK0   11
+#define RESET_BIT_PADS_BANK0  8
 
-/* IO_BANK0: GPIO function selection */
-#define IO_BANK0_BASE      0x40028000UL
-#define GPIO0_CTRL         (*(volatile uint32_t *)(IO_BANK0_BASE + 0x004))
-#define GPIO1_CTRL         (*(volatile uint32_t *)(IO_BANK0_BASE + 0x00c))
+/* --- IO_BANK0: GPIO function selection ---------------------------------- */
+#define IO_BANK0_BASE  0x40028000UL
+/* GPIO_CTRL for GPIO N: base + N*8 + 4 */
+#define GPIO_CTRL(n)   (*(volatile uint32_t *)(IO_BANK0_BASE + (n)*8 + 4))
+#define GPIO_FUNC_UART 2   /* UART function select for GPIO0/GPIO1 */
+#define GPIO_FUNC_SIO  5   /* SIO function select for GPIO25 LED   */
 
-/* RP2350 Crystal Oscillator (XOSC) — 12 MHz */
-#define XOSC_BASE          0x40048000UL
-#define XOSC_CTRL          (*(volatile uint32_t *)(XOSC_BASE + 0x00))
-#define XOSC_STATUS        (*(volatile uint32_t *)(XOSC_BASE + 0x04))
-#define XOSC_STARTUP       (*(volatile uint32_t *)(XOSC_BASE + 0x0C))
-#define XOSC_FREQ_RANGE    0xAA0   /* 1–15 MHz */
-#define XOSC_ENABLE_MAGIC  0xFAB   /* magic enable word */
-#define XOSC_STATUS_STABLE (1u << 31)
+/* --- SIO (Single-Cycle I/O): GPIO output/OE ----------------------------- */
+#define SIO_BASE           0xD0000000UL
+#define SIO_GPIO_OUT_SET   (*(volatile uint32_t *)(SIO_BASE + 0x014))
+#define SIO_GPIO_OUT_CLR   (*(volatile uint32_t *)(SIO_BASE + 0x018))
+#define SIO_GPIO_OE_SET    (*(volatile uint32_t *)(SIO_BASE + 0x024))
 
-/* RP2350 Clock system */
-#define CLOCKS_BASE        0x40010000UL
-/* CLK_PERI_CTRL — peripheral clock control register */
-#define CLK_PERI_CTRL      (*(volatile uint32_t *)(CLOCKS_BASE + 0x48))
-/* CLK_PERI_CTRL bits: AUXSRC[7:5], KILL[10], ENABLE[11] */
-#define CLK_PERI_AUXSRC_XOSC  (3u << 5)   /* AUXSRC=3 → XOSC */
-#define CLK_PERI_ENABLE        (1u << 11)
-#define CLK_PERI_KILL          (1u << 10)
+/* --- Onboard LED -------------------------------------------------------- */
+#define LED_PIN   25
+#define LED_MASK  (1u << LED_PIN)
 
-/* PL011 UART0 */
+/* --- PL011 UART0 -------------------------------------------------------- */
 #define UART0_BASE_DEFAULT 0x40034000UL
 static volatile uint32_t *uart_base = (volatile uint32_t *)UART0_BASE_DEFAULT;
 
@@ -48,68 +52,82 @@ static volatile uint32_t *uart_base = (volatile uint32_t *)UART0_BASE_DEFAULT;
 #define UARTFBRD  (0x28 / 4)
 #define UARTLCR_H (0x2c / 4)
 #define UARTCR    (0x30 / 4)
+#define UARTFR_TXFF (1u << 5)
+#define UARTFR_RXFE (1u << 4)
 
-#define UARTFR_TXFF (1u << 5)   /* TX FIFO full */
-#define UARTFR_RXFE (1u << 4)   /* RX FIFO empty */
+/* ======================================================================== */
+/* LED boot indicator                                                        */
+/* ======================================================================== */
 
-/* RESETS bit positions for RP2350 */
-#define RESET_BIT_UART0     22
-#define RESET_BIT_IO_BANK0  11
-#define RESET_BIT_PADS_BANK0 8
-
-static void xosc_init(void) {
-    /* Startup delay: ~1 ms at 12 MHz = 47 cycles of 256 XOSC periods */
-    XOSC_STARTUP = 47;
-    /* Enable XOSC: set ENABLE magic + frequency range */
-    XOSC_CTRL = (XOSC_ENABLE_MAGIC << 12) | XOSC_FREQ_RANGE;
-    /* Wait until crystal is stable */
-    while (!(XOSC_STATUS & XOSC_STATUS_STABLE));
+static void delay_cycles(volatile uint32_t n) {
+    while (n--) { __asm__ volatile("nop"); }
 }
 
-static void clk_peri_from_xosc(void) {
-    /* Kill CLK_PERI briefly to safely switch source */
-    CLK_PERI_CTRL = CLK_PERI_KILL;
-    /* Set source to XOSC (12 MHz), enable */
-    CLK_PERI_CTRL = CLK_PERI_AUXSRC_XOSC | CLK_PERI_ENABLE;
+static void led_on(void)  { SIO_GPIO_OUT_SET = LED_MASK; }
+static void led_off(void) { SIO_GPIO_OUT_CLR = LED_MASK; }
+
+/* Blink the LED `count` times then pause — call before UART is ready */
+void led_blink_phase(int count) {
+    for (int i = 0; i < count; i++) {
+        led_on();
+        delay_cycles(200000);
+        led_off();
+        delay_cycles(200000);
+    }
+    delay_cycles(600000);  /* inter-phase gap */
 }
+
+static void led_init(void) {
+    /* Route GPIO25 to SIO, enable as output */
+    GPIO_CTRL(LED_PIN) = GPIO_FUNC_SIO;
+    SIO_GPIO_OE_SET    = LED_MASK;
+    led_off();
+}
+
+/* ======================================================================== */
+/* UART driver                                                               */
+/* ======================================================================== */
 
 void uart_init(uintptr_t base_addr) {
     if (base_addr != 0) {
         uart_base = (volatile uint32_t *)base_addr;
     }
 
-    /* Ensure XOSC is running and route CLK_PERI from it (12 MHz, known clock) */
-    xosc_init();
-    clk_peri_from_xosc();
+    /* Phase 1: LED init + 1 blink = we are alive and in uart_init */
+    led_init();
+    led_blink_phase(1);
 
-    /* Unreset IO_BANK0, PADS_BANK0, and UART0 */
+    /* Unreset IO_BANK0, PADS_BANK0, UART0 */
     uint32_t mask = (1u << RESET_BIT_UART0)
                   | (1u << RESET_BIT_IO_BANK0)
                   | (1u << RESET_BIT_PADS_BANK0);
     RESETS_RESET &= ~mask;
     while ((RESETS_RESET_DONE & mask) != mask);
 
-    /* Configure GPIO0 → UART0 TX (func 2), GPIO1 → UART0 RX (func 2) */
-    GPIO0_CTRL = 2;
-    GPIO1_CTRL = 2;
+    /* GPIO0 → UART0 TX, GPIO1 → UART0 RX */
+    GPIO_CTRL(0) = GPIO_FUNC_UART;
+    GPIO_CTRL(1) = GPIO_FUNC_UART;
 
     /* Disable UART before configuration */
     uart_base[UARTCR] = 0;
 
     /*
-     * Baud rate: 115,200 with CLK_PERI = XOSC = 12 MHz
-     *   BRD = 12,000,000 / (16 * 115200) = 6.5104
-     *   IBRD = 6
-     *   FBRD = round(0.5104 * 64) = 33
+     * 115,200 baud — RP2350 BootROM leaves CLK_PERI = 150 MHz (PLL_SYS).
+     *   IBRD = 150,000,000 / (16 * 115200) = 81.38 → 81
+     *   FBRD = round(0.38 * 64)                    = 24
+     * Actual rate: 150,000,000 / (16 * (81 + 24/64)) = 115,207 baud ✓
      */
-    uart_base[UARTIBRD] = 6;
-    uart_base[UARTFBRD] = 33;
+    uart_base[UARTIBRD] = 81;
+    uart_base[UARTFBRD] = 24;
 
-    /* 8N1, FIFO enabled: WLEN=0b11<<5=0x60, FEN=0x10 → 0x70 */
+    /* 8N1, FIFOs enabled: WLEN=0b11<<5=0x60, FEN=0x10 → 0x70 */
     uart_base[UARTLCR_H] = 0x70;
 
-    /* Enable UART, TX, RX: UARTEN=bit0, TXE=bit8, RXE=bit9 */
+    /* Enable UART, TX, RX */
     uart_base[UARTCR] = (1u << 0) | (1u << 8) | (1u << 9);
+
+    /* Phase 2: 2 blinks = UART configured */
+    led_blink_phase(2);
 }
 
 void uart_putc(char c) {
@@ -131,9 +149,7 @@ char uart_getc(void) {
 void uart_puts(const char *s) {
     if (!s) return;
     while (*s) {
-        if (*s == '\n') {
-            uart_putc('\r');
-        }
+        if (*s == '\n') uart_putc('\r');
         uart_putc(*s++);
     }
 }
