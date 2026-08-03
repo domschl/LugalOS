@@ -38,6 +38,20 @@ int printk(const char *fmt, ...) {
         }
 
         p++; // Skip '%'
+        bool zero_pad = false;
+        if (*p == '0') {
+            zero_pad = true;
+            p++;
+        }
+
+        int width = -1;
+        if (*p >= '1' && *p <= '9') {
+            width = 0;
+            while (*p >= '0' && *p <= '9') {
+                width = width * 10 + (*p - '0');
+                p++;
+            }
+        }
         int max_len = -1;
         if (*p == '.') {
             p++;
@@ -47,7 +61,6 @@ int printk(const char *fmt, ...) {
                 p++;
             }
         }
-        while (*p >= '0' && *p <= '9') p++; // Skip width specifier digits (e.g., %12u)
         if (*p == 'l') p++; // Handle %ld / %lx / %lu
 
         switch (*p) {
@@ -69,6 +82,13 @@ int printk(const char *fmt, ...) {
             case 'd':
             case 'i': {
                 long val = va_arg(args, long);
+                long temp = (val < 0) ? -val : val;
+                int digits = (val <= 0) ? 1 : 0;
+                while (temp != 0) { digits++; temp /= 10; }
+                if (width > digits) {
+                    char pad = zero_pad ? '0' : ' ';
+                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                }
                 if (val < 0) {
                     uart_putc('-');
                     val = -val;
@@ -76,13 +96,32 @@ int printk(const char *fmt, ...) {
                 print_num((unsigned long)val, 10);
                 break;
             }
-            case 'u':
-                print_num(va_arg(args, unsigned long), 10);
+            case 'u': {
+                unsigned long val = va_arg(args, unsigned long);
+                unsigned long temp = val;
+                int digits = (val == 0) ? 1 : 0;
+                while (temp != 0) { digits++; temp /= 10; }
+                if (width > digits) {
+                    char pad = zero_pad ? '0' : ' ';
+                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                }
+                print_num(val, 10);
                 break;
+            }
             case 'x':
-            case 'p':
-                print_num(va_arg(args, unsigned long), 16);
+            case 'X':
+            case 'p': {
+                unsigned long val = va_arg(args, unsigned long);
+                unsigned long temp = val;
+                int digits = (val == 0) ? 1 : 0;
+                while (temp != 0) { digits++; temp /= 16; }
+                if (width > digits) {
+                    char pad = zero_pad ? '0' : ' ';
+                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                }
+                print_num(val, 16);
                 break;
+            }
             case '%':
                 uart_putc('%');
                 break;
@@ -92,6 +131,7 @@ int printk(const char *fmt, ...) {
                 break;
         }
     }
+
 
     va_end(args);
     return 0;

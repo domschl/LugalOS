@@ -71,7 +71,9 @@ set(SOURCES
     kernel/ipc.c
     kernel/sched.c
     kernel/shell.c
+    kernel/line_editor.c
     kernel/ubsan.c
+
     arch/riscv/common/entry.S
 
     arch/riscv/common/trap.c

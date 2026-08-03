@@ -19,10 +19,23 @@ It is designed to scale dynamically from embedded **NOMMU** microcontrollers (li
   * Native FAT32 filesystem engine supporting 32-bit cluster allocation, subdirectories (`.`, `..`), BPB formatting, file read/write, deletion, directory creation (`mkdir`), removal (`rmdir`), and copying (`cp`).
   * Hardware **VirtIO MMIO Block Driver** backed by a persistent shared disk image (`build/lugalos_sd.img`) used across both 32-bit and 64-bit builds.
 * **Native C11 Compiler (`chibicc`)**: Integrated C11 compiler (`cc <src.c> <dst.elf>`) generating native RISC-V ELF binaries directly on LugalOS!
-* **Embedded Scheme / S-Expression Engine (`lugal-lisp`)**: Pure C S-expression parser, environment frames, closures, arithmetic/logic primitives, hardware `peek`/`poke`, and a `(compile-file)` S-expression compiler!
+* **Unified Lisp Machine Shell (`lsh`)**:
+  * **POSIX $\rightarrow$ S-Expression Transformation**: All standard POSIX shell inputs (`ls /sd0`, `cp a b`, `cc src dst`) are automatically transformed into Lisp S-Expressions (`(ls "/sd0")`, `(cp "a" "b")`) and executed directly by the core Lisp engine!
+  * **Complete Scheme / Lisp Core**: Full support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `cond`, arithmetic (`+`, `-`, `*`, `=`), memory `peek`/`poke`, and string data types.
+  * **System Boot Scripts**: Automatically loads `/sd0/system/stdlib.lisp` and executes `/sd0/system/init.lisp` at system startup.
+  * **Dual-Mode Interactive Line Editor & Emacs Multi-Line Canvas**: Single-line editing with ANSI escape sequences (`Ctrl-A/E/K/L/P/N`, Arrow keys, Delete), clean session history logging, and a full Emacs-style multi-line editor (`e [filename]` or `Ctrl-X Ctrl-M`) featuring a top optical separator, line numbers (`%3d │ `), an active status line, and keybindings:
+    * `Ctrl-X Ctrl-E`: Evaluate buffer in Lisp engine
+    * `Ctrl-X Ctrl-S`: Save buffer to active filename
+    * `Ctrl-X Ctrl-F`: Find/load file into editor (status line prompt)
+    * `Ctrl-X Ctrl-R`: Insert file at cursor position (status line prompt)
+    * `Ctrl-X Ctrl-W`: Write buffer to new filename (status line prompt)
+    * `Ctrl-X Ctrl-C`: Exit editor (prompts on status line if buffer modified)
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
-* **Interactive Console Shell (`lsh`)**: Feature-rich shell supporting file and directory management (`ls`, `cat`, `touch`, `mkdir`, `rmdir`, `cp`, `rm`), Plan 9 `/proc/` introspection, Scheme REPL, `chibicc`, `ed` editor, and native `exec` binary execution.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 37 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds.
+
+
+
 
 ---
 
@@ -124,15 +137,62 @@ lsh> ed /sd0/hello.c
 :q
 ```
 
-### 3. Compiling C Source Files to RISC-V ELF Binaries (`chibicc`)
-```bash
-lsh> cc /sd0/hello.c /sd0/hello.elf
-[chibicc] Compiled /sd0/hello.c -> /sd0/hello.elf
-
-lsh> exec /sd0/hello.elf
-[ELF] Executing binary '/sd0/hello.elf'...
-Hello from Extended ed Editor!
+### 4. Interactive Emacs Multi-Line Lisp Editor (`e [filename]`)
+```text
+lsh> e /sd0/math.lisp
+─────────────────────────────────────────────────────────────────────────────
+  1 │ (define (factorial n)
+  2 │   (if (= n 0)
+  3 │       1
+  4 │       (* n (factorial (- n 1)))))
+  5 │ (factorial 6)
+─── /sd0/math.lisp ───────────────── C-X C-E: eval | C-X C-S: save | C-X C-C: exit ───
+=> 720
 ```
+
+---
+
+## LugalOS Lisp Machine Engine & Standard Library
+
+The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the microkernel's primary execution engine, REPL, and interactive shell environment (`lsh`).
+
+### Supported Lisp / Scheme Special Forms
+* `(define var val)` / `(define (fn args...) body...)`: Binds global symbols and procedure signatures.
+* `(lambda (args...) body...)`: Constructs anonymous procedure closures.
+* `(quote expr)` / `'expr`: Prevents evaluation of literal S-expressions and lists.
+* `(if condition then-expr else-expr)`: Evaluates conditional branches.
+* `(begin expr1 expr2 ...)`: Evaluates sequential expressions, returning the value of the final S-expression.
+* `(let ((var val) ...) body...)`: Establishes local lexical bindings.
+* `(cond (clause1) (clause2) ... (else default))`: Multi-branch conditional selection.
+
+### Built-in Primitives & Standard Library
+
+#### Arithmetic & Logic
+`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`
+
+#### File I/O & Script Execution
+* `(read-file path)`: Reads content from Plan 9 VFS into a string.
+* `(write-file path content)`: Overwrites file content on Plan 9 VFS.
+* `(load path)`: Evaluates a `.lisp` source file from disk (e.g. `(load "/sd0/system/stdlib.lisp")`).
+
+#### Microkernel VFS & System Metrics
+* `(ls path)`: Performs directory listing across `/sd0/`, `/ram0/`, `/proc/`, `/dev/`, `/srv/`.
+* `(mkdir path)`: Creates directory in FAT32 storage engine.
+* `(rm path)`: Removes file from VFS.
+* `(cp src dst)`: Copies file content between VFS locations.
+* `(cat path)`: Reads and prints file content to UART console.
+* `(ps)`: Displays task scheduler state (`/proc/ps`).
+* `(meminfo)`: Displays physical memory allocation metrics (`/proc/meminfo`).
+
+#### Native C11 Compiler & Binary Execution
+* `(cc src dst)`: Invokes native `chibicc` C11 compiler on VFS C source files.
+* `(exec path)`: Loads and executes native RISC-V ELF binaries in supervisor space.
+
+### System Boot Initialization Sequence
+On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifecycle:
+1. Loads `/sd0/system/stdlib.lisp` (standard library extensions written in pure Lisp).
+2. Executes `/sd0/system/init.lisp` to initialize system settings and launch startup tasks.
+
 
 ---
 

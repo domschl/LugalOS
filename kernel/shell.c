@@ -1,5 +1,6 @@
 #include "kernel/shell.h"
 #include "kernel/printk.h"
+#include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
@@ -52,144 +53,190 @@ static void cmd_uname(void) {
     printk("Namespace: Universal Path Resolver (/ram0/, /proc/, /dev/, /srv/)\n");
 }
 
+static void parse_and_eval_cmd(const char *cmd_line) {
+    while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
+    if (*cmd_line == '\0') return;
+
+    if (strcmp(cmd_line, "help") == 0) {
+        cmd_help();
+        return;
+    } else if (strcmp(cmd_line, "uname") == 0) {
+        cmd_uname();
+        return;
+    } else if (strcmp(cmd_line, "clear") == 0) {
+        uart_puts("\033[2J\033[H");
+        return;
+    } else if (strcmp(cmd_line, "ed") == 0) {
+        ed_main(NULL);
+        return;
+    } else if (strncmp(cmd_line, "ed ", 3) == 0) {
+        ed_main(&cmd_line[3]);
+        return;
+    } else if (strcmp(cmd_line, "e") == 0) {
+        char edit_buf[2048];
+        int mlen = edit_multiline_box("/ram0/system/scratch.lisp", edit_buf, sizeof(edit_buf));
+        if (mlen > 0) {
+            lisp_val_t *res = lisp_eval_string(edit_buf);
+            if (res) {
+                if (res->type != LISP_NIL) {
+                    printk("=> ");
+                    lisp_print(res);
+                    printk("\n");
+                } else {
+                    printk("\n");
+                }
+            }
+        }
+        return;
+    } else if (strncmp(cmd_line, "e ", 2) == 0) {
+        char edit_buf[2048];
+        const char *fn = &cmd_line[2];
+        while (*fn == ' ') fn++;
+        int mlen = edit_multiline_box(fn, edit_buf, sizeof(edit_buf));
+        if (mlen > 0) {
+            lisp_val_t *res = lisp_eval_string(edit_buf);
+            if (res) {
+                if (res->type != LISP_NIL) {
+                    printk("=> ");
+                    lisp_print(res);
+                    printk("\n");
+                } else {
+                    printk("\n");
+                }
+            }
+        }
+        return;
+    } else if (strcmp(cmd_line, "lisp") == 0) {
+        lisp_repl();
+        return;
+    }
+
+
+    /* Direct S-Expression evaluation if line starts with '(' */
+    if (*cmd_line == '(') {
+        lisp_val_t *res = lisp_eval_string(cmd_line);
+        if (res) {
+            if (res->type != LISP_NIL) {
+                printk("=> ");
+                lisp_print(res);
+                printk("\n");
+            } else {
+                printk("\n");
+            }
+        }
+        return;
+    }
+
+
+    /* Single token variable or evaluation lookup */
+    bool has_space = false;
+    for (const char *c = cmd_line; *c; c++) {
+        if (*c == ' ' || *c == '\t') { has_space = true; break; }
+    }
+
+    if (!has_space && strcmp(cmd_line, "ls") != 0 && strcmp(cmd_line, "ps") != 0 && strcmp(cmd_line, "meminfo") != 0 && strcmp(cmd_line, "version") != 0) {
+        lisp_val_t *res = lisp_eval_string(cmd_line);
+        if (res && res->type != LISP_NIL) {
+            printk("=> ");
+            lisp_print(res);
+            printk("\n");
+            return;
+        }
+    }
+
+
+
+    /* POSIX/Plan9 command -> S-Expression transformer */
+    char sexpr[512];
+    int sidx = 0;
+    sexpr[sidx++] = '(';
+
+    const char *p = cmd_line;
+    /* Verb */
+    while (*p && *p != ' ' && *p != '\t') {
+        if (sidx < 500) sexpr[sidx++] = *p;
+        p++;
+    }
+
+    /* Special case: write <path> <payload...> */
+    if (strncmp(cmd_line, "write ", 6) == 0) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p) {
+            sexpr[sidx++] = ' ';
+            sexpr[sidx++] = '"';
+            while (*p && *p != ' ' && *p != '\t') {
+                if (sidx < 500) sexpr[sidx++] = *p;
+                p++;
+            }
+            sexpr[sidx++] = '"';
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p) {
+                sexpr[sidx++] = ' ';
+                sexpr[sidx++] = '"';
+                while (*p) {
+                    if (*p == '"') {
+                        if (sidx < 498) { sexpr[sidx++] = '\\'; sexpr[sidx++] = '"'; }
+                    } else {
+                        if (sidx < 500) sexpr[sidx++] = *p;
+                    }
+                    p++;
+                }
+                sexpr[sidx++] = '"';
+            }
+        }
+    } else {
+        /* General argument tokenizer */
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '\0') break;
+
+            sexpr[sidx++] = ' ';
+            bool quoted = (*p == '"');
+            if (!quoted) sexpr[sidx++] = '"';
+
+            while (*p) {
+                if (quoted && *p == '"') {
+                    sexpr[sidx++] = *p++;
+                    break;
+                } else if (!quoted && (*p == ' ' || *p == '\t')) {
+                    break;
+                } else {
+                    if (sidx < 500) sexpr[sidx++] = *p;
+                    p++;
+                }
+            }
+            if (!quoted) sexpr[sidx++] = '"';
+        }
+    }
+
+    sexpr[sidx++] = ')';
+    sexpr[sidx] = '\0';
+
+    /* Evaluate translated S-Expression in Lisp engine */
+    lisp_val_t *res = lisp_eval_string(sexpr);
+    if (res) {
+        if (res->type != LISP_NIL) {
+            printk("=> ");
+            lisp_print(res);
+            printk("\n");
+        } else {
+            printk("\n");
+        }
+    }
+}
+
+
 void shell_run(void) {
     char buf[512];
+    line_editor_init();
     printk("\nLugalOS Interactive Console Shell (`lsh`)\n");
     printk("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
     while (1) {
-        printk("lsh> ");
-        int idx = 0;
-        while (1) {
-            char c = uart_getc();
-            if (c == '\r' || c == '\n') {
-                uart_puts("\r\n");
-                buf[idx] = '\0';
-                break;
-            } else if (c == 0x08 || c == 0x7F) {
-                if (idx > 0) {
-                    idx--;
-                    uart_puts("\b \b");
-                }
-            } else if (c >= 32 && c <= 126) {
-                if (idx < 511) {
-                    buf[idx++] = c;
-                    uart_putc(c);
-                }
-            }
-        }
-
+        int idx = readline_interactive("lsh> ", buf, sizeof(buf));
         if (idx == 0) continue;
-
-        if (strcmp(buf, "help") == 0) {
-            cmd_help();
-        } else if (strcmp(buf, "uname") == 0) {
-            cmd_uname();
-        } else if (strcmp(buf, "ps") == 0) {
-            char pbuf[256];
-            vfs_read("/proc/ps", pbuf, sizeof(pbuf));
-        } else if (strcmp(buf, "meminfo") == 0) {
-            char mbuf[256];
-            vfs_read("/proc/meminfo", mbuf, sizeof(mbuf));
-        } else if (strcmp(buf, "ls") == 0) {
-            vfs_ls("/");
-        } else if (strncmp(buf, "ls ", 3) == 0) {
-            vfs_ls(&buf[3]);
-        } else if (strncmp(buf, "cat ", 4) == 0) {
-            char file_data[512];
-            file_data[0] = '\0';
-            int read_len = vfs_read(&buf[4], file_data, 512);
-            if (read_len > 0) {
-                printk("%s\n", file_data);
-            } else if (read_len < 0) {
-                printk("cat: '%s': Cannot read path\n", &buf[4]);
-            }
-        } else if (strncmp(buf, "touch ", 6) == 0) {
-            if (vfs_write(&buf[6], "", 0) == 0) {
-                printk("File '%s' created.\n", &buf[6]);
-            } else {
-                printk("touch: failed to create '%s'\n", &buf[6]);
-            }
-        } else if (strncmp(buf, "write ", 6) == 0) {
-            char *space = strchr(&buf[6], ' ');
-            if (space) {
-                *space = '\0';
-                const char *filename = &buf[6];
-                char text[512];
-                const char *src = space + 1;
-                int tidx = 0;
-                while (*src && tidx < 511) {
-                    if (*src == '\\' && *(src + 1) == 'n') {
-                        text[tidx++] = '\n';
-                        src += 2;
-                    } else if (*src == '\\' && *(src + 1) == 't') {
-                        text[tidx++] = '\t';
-                        src += 2;
-                    } else {
-                        text[tidx++] = *src++;
-                    }
-                }
-                text[tidx] = '\0';
-                if (vfs_write(filename, text, tidx) == 0) {
-                    printk("'%s': %d bytes written.\n", filename, tidx);
-                } else {
-                    printk("write: failed to write '%s'\n", filename);
-                }
-            } else {
-                printk("Usage: write <path> <text>\n");
-            }
-        } else if (strncmp(buf, "mkdir ", 6) == 0) {
-            if (vfs_mkdir(&buf[6]) == 0) {
-                printk("Directory '%s' created.\n", &buf[6]);
-            } else {
-                printk("mkdir: failed to create directory '%s'\n", &buf[6]);
-            }
-        } else if (strncmp(buf, "rmdir ", 6) == 0) {
-            if (vfs_rmdir(&buf[6]) == 0) {
-                printk("Directory '%s' removed.\n", &buf[6]);
-            } else {
-                printk("rmdir: failed to remove directory '%s'\n", &buf[6]);
-            }
-        } else if (strncmp(buf, "cp ", 3) == 0) {
-            char *space = strchr(&buf[3], ' ');
-            if (space) {
-                *space = '\0';
-                if (vfs_cp(&buf[3], space + 1) == 0) {
-                    printk("Copied '%s' -> '%s'\n", &buf[3], space + 1);
-                } else {
-                    printk("cp: failed to copy '%s' to '%s'\n", &buf[3], space + 1);
-                }
-            } else {
-                printk("Usage: cp <src_path> <dst_path>\n");
-            }
-        } else if (strncmp(buf, "rm ", 3) == 0) {
-
-
-            if (vfs_remove(&buf[3]) == 0) {
-                printk("File '%s' removed.\n", &buf[3]);
-            } else {
-                printk("rm: failed to remove '%s'\n", &buf[3]);
-            }
-        } else if (strncmp(buf, "cc ", 3) == 0) {
-            char *space = strchr(&buf[3], ' ');
-            if (space) {
-                *space = '\0';
-                chibicc_compile(&buf[3], space + 1);
-            } else {
-                printk("Usage: cc <src.c> <dst.elf>\n");
-            }
-        } else if (strncmp(buf, "exec ", 5) == 0) {
-            elf_load_and_run(&buf[5]);
-        } else if (strcmp(buf, "ed") == 0) {
-            ed_main(NULL);
-        } else if (strncmp(buf, "ed ", 3) == 0) {
-            ed_main(&buf[3]);
-        } else if (strcmp(buf, "clear") == 0) {
-            uart_puts("\033[2J\033[H");
-        } else if (strcmp(buf, "lisp") == 0) {
-            lisp_repl();
-        } else {
-            printk("lsh: command not found: '%s'. Type 'help' for list.\n", buf);
-        }
+        parse_and_eval_cmd(buf);
     }
 }
+
+

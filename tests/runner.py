@@ -134,8 +134,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "rm /sd0/testdir/b.txt\n"
             "rmdir /sd0/testdir"
         )
-        ok, log = session.send_and_expect(cmd_rmdir, r"Directory '/sd0/testdir' removed\.", timeout=4.0)
+        ok, log = session.send_and_expect(cmd_rmdir, r"=> #t", timeout=4.0)
         results.append(("VFS rmdir & rm File Cleanup", ok, log if not ok else ""))
+
 
         # 4. Extended Unix ed Editor
         cmd_ed = (
@@ -160,15 +161,114 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc C11 Compiler & Exec", ok, log if not ok else ""))
 
 
-        # 6. Lugal-Lisp REPL
-        cmd_lisp = "lisp\n(+ 123 321)\nexit"
-        ok, log = session.send_and_expect(cmd_lisp, r"444", timeout=4.0)
-        results.append(("Scheme / Lisp REPL Engine", ok, log if not ok else ""))
+        # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
+        cmd_arith = "lisp\n(+ 10 20 30)\n(- 100 40)\n(* 6 7)\n(= 42 42)\nexit"
+        ok, log = session.send_and_expect(cmd_arith, r"42", timeout=4.0)
+        results.append(("Lisp Arithmetic Primitives (+, -, *, =)", ok, log if not ok else ""))
+
+        # 7. Lisp Special Forms (define, lambda, quote, ', if, begin, let, cond)
+        cmd_forms = (
+            "lisp\n"
+            "(define double (lambda (n) (* n 2)))\n"
+            "(double 21)\n"
+            "(quote (1 2 3))\n"
+            "'symbol_test\n"
+            "(if (= 1 1) 'if_ok 'if_fail)\n"
+            "(begin 1 2 'begin_ok)\n"
+            "(let ((x 15) (y 25)) (+ x y))\n"
+            "(cond ((= 1 0) 'cond_fail) (else 'cond_ok))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_forms, r"cond_ok", timeout=5.0)
+        results.append(("Lisp Special Forms (define, lambda, quote, if, begin, let, cond)", ok, log if not ok else ""))
+
+        # 8. Lisp File I/O Primitives (write-file, read-file, load, display, newline)
+        cmd_lisp_io = (
+            "lisp\n"
+            "(write-file \"/sd0/lisp_io.txt\" \"Lisp_File_IO_Passed\")\n"
+            "(read-file \"/sd0/lisp_io.txt\")\n"
+            "(display \"Lisp_Display_Msg\\n\")\n"
+            "(load \"/sd0/system/stdlib.lisp\")\n"
+            "(not #f)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_lisp_io, r"=> #t", timeout=5.0)
+        results.append(("Lisp File I/O & Load Primitives (write-file, read-file, load)", ok, log if not ok else ""))
+
+        # 9. Lisp Microkernel VFS & Process Operations (mkdir, touch, write, cp, cat, rm, rmdir, ps, meminfo, version)
+        cmd_lisp_vfs = (
+            "(mkdir \"/sd0/lisp_vfs\")\n"
+            "(write \"/sd0/lisp_vfs/a.txt\" \"VFS_Lisp_Data\")\n"
+            "(cp \"/sd0/lisp_vfs/a.txt\" \"/sd0/lisp_vfs/b.txt\")\n"
+            "(cat \"/sd0/lisp_vfs/b.txt\")\n"
+            "(rm \"/sd0/lisp_vfs/a.txt\")\n"
+            "(rm \"/sd0/lisp_vfs/b.txt\")\n"
+            "(rmdir \"/sd0/lisp_vfs\")\n"
+            "(ps)\n"
+            "(meminfo)\n"
+            "(version)"
+        )
+        ok, log = session.send_and_expect(cmd_lisp_vfs, r"synthetic", timeout=5.0)
+        results.append(("Lisp Microkernel VFS Primitives (mkdir, write, cp, cat, rm, ps, meminfo)", ok, log if not ok else ""))
+
+
+        # 10. Lisp Compiler & Native Binary Primitives (cc, exec)
+        cmd_lisp_cc = (
+            "(cc \"/sd0/hello.c\" \"/sd0/hello_lisp.elf\")\n"
+            "(exec \"/sd0/hello_lisp.elf\")"
+        )
+        ok, log = session.send_and_expect(cmd_lisp_cc, r"returned: 0", timeout=5.0)
+        results.append(("Lisp Compiler & Binary Exec Primitives (cc, exec)", ok, log if not ok else ""))
+
+        # 11. Phase 3: Persistent History Logging (/sd0/system/history.lisp)
+        cmd_hist_check = "cat /sd0/system/history.lisp"
+        ok, log = session.send_and_expect(cmd_hist_check, r"history", timeout=4.0)
+        results.append(("Persistent Command History (/sd0/system/history.lisp)", ok, log if not ok else ""))
+
+        # 12. Phase 3: Emacs-style Multiline Editor (Ctrl-X Ctrl-E -> Eval, e [filename])
+        # \x18\x05 launches box editor, (+ 555 444) typed, \x18\x05 evaluates
+        cmd_box = "\x18\x05(+ 555 444)\x18\x05"
+        ok, log = session.send_and_expect(cmd_box, r"999", timeout=4.0)
+        results.append(("Emacs Multiline Lisp Editor (Ctrl-X Ctrl-E)", ok, log if not ok else ""))
+
+        # 13. Direct Shell Editor Command (`e /sd0/test_e.lisp`)
+        cmd_e_file = "e /sd0/test_e.lisp\n(+ 777 222)\x18\x05"
+        ok, log = session.send_and_expect(cmd_e_file, r"999", timeout=4.0)
+        results.append(("Direct Shell Editor Command (e <filename>)", ok, log if not ok else ""))
+
+        # 14. Emacs Quit Keybinding (`Ctrl-X Ctrl-C` with unsaved changes confirmation)
+        cmd_e_quit = "e\nmodified\x18\x03y\n"
+        ok, log = session.send_and_expect(cmd_e_quit, r"lsh>", timeout=4.0)
+        results.append(("Emacs Quit Keybinding (Ctrl-X Ctrl-C with unsaved changes confirmation)", ok, log if not ok else ""))
+
+
+
+        # 13. Filesystem Namespace Listing (ls /sd0/, /ram0/, /proc/, /dev/, /srv/)
+        cmd_fs_ls = (
+            "ls /sd0/\n"
+            "ls /ram0/\n"
+            "ls /proc/\n"
+            "ls /dev/\n"
+            "ls /srv/"
+        )
+        ok, log = session.send_and_expect(cmd_fs_ls, r"lisp", timeout=4.0)
+        results.append(("Plan 9 Namespace Directory Listing (ls /sd0/, /ram0/, /proc/, /dev/, /srv/)", ok, log if not ok else ""))
+
+        # 14. Interactive Line Editor Backward Cursor Insertion & Backspace Deletion
+        # Type "ac", Left Arrow (\x1b[D), type "b" -> "abc", Backspace -> "ac"
+        cmd_edit_cursor = "ac\x1b[Db\x7f"
+        ok, log = session.send_and_expect(cmd_edit_cursor + "\n", r"Unbound symbol: ac", timeout=4.0)
+        results.append(("Line Editor Backward Cursor Insertion & Deletion", ok, log if not ok else ""))
+
 
     finally:
         session.close()
 
     return results
+
+
+
+
 
 
 def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:

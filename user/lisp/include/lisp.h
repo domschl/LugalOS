@@ -8,6 +8,7 @@
 typedef enum {
     LISP_NIL,
     LISP_INT,
+    LISP_STRING,
     LISP_SYMBOL,
     LISP_PAIR,
     LISP_PRIMITIVE,
@@ -22,6 +23,7 @@ typedef struct lisp_val {
     lisp_type_t type;
     union {
         long i;
+        char str[128];
         char sym[32];
         struct {
             struct lisp_val *car;
@@ -38,13 +40,16 @@ typedef struct lisp_val {
 
 void lisp_init(void);
 lisp_val_t *make_int(long val);
+lisp_val_t *make_str(const char *str);
 lisp_val_t *make_sym(const char *sym);
 lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr);
 lisp_val_t *make_prim(lisp_prim_fn fn);
 
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env);
+lisp_val_t *lisp_eval_string(const char *str);
 lisp_val_t *lisp_read(const char **str);
 void lisp_print(lisp_val_t *val);
 void lisp_repl(void);
+
 
 #endif /* LUGALOS_USER_LISP_H */

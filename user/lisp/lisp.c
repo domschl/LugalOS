@@ -3,11 +3,14 @@
 #include "kernel/printk.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
+#include "user/chibicc/include/chibicc.h"
+#include "arch/elf.h"
 #include <string.h>
 
-#define NODE_POOL_SIZE 512
+#define NODE_POOL_SIZE 4096
 
 static lisp_val_t node_pool[NODE_POOL_SIZE];
+
 static int node_pool_idx = 0;
 
 static lisp_val_t nil_val = { .type = LISP_NIL };
@@ -50,11 +53,18 @@ lisp_val_t *make_int(long val) {
     return v;
 }
 
+lisp_val_t *make_str(const char *str) {
+    lisp_val_t *v = alloc_node(LISP_STRING);
+    strncpy_local(v->u.str, str ? str : "", 128);
+    return v;
+}
+
 lisp_val_t *make_sym(const char *sym) {
     lisp_val_t *v = alloc_node(LISP_SYMBOL);
     strncpy_local(v->u.sym, sym, 32);
     return v;
 }
+
 
 lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr) {
     lisp_val_t *v = alloc_node(LISP_PAIR);
@@ -151,30 +161,226 @@ static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+static const char *get_str_val(lisp_val_t *val) {
+    if (!val) return "";
+    if (val->type == LISP_STRING) return val->u.str;
+    if (val->type == LISP_SYMBOL) return val->u.sym;
+    return "";
+}
+
+static lisp_val_t *prim_ls(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *path = "/";
+    if (args && args->type == LISP_PAIR) {
+        path = get_str_val(args->u.pair.car);
+    }
+    vfs_ls(path);
+    return &nil_val;
+}
+
 static lisp_val_t *prim_cat(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || args->u.pair.car->type != LISP_SYMBOL) return &nil_val;
-    char buf[512];
-    buf[0] = '\0';
-    vfs_read(args->u.pair.car->u.sym, buf, 512);
+    if (!args || args->type != LISP_PAIR) return &nil_val;
+    const char *path = get_str_val(args->u.pair.car);
+    static char buf[4096];
+    int len = vfs_read(path, buf, sizeof(buf) - 1);
+    if (len >= 0) {
+        buf[len] = '\0';
+        printk("%s\n", buf);
+    } else {
+        printk("cat: cannot read path '%s'\n", path);
+    }
     return &nil_val;
+}
+
+static lisp_val_t *prim_touch(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    return (vfs_write(path, "", 0) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_write(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    const char *text = get_str_val(args->u.pair.cdr->u.pair.car);
+    return (vfs_write(path, text, strlen(text)) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_mkdir(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    return (vfs_mkdir(path) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_rmdir(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    return (vfs_rmdir(path) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_cp(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    const char *src = get_str_val(args->u.pair.car);
+    const char *dst = get_str_val(args->u.pair.cdr->u.pair.car);
+    return (vfs_cp(src, dst) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_rm(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    return (vfs_remove(path) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    const char *src = get_str_val(args->u.pair.car);
+    const char *dst = get_str_val(args->u.pair.cdr->u.pair.car);
+    return (chibicc_compile(src, dst) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    int res = elf_load_and_run(path);
+    return make_int(res);
+}
+
+static lisp_val_t *prim_ps(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    vfs_ls("/proc/ps");
+    return &nil_val;
+}
+
+static lisp_val_t *prim_meminfo(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    vfs_ls("/proc/meminfo");
+    return &nil_val;
+}
+
+static lisp_val_t *prim_version(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    vfs_ls("/proc/version");
+    return &nil_val;
+}
+
+static lisp_val_t *prim_load(lisp_val_t *args, lisp_val_t *env) {
+
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    static char buf[8192];
+    int len = vfs_read(path, buf, sizeof(buf) - 1);
+    if (len < 0) {
+        printk("load: cannot open file '%s'\n", path);
+        return &false_val;
+    }
+    buf[len] = '\0';
+    lisp_eval_string(buf);
+    return &true_val;
+}
+
+static lisp_val_t *prim_display(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (args && args->type == LISP_PAIR) {
+        lisp_val_t *v = args->u.pair.car;
+        if (v->type == LISP_STRING) {
+            printk("%s", v->u.str);
+        } else {
+            lisp_print(v);
+        }
+    }
+    return &nil_val;
+}
+
+static lisp_val_t *prim_newline(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    printk("\n");
+    return &nil_val;
+}
+
+static lisp_val_t *prim_read_file(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_str("");
+    const char *path = get_str_val(args->u.pair.car);
+    static char buf[4096];
+    int len = vfs_read(path, buf, sizeof(buf) - 1);
+    if (len < 0) return make_str("");
+    buf[len] = '\0';
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_write_file(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+    const char *text = get_str_val(args->u.pair.cdr->u.pair.car);
+    int res = vfs_write(path, text, strlen(text));
+    return (res == 0) ? &true_val : &false_val;
 }
 
 void lisp_init(void) {
     node_pool_idx = 0;
     global_env = &nil_val;
 
+    env_set(&global_env, "#t", &true_val);
+    env_set(&global_env, "#f", &false_val);
+
     env_set(&global_env, "+", make_prim(prim_add));
+
     env_set(&global_env, "-", make_prim(prim_sub));
     env_set(&global_env, "*", make_prim(prim_mul));
     env_set(&global_env, "=", make_prim(prim_eq));
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
+    env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
+    env_set(&global_env, "touch", make_prim(prim_touch));
+    env_set(&global_env, "write", make_prim(prim_write));
+    env_set(&global_env, "mkdir", make_prim(prim_mkdir));
+    env_set(&global_env, "rmdir", make_prim(prim_rmdir));
+    env_set(&global_env, "cp", make_prim(prim_cp));
+    env_set(&global_env, "rm", make_prim(prim_rm));
+    env_set(&global_env, "cc", make_prim(prim_cc));
+    env_set(&global_env, "exec", make_prim(prim_exec));
+    env_set(&global_env, "ps", make_prim(prim_ps));
+    env_set(&global_env, "meminfo", make_prim(prim_meminfo));
+    env_set(&global_env, "version", make_prim(prim_version));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
-    printk("[Lisp] Scheme / S-Expression REPL Engine initialized.\n");
+    env_set(&global_env, "load", make_prim(prim_load));
+    env_set(&global_env, "display", make_prim(prim_display));
+    env_set(&global_env, "newline", make_prim(prim_newline));
+    env_set(&global_env, "read-file", make_prim(prim_read_file));
+    env_set(&global_env, "write-file", make_prim(prim_write_file));
+
+    printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
+
+    /* Automatically load system boot scripts if present */
+    static char boot_buf[8192];
+    int len = vfs_read("/sd0/system/stdlib.lisp", boot_buf, sizeof(boot_buf) - 1);
+    if (len > 0) {
+        boot_buf[len] = '\0';
+        lisp_eval_string(boot_buf);
+        printk("[Lisp Boot] Loaded /sd0/system/stdlib.lisp\n");
+    }
+
+    len = vfs_read("/sd0/system/init.lisp", boot_buf, sizeof(boot_buf) - 1);
+    if (len > 0) {
+        boot_buf[len] = '\0';
+        lisp_eval_string(boot_buf);
+        printk("[Lisp Boot] Executed /sd0/system/init.lisp\n");
+    }
 }
+
+
 
 /* Printer */
 void lisp_print(lisp_val_t *val) {
@@ -185,6 +391,9 @@ void lisp_print(lisp_val_t *val) {
     switch (val->type) {
         case LISP_INT:
             printk("%ld", val->u.i);
+            break;
+        case LISP_STRING:
+            printk("\"%s\"", val->u.str);
             break;
         case LISP_SYMBOL:
             printk("%s", val->u.sym);
@@ -212,14 +421,54 @@ void lisp_print(lisp_val_t *val) {
 
 /* Lexer / Parser */
 static void skip_whitespace(const char **str) {
-    while (**str == ' ' || **str == '\t' || **str == '\r' || **str == '\n') {
-        (*str)++;
+    while (1) {
+        while (**str == ' ' || **str == '\t' || **str == '\r' || **str == '\n') {
+            (*str)++;
+        }
+        if (**str == ';') {
+            while (**str != '\n' && **str != '\0') {
+                (*str)++;
+            }
+        } else {
+            break;
+        }
     }
 }
+
 
 lisp_val_t *lisp_read(const char **str) {
     skip_whitespace(str);
     if (**str == '\0') return NULL;
+
+    /* Quote Syntax 'expr */
+    if (**str == '\'') {
+        (*str)++; // skip '\''
+        lisp_val_t *quoted_val = lisp_read(str);
+        if (!quoted_val) quoted_val = &nil_val;
+        return make_pair(make_sym("quote"), make_pair(quoted_val, &nil_val));
+    }
+
+    /* Double Quoted Strings "..." */
+    if (**str == '"') {
+
+        (*str)++; // skip opening quote
+        char buf[128];
+        int i = 0;
+        while (**str != '"' && **str != '\0' && i < 127) {
+            if (**str == '\\' && (*str)[1] != '\0') {
+                (*str)++;
+                if (**str == 'n') buf[i++] = '\n';
+                else if (**str == 't') buf[i++] = '\t';
+                else buf[i++] = **str;
+            } else {
+                buf[i++] = **str;
+            }
+            (*str)++;
+        }
+        if (**str == '"') (*str)++; // skip closing quote
+        buf[i] = '\0';
+        return make_str(buf);
+    }
 
     if (**str == '(') {
         (*str)++; // skip '('
@@ -294,9 +543,10 @@ lisp_val_t *lisp_read(const char **str) {
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     if (!val) return &nil_val;
 
-    if (val->type == LISP_INT || val->type == LISP_PRIMITIVE || val->type == LISP_LAMBDA) {
+    if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE || val->type == LISP_LAMBDA) {
         return val;
     }
+
 
     if (val->type == LISP_SYMBOL) {
         lisp_val_t *res = env_get(env, val->u.sym);
@@ -308,6 +558,80 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     if (val->type == LISP_PAIR) {
         lisp_val_t *op = val->u.pair.car;
         lisp_val_t *args = val->u.pair.cdr;
+
+        /* Special form: quote */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "quote")) {
+            return (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
+        }
+
+        /* Special form: if */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "if")) {
+            if (args && args->type == LISP_PAIR && args->u.pair.cdr) {
+                lisp_val_t *cond_val = lisp_eval(args->u.pair.car, env);
+                bool is_true = (cond_val != &false_val) &&
+                               !(cond_val->type == LISP_SYMBOL && streq(cond_val->u.sym, "#f")) &&
+                               !(cond_val->type == LISP_NIL);
+                if (is_true) {
+                    return lisp_eval(args->u.pair.cdr->u.pair.car, env);
+                } else if (args->u.pair.cdr->u.pair.cdr) {
+                    return lisp_eval(args->u.pair.cdr->u.pair.cdr->u.pair.car, env);
+                }
+            }
+            return &nil_val;
+        }
+
+        /* Special form: begin */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "begin")) {
+            lisp_val_t *res = &nil_val;
+            for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                res = lisp_eval(c->u.pair.car, env);
+            }
+            return res;
+        }
+
+        /* Special form: let */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "let")) {
+            if (args && args->type == LISP_PAIR) {
+                lisp_val_t *bindings = args->u.pair.car;
+                lisp_val_t *body = args->u.pair.cdr;
+                lisp_val_t *local_env = env;
+
+                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                    lisp_val_t *pair = b->u.pair.car;
+                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                        lisp_val_t *val = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, env);
+                        env_set(&local_env, pair->u.pair.car->u.sym, val);
+                    }
+                }
+
+                lisp_val_t *res = &nil_val;
+                for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                    res = lisp_eval(c->u.pair.car, local_env);
+                }
+                return res;
+            }
+        }
+
+        /* Special form: cond */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "cond")) {
+            for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                lisp_val_t *clause = c->u.pair.car;
+                if (clause && clause->type == LISP_PAIR) {
+                    lisp_val_t *pred = clause->u.pair.car;
+                    bool is_else = (pred->type == LISP_SYMBOL && streq(pred->u.sym, "else"));
+                    lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, env);
+                    bool is_true = (pval != &false_val) && !(pval->type == LISP_SYMBOL && streq(pval->u.sym, "#f")) && !(pval->type == LISP_NIL);
+                    if (is_true) {
+                        lisp_val_t *res = &nil_val;
+                        for (lisp_val_t *expr = clause->u.pair.cdr; expr && expr->type == LISP_PAIR; expr = expr->u.pair.cdr) {
+                            res = lisp_eval(expr->u.pair.car, env);
+                        }
+                        return res;
+                    }
+                }
+            }
+            return &nil_val;
+        }
 
         /* Special form: define */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "define")) {
@@ -329,6 +653,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
             lam->u.lambda.env = env;
             return lam;
         }
+
 
         /* Evaluate Operator */
         lisp_val_t *fn = lisp_eval(op, env);
@@ -418,3 +743,18 @@ void lisp_repl(void) {
         printk("\n");
     }
 }
+
+lisp_val_t *lisp_eval_string(const char *str) {
+    if (!str) return &nil_val;
+    const char *ptr = str;
+    lisp_val_t *res = &nil_val;
+    while (*ptr != '\0') {
+        skip_whitespace(&ptr);
+        if (*ptr == '\0') break;
+        lisp_val_t *ast = lisp_read(&ptr);
+        if (!ast) break;
+        res = lisp_eval(ast, global_env);
+    }
+    return res;
+}
+

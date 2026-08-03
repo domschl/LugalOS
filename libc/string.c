@@ -59,7 +59,19 @@ int strncmp(const char *s1, const char *s2, size_t n) {
     return 0;
 }
 
+char *strcpy(char *dst, const char *src) {
+    if (!dst) return NULL;
+    if (!src) {
+        dst[0] = '\0';
+        return dst;
+    }
+    char *orig = dst;
+    while ((*dst++ = *src++) != '\0');
+    return orig;
+}
+
 char *strncpy(char *dst, const char *src, size_t n) {
+
     if (!dst) return NULL;
     if (!src) {
         if (n > 0) dst[0] = '\0';
