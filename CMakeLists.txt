@@ -117,7 +117,7 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.bin lugalos.uf2
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.elf lugalos.bin lugalos.uf2
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
 
