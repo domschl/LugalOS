@@ -120,18 +120,24 @@ add_executable(lugalos.elf ${SOURCES})
 set(PICOTOOL_EXECUTABLE "/home/dsc/gith/domschl/LugalChess/build_firmware_riscv/_deps/picotool-build/picotool")
 
 if(EXISTS "${PICOTOOL_EXECUTABLE}")
-    set(ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert)
+    set(PICOTOOL_CONVERT_FLAGS --family rp2350-riscv --abs-block)
 else()
-    set(ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.elf lugalos.bin)
+    set(PICOTOOL_CONVERT_FLAGS)
 endif()
 
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
+if(EXISTS "${PICOTOOL_EXECUTABLE}")
+    set(ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert lugalos.elf lugalos.uf2 ${PICOTOOL_CONVERT_FLAGS})
+else()
+    set(ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.elf lugalos.bin lugalos.uf2)
+endif()
+
 add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
-    COMMAND ${ELF2UF2_CMD} lugalos.elf lugalos.uf2
+    COMMAND ${ELF2UF2_CMD}
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
 
@@ -139,13 +145,13 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     add_executable(minimal_rp2350.elf tools/minimal_rp2350.c arch/riscv/common/entry.S)
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
     if(EXISTS "${PICOTOOL_EXECUTABLE}")
-        set(MINIMAL_ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert)
+        set(MINIMAL_ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert minimal_rp2350.elf minimal_rp2350.uf2 ${PICOTOOL_CONVERT_FLAGS})
     else()
-        set(MINIMAL_ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py minimal_rp2350.elf minimal_rp2350.bin)
+        set(MINIMAL_ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py minimal_rp2350.elf minimal_rp2350.bin minimal_rp2350.uf2)
     endif()
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD
         COMMAND ${CMAKE_OBJCOPY} -O binary minimal_rp2350.elf minimal_rp2350.bin
-        COMMAND ${MINIMAL_ELF2UF2_CMD} minimal_rp2350.elf minimal_rp2350.uf2
+        COMMAND ${MINIMAL_ELF2UF2_CMD}
         COMMENT "Generated minimal_rp2350.uf2 standalone hardware test"
     )
 endif()
