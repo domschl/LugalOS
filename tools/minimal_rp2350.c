@@ -10,6 +10,44 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../arch/riscv/rp2350/binary_info.h"
+
+extern char __binary_info_start;
+extern char __binary_info_end;
+extern char __flash_binary_end;
+
+static const uint32_t g_address_mapping_table[] = {
+    0x10000000, 0x10000000, 0x10400000, /* Flash identity mapping */
+    0, 0, 0                             /* Null terminator */
+};
+
+const struct rp2350_boot_header_t __attribute__((section(".boot_header"))) g_rp2350_boot_header = {
+    .marker_start = BINARY_INFO_MARKER_START,
+    .info_start   = (uint32_t)&__binary_info_start,
+    .info_end     = (uint32_t)&__binary_info_end,
+    .mapping_table = (uint32_t)g_address_mapping_table,
+    .marker_end   = BINARY_INFO_MARKER_END,
+};
+
+static const char g_prog_name[] = "minimal_rp2350";
+
+static const struct bi_id_and_string_t g_bi_name = {
+    .type = BINARY_INFO_TYPE_ID_AND_STRING,
+    .tag  = BINARY_INFO_TAG_RP,
+    .id   = BINARY_INFO_ID_RP_PROGRAM_NAME,
+    .value = (uint32_t)g_prog_name,
+};
+
+static const struct bi_id_and_int_t g_bi_binary_end = {
+    .type = BINARY_INFO_TYPE_ID_AND_INT,
+    .tag  = BINARY_INFO_TAG_RP,
+    .id   = BINARY_INFO_ID_RP_BINARY_END,
+    .value = (uint32_t)&__flash_binary_end,
+};
+
+const void * const __attribute__((section(".binary_info"))) g_p_bi_name = &g_bi_name;
+const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = &g_bi_binary_end;
+
 #define RESETS_BASE        0x40020000UL
 #define RESETS_RESET       (*(volatile uint32_t *)(RESETS_BASE + 0x00))
 #define RESETS_RESET_DONE  (*(volatile uint32_t *)(RESETS_BASE + 0x08))

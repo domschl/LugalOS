@@ -10,11 +10,10 @@ MEMORY
 
 SECTIONS
 {
-    /* 256-byte RP2350 Boot2 stage-2 loader block at offset 0 of Flash */
-    .boot2 : {
-        KEEP(*(.boot2))
-        . = ALIGN(4);
-        . = 256;
+    /* 20-byte RP2350 Boot Header (binary_info) at Flash offset 0 */
+    .boot_header : {
+        KEEP(*(.boot_header))
+        . = 20;
     } > FLASH
 
     /* Core Code (Execute-In-Place out of QSPI Flash) */
@@ -25,10 +24,14 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
-    /* Read-Only Data (Stored in QSPI Flash) */
+    /* Read-Only Data & Binary Info Array (Stored in QSPI Flash) */
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)
+        . = ALIGN(4);
+        __binary_info_start = .;
+        KEEP(*(.binary_info*))
+        __binary_info_end = .;
         . = ALIGN(4);
     } > FLASH
 
@@ -42,6 +45,8 @@ SECTIONS
         . = ALIGN(4);
         _data_end = .;
     } > SRAM AT> FLASH
+
+    __flash_binary_end = _sidata + (_data_end - _data_start);
 
     /* Uninitialized Data (Zeroed in SRAM at boot) */
     .bss (NOLOAD) : {
