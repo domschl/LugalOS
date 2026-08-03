@@ -146,23 +146,25 @@ def convert_elf_to_uf2(elf_path: str, bin_path: str, output_uf2_path: str) -> No
 
     block_size = 256
     num_code_blocks = (len(raw_data) + block_size - 1) // block_size
-    # Total blocks = 1 (IMAGE_DEF metadata UF2 block) + code blocks
-    num_blocks_total = 1 + num_code_blocks
 
     uf2_blocks: list[bytes] = []
 
-    # Block 0: special IMAGE_DEF UF2 block at 0x10FFFF00 (pads to 256 bytes of 0xEF)
+    # Block 0: special IMAGE_DEF UF2 block at 0x10FFFF00 (256 bytes of 0xEF padding).
+    # CRITICAL: each Family ID uses its OWN independent block counter.
+    # IMAGE_DEF family counter: block_no=0, num_blocks=1 (just one metadata block).
+    # Code family counter:       block_no=0..N-1, num_blocks=N.
     imagedef_payload = bytes([0xEF] * 256)
     uf2_blocks.append(make_uf2_block(
         imagedef_payload,
         IMAGEDEF_FLASH_ADDR,
         block_no=0,
-        num_blocks=num_blocks_total,
+        num_blocks=1,                    # independent IMAGE_DEF family counter
         family_id=RP2350_RISCV_FAMILY_DEF,
         flags=UF2_FLAG_FAMILYID | UF2_FLAG_MD5,
     ))
 
-    # Remaining blocks: actual firmware code
+    # Code blocks: block_no restarts from 0 for the code family (0xE48BFF5A).
+    # BootROM triggers reboot when it sees the last block (block_no == num_blocks-1).
     for i in range(num_code_blocks):
         offset = i * block_size
         chunk = bytes(raw_data[offset:offset + block_size])
@@ -171,8 +173,8 @@ def convert_elf_to_uf2(elf_path: str, bin_path: str, output_uf2_path: str) -> No
         uf2_blocks.append(make_uf2_block(
             chunk,
             FLASH_BASE_ADDR + offset,
-            block_no=1 + i,
-            num_blocks=num_blocks_total,
+            block_no=i,                  # 0-based for code family, independent of IMAGE_DEF
+            num_blocks=num_code_blocks,
             family_id=RP2350_RISCV_FAMILY_CODE,
             flags=UF2_FLAG_FAMILYID,
         ))
