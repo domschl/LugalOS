@@ -59,7 +59,12 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
 )
 
-option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
+# UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "K210")
+    option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" OFF)
+else()
+    option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
+endif()
 
 if(ENABLE_SANITIZERS)
     add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all)
@@ -80,7 +85,6 @@ set(SOURCES
     arch/riscv/common/trap.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
-    drivers/virtio_blk.c
     fs/fat32.c
     fs/vfs_server.c
     libc/string.c
@@ -97,7 +101,8 @@ set(SOURCES
 if(LUGALOS_TARGET STREQUAL "RP2350")
     list(APPEND SOURCES drivers/uart_rp2350.c)
 else()
-    list(APPEND SOURCES drivers/uart_16550.c)
+    # QEMU targets: VirtIO block device + 16550 UART
+    list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c)
 endif()
 
 

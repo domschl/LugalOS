@@ -26,6 +26,8 @@ void vfs_server_init(void) {
     g_sd_mounted = false;
     g_ram_mounted = false;
 
+#ifndef CONFIG_BOARD_RP2350
+    /* VirtIO block device is only available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
     if (sd_dev) {
         if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
@@ -33,6 +35,7 @@ void vfs_server_init(void) {
             printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: VirtIO SD Block Engine)\n");
         }
     }
+#endif
 
     g_num_services = 0;
     vfs_register_service("lisp", 2);
