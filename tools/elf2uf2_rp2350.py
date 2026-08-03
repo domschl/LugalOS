@@ -13,8 +13,8 @@ UF2_MAGIC_START_1 = 0x9E5D5157
 UF2_MAGIC_END     = 0x0AB16F30
 UF2_FLAG_FAMILYID = 0x00002000
 
-# RP2350 RISC-V Family ID (Hazard3 Core)
-RP2350_RISCV_FAMILY_ID = 0xE48DA561
+# RP2350 RISC-V Family ID (Hazard3 Core: 0xE48DA562)
+RP2350_RISCV_FAMILY_ID = 0xE48DA562
 FLASH_BASE_ADDR        = 0x10000000
 
 def crc32_mpeg2(data: bytes) -> int:
@@ -34,8 +34,8 @@ def create_picobin_header() -> bytearray:
     # 0x00: PicoBIN Block Marker Magic (0xFFFFDED3)
     struct.pack_into('<I', header, 0x00, 0xFFFFDED3)
     
-    # 0x04: IMAGE_TYPE Item (ID 0x02): Executable=2, Arch=RISC-V (1) => 0x02100002
-    struct.pack_into('<I', header, 0x04, 0x02100002)
+    # 0x04: IMAGE_TYPE Item (ID 0x02): Executable=1, Arch=RISC-V (1) => (0x0110 << 8) | 0x02 = 0x011002
+    struct.pack_into('<I', header, 0x04, 0x00011002)
     
     # 0x08: VECTOR_TABLE Item (ID 0x03): Offset 0x100 => (0x100 << 8) | 0x03 = 0x00010003
     struct.pack_into('<I', header, 0x08, 0x00010003)
@@ -51,6 +51,7 @@ def create_picobin_header() -> bytearray:
     struct.pack_into('<I', header, 252, crc)
     
     return header
+
 
 def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int = FLASH_BASE_ADDR) -> None:
     input_file = Path(input_bin_path)
