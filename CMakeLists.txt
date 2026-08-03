@@ -126,6 +126,16 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
 
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    add_executable(minimal_rp2350.elf tools/minimal_rp2350.c arch/riscv/common/entry.S)
+    set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
+    add_custom_command(TARGET minimal_rp2350.elf POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O binary minimal_rp2350.elf minimal_rp2350.bin
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py minimal_rp2350.elf minimal_rp2350.bin minimal_rp2350.uf2
+        COMMENT "Generated minimal_rp2350.uf2 standalone hardware test"
+    )
+endif()
+
 
 # Automated Test Suite Target
 enable_testing()
