@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RP2350 UF2 Packaging Tool for LugalOS (Hazard3 RISC-V Target)
-Converts raw binary/ELF outputs into standard RP2350 UF2 firmware files.
+Converts raw binary/ELF outputs into standard RP2350 UF2 firmware files with PicoBIN header.
 """
 
 import sys
@@ -28,6 +28,30 @@ def crc32_mpeg2(data: bytes) -> int:
                 crc = (crc << 1) & 0xFFFFFFFF
     return crc
 
+def create_picobin_header() -> bytearray:
+    header = bytearray(256)
+    
+    # 0x00: PicoBIN Block Marker Magic (0xFFFFDED3)
+    struct.pack_into('<I', header, 0x00, 0xFFFFDED3)
+    
+    # 0x04: IMAGE_TYPE Item (ID 0x02): Executable=2, Arch=RISC-V (1) => 0x02100002
+    struct.pack_into('<I', header, 0x04, 0x02100002)
+    
+    # 0x08: VECTOR_TABLE Item (ID 0x03): Offset 0x100 => (0x100 << 8) | 0x03 = 0x00010003
+    struct.pack_into('<I', header, 0x08, 0x00010003)
+
+    # 0x0C: ENTRY_POINT Item (ID 0x04): Offset 0x100 => (0x100 << 8) | 0x04 = 0x00010004
+    struct.pack_into('<I', header, 0x0C, 0x00010004)
+
+    # 0x10: END_ITEM (ID 0xFF) => 0x000000FF
+    struct.pack_into('<I', header, 0x10, 0x000000FF)
+
+    # 0xFC: Compute CRC32 over bytes 0..251 using MPEG-2 polynomial (0x04C11DB7)
+    crc = crc32_mpeg2(header[:252])
+    struct.pack_into('<I', header, 252, crc)
+    
+    return header
+
 def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int = FLASH_BASE_ADDR) -> None:
     input_file = Path(input_bin_path)
     if not input_file.exists():
@@ -36,14 +60,13 @@ def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int
 
     raw_data = bytearray(input_file.read_bytes())
 
-    # Pad binary to at least 256 bytes
+    # Ensure binary is at least 256 bytes long
     if len(raw_data) < 256:
         raw_data.extend(b'\x00' * (256 - len(raw_data)))
 
-    # Compute RP2350 Boot2 CRC32 over bytes 0..251 if not present
-    boot2_payload = raw_data[:252]
-    boot2_crc = crc32_mpeg2(boot2_payload)
-    struct.pack_into('<I', raw_data, 252, boot2_crc)
+    # Overwrite first 256 bytes with valid PicoBIN Image Header for RP2350 RISC-V
+    picobin_hdr = create_picobin_header()
+    raw_data[:256] = picobin_hdr
 
     block_size = 256
     num_blocks = (len(raw_data) + block_size - 1) // block_size
@@ -58,7 +81,7 @@ def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int
 
         target_addr = base_addr + offset
 
-        # 32-byte header
+        # 32-byte UF2 block header
         header = struct.pack(
             '<IIIIIIII',
             UF2_MAGIC_START_0,
@@ -75,13 +98,13 @@ def convert_bin_to_uf2(input_bin_path: str, output_uf2_path: str, base_addr: int
         payload = bytearray(chunk)
         payload.extend(b'\x00' * (476 - len(chunk)))
 
-        # 4-byte footer
+        # 4-byte UF2 footer magic
         footer = struct.pack('<I', UF2_MAGIC_END)
 
         uf2_output.extend(header + payload + footer)
 
     Path(output_uf2_path).write_bytes(uf2_output)
-    print(f"[UF2 Converter] Successfully generated RP2350 RISC-V firmware: '{output_uf2_path}' ({len(uf2_output)} bytes, {num_blocks} blocks)")
+    print(f"[UF2 Converter] Successfully generated valid RP2350 RISC-V PicoBIN firmware: '{output_uf2_path}' ({len(uf2_output)} bytes, {num_blocks} blocks)")
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
