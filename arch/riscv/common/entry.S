@@ -13,6 +13,10 @@
 #endif
 
 _start:
+    /* RP2350 boots both cores; only core 0 (mhartid == 0) executes kernel_main */
+    csrr t0, mhartid
+    bnez t0, .Lsecondary_hart_loop
+
     /* Setup Machine trap vector base address first */
     la t0, trap_vector_entry
     csrw mtvec, t0
@@ -84,8 +88,9 @@ s_mode_start:
     /* Jump to C kernel entry point */
     call kernel_main
 
-    /* Hang if kernel_main returns */
+    /* Hang if kernel_main returns or for secondary harts */
 3:
+.Lsecondary_hart_loop:
     wfi
     j 3b
 
