@@ -1,98 +1,77 @@
 #!/usr/bin/env python3
 """
-RP2350 UF2 Packaging Tool for LugalOS (Hazard3 RISC-V Target)
-Reads an ELF file, extracts _start / _stack_top symbols, embeds a valid
-RP2350 PICOBIN IMAGE_DEF block into the first 256 bytes (boot2 region),
-then generates a standards-compliant UF2 firmware file.
+tools/elf2uf2_rp2350.py - LugalOS UF2 Packager for RP2350 (Raspberry Pi Pico 2 RISC-V)
 
-RP2350 BootROM expects:
-  - UF2 Family ID for code blocks:     0xE48BFF5A  (RP2350 RISC-V)
-  - UF2 Family ID for IMAGE_DEF block: 0xE48BFF57  (RP2350 RISC-V image def)
-  - A PICOBIN block at some address in Flash containing:
-      MAGIC        0xFFFFDED3
-      IMAGE_TYPE   0x11010142  (RISC-V, non-secure, executable)
-      ENTRY_POINT  0x00000344  (3-word item)
-        word1: initial PC  (_start address in Flash)
-        word2: initial SP  (_stack_top address in SRAM)
-      LAST         0x000004FF  (id=0xFF)
-      block_size   total words in this block
-      next_block   0xAB123579  (loop-back sentinel)
+Implements official RP2350 UF2 block ordering and PICOBIN image definition:
+1. Code blocks (family 0xE48BFF5A) placed FIRST starting at block_no=0.
+2. Metadata IMAGE_DEF block (family 0xE48BFF57) placed LAST.
+3. Embedded PICOBIN Primary Metadata Block at Flash 0x10000014.
+4. Embedded PICOBIN Secondary Metadata Block at end of binary.
 """
 
-import sys
 import struct
+import sys
 import subprocess
 from pathlib import Path
 
-# --- UF2 constants ---
-UF2_MAGIC_START_0  = 0x0A324655
-UF2_MAGIC_START_1  = 0x9E5D5157
-UF2_MAGIC_END      = 0x0AB16F30
-UF2_FLAG_FAMILYID  = 0x00002000
-UF2_FLAG_NOT_MAIN  = 0x00002000
-UF2_FLAG_MD5       = 0x00008000
+UF2_MAGIC_START_0 = 0x0A324655
+UF2_MAGIC_START_1 = 0x9E5D5157
+UF2_MAGIC_END     = 0x0AB16558
 
-# RP2350 RISC-V Family IDs (from official pico-sdk / picotool source)
-RP2350_RISCV_FAMILY_CODE = 0xE48BFF5A   # code blocks
-RP2350_RISCV_FAMILY_DEF  = 0xE48BFF57   # IMAGE_DEF block
+UF2_FLAG_FAMILYID = 0x00002000
+UF2_FLAG_MD5      = 0x00008000
 
-FLASH_BASE_ADDR = 0x10000000
-IMAGEDEF_FLASH_ADDR = 0x10FFFF00        # special address for the IMAGE_DEF UF2 block
+FLASH_BASE_ADDR       = 0x10000000
+IMAGEDEF_FLASH_ADDR   = 0x10FFFF00
 
-# --- PICOBIN item constants ---
-PICOBIN_MAGIC              = 0xFFFFDED3
-PICOBIN_ITEM_IMAGE_TYPE    = 0x42
-PICOBIN_ITEM_ENTRY_POINT   = 0x44
-PICOBIN_ITEM_LAST          = 0xFF
-PICOBIN_IMAGE_TYPE_WORD    = 0x11010142  # RISC-V, chip=RP2350, non-secure executable
-PICOBIN_BLOCK_LOOP_NEXT    = 0xAB123579  # chain loops back to start
+RP2350_RISCV_FAMILY_CODE = 0xE48BFF5A
+RP2350_RISCV_FAMILY_DEF  = 0xE48BFF57
+
+PICOBIN_MAGIC             = 0xFFFFDED3
+PICOBIN_IMAGE_TYPE_WORD   = 0x11010142  # RISC-V, non-secure
+PICOBIN_ITEM_ENTRY_POINT  = 0x44
+PICOBIN_ITEM_LAST         = 0xFF
+PICOBIN_BLOCK_LOOP_NEXT   = 0xAB123579
+
 
 def read_elf_symbols(elf_path: str) -> dict[str, int]:
-    """Extract symbol addresses from ELF using riscv32-elf-nm."""
-    result = subprocess.run(
-        ['riscv32-elf-nm', elf_path],
-        capture_output=True, text=True, check=True
-    )
-    symbols: dict[str, int] = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 3:
-            try:
-                symbols[parts[2]] = int(parts[0], 16)
-            except ValueError:
-                pass
+    symbols = {}
+    try:
+        res = subprocess.run(
+            ["riscv32-elf-nm", elf_path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 3:
+                try:
+                    symbols[parts[2]] = int(parts[0], 16)
+                except ValueError:
+                    pass
+    except Exception as e:
+        print(f"[Warning] Failed to run riscv32-elf-nm: {e}")
+
+    if not symbols:
+        try:
+            res = subprocess.run(
+                ["riscv64-elf-nm", elf_path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            for line in res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) == 3:
+                    try:
+                        symbols[parts[2]] = int(parts[0], 16)
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
     return symbols
 
-def make_picobin_block(entry_pc: int, entry_sp: int) -> bytes:
-    """
-    Constructs the 256-byte boot2 block for Flash 0x10000000.
-    RP2350 BootROM expects:
-      - 5 prefix words at 0x10000000
-      - PICOBIN IMAGE_DEF block starting at offset 0x10000014
-    """
-    prefix = [
-        0x7188EBF2,
-        0x10014454,
-        0x10014474,
-        0x100000A8,
-        0xE71AA390,
-    ]
-    picobin_items = [
-        PICOBIN_MAGIC,
-        PICOBIN_IMAGE_TYPE_WORD,
-        (0x0000 << 16) | (0x03 << 8) | PICOBIN_ITEM_ENTRY_POINT,
-        entry_pc,
-        entry_sp,
-        (0x0000 << 16) | (0x04 << 8) | PICOBIN_ITEM_LAST,
-    ]
-    total_words = len(picobin_items) + 1  # 7 words in PICOBIN block before sentinel
-    picobin_items.append(total_words)
-    picobin_items.append(PICOBIN_BLOCK_LOOP_NEXT)
-
-    words = prefix + picobin_items
-    raw = struct.pack(f'<{len(words)}I', *words)
-    raw = raw + bytes([0xEF] * (256 - len(raw)))
-    return raw
 
 def make_uf2_block(
     data: bytes,
@@ -118,6 +97,7 @@ def make_uf2_block(
     footer = struct.pack('<I', UF2_MAGIC_END)
     return header + payload + footer
 
+
 def convert_elf_to_uf2(elf_path: str, bin_path: str, output_uf2_path: str) -> None:
     print(f"[UF2] Reading ELF symbols from '{elf_path}'...")
     syms = read_elf_symbols(elf_path)
@@ -134,59 +114,89 @@ def convert_elf_to_uf2(elf_path: str, bin_path: str, output_uf2_path: str) -> No
     print(f"[UF2]   _stack_top= 0x{entry_sp:08X}")
 
     raw_data = bytearray(Path(bin_path).read_bytes())
-    if len(raw_data) < 256:
-        raw_data.extend(b'\x00' * (256 - len(raw_data)))
 
-    # Embed PICOBIN IMAGE_DEF into the first 256 bytes (.boot2 region)
-    picobin = make_picobin_block(entry_pc, entry_sp)
-    raw_data[:256] = picobin
-    print(f"[UF2] Embedded PICOBIN IMAGE_DEF at Flash 0x{FLASH_BASE_ADDR:08X}")
+    # Ensure binary size is at least 512 bytes and aligned to 16 bytes
+    if len(raw_data) < 512:
+        raw_data.extend(b'\x00' * (512 - len(raw_data)))
+    if len(raw_data) % 16 != 0:
+        raw_data.extend(b'\x00' * (16 - (len(raw_data) % 16)))
 
+    sec_block_offset = len(raw_data)
+    raw_data.extend(b'\x00' * 16)
+    sec_block_flash_addr = FLASH_BASE_ADDR + sec_block_offset
+
+    # Primary Metadata Block at 0x10000014 (points to sec_block_flash_addr)
+    prefix = [
+        0x7188EBF2,
+        0x10014454,
+        0x10014474,
+        0x100000A8,
+        0xE71AA390,
+    ]
+    primary_picobin = [
+        PICOBIN_MAGIC,                                              # 0x10000014
+        PICOBIN_IMAGE_TYPE_WORD,                                     # 0x10000018
+        (0x0000 << 16) | (0x03 << 8) | PICOBIN_ITEM_ENTRY_POINT,    # 0x1000001C
+        entry_pc,                                                   # 0x10000020
+        entry_sp,                                                   # 0x10000024
+        (0x0000 << 16) | (0x04 << 8) | PICOBIN_ITEM_LAST,           # 0x10000028
+        sec_block_flash_addr & 0x00FFFFFF,                         # 0x1000002C -> points to sec block!
+        PICOBIN_BLOCK_LOOP_NEXT,                                    # 0x10000030
+    ]
+
+    primary_bytes = struct.pack(f'<{len(prefix + primary_picobin)}I', *(prefix + primary_picobin))
+    raw_data[:len(primary_bytes)] = primary_bytes
+
+    # Secondary Metadata Block at sec_block_offset (points back to 0x10000014)
+    sec_picobin = [
+        PICOBIN_MAGIC,                                              # +0x00
+        (0x0000 << 16) | (0x04 << 8) | PICOBIN_ITEM_LAST,           # +0x04
+        0x00000014,                                                 # +0x08 -> points back to 0x10000014!
+        PICOBIN_BLOCK_LOOP_NEXT,                                    # +0x0C
+    ]
+    sec_bytes = struct.pack(f'<{len(sec_picobin)}I', *sec_picobin)
+    raw_data[sec_block_offset : sec_block_offset + len(sec_bytes)] = sec_bytes
+
+    # Pad binary size to 256-byte UF2 block boundary
     block_size = 256
-    num_code_blocks = (len(raw_data) + block_size - 1) // block_size
+    if len(raw_data) % block_size != 0:
+        raw_data.extend(b'\x00' * (block_size - (len(raw_data) % block_size)))
+
+    num_code_blocks = len(raw_data) // block_size
 
     uf2_blocks: list[bytes] = []
 
-    # Block 0: special IMAGE_DEF UF2 block at 0x10FFFF00 (256 bytes of 0xEF padding).
-    # CRITICAL: each Family ID uses its OWN independent block counter.
-    # IMAGE_DEF family counter: block_no=0, num_blocks=1 (just one metadata block).
-    # Code family counter:       block_no=0..N-1, num_blocks=N.
-    imagedef_payload = bytes([0xEF] * 256)
-    uf2_blocks.append(make_uf2_block(
-        imagedef_payload,
-        IMAGEDEF_FLASH_ADDR,
-        block_no=0,
-        num_blocks=1,                    # independent IMAGE_DEF family counter
-        family_id=RP2350_RISCV_FAMILY_DEF,
-        flags=UF2_FLAG_FAMILYID | UF2_FLAG_MD5,
-    ))
-
-    # Code blocks: block_no restarts from 0 for the code family (0xE48BFF5A).
-    # BootROM triggers reboot when it sees the last block (block_no == num_blocks-1).
+    # 1. CODE BLOCKS FIRST: Family 0xE48BFF5A, block_no 0..N-1
     for i in range(num_code_blocks):
         offset = i * block_size
-        chunk = bytes(raw_data[offset:offset + block_size])
-        if len(chunk) < block_size:
-            chunk = chunk + bytes(block_size - len(chunk))
+        chunk = bytes(raw_data[offset : offset + block_size])
         uf2_blocks.append(make_uf2_block(
             chunk,
             FLASH_BASE_ADDR + offset,
-            block_no=i,                  # 0-based for code family, independent of IMAGE_DEF
+            block_no=i,
             num_blocks=num_code_blocks,
             family_id=RP2350_RISCV_FAMILY_CODE,
             flags=UF2_FLAG_FAMILYID,
         ))
 
+    # 2. IMAGE_DEF METADATA BLOCK LAST: Family 0xE48BFF57 at 0x10FFFF00
+    imagedef_payload = bytes([0xEF] * 256)
+    uf2_blocks.append(make_uf2_block(
+        imagedef_payload,
+        IMAGEDEF_FLASH_ADDR,
+        block_no=0,
+        num_blocks=2,                    # matches pico-sdk num_blocks=2
+        family_id=RP2350_RISCV_FAMILY_DEF,
+        flags=UF2_FLAG_FAMILYID | UF2_FLAG_MD5,
+    ))
+
     uf2_output = b''.join(uf2_blocks)
     Path(output_uf2_path).write_bytes(uf2_output)
-    print(
-        f"[UF2] Generated '{output_uf2_path}' "
-        f"({len(uf2_output)} bytes, {len(uf2_blocks)} blocks)"
-    )
+    print(f"[UF2] Generated '{output_uf2_path}' ({len(uf2_output)} bytes, {len(uf2_blocks)} blocks)")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     if len(sys.argv) < 4:
         print("Usage: python3 elf2uf2_rp2350.py <input.elf> <input.bin> <output.uf2>")
         sys.exit(1)
-
     convert_elf_to_uf2(sys.argv[1], sys.argv[2], sys.argv[3])
