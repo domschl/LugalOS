@@ -30,8 +30,9 @@ elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
 elseif(LUGALOS_TARGET STREQUAL "RP2350")
     set(ARCH_MARCH "rv32imac_zicsr_zifencei")
     set(ARCH_MABI "ilp32")
-    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/qemu-rv32.ld")
+    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/rp2350.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_RP2350=1)
+
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -104,14 +105,16 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 
-# Generate Raw Binary, Disassembly, and Shared SD Disk Image
+# Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
 add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
-    COMMENT "Generated lugalos.bin, lugalos.asm, and shared disk image build/lugalos_sd.img"
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.bin lugalos.uf2
+    COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
+
 
 # Automated Test Suite Target
 enable_testing()

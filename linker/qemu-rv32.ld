@@ -17,9 +17,13 @@ SECTIONS
         *(.rodata .rodata.*)
     } > RAM
 
+    _sidata = LOADADDR(.data);
     .data : {
+        _data_start = .;
         *(.data .data.*)
+        _data_end = .;
     } > RAM
+
 
     .bss (NOLOAD) : {
         _bss_start = .;

@@ -9,11 +9,19 @@
 #include "kernel/printk.h"
 #include <string.h>
 
+#if defined(CONFIG_BOARD_RP2350)
+#define MAX_NODES 256
+#define MAX_OBJS 128
+#define MAX_TYPES 64
+#else
 #define MAX_NODES 2048
+#define MAX_OBJS 512
+#define MAX_TYPES 256
+#endif
+
 static Node node_pool[MAX_NODES];
 static int node_pool_idx = 0;
 
-#define MAX_OBJS 512
 static Obj obj_pool[MAX_OBJS];
 static int obj_pool_idx = 0;
 
@@ -21,9 +29,9 @@ static int obj_pool_idx = 0;
 static Function fn_pool[MAX_FNS];
 static int fn_pool_idx = 0;
 
-#define MAX_TYPES 256
 static Type type_pool[MAX_TYPES];
 static int type_pool_idx = 0;
+
 
 #define MAX_MEMBERS 128
 static Member member_pool[MAX_MEMBERS];

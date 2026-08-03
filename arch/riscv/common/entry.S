@@ -56,9 +56,24 @@ s_mode_start:
     csrw stvec, t0
 #endif
 
+    /* Copy .data section from Flash to SRAM if _sidata != _data_start */
+    la t0, _sidata
+    la t1, _data_start
+    la t2, _data_end
+    beq t0, t1, .Lskip_data_copy
+.Lcopy_data_loop:
+    bgeu t1, t2, .Lskip_data_copy
+    REG_L t3, 0(t0)
+    REG_S t3, 0(t1)
+    addi t0, t0, REGBYTES
+    addi t1, t1, REGBYTES
+    j .Lcopy_data_loop
+.Lskip_data_copy:
+
     /* Clear BSS section */
     la t0, _bss_start
     la t1, _bss_end
+
 1:
     bgeu t0, t1, 2f
     REG_S zero, 0(t0)

@@ -3,7 +3,12 @@
 #include <string.h>
 
 #define RAMDISK_BLOCK_SIZE 512
+#if defined(CONFIG_BOARD_RP2350)
+#define RAMDISK_NUM_BLOCKS 128 // 64 KB Total RAMDisk size for RP2350 SRAM
+#else
 #define RAMDISK_NUM_BLOCKS 1024 // 512 KB Total RAMDisk size
+#endif
+
 
 static uint8_t ramdisk_storage[RAMDISK_NUM_BLOCKS * RAMDISK_BLOCK_SIZE];
 

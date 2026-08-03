@@ -9,7 +9,13 @@
 #include <string.h>
 
 
+#if defined(CONFIG_BOARD_RP2350)
+#define NODE_POOL_SIZE 512
+#else
 #define NODE_POOL_SIZE 4096
+#endif
+
+
 
 static lisp_val_t node_pool[NODE_POOL_SIZE];
 

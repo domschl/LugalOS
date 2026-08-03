@@ -93,9 +93,13 @@ int elf_load_and_run(const char *path) {
 
     uintptr_t run_target = (uintptr_t)exec_page;
 
-    /* Dedicated 64KB user stack aligned to 16 bytes for deep recursion support */
+#if defined(CONFIG_BOARD_RP2350)
+    static uint8_t user_stack[16384] __attribute__((aligned(16)));
+#else
     static uint8_t user_stack[65536] __attribute__((aligned(16)));
+#endif
     uintptr_t stack_top = (uintptr_t)user_stack + sizeof(user_stack);
+
 
     volatile int ret_code = 0;
 
