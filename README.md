@@ -47,19 +47,17 @@ lugalos/
 │   ├── common/              # RISC-V assembly entry point, traps, ELF loader
 │   ├── include/arch/        # CSRs, Trap frames, VMM, ELF headers
 │   ├── rv32_nommu/          # 32-bit physical identity memory mapping
-│   └── rv64_mmu/            # 64-bit Sv39 3-level page table manager
-├── cmake/                   # Cross-compilation toolchains (RV32 & RV64)
-├── drivers/                 # VirtIO MMIO Block Driver, 16550 UART driver & RAMDisk driver
+├── cmake/                   # Cross-compilation toolchains (RV32, RV64, RP2350)
+├── drivers/                 # UART drivers (16550 / PL011 / RP2350), VirtIO Block, RAMDisk
 ├── fs/                      # FAT32 filesystem engine (Subdirectories, BPB) & Plan 9 VFS Server
 ├── kernel/                  # Microkernel main, scheduler, IPC, shell, printk
 ├── libc/                    # Freestanding C string library
-├── user/
-│   ├── chibicc/             # Native C11 compiler (`chibicc`)
-│   ├── ed/                  # Extended Unix teletype line editor (`ed`)
-│   └── lisp/                # Scheme REPL & RISC-V S-expression ELF compiler
-├── tools/                   # SD root template (`sd_root/`) & FAT32 disk image generator script
-├── linker/                  # QEMU virt linker scripts
-└── scripts/                 # QEMU launcher scripts
+├── linker/                  # Linker scripts (QEMU virt RV32/64, RP2350 XIP Flash)
+├── tools/                   # SD root template, FAT32 disk image generator, UF2 packager
+└── user/
+    ├── chibicc/             # Native C11 compiler (`chibicc`)
+    ├── ed/                  # Extended Unix teletype line editor (`ed`)
+    └── lisp/                # Scheme REPL & RISC-V S-expression ELF compiler
 ```
 
 ---
@@ -87,6 +85,94 @@ ninja -C build/rv64
 ```
 
 ---
+
+## Running on Hardware: Raspberry Pi Pico 2 (RP2350)
+
+LugalOS boots on the **Raspberry Pi Pico 2** (RP2350 RISC-V Hazard3 core) with UART console over USB-Serial.
+
+### Hardware Required
+
+| Component | Details |
+|---|---|
+| Raspberry Pi Pico 2 | RP2350 board (Hazard3 RISC-V core) |
+| USB–Serial adapter | CP2101 or CP2102 (3.3 V logic, 5 V power out) |
+| 4 jumper wires | Female–female or as appropriate |
+
+### CP2101 → RP2350 (Pico 2) Wiring
+
+```
+CP2101 Adapter          Raspberry Pi Pico 2 (RP2350)
+──────────────          ─────────────────────────────
+      5V  ──────────►  Pin 40  VBUS       (powers the board via onboard 3.3V regulator)
+     GND  ──────────►  Pin 38  GND        (common ground)
+     TXD  ──────────►  Pin  2  GPIO1      (UART0 RX — CP2101 transmits → RP2350 receives)
+     RXD  ◄──────────  Pin  1  GPIO0      (UART0 TX — RP2350 transmits → CP2101 receives)
+```
+
+> **Note**: CP2101 signal levels are 3.3 V — connect directly to GPIO0/GPIO1 without level shifters.  
+> **Do not** connect the adapter's `3V3` output to anything; `5V → VBUS` is the sole power source.
+
+#### Pico 2 Pin Reference
+
+```
+  ┌───────────────────────────────────────┐
+  │  [USB]                                │
+  │                                       │
+  │  Pin 1  GPIO0  UART0 TX  ◄─── RXD    │
+  │  Pin 2  GPIO1  UART0 RX  ──► TXD     │
+  │  Pin 3  GND              ──► GND      │
+  │  ...                                  │
+  │  Pin 38 GND              (alt GND)    │
+  │  Pin 40 VBUS  5V input   ◄─── 5V     │
+  └───────────────────────────────────────┘
+```
+
+### Build for RP2350
+
+```bash
+cmake -B build/rp2350 -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake \
+    -DLUGALOS_TARGET=RP2350
+ninja -C build/rp2350
+# Generates: build/rp2350/lugalos.uf2
+```
+
+### Flash to Pico 2
+
+1. Hold **BOOTSEL** button on Pico 2 while plugging in USB (or while powering on via CP2101 5V).  
+   The board mounts as a USB mass storage device called `RP2350`.
+
+2. Copy the UF2 firmware:
+   ```bash
+   cp build/rp2350/lugalos.uf2 /media/$USER/RP2350/
+   ```
+
+3. The Pico 2 will flash, reboot automatically, and start LugalOS.
+
+### Open Serial Console
+
+```bash
+picocom -b 115200 /dev/ttyUSB0
+# or
+minicom -b 115200 -D /dev/ttyUSB0
+```
+
+Expected output after boot:
+```
+LugalOS Microkernel Lisp Machine v0.4.0
+[VFS Server] ...
+lsh>
+```
+
+### RP2350 UF2 Packager
+
+The build system automatically invokes [`tools/elf2uf2_rp2350.py`](tools/elf2uf2_rp2350.py) which:
+- Reads `_start` and `_stack_top` symbol addresses from the ELF
+- Embeds a valid **PICOBIN IMAGE_DEF** block (RP2350 BootROM metadata) into the boot2 Flash region
+- Generates a standard UF2 file with correct per-family block counters (`0xE48BFF5A` code, `0xE48BFF57` IMAGE_DEF)
+
+---
+
 
 ## Interactive Workflow Examples
 
