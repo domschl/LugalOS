@@ -100,8 +100,12 @@ class QemuSession:
 
 def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> list[tuple[str, bool, str]]:
     """Runs functional integration tests against a specific LugalOS build target."""
+    import shutil
+    arch_img = img_path.with_name(f"test_{arch_name}_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
     results: list[tuple[str, bool, str]] = []
-    session = QemuSession(elf_path, img_path, arch_name)
+    session = QemuSession(elf_path, arch_img, arch_name)
 
     try:
         session.start()

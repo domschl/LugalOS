@@ -9,26 +9,34 @@ MEMORY
 SECTIONS
 {
     .text : {
+        . = ALIGN(4);
         *(.text.entry)
         *(.text .text.*)
+        . = ALIGN(4);
     } > RAM
 
     .rodata : {
+        . = ALIGN(4);
         *(.rodata .rodata.*)
+        . = ALIGN(4);
     } > RAM
 
+    . = ALIGN(4);
     _sidata = LOADADDR(.data);
     .data : {
+        . = ALIGN(4);
         _data_start = .;
         *(.data .data.*)
+        . = ALIGN(4);
         _data_end = .;
     } > RAM
 
-
     .bss (NOLOAD) : {
+        . = ALIGN(4);
         _bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
+        . = ALIGN(4);
         _bss_end = .;
     } > RAM
 
