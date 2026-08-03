@@ -1,11 +1,13 @@
 #include "lisp.h"
 #include "lisp_compile.h"
 #include "kernel/printk.h"
+#include "kernel/shell.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "user/chibicc/include/chibicc.h"
 #include "arch/elf.h"
 #include <string.h>
+
 
 #define NODE_POOL_SIZE 4096
 
@@ -318,12 +320,39 @@ static lisp_val_t *prim_read_file(lisp_val_t *args, lisp_val_t *env) {
 }
 
 static lisp_val_t *prim_write_file(lisp_val_t *args, lisp_val_t *env) {
+
     (void)env;
     if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
     const char *path = get_str_val(args->u.pair.car);
     const char *text = get_str_val(args->u.pair.cdr->u.pair.car);
     int res = vfs_write(path, text, strlen(text));
     return (res == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
+
+    (void)args; (void)env;
+#if defined(CONFIG_TARGET_RV32)
+    return make_str("rv32");
+#else
+    return make_str("rv64");
+#endif
+}
+
+static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int size_kb = 512;
+    if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_INT) {
+        size_kb = args->u.pair.car->u.i;
+    }
+    int res = vfs_mount_ramdisk(size_kb);
+    return (res == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    shell_run();
+    return &nil_val;
 }
 
 void lisp_init(void) {
@@ -334,7 +363,6 @@ void lisp_init(void) {
     env_set(&global_env, "#f", &false_val);
 
     env_set(&global_env, "+", make_prim(prim_add));
-
     env_set(&global_env, "-", make_prim(prim_sub));
     env_set(&global_env, "*", make_prim(prim_mul));
     env_set(&global_env, "=", make_prim(prim_eq));
@@ -361,7 +389,12 @@ void lisp_init(void) {
     env_set(&global_env, "read-file", make_prim(prim_read_file));
     env_set(&global_env, "write-file", make_prim(prim_write_file));
 
+    env_set(&global_env, "arch", make_prim(prim_arch));
+    env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
+    env_set(&global_env, "lsh", make_prim(prim_lsh));
+
     printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
+
 
     /* Automatically load system boot scripts if present */
     static char boot_buf[8192];

@@ -27,10 +27,9 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
 
 void line_editor_init(void) {
     history_count = 0;
-    // Start session with clean history file to prevent unbounded growth
-    vfs_write("/sd0/system/history.lisp", "", 0);
-    printk("[LineEditor] History Engine Initialized (Clean Session History).\n");
+    printk("[LineEditor] History Engine Initialized.\n");
 }
+
 
 static void add_history(const char *line) {
     if (!line || strlen(line) == 0) return;

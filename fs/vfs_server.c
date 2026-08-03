@@ -30,13 +30,7 @@ void vfs_server_init(void) {
     if (sd_dev) {
         if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
             g_sd_mounted = true;
-        }
-    }
-
-    block_dev_t *ram_dev = ramdisk_get_device();
-    if (ram_dev) {
-        if (fat32_init(&g_fat32_ram, ram_dev) == 0) {
-            g_ram_mounted = true;
+            printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: VirtIO SD Block Engine)\n");
         }
     }
 
@@ -44,9 +38,24 @@ void vfs_server_init(void) {
     vfs_register_service("lisp", 2);
 
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
-    printk("[VFS Server] Mount points: /sd0/ (%s), /ram0/ (%s), /proc/ (Metrics), /dev/ (Devices), /srv/ (IPC)\n",
-           g_sd_mounted ? "SD VirtIO" : "unmounted",
-           g_ram_mounted ? "RAMDisk" : "unmounted");
+}
+
+int vfs_mount_ramdisk(int size_kb) {
+    block_dev_t *ram_dev = ramdisk_get_device();
+    if (ram_dev) {
+        if (size_kb > 0) {
+            ram_dev->num_blocks = (size_kb * 1024) / ram_dev->block_size;
+        }
+        if (fat32_init(&g_fat32_ram, ram_dev) != 0) {
+            fat32_format(ram_dev);
+            fat32_init(&g_fat32_ram, ram_dev);
+        }
+
+        g_ram_mounted = true;
+        printk("[VFS Server] Mounted FAT32 Filesystem on /ram0/ (Device: RAMDisk Engine, Size: %d KB)\n", size_kb);
+        return 0;
+    }
+    return -1;
 }
 
 int vfs_register_service(const char *service_name, int target_pid) {
@@ -57,6 +66,7 @@ int vfs_register_service(const char *service_name, int target_pid) {
     g_num_services++;
     return 0;
 }
+
 
 /* Parse prefix:
  * 0: Root "/"
@@ -148,10 +158,11 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         } else if (strcmp(rel, "version") == 0) {
-            printk("LugalOS v0.3.0 (Plan 9 Universal Namespace Core)\n");
+            printk("LugalOS v0.4.0 (RISC-V Microkernel Lisp Machine)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         }
+
         return -1;
     } else if (type == 4) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {

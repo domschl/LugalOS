@@ -14,7 +14,9 @@
 #define VFS_TAG_RM      0x15
 
 void vfs_server_init(void);
+int vfs_mount_ramdisk(int size_kb);
 int vfs_register_service(const char *service_name, int target_pid);
+
 
 int vfs_open(const char *path);
 int vfs_read(const char *path, void *buf, uint32_t max_len);

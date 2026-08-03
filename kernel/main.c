@@ -14,7 +14,7 @@ void kernel_main(void) {
     uart_init(0x10000000);
 
     printk("\n==================================================\n");
-    printk("       LugalOS Microkernel Storage Engine v0.3.0\n");
+    printk("       LugalOS Microkernel Lisp Machine v0.4.0\n");
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)
@@ -41,34 +41,12 @@ void kernel_main(void) {
     ipc_init();
     vfs_server_init();
     sched_init();
-    lisp_init();
     shell_init();
+    lisp_init();
 
-    printk("\n[Kernel] Demonstrating IPC Syscall via ecall...\n");
-    ipc_msg_t msg_in = { .tag = 0x42, .data = {10, 20, 30, 40, 50} };
-    ipc_msg_t msg_out = {0};
-
-    /* Invoke IPC call syscall via ecall */
-    register uintptr_t a0 __asm__("a0") = SYS_IPC_CALL;
-    register uintptr_t a1 __asm__("a1") = 1;
-    register uintptr_t a2 __asm__("a2") = (uintptr_t)&msg_in;
-    register uintptr_t a3 __asm__("a3") = (uintptr_t)&msg_out;
-
-    __asm__ __volatile__ (
-        "ecall"
-        : "+r"(a0), "+r"(a1), "+r"(a2), "+r"(a3)
-        :
-        : "memory"
-    );
-
-    printk("[Kernel] IPC Response Tag: 0x%lx, Data[0]=%ld (Status=%ld)\n",
-           (unsigned long)msg_out.tag, (long)msg_out.data[0], (long)a0);
-
-    printk("[Kernel] Handing control over to interactive Lugal Shell...\n");
-    shell_run();
-
-    /* Hang if shell exits */
+    /* Hang if system exits */
     while (1) {
         __asm__ __volatile__("wfi");
     }
 }
+
