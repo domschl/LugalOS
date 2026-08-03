@@ -155,7 +155,7 @@ int fat32_format(block_dev_t *dev) {
     memset(sector, 0, 512);
     dev->write_blocks(dev, sector, 48, 1);
 
-    printk("[FAT32] Volume formatted cleanly as FAT32.\n");
+    printk("[FAT32] Device '%s': Volume formatted cleanly as FAT32.\n", dev->name ? dev->name : "unknown");
     return 0;
 }
 
@@ -168,7 +168,7 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
     memcpy(&fs->bpb, sector, sizeof(fat32_bpb_t));
 
     if (fs->bpb.boot_sig != 0x29 && sector[510] != 0x55) {
-        printk("[FAT32] Invalid boot sector. Auto-formatting FAT32 volume...\n");
+        printk("[FAT32] Device '%s': Invalid boot sector. Auto-formatting FAT32 volume...\n", dev->name ? dev->name : "unknown");
         fat32_format(dev);
         dev->read_blocks(dev, sector, 0, 1);
         memcpy(&fs->bpb, sector, sizeof(fat32_bpb_t));
@@ -179,10 +179,11 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
     fs->root_dir_cluster = fs->bpb.root_clus;
     fs->bytes_per_cluster = fs->bpb.sec_per_clus * fs->bpb.bytes_per_sec;
 
-    printk("[FAT32] Volume Mounted. Label: '%.11s', Data LBA: %u\n",
-           fs->bpb.vol_lab, (unsigned int)fs->data_start_sector);
+    printk("[FAT32] Device '%s': Volume Mounted. Label: '%.11s', Data LBA: %u\n",
+           dev->name ? dev->name : "unknown", fs->bpb.vol_lab, (unsigned int)fs->data_start_sector);
     return 0;
 }
+
 
 int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks) return -1;
@@ -368,8 +369,10 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path) {
     entries[free_slot].file_size = 0;
 
     fs->dev->write_blocks(fs->dev, sector, parent_lba, 1);
-    printk("[FAT32] Subdirectory created: '%s' (Cluster %u)\n", new_dir_name, (unsigned int)new_clus);
+    printk("[FAT32] Device '%s': Subdirectory created: '%s' (Cluster %u)\n",
+           fs->dev->name ? fs->dev->name : "unknown", new_dir_name, (unsigned int)new_clus);
     return 0;
+
 }
 
 int fat32_remove_file(fat32_fs_t *fs, const char *path) {
