@@ -81,6 +81,7 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path);
 int fat32_rmdir(fat32_fs_t *fs, const char *path);
 int fat32_remove_file(fat32_fs_t *fs, const char *path);
 void fat32_list_dir(fat32_fs_t *fs, const char *path);
+int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes);
 
 
 #endif /* LUGALOS_FS_FAT32_H */

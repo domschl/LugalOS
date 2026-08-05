@@ -108,7 +108,7 @@ set(SOURCES
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c)
+    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c)

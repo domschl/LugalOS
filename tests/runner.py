@@ -165,6 +165,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_cc, r"returned: 0", timeout=5.0)
         results.append(("chibicc C11 Compiler & Exec", ok, log if not ok else ""))
 
+        # 5b. Filesystem Usage Metrics (df) & System Monitor (top)
+        cmd_df = "cat /proc/df"
+        ok, log = session.send_and_expect(cmd_df, r"Filesystem\s+512-blocks", timeout=4.0)
+        results.append(("Filesystem Usage Metrics (df)", ok, log if not ok else ""))
+
+        cmd_top = "cat /proc/ps"
+        ok, log = session.send_and_expect(cmd_top, r"PID\s+State\s+Name", timeout=4.0)
+        results.append(("System Process & Memory Monitor (top)", ok, log if not ok else ""))
+
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
         cmd_arith = "lisp\n(+ 10 20 30)\n(- 100 40)\n(* 6 7)\n(= 42 42)\nexit"

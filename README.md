@@ -124,9 +124,26 @@ CP2101 Adapter          Raspberry Pi Pico 2 (RP2350)
   │  Pin 2  GPIO1  UART0 RX  ──► TXD     │
   │  Pin 3  GND              ──► GND      │
   │  ...                                  │
+  │  Pin 14 GPIO10 SPI1 SCK  ──► CLK      │
+  │  Pin 15 GPIO11 SPI1 MOSI ──► MOSI     │
+  │  Pin 16 GPIO12 SPI1 MISO ◄── MISO     │
+  │  Pin 17 GPIO13 SPI1 CS   ──► CS       │
   │  Pin 38 GND              (alt GND)    │
   │  Pin 40 VBUS  5V input   ◄─── 5V     │
   └───────────────────────────────────────┘
+```
+
+### SPI MicroSD Card Adapter Wiring (Pico 2 SPI1)
+
+```
+MicroSD Module          Raspberry Pi Pico 2 (RP2350)
+──────────────          ─────────────────────────────
+      VCC ──────────►  Pin 36  3V3(OUT) / VBUS
+      GND ──────────►  Pin 18  GND
+      CLK ──────────►  Pin 14  GPIO10 (SPI1 SCK)
+     MOSI ──────────►  Pin 15  GPIO11 (SPI1 MOSI)
+     MISO ◄──────────  Pin 16  GPIO12 (SPI1 MISO)
+       CS ──────────►  Pin 17  GPIO13 (SPI1 CS)
 ```
 
 ### Build for RP2350

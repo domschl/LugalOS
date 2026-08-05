@@ -25,6 +25,8 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
+#include "drivers/spisd.h"
+
 static int vfs_mount_flashdisk(void) {
     block_dev_t *flash_dev = flashdisk_get_device();
     if (flash_dev) {
@@ -46,8 +48,17 @@ void vfs_server_init(void) {
     /* Mount embedded Flash ROM filesystem on /flash0/ */
     vfs_mount_flashdisk();
 
-#ifndef CONFIG_BOARD_RP2350
-    /* VirtIO block device is only available on QEMU targets */
+#if defined(CONFIG_BOARD_RP2350)
+    /* Try mounting physical MicroSD card via SPI1 (GP10-GP13) on RP2350 */
+    block_dev_t *sd_dev = spisd_get_device();
+    if (sd_dev) {
+        if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
+            g_sd_mounted = true;
+            printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: SPI1 MicroSD Card Reader)\n");
+        }
+    }
+#else
+    /* VirtIO block device is available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
     if (sd_dev) {
         if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
@@ -196,6 +207,37 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             int len = printk("PID  State    Name\n---  -------  ------------\n 0   RUNNING  kernel_idle\n 1   READY    lsh_console\n 2   READY    lisp_engine\n 3   READY    vfs_server (FAT32)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return len;
+        } else if (strcmp(rel, "df") == 0) {
+            printk("Filesystem     512-blocks       Used  Available Capacity Mounted on\n");
+            if (g_flash_mounted) {
+                uint32_t total = 0, free = 0;
+                fat32_statfs(&g_fat32_flash, &total, &free);
+                uint32_t total_b = total / 512;
+                uint32_t free_b = free / 512;
+                uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
+                uint32_t pct = total_b ? (used_b * 100 / total_b) : 100;
+                printk("/flash0/         %9u  %9u  %9u     %3u%% /flash0/\n", total_b, used_b, free_b, pct);
+            }
+            if (g_ram_mounted) {
+                uint32_t total = 0, free = 0;
+                fat32_statfs(&g_fat32_ram, &total, &free);
+                uint32_t total_b = total / 512;
+                uint32_t free_b = free / 512;
+                uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
+                uint32_t pct = total_b ? (used_b * 100 / total_b) : 0;
+                printk("/ram0/           %9u  %9u  %9u     %3u%% /ram0/\n", total_b, used_b, free_b, pct);
+            }
+            if (g_sd_mounted) {
+                uint32_t total = 0, free = 0;
+                fat32_statfs(&g_fat32_sd, &total, &free);
+                uint32_t total_b = total / 512;
+                uint32_t free_b = free / 512;
+                uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
+                uint32_t pct = total_b ? (used_b * 100 / total_b) : 0;
+                printk("/sd0/            %9u  %9u  %9u     %3u%% /sd0/\n", total_b, used_b, free_b, pct);
+            }
+            if (sbuf && max_len > 0) sbuf[0] = '\0';
+            return 0;
         } else if (strcmp(rel, "meminfo") == 0) {
             printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
@@ -239,7 +281,8 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
 
     if (type == 6) { // /flash0/
         if (g_flash_mounted) {
-            return fat32_write_file(&g_fat32_flash, rel, buf, len);
+            printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) is read-only\n");
+            return -1;
         }
         return -1;
     } else if (type == 1) { // /sd0/

@@ -285,6 +285,28 @@ static lisp_val_t *prim_version(lisp_val_t *args, lisp_val_t *env) {
     return &nil_val;
 }
 
+static lisp_val_t *prim_df(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    vfs_ls("/proc/df");
+    return &nil_val;
+}
+
+static lisp_val_t *prim_top(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    printk("\n==================================================\n");
+    printk("           LugalOS System Monitor                 \n");
+    printk("==================================================\n");
+    vfs_ls("/proc/version");
+    printk("\n[Process States]\n");
+    vfs_ls("/proc/ps");
+    printk("\n[Memory Status]\n");
+    vfs_ls("/proc/meminfo");
+    printk("\n[Storage Usage]\n");
+    vfs_ls("/proc/df");
+    printk("==================================================\n");
+    return &nil_val;
+}
+
 static lisp_val_t *prim_load(lisp_val_t *args, lisp_val_t *env) {
 
     (void)env;
@@ -393,6 +415,8 @@ void lisp_init(void) {
     env_set(&global_env, "ps", make_prim(prim_ps));
     env_set(&global_env, "meminfo", make_prim(prim_meminfo));
     env_set(&global_env, "version", make_prim(prim_version));
+    env_set(&global_env, "df", make_prim(prim_df));
+    env_set(&global_env, "top", make_prim(prim_top));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));

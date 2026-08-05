@@ -453,6 +453,32 @@ int fat32_rmdir(fat32_fs_t *fs, const char *path) {
     return fat32_remove_file(fs, path);
 }
 
+int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes) {
+    if (!fs || !fs->dev) return -1;
+    uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
+    uint32_t total_sz = total_sec * fs->bpb.bytes_per_sec;
+    if (total_bytes) *total_bytes = total_sz;
+
+    uint32_t free_clusters = 0;
+    uint32_t total_clusters = (total_sec > fs->data_start_sector) ?
+        ((total_sec - fs->data_start_sector) / fs->bpb.sec_per_clus) : 0;
+    uint32_t fat_sec = fs->fat_start_sector;
+    uint32_t fat_buf[128];
+
+    uint32_t checked = 0;
+    while (checked < total_clusters && (fat_sec < fs->data_start_sector)) {
+        if (fs->dev->read_blocks(fs->dev, fat_buf, fat_sec, 1) != 0) break;
+        for (int i = 0; i < 128 && checked < total_clusters; i++, checked++) {
+            uint32_t val = fat_buf[i] & 0x0FFFFFFF;
+            if (val == 0) free_clusters++;
+        }
+        fat_sec++;
+    }
+
+    if (free_bytes) *free_bytes = free_clusters * fs->bytes_per_cluster;
+    return 0;
+}
+
 
 void fat32_list_dir(fat32_fs_t *fs, const char *path) {
     if (!fs || !fs->dev || !fs->dev->read_blocks) return;
