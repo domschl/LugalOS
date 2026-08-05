@@ -2,6 +2,8 @@
 #include "kernel/printk.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
+#include "kernel/time.h"
+#include "drivers/i2c_rtc.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "arch/elf.h"
@@ -22,6 +24,7 @@ static void cmd_help(void) {
     printk("  meminfo         - Alias for 'cat /proc/meminfo'\n");
     printk("  df              - Alias for 'cat /proc/df'\n");
     printk("  top             - System process, memory & storage monitor\n");
+    printk("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
     printk("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
     printk("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
     printk("  touch <file>    - Create a new empty file\n");
@@ -108,6 +111,25 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             }
         }
         return;
+    } else if (strcmp(cmd_line, "date") == 0) {
+        rtc_time_t tm;
+        time_get_rtc(&tm);
+        char isostr[32];
+        time_format_iso(&tm, isostr, sizeof(isostr));
+        printk("%s\n", isostr);
+        return;
+    } else if (strncmp(cmd_line, "date ", 5) == 0) {
+        const char *arg = &cmd_line[5];
+        while (*arg == ' ') arg++;
+        rtc_time_t tm;
+        if (time_parse_iso(arg, &tm)) {
+            time_set_rtc(&tm);
+            i2c_rtc_write_time(&tm);
+            printk("System clock updated: %s\n", arg);
+        } else {
+            printk("Invalid date format. Expected: YYYY-MM-DD HH:MM:SS\n");
+        }
+        return;
     } else if (strcmp(cmd_line, "lisp") == 0) {
         lisp_repl();
         return;
@@ -141,7 +163,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         strcmp(cmd_line, "meminfo") != 0 &&
         strcmp(cmd_line, "version") != 0 &&
         strcmp(cmd_line, "df") != 0 &&
-        strcmp(cmd_line, "top") != 0) {
+        strcmp(cmd_line, "top") != 0 &&
+        strcmp(cmd_line, "date") != 0 &&
+        strcmp(cmd_line, "time") != 0) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res && res->type != LISP_NIL) {
             printk("=> ");

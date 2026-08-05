@@ -2,6 +2,8 @@
 #include "lisp_compile.h"
 #include "kernel/printk.h"
 #include "kernel/shell.h"
+#include "kernel/time.h"
+#include "drivers/i2c_rtc.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "user/chibicc/include/chibicc.h"
@@ -383,6 +385,49 @@ static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
     return (res == 0) ? &true_val : &false_val;
 }
 
+static lisp_val_t *prim_time(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return make_int((long)time_get_ms());
+}
+
+static lisp_val_t *prim_date(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    rtc_time_t tm;
+    time_get_rtc(&tm);
+    char buf[32];
+    time_format_iso(&tm, buf, sizeof(buf));
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    rtc_time_t tm;
+    if (args->u.pair.car->type == LISP_STRING || args->u.pair.car->type == LISP_SYMBOL) {
+        const char *str = (args->u.pair.car->type == LISP_STRING) ? args->u.pair.car->u.str : args->u.pair.car->u.sym;
+        if (time_parse_iso(str, &tm)) {
+            time_set_rtc(&tm);
+            i2c_rtc_write_time(&tm);
+            return &true_val;
+        }
+    } else if (args->u.pair.car->type == LISP_INT) {
+        lisp_val_t *curr = args;
+        int vals[6] = {0};
+        for (int i = 0; i < 6 && curr && curr->type == LISP_PAIR; i++) {
+            if (curr->u.pair.car->type == LISP_INT) {
+                vals[i] = (int)curr->u.pair.car->u.i;
+            }
+            curr = curr->u.pair.cdr;
+        }
+        tm.year = (uint16_t)vals[0]; tm.month = (uint8_t)vals[1]; tm.day = (uint8_t)vals[2];
+        tm.hour = (uint8_t)vals[3]; tm.min = (uint8_t)vals[4]; tm.sec = (uint8_t)vals[5]; tm.ms = 0;
+        time_set_rtc(&tm);
+        i2c_rtc_write_time(&tm);
+        return &true_val;
+    }
+    return &false_val;
+}
+
 static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     shell_run();
@@ -417,6 +462,10 @@ void lisp_init(void) {
     env_set(&global_env, "version", make_prim(prim_version));
     env_set(&global_env, "df", make_prim(prim_df));
     env_set(&global_env, "top", make_prim(prim_top));
+    env_set(&global_env, "time", make_prim(prim_time));
+    env_set(&global_env, "date", make_prim(prim_date));
+    env_set(&global_env, "set-date", make_prim(prim_set_date));
+    env_set(&global_env, "set-time", make_prim(prim_set_date));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));

@@ -81,6 +81,7 @@ add_custom_command(
 set(SOURCES
     kernel/main.c
     kernel/printk.c
+    kernel/time.c
     kernel/ipc.c
     kernel/sched.c
     kernel/shell.c
@@ -93,6 +94,7 @@ set(SOURCES
     arch/riscv/common/elf.c
     drivers/ramdisk.c
     drivers/flashdisk.c
+    drivers/i2c_rtc.c
     ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     fs/fat32.c
     fs/vfs_server.c
@@ -123,6 +125,7 @@ endif()
 
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
+target_link_libraries(lugalos.elf PRIVATE gcc)
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
 set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)

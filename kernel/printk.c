@@ -1,5 +1,6 @@
 #include "kernel/printk.h"
 #include "drivers/uart.h"
+#include "kernel/time.h"
 #include <stdint.h>
 
 static void print_num(unsigned long num, int base) {
@@ -22,8 +23,31 @@ static void print_num(unsigned long num, int base) {
     }
 }
 
+static void print_timestamp(void) {
+    uint64_t ms = time_get_ms();
+    unsigned int sec = (unsigned int)(ms / 1000);
+    unsigned int msec = (unsigned int)(ms % 1000);
+
+    uart_puts("[");
+    if (sec < 10) uart_puts("    ");
+    else if (sec < 100) uart_puts("   ");
+    else if (sec < 1000) uart_puts("  ");
+    else if (sec < 10000) uart_puts(" ");
+
+    print_num(sec, 10);
+    uart_putc('.');
+    uart_putc('0' + ((msec / 100) % 10));
+    uart_putc('0' + ((msec / 10) % 10));
+    uart_putc('0' + (msec % 10));
+    uart_puts("] ");
+}
+
 int printk(const char *fmt, ...) {
     if (!fmt) return -1;
+
+    if (fmt[0] == '[' && fmt[1] != '\0') {
+        print_timestamp();
+    }
 
     va_list args;
     va_start(args, fmt);
@@ -131,7 +155,6 @@ int printk(const char *fmt, ...) {
                 break;
         }
     }
-
 
     va_end(args);
     return 0;

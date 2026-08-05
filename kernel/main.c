@@ -2,6 +2,8 @@
 #include "kernel/sched.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
+#include "kernel/time.h"
+#include "drivers/i2c_rtc.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -50,6 +52,7 @@ void kernel_main(void) {
     uart_init(0x10000000);
 #endif
 
+    time_init();
 
     printk("\n==================================================\n");
     printk("       LugalOS Microkernel Lisp Machine v0.4.0\n");
@@ -74,6 +77,7 @@ void kernel_main(void) {
 #endif
 
     /* Initialize Subsystems */
+    i2c_rtc_init();
     trap_init();
     vmm_init();
     ipc_init();
