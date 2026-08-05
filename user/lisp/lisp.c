@@ -287,7 +287,7 @@ static lisp_val_t *prim_version(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_df(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    vfs_ls("/proc/df");
+    vfs_read("/proc/df", NULL, 0);
     return &nil_val;
 }
 
@@ -296,13 +296,13 @@ static lisp_val_t *prim_top(lisp_val_t *args, lisp_val_t *env) {
     printk("\n==================================================\n");
     printk("           LugalOS System Monitor                 \n");
     printk("==================================================\n");
-    vfs_ls("/proc/version");
+    vfs_read("/proc/version", NULL, 0);
     printk("\n[Process States]\n");
-    vfs_ls("/proc/ps");
+    vfs_read("/proc/ps", NULL, 0);
     printk("\n[Memory Status]\n");
-    vfs_ls("/proc/meminfo");
+    vfs_read("/proc/meminfo", NULL, 0);
     printk("\n[Storage Usage]\n");
-    vfs_ls("/proc/df");
+    vfs_read("/proc/df", NULL, 0);
     printk("==================================================\n");
     return &nil_val;
 }

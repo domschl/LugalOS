@@ -281,13 +281,15 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(load path)`: Evaluates a `.lisp` source file from disk (e.g. `(load "/sd0/system/stdlib.lisp")`).
 
 #### Microkernel VFS & System Metrics
-* `(ls path)`: Performs directory listing across `/sd0/`, `/ram0/`, `/proc/`, `/dev/`, `/srv/`.
+* `(ls path)`: Performs directory listing across `/flash0/`, `/sd0/`, `/ram0/`, `/proc/`, `/dev/`, `/srv/`.
 * `(mkdir path)`: Creates directory in FAT32 storage engine.
 * `(rm path)`: Removes file from VFS.
 * `(cp src dst)`: Copies file content between VFS locations.
 * `(cat path)`: Reads and prints file content to UART console.
 * `(ps)`: Displays task scheduler state (`/proc/ps`).
 * `(meminfo)`: Displays physical memory allocation metrics (`/proc/meminfo`).
+* `(df)`: Displays mounted volume capacity and cluster usage (`/proc/df`).
+* `(top)`: Displays system process, memory, and storage monitor dashboard.
 
 #### Native C11 Compiler & Binary Execution
 * `(cc src dst)`: Invokes native `chibicc` C11 compiler on VFS C source files.

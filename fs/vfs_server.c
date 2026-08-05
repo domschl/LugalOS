@@ -418,7 +418,7 @@ void vfs_ls(const char *path) {
         }
     } else if (type == 3) { // /proc/
         printk("\nDirectory Listing (/proc/):\n");
-        printk("Name        Type\n----------  ----\nps          synthetic\nmeminfo     synthetic\nversion     synthetic\n\n");
+        printk("Name        Type\n----------  ----\nps          synthetic\nmeminfo     synthetic\nversion     synthetic\ndf          synthetic\n\n");
     } else if (type == 4) { // /dev/
         printk("\nDirectory Listing (/dev/):\n");
         printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\n\n");

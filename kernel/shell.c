@@ -20,17 +20,19 @@ static void cmd_help(void) {
     printk("  uname           - Show OS build target and architecture details\n");
     printk("  ps              - Alias for 'cat /proc/ps'\n");
     printk("  meminfo         - Alias for 'cat /proc/meminfo'\n");
-    printk("  ls [path]       - List directory (/ram0/, /proc/, /dev/, /srv/)\n");
-    printk("  cat <path>      - Read and display path (/ram0/file, /proc/ps, /dev/uart)\n");
+    printk("  df              - Alias for 'cat /proc/df'\n");
+    printk("  top             - System process, memory & storage monitor\n");
+    printk("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
+    printk("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
     printk("  touch <file>    - Create a new empty file\n");
     printk("  mkdir <path>    - Create a new directory\n");
     printk("  rmdir <path>    - Remove an empty directory\n");
     printk("  cp <src> <dst>  - Copy file from source path to destination path\n");
     printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
-
     printk("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
     printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
+    printk("  e [file]        - Launch Emacs-style full-screen editor\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     printk("  clear           - Clear terminal screen\n\n");
@@ -50,7 +52,7 @@ static void cmd_uname(void) {
 #elif defined(CONFIG_MMU)
     printk("Memory Mode: Sv39 Virtual Memory Page Tables\n");
 #endif
-    printk("Namespace: Universal Path Resolver (/ram0/, /proc/, /dev/, /srv/)\n");
+    printk("Namespace: Universal Path Resolver (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -134,7 +136,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         if (*c == ' ' || *c == '\t') { has_space = true; break; }
     }
 
-    if (!has_space && strcmp(cmd_line, "ls") != 0 && strcmp(cmd_line, "ps") != 0 && strcmp(cmd_line, "meminfo") != 0 && strcmp(cmd_line, "version") != 0) {
+    if (!has_space && strcmp(cmd_line, "ls") != 0 &&
+        strcmp(cmd_line, "ps") != 0 &&
+        strcmp(cmd_line, "meminfo") != 0 &&
+        strcmp(cmd_line, "version") != 0 &&
+        strcmp(cmd_line, "df") != 0 &&
+        strcmp(cmd_line, "top") != 0) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res && res->type != LISP_NIL) {
             printk("=> ");
