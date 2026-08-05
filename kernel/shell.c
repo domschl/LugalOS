@@ -111,6 +111,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             }
         }
         return;
+    } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
+        i2c_scan_bus();
+        return;
     } else if (strcmp(cmd_line, "date") == 0) {
         rtc_time_t tm;
         time_get_rtc(&tm);
@@ -165,7 +168,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         strcmp(cmd_line, "df") != 0 &&
         strcmp(cmd_line, "top") != 0 &&
         strcmp(cmd_line, "date") != 0 &&
-        strcmp(cmd_line, "time") != 0) {
+        strcmp(cmd_line, "time") != 0 &&
+        strcmp(cmd_line, "i2c") != 0) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res && res->type != LISP_NIL) {
             printk("=> ");

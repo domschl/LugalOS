@@ -428,6 +428,12 @@ static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
+static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    i2c_scan_bus();
+    return &nil_val;
+}
+
 static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     shell_run();
@@ -466,6 +472,7 @@ void lisp_init(void) {
     env_set(&global_env, "date", make_prim(prim_date));
     env_set(&global_env, "set-date", make_prim(prim_set_date));
     env_set(&global_env, "set-time", make_prim(prim_set_date));
+    env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));
