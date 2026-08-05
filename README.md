@@ -288,7 +288,10 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 
 LugalOS is licensed under the [MIT License](LICENSE).
 
-Special thanks to:
-* **Igor Michalak** for [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350) for the reference bootloader and hardware initialization patterns that enabled the bare-metal RP2350 port.
-* **Rui Ueyama** for [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
-* **Ken Thompson & Bell Labs** for Unix `ed` and the Plan 9 Operating System architectural model.
+### Third-Party Tools & Origins
+
+* **Microsoft UF2 Tools**: [`tools/uf2conv.py`](tools/uf2conv.py) and [`tools/uf2families.json`](tools/uf2families.json) are sourced from [Microsoft UF2 (USB Flashing Format)](https://github.com/microsoft/uf2) (MIT License), providing standard UF2 block conversion and family ID registry lookups.
+* **Raspberry Pi Picotool**: [`tools/picotool`](tools/picotool) is sourced from the [Raspberry Pi Picotool Repository](https://github.com/raspberrypi/picotool) (BSD 3-Clause License), used for RP2350 image analysis, partition table parsing, and binary validation.
+* **Igor Michalak's bare-metal-rp2350**: Reference bootloader headers, RISC-V XOSC/PLL clock tree setup, and dual-core reset patterns from [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350).
+* **Rui Ueyama's chibicc**: C11 compiler architecture adapted from [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
+* **Ken Thompson & Bell Labs**: Unix `ed` teletype editor and the Plan 9 Operating System universal namespace model.
