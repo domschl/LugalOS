@@ -3,6 +3,7 @@
 #include "drivers/block.h"
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
+#include "drivers/at24c32.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
@@ -257,6 +258,11 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
                 return 1;
             }
             return 0;
+        } else if (strcmp(rel, "eeprom") == 0) {
+            if (buf && max_len > 0) {
+                return at24c32_read(0, (uint8_t *)buf, max_len);
+            }
+            return 0;
         } else if (strcmp(rel, "null") == 0 || strcmp(rel, "zero") == 0) {
             return 0;
         }
@@ -302,6 +308,11 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
                 for (uint32_t i = 0; i < len; i++) {
                     uart_putc(str[i]);
                 }
+            }
+            return 0;
+        } else if (strcmp(rel, "eeprom") == 0) {
+            if (buf && len > 0) {
+                return at24c32_write(0, (const uint8_t *)buf, len);
             }
             return 0;
         } else if (strcmp(rel, "null") == 0) {
@@ -421,7 +432,7 @@ void vfs_ls(const char *path) {
         printk("Name        Type\n----------  ----\nps          synthetic\nmeminfo     synthetic\nversion     synthetic\ndf          synthetic\n\n");
     } else if (type == 4) { // /dev/
         printk("\nDirectory Listing (/dev/):\n");
-        printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\n\n");
+        printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
     } else if (type == 5) { // /srv/
         printk("\nDirectory Listing (/srv/):\n");
         printk("Service Name  Target PID\n------------  ----------\n");

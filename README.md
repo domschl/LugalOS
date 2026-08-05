@@ -291,6 +291,14 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(df)`: Displays mounted volume capacity and cluster usage (`/proc/df`).
 * `(top)`: Displays system process, memory, and storage monitor dashboard.
 
+#### Hardware I2C, RTC & EEPROM Storage
+* `(time)`: Returns monotonic milliseconds elapsed since system boot.
+* `(date)`: Returns ISO 8601 formatted date and time string.
+* `(set-date "YYYY-MM-DD HH:MM:SS")`: Updates LugalOS clock and persists to DS1307/DS3231 RTC hardware.
+* `(i2c-scan)`: Scans I2C bus (`I2C0` on `GP4` SDA / `GP5` SCL) and outputs responsive slave matrix.
+* `(eeprom-read [offset] [len])`: Reads non-volatile string from AT24C32 4KB I2C EEPROM (`0x57` / `/dev/eeprom`).
+* `(eeprom-write offset string)`: Writes persistent string to AT24C32 4KB I2C EEPROM.
+
 #### Native C11 Compiler & Binary Execution
 * `(cc src dst)`: Invokes native `chibicc` C11 compiler on VFS C source files.
 * `(exec path)`: Loads and executes native RISC-V ELF binaries in supervisor space.

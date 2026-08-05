@@ -19,6 +19,7 @@ void time_init(void);
 /* Monotonic time */
 uint64_t time_get_us(void);
 uint64_t time_get_ms(void);
+void time_delay_us(uint64_t us);
 
 /* Wall clock RTC time */
 void time_get_rtc(rtc_time_t *tm);

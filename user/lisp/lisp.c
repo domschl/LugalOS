@@ -4,6 +4,7 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/at24c32.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "user/chibicc/include/chibicc.h"
@@ -428,6 +429,48 @@ static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
+static lisp_val_t *prim_eeprom_read(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint16_t offset = 0;
+    size_t len = 64;
+
+    if (args && args->type == LISP_PAIR) {
+        lisp_val_t *a1 = args->u.pair.car;
+        if (a1 && a1->type == LISP_INT) offset = (uint16_t)a1->u.i;
+        lisp_val_t *rest = args->u.pair.cdr;
+        if (rest && rest->type == LISP_PAIR) {
+            lisp_val_t *a2 = rest->u.pair.car;
+            if (a2 && a2->type == LISP_INT) len = (size_t)a2->u.i;
+        }
+    }
+
+    if (len > 512) len = 512;
+    char eeprom_buf[513];
+    memset(eeprom_buf, 0, sizeof(eeprom_buf));
+
+    int res = at24c32_read(offset, (uint8_t *)eeprom_buf, len);
+    if (res < 0) return &nil_val;
+    eeprom_buf[res] = '\0';
+    return make_str(eeprom_buf);
+}
+
+static lisp_val_t *prim_eeprom_write(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    lisp_val_t *a1 = args->u.pair.car;
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (!a1 || a1->type != LISP_INT || !rest || rest->type != LISP_PAIR) return &false_val;
+    lisp_val_t *a2 = rest->u.pair.car;
+    if (!a2 || a2->type != LISP_STRING) return &false_val;
+
+    uint16_t offset = (uint16_t)a1->u.i;
+    const char *str = a2->u.str;
+    size_t len = strlen(str);
+
+    int res = at24c32_write(offset, (const uint8_t *)str, len);
+    return res >= 0 ? make_int(res) : &false_val;
+}
+
 static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     i2c_scan_bus();
@@ -473,6 +516,8 @@ void lisp_init(void) {
     env_set(&global_env, "set-date", make_prim(prim_set_date));
     env_set(&global_env, "set-time", make_prim(prim_set_date));
     env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));
+    env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
+    env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));

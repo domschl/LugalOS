@@ -41,6 +41,11 @@ uint64_t time_get_ms(void) {
     return time_get_us() / 1000;
 }
 
+void time_delay_us(uint64_t us) {
+    uint64_t start = time_get_us();
+    while (time_get_us() - start < us);
+}
+
 static bool is_leap_year(uint16_t year) {
     return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
 }

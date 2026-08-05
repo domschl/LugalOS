@@ -179,6 +179,18 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_time, r"2026-08-05 16:00", timeout=4.0)
         results.append(("System Time & Date Clock", ok, log if not ok else ""))
 
+        # AT24C32 EEPROM (/dev/eeprom & eeprom-read/write)
+        cmd_eeprom = (
+            "write /dev/eeprom EEPROM_PERSIST_OK\n"
+            "cat /dev/eeprom\n"
+            "lisp\n"
+            "(eeprom-write 0 \"LISP_EEPROM_OK\")\n"
+            "(eeprom-read 0 14)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_eeprom, r"LISP_EEPROM_OK", timeout=4.0)
+        results.append(("AT24C32 EEPROM (/dev/eeprom & eeprom-read/write)", ok, log if not ok else ""))
+
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
         cmd_arith = "lisp\n(+ 10 20 30)\n(- 100 40)\n(* 6 7)\n(= 42 42)\nexit"

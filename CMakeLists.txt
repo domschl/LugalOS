@@ -95,6 +95,7 @@ set(SOURCES
     drivers/ramdisk.c
     drivers/flashdisk.c
     drivers/i2c_rtc.c
+    drivers/at24c32.c
     ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     fs/fat32.c
     fs/vfs_server.c
