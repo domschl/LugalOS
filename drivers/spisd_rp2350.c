@@ -133,20 +133,20 @@ static int spisd_init_hardware(void) {
         spi_transfer(0xFF);
     }
 
-    /* CMD0: Reset SD Card into SPI Mode (retry up to 100 times for card power-up) */
+    /* CMD0: Reset SD Card into SPI Mode (expects 0x01 = In Idle State) */
     uint8_t r1 = 0xFF;
     for (int retry = 0; retry < 100; retry++) {
         r1 = sd_send_cmd(0, 0, 0x95);
-        if (r1 == 0x01 || r1 == 0x00) break;
+        if (r1 == 0x01) break;
     }
 
-    if (r1 > 0x01) {
+    if (r1 != 0x01) {
         cs_deselect();
         printk("[SPI SD Probe] SPI1 MicroSD probe CMD0 returned 0x%02x (%s)\n",
-               r1, (r1 == 0xFF) ? "no card attached" : "invalid response");
+               r1, (r1 == 0xFF) ? "no card attached" : (r1 == 0x00) ? "MISO line grounded/stuck low" : "invalid response");
         return -1; // Card not responding or no MicroSD present
     }
-    printk("[SPI SD Probe] CMD0 reset response: 0x%02x (MicroSD Card detected!)\n", r1);
+    printk("[SPI SD Probe] CMD0 reset response: 0x01 (MicroSD Card detected in Idle State)\n");
 
     /* CMD8: Check SDv2 voltage range (0x1AA) */
     r1 = sd_send_cmd(8, 0x000001AA, 0x87);
