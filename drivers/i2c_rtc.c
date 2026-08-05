@@ -58,11 +58,11 @@ static void i2c_hw_init(void) {
     /* Disable I2C0 before configuring */
     REG(IC_ENABLE) = 0;
 
-    /* Master mode (bit 0), 7-bit addressing, Fast mode (400kHz, bit 2), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
-    REG(IC_CON) = (1u << 0) | (1u << 5) | (2u << 1) | (1u << 6) | (1u << 8);
+    /* Master mode (bit 0), 7-bit addressing, Standard mode (100kHz, 1u << 1), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
+    REG(IC_CON) = (1u << 0) | (1u << 5) | (1u << 1) | (1u << 6) | (1u << 8);
     REG(IC_TAR) = DS1307_DS3231_I2C_ADDR;
 
-    /* Fast Mode Clock Dividers for 150MHz system clock */
+    /* Standard Mode (100kHz) Clock Dividers for 150MHz system clock */
     REG(IC_SS_SCL_HCNT) = 750;
     REG(IC_SS_SCL_LCNT) = 750;
     REG(IC_FS_SCL_HCNT) = 150;
