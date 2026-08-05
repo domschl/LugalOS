@@ -91,10 +91,10 @@ static int spisd_init_hardware(void) {
     REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
-    /* 2. Configure SPI1 GPIO pins: GP10 (SCK, F6), GP11 (TX/MOSI, F6), GP12 (RX/MISO, F6) */
-    REG(IO_BANK0_CTRL(10)) = 6;
-    REG(IO_BANK0_CTRL(11)) = 6;
-    REG(IO_BANK0_CTRL(12)) = 6;
+    /* 2. Configure SPI1 GPIO pins: GP10 (SCK, F1), GP11 (TX/MOSI, F1), GP12 (RX/MISO, F1) */
+    REG(IO_BANK0_CTRL(10)) = 1;
+    REG(IO_BANK0_CTRL(11)) = 1;
+    REG(IO_BANK0_CTRL(12)) = 1;
 
     /* Configure pad pull-ups (0x5A = PUE=1, PDE=0, IE=1) so unattached bus reads 0xFF */
     REG(PADS_BANK0_PAD(10)) = 0x5A;
