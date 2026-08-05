@@ -96,13 +96,14 @@ static int spisd_init_hardware(void) {
     REG(IO_BANK0_CTRL(11)) = 6;
     REG(IO_BANK0_CTRL(12)) = 6;
 
-    REG(PADS_BANK0_PAD(10)) = 0x56;
-    REG(PADS_BANK0_PAD(11)) = 0x56;
-    REG(PADS_BANK0_PAD(12)) = 0x56;
+    /* Configure pad pull-ups (0x5A = PUE=1, PDE=0, IE=1) so unattached bus reads 0xFF */
+    REG(PADS_BANK0_PAD(10)) = 0x5A;
+    REG(PADS_BANK0_PAD(11)) = 0x5A;
+    REG(PADS_BANK0_PAD(12)) = 0x5A;
 
     /* GP13 as CS (Function 5 - SIO) */
     REG(IO_BANK0_CTRL(CS_PIN)) = 5;
-    REG(PADS_BANK0_PAD(CS_PIN)) = 0x56;
+    REG(PADS_BANK0_PAD(CS_PIN)) = 0x5A;
     REG(SIO_GPIO_OE_SET) = CS_MASK;
     cs_deselect();
 
@@ -121,14 +122,15 @@ static int spisd_init_hardware(void) {
         spi_transfer(0xFF);
     }
 
-    /* CMD0: Reset SD Card (valid R1 responses: 0x01 in idle state, or 0x00 ready) */
+    /* CMD0: Reset SD Card (expects 0x01 = In Idle State) */
     uint8_t r1 = sd_send_cmd(0, 0, 0x95);
-    if (r1 > 0x01) {
+    if (r1 != 0x01) {
         cs_deselect();
-        printk("[SPI SD Probe] SPI1 MicroSD probe CMD0 returned 0x%02x (expected 0x00 or 0x01)\n", r1);
+        printk("[SPI SD Probe] SPI1 MicroSD probe CMD0 returned 0x%02x (%s)\n",
+               r1, (r1 == 0xFF) ? "no card attached" : "invalid response");
         return -1; // Card not responding or no MicroSD present
     }
-    printk("[SPI SD Probe] CMD0 reset response: 0x%02x (MicroSD Card detected!)\n", r1);
+    printk("[SPI SD Probe] CMD0 reset response: 0x01 (MicroSD Card detected!)\n");
 
     /* CMD8: Check SDv2 voltage range (0x1AA) */
     r1 = sd_send_cmd(8, 0x000001AA, 0x87);
