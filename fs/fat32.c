@@ -98,6 +98,8 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
                 for (int i = 0; i < 16; i++) {
                     if (entries[i].name[0] == 0x00) break;
                     if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+                    if ((entries[i].attr & 0x0F) == 0x0F) continue;
+                    if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue;
 
                     if (memcmp(entries[i].name, name83, 11) == 0) {
                         if (entries[i].attr & FAT32_ATTR_DIRECTORY) {
@@ -234,6 +236,8 @@ int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_ent
         for (int i = 0; i < 16; i++) {
             if (entries[i].name[0] == 0x00) break;
             if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+            if ((entries[i].attr & 0x0F) == 0x0F) continue;
+            if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue;
 
             if (memcmp(entries[i].name, name83, 11) == 0) {
                 if (out_entry) *out_entry = entries[i];
@@ -533,6 +537,8 @@ void fat32_list_dir(fat32_fs_t *fs, const char *path) {
         for (int i = 0; i < 16; i++) {
             if (entries[i].name[0] == 0x00) break;
             if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+            if ((entries[i].attr & 0x0F) == 0x0F) continue; // Skip VFAT Long File Name (LFN) metadata
+            if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue; // Skip Volume Label entry
 
             char namebuf[13];
             memcpy(namebuf, entries[i].name, 11);
