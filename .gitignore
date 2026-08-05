@@ -19,3 +19,8 @@ build.ninja
 *.swp
 *~
 .DS_Store
+__pycache__/
+blink_test/
+tools/picotool
+tools/uf2conv.py
+tools/uf2families.json

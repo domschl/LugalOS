@@ -1,6 +1,7 @@
 #include "fs/vfs.h"
 #include "fs/fat32.h"
 #include "drivers/block.h"
+#include "drivers/flashdisk.h"
 #include "drivers/uart.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
@@ -10,8 +11,10 @@
 
 static fat32_fs_t g_fat32_sd;
 static fat32_fs_t g_fat32_ram;
+static fat32_fs_t g_fat32_flash;
 static bool g_sd_mounted = false;
 static bool g_ram_mounted = false;
+static bool g_flash_mounted = false;
 
 typedef struct {
     char name[32];
@@ -22,9 +25,26 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
+static int vfs_mount_flashdisk(void) {
+    block_dev_t *flash_dev = flashdisk_get_device();
+    if (flash_dev) {
+        if (fat32_init(&g_fat32_flash, flash_dev) == 0) {
+            g_flash_mounted = true;
+            printk("[VFS Server] Mounted FAT32 Filesystem on /flash0/ (Device: Embedded Flash ROMDisk, Size: %d KB)\n",
+                   (flash_dev->num_blocks * flash_dev->block_size) / 1024);
+            return 0;
+        }
+    }
+    return -1;
+}
+
 void vfs_server_init(void) {
     g_sd_mounted = false;
     g_ram_mounted = false;
+    g_flash_mounted = false;
+
+    /* Mount embedded Flash ROM filesystem on /flash0/ */
+    vfs_mount_flashdisk();
 
 #ifndef CONFIG_BOARD_RP2350
     /* VirtIO block device is only available on QEMU targets */
@@ -70,7 +90,6 @@ int vfs_register_service(const char *service_name, int target_pid) {
     return 0;
 }
 
-
 /* Parse prefix:
  * 0: Root "/"
  * 1: "/sd0/" (VirtIO SD Card Storage)
@@ -78,6 +97,7 @@ int vfs_register_service(const char *service_name, int target_pid) {
  * 3: "/proc/" (Metrics)
  * 4: "/dev/" (Hardware Devices)
  * 5: "/srv/" (IPC Services)
+ * 6: "/flash0/" (Embedded Flash ROM Storage)
  */
 static int parse_prefix(const char *path, const char **rel_path) {
     static const char *empty_str = "";
@@ -88,7 +108,13 @@ static int parse_prefix(const char *path, const char **rel_path) {
         return 0; // Root mount table
     }
 
-    if (strncmp(path, "/sd0/", 5) == 0) {
+    if (strncmp(path, "/flash0/", 8) == 0) {
+        *rel_path = path + 8;
+        return 6;
+    } else if (strcmp(path, "/flash0") == 0) {
+        *rel_path = empty_str;
+        return 6;
+    } else if (strncmp(path, "/sd0/", 5) == 0) {
         *rel_path = path + 5;
         return 1;
     } else if (strcmp(path, "/sd0") == 0) {
@@ -125,7 +151,7 @@ static int parse_prefix(const char *path, const char **rel_path) {
     } else {
         *rel_path = path;
     }
-    return 1; // Default un-prefixed paths to /sd0/
+    return 6; // Default un-prefixed paths to /flash0/ first
 }
 
 int vfs_read(const char *path, void *buf, uint32_t max_len) {
@@ -135,8 +161,12 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
     int type = parse_prefix(path, &rel);
     if (!rel) rel = "";
 
-    if (type == 1) { // /sd0/ (or un-prefixed fallback)
-        fat32_dir_entry_t entry;
+    fat32_dir_entry_t entry;
+
+    if (type == 6) { // /flash0/
+        if (g_flash_mounted && fat32_find_file(&g_fat32_flash, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_flash, &entry, buf, max_len);
+        }
         if (g_sd_mounted && fat32_find_file(&g_fat32_sd, rel, &entry) >= 0) {
             return fat32_read_file(&g_fat32_sd, &entry, buf, max_len);
         }
@@ -144,8 +174,18 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             return fat32_read_file(&g_fat32_ram, &entry, buf, max_len);
         }
         return -1;
+    } else if (type == 1) { // /sd0/
+        if (g_sd_mounted && fat32_find_file(&g_fat32_sd, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_sd, &entry, buf, max_len);
+        }
+        if (g_flash_mounted && fat32_find_file(&g_fat32_flash, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_flash, &entry, buf, max_len);
+        }
+        if (g_ram_mounted && fat32_find_file(&g_fat32_ram, rel, &entry) >= 0) {
+            return fat32_read_file(&g_fat32_ram, &entry, buf, max_len);
+        }
+        return -1;
     } else if (type == 2) { // /ram0/
-        fat32_dir_entry_t entry;
         if (g_ram_mounted && fat32_find_file(&g_fat32_ram, rel, &entry) >= 0) {
             return fat32_read_file(&g_fat32_ram, &entry, buf, max_len);
         }
@@ -157,7 +197,7 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return len;
         } else if (strcmp(rel, "meminfo") == 0) {
-            printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
+            printk("Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         } else if (strcmp(rel, "version") == 0) {
@@ -165,7 +205,6 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         }
-
         return -1;
     } else if (type == 4) { // /dev/ hardware devices
         if (strcmp(rel, "uart") == 0) {
@@ -198,7 +237,12 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     int type = parse_prefix(path, &rel);
     if (!rel) rel = "";
 
-    if (type == 1) { // /sd0/
+    if (type == 6) { // /flash0/
+        if (g_flash_mounted) {
+            return fat32_write_file(&g_fat32_flash, rel, buf, len);
+        }
+        return -1;
+    } else if (type == 1) { // /sd0/
         if (g_sd_mounted) {
             return fat32_write_file(&g_fat32_sd, rel, buf, len);
         }
@@ -218,7 +262,7 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
             }
             return 0;
         } else if (strcmp(rel, "null") == 0) {
-            return 0; // Bit bucket
+            return 0;
         }
     } else if (type == 5) { // /srv/ IPC channels
         for (int i = 0; i < g_num_services; i++) {
@@ -240,7 +284,9 @@ int vfs_remove(const char *path) {
     if (!path) return -1;
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
-    if (type == 1 && rel && g_sd_mounted) {
+    if (type == 6 && rel && g_flash_mounted) {
+        return fat32_remove_file(&g_fat32_flash, rel);
+    } else if (type == 1 && rel && g_sd_mounted) {
         return fat32_remove_file(&g_fat32_sd, rel);
     } else if (type == 2 && rel && g_ram_mounted) {
         return fat32_remove_file(&g_fat32_ram, rel);
@@ -252,7 +298,9 @@ int vfs_mkdir(const char *path) {
     if (!path) return -1;
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
-    if (type == 1 && rel && g_sd_mounted) {
+    if (type == 6 && rel && g_flash_mounted) {
+        return fat32_mkdir(&g_fat32_flash, rel);
+    } else if (type == 1 && rel && g_sd_mounted) {
         return fat32_mkdir(&g_fat32_sd, rel);
     } else if (type == 2 && rel && g_ram_mounted) {
         return fat32_mkdir(&g_fat32_ram, rel);
@@ -264,7 +312,9 @@ int vfs_rmdir(const char *path) {
     if (!path) return -1;
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
-    if (type == 1 && rel && g_sd_mounted) {
+    if (type == 6 && rel && g_flash_mounted) {
+        return fat32_rmdir(&g_fat32_flash, rel);
+    } else if (type == 1 && rel && g_sd_mounted) {
         return fat32_rmdir(&g_fat32_sd, rel);
     } else if (type == 2 && rel && g_ram_mounted) {
         return fat32_rmdir(&g_fat32_ram, rel);
@@ -291,7 +341,6 @@ int vfs_cp(const char *src_path, const char *dst_path) {
     return 0;
 }
 
-
 void vfs_ls(const char *path) {
     const char *rel = NULL;
     int type = parse_prefix(path, &rel);
@@ -300,11 +349,18 @@ void vfs_ls(const char *path) {
         printk("\nDirectory Listing (/):\n");
         printk("Name        Type                        Status\n");
         printk("----------  --------------------------  ---------\n");
+        printk("flash0      FAT32 Embedded Flash ROM    %s\n", g_flash_mounted ? "active" : "unmounted");
         printk("sd0         FAT32 VirtIO Persistent SD  %s\n", g_sd_mounted ? "mounted" : "unmounted");
         printk("ram0        FAT32 In-Memory RAMDisk     %s\n", g_ram_mounted ? "mounted" : "unmounted");
         printk("proc        Synthetic Metrics System    active\n");
         printk("dev         Hardware Device Nodes       active\n");
         printk("srv         IPC Service Registry        active\n\n");
+    } else if (type == 6) { // /flash0/
+        if (g_flash_mounted) {
+            fat32_list_dir(&g_fat32_flash, rel);
+        } else {
+            printk("ls: /flash0/ is not mounted\n");
+        }
     } else if (type == 1) { // /sd0/
         if (g_sd_mounted) {
             fat32_list_dir(&g_fat32_sd, rel);
@@ -332,4 +388,3 @@ void vfs_ls(const char *path) {
         printk("\n");
     }
 }
-

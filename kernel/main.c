@@ -17,17 +17,9 @@ extern char __binary_info_start;
 extern char __binary_info_end;
 extern char __flash_binary_end;
 
-static const uint32_t g_address_mapping_table[] = {
+const uint32_t g_address_mapping_table[] = {
     0x10000000, 0x10000000, 0x10400000, /* Flash identity mapping */
     0, 0, 0                             /* Null terminator */
-};
-
-const struct rp2350_boot_header_t __attribute__((section(".boot_header"))) g_rp2350_boot_header = {
-    .marker_start = BINARY_INFO_MARKER_START,
-    .info_start   = (uint32_t)&__binary_info_start,
-    .info_end     = (uint32_t)&__binary_info_end,
-    .mapping_table = (uint32_t)g_address_mapping_table,
-    .marker_end   = BINARY_INFO_MARKER_END,
 };
 
 static const char g_prog_name[] = "lugalos_microkernel";
@@ -52,7 +44,7 @@ const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = 
 
 void kernel_main(void) {
 #if defined(CONFIG_BOARD_RP2350)
-    uart_init(0x40034000);
+    uart_init(0x40070000);
     led_blink_phase(3);  /* 3 blinks = kernel_main reached */
 #else
     uart_init(0x10000000);
@@ -89,6 +81,9 @@ void kernel_main(void) {
     sched_init();
     shell_init();
     lisp_init();
+
+    /* Launch Interactive Console Shell (lsh) */
+    shell_run();
 
     /* Hang if system exits */
     while (1) {

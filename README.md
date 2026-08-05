@@ -64,10 +64,12 @@ lugalos/
 
 ## Building and Running in QEMU
 
-### Prerequisites
-* `riscv64-elf-gcc` or `riscv32-elf-gcc`
+### Toolchain & Prerequisites
+LugalOS uses a **single, unified 64-bit cross-compiler toolchain** (`riscv64-elf-gcc`) for all targets (both 64-bit MMU and 32-bit NOMMU / RP2350). The 64-bit toolchain target compiler compiles 32-bit RISC-V code cleanly via `-march=rv32imac_zicsr_zbs -mabi=ilp32`.
+
+* `riscv64-elf-gcc` (Unified 64-bit cross-compiler toolchain)
 * `cmake` and `ninja`
-* `python3` (for FAT32 SD disk image pre-population)
+* `python3` (for FAT32 SD disk image pre-population and Flash ROMDisk generation)
 * `qemu-system-riscv32` and `qemu-system-riscv64`
 
 ### Build & Run RV32 (NOMMU) Target
@@ -287,5 +289,6 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 LugalOS is licensed under the [MIT License](LICENSE).
 
 Special thanks to:
+* **Igor Michalak** for [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350) for the reference bootloader and hardware initialization patterns that enabled the bare-metal RP2350 port.
 * **Rui Ueyama** for [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
 * **Ken Thompson & Bell Labs** for Unix `ed` and the Plan 9 Operating System architectural model.

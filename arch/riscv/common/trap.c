@@ -73,8 +73,15 @@ void trap_handler(trap_frame_t *frame) {
         }
 
         /* Fatal exception hang */
-        printk("\n[Trap Exception] Cause: 0x%lx, epc=0x%lx, tval=0x%lx\n",
-               (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval);
+        uint32_t inst_val = 0;
+        if (frame->epc >= 0x10000000 && frame->epc < 0x20082000) {
+            const uint8_t *p = (const uint8_t *)frame->epc;
+            inst_val = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        }
+        printk("\n[Trap Exception] Cause: 0x%lx, epc=0x%lx, tval=0x%lx, inst=0x%08x\n",
+               (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval, (unsigned int)inst_val);
+        printk("[Trap Register Dump] a0=0x%lx, a1=0x%lx, sp=0x%lx, ra=0x%lx\n",
+               (unsigned long)frame->a0, (unsigned long)frame->a1, (unsigned long)frame->sp, (unsigned long)frame->ra);
         printk("[Fatal] System halted due to unhandled exception.\n");
         while (1) {
             __asm__ __volatile__("wfi");

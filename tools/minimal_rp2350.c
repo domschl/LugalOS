@@ -1,96 +1,89 @@
 /*
  * Standalone Minimal Hardware Test for RP2350 (Raspberry Pi Pico 2)
- * Pure bare-metal RISC-V C file (No OS kernel, No interrupts, No dependencies).
+ * Adopted from working bare-metal RP2350 driver (rp2350_cld).
  *
  * Actions:
- *   1. Toggles onboard LED (GPIO 25) at 2 Hz
- *   2. Outputs "RP2350 Bare-Metal Hardware Test OK!\r\n" to UART0 at 115200 baud
+ *   1. Initializes UART0 (115200 baud on GP0 TX / GP1 RX)
+ *   2. Toggles dual LEDs: GP25 (on-board LED) and GP16 (external LED)
+ *   3. Sends test feedback messages over UART0 and echoes RX characters
  */
 
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "../arch/riscv/rp2350/binary_info.h"
+#define CLOCKS_BASE             0x40010000UL
+#define RESETS_BASE             0x40020000UL
+#define RESETS_RESET_DONE       (RESETS_BASE + 0x08)
+#define RESETS_ATOMIC_CLEAR     (RESETS_BASE + 0x3000)
 
-extern char __binary_info_start;
-extern char __binary_info_end;
-extern char __flash_binary_end;
+#define IO_BANK0_BASE           0x40028000UL
+#define IO_BANK0_CTRL(n)        (IO_BANK0_BASE + 0x004 + (n) * 8)
 
-static const uint32_t g_address_mapping_table[] = {
-    0x10000000, 0x10000000, 0x10400000, /* Flash identity mapping */
-    0, 0, 0                             /* Null terminator */
-};
+#define PADS_BANK0_BASE         0x40038000UL
+#define PADS_BANK0_PAD(n)       (PADS_BANK0_BASE + 0x004 + (n) * 4)
 
-const struct rp2350_boot_header_t __attribute__((section(".boot_header"))) g_rp2350_boot_header = {
-    .marker_start = BINARY_INFO_MARKER_START,
-    .info_start   = (uint32_t)&__binary_info_start,
-    .info_end     = (uint32_t)&__binary_info_end,
-    .mapping_table = (uint32_t)g_address_mapping_table,
-    .marker_end   = BINARY_INFO_MARKER_END,
-};
+#define SIO_BASE                0xD0000000UL
+#define SIO_GPIO_OUT_SET        (SIO_BASE + 0x018)
+#define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
+#define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-static const char g_prog_name[] = "minimal_rp2350";
+#define UART0_BASE              0x40070000UL
 
-static const struct bi_id_and_string_t g_bi_name = {
-    .type = BINARY_INFO_TYPE_ID_AND_STRING,
-    .tag  = BINARY_INFO_TAG_RP,
-    .id   = BINARY_INFO_ID_RP_PROGRAM_NAME,
-    .value = (uint32_t)g_prog_name,
-};
+#define REG(addr) (*(volatile uint32_t *)(addr))
 
-static const struct bi_id_and_int_t g_bi_binary_end = {
-    .type = BINARY_INFO_TYPE_ID_AND_INT,
-    .tag  = BINARY_INFO_TAG_RP,
-    .id   = BINARY_INFO_ID_RP_BINARY_END,
-    .value = (uint32_t)&__flash_binary_end,
-};
-
-const void * const __attribute__((section(".binary_info"))) g_p_bi_name = &g_bi_name;
-const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = &g_bi_binary_end;
-
-#define RESETS_BASE        0x40020000UL
-#define RESETS_RESET       (*(volatile uint32_t *)(RESETS_BASE + 0x00))
-#define RESETS_RESET_DONE  (*(volatile uint32_t *)(RESETS_BASE + 0x08))
-
-#define RESET_MASK_UART0      (1u << 26)
-#define RESET_MASK_IO_BANK0   (1u << 6)
-#define RESET_MASK_PADS_BANK0 (1u << 9)
-
-#define IO_BANK0_BASE      0x40028000UL
-#define GPIO_CTRL(n)       (*(volatile uint32_t *)(IO_BANK0_BASE + 0x004 + (n)*8))
-#define GPIO_FUNC_UART     2
-#define GPIO_FUNC_SIO      5
-
-#define PADS_BANK0_BASE    0x40038000UL
-#define PAD_GPIO(n)        (*(volatile uint32_t *)(PADS_BANK0_BASE + 0x004 + (n)*4))
-
-#define SIO_BASE           0xD0000000UL
-#define SIO_GPIO_OUT_SET   (*(volatile uint32_t *)(SIO_BASE + 0x018))
-#define SIO_GPIO_OUT_CLR   (*(volatile uint32_t *)(SIO_BASE + 0x020))
-#define SIO_GPIO_OE_SET    (*(volatile uint32_t *)(SIO_BASE + 0x038))
-
-#define LED_PIN            25
-#define LED_MASK           (1u << LED_PIN)
-
-#define UART0_BASE         0x40034000UL
-#define UARTDR             (*(volatile uint32_t *)(UART0_BASE + 0x00))
-#define UARTFR             (*(volatile uint32_t *)(UART0_BASE + 0x18))
-#define UARTIBRD           (*(volatile uint32_t *)(UART0_BASE + 0x24))
-#define UARTFBRD           (*(volatile uint32_t *)(UART0_BASE + 0x28))
-#define UARTLCR_H          (*(volatile uint32_t *)(UART0_BASE + 0x2c))
-#define UARTCR             (*(volatile uint32_t *)(UART0_BASE + 0x30))
-
-#define UARTFR_TXFF        (1u << 5)
+#define PIN_MASK ((1u << 25) | (1u << 16))
 
 static void delay(volatile uint32_t count) {
     while (count--) {
-        __asm__ volatile("nop");
+        __asm__ volatile ("nop");
     }
 }
 
+static void uart_init(uint32_t baudrate) {
+    (void)baudrate;
+
+    /* 1. Explicitly enable clk_peri and attach it to clk_sys (150 MHz) */
+    REG(CLOCKS_BASE + 0x48) = (1u << 11);
+
+    /* 2. Unreset IO_BANK0 (bit 6), PADS_BANK0 (bit 9), and UART0 (bit 26) */
+    uint32_t unreset_mask = (1u << 6) | (1u << 9) | (1u << 26);
+    REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
+    
+    /* Wait for RESET_DONE status register @ 0x40020008 */
+    while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
+
+    /* 3. Mux GP0 to UART0 TX (Function 2), GP1 to UART0 RX (Function 2) */
+    REG(IO_BANK0_CTRL(0)) = 2;
+    REG(PADS_BANK0_PAD(0)) = 0x56;
+    REG(IO_BANK0_CTRL(1)) = 2;
+    REG(PADS_BANK0_PAD(1)) = 0x56;
+
+    /* 4. Disable UART before programming baud rate and line control */
+    REG(UART0_BASE + 0x30) = 0;
+
+    /* 5. Configure Baud Rate for 150MHz clk_peri -> 115200 baud */
+    REG(UART0_BASE + 0x24) = 81;  // UARTIBRD
+    REG(UART0_BASE + 0x28) = 24;  // UARTFBRD
+
+    /* 6. 8 bits, no parity, 1 stop bit, enable FIFOs */
+    REG(UART0_BASE + 0x2C) = (3u << 5) | (1u << 4); // UARTLCR_H
+
+    /* 7. Enable UART0, TX & RX */
+    REG(UART0_BASE + 0x30) = (1u << 0) | (1u << 8) | (1u << 9); // UARTCR
+}
+
 static void uart_putc(char c) {
-    while (UARTFR & UARTFR_TXFF);
-    UARTDR = (uint8_t)c;
+    while (REG(UART0_BASE + 0x18) & (1u << 5));
+    REG(UART0_BASE + 0x00) = (uint8_t)c;
+}
+
+static bool uart_has_char(void) {
+    return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0;
+}
+
+static char uart_getc(void) {
+    while (!uart_has_char());
+    return (char)(REG(UART0_BASE + 0x00) & 0xFF);
 }
 
 static void uart_puts(const char *s) {
@@ -106,40 +99,47 @@ void trap_handler(void *tf) {
 }
 
 void minimal_main(void) {
-    /* 1. Release RESETS for IO_BANK0, PADS_BANK0, and UART0 */
-    uint32_t mask = RESET_MASK_IO_BANK0 | RESET_MASK_PADS_BANK0 | RESET_MASK_UART0;
-    RESETS_RESET &= ~mask;
-    while ((RESETS_RESET_DONE & mask) != mask);
+    /* Initialize UART0 (115200 baud on GP0) */
+    uart_init(115200);
 
-    /* 2. Configure PADS_BANK0 for GPIO25: clear ISO bit (bit 8) and OD bit (bit 7), set drive 4mA */
-    PAD_GPIO(LED_PIN) = 0x00000056;
+    /* Unreset IO_BANK0 (bit 6) and PADS_BANK0 (bit 9) */
+    uint32_t unreset_mask = (1u << 6) | (1u << 9);
+    REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
+    while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
-    /* 3. Configure GPIO25 for SIO output */
-    GPIO_CTRL(LED_PIN) = GPIO_FUNC_SIO;
-    SIO_GPIO_OE_SET    = LED_MASK;
+    /* Mux GP25 (onboard LED) and GP16 (external LED) to SIO (Function 5) */
+    REG(IO_BANK0_CTRL(25)) = 5;
+    REG(IO_BANK0_CTRL(16)) = 5;
 
-    /* 4. Configure GPIO0 -> UART0 TX, GPIO1 -> UART0 RX */
-    GPIO_CTRL(0) = GPIO_FUNC_UART;
-    GPIO_CTRL(1) = GPIO_FUNC_UART;
+    /* Enable pad output buffers */
+    REG(PADS_BANK0_PAD(25)) = 0x56;
+    REG(PADS_BANK0_PAD(16)) = 0x56;
 
-    /* 5. Configure UART0: 115200 8N1 at 150 MHz CLK_PERI */
-    UARTCR = 0;
-    UARTIBRD = 81;
-    UARTFBRD = 24;
-    UARTLCR_H = 0x70;
-    UARTCR = (1u << 0) | (1u << 8) | (1u << 9);
+    /* Enable GP25 and GP16 output buffers in SIO */
+    REG(SIO_GPIO_OE_SET) = PIN_MASK;
 
-    /* 6. Blink LED and print Hello message continuously */
-    uint32_t counter = 0;
+    uart_puts("[RP2350_MINIMAL] UART Echo & Dual LED Test Initialized!\n");
+
+    uint32_t timer = 0;
+    bool led_state = false;
+
+    /* Interactive Echo Loop */
     while (1) {
-        SIO_GPIO_OUT_SET = LED_MASK;
-        uart_puts("RP2350 Bare-Metal Test: LED ON!\r\n");
-        delay(3000000);
+        if (uart_has_char()) {
+            char c = uart_getc();
+            if (c == '\r') uart_putc('\n');
+            uart_putc(c);
+        }
 
-        SIO_GPIO_OUT_CLR = LED_MASK;
-        uart_puts("RP2350 Bare-Metal Test: LED OFF!\r\n");
-        delay(3000000);
-
-        counter++;
+        timer++;
+        if (timer >= 500000) {
+            timer = 0;
+            led_state = !led_state;
+            if (led_state) {
+                REG(SIO_GPIO_OUT_SET) = PIN_MASK;
+            } else {
+                REG(SIO_GPIO_OUT_CLR) = PIN_MASK;
+            }
+        }
     }
 }

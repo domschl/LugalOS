@@ -13,7 +13,7 @@ int elf_load_and_run(const char *path) {
         if (!exec_page) return -1;
     }
 
-    uint8_t file_buf[4096];
+    static uint8_t file_buf[4096];
     int bytes = vfs_read(path, file_buf, sizeof(file_buf));
     if (bytes < 16) {
         printk("[ELF Error] Failed to read ELF file '%s' (bytes=%d)\n", path, bytes);
@@ -104,42 +104,42 @@ int elf_load_and_run(const char *path) {
     volatile int ret_code = 0;
 
 #if defined(CONFIG_TARGET_RV32)
+    register uintptr_t r_sp __asm__("a0") = stack_top;
+    register uintptr_t r_target __asm__("a1") = run_target;
     __asm__ __volatile__(
         "addi sp, sp, -8\n\t"
         "sw ra, 4(sp)\n\t"
         "sw s0, 0(sp)\n\t"
         "mv s0, sp\n\t"
-        "mv sp, %1\n\t"
-        "lla ra, 1f\n\t"
-        "jr %2\n\t"
-        "1:\n\t"
+        "mv sp, a0\n\t"
+        "jalr ra, a1, 0\n\t"
         "mv sp, s0\n\t"
         "mv %0, a0\n\t"
         "lw ra, 4(sp)\n\t"
         "lw s0, 0(sp)\n\t"
         "addi sp, sp, 8\n\t"
         : "=r"(ret_code)
-        : "r"(stack_top), "r"(run_target)
-        : "ra", "a0", "memory"
+        : "r"(r_sp), "r"(r_target)
+        : "memory"
     );
 #else
+    register uintptr_t r_sp __asm__("a0") = stack_top;
+    register uintptr_t r_target __asm__("a1") = run_target;
     __asm__ __volatile__(
         "addi sp, sp, -16\n\t"
         "sd ra, 8(sp)\n\t"
         "sd s0, 0(sp)\n\t"
         "mv s0, sp\n\t"
-        "mv sp, %1\n\t"
-        "lla ra, 1f\n\t"
-        "jr %2\n\t"
-        "1:\n\t"
+        "mv sp, a0\n\t"
+        "jalr ra, a1, 0\n\t"
         "mv sp, s0\n\t"
         "mv %0, a0\n\t"
         "ld ra, 8(sp)\n\t"
         "ld s0, 0(sp)\n\t"
         "addi sp, sp, 16\n\t"
         : "=r"(ret_code)
-        : "r"(stack_top), "r"(run_target)
-        : "ra", "a0", "memory"
+        : "r"(r_sp), "r"(r_target)
+        : "memory"
     );
 #endif
 

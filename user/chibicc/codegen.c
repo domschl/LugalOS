@@ -9,6 +9,12 @@
 #include "kernel/printk.h"
 #include <string.h>
 
+#if defined(CONFIG_TARGET_RV64)
+#define REG_SZ 8
+#else
+#define REG_SZ 4
+#endif
+
 static int code_idx = 0;
 
 static int emit_word(uint8_t *buf, int offset, uint32_t word) {
@@ -53,29 +59,33 @@ static uint32_t encode_store(int rs2, int rs1, int16_t imm, int sz) {
     uint32_t uimm = (uint32_t)imm & 0xFFF;
     uint32_t imm11_5 = (uimm >> 5) & 0x7F;
     uint32_t imm4_0 = uimm & 0x1F;
-    uint8_t funct3 = 0x3;
-    if (sz == 1) funct3 = 0x0;
-    else if (sz == 2) funct3 = 0x1;
-    else if (sz == 4) funct3 = 0x2;
+    uint8_t funct3 = 0x2; // Default 32-bit (sw)
+    if (sz == 1) funct3 = 0x0;       // sb
+    else if (sz == 2) funct3 = 0x1;  // sh
+    else if (sz == 4) funct3 = 0x2;  // sw
+    else if (sz == 8) {
 #if defined(CONFIG_TARGET_RV64)
-    else if (sz == 8) funct3 = 0x3;
+        funct3 = 0x3; // sd (RV64)
 #else
-    else if (sz == 8) funct3 = 0x2;
+        funct3 = 0x2; // sw (RV32 fallback)
 #endif
+    }
     return (imm11_5 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (imm4_0 << 7) | 0x23;
 }
 
 static uint32_t encode_load(int rd, int rs1, int16_t imm, int sz) {
     uint32_t uimm = (uint32_t)imm & 0xFFF;
-    uint8_t funct3 = 0x3;
-    if (sz == 1) funct3 = 0x0;
-    else if (sz == 2) funct3 = 0x1;
-    else if (sz == 4) funct3 = 0x2;
+    uint8_t funct3 = 0x2; // Default 32-bit (lw)
+    if (sz == 1) funct3 = 0x0;       // lb
+    else if (sz == 2) funct3 = 0x1;  // lh
+    else if (sz == 4) funct3 = 0x2;  // lw
+    else if (sz == 8) {
 #if defined(CONFIG_TARGET_RV64)
-    else if (sz == 8) funct3 = 0x3;
+        funct3 = 0x3; // ld (RV64)
 #else
-    else if (sz == 8) funct3 = 0x2;
+        funct3 = 0x2; // lw (RV32 fallback)
 #endif
+    }
     return (uimm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x03;
 }
 
@@ -161,7 +171,7 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
         case ND_VAR: {
             int sz = (node->var && node->var->ty) ? node->var->ty->size : 4;
             if (node->var && node->var->ty && node->var->ty->kind == TY_PTR) {
-                sz = 8;
+                sz = REG_SZ;
             }
             if (node->var && node->var->ty && (node->var->ty->kind == TY_ARRAY || node->var->ty->kind == TY_STRUCT)) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, (int16_t)node->var->offset));
@@ -195,6 +205,7 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
         case ND_ASSIGN:
             if (node->lhs->kind == ND_VAR) {
                 int sz = (node->lhs->var && node->lhs->var->ty) ? node->lhs->var->ty->size : 4;
+                if (node->lhs->var && node->lhs->var->ty && node->lhs->var->ty->kind == TY_PTR) sz = REG_SZ;
                 gen_expr(node->rhs, code_buf);
                 code_idx = emit_word(code_buf, code_idx, encode_store(10, 8, (int16_t)node->lhs->var->offset, sz));
             } else if (node->lhs->kind == ND_DEREF || node->lhs->kind == ND_MEMBER) {
@@ -206,10 +217,10 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 }
                 gen_expr(node->rhs, code_buf);
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -16));
-                code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, 8));
+                code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, REG_SZ));
 
                 gen_addr(node->lhs, code_buf);
-                code_idx = emit_word(code_buf, code_idx, encode_load(11, 2, 0, 8));
+                code_idx = emit_word(code_buf, code_idx, encode_load(11, 2, 0, REG_SZ));
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 16));
 
                 code_idx = emit_word(code_buf, code_idx, encode_store(11, 10, 0, sz));
@@ -221,11 +232,11 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
             for (Node *arg = node->args; arg; arg = arg->next) {
                 gen_expr(arg, code_buf);
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -16));
-                code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, 8));
+                code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, REG_SZ));
                 arg_cnt++;
             }
             for (int i = arg_cnt - 1; i >= 0; i--) {
-                code_idx = emit_word(code_buf, code_idx, encode_load(10 + i, 2, 0, 8));
+                code_idx = emit_word(code_buf, code_idx, encode_load(10 + i, 2, 0, REG_SZ));
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 16));
             }
 
@@ -251,32 +262,16 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
                 return;
             }
-            if (strcmp(node->funcname, "read_file") == 0) {
-                code_idx = emit_word(code_buf, code_idx, encode_addi(13, 12, 0)); // a3 = a2
-                code_idx = emit_word(code_buf, code_idx, encode_addi(12, 11, 0)); // a2 = a1
-                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
-                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 13)); // a0 = 13 (SYS_READ_FILE)
-                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
-                return;
-            }
-            if (strcmp(node->funcname, "write_file") == 0) {
-                code_idx = emit_word(code_buf, code_idx, encode_addi(13, 12, 0)); // a3 = a2
-                code_idx = emit_word(code_buf, code_idx, encode_addi(12, 11, 0)); // a2 = a1
-                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
-                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 14)); // a0 = 14 (SYS_WRITE_FILE)
-                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
-                return;
-            }
 
-            int target_offset = -1;
+            int target_offset = 0;
             for (Function *fn = global_prog; fn; fn = fn->next) {
                 if (strcmp(fn->name, node->funcname) == 0) {
                     target_offset = fn->code_offset;
                     break;
                 }
             }
-            if (target_offset < 0) {
-                printk("[chibicc Error] Undefined function '%s'\n", node->funcname);
+            if (target_offset == 0 && strcmp(node->funcname, "main") != 0) {
+                printk("[chibicc Warning] Unresolved function call '%s'\n", node->funcname);
                 return;
             }
             int jal_pc = code_idx;
@@ -295,10 +290,10 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
         case ND_LE: {
             gen_expr(node->rhs, code_buf);
             code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, -16));
-            code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, 8));
+            code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, REG_SZ));
 
             gen_expr(node->lhs, code_buf);
-            code_idx = emit_word(code_buf, code_idx, encode_load(11, 2, 0, 8));
+            code_idx = emit_word(code_buf, code_idx, encode_load(11, 2, 0, REG_SZ));
             code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 16));
 
             if (node->kind == ND_ADD) code_idx = emit_word(code_buf, code_idx, encode_add(10, 10, 11));
@@ -321,7 +316,8 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, encode_sltu(10, 0, 10));
             }
             return;
-        }default:
+        }
+        default:
             break;
     }
 }
@@ -333,8 +329,8 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
 
     if (node->kind == ND_RETURN) {
         gen_expr(node->lhs, code_buf);
-        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(current_stack_sz - 16), 8));
-        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(current_stack_sz - 8), 8));
+        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(current_stack_sz - 2 * REG_SZ), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(current_stack_sz - REG_SZ), REG_SZ));
         code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)current_stack_sz));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
         return;
@@ -462,8 +458,8 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
             current_stack_sz = stack_sz;
 
             code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)-stack_sz));
-            code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - 8), 8));
-            code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 16), 8));
+            code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
             code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
 
             int param_idx = 0;
@@ -475,8 +471,8 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
 
             gen_stmt(fn->body, code_buf);
 
-            code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 16), 8));
-            code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - 8), 8));
+            code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
             code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
             code_idx = emit_word(code_buf, code_idx, encode_ret());
         }
@@ -484,6 +480,7 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         rodata_offset = (code_idx + 7) & ~7;
         for (Obj *var = globals; var; var = var->next) {
             if (var->is_global && var->init_data) {
+                rodata_offset = (rodata_offset + 3) & ~3;
                 var->offset = rodata_offset;
                 int len = strlen(var->init_data) + 1;
                 rodata_offset += len;
@@ -504,8 +501,8 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         current_stack_sz = stack_sz;
 
         code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)-stack_sz));
-        code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - 8), 8));
-        code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 16), 8));
+        code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
         code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
 
         int param_idx = 0;
@@ -517,19 +514,21 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
 
         gen_stmt(fn->body, code_buf);
 
-        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 16), 8));
-        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - 8), 8));
+        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
         code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
     }
 
-    // Copy string literal payloads into .rodata section
+    // Copy string literal payloads into .rodata section (4-byte aligned)
     for (Obj *var = globals; var; var = var->next) {
         if (var->is_global && var->init_data) {
             int len = strlen(var->init_data) + 1;
+            int pad_len = (len + 3) & ~3;
+            memset(code_buf + var->offset, 0, pad_len);
             memcpy(code_buf + var->offset, var->init_data, len);
-            if (var->offset + len > code_idx) {
-                code_idx = var->offset + len;
+            if (var->offset + pad_len > code_idx) {
+                code_idx = var->offset + pad_len;
             }
         }
     }

@@ -28,11 +28,10 @@ elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/qemu-rv64.ld")
     add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_MMU=1 CONFIG_MODE_S=1)
 elseif(LUGALOS_TARGET STREQUAL "RP2350")
-    set(ARCH_MARCH "rv32imac_zicsr_zifencei")
+    set(ARCH_MARCH "rv32imac_zicsr_zbs")
     set(ARCH_MABI "ilp32")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/rp2350.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_RP2350=1)
-
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -70,6 +69,14 @@ if(ENABLE_SANITIZERS)
     add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all)
 endif()
 
+# Generate Embedded Flash FAT32 image (flash_fs.c)
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
+    COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
+)
+
 # Core Sources
 set(SOURCES
     kernel/main.c
@@ -85,6 +92,8 @@ set(SOURCES
     arch/riscv/common/trap.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
+    drivers/flashdisk.c
+    ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     fs/fat32.c
     fs/vfs_server.c
     libc/string.c
@@ -99,12 +108,11 @@ set(SOURCES
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    list(APPEND SOURCES drivers/uart_rp2350.c)
+    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c)
 endif()
-
 
 # Architecture-specific memory management source
 if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350")
@@ -116,42 +124,25 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 
-# Find official picotool binary if available
-set(PICOTOOL_EXECUTABLE "/home/dsc/gith/domschl/LugalChess/build_firmware_riscv/_deps/picotool-build/picotool")
-
-if(EXISTS "${PICOTOOL_EXECUTABLE}")
-    set(PICOTOOL_CONVERT_FLAGS --family rp2350-riscv --abs-block)
-else()
-    set(PICOTOOL_CONVERT_FLAGS)
-endif()
+# UF2 converter: official uf2conv.py with RP2350 RISC-V family support
+set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)
 
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
-if(EXISTS "${PICOTOOL_EXECUTABLE}")
-    set(ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert lugalos.elf lugalos.uf2 ${PICOTOOL_CONVERT_FLAGS})
-else()
-    set(ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py lugalos.elf lugalos.bin lugalos.uf2)
-endif()
-
 add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
-    COMMAND ${ELF2UF2_CMD}
+    COMMAND ${UF2CONV_PY} --family rp2350_riscv --base 0x10000000 lugalos.bin -o lugalos.uf2
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    add_executable(minimal_rp2350.elf tools/minimal_rp2350.c arch/riscv/common/entry.S)
+    add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S)
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
-    if(EXISTS "${PICOTOOL_EXECUTABLE}")
-        set(MINIMAL_ELF2UF2_CMD ${PICOTOOL_EXECUTABLE} uf2 convert minimal_rp2350.elf minimal_rp2350.uf2 ${PICOTOOL_CONVERT_FLAGS})
-    else()
-        set(MINIMAL_ELF2UF2_CMD python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/elf2uf2_rp2350.py minimal_rp2350.elf minimal_rp2350.bin minimal_rp2350.uf2)
-    endif()
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD
         COMMAND ${CMAKE_OBJCOPY} -O binary minimal_rp2350.elf minimal_rp2350.bin
-        COMMAND ${MINIMAL_ELF2UF2_CMD}
+        COMMAND ${UF2CONV_PY} --family rp2350_riscv --base 0x10000000 minimal_rp2350.bin -o minimal_rp2350.uf2
         COMMENT "Generated minimal_rp2350.uf2 standalone hardware test"
     )
 endif()

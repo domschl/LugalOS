@@ -1,137 +1,147 @@
 /*
- * LugalOS Hardware Driver: PL011 UART + Onboard LED for RP2350 (Pico 2)
+ * LugalOS Hardware Driver: PL011 UART0 + Dual Onboard/External LEDs for RP2350 (Pico 2)
+ * Adopted from working bare-metal RP2350 driver (rp2350_cld).
  *
- * Exact RP2350 Register Definitions verified from Pico SDK rp2350 headers:
- *   RESETS_BASE      = 0x40020000
- *   RESETS_UART0     = bit 26 (0x04000000)
- *   RESETS_IO_BANK0  = bit 6  (0x00000040)
- *   RESETS_PADS_BANK0= bit 9  (0x00000200)
- *
- *   SIO_BASE         = 0xd0000000
- *   SIO_GPIO_OUT_SET = 0x018
- *   SIO_GPIO_OUT_CLR = 0x020
- *   SIO_GPIO_OE_SET  = 0x038
- *
- *   IO_BANK0_BASE    = 0x40028000
- *   GPIO_CTRL(n)     = IO_BANK0_BASE + 0x004 + n*8
- *   FUNCSEL_SIO      = 5
- *   FUNCSEL_UART     = 2
- *
- *   UART0_BASE       = 0x40034000
- *   CLK_PERI default = 150 MHz
- *   IBRD=81, FBRD=24 for 115200 8N1 at 150 MHz
+ * Hardware Map:
+ *   GP0  : UART0 TX (Function 2)
+ *   GP1  : UART0 RX (Function 2)
+ *   GP25 : Onboard LED (Function 5 - SIO)
+ *   GP16 : External LED (Function 5 - SIO, active-high pulse)
  */
 
 #include "drivers/uart.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-/* --- RESETS (0x40020000) ------------------------------------------------ */
-#define RESETS_BASE        0x40020000UL
-#define RESETS_RESET       (*(volatile uint32_t *)(RESETS_BASE + 0x00))
-#define RESETS_RESET_DONE  (*(volatile uint32_t *)(RESETS_BASE + 0x08))
+#define CLOCKS_BASE             0x40010000UL
+#define RESETS_BASE             0x40020000UL
+#define RESETS_RESET_DONE       (RESETS_BASE + 0x08)
+#define RESETS_ATOMIC_CLEAR     (RESETS_BASE + 0x3000)
 
-#define RESET_MASK_UART0      (1u << 26)
-#define RESET_MASK_IO_BANK0   (1u << 6)
-#define RESET_MASK_PADS_BANK0 (1u << 9)
+#define IO_BANK0_BASE           0x40028000UL
+#define IO_BANK0_CTRL(n)        (IO_BANK0_BASE + 0x004 + (n) * 8)
 
-/* --- IO_BANK0 (0x40028000) ---------------------------------------------- */
-#define IO_BANK0_BASE  0x40028000UL
-#define GPIO_CTRL(n)   (*(volatile uint32_t *)(IO_BANK0_BASE + 0x004 + (n)*8))
+#define PADS_BANK0_BASE         0x40038000UL
+#define PADS_BANK0_PAD(n)       (PADS_BANK0_BASE + 0x004 + (n) * 4)
 
-#define GPIO_FUNC_UART 2
-#define GPIO_FUNC_SIO  5
+#define SIO_BASE                0xD0000000UL
+#define SIO_GPIO_OUT_SET        (SIO_BASE + 0x018)
+#define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
+#define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-/* --- SIO (0xd0000000) --------------------------------------------------- */
-#define SIO_BASE           0xD0000000UL
-#define SIO_GPIO_OUT_SET   (*(volatile uint32_t *)(SIO_BASE + 0x018))
-#define SIO_GPIO_OUT_CLR   (*(volatile uint32_t *)(SIO_BASE + 0x020))
-#define SIO_GPIO_OE_SET    (*(volatile uint32_t *)(SIO_BASE + 0x038))
+#define UART0_BASE              0x40070000UL
 
-#define LED_PIN   25
-#define LED_MASK  (1u << LED_PIN)
+#define REG(addr) (*(volatile uint32_t *)(addr))
 
-/* --- PL011 UART0 (0x40034000) ------------------------------------------- */
-#define UART0_BASE_DEFAULT 0x40034000UL
-static volatile uint32_t *uart_base = (volatile uint32_t *)UART0_BASE_DEFAULT;
-
-#define UARTDR    (0x00 / 4)
-#define UARTFR    (0x18 / 4)
-#define UARTIBRD  (0x24 / 4)
-#define UARTFBRD  (0x28 / 4)
-#define UARTLCR_H (0x2c / 4)
-#define UARTCR    (0x30 / 4)
-#define UARTFR_TXFF (1u << 5)
-#define UARTFR_RXFE (1u << 4)
+#define LED_MASK  ((1u << 25) | (1u << 16))
 
 static void delay_cycles(volatile uint32_t n) {
     while (n--) { __asm__ volatile("nop"); }
 }
 
-void led_on(void)  { SIO_GPIO_OUT_SET = LED_MASK; }
-void led_off(void) { SIO_GPIO_OUT_CLR = LED_MASK; }
+static inline uint32_t read_mcycle(void) {
+    uint32_t c;
+    __asm__ volatile("csrr %0, mcycle" : "=r"(c));
+    return c;
+}
+
+void led_on(void) {
+    REG(SIO_GPIO_OUT_SET) = LED_MASK;
+}
+
+void led_off(void) {
+    REG(SIO_GPIO_OUT_CLR) = LED_MASK;
+}
 
 void led_blink_phase(int count) {
     for (int i = 0; i < count; i++) {
         led_on();
-        delay_cycles(2000000);
+        delay_cycles(4000000);
         led_off();
-        delay_cycles(2000000);
+        delay_cycles(4000000);
     }
-    delay_cycles(6000000);
+    delay_cycles(8000000);
+}
+
+static uint32_t g_alive_loop_cnt = 0;
+
+void gp16_alive_tick(void) {
+    g_alive_loop_cnt++;
+    if (g_alive_loop_cnt >= 5000000UL) { /* Trigger pulse every ~2s of UART polling */
+        g_alive_loop_cnt = 0;
+        /* Pulse GP16 HIGH for 50ms (ON), then return LOW (OFF) */
+        REG(SIO_GPIO_OUT_SET) = (1u << 16);
+        delay_cycles(7500000); /* 50 ms pulse */
+        REG(SIO_GPIO_OUT_CLR) = (1u << 16);
+    }
 }
 
 void uart_init(uintptr_t base_addr) {
-    if (base_addr != 0) {
-        uart_base = (volatile uint32_t *)base_addr;
-    }
+    (void)base_addr;
 
-    /* 1. Unreset IO_BANK0 and PADS_BANK0 first so GPIOs work */
-    uint32_t gpio_resets = RESET_MASK_IO_BANK0 | RESET_MASK_PADS_BANK0;
-    RESETS_RESET &= ~gpio_resets;
-    while ((RESETS_RESET_DONE & gpio_resets) != gpio_resets);
+    /* 1. Explicitly enable clk_peri and attach it to clk_sys (150 MHz) */
+    REG(CLOCKS_BASE + 0x48) = (1u << 11);
 
-    /* 2. Configure GPIO25 LED for SIO output and signal phase 1 (alive!) */
-    GPIO_CTRL(LED_PIN) = GPIO_FUNC_SIO;
-    SIO_GPIO_OE_SET    = LED_MASK;
-    led_blink_phase(1);
+    /* 2. Unreset IO_BANK0 (bit 6), PADS_BANK0 (bit 9), UART0 (bit 26) */
+    uint32_t unreset_mask = (1u << 6) | (1u << 9) | (1u << 26);
+    REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
+    
+    /* Wait for RESET_DONE status register @ 0x40020008 */
+    while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
-    /* 3. Unreset UART0 peripheral */
-    RESETS_RESET &= ~RESET_MASK_UART0;
-    while ((RESETS_RESET_DONE & RESET_MASK_UART0) != RESET_MASK_UART0);
+    /* 3. Configure LEDs (GP25 onboard + GP16 external) for SIO (Function 5) */
+    REG(IO_BANK0_CTRL(25)) = 5;
+    REG(IO_BANK0_CTRL(16)) = 5;
+    REG(PADS_BANK0_PAD(25)) = 0x56;
+    REG(PADS_BANK0_PAD(16)) = 0x56;
+    REG(SIO_GPIO_OE_SET) = LED_MASK;
 
-    /* 4. Configure GPIO0 -> UART0 TX, GPIO1 -> UART0 RX */
-    GPIO_CTRL(0) = GPIO_FUNC_UART;
-    GPIO_CTRL(1) = GPIO_FUNC_UART;
+    /* Default GP16 to LOW (OFF in active-high configuration) */
+    REG(SIO_GPIO_OUT_CLR) = (1u << 16);
 
-    /* 5. Configure PL011 UART0: 115200 8N1 at 150 MHz CLK_PERI */
-    uart_base[UARTCR] = 0;             /* Disable UART */
-    uart_base[UARTIBRD] = 81;          /* 150MHz / (16 * 115200) = 81.3802 */
-    uart_base[UARTFBRD] = 24;          /* 0.3802 * 64 = 24.33 -> 24 */
-    uart_base[UARTLCR_H] = 0x70;       /* 8-bit, FIFO enabled */
-    uart_base[UARTCR] = (1u << 0) | (1u << 8) | (1u << 9); /* Enable UART, TX, RX */
+    /* 4. Mux GP0 to UART0 TX (Function 2), GP1 to UART0 RX (Function 2) */
+    REG(IO_BANK0_CTRL(0)) = 2;
+    REG(PADS_BANK0_PAD(0)) = 0x56;
 
-    /* Signal phase 2: UART initialized! */
+    REG(IO_BANK0_CTRL(1)) = 2;
+    REG(PADS_BANK0_PAD(1)) = 0x56;
+
+    /* 5. Disable UART before programming baud rate and line control */
+    REG(UART0_BASE + 0x30) = 0;
+
+    /* 6. Configure Baud Rate for 150MHz clk_peri -> 115200 baud */
+    REG(UART0_BASE + 0x24) = 81;  // UARTIBRD
+    REG(UART0_BASE + 0x28) = 24;  // UARTFBRD
+
+    /* 7. 8 bits, no parity, 1 stop bit, enable FIFOs */
+    REG(UART0_BASE + 0x2C) = (3u << 5) | (1u << 4); // UARTLCR_H
+
+    /* 8. Enable UART0, Transmit (TXE) & Receive (RXE) */
+    REG(UART0_BASE + 0x30) = (1u << 0) | (1u << 8) | (1u << 9); // UARTCR
+
+    /* Signal phase: Hardware & LEDs initialized! */
     led_blink_phase(2);
 
-    /* Print immediate test message directly to UART */
-    uart_puts("\r\n[RP2350 Hardware UART0 Online] Hello, worlds!\r\n");
+    g_alive_loop_cnt = 0;
+
+    uart_puts("\r\n[RP2350 Hardware UART0 Online] LugalOS Microkernel Starting...\r\n");
 }
 
 void uart_putc(char c) {
-    if (!uart_base) return;
-    while (uart_base[UARTFR] & UARTFR_TXFF);
-    uart_base[UARTDR] = (uint8_t)c;
+    while (REG(UART0_BASE + 0x18) & (1u << 5));
+    REG(UART0_BASE + 0x00) = (uint8_t)c;
 }
 
 bool uart_has_char(void) {
-    if (!uart_base) return false;
-    return (uart_base[UARTFR] & UARTFR_RXFE) == 0;
+    gp16_alive_tick();
+    return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0;
 }
 
 char uart_getc(void) {
-    while (!uart_has_char());
-    return (char)(uart_base[UARTDR] & 0xFF);
+    while (!uart_has_char()) {
+        gp16_alive_tick();
+    }
+    return (char)(REG(UART0_BASE + 0x00) & 0xFF);
 }
 
 void uart_puts(const char *s) {

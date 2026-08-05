@@ -248,16 +248,22 @@ static lisp_val_t *prim_rm(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    char safe_src[128];
+    char safe_dst[128];
     const char *src = get_str_val(args->u.pair.car);
     const char *dst = get_str_val(args->u.pair.cdr->u.pair.car);
-    return (chibicc_compile(src, dst) == 0) ? &true_val : &false_val;
+    strncpy_local(safe_src, src, 127); safe_src[127] = '\0';
+    strncpy_local(safe_dst, dst, 127); safe_dst[127] = '\0';
+    return (chibicc_compile(safe_src, safe_dst) == 0) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
-    const char *path = get_str_val(args->u.pair.car);
-    int res = elf_load_and_run(path);
+    char safe_path[128];
+    const char *p = get_str_val(args->u.pair.car);
+    strncpy_local(safe_path, p, 127); safe_path[127] = '\0';
+    int res = elf_load_and_run(safe_path);
     return make_int(res);
 }
 
@@ -405,17 +411,23 @@ void lisp_init(void) {
     /* Automatically load system boot scripts if present */
     static char boot_buf[8192];
     int len = vfs_read("/sd0/system/stdlib.lisp", boot_buf, sizeof(boot_buf) - 1);
+    if (len <= 0) {
+        len = vfs_read("/flash0/system/stdlib.lisp", boot_buf, sizeof(boot_buf) - 1);
+    }
     if (len > 0) {
         boot_buf[len] = '\0';
         lisp_eval_string(boot_buf);
-        printk("[Lisp Boot] Loaded /sd0/system/stdlib.lisp\n");
+        printk("[Lisp Boot] Loaded system/stdlib.lisp\n");
     }
 
     len = vfs_read("/sd0/system/init.lisp", boot_buf, sizeof(boot_buf) - 1);
+    if (len <= 0) {
+        len = vfs_read("/flash0/system/init.lisp", boot_buf, sizeof(boot_buf) - 1);
+    }
     if (len > 0) {
         boot_buf[len] = '\0';
         lisp_eval_string(boot_buf);
-        printk("[Lisp Boot] Executed /sd0/system/init.lisp\n");
+        printk("[Lisp Boot] Executed system/init.lisp\n");
     }
 }
 

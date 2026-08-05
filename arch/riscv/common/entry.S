@@ -101,6 +101,7 @@ trap_vector_entry:
     addi sp, sp, -(36 * REGBYTES)
 
     REG_S ra,  0*REGBYTES(sp)
+    REG_S sp,  1*REGBYTES(sp)
     REG_S gp,  2*REGBYTES(sp)
     REG_S tp,  3*REGBYTES(sp)
     REG_S t0,  4*REGBYTES(sp)
