@@ -52,10 +52,13 @@ static inline void cs_deselect(void) {
 }
 
 static uint8_t spi_transfer(uint8_t tx) {
-    while (!(REG(SSPSR) & (1u << 1))); // Wait for TX FIFO Not Full (TNF)
+    int timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 1)) && --timeout > 0);
     REG(SSPDR) = tx;
-    while (REG(SSPSR) & (1u << 4));    // Wait for Busy (BSY) flag to clear
-    while (!(REG(SSPSR) & (1u << 2))); // Wait for RX FIFO Not Empty (RNE)
+    timeout = 10000;
+    while ((REG(SSPSR) & (1u << 4)) && --timeout > 0);
+    timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 2)) && --timeout > 0);
     return (uint8_t)(REG(SSPDR) & 0xFF);
 }
 
@@ -83,8 +86,8 @@ static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
 }
 
 static int spisd_init_hardware(void) {
-    /* 1. Unreset SPI1 (bit 25), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */
-    uint32_t unreset_mask = (1u << 25) | (1u << 6) | (1u << 9);
+    /* 1. Unreset SPI1 (bit 18), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */
+    uint32_t unreset_mask = (1u << 18) | (1u << 6) | (1u << 9);
     REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
@@ -118,12 +121,14 @@ static int spisd_init_hardware(void) {
         spi_transfer(0xFF);
     }
 
-    /* CMD0: Reset SD Card */
+    /* CMD0: Reset SD Card (valid R1 responses: 0x01 in idle state, or 0x00 ready) */
     uint8_t r1 = sd_send_cmd(0, 0, 0x95);
-    if (r1 != 0x01) {
+    if (r1 > 0x01) {
         cs_deselect();
+        printk("[SPI SD Probe] SPI1 MicroSD probe CMD0 returned 0x%02x (expected 0x00 or 0x01)\n", r1);
         return -1; // Card not responding or no MicroSD present
     }
+    printk("[SPI SD Probe] CMD0 reset response: 0x%02x (MicroSD Card detected!)\n", r1);
 
     /* CMD8: Check SDv2 voltage range (0x1AA) */
     r1 = sd_send_cmd(8, 0x000001AA, 0x87);

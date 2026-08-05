@@ -165,16 +165,35 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
 
     uint8_t sector[512];
     dev->read_blocks(dev, sector, 0, 1);
+
+    uint32_t partition_lba = 0;
+
+    /* Check if LBA 0 is an MBR Master Boot Record with partition table at offset 0x1BE */
+    if (sector[510] == 0x55 && sector[511] == 0xAA) {
+        uint8_t *part1 = &sector[0x01BE];
+        uint8_t part_type = part1[4];
+        uint32_t start_lba = (uint32_t)part1[8] | ((uint32_t)part1[9] << 8) |
+                             ((uint32_t)part1[10] << 16) | ((uint32_t)part1[11] << 24);
+
+        if ((part_type == 0x0B || part_type == 0x0C || part_type == 0x07 || part_type == 0x0E) && start_lba > 0 && start_lba < 0x0FFFFFFF) {
+            partition_lba = start_lba;
+            dev->read_blocks(dev, sector, partition_lba, 1);
+            printk("[FAT32] Device '%s': Parsed MBR Partition 1 at LBA %u (Type 0x%02X)\n",
+                   dev->name ? dev->name : "unknown", (unsigned int)partition_lba, part_type);
+        }
+    }
+
     memcpy(&fs->bpb, sector, sizeof(fat32_bpb_t));
 
     if (fs->bpb.boot_sig != 0x29 && sector[510] != 0x55) {
         printk("[FAT32] Device '%s': Invalid boot sector. Auto-formatting FAT32 volume...\n", dev->name ? dev->name : "unknown");
         fat32_format(dev);
+        partition_lba = 0;
         dev->read_blocks(dev, sector, 0, 1);
         memcpy(&fs->bpb, sector, sizeof(fat32_bpb_t));
     }
 
-    fs->fat_start_sector = fs->bpb.reserved_sec_cnt;
+    fs->fat_start_sector = partition_lba + fs->bpb.reserved_sec_cnt;
     fs->data_start_sector = fs->fat_start_sector + (fs->bpb.num_fats * fs->bpb.fat_sz32);
     fs->root_dir_cluster = fs->bpb.root_clus;
     fs->bytes_per_cluster = fs->bpb.sec_per_clus * fs->bpb.bytes_per_sec;
