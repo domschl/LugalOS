@@ -12,10 +12,11 @@ static bool g_rtc_detected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
 #define RESETS_BASE            0x40020000UL
-#define RESETS_RESET           (RESETS_BASE + 0x000)
-#define RESETS_RESET_CLR       (RESETS_BASE + 0x008)
-#define RESETS_RESET_DONE      (RESETS_BASE + 0x00C)
-#define I2C0_RESET_BIT         (1u << 4)
+#define RESETS_RESET           (RESETS_BASE + 0x0000)
+#define RESETS_RESET_SET       (RESETS_BASE + 0x2000) // Atomic Bit SET Alias
+#define RESETS_RESET_CLR       (RESETS_BASE + 0x3000) // Atomic Bit CLR Alias
+#define RESETS_RESET_DONE      (RESETS_BASE + 0x000C) // Reset Done Register
+#define I2C0_RESET_BIT         (1u << 4) // Bit 4 = I2C0 on RP2350
 
 #define IO_BANK0_BASE          0x40028000UL
 #define IO_BANK0_CTRL(n)       (IO_BANK0_BASE + 0x004 + (n) * 8)
@@ -45,8 +46,8 @@ static bool g_rtc_detected = false;
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
 static void i2c_hw_init(void) {
-    /* 1. Assert and then clear I2C0 reset (Bit 4 on RP2350) */
-    REG(RESETS_RESET) |= I2C0_RESET_BIT;
+    /* 1. Assert and then clear I2C0 reset using RP2350 Atomic Alias Registers */
+    REG(RESETS_RESET_SET) = I2C0_RESET_BIT;
     for (volatile int i = 0; i < 1000; i++);
     REG(RESETS_RESET_CLR) = I2C0_RESET_BIT;
     int timeout = 10000;
@@ -160,8 +161,30 @@ static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
 }
 
 static bool i2c_probe_addr(uint8_t addr) {
-    uint8_t dummy = 0x00;
-    return i2c_write_bytes(addr, &dummy, 1);
+    REG(IC_ENABLE) = 0;
+    REG(IC_TAR) = addr;
+    REG(IC_ENABLE) = 1;
+    (void)REG(IC_CLR_TX_ABRT);
+
+    // Send READ command + STOP bit (matching Pico SDK probe)
+    uint32_t cmd = (1u << 8) | (1u << 9);
+    REG(IC_DATA_CMD) = cmd;
+
+    int timeout = 10000;
+    bool abort = false;
+    do {
+        if (REG(IC_RAW_INTR_STAT) & (1u << 6)) { // TX_ABRT
+            abort = true;
+            (void)REG(IC_CLR_TX_ABRT);
+            break;
+        }
+    } while (--timeout > 0 && (REG(IC_STATUS) & (1u << 3)) == 0); // RXFLR / RFNE
+
+    if (!abort && timeout > 0) {
+        (void)REG(IC_DATA_CMD); // Drain byte from RX FIFO
+        return true; // ACK!
+    }
+    return false;
 }
 #else
 static void i2c_hw_init(void) {}
