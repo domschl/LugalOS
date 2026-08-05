@@ -52,13 +52,23 @@ static inline void cs_deselect(void) {
 }
 
 static uint8_t spi_transfer(uint8_t tx) {
+    /* Drain any stale bytes from RX FIFO first */
+    while (REG(SSPSR) & (1u << 2)) {
+        (void)REG(SSPDR);
+    }
+
+    /* Wait for TX FIFO Not Full (TNF, bit 1) */
     int timeout = 10000;
     while (!(REG(SSPSR) & (1u << 1)) && --timeout > 0);
+
+    /* Push byte to start clocking */
     REG(SSPDR) = tx;
-    timeout = 10000;
-    while ((REG(SSPSR) & (1u << 4)) && --timeout > 0);
+
+    /* Wait for RX FIFO Not Empty (RNE, bit 2) */
     timeout = 10000;
     while (!(REG(SSPSR) & (1u << 2)) && --timeout > 0);
+
+    /* Read single received byte */
     return (uint8_t)(REG(SSPDR) & 0xFF);
 }
 
@@ -86,8 +96,8 @@ static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
 }
 
 static int spisd_init_hardware(void) {
-    /* 1. Unreset SPI1 (bit 18), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */
-    uint32_t unreset_mask = (1u << 18) | (1u << 6) | (1u << 9);
+    /* 1. Unreset SPI1 (bit 19 on RP2350), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */
+    uint32_t unreset_mask = (1u << 19) | (1u << 6) | (1u << 9);
     REG(RESETS_ATOMIC_CLEAR) = unreset_mask;
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
