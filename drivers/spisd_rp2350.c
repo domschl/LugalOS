@@ -28,7 +28,7 @@
 #define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
 #define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-#define SPI1_BASE               0x40090000UL
+#define SPI1_BASE               0x40088000UL
 #define SSPCR0                  (SPI1_BASE + 0x00)
 #define SSPCR1                  (SPI1_BASE + 0x04)
 #define SSPDR                   (SPI1_BASE + 0x08)
