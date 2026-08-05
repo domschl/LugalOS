@@ -12,6 +12,7 @@ static bool g_rtc_detected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
 #define RESETS_BASE            0x40020000UL
+#define RESETS_RESET           (RESETS_BASE + 0x000)
 #define RESETS_RESET_CLR       (RESETS_BASE + 0x008)
 #define RESETS_RESET_DONE      (RESETS_BASE + 0x00C)
 #define I2C0_RESET_BIT         (1u << 4)
@@ -37,36 +38,52 @@ static bool g_rtc_detected = false;
 #define IC_STATUS              (I2C0_BASE + 0x70)
 #define IC_TXFLR               (I2C0_BASE + 0x74)
 #define IC_RXFLR               (I2C0_BASE + 0x78)
+#define IC_SDA_HOLD            (I2C0_BASE + 0x7C)
 #define IC_TX_ABRT_SOURCE      (I2C0_BASE + 0x80)
+#define IC_FS_SPKLEN           (I2C0_BASE + 0xA0)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
 static void i2c_hw_init(void) {
-    /* 1. Unreset I2C0 */
+    /* 1. Assert and then clear I2C0 reset (Bit 4 on RP2350) */
+    REG(RESETS_RESET) |= I2C0_RESET_BIT;
+    for (volatile int i = 0; i < 1000; i++);
     REG(RESETS_RESET_CLR) = I2C0_RESET_BIT;
     int timeout = 10000;
     while (!(REG(RESETS_RESET_DONE) & I2C0_RESET_BIT) && --timeout > 0);
 
-    /* Configure GP4 (SDA) & GP5 (SCL) strictly as Function 3 (I2C) */
+    /* 2. Configure GP4 (SDA) & GP5 (SCL) strictly as Function 3 (I2C) */
     REG(IO_BANK0_CTRL(I2C_SDA_PIN)) = 3;
     REG(IO_BANK0_CTRL(I2C_SCL_PIN)) = 3;
 
-    /* Enable Pull-ups on GP4 & GP5 pads (0x5A) */
+    /* 3. Enable Pull-ups, Input Enable, Schmitt Trigger on GP4 & GP5 pads (0x5A) */
     REG(PADS_BANK0_PAD(I2C_SDA_PIN)) = 0x5A;
     REG(PADS_BANK0_PAD(I2C_SCL_PIN)) = 0x5A;
 
-    /* Disable I2C0 before configuring */
+    /* 4. Disable I2C0 before configuring */
     REG(IC_ENABLE) = 0;
 
-    /* Master mode (bit 0), 7-bit addressing, Standard mode (100kHz, 1u << 1), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
-    REG(IC_CON) = (1u << 0) | (1u << 5) | (1u << 1) | (1u << 6) | (1u << 8);
+    /* Master mode (bit 0), 7-bit addressing, Fast mode (2u << 1), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
+    REG(IC_CON) = (1u << 0) | (1u << 5) | (2u << 1) | (1u << 6) | (1u << 8);
     REG(IC_TAR) = DS1307_DS3231_I2C_ADDR;
 
-    /* Standard Mode (100kHz) Clock Dividers for 150MHz system clock */
-    REG(IC_SS_SCL_HCNT) = 750;
-    REG(IC_SS_SCL_LCNT) = 750;
-    REG(IC_FS_SCL_HCNT) = 150;
-    REG(IC_FS_SCL_LCNT) = 225;
+    /* 100kHz Standard Mode Clock Dividers for 150MHz system clock */
+    uint32_t freq_in = 150000000;
+    uint32_t baudrate = 100000; // 100 kHz
+    uint32_t period = (freq_in + baudrate / 2) / baudrate; // 1500 cycles
+    uint32_t lcnt = period * 3 / 5; // 900
+    uint32_t hcnt = period - lcnt;  // 600
+
+    REG(IC_FS_SCL_HCNT) = hcnt;
+    REG(IC_FS_SCL_LCNT) = lcnt;
+    REG(IC_SS_SCL_HCNT) = hcnt;
+    REG(IC_SS_SCL_LCNT) = lcnt;
+
+    REG(IC_FS_SPKLEN) = lcnt < 16 ? 1 : lcnt / 16;
+
+    /* Critical 300ns SDA Hold Time for 150MHz system clock (matching Pico SDK) */
+    uint32_t sda_tx_hold_count = ((freq_in * 3) / 10000000) + 1; // 46 cycles = 307ns
+    REG(IC_SDA_HOLD) = sda_tx_hold_count;
 
     /* Enable I2C0 */
     REG(IC_ENABLE) = 1;
