@@ -132,15 +132,16 @@ static int spisd_init_hardware(void) {
 
     /* CMD8: Check SDv2 voltage range (0x1AA) */
     r1 = sd_send_cmd(8, 0x000001AA, 0x87);
-    if (r1 == 0x01) {
+    bool is_v2 = false;
+    if (r1 <= 0x01) {
         uint32_t r7 = 0;
         r7 |= ((uint32_t)spi_transfer(0xFF) << 24);
         r7 |= ((uint32_t)spi_transfer(0xFF) << 16);
         r7 |= ((uint32_t)spi_transfer(0xFF) << 8);
         r7 |= (uint32_t)spi_transfer(0xFF);
 
-        if ((r7 & 0xFFF) == 0x1AA) {
-            g_sd_is_sdhc = true;
+        if ((r7 & 0xFF) == 0xAA) {
+            is_v2 = true;
         }
     }
 
@@ -148,22 +149,24 @@ static int spisd_init_hardware(void) {
     int retries = 0;
     do {
         sd_send_cmd(55, 0, 0x65); // CMD55 prefix
-        r1 = sd_send_cmd(41, g_sd_is_sdhc ? 0x40000000 : 0, 0x77);
+        r1 = sd_send_cmd(41, is_v2 ? 0x40000000 : 0, 0x77);
     } while (r1 != 0x00 && ++retries < 2000);
 
     if (r1 != 0x00) {
         cs_deselect();
+        printk("[SPI SD Probe] ACMD41 initialization failed (r1 = 0x%02x)\n", r1);
         return -1;
     }
 
-    /* CMD58: Read OCR register */
-    if (g_sd_is_sdhc) {
+    /* CMD58: Read OCR register to determine if Card Capacity Status (CCS, bit 30) is set */
+    g_sd_is_sdhc = false;
+    if (is_v2) {
         r1 = sd_send_cmd(58, 0, 0xFD);
-        if (r1 == 0x00) {
+        if (r1 <= 0x01) {
             uint8_t ocr0 = spi_transfer(0xFF);
             spi_transfer(0xFF); spi_transfer(0xFF); spi_transfer(0xFF);
-            if ((ocr0 & 0x40) == 0) {
-                g_sd_is_sdhc = false; // Standard Capacity
+            if (ocr0 & 0x40) { // Bit 30 of OCR is bit 6 of first byte
+                g_sd_is_sdhc = true; // SDHC/SDXC Card (Block Addressing)
             }
         }
     }
@@ -175,13 +178,13 @@ static int spisd_init_hardware(void) {
 
     cs_deselect();
 
-    /* 4. Switch SPI clock prescaler to high speed (~25 MHz) for fast data transfers */
+    /* 4. Switch SPI clock prescaler to 12.5 MHz for solid signal integrity */
     REG(SSPCR1) = 0;
-    REG(SSPCPSR) = 6; // Prescaler = 6 (150 MHz / 6 = 25 MHz SPI speed)
+    REG(SSPCPSR) = 12; // Prescaler = 12 (150 MHz / 12 = 12.5 MHz SPI speed)
     REG(SSPCR1) = (1u << 1);
 
     g_sd_initialized = true;
-    printk("[SPI SD Driver] MicroSD Card initialized on SPI1 (GP10-GP13, Mode: %s, Speed: 25 MHz)\n",
+    printk("[SPI SD Driver] MicroSD Card initialized on SPI1 (GP10-GP13, Mode: %s, Speed: 12.5 MHz)\n",
            g_sd_is_sdhc ? "SDHC/SDXC Block" : "Standard Byte");
     return 0;
 }
@@ -260,7 +263,7 @@ static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
 
         /* Wait for write completion (card holds MISO low while busy) */
         int timeout = 0;
-        while (spi_transfer(0xFF) == 0x00 && ++timeout < 50000);
+        while (spi_transfer(0xFF) != 0xFF && ++timeout < 100000);
 
         cs_deselect();
         src += 512;
