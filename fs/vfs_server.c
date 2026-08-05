@@ -80,7 +80,7 @@ int vfs_mount_ramdisk(int size_kb) {
         if (size_kb > 0) {
             ram_dev->num_blocks = (size_kb * 1024) / ram_dev->block_size;
         }
-        if (fat32_init(&g_fat32_ram, ram_dev) != 0) {
+        if (fat32_init(&g_fat32_ram, ram_dev) != 0 || g_fat32_ram.bpb.tot_sec32 != ram_dev->num_blocks) {
             fat32_format(ram_dev);
             fat32_init(&g_fat32_ram, ram_dev);
         }
