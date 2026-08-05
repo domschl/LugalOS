@@ -11,6 +11,7 @@ static char history_stack[MAX_HIST_ITEMS][MAX_LINE_LEN];
 static int history_count = 0;
 
 static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
+    uart_puts("\033[?25l"); // Hide cursor during display redraw
     uart_puts("\r");
     uart_puts(prompt);
     for (int i = 0; i < len; i++) {
@@ -22,6 +23,7 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
     for (int i = 0; i < len - pos; i++) {
         uart_puts("\033[D");
     }
+    uart_puts("\033[?25h"); // Show cursor at final target position
 }
 
 
@@ -71,6 +73,7 @@ static void add_history(const char *line) {
 static int g_prev_target_line = 1;
 
 static void redraw_box(const char *filename, const char *buf, int len, int pos, const char *status_msg) {
+    uart_puts("\033[?25l"); // Hide cursor during box redraw
     if (g_prev_target_line > 0) {
         for (int m = 0; m < g_prev_target_line; m++) {
             uart_puts("\033[A");
@@ -140,6 +143,7 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
     }
 
     g_prev_target_line = target_line;
+    uart_puts("\033[?25h"); // Show cursor at final position
 }
 
 static bool read_status_prompt(int total_lines, int target_line, const char *prompt, char *out_buf, int max_len) {
