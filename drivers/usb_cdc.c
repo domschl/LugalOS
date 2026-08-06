@@ -231,19 +231,29 @@ void usb_cdc_task(void) {
 
 void usb_cdc_init(void) {
     // 1. Initialize PLL_USB (48 MHz)
-    REG(RESETS_RESET_SET) = (1u << 13); // Set RESET_PLL_USB (bit 13)
-    for (volatile int i = 0; i < 1000; i++);
-    REG(RESETS_RESET_CLR) = (1u << 13); // Clear RESET_PLL_USB
-    while (!(REG(RESETS_RESET_DONE) & (1u << 13)));
+    uint32_t pll_cs = REG(0x40058000UL);
+    uint32_t pll_fb = REG(0x40058008UL);
+    uint32_t pll_prim = REG(0x4005800CUL);
+    uint32_t target_prim = (5u << 16) | (2u << 12);
 
-    REG(0x40058000UL) = 1; // RefDiv = 1
-    REG(0x40058008UL) = 40; // FBDiv = 40 (12MHz * 40 = 480MHz VCO)
-    REG(0x40058004UL) &= ~((1u << 0) | (1u << 5)); // Clear main power-down and VCO power-down
+    // If PLL_USB is not already running and locked at 480 MHz VCO / 48 MHz output, configure it
+    if (!(pll_cs & (1u << 31)) || (pll_cs & 0x3F) != 1 || pll_fb != 40 || pll_prim != target_prim) {
+        REG(RESETS_RESET_SET) = (1u << 13); // Set RESET_PLL_USB
+        for (volatile int i = 0; i < 1000; i++);
+        REG(RESETS_RESET_CLR) = (1u << 13); // Clear RESET_PLL_USB
+        for (volatile int i = 0; i < 100000 && !(REG(RESETS_RESET_DONE) & (1u << 13)); i++);
 
-    while (!(REG(0x40058000UL) & (1u << 31))); // Wait for PLL_USB lock (bit 31)
+        REG(0x40058000UL) = 1;  // RefDiv = 1
+        REG(0x40058008UL) = 40; // FBDiv = 40 (12MHz * 40 = 480MHz VCO)
+        REG(0x40058004UL + 0x3000) = (1u << 0) | (1u << 5); // Atomic clear power-down bits (bit 0 & bit 5)
 
-    REG(0x4005800CUL) = (5u << 16) | (2u << 12); // PostDiv1 = 5, PostDiv2 = 2 (480 / 10 = 48 MHz)
-    REG(0x40058004UL) &= ~(1u << 3); // Clear post-divider power-down
+        for (volatile int i = 0; i < 100000; i++) {
+            if (REG(0x40058000UL) & (1u << 31)) break; // Wait for PLL_USB lock (bit 31)
+        }
+
+        REG(0x4005800CUL) = target_prim; // PostDiv1 = 5, PostDiv2 = 2 (480 / 10 = 48 MHz)
+        REG(0x40058004UL + 0x3000) = (1u << 3); // Atomic clear post-divider power-down (bit 3)
+    }
 
     // 2. Enable 48 MHz USB Clock Source
     REG(CLK_USB_CTRL) = (1u << 11) | (0x0u << 5); // Enable CLK_USB from PLL_USB auxsrc
