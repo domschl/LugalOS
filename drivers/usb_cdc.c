@@ -231,16 +231,16 @@ void usb_cdc_task(void) {
 
 void usb_cdc_init(void) {
     // 1. Initialize PLL_USB (48 MHz)
+    REG(RESETS_RESET_SET) = (1u << 13); // Set RESET_PLL_USB (bit 13)
+    for (volatile int i = 0; i < 1000; i++);
     REG(RESETS_RESET_CLR) = (1u << 13); // Clear RESET_PLL_USB
-    int timeout_pll = 10000;
-    while (!(REG(RESETS_RESET_DONE) & (1u << 13)) && --timeout_pll > 0);
+    while (!(REG(RESETS_RESET_DONE) & (1u << 13)));
 
     REG(0x40058000UL) = 1; // RefDiv = 1
     REG(0x40058008UL) = 40; // FBDiv = 40 (12MHz * 40 = 480MHz VCO)
     REG(0x40058004UL) &= ~((1u << 0) | (1u << 5)); // Clear main power-down and VCO power-down
 
-    timeout_pll = 10000;
-    while (!(REG(0x40058000UL) & (1u << 31)) && --timeout_pll > 0); // Wait for PLL_USB lock
+    while (!(REG(0x40058000UL) & (1u << 31))); // Wait for PLL_USB lock (bit 31)
 
     REG(0x4005800CUL) = (5u << 16) | (2u << 12); // PostDiv1 = 5, PostDiv2 = 2 (480 / 10 = 48 MHz)
     REG(0x40058004UL) &= ~(1u << 3); // Clear post-divider power-down
