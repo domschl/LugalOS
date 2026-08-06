@@ -7,8 +7,8 @@ static bool g_usb_cdc_connected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
 
-static uint8_t g_usb_pending_addr = 0;
-static bool g_usb_need_set_addr = false;
+static volatile uint8_t g_usb_pending_addr = 0;
+static volatile bool g_usb_need_set_addr = false;
 
 #define USB_BASE              0x50110000UL
 #define USB_DPRAM_BASE        0x50100000UL
