@@ -114,13 +114,19 @@ static void ep0_send(const uint8_t *buf, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) {
         ep0_buf[i] = buf[i];
     }
-    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | Length
+    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | Length on EP0 IN
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 10) | (1u << 13) | len;
+
+    // Arm EP0 OUT with AVAILABLE (bit 10) | DATA1 (bit 13) | 0 to receive host STATUS OUT packet
+    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 static void ep0_send_ack(void) {
-    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | 0
+    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | 0 on EP0 IN
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 10) | (1u << 13) | 0;
+
+    // Arm EP0 OUT with AVAILABLE (bit 10) | DATA1 (bit 13) | 0
+    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 void usb_cdc_task(void) {
