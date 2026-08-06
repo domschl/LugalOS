@@ -298,6 +298,7 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(i2c-scan)`: Scans I2C bus (`I2C0` on `GP4` SDA / `GP5` SCL) and outputs responsive slave matrix.
 * `(eeprom-read [offset] [len])`: Reads non-volatile string from AT24C32 4KB I2C EEPROM (`0x57` / `/dev/eeprom`).
 * `(eeprom-write offset string)`: Writes persistent string to AT24C32 4KB I2C EEPROM.
+* `(p9-loopback payload)`: Evaluates 9P2000 RPC round-trip over in-memory transport gateway (`/srv/p9_loopback`).
 
 #### Native C11 Compiler & Binary Execution
 * `(cc src dst)`: Invokes native `chibicc` C11 compiler on VFS C source files.

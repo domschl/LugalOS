@@ -472,7 +472,7 @@ static lisp_val_t *prim_eeprom_write(lisp_val_t *args, lisp_val_t *env) {
     return res >= 0 ? make_int(res) : &false_val;
 }
 
-static lisp_val_t *prim_9p_loopback(lisp_val_t *args, lisp_val_t *env) {
+static lisp_val_t *prim_p9_loopback(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *payload = "9P_Lisp_Loopback_Test";
     if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_STRING) {
@@ -536,7 +536,8 @@ void lisp_init(void) {
     env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));
     env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
-    env_set(&global_env, "9p-loopback", make_prim(prim_9p_loopback));
+    env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
+    env_set(&global_env, "9p-loopback", make_prim(prim_p9_loopback));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));
