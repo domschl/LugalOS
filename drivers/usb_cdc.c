@@ -217,8 +217,8 @@ void usb_cdc_task(void) {
                     break;
                 }
                 case 0x05: // SET_ADDRESS
-                    g_usb_pending_addr = value & 0x7F;
-                    g_usb_need_set_addr = true;
+                    REG(USB_ADDR_ENDP) = value & 0x7F;
+                    printk("[USB] Directly Assigned Device Address: %d\n", value & 0x7F);
                     ep0_send_ack();
                     break;
                 case 0x09: // SET_CONFIGURATION
