@@ -294,8 +294,9 @@ void usb_cdc_init(void) {
     // 5. Enable Interrupt Flags in USB_INTE (0x90) (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
     REG(USB_INTE) = USB_INTR_SETUP_REQ | USB_INTR_BUS_RESET | USB_INTR_BUFF_STATUS;
 
-    // Enable USBCTRL_IRQ (IRQ 14) in RP2350 NVIC (0xE000E100)
-    REG(0xE000E100) = (1u << 14);
+    // Enable USBCTRL_IRQ (IRQ 14) in RP2350 Hazard3 MEIEA CSR (0xbe0)
+    uint32_t irq14_val = 0 | ((1u << 14) << 16);
+    __asm__ __volatile__("csrs 0xbe0, %0" :: "r"(irq14_val));
 
     // 6. Enable SIE Controller in Device Mode with PHY_ISO active during SIE setup
     REG(USB_MAIN_CTRL) = (1u << 0) | (1u << 2); // Controller EN (bit 0) | PHY_ISO (bit 2)

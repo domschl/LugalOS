@@ -34,7 +34,8 @@ void trap_handler(trap_frame_t *frame) {
     if (is_interrupt) {
         if (code == 11) { // Machine External Interrupt
 #if defined(CONFIG_BOARD_RP2350)
-            REG(0xE000E280) = (1u << 14); // Clear pending IRQ 14 (USBCTRL_IRQ) in NVIC ICPR
+            uint32_t irq_val = 0 | ((1u << 14) << 16);
+            __asm__ __volatile__("csrc 0xbe2, %0" :: "r"(irq_val)); // Clear pending IRQ 14 (USBCTRL_IRQ) in Hazard3 MEIFA CSR
             usb_cdc_task();
 #endif
         } else {
