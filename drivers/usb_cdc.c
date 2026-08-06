@@ -274,9 +274,12 @@ void usb_cdc_init(void) {
     // 5. Enable Interrupt Flags in USB_INTE (0x90) (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
     REG(USB_INTE) = USB_INTR_SETUP_REQ | USB_INTR_BUS_RESET | USB_INTR_BUFF_STATUS;
 
-    // 6. Enable SIE Controller in Device Mode & D+ Pullup (Clear PULLDOWN_EN bit 15!)
-    REG(USB_MAIN_CTRL) = (1u << 0); // Enable controller in Device Mode
-    REG(USB_SIE_CTRL) = (1u << 29) | (1u << 16); // EP0_INT_1BUF (bit 29) | PULLUP_EN (bit 16), PULLDOWN_EN (bit 15 = 0)
+    // 6. Enable SIE Controller in Device Mode with PHY_ISO active during SIE setup
+    REG(USB_MAIN_CTRL) = (1u << 0) | (1u << 2); // Controller EN (bit 0) | PHY_ISO (bit 2)
+    REG(USB_SIE_CTRL)  = (1u << 29) | (1u << 16); // EP0_INT_1BUF (bit 29) | PULLUP_EN (bit 16)
+
+    // 7. Remove PHY Isolation (Clear PHY_ISO bit 2) now that SIE & D+ PULLUP are ready
+    REG(USB_MAIN_CTRL) = (1u << 0);
 
     g_usb_cdc_connected = true;
 
