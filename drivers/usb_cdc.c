@@ -19,6 +19,7 @@ static bool g_usb_need_set_addr = false;
 #define USB_SIE_STATUS        (USB_BASE + 0x50)
 #define USB_BUFF_STATUS       (USB_BASE + 0x54)
 #define USB_MUXING            (USB_BASE + 0x74)
+#define USB_PWR               (USB_BASE + 0x78)
 #define USB_INTR              (USB_BASE + 0x8C)
 #define USB_INTE              (USB_BASE + 0x90)
 #define USB_INTF              (USB_BASE + 0x94)
@@ -270,6 +271,9 @@ void usb_cdc_init(void) {
 
     // 4. Enable USB PHY Muxing & Software Pullup Control (TO_PHY | SOFTCON)
     REG(USB_MUXING) = (1u << 0) | (1u << 3);
+
+    // Force VBUS_DETECT in USB_PWR (Override bit 3 = 1, VBUS_DETECT bit 2 = 1)
+    REG(USB_PWR) = (1u << 3) | (1u << 2);
 
     // 5. Enable Interrupt Flags in USB_INTE (0x90) (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
     REG(USB_INTE) = USB_INTR_SETUP_REQ | USB_INTR_BUS_RESET | USB_INTR_BUFF_STATUS;
