@@ -143,10 +143,16 @@ void usb_cdc_task(void) {
         }
     }
 
-    // Check SETUP packet arrival flag
+    // Check BUS_RESET arrival flag (bit 16)
     uint32_t sie_status = REG(USB_SIE_STATUS);
-    if (sie_status & (1u << 16)) { // SETUP_REC flag
-        REG(USB_SIE_STATUS) = (1u << 16); // Clear SETUP_REC flag
+    if (sie_status & (1u << 16)) {
+        REG(USB_SIE_STATUS) = (1u << 16); // Clear BUS_RESET
+        REG(USB_ADDR_ENDP) = 0;           // Reset device address to 0
+    }
+
+    // Check SETUP packet arrival flag (bit 17)
+    if (sie_status & (1u << 17)) {
+        REG(USB_SIE_STATUS) = (1u << 17); // Clear SETUP_REC flag
 
         volatile uint8_t *setup = (volatile uint8_t *)USB_EP0_SETUP;
         uint8_t req_type = setup[0];
