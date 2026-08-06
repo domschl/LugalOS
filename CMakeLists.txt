@@ -98,6 +98,7 @@ set(SOURCES
     drivers/at24c32.c
     drivers/loopback_net.c
     drivers/uart_net.c
+    drivers/usb_cdc.c
     ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     fs/fat32.c
     fs/vfs_server.c

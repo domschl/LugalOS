@@ -5,6 +5,7 @@
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
+#include "drivers/usb_cdc.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -80,6 +81,7 @@ void kernel_main(void) {
     /* Initialize Subsystems */
     i2c_rtc_init();
     at24c32_init();
+    usb_cdc_init();
     trap_init();
     vmm_init();
     ipc_init();
