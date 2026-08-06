@@ -131,8 +131,8 @@ static void ep0_send(const uint8_t *buf, uint32_t len) {
     // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | len
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | len;
 
-    // Arm EP0 OUT immediately for 0-length status packet from host (AVAIL bit 10 | DATA1 bit 13 | 0)
-    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
+    // Arm EP0 OUT immediately for status packet from host (AVAIL bit 10 | DATA1 bit 13 | 64 max length)
+    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 64;
 }
 
 static void ep0_send_ack(void) {
