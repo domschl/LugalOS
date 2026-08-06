@@ -128,18 +128,18 @@ static void ep0_send(const uint8_t *buf, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) {
         ep0_buf[i] = buf[i];
     }
-    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | Length on EP0 IN
-    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 10) | (1u << 13) | len;
+    // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | len
+    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | len;
 
-    // Arm EP0 OUT with AVAILABLE (bit 10) | DATA1 (bit 13) | 0 to receive host STATUS OUT packet
+    // Arm EP0 OUT with AVAIL (bit 10) | DATA1 (bit 13) | 0 to receive host STATUS OUT packet
     REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 static void ep0_send_ack(void) {
-    // Set FULL (bit 15) | AVAILABLE (bit 10) | DATA1 (bit 13) | 0 on EP0 IN
-    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 10) | (1u << 13) | 0;
+    // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | 0 on EP0 IN
+    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | 0;
 
-    // Arm EP0 OUT with AVAILABLE (bit 10) | DATA1 (bit 13) | 0
+    // Arm EP0 OUT with AVAIL (bit 10) | DATA1 (bit 13) | 0
     REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
