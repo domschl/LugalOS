@@ -35,8 +35,15 @@
 
 #define LED_MASK  ((1u << 25) | (1u << 16))
 
+#include "drivers/usb_cdc.h"
+
 static void delay_cycles(volatile uint32_t n) {
-    while (n--) { __asm__ volatile("nop"); }
+    while (n--) {
+        if ((n & 0xFFFF) == 0) {
+            usb_cdc_task();
+        }
+        __asm__ volatile("nop");
+    }
 }
 
 static inline uint32_t read_mcycle(void) {
@@ -66,6 +73,7 @@ void led_blink_phase(int count) {
 static uint32_t g_alive_loop_cnt = 0;
 
 void gp16_alive_tick(void) {
+    usb_cdc_task();
     g_alive_loop_cnt++;
     if (g_alive_loop_cnt >= 5000000UL) { /* Trigger pulse every ~2s of UART polling */
         g_alive_loop_cnt = 0;
