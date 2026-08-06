@@ -25,8 +25,27 @@ static volatile bool g_usb_need_set_addr = false;
 #define USB_INTF              (USB_BASE + 0x94)
 #define USB_INTS              (USB_BASE + 0x98)
 
-#define USB_SIE_STATUS_BUS_RESET (1u << 19)
-#define USB_SIE_STATUS_SETUP_REC (1u << 17)
+#define USB_SIE_STATUS_ACK_REC        (1u << 30)
+#define USB_SIE_STATUS_BUS_RESET      (1u << 19)
+#define USB_SIE_STATUS_TRANS_COMPLETE (1u << 18)
+#define USB_SIE_STATUS_SETUP_REC      (1u << 17)
+
+// Latched (write-1-to-clear) event/error bits in SIE_STATUS. Left uncleared,
+// each one sticks at 1 forever after its first occurrence and makes every
+// later [USB EVT] log line look like a fresh completion/error when it may
+// just be stale. Cleared every poll so the diagnostic log reflects reality.
+#define USB_SIE_STATUS_EVENT_BITS ( (1u << 31) /* DATA_SEQ_ERROR */ \
+                                   | (1u << 30) /* ACK_REC */ \
+                                   | (1u << 29) /* STALL_REC */ \
+                                   | (1u << 28) /* NAK_REC */ \
+                                   | (1u << 27) /* RX_TIMEOUT */ \
+                                   | (1u << 26) /* RX_OVERFLOW */ \
+                                   | (1u << 25) /* BIT_STUFF_ERROR */ \
+                                   | (1u << 24) /* CRC_ERROR */ \
+                                   | (1u << 19) /* BUS_RESET */ \
+                                   | (1u << 18) /* TRANS_COMPLETE */ \
+                                   | (1u << 17) /* SETUP_REC */ \
+                                   | (1u << 13) /* RESUME */ )
 
 #define USB_INTR_SETUP_REQ       (1u << 16)
 #define USB_INTR_BUS_RESET       (1u << 12)
@@ -49,6 +68,26 @@ static volatile bool g_usb_need_set_addr = false;
 #define RESET_USB_BIT         (1u << 28)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
+#define USB_BUF_CTRL_AVAIL    (1u << 10)
+
+static inline void usb_busy_wait_cycles(uint32_t n) {
+    for (volatile uint32_t i = 0; i < n; i++) {
+        __asm__ volatile("nop");
+    }
+}
+
+// RP2350 datasheet 12.7.3.7.1 "Concurrent access": the AVAILABLE bit of an
+// endpoint buffer control register must reach the SIE in a write separate
+// from (and after) the rest of the fields, with a few core clock cycles in
+// between. Setting AVAILABLE together with FULL/LEN/PID races the hardware
+// and the SIE can miss or corrupt the transfer.
+static void ep_buf_ctrl_write(volatile uint32_t *reg, uint32_t value) {
+    if (value & USB_BUF_CTRL_AVAIL) {
+        *reg = value & ~USB_BUF_CTRL_AVAIL;
+        usb_busy_wait_cycles(12);
+    }
+    *reg = value;
+}
 
 // USB Descriptors
 static const uint8_t g_usb_dev_desc[] = {
@@ -69,8 +108,8 @@ static const uint8_t g_usb_dev_desc[] = {
 };
 
 static const uint8_t g_usb_cfg_desc[] = {
-    // Configuration Descriptor
-    9, 2, 106, 0, 4, 1, 0, 0xC0, 50,
+    // Configuration Descriptor (Total Length: 141 bytes)
+    9, 2, 141, 0, 4, 1, 0, 0xC0, 50,
 
     // IAD 0 (CDC ACM 0 - Console /dev/ttyACM0)
     8, 11, 0, 2, 2, 2, 1, 0,
@@ -122,23 +161,58 @@ static const uint8_t g_usb_str_mfg[]  = { 16, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'
 static const uint8_t g_usb_str_prod[] = { 44, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'O',0,'S',0,' ',0,'D',0,'u',0,'a',0,'l',0,' ',0,'C',0,'D',0,'C',0,' ',0,'A',0,'C',0,'M',0 };
 static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08 }; // 115200 8N1
 
-static void ep0_send(const uint8_t *buf, uint32_t len) {
-    if (len > 64) len = 64;
-    volatile uint8_t *ep0_buf = (volatile uint8_t *)USB_EP0_BUF;
-    for (uint32_t i = 0; i < len; i++) {
-        ep0_buf[i] = buf[i];
-    }
-    // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | len
-    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | len;
+static const uint8_t *g_ep0_tx_buf = NULL;
+static volatile uint32_t g_ep0_tx_rem = 0;
+static volatile uint32_t g_ep0_tx_off = 0;
+static volatile bool g_ep0_tx_data_pid = 1; // DATA1 for 1st packet
 
-    // Arm EP0 OUT immediately for status packet from host (AVAIL bit 10 | DATA1 bit 13 | 64 max length)
-    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 64;
+static void ep0_send_next_chunk(void) {
+    uint32_t chunk = g_ep0_tx_rem;
+    if (chunk > 64) chunk = 64;
+
+    volatile uint8_t *ep0_buf = (volatile uint8_t *)USB_EP0_BUF;
+    for (uint32_t i = 0; i < chunk; i++) {
+        ep0_buf[i] = g_ep0_tx_buf[g_ep0_tx_off + i];
+    }
+
+    g_ep0_tx_off += chunk;
+    g_ep0_tx_rem -= chunk;
+
+    uint32_t ctrl = (1u << 15) | (1u << 10) | chunk; // FULL | AVAIL | chunk
+    if (g_ep0_tx_rem == 0) {
+        ctrl |= (1u << 14); // LAST_BUFF on final chunk
+    }
+    if (g_ep0_tx_data_pid) {
+        ctrl |= (1u << 13); // DATA1_PID
+    }
+    g_ep0_tx_data_pid = !g_ep0_tx_data_pid; // Toggle DATA1/DATA0 for next chunk
+
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_IN_CTRL, ctrl);
+
+    if (g_ep0_tx_rem == 0) {
+        // Arm EP0 OUT immediately for the host's zero-length STATUS ack.
+        // Deferring this until BUFF_STATUS confirms the IN completed was
+        // tried before (see commit 8e0ca37) and reintroduced here (then
+        // reverted again): under cooperative polling the host can time out
+        // waiting ~5s for the status phase before we get back around to
+        // arming it. Arming both together is what actually works.
+        ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_OUT_CTRL, (1u << 10) | (1u << 13) | 64);
+    }
+}
+
+static void ep0_send(const uint8_t *buf, uint32_t len) {
+    g_ep0_tx_buf = buf;
+    g_ep0_tx_rem = len;
+    g_ep0_tx_off = 0;
+    g_ep0_tx_data_pid = 1; // 1st packet is always DATA1
+    ep0_send_next_chunk();
 }
 
 static void ep0_send_ack(void) {
+    g_ep0_tx_rem = 0;
     // Zero-length IN packet for Control transfer Status phase
     // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | 0
-    REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | 0;
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_IN_CTRL, (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | 0);
 }
 
 void usb_cdc_task(void) {
@@ -161,6 +235,14 @@ void usb_cdc_task(void) {
         last_sie  = sie_filtered;
     }
 
+    // Clear latched event/error bits now that we've captured `sie` above,
+    // so a bit set once doesn't make every future poll look like a fresh
+    // event. Bus-reset/setup-rec detection below still uses the captured
+    // `sie` value, not a re-read, so this is safe to do unconditionally.
+    if (sie & USB_SIE_STATUS_EVENT_BITS) {
+        REG(USB_SIE_STATUS) = sie & USB_SIE_STATUS_EVENT_BITS;
+    }
+
     // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
     static bool bus_reset_handled = false;
     if ((intr & USB_INTR_BUS_RESET) || (sie & USB_SIE_STATUS_BUS_RESET)) {
@@ -168,6 +250,7 @@ void usb_cdc_task(void) {
         if (!bus_reset_handled) {
             REG(USB_ADDR_ENDP) = 0;
             g_usb_need_set_addr = false;
+            g_ep0_tx_rem = 0;
             printk("[USB] Bus Reset Detected\n");
             bus_reset_handled = true;
         }
@@ -175,17 +258,33 @@ void usb_cdc_task(void) {
         bus_reset_handled = false;
     }
 
-    // Check buffer status completion for pending address setup
+    // USB_BUFF_STATUS has been observed to never latch nonzero on this
+    // hardware/poll cadence even when SIE_STATUS proves a transfer
+    // completed (TRANS_COMPLETE/ACK_REC), so it is only logged here, not
+    // relied upon; SIE_STATUS bits drive all the real state transitions.
     uint32_t buf_status = REG(USB_BUFF_STATUS);
     if (buf_status) {
+        printk("[USB BUFF] status=0x%08x\n", buf_status);
         REG(USB_BUFF_STATUS) = buf_status; // Write 1 to clear all completed buffer bits
-        if (buf_status & 1u) { // EP0 IN buffer complete
-            if (g_usb_need_set_addr) {
-                REG(USB_ADDR_ENDP) = g_usb_pending_addr;
-                printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
-                g_usb_need_set_addr = false;
-            }
-        }
+    }
+
+    // Continue a multi-packet EP0 IN transfer (e.g. the 141-byte config
+    // descriptor) once the host has ACKed the chunk just sent. ACK_REC
+    // fires per packet (unlike TRANS_COMPLETE, which only fires once the
+    // whole control transfer's STATUS phase completes), so it's the right
+    // per-chunk continuation signal here.
+    if (g_ep0_tx_rem > 0 && (sie & USB_SIE_STATUS_ACK_REC)) {
+        ep0_send_next_chunk();
+    }
+
+    // Apply a pending SET_ADDRESS once the STATUS-stage ack has genuinely
+    // gone out, per USB 2.0 9.4.6 (must not switch address before the ack
+    // is sent). SIE_STATUS TRANS_COMPLETE is used as that signal instead of
+    // USB_BUFF_STATUS bit 0, which does not reliably reflect completion here.
+    if (g_usb_need_set_addr && g_ep0_tx_rem == 0 && (sie & USB_SIE_STATUS_TRANS_COMPLETE)) {
+        REG(USB_ADDR_ENDP) = g_usb_pending_addr;
+        printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
+        g_usb_need_set_addr = false;
     }
 
     // Check SETUP_REQ (bit 16 in USB_INTR or bit 17 in USB_SIE_STATUS)
