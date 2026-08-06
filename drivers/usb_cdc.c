@@ -245,15 +245,15 @@ void usb_cdc_init(void) {
     REG(RESETS_BASE + 0x3000) = (1u << 13); // RESETS_RESET_CLR bit 13
     while (!(REG(RESETS_BASE + 0x0C) & (1u << 13)));
 
-    REG(0x40058000UL) = 1;  // RefDiv = 1
-    REG(0x40058008UL) = 40; // FBDiv = 40 (12MHz * 40 = 480MHz VCO)
+    REG(0x40058000UL) = 1;   // RefDiv = 1
+    REG(0x40058008UL) = 100; // FBDiv = 100 (12MHz * 100 = 1200MHz VCO, valid for RP2350 min 750MHz)
     REG(0x40058004UL + 0x3000) = (1u << 0) | (1u << 5); // Power up main PLL (bit 0) & VCO (bit 5)
 
     for (volatile int i = 0; i < 500000; i++) {
         if (REG(0x40058000UL) & (1u << 31)) break; // Wait for PLL_USB lock (bit 31)
     }
 
-    REG(0x4005800CUL) = (5u << 16) | (2u << 12); // PostDiv1 = 5, PostDiv2 = 2 (480 / 10 = 48 MHz)
+    REG(0x4005800CUL) = (5u << 16) | (5u << 12); // PostDiv1 = 5, PostDiv2 = 5 (1200 / 25 = 48 MHz)
     REG(0x40058004UL + 0x3000) = (1u << 3); // Power up post dividers (bit 3)
 
     // 2. Enable 48 MHz USB Clock Source
