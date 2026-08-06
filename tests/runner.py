@@ -206,6 +206,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_9p_rpc, r"=> \"P9_LISP_RPC_PASSED\"", timeout=4.0)
         results.append(("9P2000 Protocol & p9-loopback Primitive Execution (Phase 1)", ok, log if not ok else ""))
 
+        # SLIP RFC 1055 UART Network Transport (Phase 2)
+        cmd_uart_9p = (
+            "write /srv/uart_9p SLIP_UART_WRITE_OK\n"
+            "cat /srv/uart_9p\n"
+            "lisp\n"
+            "(p9-uart-send \"P9_SLIP_UART_PASSED\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_uart_9p, r"=> \"P9_SLIP_UART_PASSED\"", timeout=4.0)
+        results.append(("SLIP RFC 1055 UART Transport & p9-uart-send (Phase 2)", ok, log if not ok else ""))
+
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
         cmd_arith = "lisp\n(+ 10 20 30)\n(- 100 40)\n(* 6 7)\n(= 42 42)\nexit"

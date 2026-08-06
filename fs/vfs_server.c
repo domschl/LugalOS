@@ -5,6 +5,7 @@
 #include "drivers/uart.h"
 #include "drivers/at24c32.h"
 #include "drivers/loopback_net.h"
+#include "drivers/uart_net.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
@@ -74,6 +75,8 @@ void vfs_server_init(void) {
     vfs_register_service("lisp", 2);
     loopback_net_init();
     vfs_register_service("p9_loopback", 9);
+    uart_net_init();
+    vfs_register_service("uart_9p", 10);
 
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
 }
@@ -272,6 +275,8 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
     } else if (type == 5) { // /srv/ IPC channels
         if (strcmp(rel, "p9_loopback") == 0 || strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "p9") == 0 || strcmp(rel, "net") == 0) {
             return loopback_9p_rpc(NULL, (char *)buf, max_len);
+        } else if (strcmp(rel, "uart_9p") == 0 || strcmp(rel, "net0") == 0) {
+            return uart_net_rpc(NULL, (char *)buf, max_len);
         }
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
@@ -327,6 +332,8 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     } else if (type == 5) { // /srv/ IPC channels
         if (strcmp(rel, "p9_loopback") == 0 || strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "p9") == 0 || strcmp(rel, "net") == 0) {
             return loopback_9p_rpc((const char *)buf, NULL, 0);
+        } else if (strcmp(rel, "uart_9p") == 0 || strcmp(rel, "net0") == 0) {
+            return uart_net_rpc((const char *)buf, NULL, 0);
         }
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
