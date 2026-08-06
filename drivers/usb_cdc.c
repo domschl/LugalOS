@@ -144,8 +144,17 @@ static void ep0_send_ack(void) {
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
+    static uint32_t last_intr = 0;
+    static uint32_t last_sie  = 0;
+
     uint32_t intr = REG(USB_INTR);
     uint32_t sie  = REG(USB_SIE_STATUS);
+
+    if (intr != last_intr || sie != last_sie) {
+        printk("[USB EVT] INTR=0x%08x SIE=0x%08x\n", intr, sie);
+        last_intr = intr;
+        last_sie  = sie;
+    }
 
     // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
     if ((intr & USB_INTR_BUS_RESET) || (sie & USB_SIE_STATUS_BUS_RESET)) {
@@ -277,6 +286,12 @@ void usb_cdc_init(void) {
     REG(USB_SIE_CTRL) = (1u << 29) | (1u << 16); // EP0_INT_1BUF (bit 29) | PULLUP_EN (bit 16), PULLDOWN_EN (bit 15 = 0)
 
     g_usb_cdc_connected = true;
+
+    printk("[USB CDC Init] PLL_USB CS: 0x%08x (Lock: %d), CLK_USB_CTRL: 0x%08x, CLK_SELECTED: 0x%08x\n",
+           REG(0x40058000UL), (REG(0x40058000UL) & (1u << 31)) ? 1 : 0,
+           REG(CLK_USB_CTRL), REG(CLOCKS_BASE + 0x68));
+    printk("[USB CDC Init] MUXING: 0x%08x, MAIN_CTRL: 0x%08x, SIE_CTRL: 0x%08x, SIE_STATUS: 0x%08x, INTE: 0x%08x\n",
+           REG(USB_MUXING), REG(USB_MAIN_CTRL), REG(USB_SIE_CTRL), REG(USB_SIE_STATUS), REG(USB_INTE));
 
     // Process initial USB enumeration setup packets during boot
     for (volatile int i = 0; i < 500000; i++) {
