@@ -7,6 +7,7 @@
 
 void usb_cdc_init(void);
 void usb_cdc_task(void);
+void usb_cdc_debug_dump(void);
 bool usb_cdc_is_connected(void);
 
 // Console CDC Port (/dev/ttyACM0)

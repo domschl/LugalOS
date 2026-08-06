@@ -272,6 +272,28 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
     return 1;
 }
 
+void usb_cdc_debug_dump(void) {
+#if defined(CONFIG_BOARD_RP2350)
+    printk("\n=== RP2350 USB Hardware Controller Status ===\n");
+    printk("CLK_USB_CTRL     : 0x%08x\n", REG(CLK_USB_CTRL));
+    printk("CLK_USB_SELECTED : 0x%08x\n", REG(CLOCKS_BASE + 0x68));
+    printk("PLL_USB CS       : 0x%08x\n", REG(0x40058000UL));
+    printk("USB_MAIN_CTRL    : 0x%08x\n", REG(USB_MAIN_CTRL));
+    printk("USB_SIE_CTRL     : 0x%08x\n", REG(USB_SIE_CTRL));
+    printk("USB_SIE_STATUS   : 0x%08x\n", REG(USB_SIE_STATUS));
+    printk("USB_BUFF_STATUS  : 0x%08x\n", REG(USB_BUFF_STATUS));
+    printk("USB_MUXING       : 0x%08x\n", REG(USB_BASE + 0x74));
+    printk("USB_EP0_IN_CTRL  : 0x%08x\n", REG(USB_EP0_IN_CTRL));
+
+    volatile uint8_t *s = (volatile uint8_t *)USB_EP0_SETUP;
+    printk("EP0 Setup Bytes  : [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+           s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+    printk("=============================================\n\n");
+#else
+    printk("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
+#endif
+}
+
 #else
 
 void usb_cdc_task(void) {}
@@ -305,6 +327,10 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
     if (!buf || max_len == 0) return 0;
     buf[0] = (uint8_t)uart_getc();
     return 1;
+}
+
+void usb_cdc_debug_dump(void) {
+    printk("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
 }
 
 #endif

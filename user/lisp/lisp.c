@@ -7,6 +7,7 @@
 #include "drivers/at24c32.h"
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"
+#include "drivers/usb_cdc.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "user/chibicc/include/chibicc.h"
@@ -513,6 +514,12 @@ static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
     return &nil_val;
 }
 
+static lisp_val_t *prim_usb_status(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    usb_cdc_debug_dump();
+    return &nil_val;
+}
+
 static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     shell_run();
@@ -567,6 +574,7 @@ void lisp_init(void) {
     env_set(&global_env, "arch", make_prim(prim_arch));
     env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
     env_set(&global_env, "lsh", make_prim(prim_lsh));
+    env_set(&global_env, "usb-status", make_prim(prim_usb_status));
 
     printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
 
