@@ -162,12 +162,14 @@ void usb_cdc_task(void) {
 
     // Check buffer status completion for pending address setup
     uint32_t buf_status = REG(USB_BUFF_STATUS);
-    if (buf_status & 1u) { // EP0 IN buffer complete
-        REG(USB_BUFF_STATUS) = 1u; // Clear bit 0
-        if (g_usb_need_set_addr) {
-            REG(USB_ADDR_ENDP) = g_usb_pending_addr;
-            printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
-            g_usb_need_set_addr = false;
+    if (buf_status) {
+        REG(USB_BUFF_STATUS) = buf_status; // Write 1 to clear all completed buffer bits
+        if (buf_status & 1u) { // EP0 IN buffer complete
+            if (g_usb_need_set_addr) {
+                REG(USB_ADDR_ENDP) = g_usb_pending_addr;
+                printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
+                g_usb_need_set_addr = false;
+            }
         }
     }
 
