@@ -631,6 +631,41 @@ static void skip_whitespace(const char **str) {
 }
 
 
+static bool is_delimiter(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' || c == ')' || c == ';';
+}
+
+static bool is_number_token(const char *str) {
+    if (!str || *str == '\0') return false;
+    const char *p = str;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+        if (is_delimiter(*p)) return false;
+        while (!is_delimiter(*p)) {
+            char c = *p;
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+            p++;
+        }
+        return true;
+    }
+
+    if (*p == '+' || *p == '-') {
+        p++;
+    }
+    if (is_delimiter(*p)) return false;
+
+    while (!is_delimiter(*p)) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        p++;
+    }
+    return true;
+}
+
 lisp_val_t *lisp_read(const char **str) {
     skip_whitespace(str);
     if (**str == '\0') return NULL;
@@ -693,34 +728,35 @@ lisp_val_t *lisp_read(const char **str) {
         return head ? head : &nil_val;
     }
 
-    /* Hexadecimal Numbers */
-    if (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
-        (*str) += 2;
-        long val = 0;
-        while ((**str >= '0' && **str <= '9') || (**str >= 'a' && **str <= 'f') || (**str >= 'A' && **str <= 'F')) {
-            char c = **str;
-            val = val * 16;
-            if (c >= '0' && c <= '9') val += (c - '0');
-            else if (c >= 'a' && c <= 'f') val += (c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') val += (c - 'A' + 10);
-            (*str)++;
+    /* Numbers (Hexadecimal and Decimal) */
+    if (is_number_token(*str)) {
+        if (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
+            (*str) += 2;
+            long val = 0;
+            while ((**str >= '0' && **str <= '9') || (**str >= 'a' && **str <= 'f') || (**str >= 'A' && **str <= 'F')) {
+                char c = **str;
+                val = val * 16;
+                if (c >= '0' && c <= '9') val += (c - '0');
+                else if (c >= 'a' && c <= 'f') val += (c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') val += (c - 'A' + 10);
+                (*str)++;
+            }
+            return make_int(val);
+        } else {
+            long val = 0;
+            int sign = 1;
+            if (**str == '-') {
+                sign = -1;
+                (*str)++;
+            } else if (**str == '+') {
+                (*str)++;
+            }
+            while (**str >= '0' && **str <= '9') {
+                val = val * 10 + (**str - '0');
+                (*str)++;
+            }
+            return make_int(sign * val);
         }
-        return make_int(val);
-    }
-
-    /* Decimal Numbers */
-    if ((**str >= '0' && **str <= '9') || (**str == '-' && (*str)[1] >= '0' && (*str)[1] <= '9')) {
-        long val = 0;
-        int sign = 1;
-        if (**str == '-') {
-            sign = -1;
-            (*str)++;
-        }
-        while (**str >= '0' && **str <= '9') {
-            val = val * 10 + (**str - '0');
-            (*str)++;
-        }
-        return make_int(sign * val);
     }
 
     /* Symbols */
