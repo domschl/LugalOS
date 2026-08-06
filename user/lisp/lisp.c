@@ -537,7 +537,6 @@ void lisp_init(void) {
     env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
     env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
-    env_set(&global_env, "9p-loopback", make_prim(prim_p9_loopback));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));
@@ -729,8 +728,20 @@ lisp_val_t *lisp_read(const char **str) {
         return head ? head : &nil_val;
     }
 
-    /* Numbers (Hexadecimal and Decimal) */
-    if (is_number_token(*str)) {
+    /* Numbers & Digit-Prefixed Token Validation (Standard Scheme Syntax Rule) */
+    if ((**str >= '0' && **str <= '9') || (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X'))) {
+        if (!is_number_token(*str)) {
+            char bad_tok[32];
+            int i = 0;
+            while (**str != '\0' && !is_delimiter(**str)) {
+                if (i < 31) bad_tok[i++] = **str;
+                (*str)++;
+            }
+            bad_tok[i] = '\0';
+            printk("[Lisp Syntax Error] Invalid identifier starting with digit: '%s'\n", bad_tok);
+            return &nil_val;
+        }
+
         if (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
             (*str) += 2;
             long val = 0;

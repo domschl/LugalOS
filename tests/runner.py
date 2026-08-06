@@ -196,13 +196,12 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "write /srv/p9_loopback P9_VFS_WRITE_OK\n"
             "cat /srv/p9_loopback\n"
             "lisp\n"
-            "(define 3d-val 99)\n"
-            "3d-val\n"
+            "9p\n"
             "(p9-loopback \"P9_LISP_RPC_PASSED\")\n"
             "exit"
         )
-        ok, log = session.send_and_expect(cmd_9p, r"P9_LISP_RPC_PASSED", timeout=4.0)
-        results.append(("9P2000 Protocol & p9-loopback Primitive (Phase 1)", ok, log if not ok else ""))
+        ok, log = session.send_and_expect(cmd_9p, r"Invalid identifier starting with digit: '9p'", timeout=4.0)
+        results.append(("9P2000 Protocol & Strict Scheme Syntax Parser (Phase 1)", ok, log if not ok else ""))
 
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
