@@ -130,17 +130,12 @@ static void ep0_send(const uint8_t *buf, uint32_t len) {
     }
     // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | len
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | len;
-
-    // Arm EP0 OUT with AVAIL (bit 10) | DATA1 (bit 13) | 0 to receive host STATUS OUT packet
-    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 static void ep0_send_ack(void) {
-    // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | 0 on EP0 IN
+    // Zero-length IN packet for Control transfer Status phase
+    // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | 0
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | 0;
-
-    // Arm EP0 OUT with AVAIL (bit 10) | DATA1 (bit 13) | 0
-    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 void usb_cdc_task(void) {
@@ -217,8 +212,8 @@ void usb_cdc_task(void) {
                     break;
                 }
                 case 0x05: // SET_ADDRESS
-                    REG(USB_ADDR_ENDP) = value & 0x7F;
-                    printk("[USB] Directly Assigned Device Address: %d\n", value & 0x7F);
+                    g_usb_pending_addr = value & 0x7F;
+                    g_usb_need_set_addr = true;
                     ep0_send_ack();
                     break;
                 case 0x09: // SET_CONFIGURATION
