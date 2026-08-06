@@ -11,6 +11,7 @@
 #endif
 
 void trap_init(void) {
+#if defined(CONFIG_BOARD_RP2350)
     /* Enable M-mode External Interrupts (MEIE bit 11 in mie) */
     uintptr_t mie_val;
     __asm__ __volatile__("csrr %0, mie" : "=r"(mie_val));
@@ -22,6 +23,7 @@ void trap_init(void) {
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus_val));
     mstatus_val |= (1u << 3);
     __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
+#endif
 }
 
 void trap_handler(trap_frame_t *frame) {
