@@ -157,10 +157,17 @@ void usb_cdc_task(void) {
     }
 
     // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
+    static bool bus_reset_handled = false;
     if ((intr & USB_INTR_BUS_RESET) || (sie & USB_SIE_STATUS_BUS_RESET)) {
         REG(USB_SIE_STATUS) = USB_SIE_STATUS_BUS_RESET; // Clear bit 19 in SIE_STATUS
-        REG(USB_ADDR_ENDP) = 0;
-        printk("[USB] Bus Reset Detected\n");
+        if (!bus_reset_handled) {
+            REG(USB_ADDR_ENDP) = 0;
+            g_usb_need_set_addr = false;
+            printk("[USB] Bus Reset Detected\n");
+            bus_reset_handled = true;
+        }
+    } else {
+        bus_reset_handled = false;
     }
 
     // Check buffer status completion for pending address setup
