@@ -135,24 +135,35 @@ void uart_init(uintptr_t base_addr) {
     uart_puts("\r\n[RP2350 Hardware UART0 Online] LugalOS Microkernel Starting...\r\n");
 }
 
-void uart_putc(char c) {
+static void uart_hw_putc(char c) {
     while (REG(UART0_BASE + 0x18) & (1u << 5));
     REG(UART0_BASE + 0x00) = (uint8_t)c;
 }
 
-bool uart_has_char(void) {
-    gp16_alive_tick();
-    return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0;
+void uart_putc(char c) {
+    uart_hw_putc(c);
+    usb_cdc_putc(c); // mirror interactive shell output to /dev/ttyACM0 when connected
 }
 
-#include "drivers/usb_cdc.h"
+void uart_debug_putc(char c) {
+    uart_hw_putc(c); // kernel debug log: physical UART only, no USB mirror
+}
+
+bool uart_has_char(void) {
+    gp16_alive_tick();
+    if ((REG(UART0_BASE + 0x18) & (1u << 4)) == 0) return true; // physical UART RX FIFO
+    return usb_cdc_has_char(); // or a byte typed over /dev/ttyACM0
+}
 
 char uart_getc(void) {
     while (!uart_has_char()) {
         gp16_alive_tick();
         usb_cdc_task();
     }
-    return (char)(REG(UART0_BASE + 0x00) & 0xFF);
+    if ((REG(UART0_BASE + 0x18) & (1u << 4)) == 0) {
+        return (char)(REG(UART0_BASE + 0x00) & 0xFF);
+    }
+    return usb_cdc_getc();
 }
 
 void uart_puts(const char *s) {
@@ -160,5 +171,13 @@ void uart_puts(const char *s) {
     while (*s) {
         if (*s == '\n') uart_putc('\r');
         uart_putc(*s++);
+    }
+}
+
+void uart_debug_puts(const char *s) {
+    if (!s) return;
+    while (*s) {
+        if (*s == '\n') uart_debug_putc('\r');
+        uart_debug_putc(*s++);
     }
 }

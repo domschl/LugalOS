@@ -32,6 +32,7 @@ It is designed to scale dynamically from embedded **NOMMU** microcontrollers (li
     * `Ctrl-X Ctrl-C`: Exit editor (prompts on status line if buffer modified)
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
+* **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` enumerates as a second CDC ACM interface reserved for the planned 9P network transport (see [`plan/rp2350_distributed_plan.md`](plan/rp2350_distributed_plan.md)).
 * **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 37 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds.
 
 
@@ -90,7 +91,7 @@ ninja -C build/rv64
 
 ## Running on Hardware: Raspberry Pi Pico 2 (RP2350)
 
-LugalOS boots on the **Raspberry Pi Pico 2** (RP2350 RISC-V Hazard3 core) with UART console over USB-Serial.
+LugalOS boots on the **Raspberry Pi Pico 2** (RP2350 RISC-V Hazard3 core). The interactive `lsh` console is reachable two ways: over a CP2101/CP2102 UART-to-USB adapter wired to GPIO0/GPIO1 (below), or natively over the Pico 2's own USB port via the onboard USB CDC ACM driver — no extra adapter needed. Both are mirrored to the same shell session.
 
 ### Hardware Required
 
@@ -170,11 +171,18 @@ ninja -C build/rp2350
 
 ### Open Serial Console
 
+Via the CP2101/CP2102 UART adapter:
 ```bash
 picocom -b 115200 /dev/ttyUSB0
 # or
 minicom -b 115200 -D /dev/ttyUSB0
 ```
+
+Or, with no extra adapter, directly over the Pico 2's own USB port once it enumerates as a composite CDC ACM device:
+```bash
+picocom -b 115200 /dev/ttyACM0
+```
+`/dev/ttyACM0` carries the same interactive `lsh` session as the UART console above (output is mirrored to both). Output only starts flowing once the terminal asserts DTR (i.e. once something actually opens the port), so connecting doesn't dump a backlog of boot-time log lines. `/dev/ttyACM1` also enumerates but its data path isn't wired up yet — it's reserved for the planned 9P network transport.
 
 Expected output after boot:
 ```
@@ -321,5 +329,6 @@ LugalOS is licensed under the [MIT License](LICENSE).
 * **Microsoft UF2 Tools**: [`tools/uf2conv.py`](tools/uf2conv.py) and [`tools/uf2families.json`](tools/uf2families.json) are sourced from [Microsoft UF2 (USB Flashing Format)](https://github.com/microsoft/uf2) (MIT License), providing standard UF2 block conversion and family ID registry lookups.
 * **Raspberry Pi Picotool**: [`tools/picotool`](tools/picotool) is sourced from the [Raspberry Pi Picotool Repository](https://github.com/raspberrypi/picotool) (BSD 3-Clause License), used for RP2350 image analysis, partition table parsing, and binary validation.
 * **Igor Michalak's bare-metal-rp2350**: Reference bootloader headers, RISC-V XOSC/PLL clock tree setup, and dual-core reset patterns from [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350).
+* **hathach's TinyUSB**: The native RP2350 USB CDC ACM driver (`drivers/usb_cdc.c`) was implemented and debugged against DPRAM/endpoint-control register layouts and buffer-control write ordering cross-checked from [`rp2040_usb.c`/`usb_dpram.h`](https://github.com/hathach/tinyusb) (MIT License) — no TinyUSB code or runtime is linked into LugalOS; the USB device stack is written from scratch directly against the hardware.
 * **Rui Ueyama's chibicc**: C11 compiler architecture adapted from [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
 * **Ken Thompson & Bell Labs**: Unix `ed` teletype editor and the Plan 9 Operating System universal namespace model.

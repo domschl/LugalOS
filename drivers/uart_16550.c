@@ -44,3 +44,11 @@ void uart_puts(const char *s) {
         uart_putc(*s++);
     }
 }
+
+void uart_debug_putc(char c) {
+    uart_putc(c);
+}
+
+void uart_debug_puts(const char *s) {
+    uart_puts(s);
+}

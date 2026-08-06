@@ -17,7 +17,12 @@ static volatile bool g_usb_need_set_addr = false;
 #define USB_MAIN_CTRL         (USB_BASE + 0x40)
 #define USB_SIE_CTRL          (USB_BASE + 0x4C)
 #define USB_SIE_STATUS        (USB_BASE + 0x50)
-#define USB_BUFF_STATUS       (USB_BASE + 0x54)
+// NOTE: was (USB_BASE + 0x54) for a long time, which is actually
+// USB_INT_EP_CTRL (an endpoint-interrupt config register we never write, so
+// it always read back 0). That single wrong offset was the root cause of
+// USB_BUFF_STATUS appearing to "never latch" during EP0 bring-up; verified
+// against pico-sdk's hardware/regs/usb.h, BUFF_STATUS is at 0x58.
+#define USB_BUFF_STATUS       (USB_BASE + 0x58)
 #define USB_MUXING            (USB_BASE + 0x74)
 #define USB_PWR               (USB_BASE + 0x78)
 #define USB_INTR              (USB_BASE + 0x8C)
@@ -55,6 +60,22 @@ static volatile bool g_usb_need_set_addr = false;
 #define USB_EP0_IN_CTRL       (USB_DPRAM_BASE + 0x80)
 #define USB_EP0_OUT_CTRL      (USB_DPRAM_BASE + 0x84)
 #define USB_EP0_BUF           (USB_DPRAM_BASE + 0x100)
+
+// EP2 (Bulk, CDC ACM0 "Console" data interface -> /dev/ttyACM0). DPRAM
+// layout per usb_dpram.h: endpoint-control regs for EP1..EP15 start at
+// 0x08 (8 bytes/endpoint, IN then OUT); buffer-control regs for EP0..EP15
+// start at 0x80 (8 bytes/endpoint); general-purpose endpoint data buffers
+// are software-allocated starting at 0x180.
+#define USB_EP2_IN_ENDP_CTRL  (USB_DPRAM_BASE + 0x10)
+#define USB_EP2_OUT_ENDP_CTRL (USB_DPRAM_BASE + 0x14)
+#define USB_EP2_IN_BUF_CTRL   (USB_DPRAM_BASE + 0x90)
+#define USB_EP2_OUT_BUF_CTRL  (USB_DPRAM_BASE + 0x94)
+#define USB_EP2_OUT_BUF       (USB_DPRAM_BASE + 0x180)
+#define USB_EP2_IN_BUF        (USB_DPRAM_BASE + 0x1C0)
+
+#define EP_CTRL_ENABLE            (1u << 31)
+#define EP_CTRL_INTERRUPT_PER_BUF (1u << 29)
+#define EP_CTRL_TYPE_BULK         (2u << 26)
 
 #define CLOCKS_BASE           0x40010000UL
 #define CLK_USB_CTRL          (CLOCKS_BASE + 0x60)
@@ -159,12 +180,14 @@ static const uint8_t g_usb_cfg_desc[] = {
 static const uint8_t g_usb_str_lang[] = { 4, 3, 0x09, 0x04 };
 static const uint8_t g_usb_str_mfg[]  = { 16, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'O',0,'S',0 };
 static const uint8_t g_usb_str_prod[] = { 44, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'O',0,'S',0,' ',0,'D',0,'u',0,'a',0,'l',0,' ',0,'C',0,'D',0,'C',0,' ',0,'A',0,'C',0,'M',0 };
+static const uint8_t g_usb_str_serial[] = { 26, 3, 'L',0,'U',0,'G',0,'A',0,'L',0,'O',0,'S',0,'-',0,'0',0,'0',0,'0',0,'1',0 }; // iSerialNumber = 3
 static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08 }; // 115200 8N1
 
 static const uint8_t *g_ep0_tx_buf = NULL;
 static volatile uint32_t g_ep0_tx_rem = 0;
 static volatile uint32_t g_ep0_tx_off = 0;
 static volatile bool g_ep0_tx_data_pid = 1; // DATA1 for 1st packet
+static volatile bool g_ep0_awaiting_line_coding = false; // SET_LINE_CODING OUT data stage pending
 
 static void ep0_send_next_chunk(void) {
     uint32_t chunk = g_ep0_tx_rem;
@@ -215,6 +238,102 @@ static void ep0_send_ack(void) {
     ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_IN_CTRL, (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | 0);
 }
 
+// EP2 bulk console (interface 1 -> /dev/ttyACM0). Byte-ring buffers decouple
+// usb_cdc_task()'s polling from usb_cdc_putc()/getc()'s call sites (the
+// shell), which run independently and may call in between polls.
+//
+// TX is sized generously: shell command output (e.g. `ls`) is produced in
+// one tight synchronous loop of uart_putc() calls with no usb_cdc_task()
+// polls in between, so nothing drains the ring mid-burst — it all has to
+// fit, or the tail of the output is silently dropped (usb_cdc_putc() drops
+// on a full ring rather than blocking, to avoid a reentrancy deadlock:
+// usb_cdc_task() guards against re-entry, and some of its own printk calls
+// happen from inside it, so blocking there could spin forever waiting for
+// a drain that a nested call can't perform).
+#define USB_EP2_TX_RING_SIZE 4096
+#define USB_EP2_RX_RING_SIZE 512
+
+static volatile uint8_t g_ep2_tx_ring[USB_EP2_TX_RING_SIZE];
+static volatile uint32_t g_ep2_tx_head = 0;
+static volatile uint32_t g_ep2_tx_tail = 0;
+static volatile bool g_ep2_tx_busy = false;
+static volatile bool g_ep2_tx_pid = false; // DATA0 first, per USB 2.0 8.6
+
+static volatile uint8_t g_ep2_rx_ring[USB_EP2_RX_RING_SIZE];
+static volatile uint32_t g_ep2_rx_head = 0;
+static volatile uint32_t g_ep2_rx_tail = 0;
+static volatile bool g_ep2_rx_pid = false; // DATA0 first
+
+static volatile bool g_ep2_configured = false;
+
+// CDC ACM DTR (SET_CONTROL_LINE_STATE, wValue bit 0). This driver
+// enumerates (and ep2_configure() runs) as soon as the RP2350 boots and the
+// host's USB stack sees the device -- long before a user actually opens a
+// terminal on /dev/ttyACM0. Without gating on DTR, every printk() during
+// boot (FAT32/VFS/Lisp/shell init, all mirrored to EP2 via uart_putc())
+// queues into g_ep2_tx_ring and gets transmitted regardless of whether
+// anyone is listening; the Linux side just buffers it, and whenever a
+// terminal finally does open the port, that whole backlog arrives in one
+// burst -- exactly the "garbage on first connect, clean on reconnect"
+// pattern seen in testing. Real terminal programs assert DTR on open, so
+// gate queuing on it and flush any pre-DTR backlog the instant it's seen.
+static volatile bool g_ep2_dtr = false;
+
+static void ep2_configure(void) {
+    // The connect handshake can involve more than one bus reset / repeated
+    // SET_CONFIGURATION before the host settles (seen throughout this
+    // session's logs). If a previous ep2_configure() left an EP2 IN
+    // transfer in flight at the SIE level, blindly re-arming on top of it
+    // here would clobber it mid-transaction and can desync the DATA0/DATA1
+    // toggle from the host's own tracking for that endpoint -- which looks
+    // exactly like "replies silently vanish forever" (the SIE still
+    // completes transfers on our side, so our own busy/ring bookkeeping
+    // looks fine, but the host discards packets it sees as out-of-sequence
+    // duplicates). Force AVAILABLE off on both buffer-control registers
+    // first so any stale in-flight transfer is cleanly abandoned.
+    REG(USB_EP2_IN_BUF_CTRL)  = 0;
+    REG(USB_EP2_OUT_BUF_CTRL) = 0;
+
+    REG(USB_EP2_IN_ENDP_CTRL)  = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
+                                | (uint32_t)(USB_EP2_IN_BUF - USB_DPRAM_BASE);
+    REG(USB_EP2_OUT_ENDP_CTRL) = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
+                                | (uint32_t)(USB_EP2_OUT_BUF - USB_DPRAM_BASE);
+
+    g_ep2_tx_head = g_ep2_tx_tail = 0;
+    g_ep2_rx_head = g_ep2_rx_tail = 0;
+    g_ep2_tx_busy = false;
+    g_ep2_tx_pid = false;
+    g_ep2_rx_pid = false;
+    g_ep2_dtr = false; // wait for the host to actually assert DTR before queuing anything
+
+    // Arm EP2 OUT to receive the host's first packet (AVAIL | DATA0 | 64 max)
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_OUT_BUF_CTRL, (1u << 10) | 64);
+
+    g_ep2_configured = true;
+    printk_debug("[USB] EP2 Bulk Console Endpoint Configured (Interface 1)\n");
+}
+
+// Copy any buffered TX bytes into an EP2 IN packet if the endpoint is free.
+static void ep2_tx_pump(void) {
+    if (!g_ep2_configured || g_ep2_tx_busy || g_ep2_tx_head == g_ep2_tx_tail) {
+        return;
+    }
+
+    volatile uint8_t *txbuf = (volatile uint8_t *)USB_EP2_IN_BUF;
+    uint32_t n = 0;
+    while (n < 64 && g_ep2_tx_tail != g_ep2_tx_head) {
+        txbuf[n++] = g_ep2_tx_ring[g_ep2_tx_tail];
+        g_ep2_tx_tail = (g_ep2_tx_tail + 1) % USB_EP2_TX_RING_SIZE;
+    }
+
+    uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10) | n; // FULL | LAST_BUFF | AVAIL | len
+    if (g_ep2_tx_pid) ctrl |= (1u << 13); // DATA1_PID
+    g_ep2_tx_pid = !g_ep2_tx_pid;
+    g_ep2_tx_busy = true;
+
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_IN_BUF_CTRL, ctrl);
+}
+
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
@@ -222,18 +341,15 @@ void usb_cdc_task(void) {
     if (in_task) return;
     in_task = true;
 
-    static uint32_t last_intr = 0;
-    static uint32_t last_sie  = 0;
-
     uint32_t intr = REG(USB_INTR);
     uint32_t sie  = REG(USB_SIE_STATUS);
-    uint32_t sie_filtered = sie & ~0x0000000Cu; // Filter LINE_STATE bits 2..3 oscillation
 
-    if (intr != last_intr || sie_filtered != last_sie) {
-        printk("[USB EVT] INTR=0x%08x SIE=0x%08x\n", intr, sie);
-        last_intr = intr;
-        last_sie  = sie_filtered;
-    }
+    // NOTE: this used to also printk_debug() an "[USB EVT]" line on every
+    // INTR/SIE_STATUS change, which was essential for diagnosing EP0
+    // bring-up but became a self-feeding loop once EP2 console mirroring
+    // was added: EP2 traffic changes SIE_STATUS (ACK_REC etc.), which
+    // logged a line, which (via uart_putc's USB mirror) became more EP2
+    // traffic, forever. Removed now that enumeration and EP2 both work.
 
     // Clear latched event/error bits now that we've captured `sie` above,
     // so a bit set once doesn't make every future poll look like a fresh
@@ -251,22 +367,68 @@ void usb_cdc_task(void) {
             REG(USB_ADDR_ENDP) = 0;
             g_usb_need_set_addr = false;
             g_ep0_tx_rem = 0;
-            printk("[USB] Bus Reset Detected\n");
+            g_ep0_awaiting_line_coding = false;
+            // Drop EP2 immediately rather than waiting for the next
+            // SET_CONFIGURATION to call ep2_configure(): a stray poll in
+            // between could otherwise act on now-stale busy/pid/ring state
+            // left over from before this reset.
+            g_ep2_configured = false;
+            REG(USB_EP2_IN_BUF_CTRL)  = 0;
+            REG(USB_EP2_OUT_BUF_CTRL) = 0;
+            g_ep2_tx_head = g_ep2_tx_tail = 0;
+            g_ep2_rx_head = g_ep2_rx_tail = 0;
+            g_ep2_tx_busy = false;
+            g_ep2_tx_pid = false;
+            g_ep2_rx_pid = false;
+            g_ep2_dtr = false;
+            printk_debug("[USB] Bus Reset Detected\n");
             bus_reset_handled = true;
         }
     } else {
         bus_reset_handled = false;
     }
 
-    // USB_BUFF_STATUS has been observed to never latch nonzero on this
-    // hardware/poll cadence even when SIE_STATUS proves a transfer
-    // completed (TRANS_COMPLETE/ACK_REC), so it is only logged here, not
-    // relied upon; SIE_STATUS bits drive all the real state transitions.
+    // EP0's own state machine still runs off SIE_STATUS (see below) rather
+    // than being switched back to BUFF_STATUS now that the offset is fixed,
+    // since that path is proven working and there's no reason to risk
+    // regressing it. BUFF_STATUS is used here for EP2 (bulk console),
+    // which SIE_STATUS's global ACK_REC/TRANS_COMPLETE bits can't drive
+    // since they don't say *which* endpoint completed.
     uint32_t buf_status = REG(USB_BUFF_STATUS);
     if (buf_status) {
-        printk("[USB BUFF] status=0x%08x\n", buf_status);
         REG(USB_BUFF_STATUS) = buf_status; // Write 1 to clear all completed buffer bits
+
+        if (buf_status & (1u << 1)) { // EP0 OUT complete
+            if (g_ep0_awaiting_line_coding) {
+                // The 7 line-coding bytes just landed in USB_EP0_BUF; this
+                // device doesn't act on baud/format, so just consume them
+                // and send the STATUS ack now that the data stage is done.
+                g_ep0_awaiting_line_coding = false;
+                ep0_send_ack();
+            }
+        }
+        if (buf_status & (1u << 4)) { // EP2 IN complete
+            g_ep2_tx_busy = false;
+        }
+        if (buf_status & (1u << 5)) { // EP2 OUT complete: data arrived from host
+            uint32_t ctrl = REG(USB_EP2_OUT_BUF_CTRL);
+            uint32_t len = ctrl & 0x3FFu;
+            volatile uint8_t *rxbuf = (volatile uint8_t *)USB_EP2_OUT_BUF;
+            for (uint32_t i = 0; i < len; i++) {
+                uint32_t next = (g_ep2_rx_head + 1) % USB_EP2_RX_RING_SIZE;
+                if (next != g_ep2_rx_tail) { // drop byte if the ring is full
+                    g_ep2_rx_ring[g_ep2_rx_head] = rxbuf[i];
+                    g_ep2_rx_head = next;
+                }
+            }
+            g_ep2_rx_pid = !g_ep2_rx_pid;
+            uint32_t rearm = (1u << 10) | 64; // AVAIL | 64 max
+            if (g_ep2_rx_pid) rearm |= (1u << 13); // DATA1_PID
+            ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_OUT_BUF_CTRL, rearm);
+        }
     }
+
+    ep2_tx_pump();
 
     // Continue a multi-packet EP0 IN transfer (e.g. the 141-byte config
     // descriptor) once the host has ACKed the chunk just sent. ACK_REC
@@ -283,7 +445,7 @@ void usb_cdc_task(void) {
     // USB_BUFF_STATUS bit 0, which does not reliably reflect completion here.
     if (g_usb_need_set_addr && g_ep0_tx_rem == 0 && (sie & USB_SIE_STATUS_TRANS_COMPLETE)) {
         REG(USB_ADDR_ENDP) = g_usb_pending_addr;
-        printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
+        printk_debug("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
         g_usb_need_set_addr = false;
     }
 
@@ -296,8 +458,6 @@ void usb_cdc_task(void) {
         uint8_t req      = setup[1];
         uint16_t value   = (uint16_t)setup[2] | ((uint16_t)setup[3] << 8);
         uint16_t length  = (uint16_t)setup[6] | ((uint16_t)setup[7] << 8);
-
-        printk("[USB SETUP] Type=0x%02x Req=0x%02x Val=0x%04x Len=%d\n", req_type, req, value, length);
 
         if ((req_type & 0x60) == 0x00) { // Standard Device Request
             switch (req) {
@@ -319,11 +479,24 @@ void usb_cdc_task(void) {
                             ep0_send(g_usb_str_mfg, sizeof(g_usb_str_mfg));
                         } else if (desc_idx == 2) {
                             ep0_send(g_usb_str_prod, sizeof(g_usb_str_prod));
+                        } else if (desc_idx == 3) {
+                            ep0_send(g_usb_str_serial, sizeof(g_usb_str_serial));
                         } else {
-                            ep0_send_ack();
+                            // Unsupported string index: reuse ep0_send()'s
+                            // 0-length path rather than ep0_send_ack(). This
+                            // is a GET_DESCRIPTOR (IN data stage) request;
+                            // ep0_send_ack() sends a 0-byte IN packet but
+                            // never arms EP0 OUT for the STATUS stage that
+                            // must follow, so the host waits out its ~5s
+                            // control-transfer timeout and retries (this was
+                            // exactly what happened for iSerialNumber before
+                            // it had a real string above). ep0_send(ptr, 0)
+                            // sends the same 0-byte IN packet but correctly
+                            // arms EP0 OUT afterward via ep0_send_next_chunk().
+                            ep0_send(g_usb_str_lang, 0);
                         }
                     } else {
-                        ep0_send_ack();
+                        ep0_send(g_usb_dev_desc, 0); // unsupported descriptor type; see note above
                     }
                     break;
                 }
@@ -334,6 +507,9 @@ void usb_cdc_task(void) {
                     break;
                 case 0x09: // SET_CONFIGURATION
                     ep0_send_ack();
+                    if (value != 0) {
+                        ep2_configure();
+                    }
                     break;
                 default:
                     ep0_send_ack();
@@ -342,6 +518,29 @@ void usb_cdc_task(void) {
         } else if ((req_type & 0x60) == 0x20) { // Class Request (CDC)
             if (req == 0x21) { // GET_LINE_CODING
                 ep0_send(g_usb_line_coding, sizeof(g_usb_line_coding));
+            } else if (req == 0x20 && length > 0) {
+                // SET_LINE_CODING has a host->device DATA stage (7 bytes):
+                // arm EP0 OUT to actually receive it instead of ACKing a
+                // transfer whose data was never read. The STATUS ack is
+                // sent from the BUFF_STATUS EP0-OUT-complete handler above
+                // once that data genuinely arrives.
+                g_ep0_awaiting_line_coding = true;
+                ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_OUT_CTRL, (1u << 10) | (1u << 13) | 64);
+            } else if (req == 0x22) { // SET_CONTROL_LINE_STATE (wValue bit 0 = DTR)
+                bool dtr_now = (value & 0x1) != 0;
+                if (dtr_now && !g_ep2_dtr) {
+                    // Terminal just opened the port: drop anything queued
+                    // before it was listening (boot-time printk output that
+                    // accumulated with nowhere to go) so it starts clean
+                    // instead of receiving that backlog as one burst.
+                    g_ep2_tx_head = g_ep2_tx_tail = 0;
+                    g_ep2_rx_head = g_ep2_rx_tail = 0;
+                    printk_debug("[USB] DTR asserted, EP2 console active\n");
+                } else if (!dtr_now && g_ep2_dtr) {
+                    printk_debug("[USB] DTR dropped, EP2 console inactive\n");
+                }
+                g_ep2_dtr = dtr_now;
+                ep0_send_ack();
             } else {
                 ep0_send_ack();
             }
@@ -402,10 +601,10 @@ void usb_cdc_init(void) {
 
     g_usb_cdc_connected = true;
 
-    printk("[USB CDC Init] PLL_USB CS: 0x%08x (Lock: %d), CLK_USB_CTRL: 0x%08x, CLK_SELECTED: 0x%08x\n",
+    printk_debug("[USB CDC Init] PLL_USB CS: 0x%08x (Lock: %d), CLK_USB_CTRL: 0x%08x, CLK_SELECTED: 0x%08x\n",
            REG(0x40058000UL), (REG(0x40058000UL) & (1u << 31)) ? 1 : 0,
            REG(CLK_USB_CTRL), REG(CLOCKS_BASE + 0x68));
-    printk("[USB CDC Init] MUXING: 0x%08x, MAIN_CTRL: 0x%08x, SIE_CTRL: 0x%08x, SIE_STATUS: 0x%08x, INTE: 0x%08x\n",
+    printk_debug("[USB CDC Init] MUXING: 0x%08x, MAIN_CTRL: 0x%08x, SIE_CTRL: 0x%08x, SIE_STATUS: 0x%08x, INTE: 0x%08x\n",
            REG(USB_MUXING), REG(USB_MAIN_CTRL), REG(USB_SIE_CTRL), REG(USB_SIE_STATUS), REG(USB_INTE));
 
     // Process initial USB enumeration setup packets during boot
@@ -413,19 +612,36 @@ void usb_cdc_init(void) {
         usb_cdc_task();
     }
 
-    printk("[USB CDC] Native RP2350 Dual CDC ACM Controller Initialized (/dev/ttyACM0, /dev/ttyACM1).\n");
+    printk_debug("[USB CDC] Native RP2350 Dual CDC ACM Controller Initialized (/dev/ttyACM0, /dev/ttyACM1).\n");
 }
 
 bool usb_cdc_is_connected(void) {
     return g_usb_cdc_connected;
 }
 
+// Queues a byte for EP2 bulk IN (/dev/ttyACM0); ep2_tx_pump() in
+// usb_cdc_task() drains the ring into actual USB packets. Silently drops
+// on a full ring, before the host has configured the endpoint, or before a
+// terminal has actually asserted DTR (see g_ep2_dtr) -- otherwise every
+// printk() between enumeration and someone opening a terminal would queue
+// up with nowhere to go and arrive as one stale burst when they finally do.
 void usb_cdc_putc(char c) {
-    uart_putc(c);
+    if (!g_usb_cdc_connected || !g_ep2_configured || !g_ep2_dtr) return;
+    uint32_t next = (g_ep2_tx_head + 1) % USB_EP2_TX_RING_SIZE;
+    if (next == g_ep2_tx_tail) return; // ring full; drop
+    g_ep2_tx_ring[g_ep2_tx_head] = (uint8_t)c;
+    g_ep2_tx_head = next;
+}
+
+bool usb_cdc_has_char(void) {
+    return g_ep2_configured && g_ep2_rx_head != g_ep2_rx_tail;
 }
 
 char usb_cdc_getc(void) {
-    return uart_getc();
+    if (g_ep2_rx_head == g_ep2_rx_tail) return 0;
+    char c = (char)g_ep2_rx_ring[g_ep2_rx_tail];
+    g_ep2_rx_tail = (g_ep2_rx_tail + 1) % USB_EP2_RX_RING_SIZE;
+    return c;
 }
 
 int usb_cdc_write_net(const uint8_t *buf, size_t len) {
@@ -444,26 +660,26 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
 
 void usb_cdc_debug_dump(void) {
 #if defined(CONFIG_BOARD_RP2350)
-    printk("\n=== RP2350 USB Hardware Controller Status ===\n");
-    printk("CLK_USB_CTRL     : 0x%08x\n", REG(CLK_USB_CTRL));
-    printk("CLK_USB_SELECTED : 0x%08x\n", REG(CLOCKS_BASE + 0x68));
-    printk("PLL_USB CS       : 0x%08x\n", REG(0x40058000UL));
-    printk("USB_MAIN_CTRL    : 0x%08x\n", REG(USB_MAIN_CTRL));
-    printk("USB_SIE_CTRL     : 0x%08x\n", REG(USB_SIE_CTRL));
-    printk("USB_SIE_STATUS   : 0x%08x\n", REG(USB_SIE_STATUS));
-    printk("USB_BUFF_STATUS  : 0x%08x\n", REG(USB_BUFF_STATUS));
-    printk("USB_INTR (0x8C)  : 0x%08x\n", REG(USB_INTR));
-    printk("USB_INTE (0x90)  : 0x%08x\n", REG(USB_INTE));
-    printk("USB_INTS (0x98)  : 0x%08x\n", REG(USB_INTS));
-    printk("USB_MUXING       : 0x%08x\n", REG(USB_MUXING));
-    printk("USB_EP0_IN_CTRL  : 0x%08x\n", REG(USB_EP0_IN_CTRL));
+    printk_debug("\n=== RP2350 USB Hardware Controller Status ===\n");
+    printk_debug("CLK_USB_CTRL     : 0x%08x\n", REG(CLK_USB_CTRL));
+    printk_debug("CLK_USB_SELECTED : 0x%08x\n", REG(CLOCKS_BASE + 0x68));
+    printk_debug("PLL_USB CS       : 0x%08x\n", REG(0x40058000UL));
+    printk_debug("USB_MAIN_CTRL    : 0x%08x\n", REG(USB_MAIN_CTRL));
+    printk_debug("USB_SIE_CTRL     : 0x%08x\n", REG(USB_SIE_CTRL));
+    printk_debug("USB_SIE_STATUS   : 0x%08x\n", REG(USB_SIE_STATUS));
+    printk_debug("USB_BUFF_STATUS  : 0x%08x\n", REG(USB_BUFF_STATUS));
+    printk_debug("USB_INTR (0x8C)  : 0x%08x\n", REG(USB_INTR));
+    printk_debug("USB_INTE (0x90)  : 0x%08x\n", REG(USB_INTE));
+    printk_debug("USB_INTS (0x98)  : 0x%08x\n", REG(USB_INTS));
+    printk_debug("USB_MUXING       : 0x%08x\n", REG(USB_MUXING));
+    printk_debug("USB_EP0_IN_CTRL  : 0x%08x\n", REG(USB_EP0_IN_CTRL));
 
     volatile uint8_t *s = (volatile uint8_t *)USB_EP0_SETUP;
-    printk("EP0 Setup Bytes  : [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+    printk_debug("EP0 Setup Bytes  : [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
-    printk("=============================================\n\n");
+    printk_debug("=============================================\n\n");
 #else
-    printk("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
+    printk_debug("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
 #endif
 }
 
@@ -473,7 +689,7 @@ void usb_cdc_task(void) {}
 
 void usb_cdc_init(void) {
     g_usb_cdc_connected = false;
-    printk("[USB CDC] Host Pass-Through Gateway Online (/dev/ttyUSB0 / /dev/ttyACM1).\n");
+    printk_debug("[USB CDC] Host Pass-Through Gateway Online (/dev/ttyUSB0 / /dev/ttyACM1).\n");
 }
 
 bool usb_cdc_is_connected(void) {
@@ -486,6 +702,10 @@ void usb_cdc_putc(char c) {
 
 char usb_cdc_getc(void) {
     return uart_getc();
+}
+
+bool usb_cdc_has_char(void) {
+    return false;
 }
 
 int usb_cdc_write_net(const uint8_t *buf, size_t len) {
@@ -503,7 +723,7 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
 }
 
 void usb_cdc_debug_dump(void) {
-    printk("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
+    printk_debug("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
 }
 
 #endif

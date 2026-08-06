@@ -13,6 +13,7 @@ bool usb_cdc_is_connected(void);
 // Console CDC Port (/dev/ttyACM0)
 void usb_cdc_putc(char c);
 char usb_cdc_getc(void);
+bool usb_cdc_has_char(void);
 
 // 9P Network Interconnect CDC Port (/dev/ttyACM1)
 int usb_cdc_write_net(const uint8_t *buf, size_t len);

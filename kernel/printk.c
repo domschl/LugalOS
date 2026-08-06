@@ -3,13 +3,16 @@
 #include "kernel/time.h"
 #include <stdint.h>
 
-static void print_num(unsigned long num, int base) {
+typedef void (*putc_fn)(char);
+typedef void (*puts_fn)(const char *);
+
+static void print_num(putc_fn pc, unsigned long num, int base) {
     char buf[64];
     const char digits[] = "0123456789abcdef";
     int i = 0;
 
     if (num == 0) {
-        uart_putc('0');
+        pc('0');
         return;
     }
 
@@ -19,45 +22,42 @@ static void print_num(unsigned long num, int base) {
     }
 
     while (i > 0) {
-        uart_putc(buf[--i]);
+        pc(buf[--i]);
     }
 }
 
-static void print_timestamp(void) {
+static void print_timestamp(putc_fn pc, puts_fn ps) {
     uint64_t ms = time_get_ms();
     unsigned int sec = (unsigned int)(ms / 1000);
     unsigned int msec = (unsigned int)(ms % 1000);
 
-    uart_puts("[");
-    if (sec < 10) uart_puts("    ");
-    else if (sec < 100) uart_puts("   ");
-    else if (sec < 1000) uart_puts("  ");
-    else if (sec < 10000) uart_puts(" ");
+    ps("[");
+    if (sec < 10) ps("    ");
+    else if (sec < 100) ps("   ");
+    else if (sec < 1000) ps("  ");
+    else if (sec < 10000) ps(" ");
 
-    print_num(sec, 10);
-    uart_putc('.');
-    uart_putc('0' + ((msec / 100) % 10));
-    uart_putc('0' + ((msec / 10) % 10));
-    uart_putc('0' + (msec % 10));
-    uart_puts("] ");
+    print_num(pc, sec, 10);
+    pc('.');
+    pc('0' + ((msec / 100) % 10));
+    pc('0' + ((msec / 10) % 10));
+    pc('0' + (msec % 10));
+    ps("] ");
 }
 
-int printk(const char *fmt, ...) {
+static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
     if (!fmt) return -1;
 
     if (fmt[0] == '[' && fmt[1] != '\0') {
-        print_timestamp();
+        print_timestamp(pc, ps);
     }
-
-    va_list args;
-    va_start(args, fmt);
 
     for (const char *p = fmt; *p != '\0'; p++) {
         if (*p != '%') {
             if (*p == '\n') {
-                uart_putc('\r');
+                pc('\r');
             }
-            uart_putc(*p);
+            pc(*p);
             continue;
         }
 
@@ -89,17 +89,17 @@ int printk(const char *fmt, ...) {
 
         switch (*p) {
             case 'c':
-                uart_putc((char)va_arg(args, int));
+                pc((char)va_arg(args, int));
                 break;
             case 's': {
                 const char *s = va_arg(args, const char *);
                 if (!s) s = "(null)";
                 if (max_len >= 0) {
                     for (int i = 0; i < max_len && s[i] != '\0'; i++) {
-                        uart_putc(s[i]);
+                        pc(s[i]);
                     }
                 } else {
-                    uart_puts(s);
+                    ps(s);
                 }
                 break;
             }
@@ -111,13 +111,13 @@ int printk(const char *fmt, ...) {
                 while (temp != 0) { digits++; temp /= 10; }
                 if (width > digits) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(pad);
                 }
                 if (val < 0) {
-                    uart_putc('-');
+                    pc('-');
                     val = -val;
                 }
-                print_num((unsigned long)val, 10);
+                print_num(pc, (unsigned long)val, 10);
                 break;
             }
             case 'u': {
@@ -127,9 +127,9 @@ int printk(const char *fmt, ...) {
                 while (temp != 0) { digits++; temp /= 10; }
                 if (width > digits) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(pad);
                 }
-                print_num(val, 10);
+                print_num(pc, val, 10);
                 break;
             }
             case 'x':
@@ -141,21 +141,45 @@ int printk(const char *fmt, ...) {
                 while (temp != 0) { digits++; temp /= 16; }
                 if (width > digits) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) uart_putc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(pad);
                 }
-                print_num(val, 16);
+                print_num(pc, val, 16);
                 break;
             }
             case '%':
-                uart_putc('%');
+                pc('%');
                 break;
             default:
-                uart_putc('%');
-                uart_putc(*p);
+                pc('%');
+                pc(*p);
                 break;
         }
     }
 
-    va_end(args);
     return 0;
+}
+
+// General-purpose kernel/shell text output. Mirrored to both the physical
+// UART and the USB CDC console (via uart_putc/uart_puts) -- this is used
+// for user-facing output (e.g. shell command results in vfs_server.c), not
+// just kernel diagnostics, so it must reach whichever terminal the user is
+// actually connected through.
+int printk(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int ret = vprintk_to(uart_putc, uart_puts, fmt, args);
+    va_end(args);
+    return ret;
+}
+
+// Low-level driver/kernel diagnostics only (see printk.h): physical UART
+// only, never mirrored to USB. Used by drivers/usb_cdc.c's own tracing so
+// that logging USB activity can't itself become USB traffic that logs more
+// activity.
+int printk_debug(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int ret = vprintk_to(uart_debug_putc, uart_debug_puts, fmt, args);
+    va_end(args);
+    return ret;
 }
