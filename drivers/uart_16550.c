@@ -26,8 +26,12 @@ bool uart_has_char(void) {
     return (uart_base[UART_LSR] & UART_LSR_DR) != 0;
 }
 
+#include "drivers/usb_cdc.h"
+
 char uart_getc(void) {
-    while (!uart_has_char());
+    while (!uart_has_char()) {
+        usb_cdc_task();
+    }
     return (char)uart_base[UART_RBR];
 }
 

@@ -137,9 +137,12 @@ bool uart_has_char(void) {
     return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0;
 }
 
+#include "drivers/usb_cdc.h"
+
 char uart_getc(void) {
     while (!uart_has_char()) {
         gp16_alive_tick();
+        usb_cdc_task();
     }
     return (char)(REG(UART0_BASE + 0x00) & 0xFF);
 }
