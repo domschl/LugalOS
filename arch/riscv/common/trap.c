@@ -32,15 +32,7 @@ void trap_handler(trap_frame_t *frame) {
     uintptr_t code = cause & ~((uintptr_t)1 << (__riscv_xlen - 1));
 
     if (is_interrupt) {
-        if (code == 11) { // Machine External Interrupt
-#if defined(CONFIG_BOARD_RP2350)
-            uint32_t irq_val = 0 | ((1u << 14) << 16);
-            __asm__ __volatile__("csrc 0xbe2, %0" :: "r"(irq_val)); // Clear pending IRQ 14 (USBCTRL_IRQ) in Hazard3 MEIFA CSR
-            usb_cdc_task();
-#endif
-        } else {
-            printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
-        }
+        printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
         if (code == 8 || code == 9 || code == 11) {
