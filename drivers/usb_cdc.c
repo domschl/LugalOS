@@ -43,8 +43,9 @@ static bool g_usb_need_set_addr = false;
 #define RESETS_BASE           0x40020000UL
 #define RESETS_RESET_SET      (RESETS_BASE + 0x2000)
 #define RESETS_RESET_CLR      (RESETS_BASE + 0x3000)
-#define RESETS_RESET_DONE     (RESETS_BASE + 0x000C)
-#define RESET_USB_BIT         (1u << 17)
+#define RESETS_RESET_DONE     (RESETS_BASE + 0x0008)
+#define RESET_PLL_USB_BIT     (1u << 15)
+#define RESET_USB_BIT         (1u << 28)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
@@ -240,10 +241,10 @@ void usb_cdc_task(void) {
 
 void usb_cdc_init(void) {
     // 1. Initialize PLL_USB (48 MHz) according to Pico SDK pll_init
-    REG(RESETS_BASE + 0x2000) = (1u << 13); // RESETS_RESET_SET bit 13 (PLL_USB)
+    REG(RESETS_RESET_SET) = RESET_PLL_USB_BIT;
     for (volatile int i = 0; i < 1000; i++);
-    REG(RESETS_BASE + 0x3000) = (1u << 13); // RESETS_RESET_CLR bit 13
-    while (!(REG(RESETS_BASE + 0x0C) & (1u << 13)));
+    REG(RESETS_RESET_CLR) = RESET_PLL_USB_BIT;
+    while (!(REG(RESETS_RESET_DONE) & RESET_PLL_USB_BIT));
 
     REG(0x40058000UL) = 1;   // RefDiv = 1
     REG(0x40058008UL) = 100; // FBDiv = 100 (12MHz * 100 = 1200MHz VCO, valid for RP2350 min 750MHz)
