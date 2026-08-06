@@ -248,9 +248,12 @@ void usb_cdc_init(void) {
     // 4. Enable USB PHY Muxing & Software Pullup Control (TO_PHY | SOFTCON)
     REG(USB_BASE + 0x74) = (1u << 0) | (1u << 3);
 
-    // 5. Enable SIE Controller in Device Mode & D+ Pullup
+    // 5. Enable Interrupt Flags in USB_INTE (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
+    REG(USB_BASE + 0x8C) = (1u << 16) | (1u << 12) | (1u << 4);
+
+    // 6. Enable SIE Controller in Device Mode & D+ Pullup (Clear PULLDOWN_EN bit 15!)
     REG(USB_MAIN_CTRL) = (1u << 0); // Enable controller in Device Mode
-    REG(USB_SIE_CTRL) = (1u << 16) | (1u << 29); // D+ Pullup, Enable SIE
+    REG(USB_SIE_CTRL) = (1u << 29) | (1u << 16); // EP0_INT_1BUF (bit 29) | PULLUP_EN (bit 16), PULLDOWN_EN (bit 15 = 0)
 
     g_usb_cdc_connected = true;
 
@@ -298,6 +301,8 @@ void usb_cdc_debug_dump(void) {
     printk("USB_SIE_CTRL     : 0x%08x\n", REG(USB_SIE_CTRL));
     printk("USB_SIE_STATUS   : 0x%08x\n", REG(USB_SIE_STATUS));
     printk("USB_BUFF_STATUS  : 0x%08x\n", REG(USB_BUFF_STATUS));
+    printk("USB_INTE         : 0x%08x\n", REG(USB_BASE + 0x8C));
+    printk("USB_INTS         : 0x%08x\n", REG(USB_BASE + 0x90));
     printk("USB_MUXING       : 0x%08x\n", REG(USB_BASE + 0x74));
     printk("USB_EP0_IN_CTRL  : 0x%08x\n", REG(USB_EP0_IN_CTRL));
 
