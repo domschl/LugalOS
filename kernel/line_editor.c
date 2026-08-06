@@ -1,6 +1,7 @@
 #include "kernel/line_editor.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
+#include "drivers/usb_cdc.h"
 #include "fs/vfs.h"
 #include <string.h>
 
@@ -474,6 +475,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
     redraw_line(prompt, out_buf, len, pos);
 
     while (1) {
+        usb_cdc_task();
         char c = uart_getc();
 
         // Control character handling
