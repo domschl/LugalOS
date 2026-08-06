@@ -18,6 +18,18 @@ static bool g_usb_need_set_addr = false;
 #define USB_SIE_CTRL          (USB_BASE + 0x4C)
 #define USB_SIE_STATUS        (USB_BASE + 0x50)
 #define USB_BUFF_STATUS       (USB_BASE + 0x54)
+#define USB_MUXING            (USB_BASE + 0x74)
+#define USB_INTR              (USB_BASE + 0x8C)
+#define USB_INTE              (USB_BASE + 0x90)
+#define USB_INTF              (USB_BASE + 0x94)
+#define USB_INTS              (USB_BASE + 0x98)
+
+#define USB_SIE_STATUS_BUS_RESET (1u << 19)
+#define USB_SIE_STATUS_SETUP_REC (1u << 17)
+
+#define USB_INTR_SETUP_REQ       (1u << 16)
+#define USB_INTR_BUS_RESET       (1u << 12)
+#define USB_INTR_BUFF_STATUS     (1u << 4)
 
 #define USB_EP0_SETUP         (USB_DPRAM_BASE + 0x00)
 #define USB_EP0_IN_CTRL       (USB_DPRAM_BASE + 0x80)
@@ -129,16 +141,15 @@ static void ep0_send_ack(void) {
     REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
-#define USB_INTS (USB_BASE + 0x90)
-
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
-    uint32_t ints = REG(USB_INTS);
+    uint32_t intr = REG(USB_INTR);
+    uint32_t sie  = REG(USB_SIE_STATUS);
 
-    // Check BUS_RESET (bit 12 in USB_INTS)
-    if (ints & (1u << 12)) {
-        REG(USB_INTS) = (1u << 12);
+    // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
+    if ((intr & USB_INTR_BUS_RESET) || (sie & USB_SIE_STATUS_BUS_RESET)) {
+        REG(USB_SIE_STATUS) = USB_SIE_STATUS_BUS_RESET; // Clear bit 19 in SIE_STATUS
         REG(USB_ADDR_ENDP) = 0;
         printk("[USB] Bus Reset Detected\n");
     }
@@ -146,7 +157,7 @@ void usb_cdc_task(void) {
     // Check buffer status completion for pending address setup
     uint32_t buf_status = REG(USB_BUFF_STATUS);
     if (buf_status & 1u) { // EP0 IN buffer complete
-        REG(USB_BUFF_STATUS) = 1u; // Clear bit
+        REG(USB_BUFF_STATUS) = 1u; // Clear bit 0
         if (g_usb_need_set_addr) {
             REG(USB_ADDR_ENDP) = g_usb_pending_addr;
             printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
@@ -154,9 +165,9 @@ void usb_cdc_task(void) {
         }
     }
 
-    // Check SETUP_REQ (bit 16 in USB_INTS)
-    if (ints & (1u << 16)) {
-        REG(USB_INTS) = (1u << 16); // Clear SETUP_REQ flag
+    // Check SETUP_REQ (bit 16 in USB_INTR or bit 17 in USB_SIE_STATUS)
+    if ((intr & USB_INTR_SETUP_REQ) || (sie & USB_SIE_STATUS_SETUP_REC)) {
+        REG(USB_SIE_STATUS) = USB_SIE_STATUS_SETUP_REC; // Clear bit 17 in SIE_STATUS
 
         volatile uint8_t *setup = (volatile uint8_t *)USB_EP0_SETUP;
         uint8_t req_type = setup[0];
@@ -246,10 +257,10 @@ void usb_cdc_init(void) {
     while (!(REG(RESETS_RESET_DONE) & RESET_USB_BIT) && --timeout > 0);
 
     // 4. Enable USB PHY Muxing & Software Pullup Control (TO_PHY | SOFTCON)
-    REG(USB_BASE + 0x74) = (1u << 0) | (1u << 3);
+    REG(USB_MUXING) = (1u << 0) | (1u << 3);
 
-    // 5. Enable Interrupt Flags in USB_INTE (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
-    REG(USB_BASE + 0x8C) = (1u << 16) | (1u << 12) | (1u << 4);
+    // 5. Enable Interrupt Flags in USB_INTE (0x90) (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
+    REG(USB_INTE) = USB_INTR_SETUP_REQ | USB_INTR_BUS_RESET | USB_INTR_BUFF_STATUS;
 
     // 6. Enable SIE Controller in Device Mode & D+ Pullup (Clear PULLDOWN_EN bit 15!)
     REG(USB_MAIN_CTRL) = (1u << 0); // Enable controller in Device Mode
@@ -301,9 +312,10 @@ void usb_cdc_debug_dump(void) {
     printk("USB_SIE_CTRL     : 0x%08x\n", REG(USB_SIE_CTRL));
     printk("USB_SIE_STATUS   : 0x%08x\n", REG(USB_SIE_STATUS));
     printk("USB_BUFF_STATUS  : 0x%08x\n", REG(USB_BUFF_STATUS));
-    printk("USB_INTE         : 0x%08x\n", REG(USB_BASE + 0x8C));
-    printk("USB_INTS         : 0x%08x\n", REG(USB_BASE + 0x90));
-    printk("USB_MUXING       : 0x%08x\n", REG(USB_BASE + 0x74));
+    printk("USB_INTR (0x8C)  : 0x%08x\n", REG(USB_INTR));
+    printk("USB_INTE (0x90)  : 0x%08x\n", REG(USB_INTE));
+    printk("USB_INTS (0x98)  : 0x%08x\n", REG(USB_INTS));
+    printk("USB_MUXING       : 0x%08x\n", REG(USB_MUXING));
     printk("USB_EP0_IN_CTRL  : 0x%08x\n", REG(USB_EP0_IN_CTRL));
 
     volatile uint8_t *s = (volatile uint8_t *)USB_EP0_SETUP;
