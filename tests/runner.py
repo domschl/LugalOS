@@ -192,16 +192,19 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("AT24C32 EEPROM (/dev/eeprom & eeprom-read/write)", ok, log if not ok else ""))
 
         # 9P Protocol Serialization & Loopback Transport (Phase 1)
-        cmd_9p = (
+        cmd_9p_syntax = "lisp\n9p\nexit"
+        ok, log = session.send_and_expect(cmd_9p_syntax, r"Invalid identifier starting with digit: '9p'", timeout=4.0)
+        results.append(("Strict Scheme Syntax Parser (Digit-Prefixed Symbol Rejection)", ok, log if not ok else ""))
+
+        cmd_9p_rpc = (
             "write /srv/p9_loopback P9_VFS_WRITE_OK\n"
             "cat /srv/p9_loopback\n"
             "lisp\n"
-            "9p\n"
             "(p9-loopback \"P9_LISP_RPC_PASSED\")\n"
             "exit"
         )
-        ok, log = session.send_and_expect(cmd_9p, r"Invalid identifier starting with digit: '9p'", timeout=4.0)
-        results.append(("9P2000 Protocol & Strict Scheme Syntax Parser (Phase 1)", ok, log if not ok else ""))
+        ok, log = session.send_and_expect(cmd_9p_rpc, r"=> \"P9_LISP_RPC_PASSED\"", timeout=4.0)
+        results.append(("9P2000 Protocol & p9-loopback Primitive Execution (Phase 1)", ok, log if not ok else ""))
 
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
