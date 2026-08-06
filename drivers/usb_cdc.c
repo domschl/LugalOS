@@ -144,6 +144,10 @@ static void ep0_send_ack(void) {
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
+    static volatile bool in_task = false;
+    if (in_task) return;
+    in_task = true;
+
     static uint32_t last_intr = 0;
     static uint32_t last_sie  = 0;
 
@@ -246,27 +250,20 @@ void usb_cdc_task(void) {
             ep0_send_ack();
         }
     }
+
+    in_task = false;
 }
 
 void usb_cdc_init(void) {
-    // 1. Initialize PLL_USB (48 MHz) according to Pico SDK pll_init
-    REG(RESETS_RESET_SET) = RESET_PLL_USB_BIT;
+    g_usb_cdc_connected = false;
+
+    // 1. Reset & Lock PLL_USB (48 MHz)
+    REG(0x40058000UL + 0x00) = (1u << 15) | 1u; // Reset PLL_USB
+    REG(0x40058000UL + 0x3000) = RESET_PLL_USB_BIT;
     for (volatile int i = 0; i < 1000; i++);
-    REG(RESETS_RESET_CLR) = RESET_PLL_USB_BIT;
-    while (!(REG(RESETS_RESET_DONE) & RESET_PLL_USB_BIT));
+    while (!(REG(0x40058000UL + 0x00) & (1u << 31)));
 
-    REG(0x40058000UL) = 1;   // RefDiv = 1
-    REG(0x40058008UL) = 100; // FBDiv = 100 (12MHz * 100 = 1200MHz VCO, valid for RP2350 min 750MHz)
-    REG(0x40058004UL + 0x3000) = (1u << 0) | (1u << 5); // Power up main PLL (bit 0) & VCO (bit 5)
-
-    for (volatile int i = 0; i < 500000; i++) {
-        if (REG(0x40058000UL) & (1u << 31)) break; // Wait for PLL_USB lock (bit 31)
-    }
-
-    REG(0x4005800CUL) = (5u << 16) | (5u << 12); // PostDiv1 = 5, PostDiv2 = 5 (1200 / 25 = 48 MHz)
-    REG(0x40058004UL + 0x3000) = (1u << 3); // Power up post dividers (bit 3)
-
-    // 2. Enable 48 MHz USB Clock Source
+    // 2. Select PLL_USB as CLK_USB source
     REG(CLK_USB_CTRL) = (1u << 11) | (0x0u << 5); // Enable CLK_USB from PLL_USB auxsrc
     REG(CLK_USB_DIV) = 0x00010000;
 
@@ -285,6 +282,9 @@ void usb_cdc_init(void) {
 
     // 5. Enable Interrupt Flags in USB_INTE (0x90) (SETUP_REQ bit 16, BUS_RESET bit 12, BUFF_STATUS bit 4)
     REG(USB_INTE) = USB_INTR_SETUP_REQ | USB_INTR_BUS_RESET | USB_INTR_BUFF_STATUS;
+
+    // Enable USBCTRL_IRQ (IRQ 14) in RP2350 NVIC (0xE000E100)
+    REG(0xE000E100) = (1u << 14);
 
     // 6. Enable SIE Controller in Device Mode with PHY_ISO active during SIE setup
     REG(USB_MAIN_CTRL) = (1u << 0) | (1u << 2); // Controller EN (bit 0) | PHY_ISO (bit 2)

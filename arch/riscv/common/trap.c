@@ -5,8 +5,23 @@
 #include "fs/vfs.h"
 #include "drivers/uart.h"
 
+#if defined(CONFIG_BOARD_RP2350)
+#include "drivers/usb_cdc.h"
+#define REG(addr) (*(volatile uint32_t *)(addr))
+#endif
+
 void trap_init(void) {
-    /* Trap initialization performed in entry.S setup */
+    /* Enable M-mode External Interrupts (MEIE bit 11 in mie) */
+    uintptr_t mie_val;
+    __asm__ __volatile__("csrr %0, mie" : "=r"(mie_val));
+    mie_val |= (1u << 11);
+    __asm__ __volatile__("csrw mie, %0" :: "r"(mie_val));
+
+    /* Enable M-mode Global Interrupts (MIE bit 3 in mstatus) */
+    uintptr_t mstatus_val;
+    __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus_val));
+    mstatus_val |= (1u << 3);
+    __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
 }
 
 void trap_handler(trap_frame_t *frame) {
@@ -15,8 +30,14 @@ void trap_handler(trap_frame_t *frame) {
     uintptr_t code = cause & ~((uintptr_t)1 << (__riscv_xlen - 1));
 
     if (is_interrupt) {
-        /* Timer or Software interrupt */
-        printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
+        if (code == 11) { // Machine External Interrupt
+#if defined(CONFIG_BOARD_RP2350)
+            REG(0xE000E280) = (1u << 14); // Clear pending IRQ 14 (USBCTRL_IRQ) in NVIC ICPR
+            usb_cdc_task();
+#endif
+        } else {
+            printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
+        }
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
         if (code == 8 || code == 9 || code == 11) {
