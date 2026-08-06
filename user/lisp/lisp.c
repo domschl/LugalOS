@@ -5,6 +5,7 @@
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
+#include "drivers/loopback_net.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "user/chibicc/include/chibicc.h"
@@ -471,6 +472,23 @@ static lisp_val_t *prim_eeprom_write(lisp_val_t *args, lisp_val_t *env) {
     return res >= 0 ? make_int(res) : &false_val;
 }
 
+static lisp_val_t *prim_9p_loopback(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *payload = "9P_Lisp_Loopback_Test";
+    if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_STRING) {
+        payload = args->u.pair.car->u.str;
+    }
+
+    char out_buf[256];
+    memset(out_buf, 0, sizeof(out_buf));
+
+    int res = loopback_9p_rpc(payload, out_buf, sizeof(out_buf));
+    if (res >= 0) {
+        return make_str(out_buf);
+    }
+    return &false_val;
+}
+
 static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     i2c_scan_bus();
@@ -518,6 +536,7 @@ void lisp_init(void) {
     env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));
     env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
+    env_set(&global_env, "9p-loopback", make_prim(prim_9p_loopback));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));

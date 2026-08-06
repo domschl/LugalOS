@@ -96,9 +96,11 @@ set(SOURCES
     drivers/flashdisk.c
     drivers/i2c_rtc.c
     drivers/at24c32.c
+    drivers/loopback_net.c
     ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     fs/fat32.c
     fs/vfs_server.c
+    fs/9p.c
     libc/string.c
     user/lisp/lisp.c
     user/lisp/lisp_compile.c

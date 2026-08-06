@@ -4,6 +4,7 @@
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
 #include "drivers/at24c32.h"
+#include "drivers/loopback_net.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
@@ -71,6 +72,8 @@ void vfs_server_init(void) {
 
     g_num_services = 0;
     vfs_register_service("lisp", 2);
+    loopback_net_init();
+    vfs_register_service("loopback_9p", 9);
 
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
 }
@@ -267,6 +270,9 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             return 0;
         }
     } else if (type == 5) { // /srv/ IPC channels
+        if (strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "net") == 0) {
+            return loopback_9p_rpc(NULL, (char *)buf, max_len);
+        }
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
                 printk("[VFS Router] IPC Channel '/srv/%s' read routed to PID %d\n",
@@ -319,6 +325,9 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
             return 0;
         }
     } else if (type == 5) { // /srv/ IPC channels
+        if (strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "net") == 0) {
+            return loopback_9p_rpc((const char *)buf, NULL, 0);
+        }
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
                 printk("[VFS Router] Forwarding %d byte payload to /srv/%s (PID %d) over IPC...\n",
