@@ -130,9 +130,6 @@ static void ep0_send(const uint8_t *buf, uint32_t len) {
     }
     // FULL (bit 15) | LAST_BUFF (bit 14) | DATA1 (bit 13) | AVAIL (bit 10) | len
     REG(USB_EP0_IN_CTRL) = (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | len;
-
-    // Arm EP0 OUT for 0-length status packet from host (AVAIL bit 10 | DATA1 bit 13 | 0)
-    REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
 static void ep0_send_ack(void) {
@@ -149,11 +146,12 @@ void usb_cdc_task(void) {
 
     uint32_t intr = REG(USB_INTR);
     uint32_t sie  = REG(USB_SIE_STATUS);
+    uint32_t sie_filtered = sie & ~0x0000000Cu; // Filter LINE_STATE bits 2..3 oscillation
 
-    if (intr != last_intr || sie != last_sie) {
+    if (intr != last_intr || sie_filtered != last_sie) {
         printk("[USB EVT] INTR=0x%08x SIE=0x%08x\n", intr, sie);
         last_intr = intr;
-        last_sie  = sie;
+        last_sie  = sie_filtered;
     }
 
     // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
@@ -170,7 +168,7 @@ void usb_cdc_task(void) {
         bus_reset_handled = false;
     }
 
-    // Check buffer status completion for pending address setup
+    // Check buffer status completion for pending address setup & EP0 OUT status arming
     uint32_t buf_status = REG(USB_BUFF_STATUS);
     if (buf_status) {
         REG(USB_BUFF_STATUS) = buf_status; // Write 1 to clear all completed buffer bits
@@ -179,6 +177,9 @@ void usb_cdc_task(void) {
                 REG(USB_ADDR_ENDP) = g_usb_pending_addr;
                 printk("[USB] Assigned Device Address: %d\n", g_usb_pending_addr);
                 g_usb_need_set_addr = false;
+            } else {
+                // Arm EP0 OUT for 0-length status packet from host (AVAIL bit 10 | DATA1 bit 13 | 0)
+                REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
             }
         }
     }
