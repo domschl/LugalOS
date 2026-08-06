@@ -129,8 +129,19 @@ static void ep0_send_ack(void) {
     REG(USB_EP0_OUT_CTRL) = (1u << 10) | (1u << 13) | 0;
 }
 
+#define USB_INTS (USB_BASE + 0x90)
+
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
+
+    uint32_t ints = REG(USB_INTS);
+
+    // Check BUS_RESET (bit 12 in USB_INTS)
+    if (ints & (1u << 12)) {
+        REG(USB_INTS) = (1u << 12);
+        REG(USB_ADDR_ENDP) = 0;
+        printk("[USB] Bus Reset Detected\n");
+    }
 
     // Check buffer status completion for pending address setup
     uint32_t buf_status = REG(USB_BUFF_STATUS);
@@ -143,16 +154,9 @@ void usb_cdc_task(void) {
         }
     }
 
-    // Check BUS_RESET arrival flag (bit 16)
-    uint32_t sie_status = REG(USB_SIE_STATUS);
-    if (sie_status & (1u << 16)) {
-        REG(USB_SIE_STATUS) = (1u << 16); // Clear BUS_RESET
-        REG(USB_ADDR_ENDP) = 0;           // Reset device address to 0
-    }
-
-    // Check SETUP packet arrival flag (bit 17)
-    if (sie_status & (1u << 17)) {
-        REG(USB_SIE_STATUS) = (1u << 17); // Clear SETUP_REC flag
+    // Check SETUP_REQ (bit 16 in USB_INTS)
+    if (ints & (1u << 16)) {
+        REG(USB_INTS) = (1u << 16); // Clear SETUP_REQ flag
 
         volatile uint8_t *setup = (volatile uint8_t *)USB_EP0_SETUP;
         uint8_t req_type = setup[0];
