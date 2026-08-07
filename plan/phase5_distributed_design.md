@@ -568,6 +568,81 @@ works", which is the actual Plan 9 payoff.
 - Fixes review finding A2 (namespace fall-through) as a side effect, since an explicit mount table
   has no reason to fall back across volumes.
 
+#### A5 completion notes (2026-08-07)
+
+Implemented and merged: a real mount table, and genuine read/write/`ls` access to another live
+node's filesystem through the standard command surface — not a special-purpose primitive, the
+actual "distributed namespace" payoff this section is named for. All three targets build clean;
+full `tests/runner.py` suite passes (83/83, RV64 + RV32 — one new multi-node test).
+
+- **`parse_prefix()` replaced by `vfs_resolve()` against a real mount table** (`fs/vfs_server.c`).
+  Flat, single-component matching only — a mount name is exactly the path's first segment (e.g.
+  `sd0`, `proc`, or a user-chosen remote mount name) — deliberately simpler than Plan 9's general
+  bind/union-directory model, since a flat table is enough to satisfy this section's actual goal.
+  `vfs_resolve()` returns `NULL` for a path whose first component matches no mount, full stop —
+  **review finding A2 (namespace fall-through) is now fully closed**: A1 already removed the
+  cross-volume *read* fallback as a side effect of routing through `vfs_open()`; this closes the
+  other half, the *unrecognized-path-defaults-to-`/flash0/`* branch `parse_prefix()` always had.
+- **FAT32 mounts keep the existing `g_flash_mounted`/`g_sd_mounted`/`g_ram_mounted` globals as
+  their source of truth**, referenced from the mount table via a `mounted_ptr` indirection, rather
+  than folding mounted-state into the mount table entries directly. Deliberate: `vfs_mount_ramdisk()`
+  and `vfs_format()`'s already-tested logic keeps flipping the exact same booleans it always did;
+  only the *routing* mechanism around them changed, minimizing risk in an already-large refactor.
+- **New persistent remote-connection client** (`p9_remote_mount_t`, `fs/p9_link.c`), distinct from
+  A4's `p9_link_cat()`: `p9_server_process()`'s `Tversion` handler resets *all* server-side fid
+  state by design (a connection reset) — so a mount, which needs file handles to survive across
+  separate later `vfs_open()`/`vfs_pread()`/... calls, cannot re-issue `Tversion`+`Tattach` on
+  every operation the way `p9_link_cat()`'s one-shot round trips do. `p9_remote_mount_open()` does
+  that handshake exactly once and keeps the connection (link + root fid + fid/tag allocators)
+  alive for the mount's lifetime. `p9_remote_open/pread/pwrite/readdir/fstat/close/remove/mkdir()`
+  mirror the local `vfs_*` handle contracts closely enough that `fs/vfs_server.c`'s dispatch on
+  `MOUNT_REMOTE9P` is a thin pass-through — and because `vfs_read()`/`vfs_write()`/`vfs_cp()`/
+  `vfs_append()` were already generic over whatever `vfs_open()`/`vfs_pread()`/`vfs_pwrite()`
+  resolve to, remote-mount support for all of them came "for free" once `vfs_open()` itself handled
+  the new mount kind — no changes needed to those wrapper functions at all.
+- **Remote directory listing re-walks the stream from scratch on every `vfs_readdir()` call**,
+  rather than caching decoded entries in the handle. `vfs_readdir()`'s contract is index-based
+  (0, 1, 2, ...); 9P's `Tread`-on-a-directory-fid is a byte stream of packed `stat` entries. A
+  per-handle cache would cost real memory across `VFS_MAX_HANDLES` handles for a feature only
+  remote directory handles ever use; re-walking costs O(directory size) network traffic per call
+  instead, with zero retained state. Every directory in this system is small, so this is the same
+  tradeoff A1's own `fat32_read_at()` already made ("walk from the start every call, revisit if
+  it's ever a hot path") — applied to the new remote case rather than invented fresh. Required a
+  new client-side `p9_unpack_stat_entry()` (the inverse of `fs/9p.c`'s server-side
+  `p9_pack_stat()`), bounds-checked at every step even though the only producer today is this
+  project's own trusted server — matching the general B11-era posture of not trusting wire data
+  just because nothing hostile sends it yet.
+- **`vfs_mount_remote(name, link)` attaches the peer's entire namespace root** at `/<name>/`, not
+  just one subtree (`aname` is left empty in the `Tattach`, matching how `p9_link_cat()` already
+  attaches at root) — so mounting node B's virtio-console link as `/netb/` exposes B's whole
+  namespace: `/netb/flash0/`, `/netb/sd0/`, `/netb/ram0/`, `/netb/proc/`, etc. Exposed as
+  `(mount-remote "name")` / `(unmount "name")` Lisp primitives; `mount-remote` is QEMU-only
+  (guarded like `p9-remote-cat`, since it currently only ever mounts
+  `virtio_console_get_link()` — mounting a different link by name is a reasonable future
+  extension once more than one outbound-capable link exists, not needed for this pass).
+  `vfs_unmount()` only ever removes mounts added this way; the six built-in mounts aren't
+  unmountable through it.
+- **Verified through the standard command surface, not a bespoke test primitive**: the new
+  `test_9p_remote_mount()` boots two nodes, has Node A `(mount-remote "netb")`, then runs plain
+  `ls /netb/ram0/shared`, `cat /netb/ram0/shared/greeting.txt`, and
+  `write /netb/ram0/shared/from_a.txt ...` from Node A's ordinary shell — and confirms the write
+  landed by reading it back from Node B's own **local** `/ram0/` afterward (not just trusting Node
+  A's own success return), so the proof is that bytes genuinely reached Node B's disk, not that a
+  command claimed they did.
+- **Root `ls` is now genuinely dynamic**, walking the live mount table instead of a hardcoded
+  6-entry name array — a remote mount shows up in `ls /` immediately once attached, with no
+  separate code path needed.
+- **Remote `rmdir` reuses the same `p9_remote_remove()` as remote `rm`** (one `Tremove` call);
+  the *server* side (A2's `p9_handle_tremove()`) already dispatches file-vs-directory removal
+  itself based on the fid's tracked type, so the client doesn't need to know which one it's asking
+  for.
+- **Deferred, not forgotten**: `mount-remote` can currently only target the virtio-console link
+  (matching `p9-remote-cat`'s existing A4 scope, not a new limitation this section introduced).
+  Mounting the *same* underlying link twice isn't meaningful and isn't guarded against — a second
+  mount's `Tversion` would reset the first mount's fids server-side (documented in
+  `fs/p9_link.c`); real usage is one mount per distinct remote peer, which is what every test here
+  does.
+
 ---
 
 ## 5. Track B — Memory model & isolation

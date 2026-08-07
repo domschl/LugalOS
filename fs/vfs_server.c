@@ -1,5 +1,7 @@
 #include "fs/vfs.h"
 #include "fs/fat32.h"
+#include "fs/9p.h"
+#include "fs/p9_link.h"
 #include "drivers/block.h"
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
@@ -29,24 +31,72 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
-/* --- Handle table (A1, plan/phase5_distributed_design.md) ---
- * A flat array, not a union: at 8 handles this is ~5.5KB (dominated by the
- * 512-byte proc_buf per slot), which is affordable even on RP2350's tight
- * SRAM budget and keeps every field trivially inspectable. `type` is one of
- * parse_prefix()'s return values (0=root, 1=/sd0, 2=/ram0, 3=/proc, 4=/dev,
- * 6=/flash0) -- 5=/srv/ never appears here, since /srv/ stays on its own
- * direct-dispatch path in vfs_read()/vfs_write() (see fs/include/fs/vfs.h). */
+/* --- Mount table (A5, plan/phase5_distributed_design.md) ---
+ * Replaces the old parse_prefix()'s hardcoded if-chain, which defaulted
+ * *any* unrecognized path to /flash0/ -- silent, surprising fall-through
+ * that broke Plan 9's "namespaces are explicit" semantics (review finding
+ * A2, plan/completed/2026-08-07_review_and_remediation.md). vfs_resolve()
+ * below returns NULL for a path with no matching mount, full stop; nothing
+ * falls back to anything else.
+ *
+ * Flat, single-component matching only (a mount name is exactly the first
+ * path segment, e.g. "sd0", "proc", or a user-chosen remote mount name) --
+ * this system doesn't need Plan 9's general bind/union-directory mount
+ * table, and a flat table is enough to "attach a remote namespace into the
+ * local one" (A5's stated goal) via vfs_mount_remote().
+ *
+ * FAT32 mounts still carry a `mounted_ptr` indirection into the existing
+ * g_flash_mounted/g_sd_mounted/g_ram_mounted globals rather than owning
+ * their mounted-state directly: those globals are still the single
+ * source of truth vfs_mount_ramdisk()/vfs_format() flip, unchanged from
+ * before this refactor -- minimizes risk to already-tested mount/format
+ * logic while still replacing the *routing* mechanism around it. */
+typedef enum {
+    MOUNT_FAT32,
+    MOUNT_PROC,
+    MOUNT_DEV,
+    MOUNT_SRV,
+    MOUNT_REMOTE9P,
+} mount_kind_t;
+
 typedef struct {
     bool in_use;
-    int type;
+    char name[16];
+    mount_kind_t kind;
+    char label[40];              /* human-readable description for `ls /` */
+    bool read_only;
+    fat32_fs_t *fs;               /* MOUNT_FAT32 */
+    bool *mounted_ptr;            /* MOUNT_FAT32; NULL = always considered mounted */
+    p9_remote_mount_t *remote;    /* MOUNT_REMOTE9P */
+} mount_entry_t;
+
+#define MAX_MOUNTS 10
+static mount_entry_t g_mounts[MAX_MOUNTS];
+
+/* --- Handle table (A1, plan/phase5_distributed_design.md) ---
+ * A flat array, not a union: at 8 handles this is a few KB (dominated by
+ * the 512-byte proc_buf per slot), affordable even on RP2350's SRAM
+ * budget. `kind` mirrors the owning mount's mount_kind_t, plus a
+ * root-pseudo-directory case (kind == (mount_kind_t)-1, see vfs_open())
+ * for "/" itself, which isn't a real mount_entry_t. MOUNT_SRV never
+ * appears here -- /srv/ stays on its own direct-dispatch path in
+ * vfs_read()/vfs_write() (see fs/include/fs/vfs.h), it's message-oriented
+ * IPC, not a byte-addressable file. */
+#define VFS_KIND_ROOT ((mount_kind_t)-1)
+
+typedef struct {
+    bool in_use;
+    mount_kind_t kind;
     int flags;
     bool is_dir;
-    fat32_fs_t *fs;              /* valid for type 1/2/6 */
-    fat32_dir_entry_t entry;     /* valid for type 1/2/6, non-dir */
-    uint32_t dir_cluster;        /* valid for type 1/2/6, is_dir */
-    char rel_path[128];          /* path within volume (type 1/2/6) or device name (type 4) */
-    char proc_buf[512];          /* generated /proc file content (type 3, non-dir) */
+    fat32_fs_t *fs;              /* valid for MOUNT_FAT32 */
+    fat32_dir_entry_t entry;     /* valid for MOUNT_FAT32, non-dir */
+    uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
+    char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
+    char proc_buf[512];          /* generated /proc file content (PROC, non-dir) */
     uint32_t proc_len;
+    p9_remote_mount_t *remote_mount; /* valid for MOUNT_REMOTE9P */
+    uint32_t remote_fid;              /* valid for MOUNT_REMOTE9P */
 } vfs_handle_t;
 
 static vfs_handle_t g_handles[VFS_MAX_HANDLES];
@@ -60,6 +110,97 @@ static int vfs_mount_flashdisk(void) {
             g_flash_mounted = true;
             printk("[VFS Server] Mounted FAT32 Filesystem on /flash0/ (Device: Embedded Flash ROMDisk, Size: %d KB)\n",
                    (flash_dev->num_blocks * flash_dev->block_size) / 1024);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static mount_entry_t *mount_alloc(const char *name) {
+    if (!name || !name[0] || strlen(name) >= sizeof(g_mounts[0].name)) return NULL;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, name) == 0) return NULL; // name collision
+    }
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (!g_mounts[i].in_use) {
+            memset(&g_mounts[i], 0, sizeof(g_mounts[i]));
+            strncpy(g_mounts[i].name, name, sizeof(g_mounts[i].name) - 1);
+            g_mounts[i].in_use = true;
+            return &g_mounts[i];
+        }
+    }
+    return NULL; // table full
+}
+
+static bool mount_is_active(const mount_entry_t *m) {
+    if (!m->in_use) return false;
+    if (m->kind == MOUNT_FAT32) return m->mounted_ptr ? *m->mounted_ptr : true;
+    return true; // proc/dev/srv/remote9p are always "active" once registered
+}
+
+static void mount_table_init(void) {
+    memset(g_mounts, 0, sizeof(g_mounts));
+
+    mount_entry_t *e;
+    e = mount_alloc("flash0");
+    e->kind = MOUNT_FAT32; e->fs = &g_fat32_flash; e->mounted_ptr = &g_flash_mounted; e->read_only = true;
+    strncpy(e->label, "FAT32 Embedded Flash ROM", sizeof(e->label) - 1);
+
+    e = mount_alloc("sd0");
+    e->kind = MOUNT_FAT32; e->fs = &g_fat32_sd; e->mounted_ptr = &g_sd_mounted;
+    strncpy(e->label, "FAT32 Persistent SD", sizeof(e->label) - 1);
+
+    e = mount_alloc("ram0");
+    e->kind = MOUNT_FAT32; e->fs = &g_fat32_ram; e->mounted_ptr = &g_ram_mounted;
+    strncpy(e->label, "FAT32 In-Memory RAMDisk", sizeof(e->label) - 1);
+
+    e = mount_alloc("proc");
+    e->kind = MOUNT_PROC;
+    strncpy(e->label, "Synthetic Metrics System", sizeof(e->label) - 1);
+
+    e = mount_alloc("dev");
+    e->kind = MOUNT_DEV;
+    strncpy(e->label, "Hardware Device Nodes", sizeof(e->label) - 1);
+
+    e = mount_alloc("srv");
+    e->kind = MOUNT_SRV;
+    strncpy(e->label, "IPC Service Registry", sizeof(e->label) - 1);
+}
+
+/* Attaches a remote 9P namespace at /<name>/ (A5). `link` must already be
+ * usable (e.g. virtio_console_get_link()); this does the Tversion +
+ * Tattach handshake once via p9_remote_mount_open() and keeps the
+ * connection alive for the mount's lifetime. Fails if `name` collides with
+ * an existing mount, the table is full, or the handshake itself fails. */
+int vfs_mount_remote(const char *name, p9_link_t *link) {
+    if (!link) return -1;
+    mount_entry_t *e = mount_alloc(name);
+    if (!e) return -1;
+
+    p9_remote_mount_t *remote = p9_remote_mount_open(link);
+    if (!remote) {
+        memset(e, 0, sizeof(*e));
+        return -1;
+    }
+
+    e->kind = MOUNT_REMOTE9P;
+    e->remote = remote;
+    ksnprintf(e->label, sizeof(e->label), "Remote 9P Namespace (%s)", link->name ? link->name : "?");
+    printk("[VFS Server] Mounted remote 9P namespace on /%s/ (link '%s')\n", name, link->name ? link->name : "?");
+    return 0;
+}
+
+/* Detaches a remote mount added via vfs_mount_remote(). Only ever removes
+ * MOUNT_REMOTE9P entries -- the built-in mounts (flash0/sd0/ram0/proc/dev/
+ * srv) aren't unmountable through this path, since too much of the rest of
+ * the system assumes they exist. */
+int vfs_unmount(const char *name) {
+    if (!name) return -1;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (g_mounts[i].in_use && g_mounts[i].kind == MOUNT_REMOTE9P && strcmp(g_mounts[i].name, name) == 0) {
+            p9_remote_mount_close(g_mounts[i].remote);
+            memset(&g_mounts[i], 0, sizeof(g_mounts[i]));
+            printk("[VFS Server] Unmounted /%s/\n", name);
             return 0;
         }
     }
@@ -93,6 +234,8 @@ void vfs_server_init(void) {
         }
     }
 #endif
+
+    mount_table_init();
 
     g_num_services = 0;
     vfs_register_service("lisp", 2);
@@ -140,68 +283,40 @@ int vfs_register_service(const char *service_name, int target_pid) {
     return 0;
 }
 
-/* Parse prefix:
- * 0: Root "/"
- * 1: "/sd0/" (VirtIO SD Card Storage)
- * 2: "/ram0/" (In-Memory RAMDisk Storage)
- * 3: "/proc/" (Metrics)
- * 4: "/dev/" (Hardware Devices)
- * 5: "/srv/" (IPC Services)
- * 6: "/flash0/" (Embedded Flash ROM Storage)
- */
-static int parse_prefix(const char *path, const char **rel_path) {
+/* Resolves `path` against the mount table. `*is_root` is set when `path`
+ * is "/" (or empty); in that case the return value is always NULL and
+ * callers handle the root pseudo-directory themselves. Otherwise, NULL
+ * means no mount matches the path's first component -- explicit failure,
+ * not a fallback to any particular volume (closes review finding A2). */
+static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool *is_root) {
     static const char *empty_str = "";
     if (!rel_path) rel_path = &empty_str;
+    if (is_root) *is_root = false;
 
-    if (!path || strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
+    if (!path || path[0] == '\0') path = "/";
+    while (*path == '/') path++;
+
+    if (*path == '\0') {
         *rel_path = empty_str;
-        return 0; // Root mount table
+        if (is_root) *is_root = true;
+        return NULL;
     }
 
-    if (strncmp(path, "/flash0/", 8) == 0) {
-        *rel_path = path + 8;
-        return 6;
-    } else if (strcmp(path, "/flash0") == 0) {
-        *rel_path = empty_str;
-        return 6;
-    } else if (strncmp(path, "/sd0/", 5) == 0) {
-        *rel_path = path + 5;
-        return 1;
-    } else if (strcmp(path, "/sd0") == 0) {
-        *rel_path = empty_str;
-        return 1;
-    } else if (strncmp(path, "/ram0/", 6) == 0) {
-        *rel_path = path + 6;
-        return 2;
-    } else if (strcmp(path, "/ram0") == 0) {
-        *rel_path = empty_str;
-        return 2;
-    } else if (strncmp(path, "/proc/", 6) == 0) {
-        *rel_path = path + 6;
-        return 3;
-    } else if (strcmp(path, "/proc") == 0) {
-        *rel_path = empty_str;
-        return 3;
-    } else if (strncmp(path, "/dev/", 5) == 0) {
-        *rel_path = path + 5;
-        return 4;
-    } else if (strcmp(path, "/dev") == 0) {
-        *rel_path = empty_str;
-        return 4;
-    } else if (strncmp(path, "/srv/", 5) == 0) {
-        *rel_path = path + 5;
-        return 5;
-    } else if (strcmp(path, "/srv") == 0) {
-        *rel_path = empty_str;
-        return 5;
-    }
+    const char *slash = strchr(path, '/');
+    size_t complen = slash ? (size_t)(slash - path) : strlen(path);
+    if (complen >= sizeof(g_mounts[0].name)) return NULL; // no mount name is ever this long
 
-    if (path[0] == '/') {
-        *rel_path = path + 1;
-    } else {
-        *rel_path = path;
+    char comp[sizeof(g_mounts[0].name)];
+    memcpy(comp, path, complen);
+    comp[complen] = '\0';
+
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, comp) == 0) {
+            *rel_path = slash ? slash + 1 : empty_str;
+            return &g_mounts[i];
+        }
     }
-    return 6; // Default un-prefixed paths to /flash0/ first
+    return NULL; // no such mount
 }
 
 /* Generates the current content of a /proc/<name> virtual file directly into
@@ -264,23 +379,13 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_root_names[6] = { "flash0", "sd0", "ram0", "proc", "dev", "srv" };
 static const char *g_proc_names[4] = { "ps", "meminfo", "version", "df" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
-static fat32_fs_t *vfs_volume_for_type(int type, bool *mounted_out) {
-    switch (type) {
-        case 6: *mounted_out = g_flash_mounted; return &g_fat32_flash;
-        case 1: *mounted_out = g_sd_mounted;    return &g_fat32_sd;
-        case 2: *mounted_out = g_ram_mounted;   return &g_fat32_ram;
-        default: *mounted_out = false;          return NULL;
-    }
-}
-
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
- * into g_handles[]) on success or -1 on failure. /srv/ (type 5, IPC
- * channels) is deliberately not handle-addressable -- see the comment on
- * this API in fs/include/fs/vfs.h. */
+ * into g_handles[]) on success or -1 on failure. /srv/ (message-oriented
+ * IPC channels) is deliberately not handle-addressable -- see the comment
+ * on this API in fs/include/fs/vfs.h. */
 int vfs_open(const char *path, int flags) {
     if (!path) return -1;
 
@@ -290,30 +395,33 @@ int vfs_open(const char *path, int flags) {
     }
     if (slot < 0) return -1;
 
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (!rel) rel = "";
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
     vfs_handle_t *h = &g_handles[slot];
     memset(h, 0, sizeof(*h));
 
-    if (type == 1 || type == 2 || type == 6) {
-        bool mounted = false;
-        fat32_fs_t *fs = vfs_volume_for_type(type, &mounted);
-        if (!mounted) return -1;
-        if (type == 6 && (flags & (VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC))) return -1; // /flash0/ is read-only
+    if (is_root) {
+        h->kind = VFS_KIND_ROOT;
+        h->is_dir = true;
+    } else if (!m) {
+        return -1; // no such mount -- explicit failure, no fallback (A2)
+    } else if (m->kind == MOUNT_FAT32) {
+        if (!mount_is_active(m)) return -1;
+        if (m->read_only && (flags & (VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC))) return -1;
 
         fat32_dir_entry_t entry;
-        if (fat32_find_file(fs, rel, &entry) < 0) {
+        if (fat32_find_file(m->fs, rel, &entry) < 0) {
             if (!(flags & VFS_O_CREATE)) return -1;
-            if (fat32_write_file(fs, rel, NULL, 0) != 0) return -1;
-            if (fat32_find_file(fs, rel, &entry) < 0) return -1;
+            if (fat32_write_file(m->fs, rel, NULL, 0) != 0) return -1;
+            if (fat32_find_file(m->fs, rel, &entry) < 0) return -1;
         } else if ((flags & VFS_O_TRUNC) && !(entry.attr & FAT32_ATTR_DIRECTORY)) {
-            if (fat32_truncate(fs, rel) != 0) return -1;
-            if (fat32_find_file(fs, rel, &entry) < 0) return -1;
+            if (fat32_truncate(m->fs, rel) != 0) return -1;
+            if (fat32_find_file(m->fs, rel, &entry) < 0) return -1;
         }
 
-        h->fs = fs;
+        h->fs = m->fs;
         h->entry = entry;
         h->is_dir = (entry.attr & FAT32_ATTR_DIRECTORY) != 0;
         if (h->is_dir) {
@@ -321,9 +429,8 @@ int vfs_open(const char *path, int flags) {
         }
         strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
         h->rel_path[sizeof(h->rel_path) - 1] = '\0';
-    } else if (type == 0) { // root "/" -- readdir-only pseudo-directory over the mount table
-        h->is_dir = true;
-    } else if (type == 3) { // /proc/
+        h->kind = MOUNT_FAT32;
+    } else if (m->kind == MOUNT_PROC) {
         if (rel[0] == '\0') {
             h->is_dir = true;
         } else {
@@ -331,18 +438,34 @@ int vfs_open(const char *path, int flags) {
             if (len < 0) return -1;
             h->proc_len = (uint32_t)len;
         }
-    } else if (type == 4) { // /dev/
+        h->kind = MOUNT_PROC;
+    } else if (m->kind == MOUNT_DEV) {
         if (rel[0] == '\0') {
             h->is_dir = true;
         } else {
             strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
             h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         }
+        h->kind = MOUNT_DEV;
+    } else if (m->kind == MOUNT_REMOTE9P) {
+        uint8_t p9_mode = P9_OREAD;
+        if ((flags & VFS_O_WRITE) && (flags & VFS_O_READ)) p9_mode = P9_ORDWR;
+        else if (flags & VFS_O_WRITE) p9_mode = P9_OWRITE;
+        if (flags & VFS_O_TRUNC) p9_mode |= P9_OTRUNC;
+        bool create = (flags & VFS_O_CREATE) != 0;
+
+        uint32_t fid;
+        bool remote_is_dir;
+        if (p9_remote_open(m->remote, rel, p9_mode, create, &fid, &remote_is_dir) < 0) return -1;
+
+        h->remote_mount = m->remote;
+        h->remote_fid = fid;
+        h->is_dir = remote_is_dir;
+        h->kind = MOUNT_REMOTE9P;
     } else {
-        return -1; // /srv/ (type 5) and anything unrecognized
+        return -1; // MOUNT_SRV: not handle-addressable
     }
 
-    h->type = type;
     h->flags = flags;
     h->in_use = true;
     return slot;
@@ -355,17 +478,17 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
     if (count == 0) return 0;
     if (!buf) return -1;
 
-    switch (h->type) {
-        case 1: case 2: case 6:
+    switch (h->kind) {
+        case MOUNT_FAT32:
             return fat32_read_at(h->fs, &h->entry, buf, count, offset);
-        case 3: {
+        case MOUNT_PROC: {
             if (offset >= h->proc_len) return 0;
             uint32_t avail = h->proc_len - (uint32_t)offset;
             uint32_t n = (avail < count) ? avail : count;
             memcpy(buf, h->proc_buf + offset, n);
             return (int)n;
         }
-        case 4:
+        case MOUNT_DEV:
             if (strcmp(h->rel_path, "uart") == 0) {
                 ((char *)buf)[0] = uart_getc();
                 return 1;
@@ -375,6 +498,8 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 return 0;
             }
             return -1;
+        case MOUNT_REMOTE9P:
+            return p9_remote_pread(h->remote_mount, h->remote_fid, buf, count, offset);
         default:
             return -1;
     }
@@ -388,13 +513,13 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
     if (count == 0) return 0;
     if (!buf) return -1;
 
-    switch (h->type) {
-        case 1: case 2: {
+    switch (h->kind) {
+        case MOUNT_FAT32: {
             int n = fat32_write_at(h->fs, h->rel_path, buf, count, offset);
             if (n > 0) fat32_find_file(h->fs, h->rel_path, &h->entry); // refresh cached size
             return n;
         }
-        case 4:
+        case MOUNT_DEV:
             if (strcmp(h->rel_path, "uart") == 0) {
                 const char *str = (const char *)buf;
                 for (uint32_t i = 0; i < count; i++) uart_putc(str[i]);
@@ -405,6 +530,8 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
                 return (int)count;
             }
             return -1;
+        case MOUNT_REMOTE9P:
+            return p9_remote_pwrite(h->remote_mount, h->remote_fid, buf, count, offset);
         default:
             return -1; // /flash0/ (read-only) and anything else not writable
     }
@@ -415,17 +542,24 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
     vfs_handle_t *h = &g_handles[fd];
     if (!h->is_dir) return -1;
 
-    switch (h->type) {
-        case 0: {
-            if (index >= 6) return -1;
-            if (name_out && name_max > 0) {
-                strncpy(name_out, g_root_names[index], name_max - 1);
-                name_out[name_max - 1] = '\0';
+    switch (h->kind) {
+        case VFS_KIND_ROOT: {
+            uint32_t seen = 0;
+            for (int i = 0; i < MAX_MOUNTS; i++) {
+                if (!mount_is_active(&g_mounts[i])) continue;
+                if (seen == index) {
+                    if (name_out && name_max > 0) {
+                        strncpy(name_out, g_mounts[i].name, name_max - 1);
+                        name_out[name_max - 1] = '\0';
+                    }
+                    if (stat_out) { stat_out->size = 0; stat_out->is_dir = 1; }
+                    return 0;
+                }
+                seen++;
             }
-            if (stat_out) { stat_out->size = 0; stat_out->is_dir = 1; }
-            return 0;
+            return -1;
         }
-        case 1: case 2: case 6: {
+        case MOUNT_FAT32: {
             fat32_dir_entry_t entry;
             if (fat32_readdir(h->fs, h->dir_cluster, index, name_out, name_max, &entry) != 0) return -1;
             if (stat_out) {
@@ -434,7 +568,7 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
             }
             return 0;
         }
-        case 3: {
+        case MOUNT_PROC: {
             if (index >= 4) return -1;
             if (name_out && name_max > 0) {
                 strncpy(name_out, g_proc_names[index], name_max - 1);
@@ -443,13 +577,22 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
             if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
             return 0;
         }
-        case 4: {
+        case MOUNT_DEV: {
             if (index >= 4) return -1;
             if (name_out && name_max > 0) {
                 strncpy(name_out, g_dev_names[index], name_max - 1);
                 name_out[name_max - 1] = '\0';
             }
             if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
+            return 0;
+        }
+        case MOUNT_REMOTE9P: {
+            p9_remote_stat_t rst;
+            if (p9_remote_readdir(h->remote_mount, h->remote_fid, index, name_out, name_max, &rst) != 0) return -1;
+            if (stat_out) {
+                stat_out->size = (uint32_t)rst.size;
+                stat_out->is_dir = rst.is_dir ? 1 : 0;
+            }
             return 0;
         }
         default:
@@ -461,10 +604,21 @@ int vfs_fstat(int fd, vfs_stat_t *out) {
     if (fd < 0 || fd >= VFS_MAX_HANDLES || !g_handles[fd].in_use || !out) return -1;
     vfs_handle_t *h = &g_handles[fd];
     out->is_dir = h->is_dir ? 1 : 0;
-    switch (h->type) {
-        case 1: case 2: case 6: out->size = h->entry.file_size; break;
-        case 3: out->size = h->proc_len; break;
-        default: out->size = 0; break;
+    switch (h->kind) {
+        case MOUNT_FAT32:
+            out->size = h->entry.file_size;
+            break;
+        case MOUNT_PROC:
+            out->size = h->proc_len;
+            break;
+        case MOUNT_REMOTE9P: {
+            p9_remote_stat_t rst;
+            out->size = (p9_remote_fstat(h->remote_mount, h->remote_fid, &rst) == 0) ? (uint32_t)rst.size : 0;
+            break;
+        }
+        default:
+            out->size = 0;
+            break;
     }
     return 0;
 }
@@ -480,22 +634,29 @@ int vfs_stat(const char *path, vfs_stat_t *out) {
 
 int vfs_close(int fd) {
     if (fd < 0 || fd >= VFS_MAX_HANDLES || !g_handles[fd].in_use) return -1;
-    memset(&g_handles[fd], 0, sizeof(g_handles[fd]));
+    vfs_handle_t *h = &g_handles[fd];
+    if (h->kind == MOUNT_REMOTE9P) {
+        p9_remote_close(h->remote_mount, h->remote_fid);
+    }
+    memset(h, 0, sizeof(*h));
     return 0;
 }
 
 /* --- Legacy whole-file API: thin compat wrappers over the handle API above,
  * except the /srv/ branch of vfs_read()/vfs_write(), which bypasses it
- * entirely (message-oriented IPC channels aren't handle-addressable). --- */
+ * entirely (message-oriented IPC channels aren't handle-addressable).
+ * Note this means vfs_read()/vfs_write()/vfs_cp()/vfs_append() all pick up
+ * MOUNT_REMOTE9P support "for free" -- they were already generic over
+ * whatever vfs_open()/vfs_pread()/vfs_pwrite() resolve to. --- */
 
 int vfs_read(const char *path, void *buf, uint32_t max_len) {
     if (!path) return -1;
 
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (!rel) rel = "";
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
-    if (type == 5) { // /srv/ IPC channels
+    if (m && m->kind == MOUNT_SRV) {
         if (strcmp(rel, "p9_loopback") == 0 || strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "p9") == 0 || strcmp(rel, "net") == 0) {
             return loopback_9p_rpc(NULL, (char *)buf, max_len);
         } else if (strcmp(rel, "uart_9p") == 0 || strcmp(rel, "net0") == 0) {
@@ -529,16 +690,16 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
 int vfs_write(const char *path, const void *buf, uint32_t len) {
     if (!path) return -1;
 
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (!rel) rel = "";
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
-    if (type == 6) { // /flash0/
-        printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) is read-only\n");
+    if (m && m->kind == MOUNT_FAT32 && m->read_only) {
+        printk("[VFS Error] '/%s/' is read-only\n", m->name);
         return -1;
     }
 
-    if (type == 5) { // /srv/ IPC channels
+    if (m && m->kind == MOUNT_SRV) {
         if (strcmp(rel, "p9_loopback") == 0 || strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "p9") == 0 || strcmp(rel, "net") == 0) {
             return loopback_9p_rpc((const char *)buf, NULL, 0);
         } else if (strcmp(rel, "uart_9p") == 0 || strcmp(rel, "net0") == 0) {
@@ -573,15 +734,15 @@ int vfs_append(const char *path, const void *buf, uint32_t len) {
     if (!path) return -1;
     if (!buf || len == 0) return 0; // matches fat32_append_file()'s own no-op guard
 
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (!rel) rel = "";
-
-    if (type == 6) { // /flash0/
-        printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) is read-only\n");
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    if (!m) return -1;
+    if (m->kind == MOUNT_FAT32 && m->read_only) {
+        printk("[VFS Error] '/%s/' is read-only\n", m->name);
         return -1;
     }
-    if (type != 1 && type != 2) return -1;
+    if (m->kind != MOUNT_FAT32 && m->kind != MOUNT_REMOTE9P) return -1;
 
     int fd = vfs_open(path, VFS_O_WRITE | VFS_O_CREATE);
     if (fd < 0) return -1;
@@ -598,13 +759,15 @@ int vfs_append(const char *path, const void *buf, uint32_t len) {
  * inserted at /sd0/ now just fails to mount instead of being silently
  * wiped; this is the only way (aside from vfs_mount_ramdisk()'s own
  * deliberate fallback for the always-starts-blank RAM disk) a volume gets
- * formatted now. */
+ * formatted now. Remote mounts can't be formatted (nonsensical -- it isn't
+ * this node's storage to reinitialize). */
 int vfs_format(const char *path) {
     if (!path) return -1;
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
-    if (type == 1) { // /sd0/
+    if (m && strcmp(m->name, "sd0") == 0) {
 #if defined(CONFIG_BOARD_RP2350)
         block_dev_t *dev = spisd_get_device();
 #else
@@ -613,12 +776,12 @@ int vfs_format(const char *path) {
         if (!dev || fat32_format(dev) != 0) return -1;
         g_sd_mounted = (fat32_init(&g_fat32_sd, dev) == 0);
         return g_sd_mounted ? 0 : -1;
-    } else if (type == 2) { // /ram0/
+    } else if (m && strcmp(m->name, "ram0") == 0) {
         block_dev_t *dev = ramdisk_get_device();
         if (!dev || fat32_format(dev) != 0) return -1;
         g_ram_mounted = (fat32_init(&g_fat32_ram, dev) == 0);
         return g_ram_mounted ? 0 : -1;
-    } else if (type == 6) { // /flash0/
+    } else if (m && strcmp(m->name, "flash0") == 0) {
         printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) cannot be formatted (read-only)\n");
         return -1;
     }
@@ -628,49 +791,57 @@ int vfs_format(const char *path) {
 
 int vfs_remove(const char *path) {
     if (!path) return -1;
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (type == 6 && rel && g_flash_mounted) {
-        return fat32_remove_file(&g_fat32_flash, rel);
-    } else if (type == 1 && rel && g_sd_mounted) {
-        return fat32_remove_file(&g_fat32_sd, rel);
-    } else if (type == 2 && rel && g_ram_mounted) {
-        return fat32_remove_file(&g_fat32_ram, rel);
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    if (!m || !rel || rel[0] == '\0') return -1;
+
+    if (m->kind == MOUNT_FAT32) {
+        if (m->read_only || !mount_is_active(m)) return -1;
+        return fat32_remove_file(m->fs, rel);
+    } else if (m->kind == MOUNT_REMOTE9P) {
+        return p9_remote_remove(m->remote, rel);
     }
     return -1;
 }
 
 int vfs_mkdir(const char *path) {
     if (!path) return -1;
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (type == 6 && rel && g_flash_mounted) {
-        return fat32_mkdir(&g_fat32_flash, rel);
-    } else if (type == 1 && rel && g_sd_mounted) {
-        return fat32_mkdir(&g_fat32_sd, rel);
-    } else if (type == 2 && rel && g_ram_mounted) {
-        return fat32_mkdir(&g_fat32_ram, rel);
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    if (!m || !rel || rel[0] == '\0') return -1;
+
+    if (m->kind == MOUNT_FAT32) {
+        if (m->read_only || !mount_is_active(m)) return -1;
+        return fat32_mkdir(m->fs, rel);
+    } else if (m->kind == MOUNT_REMOTE9P) {
+        return p9_remote_mkdir(m->remote, rel);
     }
     return -1;
 }
 
 int vfs_rmdir(const char *path) {
     if (!path) return -1;
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
-    if (type == 6 && rel && g_flash_mounted) {
-        return fat32_rmdir(&g_fat32_flash, rel);
-    } else if (type == 1 && rel && g_sd_mounted) {
-        return fat32_rmdir(&g_fat32_sd, rel);
-    } else if (type == 2 && rel && g_ram_mounted) {
-        return fat32_rmdir(&g_fat32_ram, rel);
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    if (!m || !rel || rel[0] == '\0') return -1;
+
+    if (m->kind == MOUNT_FAT32) {
+        if (m->read_only || !mount_is_active(m)) return -1;
+        return fat32_rmdir(m->fs, rel);
+    } else if (m->kind == MOUNT_REMOTE9P) {
+        return p9_remote_remove(m->remote, rel); // server dispatches file vs. dir removal itself
     }
     return -1;
 }
 
 /* Copies via the new handle API in fixed-size chunks rather than one
  * vfs_read()/vfs_write() shot into a static 4KB buffer -- the old approach
- * silently truncated any source file over 4095 bytes with no error. */
+ * silently truncated any source file over 4095 bytes with no error. Works
+ * across mounts of any kind (including remote ones) since it's built
+ * entirely on vfs_open()/vfs_pread()/vfs_pwrite(). */
 int vfs_cp(const char *src_path, const char *dst_path) {
     if (!src_path || !dst_path) return -1;
 
@@ -707,59 +878,78 @@ int vfs_cp(const char *src_path, const char *dst_path) {
 }
 
 void vfs_ls(const char *path) {
+    bool is_root;
     const char *rel = NULL;
-    int type = parse_prefix(path, &rel);
+    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
-    if (type == 0) { // Root "/"
+    if (is_root) {
         printk("\nDirectory Listing (/):\n");
         printk("Name        Type                        Status\n");
         printk("----------  --------------------------  ---------\n");
-        printk("flash0      FAT32 Embedded Flash ROM    %s\n", g_flash_mounted ? "active" : "unmounted");
-        printk("sd0         FAT32 VirtIO Persistent SD  %s\n", g_sd_mounted ? "mounted" : "unmounted");
-        printk("ram0        FAT32 In-Memory RAMDisk     %s\n", g_ram_mounted ? "mounted" : "unmounted");
-        printk("proc        Synthetic Metrics System    active\n");
-        printk("dev         Hardware Device Nodes       active\n");
-        printk("srv         IPC Service Registry        active\n\n");
-    } else if (type == 6) { // /flash0/
-        if (g_flash_mounted) {
-            fat32_list_dir(&g_fat32_flash, rel);
-        } else {
-            printk("ls: /flash0/ is not mounted\n");
+        for (int i = 0; i < MAX_MOUNTS; i++) {
+            if (!g_mounts[i].in_use) continue;
+            printk("%s      %s  %s\n", g_mounts[i].name, g_mounts[i].label,
+                   mount_is_active(&g_mounts[i]) ? "active" : "unmounted");
         }
-    } else if (type == 1) { // /sd0/
-        if (g_sd_mounted) {
-            fat32_list_dir(&g_fat32_sd, rel);
-        } else {
-            printk("ls: /sd0/ is not mounted\n");
-        }
-    } else if (type == 2) { // /ram0/
-        if (g_ram_mounted) {
-            fat32_list_dir(&g_fat32_ram, rel);
-        } else {
-            printk("ls: /ram0/ is not mounted\n");
-        }
-    } else if (type == 3) { // /proc/ -- listed via the real handle/readdir API now (V5 fix)
-        printk("\nDirectory Listing (/proc/):\n");
-        printk("Name        Type\n----------  ----\n");
-        int fd = vfs_open("/proc", VFS_O_READ);
-        if (fd >= 0) {
-            char name[32];
-            vfs_stat_t st;
-            for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
-                printk("%s      %s\n", name, st.is_dir ? "<DIR>" : "<FILE>");
+        printk("\n");
+        return;
+    }
+
+    if (!m) {
+        printk("ls: '%s': no such mount\n", path ? path : "");
+        return;
+    }
+
+    switch (m->kind) {
+        case MOUNT_FAT32:
+            if (mount_is_active(m)) {
+                fat32_list_dir(m->fs, rel);
+            } else {
+                printk("ls: /%s/ is not mounted\n", m->name);
             }
-            vfs_close(fd);
+            break;
+        case MOUNT_PROC: { // listed via the real handle/readdir API (V5 fix)
+            printk("\nDirectory Listing (/proc/):\n");
+            printk("Name        Type\n----------  ----\n");
+            int fd = vfs_open("/proc", VFS_O_READ);
+            if (fd >= 0) {
+                char name[32];
+                vfs_stat_t st;
+                for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
+                    printk("%s      %s\n", name, st.is_dir ? "<DIR>" : "<FILE>");
+                }
+                vfs_close(fd);
+            }
+            printk("\n");
+            break;
         }
-        printk("\n");
-    } else if (type == 4) { // /dev/
-        printk("\nDirectory Listing (/dev/):\n");
-        printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
-    } else if (type == 5) { // /srv/
-        printk("\nDirectory Listing (/srv/):\n");
-        printk("Service Name  Target PID\n------------  ----------\n");
-        for (int i = 0; i < g_num_services; i++) {
-            printk("%s            %d\n", g_services[i].name, g_services[i].target_pid);
+        case MOUNT_DEV:
+            printk("\nDirectory Listing (/dev/):\n");
+            printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
+            break;
+        case MOUNT_SRV:
+            printk("\nDirectory Listing (/srv/):\n");
+            printk("Service Name  Target PID\n------------  ----------\n");
+            for (int i = 0; i < g_num_services; i++) {
+                printk("%s            %d\n", g_services[i].name, g_services[i].target_pid);
+            }
+            printk("\n");
+            break;
+        case MOUNT_REMOTE9P: {
+            printk("\nDirectory Listing (/%s/%s):\n", m->name, rel);
+            printk("Name        Type      Size\n----------  --------  ----------\n");
+            int fd = vfs_open(path, VFS_O_READ);
+            if (fd >= 0) {
+                char name[32];
+                vfs_stat_t st;
+                for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
+                    printk("%s      %s  %u\n", name, st.is_dir ? "<DIR>" : "<FILE>", st.size);
+                }
+                vfs_close(fd);
+            } else {
+                printk("ls: cannot open '%s'\n", path);
+            }
+            break;
         }
-        printk("\n");
     }
 }

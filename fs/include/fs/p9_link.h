@@ -52,4 +52,58 @@ void p9_link_background_poll(void);
  * (matches drivers/virtio_blk.c's own busy-wait-until-done convention). */
 int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max);
 
+/* --- Persistent remote 9P connection (A5, plan/phase5_distributed_design.md) ---
+ * Unlike p9_link_cat() above (which does its own fresh Tversion + Tattach on
+ * every call -- p9_server_process()'s Tversion handler resets *all*
+ * server-side fid state, by design, as a connection reset), a mounted
+ * filesystem needs one Tversion + Tattach establishing a connection ONCE,
+ * kept alive for the mount's lifetime, so file handles opened against it
+ * survive across separate, later vfs_open()/vfs_pread()/... calls. That's
+ * the actual distinction between "a single command-line round trip" and
+ * "a mounted filesystem". Backed by a small fixed pool (no dynamic
+ * allocation in this kernel) -- see fs/p9_link.c for the pool size. */
+
+typedef struct p9_remote_mount p9_remote_mount_t; // opaque
+
+typedef struct {
+    uint64_t size;
+    bool is_dir;
+} p9_remote_stat_t;
+
+/* Tversion + Tattach("/") over `link`. Returns NULL if the pool is full or
+ * `link` is NULL. Like every other wait in this file, a reply that never
+ * arrives hangs the caller rather than timing out (matches
+ * drivers/virtio_blk.c's own busy-wait-until-done convention) -- a
+ * genuinely unresponsive peer hangs mount_open() itself, not just later
+ * operations against an already-open mount. */
+p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link);
+void p9_remote_mount_close(p9_remote_mount_t *mount);
+
+/* File-handle operations against an established mount, mirroring
+ * fs/include/fs/vfs.h's vfs_open()/vfs_pread()/vfs_pwrite()/vfs_readdir()/
+ * vfs_fstat()/vfs_close() contracts closely so fs/vfs_server.c's dispatch
+ * is a thin pass-through. `path` is relative to the mount's root.
+ * `p9_mode` is a P9_OREAD/OWRITE/ORDWR mode byte, optionally OR'd with
+ * P9_OTRUNC; `create` requests Tcreate if the final path component doesn't
+ * exist yet (its immediate parent must already exist -- matches the local
+ * vfs_open()'s own VFS_O_CREATE semantics, no implied `mkdir -p`).
+ * p9_remote_readdir() re-walks the directory stream from the start on
+ * every call rather than caching it -- see fs/p9_link.c for why that's a
+ * deliberate simplicity/memory tradeoff, not an oversight. */
+int p9_remote_open(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, bool create, uint32_t *out_fid, bool *out_is_dir);
+int p9_remote_pread(p9_remote_mount_t *mount, uint32_t fid, void *buf, uint32_t count, uint64_t offset);
+int p9_remote_pwrite(p9_remote_mount_t *mount, uint32_t fid, const void *buf, uint32_t count, uint64_t offset);
+int p9_remote_readdir(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, char *name_out, uint32_t name_max, p9_remote_stat_t *stat_out);
+int p9_remote_fstat(p9_remote_mount_t *mount, uint32_t fid, p9_remote_stat_t *out);
+int p9_remote_close(p9_remote_mount_t *mount, uint32_t fid);
+
+/* Removes a file or (empty) directory at `path` on the mount -- Tremove.
+ * Returns 0 on success, -1 otherwise. */
+int p9_remote_remove(p9_remote_mount_t *mount, const char *path);
+
+/* Creates a directory at `path` on the mount (parent must already exist) --
+ * Tcreate with the DMDIR permission bit. Returns 0 on success, -1
+ * otherwise. */
+int p9_remote_mkdir(p9_remote_mount_t *mount, const char *path);
+
 #endif // FS_P9_LINK_H

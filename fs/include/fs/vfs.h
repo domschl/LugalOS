@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "fs/p9_link.h"
 
 #define VFS_PID 3
 
@@ -66,6 +67,19 @@ int vfs_rmdir(const char *path);
 int vfs_cp(const char *src_path, const char *dst_path);
 int vfs_format(const char *path);
 void vfs_ls(const char *path);
+
+/* --- Mount table (A5, plan/phase5_distributed_design.md) ---
+ * Attaches a remote 9P namespace at /<name>/, turning "9P works" into
+ * "distributed namespace works" -- once mounted, /<name>/ behaves like any
+ * other mount for every function above (vfs_open/vfs_read/vfs_write/
+ * vfs_ls/vfs_cp/...), not just a special-purpose primitive. `link` must
+ * already be a usable p9_link_t (e.g. virtio_console_get_link()).
+ * vfs_unmount() only ever removes a mount added this way -- the built-in
+ * mounts (flash0/sd0/ram0/proc/dev/srv) aren't unmountable through this
+ * path. Both return 0 on success, -1 otherwise (name collision, mount
+ * table full, or -- for mount -- the remote handshake itself failing). */
+int vfs_mount_remote(const char *name, p9_link_t *link);
+int vfs_unmount(const char *name);
 
 #endif /* LUGALOS_FS_VFS_H */
 

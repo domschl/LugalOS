@@ -788,6 +788,90 @@ def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Pa
         session_b.close()
 
 
+def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tuple[str, bool, str]:
+    """A5: the actual "distributed namespace" payoff -- (mount-remote ...)
+    attaches Node B's entire namespace at /netb/ on Node A, and from then on
+    the *standard* shell commands (ls, cat, write) work through it exactly
+    like any local mount, proven by round-tripping through Node B's real
+    filesystem: Node A lists Node B's real /ram0/shared directory, reads a
+    file Node B wrote, writes a *new* file through the mount, then Node B
+    (after Node A disconnects) reads that file back from its own local
+    /ram0/ to confirm the write genuinely landed there -- not just that
+    Node A's `write` command returned success.
+
+    Node B's own namespace root is what gets attached (aname left empty in
+    p9_remote_mount_open()), not just one subtree -- so paths on Node A
+    look like /netb/ram0/shared/..., not /netb/shared/... A different,
+    separate port from test_9p_multinode_heterogeneous()'s, so the two
+    tests' topologies never collide even if this file is ever changed to
+    run them concurrently."""
+    import shutil
+
+    name = "9P Remote Mount: ls/cat/write Through /netb/ (A5, distributed namespace)"
+    port = 15591
+
+    img_b = img_path.with_name("test_mount_b_sd.img")
+    img_a = img_path.with_name("test_mount_a_sd.img")
+    shutil.copyfile(img_path, img_b)
+    shutil.copyfile(img_path, img_a)
+
+    session_b = QemuSession(rv64_elf, img_b, "rv64")
+    session_a = QemuSession(rv32_elf, img_a, "rv32")
+    try:
+        session_b.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port},server=on,wait=off",
+        ])
+        ok, log = session_b.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B (RV64) failed to boot:\n{log}")
+
+        cmd = 'lisp\n(mkdir "/ram0/shared")\n(write-file "/ram0/shared/greeting.txt" "hello from B")\nexit'
+        ok, log = session_b.send_and_expect(cmd, r"=> #t", timeout=4.0)
+        if not ok:
+            return (name, False, f"Node B failed to set up /ram0/shared:\n{log}")
+
+        session_a.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port}",
+        ])
+        ok, log = session_a.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node A (RV32) failed to boot:\n{log}")
+
+        cmd = 'lisp\n(mount-remote "netb")\nexit'
+        ok, log = session_a.send_and_expect(cmd, r"=> #t", timeout=4.0)
+        if not ok:
+            return (name, False, f"Node A failed to mount Node B's namespace:\n{log}")
+
+        ok, log = session_a.send_and_expect("ls /netb/ram0/shared", r"GREETING\.TXT", timeout=4.0)
+        if not ok:
+            return (name, False, f"ls through the remote mount didn't see Node B's real directory:\n{log}")
+
+        ok, log = session_a.send_and_expect("cat /netb/ram0/shared/greeting.txt", r"hello from B", timeout=4.0)
+        if not ok:
+            return (name, False, f"cat through the remote mount didn't return Node B's real content:\n{log}")
+
+        ok, log = session_a.send_and_expect("write /netb/ram0/shared/from_a.txt written_by_node_A", r"=> #t", timeout=4.0)
+        if not ok:
+            return (name, False, f"write through the remote mount failed:\n{log}")
+
+        session_a.close()
+
+        # Read the file back from Node B's own local filesystem -- proof
+        # the write genuinely reached Node B's disk, not just that Node A's
+        # `write` command claimed success.
+        ok, log = session_b.send_and_expect("cat /ram0/shared/from_a.txt", r"written_by_node_A", timeout=4.0)
+        return (name, ok, log if not ok else "")
+    except Exception as e:
+        return (name, False, str(e))
+    finally:
+        session_a.close()
+        session_b.close()
+
+
 def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:
     """Inspects the raw FAT32 disk image directly on the host OS."""
     if not img_path.exists():
@@ -901,6 +985,7 @@ def main() -> int:
     if rv64_elf.exists() and rv32_elf.exists():
         print("\n[Target: Multi-Node RV32 <-> RV64 Heterogeneous Interconnect]")
         _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_path))
+        _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_path))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
 

@@ -652,7 +652,33 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
     }
     return &false_val;
 }
+
+/* Attaches a remote peer's namespace at /<name>/ (A5) -- turns "9P works"
+ * into "distributed namespace works": once mounted, standard commands
+ * (ls, cat, write, cp, mkdir, rm) work through /<name>/ exactly like any
+ * other mount, not just through a special-purpose primitive like
+ * p9-remote-cat above. Currently only ever mounts the virtio-console link
+ * (the same one p9-remote-cat targets); mounting a different link by name
+ * is a reasonable future extension once more than one outbound-capable
+ * link exists. */
+static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+
+    p9_link_t *link = virtio_console_get_link();
+    if (!link) return &false_val;
+
+    return (vfs_mount_remote(name, link) == 0) ? &true_val : &false_val;
+}
 #endif
+
+static lisp_val_t *prim_unmount(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    return (vfs_unmount(name) == 0) ? &true_val : &false_val;
+}
 
 static lisp_val_t *prim_p9_uart_send(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -764,7 +790,9 @@ void lisp_init(void) {
     env_set(&global_env, "p9-cat", make_prim(prim_p9_cat));
 #if !defined(CONFIG_BOARD_RP2350)
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
+    env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
 #endif
+    env_set(&global_env, "unmount", make_prim(prim_unmount));
     env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
