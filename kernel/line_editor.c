@@ -13,7 +13,7 @@
  * happening anyway -- a stack-local destination buffer with no guaranteed
  * terminator is an out-of-bounds read waiting to happen the next time it's
  * treated as a C string (see B13 in
- * plan/2026-08-07_review_and_remediation.md). Mirrors strncpy_local() in
+ * plan/completed/2026-08-07_review_and_remediation.md). Mirrors strncpy_local() in
  * user/lisp/lisp.c: dst_size is the *full* destination buffer size, and the
  * result is always terminated within it. */
 static void safe_strncpy(char *dst, const char *src, int dst_size) {
@@ -72,7 +72,7 @@ static void add_history(const char *line) {
 
     /* Append just the new line to the persistent log instead of
      * reconstructing and rewriting the whole accumulated history buffer on
-     * every command (see B8 in plan/2026-08-07_review_and_remediation.md).
+     * every command (see B8 in plan/completed/2026-08-07_review_and_remediation.md).
      * history_stack[] above still independently tracks only the last
      * MAX_HIST_ITEMS entries for Up/Down navigation; the on-disk log is a
      * simple ever-growing record of everything typed since boot (or since

@@ -216,7 +216,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
      * the end of sexpr[] -- the delimiter/quote writes below used to be
      * unguarded while only content-character writes were bounds-checked,
      * which let e.g. `ls` followed by ~160 short tokens smash the stack
-     * (see B2 in plan/2026-08-07_review_and_remediation.md). */
+     * (see B2 in plan/completed/2026-08-07_review_and_remediation.md). */
     char sexpr[512];
     sexpr_buf_t sb;
     sb_init(&sb, sexpr, sizeof(sexpr));

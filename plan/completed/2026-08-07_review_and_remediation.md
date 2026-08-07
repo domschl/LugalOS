@@ -1,5 +1,15 @@
 # LugalOS Review & Remediation Plan
 
+> **⚠️ COMPLETED — archived for reference.** Phases 0–4 and the cross-cutting quick wins are all
+> done and committed. This document is kept because its **finding IDs (B1–B13, A1–A6, V1–V6,
+> D1–D4) are referenced from source comments throughout the tree** and from its successor.
+>
+> **Phase 5 has moved to
+> [`plan/phase5_distributed_design.md`](../phase5_distributed_design.md)**, which supersedes the
+> Phase 5 section below with a considerably more detailed design. Three findings recorded here are
+> still open and are scheduled there: **B11** (unbounded 9P serialize/deserialize — now a hard
+> security gate), **B12** (ELF loader input validation), and **A2** (namespace fall-through).
+
 > **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, 2, 3, and 4 complete)
 > **Scope**: Vision/implementation consistency, architecture, bug hunt, test coverage, documentation.
 > **Baseline**: commit `b133833`, RV64 (Sv39 build) and RV32 (NOMMU build) verified live under QEMU on macOS.
@@ -16,7 +26,7 @@
 | **Phase 2 — Make the Lisp engine correct** | ✅ **Complete** (see [§7 Phase 2](#phase-2--make-the-lisp-engine-correct) and [§11](#11-phase-2-completion-notes)) |
 | **Phase 3 — Filesystem integrity** | ✅ **Complete** (see [§7 Phase 3](#phase-3--filesystem-integrity) and [§12](#12-phase-3-completion-notes)) |
 | **Phase 4 — Align the docs with reality** | ✅ **Complete** (see [§7 Phase 4](#phase-4--align-the-docs-with-reality) and [§13](#13-phase-4-completion-notes)) |
-| Phase 5 — Close the vision gaps | Not started |
+| Phase 5 — Close the vision gaps | ➡️ **Superseded** by [`plan/phase5_distributed_design.md`](../phase5_distributed_design.md) |
 
 ---
 

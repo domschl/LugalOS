@@ -365,7 +365,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Line Editor Backward Cursor Insertion & Deletion", ok, log if not ok else ""))
 
         # 15. Regression: primitive arity/type mismatches must not crash the
-        # kernel (B1, see plan/2026-08-07_review_and_remediation.md). Each of
+        # kernel (B1, see plan/completed/2026-08-07_review_and_remediation.md). Each of
         # these previously dereferenced a NULL pointer (or worse) when called
         # with too few / wrong-typed arguments. If any of them still crashed,
         # FAULT_MARKERS would fail this test outright; the trailing "=> 4"
@@ -390,7 +390,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # 16. Regression: an oversized shell command line must be rejected
         # cleanly instead of overflowing the fixed-size S-expression
         # transformer buffer (B2, see
-        # plan/2026-08-07_review_and_remediation.md). 160 single-char tokens
+        # plan/completed/2026-08-07_review_and_remediation.md). 160 single-char tokens
         # previously walked sexpr[512] far out of bounds. The trailing
         # "(+ 3 3)" check on the same session proves the shell survived and
         # is still evaluating correctly.
@@ -399,7 +399,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Shell Command-Line Overflow Rejection (no crash on long input, B2)", ok, log if not ok else ""))
 
         # 17. Regression: self-recursion via (define name (lambda ...)) (B3,
-        # see plan/2026-08-07_review_and_remediation.md). The lambda used to
+        # see plan/completed/2026-08-07_review_and_remediation.md). The lambda used to
         # capture a frozen snapshot of the environment *before* its own
         # binding was added, so it could never see itself.
         cmd_recursion = (
@@ -475,7 +475,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         # 23. Regression: fat32_write_file() must free a file's old cluster
         # chain when overwriting it, instead of leaking a new chain on every
-        # write (B8, see plan/2026-08-07_review_and_remediation.md).
+        # write (B8, see plan/completed/2026-08-07_review_and_remediation.md).
         # Overwrite the same file 20 times and confirm reported free space
         # is unchanged (each write needs exactly 1 cluster; under the old
         # bug this would leak 19 of them). Parses actual numbers from two

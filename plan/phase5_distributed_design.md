@@ -1,0 +1,461 @@
+# Phase 5 — Distributed Nodes & Memory-Model Isolation: Design & Roadmap
+
+> **Status**: Planning. No Phase 5 code written yet.
+> **Date**: 2026-08-07
+> **Baseline**: commit `4a64b78` (Phases 0–4 + cross-cutting quick wins complete, 75/75 tests
+> passing on RV64 and RV32, all three targets building clean).
+>
+> **Predecessors**:
+> - [`plan/completed/2026-08-07_review_and_remediation.md`](completed/2026-08-07_review_and_remediation.md)
+>   — the review that produced Phases 0–4. Finding IDs (B11, A2, V4, V5, …) referenced here are
+>   defined there.
+> - [`plan/rp2350_distributed_plan.md`](rp2350_distributed_plan.md) — the original distributed
+>   vision. Still the statement of intent; this document supersedes its *sequencing* and
+>   transport-option analysis with findings measured against the current code.
+
+---
+
+## Table of contents
+
+1. [Goal and the core structural insight](#1-goal-and-the-core-structural-insight)
+2. [Hard ordering gate: security](#2-hard-ordering-gate-security)
+3. [Where the code actually stands today](#3-where-the-code-actually-stands-today)
+4. [Track A — Distribution](#4-track-a--distribution)
+5. [Track B — Memory model & isolation](#5-track-b--memory-model--isolation)
+6. [Test topologies](#6-test-topologies)
+7. [Milestones](#7-milestones)
+8. [Effort and risk calibration](#8-effort-and-risk-calibration)
+9. [Decisions needed before starting](#9-decisions-needed-before-starting)
+
+---
+
+## 1. Goal and the core structural insight
+
+The stated goal for this phase: **make it possible to run tests with genuinely distributed,
+heterogeneous topologies** — a NOMMU RV32 node and an MMU RV64 node cooperating over a real wire,
+extending later to physical RP2350 hardware and eventually K210 / VisionFive 2.
+
+The original Phase 5 list (5.1 VFS → 5.2 9P → 5.3 transport → 5.4 ELF → 5.5 MMU) reads as one
+sequence, but it is actually **two nearly independent tracks**:
+
+| | Track A — Distribution | Track B — Memory model & isolation |
+|---|---|---|
+| **Delivers** | Nodes talking 9P over real wires | Per-task isolation; a real microkernel |
+| **Needs** | VFS handles, 9P server, link layer, test harness | MMU/PMP, address spaces, tasks, IPC |
+| **Satisfies** | **This phase's stated goal** | The "microkernel" name (V1–V4) |
+| **Depends on the other?** | **No** | No |
+
+**This is the most important planning conclusion in this document**: a single-address-space
+LugalOS is a perfectly good 9P node. Distribution needs no scheduler, no MMU, no user mode, and no
+real IPC. The 9P server can be a poll-driven function called from the link layer's RX pump.
+
+So Track A can be built and tested to completion on today's kernel, and the distributed-testing
+goal can be met without touching the memory model at all. Coupling them — as the original
+one-through-five numbering implies — would put the single largest and riskiest chunk of work
+(Track B) on the critical path to the stated goal, for no technical reason.
+
+**Recommendation: build Track A first, in full. Start Track B afterwards, or in parallel if there
+is appetite for it, but never as a blocker for distributed testing.**
+
+### On "heterogeneous"
+
+Worth being precise, because it affects almost nothing in the design: 9P2000 is a little-endian,
+byte-oriented wire protocol with explicitly-sized fields. A NOMMU RV32 node and an MMU RV64 node
+already agree on the wire format with no negotiation beyond `Tversion`'s `msize`. Heterogeneity
+across memory models, word widths, and physical vs. emulated hardware is therefore a *test-harness*
+concern (spawning and wiring different node types) far more than a protocol one. The one real
+protocol-level care point is that `p9_msg_t` currently uses a 32-bit `offset` where 9P specifies
+64-bit — see [A2](#a2--9p-server-hardening-and-completion).
+
+---
+
+## 2. Hard ordering gate: security
+
+**B11 (unbounded 9P deserialization) is still open, and it must be closed before any real transport
+is enabled.**
+
+Verified against the current tree — `fs/9p.c`, `p9_deserialize()`:
+
+```c
+const uint8_t *p = buf;
+uint32_t size = read_u32(&p);
+if (size > len) return -1;      // the ONLY length check in the function
+msg->type = read_u8(&p);
+msg->tag  = read_u16(&p);
+switch (msg->type) {
+    case P9_TWRITE:
+        msg->fid    = read_u32(&p);   // no end-pointer check
+        msg->offset = read_u32(&p);   // walks past buf+len on a short frame
+        (void)        read_u32(&p);
+        msg->count  = read_u32(&p);
+        msg->data   = p;              // count is never validated against remaining length
+```
+
+`p9_serialize()` has the mirror-image defect on the write side: it validates `buf_size < 7` once,
+then writes payloads — including `memcpy(p, msg->data, msg->count)` — with no further bound.
+
+The Phase 1 review deferred this explicitly, and the reasoning is worth quoting because it is
+exactly the condition that is about to change:
+
+> Not reachable from today's local-only paths, but this is exactly the code the distributed roadmap
+> intends to feed from a wire.
+
+The moment [A3](#a3--link-layer-and-real-transport) lands, a malformed or hostile 9P frame arriving
+on a UART becomes remotely-triggerable out-of-bounds read/write in the kernel. On a system with no
+memory protection (which is every current target — see [Track B](#5-track-b--memory-model--isolation)),
+that is unbounded kernel memory corruption from the wire.
+
+**Gate: [A2](#a2--9p-server-hardening-and-completion) must be complete and fuzz-tested before
+[A3](#a3--link-layer-and-real-transport) enables a real link.** This is an ordering constraint on
+safety grounds, not a preference about tidiness.
+
+---
+
+## 3. Where the code actually stands today
+
+Measured against the current tree, not assumed.
+
+### VFS (`fs/vfs_server.c`, `fs/include/fs/vfs.h`)
+- Whole-file API only: `vfs_read(path, buf, max_len)`. **No offsets, no handles, no seek.**
+- `/proc` files **`printk()` directly and return an empty buffer** (`sbuf[0] = '\0'; return len;`).
+  A remote 9P client can never read them. This is the structural blocker flagged as V5.
+- `parse_prefix()` is a hardcoded if/else chain over 6 fixed prefixes with a fall-through default —
+  no mount table, so no way to attach a remote namespace. (Also still carries the namespace
+  fall-through defect A2 from the review: `/sd0/x` silently falls back to flash then ram.)
+- ~20 call sites depend on the current whole-file signature.
+
+### 9P (`fs/9p.c`, `fs/include/fs/9p.h`)
+- Header already declares the full 9P2000 message enum including `Tstat`/`Tcreate`/`Tremove`.
+  The implementation handles a subset and **implements none of those three**.
+- **No fid table.** `Twalk` ignores the path and returns a fixed qid; `Topen` ignores the path.
+- **Not connected to the VFS at all** — includes `fs/vfs.h` but never calls it. Reads and writes
+  hit one global 2 KB buffer (`g_p9_storage_buf`).
+- `p9_msg_t.offset` is `uint32_t`; 9P specifies 64-bit offsets.
+- `p9_msg_t` has a single `const char *path`; `Twalk` carries up to 16 name components.
+- B11 as above.
+
+### Transport (`drivers/uart_net.c`, `drivers/loopback_net.c`)
+- `uart_net_send_9p()` SLIP-encodes into `slip_tx`, **discards it**, and calls `p9_server_process()`
+  in-process. It never touches a UART. Functionally identical to the loopback path.
+- `slip_encode()` / `slip_decode()` themselves are real and bounds-checked — genuinely reusable.
+
+### QEMU environment (measured, not assumed)
+Dumped the `virt` machine device tree (`-M virt,dumpdtb=…`):
+- **Exactly one UART**: `serial@10000000` (NS16550), aliased `serial0`, also `stdout-path`.
+  A second `-serial` argument does **not** create a second guest UART — it lands on the QEMU
+  monitor. Confirmed by DTB inspection.
+- **Eight virtio-mmio slots**: `0x10001000`–`0x10008000`. `drivers/virtio_blk.c` probes this range
+  and claims the first responder, so free slots remain.
+- `virtio-serial-device` / `virtconsole` are available as QEMU devices.
+
+### UART RX (`drivers/uart_16550.c`)
+```c
+char uart_getc(void) {
+    while (!uart_has_char()) { usb_cdc_task(); }
+    return (char)uart_base[UART_RBR];
+}
+```
+Polled, blocking, **no RX buffering and no demultiplexing**. Every byte goes straight to whoever
+called `uart_getc()` — normally the console line editor. A 9P frame arriving while the shell is
+blocked here would be consumed as console keystrokes. This is the crux of the transport work.
+
+### Memory model / tasks
+- `arch/riscv/common/entry.S` **already** does the M→S mode transition under `CONFIG_MODE_S`,
+  programs `pmpaddr0`/`pmpcfg0` wide open, and delegates all traps to S-mode. Good foundation.
+- The trap vector does **not** switch stacks — it reuses the interrupted `sp`. Fine for
+  kernel-only traps; a blocker for U-mode (needs `sscratch`).
+- `rv64_mmu/vmm.c`: `vmm_map_page()` is `return 0;`. `satp` is never written.
+- `task_t` is `{pid, state, sp, name}` — no register context, no address space, no kernel stack.
+  `task_create()` discards its entry-point argument; nothing ever calls it.
+- `trap.c` passes raw user pointers (`frame->a1`, `frame->a2`) straight into `printk`, `vfs_read`,
+  `vfs_write`.
+
+---
+
+## 4. Track A — Distribution
+
+### A1 — VFS handle API
+
+Replace whole-file access with handles and offsets. This is the foundation everything else in
+Track A stands on.
+
+```c
+typedef struct {
+    uint8_t  type;        /* backend id */
+    bool     is_dir;
+    uint64_t size;
+    uint32_t version;     /* -> 9P qid.vers */
+    uint64_t ino;         /* backend-unique -> 9P qid.path */
+} vfs_stat_t;
+
+int vfs_open(const char *path, int flags);
+int vfs_pread (int h, void *buf, uint32_t count, uint64_t offset);
+int vfs_pwrite(int h, const void *buf, uint32_t count, uint64_t offset);
+int vfs_readdir(int h, uint32_t index, char *name_out, uint32_t name_max, vfs_stat_t *st);
+int vfs_stat(const char *path, vfs_stat_t *st);
+int vfs_close(int h);
+```
+
+Sub-work:
+
+- **`fat32_read_at()` / `fat32_write_at()`** — offset-based cluster-chain traversal.
+  `fat32_read_file()` always starts at the first cluster. First cut: walk from the start on each
+  call (O(offset)); later cache a `(last_offset → last_cluster)` hint in the handle, which turns
+  sequential streaming — the dominant 9P access pattern — back into O(1) per call.
+- **`/proc` as real byte streams** — generate content into a per-handle buffer at open time and
+  serve reads from it. This is the standard synthetic-filesystem approach and is what finally makes
+  `/proc` readable by a remote client (closes V5).
+  *Care point*: the shell's `cat /proc/ps` output must stay byte-identical, because existing tests
+  assert on it. The shell should read the buffer and print it, rather than the VFS printing as a
+  side effect.
+- **`/dev` nodes** — `uart` (stream; offset meaningless), `null`, `zero` become proper handlers.
+- **Compatibility wrappers** — keep `vfs_read()`/`vfs_write()` as thin shims over
+  open/pread/close. **This matters for reviewability**: without it, A1 becomes a single ~500-line
+  diff touching every caller in the tree. With it, the API lands in one reviewable commit and call
+  sites migrate incrementally.
+
+### A2 — 9P server hardening and completion
+
+**Gated: must complete before A3.** See [§2](#2-hard-ordering-gate-security).
+
+- **Close B11, both directions.** Add an explicit end pointer to the deserializer; bounds-check
+  every field read and validate `count` against remaining frame length. Bound every write in
+  `p9_serialize()` against `buf_size`. Clamp to the negotiated `msize`.
+- **Widen `p9_msg_t.offset` to `uint64_t`.**
+- **`Twalk` multi-component support** — up to 16 `nwname` elements, replacing the single `path`.
+- **Real fid table** — `fid → {vfs handle, qid, path, open mode}`, with a bounded table and clean
+  `Rerror` on exhaustion.
+- **Implement the declared-but-missing messages** — `Tstat`/`Rstat` (needed for remote `ls`),
+  `Tcreate`/`Rcreate`, `Tremove`/`Rremove`. `Tflush` can reply success as a no-op until there is
+  concurrency to flush.
+- **Wire the server to the VFS** from A1, replacing the single global 2 KB buffer.
+- **Fuzz/conformance testing** — a Python peer (see [T1](#6-test-topologies)) that sends truncated,
+  oversized, wrong-`size`, and hostile-`count` frames and asserts the node neither faults (UBSan
+  panic since Phase 0 makes this detectable) nor answers incorrectly.
+
+### A3 — Link layer and real transport
+
+Introduce a transport-agnostic link interface so the 9P server never knows what wire it is on:
+
+```c
+typedef struct p9_link {
+    const char *name;
+    int (*poll)(struct p9_link *);                                  /* pump RX */
+    int (*send_frame)(struct p9_link *, const uint8_t *, uint32_t);
+    int (*recv_frame)(struct p9_link *, uint8_t *, uint32_t);
+} p9_link_t;
+```
+
+Backends:
+
+| Backend | Works on | Notes |
+|---|---|---|
+| `link_uart_slip` | QEMU UART, RP2350 UART, CP2102 | **Primary.** Reuses the existing, already-correct `slip_encode`/`slip_decode`. |
+| `link_usb_cdc` | RP2350 `/dev/ttyACM1` | Endpoint already enumerates; data path unwired. |
+| `link_virtio_console` | QEMU only | Optional. Clean dedicated channel for CI; needs a new driver. |
+
+**The crux of A3** is not the framing — SLIP already works. It is that `uart_getc()` hands every
+byte directly to the console. A shared wire needs an RX pump that demultiplexes: bytes inside SLIP
+`END` (0xC0) delimiters go to the frame assembler, bytes outside go to a console queue. That means
+introducing a small RX ring and a demux state machine underneath the line editor — **touching the
+most load-bearing code path in the system** (every keystroke on every target).
+
+De-risking sequence:
+
+- **A3a — headless 9P mode.** A runtime/build flag dedicating the UART entirely to 9P, console
+  disabled. No demux at all. This is the original plan document's "Option C", and it is the
+  fastest path to a *real wire carrying real frames*.
+- **A3b — demuxed shared wire.** Console and 9P interleaved on one UART. Needed for interactive
+  debugging of a live node and for the single-cable RP2350 story.
+
+### A4 — Multi-node test harness
+
+`tests/runner.py` currently spawns one QEMU per architecture, sequentially, with one chardev. It
+needs a multi-node session abstraction: spawn N nodes, wire their chardevs together (TCP or unix
+sockets), drive each independently, tear all down deterministically.
+
+`scripts/run-qemu-multinode.sh` exists but cross-connects the two nodes' **consoles**, not a data
+channel — it will need rewriting once a real link exists.
+
+Fuzzing and protocol conformance live here too, against the Python peer.
+
+### A5 — Mount table and remote namespace
+
+Not in the original Phase 5 list, but without it "9P works" never becomes "distributed namespace
+works", which is the actual Plan 9 payoff.
+
+- Replace `parse_prefix()`'s hardcoded prefix chain with a real mount table.
+- Support attaching a remote 9P namespace into the local one (`/net/<node>/…`, or bind semantics).
+- Fixes review finding A2 (namespace fall-through) as a side effect, since an explicit mount table
+  has no reason to fall back across volumes.
+
+---
+
+## 5. Track B — Memory model & isolation
+
+This is what the **"microkernel"** name needs (V1–V4), and what
+[`plan/completed/…§13.2.1`](completed/2026-08-07_review_and_remediation.md) records as the condition
+for restoring it to the README title. It is **not** needed for distributed testing.
+
+### The intended split
+
+| | NOMMU (RP2350, QEMU RV32) | MMU (QEMU RV64, later K210 / VisionFive 2) |
+|---|---|---|
+| Address space | Single, shared | Per-task virtual address space |
+| Isolation mechanism | None today; **RISC-V PMP** is available | Sv39 page tables |
+| Enforcement granularity | Region (typically 8–16 PMP entries) | Page (4 KB) |
+
+**PMP is a genuinely available middle ground on NOMMU hardware and is worth calling out**: RP2350's
+Hazard3 core supports Physical Memory Protection, and `entry.S` already programs `pmpaddr0`/
+`pmpcfg0` (currently wide-open, granting S/U full access). Region-granularity protection — "a task
+cannot scribble on the kernel or on another task's region" — is achievable on NOMMU without any
+MMU. It is not per-task virtual memory, but it is real, enforced isolation, and it makes the
+NOMMU/MMU split a difference of *granularity* rather than *presence*.
+
+### B1 — Address-space abstraction
+`vmm_space_t` already exists with `page_table_root` / `heap_start` / `heap_end`. Give it two real
+implementations behind the existing interface: NOMMU (identity, optionally PMP-enforced) and MMU
+(Sv39).
+
+### B2 — Sv39
+Three-level page-table walk and allocation; kernel mapping (identity-map first, for simplicity);
+`satp` write plus `sfence.vma`; page-fault handling in `trap_handler` (which today halts on any
+non-`ecall` exception).
+
+### B3 — Tasks and context switch
+`task_t` needs saved callee-saved registers, `sp`, `pc`, a `vmm_space_t *`, and a per-task kernel
+stack. Context switch in assembly. Cooperative (`sched_yield`) first; timer preemption after.
+
+### B4 — U-mode and the syscall ABI — **the largest hidden cost**
+
+Two things here are much bigger than the original one-line "5.5 implement the MMU" suggests:
+
+1. **`entry.S` does not switch stacks on trap.** U-mode requires `sscratch` holding the kernel
+   stack pointer and a swap on entry/exit. This is surgery on well-tested assembly that every
+   trap — including every syscall and every timer tick — flows through.
+
+2. **Copy-in / copy-out.** `trap.c` today passes raw user pointers straight into `printk`,
+   `vfs_read`, and `vfs_write`. Once user tasks live in a *different* address space, those pointers
+   are meaningless at best and hostile at worst. **Every pointer-taking syscall needs validated
+   copying across the address-space boundary.** This is invisible in the original plan wording and
+   is realistically the single largest sub-task in Track B.
+
+### B5 — Real IPC
+`sys_ipc_call` is a 6-line stub. Real synchronous rendezvous needs B3 first: blocking send/receive
+with per-task queues, and `/srv/` becoming real endpoints. Once this exists, the 9P server *could*
+become a task — but per [§1](#1-goal-and-the-core-structural-insight) it never has to.
+
+---
+
+## 6. Test topologies
+
+Each rung proves something the previous one cannot.
+
+| | Topology | Proves | Hardware? |
+|---|---|---|---|
+| **T0** | Loopback through the *real* framing and link layer | Serialization round-trips; replaces today's in-memory shortcut | No |
+| **T1** | LugalOS (QEMU) ↔ **Python 9P peer** over pty/socket | **First real wire.** Independent protocol oracle + fuzzing home | No |
+| **T2** | LugalOS (QEMU **RV32 NOMMU**) ↔ LugalOS (QEMU **RV64**) over TCP | **First genuinely heterogeneous topology; CI-runnable** | No |
+| **T3** | LugalOS (QEMU) ↔ LugalOS (**RP2350 hardware**) over USB CDC / UART | Physical heterogeneity, single-cable story | Yes (opt-in) |
+| **T4** | 3-node: workstation + storage node + display node | Multi-hop namespace composition | Mixed |
+
+**T1 deserves emphasis as the highest-value first rung.** A Python reference peer is an
+*independent implementation*, so a protocol bug cannot be masked by both ends sharing the same
+misunderstanding — which is exactly the failure mode the current loopback path has (it "passes"
+while doing nothing over a wire). It is also far easier to instrument and fuzz from than a second
+QEMU instance.
+
+**T2 is the milestone that satisfies this phase's stated goal**: two different memory models, two
+different word widths, real frames over a real socket, no hardware required, runnable in CI.
+
+---
+
+## 7. Milestones
+
+| | Deliverable | Gates |
+|---|---|---|
+| **M1** | A1 VFS handles + A2 9P hardened (**B11 closed**) → T0 | — |
+| **M2** | A3a headless SLIP link → **T1** (Python peer) | **M1 required** (security gate) |
+| **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 |
+| **M4** | A5 mount table / remote namespace | M3 |
+| **M5** | RP2350 hardware node → **T3** | M4 |
+| **M6+** | Track B: PMP / Sv39 / tasks / U-mode / IPC → restore "Microkernel" to the README title | independent of M1–M5 |
+
+**M3 is the point at which this phase's stated goal is met.**
+
+---
+
+## 8. Effort and risk calibration
+
+Relative, not absolute — intended for sequencing decisions, not scheduling.
+
+| Item | Effort | Risk | Note |
+|---|---|---|---|
+| A1 VFS handles | Medium | Low–Med | Wide blast radius; compat wrappers keep it reviewable |
+| A2 9P | Medium | Low | Mostly greenfield in one file, plus the security fix |
+| A3a headless link | Low–Med | Low | Reuses working SLIP code |
+| A3b RX demux | Medium | **High** | Touches every keystroke on every target |
+| A4 harness | Medium | Low | Python only; no kernel risk |
+| A5 mount table | Medium | Medium | Changes path resolution everything depends on |
+| B1/B2 MMU | High | Medium | Well-understood, just large |
+| B3 tasks | High | Medium | New assembly |
+| B4 U-mode + copy-in/out | **Highest** | **High** | Surgery on entry.S + every syscall |
+| B5 IPC | Medium | Low | Straightforward once B3 exists |
+
+### Items worth an explicit decision before starting
+
+1. **B4 (U-mode + copy-in/copy-out)** — the single largest chunk in Phase 5, and the one that
+   destabilizes currently-working, heavily-exercised code (the trap path). It is also
+   unambiguously where "microkernel" stops being aspirational. Worth deciding deliberately rather
+   than drifting into.
+2. **A3b (RX demux)** — moderate effort but the highest-risk item in Track A, because a regression
+   there breaks the console on all three targets simultaneously. A3a exists specifically so this
+   can be deferred without blocking a real wire.
+3. **`link_virtio_console`** — a whole new device driver whose only benefit is nicer CI ergonomics
+   on QEMU. It does not advance the hardware story at all. Probably not worth it unless demux (A3b)
+   proves genuinely painful.
+
+---
+
+## 9. Decisions needed before starting
+
+These change the plan's content, not just its schedule.
+
+### D1 — Transport strategy
+- **(a) SLIP-multiplexed single UART** — one code path for QEMU, RP2350 UART, and CP2102.
+  Requires the A3b demux. *Recommended*, with A3a headless first to de-risk.
+- **(b) virtio-console on QEMU + USB CDC on RP2350** — cleanest separation, no demux, but two
+  unrelated drivers and nothing for a plain UART wire.
+- **(c) Headless only** — trivial, but a node under test has no console, so failures are debugged
+  blind.
+
+*Recommendation: (a), sequenced as A3a → A3b, with (b) held in reserve.*
+
+### D2 — NOMMU protection
+Leave RP2350 as a genuinely flat single address space, or invest in **PMP** region protection?
+PMP gives real enforcement on NOMMU hardware and makes the NOMMU/MMU story a difference of
+granularity rather than "protected vs. not". It is meaningful extra work and is not required for
+anything in Track A.
+
+### D3 — Track priority
+Track A to completion first (**recommended** — meets the stated goal soonest, leaves the riskiest
+work off the critical path), or interleave Track B to make the microkernel claim real sooner?
+
+### D4 — 9P server execution model
+Keep the server poll-driven (works today, no dependencies), or make it a task once B3/B5 land?
+Only worth revisiting after Track B; noted here so the A2 fid-table design does not accidentally
+assume single-threaded access forever.
+
+---
+
+## Appendix — Review findings this phase closes
+
+| Finding | Description | Closed by |
+|---|---|---|
+| **B11** | Unbounded 9P serialize/deserialize | A2 (**gates A3**) |
+| **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | Original 5.4 — fold into Track B alongside B2, since MMU changes how segments load |
+| **A2** | Namespace fall-through across volumes | A5 |
+| **A3** | No file handles in the VFS | A1 |
+| **V4** | "Scales to 64-bit with MMU protection" — no MMU | B1/B2 |
+| **V5** | `/proc` printk's instead of filling buffers; 9P not connected to VFS; `uart_net.c` never touches a UART | A1, A2, A3 |
+| **V1–V3** | Microkernel / IPC / scheduler are stubs | B3, B4, B5 |

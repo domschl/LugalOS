@@ -11,7 +11,7 @@
  * happens not to be a *live* bug for this compiler/target's stack layout
  * today -- but that's implementation behavior the standard doesn't
  * guarantee, not something this code can rely on (see B13/X.4 in
- * plan/2026-08-07_review_and_remediation.md). This union gives a sector
+ * plan/completed/2026-08-07_review_and_remediation.md). This union gives a sector
  * buffer every view it's used as up front, so the compiler guarantees
  * correct alignment for all of them and no cast is needed at any access
  * site -- used only where a buffer is actually read through one of the
@@ -26,7 +26,7 @@ typedef union {
 
 /* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more
  * characters long (e.g. a 63+ character path component into a 64-byte
- * caller buffer) -- see B13 in plan/2026-08-07_review_and_remediation.md.
+ * caller buffer) -- see B13 in plan/completed/2026-08-07_review_and_remediation.md.
  * Mirrors strncpy_local() in user/lisp/lisp.c and safe_strncpy() in
  * kernel/line_editor.c: dst_size is the *full* destination buffer size, and
  * the result is always terminated within it. */
@@ -91,7 +91,7 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
          * formatted by a PC) has a much larger FAT, and the hardcoded
          * offset silently wrote cluster-chain updates into whatever
          * unrelated sector was 8 sectors after FAT1 instead of into FAT2
-         * (see B9 in plan/2026-08-07_review_and_remediation.md). */
+         * (see B9 in plan/completed/2026-08-07_review_and_remediation.md). */
         fs->dev->write_blocks(fs->dev, fat_sec.raw, fat_sector + fs->bpb.fat_sz32, 1); // FAT2
     }
 }
@@ -126,7 +126,7 @@ static uint32_t fat_alloc_cluster(fat32_fs_t *fs) {
      * pointed past the end of the volume, and fat_set_entry() would then
      * write a chain-link into whatever unrelated storage that cluster
      * number's FAT-entry offset landed on (see B9 in
-     * plan/2026-08-07_review_and_remediation.md). */
+     * plan/completed/2026-08-07_review_and_remediation.md). */
     uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
     uint32_t fat_area_sec = fs->bpb.reserved_sec_cnt + (uint32_t)fs->bpb.num_fats * fs->bpb.fat_sz32;
     if (total_sec <= fat_area_sec) return 0;
@@ -161,7 +161,7 @@ typedef bool (*fat32_dir_scan_fn)(fat32_fs_t *fs, uint32_t sector_lba,
  * in later sectors of a cluster. That went unnoticed because this
  * codebase's own fat32_format() always uses sec_per_clus = 1, but any
  * normally PC-formatted FAT32 card typically uses 8-64 sectors per cluster
- * (see B9 in plan/2026-08-07_review_and_remediation.md). Two of the
+ * (see B9 in plan/completed/2026-08-07_review_and_remediation.md). Two of the
  * write-path scans (fat32_write_file's and fat32_mkdir's old free-slot
  * search) didn't even walk the FAT chain to a second cluster; routing them
  * through this shared helper fixes that too, as a natural consequence of
@@ -327,7 +327,7 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
         /* Used to auto-format here on any unrecognized boot sector -- which
          * meant inserting a blank, foreign-formatted, or merely corrupt SD
          * card silently wiped it (see B10 in
-         * plan/2026-08-07_review_and_remediation.md). Report the volume as
+         * plan/completed/2026-08-07_review_and_remediation.md). Report the volume as
          * unmounted instead; fat32_format() is still available and is now
          * only ever invoked explicitly (via the `format` Lisp primitive,
          * or vfs_mount_ramdisk()'s own deliberate fallback for the RAM
@@ -408,7 +408,7 @@ int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_
      * (arch/riscv/common/elf.c) passed sizeof(file_buf) directly, which
      * wrote one byte past the end of its buffer whenever the file being
      * read was >= that size (see B7 in
-     * plan/2026-08-07_review_and_remediation.md). Clamping here makes the
+     * plan/completed/2026-08-07_review_and_remediation.md). Clamping here makes the
      * function safe regardless of what any given caller passes. */
     uint32_t capacity = max_size - 1;
     uint32_t size = entry->file_size < capacity ? entry->file_size : capacity;
@@ -476,7 +476,7 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
 
     /* Overwriting an existing file: free its old cluster chain first so
      * the old clusters don't leak (see B8 in
-     * plan/2026-08-07_review_and_remediation.md) -- fat32_write_file()
+     * plan/completed/2026-08-07_review_and_remediation.md) -- fat32_write_file()
      * always allocated a brand new chain and pointed the entry at it
      * without ever freeing what it used to point at. */
     if (ctx.name_matched) {

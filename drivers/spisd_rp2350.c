@@ -216,7 +216,7 @@ static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
      * memory-safety issue), but a filesystem-layer bug that computes a
      * bad cluster number -- e.g. the fat_alloc_cluster() bug fixed
      * alongside this, see B9 in
-     * plan/2026-08-07_review_and_remediation.md -- could still silently
+     * plan/completed/2026-08-07_review_and_remediation.md -- could still silently
      * read/write sectors outside the mounted FAT32 volume's real bounds. */
     if (!buf || lba + count < lba || lba + count > dev->num_blocks) return -1;
 

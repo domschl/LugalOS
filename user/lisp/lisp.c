@@ -65,7 +65,7 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
          * the oldest, still-live end of it. Wrapping there would silently
          * overwrite bound primitives and the user's own definitions rather
          * than just running out cleanly (see B6 in
-         * plan/2026-08-07_review_and_remediation.md). Clamp to the last slot
+         * plan/completed/2026-08-07_review_and_remediation.md). Clamp to the last slot
          * instead: further allocations alias each other and produce wrong
          * results, but no longer corrupt the environment or earlier values. */
         if (!node_pool_exhausted_warned) {
@@ -98,7 +98,7 @@ static bool string_pool_exhausted_warned = false;
 static char *alloc_string_slot(void) {
     if (string_pool_idx >= STRING_POOL_SIZE) {
         /* Same clamp-not-wrap policy as alloc_node() (see B6 in
-         * plan/2026-08-07_review_and_remediation.md): reusing slot 0 would
+         * plan/completed/2026-08-07_review_and_remediation.md): reusing slot 0 would
          * silently corrupt whatever still-live value points at it, e.g. the
          * name of a primitive bound in global_env. */
         if (!string_pool_exhausted_warned) {
@@ -630,7 +630,7 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     return &nil_val;
 }
 
-/* Discoverability (D2/D3 in plan/2026-08-07_review_and_remediation.md): the
+/* Discoverability (D2/D3 in plan/completed/2026-08-07_review_and_remediation.md): the
  * Lisp engine is the shell's execution core, but had no way to list what's
  * actually callable short of reading the source. This walks global_env
  * directly rather than maintaining a separate hand-written list, so it can
@@ -1101,7 +1101,7 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
              * own body: (define ...) prepends onto global_env *after* this
              * lambda value has already captured whatever global_env was
              * before that happened (see B3 in
-             * plan/2026-08-07_review_and_remediation.md). Lambdas created
+             * plan/completed/2026-08-07_review_and_remediation.md). Lambdas created
              * inside another lambda's body or a `let` still get a normal
              * frozen-snapshot closure, which is correct lexical scoping. */
             lam->u.lambda.env = (env == global_env) ? NULL : env;
@@ -1142,7 +1142,7 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
              * this closure was defined at global scope -- resolve against
              * whatever global_env is *right now*, not a stale snapshot
              * (see the lambda special form above and B3 in
-             * plan/2026-08-07_review_and_remediation.md). */
+             * plan/completed/2026-08-07_review_and_remediation.md). */
             lisp_val_t *local_env = fn->u.lambda.env ? fn->u.lambda.env : global_env;
             lisp_val_t *p = fn->u.lambda.params;
             lisp_val_t *a = eval_args_head;
@@ -1171,7 +1171,7 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
  * this wrapper -- so a runaway or accidentally-nonterminating recursive
  * definition (or e.g. a `let` that calls itself) would otherwise overflow
  * the C stack directly (see A4 in
- * plan/2026-08-07_review_and_remediation.md), which on a freestanding
+ * plan/completed/2026-08-07_review_and_remediation.md), which on a freestanding
  * kernel has no guard page and no signal handler to recover from it.
  * LISP_MAX_EVAL_DEPTH (defined near the top of this file, with
  * eval_depth/eval_depth_exceeded_warned) is a conservative default, not a

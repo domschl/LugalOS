@@ -273,7 +273,7 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
                 /* Only guaranteed room for a NUL if the caller's buffer is
                  * at least 2 bytes -- a 1-byte buffer previously still got
                  * sbuf[1] written unconditionally (B13 in
-                 * plan/2026-08-07_review_and_remediation.md). */
+                 * plan/completed/2026-08-07_review_and_remediation.md). */
                 if (max_len > 1) sbuf[1] = '\0';
                 return 1;
             }
@@ -386,7 +386,7 @@ int vfs_append(const char *path, const void *buf, uint32_t len) {
 
 /* Explicit volume initialization, replacing the auto-format-on-invalid-boot-
  * sector behavior fat32_init() used to have (see B10 in
- * plan/2026-08-07_review_and_remediation.md) -- a corrupt or blank card
+ * plan/completed/2026-08-07_review_and_remediation.md) -- a corrupt or blank card
  * inserted at /sd0/ now just fails to mount instead of being silently
  * wiped; this is the only way (aside from vfs_mount_ramdisk()'s own
  * deliberate fallback for the always-starts-blank RAM disk) a volume gets

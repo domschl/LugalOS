@@ -29,7 +29,7 @@ typedef struct lisp_val {
                      * pair/int nodes, the majority of allocations, aren't
                      * each paying for 128 bytes of string capacity they
                      * never use (see V6 in
-                     * plan/2026-08-07_review_and_remediation.md). */
+                     * plan/completed/2026-08-07_review_and_remediation.md). */
         char *sym;  /* LISP_SYMBOL: same pool as str */
         struct {
             struct lisp_val *car;
@@ -47,7 +47,7 @@ typedef struct lisp_val {
                                      * time rather than a frozen snapshot,
                                      * which is what makes self-recursion
                                      * work (see B3 in
-                                     * plan/2026-08-07_review_and_remediation.md) */
+                                     * plan/completed/2026-08-07_review_and_remediation.md) */
         } lambda;
     } u;
 } lisp_val_t;
