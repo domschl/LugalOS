@@ -10,6 +10,10 @@
 #include "drivers/usb_cdc.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
+#include "fs/p9_link.h"
+#if !defined(CONFIG_BOARD_RP2350)
+#include "drivers/virtio_console.h"
+#endif
 #include "user/chibicc/include/chibicc.h"
 #include "arch/elf.h"
 #include <string.h>
@@ -623,6 +627,33 @@ static lisp_val_t *prim_p9_cat(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
+#if !defined(CONFIG_BOARD_RP2350)
+/* Node-to-node 9P (A4): fetches a file from whatever real peer is bridged
+ * onto this node's virtio-console link (drivers/virtio_console.c, A3) --
+ * unlike p9-cat/p9-loopback above, this isn't talking to this node's own
+ * local 9P server, it's talking to a genuinely different machine (see the
+ * multi-node test in tests/runner.py). QEMU-only, hence the RP2350 guard;
+ * see fs/p9_link.c's p9_link_cat() for why this is safe alongside the
+ * link's own background server role. */
+static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+
+    p9_link_t *link = virtio_console_get_link();
+    if (!link) return &false_val;
+
+    char out_buf[512];
+    memset(out_buf, 0, sizeof(out_buf));
+
+    int res = p9_link_cat(link, path, out_buf, sizeof(out_buf));
+    if (res >= 0) {
+        return make_str(out_buf);
+    }
+    return &false_val;
+}
+#endif
+
 static lisp_val_t *prim_p9_uart_send(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *payload = "SLIP_9P_UART_Test";
@@ -731,6 +762,9 @@ void lisp_init(void) {
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
     env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
     env_set(&global_env, "p9-cat", make_prim(prim_p9_cat));
+#if !defined(CONFIG_BOARD_RP2350)
+    env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
+#endif
     env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 

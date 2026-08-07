@@ -42,4 +42,14 @@ int p9_link_service(p9_link_t *link);
 void p9_link_register_background(p9_link_t *link);
 void p9_link_background_poll(void);
 
+/* Link-agnostic synchronous 9P client (A4, plan/phase5_distributed_design.md):
+ * attaches at "/", walks to `path` (split on '/'), opens it for read, reads
+ * the whole file into `out_buf`, clunks. Works over any p9_link_t, not just
+ * loopback -- e.g. a node fetching a file from whatever peer is bridged
+ * onto its virtio-console link. See fs/p9_link.c for why this is safe to
+ * use even on a link that also has a registered background server.
+ * Returns the byte count read, or -1. A non-responding peer blocks forever
+ * (matches drivers/virtio_blk.c's own busy-wait-until-done convention). */
+int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max);
+
 #endif // FS_P9_LINK_H

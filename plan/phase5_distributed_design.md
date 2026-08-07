@@ -499,6 +499,65 @@ channel — it will need rewriting once a real link exists.
 
 Fuzzing and protocol conformance live here too, against the Python peer.
 
+#### A4 completion notes (2026-08-07)
+
+Implemented and merged: genuine node-to-node 9P over a bridged wire between two heterogeneous
+QEMU architectures, satisfying **T2** — the milestone this phase's stated goal is measured
+against — without needing A3b or hardware. All three targets build clean; full `tests/runner.py`
+suite passes (82/82, RV64 + RV32 + one new multi-node test).
+
+- **The "multi-node session abstraction" turned out to need no new Python plumbing.** QEMU's own
+  socket chardev backend bridges two nodes' `virtconsole` ports directly to each other over TCP
+  (`server=on,wait=off` on one side, a bare connecting `-chardev socket,...` on the other) — no
+  host-side relay process, no new session class. `tests/runner.py`'s existing `QemuSession` already
+  supported everything needed (via A3's `extra_qemu_args`); the new test
+  (`test_9p_multinode_heterogeneous()`) just boots two independent `QemuSession`s with that flag
+  and lets QEMU do the wiring.
+- **Genuine node-to-node, not host-to-node** — the thing A3's tests deliberately didn't prove.
+  Node B (RV64 Sv39 MMU) writes a marker file to its own `/ram0` that Node A never touches
+  directly; Node A (RV32 NOMMU) fetches it via a brand new `(p9-remote-cat "<path>")` Lisp
+  primitive and the test asserts on the fetched content. Since the file only exists on B, a match
+  is only possible if the bytes genuinely crossed the wire between the two *guest kernels* — proof
+  that's stronger than A3's external-Python-client tests could offer (those talked to a single
+  node from the host; nothing here has ever proven two LugalOS instances can talk to each other).
+- **New shared client capability, not test-only scaffolding**: `p9_link_cat()`
+  (`fs/p9_link.c`/`.h`) is a link-agnostic synchronous 9P client — attach at `/`, multi-component
+  walk, open, read-loop, clunk — that works over *any* `p9_link_t`, generalizing the pattern
+  `loopback_9p_cat()` (A2) established for the loopback-only case. `(p9-remote-cat ...)` is a thin
+  Lisp wrapper calling it over `virtio_console_get_link()`; QEMU-only, guarded out on RP2350 like
+  the rest of the virtio-console surface.
+- **Asymmetric client/server roles, by convention rather than negotiation** — and why that's
+  fine. Every node still auto-registers its virtio-console link as a background *server*
+  (unchanged from A3). `p9_link_cat()` additionally lets a node act as a *client* on that same
+  link for the duration of one synchronous call. These two roles could in principle collide (a
+  reply meant for the client being misread as a fresh request by the same node's own background
+  pump) — but this kernel has no real task scheduler or interrupt-driven preemption (confirmed
+  before relying on it: `kernel/sched.c` is a bookkeeping shim, not a scheduler), so nothing can
+  run concurrently with a synchronous C function call. While `p9_link_cat()` is executing, this
+  node's own background pump provably cannot run, and the peer never originates traffic of its
+  own (it only replies), so there is no actual ambiguity for the "one node queries another" shape
+  every current test uses. A true peer-to-peer protocol, where both sides might originate
+  requests at arbitrary times, would need real tag-aware multiplexing this doesn't attempt — not
+  needed yet, and worth flagging explicitly rather than discovering by accident later.
+- **`p9_link_cat()`'s reply-wait is unbounded**, deliberately matching `drivers/virtio_blk.c`'s
+  own `virtio_blk_transfer()` precedent (busy-wait until the used ring advances, no timeout)
+  rather than inventing a new, bespoke timeout mechanism for just this one call site.
+- **`scripts/run-qemu-multinode.sh` rewritten** to bridge the real link instead of the console
+  crosswire the plan called out as stale. Node 1 (RV32) stays fully interactive on the terminal as
+  before; Node 2 (RV64) runs headless with its console piped through a FIFO so the script can feed
+  it one setup command (writing the marker file) without a fragile bash-coprocess dependency.
+  Manually verified end-to-end: piping `(p9-remote-cat "/ram0/multinode_marker.txt")` into Node
+  1's stdin returns Node 2's real marker content.
+- **Fixed TCP port (15590), not ephemeral** — matches the old script's own precedent (which used
+  4444) and is simple, but means the multi-node test can't run concurrently with another instance
+  of itself on the same host. Acceptable for a sequential CI run; flagged rather than silently
+  assumed, and worth an ephemeral-port-plus-readback fix if concurrent runs ever matter.
+- **Fuzz/conformance testing against a Python peer**, the other bullet this section names, remains
+  explicitly deferred — unchanged from A2 and A3's own notes on this. `tests/p9lib.py` (A3) is
+  exactly that Python peer's starting point; nothing in A4 changed the fuzzing scope itself, only
+  gave it a second, genuinely independent node to eventually fuzz *between* as well as a host
+  client to fuzz *with*.
+
 ### A5 — Mount table and remote namespace
 
 Not in the original Phase 5 list, but without it "9P works" never becomes "distributed namespace

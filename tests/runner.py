@@ -718,6 +718,74 @@ def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tu
             session.close()
 
 
+def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tuple[str, bool, str]:
+    """A4/T2: the milestone that satisfies this phase's stated goal -- two
+    different memory models, two different word widths, real 9P frames over
+    a real socket, no hardware required, CI-runnable. Boots two independent
+    LugalOS nodes (RV64 Sv39 MMU and RV32 NOMMU) and bridges their
+    virtio-console links directly to each other over TCP -- QEMU's own
+    socket chardev backend does the wiring natively (`server=on` on one
+    side, a bare connecting socket chardev on the other), no host-side
+    relay code needed. Node B (RV64) writes a marker file only it has;
+    Node A (RV32) fetches it via `(p9-remote-cat ...)` -- genuine node-to-
+    node traffic (proven by content only B could have produced), not
+    host-to-node like the single-node A3 tests above.
+
+    Port choice: a fixed port, matching scripts/run-qemu-multinode.sh's
+    existing precedent (which used 4444) -- simple, but means this test
+    cannot run concurrently with another instance of itself on the same
+    host. Acceptable for a sequential CI run; worth revisiting (ephemeral
+    port + readback) if that ever changes."""
+    import shutil
+
+    name = "9P Node-to-Node: RV32 NOMMU <-> RV64 MMU over Bridged VirtIO-Console (A4, T2)"
+    port = 15590
+
+    img_b = img_path.with_name("test_multinode_b_sd.img")
+    img_a = img_path.with_name("test_multinode_a_sd.img")
+    shutil.copyfile(img_path, img_b)
+    shutil.copyfile(img_path, img_a)
+
+    session_b = QemuSession(rv64_elf, img_b, "rv64")
+    session_a = QemuSession(rv32_elf, img_a, "rv32")
+    try:
+        # Node B: server role. Its virtio-console chardev listens for the
+        # bridge connection; it never initiates 9P traffic of its own.
+        session_b.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port},server=on,wait=off",
+        ])
+        ok, log = session_b.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B (RV64) failed to boot:\n{log}")
+
+        marker = "HELLO_FROM_NODE_B_A4_T2"
+        cmd = f'lisp\n(write-file "/ram0/multinode_marker.txt" "{marker}")\nexit'
+        ok, log = session_b.send_and_expect(cmd, r"=> #t", timeout=4.0)
+        if not ok:
+            return (name, False, f"Node B failed to write its marker file:\n{log}")
+
+        # Node A: client role. Dials directly into B's now-listening bridge
+        # port; from here on the two GUEST kernels talk to each other, not
+        # to the host.
+        session_a.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port}",
+        ])
+        ok, log = session_a.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node A (RV32) failed to boot:\n{log}")
+
+        cmd = 'lisp\n(p9-remote-cat "/ram0/multinode_marker.txt")\nexit'
+        ok, log = session_a.send_and_expect(cmd, re.escape(marker), timeout=5.0)
+        return (name, ok, log if not ok else "")
+    except Exception as e:
+        return (name, False, str(e))
+    finally:
+        session_a.close()
+        session_b.close()
 
 
 def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:
@@ -828,6 +896,13 @@ def main() -> int:
         _run_single(test_9p_uart_slip_link(rv32_elf, img_path, "rv32"))
     else:
         print(f"\n[!] RV32 binary not found at '{rv32_elf}'. Skipping RV32 tests.")
+
+    # 4. A4/T2: multi-node heterogeneous interconnect
+    if rv64_elf.exists() and rv32_elf.exists():
+        print("\n[Target: Multi-Node RV32 <-> RV64 Heterogeneous Interconnect]")
+        _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_path))
+    else:
+        print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
 
     duration = time.time() - start_time
     print("\n----------------------------------------------------------------------")
