@@ -402,6 +402,92 @@ De-risking sequence:
 - **A3b — demuxed shared wire.** Console and 9P interleaved on one UART. Needed for interactive
   debugging of a live node and for the single-cable RP2350 story.
 
+#### A3 completion notes (2026-08-07)
+
+Implemented and merged: the `p9_link_t` interface, `link_virtio_console` (explicitly requested
+ahead of schedule, over the plan's original "probably not worth it" framing — see below), and
+`link_uart_slip`/A3a headless mode. A3b (shared-wire demux) is **not** implemented — deliberately,
+per this section's own de-risking sequence. All three targets build clean; full `tests/runner.py`
+suite passes (81/81, RV64 + RV32 — four new tests: two per architecture).
+
+- **`p9_link_t`** landed almost exactly as specified (`fs/include/fs/p9_link.h`,
+  `fs/p9_link.c`): `name`/`poll`/`send_frame`/`recv_frame`, plus a small
+  `p9_link_service()` (recv → `p9_server_process()` → send) shared by every backend, and a
+  one-slot "background link" registry (`p9_link_register_background()` /
+  `p9_link_background_poll()`).
+- **`link_virtio_console` reprioritized ahead of A3a/A3b**, at explicit user request ("useful for
+  testing down the road"), reversing the plan's own §8 framing ("probably not worth it unless
+  demux proves genuinely painful"). In hindsight the reprioritization was the right call for a
+  reason the original framing didn't anticipate: virtio-console is a *wire physically separate
+  from the UART console*, so it needed **no RX demultiplexing at all** — the entire reason A3b
+  is high-risk (touching every keystroke on every target) simply doesn't apply to it. It was the
+  cheapest of the three backends to make available live, not the most expensive.
+  - `drivers/virtio_console.c` is a new, self-contained MMIO driver (device id 3, non-multiport:
+    RX = queue 0, TX = queue 1), modeled on `drivers/virtio_blk.c`'s style since this codebase has
+    no shared `virtio.c` infrastructure to build on. RX is a single persistent 2 KB buffer,
+    continuously drained (non-blocking) into an 8 KB software byte ring and re-posted; TX is
+    synchronous/polling, exactly like `virtio_blk_transfer()`. No feature negotiation, matching
+    `virtio_blk`'s existing precedent of accepting host defaults.
+  - **Framing choice**: plain length-prefixed (9P's own 4-byte size header is sufficient framing
+    over a reliable, ordered virtqueue byte stream) — deliberately *not* SLIP. SLIP's
+    escaping exists to let a 9P frame share a wire with non-9P traffic and to recover
+    synchronization on a possibly-lossy link; virtio-console is neither shared nor lossy, so SLIP
+    would only add overhead.
+  - **Genuinely live, not a special build**: rather than requiring a dedicated headless build or
+    boot flag, `virtio_console_init()` (called from `kernel/main.c`, QEMU targets only) registers
+    itself as the background link, and `drivers/uart_16550.c`'s `uart_getc()` busy-wait loop
+    (`while (!uart_has_char())`) now also calls `p9_link_background_poll()` — the same spot
+    `usb_cdc_task()` was already pumped from. This kernel has no real task scheduler (confirmed
+    before writing this: `kernel/sched.c` is a bookkeeping shim, not a scheduler — see A1/A2's own
+    notes on the single-call-stack model), so this busy-wait hook is the only place such a
+    background pump *could* run without new concurrency machinery. Net effect: a host process can
+    attach, walk, and read real files over virtio-console **while the interactive shell is sitting
+    at its prompt**, with zero risk to the console.
+  - Verified end-to-end with an external process: `tests/p9lib.py` (a new, independent Python 9P
+    client — pack/unpack only, no LugalOS C code) connects to the chardev's unix socket and reads
+    `/sd0/system/init.lisp` via `Tversion`/`Tattach("/")`/`Twalk`(3 components)/`Topen`/`Tread`/
+    `Tclunk`, asserting on the real byte-exact content.
+- **`link_uart_slip` (A3a)** reuses `drivers/uart_net.c`'s existing, already-correct
+  `slip_encode()`/`slip_decode()` unchanged: an incremental accumulator collects raw bytes as they
+  arrive and hands the whole thing to `slip_decode()` in one call the instant a `SLIP_END` closes a
+  frame, rather than re-implementing incremental unescaping. Exposed as a `p9_link_t` via
+  `uart_slip_get_link()`. `kernel/shell.c` gained a `p9serve` command that blocks forever servicing
+  this link — genuinely headless (matches A3a's "console disabled" framing exactly: once invoked,
+  only a reset gets the console back), and simpler than plumbing a build-time `CONFIG_*` flag
+  through a new CMake target for the same effect.
+- **Test-harness discovery, not a driver bug**: the first `p9serve` smoke test, run over QEMU's
+  usual `-nographic` stdio console, failed every single time with a generic "Invalid 9P frame"
+  error — bytes were vanishing from every request. Root cause, confirmed by instrumenting
+  `p9_server_process()` temporarily: QEMU's stdio console/monitor multiplexer treats byte `0x01`
+  (Ctrl-A) as its own escape character and swallows it (and whatever byte follows) before it ever
+  reaches the guest UART — completely unrelated to SLIP, and not something any kernel-side fix can
+  address, since the byte never arrives. Any binary 9P frame will eventually contain `0x01` (e.g.
+  as a tag's low byte, as it did here). This is a real constraint on QEMU-based testing of raw UART
+  traffic that happens to share stdio with the console, not a limitation of `p9serve` itself — a
+  physical UART/CP2102 wire has no such multiplexer. Fixed for testing purposes (not a code
+  change) by giving the guest's serial port its own `-serial unix:...` chardev socket (with
+  `-monitor none` to free stdio entirely) instead of the implicit stdio mux; `tests/p9lib.py` grew
+  SLIP-framing support (`framing="slip"`) alongside virtio-console's raw framing so the same client
+  library drives both.
+- **A3b (RX demux) deliberately not implemented.** Its cost/benefit is unchanged from the
+  original framing — highest-risk item in Track A because a regression breaks the console on all
+  three targets simultaneously — and `link_virtio_console` now covers the "live 9P wire during an
+  interactive QEMU session" use case A3b would have enabled anyway, without touching the console
+  path at all. Genuinely still needed eventually for the single-cable RP2350 story (a real
+  CP2102/UART deployment has no separate virtio-console channel to fall back on), but not blocking
+  anything in this phase.
+- **`link_usb_cdc` (RP2350's ACM1/`/dev/ttyACM1`) deliberately not implemented.** Confirmed before
+  starting: `drivers/usb_cdc.c` already declares dual CDC-ACM interfaces in its descriptor table,
+  but only ACM0 (the console, EP2) has any runtime data path; ACM1/EP4 has zero code behind it —
+  `usb_cdc_write_net()`/`usb_cdc_read_net()` are pure stubs that silently forward to
+  `uart_putc()`/`uart_getc()` today. Building it means writing an EP4 ring/pump from scratch
+  (mirroring EP2's ~150 lines) for RP2350-only, no-CI-value hardware support. Not requested and out
+  of scope for this pass; a real candidate for whenever RP2350 hardware-in-the-loop testing (M5)
+  is actually being pursued.
+- **Fuzz/conformance testing** (the plan's other A2-adjacent bullet) still belongs to A4/T1's
+  Python peer, unchanged from A2's own completion notes — A3 gave that peer a real wire to exist
+  on, but didn't change the fuzzing scope itself.
+
 ### A4 — Multi-node test harness
 
 `tests/runner.py` currently spawns one QEMU per architecture, sequentially, with one chardev. It

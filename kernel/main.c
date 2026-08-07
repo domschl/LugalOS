@@ -12,7 +12,12 @@
 #include "arch/vmm.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
+#include "fs/p9_link.h"
 #include "lisp.h"
+
+#if !defined(CONFIG_BOARD_RP2350)
+#include "drivers/virtio_console.h"
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
@@ -87,6 +92,11 @@ void kernel_main(void) {
     vmm_init();
     ipc_init();
     vfs_server_init();
+#if !defined(CONFIG_BOARD_RP2350)
+    if (virtio_console_init() == 0) {
+        p9_link_register_background(virtio_console_get_link());
+    }
+#endif
     sched_init();
     shell_init();
     lisp_init();

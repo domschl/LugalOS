@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -43,7 +44,7 @@ class QemuSession:
             except Exception:
                 break
 
-    def start(self) -> None:
+    def start(self, extra_qemu_args: list[str] | None = None) -> None:
 
         qemu_bin = "qemu-system-riscv64" if "64" in self.arch else "qemu-system-riscv32"
         cmd: list[str] = [
@@ -56,6 +57,8 @@ class QemuSession:
             "-device", "virtio-blk-device,drive=hd0",
             "-kernel", str(self.elf_path),
         ]
+        if extra_qemu_args:
+            cmd.extend(extra_qemu_args)
 
         self.process = subprocess.Popen(
             cmd,
@@ -579,6 +582,140 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
     return results
 
 
+def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """A3: proves the 9P server is reachable over a real, separate wire
+    (drivers/virtio_console.c) by an external host process -- not any of
+    LugalOS's own in-kernel 9P client code (drivers/loopback_net.c /
+    drivers/uart_net.c). Boots its own dedicated QEMU instance with a
+    virtio-serial chardev backed by a unix socket, connects tests/p9lib.py's
+    independent Python 9P client to it, and reads a real pre-existing file
+    (/sd0/system/init.lisp) end to end: Tversion, Tattach("/"), a
+    multi-component Twalk, Topen, Tread, Tclunk."""
+    import shutil
+    import tempfile
+    import p9lib
+
+    arch_img = img_path.with_name(f"test_{arch_name}_9p_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "p9c.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        try:
+            session.start(extra_qemu_args=[
+                "-device", "virtio-serial-device",
+                "-device", "virtconsole,chardev=p9c",
+                "-chardev", f"socket,id=p9c,path={sock_path},server=on,wait=off",
+            ])
+            # Wait for boot (also the shell prompt, so the guest is fully up
+            # and virtio_console_init() has already run by the time we dial).
+            ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+            if not ok:
+                return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", False, log)
+
+            last_err = ""
+            for _ in range(20):  # the chardev socket file can lag slightly behind boot output
+                try:
+                    client = p9lib.P9Client.connect_unix(sock_path, timeout=2.0)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                    last_err = str(e)
+                    time.sleep(0.2)
+            else:
+                return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", False,
+                        f"could not connect to {sock_path}: {last_err}")
+
+            try:
+                data = client.cat("/sd0/system/init.lisp")
+            finally:
+                client.close()
+
+            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
+            return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", ok, log)
+        except Exception as e:
+            return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", False, str(e))
+        finally:
+            session.close()
+
+
+def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """A3a: proves the headless UART/SLIP 9P mode (kernel/shell.c's `p9serve`
+    command) works over a real wire. Unlike the virtio-console test above,
+    this can't use QemuSession's stdio-multiplexed console at all: QEMU's
+    `-nographic` stdio backend intercepts byte 0x01 (Ctrl-A) as its own
+    console/monitor escape character and never forwards it to the guest --
+    which any binary 9P frame will eventually contain (e.g. as a tag byte).
+    So this boots with the guest's serial port redirected to its own unix
+    socket chardev (`-serial unix:...`) instead of stdio, with `-monitor
+    none` freeing stdio entirely -- exactly how a real UART/CP2102 wire
+    behaves (no escape-character interception), and sidesteps the
+    stdio-mux issue rather than working around it. Speaks plain text
+    ("p9serve\\n") to trigger headless mode, then switches the same
+    connection to SLIP-framed binary 9P."""
+    import shutil
+    import tempfile
+    import p9lib
+
+    arch_img = img_path.with_name(f"test_{arch_name}_9p_uart_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    name = "9P Server Reachable Over UART/SLIP Link (A3a headless p9serve, external client)"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "uart9p.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        raw_sock: socket.socket | None = None
+        try:
+            session.start(extra_qemu_args=[
+                "-serial", f"unix:{sock_path},server=on,wait=off",
+                "-monitor", "none",
+            ])
+
+            last_err = ""
+            for _ in range(30):
+                try:
+                    raw_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    raw_sock.settimeout(2.0)
+                    raw_sock.connect(sock_path)
+                    break
+                except OSError as e:
+                    last_err = str(e)
+                    time.sleep(0.2)
+            if raw_sock is None:
+                return (name, False, f"could not connect to {sock_path}: {last_err}")
+
+            time.sleep(2.5)  # let boot finish
+            raw_sock.settimeout(0.3)
+            try:
+                while raw_sock.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
+
+            raw_sock.settimeout(5.0)
+            raw_sock.sendall(b"p9serve\n")
+            time.sleep(0.5)
+            raw_sock.settimeout(0.3)
+            try:
+                while raw_sock.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
+
+            raw_sock.settimeout(5.0)
+            client = p9lib.P9Client(raw_sock, framing="slip")
+            data = client.cat("/sd0/system/init.lisp")
+
+            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
+            return (name, ok, log)
+        except Exception as e:
+            return (name, False, str(e))
+        finally:
+            if raw_sock:
+                raw_sock.close()
+            session.close()
 
 
 
@@ -638,6 +775,16 @@ def main() -> int:
     passed_tests = 0
     start_time = time.time()
 
+    def _run_single(result: tuple[str, bool, str]) -> None:
+        nonlocal total_tests, passed_tests
+        name, ok, log = result
+        total_tests += 1
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{log}")
+
     # 1. Host Disk Inspection
     print("\n[Host FAT32 Storage Inspection]")
     ok, info = test_host_fat32_image(img_path)
@@ -659,6 +806,9 @@ def main() -> int:
                 print(f"  [PASS] {name}")
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
+
+        _run_single(test_9p_virtio_link(rv64_elf, img_path, "rv64"))
+        _run_single(test_9p_uart_slip_link(rv64_elf, img_path, "rv64"))
     else:
         print(f"\n[!] RV64 binary not found at '{rv64_elf}'. Skipping RV64 tests.")
 
@@ -673,6 +823,9 @@ def main() -> int:
                 print(f"  [PASS] {name}")
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
+
+        _run_single(test_9p_virtio_link(rv32_elf, img_path, "rv32"))
+        _run_single(test_9p_uart_slip_link(rv32_elf, img_path, "rv32"))
     else:
         print(f"\n[!] RV32 binary not found at '{rv32_elf}'. Skipping RV32 tests.")
 

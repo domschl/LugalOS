@@ -27,10 +27,18 @@ bool uart_has_char(void) {
 }
 
 #include "drivers/usb_cdc.h"
+#include "fs/p9_link.h"
 
+/* p9_link_background_poll() opportunistically services the virtio-console
+ * 9P link (drivers/virtio_console.c, A3) from inside this busy-wait -- the
+ * same spot usb_cdc_task() is already pumped from. It's a no-op unless a
+ * background link was registered, and never blocks, so this costs nothing
+ * when idle and needs no real task scheduler (this kernel doesn't have
+ * one; see the A3 completion notes in plan/phase5_distributed_design.md). */
 char uart_getc(void) {
     while (!uart_has_char()) {
         usb_cdc_task();
+        p9_link_background_poll();
     }
     return (char)uart_base[UART_RBR];
 }

@@ -129,6 +129,7 @@ set(SOURCES
     fs/fat32.c
     fs/vfs_server.c
     fs/9p.c
+    fs/p9_link.c
     libc/string.c
     user/lisp/lisp.c
     user/lisp/lisp_compile.c
@@ -143,8 +144,8 @@ set(SOURCES
 if(LUGALOS_TARGET STREQUAL "RP2350")
     set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c)
 else()
-    # QEMU targets: VirtIO block device + 16550 UART
-    list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c)
+    # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
+    list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
 endif()
 
 # Architecture-specific memory management source

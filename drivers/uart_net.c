@@ -8,6 +8,83 @@ void uart_net_init(void) {
     printk("[UART 9P] Universal Serial Network Transport Engine (SLIP RFC 1055) Online.\n");
 }
 
+/* --- link_uart_slip (A3) ---
+ * Accumulates raw (still SLIP-escaped) bytes as they arrive; a SLIP_END
+ * marks the end of a frame, at which point the accumulated bytes (which
+ * never contain SLIP_END themselves, by construction) are handed to the
+ * existing, already-tested slip_decode() as a single call -- reusing it
+ * exactly as-is rather than re-implementing incremental unescaping. */
+#define UART_SLIP_RAW_CAP (P9_MAX_MSIZE * 2) // SLIP escaping can double frame size worst-case
+
+typedef struct {
+    uint8_t raw[UART_SLIP_RAW_CAP];
+    uint32_t raw_len;
+    uint8_t frame[P9_MAX_MSIZE];
+    uint32_t frame_len;
+    bool frame_ready;
+} uart_slip_ctx_t;
+
+static uart_slip_ctx_t g_uart_slip_ctx;
+
+static int uart_slip_poll(p9_link_t *link) {
+    (void)link;
+    uart_slip_ctx_t *ctx = &g_uart_slip_ctx;
+    if (ctx->frame_ready) return 1;
+
+    while (uart_has_char()) {
+        uint8_t c = (uint8_t)uart_getc(); // won't block: uart_has_char() just confirmed a byte is ready
+        if (c == SLIP_END) {
+            if (ctx->raw_len == 0) continue; // leading/duplicate delimiter
+            int n = slip_decode(ctx->raw, ctx->raw_len, ctx->frame, sizeof(ctx->frame));
+            ctx->raw_len = 0;
+            if (n > 0) {
+                ctx->frame_len = (uint32_t)n;
+                ctx->frame_ready = true;
+                return 1;
+            }
+            continue; // empty/undersized decode; keep listening for the next frame
+        }
+        if (ctx->raw_len < UART_SLIP_RAW_CAP) {
+            ctx->raw[ctx->raw_len++] = c;
+        } else {
+            ctx->raw_len = 0; // overflow: drop and resync on the next SLIP_END
+        }
+    }
+    return ctx->frame_ready ? 1 : 0;
+}
+
+static int uart_slip_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
+    (void)link;
+    uart_slip_ctx_t *ctx = &g_uart_slip_ctx;
+    if (!ctx->frame_ready) return -1;
+    uint32_t n = (ctx->frame_len < max_len) ? ctx->frame_len : max_len;
+    memcpy(buf, ctx->frame, n);
+    ctx->frame_ready = false;
+    ctx->frame_len = 0;
+    return (int)n;
+}
+
+static int uart_slip_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+    (void)link;
+    static uint8_t enc[UART_SLIP_RAW_CAP];
+    int n = slip_encode(buf, len, enc, sizeof(enc));
+    if (n < 0) return -1;
+    for (int i = 0; i < n; i++) uart_putc((char)enc[i]);
+    return (int)len;
+}
+
+static p9_link_t g_uart_slip_link = {
+    .name = "uart-slip",
+    .poll = uart_slip_poll,
+    .send_frame = uart_slip_send_frame,
+    .recv_frame = uart_slip_recv_frame,
+    .ctx = NULL,
+};
+
+p9_link_t *uart_slip_get_link(void) {
+    return &g_uart_slip_link;
+}
+
 int slip_encode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max) {
     if (!src || !dst || dst_max < 2) return -1;
 

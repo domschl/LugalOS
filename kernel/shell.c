@@ -5,7 +5,9 @@
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/uart.h"
+#include "drivers/uart_net.h"
 #include "fs/vfs.h"
+#include "fs/p9_link.h"
 #include "arch/elf.h"
 #include "chibicc.h"
 #include "lisp.h"
@@ -65,6 +67,7 @@ static void cmd_help(void) {
     printk("  e [file]        - Launch Emacs-style full-screen editor\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
+    printk("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -85,6 +88,23 @@ static void cmd_uname(void) {
     printk("Memory Mode: Sv39 Virtual Memory Page Tables\n");
 #endif
     printk("Namespace: Universal Path Resolver (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
+}
+
+/* A3a "headless" 9P mode (plan/phase5_distributed_design.md): dedicates
+ * this UART entirely to SLIP-framed 9P traffic and never returns to the
+ * shell. This is the low-risk way to get a real 9P wire over a plain UART
+ * (QEMU serial, RP2350 UART, a CP2102 dongle) without the RX
+ * demultiplexing A3b would need to share the wire with the interactive
+ * console -- that demux is deliberately deferred (see the A3 completion
+ * notes). Only reachable by explicit user command; a reset is the only way
+ * back. */
+static void cmd_p9serve(void) {
+    printk("\n[9P] Entering headless UART/SLIP 9P server mode -- this session will not\n");
+    printk("     return to the shell. Reset the device to get the console back.\n\n");
+    p9_link_t *link = uart_slip_get_link();
+    for (;;) {
+        p9_link_service(link);
+    }
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -164,6 +184,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lisp") == 0) {
         lisp_repl();
+        return;
+    } else if (strcmp(cmd_line, "p9serve") == 0) {
+        cmd_p9serve();
         return;
     }
 
