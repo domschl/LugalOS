@@ -1,6 +1,6 @@
 # LugalOS Review & Remediation Plan
 
-> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0 and Phase 1 complete)
+> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, and 2 complete)
 > **Scope**: Vision/implementation consistency, architecture, bug hunt, test coverage, documentation.
 > **Baseline**: commit `b133833`, RV64 (Sv39 build) and RV32 (NOMMU build) verified live under QEMU on macOS.
 >
@@ -13,7 +13,7 @@
 |---|---|
 | **Phase 0 — Make the tests able to fail** | ✅ **Complete** (see [§7 Phase 0](#phase-0--make-the-tests-able-to-fail) and [§9](#9-phase-0-completion-notes)) |
 | **Phase 1 — Stop the crashes and corruption** | ✅ **Complete** (see [§7 Phase 1](#phase-1--stop-the-crashes-and-corruption) and [§10](#10-phase-1-completion-notes)) |
-| Phase 2 — Make the Lisp engine correct | Not started |
+| **Phase 2 — Make the Lisp engine correct** | ✅ **Complete** (see [§7 Phase 2](#phase-2--make-the-lisp-engine-correct) and [§11](#11-phase-2-completion-notes)) |
 | Phase 3 — Filesystem integrity | Not started |
 | Phase 4 — Align the docs with reality | Not started |
 | Phase 5 — Close the vision gaps | Not started |
@@ -429,20 +429,37 @@ Phase 1.5 adds permanent regression tests for them).
 compiler warnings.** See [§10](#10-phase-1-completion-notes) for the full list of files touched,
 the design reasoning for each fix class, and what was deliberately left out of scope.
 
-### Phase 2 — Make the Lisp engine correct
+### Phase 2 — Make the Lisp engine correct ✅ COMPLETE
 
-- [ ] **2.1** Implement `(define (fn args...) body...)` desugaring to `lambda`. *(B4)*
-- [ ] **2.2** Fix recursion: bind the name before evaluating the lambda, or make closures capture
-      `&global_env` indirectly. *(B3)*
-- [ ] **2.3** Make `=` compare strings and symbols. *(B5)*
-- [ ] **2.4** Then verify `init.lisp`'s RAMDisk branch, and bound-check `vfs_mount_ramdisk`
-      against the device's real capacity. *(B5 consequence)*
-- [ ] **2.5** Evaluate all body expressions in a lambda, not just the first
-      (`user/lisp/lisp.c:919`).
-- [ ] **2.6** Shrink `lisp_val_t`: move strings to a separate interned pool so cons cells are
-      ~16 B. Recovers most of the 868 KB. *(V6)*
-- [ ] **2.7** Add a `(help)` primitive listing all bound globals; extend `cmd_help`. *(D2, D3)*
-- [ ] **2.8** Add a recursion-depth counter to `lisp_eval`. *(A4)*
+- [x] **2.1** Implement `(define (fn args...) body...)` desugaring to `lambda`. *(B4)*
+- [x] **2.2** Fix recursion: closures created directly in the global scope now resolve against the
+      *live* `global_env` at call time (a `NULL` sentinel in `lambda.env`) instead of a frozen
+      snapshot captured before their own binding existed. *(B3)*
+- [x] **2.3** Make `=` compare strings and symbols (in addition to ints). *(B5)*
+- [x] **2.4** Added `ramdisk_max_blocks()` and clamp `vfs_mount_ramdisk()` against it; verified
+      `init.lisp`'s RAMDisk branch now takes the correct arch-specific path now that `=` compares
+      strings correctly. *(B5 consequence)*
+- [x] **2.5** Lambda/function bodies are now a list of forms evaluated in sequence (like `begin`),
+      not just the first expression. *(`user/lisp/lisp.c`)*
+- [x] **2.6** Moved `LISP_STRING`/`LISP_SYMBOL` text out of the node union into a separate interned
+      string pool; `lisp_val_t` shrank from 136 B to 32 B. Sized the string pool at
+      `NODE_POOL_SIZE / 2` rather than 1:1 with node_pool — see
+      [§11.2](#112-26-the-actual-memory-savings-achieved) for why, and for the real (more modest
+      than "most of 868 KB") number achieved. *(V6)*
+- [x] **2.7** Added a `(help)` Lisp primitive that walks `global_env` directly (so it can't drift
+      out of sync the way a hand-maintained list would) and a pointer to it from the shell's
+      `help` command. *(D2, D3)*
+- [x] **2.8** Added an evaluation-depth guard: `lisp_eval()` is now a thin wrapper around the
+      renamed `lisp_eval_step()` that counts nesting depth and aborts cleanly past
+      `LISP_MAX_EVAL_DEPTH` (100, a conservative unprofiled default) instead of overflowing the C
+      stack. *(A4)*
+
+**Result: 69/69 passing on both RV64 and RV32 (up from 55/55 — 8 new Phase 2 regression tests,
+covering B3, B4, B5, the multi-body fix, the depth guard, and `(help)`), all three targets build
+clean with no new warnings.** While adding the `(help)` regression test, found and fixed an
+additional latent bug in the Phase 0 test-harness echo-stripping itself (not in LugalOS) — see
+[§11.3](#113-a-test-harness-bug-found-while-testing-27). Full file list, design reasoning, and the
+memory-savings numbers are in [§11](#11-phase-2-completion-notes).
 
 ### Phase 3 — Filesystem integrity
 
@@ -684,3 +701,93 @@ python3 tests/runner.py   # 55 / 55 Tests PASSED
 
 No new compiler warnings on any of the three targets (same 4 pre-existing chibicc
 `-Wmissing-field-initializers` warnings and the pre-existing RWX-segment linker warning).
+
+---
+
+## 11. Phase 2 completion notes
+
+### 11.1 Files touched
+
+| File | Change |
+|---|---|
+| `user/lisp/include/lisp.h` | `lisp_val_t.u.str`/`.u.sym` changed from inline `char[128]`/`char[32]` to `char *` (pointers into the new string pool); `lambda.body` is now documented as a list of forms; `lambda.env` documents the `NULL` sentinel |
+| `user/lisp/lisp.c` | String pool (`alloc_string_slot`); `make_str`/`make_sym` allocate from it; `prim_eq` compares strings/symbols; `define` desugars `(name arg...)` to a `lambda` and applies the same env-sentinel rule as the `lambda` special form; `lambda` special form captures the whole body list, not just the first form, and stores `NULL` for globally-scoped closures; the lambda-call site evaluates all body forms in sequence and resolves a `NULL` closure env against the live `global_env`; `lisp_eval` renamed to `lisp_eval_step` with a new public `lisp_eval` wrapper enforcing `LISP_MAX_EVAL_DEPTH`; added `prim_help` and its registration |
+| `drivers/include/drivers/block.h`, `drivers/ramdisk.c` | Added `ramdisk_max_blocks()`, exposing the driver's real compile-time capacity |
+| `fs/vfs_server.c` | `vfs_mount_ramdisk()` clamps the requested size against `ramdisk_max_blocks()` and warns instead of silently accepting an oversized request |
+| `kernel/shell.c` | `cmd_help()` now mentions `(help)` |
+| `tests/runner.py` | Added 8 permanent regression tests (B3, B4, B5, multi-body lambda, depth guard, `(help)` ×2 — Lisp-level and shell-level); fixed a latent echo-stripping bug in `_strip_echo` found while adding the `(help)` test (see [11.3](#113-a-test-harness-bug-found-while-testing-27)) |
+
+### 11.2 2.6: the actual memory savings achieved
+
+The original review's V6 finding described the *combined* Lisp (557 KB) and chibicc (311 KB) AST
+node pools as "868 KB, 48% of BSS," and Phase 2's plan item said shrinking `lisp_val_t` would
+"recover most of the 868 KB." That framing turned out to be optimistic once the actual tradeoff was
+worked through, and it's worth being precise about what was and wasn't achievable here rather than
+letting the earlier estimate stand uncorrected.
+
+**What changed:** `lisp_val_t` shrank from 136 B (dominated by the inline 128-byte `str[128]`
+field, paid by *every* node regardless of whether it's a string, a pair, or an int) to 32 B
+(dominated by the 3-pointer lambda-closure member). This only reduces memory if the separate string
+pool is smaller than `node_pool` — sizing them 1:1 would reserve a full 128-byte slot for every
+possible allocation exactly as before, yielding zero net savings (in fact slightly worse, from
+added pointer/padding overhead). So the string pool was deliberately sized at `NODE_POOL_SIZE / 2`
+(2048 slots on QEMU targets), not `NODE_POOL_SIZE`.
+
+**Why not smaller, for bigger savings:** `env_set()` — called on *every* `define`, every `let`
+binding, and every function call's parameter binding, not just once per unique name — allocates one
+symbol via `make_sym()` per call. That makes symbol/string allocations a substantial, roughly
+constant fraction of total node allocations in this evaluator's actual usage pattern (not just a
+rare edge case), so shrinking the string pool much further risked making long interactive sessions
+hit string-pool exhaustion sooner than they used to hit node-pool exhaustion — a real regression in
+practical capacity, even though (thanks to Phase 1's clamp-not-wrap fix) the failure mode would be
+"aliased/wrong output," not a crash.
+
+**Measured result** (RV64, `riscv64-elf-nm --size-sort -S`):
+
+| | Before | After |
+|---|---:|---:|
+| Lisp `node_pool` | 557,056 B (4096 × 136 B) | 131,072 B (4096 × 32 B) |
+| Lisp `string_pool` | *(n/a, inline)* | 262,144 B (2048 × 128 B) |
+| **Lisp engine total** | **557,056 B** | **393,216 B** |
+
+**Net savings: 163,840 B (160 KB)**, confirmed by total kernel BSS dropping by exactly that amount
+(1,789,952 B → 1,626,112 B). That's real, but it's roughly 19% of the combined 868 KB figure, not
+"most" of it — the other ~700 KB is chibicc's separate `node_pool`/`obj_pool`/`type_pool`/etc.
+(311 KB) plus the 512 KB `ramdisk_storage` array, neither of which this phase touched (chibicc's
+pools are a different struct with a different, already-reasonably-sized `Node`/`Obj`/`Type` layout
+— not dominated by an oversized inline string buffer the way `lisp_val_t` was — so the same fix
+doesn't apply there in the same way; `ramdisk_storage` is a RAM-backed disk image, sized by design,
+not a node pool). The `-Os` compiler-flag lever noted in the original review (measured at the time
+as text −17%/data −48%) remains a separate, larger, and still-untaken opportunity — it wasn't part
+of this phase's scope (Lisp engine correctness) and changes CMake defaults project-wide rather than
+one subsystem, so it's left as a deliberate follow-up rather than folded in here.
+
+### 11.3 A test-harness bug found while testing 2.7
+
+Adding the `(help)` regression test exposed a real bug in Phase 0's `_strip_echo()` (see
+[§9](#9-phase-0-completion-notes)), not in LugalOS itself. `_strip_echo` used `re.sub(pattern, "",
+text)` with no `count` limit, which strips *every* occurrence of the sent command text from the
+captured output, not just the actual keystroke echo. That's fine for a long or unusual command
+(unlikely to recur verbatim in real output), but the shell-level test sent the short, common command
+`"help"` — and the shell's own `(help)` mention in its command list legitimately contains "help" as
+a substring, so the global substitution silently deleted that real, later occurrence along with the
+actual echo, and the test's `\(help\)` pattern could no longer match. Fixed by adding `count=1`:
+since `_drain()` guarantees the buffer is empty immediately before the command is written, the
+*first* occurrence of the command text in the accumulated buffer is always the genuine echo, and
+only that one needs to be (and now is) removed. Re-verified this doesn't weaken the Phase 0
+tautology guarantees by re-running the original bogus-assertion, real-evaluation, and
+echo-only-marker probes from §9.2 against the patched harness — all three still behave correctly.
+
+### 11.4 Build verification
+
+All three targets rebuilt clean from scratch with Phase 2 changes applied:
+
+```bash
+rm -rf build/rv64 build/rv32 build/rp2350
+cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake && ninja -C build/rv64
+cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake && ninja -C build/rv32
+cmake -B build/rp2350 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake -DLUGALOS_TARGET=RP2350 && ninja -C build/rp2350
+python3 tests/runner.py   # 69 / 69 Tests PASSED
+```
+
+No new compiler warnings on any of the three targets.

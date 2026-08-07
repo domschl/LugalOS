@@ -37,3 +37,7 @@ static block_dev_t ramdisk_device = {
 block_dev_t *ramdisk_get_device(void) {
     return &ramdisk_device;
 }
+
+uint32_t ramdisk_max_blocks(void) {
+    return RAMDISK_NUM_BLOCKS;
+}

@@ -88,12 +88,20 @@ class QemuSession:
         normalized to '\\r\\n'), so the literal command text is always the
         first thing to appear -- and an expected_pattern that happens to be a
         substring of the command itself would otherwise match its own echo
-        instead of any real response from the guest."""
+        instead of any real response from the guest.
+
+        count=1 matters: _drain() guarantees the buffer is empty right
+        before we write the command, so the *first* occurrence of the
+        command text is always the actual echo -- but a short, common
+        command (e.g. "help") can legitimately recur later in real output
+        (e.g. inside "(help)"). Stripping every occurrence, not just the
+        first, silently deleted that later legitimate text too and broke
+        matching against it."""
         if not command:
             return text
         escaped_lines = [re.escape(line) for line in command.split("\n")]
         echo_pattern = r"\r?\n".join(escaped_lines)
-        return re.sub(echo_pattern, "", text)
+        return re.sub(echo_pattern, "", text, count=1)
 
     def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0) -> tuple[bool, str]:
         if not self.process or not self.process.stdin:
@@ -389,6 +397,81 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         cmd_overflow = "ls " + " ".join(["a"] * 160) + "\n(+ 3 3)"
         ok, log = session.send_and_expect(cmd_overflow, r"=> 6", timeout=4.0)
         results.append(("Shell Command-Line Overflow Rejection (no crash on long input, B2)", ok, log if not ok else ""))
+
+        # 17. Regression: self-recursion via (define name (lambda ...)) (B3,
+        # see plan/2026-08-07_review_and_remediation.md). The lambda used to
+        # capture a frozen snapshot of the environment *before* its own
+        # binding was added, so it could never see itself.
+        cmd_recursion = (
+            "lisp\n"
+            "(define f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))\n"
+            "(f 5)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_recursion, r"=> 120", timeout=5.0)
+        results.append(("Lisp Self-Recursion via (define name (lambda ...)) (B3)", ok, log if not ok else ""))
+
+        # 18. Regression: (define (fn args...) body...) function-signature
+        # form (B4). This is the exact factorial example from the README
+        # that previously produced "Unbound symbol" errors instead of 720.
+        cmd_define_fn_form = (
+            "lisp\n"
+            "(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))\n"
+            "(factorial 6)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_define_fn_form, r"=> 720", timeout=5.0)
+        results.append(("Lisp (define (fn args) body) Function-Signature Form (B4)", ok, log if not ok else ""))
+
+        # 19. Regression: = must actually differentiate string content, not
+        # just always return the same answer (B5). Nested if makes a single
+        # assertion catch both "same strings compare equal" and "different
+        # strings compare unequal" -- a broken always-true or always-false
+        # implementation would fail this even though a weaker "=> #t appears
+        # somewhere" check would not.
+        cmd_str_eq = (
+            "lisp\n"
+            "(if (= \"abc\" \"abc\") (if (= \"abc\" \"xyz\") 'both_wrong 'correct) 'first_wrong)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_str_eq, r"=> correct", timeout=4.0)
+        results.append(("Lisp String Equality Correctly Differentiates via = (B5)", ok, log if not ok else ""))
+
+        # 20. Regression: a lambda/function body of multiple forms must
+        # evaluate all of them in sequence (like `begin`), not silently
+        # drop everything after the first.
+        cmd_multi_body = (
+            "lisp\n"
+            "(define (multi x) (display \"multi_body_side_effect\\n\") (* x 2))\n"
+            "(multi 21)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_multi_body, r"multi_body_side_effect.*=> 42", timeout=4.0)
+        results.append(("Lisp Multi-Body Lambda Evaluates All Forms In Sequence", ok, log if not ok else ""))
+
+        # 21. Regression: a runaway/non-terminating recursive definition
+        # must be stopped by the evaluation-depth guard (A4) instead of
+        # overflowing the C stack. The trailing "(+ 5 5)" check on the same
+        # session proves the shell survived and is still evaluating
+        # correctly afterward, not just that it failed to print a fault
+        # banner.
+        cmd_depth_guard = (
+            "lisp\n"
+            "(define (loop n) (loop (+ n 1)))\n"
+            "(loop 0)\n"
+            "(+ 5 5)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_depth_guard, r"=> 10", timeout=5.0)
+        results.append(("Lisp Recursion Depth Guard (no crash/hang on runaway recursion, A4)", ok, log if not ok else ""))
+
+        # 22. Discoverability: the (help) Lisp primitive lists bound globals
+        # (D2/D3), and the POSIX-shell `help` command points to it.
+        ok, log = session.send_and_expect("lisp\n(help)\nexit", r"Bound Globals.*primitive", timeout=4.0)
+        results.append(("Lisp (help) Primitive Lists Bound Globals (D2/D3)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("help", r"\(help\)", timeout=3.0)
+        results.append(("Shell help Command Mentions Lisp (help) Primitive (D2/D3)", ok, log if not ok else ""))
 
 
     finally:

@@ -64,6 +64,7 @@ static void cmd_help(void) {
     printk("  e [file]        - Launch Emacs-style full-screen editor\n");
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
+    printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
 

@@ -85,7 +85,16 @@ int vfs_mount_ramdisk(int size_kb) {
     block_dev_t *ram_dev = ramdisk_get_device();
     if (ram_dev) {
         if (size_kb > 0) {
-            ram_dev->num_blocks = (size_kb * 1024) / ram_dev->block_size;
+            uint32_t requested_blocks = ((uint32_t)size_kb * 1024) / ram_dev->block_size;
+            uint32_t max_blocks = ramdisk_max_blocks();
+            if (requested_blocks > max_blocks) {
+                uint32_t max_kb = (max_blocks * ram_dev->block_size) / 1024;
+                printk("[VFS Server] Warning: requested /ram0/ size %d KB exceeds physical "
+                       "RAMDisk capacity (%u KB); clamping.\n", size_kb, (unsigned int)max_kb);
+                requested_blocks = max_blocks;
+                size_kb = (int)max_kb;
+            }
+            ram_dev->num_blocks = requested_blocks;
         }
         if (fat32_init(&g_fat32_ram, ram_dev) != 0 || g_fat32_ram.bpb.tot_sec32 != ram_dev->num_blocks) {
             fat32_format(ram_dev);

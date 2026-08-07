@@ -28,6 +28,12 @@ static lisp_val_t node_pool[NODE_POOL_SIZE];
 static int node_pool_idx = 0;
 static bool node_pool_exhausted_warned = false;
 
+/* Guards against unbounded C-stack recursion in lisp_eval() (see its
+ * definition near the bottom of this file for the full rationale). */
+#define LISP_MAX_EVAL_DEPTH 100
+static int eval_depth = 0;
+static bool eval_depth_exceeded_warned = false;
+
 static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
 static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
@@ -74,6 +80,36 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
     return v;
 }
 
+/* Interned string/symbol storage, separate from node_pool (see the lambda
+ * struct comment in lisp.h for the motivation). Sized as a fraction of
+ * NODE_POOL_SIZE rather than matching it 1:1: env_set() alone allocates one
+ * symbol per binding (every `define`, every `let` binding, every function
+ * call's parameter binding), so on typical usage a meaningful fraction but
+ * not the majority of node allocations are strings/symbols -- reserving a
+ * full string_pool slot for every possible node would erase the memory
+ * savings this pool split exists to capture. */
+#define STRING_POOL_SIZE (NODE_POOL_SIZE / 2)
+#define STRING_SLOT_LEN 128
+
+static char string_pool[STRING_POOL_SIZE][STRING_SLOT_LEN];
+static int string_pool_idx = 0;
+static bool string_pool_exhausted_warned = false;
+
+static char *alloc_string_slot(void) {
+    if (string_pool_idx >= STRING_POOL_SIZE) {
+        /* Same clamp-not-wrap policy as alloc_node() (see B6 in
+         * plan/2026-08-07_review_and_remediation.md): reusing slot 0 would
+         * silently corrupt whatever still-live value points at it, e.g. the
+         * name of a primitive bound in global_env. */
+        if (!string_pool_exhausted_warned) {
+            printk("[Lisp Error] String pool exhausted! Further strings/symbols will alias.\n");
+            string_pool_exhausted_warned = true;
+        }
+        string_pool_idx = STRING_POOL_SIZE - 1;
+    }
+    return string_pool[string_pool_idx++];
+}
+
 lisp_val_t *make_int(long val) {
     lisp_val_t *v = alloc_node(LISP_INT);
     v->u.i = val;
@@ -82,13 +118,17 @@ lisp_val_t *make_int(long val) {
 
 lisp_val_t *make_str(const char *str) {
     lisp_val_t *v = alloc_node(LISP_STRING);
-    strncpy_local(v->u.str, str ? str : "", 128);
+    char *slot = alloc_string_slot();
+    strncpy_local(slot, str ? str : "", STRING_SLOT_LEN);
+    v->u.str = slot;
     return v;
 }
 
 lisp_val_t *make_sym(const char *sym) {
     lisp_val_t *v = alloc_node(LISP_SYMBOL);
-    strncpy_local(v->u.sym, sym, 32);
+    char *slot = alloc_string_slot();
+    strncpy_local(slot, sym, STRING_SLOT_LEN);
+    v->u.sym = slot;
     return v;
 }
 
@@ -194,10 +234,19 @@ static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a1 = lisp_list_ref(args, 0);
     lisp_val_t *a2 = lisp_list_ref(args, 1);
-    if (a1 && a2 && a1->type == LISP_INT && a2->type == LISP_INT) {
-        return (a1->u.i == a2->u.i) ? &true_val : &false_val;
+    if (!a1 || !a2 || a1->type != a2->type) return &false_val;
+    switch (a1->type) {
+        case LISP_INT:
+            return (a1->u.i == a2->u.i) ? &true_val : &false_val;
+        case LISP_STRING:
+            return (strcmp(a1->u.str, a2->u.str) == 0) ? &true_val : &false_val;
+        case LISP_SYMBOL:
+            /* #t/#f are themselves LISP_SYMBOL ("#t"/"#f"), so this also
+             * makes (= #t #t) behave sensibly rather than always false. */
+            return streq(a1->u.sym, a2->u.sym) ? &true_val : &false_val;
+        default:
+            return &false_val;
     }
-    return &false_val;
 }
 
 static lisp_val_t *prim_peek(lisp_val_t *args, lisp_val_t *env) {
@@ -574,9 +623,44 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     return &nil_val;
 }
 
+/* Discoverability (D2/D3 in plan/2026-08-07_review_and_remediation.md): the
+ * Lisp engine is the shell's execution core, but had no way to list what's
+ * actually callable short of reading the source. This walks global_env
+ * directly rather than maintaining a separate hand-written list, so it can
+ * never drift out of sync with what's actually bound the way cmd_help() in
+ * kernel/shell.c had. */
+static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    printk("\nLugalOS Lisp Machine -- Bound Globals:\n");
+    printk("-------------------------------------------------\n");
+    int count = 0;
+    for (lisp_val_t *c = global_env; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *binding = c->u.pair.car;
+        if (!binding || binding->type != LISP_PAIR) continue;
+        lisp_val_t *k = binding->u.pair.car;
+        if (!k || k->type != LISP_SYMBOL) continue;
+        lisp_val_t *v = binding->u.pair.cdr;
+        const char *kind = "value";
+        if (v) {
+            if (v->type == LISP_PRIMITIVE) kind = "primitive";
+            else if (v->type == LISP_LAMBDA) kind = "closure";
+        }
+        printk("  %s -- %s\n", k->u.sym, kind);
+        count++;
+    }
+    printk("-------------------------------------------------\n");
+    printk("%d bound symbols. Special forms (not primitives, so not listed\n"
+           "above): define, lambda, quote / ', if, begin, let, cond.\n\n", count);
+    return &nil_val;
+}
+
 void lisp_init(void) {
     node_pool_idx = 0;
     node_pool_exhausted_warned = false;
+    string_pool_idx = 0;
+    string_pool_exhausted_warned = false;
+    eval_depth = 0;
+    eval_depth_exceeded_warned = false;
     global_env = &nil_val;
 
     env_set(&global_env, "#t", &true_val);
@@ -624,6 +708,7 @@ void lisp_init(void) {
     env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
     env_set(&global_env, "lsh", make_prim(prim_lsh));
     env_set(&global_env, "usb-status", make_prim(prim_usb_status));
+    env_set(&global_env, "help", make_prim(prim_help));
 
     printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
 
@@ -858,8 +943,12 @@ lisp_val_t *lisp_read(const char **str) {
     return make_sym(buf);
 }
 
-/* Evaluator */
-lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
+/* Evaluator. lisp_eval_step() holds the actual logic; every recursive
+ * descent inside it calls the public lisp_eval() below (unchanged call
+ * sites -- lisp_eval_step() is simply the renamed body of what used to be
+ * lisp_eval() itself), so the depth guard in the wrapper sees every level
+ * of nesting, not just the outermost call. */
+static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
     if (!val) return &nil_val;
 
     if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE || val->type == LISP_LAMBDA) {
@@ -952,24 +1041,62 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
             return &nil_val;
         }
 
-        /* Special form: define */
+        /* Special form: define
+         *
+         * Two forms:
+         *   (define name value-expr)             -- bind a value
+         *   (define (name arg...) body-form...)  -- bind a function, i.e.
+         *     sugar for (define name (lambda (arg...) body-form...))
+         */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "define")) {
             if (args && args->type == LISP_PAIR) {
-                lisp_val_t *sym = args->u.pair.car;
-                lisp_val_t *eval_val = lisp_eval(args->u.pair.cdr->u.pair.car, env);
-                env_set(&global_env, sym->u.sym, eval_val);
-                return sym;
+                lisp_val_t *target = args->u.pair.car;
+                lisp_val_t *rest = args->u.pair.cdr;
+
+                if (target && target->type == LISP_PAIR) {
+                    lisp_val_t *name_sym = target->u.pair.car;
+                    if (!name_sym || name_sym->type != LISP_SYMBOL) {
+                        printk("[Lisp Error] define: function name must be a symbol\n");
+                        return &nil_val;
+                    }
+                    lisp_val_t *lam = alloc_node(LISP_LAMBDA);
+                    lam->u.lambda.params = target->u.pair.cdr;
+                    lam->u.lambda.body = rest;
+                    lam->u.lambda.env = (env == global_env) ? NULL : env;
+                    env_set(&global_env, name_sym->u.sym, lam);
+                    return name_sym;
+                }
+
+                if (!target || target->type != LISP_SYMBOL) {
+                    printk("[Lisp Error] define: expected a symbol or (name arg...)\n");
+                    return &nil_val;
+                }
+
+                lisp_val_t *eval_val = (rest && rest->type == LISP_PAIR)
+                    ? lisp_eval(rest->u.pair.car, env) : &nil_val;
+                env_set(&global_env, target->u.sym, eval_val);
+                return target;
             }
         }
 
-        /* Special form: lambda */
+        /* Special form: lambda -- (lambda (arg...) body-form...) */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "lambda")) {
-            lisp_val_t *params = args ? args->u.pair.car : &nil_val;
-            lisp_val_t *body = (args && args->u.pair.cdr) ? args->u.pair.cdr->u.pair.car : &nil_val;
+            lisp_val_t *params = (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
+            lisp_val_t *body = (args && args->type == LISP_PAIR) ? args->u.pair.cdr : &nil_val;
             lisp_val_t *lam = alloc_node(LISP_LAMBDA);
             lam->u.lambda.params = params;
             lam->u.lambda.body = body;
-            lam->u.lambda.env = env;
+            /* A lambda created directly in the global scope closes over the
+             * LIVE global environment (NULL is the marker, resolved at call
+             * time below) rather than a frozen snapshot of it -- otherwise
+             * a function couldn't see its own binding while evaluating its
+             * own body: (define ...) prepends onto global_env *after* this
+             * lambda value has already captured whatever global_env was
+             * before that happened (see B3 in
+             * plan/2026-08-07_review_and_remediation.md). Lambdas created
+             * inside another lambda's body or a `let` still get a normal
+             * frozen-snapshot closure, which is correct lexical scoping. */
+            lam->u.lambda.env = (env == global_env) ? NULL : env;
             return lam;
         }
 
@@ -1003,8 +1130,12 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
         }
 
         if (fn->type == LISP_LAMBDA) {
-            /* Create new scope extending lambda environment */
-            lisp_val_t *local_env = fn->u.lambda.env;
+            /* Create new scope extending lambda environment. NULL means
+             * this closure was defined at global scope -- resolve against
+             * whatever global_env is *right now*, not a stale snapshot
+             * (see the lambda special form above and B3 in
+             * plan/2026-08-07_review_and_remediation.md). */
+            lisp_val_t *local_env = fn->u.lambda.env ? fn->u.lambda.env : global_env;
             lisp_val_t *p = fn->u.lambda.params;
             lisp_val_t *a = eval_args_head;
             while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
@@ -1014,11 +1145,45 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
                 p = p->u.pair.cdr;
                 a = a->u.pair.cdr;
             }
-            return lisp_eval(fn->u.lambda.body, local_env);
+            /* Body is a list of forms (see the lambda special form above),
+             * evaluated in sequence like `begin` -- not just the first. */
+            lisp_val_t *res = &nil_val;
+            for (lisp_val_t *c = fn->u.lambda.body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                res = lisp_eval(c->u.pair.car, local_env);
+            }
+            return res;
         }
     }
 
     return val;
+}
+
+/* This interpreter recurses on the C stack with no other bound, and every
+ * `if`/`begin`/`let`/`cond`/function-call branch above descends through
+ * this wrapper -- so a runaway or accidentally-nonterminating recursive
+ * definition (or e.g. a `let` that calls itself) would otherwise overflow
+ * the C stack directly (see A4 in
+ * plan/2026-08-07_review_and_remediation.md), which on a freestanding
+ * kernel has no guard page and no signal handler to recover from it.
+ * LISP_MAX_EVAL_DEPTH (defined near the top of this file, with
+ * eval_depth/eval_depth_exceeded_warned) is a conservative default, not a
+ * profiled figure -- the smallest target (RP2350) has not been
+ * stack-profiled under this evaluator, so this errs toward stopping well
+ * before real exhaustion rather than trying to use the full available
+ * stack. */
+lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
+    if (eval_depth >= LISP_MAX_EVAL_DEPTH) {
+        if (!eval_depth_exceeded_warned) {
+            printk("[Lisp Error] Maximum evaluation depth (%d) exceeded -- "
+                   "aborting to avoid a C stack overflow\n", LISP_MAX_EVAL_DEPTH);
+            eval_depth_exceeded_warned = true;
+        }
+        return &nil_val;
+    }
+    eval_depth++;
+    lisp_val_t *result = lisp_eval_step(val, env);
+    eval_depth--;
+    return result;
 }
 
 void lisp_repl(void) {

@@ -23,8 +23,14 @@ typedef struct lisp_val {
     lisp_type_t type;
     union {
         long i;
-        char str[128];
-        char sym[32];
+        char *str;  /* LISP_STRING: pointer into the interned string pool
+                     * (see string_pool in user/lisp/lisp.c) rather than an
+                     * inline buffer -- keeping text out of the union means
+                     * pair/int nodes, the majority of allocations, aren't
+                     * each paying for 128 bytes of string capacity they
+                     * never use (see V6 in
+                     * plan/2026-08-07_review_and_remediation.md). */
+        char *sym;  /* LISP_SYMBOL: same pool as str */
         struct {
             struct lisp_val *car;
             struct lisp_val *cdr;
@@ -32,8 +38,16 @@ typedef struct lisp_val {
         lisp_prim_fn prim;
         struct {
             struct lisp_val *params;
-            struct lisp_val *body;
-            struct lisp_val *env;
+            struct lisp_val *body; /* list of body forms, evaluated in
+                                     * sequence like `begin` -- not just a
+                                     * single expression */
+            struct lisp_val *env;  /* NULL means "was defined directly in
+                                     * the global scope": resolved against
+                                     * the live global environment at call
+                                     * time rather than a frozen snapshot,
+                                     * which is what makes self-recursion
+                                     * work (see B3 in
+                                     * plan/2026-08-07_review_and_remediation.md) */
         } lambda;
     } u;
 } lisp_val_t;
