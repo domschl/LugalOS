@@ -292,6 +292,81 @@ Implemented and merged. All three targets (RV64, RV32, RP2350) build clean; full
   oversized, wrong-`size`, and hostile-`count` frames and asserts the node neither faults (UBSan
   panic since Phase 0 makes this detectable) nor answers incorrectly.
 
+#### A2 completion notes (2026-08-07)
+
+Implemented and merged. All three targets build clean; full `tests/runner.py` suite passes
+(77/77, RV64 + RV32 — two new tests added by this work).
+
+- **B11 closed.** `fs/9p.c` was rewritten around two small bounds-checked wire cursors
+  (`wcur_t`/`rcur_t`, each carrying an explicit end pointer). Every write goes through
+  `wcur_*()`, every read through `rcur_*()`; both set an `overflow` flag and become a no-op the
+  instant a field would cross the end pointer, so a caller checks `overflow` once at the end
+  instead of after every field. `rcur_data()` is the direct fix for the exact defect the review
+  quoted (`msg->data = p` with `count` never validated) — it now bounds-checks `count` against
+  what's actually left in the frame before handing back a pointer into it.
+  `p9_deserialize()` also clamps its own working window to the frame's *declared* `size` (not
+  just the caller's buffer length), so trailing bytes left over in a reused fixed-size receive
+  buffer from a previous, longer message can never leak into the next one's parse.
+- **`p9_msg_t.offset` is `uint64_t`** end to end (wire format already carried both 32-bit halves;
+  only the in-memory struct and a `(void)read_u32(&p)` that discarded the high half needed
+  fixing).
+- **Real fid table** (`P9_MAX_FIDS = 8`, linear-searched by the client's `uint32_t` fid value —
+  small and flat is fine for a server with one peer at a time). Each entry holds a resolved
+  absolute VFS path, directory/open state, and (for open files) the underlying A1 `vfs_open()`
+  handle. `Tversion` resets the whole table (connection re-init), `Tclunk`/failed `Tattach`/
+  `Twalk` allocation-exhaustion all return a clean `Rerror` rather than corrupting state.
+- **`Twalk` supports up to 16 components in one message**, including `..` (parent, clamped at
+  `/`). Partial-walk semantics match the spec: `Rerror` only if the *first* component fails to
+  resolve; a later failure just truncates `nwqid` to how far it got, per real 9P client
+  expectations.
+- **Every declared-but-missing message type is implemented**, not stubbed: `Tstat`/`Rstat`,
+  `Tcreate`/`Rcreate` (including `DMDIR` for remote `mkdir`), `Tremove`/`Rremove` (removes then
+  clunks the fid regardless of outcome, per spec), `Tflush` (no-op success; there's no
+  concurrency yet to flush). `ORCLOSE` (remove-on-clunk) is also wired up since it was nearly
+  free once `Tremove` existed.
+- **Directory reads, not just `Tstat`** — the sub-work list named `Tstat`/`Rstat` as "needed for
+  remote `ls`", but real 9P clients enumerate a directory's contents via `Tread` on an open
+  directory fid (a stream of packed `stat` structures), not by statting names they'd have no way
+  to already know. Implemented this too (`p9_read_dir_stream()`, built on A1's `vfs_readdir()`)
+  — without it, "remote `ls`" would not actually have worked. Simplification: a directory
+  `Tread`'s `offset` is only used to detect "start over" (`offset == 0`); otherwise the fid's own
+  server-side cursor continues from wherever it left off, rather than treating `offset` as a
+  literal byte-random-access position. This matches how directory-read offsets are conventionally
+  treated in Plan 9 (an opaque, monotonic cursor, not a real byte offset) and is sufficient for
+  every client this server talks to today; a client that seeks backward mid-listing isn't
+  supported.
+- **Server wired to the VFS handle API (A1)**, replacing the single global 2 KB echo buffer
+  entirely: `Tattach` resolves `aname` to an absolute VFS path (defaulting to `/`) via
+  `vfs_stat()`; `Topen` translates 9P mode bits to `VFS_O_*` flags and calls `vfs_open()`;
+  `Tread`/`Twrite` call `vfs_pread()`/`vfs_pwrite()` at the real requested offset; `Tclunk` calls
+  `vfs_close()`.
+- **Fuzz/conformance testing deferred to A3/T1, not skipped** — the plan itself frames this as
+  "a Python peer (see T1)", which is A3's milestone, not A2's. What A2 *does* provide toward it:
+  every parse path is bounds-checked (the actual safety requirement the gate in §2 cares about),
+  and manual testing confirmed a `p9-cat` of a nonexistent path returns a clean `Rerror` (`#f` to
+  the Lisp caller) with no fault, under UBSan. Real hostile-input fuzzing against an independent
+  implementation is still T1's job, once A3 exists to give it a wire to fuzz over.
+- **`drivers/loopback_net.c` / `drivers/uart_net.c` rewired.** The old `loopback_9p_rpc()`/
+  `uart_net_rpc()` did a bare `Tattach` + `Twrite`/`Tread` directly against the attach fid — that
+  only ever worked because the old server treated every fid as the same global buffer regardless
+  of what it was "supposed" to represent. With a real fid table, writing to an unopened directory
+  fid now correctly fails. Both helpers were rewritten to do a real session: attach, walk to (or
+  `Tcreate`) a scratch file under `/ram0`, open, write/read, clunk. Verified via QEMU that a
+  `(p9-loopback "...")` write is now visible as a real FAT32 directory entry (`ls "/ram0/"` shows
+  it, byte-exact) — not just an echo.
+- **New `p9-cat` Lisp primitive** (`loopback_9p_cat()`), added specifically to prove the fid table
+  resolves *arbitrary* pre-existing namespace paths, not just the fixed loopback scratch file: it
+  drives `Tattach("/")` + a genuine multi-component `Twalk` + `Topen` + `Tread` + `Tclunk` against
+  whatever path it's given. `tests/runner.py` now uses it to read `/sd0/system/init.lisp` — a file
+  9P itself never wrote — over the wire and asserts on its real content. Also confirmed manually
+  that `(p9-cat "/proc/version")` works, i.e. A1's `/proc` byte streams are now reachable over 9P
+  too, and that a nonexistent path returns a clean `#f` rather than faulting.
+- **Deferred, not forgotten:** qid uniqueness is FNV-1a of the resolved absolute path string, not
+  a real inode/generation number — fine for a single-server, no-hardlinks filesystem, but a
+  collision is theoretically possible (cosmetic, not memory-unsafe). Directory `Tread`'s
+  offset-as-cursor simplification above. No `Twstat` (rename/chmod/truncate-via-stat) — not in the
+  original sub-work list and nothing in this codebase needs it yet.
+
 ### A3 — Link layer and real transport
 
 Introduce a transport-agnostic link interface so the 9P server never knows what wire it is on:

@@ -264,6 +264,19 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_uart_9p, r"=> \"P9_SLIP_UART_PASSED\"", timeout=4.0)
         results.append(("SLIP RFC 1055 UART Transport & p9-uart-send (Phase 2)", ok, log if not ok else ""))
 
+        # 9P server wired to the real VFS handle API, not a single global
+        # echo buffer (A2): p9-cat drives a full Tattach("/") + multi-
+        # component Twalk + Topen + Tread + Tclunk session against a real,
+        # pre-existing file that 9P itself never wrote -- proving the fid
+        # table actually resolves arbitrary namespace paths through the VFS.
+        cmd_9p_vfs_wiring = (
+            "lisp\n"
+            "(p9-cat \"/sd0/system/init.lisp\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_9p_vfs_wiring, r"LugalOS System Initialization Script", timeout=4.0)
+        results.append(("9P Server Wired to Real VFS Files via p9-cat (A2)", ok, log if not ok else ""))
+
 
         # 6. Lugal-Lisp REPL Core Engine & Arithmetic (+, -, *, =)
         cmd_arith = "lisp\n(+ 10 20 30)\n(- 100 40)\n(* 6 7)\n(= 42 42)\nexit"

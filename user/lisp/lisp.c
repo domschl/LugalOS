@@ -608,6 +608,21 @@ static lisp_val_t *prim_p9_loopback(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
+static lisp_val_t *prim_p9_cat(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *path = get_str_val(args->u.pair.car);
+
+    char out_buf[512];
+    memset(out_buf, 0, sizeof(out_buf));
+
+    int res = loopback_9p_cat(path, out_buf, sizeof(out_buf));
+    if (res >= 0) {
+        return make_str(out_buf);
+    }
+    return &false_val;
+}
+
 static lisp_val_t *prim_p9_uart_send(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *payload = "SLIP_9P_UART_Test";
@@ -715,6 +730,7 @@ void lisp_init(void) {
     env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
     env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
+    env_set(&global_env, "p9-cat", make_prim(prim_p9_cat));
     env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
