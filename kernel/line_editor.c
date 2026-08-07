@@ -55,18 +55,23 @@ static void add_history(const char *line) {
         history_stack[MAX_HIST_ITEMS - 1][MAX_LINE_LEN - 1] = '\0';
     }
 
-    // Rewrite entire accumulated session history stack to /sd0/system/history.lisp
-    char hist_file_buf[4096];
-    int hlen = 0;
-    for (int i = 0; i < history_count; i++) {
-        const char *p = history_stack[i];
-        while (*p && hlen < 4000) {
-            hist_file_buf[hlen++] = *p++;
-        }
-        hist_file_buf[hlen++] = '\n';
+    /* Append just the new line to the persistent log instead of
+     * reconstructing and rewriting the whole accumulated history buffer on
+     * every command (see B8 in plan/2026-08-07_review_and_remediation.md).
+     * history_stack[] above still independently tracks only the last
+     * MAX_HIST_ITEMS entries for Up/Down navigation; the on-disk log is a
+     * simple ever-growing record of everything typed since boot (or since
+     * the last explicit clear), not a mirror of that ring buffer --
+     * reconciling the two would require the same full-rewrite-per-command
+     * this change exists to eliminate. */
+    char entry_buf[MAX_LINE_LEN + 1];
+    int elen = 0;
+    const char *p = line;
+    while (*p && elen < MAX_LINE_LEN - 1) {
+        entry_buf[elen++] = *p++;
     }
-    hist_file_buf[hlen] = '\0';
-    vfs_write("/sd0/system/history.lisp", hist_file_buf, hlen);
+    entry_buf[elen++] = '\n';
+    vfs_append("/sd0/system/history.lisp", entry_buf, elen);
 }
 
 

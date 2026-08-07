@@ -59,6 +59,7 @@ static void cmd_help(void) {
     printk("  cp <src> <dst>  - Copy file from source path to destination path\n");
     printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
     printk("  rm <file>       - Delete file from disk\n");
+    printk("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
     printk("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
     printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
     printk("  e [file]        - Launch Emacs-style full-screen editor\n");

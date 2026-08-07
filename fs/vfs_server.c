@@ -359,6 +359,60 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return -1;
 }
 
+int vfs_append(const char *path, const void *buf, uint32_t len) {
+    if (!path) return -1;
+
+    const char *rel = NULL;
+    int type = parse_prefix(path, &rel);
+    if (!rel) rel = "";
+
+    if (type == 1) { // /sd0/
+        if (g_sd_mounted) return fat32_append_file(&g_fat32_sd, rel, buf, len);
+        return -1;
+    } else if (type == 2) { // /ram0/
+        if (g_ram_mounted) return fat32_append_file(&g_fat32_ram, rel, buf, len);
+        return -1;
+    } else if (type == 6) { // /flash0/
+        printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) is read-only\n");
+        return -1;
+    }
+    return -1;
+}
+
+/* Explicit volume initialization, replacing the auto-format-on-invalid-boot-
+ * sector behavior fat32_init() used to have (see B10 in
+ * plan/2026-08-07_review_and_remediation.md) -- a corrupt or blank card
+ * inserted at /sd0/ now just fails to mount instead of being silently
+ * wiped; this is the only way (aside from vfs_mount_ramdisk()'s own
+ * deliberate fallback for the always-starts-blank RAM disk) a volume gets
+ * formatted now. */
+int vfs_format(const char *path) {
+    if (!path) return -1;
+    const char *rel = NULL;
+    int type = parse_prefix(path, &rel);
+
+    if (type == 1) { // /sd0/
+#if defined(CONFIG_BOARD_RP2350)
+        block_dev_t *dev = spisd_get_device();
+#else
+        block_dev_t *dev = virtio_blk_get_device();
+#endif
+        if (!dev || fat32_format(dev) != 0) return -1;
+        g_sd_mounted = (fat32_init(&g_fat32_sd, dev) == 0);
+        return g_sd_mounted ? 0 : -1;
+    } else if (type == 2) { // /ram0/
+        block_dev_t *dev = ramdisk_get_device();
+        if (!dev || fat32_format(dev) != 0) return -1;
+        g_ram_mounted = (fat32_init(&g_fat32_ram, dev) == 0);
+        return g_ram_mounted ? 0 : -1;
+    } else if (type == 6) { // /flash0/
+        printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) cannot be formatted (read-only)\n");
+        return -1;
+    }
+    printk("[VFS Error] format: '%s' is not a formattable storage volume\n", path ? path : "");
+    return -1;
+}
+
 int vfs_remove(const char *path) {
     if (!path) return -1;
     const char *rel = NULL;

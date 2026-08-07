@@ -486,6 +486,13 @@ static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
     return (res == 0) ? &true_val : &false_val;
 }
 
+static lisp_val_t *prim_format(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    if (!a1) return &false_val;
+    return (vfs_format(get_str_val(a1)) == 0) ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_time(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     return make_int((long)time_get_ms());
@@ -706,6 +713,7 @@ void lisp_init(void) {
 
     env_set(&global_env, "arch", make_prim(prim_arch));
     env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
+    env_set(&global_env, "format", make_prim(prim_format));
     env_set(&global_env, "lsh", make_prim(prim_lsh));
     env_set(&global_env, "usb-status", make_prim(prim_usb_status));
     env_set(&global_env, "help", make_prim(prim_help));

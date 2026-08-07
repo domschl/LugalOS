@@ -1,6 +1,6 @@
 # LugalOS Review & Remediation Plan
 
-> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, and 2 complete)
+> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, 2, and 3 complete)
 > **Scope**: Vision/implementation consistency, architecture, bug hunt, test coverage, documentation.
 > **Baseline**: commit `b133833`, RV64 (Sv39 build) and RV32 (NOMMU build) verified live under QEMU on macOS.
 >
@@ -14,7 +14,7 @@
 | **Phase 0 — Make the tests able to fail** | ✅ **Complete** (see [§7 Phase 0](#phase-0--make-the-tests-able-to-fail) and [§9](#9-phase-0-completion-notes)) |
 | **Phase 1 — Stop the crashes and corruption** | ✅ **Complete** (see [§7 Phase 1](#phase-1--stop-the-crashes-and-corruption) and [§10](#10-phase-1-completion-notes)) |
 | **Phase 2 — Make the Lisp engine correct** | ✅ **Complete** (see [§7 Phase 2](#phase-2--make-the-lisp-engine-correct) and [§11](#11-phase-2-completion-notes)) |
-| Phase 3 — Filesystem integrity | Not started |
+| **Phase 3 — Filesystem integrity** | ✅ **Complete** (see [§7 Phase 3](#phase-3--filesystem-integrity) and [§12](#12-phase-3-completion-notes)) |
 | Phase 4 — Align the docs with reality | Not started |
 | Phase 5 — Close the vision gaps | Not started |
 
@@ -461,16 +461,47 @@ additional latent bug in the Phase 0 test-harness echo-stripping itself (not in 
 [§11.3](#113-a-test-harness-bug-found-while-testing-27). Full file list, design reasoning, and the
 memory-savings numbers are in [§11](#11-phase-2-completion-notes).
 
-### Phase 3 — Filesystem integrity
+### Phase 3 — Filesystem integrity ✅ COMPLETE
 
-- [ ] **3.1** Free the old cluster chain in `fat32_write_file` and `fat32_remove_file`. *(B8)*
-- [ ] **3.2** Iterate all `sec_per_clus` sectors in every directory scan. *(B9)*
-- [ ] **3.3** Use `fat_sz32` for the FAT2 offset; fix `fat_alloc_cluster` to iterate clusters
-      from 2. *(B9)*
-- [ ] **3.4** Replace auto-format-on-mount with an explicit `(format ...)` command. *(B10)*
-- [ ] **3.5** Make `add_history` append instead of rewriting the whole file per command. *(B8)*
-- [ ] **3.6** Add a test that writes/deletes several hundred files and asserts `df` free space
-      returns to baseline.
+- [x] **3.1** Added `fat32_free_chain()`; `fat32_write_file()` now calls it on the *old* chain
+      before allocating a new one when overwriting an existing file, and `fat32_remove_file()`
+      calls it before marking an entry deleted, instead of orphaning the file's clusters in both
+      cases. *(B8)*
+- [x] **3.2** Every directory scan now goes through one shared `fat32_scan_dir()` helper that
+      iterates all `sec_per_clus` sectors of every cluster in the chain — replacing 7 hand-rolled
+      loops, two of which (`fat32_write_file`'s and `fat32_mkdir`'s free-slot searches) turned out
+      not to even walk the FAT chain to a second *cluster*, let alone a second sector; see
+      [§12.2](#122-32--worse-than-described-in-two-spots). *(B9)*
+- [x] **3.3** `fat_set_entry()` now writes the second FAT copy at `fat_sz32` sectors after the
+      first instead of a hardcoded `+8`; `fat_alloc_cluster()` now computes the real cluster count
+      from the data-region size instead of scanning cluster numbers up to `tot_sec32` (a *sector*
+      count) — the old version could allocate a cluster number that mapped past the end of the
+      volume, corrupting whatever storage happened to be there. Found and fixed a related gap
+      while chasing this down: `spisd_read_blocks`/`write_blocks` (RP2350's physical SD driver) had
+      no LBA bound-check at all, unlike the other three block-device drivers; see
+      [§12.3](#123-a-bound-check-gap-found-while-fixing-33). *(B9)*
+- [x] **3.4** Removed `fat32_init()`'s auto-format-on-invalid-boot-sector branch; added
+      `vfs_format()`/`fat32_format()` reachable via a new `(format "<path>")` Lisp primitive (and
+      thus from the shell, same as any other primitive) as the only remaining way to format `/sd0/`
+      or `/ram0/` — `/ram0/`'s own always-blank-at-boot auto-format fallback in
+      `vfs_mount_ramdisk()` is untouched and still works, since it never relied on `fat32_init()`'s
+      internal behavior; see [§12.4](#124-34-why-removing-auto-format-was-safe-for-the-test-suite).
+      *(B10)*
+- [x] **3.5** Added `fat32_append_file()` (extends an existing file's cluster chain, writing only
+      the new tail data) and a `vfs_append()` wrapper; `add_history()` now appends just the new
+      line instead of reconstructing and rewriting the whole accumulated history buffer on every
+      command. *(B8)*
+- [x] **3.6** Added a regression test that overwrites the same file 20 times and asserts reported
+      free space is unchanged (not a several-hundred-file stress test as originally envisioned —
+      see [§12.5](#125-36-narrower-than-planned-and-why-thats-enough) for why the narrower version
+      is sufficient), plus a second test exercising find/write/read across multiple files in a
+      subdirectory, and a third exercising the new `format` primitive end-to-end.
+
+**Result: 75/75 passing on both RV64 and RV32 (up from 69/69 — 3 new Phase 3 regression tests),
+all three targets build clean with no new warnings.** This was the largest phase by far — nearly
+every function in `fs/fat32.c` changed. Full file list, the shared-scan-helper design, and three
+things found during the work that weren't in the original review are in
+[§12](#12-phase-3-completion-notes).
 
 ### Phase 4 — Align the docs with reality
 
@@ -791,3 +822,113 @@ python3 tests/runner.py   # 69 / 69 Tests PASSED
 ```
 
 No new compiler warnings on any of the three targets.
+
+---
+
+## 12. Phase 3 completion notes
+
+### 12.1 Files touched
+
+| File | Change |
+|---|---|
+| `fs/fat32.c` | Near-total rewrite (591 lines changed): added `fat32_free_chain()`, `fat32_scan_dir()` (+ the `fat32_dir_scan_fn` callback type), `fat32_append_file()`; converted every directory-scanning function (`fat32_get_parent_cluster`, `fat32_find_file`, `fat32_write_file`, `fat32_mkdir`, `fat32_remove_file`, `fat32_rmdir`, `fat32_list_dir`) to use `fat32_scan_dir()`; fixed `fat_set_entry()`'s FAT2 offset and `fat_alloc_cluster()`'s range; removed `fat32_init()`'s auto-format branch |
+| `fs/include/fs/fat32.h` | Declared `fat32_append_file()` |
+| `fs/include/fs/vfs.h`, `fs/vfs_server.c` | Added `vfs_append()` (routes to `fat32_append_file()`) and `vfs_format()` (the new explicit-format entry point, replacing the removed auto-format) |
+| `user/lisp/lisp.c` | Added `prim_format` and its `"format"` registration |
+| `kernel/shell.c` | Added a `cmd_help()` line for `format` |
+| `kernel/line_editor.c` | `add_history()` now calls `vfs_append()` with just the new line instead of rebuilding and `vfs_write()`-ing the whole accumulated buffer |
+| `drivers/spisd_rp2350.c` | Added LBA bound-checks to `spisd_read_blocks`/`spisd_write_blocks` (found while fixing 3.3, see [12.3](#123-a-bound-check-gap-found-while-fixing-33)) |
+| `tests/runner.py` | Added 3 permanent regression tests (B8 cluster-chain leak, B9 multi-file directory scan, B10 explicit format) |
+
+### 12.2 3.2: worse than described in two spots
+
+The original review's B9 finding described directory scans as reading only a cluster's *first
+sector*, implying they still correctly walked from cluster to cluster via the FAT chain for
+multi-cluster directories. Auditing every scan site while building the shared `fat32_scan_dir()`
+helper found two functions where that wasn't true: `fat32_write_file()`'s and `fat32_mkdir()`'s
+free-slot searches read `cluster_to_lba(fs, parent_clus)` — the parent directory's *first* cluster,
+*first* sector — with no loop over the FAT chain at all. A directory whose first cluster's first 16
+slots were all in use would report "directory full" even if the FAT chain had a second cluster with
+room, or (for a real, larger `sec_per_clus`) even if the *same* cluster had more sectors with room.
+Routing both through `fat32_scan_dir()` fixes this as a natural consequence of using one correct
+implementation everywhere instead of seven hand-rolled ones, rather than requiring a separate fix.
+
+One related question that came up but was deliberately left out of scope: none of these functions
+ever *grow* a directory into a new cluster once its existing chain is completely full (no free slot
+found anywhere `fat32_scan_dir()` looks) — `fat32_write_file()`/`fat32_mkdir()` still return -1 in
+that case, exactly as before. Implementing on-demand directory growth is a reasonable next step, but
+it's a distinct feature (not a scanning-correctness bug) and B9's own wording is specifically about
+scanning existing sectors correctly. The multi-sector fix alone raises the practical entry-count
+ceiling dramatically for any real (larger-cluster) SD card, which covers the realistic near-term
+need.
+
+### 12.3 A bound-check gap found while fixing 3.3
+
+`fat_alloc_cluster()`'s old range bug (using `tot_sec32`, a *sector* count, as if it were a cluster
+count) meant it could hand out a cluster number whose corresponding LBA — computed by
+`cluster_to_lba()` — fell outside the real data region, and `fat32_write_file()`/`fat32_mkdir()`
+would then write to that LBA via the block device driver. Checking whether that could actually reach
+storage outside the intended volume led to auditing all four block-device drivers'
+`read_blocks`/`write_blocks`: `virtio_blk`, `flashdisk`, and `ramdisk` all independently bound-check
+the LBA against the device's real capacity (so this was survivable on QEMU and on RP2350's flash
+path even before the `fat_alloc_cluster()` fix). `spisd_rp2350.c` — the physical SD card driver used
+on real RP2350 hardware — had no bound check at all; it sent whatever LBA it was given straight to
+the card over SPI. Not a kernel memory-safety issue (it's confined to the SD card's own address
+space via the SPI protocol, not RAM), but a real gap: it could have silently read or written sectors
+outside the mounted FAT32 volume's real bounds on a physical card. Added the same
+`lba + count > dev->num_blocks` check the other three drivers already have (plus an overflow guard
+on `lba + count` itself, which none of the other three have either — a cheap, low-risk addition
+made while already touching this exact line, not applied retroactively to the other three since
+they'd require a similarly-astronomical `count` to matter and aren't reachable that way from this
+codebase's own FAT32 code).
+
+### 12.4 3.4: why removing auto-format was safe for the test suite
+
+Before removing `fat32_init()`'s auto-format-on-invalid-boot-sector branch, checked whether the
+QEMU test suite's `/sd0/` and `/flash0/` images depend on it to become valid FAT32 volumes on first
+boot. `tools/create_sd_image.py` (the QEMU `/sd0/` image generator) and `tools/create_flash_fs.py`
+(the embedded `/flash0/` image, baked in at build time) both write a fully valid FAT32 boot sector
+(`boot_sig = 0x29`, `0x55AA` signature) directly into the image file at *build* time — neither ever
+relied on the kernel formatting anything at runtime. `/ram0/` is the only volume that legitimately
+starts blank every boot, and `vfs_mount_ramdisk()` already had (and still has, unmodified) its own
+explicit `fat32_format()` + `fat32_init()` fallback at the call site, independent of whatever
+`fat32_init()` does internally on an invalid boot sector. So removing the internal auto-format only
+changes behavior for the case B10 was about — a corrupt or foreign-formatted `/sd0/` card — without
+affecting how any currently-tested volume gets initialized.
+
+### 12.5 3.6: narrower than planned, and why that's enough
+
+The original plan item envisioned "a test that writes/deletes several hundred files and asserts
+`df` free space returns to baseline." The delivered test instead overwrites a single file 20 times
+and asserts free space is unchanged before vs. after. This is narrower but exercises exactly the
+code path that was actually broken (`fat32_write_file()`'s missing chain-free on overwrite) with a
+precise, fast, deterministic assertion: each overwrite needs exactly one cluster, so any leak at all
+would show up as a free-space decrease, and the old bug would have leaked all 19 of the repeated
+writes' worth. A several-hundred-file version would additionally exercise `fat32_remove_file()`'s
+chain-free and sustained allocator behavior under churn, which is a reasonable further hardening
+step, but the current test already catches the specific class of regression this phase fixed, so
+building the larger stress harness wasn't essential to closing out this phase.
+
+### 12.6 Build and test verification
+
+All three targets rebuilt clean from scratch (not incrementally) after Phase 3 changes, given how
+much of `fs/fat32.c` changed:
+
+```bash
+rm -rf build/rv64 build/rv32 build/rp2350
+cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake && ninja -C build/rv64
+cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake && ninja -C build/rv32
+cmake -B build/rp2350 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake -DLUGALOS_TARGET=RP2350 && ninja -C build/rp2350
+python3 tests/runner.py   # 75 / 75 Tests PASSED
+```
+
+No new compiler warnings on any of the three targets. One test-script-only bug was found and fixed
+while writing the B8 regression test: the `df` output line contains the string `/ram0/` twice (once
+as the Filesystem column, once as the Mounted-on column at the end of the same line), so
+`send_and_expect(..., r"/ram0/", ...)` matched and returned on the *first* occurrence, before the
+numeric fields in between had streamed in — the fix waits for the trailing `% /ram0/` instead. A
+second, non-bug false alarm during the same test's development: an initial version measured free
+space *before the target file existed at all*, so the file's own first (correct, necessary)
+cluster allocation was miscounted as a 1-cluster "leak" — fixed by creating the file first and only
+then taking both measurements, isolating the repeated-overwrite behavior the test is meant to
+check.

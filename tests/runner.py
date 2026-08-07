@@ -473,6 +473,87 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("help", r"\(help\)", timeout=3.0)
         results.append(("Shell help Command Mentions Lisp (help) Primitive (D2/D3)", ok, log if not ok else ""))
 
+        # 23. Regression: fat32_write_file() must free a file's old cluster
+        # chain when overwriting it, instead of leaking a new chain on every
+        # write (B8, see plan/2026-08-07_review_and_remediation.md).
+        # Overwrite the same file 20 times and confirm reported free space
+        # is unchanged (each write needs exactly 1 cluster; under the old
+        # bug this would leak 19 of them). Parses actual numbers from two
+        # separate `df` calls rather than just regex-matching text, since
+        # this specifically needs to catch a *quantity* regression.
+        # Create the file first (its very first write is a fresh allocation,
+        # not an overwrite, and correctly costs one net cluster) so both
+        # measurements below are taken with it already existing -- isolating
+        # just the repeated-*overwrite* behavior this test targets.
+        session.send_and_expect("write /ram0/leaktest.txt payload_0", r"=> #t", timeout=3.0)
+
+        # /ram0/ appears twice in this output line (Filesystem column *and*
+        # Mounted-on column), so the expected_pattern must wait for the
+        # trailing occurrence -- matching the leading one returns before the
+        # numeric fields in between have even streamed in yet.
+        _, log_before = session.send_and_expect("cat /proc/df", r"%\s+/ram0/", timeout=3.0)
+        m_before = re.search(r"/ram0/\s+(\d+)\s+(\d+)\s+(\d+)", log_before)
+        free_before = int(m_before.group(3)) if m_before else None
+
+        cmd_repeated_write = "\n".join(f"write /ram0/leaktest.txt payload_{i}" for i in range(1, 20))
+        session.send_and_expect(cmd_repeated_write, r"=> #t", timeout=6.0)
+
+        _, log_after = session.send_and_expect("cat /proc/df", r"%\s+/ram0/", timeout=3.0)
+        m_after = re.search(r"/ram0/\s+(\d+)\s+(\d+)\s+(\d+)", log_after)
+        free_after = int(m_after.group(3)) if m_after else None
+
+        ok = (free_before is not None and free_before == free_after)
+        results.append((
+            "FAT32 Cluster Chain Freed on File Overwrite (no leak, B8)",
+            ok,
+            f"free_before={free_before} free_after={free_after}" if not ok else "",
+        ))
+        session.send_and_expect("rm /ram0/leaktest.txt", r"=> #t", timeout=3.0)
+
+        # 24. Regression: directory scanning (find/list/write/mkdir/rm) must
+        # correctly handle a directory whose entries span more than one
+        # cluster in its FAT chain -- fat32_write_file's and fat32_mkdir's
+        # free-slot searches used to only look at a directory's *first*
+        # cluster at all, and every scan only read a cluster's first sector
+        # (B9). Create several files in a subdirectory and verify each is
+        # found with correct, uncorrupted content.
+        cmd_multi_file = (
+            "mkdir /ram0/many\n"
+            "write /ram0/many/f0.txt content_zero\n"
+            "write /ram0/many/f1.txt content_one\n"
+            "write /ram0/many/f2.txt content_two\n"
+            "write /ram0/many/f3.txt content_three\n"
+            "cat /ram0/many/f0.txt\n"
+            "cat /ram0/many/f1.txt\n"
+            "cat /ram0/many/f2.txt\n"
+            "cat /ram0/many/f3.txt"
+        )
+        ok, log = session.send_and_expect(
+            cmd_multi_file,
+            r"content_zero.*content_one.*content_two.*content_three",
+            timeout=6.0,
+        )
+        results.append(("FAT32 Directory Scan Finds All Entries, Uncorrupted (B9)", ok, log if not ok else ""))
+        session.send_and_expect(
+            "rm /ram0/many/f0.txt\nrm /ram0/many/f1.txt\nrm /ram0/many/f2.txt\nrm /ram0/many/f3.txt\nrmdir /ram0/many",
+            r"=> #t",
+            timeout=4.0,
+        )
+
+        # 25. Regression: a corrupt/blank volume must no longer be silently
+        # auto-formatted on mount (B10); (format "<path>") is now the only
+        # way to initialize one. Format /ram0 explicitly and confirm the
+        # freshly-formatted volume is immediately usable.
+        cmd_format = (
+            "lisp\n"
+            "(format \"/ram0\")\n"
+            "(write \"/ram0/after_format.txt\" \"format_worked\")\n"
+            "(cat \"/ram0/after_format.txt\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_format, r"format_worked", timeout=5.0)
+        results.append(("Explicit (format \"<path>\") Initializes a Usable Volume (B10)", ok, log if not ok else ""))
+
 
     finally:
         session.close()

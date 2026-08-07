@@ -208,8 +208,17 @@ static int spisd_init_hardware(void) {
 }
 
 static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
-    (void)dev;
     if (!g_sd_initialized) return -1;
+    /* Unlike the other three block-device drivers (virtio_blk, flashdisk,
+     * ramdisk), this one sent whatever LBA it was given straight to the
+     * card over SPI with no bound check at all. On real hardware that's
+     * confined to the SD card's own address space (not a kernel
+     * memory-safety issue), but a filesystem-layer bug that computes a
+     * bad cluster number -- e.g. the fat_alloc_cluster() bug fixed
+     * alongside this, see B9 in
+     * plan/2026-08-07_review_and_remediation.md -- could still silently
+     * read/write sectors outside the mounted FAT32 volume's real bounds. */
+    if (!buf || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
     uint8_t *dst = (uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
@@ -248,8 +257,8 @@ static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
 }
 
 static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
-    (void)dev;
     if (!g_sd_initialized) return -1;
+    if (!buf || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
     const uint8_t *src = (const uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
