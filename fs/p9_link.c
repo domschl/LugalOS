@@ -3,7 +3,16 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-static p9_link_t *g_background_link = NULL;
+/* Small fixed set, not one global pointer: RP2350 wants both its USB-CDC
+ * net link (ACM1/EP4) and, once a user opts into `p9share`, the UART demux
+ * link running as background servers at the same time; QEMU wants
+ * virtio-console plus (for `p9share` testing) the UART demux. All of this
+ * is still driven from a single call stack with no real concurrency (see
+ * p9_link_cat()'s own comment below on why that's safe), so servicing N
+ * links in one p9_link_background_poll() sweep carries no new race that
+ * servicing 1 didn't already have. */
+#define P9_LINK_MAX_BACKGROUND 2
+static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
 
 int p9_link_service(p9_link_t *link) {
     if (!link || !link->poll || !link->recv_frame || !link->send_frame) return -1;
@@ -25,15 +34,30 @@ int p9_link_service(p9_link_t *link) {
 }
 
 void p9_link_register_background(p9_link_t *link) {
-    g_background_link = link;
-    if (link) {
-        printk("[9P Link] '%s' registered as background transport.\n", link->name ? link->name : "?");
+    if (!link) return;
+    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
+        if (g_background_links[i] == link) return; // already registered
+    }
+    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
+        if (!g_background_links[i]) {
+            g_background_links[i] = link;
+            printk("[9P Link] '%s' registered as background transport.\n", link->name ? link->name : "?");
+            return;
+        }
+    }
+    printk("[9P Link] background transport slots full; '%s' not registered.\n", link->name ? link->name : "?");
+}
+
+void p9_link_unregister_background(p9_link_t *link) {
+    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
+        if (g_background_links[i] == link) g_background_links[i] = NULL;
     }
 }
 
 void p9_link_background_poll(void) {
-    if (!g_background_link) return;
-    p9_link_service(g_background_link);
+    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
+        if (g_background_links[i]) p9_link_service(g_background_links[i]);
+    }
 }
 
 /* --- p9_link_cat: a link-agnostic synchronous 9P client (A4) ---

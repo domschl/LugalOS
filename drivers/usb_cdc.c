@@ -73,6 +73,18 @@ static volatile bool g_usb_need_set_addr = false;
 #define USB_EP2_OUT_BUF       (USB_DPRAM_BASE + 0x180)
 #define USB_EP2_IN_BUF        (USB_DPRAM_BASE + 0x1C0)
 
+// EP4 (Bulk, CDC ACM1 "Network" data interface -> /dev/ttyACM1, A3b
+// link_usb_cdc). Same DPRAM layout rules as EP2 above: endpoint-control at
+// 0x08 + (n-1)*8 (n=4 -> 0x20/0x24), buffer-control at 0x80 + n*8 (n=4 ->
+// 0xA0/0xA4), data buffers software-allocated past EP2's own (which end at
+// 0x200) with no overlap.
+#define USB_EP4_IN_ENDP_CTRL  (USB_DPRAM_BASE + 0x20)
+#define USB_EP4_OUT_ENDP_CTRL (USB_DPRAM_BASE + 0x24)
+#define USB_EP4_IN_BUF_CTRL   (USB_DPRAM_BASE + 0xA0)
+#define USB_EP4_OUT_BUF_CTRL  (USB_DPRAM_BASE + 0xA4)
+#define USB_EP4_OUT_BUF       (USB_DPRAM_BASE + 0x200)
+#define USB_EP4_IN_BUF        (USB_DPRAM_BASE + 0x240)
+
 #define EP_CTRL_ENABLE            (1u << 31)
 #define EP_CTRL_INTERRUPT_PER_BUF (1u << 29)
 #define EP_CTRL_TYPE_BULK         (2u << 26)
@@ -334,6 +346,76 @@ static void ep2_tx_pump(void) {
     ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_IN_BUF_CTRL, ctrl);
 }
 
+// EP4 (ACM1 "Network" bulk data, A3b link_usb_cdc): same byte-ring
+// mirroring EP2 uses to decouple usb_cdc_task()'s polling from producer/
+// consumer call sites -- here that's usb_cdc_get_net_link()'s p9_link_t
+// glue, further down, rather than the shell. No DTR gating (unlike EP2's
+// g_ep2_dtr): DTR-gating exists there to avoid replaying boot-time printk()
+// backlog to a terminal that opens the port late; this link never
+// proactively sends anything until a 9P request arrives, so there's no
+// backlog to avoid, and RX bytes buffered before a peer "opens" the port
+// are harmless (the peer just hasn't asked for them yet).
+#define USB_EP4_TX_RING_SIZE 4096
+#define USB_EP4_RX_RING_SIZE 8192 // must exceed P9_MAX_MSIZE (4096) with headroom for an in-flight partial frame
+
+static volatile uint8_t g_ep4_tx_ring[USB_EP4_TX_RING_SIZE];
+static volatile uint32_t g_ep4_tx_head = 0;
+static volatile uint32_t g_ep4_tx_tail = 0;
+static volatile bool g_ep4_tx_busy = false;
+static volatile bool g_ep4_tx_pid = false; // DATA0 first, per USB 2.0 8.6
+
+static volatile uint8_t g_ep4_rx_ring[USB_EP4_RX_RING_SIZE];
+static volatile uint32_t g_ep4_rx_head = 0;
+static volatile uint32_t g_ep4_rx_tail = 0;
+static volatile uint32_t g_ep4_rx_count = 0;
+static volatile bool g_ep4_rx_pid = false; // DATA0 first
+
+static volatile bool g_ep4_configured = false;
+
+static void ep4_configure(void) {
+    // Same in-flight-transfer-abandonment rationale as ep2_configure() above.
+    REG(USB_EP4_IN_BUF_CTRL)  = 0;
+    REG(USB_EP4_OUT_BUF_CTRL) = 0;
+
+    REG(USB_EP4_IN_ENDP_CTRL)  = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
+                                | (uint32_t)(USB_EP4_IN_BUF - USB_DPRAM_BASE);
+    REG(USB_EP4_OUT_ENDP_CTRL) = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
+                                | (uint32_t)(USB_EP4_OUT_BUF - USB_DPRAM_BASE);
+
+    g_ep4_tx_head = g_ep4_tx_tail = 0;
+    g_ep4_rx_head = g_ep4_rx_tail = g_ep4_rx_count = 0;
+    g_ep4_tx_busy = false;
+    g_ep4_tx_pid = false;
+    g_ep4_rx_pid = false;
+
+    // Arm EP4 OUT to receive the host's first packet (AVAIL | DATA0 | 64 max)
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_OUT_BUF_CTRL, (1u << 10) | 64);
+
+    g_ep4_configured = true;
+    printk_debug("[USB] EP4 Bulk Network Endpoint Configured (Interface 3)\n");
+}
+
+// Copy any buffered TX bytes into an EP4 IN packet if the endpoint is free.
+static void ep4_tx_pump(void) {
+    if (!g_ep4_configured || g_ep4_tx_busy || g_ep4_tx_head == g_ep4_tx_tail) {
+        return;
+    }
+
+    volatile uint8_t *txbuf = (volatile uint8_t *)USB_EP4_IN_BUF;
+    uint32_t n = 0;
+    while (n < 64 && g_ep4_tx_tail != g_ep4_tx_head) {
+        txbuf[n++] = g_ep4_tx_ring[g_ep4_tx_tail];
+        g_ep4_tx_tail = (g_ep4_tx_tail + 1) % USB_EP4_TX_RING_SIZE;
+    }
+
+    uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10) | n; // FULL | LAST_BUFF | AVAIL | len
+    if (g_ep4_tx_pid) ctrl |= (1u << 13); // DATA1_PID
+    g_ep4_tx_pid = !g_ep4_tx_pid;
+    g_ep4_tx_busy = true;
+
+    ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_IN_BUF_CTRL, ctrl);
+}
+
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
@@ -381,6 +463,15 @@ void usb_cdc_task(void) {
             g_ep2_tx_pid = false;
             g_ep2_rx_pid = false;
             g_ep2_dtr = false;
+            // Same reasoning for EP4 (ACM1 network endpoint, A3b).
+            g_ep4_configured = false;
+            REG(USB_EP4_IN_BUF_CTRL)  = 0;
+            REG(USB_EP4_OUT_BUF_CTRL) = 0;
+            g_ep4_tx_head = g_ep4_tx_tail = 0;
+            g_ep4_rx_head = g_ep4_rx_tail = g_ep4_rx_count = 0;
+            g_ep4_tx_busy = false;
+            g_ep4_tx_pid = false;
+            g_ep4_rx_pid = false;
             printk_debug("[USB] Bus Reset Detected\n");
             bus_reset_handled = true;
         }
@@ -426,9 +517,30 @@ void usb_cdc_task(void) {
             if (g_ep2_rx_pid) rearm |= (1u << 13); // DATA1_PID
             ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_OUT_BUF_CTRL, rearm);
         }
+        if (buf_status & (1u << 8)) { // EP4 IN complete
+            g_ep4_tx_busy = false;
+        }
+        if (buf_status & (1u << 9)) { // EP4 OUT complete: data arrived from host
+            uint32_t ctrl = REG(USB_EP4_OUT_BUF_CTRL);
+            uint32_t len = ctrl & 0x3FFu;
+            volatile uint8_t *rxbuf = (volatile uint8_t *)USB_EP4_OUT_BUF;
+            for (uint32_t i = 0; i < len; i++) {
+                uint32_t next = (g_ep4_rx_head + 1) % USB_EP4_RX_RING_SIZE;
+                if (next != g_ep4_rx_tail) { // drop byte if the ring is full
+                    g_ep4_rx_ring[g_ep4_rx_head] = rxbuf[i];
+                    g_ep4_rx_head = next;
+                    g_ep4_rx_count++;
+                }
+            }
+            g_ep4_rx_pid = !g_ep4_rx_pid;
+            uint32_t rearm4 = (1u << 10) | 64; // AVAIL | 64 max
+            if (g_ep4_rx_pid) rearm4 |= (1u << 13); // DATA1_PID
+            ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_OUT_BUF_CTRL, rearm4);
+        }
     }
 
     ep2_tx_pump();
+    ep4_tx_pump();
 
     // Continue a multi-packet EP0 IN transfer (e.g. the 141-byte config
     // descriptor) once the host has ACKed the chunk just sent. ACK_REC
@@ -509,6 +621,7 @@ void usb_cdc_task(void) {
                     ep0_send_ack();
                     if (value != 0) {
                         ep2_configure();
+                        ep4_configure();
                     }
                     break;
                 default:
@@ -658,6 +771,85 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
     return 1;
 }
 
+/* --- A3b link_usb_cdc: p9_link_t glue over EP4's byte rings ---
+ * Peek/pop helpers mirror drivers/virtio_console.c's own byte_ring_t
+ * exactly (that file's rationale for the peek-before-pop split applies
+ * unchanged here: the 4-byte length prefix has to be inspected before
+ * committing to consuming a whole frame). g_ep4_rx_head/tail/count are already
+ * the ring's state; these just wrap them for read-only inspection. */
+static uint32_t ep4_rx_peek(uint8_t *out, uint32_t max) {
+    uint32_t n = max < g_ep4_rx_count ? max : g_ep4_rx_count;
+    uint32_t idx = g_ep4_rx_tail;
+    for (uint32_t i = 0; i < n; i++) {
+        out[i] = g_ep4_rx_ring[idx];
+        idx = (idx + 1) % USB_EP4_RX_RING_SIZE;
+    }
+    return n;
+}
+
+static uint32_t ep4_rx_pop(uint8_t *out, uint32_t max) {
+    uint32_t n = ep4_rx_peek(out, max);
+    g_ep4_rx_tail = (g_ep4_rx_tail + n) % USB_EP4_RX_RING_SIZE;
+    g_ep4_rx_count -= n;
+    return n;
+}
+
+static int ep4_link_poll(p9_link_t *link) {
+    (void)link;
+    if (g_ep4_rx_count < 4) return 0;
+    uint8_t hdr[4];
+    ep4_rx_peek(hdr, 4);
+    uint32_t declared = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    if (declared < 7 || declared > USB_EP4_RX_RING_SIZE) return -1; // corrupt stream
+    return (g_ep4_rx_count >= declared) ? 1 : 0;
+}
+
+static int ep4_link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
+    (void)link;
+    if (g_ep4_rx_count < 4) return -1;
+    uint8_t hdr[4];
+    ep4_rx_peek(hdr, 4);
+    uint32_t declared = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    if (declared < 7 || declared > max_len || g_ep4_rx_count < declared) return -1;
+    return (int)ep4_rx_pop(buf, declared);
+}
+
+/* Blocking, like drivers/virtio_console.c's virtio_console_send(): queues
+ * the whole frame into the TX ring (pumping usb_cdc_task() if it's briefly
+ * full) and then waits for the ring to fully drain out over the wire before
+ * returning, so the caller can reuse/free `buf` immediately afterward. */
+static int ep4_link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+    (void)link;
+    if (!g_ep4_configured || !buf || len == 0) return -1;
+
+    uint32_t sent = 0;
+    while (sent < len) {
+        uint32_t next = (g_ep4_tx_head + 1) % USB_EP4_TX_RING_SIZE;
+        if (next == g_ep4_tx_tail) {
+            usb_cdc_task();
+            continue;
+        }
+        g_ep4_tx_ring[g_ep4_tx_head] = buf[sent++];
+        g_ep4_tx_head = next;
+    }
+    while (g_ep4_tx_head != g_ep4_tx_tail || g_ep4_tx_busy) {
+        usb_cdc_task();
+    }
+    return (int)len;
+}
+
+static p9_link_t g_ep4_link = {
+    .name = "usb-cdc-net",
+    .poll = ep4_link_poll,
+    .send_frame = ep4_link_send_frame,
+    .recv_frame = ep4_link_recv_frame,
+    .ctx = NULL,
+};
+
+p9_link_t *usb_cdc_get_net_link(void) {
+    return g_usb_cdc_connected ? &g_ep4_link : NULL;
+}
+
 void usb_cdc_debug_dump(void) {
 #if defined(CONFIG_BOARD_RP2350)
     printk_debug("\n=== RP2350 USB Hardware Controller Status ===\n");
@@ -720,6 +912,11 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len) {
     if (!buf || max_len == 0) return 0;
     buf[0] = (uint8_t)uart_getc();
     return 1;
+}
+
+// No second CDC interface exists off RP2350 hardware.
+p9_link_t *usb_cdc_get_net_link(void) {
+    return NULL;
 }
 
 void usb_cdc_debug_dump(void) {

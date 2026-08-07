@@ -96,6 +96,15 @@ void kernel_main(void) {
     if (virtio_console_init() == 0) {
         p9_link_register_background(virtio_console_get_link());
     }
+#else
+    // A3b link_usb_cdc: ACM1/EP4 is a dedicated channel (its own USB
+    // endpoint pair), not the shared UART -- same zero-console-risk
+    // reasoning as virtio_console_init() above on QEMU, so it's registered
+    // unconditionally at boot rather than needing an explicit opt-in like
+    // `p9share` (the UART demux, which *does* share a wire with the
+    // console). Harmless if nothing is ever plugged into ACM1: its poll()
+    // just finds an empty ring.
+    p9_link_register_background(usb_cdc_get_net_link());
 #endif
     sched_init();
     shell_init();

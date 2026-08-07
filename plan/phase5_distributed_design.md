@@ -469,24 +469,121 @@ suite passes (81/81, RV64 + RV32 — four new tests: two per architecture).
   `-monitor none` to free stdio entirely) instead of the implicit stdio mux; `tests/p9lib.py` grew
   SLIP-framing support (`framing="slip"`) alongside virtio-console's raw framing so the same client
   library drives both.
-- **A3b (RX demux) deliberately not implemented.** Its cost/benefit is unchanged from the
-  original framing — highest-risk item in Track A because a regression breaks the console on all
-  three targets simultaneously — and `link_virtio_console` now covers the "live 9P wire during an
-  interactive QEMU session" use case A3b would have enabled anyway, without touching the console
-  path at all. Genuinely still needed eventually for the single-cable RP2350 story (a real
-  CP2102/UART deployment has no separate virtio-console channel to fall back on), but not blocking
-  anything in this phase.
-- **`link_usb_cdc` (RP2350's ACM1/`/dev/ttyACM1`) deliberately not implemented.** Confirmed before
-  starting: `drivers/usb_cdc.c` already declares dual CDC-ACM interfaces in its descriptor table,
-  but only ACM0 (the console, EP2) has any runtime data path; ACM1/EP4 has zero code behind it —
-  `usb_cdc_write_net()`/`usb_cdc_read_net()` are pure stubs that silently forward to
-  `uart_putc()`/`uart_getc()` today. Building it means writing an EP4 ring/pump from scratch
-  (mirroring EP2's ~150 lines) for RP2350-only, no-CI-value hardware support. Not requested and out
-  of scope for this pass; a real candidate for whenever RP2350 hardware-in-the-loop testing (M5)
-  is actually being pursued.
+- **A3b (RX demux) deliberately not implemented in this pass.** Its cost/benefit was unchanged
+  from the original framing — highest-risk item in Track A because a regression breaks the console
+  on all three targets simultaneously — and `link_virtio_console` covered the "live 9P wire during
+  an interactive QEMU session" use case A3b would have enabled anyway, without touching the console
+  path at all. Genuinely still needed for the single-cable RP2350 story (a real CP2102/UART
+  deployment has no separate virtio-console channel to fall back on) — **built in the A3b pass
+  below.**
+- **`link_usb_cdc` (RP2350's ACM1/`/dev/ttyACM1`) deliberately not implemented in this pass.**
+  `drivers/usb_cdc.c` declared dual CDC-ACM interfaces in its descriptor table, but only ACM0 (the
+  console, EP2) had any runtime data path; ACM1/EP4 had zero code behind it. Flagged as "a real
+  candidate for whenever RP2350 hardware-in-the-loop testing (M5) is actually being pursued" —
+  **built in the A3b pass below.**
 - **Fuzz/conformance testing** (the plan's other A2-adjacent bullet) still belongs to A4/T1's
   Python peer, unchanged from A2's own completion notes — A3 gave that peer a real wire to exist
   on, but didn't change the fuzzing scope itself.
+
+#### A3b completion notes (2026-08-07)
+
+Implemented and merged: the shared-wire UART demux, and `link_usb_cdc` (RP2350's ACM1/EP4) — the
+two items A3 explicitly deferred, both required for **M5** (an RP2350 hardware node with a real
+console). All three targets build clean; full `tests/runner.py` suite passes (85/85, RV64 + RV32 —
+one new test, run once per architecture).
+
+- **Opt-in, not always-on — the deliberate de-risking move.** The plan's own risk table flagged
+  A3b as high-risk specifically because "a regression breaks the console on all three targets
+  simultaneously." Rather than accept that risk unconditionally, the demux ships **disabled by
+  default**: `uart_has_char()`/`uart_getc()` on both `drivers/uart_16550.c` (QEMU) and
+  `drivers/uart_rp2350.c` read the hardware register directly, exactly as before A3b, unless a user
+  explicitly arms it with the new `p9share` shell command (`kernel/shell.c`, alongside the existing
+  `p9serve`). Every existing test, every existing interactive session, and every byte path that
+  doesn't call `p9share` is provably unchanged — the new code is additional, not a rewrite of the
+  console's hot path. `p9share off` reverses it. This is a different tradeoff from `p9serve`
+  (A3a): that command *never* returns to the shell (headless, reset to undo); `p9share` returns
+  immediately and can be toggled back off, because unlike headless mode it isn't giving up the
+  console to get a wire.
+- **Demux state machine** (`drivers/uart_net.c`, `uart_demux_*()`): a byte-routing variant of
+  `link_uart_slip`'s (A3a) own accumulator. Tracks whether it's currently inside an open SLIP frame
+  (started by a `SLIP_END` not yet matched by a closing one); bytes inside go to the same
+  accumulate-until-END-then-`slip_decode()` path A3a already has; bytes outside go to a new
+  256-byte console ring instead of being discarded. **Known, accepted tradeoff**, documented in the
+  header: this framing has no switch character distinct from SLIP's own `END` (`0xC0`) byte, so a
+  console byte that happened to *be* `0xC0` would be misread as the start of a 9P frame and
+  swallow subsequent keystrokes until the next `0xC0` or a raw-buffer-overflow resync. Plain ASCII
+  terminal input — including every VT100/xterm escape sequence `kernel/line_editor.c` parses —
+  never produces `0xC0`, so this doesn't bite in practice; it's the other half of why this stays
+  opt-in rather than silently always-on.
+- **One consumer of the hardware register, not two.** The platform drivers no longer read their
+  UART/PL011 RX register directly from `uart_has_char()`/`uart_getc()`; that logic moved into
+  private `hw_uart_has_char()`/`hw_uart_getc()` functions, handed to `uart_demux_init()` once at
+  boot. When the demux is disabled, `uart_has_char()`/`uart_getc()` call those private functions
+  directly (byte-for-byte the old code path). When enabled, only the demux calls them (via its
+  `poll()`/background pump), and the console reads exclusively from the ring the demux fills —
+  avoiding a race where two independent readers could each consume half of what should have been
+  one side's byte.
+- **RP2350's `uart_getc()` was missing `p9_link_background_poll()` entirely** — found while wiring
+  this up, not something A3b set out to fix. `drivers/uart_16550.c` (QEMU) has called it from
+  inside `uart_getc()`'s busy-wait since A3; `drivers/uart_rp2350.c` never did, because
+  `kernel/main.c`'s registration of `virtio_console_get_link()` as the background link is itself
+  `#if !defined(CONFIG_BOARD_RP2350)`-guarded (virtio-console is QEMU-only). The result: **no
+  background 9P link has ever actually run on RP2350 hardware**, regardless of A3/A4/A5 all being
+  "done" — those milestones were only ever proven on QEMU. Fixed as part of this pass (now that
+  RP2350 has two real background-link candidates to service, below), otherwise `link_usb_cdc` and
+  `p9share` would have shipped on RP2350 with no code path that ever polled them.
+- **Background link registry generalized from one slot to two**
+  (`fs/p9_link.c`/`fs/include/fs/p9_link.h`): `p9_link_register_background()` was a single global
+  pointer, sufficient while only one background link (`virtio_console`) ever existed on any one
+  target. RP2350 now wants two running at once — `link_usb_cdc` (auto-registered at boot, argued
+  below) and, once a user opts in, the UART demux link — and QEMU gains a second slot too (used by
+  the new `p9share` regression test below, alongside `virtio_console`). Re-registering an
+  already-registered link is a no-op; registering past the two-slot limit is logged and dropped
+  rather than silently replacing an existing registration (the old single-slot behavior). Added
+  `p9_link_unregister_background()` since passing `NULL` to "unregister" stops being unambiguous
+  once more than one slot exists; `p9share off` uses it. This is a config-table change, not a
+  concurrency change — the A4 completion notes' own reasoning for why servicing one background link
+  from a single-call-stack busy-wait is safe applies identically to servicing two.
+- **`link_usb_cdc` (`drivers/usb_cdc.c`, ACM1/EP4)**: a real bulk IN/OUT data path, built by mirroring
+  EP2's already-working console implementation (byte rings, `BUFF_STATUS` completion bits, DATA0/1
+  PID toggling) at the DPRAM offsets EP4 owns per the existing descriptor table (endpoint-control
+  `0x20`/`0x24`, buffer-control `0xA0`/`0xA4`, data buffers `0x200`/`0x240` — verified to not
+  overlap EP2's, which end at `0x200`). `ep4_configure()` is called alongside `ep2_configure()` from
+  the same `SET_CONFIGURATION` handler; EP4 state is reset on bus reset exactly where EP2's already
+  was. **No DTR gating**, unlike EP2: EP2 gates on DTR to avoid replaying a boot-time `printk()`
+  backlog to a terminal that opens the port late; this link never proactively sends anything until
+  a 9P request arrives, so there's no backlog to avoid, and RX bytes buffered before a peer
+  "opens" the port are simply harmless (unread until asked for).
+- **Framing: plain length-prefixed, not SLIP** — the same reasoning `link_virtio_console` (A3)
+  already established: 9P's own 4-byte size header is sufficient framing over a reliable, ordered
+  channel (a USB bulk pipe, like a virtqueue, doesn't need SLIP's escape-and-resync machinery,
+  which exists for sharing a wire with non-9P traffic or recovering from a lossy link — neither
+  applies here). `usb_cdc_get_net_link()` exposes it as a `p9_link_t`; `send_frame()` is blocking
+  (queues into the TX ring, pumping `usb_cdc_task()` if briefly full, then waits for the ring to
+  fully drain before returning), matching `virtio_console_send()`'s and `virtio_blk_transfer()`'s
+  own busy-wait-until-done precedent rather than inventing a timeout mechanism for just this one
+  call site.
+- **Auto-registered at boot on RP2350** (`kernel/main.c`), not gated behind an explicit command
+  like `p9share`: ACM1/EP4 is a dedicated channel with its own USB endpoint pair, so — like
+  `virtio_console` on QEMU — it carries no shared-wire ambiguity and no console risk. The `p9share`
+  opt-in gate exists specifically because the UART demux *does* share a wire with the console;
+  that reasoning doesn't apply to a second, physically separate USB interface.
+- **No interrupt endpoint (EP3, ACM1's CDC notification endpoint) implemented**, matching the
+  existing, already-working precedent for ACM0's own EP1: the descriptor table declares it, no
+  runtime code backs it, and Linux's `cdc_acm` driver has already been observed tolerating exactly
+  this for ACM0 (creates `/dev/ttyACM0` and works regardless). Same expectation applies to ACM1.
+- **QEMU regression coverage for the demux** (`tests/runner.py`,
+  `test_9p_uart_demux_shared_wire()`): `link_usb_cdc` is RP2350-only and untestable without
+  hardware, but the demux is target-agnostic — it's implemented once in `drivers/uart_net.c` and
+  used by both platform UART drivers — so it's fully exercisable on QEMU. Modeled on A3a's own
+  `test_9p_uart_slip_link()` (same `-serial unix:...` / `-monitor none` workaround for QEMU's
+  stdio Ctrl-A mux, described in that test's own docstring), but goes one step further: after
+  arming the demux (`p9share`) and completing one real SLIP-framed 9P transaction
+  (`tests/p9lib.py`, reading `/sd0/system/init.lisp` end to end), it sends a plain-text console
+  command (`help`) over the *same* socket and asserts on a real shell response. This is the one
+  proof point p9serve's own headless-mode test structurally cannot offer — its whole premise is
+  that the console never comes back — and it's the actual claim A3b makes over A3a: the wire
+  carries both, at the same time, without either breaking the other.
 
 ### A4 — Multi-node test harness
 
@@ -726,16 +823,17 @@ different word widths, real frames over a real socket, no hardware required, run
 
 ## 7. Milestones
 
-| | Deliverable | Gates |
-|---|---|---|
-| **M1** | A1 VFS handles + A2 9P hardened (**B11 closed**) → T0 | — |
-| **M2** | A3a headless SLIP link → **T1** (Python peer) | **M1 required** (security gate) |
-| **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 |
-| **M4** | A5 mount table / remote namespace | M3 |
-| **M5** | RP2350 hardware node → **T3** | M4 |
-| **M6+** | Track B: PMP / Sv39 / tasks / U-mode / IPC → restore "Microkernel" to the README title | independent of M1–M5 |
+| | Deliverable | Gates | Status |
+|---|---|---|---|
+| **M1** | A1 VFS handles + A2 9P hardened (**B11 closed**) → T0 | — | Done |
+| **M2** | A3a headless SLIP link → **T1** (Python peer) | **M1 required** (security gate) | Done |
+| **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 | Done — A4 (2026-08-07) reached T2 over `virtio_console`/TCP without needing A3b, per its own completion notes; A3b itself (shared-wire demux) landed separately, below, once RP2350 hardware support made it relevant rather than as a T2 dependency. |
+| **M4** | A5 mount table / remote namespace | M3 | Done |
+| **M5** | RP2350 hardware node → **T3** | M4 | Software prerequisites done (A3b demux + `link_usb_cdc`, below) — RP2350 now has both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4) that a background 9P link can actually run over (also fixed: RP2350's `uart_getc()` never polled a background link at all before this pass). **T3 itself — an actual physical-hardware run — is still outstanding**: it needs real RP2350 hardware in the loop, which this pass didn't have; everything here was verified by clean builds for the RP2350 target plus QEMU-side regression coverage of the demux (`link_usb_cdc` has no QEMU equivalent to test against). |
+| **M6+** | Track B: PMP / Sv39 / tasks / U-mode / IPC → restore "Microkernel" to the README title | independent of M1–M5 | Not started |
 
-**M3 is the point at which this phase's stated goal is met.**
+**M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. This
+pass's work (A3b, `link_usb_cdc`) is aimed at M5, the RP2350 hardware milestone.
 
 ---
 
@@ -764,7 +862,9 @@ Relative, not absolute — intended for sequencing decisions, not scheduling.
    than drifting into.
 2. **A3b (RX demux)** — moderate effort but the highest-risk item in Track A, because a regression
    there breaks the console on all three targets simultaneously. A3a exists specifically so this
-   can be deferred without blocking a real wire.
+   can be deferred without blocking a real wire. **Resolved (2026-08-07, see the A3b completion
+   notes): shipped opt-in behind the `p9share` command rather than always-on**, so the risk this
+   item calls out never applies to a session that doesn't explicitly arm it.
 3. **`link_virtio_console`** — a whole new device driver whose only benefit is nicer CI ergonomics
    on QEMU. It does not advance the hardware story at all. Probably not worth it unless demux (A3b)
    proves genuinely painful.

@@ -140,6 +140,160 @@ int slip_decode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max
     return (int)out;
 }
 
+/* --- link_uart_demux (A3b) ---
+ *
+ * The state machine is a byte-routing variant of link_uart_slip's own
+ * accumulator above: instead of assuming *every* byte belongs to a 9P
+ * frame, it tracks whether it's currently inside an open frame (started by
+ * a SLIP_END not yet matched by a closing one) and routes accordingly.
+ * Bytes seen outside an open frame go to a small console ring instead of
+ * being discarded, which is the one behavioral difference from headless
+ * mode; everything else (accumulate-until-END, hand the whole thing to the
+ * existing slip_decode() in one call) is unchanged.
+ *
+ * Known, accepted tradeoff: this framing has no reserved switch character
+ * separate from SLIP's own END byte, so a console byte that happens to be
+ * exactly 0xC0 would be misread as the start of a 9P frame, silently
+ * swallowing keystrokes until the next 0xC0 (or a raw-buffer overflow)
+ * resyncs it. Plain ASCII terminal input (letters, digits, punctuation,
+ * control codes, and every VT100/xterm escape sequence kernel/line_editor.c
+ * parses) never produces 0xC0, so this doesn't bite in practice -- but it's
+ * why this whole path stays off by default (see uart_demux_set_enabled())
+ * rather than being silently always-on. */
+#define UART_DEMUX_CONSOLE_RING_CAP 256
+
+typedef struct {
+    uart_raw_has_char_fn raw_has_char;
+    uart_raw_getc_fn raw_getc;
+    bool enabled;
+
+    uint8_t console_ring[UART_DEMUX_CONSOLE_RING_CAP];
+    uint32_t console_head, console_tail;
+
+    bool in_frame;
+    uint8_t raw[UART_SLIP_RAW_CAP];
+    uint32_t raw_len;
+    uint8_t frame[P9_MAX_MSIZE];
+    uint32_t frame_len;
+    bool frame_ready;
+} uart_demux_ctx_t;
+
+static uart_demux_ctx_t g_demux;
+
+static void demux_console_push(uint8_t c) {
+    uint32_t next = (g_demux.console_head + 1) % UART_DEMUX_CONSOLE_RING_CAP;
+    if (next == g_demux.console_tail) return; // ring full; drop (matches usb_cdc.c's EP2 precedent)
+    g_demux.console_ring[g_demux.console_head] = c;
+    g_demux.console_head = next;
+}
+
+static void demux_route_byte(uint8_t c) {
+    if (c == SLIP_END) {
+        if (g_demux.in_frame && g_demux.raw_len > 0) {
+            int n = slip_decode(g_demux.raw, g_demux.raw_len, g_demux.frame, sizeof(g_demux.frame));
+            g_demux.raw_len = 0;
+            g_demux.in_frame = false;
+            if (n > 0) {
+                g_demux.frame_len = (uint32_t)n;
+                g_demux.frame_ready = true;
+            }
+        } else {
+            g_demux.in_frame = true; // leading/duplicate END: (re)start frame accumulation
+            g_demux.raw_len = 0;
+        }
+        return;
+    }
+
+    if (g_demux.in_frame) {
+        if (g_demux.raw_len < UART_SLIP_RAW_CAP) {
+            g_demux.raw[g_demux.raw_len++] = c;
+        } else {
+            g_demux.in_frame = false; // overflow: drop and resync on the next SLIP_END
+            g_demux.raw_len = 0;
+        }
+    } else {
+        demux_console_push(c);
+    }
+}
+
+/* Drains every raw hardware byte currently available. Called from both the
+ * console side (uart_demux_console_has_char()) and the p9_link_t's poll()
+ * so whichever caller happens to run first keeps the wire moving -- there's
+ * only one consumer of the underlying hardware register either way. */
+static void demux_pump(void) {
+    if (!g_demux.enabled || !g_demux.raw_has_char || !g_demux.raw_getc) return;
+    while (g_demux.raw_has_char()) {
+        demux_route_byte(g_demux.raw_getc());
+    }
+}
+
+void uart_demux_init(uart_raw_has_char_fn has_char, uart_raw_getc_fn getc) {
+    g_demux.raw_has_char = has_char;
+    g_demux.raw_getc = getc;
+}
+
+void uart_demux_set_enabled(bool enabled) {
+    if (enabled && !g_demux.enabled) {
+        // Start clean: don't let bytes queued from before demux was armed
+        // (or leftover from a previous session) surface as stale input.
+        g_demux.console_head = g_demux.console_tail = 0;
+        g_demux.in_frame = false;
+        g_demux.raw_len = 0;
+        g_demux.frame_ready = false;
+        g_demux.frame_len = 0;
+    }
+    g_demux.enabled = enabled;
+}
+
+bool uart_demux_is_enabled(void) {
+    return g_demux.enabled;
+}
+
+bool uart_demux_console_has_char(void) {
+    demux_pump();
+    return g_demux.enabled && g_demux.console_head != g_demux.console_tail;
+}
+
+char uart_demux_console_getc(void) {
+    if (g_demux.console_head == g_demux.console_tail) return 0;
+    char c = (char)g_demux.console_ring[g_demux.console_tail];
+    g_demux.console_tail = (g_demux.console_tail + 1) % UART_DEMUX_CONSOLE_RING_CAP;
+    return c;
+}
+
+static int uart_demux_poll(p9_link_t *link) {
+    (void)link;
+    demux_pump();
+    return g_demux.frame_ready ? 1 : 0;
+}
+
+static int uart_demux_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
+    (void)link;
+    if (!g_demux.frame_ready) return -1;
+    uint32_t n = (g_demux.frame_len < max_len) ? g_demux.frame_len : max_len;
+    memcpy(buf, g_demux.frame, n);
+    g_demux.frame_ready = false;
+    g_demux.frame_len = 0;
+    return (int)n;
+}
+
+static int uart_demux_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+    (void)link;
+    return uart_slip_send_frame(link, buf, len); // TX has no demux ambiguity; reuse as-is
+}
+
+static p9_link_t g_uart_demux_link = {
+    .name = "uart-demux",
+    .poll = uart_demux_poll,
+    .send_frame = uart_demux_send_frame,
+    .recv_frame = uart_demux_recv_frame,
+    .ctx = NULL,
+};
+
+p9_link_t *uart_demux_get_link(void) {
+    return &g_uart_demux_link;
+}
+
 int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
 

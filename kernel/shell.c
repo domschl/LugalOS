@@ -68,6 +68,7 @@ static void cmd_help(void) {
     printk("  ed [file]       - Launch teletype line editor\n");
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     printk("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
+    printk("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -104,6 +105,35 @@ static void cmd_p9serve(void) {
     p9_link_t *link = uart_slip_get_link();
     for (;;) {
         p9_link_service(link);
+    }
+}
+
+/* A3b "shared-wire" mode (plan/phase5_distributed_design.md): unlike
+ * p9serve above, this returns to the shell immediately. It arms
+ * drivers/uart_net.c's RX demux (off by default -- see its own doc
+ * comments for the tradeoff this opts into) and registers the demuxed link
+ * as a background 9P server, so SLIP-framed 9P traffic and normal
+ * keystrokes can now share this UART: whichever arrives, uart_getc()
+ * routes it to the right place. This is the single-cable story A3a's
+ * headless mode doesn't cover (a real CP2102/RP2350 deployment with only
+ * one wire back to the host). `p9share off` reverses both steps. */
+static void cmd_p9share(const char *arg) {
+    bool enable = true;
+    if (arg) {
+        while (*arg == ' ') arg++;
+        if (strcmp(arg, "off") == 0) enable = false;
+    }
+
+    p9_link_t *link = uart_demux_get_link();
+    uart_demux_set_enabled(enable);
+    if (enable) {
+        p9_link_register_background(link);
+        printk("\n[9P] Shared-wire 9P active on this UART alongside the console -- type\n");
+        printk("     normally; a SLIP-framed 9P peer can attach on the same wire at any\n");
+        printk("     time. Run 'p9share off' to disable.\n\n");
+    } else {
+        p9_link_unregister_background(link);
+        printk("\n[9P] Shared-wire 9P disabled; this UART is console-only again.\n\n");
     }
 }
 
@@ -187,6 +217,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "p9serve") == 0) {
         cmd_p9serve();
+        return;
+    } else if (strcmp(cmd_line, "p9share") == 0) {
+        cmd_p9share(NULL);
+        return;
+    } else if (strncmp(cmd_line, "p9share ", 8) == 0) {
+        cmd_p9share(&cmd_line[8]);
         return;
     }
 

@@ -718,6 +718,116 @@ def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tu
             session.close()
 
 
+def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """A3b: proves the shared-wire demux (kernel/shell.c's `p9share` command,
+    drivers/uart_net.c's uart_demux_*()) actually demultiplexes -- unlike
+    A3a's p9serve, the console must still be alive *after* real 9P traffic
+    has gone over the same wire. Same stdio-mux workaround as
+    test_9p_uart_slip_link() above (dedicated `-serial unix:...` chardev,
+    `-monitor none`): speaks plain text ("p9share\\n") to arm the demux,
+    performs one full SLIP-framed 9P transaction, then sends a plain-text
+    console command over the SAME socket/connection and checks for a real
+    shell response -- something p9serve's headless mode could never do."""
+    import shutil
+    import tempfile
+    import p9lib
+
+    arch_img = img_path.with_name(f"test_{arch_name}_9p_demux_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    name = "9P + Console Coexist On One UART (A3b p9share demux, external client)"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "uartdemux9p.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        raw_sock: socket.socket | None = None
+        try:
+            session.start(extra_qemu_args=[
+                "-serial", f"unix:{sock_path},server=on,wait=off",
+                "-monitor", "none",
+            ])
+
+            last_err = ""
+            for _ in range(30):
+                try:
+                    raw_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    raw_sock.settimeout(2.0)
+                    raw_sock.connect(sock_path)
+                    break
+                except OSError as e:
+                    last_err = str(e)
+                    time.sleep(0.2)
+            if raw_sock is None:
+                return (name, False, f"could not connect to {sock_path}: {last_err}")
+
+            time.sleep(2.5)  # let boot finish
+            raw_sock.settimeout(0.3)
+            try:
+                while raw_sock.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
+
+            # Arm the demux -- console stays live, unlike p9serve.
+            raw_sock.settimeout(5.0)
+            raw_sock.sendall(b"p9share\n")
+            time.sleep(0.5)
+            raw_sock.settimeout(0.3)
+            try:
+                while raw_sock.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
+
+            # A real 9P transaction over the now-shared wire.
+            raw_sock.settimeout(5.0)
+            client = p9lib.P9Client(raw_sock, framing="slip")
+            data = client.cat("/sd0/system/init.lisp")
+            p9_ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            if not p9_ok:
+                return (name, False, f"9P transaction failed: {len(data)} bytes: {data[:120]!r}")
+
+            # The console must still work on the SAME connection afterward --
+            # the actual point of A3b vs. A3a's headless mode. A plain-text
+            # command should get a plain-text response containing content
+            # only the real shell (not a stray 9P reply) would produce.
+            raw_sock.settimeout(0.3)
+            try:
+                while raw_sock.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
+
+            raw_sock.settimeout(5.0)
+            raw_sock.sendall(b"help\n")
+            deadline = time.time() + 5.0
+            console_buf = b""
+            while time.time() < deadline:
+                raw_sock.settimeout(max(0.1, deadline - time.time()))
+                try:
+                    chunk = raw_sock.recv(65536)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                console_buf += chunk
+                if b"p9share" in console_buf:
+                    break
+
+            console_ok = b"p9share" in console_buf
+            if not console_ok:
+                return (name, False,
+                        f"console unresponsive after 9P traffic on shared wire: {console_buf[:200]!r}")
+
+            return (name, True, "")
+        except Exception as e:
+            return (name, False, str(e))
+        finally:
+            if raw_sock:
+                raw_sock.close()
+            session.close()
+
+
 def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tuple[str, bool, str]:
     """A4/T2: the milestone that satisfies this phase's stated goal -- two
     different memory models, two different word widths, real 9P frames over
@@ -961,6 +1071,7 @@ def main() -> int:
 
         _run_single(test_9p_virtio_link(rv64_elf, img_path, "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_path, "rv64"))
+        _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_path, "rv64"))
     else:
         print(f"\n[!] RV64 binary not found at '{rv64_elf}'. Skipping RV64 tests.")
 
@@ -978,6 +1089,7 @@ def main() -> int:
 
         _run_single(test_9p_virtio_link(rv32_elf, img_path, "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_path, "rv32"))
+        _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_path, "rv32"))
     else:
         print(f"\n[!] RV32 binary not found at '{rv32_elf}'. Skipping RV32 tests.")
 

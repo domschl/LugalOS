@@ -10,6 +10,8 @@
  */
 
 #include "drivers/uart.h"
+#include "drivers/uart_net.h"
+#include "fs/p9_link.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -84,6 +86,12 @@ void gp16_alive_tick(void) {
     }
 }
 
+// Raw physical-UART byte access (defined below, after uart_putc()); handed
+// to drivers/uart_net.c's A3b demux here in uart_init() so it needs a
+// forward declaration.
+static bool hw_uart_has_char(void);
+static uint8_t hw_uart_getc(void);
+
 void uart_init(uintptr_t base_addr) {
     (void)base_addr;
 
@@ -132,6 +140,8 @@ void uart_init(uintptr_t base_addr) {
 
     g_alive_loop_cnt = 0;
 
+    uart_demux_init(hw_uart_has_char, hw_uart_getc);
+
     uart_puts("\r\n[RP2350 Hardware UART0 Online] LugalOS Microkernel Starting...\r\n");
 }
 
@@ -149,9 +159,30 @@ void uart_debug_putc(char c) {
     uart_hw_putc(c); // kernel debug log: physical UART only, no USB mirror
 }
 
+// Raw physical-UART byte access (forward-declared above uart_init(), which
+// hands these to drivers/uart_net.c's A3b demux) -- kept separate from
+// uart_has_char()/uart_getc() below so the demux (once a user opts in via
+// `p9share`) can pull straight from the PL011 registers without going
+// through the console-ring indirection it is itself responsible for
+// providing.
+static bool hw_uart_has_char(void) {
+    return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0; // physical UART RX FIFO not empty
+}
+
+static uint8_t hw_uart_getc(void) {
+    return (uint8_t)(REG(UART0_BASE + 0x00) & 0xFF);
+}
+
+// The A3b demux only ever applies to the physical UART0 wire -- USB CDC
+// ACM0 (below) is a channel of its own with no shared-wire ambiguity, so it
+// keeps being checked directly and unconditionally, same as before.
 bool uart_has_char(void) {
     gp16_alive_tick();
-    if ((REG(UART0_BASE + 0x18) & (1u << 4)) == 0) return true; // physical UART RX FIFO
+    if (uart_demux_is_enabled()) {
+        if (uart_demux_console_has_char()) return true;
+    } else if (hw_uart_has_char()) {
+        return true;
+    }
     return usb_cdc_has_char(); // or a byte typed over /dev/ttyACM0
 }
 
@@ -159,9 +190,12 @@ char uart_getc(void) {
     while (!uart_has_char()) {
         gp16_alive_tick();
         usb_cdc_task();
+        p9_link_background_poll();
     }
-    if ((REG(UART0_BASE + 0x18) & (1u << 4)) == 0) {
-        return (char)(REG(UART0_BASE + 0x00) & 0xFF);
+    if (uart_demux_is_enabled()) {
+        if (uart_demux_console_has_char()) return uart_demux_console_getc();
+    } else if (hw_uart_has_char()) {
+        return (char)hw_uart_getc();
     }
     return usb_cdc_getc();
 }

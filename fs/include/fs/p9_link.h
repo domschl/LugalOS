@@ -32,14 +32,21 @@ typedef struct p9_link {
 int p9_link_service(p9_link_t *link);
 
 /* Registers `link` to be serviced opportunistically from
- * p9_link_background_poll() -- the hook used by drivers/uart_16550.c's
- * uart_getc() busy-wait loop (the same spot usb_cdc_task() is already
- * pumped from) so a QEMU-only link like virtio-console can carry live 9P
- * traffic *while the interactive shell is blocked on keyboard input*,
- * without any RX demultiplexing of the console's own byte stream (that's
- * the deferred, high-risk A3b work -- see the A3 completion notes). Pass
- * NULL to unregister. At most one background link at a time. */
+ * p9_link_background_poll() -- the hook used by drivers/uart_16550.c's and
+ * drivers/uart_rp2350.c's uart_getc() busy-wait loops (the same spot
+ * usb_cdc_task() is already pumped from) so a link like virtio-console, the
+ * USB-CDC net link (ACM1/EP4, A3b), or the UART demux link (A3b, once a
+ * user opts in via the `p9share` shell command) can carry live 9P traffic
+ * *while the interactive shell is blocked on keyboard input*. Up to
+ * P9_LINK_MAX_BACKGROUND (2) links may be registered at once -- e.g. RP2350
+ * running its USB-CDC net link and the UART demux link simultaneously.
+ * Re-registering the same link is a no-op; registering past the slot limit
+ * is logged and dropped. Use p9_link_unregister_background() to remove one
+ * (passing NULL to this function used to mean "unregister" when there was
+ * only one slot; with multiple slots that's ambiguous, hence the separate
+ * call). */
 void p9_link_register_background(p9_link_t *link);
+void p9_link_unregister_background(p9_link_t *link);
 void p9_link_background_poll(void);
 
 /* Link-agnostic synchronous 9P client (A4, plan/phase5_distributed_design.md):
