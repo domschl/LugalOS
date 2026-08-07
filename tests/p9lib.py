@@ -226,7 +226,17 @@ class P9Client:
         self.version()
         self.attach(root_fid, aname="/")
         names = [p for p in path.split("/") if p]
-        self.walk(root_fid, file_fid, names)
+        nwqid = self.walk(root_fid, file_fid, names)
+        if nwqid != len(names):
+            # A partial walk (nwqid < len(names)) leaves file_fid pointing at
+            # whatever directory it got stuck on -- open()+read_all() would
+            # silently return that directory's stat stream instead of
+            # raising, which reads exactly like a successful cat() of the
+            # wrong thing. Fail loudly instead.
+            raise P9Error(
+                f"walk to {path!r} only resolved {nwqid}/{len(names)} components "
+                f"(stopped at {'/'.join(names[:nwqid]) or '/'})"
+            )
         self.open(file_fid, mode=0)
         data = self.read_all(file_fid)
         self.clunk(file_fid)
