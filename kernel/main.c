@@ -57,7 +57,7 @@ void kernel_main(void) {
     time_init();
 
     printk("\n==================================================\n");
-    printk("       LugalOS Microkernel Lisp Machine v0.4.0\n");
+    printk("       LugalOS Lisp Machine v0.5.0\n");
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)

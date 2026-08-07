@@ -162,7 +162,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Kernel Boot & Shell Prompt", ok, log if not ok else ""))
 
         # 2. Plan 9 /proc/ Metrics
-        ok, log = session.send_and_expect("cat /proc/version", r"LugalOS v0\.4\.0", timeout=3.0)
+        ok, log = session.send_and_expect("cat /proc/version", r"LugalOS v0\.5\.0", timeout=3.0)
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 

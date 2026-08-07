@@ -249,7 +249,7 @@ picocom -b 115200 /dev/tty.usbmodem*
 
 Expected output after boot:
 ```
-LugalOS Microkernel Lisp Machine v0.4.0
+LugalOS Lisp Machine v0.5.0
 [VFS Server] ...
 lsh>
 ```
