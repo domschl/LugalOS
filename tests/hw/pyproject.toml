@@ -1,0 +1,8 @@
+[project]
+name = "lugalos-hw-tests"
+version = "0.1.0"
+description = "Hardware-in-the-loop test tooling for LugalOS RP2350 targets (A3b: p9share, link_usb_cdc)"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",
+]

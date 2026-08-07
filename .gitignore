@@ -20,5 +20,9 @@ build.ninja
 *~
 .DS_Store
 __pycache__/
+
+# uv-managed Python venvs (tests/hw/) -- pyproject.toml and uv.lock are
+# committed, the venv itself is reproducible via `uv sync`.
+.venv/
 blink_test/
 tools/picotool
