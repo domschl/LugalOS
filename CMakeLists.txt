@@ -67,6 +67,18 @@ endif()
 
 if(ENABLE_SANITIZERS)
     add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all)
+
+    # -fno-sanitize-recover=all makes the compiler treat the UBSan handler as
+    # noreturn; if the handler merely logs and returns (the historical
+    # behavior here), execution falls through into whatever the compiler
+    # assumed was unreachable. UBSAN_PANIC makes the handlers actually halt,
+    # so a fault is a deterministic stop instead of silently-continuing
+    # corruption -- this is what lets the QEMU test runner detect faults at
+    # all instead of them being swallowed mid-test.
+    option(UBSAN_PANIC "Halt the system on UBSan fault instead of only logging" ON)
+    if(UBSAN_PANIC)
+        add_compile_definitions(CONFIG_UBSAN_PANIC=1)
+    endif()
 endif()
 
 # Generate Embedded Flash FAT32 image (flash_fs.c)

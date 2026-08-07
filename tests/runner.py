@@ -16,6 +16,12 @@ from pathlib import Path
 class QemuSession:
     """Manages an interactive QEMU session for testing LugalOS serial I/O."""
 
+    # Markers that indicate the guest has crashed or corrupted state. If any of
+    # these appear in the output window, the test is failed immediately rather
+    # than being allowed to match its expected pattern anyway (or padding out
+    # to a timeout with no useful diagnostic).
+    FAULT_MARKERS = ("[UBSan Fault]", "[UBSan Fatal]", "[Trap Exception]", "[Fatal]")
+
     def __init__(self, elf_path: Path, img_path: Path, arch: str) -> None:
         self.elf_path: Path = elf_path
         self.img_path: Path = img_path
@@ -63,10 +69,38 @@ class QemuSession:
         self._reader_thread = threading.Thread(target=self._reader, daemon=True)
         self._reader_thread.start()
 
+    def _drain(self) -> None:
+        """Discard any output left over from a previous call. Without this, a
+        pattern from the *next* test's own echoed command (or trailing output
+        the previous test never consumed) can bleed in and produce a false
+        PASS before the new command has even been sent."""
+        while True:
+            try:
+                self.output_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    @staticmethod
+    def _strip_echo(text: str, command: str) -> str:
+        """Remove the guest's echo of what we just typed from the captured
+        output before matching. The interactive line editor echoes every
+        keystroke back (including embedded newlines between subcommands,
+        normalized to '\\r\\n'), so the literal command text is always the
+        first thing to appear -- and an expected_pattern that happens to be a
+        substring of the command itself would otherwise match its own echo
+        instead of any real response from the guest."""
+        if not command:
+            return text
+        escaped_lines = [re.escape(line) for line in command.split("\n")]
+        echo_pattern = r"\r?\n".join(escaped_lines)
+        return re.sub(echo_pattern, "", text)
+
     def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0) -> tuple[bool, str]:
         if not self.process or not self.process.stdin:
             return False, "Process not running"
-        
+
+        self._drain()
+
         if command:
             self.process.stdin.write(command + "\n")
             self.process.stdin.flush()
@@ -80,7 +114,12 @@ class QemuSession:
                 char = self.output_queue.get(timeout=0.05)
                 accumulated.append(char)
                 text = "".join(accumulated)
-                if regex.search(text):
+
+                if any(marker in text for marker in self.FAULT_MARKERS):
+                    return False, text
+
+                visible = self._strip_echo(text, command)
+                if regex.search(visible):
                     return True, text
             except queue.Empty:
                 pass

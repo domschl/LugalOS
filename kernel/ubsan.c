@@ -49,10 +49,27 @@ static void print_location(const struct ubsan_source_location *loc) {
     }
 }
 
+/* With -fno-sanitize-recover=all the compiler assumes these handlers never
+ * return; historically they did anyway (log-and-continue), which let
+ * undefined behavior keep executing after being detected. When
+ * CONFIG_UBSAN_PANIC is set, halt instead so a fault is a deterministic stop. */
+#if defined(CONFIG_UBSAN_PANIC)
+static void ubsan_halt(void) {
+    printk("[UBSan Fatal] Halting system due to undefined behavior.\n");
+    while (1) {
+        __asm__ __volatile__("wfi");
+    }
+}
+#define UBSAN_MAYBE_HALT() ubsan_halt()
+#else
+#define UBSAN_MAYBE_HALT() ((void)0)
+#endif
+
 void __ubsan_handle_out_of_bounds(struct ubsan_out_of_bounds_data *data, uintptr_t index) {
     printk("\n[UBSan Fault] Out-of-bounds array access! Index: %u ", (unsigned int)index);
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_shift_out_of_bounds(struct ubsan_shift_out_of_bounds_data *data, uintptr_t lhs, uintptr_t rhs) {
@@ -60,6 +77,7 @@ void __ubsan_handle_shift_out_of_bounds(struct ubsan_shift_out_of_bounds_data *d
     printk("\n[UBSan Fault] Shift out of bounds! Shift count: %u ", (unsigned int)rhs);
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_type_mismatch_v1(struct ubsan_type_mismatch_data_v1 *data, uintptr_t ptr) {
@@ -72,6 +90,7 @@ void __ubsan_handle_type_mismatch_v1(struct ubsan_type_mismatch_data_v1 *data, u
     }
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_add_overflow(struct ubsan_overflow_data *data, uintptr_t lhs, uintptr_t rhs) {
@@ -79,6 +98,7 @@ void __ubsan_handle_add_overflow(struct ubsan_overflow_data *data, uintptr_t lhs
     printk("\n[UBSan Fault] Signed integer addition overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_sub_overflow(struct ubsan_overflow_data *data, uintptr_t lhs, uintptr_t rhs) {
@@ -86,6 +106,7 @@ void __ubsan_handle_sub_overflow(struct ubsan_overflow_data *data, uintptr_t lhs
     printk("\n[UBSan Fault] Signed integer subtraction overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_mul_overflow(struct ubsan_overflow_data *data, uintptr_t lhs, uintptr_t rhs) {
@@ -93,6 +114,7 @@ void __ubsan_handle_mul_overflow(struct ubsan_overflow_data *data, uintptr_t lhs
     printk("\n[UBSan Fault] Signed integer multiplication overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_negate_overflow(struct ubsan_overflow_data *data, uintptr_t old_val) {
@@ -100,6 +122,7 @@ void __ubsan_handle_negate_overflow(struct ubsan_overflow_data *data, uintptr_t 
     printk("\n[UBSan Fault] Integer negation overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_divrem_overflow(struct ubsan_overflow_data *data, uintptr_t lhs, uintptr_t rhs) {
@@ -107,12 +130,14 @@ void __ubsan_handle_divrem_overflow(struct ubsan_overflow_data *data, uintptr_t 
     printk("\n[UBSan Fault] Integer division/remainder overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_builtin_unreachable(struct ubsan_unreachable_data *data) {
     printk("\n[UBSan Fault] Reached unreachable code! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_pointer_overflow(struct ubsan_overflow_data *data, uintptr_t base, uintptr_t result) {
@@ -120,6 +145,7 @@ void __ubsan_handle_pointer_overflow(struct ubsan_overflow_data *data, uintptr_t
     printk("\n[UBSan Fault] Pointer arithmetic overflow! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_out_of_bounds_abort(struct ubsan_out_of_bounds_data *data, uintptr_t index) {
@@ -172,6 +198,7 @@ void __ubsan_handle_load_invalid_value(struct ubsan_invalid_value_data *data, ui
     printk("\n[UBSan Fault] Load of invalid value! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_load_invalid_value_abort(struct ubsan_invalid_value_data *data, uintptr_t val) {
@@ -182,6 +209,7 @@ void __ubsan_handle_nonnull_arg(struct ubsan_invalid_value_data *data) {
     printk("\n[UBSan Fault] Nonnull argument is null! ");
     print_location(&data->location);
     printk("\n");
+    UBSAN_MAYBE_HALT();
 }
 
 void __ubsan_handle_nonnull_arg_abort(struct ubsan_invalid_value_data *data) {
