@@ -9,6 +9,7 @@
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
+#include "kernel/version.h"
 #include <string.h>
 #include <stdbool.h>
 
@@ -259,7 +260,7 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         } else if (strcmp(rel, "version") == 0) {
-            printk("LugalOS v0.5.0 (Bare-Metal RISC-V Lisp Machine)\n");
+            printk("LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
             if (sbuf && max_len > 0) sbuf[0] = '\0';
             return 0;
         }

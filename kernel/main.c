@@ -3,6 +3,7 @@
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
+#include "kernel/version.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
 #include "drivers/usb_cdc.h"
@@ -57,7 +58,7 @@ void kernel_main(void) {
     time_init();
 
     printk("\n==================================================\n");
-    printk("       LugalOS Lisp Machine v0.5.0\n");
+    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION);
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)
