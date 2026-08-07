@@ -1,6 +1,6 @@
 # LugalOS Review & Remediation Plan
 
-> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, 2, and 3 complete)
+> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0, 1, 2, 3, and 4 complete)
 > **Scope**: Vision/implementation consistency, architecture, bug hunt, test coverage, documentation.
 > **Baseline**: commit `b133833`, RV64 (Sv39 build) and RV32 (NOMMU build) verified live under QEMU on macOS.
 >
@@ -15,7 +15,7 @@
 | **Phase 1 — Stop the crashes and corruption** | ✅ **Complete** (see [§7 Phase 1](#phase-1--stop-the-crashes-and-corruption) and [§10](#10-phase-1-completion-notes)) |
 | **Phase 2 — Make the Lisp engine correct** | ✅ **Complete** (see [§7 Phase 2](#phase-2--make-the-lisp-engine-correct) and [§11](#11-phase-2-completion-notes)) |
 | **Phase 3 — Filesystem integrity** | ✅ **Complete** (see [§7 Phase 3](#phase-3--filesystem-integrity) and [§12](#12-phase-3-completion-notes)) |
-| Phase 4 — Align the docs with reality | Not started |
+| **Phase 4 — Align the docs with reality** | ✅ **Complete** (see [§7 Phase 4](#phase-4--align-the-docs-with-reality) and [§13](#13-phase-4-completion-notes)) |
 | Phase 5 — Close the vision gaps | Not started |
 
 ---
@@ -503,14 +503,32 @@ every function in `fs/fat32.c` changed. Full file list, the shared-scan-helper d
 things found during the work that weren't in the original review are in
 [§12](#12-phase-3-completion-notes).
 
-### Phase 4 — Align the docs with reality
+### Phase 4 — Align the docs with reality ✅ COMPLETE
 
-- [ ] **4.1** Rewrite the README's IPC / scheduler / MMU / 9P bullets to describe what exists,
-      marking the rest as roadmap. *(V1–V5)*
-- [ ] **4.2** Fix the factorial example. *(D1)*
-- [ ] **4.3** Correct the test count. *(D1)*
-- [ ] **4.4** Note `/dev/ttyACM1` and `uart_net.c` as not yet wired to hardware. *(V5)*
-- [ ] **4.5** Add `rv64_mmu` and `rp2350` to the README directory tree. *(D4)*
+- [x] **4.1** Added a new "Implementation Status" section right after the intro (before the
+      enthusiastic feature list gets a chance to mislead), explicitly separating what's
+      tested-and-working from what's a stub/name-only; trimmed the IPC bullet and the `(ps)`
+      primitive description to match and point to it. *(V1–V5)*
+- [x] **4.2** Verified live in QEMU rather than assumed: the exact README factorial example —
+      `(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))` then `(factorial 6)` — now
+      returns `=> 720`, because Phase 2 already fixed the two bugs (B3, B4) it was silently
+      demonstrating. No doc change was needed once the code was actually correct; see
+      [§13.1](#131-42-the-factorial-example-was-already-fixed-by-phase-2). *(D1)*
+- [x] **4.3** Updated "37 automated test cases" to the current 75, with a hedge
+      ("see `tests/runner.py` for the current count") against the same number drifting stale again
+      as more tests get added in later phases. *(D1)*
+- [x] **4.4** The two existing `/dev/ttyACM1` mentions already said "planned" / "not wired up yet"
+      accurately; added an explicit callout for `uart_net.c`'s SLIP transport specifically (it
+      SLIP-encodes a request and then calls the local 9P server directly instead of sending
+      anything over a UART) to the new Implementation Status section, since that gap wasn't
+      mentioned anywhere before. *(V5)*
+- [x] **4.5** Added `rv64_mmu/` and `rp2350/` to the README directory tree, each with a one-line
+      description (`rv64_mmu/` explicitly flagged as not-yet-wired-up, consistent with the new
+      Implementation Status section). *(D4)*
+
+**Result: README now has one clear, prominent, honest status section instead of the review's
+findings being scattered implicitly across enthusiastic bullets.** No functional/build changes in
+this phase — README.md was the only file touched. See [§13](#13-phase-4-completion-notes).
 
 ### Phase 5 — Close the vision gaps (dependency order)
 
@@ -932,3 +950,51 @@ space *before the target file existed at all*, so the file's own first (correct,
 cluster allocation was miscounted as a 1-cluster "leak" — fixed by creating the file first and only
 then taking both measurements, isolating the repeated-overwrite behavior the test is meant to
 check.
+
+---
+
+## 13. Phase 4 completion notes
+
+### 13.1 4.2: the factorial example was already fixed by Phase 2
+
+Before touching the README, checked whether the factorial example actually still needed a doc
+fix, rather than assuming the original review's finding still applied. It didn't: Phase 2 fixed
+B3 (self-recursion) and B4 (`(define (fn args...) body...)` signature form) as code changes, and
+the README's example exercises exactly those two code paths. Verified live rather than by
+inspection — booted the current RV64 build in QEMU and typed the exact example from the README:
+
+```
+lsh> (define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))
+=> factorial
+lsh> (factorial 6)
+=> 720
+```
+
+This is a useful data point beyond just "one less doc edit": it's an end-to-end confirmation that
+the Phase 2 fixes for B3 and B4 actually work for the exact scenario the original review used to
+find them, not just for the narrower regression tests added at the time.
+
+### 13.2 Why a dedicated status section instead of editing every bullet in place
+
+The original plan item (4.1) said "rewrite the README's IPC / scheduler / MMU / 9P bullets to
+describe what exists, marking the rest as roadmap." Editing every individual bullet in place would
+have worked but scatters the caveats across the document, each easy to skim past, and duplicates
+the same explanation in multiple places (harder to keep in sync later). Instead, added one
+prominent "Implementation Status" section directly after the intro, before the enthusiastic
+feature list — a reader hits the honest summary first, before anything has a chance to mislead
+them — and trimmed the specific bullets that actively overclaimed (the IPC bullet, the `(ps)`
+primitive description) to be accurate on their own while pointing back to the fuller explanation
+rather than repeating it. Bullets that were already honestly hedged (`/dev/ttyACM1`'s two existing
+mentions, `(p9-loopback)`'s "in-memory transport gateway" phrasing) were left alone.
+
+Deliberately did *not* rename the project or rewrite the title/intro away from "microkernel" — the
+architectural vision is a legitimate thing for a project to name itself after and aim toward, and
+that's a bigger editorial call than "keep the docs honest" implies. The status section makes the
+gap between that name and the current implementation explicit within the first screen of the
+document instead.
+
+### 13.3 What this phase didn't do
+
+No code, build, or test changes — only `README.md`. Confirmed nothing else needed to change by
+re-running the full build+test verification from Phase 3 was still current (no new commits since
+that verification), so no fresh build/test run was performed for a docs-only change.

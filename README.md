@@ -6,9 +6,50 @@ It is designed to scale dynamically from embedded **NOMMU** microcontrollers (li
 
 ---
 
+## Implementation Status
+
+LugalOS is early-stage. The section below reflects what's actually implemented today, not the
+long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
+a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
+
+**Working today**, verified by the automated test suite (`tests/runner.py`) on QEMU RV32 (NOMMU)
+and RV64, and by hand on RP2350 (Pico 2) hardware:
+- Boots to an interactive shell (`lsh`) on all three targets.
+- FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
+  backends, embedded flash ROM disk, RAM disk.
+- The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the
+  `(define (fn args...) body...)` signature form both work), `if`, `begin`, `let`, `cond`,
+  `quote`, and around 40 built-in primitives — run `(help)` for the current list.
+- The native C11 compiler (`chibicc`), producing real RISC-V ELF binaries, and the Thompson
+  `ed`-style line editor.
+- The native RP2350 USB CDC ACM console (`/dev/ttyACM0`), written from scratch against the
+  hardware.
+
+**Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
+- **IPC rendezvous**: `sys_ipc_call`/`sys_ipc_reply`/etc. exist as `ecall`-routed syscall numbers,
+  but the handler is a fixed stub (no blocking, no real message passing, no target-task lookup),
+  not the L4/seL4-style rendezvous the names suggest.
+- **Task scheduling**: `task_create`/`sched_yield` exist but are never called from anywhere in the
+  kernel; `/proc/ps` prints a static, hardcoded process table, not live scheduler state.
+- **MMU / memory protection**: the RV64 build's page-table-mapping function is a stub that
+  returns success without doing anything, and `satp` is never written. There is no virtual memory,
+  no page-level protection, and no user/kernel privilege separation on either target yet, despite
+  the boot banner's "Sv39 MMU Virtual Memory Paging Enabled" line.
+- **9P networking**: `fs/9p.c` implements 9P2000 framing, but the SLIP-over-UART transport
+  (`drivers/uart_net.c`, the `p9-uart-send` primitive) SLIP-encodes a request and then calls the
+  local 9P server directly — it does not send anything over a UART. `/dev/ttyACM1` enumerates on
+  RP2350 but has no data path wired up yet. See
+  [`plan/rp2350_distributed_plan.md`](plan/rp2350_distributed_plan.md) for where this is headed.
+
+None of this is a warning label so much as an honest map: the bare-metal boot, FAT32 engine, and
+Lisp shell are real and continuously tested; the distributed, memory-protected microkernel
+described below is the destination this project is built toward, not its current state.
+
+---
+
 ## Key Features & Architecture
 
-* **Microkernel Core & Fast IPC**: L4/seL4-style zero-copy register IPC rendezvous (`sys_ipc_call`, `sys_ipc_reply`) using RISC-V `ecall`.
+* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch (`sys_ipc_call`, `sys_ipc_reply`, `sys_ipc_send`, `sys_ipc_recv`) — the L4/seL4-style zero-copy rendezvous semantics these are named for aren't implemented yet; see [Implementation Status](#implementation-status).
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
   * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).
@@ -33,7 +74,7 @@ It is designed to scale dynamically from embedded **NOMMU** microcontrollers (li
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` enumerates as a second CDC ACM interface reserved for the planned 9P network transport (see [`plan/rp2350_distributed_plan.md`](plan/rp2350_distributed_plan.md)).
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 37 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 75 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time).
 
 
 
@@ -48,6 +89,8 @@ lugalos/
 │   ├── common/              # RISC-V assembly entry point, traps, ELF loader
 │   ├── include/arch/        # CSRs, Trap frames, VMM, ELF headers
 │   ├── rv32_nommu/          # 32-bit physical identity memory mapping
+│   ├── rv64_mmu/            # Sv39 page-table scaffolding (not yet wired up, see Implementation Status)
+│   ├── rp2350/              # RP2350 boot header, binary_info metadata
 ├── cmake/                   # Cross-compilation toolchains (RV32, RV64, RP2350)
 ├── drivers/                 # UART drivers (16550 / PL011 / RP2350), VirtIO Block, RAMDisk
 ├── fs/                      # FAT32 filesystem engine (Subdirectories, BPB) & Plan 9 VFS Server
@@ -314,7 +357,7 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(rm path)`: Removes file from VFS.
 * `(cp src dst)`: Copies file content between VFS locations.
 * `(cat path)`: Reads and prints file content to UART console.
-* `(ps)`: Displays task scheduler state (`/proc/ps`).
+* `(ps)`: Displays a static process table (`/proc/ps`) — task scheduling isn't implemented yet, see [Implementation Status](#implementation-status), so this isn't live scheduler state.
 * `(meminfo)`: Displays physical memory allocation metrics (`/proc/meminfo`).
 * `(df)`: Displays mounted volume capacity and cluster usage (`/proc/df`).
 * `(top)`: Displays system process, memory, and storage monitor dashboard.
