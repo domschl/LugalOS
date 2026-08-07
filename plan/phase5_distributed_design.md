@@ -490,7 +490,9 @@ suite passes (81/81, RV64 + RV32 — four new tests: two per architecture).
 Implemented and merged: the shared-wire UART demux, and `link_usb_cdc` (RP2350's ACM1/EP4) — the
 two items A3 explicitly deferred, both required for **M5** (an RP2350 hardware node with a real
 console). All three targets build clean; full `tests/runner.py` suite passes (85/85, RV64 + RV32 —
-one new test, run once per architecture).
+one new test, run once per architecture). **Additionally verified against a real, physical RP2350
+board** — see "Hardware validation (T3)" below — the first time any Phase 5 work has been checked
+against actual hardware rather than only QEMU and clean builds.
 
 - **Opt-in, not always-on — the deliberate de-risking move.** The plan's own risk table flagged
   A3b as high-risk specifically because "a regression breaks the console on all three targets
@@ -584,6 +586,38 @@ one new test, run once per architecture).
   proof point p9serve's own headless-mode test structurally cannot offer — its whole premise is
   that the console never comes back — and it's the actual claim A3b makes over A3a: the wire
   carries both, at the same time, without either breaking the other.
+
+#### Hardware validation (T3) — 2026-08-07
+
+With a physical RP2350 board wired up (two USB-CDC ports, plus a CP2102 dongle on GP0/GP1 for the
+physical UART), all of the above was exercised directly, not just built:
+
+- **`link_usb_cdc` standalone**: a host Python `p9lib.P9Client` (raw framing) attached over ACM1
+  and read `/proc/version` — first response was a genuine, protocol-correct `Rversion`
+  (`msize=4096`, `"9P2000"`), then a full `cat()` round trip.
+- **`p9share` standalone**: over the CP2102 physical UART, armed the demux, drove one complete
+  SLIP-framed 9P transaction, then sent a plain-text `help` command over the *same* connection
+  immediately afterward and got a real shell response — console and 9P coexisting on one wire, on
+  real hardware, not just in the QEMU regression test.
+- **T3 itself — RP2350 talking to a live QEMU node**: bridged RP2350's ACM1 to a QEMU RV64 guest's
+  `virtio-console` chardev with a plain byte relay (no re-framing needed — both ends already use
+  the same length-prefixed framing, A3/A3b's independent framing choices turning out to be
+  interoperable for free). From *inside that QEMU guest's own Lisp REPL*,
+  `(p9-remote-cat "/sd0/TEXT.TXT")` returned `"Hello, world!"` — content that exists only on the
+  RP2350's physical SD card (confirmed via the RP2350's own `ls`/`cat` first, since it's real
+  hardware with its own SD content, not the auto-generated QEMU test image). The request crossed
+  QEMU's virtio-console → the host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS
+  → the physical SPI SD card, and the response made the same trip back. This is the actual T3
+  proof point: two genuinely different LugalOS instances, one of them real silicon, exchanging real
+  files over a real wire.
+- **Bug found by this, not by any QEMU test**: `tests/p9lib.py`'s `P9Client.cat()` ignored
+  `Twalk`'s `nwqid` return value. Pointed at a path that only exists on the QEMU test image
+  (`/sd0/system/init.lisp`, absent from this board's actual card), the walk silently stopped one
+  component short and `cat()` returned the parent directory's packed-stat listing instead of
+  erroring — indistinguishable from a successful read of the wrong thing until inspected closely.
+  Every existing QEMU-side caller happened to target paths that always fully resolve, so this had
+  never been exercised before. Fixed: `cat()` now raises `P9Error` naming exactly which path
+  component the walk got stuck on.
 
 ### A4 — Multi-node test harness
 
@@ -829,7 +863,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M2** | A3a headless SLIP link → **T1** (Python peer) | **M1 required** (security gate) | Done |
 | **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 | Done — A4 (2026-08-07) reached T2 over `virtio_console`/TCP without needing A3b, per its own completion notes; A3b itself (shared-wire demux) landed separately, below, once RP2350 hardware support made it relevant rather than as a T2 dependency. |
 | **M4** | A5 mount table / remote namespace | M3 | Done |
-| **M5** | RP2350 hardware node → **T3** | M4 | Software prerequisites done (A3b demux + `link_usb_cdc`, below) — RP2350 now has both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4) that a background 9P link can actually run over (also fixed: RP2350's `uart_getc()` never polled a background link at all before this pass). **T3 itself — an actual physical-hardware run — is still outstanding**: it needs real RP2350 hardware in the loop, which this pass didn't have; everything here was verified by clean builds for the RP2350 target plus QEMU-side regression coverage of the demux (`link_usb_cdc` has no QEMU equivalent to test against). |
+| **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
 | **M6+** | Track B: PMP / Sv39 / tasks / U-mode / IPC → restore "Microkernel" to the README title | independent of M1–M5 | Not started |
 
 **M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. This
