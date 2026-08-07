@@ -1,6 +1,6 @@
-# LugalOS: Bare-Metal RISC-V Microkernel Operating System
+# LugalOS: Bare-Metal RISC-V Operating System
 
-**LugalOS** is a bare-metal, dependency-free microkernel operating system written in pure freestanding C11 and RISC-V assembly.
+**LugalOS** is a bare-metal, dependency-free operating system written in pure freestanding C11 and RISC-V assembly, built toward a microkernel architecture as its long-term design goal — see [Implementation Status](#implementation-status) below for what's actually implemented today. (This title is deliberately provisional: it drops "Microkernel" until the IPC/scheduler/MMU work in that section is real, at which point it should be restored.)
 
 It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (like the **Kendryte K210** and **VisionFive 2**).
 

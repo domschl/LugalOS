@@ -987,14 +987,31 @@ primitive description) to be accurate on their own while pointing back to the fu
 rather than repeating it. Bullets that were already honestly hedged (`/dev/ttyACM1`'s two existing
 mentions, `(p9-loopback)`'s "in-memory transport gateway" phrasing) were left alone.
 
-Deliberately did *not* rename the project or rewrite the title/intro away from "microkernel" — the
-architectural vision is a legitimate thing for a project to name itself after and aim toward, and
-that's a bigger editorial call than "keep the docs honest" implies. The status section makes the
-gap between that name and the current implementation explicit within the first screen of the
-document instead.
+Initially left the title/intro's use of "microkernel" alone, on the reasoning that the
+architectural vision is a legitimate thing for a project to name itself after and that renaming is
+a bigger editorial call than "keep the docs honest" implies — and that the status section makes the
+gap explicit within the first screen regardless. On reflection (prompted by the user, not
+self-initiated) this drew the line in the wrong place: someone who only reads the title still walks
+away with the false impression, and "the status section is right below it" only helps readers who
+keep scrolling. See 13.2.1.
+
+### 13.2.1 Follow-up: the title itself, not just the section below it
+
+Changed the title from "LugalOS: Bare-Metal RISC-V **Microkernel** Operating System" to "LugalOS:
+Bare-Metal RISC-V Operating System", and reworded the opening sentence to state the microkernel
+architecture as the *design goal* ("built toward a microkernel architecture as its long-term design
+goal") rather than a present-tense fact, with an inline pointer to Implementation Status. Added an
+explicit parenthetical in the README itself noting the title is deliberately provisional and should
+have "Microkernel" restored once Phase 5 (real IPC + scheduler + MMU) lands — flagging that here too
+so it isn't only discoverable by reading the README's own text.
+
+**Action item for whoever picks up Phase 5**: once 5.1–5.5 (or enough of them that IPC/scheduling/
+MMU are real, not stubs) are done, restore "Microkernel" to the README title and opening sentence,
+and remove the parenthetical about the title being provisional.
 
 ### 13.3 What this phase didn't do
 
 No code, build, or test changes — only `README.md`. Confirmed nothing else needed to change by
 re-running the full build+test verification from Phase 3 was still current (no new commits since
-that verification), so no fresh build/test run was performed for a docs-only change.
+that verification), so no fresh build/test run was performed for a docs-only change. The title
+follow-up in 13.2.1 is likewise docs-only.
