@@ -73,6 +73,17 @@ LugalOS uses a **single, unified 64-bit cross-compiler toolchain** (`riscv64-elf
 * `python3` (for FAT32 SD disk image pre-population and Flash ROMDisk generation)
 * `qemu-system-riscv32` and `qemu-system-riscv64`
 
+#### Linux (Debian / Ubuntu)
+```bash
+sudo apt update
+sudo apt install gcc-riscv64-unknown-elf cmake ninja-build python3 qemu-system-misc
+```
+
+#### macOS (Homebrew)
+```bash
+brew install riscv64-elf-gcc cmake ninja qemu python3
+```
+
 ### Build & Run RV32 (NOMMU) Target
 ```bash
 cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake
@@ -164,7 +175,10 @@ ninja -C build/rp2350
 
 2. Copy the UF2 firmware:
    ```bash
+   # Linux
    cp build/rp2350/lugalos.uf2 /media/$USER/RP2350/
+   # macOS
+   cp build/rp2350/lugalos.uf2 /Volumes/RP2350/
    ```
 
 3. The Pico 2 will flash, reboot automatically, and start LugalOS.
@@ -173,16 +187,22 @@ ninja -C build/rp2350
 
 Via the CP2101/CP2102 UART adapter:
 ```bash
+# Linux
 picocom -b 115200 /dev/ttyUSB0
-# or
-minicom -b 115200 -D /dev/ttyUSB0
+
+# macOS
+picocom -b 115200 /dev/tty.usbserial-*
 ```
 
 Or, with no extra adapter, directly over the Pico 2's own USB port once it enumerates as a composite CDC ACM device:
 ```bash
+# Linux
 picocom -b 115200 /dev/ttyACM0
+
+# macOS
+picocom -b 115200 /dev/tty.usbmodem*
 ```
-`/dev/ttyACM0` carries the same interactive `lsh` session as the UART console above (output is mirrored to both). Output only starts flowing once the terminal asserts DTR (i.e. once something actually opens the port), so connecting doesn't dump a backlog of boot-time log lines. `/dev/ttyACM1` also enumerates but its data path isn't wired up yet — it's reserved for the planned 9P network transport.
+`/dev/ttyACM0` (Linux) or `/dev/tty.usbmodem*` (macOS) carries the same interactive `lsh` session as the UART console above (output is mirrored to both). Output only starts flowing once the terminal asserts DTR (i.e. once something actually opens the port), so connecting doesn't dump a backlog of boot-time log lines. `/dev/ttyACM1` / second CDC ACM interface also enumerates but its data path isn't wired up yet — it's reserved for the planned 9P network transport.
 
 Expected output after boot:
 ```
