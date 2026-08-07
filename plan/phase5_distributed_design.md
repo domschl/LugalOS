@@ -1,7 +1,9 @@
 # Phase 5 — Distributed Nodes & Memory-Model Isolation: Design & Roadmap
 
-> **Status**: Planning. No Phase 5 code written yet.
-> **Date**: 2026-08-07
+> **Status**: **Track A (Distribution) complete — M1 through M5 all done, M5 verified against real
+> RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
+> Track B (Memory model & isolation) has not been started; work resumes there next.
+> **Date**: 2026-08-07 (original), updated same day through Track A completion.
 > **Baseline**: commit `4a64b78` (Phases 0–4 + cross-cutting quick wins complete, 75/75 tests
 > passing on RV64 and RV32, all three targets building clean).
 >
@@ -918,7 +920,7 @@ Relative, not absolute — intended for sequencing decisions, not scheduling.
 
 These change the plan's content, not just its schedule.
 
-### D1 — Transport strategy
+### D1 — Transport strategy — **Resolved**
 - **(a) SLIP-multiplexed single UART** — one code path for QEMU, RP2350 UART, and CP2102.
   Requires the A3b demux. *Recommended*, with A3a headless first to de-risk.
 - **(b) virtio-console on QEMU + USB CDC on RP2350** — cleanest separation, no demux, but two
@@ -926,19 +928,25 @@ These change the plan's content, not just its schedule.
 - **(c) Headless only** — trivial, but a node under test has no console, so failures are debugged
   blind.
 
-*Recommendation: (a), sequenced as A3a → A3b, with (b) held in reserve.*
+*Recommendation: (a), sequenced as A3a → A3b, with (b) held in reserve.* Both (a) and (b) ended up
+built, not just one: A3a → A3b landed as recommended (`p9serve` then `p9share`), and (b) also
+landed in full (`link_virtio_console` on QEMU, `link_usb_cdc` on RP2350) rather than staying in
+reserve — see the A3/A3b completion notes.
 
-### D2 — NOMMU protection
+### D2 — NOMMU protection — **Open; the natural next decision for Track B**
 Leave RP2350 as a genuinely flat single address space, or invest in **PMP** region protection?
 PMP gives real enforcement on NOMMU hardware and makes the NOMMU/MMU story a difference of
 granularity rather than "protected vs. not". It is meaningful extra work and is not required for
-anything in Track A.
+anything in Track A. Directly shapes **B1** (`vmm_space_t`'s NOMMU implementation): identity-only,
+or identity-plus-PMP-enforced. Worth deciding before B1 starts, not mid-implementation.
 
-### D3 — Track priority
+### D3 — Track priority — **Resolved**
 Track A to completion first (**recommended** — meets the stated goal soonest, leaves the riskiest
 work off the critical path), or interleave Track B to make the microkernel claim real sooner?
+Track A was taken to completion first, exactly as recommended (M1 through M5, all done
+2026-08-07) — Track B has not been started.
 
-### D4 — 9P server execution model
+### D4 — 9P server execution model — **Open, but low-urgency**
 Keep the server poll-driven (works today, no dependencies), or make it a task once B3/B5 land?
 Only worth revisiting after Track B; noted here so the A2 fid-table design does not accidentally
 assume single-threaded access forever.
