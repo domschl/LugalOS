@@ -270,7 +270,11 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
             if (buf && max_len > 0) {
                 char *sbuf = (char *)buf;
                 sbuf[0] = uart_getc();
-                sbuf[1] = '\0';
+                /* Only guaranteed room for a NUL if the caller's buffer is
+                 * at least 2 bytes -- a 1-byte buffer previously still got
+                 * sbuf[1] written unconditionally (B13 in
+                 * plan/2026-08-07_review_and_remediation.md). */
+                if (max_len > 1) sbuf[1] = '\0';
                 return 1;
             }
             return 0;

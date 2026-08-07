@@ -13,6 +13,17 @@ endif()
 
 message(STATUS "Configuring LugalOS for target: ${LUGALOS_TARGET}")
 
+# Default to a size-optimized build if the caller didn't request a specific
+# one -- this is bare-metal/embedded code (RP2350 has limited flash), and an
+# unset CMAKE_BUILD_TYPE previously meant no optimization flag at all
+# (effectively -O0) regardless of what the caller intended (see A6/V6 in
+# plan/2026-08-07_review_and_remediation.md: measured -Os at -17% text,
+# -48% data on this codebase vs. the unoptimized default). Callers can still
+# override with e.g. -DCMAKE_BUILD_TYPE=Debug.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "MinSizeRel" CACHE STRING "Choose the build type." FORCE)
+endif()
+
 # Compiler & Linker Flags
 set(COMMON_CFLAGS "-Wall -Wextra -pedantic -ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mcmodel=medany -ggdb")
 set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
@@ -41,8 +52,11 @@ else()
     message(FATAL_ERROR "Unknown LUGALOS_TARGET: ${LUGALOS_TARGET}")
 endif()
 
-set(CMAKE_C_FLAGS "${COMMON_CFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
-set(CMAKE_ASM_FLAGS "${COMMON_ASFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
+# Append rather than overwrite: CMAKE_C_FLAGS/CMAKE_ASM_FLAGS may already
+# carry caller-supplied flags (-DCMAKE_C_FLAGS=..., a CMake preset, etc.),
+# which an unconditional set() here used to silently discard.
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COMMON_CFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
+set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} ${COMMON_ASFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
 set(CMAKE_EXE_LINKER_FLAGS "-T${LINKER_SCRIPT} -nostdlib -Wl,--gc-sections")
 
 # Include Directories

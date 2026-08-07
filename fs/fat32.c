@@ -2,6 +2,43 @@
 #include "kernel/printk.h"
 #include <string.h>
 
+/* A 512-byte sector buffer declared as uint8_t[512] and then cast to
+ * uint32_t* or fat32_dir_entry_t* for in-place field access is a strict
+ * alignment violation per the C standard: uint8_t only guarantees 1-byte
+ * alignment, and the compiler is free to place such an array anywhere.
+ * UBSan's alignment check (enabled via -fsanitize=undefined) has never
+ * fired against this pattern across the full test suite, which means it
+ * happens not to be a *live* bug for this compiler/target's stack layout
+ * today -- but that's implementation behavior the standard doesn't
+ * guarantee, not something this code can rely on (see B13/X.4 in
+ * plan/2026-08-07_review_and_remediation.md). This union gives a sector
+ * buffer every view it's used as up front, so the compiler guarantees
+ * correct alignment for all of them and no cast is needed at any access
+ * site -- used only where a buffer is actually read through one of the
+ * typed views; buffers only ever touched via memcpy() (already
+ * alignment-safe) are left as plain uint8_t[512]. */
+typedef union {
+    uint8_t raw[512];
+    uint32_t words[128];
+    fat32_dir_entry_t entries[16];
+    fat32_bpb_t bpb;
+} fat32_sector_t;
+
+/* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more
+ * characters long (e.g. a 63+ character path component into a 64-byte
+ * caller buffer) -- see B13 in plan/2026-08-07_review_and_remediation.md.
+ * Mirrors strncpy_local() in user/lisp/lisp.c and safe_strncpy() in
+ * kernel/line_editor.c: dst_size is the *full* destination buffer size, and
+ * the result is always terminated within it. */
+static void safe_strncpy(char *dst, const char *src, int dst_size) {
+    int i = 0;
+    while (i < dst_size - 1 && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static void filename_to_83(const char *src, char *dst) {
     if (!src || !dst) return;
     memset(dst, ' ', 11);
@@ -32,9 +69,9 @@ static uint32_t fat_get_entry(fat32_fs_t *fs, uint32_t cluster) {
     if (!fs || !fs->dev || !fs->dev->read_blocks) return 0x0FFFFFFF;
     uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
     uint32_t fat_offset = (cluster * 4) % 512;
-    uint8_t fat_sec[512];
-    fs->dev->read_blocks(fs->dev, fat_sec, fat_sector, 1);
-    return ((uint32_t *)fat_sec)[fat_offset / 4] & 0x0FFFFFFF;
+    fat32_sector_t fat_sec;
+    fs->dev->read_blocks(fs->dev, fat_sec.raw, fat_sector, 1);
+    return fat_sec.words[fat_offset / 4] & 0x0FFFFFFF;
 }
 
 /* Write a 32-bit FAT entry for the given cluster (both FAT1 and FAT2) */
@@ -42,10 +79,10 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
     if (!fs || !fs->dev || !fs->dev->write_blocks) return;
     uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
     uint32_t fat_offset = (cluster * 4) % 512;
-    uint8_t fat_sec[512];
-    fs->dev->read_blocks(fs->dev, fat_sec, fat_sector, 1);
-    ((uint32_t *)fat_sec)[fat_offset / 4] = value;
-    fs->dev->write_blocks(fs->dev, fat_sec, fat_sector, 1); // FAT1
+    fat32_sector_t fat_sec;
+    fs->dev->read_blocks(fs->dev, fat_sec.raw, fat_sector, 1);
+    fat_sec.words[fat_offset / 4] = value;
+    fs->dev->write_blocks(fs->dev, fat_sec.raw, fat_sector, 1); // FAT1
     if (fs->bpb.num_fats > 1) {
         /* The second FAT copy starts fat_sz32 sectors after the first, not
          * a hardcoded +8 -- that only happened to be correct for volumes
@@ -55,7 +92,7 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
          * offset silently wrote cluster-chain updates into whatever
          * unrelated sector was 8 sectors after FAT1 instead of into FAT2
          * (see B9 in plan/2026-08-07_review_and_remediation.md). */
-        fs->dev->write_blocks(fs->dev, fat_sec, fat_sector + fs->bpb.fat_sz32, 1); // FAT2
+        fs->dev->write_blocks(fs->dev, fat_sec.raw, fat_sector + fs->bpb.fat_sz32, 1); // FAT2
     }
 }
 
@@ -135,10 +172,10 @@ static void fat32_scan_dir(fat32_fs_t *fs, uint32_t start_clus, fat32_dir_scan_f
     uint32_t clus_iter = start_clus;
     while (clus_iter < 0x0FFFFFF8) {
         for (uint32_t s = 0; s < fs->bpb.sec_per_clus; s++) {
-            uint8_t sector[512];
+            fat32_sector_t sector;
             uint32_t lba = cluster_to_lba(fs, clus_iter) + s;
-            fs->dev->read_blocks(fs->dev, sector, lba, 1);
-            if (fn(fs, lba, (fat32_dir_entry_t *)sector, 16, ctx)) return;
+            fs->dev->read_blocks(fs->dev, sector.raw, lba, 1);
+            if (fn(fs, lba, sector.entries, 16, ctx)) return;
         }
         clus_iter = fat_get_entry(fs, clus_iter);
     }
@@ -181,14 +218,18 @@ static bool find_component_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-/* Extract parent cluster and target file/directory name from a path */
+/* Extract parent cluster and target file/directory name from a path.
+ * out_name is a caller-owned buffer -- every call site declares it as
+ * char[64], which a `char *` parameter can't see or enforce, so that size
+ * is an implicit contract rather than something checkable here. */
+#define FAT32_OUT_NAME_SIZE 64
+
 static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char *out_name) {
     if (!fs || !path) return 0;
     while (*path == '/') path++;
 
     char path_copy[256];
-    strncpy(path_copy, path, sizeof(path_copy) - 1);
-    path_copy[sizeof(path_copy) - 1] = '\0';
+    safe_strncpy(path_copy, path, sizeof(path_copy));
 
     uint32_t cur_clus = fs->root_dir_cluster;
     char *curr = path_copy;
@@ -196,7 +237,7 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
     while (*curr) {
         char *slash = strchr(curr, '/');
         if (!slash) {
-            if (out_name) strncpy(out_name, curr, 63);
+            if (out_name) safe_strncpy(out_name, curr, FAT32_OUT_NAME_SIZE);
             return cur_clus;
         }
 
@@ -220,10 +261,10 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
 
 int fat32_format(block_dev_t *dev) {
     if (!dev || !dev->write_blocks) return -1;
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    fat32_sector_t sector;
+    memset(&sector, 0, sizeof(sector));
 
-    fat32_bpb_t *bpb = (fat32_bpb_t *)sector;
+    fat32_bpb_t *bpb = &sector.bpb;
     bpb->jmp_boot[0] = 0xEB; bpb->jmp_boot[1] = 0x58; bpb->jmp_boot[2] = 0x90;
     memcpy(bpb->oem_name, "MSWIN4.1", 8);
     bpb->bytes_per_sec = 512;
@@ -236,22 +277,21 @@ int fat32_format(block_dev_t *dev) {
     bpb->boot_sig = 0x29;
     memcpy(bpb->vol_lab, "LUGALOS_FAT", 11);
     memcpy(bpb->fil_sys_type, "FAT32   ", 8);
-    sector[510] = 0x55;
-    sector[511] = 0xAA;
+    sector.raw[510] = 0x55;
+    sector.raw[511] = 0xAA;
 
-    dev->write_blocks(dev, sector, 0, 1);
+    dev->write_blocks(dev, sector.raw, 0, 1);
 
-    memset(sector, 0, 512);
-    uint32_t *fat = (uint32_t *)sector;
-    fat[0] = 0x0FFFFFF8;
-    fat[1] = 0x0FFFFFFF;
-    fat[2] = 0x0FFFFFFF;
+    memset(&sector, 0, sizeof(sector));
+    sector.words[0] = 0x0FFFFFF8;
+    sector.words[1] = 0x0FFFFFFF;
+    sector.words[2] = 0x0FFFFFFF;
 
-    dev->write_blocks(dev, sector, 32, 1);
-    dev->write_blocks(dev, sector, 40, 1);
+    dev->write_blocks(dev, sector.raw, 32, 1);
+    dev->write_blocks(dev, sector.raw, 40, 1);
 
-    memset(sector, 0, 512);
-    dev->write_blocks(dev, sector, 48, 1);
+    memset(&sector, 0, sizeof(sector));
+    dev->write_blocks(dev, sector.raw, 48, 1);
 
     printk("[FAT32] Device '%s': Volume formatted cleanly as FAT32.\n", dev->name ? dev->name : "unknown");
     return 0;
@@ -472,15 +512,15 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
     }
     fat_set_entry(fs, cur_clus, 0x0FFFFFFF);
 
-    uint8_t sector[512];
-    fs->dev->read_blocks(fs->dev, sector, (uint32_t)ctx.free_sector_lba, 1);
-    fat32_dir_entry_t *entries = (fat32_dir_entry_t *)sector;
+    fat32_sector_t sector;
+    fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    fat32_dir_entry_t *entries = sector.entries;
     memcpy(entries[ctx.free_slot].name, name83, 11);
     entries[ctx.free_slot].attr = FAT32_ATTR_ARCHIVE;
     entries[ctx.free_slot].fst_clus_hi = (uint16_t)(first_cluster >> 16);
     entries[ctx.free_slot].fst_clus_lo = (uint16_t)(first_cluster & 0xFFFF);
     entries[ctx.free_slot].file_size = size;
-    fs->dev->write_blocks(fs->dev, sector, (uint32_t)ctx.free_sector_lba, 1);
+    fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
     return 0;
 }
 
@@ -575,10 +615,10 @@ int fat32_append_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_
         write_slot_ctx_t find_ctx = { .name83 = name83, .free_sector_lba = -1, .free_slot = 0, .name_matched = false };
         fat32_scan_dir(fs, parent_clus, write_slot_cb, &find_ctx);
         if (find_ctx.name_matched) {
-            uint8_t sec[512];
-            fs->dev->read_blocks(fs->dev, sec, (uint32_t)find_ctx.free_sector_lba, 1);
-            ((fat32_dir_entry_t *)sec)[find_ctx.free_slot].file_size = new_size;
-            fs->dev->write_blocks(fs->dev, sec, (uint32_t)find_ctx.free_sector_lba, 1);
+            fat32_sector_t sec;
+            fs->dev->read_blocks(fs->dev, sec.raw, (uint32_t)find_ctx.free_sector_lba, 1);
+            sec.entries[find_ctx.free_slot].file_size = new_size;
+            fs->dev->write_blocks(fs->dev, sec.raw, (uint32_t)find_ctx.free_sector_lba, 1);
         }
     }
 
@@ -606,33 +646,33 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path) {
     uint32_t new_clus = fat_alloc_cluster(fs);
     if (new_clus == 0) return -1;
 
-    uint8_t dir_sec[512];
-    memset(dir_sec, 0, 512);
+    fat32_sector_t dir_sec;
+    memset(&dir_sec, 0, sizeof(dir_sec));
 
-    fat32_dir_entry_t *dot = (fat32_dir_entry_t *)&dir_sec[0];
+    fat32_dir_entry_t *dot = &dir_sec.entries[0];
     memcpy(dot->name, ".          ", 11);
     dot->attr = FAT32_ATTR_DIRECTORY;
     dot->fst_clus_hi = (uint16_t)(new_clus >> 16);
     dot->fst_clus_lo = (uint16_t)(new_clus & 0xFFFF);
 
-    fat32_dir_entry_t *dotdot = (fat32_dir_entry_t *)&dir_sec[32];
+    fat32_dir_entry_t *dotdot = &dir_sec.entries[1];
     memcpy(dotdot->name, "..         ", 11);
     dotdot->attr = FAT32_ATTR_DIRECTORY;
     uint32_t up_clus = (parent_clus == fs->root_dir_cluster) ? 0 : parent_clus;
     dotdot->fst_clus_hi = (uint16_t)(up_clus >> 16);
     dotdot->fst_clus_lo = (uint16_t)(up_clus & 0xFFFF);
 
-    fs->dev->write_blocks(fs->dev, dir_sec, cluster_to_lba(fs, new_clus), 1);
+    fs->dev->write_blocks(fs->dev, dir_sec.raw, cluster_to_lba(fs, new_clus), 1);
 
-    uint8_t sector[512];
-    fs->dev->read_blocks(fs->dev, sector, (uint32_t)ctx.free_sector_lba, 1);
-    fat32_dir_entry_t *entries = (fat32_dir_entry_t *)sector;
+    fat32_sector_t sector;
+    fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    fat32_dir_entry_t *entries = sector.entries;
     memcpy(entries[ctx.free_slot].name, name83, 11);
     entries[ctx.free_slot].attr = FAT32_ATTR_DIRECTORY;
     entries[ctx.free_slot].fst_clus_hi = (uint16_t)(new_clus >> 16);
     entries[ctx.free_slot].fst_clus_lo = (uint16_t)(new_clus & 0xFFFF);
     entries[ctx.free_slot].file_size = 0;
-    fs->dev->write_blocks(fs->dev, sector, (uint32_t)ctx.free_sector_lba, 1);
+    fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
 
     printk("[FAT32] Device '%s': Subdirectory created: '%s' (Cluster %u)\n",
            fs->dev->name ? fs->dev->name : "unknown", new_dir_name, (unsigned int)new_clus);

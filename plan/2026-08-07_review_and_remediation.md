@@ -543,14 +543,36 @@ this phase — README.md was the only file touched. See [§13](#13-phase-4-compl
       restate the vision as a single-address-space system. The banner claiming Sv39 is active is
       the misleading part either way. *(V4)*
 
-### Cross-cutting quick wins
+### Cross-cutting quick wins ✅ COMPLETE
 
-- [ ] **X.1** Add `-Os`; stop clobbering `CMAKE_C_FLAGS`; honour `CMAKE_BUILD_TYPE`. *(A6, V6)*
-- [ ] **X.2** Pump `usb_cdc_task()` from `edit_multiline_box`, `read_status_prompt`, and
-      `lisp_repl`. *(A5)*
-- [ ] **X.3** Fix the `/dev/uart` 1-byte overflow and the `strncpy` non-termination sites. *(B13)*
-- [ ] **X.4** Decide on the alignment-violation cleanup in `fs/fat32.c` (union or `memcpy`-based
-      accessors). *(B13)*
+- [x] **X.1** `CMakeLists.txt` now defaults `CMAKE_BUILD_TYPE` to `MinSizeRel` when the caller
+      doesn't set one (verified: `-Os`, text −17%/data −49% on this build, matching the review's
+      original measurement), respects an explicit override (verified with
+      `-DCMAKE_BUILD_TYPE=Debug`), and appends to `CMAKE_C_FLAGS`/`CMAKE_ASM_FLAGS` instead of
+      overwriting them (verified a caller-supplied `-DCMAKE_C_FLAGS=...` survives into the actual
+      compile commands). *(A6, V6)*
+- [x] **X.2** `usb_cdc_task()` is now pumped from `edit_multiline_box`'s and `read_status_prompt`'s
+      main input loops (`kernel/line_editor.c`) and `lisp_repl`'s (`user/lisp/lisp.c`) — all three
+      previously blocked on `uart_getc()` with no USB polling, stalling the USB console while
+      inside the editor, a status-line prompt, or the Lisp REPL. *(A5)*
+- [x] **X.3** `/dev/uart`'s 1-byte overflow now checks `max_len > 1` before writing the second byte
+      (`fs/vfs_server.c`). Added a `safe_strncpy()` helper (mirroring the existing
+      `strncpy_local()` in `user/lisp/lisp.c`) to both `kernel/line_editor.c` and `fs/fat32.c`, and
+      converted every `strncpy` call site in both files to it — 8 of the 13 sites in
+      `line_editor.c` and 1 of the 2 in `fat32.c` were genuinely missing termination (reachable via
+      e.g. a 511-character line or an exactly-63-character path component), not just theoretically
+      risky; see [§14.1](#141-x3-which-strncpy-sites-were-actually-broken). *(B13)*
+- [x] **X.4** Decided on the union approach: added a `fat32_sector_t` union
+      (`raw`/`words`/`entries`/`bpb` views over the same 512 bytes) and converted every sector
+      buffer in `fs/fat32.c` that was cast to a stricter-aligned type to use it, eliminating the
+      casts entirely rather than working around them. Buffers only ever touched via `memcpy()`
+      (already alignment-safe) were deliberately left as plain `uint8_t[512]`; see
+      [§14.2](#142-x4-why-union-and-what-was-left-alone). *(B13)*
+
+**Result: all three targets rebuild clean with no new warnings; full suite is still 75/75 on both
+RV64 and RV32** (no new tests added — these were hardening fixes, not new user-visible behavior to
+assert against, beyond what the existing suite already exercises). See
+[§14](#14-cross-cutting-quick-wins-completion-notes) for verification detail on each item.
 
 ---
 
@@ -1015,3 +1037,82 @@ No code, build, or test changes — only `README.md`. Confirmed nothing else nee
 re-running the full build+test verification from Phase 3 was still current (no new commits since
 that verification), so no fresh build/test run was performed for a docs-only change. The title
 follow-up in 13.2.1 is likewise docs-only.
+
+---
+
+## 14. Cross-cutting quick wins completion notes
+
+### 14.0 These were genuinely unaddressed
+
+When asked, checked all four against the actual current code rather than assuming the four phases
+had swept them up along the way — they hadn't. None of the four numbered phases targeted this
+bucket, which is exactly why it exists as a separate section rather than being folded into one of
+them: `usb_cdc_task()` was still only called from `readline_interactive`'s loop; `CMakeLists.txt`
+still unconditionally overwrote `CMAKE_C_FLAGS` with no `-O` flag anywhere; the `/dev/uart`
+1-byte overflow and the `fat32.c` alignment casts were untouched by the Phase 3 filesystem rewrite,
+which had different, more urgent targets.
+
+### 14.1 X.3: which `strncpy` sites were actually broken
+
+Rather than assume every `strncpy` call was equally risky, read every site in both files before
+deciding what needed a real fix vs. a consistency cleanup:
+
+- **`kernel/line_editor.c`**: 5 of 13 sites already paired `strncpy(dst, src, N-1)` with an explicit
+  `dst[N-1] = '\0'` immediately after (safe already). The other **8 were genuinely missing
+  termination** — reachable via, for example, typing an exactly-511-character line into
+  `readline_interactive` and then navigating history (`temp_saved_line`), or an exactly-127-character
+  filename into the "Find file:" / "Write file:" status-line prompts (`active_filename`). All 13
+  were converted to `safe_strncpy()` for consistency, even the already-safe ones, since the
+  now-single helper is harder to misuse than the same two-line pattern repeated by hand 13 times.
+- **`fs/fat32.c`**: 1 of 2 sites (`path_copy`) was already safe. The other
+  (`fat32_get_parent_cluster`'s `out_name` output, a 64-byte caller buffer) was missing termination
+  for any path component of exactly 63+ characters — reachable via e.g.
+  `mkdir /sd0/<63-character-name>`. Both converted to the same `safe_strncpy()` pattern (a
+  file-local copy, mirroring the existing `strncpy_local()` in `user/lisp/lisp.c` — three files now
+  independently define the identical fix for the identical footgun, which is a reasonable amount of
+  duplication for a 6-line static helper rather than justifying a shared libc-style utility header
+  for this codebase's current size).
+
+### 14.2 X.4: why union, and what was left alone
+
+Chose the union approach over memcpy-based accessors: `fs/fat32.c`'s access pattern is pervasively
+`fat32_dir_entry_t *entries = (view); entries[i].field = ...` (array-style, used identically across
+six scan-callback functions from the Phase 3 rewrite) — converting that to explicit
+memcpy-in/memcpy-out at every field access would have been substantially more invasive and less
+readable than giving the buffer the right type in the first place. The `fat32_sector_t` union
+(`raw[512]` / `words[128]` / `entries[16]` / `bpb`) does that: the compiler guarantees correct
+alignment for the strictest member, so every view is safe with no cast anywhere.
+
+Deliberately **not** converted: sector buffers only ever touched via `memcpy()` (`fat32_init`'s
+boot-sector read, `fat32_read_file`'s and `fat32_write_file`'s data buffers, two of
+`fat32_append_file`'s three sector buffers, `fat32_statfs`'s `fat_buf`). `memcpy()` doesn't care
+about the alignment of a `uint8_t*` source or destination, so these were never actually affected by
+the violation this fix addresses — converting them too would have been churn with no correctness
+benefit.
+
+Also worth recording plainly: this was **never observed as a live fault**. UBSan's alignment check
+(`-fsanitize=undefined`, panic-on-fault since Phase 0) has been active through every test run across
+Phases 0-3 and this cross-cutting pass, and never fired on this pattern — meaning the compiler has
+consistently placed these stack buffers at addresses that happen to satisfy the stricter alignment
+anyway. That's implementation behavior (a plausible one, even: compilers commonly over-align stack
+allocations for performance), not a standard guarantee, so the fix stands, but it's worth being
+honest that this was a "make the code correct per the standard" fix, not a "stop an observed crash"
+fix, unlike most of the rest of this remediation effort.
+
+### 14.3 Build and test verification
+
+All three targets rebuilt clean from scratch:
+
+```bash
+rm -rf build/rv64 build/rv32 build/rp2350
+cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake && ninja -C build/rv64
+cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake && ninja -C build/rv32
+cmake -B build/rp2350 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake -DLUGALOS_TARGET=RP2350 && ninja -C build/rp2350
+python3 tests/runner.py   # 75 / 75 Tests PASSED
+```
+
+No new compiler warnings on any of the three targets. X.1 was additionally verified with two
+throwaway builds outside the repo: `-DCMAKE_BUILD_TYPE=Debug` correctly overrides the new
+`MinSizeRel` default, and a caller-supplied `-DCMAKE_C_FLAGS="-DMY_CUSTOM_FLAG=1"` correctly
+survives into the actual compile commands (`ninja -t commands`) instead of being silently
+discarded.

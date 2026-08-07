@@ -8,6 +8,23 @@
 #define MAX_HIST_ITEMS 32
 #define MAX_LINE_LEN 512
 
+/* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more
+ * characters long, and several call sites in this file relied on that
+ * happening anyway -- a stack-local destination buffer with no guaranteed
+ * terminator is an out-of-bounds read waiting to happen the next time it's
+ * treated as a C string (see B13 in
+ * plan/2026-08-07_review_and_remediation.md). Mirrors strncpy_local() in
+ * user/lisp/lisp.c: dst_size is the *full* destination buffer size, and the
+ * result is always terminated within it. */
+static void safe_strncpy(char *dst, const char *src, int dst_size) {
+    int i = 0;
+    while (i < dst_size - 1 && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static char history_stack[MAX_HIST_ITEMS][MAX_LINE_LEN];
 static int history_count = 0;
 
@@ -43,16 +60,14 @@ static void add_history(const char *line) {
     }
 
     if (history_count < MAX_HIST_ITEMS) {
-        strncpy(history_stack[history_count], line, MAX_LINE_LEN - 1);
-        history_stack[history_count][MAX_LINE_LEN - 1] = '\0';
+        safe_strncpy(history_stack[history_count], line, MAX_LINE_LEN);
         history_count++;
     } else {
         // Shift left
         for (int i = 0; i < MAX_HIST_ITEMS - 1; i++) {
             strcpy(history_stack[i], history_stack[i + 1]);
         }
-        strncpy(history_stack[MAX_HIST_ITEMS - 1], line, MAX_LINE_LEN - 1);
-        history_stack[MAX_HIST_ITEMS - 1][MAX_LINE_LEN - 1] = '\0';
+        safe_strncpy(history_stack[MAX_HIST_ITEMS - 1], line, MAX_LINE_LEN);
     }
 
     /* Append just the new line to the persistent log instead of
@@ -164,6 +179,7 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
     int len = 0;
     out_buf[0] = '\0';
     while (1) {
+        usb_cdc_task();
         char c = uart_getc();
         if (c == '\r' || c == '\n') {
             out_buf[len] = '\0';
@@ -200,8 +216,7 @@ static void exit_editor_cleanup(int len, const char *buf) {
 int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len) {
     char active_filename[128];
     if (initial_filename && strlen(initial_filename) > 0) {
-        strncpy(active_filename, initial_filename, sizeof(active_filename) - 1);
-        active_filename[sizeof(active_filename) - 1] = '\0';
+        safe_strncpy(active_filename, initial_filename, sizeof(active_filename));
     } else {
         strcpy(active_filename, "/ram0/system/scratch.lisp");
     }
@@ -230,6 +245,7 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
     redraw_box(active_filename, out_buf, len, pos, status_msg);
 
     while (1) {
+        usb_cdc_task();
         char c = uart_getc();
 
         int num_lines = 1;
@@ -267,7 +283,7 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
             } else if (c2 == 0x06 || c2 == 'f' || c2 == 'F') { // Ctrl-F: Find / Load File
                 char fn_in[128];
                 if (read_status_prompt(num_lines, g_prev_target_line, "Find file: ", fn_in, sizeof(fn_in))) {
-                    strncpy(active_filename, fn_in, sizeof(active_filename) - 1);
+                    safe_strncpy(active_filename, fn_in, sizeof(active_filename));
                     int r = vfs_read(active_filename, out_buf, max_len - 1);
                     if (r >= 0) {
                         out_buf[r] = '\0';
@@ -312,7 +328,7 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
             } else if (c2 == 0x17 || c2 == 'w' || c2 == 'W') { // Ctrl-W: Write File As
                 char fn_in[128];
                 if (read_status_prompt(num_lines, g_prev_target_line, "Write file: ", fn_in, sizeof(fn_in))) {
-                    strncpy(active_filename, fn_in, sizeof(active_filename) - 1);
+                    safe_strncpy(active_filename, fn_in, sizeof(active_filename));
                     vfs_write(active_filename, out_buf, len);
                     modified = false;
                     strcpy(status_msg, "Wrote file as");
@@ -522,10 +538,10 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
         } else if (c == 0x10) { // Ctrl-P: History Previous
             if (hist_nav_idx > 0) {
                 if (hist_nav_idx == history_count) {
-                    strncpy(temp_saved_line, out_buf, MAX_LINE_LEN - 1);
+                    safe_strncpy(temp_saved_line, out_buf, MAX_LINE_LEN);
                 }
                 hist_nav_idx--;
-                strncpy(out_buf, history_stack[hist_nav_idx], max_len - 1);
+                safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
                 len = strlen(out_buf);
                 pos = len;
                 redraw_line(prompt, out_buf, len, pos);
@@ -535,9 +551,9 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
             if (hist_nav_idx < history_count) {
                 hist_nav_idx++;
                 if (hist_nav_idx == history_count) {
-                    strncpy(out_buf, temp_saved_line, max_len - 1);
+                    safe_strncpy(out_buf, temp_saved_line, max_len);
                 } else {
-                    strncpy(out_buf, history_stack[hist_nav_idx], max_len - 1);
+                    safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
                 }
                 len = strlen(out_buf);
                 pos = len;
@@ -564,10 +580,10 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 if (seq2 == 'A') { // Up Arrow (History Prev)
                     if (hist_nav_idx > 0) {
                         if (hist_nav_idx == history_count) {
-                            strncpy(temp_saved_line, out_buf, MAX_LINE_LEN - 1);
+                            safe_strncpy(temp_saved_line, out_buf, MAX_LINE_LEN);
                         }
                         hist_nav_idx--;
-                        strncpy(out_buf, history_stack[hist_nav_idx], max_len - 1);
+                        safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
                         len = strlen(out_buf);
                         pos = len;
                         redraw_line(prompt, out_buf, len, pos);
@@ -576,9 +592,9 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                     if (hist_nav_idx < history_count) {
                         hist_nav_idx++;
                         if (hist_nav_idx == history_count) {
-                            strncpy(out_buf, temp_saved_line, max_len - 1);
+                            safe_strncpy(out_buf, temp_saved_line, max_len);
                         } else {
-                            strncpy(out_buf, history_stack[hist_nav_idx], max_len - 1);
+                            safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
                         }
                         len = strlen(out_buf);
                         pos = len;

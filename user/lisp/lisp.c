@@ -1206,6 +1206,7 @@ void lisp_repl(void) {
         printk("lisp> ");
         int idx = 0;
         while (1) {
+            usb_cdc_task();
             char c = uart_getc();
             if (c == '\r' || c == '\n') {
                 uart_puts("\r\n");
