@@ -12,6 +12,32 @@
 #include "ed.h"
 #include <string.h>
 
+/* Bounded output buffer for the POSIX -> S-expression command transformer.
+ * Every character bound for `sexpr[]` goes through sb_putc() so a long or
+ * adversarial input degrades to a flagged, dropped write instead of walking
+ * off the end of a fixed-size stack buffer. */
+typedef struct {
+    char *buf;
+    int idx;
+    int cap;         /* buf[cap - 1] is reserved for the terminating NUL */
+    bool overflowed;
+} sexpr_buf_t;
+
+static void sb_init(sexpr_buf_t *sb, char *buf, int cap) {
+    sb->buf = buf;
+    sb->idx = 0;
+    sb->cap = cap;
+    sb->overflowed = false;
+}
+
+static void sb_putc(sexpr_buf_t *sb, char c) {
+    if (sb->idx >= sb->cap - 1) {
+        sb->overflowed = true;
+        return;
+    }
+    sb->buf[sb->idx++] = c;
+}
+
 void shell_init(void) {
     printk("[Shell] Interactive Lugal Shell (lsh) initialized with Plan 9 Universal Namespace.\n");
 }
@@ -181,15 +207,23 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 
 
 
-    /* POSIX/Plan9 command -> S-Expression transformer */
+    /* POSIX/Plan9 command -> S-Expression transformer.
+     *
+     * Every write goes through sb_putc() so a long or adversarial command
+     * line degrades to a clean "too long" rejection instead of walking off
+     * the end of sexpr[] -- the delimiter/quote writes below used to be
+     * unguarded while only content-character writes were bounds-checked,
+     * which let e.g. `ls` followed by ~160 short tokens smash the stack
+     * (see B2 in plan/2026-08-07_review_and_remediation.md). */
     char sexpr[512];
-    int sidx = 0;
-    sexpr[sidx++] = '(';
+    sexpr_buf_t sb;
+    sb_init(&sb, sexpr, sizeof(sexpr));
+    sb_putc(&sb, '(');
 
     const char *p = cmd_line;
     /* Verb */
     while (*p && *p != ' ' && *p != '\t') {
-        if (sidx < 500) sexpr[sidx++] = *p;
+        sb_putc(&sb, *p);
         p++;
     }
 
@@ -197,26 +231,27 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     if (strncmp(cmd_line, "write ", 6) == 0) {
         while (*p == ' ' || *p == '\t') p++;
         if (*p) {
-            sexpr[sidx++] = ' ';
-            sexpr[sidx++] = '"';
+            sb_putc(&sb, ' ');
+            sb_putc(&sb, '"');
             while (*p && *p != ' ' && *p != '\t') {
-                if (sidx < 500) sexpr[sidx++] = *p;
+                sb_putc(&sb, *p);
                 p++;
             }
-            sexpr[sidx++] = '"';
+            sb_putc(&sb, '"');
             while (*p == ' ' || *p == '\t') p++;
             if (*p) {
-                sexpr[sidx++] = ' ';
-                sexpr[sidx++] = '"';
+                sb_putc(&sb, ' ');
+                sb_putc(&sb, '"');
                 while (*p) {
                     if (*p == '"') {
-                        if (sidx < 498) { sexpr[sidx++] = '\\'; sexpr[sidx++] = '"'; }
+                        sb_putc(&sb, '\\');
+                        sb_putc(&sb, '"');
                     } else {
-                        if (sidx < 500) sexpr[sidx++] = *p;
+                        sb_putc(&sb, *p);
                     }
                     p++;
                 }
-                sexpr[sidx++] = '"';
+                sb_putc(&sb, '"');
             }
         }
     } else {
@@ -225,27 +260,32 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             while (*p == ' ' || *p == '\t') p++;
             if (*p == '\0') break;
 
-            sexpr[sidx++] = ' ';
+            sb_putc(&sb, ' ');
             bool quoted = (*p == '"');
-            if (!quoted) sexpr[sidx++] = '"';
+            if (!quoted) sb_putc(&sb, '"');
 
             while (*p) {
                 if (quoted && *p == '"') {
-                    sexpr[sidx++] = *p++;
+                    sb_putc(&sb, *p++);
                     break;
                 } else if (!quoted && (*p == ' ' || *p == '\t')) {
                     break;
                 } else {
-                    if (sidx < 500) sexpr[sidx++] = *p;
+                    sb_putc(&sb, *p);
                     p++;
                 }
             }
-            if (!quoted) sexpr[sidx++] = '"';
+            if (!quoted) sb_putc(&sb, '"');
         }
     }
 
-    sexpr[sidx++] = ')';
-    sexpr[sidx] = '\0';
+    sb_putc(&sb, ')');
+    sexpr[sb.idx] = '\0';
+
+    if (sb.overflowed) {
+        printk("lsh: command line too long, ignored\n");
+        return;
+    }
 
     /* Evaluate translated S-Expression in Lisp engine */
     lisp_val_t *res = lisp_eval_string(sexpr);

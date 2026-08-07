@@ -143,6 +143,16 @@ extern Type *ty_long;
 
 extern Obj *globals;
 
+/* Set when any fixed-size compiler pool (tokens, nodes, objs, types,
+ * members, functions, string literal buffers) runs out of room mid-compile.
+ * When this happens the pool allocators clamp to their last slot instead of
+ * wrapping back to index 0 (which would silently alias and corrupt AST
+ * nodes built earlier in the same compilation), so compilation can finish
+ * without a memory-safety violation -- but the result is not trustworthy.
+ * chibicc_compile() checks this after parsing and refuses to emit or write
+ * out a binary if it's set. Reset at the start of every tokenize() call. */
+extern bool chibicc_pool_exhausted;
+
 /* Function Prototypes */
 char *preprocess(const char *input);
 Token *tokenize(char *input);

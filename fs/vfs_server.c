@@ -396,7 +396,7 @@ int vfs_cp(const char *src_path, const char *dst_path) {
     if (!src_path || !dst_path) return -1;
 
     static uint8_t copy_buf[4096];
-    int bytes_read = vfs_read(src_path, copy_buf, sizeof(copy_buf));
+    int bytes_read = vfs_read(src_path, copy_buf, sizeof(copy_buf) - 1);
     if (bytes_read < 0) {
         printk("cp: cannot read source path '%s'\n", src_path);
         return -1;

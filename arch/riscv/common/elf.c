@@ -14,7 +14,7 @@ int elf_load_and_run(const char *path) {
     }
 
     static uint8_t file_buf[4096];
-    int bytes = vfs_read(path, file_buf, sizeof(file_buf));
+    int bytes = vfs_read(path, file_buf, sizeof(file_buf) - 1);
     if (bytes < 16) {
         printk("[ELF Error] Failed to read ELF file '%s' (bytes=%d)\n", path, bytes);
         return -1;

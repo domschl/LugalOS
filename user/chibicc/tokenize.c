@@ -18,10 +18,16 @@ static int token_pool_idx = 0;
 static char str_bufs[MAX_STR_BUFS][STR_BUF_LEN];
 static int str_buf_idx = 0;
 
+bool chibicc_pool_exhausted = false;
+
 static Token *new_token(TokenKind kind, char *start, char *end) {
     if (token_pool_idx >= MAX_TOKENS) {
         printk("[chibicc Error] Token pool exhausted!\n");
-        token_pool_idx = 0;
+        chibicc_pool_exhausted = true;
+        /* Reuse the last slot instead of wrapping to 0: index 0 holds the
+         * start of the token stream, which is still linked-to and walked by
+         * the parser, so wrapping there would silently corrupt it. */
+        token_pool_idx = MAX_TOKENS - 1;
     }
     Token *tok = &token_pool[token_pool_idx++];
     memset(tok, 0, sizeof(Token));
@@ -49,21 +55,40 @@ static bool is_digit(char c) {
 
 static Token *read_string_literal(char *start) {
     char *p = start + 1;
-    if (str_buf_idx >= MAX_STR_BUFS) str_buf_idx = 0;
+    if (str_buf_idx >= MAX_STR_BUFS) {
+        printk("[chibicc Error] String literal buffer pool exhausted!\n");
+        chibicc_pool_exhausted = true;
+        str_buf_idx = MAX_STR_BUFS - 1;
+    }
     char *buf = str_bufs[str_buf_idx++];
     int len = 0;
+    bool truncated = false;
 
     while (*p != '"' && *p != '\0') {
-        if (*p == '\\') {
+        char c;
+        if (*p == '\\' && p[1] != '\0') {
             p++;
-            if (*p == 'n') buf[len++] = '\n';
-            else if (*p == 't') buf[len++] = '\t';
-            else if (*p == '0') buf[len++] = '\0';
-            else buf[len++] = *p;
+            if (*p == 'n') c = '\n';
+            else if (*p == 't') c = '\t';
+            else if (*p == '0') c = '\0';
+            else c = *p;
         } else {
-            buf[len++] = *p;
+            c = *p;
+        }
+        /* STR_BUF_LEN is fixed-size storage, not a growable buffer -- a
+         * literal longer than it fits must be capped, not overrun into the
+         * next str_bufs[] slot (or past the array on the last slot). */
+        if (len < STR_BUF_LEN - 1) {
+            buf[len++] = c;
+        } else {
+            truncated = true;
         }
         p++;
+    }
+
+    if (truncated) {
+        printk("[chibicc Error] String literal exceeds %d bytes, truncated!\n", STR_BUF_LEN - 1);
+        chibicc_pool_exhausted = true;
     }
 
     if (*p == '"') p++;
@@ -87,6 +112,7 @@ static char *my_strstr(const char *h, const char *n) {
 Token *tokenize(char *p) {
     token_pool_idx = 0;
     str_buf_idx = 0;
+    chibicc_pool_exhausted = false;
     Token head = {0};
     Token *cur = &head;
 

@@ -251,8 +251,18 @@ int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_ent
 
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size) {
     if (!fs || !entry || !buf || !fs->dev || !fs->dev->read_blocks) return -1;
+    if (max_size == 0) return 0;
     uint32_t cluster = ((uint32_t)entry->fst_clus_hi << 16) | entry->fst_clus_lo;
-    uint32_t size = entry->file_size < max_size ? entry->file_size : max_size;
+    /* Reserve the last byte of the caller's buffer for the NUL terminator
+     * written below, regardless of what max_size the caller passed. Most
+     * callers already pass sizeof(buf) - 1 themselves, but at least one
+     * (arch/riscv/common/elf.c) passed sizeof(file_buf) directly, which
+     * wrote one byte past the end of its buffer whenever the file being
+     * read was >= that size (see B7 in
+     * plan/2026-08-07_review_and_remediation.md). Clamping here makes the
+     * function safe regardless of what any given caller passes. */
+    uint32_t capacity = max_size - 1;
+    uint32_t size = entry->file_size < capacity ? entry->file_size : capacity;
 
     uint32_t bytes_read = 0;
     while (cluster < 0x0FFFFFF8 && bytes_read < size) {

@@ -36,11 +36,16 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
 
     printk("[chibicc] Parsing C AST...\n");
     Function *prog = parse(tok);
-    printk("[chibicc] AST parsed successfully!\n");
     if (!prog) {
         printk("[chibicc Error] Parsing failed\n");
         return -1;
     }
+    if (chibicc_pool_exhausted) {
+        printk("[chibicc Error] Compiler pool exhausted while compiling '%s'; "
+               "refusing to emit a possibly-corrupted binary\n", src_path);
+        return -1;
+    }
+    printk("[chibicc] AST parsed successfully!\n");
 
     static uint8_t elf_buf[CHIBICC_BUF_SIZE];
     memset(elf_buf, 0, sizeof(elf_buf));

@@ -26,6 +26,7 @@
 static lisp_val_t node_pool[NODE_POOL_SIZE];
 
 static int node_pool_idx = 0;
+static bool node_pool_exhausted_warned = false;
 
 static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
@@ -53,8 +54,20 @@ static void strncpy_local(char *dst, const char *src, int n) {
 /* Node allocation */
 static lisp_val_t *alloc_node(lisp_type_t type) {
     if (node_pool_idx >= NODE_POOL_SIZE) {
-        printk("[Lisp Error] Node pool exhausted! Resetting heap.\n");
-        node_pool_idx = 0;
+        /* Do NOT wrap back to index 0: global_env and every value evaluated
+         * so far are chains of nodes drawn from this pool, and index 0 is
+         * the oldest, still-live end of it. Wrapping there would silently
+         * overwrite bound primitives and the user's own definitions rather
+         * than just running out cleanly (see B6 in
+         * plan/2026-08-07_review_and_remediation.md). Clamp to the last slot
+         * instead: further allocations alias each other and produce wrong
+         * results, but no longer corrupt the environment or earlier values. */
+        if (!node_pool_exhausted_warned) {
+            printk("[Lisp Error] Node pool exhausted! Further evaluation will "
+                   "produce wrong results until the shell restarts.\n");
+            node_pool_exhausted_warned = true;
+        }
+        node_pool_idx = NODE_POOL_SIZE - 1;
     }
     lisp_val_t *v = &node_pool[node_pool_idx++];
     v->type = type;
@@ -112,6 +125,36 @@ static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
     *env = make_pair(binding, *env);
 }
 
+/* Safe argument-list accessors for primitives. `args` is the proper list of
+ * already-evaluated call arguments built by lisp_eval, terminated by the
+ * shared &nil_val node -- but a primitive can easily be called with fewer
+ * arguments than it expects. &nil_val is a real, non-NULL pointer whose
+ * type is LISP_NIL, not LISP_PAIR, so checking a cdr for "!= NULL" is not
+ * enough to guarantee the next car is safe to read: that was exactly the
+ * crash in e.g. (= 1), which read &nil_val's zero-initialized pair.car as a
+ * live pointer and dereferenced it. lisp_list_ref is the one place that
+ * checks the type, not just the pointer, before descending. */
+int lisp_list_len(lisp_val_t *args) {
+    int n = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) n++;
+    return n;
+}
+
+lisp_val_t *lisp_list_ref(lisp_val_t *args, int n) {
+    lisp_val_t *c = args;
+    for (int i = 0; i < n; i++) {
+        if (!c || c->type != LISP_PAIR) return NULL;
+        c = c->u.pair.cdr;
+    }
+    if (!c || c->type != LISP_PAIR) return NULL;
+    return c->u.pair.car;
+}
+
+static long arg_int(lisp_val_t *args, int n, long default_val) {
+    lisp_val_t *v = lisp_list_ref(args, n);
+    return (v && v->type == LISP_INT) ? v->u.i : default_val;
+}
+
 /* Built-in primitives */
 static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -127,7 +170,7 @@ static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_sub(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
-    long res = args->u.pair.car->u.i;
+    long res = arg_int(args, 0, 0);
     for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
         if (c->u.pair.car->type == LISP_INT) {
             res -= c->u.pair.car->u.i;
@@ -149,10 +192,9 @@ static lisp_val_t *prim_mul(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
-    lisp_val_t *a1 = args->u.pair.car;
-    lisp_val_t *a2 = args->u.pair.cdr->u.pair.car;
-    if (a1->type == LISP_INT && a2->type == LISP_INT) {
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (a1 && a2 && a1->type == LISP_INT && a2->type == LISP_INT) {
         return (a1->u.i == a2->u.i) ? &true_val : &false_val;
     }
     return &false_val;
@@ -160,22 +202,25 @@ static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_peek(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR) return make_int(0);
-    uintptr_t addr = (uintptr_t)args->u.pair.car->u.i;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    if (!a1 || a1->type != LISP_INT) return make_int(0);
+    uintptr_t addr = (uintptr_t)a1->u.i;
     uint32_t val = *(volatile uint32_t *)addr;
     return make_int((long)val);
 }
 
 static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
-    uintptr_t addr = (uintptr_t)args->u.pair.car->u.i;
-    uint32_t val = (uint32_t)args->u.pair.cdr->u.pair.car->u.i;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || a1->type != LISP_INT || !a2 || a2->type != LISP_INT) return &false_val;
+    uintptr_t addr = (uintptr_t)a1->u.i;
+    uint32_t val = (uint32_t)a2->u.i;
     *(volatile uint32_t *)addr = val;
     return &true_val;
 }
 
-static const char *get_str_val(lisp_val_t *val) {
+const char *get_str_val(lisp_val_t *val) {
     if (!val) return "";
     if (val->type == LISP_STRING) return val->u.str;
     if (val->type == LISP_SYMBOL) return val->u.sym;
@@ -216,9 +261,11 @@ static lisp_val_t *prim_touch(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_write(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
-    const char *path = get_str_val(args->u.pair.car);
-    const char *text = get_str_val(args->u.pair.cdr->u.pair.car);
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return &false_val;
+    const char *path = get_str_val(a1);
+    const char *text = get_str_val(a2);
     return (vfs_write(path, text, strlen(text)) == 0) ? &true_val : &false_val;
 }
 
@@ -238,9 +285,11 @@ static lisp_val_t *prim_rmdir(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_cp(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
-    const char *src = get_str_val(args->u.pair.car);
-    const char *dst = get_str_val(args->u.pair.cdr->u.pair.car);
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return &false_val;
+    const char *src = get_str_val(a1);
+    const char *dst = get_str_val(a2);
     return (vfs_cp(src, dst) == 0) ? &true_val : &false_val;
 }
 
@@ -253,13 +302,13 @@ static lisp_val_t *prim_rm(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return &false_val;
     char safe_src[128];
     char safe_dst[128];
-    const char *src = get_str_val(args->u.pair.car);
-    const char *dst = get_str_val(args->u.pair.cdr->u.pair.car);
-    strncpy_local(safe_src, src, 127); safe_src[127] = '\0';
-    strncpy_local(safe_dst, dst, 127); safe_dst[127] = '\0';
+    strncpy_local(safe_src, get_str_val(a1), sizeof(safe_src));
+    strncpy_local(safe_dst, get_str_val(a2), sizeof(safe_dst));
     return (chibicc_compile(safe_src, safe_dst) == 0) ? &true_val : &false_val;
 }
 
@@ -362,9 +411,11 @@ static lisp_val_t *prim_read_file(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_write_file(lisp_val_t *args, lisp_val_t *env) {
 
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return &false_val;
-    const char *path = get_str_val(args->u.pair.car);
-    const char *text = get_str_val(args->u.pair.cdr->u.pair.car);
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return &false_val;
+    const char *path = get_str_val(a1);
+    const char *text = get_str_val(a2);
     int res = vfs_write(path, text, strlen(text));
     return (res == 0) ? &true_val : &false_val;
 }
@@ -381,10 +432,7 @@ static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    int size_kb = 512;
-    if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_INT) {
-        size_kb = args->u.pair.car->u.i;
-    }
+    int size_kb = (int)arg_int(args, 0, 512);
     int res = vfs_mount_ramdisk(size_kb);
     return (res == 0) ? &true_val : &false_val;
 }
@@ -528,6 +576,7 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
 
 void lisp_init(void) {
     node_pool_idx = 0;
+    node_pool_exhausted_warned = false;
     global_env = &nil_val;
 
     env_set(&global_env, "#t", &true_val);

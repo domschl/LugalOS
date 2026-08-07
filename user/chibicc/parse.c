@@ -49,8 +49,20 @@ Type *ty_long  = &ty_long_obj;
 
 Obj *globals = NULL;
 
+/* Reuse the last slot instead of wrapping to 0 on exhaustion: index 0 and
+ * everything after it up to the current index is still referenced by
+ * already-built AST/type nodes, so wrapping there would silently corrupt
+ * them. Reusing the last slot only corrupts the newest, not-yet-linked
+ * allocation, and chibicc_pool_exhausted stops chibicc_compile() from
+ * emitting or persisting the (now unreliable) result. */
+static void type_pool_exhausted(void) {
+    printk("[chibicc Error] Type pool exhausted!\n");
+    chibicc_pool_exhausted = true;
+    type_pool_idx = MAX_TYPES - 1;
+}
+
 static Type *pointer_to(Type *base) {
-    if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+    if (type_pool_idx >= MAX_TYPES) type_pool_exhausted();
     Type *ty = &type_pool[type_pool_idx++];
     memset(ty, 0, sizeof(Type));
     ty->kind = TY_PTR;
@@ -60,7 +72,7 @@ static Type *pointer_to(Type *base) {
 }
 
 static Type *array_of(Type *base, int len) {
-    if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+    if (type_pool_idx >= MAX_TYPES) type_pool_exhausted();
     Type *ty = &type_pool[type_pool_idx++];
     memset(ty, 0, sizeof(Type));
     ty->kind = TY_ARRAY;
@@ -75,7 +87,8 @@ static Obj *locals = NULL;
 static Node *new_node(NodeKind kind) {
     if (node_pool_idx >= MAX_NODES) {
         printk("[chibicc Error] Node pool exhausted!\n");
-        node_pool_idx = 0;
+        chibicc_pool_exhausted = true;
+        node_pool_idx = MAX_NODES - 1;
     }
     Node *node = &node_pool[node_pool_idx++];
     memset(node, 0, sizeof(Node));
@@ -99,7 +112,8 @@ static Node *new_num(long val) {
 static Obj *new_var(const char *name, Type *ty) {
     if (obj_pool_idx >= MAX_OBJS) {
         printk("[chibicc Error] Obj pool exhausted!\n");
-        obj_pool_idx = 0;
+        chibicc_pool_exhausted = true;
+        obj_pool_idx = MAX_OBJS - 1;
     }
     Obj *var = &obj_pool[obj_pool_idx++];
     memset(var, 0, sizeof(Obj));
@@ -114,7 +128,8 @@ static Obj *new_var(const char *name, Type *ty) {
 static Obj *new_gvar(const char *name, Type *ty) {
     if (obj_pool_idx >= MAX_OBJS) {
         printk("[chibicc Error] Obj pool exhausted!\n");
-        obj_pool_idx = 0;
+        chibicc_pool_exhausted = true;
+        obj_pool_idx = MAX_OBJS - 1;
     }
     Obj *var = &obj_pool[obj_pool_idx++];
     memset(var, 0, sizeof(Obj));
@@ -195,7 +210,7 @@ static Type *struct_decl(Token **rest, Token *tok) {
                 return &type_pool[i];
             }
         }
-        if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+        if (type_pool_idx >= MAX_TYPES) type_pool_exhausted();
         Type *ty = &type_pool[type_pool_idx++];
         memset(ty, 0, sizeof(Type));
         ty->kind = TY_STRUCT;
@@ -206,7 +221,7 @@ static Type *struct_decl(Token **rest, Token *tok) {
 
     tok = skip(tok, "{");
 
-    if (type_pool_idx >= MAX_TYPES) type_pool_idx = 0;
+    if (type_pool_idx >= MAX_TYPES) type_pool_exhausted();
     Type *ty = &type_pool[type_pool_idx++];
     memset(ty, 0, sizeof(Type));
     ty->kind = TY_STRUCT;
@@ -225,7 +240,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
         Token *m_tok = tok;
         tok = tok->next;
 
-        if (member_pool_idx >= MAX_MEMBERS) member_pool_idx = 0;
+        if (member_pool_idx >= MAX_MEMBERS) {
+            printk("[chibicc Error] Member pool exhausted!\n");
+            chibicc_pool_exhausted = true;
+            member_pool_idx = MAX_MEMBERS - 1;
+        }
         Member *m = &member_pool[member_pool_idx++];
         memset(m, 0, sizeof(Member));
         int len = m_tok->len < 31 ? m_tok->len : 31;
@@ -706,7 +725,11 @@ static Function *function(Token **rest, Token *tok) {
     }
     tok = skip(tok, "{");
 
-    if (fn_pool_idx >= MAX_FNS) fn_pool_idx = 0;
+    if (fn_pool_idx >= MAX_FNS) {
+        printk("[chibicc Error] Function pool exhausted!\n");
+        chibicc_pool_exhausted = true;
+        fn_pool_idx = MAX_FNS - 1;
+    }
     Function *fn = &fn_pool[fn_pool_idx++];
     memset(fn, 0, sizeof(Function));
 

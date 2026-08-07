@@ -1,6 +1,6 @@
 # LugalOS Review & Remediation Plan
 
-> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0 complete)
+> **Date**: 2026-08-07 (review) — updated 2026-08-07 (Phase 0 and Phase 1 complete)
 > **Scope**: Vision/implementation consistency, architecture, bug hunt, test coverage, documentation.
 > **Baseline**: commit `b133833`, RV64 (Sv39 build) and RV32 (NOMMU build) verified live under QEMU on macOS.
 >
@@ -12,7 +12,7 @@
 | Phase | Status |
 |---|---|
 | **Phase 0 — Make the tests able to fail** | ✅ **Complete** (see [§7 Phase 0](#phase-0--make-the-tests-able-to-fail) and [§9](#9-phase-0-completion-notes)) |
-| Phase 1 — Stop the crashes and corruption | Not started |
+| **Phase 1 — Stop the crashes and corruption** | ✅ **Complete** (see [§7 Phase 1](#phase-1--stop-the-crashes-and-corruption) and [§10](#10-phase-1-completion-notes)) |
 | Phase 2 — Make the Lisp engine correct | Not started |
 | Phase 3 — Filesystem integrity | Not started |
 | Phase 4 — Align the docs with reality | Not started |
@@ -404,17 +404,30 @@ the specific broken paths — recursive lambdas, `(define (fn args) ...)` signat
 primitive calls — found via manual probing in the original review; those become Phase 1 work, and
 Phase 1.5 adds permanent regression tests for them).
 
-### Phase 1 — Stop the crashes and corruption
+### Phase 1 — Stop the crashes and corruption ✅ COMPLETE
 
-- [ ] **1.1** Add `list_ref(args, n)` / `arg_count(args)` helpers in `user/lisp/lisp.c`; convert
-      every primitive to arity + type check through them. *(fixes B1 across ~8 sites)*
-- [ ] **1.2** Rewrite the `kernel/shell.c` S-expression transformer with a single bounds-checked
-      `emit()` helper; reject over-long lines with a message. *(B2)*
-- [ ] **1.3** Replace pool wraparound with a hard error in `lisp.c` and all six chibicc pools —
-      return NULL / report "out of nodes" instead of aliasing. *(B6, A1)*
-- [ ] **1.4** Fix `fat32_read_file`'s off-by-one: drop the NUL, or require `max_size >= 1` and
-      clamp to `max_size - 1`. Audit all callers. *(B7)*
-- [ ] **1.5** Add a regression test for each of the above, asserting real output.
+- [x] **1.1** Add `lisp_list_ref(args, n)` / `lisp_list_len(args)` helpers in `user/lisp/lisp.c`
+      (exported via `lisp.h`); convert every primitive with the crash pattern to arity + type
+      check through them. *(fixes B1 across 7 sites in lisp.c, plus `prim_compile_file` in
+      lisp_compile.c — 8 total)*
+- [x] **1.2** Rewrite the `kernel/shell.c` S-expression transformer with a single bounds-checked
+      `sb_putc()`/`sexpr_buf_t` helper; reject over-long lines with a message. *(B2)*
+- [x] **1.3** Replace pool wraparound with a hard-stop-and-flag in `lisp.c` and all 8 chibicc
+      wraparound sites (type ×4, node, obj ×2, member, function, token, plus an unrelated
+      string-literal buffer overflow found in the same file) — clamp to the last slot instead of
+      aliasing, and refuse to emit/persist a binary once exhaustion is flagged. *(B6, A1)*
+- [x] **1.4** Fix `fat32_read_file`'s off-by-one: the function itself now reserves the last byte
+      of whatever `max_size` it's given for the NUL terminator, so it's safe regardless of what a
+      caller passes. Normalized the two callers (`elf.c`, `vfs_cp`) that weren't already reserving
+      a byte, for clarity. *(B7)*
+- [x] **1.5** Added 2 new permanent regression tests to `tests/runner.py` (55 total, up from 53)
+      covering B1 and B2 directly. B6 and B7 were verified by code-level bounds proof and full
+      build/suite verification rather than a dedicated regression test — see
+      [§10.3](#103-what-does-not-have-a-dedicated-regression-test-and-why) for why.
+
+**Result: 55/55 passing on both RV64 and RV32 (up from 53/53), RP2350 still builds clean, no new
+compiler warnings.** See [§10](#10-phase-1-completion-notes) for the full list of files touched,
+the design reasoning for each fix class, and what was deliberately left out of scope.
 
 ### Phase 2 — Make the Lisp engine correct
 
@@ -596,3 +609,78 @@ python3 tests/runner.py   # 51 / 51 Tests PASSED
 ```
 
 No new compiler warnings were introduced.
+
+---
+
+## 10. Phase 1 completion notes
+
+### 10.1 Files touched
+
+| File | Change |
+|---|---|
+| `user/lisp/lisp.c` | Added `lisp_list_len`/`lisp_list_ref`/`arg_int` helpers; fixed `prim_eq`, `prim_peek`, `prim_poke`, `prim_write`, `prim_cp`, `prim_cc`, `prim_write_file`, `prim_sub` to route through them; node-pool exhaustion no longer wraps to index 0 |
+| `user/lisp/include/lisp.h` | Exported `lisp_list_len`, `lisp_list_ref`, `get_str_val` (was `static`) so `lisp_compile.c` can reuse them |
+| `user/lisp/lisp_compile.c` | Fixed `prim_compile_file` (same crash pattern as the lisp.c primitives) |
+| `kernel/shell.c` | Added `sexpr_buf_t`/`sb_init`/`sb_putc`; rewrote the POSIX→S-expression transformer to route every write through it |
+| `user/chibicc/include/chibicc.h` | Added `extern bool chibicc_pool_exhausted;` |
+| `user/chibicc/tokenize.c` | Defined/reset `chibicc_pool_exhausted`; fixed token-pool wraparound; fixed an unbounded string-literal-buffer overflow found while auditing this file (see [10.2](#102-a-bug-found-during-the-fix-not-in-the-original-review)) |
+| `user/chibicc/parse.c` | Fixed all 7 remaining pool-wraparound sites (type ×4 via a new shared `type_pool_exhausted()` helper, node, obj ×2, member, function) |
+| `user/chibicc/main.c` | `chibicc_compile()` now checks `chibicc_pool_exhausted` after `parse()` and refuses to emit/write a binary if set |
+| `fs/fat32.c` | `fat32_read_file` now reserves the last byte of `max_size` for its own NUL terminator, independent of caller convention |
+| `arch/riscv/common/elf.c` | Normalized `vfs_read(..., sizeof(file_buf))` → `sizeof(file_buf) - 1` for clarity (no longer load-bearing after the fat32.c fix, but keeps the call site's intent explicit) |
+| `fs/vfs_server.c` | Same normalization in `vfs_cp`'s `copy_buf` read |
+| `tests/runner.py` | Added 2 permanent regression tests (B1, B2) |
+
+### 10.2 A bug found during the fix, not in the original review
+
+While auditing `tokenize.c` for pool-wraparound sites, `read_string_literal()` turned out to have
+an unrelated, unbounded write: it copied a C string literal's contents into a fixed 128-byte
+`str_bufs[]` slot with no bound on `len` at all — a `cc`-compiled source file containing a string
+literal longer than 127 bytes would silently overrun into the next slot (or past the array on the
+last one). This is the same severity class as B2 (stack/static buffer overflow from unbounded
+attacker/user-controlled input) and was fixed the same way: cap the write, and flag
+`chibicc_pool_exhausted` so a truncated literal can't silently produce a binary that looks like it
+compiled cleanly.
+
+### 10.3 What does not have a dedicated regression test, and why
+
+**B6 (Lisp node-pool exhaustion)**: reliably exhausting the 4096-slot pool requires either many
+sequential commands (cumulative usage across a session) or a single command line long enough to
+allocate thousands of AST/environment nodes — but the interactive shell's own line buffer caps a
+single command at 511 characters, and a back-of-envelope count (~7 node allocations per simple
+function call in this evaluator) puts a 511-character line at only a few hundred allocations, far
+short of 4096. Deterministically triggering exhaustion within the existing single-line test harness
+isn't practical without either a loop/iteration construct in the Lisp language (which doesn't exist
+yet — see Phase 2) or a test that sends dozens of separate commands in one session, which would be
+slow and fragile. The fix itself was verified by code inspection (the new code path is a straight
+line: detect, clamp, warn-once) and by confirming the existing Lisp test suite still passes
+end-to-end with the changed allocator.
+
+**B7 (fat32_read_file off-by-one) / the chibicc pool sites in `parse.c`**: exercising these requires
+constructing input at or beyond a specific fixed-size boundary (a file ≥ 4095 bytes for B7; a
+source file with 2048+ AST nodes, 512+ objects, 256+ distinct types, etc. for the chibicc pools).
+The shell's 511-byte line cap makes this awkward to construct through the existing test harness
+without adding dedicated large fixture files. These were verified by (a) a direct bounds proof —
+`bytes_read <= size <= capacity = max_size - 1`, so the terminator write is always in-bounds
+regardless of caller behavior — and (b) confirming the "chibicc C11 Compiler & Exec" test still
+compiles and runs a real program correctly through the changed allocators, i.e. the fix doesn't
+break the common case.
+
+Both are reasonable follow-ups once Phase 2 gives the Lisp language a loop/iteration construct
+(making B6 easy to trigger on demand) or a fixture-file mechanism is added to the test harness
+(making B7 easy to trigger on demand) — noted here rather than silently skipped.
+
+### 10.4 Build verification
+
+All three targets rebuilt clean from scratch with Phase 1 changes applied:
+
+```bash
+rm -rf build/rv64 build/rv32 build/rp2350
+cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake && ninja -C build/rv64
+cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake && ninja -C build/rv32
+cmake -B build/rp2350 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake -DLUGALOS_TARGET=RP2350 && ninja -C build/rp2350
+python3 tests/runner.py   # 55 / 55 Tests PASSED
+```
+
+No new compiler warnings on any of the three targets (same 4 pre-existing chibicc
+`-Wmissing-field-initializers` warnings and the pre-existing RWX-segment linker warning).

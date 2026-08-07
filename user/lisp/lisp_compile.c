@@ -183,9 +183,11 @@ int lisp_compile_file(const char *src_path, const char *dst_elf_path) {
 
 lisp_val_t *prim_compile_file(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    if (!args || args->type != LISP_PAIR || !args->u.pair.cdr) return make_sym("#f");
-    const char *src = args->u.pair.car->u.sym;
-    const char *dst = args->u.pair.cdr->u.pair.car->u.sym;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return make_sym("#f");
+    const char *src = get_str_val(a1);
+    const char *dst = get_str_val(a2);
 
     if (lisp_compile_file(src, dst) == 0) {
         return make_sym("#t");

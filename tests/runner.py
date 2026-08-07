@@ -356,6 +356,40 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_edit_cursor + "\n", r"Unbound symbol: ac", timeout=4.0)
         results.append(("Line Editor Backward Cursor Insertion & Deletion", ok, log if not ok else ""))
 
+        # 15. Regression: primitive arity/type mismatches must not crash the
+        # kernel (B1, see plan/2026-08-07_review_and_remediation.md). Each of
+        # these previously dereferenced a NULL pointer (or worse) when called
+        # with too few / wrong-typed arguments. If any of them still crashed,
+        # FAULT_MARKERS would fail this test outright; the trailing "=> 4"
+        # check on unrelated, unaffected arithmetic additionally proves the
+        # shell is still alive and evaluating correctly afterward, not just
+        # that it failed to print a fault banner.
+        cmd_arity_safety = (
+            "lisp\n"
+            "(= 1)\n"
+            "(poke 1)\n"
+            "(write \"/sd0/x.txt\")\n"
+            "(cp \"/sd0/x.txt\")\n"
+            "(cc \"/sd0/x.txt\")\n"
+            "(write-file \"/sd0/x.txt\")\n"
+            "(compile-file \"/sd0/x.txt\")\n"
+            "(+ 2 2)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_arity_safety, r"=> 4", timeout=5.0)
+        results.append(("Primitive Arity/Type Safety (no crash on malformed args, B1)", ok, log if not ok else ""))
+
+        # 16. Regression: an oversized shell command line must be rejected
+        # cleanly instead of overflowing the fixed-size S-expression
+        # transformer buffer (B2, see
+        # plan/2026-08-07_review_and_remediation.md). 160 single-char tokens
+        # previously walked sexpr[512] far out of bounds. The trailing
+        # "(+ 3 3)" check on the same session proves the shell survived and
+        # is still evaluating correctly.
+        cmd_overflow = "ls " + " ".join(["a"] * 160) + "\n(+ 3 3)"
+        ok, log = session.send_and_expect(cmd_overflow, r"=> 6", timeout=4.0)
+        results.append(("Shell Command-Line Overflow Rejection (no crash on long input, B2)", ok, log if not ok else ""))
+
 
     finally:
         session.close()
