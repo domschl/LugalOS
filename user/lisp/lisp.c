@@ -371,27 +371,40 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     return make_int(res);
 }
 
+/* /proc/<name> files are real byte streams now (A1, vfs_open()/vfs_pread()),
+ * not a printk() side effect -- read and print the actual content instead
+ * of relying on vfs_read()/vfs_ls() to have printed it themselves. */
+static void print_proc_file(const char *path) {
+    static char buf[512];
+    int len = vfs_read(path, buf, sizeof(buf));
+    if (len >= 0) {
+        printk("%s", buf);
+    } else {
+        printk("(no data for '%s')\n", path);
+    }
+}
+
 static lisp_val_t *prim_ps(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    vfs_ls("/proc/ps");
+    print_proc_file("/proc/ps");
     return &nil_val;
 }
 
 static lisp_val_t *prim_meminfo(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    vfs_ls("/proc/meminfo");
+    print_proc_file("/proc/meminfo");
     return &nil_val;
 }
 
 static lisp_val_t *prim_version(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    vfs_ls("/proc/version");
+    print_proc_file("/proc/version");
     return &nil_val;
 }
 
 static lisp_val_t *prim_df(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    vfs_read("/proc/df", NULL, 0);
+    print_proc_file("/proc/df");
     return &nil_val;
 }
 
@@ -400,13 +413,13 @@ static lisp_val_t *prim_top(lisp_val_t *args, lisp_val_t *env) {
     printk("\n==================================================\n");
     printk("           LugalOS System Monitor                 \n");
     printk("==================================================\n");
-    vfs_read("/proc/version", NULL, 0);
+    print_proc_file("/proc/version");
     printk("\n[Process States]\n");
-    vfs_read("/proc/ps", NULL, 0);
+    print_proc_file("/proc/ps");
     printk("\n[Memory Status]\n");
-    vfs_read("/proc/meminfo", NULL, 0);
+    print_proc_file("/proc/meminfo");
     printk("\n[Storage Usage]\n");
-    vfs_read("/proc/df", NULL, 0);
+    print_proc_file("/proc/df");
     printk("==================================================\n");
     return &nil_val;
 }

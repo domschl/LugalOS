@@ -312,7 +312,12 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(meminfo)\n"
             "(version)"
         )
-        ok, log = session.send_and_expect(cmd_lisp_vfs, r"synthetic", timeout=5.0)
+        # "kernel_idle" only appears in real /proc/ps content (A1) -- this also
+        # exercises that (ps)/(meminfo)/(version) now read real /proc byte
+        # streams via the VFS handle API instead of the old printk-side-effect
+        # path (which this pattern used to accidentally pass through, via a
+        # generic directory listing containing the word "synthetic").
+        ok, log = session.send_and_expect(cmd_lisp_vfs, r"kernel_idle", timeout=5.0)
         results.append(("Lisp Microkernel VFS Primitives (mkdir, write, cp, cat, rm, ps, meminfo)", ok, log if not ok else ""))
 
 

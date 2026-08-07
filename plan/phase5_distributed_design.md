@@ -214,6 +214,65 @@ Sub-work:
   diff touching every caller in the tree. With it, the API lands in one reviewable commit and call
   sites migrate incrementally.
 
+#### A1 completion notes (2026-08-07)
+
+Implemented and merged. All three targets (RV64, RV32, RP2350) build clean; full
+`tests/runner.py` suite passes (75/75, RV64 + RV32).
+
+- **API landed largely as designed**, with one simplification: `vfs_stat_t` ships as
+  `{ uint32_t size; uint8_t is_dir; }` only — `type`, `version`, and `ino` (the 9P
+  `qid.vers`/`qid.path` fields) were dropped for now, since nothing consumes them yet and
+  they're cheap to add back when A2 actually wires a 9P fid table to real handles. Flags are
+  `VFS_O_READ`/`VFS_O_WRITE`/`VFS_O_CREATE`/`VFS_O_TRUNC`; `VFS_MAX_HANDLES` is 8.
+- **`/srv/` is explicitly *not* handle-addressable** — `vfs_open()` returns -1 for it. It's
+  message-oriented IPC (a single request/response RPC per call, not a byte stream), so
+  `vfs_read()`/`vfs_write()` keep a direct-dispatch branch for it ahead of the handle path, and
+  `vfs_open()` rejects prefix-type 5 outright. Confirmed this doesn't block anything upcoming:
+  A2's 9P server talks to the *VFS's* handle API for the files/dirs it serves, not to `/srv/`
+  itself.
+- **`fat32_read_file()`/`fat32_append_file()`** are now thin wrappers over
+  `fat32_read_at()`/`fat32_write_at()`, eliminating duplicated cluster-walking logic rather than
+  leaving three copies of it.
+- **`/proc` generation uses a new `ksnprintf()`** (buffer-backed `printk()`-engine reuse, in
+  `kernel/printk.c`) instead of `printk()`'s UART path, exactly as planned — content is
+  generated once into `proc_buf` at `vfs_open()` time and served from there by `vfs_pread()`.
+- **Root `"/"` and `/dev/` also got `vfs_readdir()` support**, beyond what the original
+  sub-work list called for (which only mentioned `/proc`) — cheap to add since it's just static
+  name tables, and it means the whole non-`/srv/` namespace is walkable through one API, which
+  A2/A4 will want anyway.
+- **Compat-wrapper return-value contract preserved deliberately, not by accident**: several
+  existing callers (`user/lisp/lisp.c`'s `write-file`, `user/ed/ed.c`'s save) check
+  `vfs_write(...) == 0` for success, matching old `fat32_write_file()`'s 0-on-success/-1-on-
+  failure convention — *not* a byte count. `vfs_pwrite()` itself reports an honest byte count
+  (the new, honest contract), so `vfs_write()` translates `n == len` to `0`. Missing this would
+  have silently broken every `(write ...)` call in the Lisp REPL.
+  `vfs_read()`/`vfs_append()` keep their pre-existing byte-count return convention unchanged.
+- **Bugs found and fixed along the way (not in the original A1 scope, but exposed by it):**
+  - `vfs_ls()`'s `/proc/` branch always printed a hardcoded generic listing regardless of the
+    path given, so e.g. `(ps)` — which called `vfs_ls("/proc/ps")` — showed a directory listing
+    instead of the process table. Root cause: `/proc` reads were a `printk()` side effect with no
+    real content to list. Fixed by rewriting `prim_ps`/`prim_meminfo`/`prim_version`/`prim_df`/
+    `prim_top` in `user/lisp/lisp.c` to actually `vfs_read()` and print the real content (new
+    `print_proc_file()` helper), and by making `vfs_ls()`'s `/proc/` branch walk the real
+    directory via `vfs_open()`/`vfs_readdir()`.
+  - `kernel/shell.c`'s `cmd_uname()` read `/proc/version` into a buffer and then never printed
+    it (dead read relying on the old side effect) — fixed to print what it read.
+  - `vfs_cp()` copied through a single fixed 4096-byte static buffer with no chunking, silently
+    truncating any source file ≥ 4096 bytes with no error reported. Rewritten to copy in 512-byte
+    chunks via the new handle API with no size ceiling.
+  - Fixes this A1 work depended on (`fat32.c`): FAT32 cross-volume read fallback for `/flash0`
+    and `/sd0` (finding A2 in the review) is gone as a side effect of `vfs_read()` now routing
+    through `vfs_open()`, which resolves a single unambiguous volume per prefix.
+- **Test suite**: `tests/runner.py`'s "Lisp Microkernel VFS Primitives" test used to pass only
+  because of the `vfs_ls("/proc/ps")` bug above (its generic listing happened to contain the
+  literal word "synthetic", which the test asserted on). Updated the assertion to `kernel_idle`
+  — a string that only appears in real `/proc/ps` content — so the test now actually exercises
+  what its name claims.
+- **Deferred, not forgotten**: `fat32_read_at()` still walks the cluster chain from cluster 0 on
+  every call (O(offset) per read), same as the original `fat32_read_file()`. A per-handle
+  `(last_offset → last_cluster)` cache — turning sequential 9P streaming into O(1) per call — is
+  still worth doing once A2 makes that a hot path, exactly as the original sub-work list noted.
+
 ### A2 — 9P server hardening and completion
 
 **Gated: must complete before A3.** See [§2](#2-hard-ordering-gate-security).

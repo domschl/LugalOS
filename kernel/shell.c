@@ -71,7 +71,8 @@ static void cmd_help(void) {
 
 static void cmd_uname(void) {
     char buf[128];
-    vfs_read("/proc/version", buf, sizeof(buf));
+    int len = vfs_read("/proc/version", buf, sizeof(buf));
+    if (len >= 0) printk("%s", buf);
 #if defined(CONFIG_TARGET_RV32)
     printk("Architecture: RISC-V 32-bit (RV32IMAC)\n");
 #elif defined(CONFIG_TARGET_RV64)

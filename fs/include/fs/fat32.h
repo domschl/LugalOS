@@ -84,6 +84,26 @@ int fat32_remove_file(fat32_fs_t *fs, const char *path);
 void fat32_list_dir(fat32_fs_t *fs, const char *path);
 int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes);
 
+/* Offset-addressed read/write, underlying fs/vfs_server.c's handle-based
+ * vfs_pread()/vfs_pwrite() (see A1 in plan/phase5_distributed_design.md).
+ * fat32_read_file() and fat32_append_file() are now thin wrappers over
+ * these two. */
+int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset);
+int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset);
+
+/* Frees an existing file's cluster chain and resets it to empty (size 0,
+ * no first cluster) without deleting its directory entry -- the FAT32-level
+ * primitive behind VFS_O_TRUNC. */
+int fat32_truncate(fat32_fs_t *fs, const char *path);
+
+/* Returns the `index`-th directory entry (0-based, in on-disk order,
+ * including "." and ".." -- matching fat32_list_dir()'s existing behavior)
+ * of the directory at `dir_cluster`. `name_out` receives a normalized
+ * "NAME.EXT" (or "NAME") display string, not the raw space-padded 8.3
+ * bytes. Returns -1 once `index` is past the last entry. */
+int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
+                   char *name_out, uint32_t name_max, fat32_dir_entry_t *out_entry);
+
 
 #endif /* LUGALOS_FS_FAT32_H */
 

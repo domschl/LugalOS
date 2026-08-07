@@ -183,3 +183,43 @@ int printk_debug(const char *fmt, ...) {
     va_end(args);
     return ret;
 }
+
+/* ksnprintf() reuses vprintk_to() with buffer-backed putc/puts callbacks
+ * instead of UART ones. putc_fn/puts_fn take no context parameter (they're
+ * plain function pointers, matching uart_putc/uart_puts), so there's no way
+ * for snprintf_putc() below to know *which* buffer to write to except via a
+ * single shared pointer -- not reentrant, but nothing in this freestanding,
+ * single-threaded kernel calls printk() from inside a format callback, so
+ * that's never exercised in practice. */
+static struct {
+    char *buf;
+    uint32_t idx;
+    uint32_t cap; /* buf[cap - 1] is reserved for the terminating NUL */
+} g_snprintf_ctx;
+
+static void snprintf_putc(char c) {
+    if (g_snprintf_ctx.idx < g_snprintf_ctx.cap - 1) {
+        g_snprintf_ctx.buf[g_snprintf_ctx.idx++] = c;
+    }
+}
+
+static void snprintf_puts(const char *s) {
+    if (!s) return;
+    while (*s) snprintf_putc(*s++);
+}
+
+int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
+    if (!buf || cap == 0) return 0;
+
+    g_snprintf_ctx.buf = buf;
+    g_snprintf_ctx.idx = 0;
+    g_snprintf_ctx.cap = cap;
+
+    va_list args;
+    va_start(args, fmt);
+    vprintk_to(snprintf_putc, snprintf_puts, fmt, args);
+    va_end(args);
+
+    buf[g_snprintf_ctx.idx] = '\0';
+    return (int)g_snprintf_ctx.idx;
+}
