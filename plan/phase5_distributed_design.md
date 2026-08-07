@@ -590,7 +590,16 @@ against actual hardware rather than only QEMU and clean builds.
 #### Hardware validation (T3) — 2026-08-07
 
 With a physical RP2350 board wired up (two USB-CDC ports, plus a CP2102 dongle on GP0/GP1 for the
-physical UART), all of the above was exercised directly, not just built:
+physical UART), all of the above was exercised directly, not just built. What follows was first
+run ad hoc; it's now a permanent, repeatable suite at [`tests/hw/`](../tests/hw/) (a self-contained
+`uv` project — `pyproject.toml` + committed `uv.lock`, `pyserial` as the only dependency, kept
+isolated from `tests/runner.py`'s deliberately zero-dependency QEMU suite). Every test there skips
+cleanly rather than failing when no board is attached, so it's safe to leave out of CI. Building it
+surfaced two real bugs, both fixed: port auto-detection was probing with a bare newline, which
+desyncs `link_usb_cdc`'s frame parser (no SLIP-style resync-on-garbage) until a real bus reset —
+fixed to probe with a complete, self-contained Tversion frame instead; and the QEMU-bridge test's
+own cleanup had a race that could abort a USB transfer mid-flight, fixed to join the relay threads
+before closing the serial handle.
 
 - **`link_usb_cdc` standalone**: a host Python `p9lib.P9Client` (raw framing) attached over ACM1
   and read `/proc/version` — first response was a genuine, protocol-correct `Rversion`
