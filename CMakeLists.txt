@@ -107,6 +107,7 @@ add_custom_command(
 set(SOURCES
     kernel/main.c
     kernel/printk.c
+    kernel/klog.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c

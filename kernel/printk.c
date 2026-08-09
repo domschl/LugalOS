@@ -1,4 +1,5 @@
 #include "kernel/printk.h"
+#include "kernel/klog.h"
 #include "drivers/uart.h"
 #include "kernel/time.h"
 #include <stdint.h>
@@ -159,15 +160,22 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
     return 0;
 }
 
-// General-purpose kernel/shell text output. Mirrored to both the physical
-// UART and the USB CDC console (via uart_putc/uart_puts) -- this is used
-// for user-facing output (e.g. shell command results in vfs_server.c), not
-// just kernel diagnostics, so it must reach whichever terminal the user is
-// actually connected through.
+// General-purpose kernel/shell text output. Since B0 this goes to the kernel
+// log ring and fans out to whatever sinks are currently attached, rather than
+// calling uart_putc() directly -- so output survives a UART being handed to
+// 9P or to a login shell, and is readable afterwards via /proc/kmsg (see
+// kernel/klog.h). Boot attaches the "console" sink, whose putc is uart_putc,
+// so the default destination is byte-identical to the pre-B0 behavior: the
+// physical UART plus the USB CDC console it already mirrored to.
+static void klog_puts_shim(const char *s) {
+    if (!s) return;
+    while (*s) klog_putc(*s++);
+}
+
 int printk(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    int ret = vprintk_to(uart_putc, uart_puts, fmt, args);
+    int ret = vprintk_to(klog_putc, klog_puts_shim, fmt, args);
     va_end(args);
     return ret;
 }
@@ -176,6 +184,13 @@ int printk(const char *fmt, ...) {
 // only, never mirrored to USB. Used by drivers/usb_cdc.c's own tracing so
 // that logging USB activity can't itself become USB traffic that logs more
 // activity.
+//
+// Deliberately NOT routed through klog (B0), unlike printk() above: this
+// function's entire purpose is to bypass the mirroring machinery, and the
+// log ring is served by /proc/kmsg, which a remote 9P client can read. Low
+// level USB/I2C/SPI tracing does not belong in a file other nodes fetch, and
+// keeping it on the direct path preserves its "physical UART, always, no
+// exceptions" guarantee without needing an argument about sink policy.
 int printk_debug(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);

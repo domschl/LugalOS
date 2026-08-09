@@ -965,6 +965,63 @@ No scheduler. Kills two of the three §5.2 blockers outright.
 *Risk: low. Blast radius is `printk()` and boot ordering, both well covered by the existing 85-test
 suite.*
 
+##### B0 completion notes — part 1 of 3 (2026-08-09)
+
+**Log ring + sink registry implemented and merged.** The device/service registry and the
+`kernel_main()` reduction / `init.lisp` binding primitives are **not** done — B0 remains open. All
+three targets build clean; `tests/runner.py` passes **89/89** (RV64 + RV32, four new tests: two per
+architecture, up from 85).
+
+- **`kernel/klog.c` + `kernel/include/kernel/klog.h`**: a 4 KB ring plus a 4-slot sink registry.
+  `printk()` now writes to `klog_putc()` instead of `uart_putc()`; boot registers a `"console"` sink
+  whose putc *is* `uart_putc`, so default output is byte-identical to the pre-B0 path. The ring is
+  written unconditionally, which is the actual fix — detaching a sink is now non-destructive.
+- **Sinks are addressed by name, not by index**, and re-registering an existing name replaces its
+  function rather than consuming a second slot. `klog_sink_register()` must be called before
+  anything can `printk()`; it is the first statement in `kernel_main()` after `uart_init()`, ahead
+  of `time_init()`, which logs.
+- **`printk_debug()` deliberately left on the direct path**, not routed through klog. Its documented
+  guarantee is "physical UART only, never mirrored to USB", and the ring is served by `/proc/kmsg`,
+  which a *remote 9P client can read* — low-level USB/I²C/SPI tracing does not belong in a file
+  other nodes fetch. Keeping it direct preserves the guarantee without needing a sink-policy
+  argument.
+- **`/proc/kmsg`** serves the ring through A1's existing handle API, so it is readable over 9P by
+  another node — kernel logs were never remotely readable before. It does **not** use the 512-byte
+  per-handle `proc_buf` (far too small); instead the handle snapshots the window
+  `[klog_oldest(), klog_total())` at `vfs_open()` time and `vfs_pread()` serves from the ring by
+  absolute position. **The snapshot is load-bearing, not tidiness**: `cat /proc/kmsg` prints via
+  `printk()`, which appends to the same ring, so a read tracking the live end would feed itself its
+  own output and never terminate.
+- **`klog_read()` clamps a caller that fell off the back of the ring** to the oldest byte still
+  held, rather than returning wrapped garbage.
+- **Re-entrancy guard** (`g_in_fanout`) so a future sink whose putc logs about its own failures
+  can't recurse until the stack dies. It is *not* a concurrency lock — B2 must revisit this.
+- **New `klog` shell command** (list / `klog attach <sink>` / `klog detach <sink>`), matching the
+  `p9serve`/`p9share` precedent of exposing new plumbing through an explicit command.
+- **Bug avoided, worth recording**: the first version of the `klog` listing used `printk("%-10s")`.
+  This kernel's format engine (`kernel/printk.c`) accepts only `0`, width, `.prec` and `l` — there
+  is **no `-` (left-justify) flag**, so that would have printed the format spec literally.
+- **`vfs_readdir()`'s `/proc` branch had a hardcoded `index >= 4`** next to a 4-entry name table;
+  adding `kmsg` required changing a literal in a second place. Replaced with a `sizeof()`-derived
+  count so the next addition can't drift.
+- **Test falsification, not just a green run**: `klog_sink_detach()` was temporarily sabotaged to a
+  no-op and the suite re-run, confirming the new test fails on both architectures (87/89) rather
+  than passing vacuously. Restored afterwards. The test stages a marker into a file *before*
+  detaching, so the marker never appears in a typed command — `kernel/line_editor.c` echoes
+  keystrokes via `uart_putc()`, bypassing klog entirely (which is also why typing still works with
+  every sink detached), so a marker in the typed text would have made the silence assertion
+  meaningless.
+
+**Known limitation, deferred to B4 — `printk()` is still one stream carrying two things.** It is
+both kernel diagnostics *and* user-facing output (shell command results, Lisp REPL output — its own
+header comment says so). So `klog detach console` currently silences **everything** on that
+terminal, not just log lines. That is the correct semantic for `p9serve` (the terminal has become a
+9P wire; nothing should print to it) but it is *not yet* the full §5.2 scenario-1 story, which wants
+kernel log and login-shell output to be separately routable. Splitting them means touching several
+hundred `printk()` call sites and properly belongs to **B4**, where the console becomes a server
+that owns its own output stream. What B0 delivers today is the part that needed no scheduler: the
+log is retained regardless of sink state, and it is readable locally *and remotely* after the fact.
+
 #### B1 — `chan_t`, and the local channel-backed mount
 
 - **`chan_t`**: bounded, copy-based message channel. **Rule 1 applies from this commit.**

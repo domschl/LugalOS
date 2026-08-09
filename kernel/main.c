@@ -1,4 +1,5 @@
 #include "kernel/printk.h"
+#include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
@@ -59,6 +60,13 @@ void kernel_main(void) {
 #else
     uart_init(0x10000000);
 #endif
+
+    /* B0: attach the default kernel log sink before anything can printk().
+     * uart_putc() is exactly what printk() used to call directly, so boot
+     * output is byte-identical to the pre-B0 path -- the difference is that
+     * it is now detachable (`klog detach console`) and retained in the ring
+     * for /proc/kmsg either way. Must precede time_init(), which logs. */
+    klog_sink_register("console", uart_putc);
 
     time_init();
 

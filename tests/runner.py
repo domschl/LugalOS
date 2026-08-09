@@ -379,6 +379,41 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_fs_ls, r"lisp", timeout=4.0)
         results.append(("Plan 9 Namespace Directory Listing (ls /sd0/, /ram0/, /proc/, /dev/, /srv/)", ok, log if not ok else ""))
 
+        # 13b. B0 (plan/phase5_distributed_design.md §5.4): the kernel log ring
+        # and its detachable output sinks. Before B0, printk() called
+        # uart_putc() directly, so repurposing a UART (p9serve / a login shell)
+        # silently destroyed all kernel log output. The claim under test is
+        # that output produced while the console sink is detached is invisible
+        # on the terminal yet fully retained in the ring for /proc/kmsg.
+        ok, log = session.send_and_expect("klog", r"console: attached", timeout=3.0)
+        results.append(("Kernel Log Sink Registry Lists Console Sink (B0)", ok, log if not ok else ""))
+
+        # Stage a probe file first, while output is still visible. The marker
+        # lives only in the file's *content*, never in a command typed later --
+        # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing
+        # klog entirely, which is why typing still works with every sink
+        # detached), so a marker appearing in a typed command would show up in
+        # the captured terminal text and make the silence check meaningless.
+        session.send_and_expect("write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
+
+        # Detach, then produce output that the terminal must NOT show. The
+        # never-matching pattern is deliberate: send_and_expect returns the
+        # raw captured text on timeout, which is exactly what to assert on.
+        session.send_and_expect("klog detach console", r"\Z\A", timeout=1.0)
+        _, silent_log = session.send_and_expect("cat /ram0/klogprobe.txt", r"\Z\A", timeout=1.5)
+        stayed_silent = "KLOG_RING_PROBE_MARKER" not in silent_log
+
+        # Re-attach and confirm the ring captured what the terminal never saw.
+        ok, log = session.send_and_expect(
+            "klog attach console\ncat /proc/kmsg", r"KLOG_RING_PROBE_MARKER", timeout=5.0)
+        detail = ""
+        if not stayed_silent:
+            detail = "console sink detach did not suppress terminal output:\n" + silent_log
+        elif not ok:
+            detail = log
+        results.append(("Kernel Log Ring Retains Output While Console Sink Detached (B0, /proc/kmsg)",
+                        ok and stayed_silent, detail))
+
         # 14. Interactive Line Editor Backward Cursor Insertion & Backspace Deletion
         # Type "ac", Left Arrow (\x1b[D), type "b" -> "abc", Backspace -> "ac"
         cmd_edit_cursor = "ac\x1b[Db\x7f"
