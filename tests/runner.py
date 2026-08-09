@@ -204,6 +204,13 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
         results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
+        # B4/D4: the 9P server -- which is also the filesystem server, since
+        # its handlers are VFS calls -- is a scheduled task rather than
+        # something pumped from the console's busy-wait. Before this a node
+        # answered its peers only while sitting at the prompt.
+        ok, log = session.send_and_expect("cat /proc/ps", r"\d+\s+\w+\s+p9srv", timeout=3.0)
+        results.append(("9P/Filesystem Server Runs As A Task (B4, D4)", ok, log if not ok else ""))
+
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
             "mkdir /sd0/testdir\n"

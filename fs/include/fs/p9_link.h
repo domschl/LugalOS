@@ -49,6 +49,14 @@ void p9_link_register_background(p9_link_t *link);
 void p9_link_unregister_background(p9_link_t *link);
 void p9_link_background_poll(void);
 
+/* Starts the 9P server as a scheduled task (B4, resolving D4). Before this
+ * the server was pumped from uart_getc()'s busy-wait, so a node answered its
+ * peers only while sitting at the prompt. Returns the pid, or -1.
+ *
+ * This is also the filesystem server: the 9P handlers are VFS calls, so there
+ * is no second local-only protocol to build. See fs/p9_link.c. */
+int p9_server_task_start(void);
+
 /* Link-agnostic synchronous 9P client (A4, plan/phase5_distributed_design.md):
  * attaches at "/", walks to `path` (split on '/'), opens it for read, reads
  * the whole file into `out_buf`, clunks. Works over any p9_link_t, not just

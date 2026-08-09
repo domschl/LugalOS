@@ -139,6 +139,46 @@ void p9_link_unregister_background(p9_link_t *link) {
     }
 }
 
+/* --- The 9P server as a task (B4, resolving D4) ---
+ *
+ * Until now the server ran opportunistically: p9_link_background_poll() was
+ * called from inside uart_getc()'s busy-wait, so inbound 9P was serviced only
+ * while the console happened to be blocked on a keystroke. That was the only
+ * place such a pump *could* live before B2 -- there was no scheduler -- and
+ * it means a node busy doing anything else silently stops answering its peers.
+ *
+ * As a task it is scheduled like anything else: it services every registered
+ * background link and yields. A peer gets answered whenever this node yields,
+ * not only when someone is waiting at the prompt.
+ *
+ * ## This is also the filesystem server
+ *
+ * There is no separate filesystem server to build, and that is a conclusion
+ * rather than an omission. Rule 2 (§5.1) makes 9P the service protocol, and
+ * the 9P server's handlers *are* VFS calls -- Tread is vfs_pread(), Twalk is
+ * vfs_stat(), and so on. A distinct "fs server" behind its own channel would
+ * be a second protocol saying the same things, reachable only locally, which
+ * is exactly the duplication Rule 2 exists to avoid. Making this a task is
+ * therefore what makes the filesystem a server: one component, reachable
+ * identically by a local channel (/srv/p9, B1) or by a peer over a wire.
+ */
+static void p9_server_task_body(void *arg) {
+    (void)arg;
+    for (;;) {
+        p9_link_background_poll();
+        sched_yield();
+    }
+}
+
+int p9_server_task_start(void) {
+    int pid = task_create("p9srv", p9_server_task_body, NULL);
+    if (pid < 0) {
+        printk("[9P Link] Could not start the server task; falling back to "
+               "opportunistic polling only.\n");
+    }
+    return pid;
+}
+
 void p9_link_background_poll(void) {
     for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
         if (g_background_links[i]) p9_link_service(g_background_links[i]);

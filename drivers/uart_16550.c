@@ -51,17 +51,15 @@ bool uart_has_char(void) {
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
 
-/* p9_link_background_poll() opportunistically services whatever background
- * 9P links are registered (drivers/virtio_console.c, A3; the A3b UART demux
- * link once `p9share` is active) from inside this busy-wait -- the same
- * spot usb_cdc_task() is already pumped from. It's a no-op unless a
- * background link was registered, and never blocks, so this costs nothing
- * when idle and needs no real task scheduler (this kernel doesn't have
- * one; see the A3 completion notes in plan/phase5_distributed_design.md). */
+/* B4: 9P links used to be pumped from inside this busy-wait, because before
+ * B2 there was no scheduler and this was the only place such a pump could
+ * live. The 9P server is now a task (p9_server_task_start()), so the hook is
+ * gone: a peer is answered whenever this node yields, not only while someone
+ * is waiting at the prompt. The sched_yield() below is what gives the server
+ * task its chance to run. */
 char uart_getc(void) {
     while (!uart_has_char()) {
         usb_cdc_task();
-        p9_link_background_poll();
         /* B2: the console blocking on a keystroke is the single longest wait
          * in the system, so it is the most important yield point in the tree
          * -- without it every other task would be starved for as long as the

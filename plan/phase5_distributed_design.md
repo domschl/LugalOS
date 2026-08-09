@@ -4,9 +4,9 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6) through B3 (M9) are complete as of 2026-08-09** — the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
-> gate is met, and U-mode isolation is enforced on real RP2350 silicon. **B4 (M10, servers as tasks)
-> and B5 (M11, Sv39) are next; they are independent of each other.** D2, D5 and D6 are resolved;
+> **B0 (M6) through B4 (M10) are complete as of 2026-08-09** — D4 and the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
+> gate are both resolved, U-mode isolation is enforced on real RP2350 silicon, and every §5.2
+> scenario is delivered. **B5 (M11, Sv39) and B6 (M12, preemption + ELF) remain.** D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -1485,7 +1485,7 @@ silicon.
   filesystem server.
 - `init.lisp` binds channels to services — **this is scenario 1 delivered in full**: a UART carries
   kernel log output until `init.lisp` binds a login shell to it.
-- The 9P server itself may become a task here, resolving [D4](#d4--9p-server-execution-model--subsumed-by-b4).
+- The 9P server itself may become a task here, resolving [D4](#d4--9p-server-execution-model--resolved-2026-08-09-in-b4-it-is-a-task).
 
 ##### B4 progress notes (2026-08-09) — the two streams are separate
 
@@ -1542,9 +1542,41 @@ preemption is what would change that calculus; recorded rather than assumed away
 probed), which left `(console-device)` reporting `"(none)"`. It now re-binds by name once the
 registry exists, so the reported owner is the real one rather than a plausible-looking lie.
 
-**Still to do in B4**: a filesystem server behind a channel, and resolving [D4](#d4--9p-server-execution-model--subsumed-by-b4)
-by making the 9P server a task. The console was the right first server because it is the one whose
-ownership §5.2 actually asks to move.
+##### B4 completion notes (2026-08-09) — **B4/M10 COMPLETE**, D4 resolved
+
+The 9P server is now a scheduled task (`p9srv`), and that single change resolves both remaining
+items. QEMU **121/121**, hardware **6/6**.
+
+**D4 resolved: the server is a task.** It used to be pumped from inside `uart_getc()`'s busy-wait —
+the only place such a pump *could* live before B2, since there was no scheduler — which meant a node
+answered its peers **only while sitting at the prompt**. A node busy doing anything else silently
+stopped responding. As a task it is scheduled like anything else and a peer is answered whenever the
+node yields. The opportunistic hook is gone, so the task is load-bearing rather than redundant
+belt-and-braces: sabotaging its body fails all six 9P-over-a-wire tests.
+
+**There is no separate filesystem server, and that is a conclusion rather than an omission.** Rule 2
+(§5.1) makes 9P the service protocol, and the 9P server's handlers *are* VFS calls — `Tread` is
+`vfs_pread()`, `Twalk` is `vfs_stat()`. A distinct "fs server" behind its own channel would be a
+second protocol saying the same things, reachable only locally, which is precisely the duplication
+Rule 2 exists to prevent. Making the 9P server a task is therefore what makes the filesystem a
+server: one component, reached identically through a local channel (`/srv/p9`, B1) or by a peer over
+a wire.
+
+**A consequence worth noting for D5.** The server task now runs concurrently with everything by
+default, so the client/server overlap hazard D5 guards against is *always* live rather than only
+when a test arranges it. B2's `(spawn-pump)` was a manual stand-in for exactly this; the tag
+multiplexing it forced is now exercised continuously.
+
+**B4 delivered, against §5.2's scenarios:**
+
+| | Status |
+|---|---|
+| Kernel log and console are independent streams | Done — B0's recorded limitation resolved |
+| Console reachable as a channel service (`/srv/console`) | Done, verified on silicon |
+| Console ownership bound by name from `init.lisp` | Done |
+| 9P/filesystem server as a task | Done — D4 resolved |
+
+
 
 #### B5 — Sv39, the MMU backend
 
@@ -1596,7 +1628,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M7** | **B1** `chan_t` copy-always channels + local channel-backed mount | M6 | **Done (2026-08-09)** — see B1's completion notes. `kernel/chan.c` (copy-always endpoints), `fs/p9_chan.c` (local 9P server as an ordinary `p9_link_t`), `vfs_mount_local()`. Notably there is **no** `MOUNT_LOCAL9P` kind: a local mount is `vfs_mount_remote()` with a channel-backed link, reusing every layer below unchanged. `/srv/`'s pointer-passing retired; `loopback_9p_cat()` (~60 lines) deleted in favour of the shared `p9_link_cat()`. Found and fixed a latent `vfs_open()` handle-slot reservation bug that only a re-entrant (local) mount can expose. Tests 95→103. |
 | **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing | M7 | **Done (2026-08-09)** — see B2's completion notes. Page allocator (replacing an unbounded bump pointer), `switch.S` cooperative context switch shared by both word widths, real `task_t`/`sched.c`, yield points in `uart_getc()`/`virtio_blk`, and `p9_route_frame()` type-parity + tag demultiplexing. **D5 gate met and genuinely exercised**: a new `(spawn-pump)` task runs concurrently with the client exchange, since with only the boot task alive the hazard never occurs and the gate would have been hollow. Tests 103→107. |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | **Done (2026-08-09)** — see B3's completion notes. Scratch-CSR trap stack switch, `arch_enter_user()`, per-task `mem_domain_t` activated by the scheduler, and `kernel/uaccess.c` closing the confused-deputy hole. Enforced on QEMU RV32 **and real RP2350 silicon** (three datasheet findings needed: no TOR, 32-byte granule, erratum E6's reversed R/W/X order). RV64 reports honestly that it cannot enforce until Sv39 (B5). Tests 113→115 QEMU, 6/6 hardware. |
-| **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |
+| **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | **Done (2026-08-09)** — see B4's completion notes. `printk()`/`cprintf()` split into independent kernel-log and console streams (resolving B0's recorded limitation), the console exposed as a channel service and bound by name from `init.lisp`, and the 9P/filesystem server made a scheduled task — **resolving D4**. Tests 115→121 QEMU, 6/6 hardware. |
 | **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
 | **M12** | **B6** preemption; ELF-loaded servers (MMU only, closes B12) | M10, M11 | Not started |
 
@@ -1752,7 +1784,7 @@ work off the critical path), or interleave Track B to make the microkernel claim
 Track A was taken to completion first, exactly as recommended (M1 through M5, all done
 2026-08-07) — Track B has not been started.
 
-### D4 — 9P server execution model — **Subsumed by B4**
+### D4 — 9P server execution model — **Resolved (2026-08-09) in B4: it is a task**
 Keep the server poll-driven (works today, no dependencies), or make it a task? The revised Track B
 answers this: it becomes a task in [B4](#b4--servers-leave-the-main-call-stack), once B1's channels
 and B2's scheduler exist. Note the related constraint is *earlier* and harder than this decision —

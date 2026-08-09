@@ -191,7 +191,6 @@ char uart_getc(void) {
     while (!uart_has_char()) {
         gp16_alive_tick();
         usb_cdc_task();
-        p9_link_background_poll();
         sched_yield(); /* B2: see drivers/uart_16550.c's equivalent */
     }
     if (uart_demux_is_enabled()) {

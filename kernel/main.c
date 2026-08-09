@@ -140,6 +140,10 @@ void kernel_main(void) {
     console_bind_device("uart");
 
     sched_init();
+    /* The 9P/filesystem server, now a scheduled task rather than something
+     * pumped from the console's busy-wait (D4). Must follow sched_init(). */
+    p9_server_task_start();
+
     shell_init();
     lisp_init();
 
