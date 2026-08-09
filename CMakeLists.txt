@@ -111,6 +111,7 @@ set(SOURCES
     kernel/device.c
     kernel/board.c
     kernel/chan.c
+    kernel/palloc.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c
@@ -119,6 +120,7 @@ set(SOURCES
     kernel/ubsan.c
 
     arch/riscv/common/entry.S
+    arch/riscv/common/switch.S
 
     arch/riscv/common/trap.c
     arch/riscv/common/elf.c

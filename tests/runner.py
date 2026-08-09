@@ -184,8 +184,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 
-        ok, log = session.send_and_expect("cat /proc/ps", r"vfs_server", timeout=3.0)
-        results.append(("/proc/ps Task Listing", ok, log if not ok else ""))
+        # B2: /proc/ps now renders the real task table. Before B2 it was a
+        # hardcoded string naming four tasks that did not exist, so this used
+        # to assert on "vfs_server" -- a name nothing was ever scheduled under.
+        ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
+        results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
@@ -343,12 +346,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(meminfo)\n"
             "(version)"
         )
-        # "kernel_idle" only appears in real /proc/ps content (A1) -- this also
-        # exercises that (ps)/(meminfo)/(version) now read real /proc byte
-        # streams via the VFS handle API instead of the old printk-side-effect
-        # path (which this pattern used to accidentally pass through, via a
-        # generic directory listing containing the word "synthetic").
-        ok, log = session.send_and_expect(cmd_lisp_vfs, r"kernel_idle", timeout=5.0)
+        # Asserts on real /proc content, so (ps)/(meminfo)/(version) are
+        # exercised as genuine byte streams read through the VFS handle API,
+        # not the old printk-side-effect path. The marker was "kernel_idle"
+        # until B2 replaced /proc/ps's hardcoded string with the real task
+        # table; "Pages Total" from /proc/meminfo is the equivalent today --
+        # it likewise only appears in real generated content (and is itself
+        # B2 output: the live page allocator's counters).
+        ok, log = session.send_and_expect(cmd_lisp_vfs, r"Pages Total", timeout=5.0)
         results.append(("Lisp Microkernel VFS Primitives (mkdir, write, cp, cat, rm, ps, meminfo)", ok, log if not ok else ""))
 
 
@@ -429,6 +434,26 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
         results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
+
+        # 13d-bis. B2: the cooperative scheduler actually switches.
+        # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
+        # output appears: if sched_yield() were still the pre-B2 no-op, each
+        # task would run to completion first (A1 A2 A3 B1 B2 B3) and every
+        # marker would still be printed. An early version of kernel/sched.c
+        # had exactly that bug -- a "currently switching" flag that a freshly
+        # created task could never clear, since it enters at the trampoline
+        # rather than returning from ctx_switch() -- and this ordering check
+        # is what caught it.
+        ok, log = session.send_and_expect(
+            "taskdemo",
+            r"A1(.|\n)*B1(.|\n)*A2(.|\n)*B2(.|\n)*A3(.|\n)*B3",
+            timeout=8.0)
+        results.append(("Cooperative Tasks Interleave Via sched_yield (B2)", ok, log if not ok else ""))
+
+        # Both task stacks must come back to the page allocator on exit. The
+        # counts are printed by the demo itself; equality is the assertion.
+        ok, log = session.send_and_expect("taskdemo", r"free before=(\d+) after=\1", timeout=8.0)
+        results.append(("Task Stacks Are Reclaimed On Exit (B2)", ok, log if not ok else ""))
 
         # 13e. B1: this node's own namespace, mounted over a local copy-always
         # channel (kernel/chan.c) and reached through the *same* 9P client code

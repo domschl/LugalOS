@@ -49,4 +49,9 @@ SECTIONS
 
     . = ALIGN(4096);
     _kernel_end = .;
+
+    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c). The
+     * bump allocator this replaced had no upper bound at all -- it walked
+     * off the end of RAM given enough allocations. */
+    _heap_end = ORIGIN(RAM) + LENGTH(RAM);
 }

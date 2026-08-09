@@ -1,50 +1,197 @@
 #include "kernel/sched.h"
+#include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include <string.h>
 
-#define MAX_TASKS 8
+/* See kernel/include/kernel/sched.h for the rationale. */
 
-static task_t task_table[MAX_TASKS];
-static int current_task_idx = 0;
-static int num_tasks = 0;
+extern void ctx_switch(uintptr_t *old_sp, uintptr_t new_sp);
+extern void task_trampoline(void);
+
+static task_t  g_tasks[MAX_TASKS];
+static int     g_current;      /* index into g_tasks */
+static bool    g_active;
+
+/* Deliberately no "currently switching" guard.
+ *
+ * An earlier version of this file had one, and it silently broke cooperative
+ * scheduling: a freshly created task enters at task_trampoline and never
+ * returns from ctx_switch(), so it never reached the line that cleared the
+ * flag -- its own sched_yield() then saw the flag still set and returned
+ * immediately, making the task run to completion instead of yielding. The
+ * `taskdemo` interleaving check is what caught it (output was A1 A2 A3 B1 B2
+ * B3 rather than A1 B1 A2 B2 A3 B3), which is exactly why that test asserts
+ * on ordering rather than on output merely appearing.
+ *
+ * No guard is needed: between the state updates below and ctx_switch() there
+ * is no call that could re-enter sched_yield(), so there is no window to
+ * protect. Preemption (B6) changes that and will need real critical
+ * sections, not a flag. */
 
 void sched_init(void) {
-    num_tasks = 0;
-    current_task_idx = 0;
+    memset(g_tasks, 0, sizeof(g_tasks));
     for (int i = 0; i < MAX_TASKS; i++) {
-        task_table[i].state = TASK_DEAD;
-        task_table[i].pid = i;
-        task_table[i].name = "(unused)";
+        g_tasks[i].pid = i;
+        g_tasks[i].state = TASK_UNUSED;
+        g_tasks[i].name = "(unused)";
     }
-    printk("[Sched] Round-Robin Process Scheduler initialized (Max Tasks: %d)\n", MAX_TASKS);
+
+    /* The boot context becomes task 0. Its stack is the linker-provided boot
+     * stack, not a palloc'd one, so stack_base stays NULL and task_exit()
+     * knows not to free it. Its sp is filled in by the first ctx_switch(). */
+    g_tasks[0].state = TASK_RUNNING;
+    g_tasks[0].name = "kernel";
+    g_tasks[0].stack_base = NULL;
+    g_current = 0;
+    g_active = true;
+
+    printk("[Sched] Cooperative round-robin scheduler online (max %d tasks)\n", MAX_TASKS);
 }
 
-int task_create(const char *name, void (*entry)(void)) {
-    if (num_tasks >= MAX_TASKS) {
-        printk("[Sched Error] Task table full\n");
+bool sched_active(void) { return g_active; }
+
+int sched_current_pid(void) { return g_active ? g_tasks[g_current].pid : 0; }
+
+const char *sched_state_name(int state) {
+    switch (state) {
+        case TASK_UNUSED:  return "UNUSED";
+        case TASK_READY:   return "READY";
+        case TASK_RUNNING: return "RUNNING";
+        case TASK_BLOCKED: return "BLOCKED";
+        case TASK_DEAD:    return "DEAD";
+    }
+    return "?";
+}
+
+bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
+    if (index >= MAX_TASKS) return false;
+    if (g_tasks[index].state == TASK_UNUSED) return false;
+    if (pid)   *pid = g_tasks[index].pid;
+    if (state) *state = g_tasks[index].state;
+    if (name)  *name = g_tasks[index].name;
+    return true;
+}
+
+int task_create(const char *name, void (*entry)(void *), void *arg) {
+    if (!entry) return -1;
+
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) { /* slot 0 is always the boot task */
+        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) { slot = i; break; }
+    }
+    if (slot < 0) {
+        printk("[Sched] Task table full; '%s' not created\n", name ? name : "?");
         return -1;
     }
 
-    int slot = num_tasks;
-    task_table[slot].pid = slot;
-    task_table[slot].name = name ? name : "unnamed";
-    task_table[slot].state = TASK_READY;
-    num_tasks++;
+    void *stack = palloc_pages(TASK_STACK_PAGES);
+    if (!stack) {
+        printk("[Sched] Out of memory for '%s' stack (%d pages)\n",
+               name ? name : "?", TASK_STACK_PAGES);
+        return -1;
+    }
 
-    printk("[Sched] Created Task #%d: '%s' (entry at 0x%lx)\n",
-           slot, task_table[slot].name, (unsigned long)entry);
+    task_t *t = &g_tasks[slot];
+    t->pid = slot;
+    t->name = name ? name : "unnamed";
+    t->stack_base = stack;
+    t->stack_pages = TASK_STACK_PAGES;
+    t->domain = NULL;
+
+    /* Prime the stack so the first ctx_switch() into this task "returns" to
+     * task_trampoline with s0 = entry and s1 = arg. The frame layout must
+     * match arch/riscv/common/switch.S exactly: slot 0 is ra, slots 1..12
+     * are s0..s11, and the frame is 16 registers wide for ABI alignment. */
+    uintptr_t top = (uintptr_t)stack + (uintptr_t)TASK_STACK_PAGES * PAGE_SIZE;
+    top &= ~(uintptr_t)15; /* 16-byte aligned, per the RISC-V ABI */
+    uintptr_t *frame = (uintptr_t *)top - 16;
+    for (int i = 0; i < 16; i++) frame[i] = 0;
+    frame[0] = (uintptr_t)task_trampoline; /* ra  */
+    frame[1] = (uintptr_t)entry;           /* s0  */
+    frame[2] = (uintptr_t)arg;             /* s1  */
+
+    t->sp = (uintptr_t)frame;
+    t->state = TASK_READY;
+
+    printk("[Sched] Created task #%d '%s' (stack %p, %d KB)\n",
+           slot, t->name, stack, (TASK_STACK_PAGES * PAGE_SIZE) / 1024);
     return slot;
 }
 
-void sched_yield(void) {
-    if (num_tasks <= 1) return;
-
-    int prev = current_task_idx;
-    current_task_idx = (current_task_idx + 1) % num_tasks;
-
-    if (prev != current_task_idx) {
-        const char *prev_name = task_table[prev].name ? task_table[prev].name : "unnamed";
-        const char *curr_name = task_table[current_task_idx].name ? task_table[current_task_idx].name : "unnamed";
-        printk("[Sched] Context Switch: Task #%d ('%s') -> Task #%d ('%s')\n",
-               prev, prev_name, current_task_idx, curr_name);
+/* Next runnable task after `from`, or -1 if none. The current task counts as
+ * runnable only if it is still RUNNING -- so a task that just blocked or
+ * exited is never picked again here. */
+static int next_runnable(int from) {
+    for (int step = 1; step <= MAX_TASKS; step++) {
+        int i = (from + step) % MAX_TASKS;
+        if (g_tasks[i].state == TASK_READY) return i;
     }
+    return -1;
+}
+
+void sched_yield(void) {
+    if (!g_active) return;
+
+    int prev = g_current;
+    int next = next_runnable(prev);
+    if (next < 0) return; /* nothing else can run; keep going */
+
+    if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
+    g_tasks[next].state = TASK_RUNNING;
+    g_current = next;
+
+    /* Returns once something switches back to `prev` -- i.e. to us. */
+    ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
+}
+
+void task_block(void) {
+    if (!g_active) return;
+    g_tasks[g_current].state = TASK_BLOCKED;
+    sched_yield();
+}
+
+int task_unblock(int pid) {
+    if (!g_active || pid < 0 || pid >= MAX_TASKS) return -1;
+    if (g_tasks[pid].state != TASK_BLOCKED) return -1;
+    g_tasks[pid].state = TASK_READY;
+    return 0;
+}
+
+void task_exit(void) {
+    if (!g_active) { for (;;) { } }
+
+    task_t *t = &g_tasks[g_current];
+    printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
+
+    /* Free the stack *before* the final switch, while still running on it.
+     * That is safe here only because this is cooperative: nothing can
+     * allocate and reuse these pages between the free and the ctx_switch
+     * away, since nothing else runs until this task yields. Under preemption
+     * (B6) this must move to a reaper that frees the stack after the switch. */
+    void *stack = t->stack_base;
+    uint32_t pages = t->stack_pages;
+
+    t->state = TASK_DEAD;
+    t->stack_base = NULL;
+    t->stack_pages = 0;
+
+    int next = next_runnable(g_current);
+    if (next < 0) {
+        /* No other runnable task. Nothing can free this stack or resume us,
+         * so keep the stack and park forever rather than returning into a
+         * caller that no longer exists. */
+        printk("[Sched] No runnable task remains after #%d exited; halting task\n", t->pid);
+        for (;;) { }
+    }
+
+    if (stack) palloc_free(stack, pages);
+
+    g_tasks[next].state = TASK_RUNNING;
+    int prev = g_current;
+    g_current = next;
+
+    /* Parks the dead task's sp into a slot nobody will read again. */
+    ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
+
+    for (;;) { } /* unreachable: nothing ever switches back to a DEAD task */
 }
