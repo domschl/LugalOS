@@ -457,7 +457,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # inaccessible, so both outcomes are accepted here. The measurement
         # that matters is on real Hazard3 silicon -- see tests/hw/.
         ok, log = session.send_and_expect(
-            "pmpinfo", r"PMP: (configurable=\d+|unavailable)", timeout=5.0)
+            "pmpinfo", r"PMP: (writable=\d+|unavailable)", timeout=5.0)
         results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
 
         # 13d-bis. B2: the cooperative scheduler actually switches.

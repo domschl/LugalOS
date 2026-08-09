@@ -59,6 +59,7 @@
         __asm__ __volatile__("csrw pmpaddr" #n ", %0" :: "r"(old));         \
         if (arch_probe_faulted()) { faulted = true; break; }                \
         readback = hi;                                                      \
+        zero_readback = lo;                                                 \
         writable = (hi != lo);                                              \
     } while (0)
 
@@ -67,44 +68,80 @@ void pmp_probe(pmp_info_t *out) {
     out->mode_m = true;
     out->num_entries = 0;
     out->num_hardwired = 0;
+    out->num_active_at_boot = 0;
+    out->addr_stuck_low_bits = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
 
     const uintptr_t all_ones = (uintptr_t)-1;
     uintptr_t readback = 0;
+    uintptr_t zero_readback = 0;
     bool faulted = false;
     bool writable = false;
 
     /* pmpcfg0 must be zeroed before touching pmpaddr0: a locked or active
      * entry would make the address write a no-op (and, if active, could
      * change what memory is reachable while we do it). Saved and restored. */
-    uintptr_t cfg0_saved = 0;
+    uintptr_t cfg_saved[4] = {0, 0, 0, 0};
     arch_probe_begin();
-    __asm__ __volatile__("csrr %0, pmpcfg0" : "=r"(cfg0_saved));
+    __asm__ __volatile__("csrr %0, pmpcfg0" : "=r"(cfg_saved[0]));
     if (arch_probe_faulted()) {
         out->mode_m = true;
         out->num_entries = 0;
         printk("[PMP] pmpcfg0 not accessible: no PMP on this core\n");
         return;
     }
-    /* Bit 7 of each 8-bit config byte is L (locked). A locked entry cannot be
-     * modified until reset, which would make the counts below meaningless. */
-    for (unsigned i = 0; i < sizeof(uintptr_t); i++) {
-        if ((cfg0_saved >> (i * 8)) & 0x80u) out->any_locked = true;
+    __asm__ __volatile__("csrr %0, pmpcfg1" : "=r"(cfg_saved[1]));
+    __asm__ __volatile__("csrr %0, pmpcfg2" : "=r"(cfg_saved[2]));
+    __asm__ __volatile__("csrr %0, pmpcfg3" : "=r"(cfg_saved[3]));
+
+    /* Per 8-bit config byte: bit 7 is L (locked), bits [4:3] are A (address
+     * matching mode; non-zero means the entry is ACTIVE).
+     *
+     * Counting active-at-boot entries matters more than it first appears.
+     * RP2350 ships with pmpcfg2 = 0x001f1f1f -- entries 8/9/10 preconfigured
+     * as RWX NAPOT regions granting U-mode default access to the boot ROM,
+     * system peripherals and SIO. They are fully writable, so a naive
+     * "writable entries" count reports them as free budget when they are in
+     * fact already doing a job B3 would have to consciously take over. */
+    for (int reg = 0; reg < 4; reg++) {
+        for (unsigned i = 0; i < sizeof(uintptr_t); i++) {
+            uint8_t cfg = (uint8_t)(cfg_saved[reg] >> (i * 8));
+            if (cfg & 0x80u) out->any_locked = true;
+            if ((cfg >> 3) & 0x3u) out->num_active_at_boot++;
+        }
     }
+
     __asm__ __volatile__("csrw pmpcfg0, zero");
+    __asm__ __volatile__("csrw pmpcfg1, zero");
+    __asm__ __volatile__("csrw pmpcfg2, zero");
+    __asm__ __volatile__("csrw pmpcfg3, zero");
 
     /* --- granularity, from pmpaddr0 with A=OFF --- */
     readback = 0; faulted = false; writable = false;
     PROBE_ONE(0);
     if (faulted || readback == 0) {
-        __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg0_saved));
+        __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg_saved[0]));
         printk("[PMP] No PMP entries implemented\n");
         return;
     }
-    int g = 0;
-    while (g < (int)(sizeof(uintptr_t) * 8) && !((readback >> g) & 1u)) g++;
-    out->granularity_log2 = g + 2;
+    /* Granularity from the WRITE-ZERO readback, not the all-ones one.
+     *
+     * The privileged spec's stated procedure -- write all ones, take the
+     * index of the least-significant set bit as G -- silently gives the wrong
+     * answer on a core that reads those low bits as ones regardless of what
+     * was written. RP2350 does exactly that: after writing zero, pmpaddr
+     * still reads 0x00000003, so the all-ones procedure reports G=0 (4-byte
+     * granularity) when the low two bits cannot actually be cleared.
+     *
+     * Counting the bits that survive a zero write measures the real floor. */
+    uint32_t stuck = 0;
+    while (stuck < sizeof(uintptr_t) * 8 && ((zero_readback >> stuck) & 1u)) stuck++;
+    out->addr_stuck_low_bits = (int)stuck;
+    /* granularity_log2 is log2(bytes). With no stuck bits the floor is 4
+     * bytes (NA4). Each stuck bit doubles the smallest encodable NAPOT
+     * region. */
+    out->granularity_log2 = 2 + (int)stuck;
 
     /* --- entry count --- */
 #define PROBE_STEP(n) do { readback = 0; faulted = false; writable = false;   \
@@ -134,7 +171,10 @@ void pmp_probe(pmp_info_t *out) {
     out->num_entries = counted;
     out->num_hardwired = hardwired;
 
-    __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg0_saved));
+    __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg_saved[0]));
+    __asm__ __volatile__("csrw pmpcfg1, %0" :: "r"(cfg_saved[1]));
+    __asm__ __volatile__("csrw pmpcfg2, %0" :: "r"(cfg_saved[2]));
+    __asm__ __volatile__("csrw pmpcfg3, %0" :: "r"(cfg_saved[3]));
 }
 
 #else /* !CONFIG_MODE_M */
@@ -148,6 +188,8 @@ void pmp_probe(pmp_info_t *out) {
     out->mode_m = false;
     out->num_entries = 0;
     out->num_hardwired = 0;
+    out->num_active_at_boot = 0;
+    out->addr_stuck_low_bits = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
 }
@@ -158,6 +200,7 @@ void pmp_probe(pmp_info_t *out) {
 void pmp_dump(void) {
     const uintptr_t all_ones = (uintptr_t)-1;
     uintptr_t readback = 0;
+    uintptr_t zero_readback = 0;
     bool faulted = false;
     bool writable = false;
 
@@ -205,7 +248,7 @@ void pmp_dump(void) {
     __asm__ __volatile__("csrw pmpcfg1, %0" :: "r"(cfg[1]));
     __asm__ __volatile__("csrw pmpcfg2, %0" :: "r"(cfg[2]));
     __asm__ __volatile__("csrw pmpcfg3, %0" :: "r"(cfg[3]));
-    (void)readback; (void)faulted; (void)writable;
+    (void)readback; (void)zero_readback; (void)faulted; (void)writable;
 }
 #else
 void pmp_dump(void) {
@@ -224,10 +267,9 @@ void pmp_report(void) {
         return;
     }
 
-    printk("PMP: configurable=%d hardwired=%d granularity=%lu bytes (G=%d) locked_at_boot=%s\n",
-           info.num_entries, info.num_hardwired,
+    printk("PMP: writable=%d active_at_boot=%d min_region=%lu bytes locked=%s\n",
+           info.num_entries, info.num_active_at_boot,
            (unsigned long)(1UL << info.granularity_log2),
-           info.granularity_log2 - 2,
            info.any_locked ? "yes" : "no");
 
     if (info.num_entries == 0) {
@@ -238,11 +280,17 @@ void pmp_report(void) {
          * fixes pmpaddr8/9/10 to the boot ROM, system peripheral and SIO
          * windows) cannot be reprogrammed and are reported separately so they
          * are never mistaken for budget. */
-        printk("     Usable isolated regions for B3: %d (1 reserved for the kernel)\n",
-               info.num_entries - 1);
-        if (info.num_hardwired) {
-            printk("     Plus %d read-only hardwired region(s), not available to B3.\n",
-                   info.num_hardwired);
+        /* Entries already active at boot are writable but not free: on RP2350
+         * they grant U-mode access to the boot ROM, peripherals and SIO. B3
+         * can reclaim them, but only by deciding what loses that access. */
+        int free_now = info.num_entries - info.num_active_at_boot;
+        printk("     Free for B3: %d (+%d reclaimable, already granting U-mode access)\n",
+               free_now, info.num_active_at_boot);
+        if (info.addr_stuck_low_bits) {
+            printk("     Note: pmpaddr[%d:0] read as ones after a zero write, so the\n"
+                   "     smallest encodable region is %lu bytes, not 4.\n",
+                   info.addr_stuck_low_bits - 1,
+                   (unsigned long)(1UL << info.granularity_log2));
         }
     }
 }

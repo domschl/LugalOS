@@ -126,7 +126,7 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
 
         text = out.decode("utf-8", errors="replace")
-        m = re.search(r"PMP: configurable=(\d+) hardwired=(\d+) granularity=(\d+) bytes \(G=(-?\d+)\) locked_at_boot=(\w+)", text)
+        m = re.search(r"PMP: writable=(\d+) active_at_boot=(\d+) min_region=(\d+) bytes locked=(\w+)", text)
         if not m:
             # Distinguish "the board is running older firmware" from "the probe
             # is broken". The former is by far the more likely cause the first
@@ -144,21 +144,27 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
                         f"got:\n{text[:300]}")
             return (name, False, f"no PMP report in console output:\n{text[:300]}")
 
-        entries = int(m.group(1))       # configurable (writable) -- B3's real budget
-        hardwired = int(m.group(2))     # read-only, fixed by the silicon
-        granularity = int(m.group(3))
-        locked = m.group(5) == "yes"
+        writable = int(m.group(1))
+        active = int(m.group(2))        # preconfigured at boot -- writable but not free
+        min_region = int(m.group(3))
+        locked = m.group(4) == "yes"
+        free = writable - active        # what B3 can actually take without deciding what loses access
 
-        detail = (f"configurable={entries} hardwired={hardwired} "
-                  f"granularity={granularity}B locked_at_boot={locked}")
+        detail = (f"writable={writable} active_at_boot={active} free={free} "
+                  f"min_region={min_region}B locked={locked}")
 
-        if entries == 0:
-            return (name, False, f"no configurable PMP entries -- B3 has no enforcement mechanism ({detail})")
+        if writable == 0:
+            return (name, False, f"no writable PMP entries -- B3 has no enforcement mechanism ({detail})")
+        if free <= 1:
+            return (name, False,
+                    f"only {free} free PMP region(s) -- B3 needs at least one per isolated task "
+                    f"plus one for the kernel ({detail})")
         if locked:
             return (name, False, f"a PMP entry is already locked at boot; B3 cannot reprogram it ({detail})")
 
         # Informational, not a failure: B3's design has to fit this budget.
-        print(f"    ...measured: {detail}; usable isolated regions for B3 = {entries - 1}")
+        print(f"    ...measured: {detail}; isolatable tasks for B3 = {free - 1} "
+              f"(+{active} reclaimable)")
         return (name, True, detail)
     except Exception as e:
         return (name, False, str(e))

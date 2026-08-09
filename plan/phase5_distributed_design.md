@@ -1477,41 +1477,56 @@ consistent with [§5.0](#50--the-assumption-this-track-no-longer-makes).
 `CONFIG_MODE_S`, and RV32/RP2350 build with `CONFIG_MODE_M` — so **PMP on RP2350 starts from zero**,
 not from the wide-open configuration the pre-revision text implied.
 
-#### D2 hardware measurements (2026-08-09) — one resolved, one open
+#### D2 hardware measurements (2026-08-09) — **resolved on real silicon**
 
-Taken from a physical RP2350 via the new `pmpinfo` probe and `tests/hw/`.
+Taken from a physical RP2350 via `pmpinfo`/`pmpdump` and `tests/hw/`.
 
 | | QEMU RV32 | RP2350 (Hazard3) |
 |---|---|---|
-| Configurable (writable) entries | 16 | **11 — contested, see below** |
-| Hardwired read-only entries | 0 | 0 measured |
-| Granularity | 4 bytes (G=0) | **4 bytes (G=0)** — settled |
-| Locked at boot | no | **no** — settled |
-| Usable heap above `_kernel_end` | 4096 pages (capped) | **18 pages / 72 KB** — settled |
+| Writable `pmpaddr` entries | 16 | **11** |
+| Active at boot (`cfg.A != 0`) | 0 | **3** (entries 8/9/10) |
+| **Free for B3** | 15 | **8** |
+| Smallest encodable region | 4 bytes | **16 bytes** |
+| Locked at boot | no | no |
+| Usable heap above `_kernel_end` | 4096 pages (capped) | **18 pages / 72 KB** |
 
-**Settled and load-bearing for B3**: granularity is 4 bytes, so PMP regions can be aligned as tightly
-as B3 needs; nothing is locked at boot, so every entry is reprogrammable. And RP2350 has only **18
-usable heap pages**, versus QEMU's capped 4096 — at `TASK_STACK_PAGES = 2` that is 9 task stacks
-before the heap is exhausted, and B1's plus B2's static 9P buffers account for roughly 20 KB of the
-BSS that consumed the rest. **B3/B4 must be sized against 18 pages, not QEMU's headroom.** This is
-Rule 0's "measure the constrained target" paying off directly: QEMU hides the constraint completely.
+**B3's budget is 8 free regions — one for the kernel, so 7 isolatable tasks**, plus 3 reclaimable.
 
-**Open — do not size B3's region budget yet.** RP2350's own SDK register definitions
-(`src/rp2350/hardware_regs/include/hardware/regs/rvcsr.h`) document `pmpaddr8/9/10` as `ACCESS "RO"`,
-hardwired to the boot ROM, system-peripheral and SIO windows, with `pmpaddr11-15` hardwired to zero —
-implying **8** configurable regions. The silicon, probed by writing all-ones and zero and comparing
-the readbacks, reports **11 writable, 0 hardwired**. Both cannot be true.
+##### How the apparent contradiction resolved
 
-Worth noting how the probe got here, because the first version was wrong in a way that would have
-gone unnoticed: it counted "reads back non-zero", which counts a hardwired-but-non-zero register as
-usable, and reported 11 for that reason. The corrected probe reports 11 *writable*, which is a much
-stronger claim — and now contradicts the vendor header rather than agreeing with it by accident.
-A `pmpdump` command was added to settle it from raw values (each register's reset value plus its
-readback after writing all-ones and zero, with `pmpcfg0..3` zeroed first so a stray lock bit cannot
-masquerade as hardwired). **Awaiting a flash to run.**
+The SDK headers say 8 configurable regions and mark `pmpaddr8/9/10` `ACCESS "RO"`; the silicon
+reported 11 writable. Both were right, and the reconciliation is the useful part:
 
-Either way the lesson is banked: a count derived from one heuristic was already wrong once, and would
-have over-provisioned B3 by three regions with no symptom until enforcement silently failed.
+```
+pmpcfg0..3 = 00000000 00000000 001f1f1f 00000000
+  0..7   reset 00000003   writable, cfg 0  -> free
+  8..10  reset 01ffffff / 13ffffff / 35ffffff, cfg 0x1f  -> writable but ACTIVE
+  11..15 absent
+```
+
+`pmpcfg2 = 0x001f1f1f` gives entries 8/9/10 `A=NAPOT` with RWX and no lock: they are **preconfigured
+and running**, granting U-mode default access to the boot ROM, system peripherals and SIO. They are
+fully writable — the header's `"RO"` is inaccurate — but they are *not free budget*. B3 can reclaim
+them only by deciding what loses that access, which is a policy question, not spare capacity.
+
+**The lesson is about the metric, not the chip.** Three successive counts were reported before the
+right one: 11 (counting "reads back non-zero", which admits hardwired registers), then 11 again
+(counting "writable", which admits *in-use* registers), and finally 8 free / 3 in-use. Only dumping
+raw per-register values plus the config registers made the distinction visible. **A summary count is
+a derived answer; when it disagrees with a datasheet, the raw values arbitrate.**
+
+##### Granularity: the spec's own procedure gives the wrong answer here
+
+The privileged spec says to write all ones to `pmpaddr0` with `A=OFF` and take the index of the
+least-significant set bit as G. On RP2350 that yields G=0 (4-byte regions) — and is wrong. Writing
+**zero** leaves `0x00000003`: the low two bits read as ones no matter what is written, so the
+all-ones procedure sees a set bit at index 0 that carries no information.
+
+`pmpinfo` now derives the floor from the zero-write instead, reporting a **16-byte** minimum region.
+*Caveat, stated rather than hidden*: whether two stuck bits mean 16 or 32 bytes depends on an
+off-by-one in how the spec indexes those bits, and confirming it needs either the datasheet or a
+U-mode access test (B3 work). It does not constrain B3 either way — task stacks are page-aligned at
+4096 bytes, three orders of magnitude above the floor.
 
 ### D5 — Track A regression policy under a scheduler — **Resolved (2026-08-09): hard gate**
 A4's client/server safety argument explicitly depends on there being no scheduler
