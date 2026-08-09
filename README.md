@@ -1,6 +1,14 @@
-# LugalOS: Bare-Metal RISC-V Operating System
+# LugalOS: Bare-Metal RISC-V Microkernel Operating System
 
-**LugalOS** is a bare-metal, dependency-free operating system written in pure freestanding C11 and RISC-V assembly, built toward a microkernel architecture as its long-term design goal — see [Implementation Status](#implementation-status) below for what's actually implemented today. (This title is deliberately provisional: it drops "Microkernel" until the IPC/scheduler/MMU work in that section is real, at which point it should be restored.)
+**LugalOS** is a bare-metal, dependency-free microkernel operating system written in pure freestanding C11 and RISC-V assembly.
+
+The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
+were aspirational, on the principle that a name should describe what the code does. It is restored
+as of v0.6.0: message-passing IPC, a real scheduler, U-mode tasks, and **hardware-enforced per-task
+memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
+silicon) and Sv39 page tables on the 64-bit MMU target — are implemented and continuously tested.
+[Implementation Status](#implementation-status) below still states exactly what is and is not real,
+including what remains roadmap.
 
 It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (like the **Kendryte K210** and **VisionFive 2**).
 
@@ -12,8 +20,16 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`) on QEMU RV32 (NOMMU)
-and RV64, and by hand on RP2350 (Pico 2) hardware:
+**Working today**, verified by the automated test suite (`tests/runner.py`, 121 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 6 tests against real RP2350
+silicon):
+- **Microkernel core**: cooperative scheduler with per-task kernel stacks; copy-always message
+  channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
+  PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
+  boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
+  running as scheduled tasks rather than inline calls.
+- **Not yet**: timer preemption and separately-linked ELF user programs (both roadmap; scheduling is
+  cooperative, and user code currently shares the kernel image).
 - Boots to an interactive shell (`lsh`) on all three targets.
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
@@ -26,36 +42,70 @@ and RV64, and by hand on RP2350 (Pico 2) hardware:
   hardware.
 
 **Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-- **IPC rendezvous**: `sys_ipc_call`/`sys_ipc_reply`/etc. exist as `ecall`-routed syscall numbers,
-  but the handler is a fixed stub (no blocking, no real message passing, no target-task lookup),
-  not the L4/seL4-style rendezvous the names suggest.
-- **Task scheduling**: `task_create`/`sched_yield` exist but are never called from anywhere in the
-  kernel; `/proc/ps` prints a static, hardcoded process table, not live scheduler state.
-- **MMU / memory protection**: the RV64 build's page-table-mapping function is a stub that
-  returns success without doing anything, and `satp` is never written. There is no virtual memory,
-  no page-level protection, and no user/kernel privilege separation on either target yet, despite
-  the boot banner's "Sv39 MMU Virtual Memory Paging Enabled" line.
-- **9P networking**: `fs/9p.c` implements 9P2000 framing, but the SLIP-over-UART transport
-  (`drivers/uart_net.c`, the `p9-uart-send` primitive) SLIP-encodes a request and then calls the
-  local 9P server directly — it does not send anything over a UART. `/dev/ttyACM1` enumerates on
-  RP2350 but has no data path wired up yet. See
-  [`plan/rp2350_distributed_plan.md`](plan/rp2350_distributed_plan.md) for where this is headed.
+- **Timer preemption**: scheduling is cooperative. Tasks switch at explicit yield points (including
+  every blocking driver wait), never on a timer interrupt. A task that loops without yielding still
+  stalls the system.
+- **Separately-linked user programs**: U-mode tasks run code compiled into the kernel image, in a
+  dedicated `.utext` page. There is no ELF loader for user binaries, so a user program cannot yet be
+  a file on disk. The ELF loader that exists (`arch/riscv/common/elf.c`, driven by `exec`) loads
+  binaries into *kernel* mode and does not validate its headers.
+- **The old register-IPC entry points**: `sys_ipc_call`/`sys_ipc_reply`/etc. remain fixed stubs.
+  They are superseded rather than pending — services are reached by message passing over
+  copy-always channels (`kernel/chan.h`), which is what the microkernel actually uses.
+- **`printk()` under contention**: output is not atomic and takes no locks, which is correct only
+  because scheduling is cooperative. This has to be revisited with preemption.
 
-None of this is a warning label so much as an honest map: the bare-metal boot, FAT32 engine, and
-Lisp shell are real and continuously tested; the distributed, memory-protected microkernel
-described below is the destination this project is built toward, not its current state.
+Everything else described below — including the scheduler, IPC, U-mode isolation, and the
+distributed 9P namespace — is implemented and continuously tested. This section exists to stay an
+honest map rather than a wish list, so it is kept accurate in both directions.
 
 ---
 
 ## Key Features & Architecture
 
-* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch (`sys_ipc_call`, `sys_ipc_reply`, `sys_ipc_send`, `sys_ipc_recv`) — the L4/seL4-style zero-copy rendezvous semantics these are named for aren't implemented yet; see [Implementation Status](#implementation-status).
+* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), not by the older register-based `sys_ipc_*` entry points, which remain stubs superseded by that design.
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
   * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).
-  * `/proc/` — Synthetic process and kernel metrics (`/proc/ps`, `/proc/meminfo`, `/proc/version`).
+  * `/proc/` — Synthetic kernel metrics, generated on read and served as real byte streams (so a
+    remote node can read them over 9P): `/proc/ps` (the live task table), `/proc/meminfo` (live page
+    allocator counters), `/proc/version`, `/proc/df`, `/proc/kmsg` (the kernel log ring),
+    `/proc/devices` (the probed device registry), `/proc/buildid`.
   * `/dev/` — Hardware device nodes (`/dev/uart`, `/dev/null`, `/dev/zero`).
-  * `/srv/` — Named process IPC channel registry (`/srv/lisp` $\rightarrow$ PID 2).
+  * `/srv/` — Named service endpoints, reached by copy-always message passing: `/srv/console` (the
+    console server — anything that can write here emits on the terminal, including a remote node
+    over 9P) and `/srv/p9` (this node's own 9P/filesystem server, which is what `(mount-local ...)`
+    attaches).
+* **Microkernel Core** (see [Implementation Status](#implementation-status) for what is not yet done):
+  * **Cooperative scheduler** with per-task kernel stacks drawn from a real page allocator
+    (`kernel/palloc.c`), which replaced a bump pointer that could neither free nor fail.
+  * **Copy-always message channels** (`kernel/chan.h`) as the only IPC primitive. Both copies are
+    performed even on NOMMU builds where they are provably redundant — the discipline is what lets
+    one set of server sources be correct under both memory models, and it is why a local service and
+    a service on another machine are the same code path.
+  * **U-mode tasks with hardware-enforced per-task memory domains**, behind a single interface
+    (`kernel/mem_domain.h`): **PMP regions** on the NOMMU/M-mode targets and **Sv39 page tables** on
+    RV64. A task that stores into kernel memory faults and is terminated; the kernel survives.
+  * **Validated syscall boundary** (`kernel/uaccess.h`): every user pointer is checked against the
+    calling task's own domain and then copied, so the kernel never dereferences a caller-supplied
+    address and cannot be used as a confused deputy.
+  * **Servers as scheduled tasks**: the console and the 9P/filesystem server run as tasks rather
+    than inline calls. Kernel diagnostics (`printk`) and user-facing output (`cprintf`) are separate
+    streams, so handing a channel to a login shell does not silence the log, and detaching the log
+    does not silence the shell.
+
+  **Verifying these claims yourself** — the shell exposes the same probes the test suite uses, so
+  none of the above has to be taken on trust:
+
+  | Command | Shows |
+  |---|---|
+  | `pmpinfo` / `pmpdump` | What PMP this silicon actually implements — usable regions, granularity, and a per-register dump. On RP2350 it reports 8 configurable regions and a 32-byte granule. |
+  | `usertest` | A task really dropping to U-mode. Asserted on the *hardware-set trap cause* (8 = ecall from U-mode), which the kernel cannot fake. |
+  | `isolationtest` | A U-mode task storing into kernel memory: it faults, the task is terminated, and a canary in kernel `.data` is verifiably untouched. |
+  | `deputytest` | A U-mode task asking the *kernel* to write kernel memory on its behalf: refused — while a pointer the task does own still works. |
+  | `taskdemo` | Two cooperative tasks interleaving, which is what distinguishes real switching from a no-op yield. |
+  | `klog detach console` | Kernel diagnostics stop reaching the terminal while the shell keeps working. |
+
 * **Storage Engine & VirtIO Block Device**:
   * Native FAT32 filesystem engine supporting 32-bit cluster allocation, subdirectories (`.`, `..`), BPB formatting, file read/write, deletion, directory creation (`mkdir`), removal (`rmdir`), and copying (`cp`).
   * Hardware **VirtIO MMIO Block Driver** backed by a persistent shared disk image (`build/lugalos_sd.img`) used across both 32-bit and 64-bit builds.
@@ -224,6 +274,21 @@ ninja -C build/rp2350
    cp build/rp2350/lugalos.uf2 /Volumes/RP2350/
    ```
 
+**After the first flash, this is automatic.** The firmware implements the Arduino-style
+"1200-baud touch": opening the console CDC port at 1200 baud and dropping DTR makes the device
+reboot itself into BOOTSEL via the bootrom, so no button press is needed.
+
+```bash
+cd tests/hw
+uv run flash.py --verify        # touch -> wait for the volume -> copy -> confirm /proc/buildid
+```
+
+`--verify` compares the board's `/proc/buildid` against what the local tree builds, which turns
+"the board is running older firmware" into an explicit message instead of a confusing test failure.
+The bootstrap flash still has to be manual, because firmware that predates the touch cannot respond
+to it.
+
+
 3. The Pico 2 will flash, reboot automatically, and start LugalOS.
 
 ### Open Serial Console
@@ -249,8 +314,11 @@ picocom -b 115200 /dev/tty.usbmodem*
 
 Expected output after boot:
 ```
-LugalOS Lisp Machine v0.5.0
-[VFS Server] ...
+LugalOS Lisp Machine v0.6.0 (build 152.3ce6e4e2)
+[Dev] Registry: rtc, eeprom, usb, uart, uartslip, uartdemux, usbnet
+[PAlloc] Page allocator: 18 pages of 4096 bytes at 0x2006e000 (72 KB)
+[9P Chan] Local 9P server endpoint '/srv/p9' online (copy-always IPC).
+[Sched] Cooperative round-robin scheduler online (max 8 tasks)
 lsh>
 ```
 
@@ -357,8 +425,8 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(rm path)`: Removes file from VFS.
 * `(cp src dst)`: Copies file content between VFS locations.
 * `(cat path)`: Reads and prints file content to UART console.
-* `(ps)`: Displays a static process table (`/proc/ps`) — task scheduling isn't implemented yet, see [Implementation Status](#implementation-status), so this isn't live scheduler state.
-* `(meminfo)`: Displays physical memory allocation metrics (`/proc/meminfo`).
+* `(ps)`: Displays the live task table (`/proc/ps`) — real scheduler state, including the `p9srv` server task.
+* `(meminfo)`: Displays live page-allocator counters — pages total, free and used (`/proc/meminfo`).
 * `(df)`: Displays mounted volume capacity and cluster usage (`/proc/df`).
 * `(top)`: Displays system process, memory, and storage monitor dashboard.
 
@@ -370,6 +438,27 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(eeprom-read [offset] [len])`: Reads non-volatile string from AT24C32 4KB I2C EEPROM (`0x57` / `/dev/eeprom`).
 * `(eeprom-write offset string)`: Writes persistent string to AT24C32 4KB I2C EEPROM.
 * `(p9-loopback payload)`: Evaluates 9P2000 RPC round-trip over in-memory transport gateway (`/srv/p9_loopback`).
+
+#### Registries, Streams and Servers
+These exist so that *policy* — which hardware is used, which link serves 9P, who owns the terminal —
+lives in `init.lisp` rather than being compiled into the kernel.
+* `(devices)`: Prints the probed device registry (same content as `/proc/devices`).
+* `(dev-present? "name")`: Whether this board actually has a device — lets a boot script branch on
+  the hardware instead of on which target it was built for.
+* `(klog-sinks)`, `(klog-detach "console")`, `(klog-attach "console")`: Inspect and rebind kernel-log
+  output. Detaching stops diagnostics reaching the terminal **without silencing the shell**; the log
+  keeps accumulating in the ring either way, readable via `/proc/kmsg` (locally or over 9P).
+* `(console-device)`, `(console-bind "uart"|"usb")`: Which device owns the interactive console, and
+  hand it to another one at runtime.
+* `(mount-local "name")`: Attach this node's *own* namespace at `/name/` through the local 9P
+  channel — `/name/sd0/x` reaches the same bytes as `/sd0/x`, having crossed serialized frames and
+  the copy-always channel. Mostly a demonstration that a local server and a remote one are the same
+  code path.
+* `(mount-remote "name" ["device"])`, `(unmount "name")`: Attach a peer's namespace over a named 9P
+  link (omit the device to use this board's default).
+* `(p9-serve "device")`, `(p9-unserve "device")`: Serve inbound 9P on a named link.
+* `(spawn-pump n)`: Spawn a task that services background 9P links and yields. Exists to make the
+  client/server concurrency hazard genuinely reachable in tests.
 
 #### Native C11 Compiler & Binary Execution
 * `(cc src dst)`: Invokes native `chibicc` C11 compiler on VFS C source files.

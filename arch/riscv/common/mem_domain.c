@@ -1,6 +1,7 @@
 #include "kernel/mem_domain.h"
 #include "kernel/printk.h"
 #include "arch/csr.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 /* See kernel/include/kernel/mem_domain.h for the rationale. */
@@ -194,18 +195,128 @@ int mem_domain_activate(const mem_domain_t *d) {
 
 bool mem_domain_enforced(void) { return true; }
 
-#else /* CONFIG_MODE_S */
+#else /* CONFIG_MODE_S -- Sv39 (B5) */
 
-int mem_domain_activate(const mem_domain_t *d) {
-    (void)d;
-    return 0;
-    /* PMP CSRs are M-mode only and this build runs in S-mode; Sv39 is B5.
-     * Deliberately a no-op rather than an error: the scheduler calls this on
-     * every switch on both builds (Rule 0), and the difference belongs here,
-     * in one place, not in the caller. mem_domain_enforced() reports the
-     * truth so nothing claims isolation it does not have. */
+#include "arch/vmm.h"
+
+#define PTE_R (1UL << 1)
+#define PTE_W (1UL << 2)
+#define PTE_X (1UL << 3)
+#define PTE_U (1UL << 4)
+#define PTE_G (1UL << 5)
+
+#define MB2 (2UL * 1024 * 1024)
+#define GB1 (1024UL * 1024 * 1024)
+
+/* QEMU virt: MMIO below 1 GB, RAM at 0x80000000. Mapped separately because
+ * only the RAM gigabyte ever contains user regions, and it is the only one
+ * that needs splitting to finer granularity. */
+#define RAM_BASE 0x80000000UL
+
+static const mem_region_t *region_at(const mem_domain_t *d, uintptr_t addr) {
+    for (int i = 0; i < d->count; i++) {
+        if (addr >= d->regions[i].base &&
+            addr < d->regions[i].base + d->regions[i].size) {
+            return &d->regions[i];
+        }
+    }
+    return NULL;
 }
 
-bool mem_domain_enforced(void) { return false; }
+/* How a 2 MB block should be mapped. Splitting is expensive -- 512 PTEs and a
+ * table -- so it is done only where a region boundary actually falls inside
+ * the block. An earlier version split every block a region merely touched,
+ * which turned the 128 MB text region into 32768 individual page mappings and
+ * hung the boot. */
+typedef enum { BLK_KERNEL, BLK_WHOLE_REGION, BLK_SPLIT } blk_kind_t;
+
+static blk_kind_t classify_block(const mem_domain_t *d, uintptr_t base,
+                                 uintptr_t size, const mem_region_t **whole) {
+    bool partial = false;
+    const mem_region_t *cover = NULL;
+
+    for (int i = 0; i < d->count; i++) {
+        uintptr_t rb = d->regions[i].base, re = rb + d->regions[i].size;
+        if (rb >= base + size || re <= base) continue;      /* no overlap */
+        if (rb <= base && re >= base + size) {
+            /* Fully covers the block. First match wins, matching PMP's
+             * lowest-numbered-region rule so both backends resolve overlaps
+             * the same way. */
+            if (!cover) cover = &d->regions[i];
+        } else {
+            partial = true;
+        }
+    }
+    if (partial) return BLK_SPLIT;      /* a boundary lands inside this block */
+    if (cover) { *whole = cover; return BLK_WHOLE_REGION; }
+    return BLK_KERNEL;
+}
+
+static uintptr_t leaf_flags_for(const mem_region_t *r) {
+    uintptr_t f = PTE_U;
+    if (r->perms & MEM_R) f |= PTE_R;
+    if (r->perms & MEM_W) f |= PTE_W;
+    if (r->perms & MEM_X) f |= PTE_X;
+    return f;
+}
+
+/* Builds this domain's address space: the kernel identity map (so the kernel
+ * keeps working after a trap, which runs with the faulting task's satp still
+ * active) plus the domain's regions marked U. */
+static uintptr_t *build_space(const mem_domain_t *d) {
+    uintptr_t *root = (uintptr_t *)palloc_pages(1);
+    if (!root) return NULL;
+    memset(root, 0, PAGE_SIZE);
+
+    const uintptr_t kflags = PTE_R | PTE_W | PTE_X | PTE_G;
+
+    /* MMIO gigabyte, as a single superpage. */
+    if (vmm_map_range(root, 0, 0, GB1, kflags) != 0) return NULL;
+
+    for (uintptr_t blk = RAM_BASE; blk < RAM_BASE + GB1; blk += MB2) {
+        const mem_region_t *whole = NULL;
+        switch (classify_block(d, blk, MB2, &whole)) {
+            case BLK_KERNEL:
+                if (vmm_map_range(root, blk, blk, MB2, kflags) != 0) return NULL;
+                break;
+            case BLK_WHOLE_REGION:
+                if (vmm_map_range(root, blk, blk, MB2, leaf_flags_for(whole)) != 0) return NULL;
+                break;
+            case BLK_SPLIT:
+                for (uintptr_t pg = blk; pg < blk + MB2; pg += PAGE_SIZE) {
+                    const mem_region_t *r = region_at(d, pg);
+                    uintptr_t f = r ? leaf_flags_for(r) : kflags;
+                    if (vmm_map_range(root, pg, pg, PAGE_SIZE, f) != 0) return NULL;
+                }
+                break;
+        }
+    }
+    return root;
+}
+
+int mem_domain_activate(const mem_domain_t *d) {
+    if (!vmm_paging_enabled()) return 0; /* nothing to enforce with */
+
+    if (!d) {
+        /* Kernel task: the kernel's own space, which grants U nothing. */
+        vmm_switch_space(NULL);
+        return 0;
+    }
+
+    mem_domain_t *m = (mem_domain_t *)d; /* the cache below is the only write */
+    if (!m->arch_priv) {
+        m->arch_priv = build_space(d);
+        if (!m->arch_priv) {
+            printk("[MemDomain] Could not build an address space for this domain\n");
+            return -1;
+        }
+    }
+
+    vmm_space_t space = { .page_table_root = (uintptr_t *)m->arch_priv };
+    vmm_switch_space(&space);
+    return 0;
+}
+
+bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
 
 #endif

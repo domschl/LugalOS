@@ -23,6 +23,14 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
+    /* U-mode-executable code -- see the QEMU linker scripts for why it cannot
+     * share pages with kernel .text. One page, power-of-two aligned. */
+    .utext : ALIGN(4096) {
+        _utext_start = .;
+        *(.utext .utext.*)
+        . = _utext_start + 4096;
+    } > FLASH
+
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)

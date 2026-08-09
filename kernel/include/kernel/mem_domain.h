@@ -60,6 +60,12 @@ typedef struct {
 typedef struct mem_domain {
     mem_region_t regions[MEM_DOMAIN_MAX_REGIONS];
     int          count;
+    /* Backend-private. Unused by the PMP backend, which programs registers
+     * directly; the Sv39 backend caches this domain's page table here,
+     * because building one per context switch would be absurd where the PMP
+     * path is a handful of CSR writes. Built lazily on first activation so
+     * the interface stays the one B3 defined. */
+    void        *arch_priv;
 } mem_domain_t;
 
 void mem_domain_init(mem_domain_t *d);

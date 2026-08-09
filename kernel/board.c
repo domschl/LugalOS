@@ -30,14 +30,16 @@
  * still cannot execute a single privileged instruction) and read constants,
  * but cannot modify anything. Tight per-task code regions need user programs
  * linked separately, which is B6's ELF work. */
+extern char _utext_start[];
+
 void board_text_region(uintptr_t *base, uintptr_t *size) {
-#if defined(CONFIG_BOARD_RP2350)
-    *base = 0x10000000; /* XIP flash, 4 MB -- code lives here */
-    *size = 4u * 1024 * 1024;
-#else
-    *base = 0x80000000; /* QEMU virt RAM, 128 MB -- code and data both */
-    *size = 128u * 1024 * 1024;
-#endif
+    /* The dedicated U-mode-executable page (linker: .utext), not the kernel's
+     * text. Granting U-mode execute on kernel .text would stop the kernel
+     * executing it under Sv39, since S-mode may not fetch instructions from a
+     * page marked U. Invisible under PMP, fatal under paging -- so one page
+     * of code that U-mode owns, on both. */
+    *base = (uintptr_t)_utext_start;
+    *size = 4096;
 }
 
 uintptr_t board_uart_base(void) {
