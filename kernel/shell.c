@@ -2,6 +2,8 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
 #include "kernel/palloc.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -79,6 +81,7 @@ static void cmd_help(void) {
     printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
     printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
     printk("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
+    printk("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -235,43 +238,102 @@ static void user_probe(void) {
                              :: "r"(12), "r"((uintptr_t)msg[i]) : "a0", "a1");
     }
     __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
-    for (;;) { } /* unreachable: SYS_UEXIT ends the task */
+    for (;;) { }
 }
 
-/* Static rather than palloc'd: the task never returns to free it, and a
- * per-task user stack belongs with per-task PMP regions in the next step
- * rather than being invented here. 16-byte aligned per the RISC-V ABI. */
-static uint8_t g_user_stack[1024] __attribute__((aligned(16)));
+/* The isolation probe: a U-mode task writing to kernel memory it was never
+ * granted. Under a correct domain this faults on the store and the task is
+ * terminated; with the wide-open grant B3's previous step used, it silently
+ * succeeds. That difference is the whole claim, and it is why this exists as
+ * a separate command rather than being folded into user_probe(). */
+static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
 
-static void usertest_body(void *arg) {
-    (void)arg;
-    arch_user_grant_all();
-    printk("[UserTest] Entering U-mode...\n");
-    arch_enter_user(user_probe, (uintptr_t)g_user_stack + sizeof(g_user_stack));
+static void user_intruder(void) {
+    /* g_kernel_canary is kernel .data: readable under the RX region below,
+     * but never writable by any region in this task's domain. */
+    g_kernel_canary = 0xDEAD;
+    /* Only reached if the store was NOT stopped. Report that explicitly --
+     * silence would look identical to a correctly terminated task. */
+    const char bad[] = "NOT_ISOLATED";
+    for (int i = 0; bad[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)bad[i]) : "a0", "a1");
+    }
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { }
 }
 
-static void cmd_usertest(void) {
-    int pid = task_create("usertest", usertest_body, NULL);
+/* 1 KB, aligned to its own size: NAPOT regions must be power-of-two sized and
+ * self-aligned, and mem_domain_add() rejects anything else rather than
+ * silently widening it. */
+static uint8_t g_user_stack[1024] __attribute__((aligned(1024)));
+static mem_domain_t g_user_domain;
+
+static void user_task_common(void (*entry)(void)) {
+    mem_domain_init(&g_user_domain);
+
+    /* Order matters: PMP resolves against the lowest-numbered matching
+     * region, so the narrow RW grant for this task's own stack must come
+     * before the broad RX grant that also covers it. */
+    mem_domain_add(&g_user_domain, (uintptr_t)g_user_stack, sizeof(g_user_stack),
+                   MEM_R | MEM_W);
+
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_user_domain, tbase, tsize, MEM_R | MEM_X);
+
+    if (task_set_domain(sched_current_pid(), &g_user_domain) != 0) {
+        /* The hardware did not install the domain as written, so nothing here
+         * knows what this task would actually be allowed to touch. Refusing is
+         * the only honest option -- entering U-mode anyway would report
+         * "isolated" on the strength of a restriction that was never verified. */
+        printk("[UserTest] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack));
+}
+
+static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
+static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
+
+static void run_user_task(const char *name, void (*body)(void *)) {
+    int pid = task_create(name, body, NULL);
     if (pid < 0) {
         printk("[UserTest] Could not create the task\n");
         return;
     }
-    /* Cooperative: the task only advances when this one yields. */
     for (int i = 0; i < 64; i++) sched_yield();
+}
 
-    /* The discriminating check. Output alone proves nothing -- a kernel-mode
-     * task making the same ecalls prints exactly the same thing. The trap
-     * cause is set by the hardware from the privilege level the ecall came
-     * from, so cause 8 is proof the transition really happened. */
-    /* Hand the region back: the grant belongs to the task's lifetime, not to
-     * the system's. See arch_user_revoke_all(). */
-    arch_user_revoke_all();
+static void cmd_usertest(void) {
+    if (!mem_domain_enforced()) {
+        printk("[UserTest] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5).\n");
+    }
+    run_user_task("usertest", usertest_body);
 
     uintptr_t c = arch_last_ecall_cause();
     printk("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
            c == 8 ? "U-mode -- privilege level really dropped"
                   : "NOT U-mode -- the transition did not happen");
     printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
+}
+
+static void cmd_usertest_isolation(void) {
+    /* State the enforcement capability here, not only in usertest: this is
+     * the command whose result is meaningless without it. A "BREACHED" line
+     * with no explanation reads as a bug rather than as the documented state
+     * of a build whose mechanism (Sv39) is still B5. */
+    if (!mem_domain_enforced()) {
+        printk("[Isolation] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5),\n");
+        printk("[Isolation]       so the write below is EXPECTED to succeed.\n");
+    }
+    g_kernel_canary = 0xC0FFEE;
+    printk("[Isolation] Canary before: 0x%lx\n", (unsigned long)g_kernel_canary);
+    run_user_task("intruder", intruder_body);
+    printk("[Isolation] Canary after:  0x%lx -- %s\n",
+           (unsigned long)g_kernel_canary,
+           g_kernel_canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                                       : "BREACHED (user task wrote kernel memory)");
 }
 
 static void cmd_taskdemo(void) {
@@ -387,6 +449,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "usertest") == 0) {
         cmd_usertest();
+        return;
+    } else if (strcmp(cmd_line, "isolationtest") == 0) {
+        cmd_usertest_isolation();
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();

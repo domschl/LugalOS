@@ -41,7 +41,7 @@
  * re-entrant VFS calls, both of which have modest frames. */
 #define TASK_STACK_PAGES 2
 
-struct mem_domain; /* B3/B5; NULL means "the kernel's own domain" */
+#include "kernel/mem_domain.h" /* B3: per-task restriction set */
 
 typedef struct task {
     int          pid;
@@ -50,7 +50,10 @@ typedef struct task {
     void        *stack_base;  /* palloc'd kernel stack, NULL for the boot task */
     uint32_t     stack_pages;
     const char  *name;
-    struct mem_domain *domain;
+    /* B3: the task's memory domain, activated by the scheduler on every
+     * switch. NULL means unrestricted (kernel tasks). Owned by whoever
+     * created the task. */
+    mem_domain_t *domain;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -68,6 +71,10 @@ void sched_yield(void);
 /* Marks the calling task DEAD, frees its stack, and yields permanently.
  * Never returns. Called automatically when a task's entry function returns. */
 void task_exit(void);
+
+/* Attaches a memory domain (B3). Takes effect immediately if `pid` is the
+ * running task, otherwise at its next scheduling. */
+int task_set_domain(int pid, mem_domain_t *domain);
 
 /* Blocks/unblocks by pid. A BLOCKED task is skipped by sched_yield(). */
 void task_block(void);

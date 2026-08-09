@@ -1,5 +1,6 @@
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
+#include "kernel/mem_domain.h"
 #include "kernel/printk.h"
 #include <string.h>
 
@@ -72,6 +73,19 @@ bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
     return true;
 }
 
+/* Attaches a memory domain to a task. Separate from task_create() because a
+ * task's regions usually depend on resources allocated after it exists (its
+ * own user stack, for one). */
+int task_set_domain(int pid, mem_domain_t *domain) {
+    if (pid < 0 || pid >= MAX_TASKS) return -1;
+    if (g_tasks[pid].state == TASK_UNUSED) return -1;
+    g_tasks[pid].domain = domain;
+    /* If the task is the one running, the change takes effect now rather than
+     * at the next switch. */
+    if (pid == g_current) return mem_domain_activate(domain);
+    return 0;
+}
+
 int task_create(const char *name, void (*entry)(void *), void *arg) {
     if (!entry) return -1;
 
@@ -96,7 +110,7 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
     t->name = name ? name : "unnamed";
     t->stack_base = stack;
     t->stack_pages = TASK_STACK_PAGES;
-    t->domain = NULL;
+    t->domain = NULL; /* unrestricted until a caller attaches one */
 
     /* Prime the stack so the first ctx_switch() into this task "returns" to
      * task_trampoline with s0 = entry and s1 = arg. The frame layout must
@@ -139,6 +153,13 @@ void sched_yield(void) {
     if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
     g_tasks[next].state = TASK_RUNNING;
     g_current = next;
+
+    /* B3: install the incoming task's memory domain. Done here rather than in
+     * the U-mode entry path because a task's restrictions must be re-applied
+     * every time it is *resumed*, not only when it first enters U-mode --
+     * otherwise a task would run under whatever domain the previously running
+     * task left behind. NULL (kernel tasks) clears all restriction. */
+    (void)mem_domain_activate(g_tasks[next].domain);
 
     /* Returns once something switches back to `prev` -- i.e. to us. */
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
@@ -189,6 +210,7 @@ void task_exit(void) {
     g_tasks[next].state = TASK_RUNNING;
     int prev = g_current;
     g_current = next;
+    (void)mem_domain_activate(g_tasks[next].domain);
 
     /* Parks the dead task's sp into a slot nobody will read again. */
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);

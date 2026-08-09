@@ -479,6 +479,24 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             timeout=10.0)
         results.append(("U-mode Task Runs And Syscalls Back (B3)", ok, log if not ok else ""))
 
+        # 13c-quater. B3: per-task memory domains actually enforce.
+        #
+        # The expectation differs by target *by design*, and asserting the
+        # same thing on both would be wrong. D2 put enforcement on the M-mode
+        # targets first: RV32 programs PMP regions and a U-mode store into
+        # kernel memory faults, while RV64 runs in S-mode where PMP CSRs are
+        # inaccessible and Sv39 is still B5 -- so the same store succeeds. The
+        # build reports which case it is rather than quietly implying
+        # isolation it does not have, and this test holds it to that.
+        if "32" in arch_name:
+            pattern = r"faulted: cause \d+(.|\n)*ISOLATED \(kernel memory untouched\)"
+            label = "U-mode Task Cannot Write Kernel Memory (B3, PMP enforced)"
+        else:
+            pattern = r"cannot enforce domains(.|\n)*BREACHED \(user task wrote kernel memory\)"
+            label = "U-mode Isolation Honestly Reported As Unenforced (B3, S-mode awaits B5)"
+        ok, log = session.send_and_expect("isolationtest", pattern, timeout=12.0)
+        results.append((label, ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

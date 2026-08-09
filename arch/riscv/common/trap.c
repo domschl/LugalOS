@@ -3,6 +3,7 @@
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
+#include <stdbool.h>
 #include "fs/vfs.h"
 #include "drivers/uart.h"
 
@@ -130,6 +131,27 @@ void trap_handler(trap_frame_t *frame) {
             /* Advance EPC past 4-byte ecall instruction */
             frame->epc += 4;
             return;
+        }
+
+        /* B3: a fault taken *from U-mode* kills that task instead of halting
+         * the machine. Containment is the entire point of running a task in
+         * U-mode -- a kernel that halts whenever a user task misbehaves has
+         * enforcement but no benefit from it.
+         *
+         * The previous privilege level comes from the saved status word, where
+         * the hardware recorded it: MPP is mstatus[12:11], SPP is sstatus[8].
+         * Zero means the trap came from U-mode. */
+#if defined(CONFIG_MODE_S)
+        bool from_user = ((frame->status >> 8) & 1u) == 0;
+#else
+        bool from_user = ((frame->status >> 11) & 3u) == 0;
+#endif
+        if (from_user) {
+            printk("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
+                   "terminating the task\n",
+                   (unsigned long)code, (unsigned long)frame->epc,
+                   (unsigned long)frame->tval);
+            task_exit(); /* switches away; never returns */
         }
 
         /* An illegal instruction during a deliberate hardware probe is an
