@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define PAGE_SIZE 4096
 
@@ -18,5 +19,19 @@ void vmm_init(void);
 int vmm_map_page(vmm_space_t *space, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
 void vmm_switch_space(vmm_space_t *space);
 void *vmm_alloc_page(void);
+
+/* --- Sv39 (B5, MMU builds only; no-ops or absent on NOMMU) --- */
+
+/* Maps [va, va+size) using the largest superpage each alignment allows.
+ * `leaf_flags` are raw Sv39 PTE permission bits. Returns 0, or -1. */
+int vmm_map_range(uintptr_t *root, uintptr_t va, uintptr_t pa, uintptr_t size,
+                  uintptr_t leaf_flags);
+
+/* The kernel's root page table, for building a task space that shares it. */
+uintptr_t *vmm_kernel_root(void);
+
+/* False if paging could not be brought up, so callers can report honestly
+ * rather than claim enforcement that is not there. */
+bool vmm_paging_enabled(void);
 
 #endif /* LUGALOS_ARCH_VMM_H */

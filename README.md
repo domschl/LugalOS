@@ -1,6 +1,14 @@
-# LugalOS: Bare-Metal RISC-V Operating System
+# LugalOS: Bare-Metal RISC-V Microkernel Operating System
 
-**LugalOS** is a bare-metal, dependency-free operating system written in pure freestanding C11 and RISC-V assembly, built toward a microkernel architecture as its long-term design goal — see [Implementation Status](#implementation-status) below for what's actually implemented today. (This title is deliberately provisional: it drops "Microkernel" until the IPC/scheduler/MMU work in that section is real, at which point it should be restored.)
+**LugalOS** is a bare-metal, dependency-free microkernel operating system written in pure freestanding C11 and RISC-V assembly.
+
+The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
+were aspirational, on the principle that a name should describe what the code does. It is restored
+as of v0.6.0: message-passing IPC, a real scheduler, U-mode tasks, and **hardware-enforced per-task
+memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
+silicon) and Sv39 page tables on the 64-bit MMU target — are implemented and continuously tested.
+[Implementation Status](#implementation-status) below still states exactly what is and is not real,
+including what remains roadmap.
 
 It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (like the **Kendryte K210** and **VisionFive 2**).
 
@@ -12,8 +20,16 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`) on QEMU RV32 (NOMMU)
-and RV64, and by hand on RP2350 (Pico 2) hardware:
+**Working today**, verified by the automated test suite (`tests/runner.py`, 121 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 6 tests against real RP2350
+silicon):
+- **Microkernel core**: cooperative scheduler with per-task kernel stacks; copy-always message
+  channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
+  PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
+  boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
+  running as scheduled tasks rather than inline calls.
+- **Not yet**: timer preemption and separately-linked ELF user programs (both roadmap; scheduling is
+  cooperative, and user code currently shares the kernel image).
 - Boots to an interactive shell (`lsh`) on all three targets.
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
@@ -49,7 +65,7 @@ described below is the destination this project is built toward, not its current
 
 ## Key Features & Architecture
 
-* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch (`sys_ipc_call`, `sys_ipc_reply`, `sys_ipc_send`, `sys_ipc_recv`) — the L4/seL4-style zero-copy rendezvous semantics these are named for aren't implemented yet; see [Implementation Status](#implementation-status).
+* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), not by the older register-based `sys_ipc_*` entry points, which remain stubs superseded by that design.
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
   * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).

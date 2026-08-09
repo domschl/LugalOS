@@ -233,115 +233,118 @@ static void taskdemo_body(void *arg) {
  * pointer-taking syscalls still dereference user addresses directly, and
  * calling one from here would "work" only because nothing separates the
  * address spaces yet. That is B3's copy-in/copy-out step, not this one. */
-static void user_probe(void) {
-    const char msg[] = "UMODE_OK";
-    for (int i = 0; msg[i]; i++) {
-        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
-                             :: "r"(12), "r"((uintptr_t)msg[i]) : "a0", "a1");
-    }
+/* --- U-mode probe code ---
+ *
+ * These live in .utext, the one page U-mode is granted execute on, and must
+ * be genuinely self-contained: anything they reach outside that page is a
+ * fault. Two things break that by default and neither is obvious:
+ *
+ *   - UBSan instrumentation (on for the QEMU builds) inserts calls to
+ *     __ubsan_handle_*_abort in kernel .text. Hence no_sanitize here.
+ *   - String literals are emitted into kernel .rodata and loaded from there,
+ *     so every message has to be built by explicit assignment instead. Ugly,
+ *     and the ugliness is the point: it is visible rather than depending on
+ *     what the optimiser happened to do. RV32 inlined the stores and RV64
+ *     loaded from .rodata for identical source, which is exactly the kind of
+ *     difference that turns into a mystery fault on one target only.
+ *
+ * B6's ELF work replaces all of this with separately linked user programs,
+ * where self-containment is structural rather than hand-maintained. */
+#define UATTR __attribute__((section(".utext"))) __attribute__((no_sanitize("undefined")))
+
+/* Value-only syscall: no pointer, so nothing to validate and nothing outside
+ * .utext to reach. */
+/* always_inline, not merely inline: at -Os the compiler emitted these as real
+ * functions in kernel .text, which U-mode cannot execute. A helper that is
+ * "obviously" inlined is not a guarantee. */
+__attribute__((always_inline)) static inline void usys_putc(char c) {
+    __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                         :: "r"(12), "r"((uintptr_t)c) : "a0", "a1");
+}
+__attribute__((always_inline)) static inline long usys_read(const char *path, void *buf, long len) {
+    long rc;
+    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
+                         "ecall\n mv %0, a0"
+                         : "=r"(rc)
+                         : "r"(13), "r"((uintptr_t)path), "r"((uintptr_t)buf), "r"(len)
+                         : "a0", "a1", "a2", "a3", "memory");
+    return rc;
+}
+__attribute__((always_inline)) static inline void usys_exit(void) {
     __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+}
+
+UATTR static void user_probe(void) {
+    usys_putc('U'); usys_putc('M'); usys_putc('O'); usys_putc('D');
+    usys_putc('E'); usys_putc('_'); usys_putc('O'); usys_putc('K');
+    usys_exit();
     for (;;) { }
 }
 
-/* The isolation probe: a U-mode task writing to kernel memory it was never
- * granted. Under a correct domain this faults on the store and the task is
- * terminated; with the wide-open grant B3's previous step used, it silently
- * succeeds. That difference is the whole claim, and it is why this exists as
- * a separate command rather than being folded into user_probe(). */
+/* The isolation probe: a store into kernel memory the task was never granted.
+ * Under a correct domain it faults and the task is terminated. */
 static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
 
-static void user_intruder(void) {
-    /* g_kernel_canary is kernel .data: readable under the RX region below,
-     * but never writable by any region in this task's domain. */
+UATTR static void user_intruder(void) {
     g_kernel_canary = 0xDEAD;
-    /* Only reached if the store was NOT stopped. Report that explicitly --
-     * silence would look identical to a correctly terminated task. */
-    const char bad[] = "NOT_ISOLATED";
-    for (int i = 0; bad[i]; i++) {
-        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
-                             :: "r"(12), "r"((uintptr_t)bad[i]) : "a0", "a1");
-    }
-    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    /* Only reached if the store was NOT stopped. Report explicitly: silence
+     * would look identical to a correctly terminated task. */
+    usys_putc('N'); usys_putc('O'); usys_putc('T'); usys_putc('_');
+    usys_putc('I'); usys_putc('S'); usys_putc('O');
+    usys_exit();
     for (;;) { }
 }
 
-/* The confused-deputy probe: can a U-mode task get the kernel to write to
- * kernel memory on its behalf?
- *
- * The isolation test proves the task cannot store into kernel memory itself.
- * This asks the harder question -- whether it can hand the kernel a
- * destination pointer and have the kernel do it, which is the hole that
- * remains whenever a syscall dereferences a caller-supplied address. The
- * kernel runs where PMP does not restrict it, so the restriction would stay
- * intact and be entirely bypassed.
- *
- * SYS_READ_FILE is the vehicle: its `buf` argument is a destination the
- * kernel writes into, validated by copy_to_user() against the caller's own
- * domain (MEM_W). Both outcomes are asserted, and the second matters as much
- * as the first: a syscall layer that rejects every pointer would pass the
- * "refused" half while being useless.
- *
- * The *read* direction (a source pointer into kernel memory) is deliberately
- * not asserted here. On QEMU the text region is one coarse RX grant over all
- * of RAM, so kernel data is legitimately readable by U-mode and there is
- * nothing to catch -- a limitation of the coarse region, not of the
- * validation. Tight per-task code/data regions need separately linked user
- * programs, which is B6's ELF work.
- */
+/* The confused-deputy probe: can a U-mode task get the KERNEL to write to
+ * kernel memory on its behalf? SYS_READ_FILE's `buf` is a destination the
+ * kernel writes into, validated by copy_to_user() against this task's domain.
+ * Both outcomes are asserted -- a syscall layer refusing every pointer would
+ * pass the "refused" half while being useless. */
 static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
 
-/* NOTE on the "memory" clobbers below: an ecall passing a pointer must tell
- * the compiler that memory is read or written. Without it GCC sees only the
- * pointer value crossing into the asm, concludes nothing ever reads the
- * buffer's contents, and deletes the code that filled it. That happened here:
- * on RP2350 (-Os) the path string was optimised away entirely, the kernel
- * received a pointer to zeroed stack, and the syscall failed on the empty
- * path -- which looked exactly like the destination check doing its job. A
- * test that passes for the wrong reason is worse than one that fails. */
-
-static void user_deputy(void) {
-    char path[] = "/proc/version";
+UATTR static void user_deputy(void) {
+    /* volatile, because gcc recognises a run of consecutive char stores and
+     * turns it back into a copy from a .rodata blob -- defeating the whole
+     * point of writing them out. RV32 did not do this and RV64 did, for
+     * identical source. */
+    volatile char path[16];
+    path[0]='/'; path[1]='p'; path[2]='r'; path[3]='o'; path[4]='c';
+    path[5]='/'; path[6]='v'; path[7]='e'; path[8]='r'; path[9]='s';
+    path[10]='i'; path[11]='o'; path[12]='n'; path[13]='\0';
     char mybuf[64];
-    long rc;
 
-    /* 1. Destination = kernel memory the task does not own. Must be refused. */
-    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
-                         "ecall\n mv %0, a0"
-                         : "=r"(rc)
-                         : "r"(13), "r"((uintptr_t)path),
-                           "r"((uintptr_t)&g_deputy_target), "r"(16)
-                         : "a0", "a1", "a2", "a3", "memory");
-    const char refused[] = "DEPUTY_REFUSED";
-    const char leaked[]  = "DEPUTY_WROTE_KERNEL";
-    const char *m = (rc < 0) ? refused : leaked;
-    for (int i = 0; m[i]; i++) {
-        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
-                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    long rc = usys_read((const char *)path, (void *)&g_deputy_target, 16);
+    if (rc < 0) {
+        usys_putc('D'); usys_putc('E'); usys_putc('P'); usys_putc('U');
+        usys_putc('T'); usys_putc('Y'); usys_putc('_');
+        usys_putc('R'); usys_putc('E'); usys_putc('F'); usys_putc('U');
+        usys_putc('S'); usys_putc('E'); usys_putc('D');
+    } else {
+        usys_putc('D'); usys_putc('E'); usys_putc('P'); usys_putc('U');
+        usys_putc('T'); usys_putc('Y'); usys_putc('_');
+        usys_putc('W'); usys_putc('R'); usys_putc('O'); usys_putc('T'); usys_putc('E');
     }
 
-    /* 2. Destination = the task's own stack. Must succeed. */
-    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
-                         "ecall\n mv %0, a0"
-                         : "=r"(rc)
-                         : "r"(13), "r"((uintptr_t)path),
-                           "r"((uintptr_t)mybuf), "r"(32)
-                         : "a0", "a1", "a2", "a3", "memory");
-    const char own_ok[]  = " OWNBUF_OK";
-    const char own_bad[] = " OWNBUF_REJECTED";
-    m = (rc >= 0) ? own_ok : own_bad;
-    for (int i = 0; m[i]; i++) {
-        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
-                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    rc = usys_read((const char *)path, mybuf, 32);
+    usys_putc(' ');
+    if (rc >= 0) {
+        usys_putc('O'); usys_putc('W'); usys_putc('N'); usys_putc('B');
+        usys_putc('U'); usys_putc('F'); usys_putc('_');
+        usys_putc('O'); usys_putc('K');
+    } else {
+        usys_putc('O'); usys_putc('W'); usys_putc('N'); usys_putc('B');
+        usys_putc('U'); usys_putc('F'); usys_putc('_');
+        usys_putc('B'); usys_putc('A'); usys_putc('D');
     }
-
-    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    usys_exit();
     for (;;) { }
 }
 
-/* 1 KB, aligned to its own size: NAPOT regions must be power-of-two sized and
- * self-aligned, comfortably above RP2350's 32-byte granule.
- * mem_domain_add() rejects anything else rather than silently widening it. */
-static uint8_t g_user_stack[1024] __attribute__((aligned(1024)));
+/* A full page, page-aligned: one rule that satisfies both backends. PMP needs
+ * power-of-two and self-aligned; Sv39 cannot grant anything finer than a page,
+ * so a sub-page region would silently hand U-mode the rest of the page. Taking
+ * the stricter of the two keeps a single description working on both. */
+static uint8_t g_user_stack[4096] __attribute__((aligned(4096)));
 static mem_domain_t g_user_domain;
 
 /* Set only once a task has actually reached U-mode. Without it the isolation

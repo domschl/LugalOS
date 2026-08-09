@@ -184,6 +184,11 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 add_dependencies(lugalos.elf lugalos_build_id)
+
+# Relink when the linker script changes. CMake does not infer this, so an
+# edit to the memory layout silently produced a stale binary -- which cost a
+# confusing debugging round when a 2 MB alignment appeared not to take effect.
+set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS ${LINKER_SCRIPT})
 target_link_libraries(lugalos.elf PRIVATE gcc)
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

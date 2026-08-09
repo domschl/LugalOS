@@ -4,9 +4,10 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6) through B4 (M10) are complete as of 2026-08-09** — D4 and the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
-> gate are both resolved, U-mode isolation is enforced on real RP2350 silicon, and every §5.2
-> scenario is delivered. **B5 (M11, Sv39) and B6 (M12, preemption + ELF) remain.** D2, D5 and D6 are resolved;
+> **B0 (M6) through B5 (M11) are complete as of 2026-08-09.** D4 and the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
+> gate are resolved, every §5.2 scenario is delivered, and **hardware-enforced per-task isolation
+> works on both memory models** — PMP on RP2350 silicon, Sv39 on RV64 — behind one interface.
+> **V1–V4 are closed and the README title is restored. Only B6 (M12, preemption + ELF) remains.** D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -1585,6 +1586,50 @@ and tested: three-level walk and allocation, kernel identity map first, `satp` +
 page-fault handling in `trap_handler` (which today halts on any non-`ecall` exception). Closes
 **V4**.
 
+##### B5 completion notes (2026-08-09) — **B5/M11 COMPLETE**, V4 closed
+
+Sv39 is implemented and RV64 now enforces per-task memory domains through page tables, behind the
+same `mem_domain_t` interface B3 defined and tested against PMP. The isolation test's per-target
+branch is **gone**: both models are asserted identically, which is the clearest statement of Rule 0
+in the suite. QEMU **121/121**, hardware **6/6**.
+
+**Landed as an identity map first**, like B3's trap-path work: four 1 GB superpages covering MMIO and
+RAM, so enabling `satp` changed nothing observable and the existing suite was a regression check on
+paging itself before domains were layered on.
+
+**Three things only paging could reveal, each invisible under PMP:**
+
+1. **The coarse text region was describing the wrong thing.** Granting U-mode `R|X` over all of RAM
+   was harmless under PMP — which does not restrict M-mode — and under Sv39 it removed the
+   *kernel's* write access to its own `.data`/`.bss`, hanging the boot. The region is now the first
+   2 MB of RAM, which the linker reserves for `.text`/`.rodata` by pushing `.data` to a 2 MB
+   boundary.
+2. **S-mode may never fetch instructions from a page marked `U`.** `SUM` permits S-mode *data*
+   access to user pages; it does not extend to instruction fetch. So user-executable code cannot
+   share pages with kernel code at all, and a dedicated `.utext` page now holds it. Under PMP this
+   constraint simply does not exist.
+3. **"Self-contained" user code was not.** With `.utext` in place, U-mode faulted on things the
+   source did not mention: UBSan instrumentation calling kernel handlers, string literals loaded
+   from kernel `.rodata`, `static inline` helpers the optimiser emitted as real functions, and — after
+   writing the literals out as explicit char stores — gcc coalescing them *back* into a `.rodata`
+   copy. Fixed with `no_sanitize`, `always_inline`, and `volatile`. **RV32 and RV64 differed on
+   identical source**, so each of these was a one-target mystery until located.
+
+**On falsifying the Sv39 path**: the honest evidence is the before/after, not an in-place sabotage.
+Before this work RV64 printed `BREACHED` with the canary at `0xdead`; it now faults with **cause 15,
+a store *page* fault** — a code only an MMU produces — and the canary is intact. Targeted sabotages
+were attempted and are poor discriminators here: granting `W` on user pages does not touch the
+canary's kernel-only page, and adding `U` to kernel pages hangs the kernel by making its own code
+unfetchable.
+
+**Also fixed**: CMake did not track the linker script, so a memory-layout change silently produced a
+stale binary — which cost a confusing round where a 2 MB alignment appeared not to take effect.
+`LINK_DEPENDS` now covers it.
+
+**V4 closed, and the README title restored.** "Scales to 64-bit with MMU protection" is now true
+rather than aspirational, and the README's own condition for restoring "Microkernel" — that the
+IPC, scheduler and MMU work be real — is met on both memory models.
+
 #### B6 — Preemption, and ELF-loaded servers
 
 - Timer preemption (the point at which NOMMU genuinely needs B3's PMP to already be in place).
@@ -1629,7 +1674,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing | M7 | **Done (2026-08-09)** — see B2's completion notes. Page allocator (replacing an unbounded bump pointer), `switch.S` cooperative context switch shared by both word widths, real `task_t`/`sched.c`, yield points in `uart_getc()`/`virtio_blk`, and `p9_route_frame()` type-parity + tag demultiplexing. **D5 gate met and genuinely exercised**: a new `(spawn-pump)` task runs concurrently with the client exchange, since with only the boot task alive the hazard never occurs and the gate would have been hollow. Tests 103→107. |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | **Done (2026-08-09)** — see B3's completion notes. Scratch-CSR trap stack switch, `arch_enter_user()`, per-task `mem_domain_t` activated by the scheduler, and `kernel/uaccess.c` closing the confused-deputy hole. Enforced on QEMU RV32 **and real RP2350 silicon** (three datasheet findings needed: no TOR, 32-byte granule, erratum E6's reversed R/W/X order). RV64 reports honestly that it cannot enforce until Sv39 (B5). Tests 113→115 QEMU, 6/6 hardware. |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | **Done (2026-08-09)** — see B4's completion notes. `printk()`/`cprintf()` split into independent kernel-log and console streams (resolving B0's recorded limitation), the console exposed as a channel service and bound by name from `init.lisp`, and the 9P/filesystem server made a scheduled task — **resolving D4**. Tests 115→121 QEMU, 6/6 hardware. |
-| **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
+| **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | **Done (2026-08-09)** — Sv39 three-level paging with superpages, per-domain address spaces behind B3's `mem_domain_t`, and the isolation test's per-target branch removed because both models now behave identically. Required a dedicated `.utext` page (S-mode may not fetch from `U` pages) and a tight text region (the coarse one stripped the kernel's own write access under paging). **V4 closed; README title restored.** |
 | **M12** | **B6** preemption; ELF-loaded servers (MMU only, closes B12) | M10, M11 | Not started |
 
 **M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. A3b and
@@ -1801,6 +1846,6 @@ A2's fid table and A4's client/server role assumption both stop being safe at B2
 | **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | **B6** — ELF-loaded servers are MMU-only (see D6), so this closes with them |
 | **A2** | Namespace fall-through across volumes | A5 |
 | **A3** | No file handles in the VFS | A1 |
-| **V4** | "Scales to 64-bit with MMU protection" — no MMU | **B5** (Sv39); **B3** delivers enforcement on NOMMU first |
+| **V4** | "Scales to 64-bit with MMU protection" — no MMU | **Closed.** B3 (PMP, NOMMU first), B5 (Sv39) |
 | **V5** | `/proc` printk's instead of filling buffers; 9P not connected to VFS; `uart_net.c` never touches a UART | A1, A2, A3 |
 | **V1–V3** | Microkernel / IPC / scheduler are stubs | **B1** (IPC), **B2** (scheduler), **B4** (servers) — enforcement then hardens in B3/B5 |
