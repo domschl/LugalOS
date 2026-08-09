@@ -1,5 +1,6 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/device.h"
 #include "kernel/sched.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
@@ -54,11 +55,12 @@ const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = 
 #endif
 
 void kernel_main(void) {
+    /* Boot bootstrap: the console UART and the kernel log sink must both
+     * exist before anything can printk(), which the device registry itself
+     * does -- so these two cannot go through it, and stay explicit here. */
+    uart_init(board_uart_base());
 #if defined(CONFIG_BOARD_RP2350)
-    uart_init(0x40070000);
     led_blink_phase(3);  /* 3 blinks = kernel_main reached */
-#else
-    uart_init(0x10000000);
 #endif
 
     /* B0: attach the default kernel log sink before anything can printk().
@@ -92,28 +94,27 @@ void kernel_main(void) {
     printk("[Priv] Execution Mode: Machine Mode (M-mode)\n");
 #endif
 
-    /* Initialize Subsystems */
-    i2c_rtc_init();
-    at24c32_init();
-    usb_cdc_init();
+    /* Hardware: what exists is a per-board table (kernel/board.c), not a
+     * sequence of #ifs here. */
+    board_register_devices();
+    dev_probe_all();
+
+    /* Kernel subsystems -- not devices, so they stay explicit. */
     trap_init();
     vmm_init();
     ipc_init();
     vfs_server_init();
-#if !defined(CONFIG_BOARD_RP2350)
-    if (virtio_console_init() == 0) {
-        p9_link_register_background(virtio_console_get_link());
+
+    /* Serve inbound 9P on every dedicated link this board has. The registry
+     * decides which those are via DEV_F_BACKGROUND_9P; the UART-backed links
+     * deliberately lack the flag because they share a wire with the console
+     * and stay behind `p9serve` / `p9share` (see kernel/device.h). */
+    uint32_t cursor = 0;
+    void *link;
+    while ((link = dev_next_with_flags(&cursor, DEV_KIND_P9LINK, DEV_F_BACKGROUND_9P)) != NULL) {
+        p9_link_register_background((p9_link_t *)link);
     }
-#else
-    // A3b link_usb_cdc: ACM1/EP4 is a dedicated channel (its own USB
-    // endpoint pair), not the shared UART -- same zero-console-risk
-    // reasoning as virtio_console_init() above on QEMU, so it's registered
-    // unconditionally at boot rather than needing an explicit opt-in like
-    // `p9share` (the UART demux, which *does* share a wire with the
-    // console). Harmless if nothing is ever plugged into ACM1: its poll()
-    // just finds an empty ring.
-    p9_link_register_background(usb_cdc_get_net_link());
-#endif
+
     sched_init();
     shell_init();
     lisp_init();

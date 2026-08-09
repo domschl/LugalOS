@@ -388,6 +388,19 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("klog", r"console: attached", timeout=3.0)
         results.append(("Kernel Log Sink Registry Lists Console Sink (B0)", ok, log if not ok else ""))
 
+        # 13c. B0 device registry (kernel/device.h, kernel/board.c): what
+        # hardware exists is a per-board table probed at boot, not a sequence
+        # of #ifs inline in kernel_main(). /proc/devices exposes it, so it is
+        # readable over 9P by another node like every other /proc file.
+        # `vblk` present proves a probe that really ran (virtio-blk is what
+        # /sd0 is mounted from); `uartslip p9link` proves a device registered
+        # with no probe function is still reported present and typed.
+        ok, log = session.send_and_expect(
+            "cat /proc/devices",
+            r"uartslip\s+p9link\s+present(.|\n)*vblk\s+block\s+present",
+            timeout=4.0)
+        results.append(("Device Registry Enumerated Via /proc/devices (B0)", ok, log if not ok else ""))
+
         # Stage a probe file first, while output is still visible. The marker
         # lives only in the file's *content*, never in a command typed later --
         # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing

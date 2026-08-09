@@ -1012,6 +1012,46 @@ architecture, up from 85).
   every sink detached), so a marker in the typed text would have made the silence assertion
   meaningless.
 
+##### B0 completion notes — part 2 of 3 (2026-08-09)
+
+**Device registry implemented and merged.** The `kernel_main()` reduction and `init.lisp` binding
+primitives remain — B0 is still open. All three targets build clean; `tests/runner.py` passes
+**91/91** (RV64 + RV32, two more new tests, up from 89).
+
+- **`kernel/device.c` + `kernel/include/kernel/device.h`**: drivers publish a `dev_driver_t`
+  (`name`, `kind`, `flags`, `probe`, `get`); a per-board table decides which exist; `kernel_main()`
+  just probes the table. Kinds are `CONSOLE`/`P9LINK`/`CLOCK`/`EEPROM`/`BLOCK`.
+- **`kernel/board.c` concentrates the `#if`s.** They did not disappear — CMake compiles a different
+  driver set per board, so they never could — but they no longer interleave with initialization
+  order and 9P link policy inside the boot path. `board_uart_base()` replaces the inline
+  `0x40070000` / `0x10000000` split.
+- **`DEV_F_BACKGROUND_9P` replaced the `#if defined(CONFIG_BOARD_RP2350)` block that chose which
+  link serves inbound 9P.** `kernel_main()` now iterates `dev_next_with_flags()` and registers
+  whatever the board's table flagged — `vconsole` on QEMU, `usbnet` (ACM1/EP4) on RP2350. The
+  UART-backed links (`uartslip`, `uartdemux`) are registered as devices but deliberately *without*
+  the flag, so they remain behind explicit `p9serve` / `p9share`, exactly as A3b established.
+- **Layering kept clean deliberately**: `dev_next_with_flags()` returns opaque objects so
+  `kernel/device.c` needs no `fs/p9_link.h` dependency — the 9P knowledge stays in `kernel_main()`.
+  The obvious shortcut (having `dev_probe_all()` register background links itself) would have put
+  a filesystem dependency in the generic device layer to save four lines.
+- **Probe reordering checked, not assumed.** `virtio_console_init()` used to run *after*
+  `vfs_server_init()`, and virtio-blk claims an MMIO slot lazily during mount. Both probes match on
+  `REG_DEVICE_ID` (block=2, console=3), so neither can claim the other's slot at any ordering —
+  verified by reading both probe loops before moving anything.
+- **`/proc/devices`** exposes the registry, so it is readable over 9P from another node like every
+  other `/proc` file.
+- **The `-` flag trap bit again**: the first `/proc/devices` version produced ragged columns for the
+  same reason the `klog` listing nearly did. Fixed properly this time with an `append_col()` helper
+  in `fs/vfs_server.c` rather than by giving up on alignment.
+- **Test falsification, again non-vacuous**: removing `DEV_F_BACKGROUND_9P` from the `vconsole`
+  table entry fails exactly the four virtio-console 9P tests (87/91) — confirming the new
+  flag-driven path really is what registers the background link, not a leftover from the old `#if`.
+  Restored afterwards.
+- **`/srv/`'s service registry (`vfs_register_service()`) left alone.** It maps a name to a
+  placeholder PID and is the stub [B1](#b1--chan_t-and-the-local-channel-backed-mount) replaces
+  with real `chan_t` endpoints; half-merging it into the device table now would mean rewriting it
+  twice.
+
 **Known limitation, deferred to B4 — `printk()` is still one stream carrying two things.** It is
 both kernel diagnostics *and* user-facing output (shell command results, Lisp REPL output — its own
 header comment says so). So `klog detach console` currently silences **everything** on that

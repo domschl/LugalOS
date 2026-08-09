@@ -108,6 +108,8 @@ set(SOURCES
     kernel/main.c
     kernel/printk.c
     kernel/klog.c
+    kernel/device.c
+    kernel/board.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c

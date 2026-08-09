@@ -10,6 +10,7 @@
 #include "drivers/uart_net.h"
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/device.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -333,6 +334,20 @@ static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool 
  * client) can vfs_pread() in pieces, not a printk() side effect (see V5 in
  * plan/completed/2026-08-07_review_and_remediation.md). Returns the number of
  * bytes generated, or -1 if `rel` doesn't name a known /proc file. */
+/* Appends `s` padded with spaces to `width`, for fixed-width /proc columns.
+ * Needed because this kernel's printk()/ksnprintf() format engine accepts
+ * only '0', width, '.prec' and 'l' -- there is no '-' (left-justify) flag,
+ * so "%-11s" would be emitted literally rather than padding. Truncates
+ * rather than overflowing if `s` is longer than `width`. */
+static uint32_t append_col(char *buf, uint32_t used, uint32_t cap,
+                           const char *s, uint32_t width) {
+    uint32_t n = 0;
+    while (s && s[n] && n < width && used < cap - 1) buf[used++] = s[n++];
+    while (n < width && used < cap - 1) { buf[used++] = ' '; n++; }
+    if (used < cap) buf[used] = '\0';
+    return used;
+}
+
 static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     if (!rel || !buf || cap == 0) return -1;
     uint32_t used = 0;
@@ -379,6 +394,21 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "devices") == 0) {
+        /* B0 device registry (kernel/device.h). Compact deliberately: this
+         * is generated into the handle's fixed 512-byte proc_buf. */
+        used = append_col(buf, used, cap, "Name", 11);
+        used = append_col(buf, used, cap, "Kind", 9);
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "State\n");
+        const char *dname, *dkind;
+        bool dpresent;
+        for (uint32_t i = 0; dev_info(i, &dname, &dkind, &dpresent); i++) {
+            used = append_col(buf, used, cap, dname, 11);
+            used = append_col(buf, used, cap, dkind, 9);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                                        "%s\n", dpresent ? "present" : "absent");
+        }
+        return (int)used;
     } else if (strcmp(rel, "version") == 0) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
@@ -387,7 +417,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[5] = { "ps", "meminfo", "version", "df", "kmsg" };
+static const char *g_proc_names[6] = { "ps", "meminfo", "version", "df", "kmsg", "devices" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
