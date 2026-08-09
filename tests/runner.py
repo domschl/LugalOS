@@ -581,31 +581,52 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # reason. It runs in test_9p_remote_mount() instead, where the default
         # link genuinely exists.
 
-        # Stage a probe file first, while output is still visible. The marker
-        # lives only in the file's *content*, never in a command typed later --
-        # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing
-        # klog entirely, which is why typing still works with every sink
-        # detached), so a marker appearing in a typed command would show up in
-        # the captured terminal text and make the silence check meaningless.
-        session.send_and_expect("write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
-
-        # Detach, then produce output that the terminal must NOT show. The
-        # never-matching pattern is deliberate: send_and_expect returns the
-        # raw captured text on timeout, which is exactly what to assert on.
+        # B4: the two streams are now independent, which is the whole point.
+        # Detaching the kernel-log sink must stop DIAGNOSTICS reaching the
+        # terminal while the SHELL keeps working -- the §5.2 scenario this
+        # track exists to deliver. Before B4 printk() carried both, so
+        # detaching silenced everything, and this test asserted that weaker
+        # (and undesirable) behaviour.
+        # Stage the probe file BEFORE detaching, so the marker exists only in
+        # the file's *content* and never in a command typed afterwards. The
+        # line editor echoes keystrokes to the console, so a marker inside a
+        # typed command would be matched from its own echo and the check would
+        # pass no matter what -- which is exactly what happened when this was
+        # first rewritten, and what B0's original comment had warned about.
+        session.send_and_expect(
+            "write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
         session.send_and_expect("klog detach console", r"\Z\A", timeout=1.0)
-        _, silent_log = session.send_and_expect("cat /ram0/klogprobe.txt", r"\Z\A", timeout=1.5)
-        stayed_silent = "KLOG_RING_PROBE_MARKER" not in silent_log
 
-        # Re-attach and confirm the ring captured what the terminal never saw.
+        # 1. User-facing output still reaches the terminal. The typed command
+        #    does not contain the marker, so only cat's output can match.
+        shell_ok, shell_log = session.send_and_expect(
+            "cat /ram0/klogprobe.txt", r"KLOG_RING_PROBE_MARKER", timeout=4.0)
+
+        # 2. Diagnostics do not. `taskdemo` emits several bracketed [Sched]
+        #    lines through printk(); none may appear while the sink is off.
+        _, diag_log = session.send_and_expect("taskdemo", r"\Z\A", timeout=3.0)
+        diagnostics_silent = "[Sched]" not in diag_log and "[TaskDemo]" not in diag_log
+
+        # 3. The ring kept them anyway, so nothing was lost.
         ok, log = session.send_and_expect(
-            "klog attach console\ncat /proc/kmsg", r"KLOG_RING_PROBE_MARKER", timeout=5.0)
+            "klog attach console\ncat /proc/kmsg", r"\[TaskDemo\]", timeout=6.0)
+
         detail = ""
-        if not stayed_silent:
-            detail = "console sink detach did not suppress terminal output:\n" + silent_log
+        if not shell_ok:
+            detail = "shell output was suppressed along with the log:\n" + shell_log
+        elif not diagnostics_silent:
+            detail = "diagnostics still reached the terminal while detached:\n" + diag_log
         elif not ok:
-            detail = log
-        results.append(("Kernel Log Ring Retains Output While Console Sink Detached (B0, /proc/kmsg)",
-                        ok and stayed_silent, detail))
+            detail = "ring did not retain diagnostics emitted while detached:\n" + log
+        results.append(("Log And Console Are Independent Streams (B4)",
+                        shell_ok and diagnostics_silent and ok, detail))
+
+        # NOTE: the "unknown link name is rejected" assertion deliberately does
+        # NOT live here. On this single-node session no virtconsole is
+        # attached, so a broken name lookup would fall back to a default link
+        # that is also absent and still return #f -- passing for the wrong
+        # reason. It runs in test_9p_remote_mount() instead, where the default
+        # link genuinely exists.
 
         # 14. Interactive Line Editor Backward Cursor Insertion & Backspace Deletion
         # Type "ac", Left Arrow (\x1b[D), type "b" -> "abc", Backspace -> "ac"

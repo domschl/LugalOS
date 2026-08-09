@@ -1,3 +1,4 @@
+#include "kernel/console.h"
 #include "ed.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
@@ -39,14 +40,14 @@ static void ed_load_file(const char *filename) {
     if (!filename || filename[0] == '\0') {
         line_count = 0;
         dot = 0;
-        printk("?\n");
+        cprintf("?\n");
         return;
     }
 
     static char raw_buf[4096];
     int bytes = vfs_read(filename, raw_buf, sizeof(raw_buf) - 1);
     if (bytes < 0) {
-        printk("'%s': [New File]\n", filename);
+        cprintf("'%s': [New File]\n", filename);
         line_count = 0;
         dot = 0;
         return;
@@ -75,12 +76,12 @@ static void ed_load_file(const char *filename) {
     }
 
     dot = (line_count > 0) ? line_count : 0;
-    printk("'%s': %d bytes (%d lines)\n", filename, bytes, line_count);
+    cprintf("'%s': %d bytes (%d lines)\n", filename, bytes, line_count);
 }
 
 static void ed_save_file(const char *filename) {
     if (!filename || filename[0] == '\0') {
-        printk("?\n");
+        cprintf("?\n");
         return;
     }
 
@@ -98,9 +99,9 @@ static void ed_save_file(const char *filename) {
     out_buf[total_len] = '\0';
 
     if (vfs_write(filename, out_buf, total_len) == 0) {
-        printk("'%s': %d bytes written\n", filename, total_len);
+        cprintf("'%s': %d bytes written\n", filename, total_len);
     } else {
-        printk("?\n");
+        cprintf("?\n");
     }
 }
 
@@ -188,12 +189,12 @@ static const char *parse_range(const char *p, int *start, int *end) {
 
 static void ed_substitute(int start, int end, const char *pattern) {
     if (start < 1 || end > line_count || start > end) {
-        printk("?\n");
+        cprintf("?\n");
         return;
     }
 
     char sep = *pattern++;
-    if (!sep) { printk("?\n"); return; }
+    if (!sep) { cprintf("?\n"); return; }
 
     char old_str[64], new_str[64];
     int idx = 0;
@@ -211,7 +212,7 @@ static void ed_substitute(int start, int end, const char *pattern) {
     new_str[idx] = '\0';
 
     if (old_str[0] == '\0') {
-        printk("?\n");
+        cprintf("?\n");
         return;
     }
 
@@ -234,14 +235,14 @@ static void ed_substitute(int start, int end, const char *pattern) {
     }
 
     if (modified == 0) {
-        printk("?\n");
+        cprintf("?\n");
     } else {
-        printk("%s\n", ed_buf[dot - 1]);
+        cprintf("%s\n", ed_buf[dot - 1]);
     }
 }
 
 static void ed_search(const char *pattern) {
-    if (line_count <= 0) { printk("?\n"); return; }
+    if (line_count <= 0) { cprintf("?\n"); return; }
     char search_str[64];
     int idx = 0;
     while (*pattern && *pattern != '/' && idx < 63) {
@@ -254,11 +255,11 @@ static void ed_search(const char *pattern) {
         int l = ((start_line - 1 + i) % line_count) + 1;
         if (strstr(ed_buf[l - 1], search_str) != NULL) {
             dot = l;
-            printk("%d: %s\n", dot, ed_buf[dot - 1]);
+            cprintf("%d: %s\n", dot, ed_buf[dot - 1]);
             return;
         }
     }
-    printk("?\n");
+    cprintf("?\n");
 }
 
 void ed_main(const char *filename) {
@@ -275,7 +276,7 @@ void ed_main(const char *filename) {
 
     char line_in[128];
     while (1) {
-        printk(":");
+        cprintf(":");
         ed_read_line(line_in, 128);
         if (line_in[0] == '\0') continue;
 
@@ -291,9 +292,9 @@ void ed_main(const char *filename) {
         if (*cmd_p == '\0') {
             if (start_addr >= 1 && start_addr <= line_count) {
                 dot = start_addr;
-                printk("%s\n", ed_buf[dot - 1]);
+                cprintf("%s\n", ed_buf[dot - 1]);
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
             continue;
         }
@@ -308,7 +309,7 @@ void ed_main(const char *filename) {
                 strncpy(current_file, cmd_p, 63);
                 current_file[63] = '\0';
             }
-            printk("%s\n", current_file[0] != '\0' ? current_file : "[No name]");
+            cprintf("%s\n", current_file[0] != '\0' ? current_file : "[No name]");
         } else if (cmd == 'e') {
             while (*cmd_p == ' ') cmd_p++;
             if (*cmd_p != '\0') {
@@ -323,7 +324,7 @@ void ed_main(const char *filename) {
             } else if (current_file[0] != '\0') {
                 ed_save_file(current_file);
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
         } else if (cmd == 'a') {
             int insert_pos = (end_addr >= 0 && end_addr <= line_count) ? end_addr : dot;
@@ -358,7 +359,7 @@ void ed_main(const char *filename) {
                     insert_pos++;
                 }
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
         } else if (cmd == 'd') {
             if (line_count > 0 && start_addr >= 1 && end_addr <= line_count && start_addr <= end_addr) {
@@ -367,30 +368,30 @@ void ed_main(const char *filename) {
                     ed_delete_line(start_addr);
                 }
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
         } else if (cmd == 'p') {
             if (line_count > 0 && start_addr >= 1 && end_addr <= line_count && start_addr <= end_addr) {
                 for (int i = start_addr; i <= end_addr; i++) {
-                    printk("%s\n", ed_buf[i - 1]);
+                    cprintf("%s\n", ed_buf[i - 1]);
                 }
                 dot = end_addr;
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
         } else if (cmd == 'n') {
             if (line_count > 0 && start_addr >= 1 && end_addr <= line_count && start_addr <= end_addr) {
                 for (int i = start_addr; i <= end_addr; i++) {
-                    printk("%d: %s\n", i, ed_buf[i - 1]);
+                    cprintf("%d: %s\n", i, ed_buf[i - 1]);
                 }
                 dot = end_addr;
             } else {
-                printk("?\n");
+                cprintf("?\n");
             }
         } else if (cmd == 's') {
             ed_substitute(start_addr, end_addr, cmd_p);
         } else {
-            printk("?\n");
+            cprintf("?\n");
         }
     }
 }

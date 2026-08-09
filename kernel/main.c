@@ -1,5 +1,6 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/console.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
 #include "kernel/sched.h"
@@ -73,6 +74,12 @@ void kernel_main(void) {
      * it is now detachable (`klog detach console`) and retained in the ring
      * for /proc/kmsg either way. Must precede time_init(), which logs. */
     klog_sink_register("console", uart_putc);
+
+    /* B4: the user-facing stream, bound to the same device by default so
+     * behaviour is unchanged until something rebinds it. It is a separate
+     * stream, not a second sink: detaching the *log* sink above must not
+     * silence the shell. */
+    console_bind(uart_putc);
 
     time_init();
 

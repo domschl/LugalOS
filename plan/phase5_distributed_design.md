@@ -1151,6 +1151,10 @@ clean; `tests/runner.py` passes **95/95** (RV64 + RV32, four more new tests, up 
   caught (94/95). **The lesson generalizes: a negative assertion only discriminates when the thing
   it would have fallen back to is present and working.**
 
+**Known limitation — RESOLVED in B4 (2026-08-09).** The text below describes the state B0 shipped
+in; `printk()` and `cprintf()` are now separate streams, and `klog detach console` silences
+diagnostics without silencing the shell. Kept for the reasoning, which is why B4 exists.
+
 **Known limitation, deferred to B4 — `printk()` is still one stream carrying two things.** It is
 both kernel diagnostics *and* user-facing output (shell command results, Lisp REPL output — its own
 header comment says so). So `klog detach console` currently silences **everything** on that
@@ -1482,6 +1486,42 @@ silicon.
 - `init.lisp` binds channels to services — **this is scenario 1 delivered in full**: a UART carries
   kernel log output until `init.lisp` binds a login shell to it.
 - The 9P server itself may become a task here, resolving [D4](#d4--9p-server-execution-model--subsumed-by-b4).
+
+##### B4 progress notes (2026-08-09) — the two streams are separate
+
+The limitation B0 recorded and could not fix is fixed. `printk()` is kernel diagnostics and lands in
+the klog ring and its sinks; `cprintf()` is user-facing output and lands on whatever device the
+console is bound to. Detaching the log sink now stops `[Sched] …` lines reaching the terminal
+**while the shell keeps working**, and the ring keeps accumulating either way. That is §5.2's
+scenario 1, delivered.
+
+- **163 call sites migrated**, using the convention the codebase already had: a format string
+  starting with `[` is a diagnostic — which is exactly what `printk()`'s own engine keys its
+  timestamp on. Not a guess imposed after the fact; an existing signal made load-bearing.
+- **`kernel/line_editor.c`'s keystroke echo now goes through the console too.** It called
+  `uart_putc()` directly — the third uncontrolled path to the device, flagged in B0's notes and
+  now absorbed.
+- **The console is bindable**, like the log sinks, because the same argument applies: a channel may
+  carry output until something else should own it.
+
+**A vacuous test, caught by falsification — the fourth this track, and the most instructive.** The
+rewritten test asserted "shell output still appears while the log sink is detached" by writing a
+marker and `cat`-ing it back. It passed even with the two streams deliberately merged again, because
+the marker was in the *typed command* and the line editor's echo matched it. The check was reading
+its own input.
+
+B0's original version had staged the file *before* detaching precisely so the marker never appeared
+in a later command, and had said so in a comment. **I removed that safeguard while rewriting the
+test around it.** Restored, the sabotage fails as it should.
+
+The pattern across all four: every vacuous test here passed because something *other than the
+behaviour under test* could produce the expected output — a fallback path, an echo, an unrelated
+early failure. Falsification is the only thing that has reliably found them; reading the test never
+has.
+
+**Still to do in B4**: the console as an actual server task reachable through a channel, and
+`init.lisp` binding it — which is what makes "hand this UART to a login shell" a runtime decision
+rather than a compile-time one. The stream split is the prerequisite that made it meaningful.
 
 #### B5 — Sv39, the MMU backend
 

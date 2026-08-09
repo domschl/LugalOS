@@ -1,5 +1,6 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/console.h"
 #include "drivers/uart.h"
 #include "kernel/time.h"
 #include <stdint.h>
@@ -195,6 +196,18 @@ int printk_debug(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     int ret = vprintk_to(uart_debug_putc, uart_debug_puts, fmt, args);
+    va_end(args);
+    return ret;
+}
+
+/* User-facing output (B4). Same engine as printk(), different stream: this
+ * lands on whatever device the console is bound to and is unaffected by
+ * kernel-log sink changes. Splitting the two is what makes
+ * `klog detach console` silence diagnostics without silencing the shell. */
+int cprintf(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int ret = vprintk_to(console_putc, console_puts, fmt, args);
     va_end(args);
     return ret;
 }

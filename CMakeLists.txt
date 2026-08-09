@@ -121,6 +121,7 @@ set(SOURCES
     kernel/main.c
     kernel/printk.c
     kernel/klog.c
+    kernel/console.c
     kernel/device.c
     kernel/board.c
     kernel/chan.c

@@ -10,6 +10,7 @@
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "kernel/chan.h"
@@ -991,13 +992,13 @@ int vfs_cp(const char *src_path, const char *dst_path) {
 
     int src_fd = vfs_open(src_path, VFS_O_READ);
     if (src_fd < 0) {
-        printk("cp: cannot read source path '%s'\n", src_path);
+        cprintf("cp: cannot read source path '%s'\n", src_path);
         return -1;
     }
     int dst_fd = vfs_open(dst_path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
     if (dst_fd < 0) {
         vfs_close(src_fd);
-        printk("cp: failed to write to destination path '%s'\n", dst_path);
+        cprintf("cp: failed to write to destination path '%s'\n", dst_path);
         return -1;
     }
 
@@ -1016,7 +1017,7 @@ int vfs_cp(const char *src_path, const char *dst_path) {
     vfs_close(src_fd);
     vfs_close(dst_fd);
     if (result < 0) {
-        printk("cp: copy failed ('%s' -> '%s')\n", src_path, dst_path);
+        cprintf("cp: copy failed ('%s' -> '%s')\n", src_path, dst_path);
     }
     return result;
 }
@@ -1027,20 +1028,20 @@ void vfs_ls(const char *path) {
     mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
     if (is_root) {
-        printk("\nDirectory Listing (/):\n");
-        printk("Name        Type                        Status\n");
-        printk("----------  --------------------------  ---------\n");
+        cprintf("\nDirectory Listing (/):\n");
+        cprintf("Name        Type                        Status\n");
+        cprintf("----------  --------------------------  ---------\n");
         for (int i = 0; i < MAX_MOUNTS; i++) {
             if (!g_mounts[i].in_use) continue;
-            printk("%s      %s  %s\n", g_mounts[i].name, g_mounts[i].label,
+            cprintf("%s      %s  %s\n", g_mounts[i].name, g_mounts[i].label,
                    mount_is_active(&g_mounts[i]) ? "active" : "unmounted");
         }
-        printk("\n");
+        cprintf("\n");
         return;
     }
 
     if (!m) {
-        printk("ls: '%s': no such mount\n", path ? path : "");
+        cprintf("ls: '%s': no such mount\n", path ? path : "");
         return;
     }
 
@@ -1049,49 +1050,49 @@ void vfs_ls(const char *path) {
             if (mount_is_active(m)) {
                 fat32_list_dir(m->fs, rel);
             } else {
-                printk("ls: /%s/ is not mounted\n", m->name);
+                cprintf("ls: /%s/ is not mounted\n", m->name);
             }
             break;
         case MOUNT_PROC: { // listed via the real handle/readdir API (V5 fix)
-            printk("\nDirectory Listing (/proc/):\n");
-            printk("Name        Type\n----------  ----\n");
+            cprintf("\nDirectory Listing (/proc/):\n");
+            cprintf("Name        Type\n----------  ----\n");
             int fd = vfs_open("/proc", VFS_O_READ);
             if (fd >= 0) {
                 char name[32];
                 vfs_stat_t st;
                 for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
-                    printk("%s      %s\n", name, st.is_dir ? "<DIR>" : "<FILE>");
+                    cprintf("%s      %s\n", name, st.is_dir ? "<DIR>" : "<FILE>");
                 }
                 vfs_close(fd);
             }
-            printk("\n");
+            cprintf("\n");
             break;
         }
         case MOUNT_DEV:
-            printk("\nDirectory Listing (/dev/):\n");
-            printk("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
+            cprintf("\nDirectory Listing (/dev/):\n");
+            cprintf("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
             break;
         case MOUNT_SRV:
-            printk("\nDirectory Listing (/srv/):\n");
-            printk("Service Name  Target PID\n------------  ----------\n");
+            cprintf("\nDirectory Listing (/srv/):\n");
+            cprintf("Service Name  Target PID\n------------  ----------\n");
             for (int i = 0; i < g_num_services; i++) {
-                printk("%s            %d\n", g_services[i].name, g_services[i].target_pid);
+                cprintf("%s            %d\n", g_services[i].name, g_services[i].target_pid);
             }
-            printk("\n");
+            cprintf("\n");
             break;
         case MOUNT_REMOTE9P: {
-            printk("\nDirectory Listing (/%s/%s):\n", m->name, rel);
-            printk("Name        Type      Size\n----------  --------  ----------\n");
+            cprintf("\nDirectory Listing (/%s/%s):\n", m->name, rel);
+            cprintf("Name        Type      Size\n----------  --------  ----------\n");
             int fd = vfs_open(path, VFS_O_READ);
             if (fd >= 0) {
                 char name[32];
                 vfs_stat_t st;
                 for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
-                    printk("%s      %s  %u\n", name, st.is_dir ? "<DIR>" : "<FILE>", st.size);
+                    cprintf("%s      %s  %u\n", name, st.is_dir ? "<DIR>" : "<FILE>", st.size);
                 }
                 vfs_close(fd);
             } else {
-                printk("ls: cannot open '%s'\n", path);
+                cprintf("ls: cannot open '%s'\n", path);
             }
             break;
         }
