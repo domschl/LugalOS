@@ -51,7 +51,20 @@ void palloc_init(uintptr_t start, uintptr_t end) {
 }
 
 void *palloc_pages(uint32_t n) {
+    return palloc_pages_aligned(n, 1);
+}
+
+void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
     if (n == 0 || n > g_num_pages) return NULL;
+    if (align_pages == 0 || (align_pages & (align_pages - 1)) != 0) return NULL;
+
+    /* The alignment is relative to g_base, which palloc_init() rounded up to a
+     * page boundary but not further. If the heap does not start on the
+     * requested boundary, an index that is a multiple of align_pages is not an
+     * address that is -- so the offset is folded in rather than assumed away. */
+    uint32_t align_bytes = align_pages * (uint32_t)PAGE_SIZE;
+    uint32_t skew = (uint32_t)(g_base & (align_bytes - 1)) / (uint32_t)PAGE_SIZE;
+    uint32_t phase = skew ? (align_pages - skew) : 0;
 
     /* The scan-then-claim below is only correct if nothing else can claim a
      * page between finding a free run and marking it. Cooperative scheduling
@@ -61,7 +74,8 @@ void *palloc_pages(uint32_t n) {
     /* First fit. The page count here is small (128 on RP2350, 4096 on QEMU)
      * and allocation is rare -- task creation and page tables -- so a linear
      * scan is not worth improving on. */
-    for (uint32_t i = 0; i + n <= g_num_pages; i++) {
+    for (uint32_t i = phase; i + n <= g_num_pages; i++) {
+        if (((i - phase) & (align_pages - 1)) != 0) continue;
         bool run_ok = true;
         for (uint32_t j = 0; j < n; j++) {
             if (bit_get(i + j)) { i += j; run_ok = false; break; }

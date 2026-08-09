@@ -1,4 +1,5 @@
 #include "drivers/usb_cdc.h"
+#include "kernel/irq.h"
 #include "arch/rp2350_bootrom.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
@@ -791,10 +792,21 @@ bool usb_cdc_is_connected(void) {
 // up with nowhere to go and arrive as one stale burst when they finally do.
 void usb_cdc_putc(char c) {
     if (!g_usb_cdc_connected || !g_ep2_configured || !g_ep2_dtr) return;
+    // Read-modify-write on the ring head, so it has to be atomic against
+    // preemption (B6). Without this, a task preempted between computing
+    // `next` and storing it writes at a stale head and then rewinds the head
+    // over everything the other task appended -- silently losing whole
+    // messages rather than interleaving them. Observed on RP2350 hardware as
+    // a user program whose output simply never appeared while the kernel's
+    // did. printk() now masks around a whole message (kernel/printk.c), but
+    // this is the lower-level guarantee and other callers reach it directly.
+    uintptr_t flags = irq_save();
     uint32_t next = (g_ep2_tx_head + 1) % USB_EP2_TX_RING_SIZE;
-    if (next == g_ep2_tx_tail) return; // ring full; drop
-    g_ep2_tx_ring[g_ep2_tx_head] = (uint8_t)c;
-    g_ep2_tx_head = next;
+    if (next != g_ep2_tx_tail) { // ring full; drop
+        g_ep2_tx_ring[g_ep2_tx_head] = (uint8_t)c;
+        g_ep2_tx_head = next;
+    }
+    irq_restore(flags);
 }
 
 bool usb_cdc_has_char(void) {

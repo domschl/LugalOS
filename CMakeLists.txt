@@ -57,7 +57,10 @@ endif()
 # which an unconditional set() here used to silently discard.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COMMON_CFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
 set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} ${COMMON_ASFLAGS} -march=${ARCH_MARCH} -mabi=${ARCH_MABI}")
-set(CMAKE_EXE_LINKER_FLAGS "-T${LINKER_SCRIPT} -nostdlib -Wl,--gc-sections")
+# No -T here: user programs (below) link against a different script, and two
+# -T options on one command line is not a well-defined way to override one.
+# Each target names the script it wants.
+set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -Wl,--gc-sections")
 
 # Include Directories
 include_directories(
@@ -96,11 +99,69 @@ if(ENABLE_SANITIZERS)
     endif()
 endif()
 
+# --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
+#
+# Separately linked binaries, loaded from the filesystem and run in U-mode by
+# arch/riscv/common/elf.c. They are built here rather than checked in because
+# they are target-specific (RV32 vs RV64, ilp32 vs lp64d), and the filesystem
+# image they ship in is generated per build anyway.
+#
+# The flags are the position-independence contract that linker/user.ld
+# documents:
+#   -mcmodel=medany                 PC-relative code and data (from COMMON_CFLAGS)
+#   -mno-relax / -Wl,--no-relax     keep the linker from rewriting those into
+#                                   gp-relative accesses; nothing sets gp here
+#   -msmall-data-limit=0            ...and keep globals out of .sdata, which is
+#                                   what gp-relative addressing exists for
+#   -fno-jump-tables                a switch table is absolute addresses in .rodata
+#   -fno-sanitize=all               UBSan calls land in the *kernel's* runtime
+#
+# A program that violates any of this does not fault mysteriously at run time:
+# it either fails to link, or trips one of user.ld's ASSERTs by name.
+set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user.ld)
+set(USER_PROGRAMS uhello uisolate uspin)
+set(USER_PROG_STAGED "")
+
+foreach(uprog ${USER_PROGRAMS})
+    add_executable(${uprog}.elf user/progs/${uprog}.c)
+    target_compile_options(${uprog}.elf PRIVATE
+        -fno-sanitize=all -Os -mno-relax -msmall-data-limit=0
+        -fno-jump-tables -fno-common -fno-tree-loop-distribute-patterns)
+    target_include_directories(${uprog}.elf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/user/progs)
+    target_link_options(${uprog}.elf PRIVATE
+        -T${USER_LINKER_SCRIPT} -nostdlib -static -Wl,--no-relax -Wl,--build-id=none)
+    set_target_properties(${uprog}.elf PROPERTIES LINK_DEPENDS ${USER_LINKER_SCRIPT})
+    # Stripped: the loader reads the program headers out of the file, and an
+    # unstripped binary is mostly debug sections that would be embedded
+    # verbatim into the kernel's flash image.
+    add_custom_command(TARGET ${uprog}.elf POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} --strip-all $<TARGET_FILE:${uprog}.elf>
+                ${CMAKE_CURRENT_BINARY_DIR}/${uprog}.stripped
+        COMMENT "Stripping user program ${uprog}.elf")
+    list(APPEND USER_PROG_STAGED ${uprog})
+endforeach()
+
 # Generate Embedded Flash FAT32 image (flash_fs.c)
+#
+# Built from a staging directory rather than straight from tools/sd_root, so
+# the generated user programs ship alongside the checked-in sources without
+# either being written into the source tree.
+set(SD_STAGE ${CMAKE_CURRENT_BINARY_DIR}/sd_root)
+set(SD_STAGE_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SD_STAGE}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root ${SD_STAGE})
+foreach(uprog ${USER_PROG_STAGED})
+    list(APPEND SD_STAGE_COMMANDS
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/${uprog}.stripped
+                ${SD_STAGE}/${uprog}.elf)
+endforeach()
+
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root
+    ${SD_STAGE_COMMANDS}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${SD_STAGE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
+            uhello.elf uisolate.elf uspin.elf
     COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
 )
 
@@ -190,6 +251,7 @@ add_dependencies(lugalos.elf lugalos_build_id)
 # edit to the memory layout silently produced a stale binary -- which cost a
 # confusing debugging round when a 2 MB alignment appeared not to take effect.
 set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS ${LINKER_SCRIPT})
+target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT})
 target_link_libraries(lugalos.elf PRIVATE gcc)
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
@@ -200,13 +262,14 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img --if-missing
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img ${SD_STAGE} --if-missing
     COMMAND ${UF2CONV_PY} --family rp2350_riscv --base 0x10000000 lugalos.bin -o lugalos.uf2
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S)
+    target_link_options(minimal_rp2350.elf PRIVATE -T${LINKER_SCRIPT})
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD
         COMMAND ${CMAKE_OBJCOPY} -O binary minimal_rp2350.elf minimal_rp2350.bin

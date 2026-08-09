@@ -4,9 +4,29 @@
 #include "drivers/uart.h"
 #include "kernel/time.h"
 #include <stdint.h>
+#include "kernel/irq.h"
 
 typedef void (*putc_fn)(char);
 typedef void (*puts_fn)(const char *);
+
+/* One printk/cprintf call emits as one uninterrupted run (B6).
+ *
+ * Preemption made a message a shared resource. Two tasks formatting at once
+ * interleave character by character, and the result is not merely untidy: it
+ * splices words together, so a marker a test greps for ("UPROG_TEXT_OK")
+ * arrives cut in half and the test fails for a reason that has nothing to do
+ * with what it was testing. The RP2350 hardware suite hit exactly that.
+ *
+ * Masking interrupts rather than taking a lock, for the same reasons
+ * kernel/irq.h gives: the region is short, there is one hart, and printk() is
+ * reachable from the trap handler -- where a lock that could block would be a
+ * deadlock rather than a wait. irq_save()/irq_restore() nest, so a printk
+ * from inside an already-masked region is still correct.
+ *
+ * Formatting happens inside the region too. Splitting "format into a buffer,
+ * then emit" would shorten the masked window, but every sink here is either a
+ * ring-buffer append (RP2350's USB CDC) or a QEMU MMIO store, so the window
+ * is already short and the extra buffer would cost stack in the trap path. */
 
 static void print_num(putc_fn pc, unsigned long num, int base) {
     char buf[64];
@@ -176,7 +196,9 @@ static void klog_puts_shim(const char *s) {
 int printk(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
+    uintptr_t flags = irq_save();
     int ret = vprintk_to(klog_putc, klog_puts_shim, fmt, args);
+    irq_restore(flags);
     va_end(args);
     return ret;
 }
@@ -195,7 +217,9 @@ int printk(const char *fmt, ...) {
 int printk_debug(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
+    uintptr_t flags = irq_save();
     int ret = vprintk_to(uart_debug_putc, uart_debug_puts, fmt, args);
+    irq_restore(flags);
     va_end(args);
     return ret;
 }
@@ -207,7 +231,9 @@ int printk_debug(const char *fmt, ...) {
 int cprintf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
+    uintptr_t flags = irq_save();
     int ret = vprintk_to(console_putc, console_puts, fmt, args);
+    irq_restore(flags);
     va_end(args);
     return ret;
 }

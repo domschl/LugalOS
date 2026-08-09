@@ -223,6 +223,87 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("ELF Loader Rejects Malformed Program Headers (B12)",
                         ok, log if not ok else ""))
 
+        # B6: a separately linked ELF, loaded from the filesystem into pages
+        # the allocator handed out, running in U-mode under a memory domain.
+        #
+        # Each marker is a different part of the image model, so a failure says
+        # which part broke rather than only that the program did not finish:
+        #
+        #   UPROG_TEXT_OK   a string literal read from the program's own
+        #                   .rodata -- the thing kernel/shell.c's `.utext`
+        #                   probes cannot do, and the reason they assemble
+        #                   every message one character at a time
+        #   UPROG_DATA_OK   a store to a writable global on the image's second
+        #                   page, which faults if that page is not mapped R|W
+        #   UPROG_FILE_OK   a pointer-taking syscall: the kernel read a path
+        #                   out of user .rodata and copied file content back
+        #                   into a user .bss buffer, both validated against
+        #                   this task's domain
+        #   returned 7      the program ended by *returning*, through the exit
+        #                   stub the loader plants at its return address, with
+        #                   its value carried across as the exit status
+        #
+        # The version string is matched inside UPROG_FILE_OK deliberately: a
+        # syscall returning a non-negative number would satisfy a weaker test
+        # without any bytes having crossed the boundary.
+        ok, log = session.send_and_expect(
+            "exec /flash0/uhello.elf",
+            r"UPROG_TEXT_OK(.|\n)*UPROG_DATA_OK(.|\n)*UPROG_FILE_OK LugalOS v"
+            + expected_version() + r"(.|\n)*returned 7",
+            timeout=6.0)
+        results.append(("Separately Linked ELF Runs In U-mode (B6)", ok, log if not ok else ""))
+
+        # B6: and the same loader path is confined.
+        #
+        # `isolationtest` already probes a domain, but with kernel code in a
+        # kernel section -- it cannot show that a program which came off the
+        # filesystem and was placed in allocator pages is contained, because
+        # before B6 such a program was *called* at kernel privilege.
+        #
+        # Both outcomes are asserted. UISO_NOT_ISOLATED is printed by the
+        # program itself if its out-of-domain store was allowed, so a build
+        # that grants too much fails loudly instead of looking like a pass.
+        ok, log = session.send_and_expect(
+            "exec /flash0/uisolate.elf\nhelp",
+            r"UISO_ALIVE(.|\n)*terminated before it could exit"
+            r"(.|\n)*Available LugalOS Shell Commands",
+            timeout=6.0)
+        if ok and "UISO_NOT_ISOLATED" in log:
+            ok = False
+        results.append(("Loaded User Program Is Confined By Its Domain (B6)",
+                        ok, log if not ok else ""))
+
+        # B6: a timer interrupt reaches user code, and user code survives it.
+        #
+        # `preempttest` above covers the same mechanism for a *kernel* task.
+        # This is the narrower question about the code least entitled to
+        # cooperate: a program loaded off the filesystem, running in U-mode.
+        #
+        # It reads the kernel's tick counter, spins making no syscall at all,
+        # and reads it again. Only the timer interrupt handler advances that
+        # counter, so a count that moved means an interrupt was taken while
+        # *user* code was running -- and that the program was resumed
+        # correctly, since it is still there to print the result.
+        #
+        # This test cannot fail on QEMU, and that is worth stating plainly:
+        # QEMU implements the privileged spec's rule that interrupts for a
+        # higher privilege level are always enabled while the hart runs at a
+        # lower one, so U-mode is preemptible there whatever mstatus.MIE says.
+        # Real RP2350 silicon does not -- the same program reports zero ticks
+        # across a 0.4 s spin unless umode.S sets MPIE before mret. So the
+        # assertion that has teeth is the hardware one in
+        # tests/hw/test_rp2350.py; this is its QEMU-side twin, kept so the
+        # program and the marker stay exercised on every run.
+        #
+        # The program prints USPIN_NOT_PREEMPTED itself when the count did not
+        # move, so a failure is a loud line rather than a missing one.
+        ok, log = session.send_and_expect(
+            "exec /flash0/uspin.elf",
+            r"USPIN_START(.|\n)*USPIN_PREEMPTED", timeout=25.0)
+        if ok and "USPIN_NOT_PREEMPTED" in log:
+            ok = False
+        results.append(("U-mode Code Is Preemptible (B6)", ok, log if not ok else ""))
+
         # B6: the timer preempts a task that never yields.
         #
         # This cannot pass under cooperative scheduling, which is the point:
@@ -284,7 +365,13 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         # 5. chibicc C11 Compiler & Execution
         cmd_cc = "cc /sd0/hello.c /sd0/hello.elf\nexec /sd0/hello.elf"
-        ok, log = session.send_and_expect(cmd_cc, r"returned: 0", timeout=5.0)
+        # The compiled program's own output, not just the loader's "returned"
+        # line: the previous pattern matched a status the loader prints whether
+        # or not the program produced anything. Since B6 this runs in U-mode,
+        # so the greeting is now also evidence that a syscall crossed the
+        # privilege boundary and came back.
+        ok, log = session.send_and_expect(
+            cmd_cc, r"Hello from LugalOS(.|\n)*returned 0", timeout=5.0)
         results.append(("chibicc C11 Compiler & Exec", ok, log if not ok else ""))
 
         # 5b. Filesystem Usage Metrics (df) & System Monitor (top)
@@ -416,7 +503,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(cc \"/sd0/hello.c\" \"/sd0/hello_lisp.elf\")\n"
             "(exec \"/sd0/hello_lisp.elf\")"
         )
-        ok, log = session.send_and_expect(cmd_lisp_cc, r"returned: 0", timeout=5.0)
+        ok, log = session.send_and_expect(
+            cmd_lisp_cc, r"Hello from LugalOS(.|\n)*returned 0", timeout=5.0)
         results.append(("Lisp Compiler & Binary Exec Primitives (cc, exec)", ok, log if not ok else ""))
 
         # 11. Phase 3: Persistent History Logging (/sd0/system/history.lisp)

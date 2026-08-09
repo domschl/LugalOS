@@ -79,6 +79,69 @@ def test_umode_isolation(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """B6 on real silicon: a separately linked ELF, loaded from the flash
+    filesystem and run in U-mode under a PMP-enforced domain.
+
+    Distinct from test_umode_isolation above, which runs kernel code from a
+    kernel section under a domain the kernel built around its own image. Here
+    the program arrived as a file, was parsed by the loader, and was placed in
+    pages the allocator handed out -- so this is the path an untrusted binary
+    actually takes, and until B6 it did not involve U-mode at all: `exec`
+    called the loaded bytes directly, at machine privilege.
+
+    Worth running on hardware rather than trusting QEMU for the same reason
+    B3 was: the loader's image model exists to satisfy PMP's NAPOT rules, and
+    Hazard3 is the core that actually has them -- 32-byte granule, no TOR, and
+    the reversed permission bit order of erratum E6. A domain that grants R|X
+    on QEMU and X|W here would run the program and silently drop its
+    isolation.
+
+    Three claims:
+      uhello    -- .rodata, a writable .bss page, a pointer-taking syscall,
+                   and a normal return carried out through the exit stub
+      uisolate  -- a store outside the domain faults; the program never
+                   reaches the line that would report it succeeded
+      uspin     -- a timer interrupt reaches user code on this silicon too
+    """
+    name = "B6: separately linked ELF runs confined in U-mode on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            # uspin is *expected* to be silent while it computes -- that is
+            # the whole point of its measurement window -- so it needs a quiet
+            # threshold longer than the spin. A shorter one does not fail the
+            # test honestly, it truncates the capture and reports the marker
+            # as missing.
+            for cmd, quiet in ((b"exec /flash0/uhello.elf\n", 0.8),
+                               (b"exec /flash0/uisolate.elf\n", 0.8),
+                               (b"exec /flash0/uspin.elf\n", 3.0)):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=quiet, deadline=30.0).decode("utf-8", "replace")
+
+        checks = [
+            ("program text ran",        "UPROG_TEXT_OK" in out),
+            ("data page writable",      "UPROG_DATA_OK" in out),
+            ("syscall copied a file",   "UPROG_FILE_OK LugalOS" in out),
+            ("returned via exit stub",  "returned 7" in out),
+            ("out-of-domain store faulted",
+             "UISO_ALIVE" in out and "UISO_NOT_ISOLATED" not in out
+             and "terminated before it could exit" in out),
+            ("user code preempted",
+             "USPIN_PREEMPTED" in out and "USPIN_NOT_PREEMPTED" not in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """link_usb_cdc standalone: a host 9P client reads /proc/version over
     ACM1 (plain length-prefixed framing -- no SLIP, matching virtio-console's
@@ -450,7 +513,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
 

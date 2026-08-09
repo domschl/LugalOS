@@ -7,8 +7,11 @@
 > **B0 (M6) through B5 (M11) are complete as of 2026-08-09.** D4 and the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
 > gate are resolved, every §5.2 scenario is delivered, and **hardware-enforced per-task isolation
 > works on both memory models** — PMP on RP2350 silicon, Sv39 on RV64 — behind one interface.
-> **V1–V4 are closed and the README title is restored. Only B6 (M12, preemption + ELF) remains.** D2, D5 and D6 are resolved;
-> D4 is subsumed by B4.
+> **B6 (M12) is complete, and with it Track B**: timer preemption on all three targets, and
+> separately linked user programs loaded from the filesystem and run in U-mode under a per-task
+> domain — on *both* memory models, which [D6](#d6--dynamic-server-loading--resolved-2026-08-09-by-capability-per-target)
+> had assumed would be MMU-only. **V1–V4 are closed and the README title is restored.** D2, D5 and
+> D6 are resolved; D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
 > **Baseline**: commit `4a64b78` (Phases 0–4 + cross-cutting quick wins complete, 75/75 tests
@@ -1754,10 +1757,62 @@ the suite, because the out-of-bounds read halts the guest and every later test t
 
 **B12 is closed.** Tests 123→125.
 
-**Still to do in B6**: separately-linked ELF user programs — loading a binary into its own pages and
-running it in U-mode under a memory domain, which is what makes `.utext`'s hand-maintained
-self-containment structural. The loader hardening above is the prerequisite: it is the code that
-would parse an untrusted user binary.
+##### B6 — user programs run in U-mode; **B6 and Track B complete** (2026-08-09)
+
+The loader used to copy a binary into a page and *call it*, at kernel privilege, on the kernel's
+own stack — `mv sp, a0 ; jalr ra, a1, 0`. That is not running a program, it is inlining an
+untrusted byte string into the kernel: `exec` runs whatever is on the SD card, and anything it
+loaded could touch any device register and execute any privileged instruction, with B3's PMP and
+B5's Sv39 fully implemented and simply not applied to the one path that most needed them.
+
+A loaded program is now a task in U-mode under a memory domain granting it exactly three pages —
+text `R|X`, data `R|W`, stack `R|W` — and every pointer it hands a syscall is validated against
+that same domain. `linker/user.ld` + `user/progs/` build the programs separately, which is what
+makes `.utext`'s self-containment **structural**: a program linked against nothing cannot
+accidentally reference the kernel's `.rodata`, and the two remaining limits (one page of text, one
+of data) are link-time ASSERTs naming the section rather than a fault at run time.
+
+**The image model is shaped by PMP, and both builds obey it** (Rule 0). A PMP region must be
+power-of-two sized *and* self-aligned, so granting the two image pages different permissions
+requires them inside one aligned block — hence `palloc_pages_aligned()`. Sv39 needs none of that
+and takes the same layout anyway, so the constraint is exercised everywhere rather than only where
+it bites.
+
+A program ends by *returning*, so the loader plants a 16-byte exit stub in the top of the text page
+and enters U-mode with `ra` pointing at it, carrying `main`'s value out as the task's exit status.
+Without it a normal return was a wild jump, reported by the fault handler as misbehaviour — the
+wrong story about the most ordinary thing a program can do.
+
+**Three findings, all from hardware, none visible on QEMU:**
+
+1. **RP2350 hardwires U-mode RWX over the ROM, all peripherals, and SIO** (datasheet §3.8.8.1).
+   A task confined to three pages of RAM still had write and execute on every peripheral in the
+   chip — enough to reprogram or reset the machine, making "confined" a false claim on the one
+   target where enforcement is real. Fixed by the same paragraph that documents it: dynamic
+   regions 0–7 outrank the hardwired ones, so three deny regions installed from the top of the
+   entry table revoke them. The isolation probe now stores to `0x40000000` precisely because that
+   is the address which behaves differently on the three targets.
+
+2. **Hazard3 gates interrupts-to-U-mode on `mstatus.MIE`.** The privileged spec says interrupts
+   for a higher privilege level are always enabled while the hart runs at a lower one, and QEMU
+   implements exactly that — a U-mode spin is preempted whatever the kernel does with the bit. Real
+   silicon, same program, same 0.4 s spin: **MPIE=0 → 0 ticks, MPIE=1 → 41 ticks.** The QEMU
+   falsification run said the line in `umode.S` was a no-op and very nearly justified deleting it.
+   Hardware said otherwise.
+
+3. **`usb_cdc_putc()` had a read-modify-write race on the TX ring head.** A task preempted between
+   computing `next` and storing it rewinds the head over everything the other task appended, losing
+   whole messages rather than interleaving them. It presented as a user program whose output never
+   appeared while the kernel's did — briefly misread as a preemption failure.
+
+**And one gap closed rather than documented**: `printk()`/`cprintf()` now emit a whole message
+under an interrupt-masked critical section. The README listed non-atomic console output as a known
+limitation of preemption; it stopped being merely untidy when spliced output cut a test's marker in
+half on hardware.
+
+Tests 125→**131 QEMU, 6/6→7/7 hardware**. Version 0.7.0→0.8.0.
+
+**B6 is complete, and with it Track B.**
 
 ---
 
@@ -1799,7 +1854,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | **Done (2026-08-09)** — see B3's completion notes. Scratch-CSR trap stack switch, `arch_enter_user()`, per-task `mem_domain_t` activated by the scheduler, and `kernel/uaccess.c` closing the confused-deputy hole. Enforced on QEMU RV32 **and real RP2350 silicon** (three datasheet findings needed: no TOR, 32-byte granule, erratum E6's reversed R/W/X order). RV64 reports honestly that it cannot enforce until Sv39 (B5). Tests 113→115 QEMU, 6/6 hardware. |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | **Done (2026-08-09)** — see B4's completion notes. `printk()`/`cprintf()` split into independent kernel-log and console streams (resolving B0's recorded limitation), the console exposed as a channel service and bound by name from `init.lisp`, and the 9P/filesystem server made a scheduled task — **resolving D4**. Tests 115→121 QEMU, 6/6 hardware. |
 | **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | **Done (2026-08-09)** — Sv39 three-level paging with superpages, per-domain address spaces behind B3's `mem_domain_t`, and the isolation test's per-target branch removed because both models now behave identically. Required a dedicated `.utext` page (S-mode may not fetch from `U` pages) and a tight text region (the coarse one stripped the kernel's own write access under paging). **V4 closed; README title restored.** |
-| **M12** | **B6** preemption; ELF-loaded servers (MMU only, closes B12) | M10, M11 | Not started |
+| **M12** | **B6** preemption; U-mode ELF user programs (closes B12) | M10, M11 | **Done (2026-08-09)** — see B6's completion notes. Timer preemption on all three targets; the ELF loader hardened (B12 closed); and separately linked user programs loaded from the filesystem into allocator pages and run in U-mode under a three-page domain — **on both memory models**, not MMU-only as D6 originally assumed. Three hardware-only findings (RP2350's hardwired U-mode grants over ROM/peripherals/SIO, Hazard3 gating U-mode interrupts on `mstatus.MIE`, and a preemption race in the USB TX ring) plus atomic console output. Tests 125→131 QEMU, 7/7 hardware. |
 
 **M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. A3b and
 `link_usb_cdc` were aimed at M5, the RP2350 hardware milestone, also done.
@@ -1940,11 +1995,24 @@ A4's client/server safety argument explicitly depends on there being no schedule
 `test_9p_multinode_heterogeneous()` and `test_9p_remote_mount()` pass with the scheduler enabled.**
 Track A does not get to regress silently to buy Track B progress.
 
-### D6 — Dynamic server loading — **Resolved (2026-08-09) by capability, per target**
-"Started dynamically" means different things on the two targets, and conflating them would overpromise.
-**MMU**: ELF loaded at a fixed per-process virtual address (B6, closes B12). **NOMMU**: compiled into
-the image, *started and bound* dynamically from `init.lisp`. Loading a third-party binary at runtime
-is MMU-only unless a PIC toolchain is taken on — not currently planned. See
+### D6 — Dynamic server loading — **Resolved (2026-08-09); revised by B6, which did it on both**
+The original resolution split by capability: **MMU** would load an ELF at a fixed per-process
+virtual address, **NOMMU** would compile servers into the image and merely *start and bind* them
+from `init.lisp`, and "loading a third-party binary at runtime is MMU-only unless a PIC toolchain is
+taken on — not currently planned."
+
+**B6 loads and runs binaries on both memory models**, so the second half of that is superseded and
+worth being explicit about rather than quietly editing. The premise was that position independence
+needs a PIC toolchain and a relocation-processing loader. It does not: `-mcmodel=medany` already
+makes every code and data reference PC-relative, so an image linked at 0 runs correctly at whatever
+base the page allocator returns, with no relocations to process. What it costs is three build flags
+(`-mno-relax`, `-msmall-data-limit=0`, `-fno-jump-tables`, each removing a way absolute addresses
+creep back in) and a linker script — not a toolchain. See `linker/user.ld` and the user-program
+section of `CMakeLists.txt`.
+
+What remains genuinely per-target is the *enforcement* mechanism, which §5.1 was always right
+about, and the image-size limit: PMP's power-of-two self-aligned regions are why the image model is
+two pages rather than arbitrary. See
 [§5.1](#corollary--dynamically-started-drivers-means-different-things-per-target).
 
 ### D3 — Track priority — **Resolved**

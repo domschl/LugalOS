@@ -142,11 +142,33 @@ void trap_handler(trap_frame_t *frame) {
                     uart_putc((char)frame->a1);
                     ret = 0;
                     break;
+                case 21: /* SYS_TICKS: the preemption tick counter */
+                    /* A value, not a pointer, and read-only -- so it is safe
+                     * to expose to U-mode as it stands.
+                     *
+                     * It exists to make U-mode preemptibility testable from
+                     * inside a user program: ticker_count_tick() is reached
+                     * only from the timer interrupt handler, so a program
+                     * that reads this, spins without making a single syscall,
+                     * and reads it again has direct evidence of whether a
+                     * timer interrupt was taken while *it* was running. With
+                     * interrupts masked in U-mode the count cannot move
+                     * across that window, however long the spin. */
+                    ret = (long)ticker_ticks();
+                    break;
                 case SYS_UEXIT:
                     /* A U-mode task asking to end. task_exit() switches away
                      * and never returns, so this call does not come back here
                      * and the trap frame on this kernel stack is simply
-                     * abandoned along with the task. */
+                     * abandoned along with the task.
+                     *
+                     * a1 carries the program's return value. Recording it
+                     * *here* rather than in task_exit() is what makes it
+                     * mean something: this path is only reached by a task
+                     * that asked to end, so a status recorded on it can
+                     * never be confused with one from a task the fault
+                     * handler killed. */
+                    task_set_exit_status((long)frame->a1);
                     task_exit();
                     ret = 0; /* unreachable */
                     break;

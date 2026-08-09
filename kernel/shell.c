@@ -73,7 +73,7 @@ static void cmd_help(void) {
     cprintf("  rm <file>       - Delete file from disk\n");
     cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
     cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
-    cprintf("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
+    cprintf("  exec <elf>      - Run a RISC-V ELF binary as a U-mode task, confined to its own pages\n");
     cprintf("  e [file]        - Launch Emacs-style full-screen editor\n");
     cprintf("  ed [file]       - Launch teletype line editor\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
@@ -382,7 +382,10 @@ static void user_task_common(void (*entry)(void)) {
         return;
     }
     g_user_entered = true;
-    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack));
+    /* ra = 0: every probe below ends with usys_exit() and an infinite loop,
+     * so none of them ever returns. The ELF loader is what needs a real
+     * return address. */
+    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack), 0);
 }
 
 static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }

@@ -4,8 +4,9 @@
 
 The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
 were aspirational, on the principle that a name should describe what the code does. It is restored
-as of v0.6.0 (preemptive scheduling landed in v0.7.0): message-passing IPC, a real scheduler, U-mode tasks, and **hardware-enforced per-task
-memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
+as of v0.6.0 (preemptive scheduling landed in v0.7.0, separately linked user programs in v0.8.0):
+message-passing IPC, a real scheduler, **user programs that run in U-mode from files on disk**, and
+**hardware-enforced per-task memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
 silicon) and Sv39 page tables on the 64-bit MMU target — are implemented and continuously tested.
 [Implementation Status](#implementation-status) below still states exactly what is and is not real,
 including what remains roadmap.
@@ -20,16 +21,18 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 123 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 6 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 131 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 7 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
   boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
   running as scheduled tasks rather than inline calls.
-- **Not yet**: separately-linked ELF user programs — user code currently shares the kernel image,
-  in a dedicated `.utext` page.
+- **User programs**: a separately linked ELF is loaded from the filesystem into pages the allocator
+  hands out, and runs as a U-mode task confined to three of them — text (R|X), data (R|W), stack
+  (R|W). `exec` is that path, so a program compiled on the machine by `cc` runs confined too. The
+  loader validates every header offset against the file size before using it.
 - Boots to an interactive shell (`lsh`) on all three targets.
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
@@ -42,17 +45,17 @@ silicon):
   hardware.
 
 **Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-- **Separately-linked user programs**: U-mode tasks run code compiled into the kernel image, in a
-  dedicated `.utext` page. There is no ELF loader for user binaries, so a user program cannot yet be
-  a file on disk. The ELF loader that exists (`arch/riscv/common/elf.c`, driven by `exec`) loads
-  binaries into *kernel* mode and does not validate its headers.
+- **More than one user program at a time**: there is a single user-image slot, allocated once and
+  reused, so `exec` runs one program to completion before another can start. The blocker is
+  concrete rather than structural: the Sv39 backend caches a page table per memory domain and
+  nothing can free a page-table tree yet, so a domain per program would leak pages.
+- **User programs larger than two pages**: the image model is one page of text and one of data,
+  enforced at link time by `linker/user.ld`'s ASSERTs rather than discovered at run time. Growing
+  it needs the loader to allocate a power-of-two page run per segment, since a PMP region must be
+  power-of-two sized and self-aligned.
 - **The old register-IPC entry points**: `sys_ipc_call`/`sys_ipc_reply`/etc. remain fixed stubs.
   They are superseded rather than pending — services are reached by message passing over
   copy-always channels (`kernel/chan.h`), which is what the microkernel actually uses.
-- **Atomic console output**: `printk()`/`cprintf()` take no locks, so with preemption now live two
-  tasks writing at once can interleave their output character by character. Ugly rather than
-  unsafe — no state is corrupted — but it is a real gap, and the fix belongs with the console
-  server owning its own stream rather than with a lock bolted onto the formatter.
 
 Everything else described below — including the scheduler, IPC, U-mode isolation, and the
 distributed 9P namespace — is implemented and continuously tested. This section exists to stay an

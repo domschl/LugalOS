@@ -52,6 +52,25 @@ void palloc_init(uintptr_t start, uintptr_t end);
 
 /* `n` contiguous pages, zeroed. NULL if no run of that size is free. */
 void *palloc_pages(uint32_t n);
+
+/* As above, but the returned block also starts on an `align_pages` boundary
+ * (`align_pages` must be a power of two; 1 means "page-aligned", i.e. the
+ * same as palloc_pages()).
+ *
+ * This exists for a hardware reason rather than a stylistic one. A PMP region
+ * must be power-of-two sized *and self-aligned* (NAPOT -- see
+ * kernel/mem_domain.h), so a user image that wants its text page granted R|X
+ * and its data page R|W needs the two pages to sit inside one naturally
+ * aligned block: within a 2^k-aligned run, every page-sized piece is itself
+ * page-aligned, and each piece is separately expressible. A merely contiguous
+ * pair is not, and the loader would have had to either widen a grant or give
+ * up on W^X.
+ *
+ * The MMU build does not need the alignment -- Sv39 maps at page granularity
+ * regardless -- but takes it anyway, per Rule 0 (§5.1): one allocation rule,
+ * so the NOMMU constraint is not something only one build has ever run. */
+void *palloc_pages_aligned(uint32_t n, uint32_t align_pages);
+
 void  palloc_free(void *p, uint32_t n);
 
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages);

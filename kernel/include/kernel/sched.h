@@ -54,6 +54,14 @@ typedef struct task {
      * switch. NULL means unrestricted (kernel tasks). Owned by whoever
      * created the task. */
     mem_domain_t *domain;
+    /* How the task ended, for whoever spawned it. A U-mode program that
+     * returns normally reaches SYS_UEXIT and sets both; one that faults is
+     * terminated by the trap handler and sets neither, so `exit_clean` is
+     * what distinguishes "the program returned 0" from "the program was
+     * killed" -- statuses alone cannot, since 0 is a perfectly ordinary
+     * return value. */
+    long         exit_status;
+    bool         exit_clean;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -79,6 +87,20 @@ void task_start(void (*entry)(void *), void *arg);
 /* Attaches a memory domain (B3). Takes effect immediately if `pid` is the
  * running task, otherwise at its next scheduling. */
 int task_set_domain(int pid, mem_domain_t *domain);
+
+/* Records how the calling task is about to end. Called by the syscall layer
+ * on SYS_UEXIT, i.e. only on a *voluntary* exit -- which is precisely what
+ * makes it distinguishable from a task the trap handler killed. */
+void task_set_exit_status(long status);
+
+/* One task's state, or TASK_UNUSED for an out-of-range pid. Lets a spawning
+ * task wait for its child instead of yielding a fixed number of times and
+ * hoping, which is what the U-mode probes in kernel/shell.c did. */
+int sched_task_state(int pid);
+
+/* True if `pid` ended by asking to (SYS_UEXIT), writing its status to
+ * `*status`. False if it is still alive, or was terminated by a fault. */
+bool sched_task_exited_cleanly(int pid, long *status);
 
 /* Blocks/unblocks by pid. A BLOCKED task is skipped by sched_yield(). */
 void task_block(void);

@@ -93,6 +93,25 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     return 0;
 }
 
+void task_set_exit_status(long status) {
+    if (!g_active) return;
+    g_tasks[g_current].exit_status = status;
+    g_tasks[g_current].exit_clean = true;
+}
+
+int sched_task_state(int pid) {
+    if (!g_active || pid < 0 || pid >= MAX_TASKS) return TASK_UNUSED;
+    return g_tasks[pid].state;
+}
+
+bool sched_task_exited_cleanly(int pid, long *status) {
+    if (!g_active || pid < 0 || pid >= MAX_TASKS) return false;
+    if (g_tasks[pid].state != TASK_DEAD) return false;
+    if (!g_tasks[pid].exit_clean) return false;
+    if (status) *status = g_tasks[pid].exit_status;
+    return true;
+}
+
 /* First-run entry for every task, reached from task_trampoline. */
 void task_start(void (*entry)(void *), void *arg) {
     /* A first run arrives here instead of returning from ctx_switch(), so it
@@ -138,6 +157,10 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
     t->stack_base = stack;
     t->stack_pages = TASK_STACK_PAGES;
     t->domain = NULL; /* unrestricted until a caller attaches one */
+    /* Cleared explicitly: a slot is reused from TASK_DEAD, so a previous
+     * occupant's clean exit would otherwise be reported as this task's. */
+    t->exit_status = 0;
+    t->exit_clean = false;
 
     /* Prime the stack so the first ctx_switch() into this task "returns" to
      * task_trampoline with s0 = entry and s1 = arg. The frame layout must

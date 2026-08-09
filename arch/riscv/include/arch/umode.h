@@ -5,14 +5,20 @@
 
 /* U-mode entry (B3, plan/phase5_distributed_design.md §5.4).
  *
- * Drops to user mode at `entry` with `user_sp` as the stack, after parking
- * the caller's kernel stack pointer in the trap path's scratch CSR (see
- * arch/riscv/common/entry.S for that invariant). Does not return: the task
- * leaves U-mode only by trapping.
+ * Drops to user mode at `entry` with `user_sp` as the stack and `user_ra` in
+ * ra, after parking the caller's kernel stack pointer in the trap path's
+ * scratch CSR (see arch/riscv/common/entry.S for that invariant). Does not
+ * return: the task leaves U-mode only by trapping.
  *
- * Call arch_user_grant_all() first on the M-mode targets, or U-mode cannot
- * fetch its first instruction -- see arch/riscv/common/umode.c. */
-void arch_enter_user(void (*entry)(void), uintptr_t user_sp);
+ * `user_ra` is where the program lands if it *returns* rather than asking to
+ * exit, which is how an ordinary compiled `main` ends. It must be an address
+ * this task's domain grants execute on; the ELF loader points it at an exit
+ * stub inside the user's own image. Pass 0 for user code that never returns.
+ *
+ * The task needs a memory domain installed (task_set_domain) before this is
+ * called, or on the M-mode targets U-mode cannot fetch its first instruction
+ * -- see arch/riscv/common/umode.c. */
+void arch_enter_user(void (*entry)(void), uintptr_t user_sp, uintptr_t user_ra);
 
 /* Grants U-mode access to the whole address space via one PMP entry.
  * NOT isolation -- the minimum that makes the mode transition observable, so

@@ -105,6 +105,50 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
 
 #define PMP_ENTRIES 8
 
+#if defined(CONFIG_BOARD_RP2350)
+/* Hazard3 hardwires three PMP regions that this kernel cannot switch off, and
+ * they are not neutral: RP2350 datasheet §3.8.8.1 says regions 8, 9 and 10
+ * "provide default U-mode RWX permissions" on
+ *
+ *     ROM          0x00000000 .. 0x0fffffff
+ *     Peripherals  0x40000000 .. 0x5fffffff
+ *     SIO          0xd0000000 .. 0xdfffffff
+ *
+ * So on this silicon a task confined to three pages of RAM still had read,
+ * write *and execute* on every peripheral in the chip -- UART, SPI, PWM,
+ * PADS, the watchdog, the TICKS block this kernel's own timer depends on --
+ * plus the boot ROM and SIO. That is not a narrow leak; it is enough to
+ * reprogram or reset the machine, and it would have made "the program is
+ * confined" a false claim on the one target where the enforcement is real.
+ *
+ * Found by running the isolation probe on hardware rather than by reading
+ * the datasheet first: on QEMU the same program faults, because QEMU's PMP
+ * has no hardwired regions. It is the third time B3/B6 has hit a Hazard3
+ * property invisible under emulation, after NAPOT-only and erratum E6.
+ *
+ * The fix is in the same paragraph of the datasheet: "The dynamic regions 0
+ * through 7 take priority over the hardwired regions." Three dynamic regions
+ * covering the same ranges with *no* permissions therefore revoke them. They
+ * are installed for every domain, from the top of the entry table down, so
+ * they cost nothing a domain would otherwise use and a domain that genuinely
+ * needs a device window can still grant one -- its region is lower-numbered,
+ * so it wins.
+ *
+ * Each range is already a naturally aligned power of two, which is what makes
+ * this expressible at all: 256 MB, 512 MB, 256 MB. */
+#define PMP_DENY_ENTRIES 3
+#define PMP_DYNAMIC_ENTRIES (PMP_ENTRIES - PMP_DENY_ENTRIES)
+
+static const struct { uintptr_t base, size; } g_hardwired_shadow[PMP_DENY_ENTRIES] = {
+    { 0x00000000u, 0x10000000u },  /* ROM         */
+    { 0x40000000u, 0x20000000u },  /* Peripherals */
+    { 0xd0000000u, 0x10000000u },  /* SIO         */
+};
+#else
+#define PMP_DENY_ENTRIES 0
+#define PMP_DYNAMIC_ENTRIES PMP_ENTRIES
+#endif
+
 static void pmpaddr_write(int idx, uintptr_t v) {
     switch (idx) {
         case 0: write_csr(pmpaddr0, v); break;
@@ -141,6 +185,7 @@ static uintptr_t napot_encode(uintptr_t base, uintptr_t size) {
 int mem_domain_activate(const mem_domain_t *d) {
     int n = d ? d->count : 0;
     if (n > MEM_DOMAIN_MAX_REGIONS) n = MEM_DOMAIN_MAX_REGIONS;
+    if (n > PMP_DYNAMIC_ENTRIES) n = PMP_DYNAMIC_ENTRIES;
 
     uint8_t cfg[PMP_ENTRIES];
     for (int i = 0; i < PMP_ENTRIES; i++) cfg[i] = 0;
@@ -151,6 +196,16 @@ int mem_domain_activate(const mem_domain_t *d) {
         if (d->regions[i].perms & MEM_X) byte |= PMP_X;
         cfg[i] = byte;
     }
+#if PMP_DENY_ENTRIES > 0
+    /* Active (A=NAPOT) with every permission bit clear: a match that grants
+     * U-mode nothing, which is what overrides the hardwired grants above.
+     * Installed only when there is a domain to enforce -- a kernel task runs
+     * with no restriction at all, and M-mode ignores an unlocked region
+     * anyway (datasheet §3.8.3.2). */
+    if (d) {
+        for (int i = 0; i < PMP_DENY_ENTRIES; i++) cfg[PMP_DYNAMIC_ENTRIES + i] = PMP_A_NAPOT;
+    }
+#endif
 
     /* Config first (see above), and every byte including the unused entries:
      * writing the whole word is what makes a switch to a smaller domain
@@ -170,6 +225,15 @@ int mem_domain_activate(const mem_domain_t *d) {
 #endif
 
     int ok = 0;
+#if PMP_DENY_ENTRIES > 0
+    if (d) {
+        for (int i = 0; i < PMP_DENY_ENTRIES; i++) {
+            pmpaddr_write(PMP_DYNAMIC_ENTRIES + i,
+                          napot_encode(g_hardwired_shadow[i].base,
+                                       g_hardwired_shadow[i].size));
+        }
+    }
+#endif
     for (int i = 0; i < n; i++) {
         uintptr_t want = napot_encode(d->regions[i].base, d->regions[i].size);
         pmpaddr_write(i, want);
