@@ -1034,7 +1034,13 @@ def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Pa
         if not ok:
             return (name, False, f"Node A (RV32) failed to boot:\n{log}")
 
-        cmd = 'lisp\n(p9-remote-cat "/ram0/multinode_marker.txt")\nexit'
+        # B2/D5: spawn a task that pumps this link's background server while
+        # the client exchange below is in flight. Without it the yield inside
+        # the client's reply-wait has nobody to switch to and the hazard never
+        # occurs -- the test would pass whether or not frames are routed.
+        # With it, the pump task reads the client's own replies off the wire,
+        # and only fs/p9_link.c's type-parity + tag routing keeps this working.
+        cmd = 'lisp\n(spawn-pump 512)\n(p9-remote-cat "/ram0/multinode_marker.txt")\nexit'
         ok, log = session_a.send_and_expect(cmd, re.escape(marker), timeout=5.0)
         return (name, ok, log if not ok else "")
     except Exception as e:

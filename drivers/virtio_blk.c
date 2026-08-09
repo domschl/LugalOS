@@ -1,4 +1,5 @@
 #include "drivers/virtio_blk.h"
+#include "kernel/sched.h"
 #include "kernel/printk.h"
 #include <string.h>
 #include <stdint.h>
@@ -133,7 +134,9 @@ static int virtio_blk_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t 
 
     /* Poll for completion */
     while (g_vq_mem.used.idx == g_last_used_idx) {
-        __asm__ __volatile__("" ::: "memory");
+        /* B2: yield instead of spinning. A block transfer is slow enough
+         * that holding the CPU through it would stall every other task. */
+        sched_yield();
     }
     g_last_used_idx = g_vq_mem.used.idx;
 

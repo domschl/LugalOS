@@ -4,8 +4,8 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6) and B1 (M7) are complete as of 2026-08-09**; B2 (M8, tasks + scheduler) is next
-> — note its hard gate, [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate). D2, D5 and D6 are resolved;
+> **B0 (M6), B1 (M7) and B2 (M8) are complete as of 2026-08-09** — the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
+> gate is met. **B3 (M9, U-mode + PMP, NOMMU leads) is next** and is the riskiest milestone in the track. D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -1215,6 +1215,67 @@ progress.
 
 *Risk: medium–high. New assembly, and it touches every blocking path in the tree.*
 
+##### B2 completion notes (2026-08-09) — **B2/M8 COMPLETE**
+
+All three targets build clean; `tests/runner.py` passes **107/107** (RV64 + RV32, four new tests,
+up from 103). Landed in two commits: allocator + tasks + switch, then yield points + tag
+multiplexing.
+
+- **`kernel/palloc.c`** — bitmap page allocator. What it replaced could neither free nor fail: each
+  arch's `vmm_alloc_page()` was a bump pointer with **no upper bound**, so on RP2350 enough
+  allocations would have walked through the scratch regions and the boot stack with no diagnostic.
+  The linker scripts now export `_heap_end`, making the bound a property of each board's memory map.
+  `/proc/meminfo` reports real counters.
+- **`arch/riscv/common/switch.S`** — one cooperative switch for both word widths via the existing
+  `REG_S`/`REG_L` macros (Rule 0 at the lowest level). **FP state is deliberately not saved, and the
+  reason was checked rather than assumed**: `entry.S` does `csrw mstatus, zero` and never sets
+  `mstatus.FS`, so the FPU is off and no task can hold live FP state. If FS is ever enabled this
+  must grow `fs0-fs11` saves (RV64 uses lp64d, where those are callee-saved).
+- **`kernel/sched.c`** — real tasks, palloc'd stacks, round-robin, block/unblock, and a
+  `task_exit()` that reclaims the stack. The boot context becomes task 0. `task_t` carries a
+  `domain` pointer, NULL everywhere today, that B3 fills with a PMP region set and B5 with an Sv39
+  page table — the NOMMU build does not get a simplified task.
+- **`/proc/ps` renders the real table.** It was a hardcoded string naming four tasks that never
+  existed; two tests had been asserting on those invented names.
+
+**Bug caught by a test rather than by review.** An earlier `sched.c` had a "currently switching"
+guard that silently broke cooperative scheduling: a freshly created task enters at
+`task_trampoline` and never returns from `ctx_switch()`, so it never reached the line clearing the
+flag — its own `sched_yield()` then saw the flag still set and returned immediately, running the
+task to completion instead of yielding. The guard was unnecessary (no window exists between the
+state updates and `ctx_switch()`) and is gone. **This is why the test asserts on interleaving order
+(`A1 B1 A2 B2 A3 B3`) rather than on output appearing**: every marker still printed with switching
+completely broken.
+
+**Yield points**: `uart_getc()` on both platform UARTs (the console blocking on a keystroke is the
+longest wait in the system and so the most important one), and `virtio_blk_transfer()`'s completion
+poll.
+
+**D5 gate — satisfied, and genuinely exercised.** Inbound frames now pass through one routing point
+(`p9_route_frame()`) shared by the background pump and by client waits. 9P makes the classification
+exact: T-messages (requests) have even type numbers, R-messages (replies) odd ones, for every pair.
+A reply is matched to a registered waiter by tag; a request goes to the server. Waiters live in a
+small fixed table rather than in `p9_link_t`, so no backend changed and links that never act as
+client pay no per-link reply buffer.
+
+- **A4's safety comment was false as written and has been rewritten, not deleted.** It argued the
+  client/server overlap was safe *because there was no scheduler*. That reasoning is now wrong; the
+  code is safe for a different reason, and recording the change matters more than quietly fixing it.
+- **Passing "with the scheduler on" is not enough on its own, which nearly produced a hollow gate.**
+  With only the boot task alive, `sched_yield()` has nobody to switch to, so the dangerous
+  interleaving never happens and the multi-node tests would pass whether or not frames were routed.
+  A new `(spawn-pump n)` primitive creates a task that services background links and yields, so the
+  client's reply really is read off the wire by *another task* mid-exchange. The multi-node test now
+  spawns it before `(p9-remote-cat …)`.
+- **Verified by falsification**: routing every inbound frame to the server, as before B2, collapses
+  the suite to **35/107** — including both multi-node tests. The breadth is expected, since the
+  local channel link's replies are misrouted too.
+
+**Deferred to B6, explicitly**: `task_exit()` frees its own stack while still running on it. Safe
+only because cooperative scheduling means nothing can allocate and reuse those pages before the
+final `ctx_switch()`. Under preemption this must move to a reaper that frees after the switch.
+Likewise `palloc` and `sched` take no locks, which is correct only without preemption.
+
 #### B3 — U-mode + PMP on the NOMMU targets — **NOMMU leads**
 
 Per [D2](#d2--nommu-protection--resolved-2026-08-09-pmp-early-nommu-leads), enforcement arrives on RV32/RP2350 *first*, and Sv39
@@ -1296,7 +1357,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
 | **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
 | **M7** | **B1** `chan_t` copy-always channels + local channel-backed mount | M6 | **Done (2026-08-09)** — see B1's completion notes. `kernel/chan.c` (copy-always endpoints), `fs/p9_chan.c` (local 9P server as an ordinary `p9_link_t`), `vfs_mount_local()`. Notably there is **no** `MOUNT_LOCAL9P` kind: a local mount is `vfs_mount_remote()` with a channel-backed link, reusing every layer below unchanged. `/srv/`'s pointer-passing retired; `loopback_9p_cat()` (~60 lines) deleted in favour of the shared `p9_link_cat()`. Found and fixed a latent `vfs_open()` handle-slot reservation bug that only a re-entrant (local) mount can expose. Tests 95→103. |
-| **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing — **gated on M3/M4 tests still passing with the scheduler on** | M7 | Not started |
+| **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing | M7 | **Done (2026-08-09)** — see B2's completion notes. Page allocator (replacing an unbounded bump pointer), `switch.S` cooperative context switch shared by both word widths, real `task_t`/`sched.c`, yield points in `uart_getc()`/`virtio_blk`, and `p9_route_frame()` type-parity + tag demultiplexing. **D5 gate met and genuinely exercised**: a new `(spawn-pump)` task runs concurrently with the client exchange, since with only the boot task alive the hazard never occurs and the gate would have been hollow. Tests 103→107. |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |
 | **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
