@@ -269,6 +269,12 @@ static void user_intruder(void) {
 static uint8_t g_user_stack[1024] __attribute__((aligned(1024)));
 static mem_domain_t g_user_domain;
 
+/* Set only once a task has actually reached U-mode. Without it the isolation
+ * report is a false positive on any core where the domain could not be
+ * installed: the canary is untouched because nothing ran, which reads
+ * identically to "the write was correctly blocked". */
+static volatile bool g_user_entered;
+
 static void user_task_common(void (*entry)(void)) {
     mem_domain_init(&g_user_domain);
 
@@ -290,6 +296,7 @@ static void user_task_common(void (*entry)(void)) {
         printk("[UserTest] Refusing to enter U-mode: memory domain not enforceable\n");
         return;
     }
+    g_user_entered = true;
     arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack));
 }
 
@@ -297,6 +304,7 @@ static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe);
 static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
 
 static void run_user_task(const char *name, void (*body)(void *)) {
+    g_user_entered = false;
     int pid = task_create(name, body, NULL);
     if (pid < 0) {
         printk("[UserTest] Could not create the task\n");
@@ -330,6 +338,15 @@ static void cmd_usertest_isolation(void) {
     g_kernel_canary = 0xC0FFEE;
     printk("[Isolation] Canary before: 0x%lx\n", (unsigned long)g_kernel_canary);
     run_user_task("intruder", intruder_body);
+
+    if (!g_user_entered) {
+        /* The task never reached U-mode, so the canary proves nothing about
+         * isolation. Saying "ISOLATED" here would be a false positive of
+         * exactly the kind this whole command exists to rule out. */
+        printk("[Isolation] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
     printk("[Isolation] Canary after:  0x%lx -- %s\n",
            (unsigned long)g_kernel_canary,
            g_kernel_canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
