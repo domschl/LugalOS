@@ -27,6 +27,35 @@ int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perm
     return 0;
 }
 
+/* Architecture-independent, and deliberately so: this is the check the
+ * syscall boundary uses to decide whether a user-supplied pointer is one the
+ * calling task may actually touch. It reads the region list, not the
+ * hardware, so it behaves identically on both builds -- including on the
+ * S-mode target where nothing is enforced yet, so that copy-in/copy-out is
+ * exercised by the whole test suite rather than only where PMP exists.
+ *
+ * A NULL domain means an unrestricted (kernel) task, for which every address
+ * is permitted -- kernel code calling a syscall on its own behalf. */
+bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
+                        uint8_t perms) {
+    if (!d) return true;
+    if (len == 0) return true;
+    if (base + len < base) return false; /* wrap-around */
+
+    /* The range must fall entirely inside ONE region. Stitching a range
+     * together from several adjacent regions would be wrong: PMP resolves
+     * each access against the lowest-numbered matching region, so a range
+     * spanning two of them is not uniformly governed by either. */
+    for (int i = 0; i < d->count; i++) {
+        uintptr_t rb = d->regions[i].base;
+        uintptr_t re = rb + d->regions[i].size;
+        if (base >= rb && base + len <= re) {
+            return (d->regions[i].perms & perms) == perms;
+        }
+    }
+    return false;
+}
+
 #if defined(CONFIG_MODE_M)
 
 /* Permission bit order differs by silicon -- this is erratum RP2350-E6, not a

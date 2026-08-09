@@ -81,6 +81,10 @@ void task_block(void);
 int  task_unblock(int pid);
 
 int         sched_current_pid(void);
+
+/* The running task's domain, or NULL if unrestricted. The syscall boundary
+ * validates user pointers against it. */
+mem_domain_t *sched_current_domain(void);
 const char *sched_state_name(int state);
 bool        sched_task_info(uint32_t index, int *pid, int *state, const char **name);
 

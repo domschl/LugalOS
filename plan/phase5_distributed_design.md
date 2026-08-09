@@ -4,8 +4,9 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6), B1 (M7) and B2 (M8) are complete as of 2026-08-09** — the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
-> gate is met. **B3 (M9, U-mode + PMP, NOMMU leads) is next** and is the riskiest milestone in the track. D2, D5 and D6 are resolved;
+> **B0 (M6) through B3 (M9) are complete as of 2026-08-09** — the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
+> gate is met, and U-mode isolation is enforced on real RP2350 silicon. **B4 (M10, servers as tasks)
+> and B5 (M11, Sv39) are next; they are independent of each other.** D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -1334,6 +1335,50 @@ follows the pattern it establishes rather than the other way round.
 
 *Risk: high. The single riskiest milestone in the track.*
 
+##### B3 completion notes (2026-08-09) — **B3/M9 COMPLETE**
+
+All four parts are in: trap-path stack switch, M→U transition, per-task PMP regions, and
+copy-in/copy-out. QEMU **115/115**, hardware **6/6** on real RP2350.
+
+**Copy-in/copy-out closes the confused-deputy hole.** `trap.c` passed `frame->a1`/`a2` straight into
+`printk()`, `vfs_read()` and `vfs_write()`. The kernel runs where PMP does not restrict it, so a task
+that cannot touch kernel memory itself could ask the kernel to touch it *on the task's behalf* — the
+restriction intact and wholly bypassed. `kernel/uaccess.c` validates every user pointer against the
+calling task's own domain and then copies; the kernel never dereferences a caller-supplied address.
+
+**Rule 1 is finally checkable.** B1 imposed copy-always IPC and said honestly that it could not be
+tested: on one address space, deleting the copies would have passed every test. With U-mode and PMP
+live that is no longer true — a pointer escaping validation now names memory the caller cannot
+reach, and the difference is observable. Confirmed by falsification: removing the destination check
+fails the new test on both architectures.
+
+**`mem_domain_permits()` reads the region list, not the hardware**, so the syscall boundary is
+validated identically on both builds — including the S-mode target where nothing is enforced yet.
+Rule 0 keeping one code path honest rather than two.
+
+**Two false passes caught, both mine, both in the tests rather than the kernel:**
+
+- *Probing a direction the regions cannot discriminate.* The first deputy test asked the kernel to
+  **read** kernel memory. On QEMU the text region is one coarse RX grant over all of RAM, so that
+  read is legitimately permitted and `KERNEL_SECRET` duly printed. Nothing was broken; the test was
+  asking a question the configuration could not answer. Rewritten around the **write** direction
+  (a destination pointer), which no region grants and which is the more dangerous case anyway.
+  The read direction stays unasserted, with the reason recorded: tightening it needs separately
+  linked user programs, which is B6's ELF work.
+- *An inline-asm dead-store elimination that faked success.* The ecall wrappers passed a pointer
+  without a `"memory"` clobber, so GCC saw only the pointer value crossing into the asm, concluded
+  nothing read the buffer, and deleted the code filling it. On RP2350 at `-Os` the path string
+  vanished entirely; the kernel received a pointer to zeroed stack and the syscall failed on the
+  empty path — which looked *exactly* like the destination check working. It passed on QEMU, where
+  the same code was not eliminated. Caught only because the second half of the test ("a pointer the
+  task does own must still work") failed on hardware. **That second half is why the test is worth
+  anything**: "refused" alone would also pass for a syscall layer that rejects everything.
+
+**Hardware coverage is now permanent.** `tests/hw/` runs all three B3 probes on silicon, because
+every one of B3's surprises was invisible on QEMU: no TOR, a 32-byte granule, and erratum E6's
+reversed permission bits. A build passing on QEMU says nothing about whether the board enforces
+anything.
+
 ##### B3 progress notes — per-task PMP regions enforced on both targets (2026-08-09)
 
 Three of B3's four parts are in; copy-in/copy-out remains. QEMU **113/113**, hardware **5/5**, and
@@ -1487,7 +1532,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
 | **M7** | **B1** `chan_t` copy-always channels + local channel-backed mount | M6 | **Done (2026-08-09)** — see B1's completion notes. `kernel/chan.c` (copy-always endpoints), `fs/p9_chan.c` (local 9P server as an ordinary `p9_link_t`), `vfs_mount_local()`. Notably there is **no** `MOUNT_LOCAL9P` kind: a local mount is `vfs_mount_remote()` with a channel-backed link, reusing every layer below unchanged. `/srv/`'s pointer-passing retired; `loopback_9p_cat()` (~60 lines) deleted in favour of the shared `p9_link_cat()`. Found and fixed a latent `vfs_open()` handle-slot reservation bug that only a re-entrant (local) mount can expose. Tests 95→103. |
 | **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing | M7 | **Done (2026-08-09)** — see B2's completion notes. Page allocator (replacing an unbounded bump pointer), `switch.S` cooperative context switch shared by both word widths, real `task_t`/`sched.c`, yield points in `uart_getc()`/`virtio_blk`, and `p9_route_frame()` type-parity + tag demultiplexing. **D5 gate met and genuinely exercised**: a new `(spawn-pump)` task runs concurrently with the client exchange, since with only the boot task alive the hazard never occurs and the gate would have been hollow. Tests 103→107. |
-| **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |
+| **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | **Done (2026-08-09)** — see B3's completion notes. Scratch-CSR trap stack switch, `arch_enter_user()`, per-task `mem_domain_t` activated by the scheduler, and `kernel/uaccess.c` closing the confused-deputy hole. Enforced on QEMU RV32 **and real RP2350 silicon** (three datasheet findings needed: no TOR, 32-byte granule, erratum E6's reversed R/W/X order). RV64 reports honestly that it cannot enforce until Sv39 (B5). Tests 113→115 QEMU, 6/6 hardware. |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |
 | **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
 | **M12** | **B6** preemption; ELF-loaded servers (MMU only, closes B12) | M10, M11 | Not started |

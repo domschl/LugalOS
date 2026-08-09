@@ -53,6 +53,10 @@ bool sched_active(void) { return g_active; }
 
 int sched_current_pid(void) { return g_active ? g_tasks[g_current].pid : 0; }
 
+mem_domain_t *sched_current_domain(void) {
+    return g_active ? g_tasks[g_current].domain : NULL;
+}
+
 const char *sched_state_name(int state) {
     switch (state) {
         case TASK_UNUSED:  return "UNUSED";

@@ -3,6 +3,7 @@
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
+#include "kernel/uaccess.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 #include "drivers/uart.h"
@@ -89,10 +90,20 @@ void trap_handler(trap_frame_t *frame) {
                 case SYS_IPC_RECV:
                     ret = sys_ipc_recv(target_pid, msg_in);
                     break;
-                case 10: /* SYS_PRINT */
-                    if (frame->a1) printk("%s", (const char *)frame->a1);
+                case 10: { /* SYS_PRINT(const char *) */
+                    /* Copied in, never dereferenced in place. A U-mode task
+                     * cannot read kernel memory, but before this it could ask
+                     * the kernel to print it -- the restriction intact and
+                     * entirely bypassed. */
+                    char kbuf[128];
+                    if (strncpy_from_user(kbuf, frame->a1, sizeof(kbuf)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    printk("%s", kbuf);
                     ret = 0;
                     break;
+                }
                 case 11: /* SYS_PUTNUM */
                     printk("%ld", (long)frame->a1);
                     ret = 0;
@@ -115,12 +126,35 @@ void trap_handler(trap_frame_t *frame) {
                     task_exit();
                     ret = 0; /* unreachable */
                     break;
-                case 13: /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
-                    ret = vfs_read((const char *)frame->a1, (void *)frame->a2, (uint32_t)frame->a3);
+                case 13: { /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
+                    char kpath[128];
+                    static char kdata[512]; /* static: too big for the trap stack */
+                    uint32_t want = (uint32_t)frame->a3;
+                    if (want > sizeof(kdata)) want = sizeof(kdata);
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    int n = vfs_read(kpath, kdata, want);
+                    if (n < 0) { ret = n; break; }
+                    /* Copied out only after the read succeeded, and only as
+                     * many bytes as were actually produced. */
+                    ret = (copy_to_user(frame->a2, kdata, (uint32_t)n) < 0) ? -1 : n;
                     break;
-                case 14: /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
-                    ret = vfs_write((const char *)frame->a1, (const void *)frame->a2, (uint32_t)frame->a3);
+                }
+                case 14: { /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
+                    char kpath[128];
+                    static char kdata[512];
+                    uint32_t len = (uint32_t)frame->a3;
+                    if (len > sizeof(kdata)) { ret = -1; break; }
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    if (copy_from_user(kdata, frame->a2, len) < 0) { ret = -1; break; }
+                    ret = vfs_write(kpath, kdata, len);
                     break;
+                }
                 default:
                     printk("[Syscall] Unknown syscall nr %ld requested\n", (long)sys_nr);
                     ret = -1;

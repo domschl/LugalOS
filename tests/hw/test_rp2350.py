@@ -37,6 +37,48 @@ import p9lib  # via rp2350.py's sys.path insert
 REPO_ROOT = rp2350.REPO_ROOT
 
 
+def test_umode_isolation(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """B3 on real silicon: U-mode, PMP-enforced isolation, and the syscall
+    boundary.
+
+    Worth running here rather than trusting QEMU, because every one of B3's
+    hardware surprises was invisible on QEMU: Hazard3 implements no TOR, uses a
+    32-byte granule, and reverses the PMP permission bit order under erratum
+    E6. QEMU has none of those properties, so a build that passes there says
+    nothing about whether this board is actually enforcing anything.
+
+    Three claims, each with its own failure mode:
+      usertest      -- trap cause 8 proves the privilege level really dropped
+      isolationtest -- a U-mode store into kernel memory faults; canary intact
+      deputytest    -- the kernel refuses a foreign destination pointer, and
+                       still accepts one the task owns
+    """
+    name = "B3: U-mode isolation and syscall boundary on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"usertest\n", b"isolationtest\n", b"deputytest\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.8, deadline=12.0).decode("utf-8", "replace")
+
+        checks = [
+            ("privilege level dropped", "cause: 8 (U-mode" in out),
+            ("kernel memory isolated",  "ISOLATED (kernel memory untouched)" in out),
+            ("foreign pointer refused", "DEPUTY_REFUSED" in out),
+            ("own pointer still works", "OWNBUF_OK" in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-400:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """link_usb_cdc standalone: a host 9P client reads /proc/version over
     ACM1 (plain length-prefixed framing -- no SLIP, matching virtio-console's
@@ -408,7 +450,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
 

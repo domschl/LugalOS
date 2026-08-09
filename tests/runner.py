@@ -497,6 +497,29 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("isolationtest", pattern, timeout=12.0)
         results.append((label, ok, log if not ok else ""))
 
+        # 13c-quinquies. B3: the syscall boundary validates user pointers.
+        #
+        # The kernel runs where PMP does not restrict it, so a syscall that
+        # dereferences a caller-supplied address lets a U-mode task reach
+        # memory it cannot touch itself -- the restriction intact and wholly
+        # bypassed. SYS_READ_FILE's `buf` is the vehicle: the kernel writes
+        # into it, so it must be validated against the caller's own domain.
+        #
+        # BOTH halves are asserted. "Refused" alone would pass for a syscall
+        # layer that rejects every pointer, which is useless rather than
+        # secure, so the task must also succeed with a buffer it does own.
+        #
+        # Runs on both targets even though only RV32 enforces: the check reads
+        # the domain's region list rather than the hardware, which is what
+        # keeps copy-in/copy-out honest on a build whose mechanism (Sv39) is
+        # still B5.
+        ok, log = session.send_and_expect(
+            "deputytest",
+            r"DEPUTY_REFUSED(.|\n)*OWNBUF_OK(.|\n)*UNTOUCHED",
+            timeout=12.0)
+        results.append(("Syscall Boundary Rejects A Foreign Pointer (B3, copy-in/out)",
+                        ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

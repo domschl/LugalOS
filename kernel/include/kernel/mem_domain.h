@@ -82,6 +82,17 @@ int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perm
  * not been verified. */
 int mem_domain_activate(const mem_domain_t *d);
 
+/* True if `base..base+len` lies entirely within one region of `d` that grants
+ * every bit of `perms`. A NULL domain (an unrestricted kernel task) permits
+ * everything.
+ *
+ * Used by the syscall boundary to validate user-supplied pointers. Reads the
+ * region list rather than the hardware, so it is identical on both builds --
+ * which means copy-in/copy-out is exercised by the whole suite, not only
+ * where PMP happens to be enforcing. */
+bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
+                        uint8_t perms);
+
 /* True when this build can actually enforce a domain. False on the S-mode
  * target until B5 lands Sv39 -- so a caller can report "unenforced" honestly
  * rather than implying isolation that is not there. */

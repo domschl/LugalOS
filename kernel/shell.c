@@ -82,6 +82,7 @@ static void cmd_help(void) {
     printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
     printk("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
     printk("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
+    printk("  deputytest      - U-mode task asks the kernel to read kernel memory (B3)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -263,6 +264,79 @@ static void user_intruder(void) {
     for (;;) { }
 }
 
+/* The confused-deputy probe: can a U-mode task get the kernel to write to
+ * kernel memory on its behalf?
+ *
+ * The isolation test proves the task cannot store into kernel memory itself.
+ * This asks the harder question -- whether it can hand the kernel a
+ * destination pointer and have the kernel do it, which is the hole that
+ * remains whenever a syscall dereferences a caller-supplied address. The
+ * kernel runs where PMP does not restrict it, so the restriction would stay
+ * intact and be entirely bypassed.
+ *
+ * SYS_READ_FILE is the vehicle: its `buf` argument is a destination the
+ * kernel writes into, validated by copy_to_user() against the caller's own
+ * domain (MEM_W). Both outcomes are asserted, and the second matters as much
+ * as the first: a syscall layer that rejects every pointer would pass the
+ * "refused" half while being useless.
+ *
+ * The *read* direction (a source pointer into kernel memory) is deliberately
+ * not asserted here. On QEMU the text region is one coarse RX grant over all
+ * of RAM, so kernel data is legitimately readable by U-mode and there is
+ * nothing to catch -- a limitation of the coarse region, not of the
+ * validation. Tight per-task code/data regions need separately linked user
+ * programs, which is B6's ELF work.
+ */
+static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
+
+/* NOTE on the "memory" clobbers below: an ecall passing a pointer must tell
+ * the compiler that memory is read or written. Without it GCC sees only the
+ * pointer value crossing into the asm, concludes nothing ever reads the
+ * buffer's contents, and deletes the code that filled it. That happened here:
+ * on RP2350 (-Os) the path string was optimised away entirely, the kernel
+ * received a pointer to zeroed stack, and the syscall failed on the empty
+ * path -- which looked exactly like the destination check doing its job. A
+ * test that passes for the wrong reason is worse than one that fails. */
+
+static void user_deputy(void) {
+    char path[] = "/proc/version";
+    char mybuf[64];
+    long rc;
+
+    /* 1. Destination = kernel memory the task does not own. Must be refused. */
+    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
+                         "ecall\n mv %0, a0"
+                         : "=r"(rc)
+                         : "r"(13), "r"((uintptr_t)path),
+                           "r"((uintptr_t)&g_deputy_target), "r"(16)
+                         : "a0", "a1", "a2", "a3", "memory");
+    const char refused[] = "DEPUTY_REFUSED";
+    const char leaked[]  = "DEPUTY_WROTE_KERNEL";
+    const char *m = (rc < 0) ? refused : leaked;
+    for (int i = 0; m[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    }
+
+    /* 2. Destination = the task's own stack. Must succeed. */
+    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
+                         "ecall\n mv %0, a0"
+                         : "=r"(rc)
+                         : "r"(13), "r"((uintptr_t)path),
+                           "r"((uintptr_t)mybuf), "r"(32)
+                         : "a0", "a1", "a2", "a3", "memory");
+    const char own_ok[]  = " OWNBUF_OK";
+    const char own_bad[] = " OWNBUF_REJECTED";
+    m = (rc >= 0) ? own_ok : own_bad;
+    for (int i = 0; m[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    }
+
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { }
+}
+
 /* 1 KB, aligned to its own size: NAPOT regions must be power-of-two sized and
  * self-aligned, comfortably above RP2350's 32-byte granule.
  * mem_domain_add() rejects anything else rather than silently widening it. */
@@ -302,6 +376,7 @@ static void user_task_common(void (*entry)(void)) {
 
 static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
 static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
+static void deputy_body(void *arg)    { (void)arg; user_task_common(user_deputy); }
 
 static void run_user_task(const char *name, void (*body)(void *)) {
     g_user_entered = false;
@@ -324,6 +399,21 @@ static void cmd_usertest(void) {
            c == 8 ? "U-mode -- privilege level really dropped"
                   : "NOT U-mode -- the transition did not happen");
     printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
+}
+
+static void cmd_deputytest(void) {
+    g_deputy_target = 0xFEEDFACE;
+    printk("[Deputy] Kernel target at %p holds 0x%lx before.\n",
+           (const void *)&g_deputy_target, (unsigned long)g_deputy_target);
+    run_user_task("deputy", deputy_body);
+    if (!g_user_entered) {
+        printk("\n[Deputy] INCONCLUSIVE -- the task never entered U-mode.\n");
+        return;
+    }
+    printk("\n[Deputy] Kernel target holds 0x%lx after -- %s\n",
+           (unsigned long)g_deputy_target,
+           g_deputy_target == 0xFEEDFACE ? "UNTOUCHED"
+                                         : "OVERWRITTEN VIA THE KERNEL");
 }
 
 static void cmd_usertest_isolation(void) {
@@ -469,6 +559,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "isolationtest") == 0) {
         cmd_usertest_isolation();
+        return;
+    } else if (strcmp(cmd_line, "deputytest") == 0) {
+        cmd_deputytest();
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();
