@@ -15,7 +15,7 @@ int elf_load_and_run(const char *path) {
 
     static uint8_t file_buf[4096];
     int bytes = vfs_read(path, file_buf, sizeof(file_buf) - 1);
-    if (bytes < 16) {
+    if (bytes < 5) { /* need at least magic + class byte */
         printk("[ELF Error] Failed to read ELF file '%s' (bytes=%d)\n", path, bytes);
         return -1;
     }
@@ -25,61 +25,128 @@ int elf_load_and_run(const char *path) {
         return -1;
     }
 
-    uint8_t elf_class = file_buf[4]; // 1: 32-bit, 2: 64-bit
+    /* --- Header validation (closes B12) ---
+     *
+     * Everything below this point used to be taken on trust: e_phoff indexed
+     * the buffer with no bound, e_phnum controlled a loop over it, p_offset
+     * became a read pointer, and `bytes - code_offset` underflowed to a huge
+     * size when the offset exceeded the file. A corrupt or hostile ELF -- and
+     * `exec` runs whatever is on the SD card -- could therefore read far
+     * outside the 4 KB buffer.
+     *
+     * The file is read into a fixed buffer, so every offset is checked
+     * against how much was actually read, and every addition is checked for
+     * overflow before it is used rather than after. */
+    const uint32_t avail = (uint32_t)bytes;
+
+    uint8_t elf_class = file_buf[4]; /* 1: 32-bit, 2: 64-bit */
     uintptr_t entry_point = 0;
     uint32_t code_offset = 0;
     uint32_t code_size = 0;
 
-    if (elf_class == 1) { // ELF32
-        elf32_ehdr_t *ehdr = (elf32_ehdr_t *)file_buf;
-        if (ehdr->e_machine != EM_RISCV) {
-            printk("[ELF Error] Unsupported machine architecture 0x%x\n", ehdr->e_machine);
-            return -1;
-        }
-        entry_point = ehdr->e_entry;
+    uint32_t ehdr_size, phdr_size, phoff, phnum, phentsize;
+    uint16_t machine;
 
-        if (ehdr->e_phnum > 0) {
-            elf32_phdr_t *phdr = (elf32_phdr_t *)(file_buf + ehdr->e_phoff);
-            for (int i = 0; i < ehdr->e_phnum; i++) {
-                if (phdr[i].p_type == PT_LOAD) {
-                    code_offset = phdr[i].p_offset;
-                    code_size = phdr[i].p_filesz;
-                    break;
-                }
-            }
-        }
-    } else if (elf_class == 2) { // ELF64
-        elf64_ehdr_t *ehdr = (elf64_ehdr_t *)file_buf;
-        if (ehdr->e_machine != EM_RISCV) {
-            printk("[ELF Error] Unsupported machine architecture 0x%x\n", ehdr->e_machine);
-            return -1;
-        }
-        entry_point = (uintptr_t)ehdr->e_entry;
-
-        if (ehdr->e_phnum > 0) {
-            elf64_phdr_t *phdr = (elf64_phdr_t *)(file_buf + ehdr->e_phoff);
-            for (int i = 0; i < ehdr->e_phnum; i++) {
-                if (phdr[i].p_type == PT_LOAD) {
-                    code_offset = (uint32_t)phdr[i].p_offset;
-                    code_size = (uint32_t)phdr[i].p_filesz;
-                    break;
-                }
-            }
-        }
+    if (elf_class == 1) {
+        ehdr_size = sizeof(elf32_ehdr_t);
+        phdr_size = sizeof(elf32_phdr_t);
+    } else if (elf_class == 2) {
+        ehdr_size = sizeof(elf64_ehdr_t);
+        phdr_size = sizeof(elf64_phdr_t);
     } else {
         printk("[ELF Error] Invalid ELF class %d\n", elf_class);
         return -1;
     }
 
+    if (avail < ehdr_size) {
+        printk("[ELF Error] '%s' truncated: %u bytes, header needs %u\n",
+               path, avail, ehdr_size);
+        return -1;
+    }
+
+    if (elf_class == 1) {
+        elf32_ehdr_t *e = (elf32_ehdr_t *)file_buf;
+        machine = e->e_machine; entry_point = e->e_entry;
+        phoff = e->e_phoff; phnum = e->e_phnum; phentsize = e->e_phentsize;
+    } else {
+        elf64_ehdr_t *e = (elf64_ehdr_t *)file_buf;
+        machine = e->e_machine; entry_point = (uintptr_t)e->e_entry;
+        /* e_phoff is 64-bit; a value past the buffer is rejected below, and
+         * narrowing first would let a huge offset alias a small one. */
+        if (e->e_phoff > avail) { printk("[ELF Error] '%s': program headers past end of file\n", path); return -1; }
+        phoff = (uint32_t)e->e_phoff; phnum = e->e_phnum; phentsize = e->e_phentsize;
+    }
+
+    if (machine != EM_RISCV) {
+        printk("[ELF Error] Unsupported machine architecture 0x%x\n", machine);
+        return -1;
+    }
+    if (phentsize != phdr_size) {
+        printk("[ELF Error] '%s': program header size %u, expected %u\n",
+               path, phentsize, phdr_size);
+        return -1;
+    }
+
+    /* The whole program header table must lie inside what was read. Checked
+     * as a subtraction rather than phoff + phnum*size, which can wrap. */
+    if (phnum > 0) {
+        if (phoff > avail || (avail - phoff) / phdr_size < phnum) {
+            printk("[ELF Error] '%s': program header table (%u entries at 0x%x) "
+                   "does not fit in %u bytes\n", path, phnum, phoff, avail);
+            return -1;
+        }
+    }
+
+    for (uint32_t i = 0; i < phnum; i++) {
+        uint32_t p_type, p_off, p_filesz;
+        if (elf_class == 1) {
+            elf32_phdr_t *ph = (elf32_phdr_t *)(file_buf + phoff) + i;
+            p_type = ph->p_type; p_off = ph->p_offset; p_filesz = ph->p_filesz;
+        } else {
+            elf64_phdr_t *ph = (elf64_phdr_t *)(file_buf + phoff) + i;
+            p_type = ph->p_type;
+            if (ph->p_offset > avail || ph->p_filesz > avail) continue; /* cannot be in range */
+            p_off = (uint32_t)ph->p_offset; p_filesz = (uint32_t)ph->p_filesz;
+        }
+        if (p_type != PT_LOAD) continue;
+
+        if (p_off > avail || (avail - p_off) < p_filesz) {
+            printk("[ELF Error] '%s': segment %u (0x%x + %u) past end of file (%u)\n",
+                   path, i, p_off, p_filesz, avail);
+            return -1;
+        }
+        code_offset = p_off;
+        code_size = p_filesz;
+        break;
+    }
+
     if (code_size == 0) {
-        code_offset = (elf_class == 1) ? sizeof(elf32_ehdr_t) : sizeof(elf64_ehdr_t);
-        code_size = bytes - code_offset;
+        /* No PT_LOAD found: fall back to "everything after the header", which
+         * is what a flat blob produced by this project's own `cc` looks like.
+         * The subtraction is guarded -- unguarded, an offset past the end
+         * underflowed to a ~4 GB size. */
+        code_offset = ehdr_size;
+        if (code_offset > avail) {
+            printk("[ELF Error] '%s': no loadable segment and no body\n", path);
+            return -1;
+        }
+        code_size = avail - code_offset;
+    }
+
+    if (code_size == 0) {
+        printk("[ELF Error] '%s': loadable segment is empty\n", path);
+        return -1;
+    }
+    if (code_size > PAGE_SIZE) {
+        printk("[ELF Error] '%s': segment of %u bytes exceeds the %d-byte "
+               "execution page\n", path, code_size, PAGE_SIZE);
+        return -1;
     }
 
     /* Copy code segment to executable page using volatile writes */
     volatile uint8_t *dst = (volatile uint8_t *)exec_page;
     const uint8_t *src = (const uint8_t *)(file_buf + code_offset);
-    uint32_t copy_len = code_size < 4096 ? code_size : 4096;
+    uint32_t copy_len = code_size; /* already bounded to PAGE_SIZE above */
 
     for (uint32_t i = 0; i < copy_len; i++) {
         dst[i] = src[i];

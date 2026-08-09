@@ -204,6 +204,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
         results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
+        # B12 (closed in B6): the ELF loader must reject malformed headers
+        # rather than reading outside the buffer it loaded the file into.
+        #
+        # tools/sd_root/badelf.bin is a syntactically valid ELF32 RISC-V header
+        # whose e_phoff points far past the end of the file and whose e_phnum
+        # claims 100 program headers. That is the exact defect B12 recorded:
+        # e_phoff indexed the read buffer unchecked and e_phnum drove a loop
+        # over it. `exec` runs whatever is on the SD card, so this is reachable.
+        #
+        # The assertion is both halves: a clean diagnostic AND the shell still
+        # alive afterwards. send_and_expect()'s FAULT_MARKERS check makes the
+        # second half real -- under UBSan an out-of-bounds read halts the guest.
+        ok, log = session.send_and_expect(
+            "exec /sd0/badelf.bin\nhelp",
+            r"(does not fit|past end of file)(.|\n)*Available LugalOS Shell Commands",
+            timeout=6.0)
+        results.append(("ELF Loader Rejects Malformed Program Headers (B12)",
+                        ok, log if not ok else ""))
+
         # B6: the timer preempts a task that never yields.
         #
         # This cannot pass under cooperative scheduling, which is the point:

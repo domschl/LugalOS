@@ -1733,8 +1733,31 @@ needs.)
 
 **Preemption now works on all three targets**, verified on real RP2350 silicon.
 
-**Still to do in B6**: separately-linked ELF user programs — which is what makes `.utext`'s
-hand-maintained self-containment structural, and closes **B12**.
+##### B6 — ELF loader hardened, closing B12 (2026-08-09)
+
+`exec` runs whatever is on the SD card, and the loader took its headers entirely on trust: `e_phoff`
+indexed the read buffer with no bound, `e_phnum` drove a loop over it, `p_offset` became a read
+pointer, and `bytes - code_offset` underflowed to a ~4 GB size when the offset exceeded the file.
+Every offset is now checked against how much was actually read, and every addition is checked for
+overflow *before* use — `(avail - phoff) / phdr_size < phnum` rather than `phoff + phnum * size`,
+which can wrap.
+
+**Tested with a fixture that reproduces the exact defect**, not just a non-ELF file:
+`tools/sd_root/badelf.bin` is a syntactically valid ELF32 RISC-V header whose `e_phoff` points far
+past the end of the file and whose `e_phnum` claims 100 program headers. The test asserts both a
+clean diagnostic *and* that the shell is still alive afterwards — the second half matters, because
+`send_and_expect()`'s fault-marker check turns "the guest survived" into a real assertion under
+UBSan.
+
+Falsification was unusually emphatic: reintroducing the missing bound did not fail one test, it hung
+the suite, because the out-of-bounds read halts the guest and every later test then times out.
+
+**B12 is closed.** Tests 123→125.
+
+**Still to do in B6**: separately-linked ELF user programs — loading a binary into its own pages and
+running it in U-mode under a memory domain, which is what makes `.utext`'s hand-maintained
+self-containment structural. The loader hardening above is the prerequisite: it is the code that
+would parse an untrusted user binary.
 
 ---
 
@@ -1944,7 +1967,7 @@ A2's fid table and A4's client/server role assumption both stop being safe at B2
 | Finding | Description | Closed by |
 |---|---|---|
 | **B11** | Unbounded 9P serialize/deserialize | A2 (**gates A3**) |
-| **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | **B6** — ELF-loaded servers are MMU-only (see D6), so this closes with them |
+| **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | **Closed (2026-08-09) in B6.** Every offset bounded against the bytes actually read; overflow checked before use. Tested with a crafted malformed ELF. |
 | **A2** | Namespace fall-through across volumes | A5 |
 | **A3** | No file handles in the VFS | A1 |
 | **V4** | "Scales to 64-bit with MMU protection" — no MMU | **Closed.** B3 (PMP, NOMMU first), B5 (Sv39) |
