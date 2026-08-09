@@ -1475,8 +1475,43 @@ consistent with [§5.0](#50--the-assumption-this-track-no-longer-makes).
 
 *Prerequisite that is easy to miss*: `entry.S` programs `pmpaddr0`/`pmpcfg0` only under
 `CONFIG_MODE_S`, and RV32/RP2350 build with `CONFIG_MODE_M` — so **PMP on RP2350 starts from zero**,
-not from the wide-open configuration the pre-revision text implied. Hazard3's PMP region count must
-be measured from silicon before the region budget can be planned.
+not from the wide-open configuration the pre-revision text implied.
+
+#### D2 hardware measurements (2026-08-09) — one resolved, one open
+
+Taken from a physical RP2350 via the new `pmpinfo` probe and `tests/hw/`.
+
+| | QEMU RV32 | RP2350 (Hazard3) |
+|---|---|---|
+| Configurable (writable) entries | 16 | **11 — contested, see below** |
+| Hardwired read-only entries | 0 | 0 measured |
+| Granularity | 4 bytes (G=0) | **4 bytes (G=0)** — settled |
+| Locked at boot | no | **no** — settled |
+| Usable heap above `_kernel_end` | 4096 pages (capped) | **18 pages / 72 KB** — settled |
+
+**Settled and load-bearing for B3**: granularity is 4 bytes, so PMP regions can be aligned as tightly
+as B3 needs; nothing is locked at boot, so every entry is reprogrammable. And RP2350 has only **18
+usable heap pages**, versus QEMU's capped 4096 — at `TASK_STACK_PAGES = 2` that is 9 task stacks
+before the heap is exhausted, and B1's plus B2's static 9P buffers account for roughly 20 KB of the
+BSS that consumed the rest. **B3/B4 must be sized against 18 pages, not QEMU's headroom.** This is
+Rule 0's "measure the constrained target" paying off directly: QEMU hides the constraint completely.
+
+**Open — do not size B3's region budget yet.** RP2350's own SDK register definitions
+(`src/rp2350/hardware_regs/include/hardware/regs/rvcsr.h`) document `pmpaddr8/9/10` as `ACCESS "RO"`,
+hardwired to the boot ROM, system-peripheral and SIO windows, with `pmpaddr11-15` hardwired to zero —
+implying **8** configurable regions. The silicon, probed by writing all-ones and zero and comparing
+the readbacks, reports **11 writable, 0 hardwired**. Both cannot be true.
+
+Worth noting how the probe got here, because the first version was wrong in a way that would have
+gone unnoticed: it counted "reads back non-zero", which counts a hardwired-but-non-zero register as
+usable, and reported 11 for that reason. The corrected probe reports 11 *writable*, which is a much
+stronger claim — and now contradicts the vendor header rather than agreeing with it by accident.
+A `pmpdump` command was added to settle it from raw values (each register's reset value plus its
+readback after writing all-ones and zero, with `pmpcfg0..3` zeroed first so a stray lock bit cannot
+masquerade as hardwired). **Awaiting a flash to run.**
+
+Either way the lesson is banked: a count derived from one heuristic was already wrong once, and would
+have over-provisioned B3 by three regions with no symptom until enforcement silently failed.
 
 ### D5 — Track A regression policy under a scheduler — **Resolved (2026-08-09): hard gate**
 A4's client/server safety argument explicitly depends on there being no scheduler
