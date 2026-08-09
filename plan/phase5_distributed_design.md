@@ -1334,6 +1334,57 @@ follows the pattern it establishes rather than the other way round.
 
 *Risk: high. The single riskiest milestone in the track.*
 
+##### B3 progress notes (2026-08-09) — trap stack switch + M→U transition done
+
+Two of B3's four parts are in. Per-task PMP regions and copy-in/copy-out remain. All three targets
+build clean; QEMU **111/111**, hardware **5/5**, both verified on real RP2350 silicon flashed
+autonomously.
+
+**Trap-path stack switch.** One invariant carries the whole design: `CSR_SCRATCH` holds the current
+task's *kernel* stack pointer while U-mode runs, and zero while the kernel runs. A single `csrrw`
+then both switches stacks and reveals the origin of the trap — non-zero swapped in means U-mode,
+zero means kernel and the swap is simply undone. No separate "in user mode" flag exists to drift out
+of sync. Landed as a **behaviour-preserving refactor** first, with nothing entering U-mode, so the
+existing suite was a real regression check on the riskiest code in the track before the feature that
+needs it was stacked on top.
+
+*Fixed in passing*: the vector stored the already-decremented `sp` in the frame's sp slot, so every
+`[Trap Register Dump] … sp=` line ever printed reported the trap frame's own address rather than the
+interrupted sp. Now correct, which also lets the exit path restore `sp` with one unconditional load.
+
+**M→U transition.** `arch_enter_user()` in assembly (the sp is replaced and control leaves via
+`mret`/`sret`, so there is no epilogue and no return). Rule 0 holds: one implementation, differing
+only in CSR names and which bits name the previous privilege level.
+
+**The order of B3's steps is forced by the hardware, not chosen.** On the M-mode targets PMP defaults
+to *deny* for U-mode, so dropping to U-mode with no entry configured does not yield a restricted
+task — it yields one that cannot fetch its first instruction. RP2350's preconfigured entries 8/9/10
+cover boot ROM, peripherals and SIO, none of which hold this kernel's code. So a PMP grant had to
+come *with* the transition rather than after it. The current grant is one wide-open region:
+**explicitly not isolation**, just the minimum that makes the transition observable.
+
+**Testing note — output proves nothing here.** A U-mode task making syscalls prints byte-identical
+output to a kernel task making the same syscalls, so `UMODE_OK` appearing is worthless as evidence.
+The assertion is the trap **cause**: the hardware sets 8 only for an ecall taken from U-mode (9 =
+S-mode, 11 = M-mode), a value the kernel cannot fake. Confirmed 8 on both QEMU targets and on
+silicon.
+
+**Two findings worth recording:**
+
+- *The explicit MPP/SPP clear is defensive, not load-bearing on this path.* Removing it changes
+  nothing measurable: `entry.S` zeroes `mstatus` at boot and `mret`/`sret` both leave the field at U,
+  so it is already zero every time `arch_enter_user()` runs. It stays because entering U-mode from a
+  context where the field *is* set — inside a trap handler, where the hardware records the
+  interrupted level — would otherwise return to the privileged level silently. Forcing the bits on
+  does fail the test, so the property is tested; only that instruction's absence is masked.
+- *The PMP grant leaked, and the hardware suite caught it.* After `usertest` ran once, `pmpinfo`
+  reported one more active region and one fewer free — **permanently**. A wide-open U-mode grant was
+  being left installed for the rest of the system's life. Reasoning had not caught it; a number
+  changing between two hardware runs did. Now explicitly revoked with the task that needed it, and
+  verified on silicon as `active=3` both before and after. Per-task regions will make the scoping
+  structural rather than manual. The probe's field was also renamed `active_at_boot` → `active`,
+  since it measures the present, not boot state.
+
 #### B4 — Servers leave the main call stack
 
 - **Console/log server** first (owns the UART/USB-CDC console and the B0 log ring), then a

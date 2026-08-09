@@ -2,6 +2,7 @@
 #include "arch/csr.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
+#include "kernel/sched.h"
 #include "fs/vfs.h"
 #include "drivers/uart.h"
 
@@ -41,6 +42,19 @@ bool arch_probe_faulted(void) {
     return g_probe_faulted;
 }
 
+/* Cause code of the most recent environment call. The hardware picks it by
+ * the privilege level the ecall came FROM -- 8 = U-mode, 9 = S-mode,
+ * 11 = M-mode -- so it is direct evidence of the level, not an inference from
+ * something the kernel set itself.
+ *
+ * That distinction is the whole reason this exists: a U-mode task making
+ * syscalls produces output identical to a kernel task making the same
+ * syscalls, so "it printed" proves nothing about the mode transition. The
+ * cause code does. */
+static uintptr_t g_last_ecall_cause = 0;
+
+uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
+
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
     uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
@@ -51,6 +65,7 @@ void trap_handler(trap_frame_t *frame) {
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
         if (code == 8 || code == 9 || code == 11) {
+            g_last_ecall_cause = code;
             uintptr_t sys_nr = frame->a0;
             int target_pid = (int)frame->a1;
             ipc_msg_t *msg_in = (ipc_msg_t *)frame->a2;
@@ -82,8 +97,22 @@ void trap_handler(trap_frame_t *frame) {
                     ret = 0;
                     break;
                 case 12: /* SYS_PUTCHAR */
+                    /* Takes a value, not a pointer, so it is already safe to
+                     * call from U-mode. The pointer-taking syscalls below are
+                     * NOT -- they still dereference user-supplied addresses
+                     * directly, which is what B3's copy-in/copy-out step
+                     * exists to fix. Until then, U-mode code must stick to
+                     * value-only syscalls. */
                     uart_putc((char)frame->a1);
                     ret = 0;
+                    break;
+                case SYS_UEXIT:
+                    /* A U-mode task asking to end. task_exit() switches away
+                     * and never returns, so this call does not come back here
+                     * and the trap frame on this kernel stack is simply
+                     * abandoned along with the task. */
+                    task_exit();
+                    ret = 0; /* unreachable */
                     break;
                 case 13: /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
                     ret = vfs_read((const char *)frame->a1, (void *)frame->a2, (uint32_t)frame->a3);

@@ -134,6 +134,8 @@ set(SOURCES
 
     arch/riscv/common/entry.S
     arch/riscv/common/switch.S
+    arch/riscv/common/umode.S
+    arch/riscv/common/umode.c
 
     arch/riscv/common/trap.c
     arch/riscv/common/pmp_probe.c

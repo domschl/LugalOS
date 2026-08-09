@@ -460,6 +460,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "pmpinfo", r"PMP: (writable=\d+|unavailable)", timeout=5.0)
         results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
 
+        # 13c-ter. B3: the M->U (or S->U) transition and the trap path's
+        # scratch-CSR stack swap.
+        #
+        # The assertion that matters is the trap CAUSE, not the output. A
+        # kernel-mode task making the same ecalls prints byte-identical
+        # output, so "UMODE_OK appeared" would pass whether or not the
+        # privilege level ever dropped. The hardware sets cause 8 only for an
+        # ecall taken FROM U-mode (9 = S-mode, 11 = M-mode), so that number is
+        # evidence the kernel cannot fake.
+        #
+        # Reaching it also exercises the B3 stack swap end to end: each ecall
+        # enters the kernel on the task's kernel stack rather than the user
+        # stack it was running on.
+        ok, log = session.send_and_expect(
+            "usertest",
+            r"UMODE_OK(.|\n)*cause: 8 \(U-mode(.|\n)*ended cleanly",
+            timeout=10.0)
+        results.append(("U-mode Task Runs And Syscalls Back (B3)", ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

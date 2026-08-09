@@ -12,6 +12,9 @@
 #include "fs/p9_link.h"
 #include "arch/elf.h"
 #include "arch/pmp.h"
+#include "arch/umode.h"
+#include "arch/trap.h"
+#include "kernel/ipc.h"
 #include "chibicc.h"
 #include "lisp.h"
 #include "ed.h"
@@ -75,6 +78,7 @@ static void cmd_help(void) {
     printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
     printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
+    printk("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -212,6 +216,64 @@ static void taskdemo_body(void *arg) {
     }
 }
 
+/* B3: proves the M->U transition and the trap path's stack swap.
+ *
+ * The user function below runs with the privilege level actually lowered: it
+ * cannot touch CSRs, cannot execute privileged instructions, and traps into
+ * the kernel for every ecall. Each ecall exercises the scratch-CSR swap added
+ * in B3's first commit -- entering the kernel on the task's kernel stack
+ * rather than on the user stack it was using.
+ *
+ * SYS_PUTCHAR is used deliberately: it passes a *value*, not a pointer. The
+ * pointer-taking syscalls still dereference user addresses directly, and
+ * calling one from here would "work" only because nothing separates the
+ * address spaces yet. That is B3's copy-in/copy-out step, not this one. */
+static void user_probe(void) {
+    const char msg[] = "UMODE_OK";
+    for (int i = 0; msg[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)msg[i]) : "a0", "a1");
+    }
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { } /* unreachable: SYS_UEXIT ends the task */
+}
+
+/* Static rather than palloc'd: the task never returns to free it, and a
+ * per-task user stack belongs with per-task PMP regions in the next step
+ * rather than being invented here. 16-byte aligned per the RISC-V ABI. */
+static uint8_t g_user_stack[1024] __attribute__((aligned(16)));
+
+static void usertest_body(void *arg) {
+    (void)arg;
+    arch_user_grant_all();
+    printk("[UserTest] Entering U-mode...\n");
+    arch_enter_user(user_probe, (uintptr_t)g_user_stack + sizeof(g_user_stack));
+}
+
+static void cmd_usertest(void) {
+    int pid = task_create("usertest", usertest_body, NULL);
+    if (pid < 0) {
+        printk("[UserTest] Could not create the task\n");
+        return;
+    }
+    /* Cooperative: the task only advances when this one yields. */
+    for (int i = 0; i < 64; i++) sched_yield();
+
+    /* The discriminating check. Output alone proves nothing -- a kernel-mode
+     * task making the same ecalls prints exactly the same thing. The trap
+     * cause is set by the hardware from the privilege level the ecall came
+     * from, so cause 8 is proof the transition really happened. */
+    /* Hand the region back: the grant belongs to the task's lifetime, not to
+     * the system's. See arch_user_revoke_all(). */
+    arch_user_revoke_all();
+
+    uintptr_t c = arch_last_ecall_cause();
+    printk("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
+           c == 8 ? "U-mode -- privilege level really dropped"
+                  : "NOT U-mode -- the transition did not happen");
+    printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
+}
+
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -322,6 +384,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "pmpinfo") == 0) {
         pmp_report();
+        return;
+    } else if (strcmp(cmd_line, "usertest") == 0) {
+        cmd_usertest();
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();
