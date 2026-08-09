@@ -2,6 +2,7 @@
 #include "fs/9p.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
+#include "kernel/irq.h"
 #include <string.h>
 
 /* Small fixed set, not one global pointer: RP2350 wants both its USB-CDC
@@ -34,6 +35,68 @@ static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
  * Waiters live in a small fixed table rather than in p9_link_t, so backends
  * (drivers/virtio_console.c, usb_cdc.c, uart_net.c) need no changes and no
  * per-link 4 KB reply buffer is paid for on links that never act as client. */
+
+/* --- Serialising access to the 9P layer's shared buffers (B6) ---
+ *
+ * p9_link_pump() and p9_link_roundtrip() each use static buffers, which was
+ * safe while cooperative scheduling meant only one task could be inside them
+ * at a time. Preemption removes that: the p9srv server task and a client task
+ * (whose reply-wait loop also pumps) can now be inside the same buffer
+ * simultaneously. The symptom was intermittent -- the two multi-node tests
+ * failed in roughly one run in three -- which is exactly how this class of bug
+ * presents and exactly why it is worth fixing rather than re-running.
+ *
+ * A yielding lock, not interrupt masking: these regions block (a roundtrip
+ * waits for a peer's reply), and masking interrupts across a wait would stop
+ * the very timer that lets the peer's reply be processed. Taking the flag is
+ * itself done with interrupts masked so test-and-set is atomic.
+ *
+ * Separate locks for pump and client, deliberately: a client holding the
+ * client lock while waiting for a reply must not block the pump that delivers
+ * it. */
+/* Re-entrant for the owning task, and that is not a convenience -- it is
+ * required. A locally-mounted namespace can be walked into recursively
+ * (/self/self/...), in which case the 9P server handler re-enters the client
+ * path *on the same task*. A plain lock deadlocks there: the task waits
+ * forever for something it already holds. The recursion is still bounded, by
+ * chan_call()'s single-slot re-entrancy check, which rejects the inner call
+ * exactly as it did before preemption existed. */
+typedef struct {
+    volatile bool held;
+    volatile int  owner;
+    volatile int  depth;
+} p9_lock_t;
+
+static void p9_lock(p9_lock_t *l) {
+    int me = sched_current_pid();
+    for (;;) {
+        uintptr_t f = irq_save();
+        if (!l->held) {
+            l->held = true; l->owner = me; l->depth = 1;
+            irq_restore(f);
+            return;
+        }
+        if (l->owner == me) {
+            l->depth++;
+            irq_restore(f);
+            return;
+        }
+        irq_restore(f);
+        sched_yield();
+    }
+}
+
+static void p9_unlock(p9_lock_t *l) {
+    uintptr_t f = irq_save();
+    if (l->depth > 0 && --l->depth == 0) {
+        l->held = false;
+        l->owner = -1;
+    }
+    irq_restore(f);
+}
+
+static p9_lock_t g_pump_lock;
+static p9_lock_t g_client_lock;
 
 #define P9_LINK_MAX_WAITERS 2
 
@@ -104,14 +167,18 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
 static int p9_link_pump(p9_link_t *link) {
     if (!link || !link->poll || !link->recv_frame || !link->send_frame) return -1;
 
-    int ready = link->poll(link);
-    if (ready <= 0) return ready; // 0 = nothing pending, -1 = transport error
-
     static uint8_t rx_buf[P9_MAX_MSIZE];
-    int rx_len = link->recv_frame(link, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
 
-    return p9_route_frame(link, rx_buf, (uint32_t)rx_len);
+    p9_lock(&g_pump_lock);
+    int ready = link->poll(link);
+    if (ready <= 0) { p9_unlock(&g_pump_lock); return ready; }
+
+    int rx_len = link->recv_frame(link, rx_buf, sizeof(rx_buf));
+    if (rx_len < 7) { p9_unlock(&g_pump_lock); return -1; }
+
+    int r = p9_route_frame(link, rx_buf, (uint32_t)rx_len);
+    p9_unlock(&g_pump_lock);
+    return r;
 }
 
 int p9_link_service(p9_link_t *link) {
@@ -217,29 +284,41 @@ void p9_link_background_poll(void) {
  * no longer blocks the whole system. */
 static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *resp,
                               uint8_t *tx, uint8_t *rx, uint32_t cap) {
+    /* Held across the whole exchange: `tx` and `rx` are shared static buffers,
+     * so a second client task entering here mid-transaction would overwrite a
+     * request still in flight. */
+    p9_lock(&g_client_lock);
+
     int tx_len = p9_serialize(req, tx, cap);
-    if (tx_len < 7) return -1;
+    if (tx_len < 7) { p9_unlock(&g_client_lock); return -1; }
 
     p9_waiter_t *w = waiter_begin(link, req->tag);
     if (!w) {
         printk("[9P Link] No free reply-waiter slot for tag %d\n", (int)req->tag);
+        p9_unlock(&g_client_lock);
         return -1;
     }
 
     if (link->send_frame(link, tx, (uint32_t)tx_len) < 0) {
         waiter_end(w);
+        p9_unlock(&g_client_lock);
         return -1;
     }
 
     for (;;) {
         if (w->have_reply) {
             uint32_t n = w->reply_len;
-            if (n > cap) { waiter_end(w); return -1; }
+            if (n > cap) { waiter_end(w); p9_unlock(&g_client_lock); return -1; }
             memcpy(rx, w->reply, n);
             waiter_end(w);
-            return p9_deserialize(rx, n, resp);
+            int r = p9_deserialize(rx, n, resp);
+            p9_unlock(&g_client_lock);
+            return r;
         }
-        if (p9_link_pump(link) < 0) { waiter_end(w); return -1; }
+        /* Pumping from inside the wait is what lets a reply arrive at all when
+         * the server task has not been scheduled yet. It takes the *pump* lock,
+         * not this one, so the two never deadlock against each other. */
+        if (p9_link_pump(link) < 0) { waiter_end(w); p9_unlock(&g_client_lock); return -1; }
         sched_yield();
     }
 }

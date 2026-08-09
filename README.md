@@ -4,7 +4,7 @@
 
 The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
 were aspirational, on the principle that a name should describe what the code does. It is restored
-as of v0.6.0: message-passing IPC, a real scheduler, U-mode tasks, and **hardware-enforced per-task
+as of v0.6.0 (preemptive scheduling landed in v0.7.0): message-passing IPC, a real scheduler, U-mode tasks, and **hardware-enforced per-task
 memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
 silicon) and Sv39 page tables on the 64-bit MMU target — are implemented and continuously tested.
 [Implementation Status](#implementation-status) below still states exactly what is and is not real,
@@ -20,16 +20,16 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 121 tests on QEMU RV32
+**Working today**, verified by the automated test suite (`tests/runner.py`, 123 tests on QEMU RV32
 NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 6 tests against real RP2350
 silicon):
-- **Microkernel core**: cooperative scheduler with per-task kernel stacks; copy-always message
+- **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
   boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
   running as scheduled tasks rather than inline calls.
-- **Not yet**: timer preemption and separately-linked ELF user programs (both roadmap; scheduling is
-  cooperative, and user code currently shares the kernel image).
+- **Not yet**: separately-linked ELF user programs — user code currently shares the kernel image,
+  in a dedicated `.utext` page.
 - Boots to an interactive shell (`lsh`) on all three targets.
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
@@ -42,9 +42,6 @@ silicon):
   hardware.
 
 **Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-- **Timer preemption**: scheduling is cooperative. Tasks switch at explicit yield points (including
-  every blocking driver wait), never on a timer interrupt. A task that loops without yielding still
-  stalls the system.
 - **Separately-linked user programs**: U-mode tasks run code compiled into the kernel image, in a
   dedicated `.utext` page. There is no ELF loader for user binaries, so a user program cannot yet be
   a file on disk. The ELF loader that exists (`arch/riscv/common/elf.c`, driven by `exec`) loads
@@ -52,8 +49,10 @@ silicon):
 - **The old register-IPC entry points**: `sys_ipc_call`/`sys_ipc_reply`/etc. remain fixed stubs.
   They are superseded rather than pending — services are reached by message passing over
   copy-always channels (`kernel/chan.h`), which is what the microkernel actually uses.
-- **`printk()` under contention**: output is not atomic and takes no locks, which is correct only
-  because scheduling is cooperative. This has to be revisited with preemption.
+- **Atomic console output**: `printk()`/`cprintf()` take no locks, so with preemption now live two
+  tasks writing at once can interleave their output character by character. Ugly rather than
+  unsafe — no state is corrupted — but it is a real gap, and the fix belongs with the console
+  server owning its own stream rather than with a lock bolted onto the formatter.
 
 Everything else described below — including the scheduler, IPC, U-mode isolation, and the
 distributed 9P namespace — is implemented and continuously tested. This section exists to stay an
@@ -77,8 +76,11 @@ honest map rather than a wish list, so it is kept accurate in both directions.
     over 9P) and `/srv/p9` (this node's own 9P/filesystem server, which is what `(mount-local ...)`
     attaches).
 * **Microkernel Core** (see [Implementation Status](#implementation-status) for what is not yet done):
-  * **Cooperative scheduler** with per-task kernel stacks drawn from a real page allocator
-    (`kernel/palloc.c`), which replaced a bump pointer that could neither free nor fail.
+  * **Preemptive scheduler** with per-task kernel stacks drawn from a real page allocator
+    (`kernel/palloc.c`). A 100 Hz timer interrupt switches tasks at arbitrary instructions, so a
+    task that never yields cannot monopolise the machine; tasks may also yield explicitly. The
+    per-target timers (SIO `mtime`, CLINT, and Sstc `stimecmp`) sit behind one interface, and the
+    RP2350 tick rate is *measured* at boot rather than assumed.
   * **Copy-always message channels** (`kernel/chan.h`) as the only IPC primitive. Both copies are
     performed even on NOMMU builds where they are provably redundant — the discipline is what lets
     one set of server sources be correct under both memory models, and it is why a local service and
@@ -103,7 +105,8 @@ honest map rather than a wish list, so it is kept accurate in both directions.
   | `usertest` | A task really dropping to U-mode. Asserted on the *hardware-set trap cause* (8 = ecall from U-mode), which the kernel cannot fake. |
   | `isolationtest` | A U-mode task storing into kernel memory: it faults, the task is terminated, and a canary in kernel `.data` is verifiably untouched. |
   | `deputytest` | A U-mode task asking the *kernel* to write kernel memory on its behalf: refused — while a pointer the task does own still works. |
-  | `taskdemo` | Two cooperative tasks interleaving, which is what distinguishes real switching from a no-op yield. |
+  | `taskdemo` | Two tasks interleaving at explicit yield points, which is what distinguishes real switching from a no-op yield. |
+  | `preempttest` | A task that **never yields** still gets switched away from. This cannot pass without a timer interrupt, which is exactly why it exists separately from `taskdemo`. |
   | `klog detach console` | Kernel diagnostics stop reaching the terminal while the shell keeps working. |
 
 * **Storage Engine & VirtIO Block Device**:

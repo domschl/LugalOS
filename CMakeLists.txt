@@ -127,6 +127,7 @@ set(SOURCES
     kernel/chan.c
     kernel/palloc.c
     kernel/uaccess.c
+    kernel/ticker.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c

@@ -3,6 +3,8 @@
 #include "kernel/console.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
+#include "kernel/ticker.h"
+#include "kernel/irq.h"
 #include "kernel/sched.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
@@ -140,6 +142,15 @@ void kernel_main(void) {
     console_bind_device("uart");
 
     sched_init();
+    /* Preemption (B6). Started after sched_init() so there is a task table to
+     * switch within, and after the server task below would be pointless --
+     * the tick is what lets a busy node keep answering. 100 Hz: frequent
+     * enough that a spinning task cannot monopolise the console, rare enough
+     * that the switch cost is irrelevant. */
+    if (ticker_init(100)) {
+        irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
+    }
+
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
     p9_server_task_start();

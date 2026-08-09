@@ -72,6 +72,10 @@ void sched_yield(void);
  * Never returns. Called automatically when a task's entry function returns. */
 void task_exit(void);
 
+/* Called only by arch/riscv/common/switch.S's trampoline, on a task's first
+ * run. Enables interrupts, runs the entry point, and exits the task. */
+void task_start(void (*entry)(void *), void *arg);
+
 /* Attaches a memory domain (B3). Takes effect immediately if `pid` is the
  * running task, otherwise at its next scheduling. */
 int task_set_domain(int pid, mem_domain_t *domain);

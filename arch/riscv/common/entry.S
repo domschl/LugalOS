@@ -34,6 +34,22 @@ _start:
     li t0, 0x1f
     csrw pmpcfg0, t0
 
+    /* Let S-mode read the time counter. `rdtime` is not a plain instruction:
+     * it traps as illegal unless M-mode grants it via mcounteren.TM. The
+     * timer code reads the current time before programming a deadline, so
+     * without this the whole path looks like "Sstc unavailable" when in fact
+     * it was the clock read that faulted. Bits 0..2 are CY, TM, IR. */
+    li t0, 0x7
+    csrw mcounteren, t0
+
+    /* Unlock Sstc so S-mode can program its own timer via stimecmp.
+     * Without menvcfg.STCE the CSR access traps, and this build has no SBI
+     * firmware underneath to ask instead -- entry.S performs the M->S
+     * transition itself. menvcfg is a 64-bit CSR on RV64; STCE is bit 63. */
+    li t0, 1
+    slli t0, t0, 63
+    csrs 0x30a, t0          /* menvcfg */
+
     /* Delegate all exceptions and interrupts to S-mode */
     li t0, 0xffff
     csrw mideleg, t0

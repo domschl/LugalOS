@@ -4,6 +4,7 @@
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/uaccess.h"
+#include "kernel/ticker.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 #include "drivers/uart.h"
@@ -63,6 +64,29 @@ void trap_handler(trap_frame_t *frame) {
     uintptr_t code = cause & ~((uintptr_t)1 << (__riscv_xlen - 1));
 
     if (is_interrupt) {
+        /* Timer: 7 is machine-mode, 5 is supervisor-mode. This is the
+         * preemption tick. */
+        if (code == 7 || code == 5) {
+            ticker_count_tick();
+            /* Rearm FIRST. A RISC-V timer interrupt is level-triggered off
+             * mtime >= mtimecmp, so it stays pending until the comparator
+             * moves -- returning without rearming does not drop a tick, it
+             * re-enters the handler forever. */
+            ticker_next();
+
+            /* Switch away from whatever was running. This works through the
+             * ordinary cooperative ctx_switch() rather than needing a second,
+             * preemption-specific path: the full register state is already
+             * saved in the trap frame on this task's kernel stack, so
+             * ctx_switch() only has to preserve what a C call would. When
+             * something switches back, it returns here, unwinds into the trap
+             * vector, and the frame restores the interrupted task exactly.
+             *
+             * sched_yield() is a no-op when nothing else is runnable, so an
+             * idle system just takes the tick and returns. */
+            sched_yield();
+            return;
+        }
         printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */

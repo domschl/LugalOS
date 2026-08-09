@@ -204,6 +204,20 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
         results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
+        # B6: the timer preempts a task that never yields.
+        #
+        # This cannot pass under cooperative scheduling, which is the point:
+        # the spinner task never yields and the waiting loop never yields, so
+        # whichever runs first would run to completion and the flag would stay
+        # clear forever. Observing it set means a timer interrupt switched
+        # tasks at an arbitrary instruction.
+        #
+        # taskdemo's interleaving test does NOT already cover this -- its tasks
+        # yield explicitly, so it passes with or without a timer.
+        ok, log = session.send_and_expect(
+            "preempttest", r"PREEMPTED \(a task ran without anyone yielding\)", timeout=30.0)
+        results.append(("Timer Preempts A Task That Never Yields (B6)", ok, log if not ok else ""))
+
         # B4/D4: the 9P server -- which is also the filesystem server, since
         # its handlers are VFS calls -- is a scheduled task rather than
         # something pumped from the console's busy-wait. Before this a node
@@ -569,8 +583,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         # Both task stacks must come back to the page allocator on exit. The
         # counts are printed by the demo itself; equality is the assertion.
+        #
+        # B6 changed HOW: task_exit() no longer frees the stack it is still
+        # running on -- it hands it to a reaper that the next task runs. The
+        # assertion is unchanged because the observable outcome should be, and
+        # running the demo twice checks the reaper actually keeps up rather
+        # than leaking one stack per exit.
+        session.send_and_expect("taskdemo", r"Done\. Heap", timeout=8.0)
         ok, log = session.send_and_expect("taskdemo", r"free before=(\d+) after=\1", timeout=8.0)
-        results.append(("Task Stacks Are Reclaimed On Exit (B2)", ok, log if not ok else ""))
+        results.append(("Task Stacks Are Reclaimed On Exit, Via The Reaper (B2/B6)",
+                        ok, log if not ok else ""))
 
         # 13e. B1: this node's own namespace, mounted over a local copy-always
         # channel (kernel/chan.c) and reached through the *same* 9P client code

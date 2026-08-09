@@ -5,6 +5,7 @@
 #include "kernel/palloc.h"
 #include "kernel/mem_domain.h"
 #include "kernel/device.h"
+#include "kernel/ticker.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -81,6 +82,7 @@ static void cmd_help(void) {
     cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
+    cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
     cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
     cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
     cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
@@ -452,6 +454,49 @@ static void cmd_usertest_isolation(void) {
                                        : "BREACHED (user task wrote kernel memory)");
 }
 
+/* B6: preemption, tested by something that cannot work without it.
+ *
+ * The spinner never yields. The waiter never yields either. Under cooperative
+ * scheduling whichever starts first runs to completion and the other never
+ * advances -- so if the flag is ever observed set, a timer interrupt must have
+ * switched tasks at an arbitrary instruction. That is the whole claim, and it
+ * is not something a passing "tasks interleave" test could already cover:
+ * taskdemo's tasks yield explicitly.
+ *
+ * Both loops are bounded, so a failure reports rather than wedging the
+ * machine and taking every later test down with it. */
+static volatile uint32_t g_preempt_flag;
+
+static void preempt_spinner(void *arg) {
+    (void)arg;
+    for (volatile uint32_t i = 0; i < 300000u; i++) { /* no yield, on purpose */ }
+    g_preempt_flag = 1;
+}
+
+static void cmd_preempttest(void) {
+    if (!ticker_enabled()) {
+        cprintf("[Preempt] No preemption timer on this build -- cannot test.\n");
+        return;
+    }
+    g_preempt_flag = 0;
+    uint64_t t0 = ticker_ticks();
+
+    if (task_create("spinner", preempt_spinner, NULL) < 0) {
+        cprintf("[Preempt] Could not create the spinner task\n");
+        return;
+    }
+
+    /* Deliberately no sched_yield() in this loop. */
+    volatile uint64_t spins = 0;
+    while (!g_preempt_flag && spins < 400000000ULL) spins++;
+
+    uint64_t ticks = ticker_ticks() - t0;
+    cprintf("[Preempt] ticks=%lu flag=%u -- %s\n",
+            (unsigned long)ticks, (unsigned)g_preempt_flag,
+            g_preempt_flag ? "PREEMPTED (a task ran without anyone yielding)"
+                           : "NOT PREEMPTED");
+}
+
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -574,6 +619,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();
+        return;
+    } else if (strcmp(cmd_line, "preempttest") == 0) {
+        cmd_preempttest();
         return;
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();

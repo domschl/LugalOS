@@ -1635,6 +1635,107 @@ IPC, scheduler and MMU work be real — is met on both memory models.
 - Timer preemption (the point at which NOMMU genuinely needs B3's PMP to already be in place).
 - ELF-loaded servers, **MMU only** per §5.1's corollary. Closes **B12**.
 
+##### B6 progress notes (2026-08-09) — preemption prerequisites landed
+
+Preemption is not on yet. What landed first are the three correctness items every previous
+milestone deferred *to* B6, deliberately while they are still behaviour-preserving — disabling an
+interrupt that never fires changes nothing, so the existing 121-test suite is a regression check on
+where the critical sections go before anything can actually interrupt. Getting that order backwards
+would mean debugging the timer and the locking simultaneously. Same de-risking as B3's trap-path
+refactor and B5's identity map.
+
+**1. Critical sections (`kernel/irq.h`).** Every "no locking needed" note in this kernel —
+`palloc.h`, `sched.h`, `chan.h`, `klog.h` — rests on one premise: cooperative scheduling means
+nothing runs between two instructions unless the code yields. Preemption removes that premise
+wholesale. Interrupt masking is the right primitive rather than a mutex here: the regions are a few
+instructions, there is one hart, and a task that blocked while holding a scheduler lock could not be
+scheduled out of it. `irq_save()`/`irq_restore()` nest correctly — an inner pair restores what it
+found rather than unconditionally enabling.
+
+**2. The stack reaper.** `task_exit()` used to free its own stack and then switch away. That was safe
+only because nothing could allocate and reuse those pages in the window between the free and the
+`ctx_switch` — a window in which the task is *still executing on them*. Preemption makes that window
+real: a timer interrupt would push a trap frame onto memory already handed back to the allocator. The
+stack now goes to a reaper that the next task runs, off a different stack.
+
+**3. Allocator and task-table races.** `palloc_pages()` scans for a free run and then claims it;
+`task_create()` scans for a free slot and then fills it. Both are correct only if nothing else can
+claim in between. The scan-and-claim is now atomic, and `task_create()` reserves its slot before
+releasing the lock rather than after allocating a stack.
+
+**A process note, since it recurred**: the first build of this change failed to compile, and the
+suite reported 121/121 — on stale binaries. Build output had been filtered to errors and the failure
+scrolled past. Test results after a silent build failure mean nothing, and the only reliable guard is
+to check the build result explicitly rather than infer it from a green suite.
+
+##### B6 — preemption live on QEMU (2026-08-09)
+
+Timer preemption works on both QEMU targets and is **deliberately disabled on RP2350**, see below.
+QEMU **123/123** across five consecutive runs; hardware **6/6**.
+
+**The preemptive switch needed no new switch path.** A timer interrupt already saves the full
+register state in the trap frame on the task's kernel stack, so the handler can call the ordinary
+cooperative `ctx_switch()` — it only has to preserve what a C call would. When something switches
+back, it returns into the handler, unwinds into the trap vector, and the frame restores the
+interrupted task exactly. Anticipating a second preemption-specific path turned out to be wrong.
+
+**Three per-target timers, one interface** (`kernel/ticker.h`): SIO mtime on RP2350, CLINT mtimecmp
+on QEMU RV32, and Sstc's `stimecmp` on QEMU RV64 — which cannot use either of the others, since CLINT
+registers are M-mode and this build enters S-mode from `entry.S` with no SBI underneath. Two M-mode
+grants in `entry.S` were needed and neither is obvious: `menvcfg.STCE` to unlock `stimecmp`, and
+**`mcounteren.TM` so S-mode may execute `rdtime` at all** — without it the clock read faults and the
+whole path reports "Sstc unavailable", blaming the wrong thing.
+
+**A first run never passes `sched_yield()`'s `irq_restore()`.** A new task arrives at
+`task_trampoline` rather than returning from `ctx_switch()`, so it would run with interrupts masked
+forever and never be preemptible. The trampoline now enters C at `task_start()`, which enables
+interrupts before calling the entry point.
+
+**Preemption found two real races that cooperative scheduling had been hiding**, which is the whole
+argument for doing this before B6's remaining work rather than after:
+
+1. *The `p9share` demux*, immediately and deterministically. Two independent callers reach that state
+   machine — the console via `uart_getc()` and the 9P server task via the link's `poll()` — and were
+   serialised for free. Now masked.
+2. *The 9P layer's static buffers*, intermittently: the two multi-node tests failed in roughly one
+   run in three. `p9_link_pump()` and `p9_link_roundtrip()` each use shared statics, and the server
+   task and a client task (whose reply-wait also pumps) can now be inside them at once. Fixed with
+   **yielding** locks rather than interrupt masking — these regions block waiting for a peer, and
+   masking across that would stop the timer that lets the reply arrive.
+
+   The client lock had to be made **re-entrant per task**, and the first version that was not
+   deadlocked: `/self/self/…` re-enters the client path *on the same task*, which then waited forever
+   for a lock it already held. That took the suite from 123/123 to 93/123 — a useful reminder that a
+   lock added to fix one race can create a worse failure than the race.
+
+**RP2350 preemption — two causes, both found by hunting rather than guessing.** The first attempt
+wedged the board (console echo stopping mid-line, physical UART silent — a trap loop, not slowness),
+and it was shipped *disabled and saying so* rather than pretending. Both causes turned out to be
+real and independent:
+
+1. **`mtime` was never running.** It is driven by a tick generator in the TICKS block whose
+   `RISCV_CTRL.ENABLE` resets to 0, so the counter sat at zero and no deadline was ever reached.
+   Found by asking the cheapest question first — "is the clock even ticking?" — rather than
+   inspecting the comparator logic.
+2. **A 4 KB boot stack in SCRATCH_Y.** It grew down through SCRATCH into the page allocator's heap,
+   with 8 KB total against QEMU's 64 KB. Survivable while nothing unexpected pushed onto it;
+   preemption adds a trap frame plus handler frames at an arbitrary point in the deepest call chain
+   in the system (the Lisp evaluator), and overflowing there corrupts the heap rather than faulting.
+   The boot stack now lives in RAM with 16 KB.
+
+Two smaller things came out of the same hunt. `RUNNING` is a status bit synchronised to the source
+clock, so reading it immediately after writing `ENABLE` returns 0 and looks exactly like a hardware
+failure — it is polled now. And the tick rate is **measured** against the microsecond timer rather
+than assumed: it came out near **2.33 MHz**, not the 1 MHz a 12 MHz `clk_ref` would imply, so
+assuming would have made the tick more than twice as fast as asked for. (The absolute figure is only
+as good as `time.c`'s own timer, which this kernel has never configured; the ratio is what preemption
+needs.)
+
+**Preemption now works on all three targets**, verified on real RP2350 silicon.
+
+**Still to do in B6**: separately-linked ELF user programs — which is what makes `.utext`'s
+hand-maintained self-containment structural, and closes **B12**.
+
 ---
 
 ## 6. Test topologies
