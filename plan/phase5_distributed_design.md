@@ -1635,6 +1635,43 @@ IPC, scheduler and MMU work be real — is met on both memory models.
 - Timer preemption (the point at which NOMMU genuinely needs B3's PMP to already be in place).
 - ELF-loaded servers, **MMU only** per §5.1's corollary. Closes **B12**.
 
+##### B6 progress notes (2026-08-09) — preemption prerequisites landed
+
+Preemption is not on yet. What landed first are the three correctness items every previous
+milestone deferred *to* B6, deliberately while they are still behaviour-preserving — disabling an
+interrupt that never fires changes nothing, so the existing 121-test suite is a regression check on
+where the critical sections go before anything can actually interrupt. Getting that order backwards
+would mean debugging the timer and the locking simultaneously. Same de-risking as B3's trap-path
+refactor and B5's identity map.
+
+**1. Critical sections (`kernel/irq.h`).** Every "no locking needed" note in this kernel —
+`palloc.h`, `sched.h`, `chan.h`, `klog.h` — rests on one premise: cooperative scheduling means
+nothing runs between two instructions unless the code yields. Preemption removes that premise
+wholesale. Interrupt masking is the right primitive rather than a mutex here: the regions are a few
+instructions, there is one hart, and a task that blocked while holding a scheduler lock could not be
+scheduled out of it. `irq_save()`/`irq_restore()` nest correctly — an inner pair restores what it
+found rather than unconditionally enabling.
+
+**2. The stack reaper.** `task_exit()` used to free its own stack and then switch away. That was safe
+only because nothing could allocate and reuse those pages in the window between the free and the
+`ctx_switch` — a window in which the task is *still executing on them*. Preemption makes that window
+real: a timer interrupt would push a trap frame onto memory already handed back to the allocator. The
+stack now goes to a reaper that the next task runs, off a different stack.
+
+**3. Allocator and task-table races.** `palloc_pages()` scans for a free run and then claims it;
+`task_create()` scans for a free slot and then fills it. Both are correct only if nothing else can
+claim in between. The scan-and-claim is now atomic, and `task_create()` reserves its slot before
+releasing the lock rather than after allocating a stack.
+
+**A process note, since it recurred**: the first build of this change failed to compile, and the
+suite reported 121/121 — on stale binaries. Build output had been filtered to errors and the failure
+scrolled past. Test results after a silent build failure mean nothing, and the only reliable guard is
+to check the build result explicitly rather than infer it from a green suite.
+
+**Still to do in B6**: the timer interrupt and preemptive switch (which needs a full trap-frame
+switch, not `ctx_switch`'s callee-saved-only one), and separately-linked ELF user programs — which is
+what makes `.utext`'s hand-maintained self-containment structural, and closes **B12**.
+
 ---
 
 ## 6. Test topologies

@@ -569,8 +569,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         # Both task stacks must come back to the page allocator on exit. The
         # counts are printed by the demo itself; equality is the assertion.
+        #
+        # B6 changed HOW: task_exit() no longer frees the stack it is still
+        # running on -- it hands it to a reaper that the next task runs. The
+        # assertion is unchanged because the observable outcome should be, and
+        # running the demo twice checks the reaper actually keeps up rather
+        # than leaking one stack per exit.
+        session.send_and_expect("taskdemo", r"Done\. Heap", timeout=8.0)
         ok, log = session.send_and_expect("taskdemo", r"free before=(\d+) after=\1", timeout=8.0)
-        results.append(("Task Stacks Are Reclaimed On Exit (B2)", ok, log if not ok else ""))
+        results.append(("Task Stacks Are Reclaimed On Exit, Via The Reaper (B2/B6)",
+                        ok, log if not ok else ""))
 
         # 13e. B1: this node's own namespace, mounted over a local copy-always
         # channel (kernel/chan.c) and reached through the *same* 9P client code

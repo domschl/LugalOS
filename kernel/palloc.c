@@ -1,5 +1,6 @@
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include "kernel/irq.h"
 #include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,6 +53,11 @@ void palloc_init(uintptr_t start, uintptr_t end) {
 void *palloc_pages(uint32_t n) {
     if (n == 0 || n > g_num_pages) return NULL;
 
+    /* The scan-then-claim below is only correct if nothing else can claim a
+     * page between finding a free run and marking it. Cooperative scheduling
+     * made that true for free; preemption does not. */
+    uintptr_t irqf = irq_save();
+
     /* First fit. The page count here is small (128 on RP2350, 4096 on QEMU)
      * and allocation is rare -- task creation and page tables -- so a linear
      * scan is not worth improving on. */
@@ -63,10 +69,12 @@ void *palloc_pages(uint32_t n) {
         if (!run_ok) continue;
 
         for (uint32_t j = 0; j < n; j++) bit_set(i + j);
+        irq_restore(irqf);
         void *p = (void *)(g_base + (uintptr_t)i * PAGE_SIZE);
-        memset(p, 0, (size_t)n * PAGE_SIZE);
+        memset(p, 0, (size_t)n * PAGE_SIZE); /* outside the critical section */
         return p;
     }
+    irq_restore(irqf);
     return NULL;
 }
 
@@ -81,7 +89,9 @@ void palloc_free(void *p, uint32_t n) {
     uint32_t idx = (uint32_t)(off / PAGE_SIZE);
     if (idx >= g_num_pages || idx + n > g_num_pages) return;
 
+    uintptr_t irqf = irq_save();
     for (uint32_t j = 0; j < n; j++) bit_clear(idx + j);
+    irq_restore(irqf);
 }
 
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages) {

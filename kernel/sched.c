@@ -1,12 +1,15 @@
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
 #include "kernel/mem_domain.h"
+#include "kernel/irq.h"
 #include "kernel/printk.h"
 #include <string.h>
 
 /* See kernel/include/kernel/sched.h for the rationale. */
 
 extern void ctx_switch(uintptr_t *old_sp, uintptr_t new_sp);
+
+static void sched_reap(void); /* defined below; used by sched_yield() above it */
 extern void task_trampoline(void);
 
 static task_t  g_tasks[MAX_TASKS];
@@ -93,10 +96,19 @@ int task_set_domain(int pid, mem_domain_t *domain) {
 int task_create(const char *name, void (*entry)(void *), void *arg) {
     if (!entry) return -1;
 
+    /* Claiming a slot must be atomic with respect to anything else that scans
+     * the table, or two creators could pick the same one. */
+    uintptr_t flags = irq_save();
     int slot = -1;
     for (int i = 1; i < MAX_TASKS; i++) { /* slot 0 is always the boot task */
-        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) { slot = i; break; }
+        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) {
+            slot = i;
+            g_tasks[i].state = TASK_BLOCKED; /* reserve it before releasing */
+            break;
+        }
     }
+    irq_restore(flags);
+
     if (slot < 0) {
         printk("[Sched] Task table full; '%s' not created\n", name ? name : "?");
         return -1;
@@ -106,6 +118,7 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
     if (!stack) {
         printk("[Sched] Out of memory for '%s' stack (%d pages)\n",
                name ? name : "?", TASK_STACK_PAGES);
+        g_tasks[slot].state = TASK_UNUSED; /* release the reservation */
         return -1;
     }
 
@@ -150,9 +163,15 @@ static int next_runnable(int from) {
 void sched_yield(void) {
     if (!g_active) return;
 
+    /* Free any stack left by a task that exited before we were resumed. Safe
+     * here and nowhere earlier: we are demonstrably not running on it. */
+    sched_reap();
+
+    uintptr_t flags = irq_save();
+
     int prev = g_current;
     int next = next_runnable(prev);
-    if (next < 0) return; /* nothing else can run; keep going */
+    if (next < 0) { irq_restore(flags); return; } /* nothing else can run */
 
     if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
     g_tasks[next].state = TASK_RUNNING;
@@ -165,8 +184,15 @@ void sched_yield(void) {
      * task left behind. NULL (kernel tasks) clears all restriction. */
     (void)mem_domain_activate(g_tasks[next].domain);
 
-    /* Returns once something switches back to `prev` -- i.e. to us. */
+    /* Returns once something switches back to `prev` -- i.e. to us.
+     *
+     * Interrupts stay masked across the switch itself and are restored by
+     * whichever task resumes here, from the flags IT saved. The incoming task
+     * does the same for us. */
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
+
+    irq_restore(flags);
+    sched_reap();
 }
 
 void task_block(void) {
@@ -182,41 +208,65 @@ int task_unblock(int pid) {
     return 0;
 }
 
+/* A dead task's stack, waiting to be freed by whoever runs next.
+ *
+ * task_exit() used to free its own stack and then switch away, which was safe
+ * only because cooperative scheduling meant nothing could allocate and reuse
+ * those pages in the window between the free and the ctx_switch -- a window in
+ * which the task is still executing on them. Preemption makes that window
+ * real: a timer interrupt would push a trap frame onto a stack that has
+ * already been handed back to the allocator.
+ *
+ * One slot suffices because a task can only exit while running, and the next
+ * task reaps before anything else can exit. */
+static void    *g_reap_stack;
+static uint32_t g_reap_pages;
+
+static void sched_reap(void) {
+    uintptr_t flags = irq_save();
+    void *stack = g_reap_stack;
+    uint32_t pages = g_reap_pages;
+    g_reap_stack = NULL;
+    g_reap_pages = 0;
+    irq_restore(flags);
+
+    if (stack) palloc_free(stack, pages);
+}
+
 void task_exit(void) {
     if (!g_active) { for (;;) { } }
 
     task_t *t = &g_tasks[g_current];
     printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
-    /* Free the stack *before* the final switch, while still running on it.
-     * That is safe here only because this is cooperative: nothing can
-     * allocate and reuse these pages between the free and the ctx_switch
-     * away, since nothing else runs until this task yields. Under preemption
-     * (B6) this must move to a reaper that frees the stack after the switch. */
-    void *stack = t->stack_base;
-    uint32_t pages = t->stack_pages;
-
-    t->state = TASK_DEAD;
-    t->stack_base = NULL;
-    t->stack_pages = 0;
+    uintptr_t flags = irq_save();
 
     int next = next_runnable(g_current);
     if (next < 0) {
-        /* No other runnable task. Nothing can free this stack or resume us,
-         * so keep the stack and park forever rather than returning into a
-         * caller that no longer exists. */
+        /* No other runnable task. Nothing can reap this stack or resume us,
+         * so keep it and park forever rather than returning into a caller
+         * that no longer exists. */
+        irq_restore(flags);
         printk("[Sched] No runnable task remains after #%d exited; halting task\n", t->pid);
         for (;;) { }
     }
 
-    if (stack) palloc_free(stack, pages);
+    /* Hand the stack to the reaper rather than freeing it here: this code is
+     * still executing on it. */
+    g_reap_stack = t->stack_base;
+    g_reap_pages = t->stack_pages;
+
+    t->state = TASK_DEAD;
+    t->stack_base = NULL;
+    t->stack_pages = 0;
 
     g_tasks[next].state = TASK_RUNNING;
     int prev = g_current;
     g_current = next;
     (void)mem_domain_activate(g_tasks[next].domain);
 
-    /* Parks the dead task's sp into a slot nobody will read again. */
+    /* Parks the dead task's sp into a slot nobody will read again. The
+     * incoming task reaps as soon as it resumes, off this stack. */
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
 
     for (;;) { } /* unreachable: nothing ever switches back to a DEAD task */
