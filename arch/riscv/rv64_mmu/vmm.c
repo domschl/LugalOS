@@ -1,4 +1,5 @@
 #include "arch/vmm.h"
+#include "kernel/palloc.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
 
@@ -34,10 +35,11 @@ void vmm_init(void) {
            (unsigned long)kernel_page_table);
 }
 
+/* B2: delegates to the one page allocator instead of bumping an unbounded
+ * pointer. The old version could not free and could not fail -- it just kept
+ * handing out addresses past the end of RAM. */
 void *vmm_alloc_page(void) {
-    void *ptr = (void *)current_heap;
-    current_heap += PAGE_SIZE;
-    return ptr;
+    return palloc_pages(1);
 }
 
 int vmm_map_page(vmm_space_t *space, uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {

@@ -1,0 +1,85 @@
+#include "arch/rp2350_bootrom.h"
+
+#if defined(CONFIG_BOARD_RP2350)
+
+/* RP2350 bootrom access: rebooting into BOOTSEL (USB mass-storage) mode so a
+ * host can flash a new UF2 without anyone physically holding the BOOTSEL
+ * button.
+ *
+ * Constants and the lookup sequence are taken from the Pico SDK
+ * (src/rp2_common/boot_bootrom_headers/include/boot/bootrom_constants.h and
+ * src/rp2_common/pico_bootrom/include/pico/bootrom.h), not guessed. The
+ * RISC-V path differs from the Arm one in a way that matters: on RISC-V the
+ * table entry *is* executable code (a jump), so the lookup function pointer
+ * comes from BOOTROM_TABLE_LOOKUP_ENTRY_OFFSET and the lookup is called with
+ * RT_FLAG_FUNC_RISCV. Using the Arm offset here would call into the wrong
+ * thing entirely.
+ *
+ * The SDK also applies a +32K offset when the ROM is 64K, but that is guarded
+ * by RASPBERRYPI_AMETHYST_FPGA -- it is an FPGA-only case, and real RP2350
+ * silicon uses no adjustment.
+ */
+
+#define BOOTROM_ENTRY_OFFSET              0x7dfc
+#define BOOTROM_WELL_KNOWN_PTR_SIZE       2
+#define BOOTROM_TABLE_LOOKUP_ENTRY_OFFSET (BOOTROM_ENTRY_OFFSET - BOOTROM_WELL_KNOWN_PTR_SIZE)
+
+#define RT_FLAG_FUNC_RISCV      0x0001
+#define ROM_TABLE_CODE(c1, c2)  ((c1) | ((c2) << 8))
+
+/* ROM_FUNC_RESET_USB_BOOT ('U','B') is **RP2040 only** -- it sits inside
+ * `#if PICO_RP2040` in the SDK's bootrom_constants.h, and looking it up on
+ * RP2350 returns NULL. Verified the hard way on real silicon: the first
+ * version of this file used it and the board reported
+ * "bootrom reset_usb_boot not found" over the debug UART rather than
+ * rebooting. RP2350 exposes the unified reboot() API instead, which is what
+ * the SDK's own rom_reset_usb_boot() falls back to when the RP2040 symbol is
+ * absent (pico_bootrom/bootrom.c). */
+#define ROM_FUNC_REBOOT         ROM_TABLE_CODE('R', 'B')
+
+#define REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL   0x0002
+#define REBOOT2_FLAG_NO_RETURN_ON_SUCCESS  0x0100
+
+typedef void *(*rom_table_lookup_fn)(uint32_t code, uint32_t mask);
+typedef int (*rom_reboot_fn)(uint32_t flags, uint32_t delay_ms,
+                             uint32_t p0, uint32_t p1);
+
+/* Converting the ROM's data pointer to a function pointer is exactly what
+ * this interface requires, and ISO C has no conforming way to express it --
+ * the Pico SDK suppresses the same diagnostic at the same place. Scoped to
+ * this file so it cannot mask the warning anywhere it would be meaningful. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
+static void *rom_func_lookup(uint32_t code) {
+    rom_table_lookup_fn lookup =
+        (rom_table_lookup_fn)(uintptr_t)*(volatile uint16_t *)BOOTROM_TABLE_LOOKUP_ENTRY_OFFSET;
+    if (!lookup) return 0;
+    return lookup(code, RT_FLAG_FUNC_RISCV);
+}
+
+bool rp2350_reboot_to_bootsel(void) {
+    rom_reboot_fn reboot = (rom_reboot_fn)rom_func_lookup(ROM_FUNC_REBOOT);
+    if (!reboot) return false;
+
+    /* Arguments mirror the SDK's own rom_reset_usb_boot() fallback:
+     *   flags   = BOOTSEL reboot type, and do not return if it succeeds
+     *   delay   = 10 ms, giving the USB host a moment before the detach
+     *   p0      = BOOTSEL flags; 0 disables nothing, so both mass storage and
+     *             PICOBOOT are exposed, exactly as a physical BOOTSEL press
+     *   p1      = activity GPIO; unused, no LED is requested
+     * Does not return on success. */
+    reboot(REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+           10, 0, 0);
+    return false; /* reached only if the bootrom refused the request */
+}
+
+#pragma GCC diagnostic pop
+
+#else
+
+bool rp2350_reboot_to_bootsel(void) {
+    return false; /* no bootrom to call on QEMU targets */
+}
+
+#endif

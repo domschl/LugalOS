@@ -14,6 +14,20 @@ import time
 from pathlib import Path
 
 
+def expected_version() -> str:
+    """The version string kernel/include/kernel/version.h defines, as a regex.
+
+    Read from the header rather than hardcoded: the version is now bumped
+    regularly, and a literal here would break several unrelated tests on every
+    bump -- the same brittleness that hardcoding init.lisp's byte length caused
+    (see expected_init_lisp below)."""
+    src = Path(__file__).resolve().parent.parent / "kernel" / "include" / "kernel" / "version.h"
+    m = re.search(r'#define\s+LUGALOS_VERSION\s+"([^"]+)"', src.read_text())
+    if not m:
+        raise RuntimeError("could not read LUGALOS_VERSION from version.h")
+    return re.escape(m.group(1))
+
+
 def expected_init_lisp() -> bytes:
     """The bytes /sd0/system/init.lisp should contain, read from the source
     that tools/create_sd_image.py copies onto the image.
@@ -180,12 +194,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Kernel Boot & Shell Prompt", ok, log if not ok else ""))
 
         # 2. Plan 9 /proc/ Metrics
-        ok, log = session.send_and_expect("cat /proc/version", r"LugalOS v0\.5\.0", timeout=3.0)
+        ok, log = session.send_and_expect("cat /proc/version", rf"LugalOS v{expected_version()}", timeout=3.0)
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 
-        ok, log = session.send_and_expect("cat /proc/ps", r"vfs_server", timeout=3.0)
-        results.append(("/proc/ps Task Listing", ok, log if not ok else ""))
+        # B2: /proc/ps now renders the real task table. Before B2 it was a
+        # hardcoded string naming four tasks that did not exist, so this used
+        # to assert on "vfs_server" -- a name nothing was ever scheduled under.
+        ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
+        results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
@@ -343,12 +360,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(meminfo)\n"
             "(version)"
         )
-        # "kernel_idle" only appears in real /proc/ps content (A1) -- this also
-        # exercises that (ps)/(meminfo)/(version) now read real /proc byte
-        # streams via the VFS handle API instead of the old printk-side-effect
-        # path (which this pattern used to accidentally pass through, via a
-        # generic directory listing containing the word "synthetic").
-        ok, log = session.send_and_expect(cmd_lisp_vfs, r"kernel_idle", timeout=5.0)
+        # Asserts on real /proc content, so (ps)/(meminfo)/(version) are
+        # exercised as genuine byte streams read through the VFS handle API,
+        # not the old printk-side-effect path. The marker was "kernel_idle"
+        # until B2 replaced /proc/ps's hardcoded string with the real task
+        # table; "Pages Total" from /proc/meminfo is the equivalent today --
+        # it likewise only appears in real generated content (and is itself
+        # B2 output: the live page allocator's counters).
+        ok, log = session.send_and_expect(cmd_lisp_vfs, r"Pages Total", timeout=5.0)
         results.append(("Lisp Microkernel VFS Primitives (mkdir, write, cp, cat, rm, ps, meminfo)", ok, log if not ok else ""))
 
 
@@ -430,6 +449,37 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
         results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
 
+        # 13c-bis. B3 prep (D2): the PMP probe must complete without faulting.
+        # It touches all 64 pmpaddr CSRs, most of which may not exist on a
+        # given core, so the real assertion is the absence of a fault --
+        # send_and_expect()'s FAULT_MARKERS check. RV32 runs in M-mode and
+        # reports real numbers; RV64 runs in S-mode where PMP CSRs are
+        # inaccessible, so both outcomes are accepted here. The measurement
+        # that matters is on real Hazard3 silicon -- see tests/hw/.
+        ok, log = session.send_and_expect(
+            "pmpinfo", r"PMP: (writable=\d+|unavailable)", timeout=5.0)
+        results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
+
+        # 13d-bis. B2: the cooperative scheduler actually switches.
+        # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
+        # output appears: if sched_yield() were still the pre-B2 no-op, each
+        # task would run to completion first (A1 A2 A3 B1 B2 B3) and every
+        # marker would still be printed. An early version of kernel/sched.c
+        # had exactly that bug -- a "currently switching" flag that a freshly
+        # created task could never clear, since it enters at the trampoline
+        # rather than returning from ctx_switch() -- and this ordering check
+        # is what caught it.
+        ok, log = session.send_and_expect(
+            "taskdemo",
+            r"A1(.|\n)*B1(.|\n)*A2(.|\n)*B2(.|\n)*A3(.|\n)*B3",
+            timeout=8.0)
+        results.append(("Cooperative Tasks Interleave Via sched_yield (B2)", ok, log if not ok else ""))
+
+        # Both task stacks must come back to the page allocator on exit. The
+        # counts are printed by the demo itself; equality is the assertion.
+        ok, log = session.send_and_expect("taskdemo", r"free before=(\d+) after=\1", timeout=8.0)
+        results.append(("Task Stacks Are Reclaimed On Exit (B2)", ok, log if not ok else ""))
+
         # 13e. B1: this node's own namespace, mounted over a local copy-always
         # channel (kernel/chan.c) and reached through the *same* 9P client code
         # that talks to a peer over a wire. Nothing above the channel can tell
@@ -443,7 +493,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # Reading through the mount: the bytes crossed serialized 9P frames and
         # two chan_call() copies to reach the same file /proc/version names.
         ok, log = session.send_and_expect(
-            "cat /self/proc/version", r"LugalOS v0\.5\.0", timeout=5.0)
+            "cat /self/proc/version", rf"LugalOS v{expected_version()}", timeout=5.0)
         results.append(("9P Read Through Local Channel Mount (B1)", ok, log if not ok else ""))
 
         # The stronger claim: a *write* through the channel mount lands on the
@@ -1009,7 +1059,13 @@ def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Pa
         if not ok:
             return (name, False, f"Node A (RV32) failed to boot:\n{log}")
 
-        cmd = 'lisp\n(p9-remote-cat "/ram0/multinode_marker.txt")\nexit'
+        # B2/D5: spawn a task that pumps this link's background server while
+        # the client exchange below is in flight. Without it the yield inside
+        # the client's reply-wait has nobody to switch to and the hazard never
+        # occurs -- the test would pass whether or not frames are routed.
+        # With it, the pump task reads the client's own replies off the wire,
+        # and only fs/p9_link.c's type-parity + tag routing keeps this working.
+        cmd = 'lisp\n(spawn-pump 512)\n(p9-remote-cat "/ram0/multinode_marker.txt")\nexit'
         ok, log = session_a.send_and_expect(cmd, re.escape(marker), timeout=5.0)
         return (name, ok, log if not ok else "")
     except Exception as e:

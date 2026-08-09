@@ -49,6 +49,7 @@ bool uart_has_char(void) {
 
 #include "drivers/usb_cdc.h"
 #include "fs/p9_link.h"
+#include "kernel/sched.h"
 
 /* p9_link_background_poll() opportunistically services whatever background
  * 9P links are registered (drivers/virtio_console.c, A3; the A3b UART demux
@@ -61,6 +62,11 @@ char uart_getc(void) {
     while (!uart_has_char()) {
         usb_cdc_task();
         p9_link_background_poll();
+        /* B2: the console blocking on a keystroke is the single longest wait
+         * in the system, so it is the most important yield point in the tree
+         * -- without it every other task would be starved for as long as the
+         * user is thinking. No-op until sched_init() has run. */
+        sched_yield();
     }
     if (uart_demux_is_enabled()) return uart_demux_console_getc();
     return (char)hw_uart_getc();

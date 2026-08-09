@@ -12,6 +12,7 @@
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
+#include "kernel/sched.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -191,6 +192,7 @@ char uart_getc(void) {
         gp16_alive_tick();
         usb_cdc_task();
         p9_link_background_poll();
+        sched_yield(); /* B2: see drivers/uart_16550.c's equivalent */
     }
     if (uart_demux_is_enabled()) {
         if (uart_demux_console_has_char()) return uart_demux_console_getc();

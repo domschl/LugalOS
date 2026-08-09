@@ -61,6 +61,7 @@ set(CMAKE_EXE_LINKER_FLAGS "-T${LINKER_SCRIPT} -nostdlib -Wl,--gc-sections")
 
 # Include Directories
 include_directories(
+    ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/arch/riscv/include
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
@@ -103,6 +104,18 @@ add_custom_command(
     COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
 )
 
+# Build-id header, regenerated (write-if-changed) before every build so it
+# tracks commits without a re-configure. See cmake/gen_build_id.cmake.
+set(LUGALOS_BUILD_ID_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_build_id.h)
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${LUGALOS_BUILD_ID_HEADER}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake)
+add_custom_target(lugalos_build_id ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${LUGALOS_BUILD_ID_HEADER}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake
+    COMMENT "Refreshing build id")
+
 # Core Sources
 set(SOURCES
     kernel/main.c
@@ -111,6 +124,7 @@ set(SOURCES
     kernel/device.c
     kernel/board.c
     kernel/chan.c
+    kernel/palloc.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c
@@ -119,8 +133,10 @@ set(SOURCES
     kernel/ubsan.c
 
     arch/riscv/common/entry.S
+    arch/riscv/common/switch.S
 
     arch/riscv/common/trap.c
+    arch/riscv/common/pmp_probe.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
     drivers/flashdisk.c
@@ -147,7 +163,7 @@ set(SOURCES
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c)
+    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -162,6 +178,7 @@ endif()
 
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
+add_dependencies(lugalos.elf lugalos_build_id)
 target_link_libraries(lugalos.elf PRIVATE gcc)
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

@@ -26,6 +26,21 @@ void trap_init(void) {
 #endif
 }
 
+/* See arch/trap.h. Not a general exception-handling mechanism -- deliberately
+ * narrow, so it cannot accidentally mask a real fault. */
+static volatile bool g_probe_active;
+static volatile bool g_probe_faulted;
+
+void arch_probe_begin(void) {
+    g_probe_faulted = false;
+    g_probe_active = true;
+}
+
+bool arch_probe_faulted(void) {
+    g_probe_active = false;
+    return g_probe_faulted;
+}
+
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
     uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
@@ -85,6 +100,15 @@ void trap_handler(trap_frame_t *frame) {
             frame->a0 = (uintptr_t)ret;
             /* Advance EPC past 4-byte ecall instruction */
             frame->epc += 4;
+            return;
+        }
+
+        /* An illegal instruction during a deliberate hardware probe is an
+         * answer, not a failure: record it and step over the instruction.
+         * See arch/trap.h for why this is narrowed to cause 2 only. */
+        if (g_probe_active && code == 2) {
+            g_probe_faulted = true;
+            frame->epc += 4; /* CSR instructions have no compressed encoding */
             return;
         }
 

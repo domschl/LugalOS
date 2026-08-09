@@ -1,6 +1,7 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
+#include "kernel/palloc.h"
 #include "kernel/sched.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
@@ -54,6 +55,9 @@ const void * const __attribute__((section(".binary_info"))) g_p_bi_name = &g_bi_
 const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = &g_bi_binary_end;
 #endif
 
+extern char _kernel_end[];
+extern char _heap_end[];
+
 void kernel_main(void) {
     /* Boot bootstrap: the console UART and the kernel log sink must both
      * exist before anything can printk(), which the device registry itself
@@ -73,7 +77,7 @@ void kernel_main(void) {
     time_init();
 
     printk("\n==================================================\n");
-    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION);
+    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION_FULL);
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)
@@ -99,8 +103,12 @@ void kernel_main(void) {
     board_register_devices();
     dev_probe_all();
 
-    /* Kernel subsystems -- not devices, so they stay explicit. */
+    /* Kernel subsystems -- not devices, so they stay explicit. Note
+     * palloc_init() must precede vmm_init(): the MMU backend allocates its
+     * root page table through vmm_alloc_page(), which is now backed by the
+     * page allocator rather than an unbounded bump pointer. */
     trap_init();
+    palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
     vmm_init();
     ipc_init();
     vfs_server_init();

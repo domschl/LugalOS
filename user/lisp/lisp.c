@@ -13,6 +13,7 @@
 #include "fs/p9_link.h"
 #include "kernel/device.h"
 #include "kernel/klog.h"
+#include "kernel/sched.h"
 #include "user/chibicc/include/chibicc.h"
 #include "arch/elf.h"
 #include <string.h>
@@ -796,6 +797,36 @@ static lisp_val_t *prim_p9_unserve(lisp_val_t *args, lisp_val_t *env) {
  * traversed serialized, copied 9P frames through the same client code that
  * talks to a peer over a USB cable. If that works, an address-space boundary
  * (B3) changes nothing above the channel. */
+/* (spawn-pump n) -- B2/D5. Creates a task that services background 9P links
+ * and yields, n times, then exits.
+ *
+ * This exists to make the D5 hazard actually reachable in a test. A4's
+ * correctness argument was "nothing can run while a synchronous client
+ * exchange is in flight, because there is no scheduler". B2 makes that
+ * false, but only if something else is genuinely runnable -- with just the
+ * boot task alive, sched_yield() has nobody to switch to and the dangerous
+ * interleaving never occurs. With this task running, a client waiting for
+ * its reply yields, this task runs p9_link_background_poll() on the *same*
+ * link, and reads the reply off the wire. Routing it correctly (by 9P type
+ * parity and tag, see fs/p9_link.c) is what keeps the client from hanging. */
+static void pump_task_body(void *arg) {
+    long n = (long)(uintptr_t)arg;
+    for (long i = 0; i < n; i++) {
+        p9_link_background_poll();
+        sched_yield();
+    }
+}
+
+static lisp_val_t *prim_spawn_pump(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long n = 512;
+    if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_INT) {
+        n = args->u.pair.car->u.i;
+    }
+    int pid = task_create("pump", pump_task_body, (void *)(uintptr_t)n);
+    return (pid >= 0) ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_mount_local(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -924,6 +955,7 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
+    env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));
     env_set(&global_env, "mount-local", make_prim(prim_mount_local));
     env_set(&global_env, "unmount", make_prim(prim_unmount));
 

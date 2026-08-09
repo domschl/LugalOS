@@ -1,4 +1,5 @@
 #include "arch/vmm.h"
+#include "kernel/palloc.h"
 #include "kernel/printk.h"
 
 extern char _kernel_end[];
@@ -31,8 +32,9 @@ void vmm_switch_space(vmm_space_t *space) {
     /* No page table switching on NOMMU hardware */
 }
 
+/* B2: delegates to the one page allocator instead of bumping an unbounded
+ * pointer. The old version could not free and could not fail -- it just kept
+ * handing out addresses past the end of RAM. */
 void *vmm_alloc_page(void) {
-    void *ptr = (void *)current_heap;
-    current_heap += PAGE_SIZE;
-    return ptr;
+    return palloc_pages(1);
 }

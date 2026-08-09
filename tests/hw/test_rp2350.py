@@ -18,6 +18,7 @@ the p9share test (see README.md's "CP2101 -> RP2350 Wiring" section).
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import socket
 import subprocess
@@ -55,6 +56,116 @@ def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             data = client.cat("/proc/version")
             ok = b"LugalOS" in data
             return (name, ok, "" if ok else f"unexpected content: {data!r}")
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """Checks the board is running the firmware this tree would build.
+
+    Reported as a WARNING rather than a failure: a deliberately older board is
+    a legitimate thing to test against. But a silent mismatch is not -- an
+    earlier session lost a full flash-and-measure cycle to a stale UF2 whose
+    only symptom was one command being missing, which looked like a broken
+    feature rather than a stale board."""
+    name = "Firmware freshness: board build id matches the local build"
+    want = rp2350.local_build_id()
+    if want is None:
+        return (name, True, "SKIPPED: no build/rp2350/ build to compare against")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/buildid\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", errors="replace")
+
+        m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", out.replace("cat /proc/buildid", ""))
+        if not m:
+            return (name, True,
+                    "SKIPPED: board predates /proc/buildid -- it is definitely older than this "
+                    f"tree (expected build {want}); reflash build/rp2350/lugalos.uf2")
+        got = m.group(2)
+        if got != want:
+            return (name, True,
+                    f"WARNING: board is running build {got}, local tree builds {want} -- "
+                    "reflash build/rp2350/lugalos.uf2 if the tests below look wrong")
+        return (name, True, f"build {got}")
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """B3 prep (D2): read this silicon's actual PMP configuration.
+
+    D2 resolved to "PMP early, NOMMU leads" -- RV32/RP2350 gets U-mode plus
+    PMP enforcement in B3, ahead of Sv39 in B5. How many isolated servers a
+    NOMMU node can host is bounded by the implemented region count, and the
+    RISC-V privileged spec permits 0, 16 or 64 entries, so this is a property
+    of Hazard3 that has to be measured rather than assumed. QEMU's RV32 model
+    reports 16 entries at 4-byte granularity; there is no reason to expect
+    real Hazard3 silicon to match, which is the entire point of running it
+    here.
+
+    This is a *measurement*, so it asserts only the two things B3 genuinely
+    requires -- that PMP exists at all, and that nothing is already locked at
+    boot (a locked entry cannot be reprogrammed until reset). The numbers
+    themselves are printed for the plan to record, not compared against a
+    hardcoded expectation that would just encode today's guess.
+    """
+    name = "PMP: probe entry count and granularity on real Hazard3 silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"pmpinfo\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+        text = out.decode("utf-8", errors="replace")
+        m = re.search(r"PMP: writable=(\d+) active_at_boot=(\d+) min_region=(\d+) bytes locked=(\w+)", text)
+        if not m:
+            # Distinguish "the board is running older firmware" from "the probe
+            # is broken". The former is by far the more likely cause the first
+            # time this test is run, and it needs a completely different fix,
+            # so guessing wrong here wastes real debugging time.
+            if "Unbound symbol: pmpinfo" in text or "Unknown command" in text:
+                return (name, False,
+                        "board firmware predates the `pmpinfo` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run. (LugalOS does not implement "
+                        "the 1200-baud BOOTSEL touch, so this flash is manual: hold BOOTSEL while "
+                        "connecting, then copy the .uf2 to the mounted volume.)")
+            if "PMP: unavailable" in text:
+                return (name, False,
+                        "board reports PMP unavailable -- an M-mode build should have access; "
+                        f"got:\n{text[:300]}")
+            return (name, False, f"no PMP report in console output:\n{text[:300]}")
+
+        writable = int(m.group(1))
+        active = int(m.group(2))        # preconfigured at boot -- writable but not free
+        min_region = int(m.group(3))
+        locked = m.group(4) == "yes"
+        free = writable - active        # what B3 can actually take without deciding what loses access
+
+        detail = (f"writable={writable} active_at_boot={active} free={free} "
+                  f"min_region={min_region}B locked={locked}")
+
+        if writable == 0:
+            return (name, False, f"no writable PMP entries -- B3 has no enforcement mechanism ({detail})")
+        if free <= 1:
+            return (name, False,
+                    f"only {free} free PMP region(s) -- B3 needs at least one per isolated task "
+                    f"plus one for the kernel ({detail})")
+        if locked:
+            return (name, False, f"a PMP entry is already locked at boot; B3 cannot reprogram it ({detail})")
+
+        # Informational, not a failure: B3's design has to fit this budget.
+        print(f"    ...measured: {detail}; isolatable tasks for B3 = {free - 1} "
+              f"(+{active} reclaimable)")
+        return (name, True, detail)
     except Exception as e:
         return (name, False, str(e))
 
@@ -297,7 +408,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
 

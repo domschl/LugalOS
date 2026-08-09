@@ -4,8 +4,8 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6) and B1 (M7) are complete as of 2026-08-09**; B2 (M8, tasks + scheduler) is next
-> — note its hard gate, [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate). D2, D5 and D6 are resolved;
+> **B0 (M6), B1 (M7) and B2 (M8) are complete as of 2026-08-09** — the [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate)
+> gate is met. **B3 (M9, U-mode + PMP, NOMMU leads) is next** and is the riskiest milestone in the track. D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -991,6 +991,39 @@ No scheduler. Kills two of the three §5.2 blockers outright.
 *Risk: low. Blast radius is `printk()` and boot ordering, both well covered by the existing 85-test
 suite.*
 
+##### Known issue — `uart_putc()` blocks unbounded (found 2026-08-09, not fixed)
+
+`drivers/uart_16550.c`'s `uart_putc()` spins on the 16550's THRE bit with no
+bound and no yield:
+
+```c
+while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
+```
+
+If console output ever backs up, the guest wedges there permanently — no
+timeout, no yield, no recovery. It was found by a real symptom: adding ~27
+bytes to `/proc/version` deterministically tipped `tests/runner.py` into a
+state where `cat /proc/kmsg` (a ~4 KB dump of the whole log ring) went silent
+mid-write and every subsequent test failed with empty output. The read itself
+completes correctly; the stall is in emitting.
+
+**Not root-caused, and deliberately not papered over in code.** What is
+established: the read returns its full 4094 bytes; QEMU and the harness reader
+thread both stay alive; a wrapped-ring dump in isolation completes in 0.1 s.
+What is not established is why the same dump wedges only after ~25 preceding
+tests.
+
+Worked around by *not* growing `/proc/version` — the build id lives in its own
+`/proc/buildid` instead. That removes the trigger without pretending the
+underlying fragility is gone.
+
+**`sched_yield()` was deliberately NOT added to this spin**, unlike
+`uart_getc()`'s in B2. Yielding mid-`printk()` would let two tasks interleave
+output character by character, since `printk()` is not atomic and there are no
+locks yet. That trade only becomes acceptable once B4 gives the console a
+single owning server. Recorded here so B4 picks it up rather than rediscovering
+it.
+
 ##### B0 completion notes — part 1 of 3 (2026-08-09)
 
 **Log ring + sink registry implemented and merged.** The device/service registry and the
@@ -1215,6 +1248,67 @@ progress.
 
 *Risk: medium–high. New assembly, and it touches every blocking path in the tree.*
 
+##### B2 completion notes (2026-08-09) — **B2/M8 COMPLETE**
+
+All three targets build clean; `tests/runner.py` passes **107/107** (RV64 + RV32, four new tests,
+up from 103). Landed in two commits: allocator + tasks + switch, then yield points + tag
+multiplexing.
+
+- **`kernel/palloc.c`** — bitmap page allocator. What it replaced could neither free nor fail: each
+  arch's `vmm_alloc_page()` was a bump pointer with **no upper bound**, so on RP2350 enough
+  allocations would have walked through the scratch regions and the boot stack with no diagnostic.
+  The linker scripts now export `_heap_end`, making the bound a property of each board's memory map.
+  `/proc/meminfo` reports real counters.
+- **`arch/riscv/common/switch.S`** — one cooperative switch for both word widths via the existing
+  `REG_S`/`REG_L` macros (Rule 0 at the lowest level). **FP state is deliberately not saved, and the
+  reason was checked rather than assumed**: `entry.S` does `csrw mstatus, zero` and never sets
+  `mstatus.FS`, so the FPU is off and no task can hold live FP state. If FS is ever enabled this
+  must grow `fs0-fs11` saves (RV64 uses lp64d, where those are callee-saved).
+- **`kernel/sched.c`** — real tasks, palloc'd stacks, round-robin, block/unblock, and a
+  `task_exit()` that reclaims the stack. The boot context becomes task 0. `task_t` carries a
+  `domain` pointer, NULL everywhere today, that B3 fills with a PMP region set and B5 with an Sv39
+  page table — the NOMMU build does not get a simplified task.
+- **`/proc/ps` renders the real table.** It was a hardcoded string naming four tasks that never
+  existed; two tests had been asserting on those invented names.
+
+**Bug caught by a test rather than by review.** An earlier `sched.c` had a "currently switching"
+guard that silently broke cooperative scheduling: a freshly created task enters at
+`task_trampoline` and never returns from `ctx_switch()`, so it never reached the line clearing the
+flag — its own `sched_yield()` then saw the flag still set and returned immediately, running the
+task to completion instead of yielding. The guard was unnecessary (no window exists between the
+state updates and `ctx_switch()`) and is gone. **This is why the test asserts on interleaving order
+(`A1 B1 A2 B2 A3 B3`) rather than on output appearing**: every marker still printed with switching
+completely broken.
+
+**Yield points**: `uart_getc()` on both platform UARTs (the console blocking on a keystroke is the
+longest wait in the system and so the most important one), and `virtio_blk_transfer()`'s completion
+poll.
+
+**D5 gate — satisfied, and genuinely exercised.** Inbound frames now pass through one routing point
+(`p9_route_frame()`) shared by the background pump and by client waits. 9P makes the classification
+exact: T-messages (requests) have even type numbers, R-messages (replies) odd ones, for every pair.
+A reply is matched to a registered waiter by tag; a request goes to the server. Waiters live in a
+small fixed table rather than in `p9_link_t`, so no backend changed and links that never act as
+client pay no per-link reply buffer.
+
+- **A4's safety comment was false as written and has been rewritten, not deleted.** It argued the
+  client/server overlap was safe *because there was no scheduler*. That reasoning is now wrong; the
+  code is safe for a different reason, and recording the change matters more than quietly fixing it.
+- **Passing "with the scheduler on" is not enough on its own, which nearly produced a hollow gate.**
+  With only the boot task alive, `sched_yield()` has nobody to switch to, so the dangerous
+  interleaving never happens and the multi-node tests would pass whether or not frames were routed.
+  A new `(spawn-pump n)` primitive creates a task that services background links and yields, so the
+  client's reply really is read off the wire by *another task* mid-exchange. The multi-node test now
+  spawns it before `(p9-remote-cat …)`.
+- **Verified by falsification**: routing every inbound frame to the server, as before B2, collapses
+  the suite to **35/107** — including both multi-node tests. The breadth is expected, since the
+  local channel link's replies are misrouted too.
+
+**Deferred to B6, explicitly**: `task_exit()` frees its own stack while still running on it. Safe
+only because cooperative scheduling means nothing can allocate and reuse those pages before the
+final `ctx_switch()`. Under preemption this must move to a reaper that frees after the switch.
+Likewise `palloc` and `sched` take no locks, which is correct only without preemption.
+
 #### B3 — U-mode + PMP on the NOMMU targets — **NOMMU leads**
 
 Per [D2](#d2--nommu-protection--resolved-2026-08-09-pmp-early-nommu-leads), enforcement arrives on RV32/RP2350 *first*, and Sv39
@@ -1296,7 +1390,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
 | **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
 | **M7** | **B1** `chan_t` copy-always channels + local channel-backed mount | M6 | **Done (2026-08-09)** — see B1's completion notes. `kernel/chan.c` (copy-always endpoints), `fs/p9_chan.c` (local 9P server as an ordinary `p9_link_t`), `vfs_mount_local()`. Notably there is **no** `MOUNT_LOCAL9P` kind: a local mount is `vfs_mount_remote()` with a channel-backed link, reusing every layer below unchanged. `/srv/`'s pointer-passing retired; `loopback_9p_cat()` (~60 lines) deleted in favour of the shared `p9_link_cat()`. Found and fixed a latent `vfs_open()` handle-slot reservation bug that only a re-entrant (local) mount can expose. Tests 95→103. |
-| **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing — **gated on M3/M4 tests still passing with the scheduler on** | M7 | Not started |
+| **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing | M7 | **Done (2026-08-09)** — see B2's completion notes. Page allocator (replacing an unbounded bump pointer), `switch.S` cooperative context switch shared by both word widths, real `task_t`/`sched.c`, yield points in `uart_getc()`/`virtio_blk`, and `p9_route_frame()` type-parity + tag demultiplexing. **D5 gate met and genuinely exercised**: a new `(spawn-pump)` task runs concurrently with the client exchange, since with only the boot task alive the hazard never occurs and the gate would have been hollow. Tests 103→107. |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |
 | **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
@@ -1381,8 +1475,58 @@ consistent with [§5.0](#50--the-assumption-this-track-no-longer-makes).
 
 *Prerequisite that is easy to miss*: `entry.S` programs `pmpaddr0`/`pmpcfg0` only under
 `CONFIG_MODE_S`, and RV32/RP2350 build with `CONFIG_MODE_M` — so **PMP on RP2350 starts from zero**,
-not from the wide-open configuration the pre-revision text implied. Hazard3's PMP region count must
-be measured from silicon before the region budget can be planned.
+not from the wide-open configuration the pre-revision text implied.
+
+#### D2 hardware measurements (2026-08-09) — **resolved on real silicon**
+
+Taken from a physical RP2350 via `pmpinfo`/`pmpdump` and `tests/hw/`.
+
+| | QEMU RV32 | RP2350 (Hazard3) |
+|---|---|---|
+| Writable `pmpaddr` entries | 16 | **11** |
+| Active at boot (`cfg.A != 0`) | 0 | **3** (entries 8/9/10) |
+| **Free for B3** | 15 | **8** |
+| Smallest encodable region | 4 bytes | **16 bytes** |
+| Locked at boot | no | no |
+| Usable heap above `_kernel_end` | 4096 pages (capped) | **18 pages / 72 KB** |
+
+**B3's budget is 8 free regions — one for the kernel, so 7 isolatable tasks**, plus 3 reclaimable.
+
+##### How the apparent contradiction resolved
+
+The SDK headers say 8 configurable regions and mark `pmpaddr8/9/10` `ACCESS "RO"`; the silicon
+reported 11 writable. Both were right, and the reconciliation is the useful part:
+
+```
+pmpcfg0..3 = 00000000 00000000 001f1f1f 00000000
+  0..7   reset 00000003   writable, cfg 0  -> free
+  8..10  reset 01ffffff / 13ffffff / 35ffffff, cfg 0x1f  -> writable but ACTIVE
+  11..15 absent
+```
+
+`pmpcfg2 = 0x001f1f1f` gives entries 8/9/10 `A=NAPOT` with RWX and no lock: they are **preconfigured
+and running**, granting U-mode default access to the boot ROM, system peripherals and SIO. They are
+fully writable — the header's `"RO"` is inaccurate — but they are *not free budget*. B3 can reclaim
+them only by deciding what loses that access, which is a policy question, not spare capacity.
+
+**The lesson is about the metric, not the chip.** Three successive counts were reported before the
+right one: 11 (counting "reads back non-zero", which admits hardwired registers), then 11 again
+(counting "writable", which admits *in-use* registers), and finally 8 free / 3 in-use. Only dumping
+raw per-register values plus the config registers made the distinction visible. **A summary count is
+a derived answer; when it disagrees with a datasheet, the raw values arbitrate.**
+
+##### Granularity: the spec's own procedure gives the wrong answer here
+
+The privileged spec says to write all ones to `pmpaddr0` with `A=OFF` and take the index of the
+least-significant set bit as G. On RP2350 that yields G=0 (4-byte regions) — and is wrong. Writing
+**zero** leaves `0x00000003`: the low two bits read as ones no matter what is written, so the
+all-ones procedure sees a set bit at index 0 that carries no information.
+
+`pmpinfo` now derives the floor from the zero-write instead, reporting a **16-byte** minimum region.
+*Caveat, stated rather than hidden*: whether two stuck bits mean 16 or 32 bytes depends on an
+off-by-one in how the spec indexes those bits, and confirming it needs either the datasheet or a
+U-mode access test (B3 work). It does not constrain B3 either way — task stacks are page-aligned at
+4096 bytes, three orders of magnitude above the floor.
 
 ### D5 — Track A regression policy under a scheduler — **Resolved (2026-08-09): hard gate**
 A4's client/server safety argument explicitly depends on there being no scheduler

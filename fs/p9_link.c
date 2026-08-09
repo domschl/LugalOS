@@ -1,6 +1,7 @@
 #include "fs/p9_link.h"
 #include "fs/9p.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
 #include <string.h>
 
 /* Small fixed set, not one global pointer: RP2350 wants both its USB-CDC
@@ -14,23 +15,107 @@
 #define P9_LINK_MAX_BACKGROUND 2
 static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
 
-int p9_link_service(p9_link_t *link) {
+/* --- B2: inbound frame demultiplexing (the D5 gate) ---
+ *
+ * A4's completion notes justified a node being both 9P client and server on
+ * one link by arguing that nothing could run concurrently with a synchronous
+ * C call, because there was no scheduler. B2 makes that false. A client
+ * waiting for its reply now yields, so this node's own background pump can
+ * run during the wait -- and would happily read the *reply* off the wire and
+ * feed it to p9_server_process() as though it were a fresh request.
+ *
+ * The fix is that every inbound frame passes through one routing point,
+ * used by both the background pump and by client waits. 9P makes the
+ * classification trivial and exact: T-messages (requests) have even type
+ * numbers and R-messages (replies) odd ones -- Tversion=100/Rversion=101,
+ * Twalk=110/Rwalk=111, and so on for every pair. A reply is then matched to
+ * a registered waiter by tag; a request goes to the server as before.
+ *
+ * Waiters live in a small fixed table rather than in p9_link_t, so backends
+ * (drivers/virtio_console.c, usb_cdc.c, uart_net.c) need no changes and no
+ * per-link 4 KB reply buffer is paid for on links that never act as client. */
+
+#define P9_LINK_MAX_WAITERS 2
+
+typedef struct {
+    p9_link_t *link;          /* NULL = slot free */
+    uint16_t   tag;
+    bool       have_reply;
+    uint32_t   reply_len;
+    uint8_t    reply[P9_MAX_MSIZE];
+} p9_waiter_t;
+
+static p9_waiter_t g_waiters[P9_LINK_MAX_WAITERS];
+
+static p9_waiter_t *waiter_begin(p9_link_t *link, uint16_t tag) {
+    for (int i = 0; i < P9_LINK_MAX_WAITERS; i++) {
+        if (!g_waiters[i].link) {
+            g_waiters[i].link = link;
+            g_waiters[i].tag = tag;
+            g_waiters[i].have_reply = false;
+            g_waiters[i].reply_len = 0;
+            return &g_waiters[i];
+        }
+    }
+    return NULL;
+}
+
+static void waiter_end(p9_waiter_t *w) {
+    if (w) w->link = NULL;
+}
+
+/* Routes one already-received frame. Requests are answered here; replies are
+ * parked for their waiter. Returns 1 if handled, -1 on a transport error. */
+static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+    if (len < 7) return -1;
+
+    uint8_t type = buf[4];              /* size[4] type[1] tag[2] */
+    uint16_t tag = (uint16_t)(buf[5] | ((uint16_t)buf[6] << 8));
+
+    if (type & 1u) {
+        /* R-message: a reply to something this node asked for. */
+        for (int i = 0; i < P9_LINK_MAX_WAITERS; i++) {
+            p9_waiter_t *w = &g_waiters[i];
+            if (w->link != link || w->tag != tag || w->have_reply) continue;
+            if (len > sizeof(w->reply)) return -1;
+            memcpy(w->reply, buf, len);
+            w->reply_len = len;
+            w->have_reply = true;
+            return 1;
+        }
+        /* Nobody is waiting for this. Dropping it is correct and worth
+         * saying out loud -- silently feeding a reply to the server would
+         * produce an Rerror sent back to a peer that never asked anything,
+         * which is precisely the confusion this routing exists to prevent. */
+        printk("[9P Link] Dropped unexpected reply (type %d, tag %d) on '%s'\n",
+               (int)type, (int)tag, link->name ? link->name : "?");
+        return 1;
+    }
+
+    /* T-message: a genuine request for this node's server. */
+    static uint8_t resp_buf[P9_MAX_MSIZE];
+    int resp_len = p9_server_process(buf, len, resp_buf, sizeof(resp_buf));
+    if (resp_len < 7) return -1;
+    if (link->send_frame(link, resp_buf, (uint32_t)resp_len) < 0) return -1;
+    return 1;
+}
+
+/* Receives at most one frame from `link` and routes it. */
+static int p9_link_pump(p9_link_t *link) {
     if (!link || !link->poll || !link->recv_frame || !link->send_frame) return -1;
 
     int ready = link->poll(link);
     if (ready <= 0) return ready; // 0 = nothing pending, -1 = transport error
 
-    static uint8_t req_buf[P9_MAX_MSIZE];
-    static uint8_t resp_buf[P9_MAX_MSIZE];
+    static uint8_t rx_buf[P9_MAX_MSIZE];
+    int rx_len = link->recv_frame(link, rx_buf, sizeof(rx_buf));
+    if (rx_len < 7) return -1;
 
-    int req_len = link->recv_frame(link, req_buf, sizeof(req_buf));
-    if (req_len < 7) return -1;
+    return p9_route_frame(link, rx_buf, (uint32_t)rx_len);
+}
 
-    int resp_len = p9_server_process(req_buf, (uint32_t)req_len, resp_buf, sizeof(resp_buf));
-    if (resp_len < 7) return -1;
-
-    if (link->send_frame(link, resp_buf, (uint32_t)resp_len) < 0) return -1;
-    return 1;
+int p9_link_service(p9_link_t *link) {
+    return p9_link_pump(link);
 }
 
 void p9_link_register_background(p9_link_t *link) {
@@ -62,44 +147,61 @@ void p9_link_background_poll(void) {
 
 /* --- p9_link_cat: a link-agnostic synchronous 9P client (A4) ---
  *
- * Safe to run on a link that also has a registered background server (see
- * p9_link_register_background() above), including on itself: this kernel
- * has no real task scheduler or interrupts that could preempt a C function
- * call (kernel/sched.c is a bookkeeping shim, not a scheduler -- see the
- * A1/A2 completion notes), so while p9_link_cat() is running, nothing else
- * -- including this link's own background pump -- can run concurrently and
- * misinterpret one of its frames. The remote peer only ever *responds* to
- * what this function sends (it never spontaneously originates traffic), so
- * there is no risk of the two ends' server roles colliding either.
+ * Safe to run on a link that also has a registered background server,
+ * including on itself -- but the *reason* changed in B2, and the old reason
+ * is worth recording because it was load-bearing and is now false.
  *
- * This does mean the roles are asymmetric by convention, not by
- * negotiation: whichever node actively calls p9_link_cat() is acting as
- * client for that one exchange, and the peer it's talking to must be
- * purely a server (running only its own background pump) for as long as
- * that holds. Good enough for A4's test topology (see the completion
- * notes); a real bidirectional peer-to-peer protocol would need tag-aware
- * multiplexing this doesn't attempt. */
+ * A4 argued this was safe because nothing could run concurrently with a
+ * synchronous C call: there was no scheduler, so this link's own background
+ * pump provably could not run mid-exchange and misread a reply as a request.
+ * B2's scheduler destroys that argument -- the wait below yields, precisely
+ * so it does not starve everything else, which is exactly the window A4
+ * relied on not existing.
+ *
+ * What makes it safe now is p9_route_frame() above: every inbound frame is
+ * classified as request or reply by its 9P type parity and, if a reply,
+ * matched to a registered waiter by tag. Client and server roles can now
+ * genuinely coexist on one link rather than by convention. */
 
-/* Waits for a reply, exactly like virtio_blk_transfer()'s own
- * busy-wait-until-done poll (drivers/virtio_blk.c) -- no separate timeout
- * mechanism; a non-responsive peer hangs the caller, matching that
- * existing precedent rather than inventing a new one. */
-static int p9_link_wait_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
-    for (;;) {
-        int ready = link->poll(link);
-        if (ready < 0) return -1;
-        if (ready > 0) return link->recv_frame(link, buf, max_len);
-    }
-}
-
+/* Sends one request and waits for the reply carrying its tag.
+ *
+ * Registers a waiter *before* sending, so a reply that arrives while this
+ * task is descheduled is parked rather than mistaken for a request. The wait
+ * loop pumps the link itself and yields, so other tasks (and this link's own
+ * server role) keep running instead of being starved by a busy-wait -- which
+ * is also why the routing in p9_route_frame() is load-bearing rather than
+ * belt-and-braces.
+ *
+ * Still no timeout, matching drivers/virtio_blk.c's busy-wait-until-done
+ * precedent: an unresponsive peer blocks this task, but with a scheduler it
+ * no longer blocks the whole system. */
 static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *resp,
                               uint8_t *tx, uint8_t *rx, uint32_t cap) {
     int tx_len = p9_serialize(req, tx, cap);
     if (tx_len < 7) return -1;
-    if (link->send_frame(link, tx, (uint32_t)tx_len) < 0) return -1;
-    int rx_len = p9_link_wait_frame(link, rx, cap);
-    if (rx_len < 7) return -1;
-    return p9_deserialize(rx, (uint32_t)rx_len, resp);
+
+    p9_waiter_t *w = waiter_begin(link, req->tag);
+    if (!w) {
+        printk("[9P Link] No free reply-waiter slot for tag %d\n", (int)req->tag);
+        return -1;
+    }
+
+    if (link->send_frame(link, tx, (uint32_t)tx_len) < 0) {
+        waiter_end(w);
+        return -1;
+    }
+
+    for (;;) {
+        if (w->have_reply) {
+            uint32_t n = w->reply_len;
+            if (n > cap) { waiter_end(w); return -1; }
+            memcpy(rx, w->reply, n);
+            waiter_end(w);
+            return p9_deserialize(rx, n, resp);
+        }
+        if (p9_link_pump(link) < 0) { waiter_end(w); return -1; }
+        sched_yield();
+    }
 }
 
 int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max) {

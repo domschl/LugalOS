@@ -13,6 +13,7 @@
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "kernel/chan.h"
+#include "kernel/palloc.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -374,8 +375,18 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     uint32_t used = 0;
 
     if (strcmp(rel, "ps") == 0) {
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "PID  State    Name\n---  -------  ------------\n 0   RUNNING  kernel_idle\n 1   READY    lsh_console\n 2   READY    lisp_engine\n 3   READY    vfs_server (FAT32)\n");
+        /* B2: the real task table. This used to be a hardcoded string
+         * listing four tasks that did not exist -- kernel/sched.c was
+         * bookkeeping only and nothing was ever scheduled. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------\n");
+        int pid, state;
+        const char *tname;
+        for (uint32_t i = 0; sched_task_info(i, &pid, &state, &tname); i++) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%3d  ", pid);
+            used = append_col(buf, used, cap, sched_state_name(state), 9);
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s\n", tname);
+        }
         return (int)used;
     } else if (strcmp(rel, "df") == 0) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
@@ -412,8 +423,29 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         }
         return (int)used;
     } else if (strcmp(rel, "meminfo") == 0) {
+        /* B2: real allocator numbers instead of a fixed string. The bump
+         * allocator this replaced had nothing meaningful to report -- it
+         * couldn't free and had no upper bound to be a fraction of. */
+        uint32_t total_pg = 0, free_pg = 0;
+        palloc_stats(&total_pg, &free_pg);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
+            "Heap & Storage Status:\n  Page Size: %u bytes\n", (unsigned int)PAGE_SIZE);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Pages Total: %u\n  Pages Free: %u\n  Pages Used: %u\n",
+            total_pg, free_pg, total_pg - free_pg);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Heap Free: %u KB of %u KB\n",
+            (free_pg * (uint32_t)PAGE_SIZE) / 1024, (total_pg * (uint32_t)PAGE_SIZE) / 1024);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
+        return (int)used;
+    } else if (strcmp(rel, "buildid") == 0) {
+        /* Deliberately its own file rather than extra lines on /proc/version:
+         * tests/hw/ needs to ask "is this board running the firmware I just
+         * built?", and a small dedicated file answers that without changing
+         * the size of a file several tests already read. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "%s %s\n", LUGALOS_VERSION, LUGALOS_BUILD_ID);
         return (int)used;
     } else if (strcmp(rel, "devices") == 0) {
         /* B0 device registry (kernel/device.h). Compact deliberately: this
@@ -438,7 +470,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[6] = { "ps", "meminfo", "version", "df", "kmsg", "devices" };
+static const char *g_proc_names[7] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index

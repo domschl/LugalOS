@@ -1,6 +1,7 @@
 #include "kernel/shell.h"
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/palloc.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -10,6 +11,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "arch/elf.h"
+#include "arch/pmp.h"
 #include "chibicc.h"
 #include "lisp.h"
 #include "ed.h"
@@ -71,6 +73,8 @@ static void cmd_help(void) {
     printk("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     printk("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
     printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
+    printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
+    printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -191,6 +195,44 @@ static void cmd_klog(const char *arg) {
     printk("[klog] Sink '%s' %s\n", name, detach ? "detached" : "attached");
 }
 
+/* B2: proves the cooperative scheduler actually switches, rather than
+ * merely bookkeeping as the pre-B2 shim did.
+ *
+ * Two tasks each emit their own marker three times, yielding between each.
+ * If switching is real the output interleaves (A1 B1 A2 B2 A3 B3); if
+ * sched_yield() were still a no-op the first task would run to completion
+ * before the second started (A1 A2 A3 B1 B2 B3). The interleaving is
+ * therefore the assertion, not the fact that output appears at all --
+ * tests/runner.py checks for exactly that ordering. */
+static void taskdemo_body(void *arg) {
+    const char *tag = (const char *)arg;
+    for (int i = 1; i <= 3; i++) {
+        printk("[TaskDemo] %s%d\n", tag, i);
+        sched_yield();
+    }
+}
+
+static void cmd_taskdemo(void) {
+    uint32_t before_total = 0, before_free = 0;
+    palloc_stats(&before_total, &before_free);
+
+    int a = task_create("demoA", taskdemo_body, (void *)"A");
+    int b = task_create("demoB", taskdemo_body, (void *)"B");
+    if (a < 0 || b < 0) {
+        printk("[TaskDemo] Could not create both tasks\n");
+        return;
+    }
+
+    /* Drive the demo from this (the boot) task by yielding until both have
+     * exited. Cooperative scheduling means they only advance when we do. */
+    for (int spin = 0; spin < 64; spin++) sched_yield();
+
+    uint32_t after_total = 0, after_free = 0;
+    palloc_stats(&after_total, &after_free);
+    printk("[TaskDemo] Done. Heap pages free before=%u after=%u\n",
+           before_free, after_free);
+}
+
 static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
@@ -277,6 +319,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "p9share ", 8) == 0) {
         cmd_p9share(&cmd_line[8]);
+        return;
+    } else if (strcmp(cmd_line, "pmpinfo") == 0) {
+        pmp_report();
+        return;
+    } else if (strcmp(cmd_line, "pmpdump") == 0) {
+        pmp_dump();
+        return;
+    } else if (strcmp(cmd_line, "taskdemo") == 0) {
+        cmd_taskdemo();
         return;
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);

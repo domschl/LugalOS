@@ -90,4 +90,11 @@ SECTIONS
 
     __flash_binary_end = LOADADDR(.scratch_y) + SIZEOF(.scratch_y);
     _stack_top = 0x20082000;
+
+    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): stops
+     * at the start of SCRATCH_X, so the heap can never grow into the scratch
+     * regions or the boot stack that lives at the top of SCRATCH_Y. The bump
+     * allocator this replaced had no upper bound and would have run straight
+     * through both. */
+    _heap_end = 0x20080000;
 }
