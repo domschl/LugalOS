@@ -18,6 +18,11 @@ void vfs_server_init(void);
 int vfs_mount_ramdisk(int size_kb);
 int vfs_register_service(const char *service_name, int target_pid);
 
+/* Mounts this node's own 9P server at /<name>/ over a local channel (B1).
+ * Implemented as vfs_mount_remote() with a channel-backed link -- see
+ * fs/vfs_server.c for why there is deliberately no separate local path. */
+int vfs_mount_local(const char *name);
+
 /* --- Handle-based file API (A1, plan/phase5_distributed_design.md) ---
  *
  * Real, offset-addressed file handles across the whole namespace (/flash0,

@@ -790,6 +790,20 @@ static lisp_val_t *prim_p9_unserve(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* (mount-local "name") -- attaches this node's OWN namespace at /<name>/
+ * through the local 9P channel (B1). Useful in itself, but mainly a
+ * demonstration: /<name>/sd0/x reaches the same bytes as /sd0/x, having
+ * traversed serialized, copied 9P frames through the same client code that
+ * talks to a peer over a USB cable. If that works, an address-space boundary
+ * (B3) changes nothing above the channel. */
+static lisp_val_t *prim_mount_local(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+    return (vfs_mount_local(name) == 0) ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_unmount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -910,6 +924,7 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
+    env_set(&global_env, "mount-local", make_prim(prim_mount_local));
     env_set(&global_env, "unmount", make_prim(prim_unmount));
 
     /* B0 part 3: registry/sink binding, so init.lisp owns the policy. */

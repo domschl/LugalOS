@@ -110,6 +110,7 @@ set(SOURCES
     kernel/klog.c
     kernel/device.c
     kernel/board.c
+    kernel/chan.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c
@@ -133,6 +134,7 @@ set(SOURCES
     fs/vfs_server.c
     fs/9p.c
     fs/p9_link.c
+    fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c
     user/lisp/lisp_compile.c
