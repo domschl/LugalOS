@@ -1,6 +1,7 @@
 #include "lisp.h"
 #include "lisp_compile.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
@@ -298,9 +299,9 @@ static lisp_val_t *prim_cat(lisp_val_t *args, lisp_val_t *env) {
     int len = vfs_read(path, buf, sizeof(buf) - 1);
     if (len >= 0) {
         buf[len] = '\0';
-        printk("%s\n", buf);
+        cprintf("%s\n", buf);
     } else {
-        printk("cat: cannot read path '%s'\n", path);
+        cprintf("cat: cannot read path '%s'\n", path);
     }
     return &nil_val;
 }
@@ -382,9 +383,9 @@ static void print_proc_file(const char *path) {
     static char buf[512];
     int len = vfs_read(path, buf, sizeof(buf));
     if (len >= 0) {
-        printk("%s", buf);
+        cprintf("%s", buf);
     } else {
-        printk("(no data for '%s')\n", path);
+        cprintf("(no data for '%s')\n", path);
     }
 }
 
@@ -414,17 +415,17 @@ static lisp_val_t *prim_df(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_top(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    printk("\n==================================================\n");
-    printk("           LugalOS System Monitor                 \n");
-    printk("==================================================\n");
+    cprintf("\n==================================================\n");
+    cprintf("           LugalOS System Monitor                 \n");
+    cprintf("==================================================\n");
     print_proc_file("/proc/version");
-    printk("\n[Process States]\n");
+    cprintf("\n[Process States]\n");
     print_proc_file("/proc/ps");
-    printk("\n[Memory Status]\n");
+    cprintf("\n[Memory Status]\n");
     print_proc_file("/proc/meminfo");
-    printk("\n[Storage Usage]\n");
+    cprintf("\n[Storage Usage]\n");
     print_proc_file("/proc/df");
-    printk("==================================================\n");
+    cprintf("==================================================\n");
     return &nil_val;
 }
 
@@ -436,7 +437,7 @@ static lisp_val_t *prim_load(lisp_val_t *args, lisp_val_t *env) {
     static char buf[8192];
     int len = vfs_read(path, buf, sizeof(buf) - 1);
     if (len < 0) {
-        printk("load: cannot open file '%s'\n", path);
+        cprintf("load: cannot open file '%s'\n", path);
         return &false_val;
     }
     buf[len] = '\0';
@@ -449,7 +450,7 @@ static lisp_val_t *prim_display(lisp_val_t *args, lisp_val_t *env) {
     if (args && args->type == LISP_PAIR) {
         lisp_val_t *v = args->u.pair.car;
         if (v->type == LISP_STRING) {
-            printk("%s", v->u.str);
+            cprintf("%s", v->u.str);
         } else {
             lisp_print(v);
         }
@@ -459,7 +460,7 @@ static lisp_val_t *prim_display(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_newline(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    printk("\n");
+    cprintf("\n");
     return &nil_val;
 }
 
@@ -737,7 +738,7 @@ static lisp_val_t *prim_klog_sinks(lisp_val_t *args, lisp_val_t *env) {
     const char *name;
     bool attached;
     for (uint32_t i = 0; klog_sink_info(i, &name, &attached); i++) {
-        printk("  %s: %s\n", name, attached ? "attached" : "detached");
+        cprintf("  %s: %s\n", name, attached ? "attached" : "detached");
     }
     return &nil_val;
 }
@@ -817,6 +818,24 @@ static void pump_task_body(void *arg) {
     }
 }
 
+/* (console-bind "uart"|"usb") -- hand the terminal to a named device from
+ * the registry (B4). This is §5.2's scenario made runtime: a channel carries
+ * output until init.lisp decides something else should own it. Kernel
+ * diagnostics are a separate stream (see klog-detach), so moving the console
+ * does not move the log, and vice versa. */
+static lisp_val_t *prim_console_bind(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+    return (console_bind_device(name) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_console_device(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return make_str(console_bound_device());
+}
+
 static lisp_val_t *prim_spawn_pump(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     long n = 512;
@@ -885,8 +904,8 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
  * kernel/shell.c had. */
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    printk("\nLugalOS Lisp Machine -- Bound Globals:\n");
-    printk("-------------------------------------------------\n");
+    cprintf("\nLugalOS Lisp Machine -- Bound Globals:\n");
+    cprintf("-------------------------------------------------\n");
     int count = 0;
     for (lisp_val_t *c = global_env; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
         lisp_val_t *binding = c->u.pair.car;
@@ -899,11 +918,11 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
             if (v->type == LISP_PRIMITIVE) kind = "primitive";
             else if (v->type == LISP_LAMBDA) kind = "closure";
         }
-        printk("  %s -- %s\n", k->u.sym, kind);
+        cprintf("  %s -- %s\n", k->u.sym, kind);
         count++;
     }
-    printk("-------------------------------------------------\n");
-    printk("%d bound symbols. Special forms (not primitives, so not listed\n"
+    cprintf("-------------------------------------------------\n");
+    cprintf("%d bound symbols. Special forms (not primitives, so not listed\n"
            "above): define, lambda, quote / ', if, begin, let, cond.\n\n", count);
     return &nil_val;
 }
@@ -955,6 +974,8 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
+    env_set(&global_env, "console-bind", make_prim(prim_console_bind));
+    env_set(&global_env, "console-device", make_prim(prim_console_device));
     env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));
     env_set(&global_env, "mount-local", make_prim(prim_mount_local));
     env_set(&global_env, "unmount", make_prim(prim_unmount));
@@ -1014,36 +1035,36 @@ void lisp_init(void) {
 /* Printer */
 void lisp_print(lisp_val_t *val) {
     if (!val || val->type == LISP_NIL) {
-        printk("()");
+        cprintf("()");
         return;
     }
     switch (val->type) {
         case LISP_INT:
-            printk("%ld", val->u.i);
+            cprintf("%ld", val->u.i);
             break;
         case LISP_STRING:
-            printk("\"%s\"", val->u.str);
+            cprintf("\"%s\"", val->u.str);
             break;
         case LISP_SYMBOL:
-            printk("%s", val->u.sym);
+            cprintf("%s", val->u.sym);
             break;
         case LISP_PRIMITIVE:
-            printk("<#primitive>");
+            cprintf("<#primitive>");
             break;
         case LISP_LAMBDA:
-            printk("<#closure>");
+            cprintf("<#closure>");
             break;
         case LISP_PAIR:
-            printk("(");
+            cprintf("(");
             lisp_print(val->u.pair.car);
             for (lisp_val_t *c = val->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                printk(" ");
+                cprintf(" ");
                 lisp_print(c->u.pair.car);
             }
-            printk(")");
+            cprintf(")");
             break;
         default:
-            printk("?");
+            cprintf("?");
             break;
     }
 }
@@ -1232,7 +1253,7 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
     if (val->type == LISP_SYMBOL) {
         lisp_val_t *res = env_get(env, val->u.sym);
         if (res) return res;
-        printk("Unbound symbol: %s\n", val->u.sym);
+        cprintf("Unbound symbol: %s\n", val->u.sym);
         return &nil_val;
     }
 
@@ -1460,15 +1481,15 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
 }
 
 void lisp_repl(void) {
-    printk("\n==================================================\n");
-    printk("       LugalOS Scheme / S-Expression REPL         \n");
-    printk("  Type expressions like (+ 10 20) or (cat /proc/ps)\n");
-    printk("  Type 'exit' to return to lugal shell.            \n");
-    printk("==================================================\n");
+    cprintf("\n==================================================\n");
+    cprintf("       LugalOS Scheme / S-Expression REPL         \n");
+    cprintf("  Type expressions like (+ 10 20) or (cat /proc/ps)\n");
+    cprintf("  Type 'exit' to return to lugal shell.            \n");
+    cprintf("==================================================\n");
 
     char buf[128];
     while (1) {
-        printk("lisp> ");
+        cprintf("lisp> ");
         int idx = 0;
         while (1) {
             usb_cdc_task();
@@ -1496,9 +1517,9 @@ void lisp_repl(void) {
         const char *ptr = buf;
         lisp_val_t *ast = lisp_read(&ptr);
         lisp_val_t *result = lisp_eval(ast, global_env);
-        printk("=> ");
+        cprintf("=> ");
         lisp_print(result);
-        printk("\n");
+        cprintf("\n");
     }
 }
 

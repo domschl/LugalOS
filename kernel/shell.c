@@ -1,5 +1,6 @@
 #include "kernel/shell.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "kernel/klog.h"
 #include "kernel/palloc.h"
 #include "kernel/mem_domain.h"
@@ -53,56 +54,56 @@ void shell_init(void) {
 }
 
 static void cmd_help(void) {
-    printk("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
-    printk("  help            - Display command manual\n");
-    printk("  uname           - Show OS build target and architecture details\n");
-    printk("  ps              - Alias for 'cat /proc/ps'\n");
-    printk("  meminfo         - Alias for 'cat /proc/meminfo'\n");
-    printk("  df              - Alias for 'cat /proc/df'\n");
-    printk("  top             - System process, memory & storage monitor\n");
-    printk("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
-    printk("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
-    printk("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
-    printk("  touch <file>    - Create a new empty file\n");
-    printk("  mkdir <path>    - Create a new directory\n");
-    printk("  rmdir <path>    - Remove an empty directory\n");
-    printk("  cp <src> <dst>  - Copy file from source path to destination path\n");
-    printk("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
-    printk("  rm <file>       - Delete file from disk\n");
-    printk("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
-    printk("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
-    printk("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
-    printk("  e [file]        - Launch Emacs-style full-screen editor\n");
-    printk("  ed [file]       - Launch teletype line editor\n");
-    printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
-    printk("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
-    printk("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
-    printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
-    printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
-    printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
-    printk("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
-    printk("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
-    printk("  deputytest      - U-mode task asks the kernel to read kernel memory (B3)\n");
-    printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
-    printk("  clear           - Clear terminal screen\n\n");
+    cprintf("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
+    cprintf("  help            - Display command manual\n");
+    cprintf("  uname           - Show OS build target and architecture details\n");
+    cprintf("  ps              - Alias for 'cat /proc/ps'\n");
+    cprintf("  meminfo         - Alias for 'cat /proc/meminfo'\n");
+    cprintf("  df              - Alias for 'cat /proc/df'\n");
+    cprintf("  top             - System process, memory & storage monitor\n");
+    cprintf("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
+    cprintf("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
+    cprintf("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
+    cprintf("  touch <file>    - Create a new empty file\n");
+    cprintf("  mkdir <path>    - Create a new directory\n");
+    cprintf("  rmdir <path>    - Remove an empty directory\n");
+    cprintf("  cp <src> <dst>  - Copy file from source path to destination path\n");
+    cprintf("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
+    cprintf("  rm <file>       - Delete file from disk\n");
+    cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
+    cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
+    cprintf("  exec <elf>      - Load and execute native RISC-V ELF binary\n");
+    cprintf("  e [file]        - Launch Emacs-style full-screen editor\n");
+    cprintf("  ed [file]       - Launch teletype line editor\n");
+    cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
+    cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
+    cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
+    cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
+    cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
+    cprintf("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
+    cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
+    cprintf("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
+    cprintf("  deputytest      - U-mode task asks the kernel to read kernel memory (B3)\n");
+    cprintf("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
+    cprintf("  clear           - Clear terminal screen\n\n");
 }
 
 static void cmd_uname(void) {
     char buf[128];
     int len = vfs_read("/proc/version", buf, sizeof(buf));
-    if (len >= 0) printk("%s", buf);
+    if (len >= 0) cprintf("%s", buf);
 #if defined(CONFIG_TARGET_RV32)
-    printk("Architecture: RISC-V 32-bit (RV32IMAC)\n");
+    cprintf("Architecture: RISC-V 32-bit (RV32IMAC)\n");
 #elif defined(CONFIG_TARGET_RV64)
-    printk("Architecture: RISC-V 64-bit (RV64GC)\n");
+    cprintf("Architecture: RISC-V 64-bit (RV64GC)\n");
 #endif
 
 #if defined(CONFIG_NOMMU)
-    printk("Memory Mode: NOMMU Physical Direct Execution\n");
+    cprintf("Memory Mode: NOMMU Physical Direct Execution\n");
 #elif defined(CONFIG_MMU)
-    printk("Memory Mode: Sv39 Virtual Memory Page Tables\n");
+    cprintf("Memory Mode: Sv39 Virtual Memory Page Tables\n");
 #endif
-    printk("Namespace: Universal Path Resolver (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
+    cprintf("Namespace: Universal Path Resolver (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
 }
 
 /* A3a "headless" 9P mode (plan/phase5_distributed_design.md): dedicates
@@ -114,8 +115,8 @@ static void cmd_uname(void) {
  * notes). Only reachable by explicit user command; a reset is the only way
  * back. */
 static void cmd_p9serve(void) {
-    printk("\n[9P] Entering headless UART/SLIP 9P server mode -- this session will not\n");
-    printk("     return to the shell. Reset the device to get the console back.\n\n");
+    cprintf("\n[9P] Entering headless UART/SLIP 9P server mode -- this session will not\n");
+    cprintf("     return to the shell. Reset the device to get the console back.\n\n");
     p9_link_t *link = uart_slip_get_link();
     for (;;) {
         p9_link_service(link);
@@ -142,12 +143,12 @@ static void cmd_p9share(const char *arg) {
     uart_demux_set_enabled(enable);
     if (enable) {
         p9_link_register_background(link);
-        printk("\n[9P] Shared-wire 9P active on this UART alongside the console -- type\n");
-        printk("     normally; a SLIP-framed 9P peer can attach on the same wire at any\n");
-        printk("     time. Run 'p9share off' to disable.\n\n");
+        cprintf("\n[9P] Shared-wire 9P active on this UART alongside the console -- type\n");
+        cprintf("     normally; a SLIP-framed 9P peer can attach on the same wire at any\n");
+        cprintf("     time. Run 'p9share off' to disable.\n\n");
     } else {
         p9_link_unregister_background(link);
-        printk("\n[9P] Shared-wire 9P disabled; this UART is console-only again.\n\n");
+        cprintf("\n[9P] Shared-wire 9P disabled; this UART is console-only again.\n\n");
     }
 }
 
@@ -163,19 +164,19 @@ static void cmd_klog(const char *arg) {
     }
 
     if (!arg || *arg == '\0') {
-        printk("\nKernel log sinks:\n");
+        cprintf("\nKernel log sinks:\n");
         const char *name;
         bool attached;
         for (uint32_t i = 0; klog_sink_info(i, &name, &attached); i++) {
             /* No '-' (left-justify) flag in this printk engine -- see
              * kernel/printk.c's format parser, which accepts only '0',
              * width, '.prec' and 'l'. Plain "name: state" instead. */
-            printk("  %s: %s\n", name, attached ? "attached" : "detached");
+            cprintf("  %s: %s\n", name, attached ? "attached" : "detached");
         }
-        printk("\n  Ring: %lu bytes buffered (%lu total written)\n",
+        cprintf("\n  Ring: %lu bytes buffered (%lu total written)\n",
                (unsigned long)(klog_total() - klog_oldest()),
                (unsigned long)klog_total());
-        printk("  Usage: klog [attach|detach] <sink>   (read it with: cat /proc/kmsg)\n\n");
+        cprintf("  Usage: klog [attach|detach] <sink>   (read it with: cat /proc/kmsg)\n\n");
         return;
     }
 
@@ -395,7 +396,7 @@ static void cmd_usertest(void) {
     run_user_task("usertest", usertest_body);
 
     uintptr_t c = arch_last_ecall_cause();
-    printk("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
+    cprintf("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
            c == 8 ? "U-mode -- privilege level really dropped"
                   : "NOT U-mode -- the transition did not happen");
     printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
@@ -407,10 +408,10 @@ static void cmd_deputytest(void) {
            (const void *)&g_deputy_target, (unsigned long)g_deputy_target);
     run_user_task("deputy", deputy_body);
     if (!g_user_entered) {
-        printk("\n[Deputy] INCONCLUSIVE -- the task never entered U-mode.\n");
+        cprintf("\n[Deputy] INCONCLUSIVE -- the task never entered U-mode.\n");
         return;
     }
-    printk("\n[Deputy] Kernel target holds 0x%lx after -- %s\n",
+    cprintf("\n[Deputy] Kernel target holds 0x%lx after -- %s\n",
            (unsigned long)g_deputy_target,
            g_deputy_target == 0xFEEDFACE ? "UNTOUCHED"
                                          : "OVERWRITTEN VIA THE KERNEL");
@@ -490,11 +491,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             lisp_val_t *res = lisp_eval_string(edit_buf);
             if (res) {
                 if (res->type != LISP_NIL) {
-                    printk("=> ");
+                    cprintf("=> ");
                     lisp_print(res);
-                    printk("\n");
+                    cprintf("\n");
                 } else {
-                    printk("\n");
+                    cprintf("\n");
                 }
             }
         }
@@ -508,11 +509,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             lisp_val_t *res = lisp_eval_string(edit_buf);
             if (res) {
                 if (res->type != LISP_NIL) {
-                    printk("=> ");
+                    cprintf("=> ");
                     lisp_print(res);
-                    printk("\n");
+                    cprintf("\n");
                 } else {
-                    printk("\n");
+                    cprintf("\n");
                 }
             }
         }
@@ -525,7 +526,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         time_get_rtc(&tm);
         char isostr[32];
         time_format_iso(&tm, isostr, sizeof(isostr));
-        printk("%s\n", isostr);
+        cprintf("%s\n", isostr);
         return;
     } else if (strncmp(cmd_line, "date ", 5) == 0) {
         const char *arg = &cmd_line[5];
@@ -534,9 +535,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         if (time_parse_iso(arg, &tm)) {
             time_set_rtc(&tm);
             i2c_rtc_write_time(&tm);
-            printk("System clock updated: %s\n", arg);
+            cprintf("System clock updated: %s\n", arg);
         } else {
-            printk("Invalid date format. Expected: YYYY-MM-DD HH:MM:SS\n");
+            cprintf("Invalid date format. Expected: YYYY-MM-DD HH:MM:SS\n");
         }
         return;
     } else if (strcmp(cmd_line, "lisp") == 0) {
@@ -583,11 +584,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res) {
             if (res->type != LISP_NIL) {
-                printk("=> ");
+                cprintf("=> ");
                 lisp_print(res);
-                printk("\n");
+                cprintf("\n");
             } else {
-                printk("\n");
+                cprintf("\n");
             }
         }
         return;
@@ -611,9 +612,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         strcmp(cmd_line, "i2c") != 0) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res && res->type != LISP_NIL) {
-            printk("=> ");
+            cprintf("=> ");
             lisp_print(res);
-            printk("\n");
+            cprintf("\n");
             return;
         }
     }
@@ -696,7 +697,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     sexpr[sb.idx] = '\0';
 
     if (sb.overflowed) {
-        printk("lsh: command line too long, ignored\n");
+        cprintf("lsh: command line too long, ignored\n");
         return;
     }
 
@@ -704,11 +705,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     lisp_val_t *res = lisp_eval_string(sexpr);
     if (res) {
         if (res->type != LISP_NIL) {
-            printk("=> ");
+            cprintf("=> ");
             lisp_print(res);
-            printk("\n");
+            cprintf("\n");
         } else {
-            printk("\n");
+            cprintf("\n");
         }
     }
 }
@@ -717,8 +718,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 void shell_run(void) {
     char buf[512];
     line_editor_init();
-    printk("\nLugalOS Interactive Console Shell (`lsh`)\n");
-    printk("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
+    cprintf("\nLugalOS Interactive Console Shell (`lsh`)\n");
+    cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
     while (1) {
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));

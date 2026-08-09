@@ -204,6 +204,13 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
         results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
+        # B4/D4: the 9P server -- which is also the filesystem server, since
+        # its handlers are VFS calls -- is a scheduled task rather than
+        # something pumped from the console's busy-wait. Before this a node
+        # answered its peers only while sitting at the prompt.
+        ok, log = session.send_and_expect("cat /proc/ps", r"\d+\s+\w+\s+p9srv", timeout=3.0)
+        results.append(("9P/Filesystem Server Runs As A Task (B4, D4)", ok, log if not ok else ""))
+
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
             "mkdir /sd0/testdir\n"
@@ -520,6 +527,33 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Syscall Boundary Rejects A Foreign Pointer (B3, copy-in/out)",
                         ok, log if not ok else ""))
 
+        # 13c-sexies. B4: the console is a server, not a renamed printf.
+        #
+        # Two independent claims. First, it is reachable through a channel:
+        # writing to /srv/console emits on the terminal, using the same
+        # copy-always IPC as every other service -- which is what lets a task,
+        # or a remote node over 9P, drive it without being the kernel.
+        #
+        # The marker is inside the typed command, which would normally make
+        # this match its own echo (the trap that made the B4 stream test
+        # vacuous). It does not here: send_and_expect() strips the first
+        # occurrence of the command text before matching, so the only way a
+        # match survives is if the endpoint independently emitted the marker.
+        # Without the endpoint running, the reply is a bare "=> #t".
+        ok, log = session.send_and_expect(
+            "write /srv/console CONSOLE_VIA_CHANNEL",
+            r"CONSOLE_VIA_CHANNEL", timeout=4.0)
+        results.append(("Console Reachable As A Channel Service (B4)", ok, log if not ok else ""))
+
+        # Second, ownership is bound by name from the device registry, so
+        # init.lisp decides who owns the terminal. A name that does not
+        # resolve must fail rather than silently leave the console bound to
+        # whatever it had -- otherwise "bound" would mean nothing.
+        ok, log = session.send_and_expect(
+            'lisp\n(console-device)\n(console-bind "nosuchdev")\n(console-bind "uart")\nexit',
+            r'=> "uart"(.|\n)*=> #f(.|\n)*=> #t', timeout=6.0)
+        results.append(("Console Device Bound By Name At Runtime (B4)", ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each
@@ -581,31 +615,52 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # reason. It runs in test_9p_remote_mount() instead, where the default
         # link genuinely exists.
 
-        # Stage a probe file first, while output is still visible. The marker
-        # lives only in the file's *content*, never in a command typed later --
-        # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing
-        # klog entirely, which is why typing still works with every sink
-        # detached), so a marker appearing in a typed command would show up in
-        # the captured terminal text and make the silence check meaningless.
-        session.send_and_expect("write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
-
-        # Detach, then produce output that the terminal must NOT show. The
-        # never-matching pattern is deliberate: send_and_expect returns the
-        # raw captured text on timeout, which is exactly what to assert on.
+        # B4: the two streams are now independent, which is the whole point.
+        # Detaching the kernel-log sink must stop DIAGNOSTICS reaching the
+        # terminal while the SHELL keeps working -- the §5.2 scenario this
+        # track exists to deliver. Before B4 printk() carried both, so
+        # detaching silenced everything, and this test asserted that weaker
+        # (and undesirable) behaviour.
+        # Stage the probe file BEFORE detaching, so the marker exists only in
+        # the file's *content* and never in a command typed afterwards. The
+        # line editor echoes keystrokes to the console, so a marker inside a
+        # typed command would be matched from its own echo and the check would
+        # pass no matter what -- which is exactly what happened when this was
+        # first rewritten, and what B0's original comment had warned about.
+        session.send_and_expect(
+            "write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
         session.send_and_expect("klog detach console", r"\Z\A", timeout=1.0)
-        _, silent_log = session.send_and_expect("cat /ram0/klogprobe.txt", r"\Z\A", timeout=1.5)
-        stayed_silent = "KLOG_RING_PROBE_MARKER" not in silent_log
 
-        # Re-attach and confirm the ring captured what the terminal never saw.
+        # 1. User-facing output still reaches the terminal. The typed command
+        #    does not contain the marker, so only cat's output can match.
+        shell_ok, shell_log = session.send_and_expect(
+            "cat /ram0/klogprobe.txt", r"KLOG_RING_PROBE_MARKER", timeout=4.0)
+
+        # 2. Diagnostics do not. `taskdemo` emits several bracketed [Sched]
+        #    lines through printk(); none may appear while the sink is off.
+        _, diag_log = session.send_and_expect("taskdemo", r"\Z\A", timeout=3.0)
+        diagnostics_silent = "[Sched]" not in diag_log and "[TaskDemo]" not in diag_log
+
+        # 3. The ring kept them anyway, so nothing was lost.
         ok, log = session.send_and_expect(
-            "klog attach console\ncat /proc/kmsg", r"KLOG_RING_PROBE_MARKER", timeout=5.0)
+            "klog attach console\ncat /proc/kmsg", r"\[TaskDemo\]", timeout=6.0)
+
         detail = ""
-        if not stayed_silent:
-            detail = "console sink detach did not suppress terminal output:\n" + silent_log
+        if not shell_ok:
+            detail = "shell output was suppressed along with the log:\n" + shell_log
+        elif not diagnostics_silent:
+            detail = "diagnostics still reached the terminal while detached:\n" + diag_log
         elif not ok:
-            detail = log
-        results.append(("Kernel Log Ring Retains Output While Console Sink Detached (B0, /proc/kmsg)",
-                        ok and stayed_silent, detail))
+            detail = "ring did not retain diagnostics emitted while detached:\n" + log
+        results.append(("Log And Console Are Independent Streams (B4)",
+                        shell_ok and diagnostics_silent and ok, detail))
+
+        # NOTE: the "unknown link name is rejected" assertion deliberately does
+        # NOT live here. On this single-node session no virtconsole is
+        # attached, so a broken name lookup would fall back to a default link
+        # that is also absent and still return #f -- passing for the wrong
+        # reason. It runs in test_9p_remote_mount() instead, where the default
+        # link genuinely exists.
 
         # 14. Interactive Line Editor Backward Cursor Insertion & Backspace Deletion
         # Type "ac", Left Arrow (\x1b[D), type "b" -> "abc", Backspace -> "ac"

@@ -5,6 +5,7 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
+#include "kernel/console.h"
 
 #if !defined(CONFIG_BOARD_RP2350)
 #include "drivers/virtio_console.h"
@@ -56,6 +57,15 @@ static int probe_i2c_rtc(void)  { i2c_rtc_init();  return 0; }
 static int probe_at24c32(void)  { at24c32_init();  return 0; }
 static int probe_usb_cdc(void)  { usb_cdc_init();  return 0; }
 
+/* Console devices, exposed so the console stream can be bound to one by name
+ * at runtime (B4). `uart` is the boot console: already initialised during
+ * bootstrap, so it has no probe. */
+static console_dev_t g_uart_console = { .putc = uart_putc };
+static void *get_uart_console(void) { return &g_uart_console; }
+
+static console_dev_t g_usb_console = { .putc = usb_cdc_putc };
+static void *get_usb_console(void)  { return &g_usb_console; }
+
 static void *get_uart_slip(void)  { return uart_slip_get_link(); }
 static void *get_uart_demux(void) { return uart_demux_get_link(); }
 
@@ -88,6 +98,10 @@ static const dev_driver_t dev_eeprom = {
 };
 static const dev_driver_t dev_usb = {
     .name = "usb", .kind = DEV_KIND_CONSOLE, .probe = probe_usb_cdc,
+    .get = get_usb_console,
+};
+static const dev_driver_t dev_uart = {
+    .name = "uart", .kind = DEV_KIND_CONSOLE, .get = get_uart_console,
 };
 
 /* UART-backed 9P links: present unconditionally (the UART itself is brought
@@ -121,6 +135,7 @@ void board_register_devices(void) {
     dev_register(&dev_rtc);
     dev_register(&dev_eeprom);
     dev_register(&dev_usb);
+    dev_register(&dev_uart);
     dev_register(&dev_uartslip);
     dev_register(&dev_uartdemux);
 #if defined(CONFIG_BOARD_RP2350)

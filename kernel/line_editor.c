@@ -1,5 +1,6 @@
 #include "kernel/line_editor.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "drivers/uart.h"
 #include "drivers/usb_cdc.h"
 #include "fs/vfs.h"
@@ -33,7 +34,7 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
     uart_puts("\r");
     uart_puts(prompt);
     for (int i = 0; i < len; i++) {
-        uart_putc(buf[i]);
+        console_putc(buf[i]);
     }
     uart_puts("\033[K"); // Clear remaining line to the right
 
@@ -121,9 +122,9 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
     int i = 0;
     int current_line = 1;
     while (1) {
-        printk("\033[1;36m%3d │ \033[0m", current_line);
+        cprintf("\033[1;36m%3d │ \033[0m", current_line);
         while (i < len && buf[i] != '\n') {
-            uart_putc(buf[i]);
+            console_putc(buf[i]);
             i++;
         }
         uart_puts("\033[K\r\n");
@@ -147,7 +148,7 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
     for (int m = 0; m < mid_fill; m++) uart_puts("─");
 
     if (status_msg && strlen(status_msg) > 0) {
-        printk(" \033[1;32m%s\033[1;36m ───\033[0m", status_msg);
+        cprintf(" \033[1;32m%s\033[1;36m ───\033[0m", status_msg);
     } else {
         uart_puts(" C-X C-E: eval | C-X C-S: save | C-X C-C: exit ───\033[0m");
     }
@@ -158,7 +159,7 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
         uart_puts("\033[A");
     }
     uart_puts("\r");
-    printk("\033[1;36m%3d │ \033[0m", target_line);
+    cprintf("\033[1;36m%3d │ \033[0m", target_line);
     for (int c = 0; c < target_col; c++) {
         uart_puts("\033[C");
     }
@@ -197,7 +198,7 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
             if (len < max_len - 1) {
                 out_buf[len++] = c;
                 out_buf[len] = '\0';
-                uart_putc(c);
+                console_putc(c);
             }
         }
     }
@@ -663,7 +664,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                     pos++;
                     len++;
                     out_buf[len] = '\0';
-                    uart_putc(c);
+                    console_putc(c);
                 } else {
                     for (int i = len; i > pos; i--) {
                         out_buf[i] = out_buf[i - 1];

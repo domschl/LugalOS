@@ -1,5 +1,6 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
+#include "kernel/console.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
 #include "kernel/sched.h"
@@ -74,6 +75,12 @@ void kernel_main(void) {
      * for /proc/kmsg either way. Must precede time_init(), which logs. */
     klog_sink_register("console", uart_putc);
 
+    /* B4: the user-facing stream, bound to the same device by default so
+     * behaviour is unchanged until something rebinds it. It is a separate
+     * stream, not a second sink: detaching the *log* sink above must not
+     * silence the shell. */
+    console_bind(uart_putc);
+
     time_init();
 
     printk("\n==================================================\n");
@@ -123,7 +130,20 @@ void kernel_main(void) {
         p9_link_register_background((p9_link_t *)link);
     }
 
+    console_server_init();
+
+    /* Re-bind by name now that the registry exists. The bootstrap binding
+     * above had to be a direct function pointer -- the console must work
+     * before any device can be probed -- but that leaves the *reported*
+     * binding as "(none)", which would be a lie the moment anyone asked
+     * which device owns the terminal. */
+    console_bind_device("uart");
+
     sched_init();
+    /* The 9P/filesystem server, now a scheduled task rather than something
+     * pumped from the console's busy-wait (D4). Must follow sched_init(). */
+    p9_server_task_start();
+
     shell_init();
     lisp_init();
 
