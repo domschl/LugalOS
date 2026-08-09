@@ -460,6 +460,66 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "pmpinfo", r"PMP: (writable=\d+|unavailable)", timeout=5.0)
         results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
 
+        # 13c-ter. B3: the M->U (or S->U) transition and the trap path's
+        # scratch-CSR stack swap.
+        #
+        # The assertion that matters is the trap CAUSE, not the output. A
+        # kernel-mode task making the same ecalls prints byte-identical
+        # output, so "UMODE_OK appeared" would pass whether or not the
+        # privilege level ever dropped. The hardware sets cause 8 only for an
+        # ecall taken FROM U-mode (9 = S-mode, 11 = M-mode), so that number is
+        # evidence the kernel cannot fake.
+        #
+        # Reaching it also exercises the B3 stack swap end to end: each ecall
+        # enters the kernel on the task's kernel stack rather than the user
+        # stack it was running on.
+        ok, log = session.send_and_expect(
+            "usertest",
+            r"UMODE_OK(.|\n)*cause: 8 \(U-mode(.|\n)*ended cleanly",
+            timeout=10.0)
+        results.append(("U-mode Task Runs And Syscalls Back (B3)", ok, log if not ok else ""))
+
+        # 13c-quater. B3: per-task memory domains actually enforce.
+        #
+        # The expectation differs by target *by design*, and asserting the
+        # same thing on both would be wrong. D2 put enforcement on the M-mode
+        # targets first: RV32 programs PMP regions and a U-mode store into
+        # kernel memory faults, while RV64 runs in S-mode where PMP CSRs are
+        # inaccessible and Sv39 is still B5 -- so the same store succeeds. The
+        # build reports which case it is rather than quietly implying
+        # isolation it does not have, and this test holds it to that.
+        if "32" in arch_name:
+            pattern = r"faulted: cause \d+(.|\n)*ISOLATED \(kernel memory untouched\)"
+            label = "U-mode Task Cannot Write Kernel Memory (B3, PMP enforced)"
+        else:
+            pattern = r"cannot enforce domains(.|\n)*BREACHED \(user task wrote kernel memory\)"
+            label = "U-mode Isolation Honestly Reported As Unenforced (B3, S-mode awaits B5)"
+        ok, log = session.send_and_expect("isolationtest", pattern, timeout=12.0)
+        results.append((label, ok, log if not ok else ""))
+
+        # 13c-quinquies. B3: the syscall boundary validates user pointers.
+        #
+        # The kernel runs where PMP does not restrict it, so a syscall that
+        # dereferences a caller-supplied address lets a U-mode task reach
+        # memory it cannot touch itself -- the restriction intact and wholly
+        # bypassed. SYS_READ_FILE's `buf` is the vehicle: the kernel writes
+        # into it, so it must be validated against the caller's own domain.
+        #
+        # BOTH halves are asserted. "Refused" alone would pass for a syscall
+        # layer that rejects every pointer, which is useless rather than
+        # secure, so the task must also succeed with a buffer it does own.
+        #
+        # Runs on both targets even though only RV32 enforces: the check reads
+        # the domain's region list rather than the hardware, which is what
+        # keeps copy-in/copy-out honest on a build whose mechanism (Sv39) is
+        # still B5.
+        ok, log = session.send_and_expect(
+            "deputytest",
+            r"DEPUTY_REFUSED(.|\n)*OWNBUF_OK(.|\n)*UNTOUCHED",
+            timeout=12.0)
+        results.append(("Syscall Boundary Rejects A Foreign Pointer (B3, copy-in/out)",
+                        ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

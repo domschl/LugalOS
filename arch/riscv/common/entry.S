@@ -94,14 +94,58 @@ s_mode_start:
     wfi
     j 3b
 
-/* Interrupt / Exception vector entry point */
+/* --- Trap CSR names, by privilege mode ---
+ * The two builds differ only in which CSR set they use, never in structure:
+ * Rule 0 (plan/phase5_distributed_design.md §5.1) applied to the trap path. */
+#if defined(CONFIG_MODE_S)
+#define CSR_SCRATCH sscratch
+#define CSR_EPC     sepc
+#define CSR_STATUS  sstatus
+#define CSR_CAUSE   scause
+#define CSR_TVAL    stval
+#else
+#define CSR_SCRATCH mscratch
+#define CSR_EPC     mepc
+#define CSR_STATUS  mstatus
+#define CSR_CAUSE   mcause
+#define CSR_TVAL    mtval
+#endif
+
+#define TRAP_FRAME_SIZE (36 * REGBYTES)
+
+/* Interrupt / Exception vector entry point.
+ *
+ * B3: the trap path now switches stacks, which U-mode requires -- a trap from
+ * user code must not keep running on the user's stack, or a task could hand
+ * the kernel a bogus (or hostile) sp. Before B3 this vector simply reused the
+ * interrupted sp, which is fine while only the kernel ever traps.
+ *
+ * The invariant is one line, and everything here follows from it:
+ *
+ *     CSR_SCRATCH holds the current task's KERNEL stack pointer while U-mode
+ *     is running, and ZERO while the kernel is running.
+ *
+ * So a single csrrw both switches stacks and reveals where the trap came
+ * from: if the swapped-in value is non-zero we were in U-mode and now hold
+ * the kernel stack; if it is zero we were already in the kernel and the swap
+ * is simply undone. No separate "am I in user mode" flag exists to get out of
+ * sync with reality.
+ *
+ * As of this commit nothing ever enters U-mode, so CSR_SCRATCH is always zero
+ * and this is a behaviour-preserving refactor -- deliberately, so the switch
+ * itself is proven by the existing suite before U-mode is added on top. */
 .align 4
 trap_vector_entry:
-    /* Allocate stack frame for registers (36 * REGBYTES) */
-    addi sp, sp, -(36 * REGBYTES)
+    csrrw sp, CSR_SCRATCH, sp
+    bnez sp, .Ltrap_have_kstack
+    /* Zero came back: this was a kernel trap, so CSR_SCRATCH was 0 and now
+     * holds the interrupted sp. Undo the swap to restore both. */
+    csrrw sp, CSR_SCRATCH, sp
+
+.Ltrap_have_kstack:
+    addi sp, sp, -TRAP_FRAME_SIZE
 
     REG_S ra,  0*REGBYTES(sp)
-    REG_S sp,  1*REGBYTES(sp)
     REG_S gp,  2*REGBYTES(sp)
     REG_S tp,  3*REGBYTES(sp)
     REG_S t0,  4*REGBYTES(sp)
@@ -132,18 +176,29 @@ trap_vector_entry:
     REG_S t5, 29*REGBYTES(sp)
     REG_S t6, 30*REGBYTES(sp)
 
+    /* The interrupted sp. For a user trap CSR_SCRATCH holds it (the csrrw
+     * above parked it there); for a kernel trap CSR_SCRATCH is zero and the
+     * interrupted sp is simply this frame's base plus its size.
+     *
+     * Filling this slot correctly also fixes a long-standing inaccuracy: the
+     * pre-B3 vector stored the *already-decremented* sp here, so every
+     * "[Trap Register Dump] ... sp=" line ever printed reported the trap
+     * frame's own address rather than the sp that was interrupted. t0's
+     * original value is already saved above, so it is free as a temp. */
+    csrr t0, CSR_SCRATCH
+    bnez t0, .Ltrap_sp_known
+    addi t0, sp, TRAP_FRAME_SIZE
+.Ltrap_sp_known:
+    REG_S t0, 1*REGBYTES(sp)
+
+    /* Re-establish the kernel invariant for the duration of the handler. */
+    csrw CSR_SCRATCH, zero
+
     /* Save EPC, status, cause, tval */
-#if defined(CONFIG_MODE_S)
-    csrr t0, sepc
-    csrr t1, sstatus
-    csrr t2, scause
-    csrr t3, stval
-#else
-    csrr t0, mepc
-    csrr t1, mstatus
-    csrr t2, mcause
-    csrr t3, mtval
-#endif
+    csrr t0, CSR_EPC
+    csrr t1, CSR_STATUS
+    csrr t2, CSR_CAUSE
+    csrr t3, CSR_TVAL
 
     REG_S t0, 31*REGBYTES(sp)
     REG_S t1, 32*REGBYTES(sp)
@@ -157,13 +212,26 @@ trap_vector_entry:
     /* Restore EPC and status */
     REG_L t0, 31*REGBYTES(sp)
     REG_L t1, 32*REGBYTES(sp)
+    csrw CSR_EPC, t0
+    csrw CSR_STATUS, t1
+
+    /* If this return goes to U-mode, re-arm CSR_SCRATCH with the kernel
+     * stack pointer so the *next* trap can switch back. t1 still holds the
+     * status word and t0/t1 are restored below, so both are free as temps.
+     *
+     * Previous privilege lives in different bits per mode: SPP is bit 8 of
+     * sstatus, MPP is bits 12:11 of mstatus. Non-zero means we are returning
+     * to a privileged mode and the invariant stays at zero. */
 #if defined(CONFIG_MODE_S)
-    csrw sepc, t0
-    csrw sstatus, t1
+    li t0, (1 << 8)
 #else
-    csrw mepc, t0
-    csrw mstatus, t1
+    li t0, (3 << 11)
 #endif
+    and t0, t1, t0
+    bnez t0, .Ltrap_exit_kernel
+    addi t0, sp, TRAP_FRAME_SIZE
+    csrw CSR_SCRATCH, t0
+.Ltrap_exit_kernel:
 
     /* Restore general registers */
     REG_L ra,  0*REGBYTES(sp)
@@ -197,7 +265,10 @@ trap_vector_entry:
     REG_L t5, 29*REGBYTES(sp)
     REG_L t6, 30*REGBYTES(sp)
 
-    addi sp, sp, (36 * REGBYTES)
+    /* Unconditional, and correct for both kernel and user returns because the
+     * slot always holds the true interrupted sp (see the entry path). Must be
+     * the last frame access: it overwrites the base register. */
+    REG_L sp, 1*REGBYTES(sp)
 
 #if defined(CONFIG_MODE_S)
     sret

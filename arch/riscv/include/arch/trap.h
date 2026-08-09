@@ -41,6 +41,11 @@ void trap_handler(trap_frame_t *frame);
  * fatal path -- a probe should never mask a genuine bug such as a bad load.
  * Assumes the probed instruction is 4 bytes, which every CSR instruction is
  * (there is no compressed encoding for them). */
+/* Cause code of the most recent ecall: 8 from U-mode, 9 from S-mode, 11 from
+ * M-mode. Set by the hardware, so it is proof of the privilege level rather
+ * than a value the kernel chose. */
+uintptr_t arch_last_ecall_cause(void);
+
 void arch_probe_begin(void);
 bool arch_probe_faulted(void);
 

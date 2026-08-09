@@ -2,6 +2,9 @@
 #include "arch/csr.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
+#include "kernel/sched.h"
+#include "kernel/uaccess.h"
+#include <stdbool.h>
 #include "fs/vfs.h"
 #include "drivers/uart.h"
 
@@ -41,6 +44,19 @@ bool arch_probe_faulted(void) {
     return g_probe_faulted;
 }
 
+/* Cause code of the most recent environment call. The hardware picks it by
+ * the privilege level the ecall came FROM -- 8 = U-mode, 9 = S-mode,
+ * 11 = M-mode -- so it is direct evidence of the level, not an inference from
+ * something the kernel set itself.
+ *
+ * That distinction is the whole reason this exists: a U-mode task making
+ * syscalls produces output identical to a kernel task making the same
+ * syscalls, so "it printed" proves nothing about the mode transition. The
+ * cause code does. */
+static uintptr_t g_last_ecall_cause = 0;
+
+uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
+
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
     uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
@@ -51,6 +67,7 @@ void trap_handler(trap_frame_t *frame) {
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
         if (code == 8 || code == 9 || code == 11) {
+            g_last_ecall_cause = code;
             uintptr_t sys_nr = frame->a0;
             int target_pid = (int)frame->a1;
             ipc_msg_t *msg_in = (ipc_msg_t *)frame->a2;
@@ -73,24 +90,71 @@ void trap_handler(trap_frame_t *frame) {
                 case SYS_IPC_RECV:
                     ret = sys_ipc_recv(target_pid, msg_in);
                     break;
-                case 10: /* SYS_PRINT */
-                    if (frame->a1) printk("%s", (const char *)frame->a1);
+                case 10: { /* SYS_PRINT(const char *) */
+                    /* Copied in, never dereferenced in place. A U-mode task
+                     * cannot read kernel memory, but before this it could ask
+                     * the kernel to print it -- the restriction intact and
+                     * entirely bypassed. */
+                    char kbuf[128];
+                    if (strncpy_from_user(kbuf, frame->a1, sizeof(kbuf)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    printk("%s", kbuf);
                     ret = 0;
                     break;
+                }
                 case 11: /* SYS_PUTNUM */
                     printk("%ld", (long)frame->a1);
                     ret = 0;
                     break;
                 case 12: /* SYS_PUTCHAR */
+                    /* Takes a value, not a pointer, so it is already safe to
+                     * call from U-mode. The pointer-taking syscalls below are
+                     * NOT -- they still dereference user-supplied addresses
+                     * directly, which is what B3's copy-in/copy-out step
+                     * exists to fix. Until then, U-mode code must stick to
+                     * value-only syscalls. */
                     uart_putc((char)frame->a1);
                     ret = 0;
                     break;
-                case 13: /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
-                    ret = vfs_read((const char *)frame->a1, (void *)frame->a2, (uint32_t)frame->a3);
+                case SYS_UEXIT:
+                    /* A U-mode task asking to end. task_exit() switches away
+                     * and never returns, so this call does not come back here
+                     * and the trap frame on this kernel stack is simply
+                     * abandoned along with the task. */
+                    task_exit();
+                    ret = 0; /* unreachable */
                     break;
-                case 14: /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
-                    ret = vfs_write((const char *)frame->a1, (const void *)frame->a2, (uint32_t)frame->a3);
+                case 13: { /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
+                    char kpath[128];
+                    static char kdata[512]; /* static: too big for the trap stack */
+                    uint32_t want = (uint32_t)frame->a3;
+                    if (want > sizeof(kdata)) want = sizeof(kdata);
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    int n = vfs_read(kpath, kdata, want);
+                    if (n < 0) { ret = n; break; }
+                    /* Copied out only after the read succeeded, and only as
+                     * many bytes as were actually produced. */
+                    ret = (copy_to_user(frame->a2, kdata, (uint32_t)n) < 0) ? -1 : n;
                     break;
+                }
+                case 14: { /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
+                    char kpath[128];
+                    static char kdata[512];
+                    uint32_t len = (uint32_t)frame->a3;
+                    if (len > sizeof(kdata)) { ret = -1; break; }
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    if (copy_from_user(kdata, frame->a2, len) < 0) { ret = -1; break; }
+                    ret = vfs_write(kpath, kdata, len);
+                    break;
+                }
                 default:
                     printk("[Syscall] Unknown syscall nr %ld requested\n", (long)sys_nr);
                     ret = -1;
@@ -101,6 +165,27 @@ void trap_handler(trap_frame_t *frame) {
             /* Advance EPC past 4-byte ecall instruction */
             frame->epc += 4;
             return;
+        }
+
+        /* B3: a fault taken *from U-mode* kills that task instead of halting
+         * the machine. Containment is the entire point of running a task in
+         * U-mode -- a kernel that halts whenever a user task misbehaves has
+         * enforcement but no benefit from it.
+         *
+         * The previous privilege level comes from the saved status word, where
+         * the hardware recorded it: MPP is mstatus[12:11], SPP is sstatus[8].
+         * Zero means the trap came from U-mode. */
+#if defined(CONFIG_MODE_S)
+        bool from_user = ((frame->status >> 8) & 1u) == 0;
+#else
+        bool from_user = ((frame->status >> 11) & 3u) == 0;
+#endif
+        if (from_user) {
+            printk("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
+                   "terminating the task\n",
+                   (unsigned long)code, (unsigned long)frame->epc,
+                   (unsigned long)frame->tval);
+            task_exit(); /* switches away; never returns */
         }
 
         /* An illegal instruction during a deliberate hardware probe is an

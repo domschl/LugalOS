@@ -21,6 +21,24 @@
  * interleaving with initialization order and 9P link policy.
  */
 
+/* The executable region a U-mode task needs RX access to (B3).
+ *
+ * Must be a power-of-two-sized, self-aligned block for NAPOT, so these are
+ * whole memory-map regions rather than tight bounds around .text. Coarse but
+ * honest: the grant is execute+read only, so a task can run kernel code (it
+ * still cannot execute a single privileged instruction) and read constants,
+ * but cannot modify anything. Tight per-task code regions need user programs
+ * linked separately, which is B6's ELF work. */
+void board_text_region(uintptr_t *base, uintptr_t *size) {
+#if defined(CONFIG_BOARD_RP2350)
+    *base = 0x10000000; /* XIP flash, 4 MB -- code lives here */
+    *size = 4u * 1024 * 1024;
+#else
+    *base = 0x80000000; /* QEMU virt RAM, 128 MB -- code and data both */
+    *size = 128u * 1024 * 1024;
+#endif
+}
+
 uintptr_t board_uart_base(void) {
 #if defined(CONFIG_BOARD_RP2350)
     return 0x40070000;

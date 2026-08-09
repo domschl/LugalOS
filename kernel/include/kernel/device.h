@@ -87,6 +87,9 @@ void *dev_next_with_flags(uint32_t *cursor, dev_kind_t kind, uint32_t flags);
  * because printk() must work before anything else can be probed. */
 uintptr_t board_uart_base(void);
 
+/* Power-of-two, self-aligned executable region for U-mode tasks (B3). */
+void board_text_region(uintptr_t *base, uintptr_t *size);
+
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 

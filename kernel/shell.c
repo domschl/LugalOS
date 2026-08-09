@@ -2,6 +2,8 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
 #include "kernel/palloc.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -12,6 +14,9 @@
 #include "fs/p9_link.h"
 #include "arch/elf.h"
 #include "arch/pmp.h"
+#include "arch/umode.h"
+#include "arch/trap.h"
+#include "kernel/ipc.h"
 #include "chibicc.h"
 #include "lisp.h"
 #include "ed.h"
@@ -75,6 +80,9 @@ static void cmd_help(void) {
     printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
     printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
+    printk("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
+    printk("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
+    printk("  deputytest      - U-mode task asks the kernel to read kernel memory (B3)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -212,6 +220,229 @@ static void taskdemo_body(void *arg) {
     }
 }
 
+/* B3: proves the M->U transition and the trap path's stack swap.
+ *
+ * The user function below runs with the privilege level actually lowered: it
+ * cannot touch CSRs, cannot execute privileged instructions, and traps into
+ * the kernel for every ecall. Each ecall exercises the scratch-CSR swap added
+ * in B3's first commit -- entering the kernel on the task's kernel stack
+ * rather than on the user stack it was using.
+ *
+ * SYS_PUTCHAR is used deliberately: it passes a *value*, not a pointer. The
+ * pointer-taking syscalls still dereference user addresses directly, and
+ * calling one from here would "work" only because nothing separates the
+ * address spaces yet. That is B3's copy-in/copy-out step, not this one. */
+static void user_probe(void) {
+    const char msg[] = "UMODE_OK";
+    for (int i = 0; msg[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)msg[i]) : "a0", "a1");
+    }
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { }
+}
+
+/* The isolation probe: a U-mode task writing to kernel memory it was never
+ * granted. Under a correct domain this faults on the store and the task is
+ * terminated; with the wide-open grant B3's previous step used, it silently
+ * succeeds. That difference is the whole claim, and it is why this exists as
+ * a separate command rather than being folded into user_probe(). */
+static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
+
+static void user_intruder(void) {
+    /* g_kernel_canary is kernel .data: readable under the RX region below,
+     * but never writable by any region in this task's domain. */
+    g_kernel_canary = 0xDEAD;
+    /* Only reached if the store was NOT stopped. Report that explicitly --
+     * silence would look identical to a correctly terminated task. */
+    const char bad[] = "NOT_ISOLATED";
+    for (int i = 0; bad[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)bad[i]) : "a0", "a1");
+    }
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { }
+}
+
+/* The confused-deputy probe: can a U-mode task get the kernel to write to
+ * kernel memory on its behalf?
+ *
+ * The isolation test proves the task cannot store into kernel memory itself.
+ * This asks the harder question -- whether it can hand the kernel a
+ * destination pointer and have the kernel do it, which is the hole that
+ * remains whenever a syscall dereferences a caller-supplied address. The
+ * kernel runs where PMP does not restrict it, so the restriction would stay
+ * intact and be entirely bypassed.
+ *
+ * SYS_READ_FILE is the vehicle: its `buf` argument is a destination the
+ * kernel writes into, validated by copy_to_user() against the caller's own
+ * domain (MEM_W). Both outcomes are asserted, and the second matters as much
+ * as the first: a syscall layer that rejects every pointer would pass the
+ * "refused" half while being useless.
+ *
+ * The *read* direction (a source pointer into kernel memory) is deliberately
+ * not asserted here. On QEMU the text region is one coarse RX grant over all
+ * of RAM, so kernel data is legitimately readable by U-mode and there is
+ * nothing to catch -- a limitation of the coarse region, not of the
+ * validation. Tight per-task code/data regions need separately linked user
+ * programs, which is B6's ELF work.
+ */
+static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
+
+/* NOTE on the "memory" clobbers below: an ecall passing a pointer must tell
+ * the compiler that memory is read or written. Without it GCC sees only the
+ * pointer value crossing into the asm, concludes nothing ever reads the
+ * buffer's contents, and deletes the code that filled it. That happened here:
+ * on RP2350 (-Os) the path string was optimised away entirely, the kernel
+ * received a pointer to zeroed stack, and the syscall failed on the empty
+ * path -- which looked exactly like the destination check doing its job. A
+ * test that passes for the wrong reason is worse than one that fails. */
+
+static void user_deputy(void) {
+    char path[] = "/proc/version";
+    char mybuf[64];
+    long rc;
+
+    /* 1. Destination = kernel memory the task does not own. Must be refused. */
+    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
+                         "ecall\n mv %0, a0"
+                         : "=r"(rc)
+                         : "r"(13), "r"((uintptr_t)path),
+                           "r"((uintptr_t)&g_deputy_target), "r"(16)
+                         : "a0", "a1", "a2", "a3", "memory");
+    const char refused[] = "DEPUTY_REFUSED";
+    const char leaked[]  = "DEPUTY_WROTE_KERNEL";
+    const char *m = (rc < 0) ? refused : leaked;
+    for (int i = 0; m[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    }
+
+    /* 2. Destination = the task's own stack. Must succeed. */
+    __asm__ __volatile__("mv a0, %1\n mv a1, %2\n mv a2, %3\n mv a3, %4\n"
+                         "ecall\n mv %0, a0"
+                         : "=r"(rc)
+                         : "r"(13), "r"((uintptr_t)path),
+                           "r"((uintptr_t)mybuf), "r"(32)
+                         : "a0", "a1", "a2", "a3", "memory");
+    const char own_ok[]  = " OWNBUF_OK";
+    const char own_bad[] = " OWNBUF_REJECTED";
+    m = (rc >= 0) ? own_ok : own_bad;
+    for (int i = 0; m[i]; i++) {
+        __asm__ __volatile__("mv a0, %0\n mv a1, %1\n ecall"
+                             :: "r"(12), "r"((uintptr_t)m[i]) : "a0", "a1");
+    }
+
+    __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
+    for (;;) { }
+}
+
+/* 1 KB, aligned to its own size: NAPOT regions must be power-of-two sized and
+ * self-aligned, comfortably above RP2350's 32-byte granule.
+ * mem_domain_add() rejects anything else rather than silently widening it. */
+static uint8_t g_user_stack[1024] __attribute__((aligned(1024)));
+static mem_domain_t g_user_domain;
+
+/* Set only once a task has actually reached U-mode. Without it the isolation
+ * report is a false positive on any core where the domain could not be
+ * installed: the canary is untouched because nothing ran, which reads
+ * identically to "the write was correctly blocked". */
+static volatile bool g_user_entered;
+
+static void user_task_common(void (*entry)(void)) {
+    mem_domain_init(&g_user_domain);
+
+    /* Order matters: PMP resolves against the lowest-numbered matching
+     * region, so the narrow RW grant for this task's own stack must come
+     * before the broad RX grant that also covers it. */
+    mem_domain_add(&g_user_domain, (uintptr_t)g_user_stack, sizeof(g_user_stack),
+                   MEM_R | MEM_W);
+
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_user_domain, tbase, tsize, MEM_R | MEM_X);
+
+    if (task_set_domain(sched_current_pid(), &g_user_domain) != 0) {
+        /* The hardware did not install the domain as written, so nothing here
+         * knows what this task would actually be allowed to touch. Refusing is
+         * the only honest option -- entering U-mode anyway would report
+         * "isolated" on the strength of a restriction that was never verified. */
+        printk("[UserTest] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_user_entered = true;
+    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack));
+}
+
+static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
+static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
+static void deputy_body(void *arg)    { (void)arg; user_task_common(user_deputy); }
+
+static void run_user_task(const char *name, void (*body)(void *)) {
+    g_user_entered = false;
+    int pid = task_create(name, body, NULL);
+    if (pid < 0) {
+        printk("[UserTest] Could not create the task\n");
+        return;
+    }
+    for (int i = 0; i < 64; i++) sched_yield();
+}
+
+static void cmd_usertest(void) {
+    if (!mem_domain_enforced()) {
+        printk("[UserTest] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5).\n");
+    }
+    run_user_task("usertest", usertest_body);
+
+    uintptr_t c = arch_last_ecall_cause();
+    printk("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
+           c == 8 ? "U-mode -- privilege level really dropped"
+                  : "NOT U-mode -- the transition did not happen");
+    printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
+}
+
+static void cmd_deputytest(void) {
+    g_deputy_target = 0xFEEDFACE;
+    printk("[Deputy] Kernel target at %p holds 0x%lx before.\n",
+           (const void *)&g_deputy_target, (unsigned long)g_deputy_target);
+    run_user_task("deputy", deputy_body);
+    if (!g_user_entered) {
+        printk("\n[Deputy] INCONCLUSIVE -- the task never entered U-mode.\n");
+        return;
+    }
+    printk("\n[Deputy] Kernel target holds 0x%lx after -- %s\n",
+           (unsigned long)g_deputy_target,
+           g_deputy_target == 0xFEEDFACE ? "UNTOUCHED"
+                                         : "OVERWRITTEN VIA THE KERNEL");
+}
+
+static void cmd_usertest_isolation(void) {
+    /* State the enforcement capability here, not only in usertest: this is
+     * the command whose result is meaningless without it. A "BREACHED" line
+     * with no explanation reads as a bug rather than as the documented state
+     * of a build whose mechanism (Sv39) is still B5. */
+    if (!mem_domain_enforced()) {
+        printk("[Isolation] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5),\n");
+        printk("[Isolation]       so the write below is EXPECTED to succeed.\n");
+    }
+    g_kernel_canary = 0xC0FFEE;
+    printk("[Isolation] Canary before: 0x%lx\n", (unsigned long)g_kernel_canary);
+    run_user_task("intruder", intruder_body);
+
+    if (!g_user_entered) {
+        /* The task never reached U-mode, so the canary proves nothing about
+         * isolation. Saying "ISOLATED" here would be a false positive of
+         * exactly the kind this whole command exists to rule out. */
+        printk("[Isolation] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[Isolation] Canary after:  0x%lx -- %s\n",
+           (unsigned long)g_kernel_canary,
+           g_kernel_canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                                       : "BREACHED (user task wrote kernel memory)");
+}
+
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -322,6 +553,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "pmpinfo") == 0) {
         pmp_report();
+        return;
+    } else if (strcmp(cmd_line, "usertest") == 0) {
+        cmd_usertest();
+        return;
+    } else if (strcmp(cmd_line, "isolationtest") == 0) {
+        cmd_usertest_isolation();
+        return;
+    } else if (strcmp(cmd_line, "deputytest") == 0) {
+        cmd_deputytest();
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();

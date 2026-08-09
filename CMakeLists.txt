@@ -125,6 +125,7 @@ set(SOURCES
     kernel/board.c
     kernel/chan.c
     kernel/palloc.c
+    kernel/uaccess.c
     kernel/time.c
     kernel/ipc.c
     kernel/sched.c
@@ -134,6 +135,9 @@ set(SOURCES
 
     arch/riscv/common/entry.S
     arch/riscv/common/switch.S
+    arch/riscv/common/umode.S
+    arch/riscv/common/umode.c
+    arch/riscv/common/mem_domain.c
 
     arch/riscv/common/trap.c
     arch/riscv/common/pmp_probe.c

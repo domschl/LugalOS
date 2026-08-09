@@ -68,7 +68,7 @@ void pmp_probe(pmp_info_t *out) {
     out->mode_m = true;
     out->num_entries = 0;
     out->num_hardwired = 0;
-    out->num_active_at_boot = 0;
+    out->num_active = 0;
     out->addr_stuck_low_bits = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
@@ -108,7 +108,7 @@ void pmp_probe(pmp_info_t *out) {
         for (unsigned i = 0; i < sizeof(uintptr_t); i++) {
             uint8_t cfg = (uint8_t)(cfg_saved[reg] >> (i * 8));
             if (cfg & 0x80u) out->any_locked = true;
-            if ((cfg >> 3) & 0x3u) out->num_active_at_boot++;
+            if ((cfg >> 3) & 0x3u) out->num_active++;
         }
     }
 
@@ -138,10 +138,13 @@ void pmp_probe(pmp_info_t *out) {
     uint32_t stuck = 0;
     while (stuck < sizeof(uintptr_t) * 8 && ((zero_readback >> stuck) & 1u)) stuck++;
     out->addr_stuck_low_bits = (int)stuck;
-    /* granularity_log2 is log2(bytes). With no stuck bits the floor is 4
-     * bytes (NA4). Each stuck bit doubles the smallest encodable NAPOT
-     * region. */
-    out->granularity_log2 = 2 + (int)stuck;
+    /* A NAPOT value with k trailing ones matches 8 << k bytes, so the
+     * smallest region the hardware can decode is 8 << (fixed low bits).
+     * RP2350: two fixed bits -> 32 bytes, which the datasheet states
+     * directly (§3.8.3.1) and which this now agrees with. An earlier version
+     * computed 2 + stuck and reported 16, off by one because it assumed the
+     * NA4 floor of 4 bytes -- but NA4 is not implemented here. */
+    out->granularity_log2 = 3 + (int)stuck;
 
     /* --- entry count --- */
 #define PROBE_STEP(n) do { readback = 0; faulted = false; writable = false;   \
@@ -188,7 +191,7 @@ void pmp_probe(pmp_info_t *out) {
     out->mode_m = false;
     out->num_entries = 0;
     out->num_hardwired = 0;
-    out->num_active_at_boot = 0;
+    out->num_active = 0;
     out->addr_stuck_low_bits = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
@@ -267,8 +270,8 @@ void pmp_report(void) {
         return;
     }
 
-    printk("PMP: writable=%d active_at_boot=%d min_region=%lu bytes locked=%s\n",
-           info.num_entries, info.num_active_at_boot,
+    printk("PMP: writable=%d active=%d min_region=%lu bytes locked=%s\n",
+           info.num_entries, info.num_active,
            (unsigned long)(1UL << info.granularity_log2),
            info.any_locked ? "yes" : "no");
 
@@ -283,9 +286,9 @@ void pmp_report(void) {
         /* Entries already active at boot are writable but not free: on RP2350
          * they grant U-mode access to the boot ROM, peripherals and SIO. B3
          * can reclaim them, but only by deciding what loses that access. */
-        int free_now = info.num_entries - info.num_active_at_boot;
+        int free_now = info.num_entries - info.num_active;
         printk("     Free for B3: %d (+%d reclaimable, already granting U-mode access)\n",
-               free_now, info.num_active_at_boot);
+               free_now, info.num_active);
         if (info.addr_stuck_low_bits) {
             printk("     Note: pmpaddr[%d:0] read as ones after a zero write, so the\n"
                    "     smallest encodable region is %lu bytes, not 4.\n",

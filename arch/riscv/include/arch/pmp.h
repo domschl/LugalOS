@@ -18,7 +18,7 @@ typedef struct {
     int  num_entries;      /* CONFIGURABLE (writable) entries -- B3's real budget */
     int  num_hardwired;    /* read-only entries fixed by the silicon (RP2350: 3) */
     int  granularity_log2; /* log2(bytes); 2 means 4-byte granularity */
-    int  num_active_at_boot; /* entries with cfg.A != 0 before we touched anything */
+    int  num_active;      /* entries with cfg.A != 0 right now */
     int  addr_stuck_low_bits; /* pmpaddr low bits that survive a zero write */
     bool any_locked;       /* an entry was already locked at boot */
 } pmp_info_t;

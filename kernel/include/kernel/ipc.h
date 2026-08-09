@@ -11,6 +11,11 @@
 
 #define IPC_ANY -1
 
+/* B3: a U-mode task's only way back out. Handled in trap.c by ending the
+ * calling task -- a user task cannot call task_exit() itself, since that is
+ * kernel code manipulating kernel state. */
+#define SYS_UEXIT 20
+
 /* Zero-copy register IPC message payload (fits in a1..a6) */
 typedef struct ipc_msg {
     uintptr_t tag;
