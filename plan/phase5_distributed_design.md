@@ -4,7 +4,8 @@
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
 > **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
 > microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
-> **B0 (M6) is complete as of 2026-08-09**; B1 (M7, `chan_t`) is next. D2, D5 and D6 are resolved;
+> **B0 (M6) and B1 (M7) are complete as of 2026-08-09**; B2 (M8, tasks + scheduler) is next
+> — note its hard gate, [D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate). D2, D5 and D6 are resolved;
 > D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
@@ -836,6 +837,30 @@ stricter target catches the bugs the looser one would silently tolerate.
 These are not descriptions of the outcome; they are constraints that must be imposed from the first
 commit, because each one is cheap to honor up front and expensive to retrofit.
 
+#### Rule 0 — The NOMMU build obeys the MMU build's design constraints
+
+**The general paradigm, of which Rules 1–3 are instances.** Wherever the two builds could differ,
+the constrained one wins: NOMMU is written as though an address-space boundary were present, even
+though it is not. The NOMMU build is never allowed to take a shortcut that the MMU build cannot
+also take.
+
+This costs something real (a redundant memcpy here, an extra indirection there) and buys three
+things:
+
+1. **One set of server sources**, correct under both builds — the entire justification for building
+   both.
+2. **The stricter target catches the looser target's bugs**, which is only true if they are running
+   the same code.
+3. **Remoting comes out nearly free, and this is not a coincidence.** An address-space boundary and
+   a network boundary impose the *same* requirement: no shared pointers, everything explicitly
+   serialized, failure always possible. Code written to survive the first already survives the
+   second. Track A is the existing proof — a 9P server across a USB cable needed no protocol design
+   beyond what a local server needs — and B1 deliberately reuses that machinery for the local case
+   rather than shortcutting past it.
+
+The inverse framing is the trap to avoid: *"NOMMU is simpler, so let it be simpler."* That produces
+two systems, two IPC designs, and no cross-validation.
+
 #### Rule 1 — Copy-always IPC, even where copying is "unnecessary"
 
 The predictable failure mode: on NOMMU it costs nothing to pass a pointer, so the NOMMU IPC quietly
@@ -1115,6 +1140,61 @@ log is retained regardless of sink state, and it is readable locally *and remote
 
 *Risk: low–medium. New primitive, but it lands beside an already-working remote equivalent.*
 
+##### B1 completion notes (2026-08-09) — **B1/M7 COMPLETE**
+
+All three targets build clean; `tests/runner.py` passes **103/103** (RV64 + RV32, eight new tests —
+four per architecture, up from 95).
+
+- **`kernel/chan.c` / `kernel/include/kernel/chan.h`**: named server endpoints, synchronous
+  request/response, **two copies per call** (request in, response out) so a handler only ever
+  touches endpoint-owned memory. Buffers are supplied by the registrant — this kernel has no
+  malloc, and it keeps the layer free of any assumption about message size.
+- **No queue depth, deliberately.** With no scheduler a message can never wait for a receiver that
+  isn't already running, so a depth-N ring would be untestable capacity — a liability, not a
+  feature. **B2 must revisit**: `chan_call()` splits into a real blocking rendezvous and the `busy`
+  flag becomes a wait queue.
+- **`fs/p9_chan.c`**: the local 9P server as a channel endpoint, exposed as an ordinary `p9_link_t`.
+  `p9_server_process()` already had exactly the handler shape required, which is not luck — A3 wrote
+  it to be driven from a wire.
+- **There is no `MOUNT_LOCAL9P`, and that is the result rather than a shortcut.** `vfs_mount_local()`
+  is `vfs_mount_remote()` handed a channel-backed link; every layer below — `p9_remote_open/pread/
+  pwrite/readdir`, `vfs_open()`'s `MOUNT_REMOTE9P` branch — is reused unchanged. Adding a parallel
+  local mount kind would have *weakened* the demonstration it exists to make.
+- **`/srv/` no longer passes a caller pointer.** The write path built
+  `ipc_msg_t{.data = {(uintptr_t)buf, len, …}}` and handed it to `sys_ipc_call()` — the exact
+  shortcut §5.1 predicted would force the two builds apart. It now goes through `chan_call()`. A
+  declared service with no channel bound reports failure instead of the old unconditional `0`:
+  claiming a write succeeded when nothing consumed it is worse than an honest error.
+- **`loopback_9p_cat()` deleted (~60 lines)** in favour of `p9_link_cat()` over the local link — the
+  *same client code* now drives the local server and a peer across a USB cable. `loopback_send_9p()`
+  also routes through the channel, so every pre-existing loopback test exercises copy-always IPC.
+- **New `(mount-local "name")` Lisp primitive.**
+
+**Bug found by this work, and the reason the local case was worth building
+(`fs/vfs_server.c`, `vfs_open()`):** the handle table's slot was marked `in_use` only on the success
+path at the very end. Harmless while every backend was a straight-line local call. Once a mount can
+be served by *this same node* over a channel, opening `/<local>/proc/version` makes the 9P server
+re-enter `vfs_open()` for `/proc/version` while the outer call is still in flight; the inner call
+found the slot still free, took it, and the outer call then overwrote the inner handle with its own
+remote state. The server's fid then referred to a `MOUNT_REMOTE9P` handle, so its next `vfs_pread()`
+bounced straight back into the channel and was refused as re-entrant — surfacing as a bare
+"cannot read path" two layers from the cause. Fixed by reserving the slot *before* any work that can
+re-enter, and releasing it on failure.
+
+**A truly remote peer could never have exposed this** — its `vfs_open()` runs on another machine.
+That is the concrete argument for Rule 0 beyond tidiness: forcing the local case through the remote
+machinery puts client and server in one address space, where shared-state bugs become reachable
+*and* reproducible in CI, instead of waiting for B3's hardware boundary to turn them into faults.
+
+- **Verified by falsification**: reverting the slot reservation to its old position fails the
+  local-mount read test on both architectures (101/103). Recursive `/self/self/…` is covered too —
+  it must fail cleanly rather than hang or corrupt the outer call's single-slot buffer.
+- **Honest limit on what the tests prove.** The copies themselves are *not* observable on a
+  single-address-space build: deleting them and passing the caller's pointer through would pass
+  every test here. Rule 1 is therefore enforced by construction and review, not by assertion, until
+  **B3** puts a real boundary in place and makes a violation fault. What the tests *do* cover is the
+  bounded behaviour around the copies — capacity rejection and the re-entrancy guard.
+
 #### B2 — Tasks, cooperative scheduling — **gated on Track A staying green**
 
 The first genuinely large step.
@@ -1215,7 +1295,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M4** | A5 mount table / remote namespace | M3 | Done |
 | **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
 | **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
-| **M7** | **B1** `chan_t` copy-always channels + `MOUNT_LOCAL9P` | M6 | Not started |
+| **M7** | **B1** `chan_t` copy-always channels + local channel-backed mount | M6 | **Done (2026-08-09)** — see B1's completion notes. `kernel/chan.c` (copy-always endpoints), `fs/p9_chan.c` (local 9P server as an ordinary `p9_link_t`), `vfs_mount_local()`. Notably there is **no** `MOUNT_LOCAL9P` kind: a local mount is `vfs_mount_remote()` with a channel-backed link, reusing every layer below unchanged. `/srv/`'s pointer-passing retired; `loopback_9p_cat()` (~60 lines) deleted in favour of the shared `p9_link_cat()`. Found and fixed a latent `vfs_open()` handle-slot reservation bug that only a re-entrant (local) mount can expose. Tests 95→103. |
 | **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing — **gated on M3/M4 tests still passing with the scheduler on** | M7 | Not started |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |
 | **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |

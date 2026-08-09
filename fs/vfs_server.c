@@ -2,6 +2,7 @@
 #include "fs/fat32.h"
 #include "fs/9p.h"
 #include "fs/p9_link.h"
+#include "fs/p9_chan.h"
 #include "drivers/block.h"
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
@@ -11,6 +12,7 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
+#include "kernel/chan.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -197,6 +199,25 @@ int vfs_mount_remote(const char *name, p9_link_t *link) {
     ksnprintf(e->label, sizeof(e->label), "Remote 9P Namespace (%s)", link->name ? link->name : "?");
     printk("[VFS Server] Mounted remote 9P namespace on /%s/ (link '%s')\n", name, link->name ? link->name : "?");
     return 0;
+}
+
+/* Attaches this node's OWN 9P server at /<name>/, over a local channel
+ * (B1). Note what this function does not do: there is no MOUNT_LOCAL9P kind,
+ * no local-specific handle code, no second dispatch path. A local mount is
+ * vfs_mount_remote() handed a channel-backed link instead of a wire-backed
+ * one, and everything downstream -- p9_remote_open/pread/pwrite/readdir,
+ * vfs_open()'s MOUNT_REMOTE9P branch -- is reused unchanged.
+ *
+ * That reuse *is* the deliverable. Because the copy-always discipline an
+ * address-space boundary would impose is already being obeyed with no
+ * boundary present, "local" and "remote" stopped being different problems.
+ * It is also why walking into /<name>/<name>/... is possible: bounded by
+ * chan_call()'s re-entrancy check, which fails the inner call rather than
+ * corrupting the outer one. */
+int vfs_mount_local(const char *name) {
+    p9_link_t *link = p9_chan_get_link();
+    if (!link) return -1;
+    return vfs_mount_remote(name, link);
 }
 
 /* Detaches a remote mount added via vfs_mount_remote(). Only ever removes
@@ -424,21 +445,12 @@ static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
  * into g_handles[]) on success or -1 on failure. /srv/ (message-oriented
  * IPC channels) is deliberately not handle-addressable -- see the comment
  * on this API in fs/include/fs/vfs.h. */
-int vfs_open(const char *path, int flags) {
-    if (!path) return -1;
-
-    int slot = -1;
-    for (int i = 0; i < VFS_MAX_HANDLES; i++) {
-        if (!g_handles[i].in_use) { slot = i; break; }
-    }
-    if (slot < 0) return -1;
-
+/* Fills an already-reserved handle. Split out of vfs_open() so that the
+ * slot can be marked in_use *before* any of this runs -- see vfs_open(). */
+static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
     bool is_root;
     const char *rel = NULL;
     mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
-
-    vfs_handle_t *h = &g_handles[slot];
-    memset(h, 0, sizeof(*h));
 
     if (is_root) {
         h->kind = VFS_KIND_ROOT;
@@ -508,8 +520,47 @@ int vfs_open(const char *path, int flags) {
         return -1; // MOUNT_SRV: not handle-addressable
     }
 
-    h->flags = flags;
+    return 0;
+}
+
+int vfs_open(const char *path, int flags) {
+    if (!path) return -1;
+
+    int slot = -1;
+    for (int i = 0; i < VFS_MAX_HANDLES; i++) {
+        if (!g_handles[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    vfs_handle_t *h = &g_handles[slot];
+    memset(h, 0, sizeof(*h));
+
+    /* Reserve the slot BEFORE doing any work that might re-enter vfs_open().
+     *
+     * This used to be set only on the success path at the very end, which was
+     * fine while every backend was a straight-line local call. It stopped
+     * being fine the moment a mount could be served by this same node over a
+     * channel (B1's vfs_mount_local()): opening /<local>/proc/version makes
+     * the 9P server re-enter vfs_open() for /proc/version *while this call is
+     * still in flight*, the inner call finds this slot still marked free,
+     * takes it, and the outer call then overwrites the inner handle with its
+     * own remote state. The server's fid then pointed at a MOUNT_REMOTE9P
+     * handle, so its next vfs_pread() bounced straight back into the channel
+     * and was refused as re-entrant -- a genuinely confusing failure two
+     * layers away from the cause.
+     *
+     * A truly remote peer could never expose this (its vfs_open() runs on
+     * another machine), which is exactly why exercising the local case is
+     * worth doing: it puts the client and server in one address space, where
+     * shared-state bugs like this one become reachable. */
     h->in_use = true;
+
+    if (vfs_open_into(h, path, flags) < 0) {
+        memset(h, 0, sizeof(*h)); /* releases the reservation */
+        return -1;
+    }
+
+    h->flags = flags;
     return slot;
 }
 
@@ -753,15 +804,28 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
         } else if (strcmp(rel, "uart_9p") == 0 || strcmp(rel, "net0") == 0) {
             return uart_net_rpc((const char *)buf, NULL, 0);
         }
+        /* B1 Rule 1: a /srv/ write is a *message*, delivered by copy through
+         * a channel. This used to build an ipc_msg_t carrying
+         * `.data = { (uintptr_t)buf, len, ... }` -- the caller's raw pointer
+         * handed to another "task" -- which is exactly the shortcut that
+         * cannot survive an address-space boundary and would have forced the
+         * MMU and NOMMU builds apart. chan_call() copies in and out; nothing
+         * a handler sees belongs to the caller. */
+        chan_endpoint_t *ep = chan_lookup(rel);
+        if (ep) {
+            uint8_t reply[64];
+            int n = chan_call(ep, (const uint8_t *)buf, len, reply, sizeof(reply));
+            return (n < 0) ? -1 : 0;
+        }
         for (int i = 0; i < g_num_services; i++) {
             if (strcmp(rel, g_services[i].name) == 0) {
-                printk("[VFS Router] Forwarding %d byte payload to /srv/%s (PID %d) over IPC...\n",
-                       len, g_services[i].name, g_services[i].target_pid);
-
-                ipc_msg_t msg_in = { .tag = VFS_TAG_WRITE, .data = { (uintptr_t)buf, len, 0, 0, 0 } };
-                ipc_msg_t msg_out = {0};
-                sys_ipc_call(g_services[i].target_pid, &msg_in, &msg_out);
-                return 0;
+                /* A declared service with no channel behind it yet. Reports
+                 * failure rather than the old unconditional 0: claiming a
+                 * write succeeded when nothing consumed it is worse than an
+                 * honest error, and nothing in the tree depends on the lie. */
+                printk("[VFS Router] '/srv/%s' has no channel endpoint bound\n",
+                       g_services[i].name);
+                return -1;
             }
         }
         return -1;

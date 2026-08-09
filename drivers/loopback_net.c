@@ -1,16 +1,28 @@
 #include "drivers/loopback_net.h"
 #include "fs/9p.h"
+#include "fs/p9_chan.h"
+#include "fs/p9_link.h"
+#include "kernel/chan.h"
 #include "kernel/printk.h"
 #include <string.h>
 
 void loopback_net_init(void) {
     p9_init();
+    p9_chan_init();
     printk("[Loopback 9P] In-Memory Transport Gateway Online.\n");
 }
 
+/* B1: goes through the "p9" channel endpoint rather than calling
+ * p9_server_process() directly with the caller's buffers. The two copies
+ * chan_call() performs are redundant in this single-address-space build and
+ * are done anyway -- see kernel/chan.h on why the NOMMU path deliberately
+ * obeys the MMU path's constraints. Net effect: every existing loopback test
+ * now exercises the copy-always channel. */
 int loopback_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
-    return p9_server_process(req_buf, req_len, resp_buf, resp_max);
+    chan_endpoint_t *ep = chan_lookup("p9");
+    if (!ep) return -1;
+    return chan_call(ep, req_buf, req_len, resp_buf, resp_max);
 }
 
 /* Drives a full 9P session against a real file on /ram0 -- attach, walk to
@@ -110,80 +122,12 @@ int loopback_9p_rpc(const char *write_payload, char *read_out_buf, uint32_t read
     return result;
 }
 
+/* B1: was a ~60-line hand-rolled Tversion/Tattach/Twalk/Topen/Tread/Tclunk
+ * sequence duplicating fs/p9_link.c's p9_link_cat() (A4), which does exactly
+ * the same thing over any p9_link_t. Now that the local 9P server is reachable
+ * as an ordinary link (fs/p9_chan.c), the duplicate is gone: the *same client
+ * code* drives the local server and a peer across a USB cable. That
+ * equivalence is what B1 exists to demonstrate. */
 int loopback_9p_cat(const char *path, char *out_buf, uint32_t out_max) {
-    if (!path) return -1;
-    while (*path == '/') path++;
-
-    static uint8_t tx_buf[1024];
-    static uint8_t rx_buf[1024];
-
-    // 1. Tversion
-    p9_msg_t tv = { .type = P9_TVERSION, .tag = 1, .msize = 1024 };
-    int tx_len = p9_serialize(&tv, tx_buf, sizeof(tx_buf));
-    int rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
-
-    // 2. Tattach fid=1 at the namespace root "/".
-    p9_msg_t ta = { .type = P9_TATTACH, .tag = 2, .fid = 1, .uname = "lugal" };
-    tx_len = p9_serialize(&ta, tx_buf, sizeof(tx_buf));
-    rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
-
-    // 3. Twalk fid=1 -> newfid=2, splitting `path` into up to
-    // P9_MAX_WALK_ELEM components -- a single Twalk carrying every
-    // component, exercising the multi-component walk (A2's Twalk
-    // requirement), not a bare single-name walk.
-    p9_msg_t tw = { .type = P9_TWALK, .tag = 3, .fid = 1, .newfid = 2 };
-    char pathcopy[128];
-    strncpy(pathcopy, path, sizeof(pathcopy) - 1);
-    pathcopy[sizeof(pathcopy) - 1] = '\0';
-    uint16_t n = 0;
-    char *tok = pathcopy;
-    while (*tok && n < P9_MAX_WALK_ELEM) {
-        char *slash = strchr(tok, '/');
-        if (slash) *slash = '\0';
-        if (*tok) {
-            strncpy(tw.wname[n], tok, P9_MAX_NAME_LEN - 1);
-            n++;
-        }
-        if (!slash) break;
-        tok = slash + 1;
-    }
-    tw.nwname = n;
-    tx_len = p9_serialize(&tw, tx_buf, sizeof(tx_buf));
-    rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
-    p9_msg_t wr;
-    if (p9_deserialize(rx_buf, (uint32_t)rx_len, &wr) < 0 || wr.type != P9_RWALK || wr.nwqid != n) return -1;
-
-    // 4. Topen fid=2 for read.
-    p9_msg_t to = { .type = P9_TOPEN, .tag = 4, .fid = 2, .mode = P9_OREAD };
-    tx_len = p9_serialize(&to, tx_buf, sizeof(tx_buf));
-    rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
-
-    // 5. Tread fid=2.
-    p9_msg_t tr = { .type = P9_TREAD, .tag = 5, .fid = 2, .offset = 0, .count = (out_max > 0) ? (out_max - 1) : 0 };
-    tx_len = p9_serialize(&tr, tx_buf, sizeof(tx_buf));
-    rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-    if (rx_len < 7) return -1;
-
-    p9_msg_t rr;
-    if (p9_deserialize(rx_buf, (uint32_t)rx_len, &rr) < 0 || rr.type != P9_RREAD) return -1;
-
-    int result = -1;
-    if (out_buf && out_max > 0) {
-        uint32_t copy_cnt = rr.count;
-        if (copy_cnt >= out_max) copy_cnt = out_max - 1;
-        if (rr.data && copy_cnt > 0) memcpy(out_buf, rr.data, copy_cnt);
-        out_buf[copy_cnt] = '\0';
-        result = (int)copy_cnt;
-    }
-
-    // 6. Tclunk fid=2.
-    p9_msg_t tcl = { .type = P9_TCLUNK, .tag = 6, .fid = 2 };
-    tx_len = p9_serialize(&tcl, tx_buf, sizeof(tx_buf));
-    loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
-
-    return result;
+    return p9_link_cat(p9_chan_get_link(), path, out_buf, out_max);
 }

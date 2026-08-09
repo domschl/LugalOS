@@ -430,6 +430,40 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
         results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
 
+        # 13e. B1: this node's own namespace, mounted over a local copy-always
+        # channel (kernel/chan.c) and reached through the *same* 9P client code
+        # that talks to a peer over a wire. Nothing above the channel can tell
+        # local from remote -- vfs_mount_local() is vfs_mount_remote() handed a
+        # channel-backed link, with no separate local path anywhere below it.
+        ok, log = session.send_and_expect(
+            'lisp\n(mount-local "self")\nexit', r"=> #t", timeout=5.0)
+        results.append(("Lisp (mount-local) Attaches Own Namespace Over A Channel (B1)",
+                        ok, log if not ok else ""))
+
+        # Reading through the mount: the bytes crossed serialized 9P frames and
+        # two chan_call() copies to reach the same file /proc/version names.
+        ok, log = session.send_and_expect(
+            "cat /self/proc/version", r"LugalOS v0\.5\.0", timeout=5.0)
+        results.append(("9P Read Through Local Channel Mount (B1)", ok, log if not ok else ""))
+
+        # The stronger claim: a *write* through the channel mount lands on the
+        # real local filesystem. Confirmed by reading it back at its ordinary
+        # local path, not through /self/ -- so a passing result cannot come
+        # from the mount echoing its own state back.
+        ok, log = session.send_and_expect(
+            "write /self/ram0/viachan.txt HELLO_VIA_LOCAL_CHANNEL\ncat /ram0/viachan.txt",
+            r"HELLO_VIA_LOCAL_CHANNEL", timeout=6.0)
+        results.append(("9P Write Through Local Channel Lands On Real Local Disk (B1)",
+                        ok, log if not ok else ""))
+
+        # chan_call()'s re-entrancy guard: walking into the mount recursively
+        # must fail cleanly rather than hang or corrupt the outer call's
+        # single-slot request buffer. The FAULT_MARKERS check in
+        # send_and_expect() also makes this a crash test.
+        ok, log = session.send_and_expect(
+            "cat /self/self/proc/version", r"cannot read path", timeout=6.0)
+        results.append(("Recursive Local Mount Is Refused, Not Fatal (B1)", ok, log if not ok else ""))
+
         # NOTE: the "unknown link name is rejected" assertion deliberately does
         # NOT live here. On this single-node session no virtconsole is
         # attached, so a broken name lookup would fall back to a default link
