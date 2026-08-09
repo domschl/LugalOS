@@ -520,6 +520,33 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Syscall Boundary Rejects A Foreign Pointer (B3, copy-in/out)",
                         ok, log if not ok else ""))
 
+        # 13c-sexies. B4: the console is a server, not a renamed printf.
+        #
+        # Two independent claims. First, it is reachable through a channel:
+        # writing to /srv/console emits on the terminal, using the same
+        # copy-always IPC as every other service -- which is what lets a task,
+        # or a remote node over 9P, drive it without being the kernel.
+        #
+        # The marker is inside the typed command, which would normally make
+        # this match its own echo (the trap that made the B4 stream test
+        # vacuous). It does not here: send_and_expect() strips the first
+        # occurrence of the command text before matching, so the only way a
+        # match survives is if the endpoint independently emitted the marker.
+        # Without the endpoint running, the reply is a bare "=> #t".
+        ok, log = session.send_and_expect(
+            "write /srv/console CONSOLE_VIA_CHANNEL",
+            r"CONSOLE_VIA_CHANNEL", timeout=4.0)
+        results.append(("Console Reachable As A Channel Service (B4)", ok, log if not ok else ""))
+
+        # Second, ownership is bound by name from the device registry, so
+        # init.lisp decides who owns the terminal. A name that does not
+        # resolve must fail rather than silently leave the console bound to
+        # whatever it had -- otherwise "bound" would mean nothing.
+        ok, log = session.send_and_expect(
+            'lisp\n(console-device)\n(console-bind "nosuchdev")\n(console-bind "uart")\nexit',
+            r'=> "uart"(.|\n)*=> #f(.|\n)*=> #t', timeout=6.0)
+        results.append(("Console Device Bound By Name At Runtime (B4)", ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

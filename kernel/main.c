@@ -130,6 +130,15 @@ void kernel_main(void) {
         p9_link_register_background((p9_link_t *)link);
     }
 
+    console_server_init();
+
+    /* Re-bind by name now that the registry exists. The bootstrap binding
+     * above had to be a direct function pointer -- the console must work
+     * before any device can be probed -- but that leaves the *reported*
+     * binding as "(none)", which would be a lie the moment anyone asked
+     * which device owns the terminal. */
+    console_bind_device("uart");
+
     sched_init();
     shell_init();
     lisp_init();

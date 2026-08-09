@@ -270,6 +270,7 @@ void vfs_server_init(void) {
     mount_table_init();
 
     g_num_services = 0;
+    vfs_register_service("console", VFS_PID); /* B4: the console server endpoint */
     vfs_register_service("lisp", 2);
     loopback_net_init();
     vfs_register_service("p9_loopback", 9);

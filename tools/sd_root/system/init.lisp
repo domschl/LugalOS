@@ -23,6 +23,17 @@
 ;;    by default. Use (dev-present? "name") to branch on what this board has
 ;;    instead of on which target it was built for.
 
+;; 4. Console ownership (B4). The kernel log and the interactive console are
+;;    now separate streams, so they can be routed independently:
+;;      (console-device)          -- which device owns the terminal
+;;      (console-bind "usb")      -- hand the terminal to another device
+;;      (klog-detach "console")   -- stop kernel diagnostics reaching it,
+;;                                   without silencing the shell
+;;    The console is also a service: anything that can write to /srv/console
+;;    can emit on it, including a remote node over 9P. So "this UART carries
+;;    kernel messages until a login shell takes it over" is a decision made
+;;    here, at boot, rather than one compiled into the kernel.
+
 (display "[Init] LugalOS Lisp System Initialized successfully!\n")
 
 ;; 3. Launch interactive Lugal Console Shell

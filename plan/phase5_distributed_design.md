@@ -1519,9 +1519,32 @@ behaviour under test* could produce the expected output — a fallback path, an 
 early failure. Falsification is the only thing that has reliably found them; reading the test never
 has.
 
-**Still to do in B4**: the console as an actual server task reachable through a channel, and
-`init.lisp` binding it — which is what makes "hand this UART to a login shell" a runtime decision
-rather than a compile-time one. The stream split is the prerequisite that made it meaningful.
+##### B4 — the console as a server (2026-08-09)
+
+Two things make it a server rather than a renamed printf, and both are tested on QEMU and on
+silicon:
+
+- **Reachable through a channel.** `/srv/console` is a `chan_t` endpoint, so any task — or a remote
+  node over 9P, since `/srv/` is in the namespace — can send it output through the same copy-always
+  IPC as every other service. Writing to the console requires neither being the kernel nor being on
+  this machine.
+- **Ownership bound by name at runtime.** `(console-bind "uart"|"usb")` resolves against the B0
+  device registry, so `init.lisp` decides who owns the terminal. With the streams already separate,
+  moving the console does not move the log, and detaching the log does not silence the shell.
+
+**Local `cprintf()` deliberately stays a direct call**, not a channel round trip. Routing every
+character through a rendezvous would make output a scheduling event — unusable from a fault handler,
+and a large cost for no isolation gain while the console driver is kernel code anyway. The
+server-ness here is reachability and ownership, not forcing every byte through a queue. B6's
+preemption is what would change that calculus; recorded rather than assumed away.
+
+**A small honesty fix**: boot binds the console directly (it must work before any device can be
+probed), which left `(console-device)` reporting `"(none)"`. It now re-binds by name once the
+registry exists, so the reported owner is the real one rather than a plausible-looking lie.
+
+**Still to do in B4**: a filesystem server behind a channel, and resolving [D4](#d4--9p-server-execution-model--subsumed-by-b4)
+by making the 9P server a task. The console was the right first server because it is the one whose
+ownership §5.2 actually asks to move.
 
 #### B5 — Sv39, the MMU backend
 

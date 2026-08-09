@@ -818,6 +818,24 @@ static void pump_task_body(void *arg) {
     }
 }
 
+/* (console-bind "uart"|"usb") -- hand the terminal to a named device from
+ * the registry (B4). This is §5.2's scenario made runtime: a channel carries
+ * output until init.lisp decides something else should own it. Kernel
+ * diagnostics are a separate stream (see klog-detach), so moving the console
+ * does not move the log, and vice versa. */
+static lisp_val_t *prim_console_bind(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+    return (console_bind_device(name) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_console_device(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return make_str(console_bound_device());
+}
+
 static lisp_val_t *prim_spawn_pump(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     long n = 512;
@@ -956,6 +974,8 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
+    env_set(&global_env, "console-bind", make_prim(prim_console_bind));
+    env_set(&global_env, "console-device", make_prim(prim_console_device));
     env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));
     env_set(&global_env, "mount-local", make_prim(prim_mount_local));
     env_set(&global_env, "unmount", make_prim(prim_unmount));
