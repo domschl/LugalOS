@@ -1,5 +1,6 @@
 #include "kernel/shell.h"
 #include "kernel/printk.h"
+#include "kernel/klog.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -69,6 +70,7 @@ static void cmd_help(void) {
     printk("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     printk("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     printk("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
+    printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -135,6 +137,58 @@ static void cmd_p9share(const char *arg) {
         p9_link_unregister_background(link);
         printk("\n[9P] Shared-wire 9P disabled; this UART is console-only again.\n\n");
     }
+}
+
+/* B0 (plan/phase5_distributed_design.md §5.4): inspect and rebind kernel log
+ * output sinks at runtime. `klog` lists them; `klog detach console` stops
+ * kernel output reaching this terminal -- which is what makes handing this
+ * UART to 9P (`p9serve`) or, later, to a login shell non-destructive: the
+ * ring keeps accumulating regardless, so `cat /proc/kmsg` still has the full
+ * log afterwards, and so does a remote node reading it over 9P. */
+static void cmd_klog(const char *arg) {
+    if (arg) {
+        while (*arg == ' ') arg++;
+    }
+
+    if (!arg || *arg == '\0') {
+        printk("\nKernel log sinks:\n");
+        const char *name;
+        bool attached;
+        for (uint32_t i = 0; klog_sink_info(i, &name, &attached); i++) {
+            /* No '-' (left-justify) flag in this printk engine -- see
+             * kernel/printk.c's format parser, which accepts only '0',
+             * width, '.prec' and 'l'. Plain "name: state" instead. */
+            printk("  %s: %s\n", name, attached ? "attached" : "detached");
+        }
+        printk("\n  Ring: %lu bytes buffered (%lu total written)\n",
+               (unsigned long)(klog_total() - klog_oldest()),
+               (unsigned long)klog_total());
+        printk("  Usage: klog [attach|detach] <sink>   (read it with: cat /proc/kmsg)\n\n");
+        return;
+    }
+
+    bool detach;
+    const char *name;
+    if (strncmp(arg, "detach ", 7) == 0) {
+        detach = true;
+        name = arg + 7;
+    } else if (strncmp(arg, "attach ", 7) == 0) {
+        detach = false;
+        name = arg + 7;
+    } else {
+        printk("[klog] Usage: klog [attach|detach] <sink>\n");
+        return;
+    }
+
+    while (*name == ' ') name++;
+    int rc = detach ? klog_sink_detach(name) : klog_sink_attach(name);
+    if (rc < 0) {
+        printk("[klog] No such sink: '%s'\n", name);
+        return;
+    }
+    /* If the console sink was just detached this message goes nowhere, which
+     * is the point -- it is still recorded in the ring for /proc/kmsg. */
+    printk("[klog] Sink '%s' %s\n", name, detach ? "detached" : "attached");
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -223,6 +277,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "p9share ", 8) == 0) {
         cmd_p9share(&cmd_line[8]);
+        return;
+    } else if (strcmp(cmd_line, "klog") == 0) {
+        cmd_klog(NULL);
+        return;
+    } else if (strncmp(cmd_line, "klog ", 5) == 0) {
+        cmd_klog(&cmd_line[5]);
         return;
     }
 

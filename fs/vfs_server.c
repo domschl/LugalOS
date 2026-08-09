@@ -9,6 +9,8 @@
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"
 #include "kernel/printk.h"
+#include "kernel/klog.h"
+#include "kernel/device.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -95,6 +97,13 @@ typedef struct {
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
     char proc_buf[512];          /* generated /proc file content (PROC, non-dir) */
     uint32_t proc_len;
+    /* /proc/kmsg only: served straight from the klog ring rather than
+     * generated into proc_buf, which is far too small to hold it. The window
+     * [kmsg_start, kmsg_start + proc_len) is snapshotted at open() time, so
+     * the log output produced *by reading the log* (cat's own printk() calls
+     * land in the same ring) can't feed the read and make it never finish. */
+    bool is_kmsg;
+    uint64_t kmsg_start;
     p9_remote_mount_t *remote_mount; /* valid for MOUNT_REMOTE9P */
     uint32_t remote_fid;              /* valid for MOUNT_REMOTE9P */
 } vfs_handle_t;
@@ -325,6 +334,20 @@ static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool 
  * client) can vfs_pread() in pieces, not a printk() side effect (see V5 in
  * plan/completed/2026-08-07_review_and_remediation.md). Returns the number of
  * bytes generated, or -1 if `rel` doesn't name a known /proc file. */
+/* Appends `s` padded with spaces to `width`, for fixed-width /proc columns.
+ * Needed because this kernel's printk()/ksnprintf() format engine accepts
+ * only '0', width, '.prec' and 'l' -- there is no '-' (left-justify) flag,
+ * so "%-11s" would be emitted literally rather than padding. Truncates
+ * rather than overflowing if `s` is longer than `width`. */
+static uint32_t append_col(char *buf, uint32_t used, uint32_t cap,
+                           const char *s, uint32_t width) {
+    uint32_t n = 0;
+    while (s && s[n] && n < width && used < cap - 1) buf[used++] = s[n++];
+    while (n < width && used < cap - 1) { buf[used++] = ' '; n++; }
+    if (used < cap) buf[used] = '\0';
+    return used;
+}
+
 static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     if (!rel || !buf || cap == 0) return -1;
     uint32_t used = 0;
@@ -371,6 +394,21 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "Heap & Storage Status:\n  Page Size: 4096 bytes\n  VMM Status: Active\n  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "devices") == 0) {
+        /* B0 device registry (kernel/device.h). Compact deliberately: this
+         * is generated into the handle's fixed 512-byte proc_buf. */
+        used = append_col(buf, used, cap, "Name", 11);
+        used = append_col(buf, used, cap, "Kind", 9);
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "State\n");
+        const char *dname, *dkind;
+        bool dpresent;
+        for (uint32_t i = 0; dev_info(i, &dname, &dkind, &dpresent); i++) {
+            used = append_col(buf, used, cap, dname, 11);
+            used = append_col(buf, used, cap, dkind, 9);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                                        "%s\n", dpresent ? "present" : "absent");
+        }
+        return (int)used;
     } else if (strcmp(rel, "version") == 0) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
@@ -379,7 +417,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[4] = { "ps", "meminfo", "version", "df" };
+static const char *g_proc_names[6] = { "ps", "meminfo", "version", "df", "kmsg", "devices" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
@@ -433,6 +471,10 @@ int vfs_open(const char *path, int flags) {
     } else if (m->kind == MOUNT_PROC) {
         if (rel[0] == '\0') {
             h->is_dir = true;
+        } else if (strcmp(rel, "kmsg") == 0) {
+            h->is_kmsg = true;
+            h->kmsg_start = klog_oldest();
+            h->proc_len = (uint32_t)(klog_total() - h->kmsg_start);
         } else {
             int len = vfs_generate_proc_content(rel, h->proc_buf, sizeof(h->proc_buf));
             if (len < 0) return -1;
@@ -485,6 +527,9 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
             if (offset >= h->proc_len) return 0;
             uint32_t avail = h->proc_len - (uint32_t)offset;
             uint32_t n = (avail < count) ? avail : count;
+            if (h->is_kmsg) {
+                return (int)klog_read(h->kmsg_start + offset, (char *)buf, n);
+            }
             memcpy(buf, h->proc_buf + offset, n);
             return (int)n;
         }
@@ -569,7 +614,10 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
             return 0;
         }
         case MOUNT_PROC: {
-            if (index >= 4) return -1;
+            /* Derived from the table rather than hardcoded: adding /proc/kmsg
+             * (B0) meant updating a literal 4 in a second place, which is
+             * exactly the drift this sizeof() prevents next time. */
+            if (index >= sizeof(g_proc_names) / sizeof(g_proc_names[0])) return -1;
             if (name_out && name_max > 0) {
                 strncpy(name_out, g_proc_names[index], name_max - 1);
                 name_out[name_max - 1] = '\0';

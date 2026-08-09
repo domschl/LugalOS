@@ -2,8 +2,12 @@
 
 > **Status**: **Track A (Distribution) complete — M1 through M5 all done, M5 verified against real
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
-> Track B (Memory model & isolation) has not been started; work resumes there next.
-> **Date**: 2026-08-07 (original), updated same day through Track A completion.
+> **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
+> microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
+> **B0 (M6) is complete as of 2026-08-09**; B1 (M7, `chan_t`) is next. D2, D5 and D6 are resolved;
+> D4 is subsumed by B4.
+> **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
+> 2026-08-09.
 > **Baseline**: commit `4a64b78` (Phases 0–4 + cross-cutting quick wins complete, 75/75 tests
 > passing on RV64 and RV32, all three targets building clean).
 >
@@ -23,7 +27,7 @@
 2. [Hard ordering gate: security](#2-hard-ordering-gate-security)
 3. [Where the code actually stands today](#3-where-the-code-actually-stands-today)
 4. [Track A — Distribution](#4-track-a--distribution)
-5. [Track B — Memory model & isolation](#5-track-b--memory-model--isolation)
+5. [Track B — A microkernel on both memory models](#5-track-b--a-microkernel-on-both-memory-models)
 6. [Test topologies](#6-test-topologies)
 7. [Milestones](#7-milestones)
 8. [Effort and risk calibration](#8-effort-and-risk-calibration)
@@ -104,7 +108,7 @@ exactly the condition that is about to change:
 
 The moment [A3](#a3--link-layer-and-real-transport) lands, a malformed or hostile 9P frame arriving
 on a UART becomes remotely-triggerable out-of-bounds read/write in the kernel. On a system with no
-memory protection (which is every current target — see [Track B](#5-track-b--memory-model--isolation)),
+memory protection (which is every current target — see [Track B](#5-track-b--a-microkernel-on-both-memory-models)),
 that is unbounded kernel memory corruption from the wire.
 
 **Gate: [A2](#a2--9p-server-hardening-and-completion) must be complete and fuzz-tested before
@@ -787,59 +791,394 @@ full `tests/runner.py` suite passes (83/83, RV64 + RV32 — one new multi-node t
 
 ---
 
-## 5. Track B — Memory model & isolation
+## 5. Track B — A microkernel on both memory models
+
+> **Revised 2026-08-09.** This section was rewritten after challenging the assumption the original
+> version rested on. The old text (B1 Sv39 → B2 tasks → B3 U-mode → B5 IPC) is superseded; its
+> technical content survives, resequenced, in B3–B6 below.
 
 This is what the **"microkernel"** name needs (V1–V4), and what
 [`plan/completed/…§13.2.1`](completed/2026-08-07_review_and_remediation.md) records as the condition
 for restoring it to the README title. It is **not** needed for distributed testing.
 
-### The intended split
+### 5.0 — The assumption this track no longer makes
 
-| | NOMMU (RP2350, QEMU RV32) | MMU (QEMU RV64, later K210 / VisionFive 2) |
+The original Track B was written around an implicit claim: *a true microkernel requires an MMU and
+per-process address-space isolation*, so the NOMMU targets get a lesser, monolithic variant and only
+the MMU build earns the name.
+
+**That claim is false, and Track A already disproves it in this repository.** It conflates two
+separable things:
+
+| | Meaning | Needs an MMU? |
 |---|---|---|
-| Address space | Single, shared | Per-task virtual address space |
-| Isolation mechanism | None today; **RISC-V PMP** is available | Sv39 page tables |
-| Enforcement granularity | Region (typically 8–16 PMP entries) | Page (4 KB) |
+| **Structure** | Minimal kernel; drivers, filesystems and services are separate components; all interaction is message-passing over named channels | **No** |
+| **Enforcement** | Hardware makes a component's bugs *unable* to reach across the boundary | Yes, for page granularity — but PMP gives region granularity without one |
 
-**PMP is a genuinely available middle ground on NOMMU hardware and is worth calling out**: RP2350's
-Hazard3 core supports Physical Memory Protection, and `entry.S` already programs `pmpaddr0`/
-`pmpcfg0` (currently wide-open, granting S/U full access). Region-granularity protection — "a task
-cannot scribble on the kernel or on another task's region" — is achievable on NOMMU without any
-MMU. It is not per-task virtual memory, but it is real, enforced isolation, and it makes the
-NOMMU/MMU split a difference of *granularity* rather than *presence*.
+The proof is [M5](#7-milestones): `(p9-remote-cat "/sd0/TEXT.TXT")`, evaluated inside a QEMU RV64
+guest, returned the contents of a file that exists only on a physical RP2350's SD card. A 9P server
+on the far end of a USB cable is *already* a separate component sharing no address space with its
+client. **A local server in the same address space is a strictly easier case than the one that
+already works.** Nothing about the memory model was load-bearing for that result.
 
-### B1 — Address-space abstraction
-`vmm_space_t` already exists with `page_table_root` / `heap_start` / `heap_end`. Give it two real
-implementations behind the existing interface: NOMMU (identity, optionally PMP-enforced) and MMU
-(Sv39).
+Prior art agrees: **F9** is an L4-family microkernel for ARM Cortex-M isolating with only an MPU
+(RISC-V PMP is the direct analogue), and **Singularity** was microkernel-structured with no hardware
+memory protection whatsoever. The MMU is a dial on enforcement quality, not a switch that turns the
+architecture on.
 
-### B2 — Sv39
-Three-level page-table walk and allocation; kernel mapping (identity-map first, for simplicity);
-`satp` write plus `sfence.vma`; page-fault handling in `trap_handler` (which today halts on any
-non-`ecall` exception).
+**So both builds get the same microkernel.** The MMU build adds page-granular hardware enforcement;
+the NOMMU build adds region-granular PMP enforcement (see [D2](#d2--nommu-protection--resolved-2026-08-09-pmp-early-nommu-leads)).
+The value of that symmetry is cross-validation: the same server sources run in both, and the
+stricter target catches the bugs the looser one would silently tolerate.
 
-### B3 — Tasks and context switch
-`task_t` needs saved callee-saved registers, `sp`, `pc`, a `vmm_space_t *`, and a per-task kernel
-stack. Context switch in assembly. Cooperative (`sched_yield`) first; timer preemption after.
+### 5.1 — The three design rules that make this real
 
-### B4 — U-mode and the syscall ABI — **the largest hidden cost**
+These are not descriptions of the outcome; they are constraints that must be imposed from the first
+commit, because each one is cheap to honor up front and expensive to retrofit.
 
-Two things here are much bigger than the original one-line "5.5 implement the MMU" suggests:
+#### Rule 1 — Copy-always IPC, even where copying is "unnecessary"
 
-1. **`entry.S` does not switch stacks on trap.** U-mode requires `sscratch` holding the kernel
-   stack pointer and a swap on entry/exit. This is surgery on well-tested assembly that every
-   trap — including every syscall and every timer tick — flows through.
+The predictable failure mode: on NOMMU it costs nothing to pass a pointer, so the NOMMU IPC quietly
+becomes pointer-passing; then the MMU build cannot implement the same ABI without copying; and the
+two builds have two different IPC systems, which destroys the entire cross-validation rationale.
 
-2. **Copy-in / copy-out.** `trap.c` today passes raw user pointers straight into `printk`,
-   `vfs_read`, and `vfs_write`. Once user tasks live in a *different* address space, those pointers
-   are meaningless at best and hostile at worst. **Every pointer-taking syscall needs validated
-   copying across the address-space boundary.** This is invisible in the original plan wording and
-   is realistically the single largest sub-task in Track B.
+**Rule: no syscall or IPC path ever dereferences a caller-supplied pointer. Messages are copied,
+always — including on NOMMU where the copy is provably redundant.** A memcpy of a 9P frame is
+negligible beside an SPI SD-card read. What it buys is that the *same server source file* is
+correct in both builds, which is the whole point.
 
-### B5 — Real IPC
-`sys_ipc_call` is a 6-line stub. Real synchronous rendezvous needs B3 first: blocking send/receive
-with per-task queues, and `/srv/` becoming real endpoints. Once this exists, the 9P server *could*
-become a task — but per [§1](#1-goal-and-the-core-structural-insight) it never has to.
+This is already being violated in embryo. `fs/vfs_server.c`'s `/srv/` write path does:
+
+```c
+ipc_msg_t msg_in = { .tag = VFS_TAG_WRITE, .data = { (uintptr_t)buf, len, 0, 0, 0 } };
+sys_ipc_call(g_services[i].target_pid, &msg_in, &msg_out);
+```
+
+`data[0]` is a raw pointer into the caller's buffer. `kernel/ipc.h`'s `ipc_msg_t` is
+register-shaped (`{tag, data[5]}`), which is a fine *notification* primitive but the wrong shape for
+services, because `data[N]` inevitably becomes a pointer — as it already has here. B1 replaces this
+path.
+
+#### Rule 2 — 9P *is* the service IPC
+
+There is no need to invent an IPC discipline. This tree already has one that is serialized by
+construction (hence location-transparent for free), fully bounds-checked (A2 closed B11), and backed
+by an independent test oracle (`tests/p9lib.py`). Two layers, and only two:
+
+- **`chan_t`** — the kernel primitive: a bounded, copy-based message channel between two endpoints.
+  Small, and the only IPC the kernel itself knows about.
+- **9P over `chan_t`** — the service protocol. A local FAT32 server and a remote node's FAT32 server
+  then become *the same thing*, differing only in which channel the frames cross.
+
+**Why this is incremental rather than a rewrite**: `fs/vfs_server.c` is already a namespace server
+with a real mount table (A5), and `MOUNT_REMOTE9P` is already the mount kind meaning "this subtree
+lives in another address space, reached by 9P frames over a link." The microkernel transition is
+adding **one more mount kind** — a channel-backed *local* server — through dispatch machinery that
+is already written, already tested, and already carrying real traffic between two machines.
+
+#### Rule 3 — One kernel, not a fork
+
+The user framing that prompted this rewrite called Track B a "fork of LugalOS into two
+architectures." **It must not be one.** One source tree, one `mem_domain` interface, two backends,
+both built and both tested on every commit.
+
+Evidence this rule needs teeth: `arch/riscv/rv64_mmu/vmm.c`'s `vmm_map_page()` is `return 0;` and
+`satp` is never written outside `vmm_switch_space()`, which nothing calls. **RV64 and RV32 are today
+both effectively flat**, and the MMU backend has already bit-rotted once precisely because nothing
+exercised it. If the MMU build is not the primary CI target with the strictest checks, and if every
+test does not run on both, the cross-validation benefit is zero and this track's central claim is
+decoration.
+
+#### Corollary — "dynamically started drivers" means different things per target
+
+Worth pinning down, because the phrase hides a real capability difference:
+
+- **MMU**: a server can be an ELF loaded at a fixed virtual address per process (and this is where
+  finding **B12**, the ELF loader's unvalidated `e_phoff`/`e_phnum`/`p_offset`, finally gets fixed).
+- **NOMMU**: there is no per-process link address, so servers are **compiled into the image and
+  started dynamically** — `init.lisp` decides *what runs and what it is bound to*, not *which binary
+  is loaded from disk*.
+
+That still delivers every scenario driving this track. But "load a third-party server binary at
+runtime" is an **MMU-only capability** unless a PIC toolchain is taken on, and the plan should not
+imply otherwise.
+
+### 5.2 — What actually blocks the motivating scenarios (measured, not assumed)
+
+Three concrete limitations motivated this rewrite. Checked against the tree, the memory model is not
+the cause of any of them:
+
+| Scenario | Actual blocker | Needs a scheduler? |
+|---|---|---|
+| Kernel logs lost when the UART becomes a 9P wire or a login shell | `printk()` calls `uart_putc()` directly (`kernel/printk.c:169`). No log ring, no sink registry. | **No** |
+| Drivers/filesystems should start dynamically, configured from `init.lisp` | `kernel_main()` is a fixed init sequence with `#if defined(CONFIG_BOARD_RP2350)` inline. No device or service registry. | **No** |
+| Bind a login shell to a channel that was carrying kernel log | `shell_run()` is called from inside `init.lisp`'s eval (`user/lisp/lisp.c:714`) and never returns. Everything is one call stack — a bound shell has nowhere to stand. | **Yes** |
+
+Two of the three are solvable before any scheduler exists. They are **the first milestones of this
+track, not preconditions to it**: "who owns this device, and who decides" is the microkernel's
+central question with concurrency subtracted.
+
+### 5.3 — Hard finding: the scheduler invalidates Track A's correctness argument
+
+**This was not recorded anywhere before this revision and is a gate on B2.** A4's completion notes
+justify a node acting as both 9P client and server on one link like this:
+
+> *this kernel has no real task scheduler or interrupt-driven preemption … While `p9_link_cat()` is
+> executing, this node's own background pump provably cannot run*
+
+That argument dies the moment a scheduler exists. `p9_link_cat()` (`fs/p9_link.c:451`) spins
+unboundedly awaiting a reply; under a scheduler that spin becomes a yield point, this node's
+background pump *does* get to run, and it will consume the reply frame as though it were a fresh
+inbound request. **Tag-aware 9P multiplexing is therefore not future work — it is a hard
+prerequisite of the first scheduler milestone**, or M3/M4/M5 silently regress with no test failing
+for the right reason.
+
+The same shape recurs across the tree: every blocking path is a busy-wait that assumes nothing else
+can run — `uart_getc()` (`drivers/uart_16550.c:61`, `drivers/uart_rp2350.c:190`),
+`virtio_blk_transfer()`, the RP2350 I²C/SPI/USB polls. Each must become an explicit yield point or
+it becomes a starvation bug.
+
+This is the main argument for **cooperative scheduling first**: with no preemption there is no
+locking to design, and the conversion is mechanical (`while (!done) sched_yield();`). Preemption is
+where NOMMU turns genuinely dangerous (a preempted server caught mid-update of a global, with no
+hardware to stop the damage) and belongs behind its own milestone, after PMP.
+
+### 5.4 — Milestone ladder
+
+Ordering rationale: **B0–B2 deliver every structural benefit above, are testable on both targets,
+and carry low risk.** B3–B5 then add *enforcement* to a structure that already works and is already
+under test — the reverse of the original plan, which put MMU and U-mode surgery first, before there
+was anything to isolate.
+
+#### B0 — Structure without concurrency
+
+No scheduler. Kills two of the three §5.2 blockers outright.
+
+- **Kernel log ring + sink registry.** `printk()` writes to a ring; sinks (UART, USB CDC, later a
+  `/dev` node or a 9P-served `/proc/kmsg`) subscribe. A UART that becomes a 9P wire or a login shell
+  detaches its sink instead of silently swallowing the log. Preserve `printk_debug()`'s existing
+  UART-only guarantee (it exists so USB tracing cannot recurse into USB traffic).
+- **Device + service registry.** Drivers register capabilities; nothing is bound at compile time.
+- **`kernel_main()` reduced** to registry bring-up plus "run init", with the `#if
+  defined(CONFIG_BOARD_RP2350)` blocks becoming per-board registration tables.
+- **`init.lisp` binding primitives** — bind a channel to a service, list/attach/detach.
+
+*Risk: low. Blast radius is `printk()` and boot ordering, both well covered by the existing 85-test
+suite.*
+
+##### B0 completion notes — part 1 of 3 (2026-08-09)
+
+**Log ring + sink registry implemented and merged.** The device/service registry and the
+`kernel_main()` reduction / `init.lisp` binding primitives are **not** done — B0 remains open. All
+three targets build clean; `tests/runner.py` passes **89/89** (RV64 + RV32, four new tests: two per
+architecture, up from 85).
+
+- **`kernel/klog.c` + `kernel/include/kernel/klog.h`**: a 4 KB ring plus a 4-slot sink registry.
+  `printk()` now writes to `klog_putc()` instead of `uart_putc()`; boot registers a `"console"` sink
+  whose putc *is* `uart_putc`, so default output is byte-identical to the pre-B0 path. The ring is
+  written unconditionally, which is the actual fix — detaching a sink is now non-destructive.
+- **Sinks are addressed by name, not by index**, and re-registering an existing name replaces its
+  function rather than consuming a second slot. `klog_sink_register()` must be called before
+  anything can `printk()`; it is the first statement in `kernel_main()` after `uart_init()`, ahead
+  of `time_init()`, which logs.
+- **`printk_debug()` deliberately left on the direct path**, not routed through klog. Its documented
+  guarantee is "physical UART only, never mirrored to USB", and the ring is served by `/proc/kmsg`,
+  which a *remote 9P client can read* — low-level USB/I²C/SPI tracing does not belong in a file
+  other nodes fetch. Keeping it direct preserves the guarantee without needing a sink-policy
+  argument.
+- **`/proc/kmsg`** serves the ring through A1's existing handle API, so it is readable over 9P by
+  another node — kernel logs were never remotely readable before. It does **not** use the 512-byte
+  per-handle `proc_buf` (far too small); instead the handle snapshots the window
+  `[klog_oldest(), klog_total())` at `vfs_open()` time and `vfs_pread()` serves from the ring by
+  absolute position. **The snapshot is load-bearing, not tidiness**: `cat /proc/kmsg` prints via
+  `printk()`, which appends to the same ring, so a read tracking the live end would feed itself its
+  own output and never terminate.
+- **`klog_read()` clamps a caller that fell off the back of the ring** to the oldest byte still
+  held, rather than returning wrapped garbage.
+- **Re-entrancy guard** (`g_in_fanout`) so a future sink whose putc logs about its own failures
+  can't recurse until the stack dies. It is *not* a concurrency lock — B2 must revisit this.
+- **New `klog` shell command** (list / `klog attach <sink>` / `klog detach <sink>`), matching the
+  `p9serve`/`p9share` precedent of exposing new plumbing through an explicit command.
+- **Bug avoided, worth recording**: the first version of the `klog` listing used `printk("%-10s")`.
+  This kernel's format engine (`kernel/printk.c`) accepts only `0`, width, `.prec` and `l` — there
+  is **no `-` (left-justify) flag**, so that would have printed the format spec literally.
+- **`vfs_readdir()`'s `/proc` branch had a hardcoded `index >= 4`** next to a 4-entry name table;
+  adding `kmsg` required changing a literal in a second place. Replaced with a `sizeof()`-derived
+  count so the next addition can't drift.
+- **Test falsification, not just a green run**: `klog_sink_detach()` was temporarily sabotaged to a
+  no-op and the suite re-run, confirming the new test fails on both architectures (87/89) rather
+  than passing vacuously. Restored afterwards. The test stages a marker into a file *before*
+  detaching, so the marker never appears in a typed command — `kernel/line_editor.c` echoes
+  keystrokes via `uart_putc()`, bypassing klog entirely (which is also why typing still works with
+  every sink detached), so a marker in the typed text would have made the silence assertion
+  meaningless.
+
+##### B0 completion notes — part 2 of 3 (2026-08-09)
+
+**Device registry implemented and merged.** The `kernel_main()` reduction and `init.lisp` binding
+primitives remain — B0 is still open. All three targets build clean; `tests/runner.py` passes
+**91/91** (RV64 + RV32, two more new tests, up from 89).
+
+- **`kernel/device.c` + `kernel/include/kernel/device.h`**: drivers publish a `dev_driver_t`
+  (`name`, `kind`, `flags`, `probe`, `get`); a per-board table decides which exist; `kernel_main()`
+  just probes the table. Kinds are `CONSOLE`/`P9LINK`/`CLOCK`/`EEPROM`/`BLOCK`.
+- **`kernel/board.c` concentrates the `#if`s.** They did not disappear — CMake compiles a different
+  driver set per board, so they never could — but they no longer interleave with initialization
+  order and 9P link policy inside the boot path. `board_uart_base()` replaces the inline
+  `0x40070000` / `0x10000000` split.
+- **`DEV_F_BACKGROUND_9P` replaced the `#if defined(CONFIG_BOARD_RP2350)` block that chose which
+  link serves inbound 9P.** `kernel_main()` now iterates `dev_next_with_flags()` and registers
+  whatever the board's table flagged — `vconsole` on QEMU, `usbnet` (ACM1/EP4) on RP2350. The
+  UART-backed links (`uartslip`, `uartdemux`) are registered as devices but deliberately *without*
+  the flag, so they remain behind explicit `p9serve` / `p9share`, exactly as A3b established.
+- **Layering kept clean deliberately**: `dev_next_with_flags()` returns opaque objects so
+  `kernel/device.c` needs no `fs/p9_link.h` dependency — the 9P knowledge stays in `kernel_main()`.
+  The obvious shortcut (having `dev_probe_all()` register background links itself) would have put
+  a filesystem dependency in the generic device layer to save four lines.
+- **Probe reordering checked, not assumed.** `virtio_console_init()` used to run *after*
+  `vfs_server_init()`, and virtio-blk claims an MMIO slot lazily during mount. Both probes match on
+  `REG_DEVICE_ID` (block=2, console=3), so neither can claim the other's slot at any ordering —
+  verified by reading both probe loops before moving anything.
+- **`/proc/devices`** exposes the registry, so it is readable over 9P from another node like every
+  other `/proc` file.
+- **The `-` flag trap bit again**: the first `/proc/devices` version produced ragged columns for the
+  same reason the `klog` listing nearly did. Fixed properly this time with an `append_col()` helper
+  in `fs/vfs_server.c` rather than by giving up on alignment.
+- **Test falsification, again non-vacuous**: removing `DEV_F_BACKGROUND_9P` from the `vconsole`
+  table entry fails exactly the four virtio-console 9P tests (87/91) — confirming the new
+  flag-driven path really is what registers the background link, not a leftover from the old `#if`.
+  Restored afterwards.
+- **`/srv/`'s service registry (`vfs_register_service()`) left alone.** It maps a name to a
+  placeholder PID and is the stub [B1](#b1--chan_t-and-the-local-channel-backed-mount) replaces
+  with real `chan_t` endpoints; half-merging it into the device table now would mean rewriting it
+  twice.
+
+##### B0 completion notes — part 3 of 3 (2026-08-09) — **B0 COMPLETE**
+
+**Binding primitives implemented and merged. B0 is done; M6 is complete.** All three targets build
+clean; `tests/runner.py` passes **95/95** (RV64 + RV32, four more new tests, up from 91).
+
+- **New Lisp primitives**: `(devices)`, `(dev-present? "name")`, `(klog-sinks)`,
+  `(klog-detach "name")`, `(klog-attach "name")`, `(p9-serve "dev")`, `(p9-unserve "dev")`.
+  Policy — which link serves 9P, where the kernel log goes, what hardware a boot script assumes —
+  is now expressible in `init.lisp` rather than compiled into `kernel_main()`.
+- **`(devices)` reads `/proc/devices`** rather than formatting the table a second time, so what the
+  REPL prints is byte-identical to what a remote 9P client reading that file sees. No divergent
+  second formatting path.
+- **`mount-remote` and `p9-remote-cat` are no longer RP2350-guarded.** Both took their link from a
+  hardcoded `virtio_console_get_link()`; they now resolve through the registry
+  (`lisp_resolve_link()`), so both gained an optional device-name argument *and* RP2350 can use them
+  over its `usbnet` (ACM1/EP4) link. **This closes A5's "deferred, not forgotten" item** —
+  "`mount-remote` can currently only target the virtio-console link". Omitting the argument selects
+  the board's `DEV_F_BACKGROUND_9P` link, so every existing call site keeps working unchanged.
+- **`(p9-serve ...)` returns `#t` for "requested", not "succeeded"**, and says so:
+  `p9_link_register_background()` returns void and logs-and-drops past its two-slot limit (A3b), so
+  there is no success code to forward honestly. It does *not* arm the UART demux — `uartdemux` still
+  needs `p9share`, because sharing a wire with the console is a driver-mode change, not just a
+  registration.
+- **`init.lisp` documents the new surface** in comments rather than gaining active lines that do
+  nothing: dedicated links are already served from boot via `DEV_F_BACKGROUND_9P`, so no binding is
+  *required* there by default.
+- **A brittle test assertion fixed at the cause.** Three 9P transport tests asserted
+  `len(data) == 515` — the literal byte length of `init.lisp` — so editing the boot script broke
+  three unrelated tests with a confusing "unexpected content" message. The length check is worth
+  keeping (it proves a complete multi-read transfer, not a truncated one), so it now derives the
+  expected length from the source file instead of hardcoding it.
+- **Falsification caught a vacuous test of mine — the most useful result of this pass.** The
+  assertion "an unknown link name must be rejected" was first placed in the single-node arch suite,
+  where it passed *even with name resolution deliberately deleted*: no virtconsole is attached
+  there, so the fallback link is absent too and `#f` comes back either way. Moved to
+  `test_9p_remote_mount()`, where the default link genuinely exists and works, the sabotage is
+  caught (94/95). **The lesson generalizes: a negative assertion only discriminates when the thing
+  it would have fallen back to is present and working.**
+
+**Known limitation, deferred to B4 — `printk()` is still one stream carrying two things.** It is
+both kernel diagnostics *and* user-facing output (shell command results, Lisp REPL output — its own
+header comment says so). So `klog detach console` currently silences **everything** on that
+terminal, not just log lines. That is the correct semantic for `p9serve` (the terminal has become a
+9P wire; nothing should print to it) but it is *not yet* the full §5.2 scenario-1 story, which wants
+kernel log and login-shell output to be separately routable. Splitting them means touching several
+hundred `printk()` call sites and properly belongs to **B4**, where the console becomes a server
+that owns its own output stream. What B0 delivers today is the part that needed no scheduler: the
+log is retained regardless of sink state, and it is readable locally *and remotely* after the fact.
+
+#### B1 — `chan_t`, and the local channel-backed mount
+
+- **`chan_t`**: bounded, copy-based message channel. **Rule 1 applies from this commit.**
+- **Replaces the `/srv/` pointer-passing path** in `fs/vfs_server.c` and retires the `ipc_msg_t`
+  pointer-in-`data[0]` pattern.
+- **`MOUNT_LOCAL9P`** — a mount served by a local channel endpoint, alongside A5's existing
+  `MOUNT_REMOTE9P`.
+- **Testable without tasks**: `drivers/loopback_net.c` becomes a `chan_t`-backed local 9P link, so
+  B1 is provable by the existing loopback tests plus a new local-mount test — a real proof that a
+  local server and a remote server are the same code path.
+
+*Risk: low–medium. New primitive, but it lands beside an already-working remote equivalent.*
+
+#### B2 — Tasks, cooperative scheduling — **gated on Track A staying green**
+
+The first genuinely large step.
+
+- **Real `task_t`**: saved callee-saved registers, `sp`, `pc`, a `mem_domain *`, and a per-task
+  kernel stack. Today it is `{pid, state, sp, name}` and `task_create()` discards its entry point.
+- **A real allocator.** `vmm_alloc_page()` is a bump pointer that never frees
+  (`arch/riscv/*/vmm.c`), and each target has exactly one `_stack_top`. Per-task stacks need
+  genuine allocation — this is an unglamorous prerequisite that the original plan never named.
+- **Cooperative context switch in assembly**; `sched_yield()` becomes real. `kernel/sched.c` is
+  today a 50-line bookkeeping shim that only prints.
+- **Convert every busy-wait to a yield point** (§5.3).
+- **9P tag multiplexing** (§5.3).
+
+**Exit criterion, non-negotiable**: `test_9p_multinode_heterogeneous()` and `test_9p_remote_mount()`
+still pass **with the scheduler enabled**. Track A is not allowed to regress silently to buy Track B
+progress.
+
+*Risk: medium–high. New assembly, and it touches every blocking path in the tree.*
+
+#### B3 — U-mode + PMP on the NOMMU targets — **NOMMU leads**
+
+Per [D2](#d2--nommu-protection--resolved-2026-08-09-pmp-early-nommu-leads), enforcement arrives on RV32/RP2350 *first*, and Sv39
+follows the pattern it establishes rather than the other way round.
+
+- **Trap-path stack switch.** `mscratch` (RV32/RP2350 are `CONFIG_MODE_M`) / `sscratch` (RV64 is
+  `CONFIG_MODE_S`) holding the kernel stack, swapped on entry and exit. Verified: **neither CSR is
+  referenced anywhere in the tree today**, and `entry.S`'s trap vector reuses the interrupted `sp`.
+  This is surgery on assembly that every trap flows through.
+- **M→U transition** on RV32/RP2350 (`mstatus.MPP = 0`), mirroring the existing M→S sequence.
+- **PMP region programming per task.** Note `entry.S` touches `pmpaddr0`/`pmpcfg0` **only under
+  `CONFIG_MODE_S`** — so RP2350 (`CONFIG_MODE_M`) starts from zero here, not from the wide-open
+  configuration the original Track B text implied was already in place.
+  - *Measure first*: the RISC-V spec permits 0, 16, or 64 PMP entries and Hazard3's actual count
+    must be read back from silicon (write all-ones to `pmpaddrN`, read back) rather than assumed.
+    The region budget shapes how many isolated servers a NOMMU node can host.
+- **Copy-in / copy-out at the syscall boundary.** `arch/riscv/common/trap.c` passes `frame->a1`,
+  `frame->a2` straight into `printk`, `vfs_read`, `vfs_write`. Every pointer-taking syscall needs
+  validated copying. **Rule 1 means the ABI needs no redesign at this point — only enforcement**,
+  which is precisely the payoff for having imposed it in B1.
+- Brought up against a **minimal U-mode test task**, not a real server — there must be something in
+  U-mode to protect before B4 puts anything valuable there.
+
+*Risk: high. The single riskiest milestone in the track.*
+
+#### B4 — Servers leave the main call stack
+
+- **Console/log server** first (owns the UART/USB-CDC console and the B0 log ring), then a
+  filesystem server.
+- `init.lisp` binds channels to services — **this is scenario 1 delivered in full**: a UART carries
+  kernel log output until `init.lisp` binds a login shell to it.
+- The 9P server itself may become a task here, resolving [D4](#d4--9p-server-execution-model--subsumed-by-b4).
+
+#### B5 — Sv39, the MMU backend
+
+Unchanged in content from the original B1/B2, but now implementing an interface B3 already defined
+and tested: three-level walk and allocation, kernel identity map first, `satp` + `sfence.vma`,
+page-fault handling in `trap_handler` (which today halts on any non-`ecall` exception). Closes
+**V4**.
+
+#### B6 — Preemption, and ELF-loaded servers
+
+- Timer preemption (the point at which NOMMU genuinely needs B3's PMP to already be in place).
+- ELF-loaded servers, **MMU only** per §5.1's corollary. Closes **B12**.
 
 ---
 
@@ -875,10 +1214,21 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 | Done — A4 (2026-08-07) reached T2 over `virtio_console`/TCP without needing A3b, per its own completion notes; A3b itself (shared-wire demux) landed separately, below, once RP2350 hardware support made it relevant rather than as a T2 dependency. |
 | **M4** | A5 mount table / remote namespace | M3 | Done |
 | **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
-| **M6+** | Track B: PMP / Sv39 / tasks / U-mode / IPC → restore "Microkernel" to the README title | independent of M1–M5 | Not started |
+| **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
+| **M7** | **B1** `chan_t` copy-always channels + `MOUNT_LOCAL9P` | M6 | Not started |
+| **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing — **gated on M3/M4 tests still passing with the scheduler on** | M7 | Not started |
+| **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |
+| **M10** | **B4** servers off the main call stack; `init.lisp`-bound console/log and filesystem | M9 | Not started |
+| **M11** | **B5** Sv39 on RV64 → restore "Microkernel" to the README title (V1–V4 closed) | M9 | Not started |
+| **M12** | **B6** preemption; ELF-loaded servers (MMU only, closes B12) | M10, M11 | Not started |
 
-**M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. This
-pass's work (A3b, `link_usb_cdc`) is aimed at M5, the RP2350 hardware milestone.
+**M3 is the point at which this phase's stated goal is met** — already true as of A4/A5. A3b and
+`link_usb_cdc` were aimed at M5, the RP2350 hardware milestone, also done.
+
+**M6 onward is Track B as revised in [§5](#5-track-b--a-microkernel-on-both-memory-models).** Note
+M11 (Sv39) is gated on M9, not on M10 — once B3 has defined and tested the `mem_domain` interface on
+the NOMMU targets, the MMU backend and the server migration are independent and can proceed in
+either order or in parallel.
 
 ---
 
@@ -894,17 +1244,21 @@ Relative, not absolute — intended for sequencing decisions, not scheduling.
 | A3b RX demux | Medium | **High** | Touches every keystroke on every target |
 | A4 harness | Medium | Low | Python only; no kernel risk |
 | A5 mount table | Medium | Medium | Changes path resolution everything depends on |
-| B1/B2 MMU | High | Medium | Well-understood, just large |
-| B3 tasks | High | Medium | New assembly |
-| B4 U-mode + copy-in/out | **Highest** | **High** | Surgery on entry.S + every syscall |
-| B5 IPC | Medium | Low | Straightforward once B3 exists |
+| **B0** registries + log ring | Low–Med | **Low** | No scheduler; blast radius is `printk()` and boot order |
+| **B1** `chan_t` + local mount | Medium | Low–Med | New primitive, but lands beside a working remote equivalent |
+| **B2** tasks + tag multiplexing | High | **Med–High** | New assembly; touches every blocking path; **gated on Track A staying green** |
+| **B3** U-mode + PMP + copy-in/out | **Highest** | **High** | `mscratch`/`sscratch` surgery on the trap path every syscall flows through |
+| **B4** servers as tasks | Medium | Medium | Mostly mechanical once B1–B3 exist |
+| **B5** Sv39 | High | Medium | Well-understood, just large — and B3 already defined the interface |
+| **B6** preemption + ELF | High | **High** | Preemption on NOMMU is only safe once B3's PMP is in place |
 
 ### Items worth an explicit decision before starting
 
-1. **B4 (U-mode + copy-in/copy-out)** — the single largest chunk in Phase 5, and the one that
-   destabilizes currently-working, heavily-exercised code (the trap path). It is also
-   unambiguously where "microkernel" stops being aspirational. Worth deciding deliberately rather
-   than drifting into.
+1. **B3 (U-mode + PMP + copy-in/copy-out)** — the single largest chunk in Phase 5, and the one that
+   destabilizes currently-working, heavily-exercised code (the trap path). Worth deciding
+   deliberately rather than drifting into. *Note the revised §5 no longer treats this as the point
+   where "microkernel" stops being aspirational — B0–B2 deliver the microkernel structure, and B3
+   adds hardware enforcement to it. That reordering is the main practical consequence of §5.0.*
 2. **A3b (RX demux)** — moderate effort but the highest-risk item in Track A, because a regression
    there breaks the console on all three targets simultaneously. A3a exists specifically so this
    can be deferred without blocking a real wire. **Resolved (2026-08-07, see the A3b completion
@@ -933,12 +1287,36 @@ built, not just one: A3a → A3b landed as recommended (`p9serve` then `p9share`
 landed in full (`link_virtio_console` on QEMU, `link_usb_cdc` on RP2350) rather than staying in
 reserve — see the A3/A3b completion notes.
 
-### D2 — NOMMU protection — **Open; the natural next decision for Track B**
+### D2 — NOMMU protection — **Resolved (2026-08-09): PMP early, NOMMU leads**
 Leave RP2350 as a genuinely flat single address space, or invest in **PMP** region protection?
-PMP gives real enforcement on NOMMU hardware and makes the NOMMU/MMU story a difference of
-granularity rather than "protected vs. not". It is meaningful extra work and is not required for
-anything in Track A. Directly shapes **B1** (`vmm_space_t`'s NOMMU implementation): identity-only,
-or identity-plus-PMP-enforced. Worth deciding before B1 starts, not mid-implementation.
+
+**Resolved: invest in PMP, and bring it up *before* Sv39.** RV32/RP2350 gets U-mode + PMP in
+[B3](#b3--u-mode--pmp-on-the-nommu-targets--nommu-leads) (M9), and Sv39 follows in
+[B5](#b5--sv39-the-mmu-backend) (M11) implementing the `mem_domain` interface B3 has already defined
+and tested. Rationale for that ordering: PMP is the simpler enforcement model (flat regions, no page
+tables, no faulting-in), so it is the cheaper place to get the *interface* right — and it means the
+constrained target is the one with proven enforcement rather than the one perpetually waiting for
+it. Makes the NOMMU/MMU story a difference of **granularity** rather than "protected vs. not",
+consistent with [§5.0](#50--the-assumption-this-track-no-longer-makes).
+
+*Prerequisite that is easy to miss*: `entry.S` programs `pmpaddr0`/`pmpcfg0` only under
+`CONFIG_MODE_S`, and RV32/RP2350 build with `CONFIG_MODE_M` — so **PMP on RP2350 starts from zero**,
+not from the wide-open configuration the pre-revision text implied. Hazard3's PMP region count must
+be measured from silicon before the region budget can be planned.
+
+### D5 — Track A regression policy under a scheduler — **Resolved (2026-08-09): hard gate**
+A4's client/server safety argument explicitly depends on there being no scheduler
+([§5.3](#53--hard-finding-the-scheduler-invalidates-track-as-correctness-argument)). **Resolved:
+9P tag multiplexing lands inside B2 (M8), and B2 is not complete until
+`test_9p_multinode_heterogeneous()` and `test_9p_remote_mount()` pass with the scheduler enabled.**
+Track A does not get to regress silently to buy Track B progress.
+
+### D6 — Dynamic server loading — **Resolved (2026-08-09) by capability, per target**
+"Started dynamically" means different things on the two targets, and conflating them would overpromise.
+**MMU**: ELF loaded at a fixed per-process virtual address (B6, closes B12). **NOMMU**: compiled into
+the image, *started and bound* dynamically from `init.lisp`. Loading a third-party binary at runtime
+is MMU-only unless a PIC toolchain is taken on — not currently planned. See
+[§5.1](#corollary--dynamically-started-drivers-means-different-things-per-target).
 
 ### D3 — Track priority — **Resolved**
 Track A to completion first (**recommended** — meets the stated goal soonest, leaves the riskiest
@@ -946,10 +1324,12 @@ work off the critical path), or interleave Track B to make the microkernel claim
 Track A was taken to completion first, exactly as recommended (M1 through M5, all done
 2026-08-07) — Track B has not been started.
 
-### D4 — 9P server execution model — **Open, but low-urgency**
-Keep the server poll-driven (works today, no dependencies), or make it a task once B3/B5 land?
-Only worth revisiting after Track B; noted here so the A2 fid-table design does not accidentally
-assume single-threaded access forever.
+### D4 — 9P server execution model — **Subsumed by B4**
+Keep the server poll-driven (works today, no dependencies), or make it a task? The revised Track B
+answers this: it becomes a task in [B4](#b4--servers-leave-the-main-call-stack), once B1's channels
+and B2's scheduler exist. Note the related constraint is *earlier* and harder than this decision —
+A2's fid table and A4's client/server role assumption both stop being safe at B2, not B4; see
+[D5](#d5--track-a-regression-policy-under-a-scheduler--resolved-2026-08-09-hard-gate).
 
 ---
 
@@ -958,9 +1338,9 @@ assume single-threaded access forever.
 | Finding | Description | Closed by |
 |---|---|---|
 | **B11** | Unbounded 9P serialize/deserialize | A2 (**gates A3**) |
-| **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | Original 5.4 — fold into Track B alongside B2, since MMU changes how segments load |
+| **B12** | ELF loader trusts `e_phoff`/`e_phnum`/`p_offset`; `code_size` underflow | **B6** — ELF-loaded servers are MMU-only (see D6), so this closes with them |
 | **A2** | Namespace fall-through across volumes | A5 |
 | **A3** | No file handles in the VFS | A1 |
-| **V4** | "Scales to 64-bit with MMU protection" — no MMU | B1/B2 |
+| **V4** | "Scales to 64-bit with MMU protection" — no MMU | **B5** (Sv39); **B3** delivers enforcement on NOMMU first |
 | **V5** | `/proc` printk's instead of filling buffers; 9P not connected to VFS; `uart_net.c` never touches a UART | A1, A2, A3 |
-| **V1–V3** | Microkernel / IPC / scheduler are stubs | B3, B4, B5 |
+| **V1–V3** | Microkernel / IPC / scheduler are stubs | **B1** (IPC), **B2** (scheduler), **B4** (servers) — enforcement then hardens in B3/B5 |

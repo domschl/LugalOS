@@ -14,6 +14,21 @@ import time
 from pathlib import Path
 
 
+def expected_init_lisp() -> bytes:
+    """The bytes /sd0/system/init.lisp should contain, read from the source
+    that tools/create_sd_image.py copies onto the image.
+
+    The three 9P tests below assert on the full length of this file to prove a
+    complete multi-read transfer rather than a truncated one -- a real thing to
+    check. They used to hardcode that length (515), which meant any edit to the
+    boot script broke three unrelated 9P transport tests with a confusing
+    "unexpected content" failure. Deriving it keeps the same assertion without
+    the brittleness.
+    """
+    src = Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "system" / "init.lisp"
+    return src.read_bytes()
+
+
 class QemuSession:
     """Manages an interactive QEMU session for testing LugalOS serial I/O."""
 
@@ -379,6 +394,75 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_fs_ls, r"lisp", timeout=4.0)
         results.append(("Plan 9 Namespace Directory Listing (ls /sd0/, /ram0/, /proc/, /dev/, /srv/)", ok, log if not ok else ""))
 
+        # 13b. B0 (plan/phase5_distributed_design.md §5.4): the kernel log ring
+        # and its detachable output sinks. Before B0, printk() called
+        # uart_putc() directly, so repurposing a UART (p9serve / a login shell)
+        # silently destroyed all kernel log output. The claim under test is
+        # that output produced while the console sink is detached is invisible
+        # on the terminal yet fully retained in the ring for /proc/kmsg.
+        ok, log = session.send_and_expect("klog", r"console: attached", timeout=3.0)
+        results.append(("Kernel Log Sink Registry Lists Console Sink (B0)", ok, log if not ok else ""))
+
+        # 13c. B0 device registry (kernel/device.h, kernel/board.c): what
+        # hardware exists is a per-board table probed at boot, not a sequence
+        # of #ifs inline in kernel_main(). /proc/devices exposes it, so it is
+        # readable over 9P by another node like every other /proc file.
+        # `vblk` present proves a probe that really ran (virtio-blk is what
+        # /sd0 is mounted from); `uartslip p9link` proves a device registered
+        # with no probe function is still reported present and typed.
+        ok, log = session.send_and_expect(
+            "cat /proc/devices",
+            r"uartslip\s+p9link\s+present(.|\n)*vblk\s+block\s+present",
+            timeout=4.0)
+        results.append(("Device Registry Enumerated Via /proc/devices (B0)", ok, log if not ok else ""))
+
+        # 13d. B0 part 3: the registries are bindable from Lisp, so init.lisp
+        # owns policy instead of it being compiled into kernel_main().
+        # (dev-present? ...) is what lets a boot script branch on what the
+        # board actually has rather than on which target it was built for.
+        cmd_bind = (
+            '(dev-present? "vblk")\n'
+            '(dev-present? "no-such-device")'
+        )
+        ok, log = session.send_and_expect(cmd_bind, r"=> #t(.|\n)*=> #f", timeout=4.0)
+        results.append(("Lisp (dev-present?) Queries Device Registry (B0)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
+        results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
+
+        # NOTE: the "unknown link name is rejected" assertion deliberately does
+        # NOT live here. On this single-node session no virtconsole is
+        # attached, so a broken name lookup would fall back to a default link
+        # that is also absent and still return #f -- passing for the wrong
+        # reason. It runs in test_9p_remote_mount() instead, where the default
+        # link genuinely exists.
+
+        # Stage a probe file first, while output is still visible. The marker
+        # lives only in the file's *content*, never in a command typed later --
+        # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing
+        # klog entirely, which is why typing still works with every sink
+        # detached), so a marker appearing in a typed command would show up in
+        # the captured terminal text and make the silence check meaningless.
+        session.send_and_expect("write /ram0/klogprobe.txt KLOG_RING_PROBE_MARKER", r"=> ", timeout=3.0)
+
+        # Detach, then produce output that the terminal must NOT show. The
+        # never-matching pattern is deliberate: send_and_expect returns the
+        # raw captured text on timeout, which is exactly what to assert on.
+        session.send_and_expect("klog detach console", r"\Z\A", timeout=1.0)
+        _, silent_log = session.send_and_expect("cat /ram0/klogprobe.txt", r"\Z\A", timeout=1.5)
+        stayed_silent = "KLOG_RING_PROBE_MARKER" not in silent_log
+
+        # Re-attach and confirm the ring captured what the terminal never saw.
+        ok, log = session.send_and_expect(
+            "klog attach console\ncat /proc/kmsg", r"KLOG_RING_PROBE_MARKER", timeout=5.0)
+        detail = ""
+        if not stayed_silent:
+            detail = "console sink detach did not suppress terminal output:\n" + silent_log
+        elif not ok:
+            detail = log
+        results.append(("Kernel Log Ring Retains Output While Console Sink Detached (B0, /proc/kmsg)",
+                        ok and stayed_silent, detail))
+
         # 14. Interactive Line Editor Backward Cursor Insertion & Backspace Deletion
         # Type "ac", Left Arrow (\x1b[D), type "b" -> "abc", Backspace -> "ac"
         cmd_edit_cursor = "ac\x1b[Db\x7f"
@@ -630,7 +714,8 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             finally:
                 client.close()
 
-            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
             return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", ok, log)
         except Exception as e:
@@ -707,7 +792,8 @@ def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tu
             client = p9lib.P9Client(raw_sock, framing="slip")
             data = client.cat("/sd0/system/init.lisp")
 
-            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
             return (name, ok, log)
         except Exception as e:
@@ -783,7 +869,8 @@ def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: st
             raw_sock.settimeout(5.0)
             client = p9lib.P9Client(raw_sock, framing="slip")
             data = client.cat("/sd0/system/init.lisp")
-            p9_ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            p9_ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             if not p9_ok:
                 return (name, False, f"9P transaction failed: {len(data)} bytes: {data[:120]!r}")
 
@@ -951,7 +1038,23 @@ def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tupl
         if not ok:
             return (name, False, f"Node A (RV32) failed to boot:\n{log}")
 
-        cmd = 'lisp\n(mount-remote "netb")\nexit'
+        # B0 part 3: an unknown link name must fail rather than silently
+        # falling back to the default background link. This assertion has to
+        # run *here*, on a node where the default link genuinely exists and
+        # works -- in the single-node arch suite no virtconsole is attached, so
+        # the fallback returns NULL too and #f would prove nothing. (Confirmed
+        # the hard way: a version of this check placed there passed even with
+        # name resolution deliberately removed.)
+        ok, log = session_a.send_and_expect(
+            'lisp\n(mount-remote "bogus" "no-such-link")\nexit', r"=> #f", timeout=4.0)
+        if not ok:
+            return (name, False,
+                    f"Node A accepted an unknown link name instead of rejecting it:\n{log}")
+
+        # Explicit device name: resolves the link through the device registry
+        # by name. test_9p_multinode_heterogeneous()'s (p9-remote-cat "path")
+        # still exercises the no-device-argument default, so both are covered.
+        cmd = 'lisp\n(mount-remote "netb" "vconsole")\nexit'
         ok, log = session_a.send_and_expect(cmd, r"=> #t", timeout=4.0)
         if not ok:
             return (name, False, f"Node A failed to mount Node B's namespace:\n{log}")
