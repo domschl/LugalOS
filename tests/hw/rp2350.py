@@ -13,6 +13,7 @@ in pyserial from the committed lockfile). Every test here is written to be
 from __future__ import annotations
 
 import glob
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -212,3 +213,19 @@ def discover_ports(console: str | None = None, net: str | None = None,
         uart = uart_candidates[0]
 
     return Rp2350Ports(console=console, net=net, uart=uart)
+
+
+def local_build_id() -> str | None:
+    """The build id the local tree would produce, read from whichever build
+    directory cmake last generated it into. Returns None if no build exists.
+
+    Exists because "the board is running older firmware" previously had no
+    direct answer: it was only detectable by noticing that some feature under
+    test was missing, which costs a whole flash-and-measure cycle to work out.
+    """
+    for candidate in (REPO_ROOT / "build" / "rp2350" / "lugalos_build_id.h",):
+        if candidate.exists():
+            m = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"', candidate.read_text())
+            if m:
+                return m.group(1)
+    return None

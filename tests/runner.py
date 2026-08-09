@@ -14,6 +14,20 @@ import time
 from pathlib import Path
 
 
+def expected_version() -> str:
+    """The version string kernel/include/kernel/version.h defines, as a regex.
+
+    Read from the header rather than hardcoded: the version is now bumped
+    regularly, and a literal here would break several unrelated tests on every
+    bump -- the same brittleness that hardcoding init.lisp's byte length caused
+    (see expected_init_lisp below)."""
+    src = Path(__file__).resolve().parent.parent / "kernel" / "include" / "kernel" / "version.h"
+    m = re.search(r'#define\s+LUGALOS_VERSION\s+"([^"]+)"', src.read_text())
+    if not m:
+        raise RuntimeError("could not read LUGALOS_VERSION from version.h")
+    return re.escape(m.group(1))
+
+
 def expected_init_lisp() -> bytes:
     """The bytes /sd0/system/init.lisp should contain, read from the source
     that tools/create_sd_image.py copies onto the image.
@@ -180,7 +194,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Kernel Boot & Shell Prompt", ok, log if not ok else ""))
 
         # 2. Plan 9 /proc/ Metrics
-        ok, log = session.send_and_expect("cat /proc/version", r"LugalOS v0\.5\.0", timeout=3.0)
+        ok, log = session.send_and_expect("cat /proc/version", rf"LugalOS v{expected_version()}", timeout=3.0)
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 
@@ -443,7 +457,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # inaccessible, so both outcomes are accepted here. The measurement
         # that matters is on real Hazard3 silicon -- see tests/hw/.
         ok, log = session.send_and_expect(
-            "pmpinfo", r"PMP: (entries=\d+|unavailable)", timeout=5.0)
+            "pmpinfo", r"PMP: (configurable=\d+|unavailable)", timeout=5.0)
         results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
 
         # 13d-bis. B2: the cooperative scheduler actually switches.
@@ -479,7 +493,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # Reading through the mount: the bytes crossed serialized 9P frames and
         # two chan_call() copies to reach the same file /proc/version names.
         ok, log = session.send_and_expect(
-            "cat /self/proc/version", r"LugalOS v0\.5\.0", timeout=5.0)
+            "cat /self/proc/version", rf"LugalOS v{expected_version()}", timeout=5.0)
         results.append(("9P Read Through Local Channel Mount (B1)", ok, log if not ok else ""))
 
         # The stronger claim: a *write* through the channel mount lands on the

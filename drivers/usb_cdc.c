@@ -1,4 +1,6 @@
 #include "drivers/usb_cdc.h"
+#include "arch/rp2350_bootrom.h"
+#include "kernel/time.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
 #include <string.h>
@@ -200,6 +202,26 @@ static volatile uint32_t g_ep0_tx_rem = 0;
 static volatile uint32_t g_ep0_tx_off = 0;
 static volatile bool g_ep0_tx_data_pid = 1; // DATA1 for 1st packet
 static volatile bool g_ep0_awaiting_line_coding = false; // SET_LINE_CODING OUT data stage pending
+
+/* --- "1200-baud touch" BOOTSEL reset ---
+ *
+ * The Arduino convention, also implemented by the Pico SDK: a host that opens
+ * the CDC port at 1200 baud and then drops DTR is asking the *firmware* to
+ * reboot into the bootloader. Nothing in USB or the silicon does this on its
+ * own -- it only works because the device chooses to act on it, which is why
+ * it did nothing here until now (this driver received SET_LINE_CODING and
+ * discarded the rate).
+ *
+ * Gated on DTR going low rather than on the rate alone, so merely configuring
+ * 1200 baud cannot reboot a board out from under a user; the reset is the
+ * *close* of a 1200-baud connection. Deferred out of the control-transfer
+ * handler so the STATUS stage is acknowledged first -- rebooting mid-transfer
+ * leaves the host reporting a failed control request instead of a clean
+ * detach. */
+#define BOOTSEL_MAGIC_BAUD 1200
+static volatile uint32_t g_line_coding_baud = 115200;
+static volatile bool     g_bootsel_pending = false;
+static volatile uint64_t g_bootsel_at_ms = 0;
 
 static void ep0_send_next_chunk(void) {
     uint32_t chunk = g_ep0_tx_rem;
@@ -419,6 +441,22 @@ static void ep4_tx_pump(void) {
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
+    /* Deferred BOOTSEL reset (see BOOTSEL_MAGIC_BAUD above). Executed here
+     * rather than inside the control-transfer handler so the STATUS stage has
+     * already been acknowledged and the host sees a clean detach instead of a
+     * failed request. Checked before the re-entrancy guard because it never
+     * returns -- there is nothing to guard. */
+    if (g_bootsel_pending && time_get_ms() >= g_bootsel_at_ms) {
+        g_bootsel_pending = false;
+        printk("[USB] 1200-baud touch: rebooting into BOOTSEL for flashing\n");
+        if (!rp2350_reboot_to_bootsel()) {
+            /* Only reachable if the bootrom lookup failed, which would mean
+             * the ROM table is not where the SDK says it is. Say so instead
+             * of silently continuing as though the request never happened. */
+            printk("[USB] BOOTSEL reset failed: bootrom reset_usb_boot not found\n");
+        }
+    }
+
     static volatile bool in_task = false;
     if (in_task) return;
     in_task = true;
@@ -491,9 +529,13 @@ void usb_cdc_task(void) {
 
         if (buf_status & (1u << 1)) { // EP0 OUT complete
             if (g_ep0_awaiting_line_coding) {
-                // The 7 line-coding bytes just landed in USB_EP0_BUF; this
-                // device doesn't act on baud/format, so just consume them
-                // and send the STATUS ack now that the data stage is done.
+                // The 7 line-coding bytes just landed in USB_EP0_BUF. Only
+                // dwDTERate (the first 4, little-endian) is acted on, and only
+                // to recognize the 1200-baud BOOTSEL touch -- the framing
+                // fields still have no meaning for a USB CDC endpoint.
+                const volatile uint8_t *lc = (const volatile uint8_t *)USB_EP0_BUF;
+                g_line_coding_baud = (uint32_t)lc[0] | ((uint32_t)lc[1] << 8) |
+                                     ((uint32_t)lc[2] << 16) | ((uint32_t)lc[3] << 24);
                 g_ep0_awaiting_line_coding = false;
                 ep0_send_ack();
             }
@@ -649,7 +691,16 @@ void usb_cdc_task(void) {
                     g_ep2_tx_head = g_ep2_tx_tail = 0;
                     g_ep2_rx_head = g_ep2_rx_tail = 0;
                     printk_debug("[USB] DTR asserted, EP2 console active\n");
-                } else if (!dtr_now && g_ep2_dtr) {
+                }
+                if (!dtr_now && g_line_coding_baud == BOOTSEL_MAGIC_BAUD) {
+                    // Host closed a 1200-baud connection: reboot to BOOTSEL.
+                    // Deferred ~64 ms so the STATUS ack for this very request
+                    // reaches the host first.
+                    g_bootsel_pending = true;
+                    g_bootsel_at_ms = time_get_ms() + 64;
+                    printk_debug("[USB] 1200-baud touch: BOOTSEL reset armed\n");
+                }
+                if (!dtr_now && g_ep2_dtr) {
                     printk_debug("[USB] DTR dropped, EP2 console inactive\n");
                 }
                 g_ep2_dtr = dtr_now;

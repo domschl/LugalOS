@@ -60,6 +60,42 @@ def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """Checks the board is running the firmware this tree would build.
+
+    Reported as a WARNING rather than a failure: a deliberately older board is
+    a legitimate thing to test against. But a silent mismatch is not -- an
+    earlier session lost a full flash-and-measure cycle to a stale UF2 whose
+    only symptom was one command being missing, which looked like a broken
+    feature rather than a stale board."""
+    name = "Firmware freshness: board build id matches the local build"
+    want = rp2350.local_build_id()
+    if want is None:
+        return (name, True, "SKIPPED: no build/rp2350/ build to compare against")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/buildid\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", errors="replace")
+
+        m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", out.replace("cat /proc/buildid", ""))
+        if not m:
+            return (name, True,
+                    "SKIPPED: board predates /proc/buildid -- it is definitely older than this "
+                    f"tree (expected build {want}); reflash build/rp2350/lugalos.uf2")
+        got = m.group(2)
+        if got != want:
+            return (name, True,
+                    f"WARNING: board is running build {got}, local tree builds {want} -- "
+                    "reflash build/rp2350/lugalos.uf2 if the tests below look wrong")
+        return (name, True, f"build {got}")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """B3 prep (D2): read this silicon's actual PMP configuration.
 
@@ -90,7 +126,7 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
 
         text = out.decode("utf-8", errors="replace")
-        m = re.search(r"PMP: entries=(\d+) granularity=(\d+) bytes \(G=(-?\d+)\) locked_at_boot=(\w+)", text)
+        m = re.search(r"PMP: configurable=(\d+) hardwired=(\d+) granularity=(\d+) bytes \(G=(-?\d+)\) locked_at_boot=(\w+)", text)
         if not m:
             # Distinguish "the board is running older firmware" from "the probe
             # is broken". The former is by far the more likely cause the first
@@ -108,14 +144,16 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
                         f"got:\n{text[:300]}")
             return (name, False, f"no PMP report in console output:\n{text[:300]}")
 
-        entries = int(m.group(1))
-        granularity = int(m.group(2))
-        locked = m.group(4) == "yes"
+        entries = int(m.group(1))       # configurable (writable) -- B3's real budget
+        hardwired = int(m.group(2))     # read-only, fixed by the silicon
+        granularity = int(m.group(3))
+        locked = m.group(5) == "yes"
 
-        detail = f"entries={entries} granularity={granularity}B locked_at_boot={locked}"
+        detail = (f"configurable={entries} hardwired={hardwired} "
+                  f"granularity={granularity}B locked_at_boot={locked}")
 
         if entries == 0:
-            return (name, False, f"no PMP entries implemented -- B3 has no enforcement mechanism ({detail})")
+            return (name, False, f"no configurable PMP entries -- B3 has no enforcement mechanism ({detail})")
         if locked:
             return (name, False, f"a PMP entry is already locked at boot; B3 cannot reprogram it ({detail})")
 
@@ -364,7 +402,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_pmp_probe, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
 

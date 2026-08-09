@@ -15,7 +15,8 @@
 
 typedef struct {
     bool mode_m;           /* false when this build runs in S-mode (no PMP access) */
-    int  num_entries;      /* implemented pmpaddr registers, 0 if none */
+    int  num_entries;      /* CONFIGURABLE (writable) entries -- B3's real budget */
+    int  num_hardwired;    /* read-only entries fixed by the silicon (RP2350: 3) */
     int  granularity_log2; /* log2(bytes); 2 means 4-byte granularity */
     bool any_locked;       /* an entry was already locked at boot */
 } pmp_info_t;

@@ -34,32 +34,46 @@
 
 #if defined(CONFIG_MODE_M)
 
-/* Reads, all-ones-writes, re-reads and restores one pmpaddr CSR. Sets
- * `*faulted` if the access is not legal on this core. */
+/* Probes one pmpaddr CSR by writing BOTH all-ones and zero and comparing the
+ * two readbacks. Sets `readback` (the all-ones result) and `writable`.
+ *
+ * The two-write comparison is the whole point, and a single all-ones write is
+ * not enough: RP2350's Hazard3 hardwires pmpaddr8/9/10 to fixed, *non-zero*
+ * ranges (boot ROM, system peripherals, SIO) as read-only entries. A probe
+ * that only asks "does this read back non-zero?" counts those three as
+ * implemented and reports 11 usable regions when only 8 can actually be
+ * programmed -- which is exactly the number B3's design depends on. Comparing
+ * an all-ones write against a zero write separates "configurable" from
+ * "hardwired": a read-only register returns the same value both times. */
 #define PROBE_ONE(n)                                                        \
     do {                                                                    \
-        uintptr_t old = 0, back = 0;                                        \
+        uintptr_t old = 0, hi = 0, lo = 0;                                  \
         arch_probe_begin();                                                 \
         __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(old));            \
         if (arch_probe_faulted()) { faulted = true; break; }                \
         arch_probe_begin();                                                 \
         __asm__ __volatile__("csrw pmpaddr" #n ", %0" :: "r"(all_ones));    \
-        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(back));           \
+        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(hi));             \
+        __asm__ __volatile__("csrw pmpaddr" #n ", zero");                   \
+        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(lo));             \
         __asm__ __volatile__("csrw pmpaddr" #n ", %0" :: "r"(old));         \
         if (arch_probe_faulted()) { faulted = true; break; }                \
-        readback = back;                                                    \
+        readback = hi;                                                      \
+        writable = (hi != lo);                                              \
     } while (0)
 
 void pmp_probe(pmp_info_t *out) {
     if (!out) return;
     out->mode_m = true;
     out->num_entries = 0;
+    out->num_hardwired = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
 
     const uintptr_t all_ones = (uintptr_t)-1;
     uintptr_t readback = 0;
     bool faulted = false;
+    bool writable = false;
 
     /* pmpcfg0 must be zeroed before touching pmpaddr0: a locked or active
      * entry would make the address write a no-op (and, if active, could
@@ -81,7 +95,7 @@ void pmp_probe(pmp_info_t *out) {
     __asm__ __volatile__("csrw pmpcfg0, zero");
 
     /* --- granularity, from pmpaddr0 with A=OFF --- */
-    readback = 0; faulted = false;
+    readback = 0; faulted = false; writable = false;
     PROBE_ONE(0);
     if (faulted || readback == 0) {
         __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg0_saved));
@@ -93,9 +107,13 @@ void pmp_probe(pmp_info_t *out) {
     out->granularity_log2 = g + 2;
 
     /* --- entry count --- */
-#define PROBE_STEP(n) do { readback = 0; faulted = false; PROBE_ONE(n); \
-                           if (!faulted && readback != 0) counted++; } while (0);
+#define PROBE_STEP(n) do { readback = 0; faulted = false; writable = false;   \
+                           PROBE_ONE(n);                                      \
+                           if (!faulted && readback != 0) {                   \
+                               if (writable) counted++; else hardwired++;     \
+                           } } while (0);
     int counted = 0;
+    int hardwired = 0;
     /* Enumerated rather than macro-generated: CSR names must be assembler
      * literals, so there is no loop to write, and token-pasting a counter
      * would be harder to read than the list it replaces. */
@@ -114,6 +132,7 @@ void pmp_probe(pmp_info_t *out) {
     PROBE_STEP(60) PROBE_STEP(61) PROBE_STEP(62) PROBE_STEP(63)
 #undef PROBE_STEP
     out->num_entries = counted;
+    out->num_hardwired = hardwired;
 
     __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg0_saved));
 }
@@ -128,6 +147,7 @@ void pmp_probe(pmp_info_t *out) {
      * S-mode target gets Sv39 in B5 instead. */
     out->mode_m = false;
     out->num_entries = 0;
+    out->num_hardwired = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
 }
@@ -145,19 +165,25 @@ void pmp_report(void) {
         return;
     }
 
-    printk("PMP: entries=%d granularity=%lu bytes (G=%d) locked_at_boot=%s\n",
-           info.num_entries,
+    printk("PMP: configurable=%d hardwired=%d granularity=%lu bytes (G=%d) locked_at_boot=%s\n",
+           info.num_entries, info.num_hardwired,
            (unsigned long)(1UL << info.granularity_log2),
            info.granularity_log2 - 2,
            info.any_locked ? "yes" : "no");
 
     if (info.num_entries == 0) {
-        printk("     No usable PMP: B3 would have no enforcement mechanism on this core.\n");
+        printk("     No configurable PMP: B3 would have no enforcement mechanism on this core.\n");
     } else {
-        /* B3 needs, at minimum, one region per protected task plus one
-         * covering the kernel. Reporting the implied ceiling here is the
-         * whole point of running this on real silicon. */
+        /* B3 needs one region per protected task plus one covering the
+         * kernel. Only *configurable* entries count: hardwired ones (RP2350
+         * fixes pmpaddr8/9/10 to the boot ROM, system peripheral and SIO
+         * windows) cannot be reprogrammed and are reported separately so they
+         * are never mistaken for budget. */
         printk("     Usable isolated regions for B3: %d (1 reserved for the kernel)\n",
                info.num_entries - 1);
+        if (info.num_hardwired) {
+            printk("     Plus %d read-only hardwired region(s), not available to B3.\n",
+                   info.num_hardwired);
+        }
     }
 }

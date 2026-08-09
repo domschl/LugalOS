@@ -77,7 +77,7 @@ void kernel_main(void) {
     time_init();
 
     printk("\n==================================================\n");
-    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION);
+    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION_FULL);
     printk("==================================================\n");
 
 #if defined(CONFIG_TARGET_RV32)

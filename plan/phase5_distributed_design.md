@@ -991,6 +991,39 @@ No scheduler. Kills two of the three §5.2 blockers outright.
 *Risk: low. Blast radius is `printk()` and boot ordering, both well covered by the existing 85-test
 suite.*
 
+##### Known issue — `uart_putc()` blocks unbounded (found 2026-08-09, not fixed)
+
+`drivers/uart_16550.c`'s `uart_putc()` spins on the 16550's THRE bit with no
+bound and no yield:
+
+```c
+while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
+```
+
+If console output ever backs up, the guest wedges there permanently — no
+timeout, no yield, no recovery. It was found by a real symptom: adding ~27
+bytes to `/proc/version` deterministically tipped `tests/runner.py` into a
+state where `cat /proc/kmsg` (a ~4 KB dump of the whole log ring) went silent
+mid-write and every subsequent test failed with empty output. The read itself
+completes correctly; the stall is in emitting.
+
+**Not root-caused, and deliberately not papered over in code.** What is
+established: the read returns its full 4094 bytes; QEMU and the harness reader
+thread both stay alive; a wrapped-ring dump in isolation completes in 0.1 s.
+What is not established is why the same dump wedges only after ~25 preceding
+tests.
+
+Worked around by *not* growing `/proc/version` — the build id lives in its own
+`/proc/buildid` instead. That removes the trigger without pretending the
+underlying fragility is gone.
+
+**`sched_yield()` was deliberately NOT added to this spin**, unlike
+`uart_getc()`'s in B2. Yielding mid-`printk()` would let two tasks interleave
+output character by character, since `printk()` is not atomic and there are no
+locks yet. That trade only becomes acceptable once B4 gives the console a
+single owning server. Recorded here so B4 picks it up rather than rediscovering
+it.
+
 ##### B0 completion notes — part 1 of 3 (2026-08-09)
 
 **Log ring + sink registry implemented and merged.** The device/service registry and the

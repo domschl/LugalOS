@@ -439,6 +439,14 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "buildid") == 0) {
+        /* Deliberately its own file rather than extra lines on /proc/version:
+         * tests/hw/ needs to ask "is this board running the firmware I just
+         * built?", and a small dedicated file answers that without changing
+         * the size of a file several tests already read. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "%s %s\n", LUGALOS_VERSION, LUGALOS_BUILD_ID);
+        return (int)used;
     } else if (strcmp(rel, "devices") == 0) {
         /* B0 device registry (kernel/device.h). Compact deliberately: this
          * is generated into the handle's fixed 512-byte proc_buf. */
@@ -462,7 +470,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[6] = { "ps", "meminfo", "version", "df", "kmsg", "devices" };
+static const char *g_proc_names[7] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
