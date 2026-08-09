@@ -2,9 +2,10 @@
 
 > **Status**: **Track A (Distribution) complete — M1 through M5 all done, M5 verified against real
 > RP2350 hardware** (see §7's milestone table and each subsection's dated completion notes below).
-> **Track B was redesigned on 2026-08-09** and is not started (M6–M12). It is no longer "memory
-> model & isolation" but *a microkernel on both memory models* — see §5.0 for the assumption that
-> was dropped and why. D2, D5 and D6 are resolved; D4 is subsumed by B4.
+> **Track B was redesigned on 2026-08-09**; it is no longer "memory model & isolation" but *a
+> microkernel on both memory models* — see §5.0 for the assumption that was dropped and why.
+> **B0 (M6) is complete as of 2026-08-09**; B1 (M7, `chan_t`) is next. D2, D5 and D6 are resolved;
+> D4 is subsumed by B4.
 > **Date**: 2026-08-07 (original), updated same day through Track A completion; Track B rewritten
 > 2026-08-09.
 > **Baseline**: commit `4a64b78` (Phases 0–4 + cross-cutting quick wins complete, 75/75 tests
@@ -1052,6 +1053,45 @@ primitives remain — B0 is still open. All three targets build clean; `tests/ru
   with real `chan_t` endpoints; half-merging it into the device table now would mean rewriting it
   twice.
 
+##### B0 completion notes — part 3 of 3 (2026-08-09) — **B0 COMPLETE**
+
+**Binding primitives implemented and merged. B0 is done; M6 is complete.** All three targets build
+clean; `tests/runner.py` passes **95/95** (RV64 + RV32, four more new tests, up from 91).
+
+- **New Lisp primitives**: `(devices)`, `(dev-present? "name")`, `(klog-sinks)`,
+  `(klog-detach "name")`, `(klog-attach "name")`, `(p9-serve "dev")`, `(p9-unserve "dev")`.
+  Policy — which link serves 9P, where the kernel log goes, what hardware a boot script assumes —
+  is now expressible in `init.lisp` rather than compiled into `kernel_main()`.
+- **`(devices)` reads `/proc/devices`** rather than formatting the table a second time, so what the
+  REPL prints is byte-identical to what a remote 9P client reading that file sees. No divergent
+  second formatting path.
+- **`mount-remote` and `p9-remote-cat` are no longer RP2350-guarded.** Both took their link from a
+  hardcoded `virtio_console_get_link()`; they now resolve through the registry
+  (`lisp_resolve_link()`), so both gained an optional device-name argument *and* RP2350 can use them
+  over its `usbnet` (ACM1/EP4) link. **This closes A5's "deferred, not forgotten" item** —
+  "`mount-remote` can currently only target the virtio-console link". Omitting the argument selects
+  the board's `DEV_F_BACKGROUND_9P` link, so every existing call site keeps working unchanged.
+- **`(p9-serve ...)` returns `#t` for "requested", not "succeeded"**, and says so:
+  `p9_link_register_background()` returns void and logs-and-drops past its two-slot limit (A3b), so
+  there is no success code to forward honestly. It does *not* arm the UART demux — `uartdemux` still
+  needs `p9share`, because sharing a wire with the console is a driver-mode change, not just a
+  registration.
+- **`init.lisp` documents the new surface** in comments rather than gaining active lines that do
+  nothing: dedicated links are already served from boot via `DEV_F_BACKGROUND_9P`, so no binding is
+  *required* there by default.
+- **A brittle test assertion fixed at the cause.** Three 9P transport tests asserted
+  `len(data) == 515` — the literal byte length of `init.lisp` — so editing the boot script broke
+  three unrelated tests with a confusing "unexpected content" message. The length check is worth
+  keeping (it proves a complete multi-read transfer, not a truncated one), so it now derives the
+  expected length from the source file instead of hardcoding it.
+- **Falsification caught a vacuous test of mine — the most useful result of this pass.** The
+  assertion "an unknown link name must be rejected" was first placed in the single-node arch suite,
+  where it passed *even with name resolution deliberately deleted*: no virtconsole is attached
+  there, so the fallback link is absent too and `#f` comes back either way. Moved to
+  `test_9p_remote_mount()`, where the default link genuinely exists and works, the sabotage is
+  caught (94/95). **The lesson generalizes: a negative assertion only discriminates when the thing
+  it would have fallen back to is present and working.**
+
 **Known limitation, deferred to B4 — `printk()` is still one stream carrying two things.** It is
 both kernel diagnostics *and* user-facing output (shell command results, Lisp REPL output — its own
 header comment says so). So `klog detach console` currently silences **everything** on that
@@ -1174,7 +1214,7 @@ different word widths, real frames over a real socket, no hardware required, run
 | **M3** | A3b demux + A4 harness → **T2** heterogeneous CI | M2 | Done — A4 (2026-08-07) reached T2 over `virtio_console`/TCP without needing A3b, per its own completion notes; A3b itself (shared-wire demux) landed separately, below, once RP2350 hardware support made it relevant rather than as a T2 dependency. |
 | **M4** | A5 mount table / remote namespace | M3 | Done |
 | **M5** | RP2350 hardware node → **T3** | M4 | **Done (2026-08-07) — verified against real RP2350 hardware, not just clean builds.** A3b demux + `link_usb_cdc` (below) gave RP2350 both a single-cable UART story (`p9share`) and a dedicated USB channel (ACM1/EP4); with a physical board wired up, both were exercised directly: `link_usb_cdc` served a real `/proc/version` read to a host Python 9P client over ACM1, and `p9share` carried a real SLIP-framed 9P transaction *and* a live console command over the same physical UART. The actual T3 milestone — **RP2350 hardware talking 9P to a QEMU node** — was then proven for real: RP2350's ACM1 was bridged (a plain byte relay; both ends already speak the same length-prefixed framing) to a QEMU RV64 guest's `virtio-console` chardev, and `(p9-remote-cat "/sd0/TEXT.TXT")`, run from *inside that QEMU guest's own Lisp REPL*, returned `"Hello, world!"` — content that exists only on the RP2350's physical SD card. The round trip crossed QEMU's virtio-console → a host relay → USB → RP2350's `link_usb_cdc` → the 9P server → the VFS → the physical SPI SD card, and back. Found and fixed along the way: `tests/p9lib.py`'s `P9Client.cat()` discarded `Twalk`'s `nwqid`, so a partial walk (e.g. a path that doesn't exist on this board's card) silently returned the wrong directory's listing instead of erroring — it now raises `P9Error` naming exactly which path component it got stuck on. |
-| **M6** | **B0** log ring + sink registry, device/service registry, `init.lisp` binding | independent of M1–M5 | Not started |
+| **M6** | **B0** log ring + sink registry, device registry, `init.lisp` binding | independent of M1–M5 | **Done (2026-08-09)** — see B0's three completion notes. Delivered in three commits: klog ring + detachable sinks + `/proc/kmsg`; per-board device registry + `/proc/devices` replacing `kernel_main()`'s `#if` blocks; Lisp binding primitives. Side effects beyond scope: A5's "`mount-remote` can only target virtio-console" limitation is closed, and `mount-remote`/`p9-remote-cat` now work on RP2350 over `usbnet`. Tests 85→95. One limitation deferred to B4: `printk()` is still a single stream carrying both kernel diagnostics and user-facing output. |
 | **M7** | **B1** `chan_t` copy-always channels + `MOUNT_LOCAL9P` | M6 | Not started |
 | **M8** | **B2** tasks + cooperative scheduler + 9P tag multiplexing — **gated on M3/M4 tests still passing with the scheduler on** | M7 | Not started |
 | **M9** | **B3** U-mode + PMP on RV32/RP2350; trap-path stack switch; copy-in/out | M8 | Not started |

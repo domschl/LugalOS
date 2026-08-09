@@ -11,9 +11,8 @@
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
-#if !defined(CONFIG_BOARD_RP2350)
-#include "drivers/virtio_console.h"
-#endif
+#include "kernel/device.h"
+#include "kernel/klog.h"
 #include "user/chibicc/include/chibicc.h"
 #include "arch/elf.h"
 #include <string.h>
@@ -627,20 +626,41 @@ static lisp_val_t *prim_p9_cat(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
-#if !defined(CONFIG_BOARD_RP2350)
+/* Resolves a DEV_KIND_P9LINK device from the B0 registry (kernel/device.h)
+ * by name. A NULL/empty name selects this board's default background link --
+ * virtio-console on QEMU, ACM1/EP4 on RP2350 -- which is what the flag
+ * DEV_F_BACKGROUND_9P marks, so callers that don't care get the same link
+ * they used to get from a hardcoded virtio_console_get_link() call, while
+ * callers that do care can now name one. */
+static p9_link_t *lisp_resolve_link(const char *name) {
+    if (name && name[0]) {
+        return (p9_link_t *)dev_get(name, DEV_KIND_P9LINK);
+    }
+    uint32_t cursor = 0;
+    return (p9_link_t *)dev_next_with_flags(&cursor, DEV_KIND_P9LINK, DEV_F_BACKGROUND_9P);
+}
+
 /* Node-to-node 9P (A4): fetches a file from whatever real peer is bridged
- * onto this node's virtio-console link (drivers/virtio_console.c, A3) --
- * unlike p9-cat/p9-loopback above, this isn't talking to this node's own
- * local 9P server, it's talking to a genuinely different machine (see the
- * multi-node test in tests/runner.py). QEMU-only, hence the RP2350 guard;
- * see fs/p9_link.c's p9_link_cat() for why this is safe alongside the
- * link's own background server role. */
+ * onto one of this node's 9P links -- unlike p9-cat/p9-loopback above, this
+ * isn't talking to this node's own local 9P server, it's talking to a
+ * genuinely different machine (see the multi-node test in tests/runner.py).
+ * See fs/p9_link.c's p9_link_cat() for why this is safe alongside the link's
+ * own background server role.
+ *
+ * (p9-remote-cat "path" ["device"]) -- was QEMU-only behind an RP2350 guard
+ * while it hardcoded virtio_console_get_link(); resolving through the device
+ * registry instead means RP2350 can use it over its `usbnet` link, so the
+ * guard is gone. */
 static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *path = get_str_val(args->u.pair.car);
 
-    p9_link_t *link = virtio_console_get_link();
+    const char *devname = NULL;
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (rest && rest->type == LISP_PAIR) devname = get_str_val(rest->u.pair.car);
+
+    p9_link_t *link = lisp_resolve_link(devname);
     if (!link) return &false_val;
 
     char out_buf[512];
@@ -657,21 +677,118 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * into "distributed namespace works": once mounted, standard commands
  * (ls, cat, write, cp, mkdir, rm) work through /<name>/ exactly like any
  * other mount, not just through a special-purpose primitive like
- * p9-remote-cat above. Currently only ever mounts the virtio-console link
- * (the same one p9-remote-cat targets); mounting a different link by name
- * is a reasonable future extension once more than one outbound-capable
- * link exists. */
+ * p9-remote-cat above.
+ *
+ * (mount-remote "name" ["device"]) -- the optional second argument names a
+ * DEV_KIND_P9LINK device from the B0 registry (see /proc/devices). Omitted,
+ * it uses this board's default background link. A5's completion notes listed
+ * "mount-remote can currently only target the virtio-console link" as
+ * deferred; the device registry is what makes resolving one by name
+ * possible, so that limitation is closed here. */
 static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *name = get_str_val(args->u.pair.car);
 
-    p9_link_t *link = virtio_console_get_link();
+    const char *devname = NULL;
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (rest && rest->type == LISP_PAIR) devname = get_str_val(rest->u.pair.car);
+
+    p9_link_t *link = lisp_resolve_link(devname);
     if (!link) return &false_val;
 
     return (vfs_mount_remote(name, link) == 0) ? &true_val : &false_val;
 }
-#endif
+
+/* --- B0 part 3: binding primitives ---
+ * These exist so that *policy* -- which link serves 9P, where the kernel log
+ * goes, which hardware a boot script assumes -- lives in init.lisp instead of
+ * being compiled into kernel_main(). The registries themselves (B0 parts 1
+ * and 2) are what make naming these things at runtime possible. */
+
+/* (devices) / (klog-sinks): print the registries. Both read through /proc,
+ * so they show exactly what a remote 9P client reading the same file sees --
+ * no second, divergent formatting path. */
+static lisp_val_t *prim_devices(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    print_proc_file("/proc/devices");
+    return &nil_val;
+}
+
+/* (dev-present? "name") -- lets init.lisp branch on what this board actually
+ * has, rather than the script having to know which target it booted on. */
+static lisp_val_t *prim_dev_present(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+
+    const char *dname;
+    bool present;
+    for (uint32_t i = 0; dev_info(i, &dname, NULL, &present); i++) {
+        if (strcmp(dname, name) == 0) return present ? &true_val : &false_val;
+    }
+    return &false_val;
+}
+
+static lisp_val_t *prim_klog_sinks(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    const char *name;
+    bool attached;
+    for (uint32_t i = 0; klog_sink_info(i, &name, &attached); i++) {
+        printk("  %s: %s\n", name, attached ? "attached" : "detached");
+    }
+    return &nil_val;
+}
+
+/* (klog-detach "console") / (klog-attach "console") -- the scenario this
+ * whole milestone is named for: a channel carries kernel log output until
+ * init.lisp decides something else should own it. The ring keeps recording
+ * either way, so nothing is lost (see kernel/klog.h). */
+static lisp_val_t *prim_klog_detach(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    return (name && klog_sink_detach(name) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_klog_attach(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    return (name && klog_sink_attach(name) == 0) ? &true_val : &false_val;
+}
+
+/* (p9-serve "device") / (p9-unserve "device") -- bind or unbind a named
+ * p9link device as a background 9P server at runtime. This is the
+ * general-purpose form of what DEV_F_BACKGROUND_9P does automatically at
+ * boot, and of what `p9share` does for the UART demux specifically. Note it
+ * does NOT arm the UART demux itself -- `uartdemux` still needs `p9share`,
+ * because sharing a wire with the console is a driver-level mode change, not
+ * just a registration.
+ *
+ * #f means the device name didn't resolve to a present p9link. #t means the
+ * registration was *requested*: p9_link_register_background() returns void
+ * and, past its two-slot limit, logs and drops rather than reporting an
+ * error (A3b), so there is no success code here to forward honestly. Check
+ * the kernel log if a link doesn't come up. */
+static lisp_val_t *prim_p9_serve(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    p9_link_t *link = lisp_resolve_link(get_str_val(args->u.pair.car));
+    if (!link) return &false_val;
+    p9_link_register_background(link);
+    return &true_val;
+}
+
+static lisp_val_t *prim_p9_unserve(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    p9_link_t *link = lisp_resolve_link(get_str_val(args->u.pair.car));
+    if (!link) return &false_val;
+    p9_link_unregister_background(link);
+    return &true_val;
+}
 
 static lisp_val_t *prim_unmount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -788,11 +905,21 @@ void lisp_init(void) {
     env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
     env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
     env_set(&global_env, "p9-cat", make_prim(prim_p9_cat));
-#if !defined(CONFIG_BOARD_RP2350)
+    /* No longer RP2350-guarded: both resolve their link through the B0
+     * device registry rather than hardcoding virtio-console, so RP2350 can
+     * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
-#endif
     env_set(&global_env, "unmount", make_prim(prim_unmount));
+
+    /* B0 part 3: registry/sink binding, so init.lisp owns the policy. */
+    env_set(&global_env, "devices", make_prim(prim_devices));
+    env_set(&global_env, "dev-present?", make_prim(prim_dev_present));
+    env_set(&global_env, "klog-sinks", make_prim(prim_klog_sinks));
+    env_set(&global_env, "klog-detach", make_prim(prim_klog_detach));
+    env_set(&global_env, "klog-attach", make_prim(prim_klog_attach));
+    env_set(&global_env, "p9-serve", make_prim(prim_p9_serve));
+    env_set(&global_env, "p9-unserve", make_prim(prim_p9_unserve));
     env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
     env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 

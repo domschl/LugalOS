@@ -8,6 +8,21 @@
 ;; 2. Clear command history file on boot (configurable)
 (write-file "/sd0/system/history.lisp" "")
 
+;; 3. Kernel log and device policy (B0). Both registries are inspectable...
+;;      (devices)      -- what hardware this board probed; also /proc/devices
+;;      (klog-sinks)   -- where kernel log output currently goes
+;;    ...and bindable here, at boot, rather than compiled into kernel_main():
+;;      (klog-detach "console")  -- stop kernel log reaching this terminal.
+;;                                  Nothing is lost: the ring keeps recording,
+;;                                  so `cat /proc/kmsg` still has it, and so
+;;                                  does a remote node reading that file.
+;;      (p9-serve "uartslip")    -- serve 9P on a link named in the registry
+;;      (mount-remote "peer" "usbnet")  -- mount a peer over a named link
+;;    Dedicated links (vconsole on QEMU, usbnet/ACM1 on RP2350) are already
+;;    served from boot via DEV_F_BACKGROUND_9P, so nothing is required here
+;;    by default. Use (dev-present? "name") to branch on what this board has
+;;    instead of on which target it was built for.
+
 (display "[Init] LugalOS Lisp System Initialized successfully!\n")
 
 ;; 3. Launch interactive Lugal Console Shell

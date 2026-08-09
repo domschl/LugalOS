@@ -14,6 +14,21 @@ import time
 from pathlib import Path
 
 
+def expected_init_lisp() -> bytes:
+    """The bytes /sd0/system/init.lisp should contain, read from the source
+    that tools/create_sd_image.py copies onto the image.
+
+    The three 9P tests below assert on the full length of this file to prove a
+    complete multi-read transfer rather than a truncated one -- a real thing to
+    check. They used to hardcode that length (515), which meant any edit to the
+    boot script broke three unrelated 9P transport tests with a confusing
+    "unexpected content" failure. Deriving it keeps the same assertion without
+    the brittleness.
+    """
+    src = Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "system" / "init.lisp"
+    return src.read_bytes()
+
+
 class QemuSession:
     """Manages an interactive QEMU session for testing LugalOS serial I/O."""
 
@@ -401,6 +416,27 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             timeout=4.0)
         results.append(("Device Registry Enumerated Via /proc/devices (B0)", ok, log if not ok else ""))
 
+        # 13d. B0 part 3: the registries are bindable from Lisp, so init.lisp
+        # owns policy instead of it being compiled into kernel_main().
+        # (dev-present? ...) is what lets a boot script branch on what the
+        # board actually has rather than on which target it was built for.
+        cmd_bind = (
+            '(dev-present? "vblk")\n'
+            '(dev-present? "no-such-device")'
+        )
+        ok, log = session.send_and_expect(cmd_bind, r"=> #t(.|\n)*=> #f", timeout=4.0)
+        results.append(("Lisp (dev-present?) Queries Device Registry (B0)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
+        results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
+
+        # NOTE: the "unknown link name is rejected" assertion deliberately does
+        # NOT live here. On this single-node session no virtconsole is
+        # attached, so a broken name lookup would fall back to a default link
+        # that is also absent and still return #f -- passing for the wrong
+        # reason. It runs in test_9p_remote_mount() instead, where the default
+        # link genuinely exists.
+
         # Stage a probe file first, while output is still visible. The marker
         # lives only in the file's *content*, never in a command typed later --
         # kernel/line_editor.c echoes keystrokes via uart_putc() (bypassing
@@ -678,7 +714,8 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             finally:
                 client.close()
 
-            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
             return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", ok, log)
         except Exception as e:
@@ -755,7 +792,8 @@ def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tu
             client = p9lib.P9Client(raw_sock, framing="slip")
             data = client.cat("/sd0/system/init.lisp")
 
-            ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             log = "" if ok else f"unexpected content ({len(data)} bytes): {data[:120]!r}"
             return (name, ok, log)
         except Exception as e:
@@ -831,7 +869,8 @@ def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: st
             raw_sock.settimeout(5.0)
             client = p9lib.P9Client(raw_sock, framing="slip")
             data = client.cat("/sd0/system/init.lisp")
-            p9_ok = b"LugalOS System Initialization Script" in data and len(data) == 515
+            _want = expected_init_lisp()
+            p9_ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             if not p9_ok:
                 return (name, False, f"9P transaction failed: {len(data)} bytes: {data[:120]!r}")
 
@@ -999,7 +1038,23 @@ def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tupl
         if not ok:
             return (name, False, f"Node A (RV32) failed to boot:\n{log}")
 
-        cmd = 'lisp\n(mount-remote "netb")\nexit'
+        # B0 part 3: an unknown link name must fail rather than silently
+        # falling back to the default background link. This assertion has to
+        # run *here*, on a node where the default link genuinely exists and
+        # works -- in the single-node arch suite no virtconsole is attached, so
+        # the fallback returns NULL too and #f would prove nothing. (Confirmed
+        # the hard way: a version of this check placed there passed even with
+        # name resolution deliberately removed.)
+        ok, log = session_a.send_and_expect(
+            'lisp\n(mount-remote "bogus" "no-such-link")\nexit', r"=> #f", timeout=4.0)
+        if not ok:
+            return (name, False,
+                    f"Node A accepted an unknown link name instead of rejecting it:\n{log}")
+
+        # Explicit device name: resolves the link through the device registry
+        # by name. test_9p_multinode_heterogeneous()'s (p9-remote-cat "path")
+        # still exercises the no-device-argument default, so both are covered.
+        cmd = 'lisp\n(mount-remote "netb" "vconsole")\nexit'
         ok, log = session_a.send_and_expect(cmd, r"=> #t", timeout=4.0)
         if not ok:
             return (name, False, f"Node A failed to mount Node B's namespace:\n{log}")
