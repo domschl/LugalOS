@@ -2,10 +2,13 @@
 #include "kernel/printk.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
+#include "kernel/time.h"
 
 /* See kernel/include/kernel/ticker.h for why this has three backends. */
 
 static bool     g_enabled;
+static uint32_t g_hz;
+static uint64_t g_measured_hz;   /* 0 = the nominal TICK_HZ was used */
 static uint64_t g_ticks;
 static uint64_t g_interval;   /* in whatever unit the target's clock counts */
 
@@ -24,7 +27,13 @@ void     ticker_count_tick(void) { g_ticks++; }
 #define SIO_MTIMECMPH   (*(volatile uint32_t *)(SIO_BASE + 0x1bc))
 #define MTIME_CTRL_EN   (1u << 0)
 
-/* The SDK documents this timer as ticking at 1 MHz when not in FULLSPEED. */
+#define TICKS_BASE        0x40108000UL
+#define TICKS_RISCV_CTRL   (*(volatile uint32_t *)(TICKS_BASE + 0x3c))
+#define TICKS_RISCV_CYCLES (*(volatile uint32_t *)(TICKS_BASE + 0x40))
+#define TICKS_CTRL_ENABLE  (1u << 0)
+#define TICKS_CTRL_RUNNING (1u << 1)
+
+/* Nominal only -- the real rate is measured at init, see below. */
 #define TICK_HZ 1000000UL
 
 static uint64_t now(void) {
@@ -43,25 +52,60 @@ static void set_deadline(uint64_t t) {
 }
 
 static bool arch_ticker_init(void) {
-    /* DISABLED pending investigation -- see the B6 notes in
-     * plan/phase5_distributed_design.md.
+    /* mtime does not run on its own. It is driven by a tick generator in the
+     * TICKS block whose ENABLE bit resets to 0, so without this the counter
+     * sits at zero forever and no deadline is ever reached. That was half of
+     * why the first attempt at RP2350 preemption failed; the other half was a
+     * 4 KB boot stack in SCRATCH_Y, which a trap frame taken deep inside the
+     * Lisp evaluator could overflow into the heap. The stack now lives in RAM
+     * (see linker/rp2350.ld).
      *
-     * Enabling the SIO mtime comparator and MTIE wedges the board: it stops
-     * echoing console input partway through a line and the physical UART goes
-     * silent too, which is a trap loop rather than a slow system. The same
-     * code preempts correctly on both QEMU targets, so it is something
-     * specific to Hazard3's platform timer or how RP2350 routes it, and I do
-     * not yet understand which.
-     *
-     * Refusing is the honest state: preemption reports itself off (ticker_
-     * enabled() is false, and `preempttest` says so), the board stays usable,
-     * and cooperative scheduling continues to work exactly as it did through
-     * B0-B5. Shipping a kernel that hangs the only physical target would be
-     * strictly worse than shipping one that says it cannot preempt yet. */
-    (void)set_deadline;
-    (void)now;
-    printk("[Ticker] Preemption disabled on RP2350 (platform timer under investigation)\n");
-    return false;
+     * CYCLES is in source-clock cycles per tick. 12 assumes a 12 MHz clk_ref,
+     * which is the usual XOSC configuration -- but rather than trust that, the
+     * rate is measured below against the microsecond timer that time.c already
+     * uses and is known good. */
+    TICKS_RISCV_CTRL = 0;
+    TICKS_RISCV_CYCLES = 12;
+    TICKS_RISCV_CTRL = TICKS_CTRL_ENABLE;
+
+    /* RUNNING is a status bit synchronised to the source clock, so it is not
+     * asserted the instant ENABLE is written -- checking it immediately reads
+     * back 0 and looks like a hardware failure. Poll it briefly instead. */
+    {
+        uint64_t deadline_us = time_get_us() + 5000;
+        while (!(TICKS_RISCV_CTRL & TICKS_CTRL_RUNNING)) {
+            if (time_get_us() > deadline_us) {
+                printk("[Ticker] RISC-V tick generator did not start; preemption off\n");
+                return false;
+            }
+        }
+    }
+
+    /* Measure the real tick rate instead of assuming it. */
+    uint64_t t0 = now();
+    uint64_t us0 = time_get_us();
+    while (time_get_us() - us0 < 2000) { /* 2 ms is plenty to divide by */ }
+    uint64_t elapsed_ticks = now() - t0;
+    uint64_t elapsed_us = time_get_us() - us0;
+
+    if (elapsed_ticks == 0 || elapsed_us == 0) {
+        printk("[Ticker] mtime is not advancing; preemption off\n");
+        return false;
+    }
+    /* ticks per second, from the measurement */
+    uint64_t measured_hz = (elapsed_ticks * 1000000UL) / elapsed_us;
+    g_measured_hz = measured_hz;
+    /* Measured, not assumed -- it came out near 2.33 MHz rather than the 1 MHz
+     * a 12 MHz clk_ref would imply, so assuming would have made the tick more
+     * than twice as fast as asked for. The absolute figure is only as good as
+     * time.c's microsecond timer, whose own tick generator this kernel has
+     * never configured either; the ratio is what preemption actually needs. */
+    g_interval = measured_hz / g_hz;
+    if (g_interval == 0) g_interval = 1;
+
+    set_deadline(now() + g_interval);
+    set_csr(mie, 1UL << 7);   /* MTIE */
+    return true;
 }
 
 /* --- QEMU RV32: CLINT, M-mode ---------------------------------------- */
@@ -125,6 +169,7 @@ void ticker_next(void) {
 
 bool ticker_init(uint32_t hz) {
     if (hz == 0) return false;
+    g_hz = hz;
     g_interval = TICK_HZ / hz;
     if (g_interval == 0) g_interval = 1;
 
@@ -133,7 +178,9 @@ bool ticker_init(uint32_t hz) {
         return false;
     }
     g_enabled = true;
-    printk("[Ticker] Preemption timer at %u Hz (%lu ticks of a %lu Hz clock)\n",
-           (unsigned)hz, (unsigned long)g_interval, (unsigned long)TICK_HZ);
+    printk("[Ticker] Preemption timer at %u Hz (%lu ticks of a %lu Hz clock%s)\n",
+           (unsigned)hz, (unsigned long)g_interval,
+           (unsigned long)(g_measured_hz ? g_measured_hz : TICK_HZ),
+           g_measured_hz ? ", measured" : "");
     return true;
 }

@@ -74,6 +74,23 @@ SECTIONS
         __bss_end = .;
         _bss_end = .;
     } > RAM
+    /* Boot stack in main RAM, not SCRATCH.
+     *
+     * It used to live at the top of SCRATCH_Y, giving 8 KB at most before it
+     * ran into the page allocator's heap at 0x20080000 -- against 64 KB on the
+     * QEMU targets. Survivable while nothing unexpected pushed onto it;
+     * preemption adds a trap frame plus handler frames at an arbitrary point
+     * in the deepest call chain in the system (the Lisp evaluator), and
+     * overflowing here corrupts the heap rather than faulting. A real output
+     * section so it is allocated inside RAM -- setting the location counter
+     * between sections does not move a region-assigned one. */
+    .stack (NOLOAD) : {
+        . = ALIGN(16);
+        . += 16k;
+        _stack_top = .;
+    } > RAM
+
+    . = ALIGN(4096);
     _kernel_end = .;
 
     .scratch_x : {
@@ -97,7 +114,6 @@ SECTIONS
     __scratch_y_load_ptr = LOADADDR(.scratch_y);
 
     __flash_binary_end = LOADADDR(.scratch_y) + SIZEOF(.scratch_y);
-    _stack_top = 0x20082000;
 
     /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): stops
      * at the start of SCRATCH_X, so the heap can never grow into the scratch

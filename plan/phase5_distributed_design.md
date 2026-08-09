@@ -1708,18 +1708,33 @@ argument for doing this before B6's remaining work rather than after:
    for a lock it already held. That took the suite from 123/123 to 93/123 — a useful reminder that a
    lock added to fix one race can create a worse failure than the race.
 
-**RP2350 preemption is off, and refusing rather than pretending.** Enabling the SIO mtime comparator
-wedges the board: it stops echoing console input partway through a line and the physical UART goes
-silent, which is a trap loop rather than a slow system. The identical code preempts correctly on both
-QEMU targets, so it is specific to Hazard3's platform timer or how RP2350 routes it — **not yet
-understood**. `ticker_init()` returns false there, `preempttest` reports it, the board stays fully
-usable, and cooperative scheduling works exactly as it did through B0–B5. Given RP2350 is the only
-physical target, shipping a kernel that hangs it would be strictly worse than one that says it cannot
-preempt yet. The 1200-baud touch still recovered the wedged board, which is a nice incidental
-validation of that path.
+**RP2350 preemption — two causes, both found by hunting rather than guessing.** The first attempt
+wedged the board (console echo stopping mid-line, physical UART silent — a trap loop, not slowness),
+and it was shipped *disabled and saying so* rather than pretending. Both causes turned out to be
+real and independent:
 
-**Still to do in B6**: RP2350's timer, and separately-linked ELF user programs — which is what makes
-`.utext`'s hand-maintained self-containment structural, and closes **B12**.
+1. **`mtime` was never running.** It is driven by a tick generator in the TICKS block whose
+   `RISCV_CTRL.ENABLE` resets to 0, so the counter sat at zero and no deadline was ever reached.
+   Found by asking the cheapest question first — "is the clock even ticking?" — rather than
+   inspecting the comparator logic.
+2. **A 4 KB boot stack in SCRATCH_Y.** It grew down through SCRATCH into the page allocator's heap,
+   with 8 KB total against QEMU's 64 KB. Survivable while nothing unexpected pushed onto it;
+   preemption adds a trap frame plus handler frames at an arbitrary point in the deepest call chain
+   in the system (the Lisp evaluator), and overflowing there corrupts the heap rather than faulting.
+   The boot stack now lives in RAM with 16 KB.
+
+Two smaller things came out of the same hunt. `RUNNING` is a status bit synchronised to the source
+clock, so reading it immediately after writing `ENABLE` returns 0 and looks exactly like a hardware
+failure — it is polled now. And the tick rate is **measured** against the microsecond timer rather
+than assumed: it came out near **2.33 MHz**, not the 1 MHz a 12 MHz `clk_ref` would imply, so
+assuming would have made the tick more than twice as fast as asked for. (The absolute figure is only
+as good as `time.c`'s own timer, which this kernel has never configured; the ratio is what preemption
+needs.)
+
+**Preemption now works on all three targets**, verified on real RP2350 silicon.
+
+**Still to do in B6**: separately-linked ELF user programs — which is what makes `.utext`'s
+hand-maintained self-containment structural, and closes **B12**.
 
 ---
 
