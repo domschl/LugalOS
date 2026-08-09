@@ -93,6 +93,16 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     return 0;
 }
 
+/* First-run entry for every task, reached from task_trampoline. */
+void task_start(void (*entry)(void *), void *arg) {
+    /* A first run arrives here instead of returning from ctx_switch(), so it
+     * never passes the irq_restore() that every later resume goes through.
+     * Enabling interrupts here is what makes a new task preemptible. */
+    irq_restore(IRQ_ENABLE_BIT);
+    entry(arg);
+    task_exit();
+}
+
 int task_create(const char *name, void (*entry)(void *), void *arg) {
     if (!entry) return -1;
 

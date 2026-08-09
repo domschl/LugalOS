@@ -204,6 +204,20 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"0\s+RUNNING\s+kernel", timeout=3.0)
         results.append(("/proc/ps Renders The Real Task Table (B2)", ok, log if not ok else ""))
 
+        # B6: the timer preempts a task that never yields.
+        #
+        # This cannot pass under cooperative scheduling, which is the point:
+        # the spinner task never yields and the waiting loop never yields, so
+        # whichever runs first would run to completion and the flag would stay
+        # clear forever. Observing it set means a timer interrupt switched
+        # tasks at an arbitrary instruction.
+        #
+        # taskdemo's interleaving test does NOT already cover this -- its tasks
+        # yield explicitly, so it passes with or without a timer.
+        ok, log = session.send_and_expect(
+            "preempttest", r"PREEMPTED \(a task ran without anyone yielding\)", timeout=30.0)
+        results.append(("Timer Preempts A Task That Never Yields (B6)", ok, log if not ok else ""))
+
         # B4/D4: the 9P server -- which is also the filesystem server, since
         # its handlers are VFS calls -- is a scheduled task rather than
         # something pumped from the console's busy-wait. Before this a node

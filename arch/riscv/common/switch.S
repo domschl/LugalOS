@@ -79,10 +79,16 @@ ctx_switch:
  * s1 = its argument -- there is no earlier frame to return to, so the task
  * starts by calling its entry point rather than resuming one. */
 task_trampoline:
-    mv a0, s1
-    jalr s0
-    call task_exit
+    /* Hand off to C rather than calling the entry point directly. A task's
+     * first run needs setup that belongs in C -- notably enabling interrupts,
+     * which every *later* resume gets from the irq_restore() in sched_yield()
+     * but a first entry never reaches, because it arrives here instead of
+     * returning from ctx_switch(). Without that a new task would run with
+     * interrupts masked forever and could never be preempted. */
+    mv a0, s0
+    mv a1, s1
+    call task_start
 .Lhang:
-    /* task_exit() never returns; if it somehow did, stopping here is far
+    /* task_start() never returns; if it somehow did, stopping here is far
      * better than falling into whatever bytes follow. */
     j .Lhang

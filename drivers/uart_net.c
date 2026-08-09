@@ -2,6 +2,7 @@
 #include "fs/9p.h"
 #include "drivers/uart.h"
 #include "kernel/printk.h"
+#include "kernel/irq.h"
 #include <string.h>
 
 void uart_net_init(void) {
@@ -220,12 +221,26 @@ static void demux_route_byte(uint8_t c) {
  * console side (uart_demux_console_has_char()) and the p9_link_t's poll()
  * so whichever caller happens to run first keeps the wire moving -- there's
  * only one consumer of the underlying hardware register either way. */
-static void demux_pump(void) {
+/* B6: every entry point below runs with interrupts masked.
+ *
+ * Two independent callers reach this state machine -- the console via
+ * uart_getc(), and the 9P server task via the link's poll() -- and before
+ * preemption they were serialised for free by cooperative scheduling. A timer
+ * interrupt can now land between reading a byte and routing it, so two
+ * callers can interleave inside the frame accumulator and the console ring.
+ * The symptom was not subtle: the p9share shared-wire test failed the moment
+ * preemption was switched on, which is exactly the sort of race that would
+ * otherwise have shown up as an occasional corrupted frame much later.
+ *
+ * Masking rather than a lock, for the same reasons as kernel/irq.h: the
+ * regions are short and there is one hart. */
+static void demux_pump_locked(void) {
     if (!g_demux.enabled || !g_demux.raw_has_char || !g_demux.raw_getc) return;
     while (g_demux.raw_has_char()) {
         demux_route_byte(g_demux.raw_getc());
     }
 }
+
 
 void uart_demux_init(uart_raw_has_char_fn has_char, uart_raw_getc_fn getc) {
     g_demux.raw_has_char = has_char;
@@ -250,30 +265,45 @@ bool uart_demux_is_enabled(void) {
 }
 
 bool uart_demux_console_has_char(void) {
-    demux_pump();
-    return g_demux.enabled && g_demux.console_head != g_demux.console_tail;
+    uintptr_t f = irq_save();
+    demux_pump_locked();
+    bool r = g_demux.enabled && g_demux.console_head != g_demux.console_tail;
+    irq_restore(f);
+    return r;
 }
 
 char uart_demux_console_getc(void) {
-    if (g_demux.console_head == g_demux.console_tail) return 0;
-    char c = (char)g_demux.console_ring[g_demux.console_tail];
-    g_demux.console_tail = (g_demux.console_tail + 1) % UART_DEMUX_CONSOLE_RING_CAP;
+    uintptr_t f = irq_save();
+    char c = 0;
+    if (g_demux.console_head != g_demux.console_tail) {
+        c = (char)g_demux.console_ring[g_demux.console_tail];
+        g_demux.console_tail = (g_demux.console_tail + 1) % UART_DEMUX_CONSOLE_RING_CAP;
+    }
+    irq_restore(f);
     return c;
 }
 
 static int uart_demux_poll(p9_link_t *link) {
     (void)link;
-    demux_pump();
-    return g_demux.frame_ready ? 1 : 0;
+    uintptr_t f = irq_save();
+    demux_pump_locked();
+    int r = g_demux.frame_ready ? 1 : 0;
+    irq_restore(f);
+    return r;
 }
 
+/* Claiming the frame must be atomic with clearing frame_ready, or two pollers
+ * can both decide a frame is theirs and one copies a buffer already being
+ * overwritten by the next arrival. */
 static int uart_demux_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     (void)link;
-    if (!g_demux.frame_ready) return -1;
+    uintptr_t f = irq_save();
+    if (!g_demux.frame_ready) { irq_restore(f); return -1; }
     uint32_t n = (g_demux.frame_len < max_len) ? g_demux.frame_len : max_len;
     memcpy(buf, g_demux.frame, n);
     g_demux.frame_ready = false;
     g_demux.frame_len = 0;
+    irq_restore(f);
     return (int)n;
 }
 
