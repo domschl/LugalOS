@@ -11,11 +11,13 @@ void mem_domain_init(mem_domain_t *d) {
 
 int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perms) {
     if (!d || d->count >= MEM_DOMAIN_MAX_REGIONS) return -1;
-    /* NAPOT requires a power-of-two size, self-aligned, at least the measured
-     * 16-byte granularity. Rejected rather than rounded: a region quietly
-     * widened to satisfy alignment is a hole in the isolation it was asked to
-     * provide. */
-    if (size < 16 || (size & (size - 1)) != 0) return -1;
+    /* NAPOT requires a power-of-two size, self-aligned. The floor is 32 bytes
+     * -- RP2350's granule (datasheet §3.8.3.1); QEMU's is 8, and taking the
+     * stricter of the two keeps one rule for both builds rather than a region
+     * that is legal on one target and silently widened on the other.
+     * Rejected rather than rounded: a region quietly widened to satisfy
+     * alignment is a hole in the isolation it was asked to provide. */
+    if (size < 32 || (size & (size - 1)) != 0) return -1;
     if (base & (size - 1)) return -1;
 
     d->regions[d->count].base  = base;
@@ -27,35 +29,49 @@ int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perm
 
 #if defined(CONFIG_MODE_M)
 
+/* Permission bit order differs by silicon -- this is erratum RP2350-E6, not a
+ * choice. The RP2350 datasheet (§3.8.3.2) states:
+ *
+ *   "Due to RP2350-E6 the field order in the PMP configuration fields is
+ *    R, W, X (MSB-first) rather than the standard X, W, R."
+ *
+ * So on RP2350 bit 0 is X and bit 2 is R -- the reverse of every other
+ * RISC-V core, including QEMU's. Getting this wrong is not a subtle
+ * degradation: a region asked for as R|W becomes X|W, which is why a U-mode
+ * task's stores to its own stack succeeded while its loads from the same
+ * stack faulted. That symptom cost a long detour through NAPOT encoding and
+ * an abandoned attempt to use TOR before the datasheet named the cause. */
+#if defined(CONFIG_BOARD_RP2350)
+#define PMP_X       (1u << 0)
+#define PMP_W       (1u << 1)
+#define PMP_R       (1u << 2)
+#else
 #define PMP_R       (1u << 0)
 #define PMP_W       (1u << 1)
 #define PMP_X       (1u << 2)
+#endif
 #define PMP_A_NAPOT (3u << 3)
 
-/* NAPOT, with the configuration register written BEFORE the addresses.
+/* Granule: the smallest NAPOT region the hardware decodes. RP2350 hardwires
+ * the low two pmpaddr bits to ones when a region is enabled, giving 8 << 2 =
+ * 32 bytes (datasheet §3.8.3.1). Those bits are therefore not meaningful to
+ * compare on readback. */
+#if defined(CONFIG_BOARD_RP2350)
+#define PMP_GRANULE       32u
+#define PMP_ADDR_FIXED_LOW 3u   /* bits [1:0] hardwired */
+#else
+#define PMP_GRANULE       8u
+#define PMP_ADDR_FIXED_LOW 0u
+#endif
+
+/* NAPOT only. The RP2350 datasheet (§3.8.3.1) is explicit: "The RP2350
+ * configuration of Hazard3 supports only the OFF and NAPOT values for the
+ * PMPCFG A fields." An earlier attempt here used TOR and every region came
+ * back inactive -- writing A=TOR reads back as A=OFF, because the field is
+ * WARL and the unsupported mode is simply dropped.
  *
- * Both halves of that were established by measurement on Hazard3, and each
- * cost a confusing failure first:
- *
- * 1. TOR is not implemented. Writing A=TOR reads back as A=OFF -- the field is
- *    WARL and the mode is simply dropped, leaving every region inactive. The
- *    symptom was a U-mode task faulting on its first instruction fetch, with
- *    a config word that looked plausible until read back (0x05000300 where
- *    0x0d000b00 had been written). NAPOT is the only mode available here.
- *
- * 2. pmpaddr's low bits are masked at WRITE time according to the A mode in
- *    effect at that moment: with A=OFF they read back as ones, with A=NAPOT
- *    as zeros. Writing the address first (while the entry was still OFF) and
- *    the mode second corrupted the encoding -- a 1 KB region written as
- *    0x0800077f came back 0x0800077c, two trailing ones short, which NAPOT
- *    decodes as 8 bytes. That is why stores near the top of the user stack
- *    succeeded while a load a few bytes away faulted: only a sliver of the
- *    intended range was ever covered.
- *
- * Writing the config first makes the mode already correct when the masking is
- * applied, and the readback check turns any remaining disagreement into a
- * visible complaint instead of a silently wrong region.
- */
+ * Size is encoded as trailing one-bits: a value with k trailing ones matches
+ * 8 << k bytes, naturally aligned. */
 
 #define PMP_ENTRIES 8
 
@@ -131,8 +147,11 @@ int mem_domain_activate(const mem_domain_t *d) {
          * smaller region -- it is an unknown one. Report failure so the
          * caller can refuse to run a task under a restriction nobody has
          * verified, rather than granting something arbitrary. */
+        /* Compare only the bits the hardware lets software own. RP2350
+         * hardwires the low two to ones when the region is enabled (granule
+         * 32), so they carry no information and differ by design. */
         uintptr_t got = pmpaddr_read(i);
-        if (got != want) {
+        if ((got | PMP_ADDR_FIXED_LOW) != (want | PMP_ADDR_FIXED_LOW)) {
             printk("[MemDomain] pmpaddr%d: wrote %08lx, kept %08lx "
                    "(region %08lx+%08lx not representable on this core)\n",
                    i, (unsigned long)want, (unsigned long)got,

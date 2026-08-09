@@ -138,10 +138,13 @@ void pmp_probe(pmp_info_t *out) {
     uint32_t stuck = 0;
     while (stuck < sizeof(uintptr_t) * 8 && ((zero_readback >> stuck) & 1u)) stuck++;
     out->addr_stuck_low_bits = (int)stuck;
-    /* granularity_log2 is log2(bytes). With no stuck bits the floor is 4
-     * bytes (NA4). Each stuck bit doubles the smallest encodable NAPOT
-     * region. */
-    out->granularity_log2 = 2 + (int)stuck;
+    /* A NAPOT value with k trailing ones matches 8 << k bytes, so the
+     * smallest region the hardware can decode is 8 << (fixed low bits).
+     * RP2350: two fixed bits -> 32 bytes, which the datasheet states
+     * directly (§3.8.3.1) and which this now agrees with. An earlier version
+     * computed 2 + stuck and reported 16, off by one because it assumed the
+     * NA4 floor of 4 bytes -- but NA4 is not implemented here. */
+    out->granularity_log2 = 3 + (int)stuck;
 
     /* --- entry count --- */
 #define PROBE_STEP(n) do { readback = 0; faulted = false; writable = false;   \

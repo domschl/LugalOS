@@ -28,17 +28,15 @@
  * The cost is ~2 CSR writes per region on each switch, which is nothing
  * beside the work a switch already does.
  *
- * ## Regions are NAPOT, and the order of the CSR writes matters
+ * ## Regions are NAPOT, and RP2350 reverses the permission bits
  *
- * Hazard3 does not implement TOR (writing A=TOR reads back as A=OFF), so
- * NAPOT is the only mode available. Its size-in-trailing-ones encoding is
- * fragile here: pmpaddr's low bits are masked at write time according to the
- * A mode then in effect, so the config register must be written before the
- * address or the encoding is silently corrupted. See
- * arch/riscv/common/mem_domain.c for both findings and how they presented.
+ * Hazard3 implements only OFF and NAPOT (datasheet §3.8.3.1), so regions are
+ * power-of-two sized and self-aligned. RP2350 additionally reverses the R/W/X
+ * bit order under erratum E6 -- see arch/riscv/common/mem_domain.c, where
+ * that is handled and where the symptom it produced is recorded.
  *
- * Callers therefore supply power-of-two, self-aligned base and size (at least
- * the 16-byte measured granularity).
+ * Callers supply power-of-two, self-aligned base and size of at least 32
+ * bytes (RP2350's granule; the stricter of the two targets' floors).
  * mem_domain_add() rejects anything else rather than silently rounding: a
  * region quietly widened to satisfy alignment is a hole in the isolation it
  * was asked to provide.

@@ -264,8 +264,8 @@ static void user_intruder(void) {
 }
 
 /* 1 KB, aligned to its own size: NAPOT regions must be power-of-two sized and
- * self-aligned, and mem_domain_add() rejects anything else rather than
- * silently widening it. */
+ * self-aligned, comfortably above RP2350's 32-byte granule.
+ * mem_domain_add() rejects anything else rather than silently widening it. */
 static uint8_t g_user_stack[1024] __attribute__((aligned(1024)));
 static mem_domain_t g_user_domain;
 

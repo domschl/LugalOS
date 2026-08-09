@@ -1334,6 +1334,51 @@ follows the pattern it establishes rather than the other way round.
 
 *Risk: high. The single riskiest milestone in the track.*
 
+##### B3 progress notes — per-task PMP regions enforced on both targets (2026-08-09)
+
+Three of B3's four parts are in; copy-in/copy-out remains. QEMU **113/113**, hardware **5/5**, and
+U-mode isolation is now genuinely enforced on **real RP2350 silicon** as well as QEMU RV32.
+
+**Planning error corrected.** The measured "8 free PMP entries" was read here as bounding isolatable
+tasks at 7. It does not: PMP describes the *running hart's* view and is reprogrammed on every context
+switch, so the entries bound how complicated **one task's** view can be, not how many tasks exist.
+Task count is bounded by memory. Statically partitioning entries across tasks would have imposed a
+7-task ceiling for nothing.
+
+**Three Hazard3 facts, and the order in which they were learned.** Two were established the hard way
+before the datasheet was consulted; all three are now cited to it.
+
+| Fact | Symptom when unknown | Source |
+|---|---|---|
+| Only OFF and NAPOT are implemented; **TOR is not** | Writing `A=TOR` reads back `A=OFF`; every region inactive, U-mode faulting on its first instruction fetch | §3.8.3.1 |
+| Granule is **32 bytes**; low two `pmpaddr` bits hardwired to ones when enabled | Readback never matched what was written | §3.8.3.1 |
+| **Erratum RP2350-E6: the permission field order is reversed** — bit 0 is X, bit 2 is R | A region requested as `R|W` becomes `X|W`: a task's stores to its own stack succeeded while its loads from that same stack faulted | §3.8.3.2 |
+
+**The erratum is the whole story, and empiricism alone was not going to find it.** The reversed bit
+order produced a symptom that looked like a size-encoding bug (part of the stack reachable, part
+not), which sent the work through a NAPOT-encoding investigation and an abandoned switch to TOR —
+itself unsupported, producing a *second* misleading symptom. Neither dead end was careless; the
+observations genuinely fit those hypotheses. What settled it in minutes was reading the datasheet,
+where the erratum is stated plainly. **Measuring hardware establishes what it does; only
+documentation explains why** — and when the two disagree, that gap is where errata live.
+
+The probe's own granularity figure was wrong too, for a related reason: it computed `2 + stuck` on
+the assumption of a 4-byte NA4 floor, reporting 16 bytes. NA4 is not implemented here, so the floor
+is `8 << stuck` = 32 — which now agrees with the datasheet exactly.
+
+**What is enforced now.** A U-mode task gets RW on its own stack and RX on text, nothing else.
+Storing into kernel memory faults, the *task* is terminated rather than the machine halted, and a
+canary in kernel `.data` is verifiably untouched. Confirmed on QEMU RV32 and on silicon; falsified by
+granting W everywhere, which fails the test. The S-mode target reports honestly that it cannot
+enforce yet (Sv39 is B5).
+
+**Two safety behaviours worth keeping.** `mem_domain_activate()` reads every `pmpaddr` back and fails
+if the hardware altered it (ignoring the bits the datasheet says are hardwired), and the U-mode entry
+path refuses to run a task whose domain could not be installed exactly — a region the hardware
+rewrote is not a tighter restriction, it is an unknown one. That refusal then exposed a false
+positive in the *report*: with the task never running, the canary was untouched, which printed
+"ISOLATED". It now says INCONCLUSIVE unless a task actually reached U-mode.
+
 ##### B3 progress notes (2026-08-09) — trap stack switch + M→U transition done
 
 Two of B3's four parts are in. Per-task PMP regions and copy-in/copy-out remain. All three targets
