@@ -54,3 +54,28 @@ uv run test_rp2350.py --console /dev/tty.usbmodemXXXX1 --net /dev/tty.usbmodemXX
   then runs `(p9-remote-cat ...)` from *inside the QEMU guest's own Lisp
   REPL* and checks the marker's content came back. A match is only possible
   if the bytes genuinely crossed real hardware.
+
+## PMP probe (B3 prep)
+
+`test_pmp_probe` reads this silicon's actual PMP configuration via the
+kernel's `pmpinfo` shell command and prints the numbers. Decision **D2**
+("PMP early, NOMMU leads") makes B3 depend on them: the implemented region
+count bounds how many isolated servers a NOMMU node can host, and the RISC-V
+privileged spec permits 0, 16 or 64 entries, so Hazard3's real count has to
+be measured rather than assumed. QEMU's RV32 model reports 16 entries at
+4-byte granularity; there is no reason to expect real silicon to match.
+
+The test asserts only what B3 genuinely requires -- that PMP exists, and that
+no entry is locked at boot (a locked entry cannot be reprogrammed until
+reset). The counts themselves are reported, not compared against a hardcoded
+expectation.
+
+### Reflashing
+
+There is no automatic path: LugalOS implements its own USB CDC stack, which
+receives `SET_LINE_CODING` but ignores the baud rate, so the Arduino-style
+"1200-baud touch" that reboots Pico-SDK firmware into BOOTSEL does nothing
+here. Flash manually -- hold BOOTSEL while connecting, then copy
+`build/rp2350/lugalos.uf2` to the mounted volume. If the board is running
+firmware older than the feature under test, `test_pmp_probe` says so
+explicitly rather than failing with a confusing parse error.

@@ -435,6 +435,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
         results.append(("Lisp (klog-sinks) Lists Log Sinks (B0)", ok, log if not ok else ""))
 
+        # 13c-bis. B3 prep (D2): the PMP probe must complete without faulting.
+        # It touches all 64 pmpaddr CSRs, most of which may not exist on a
+        # given core, so the real assertion is the absence of a fault --
+        # send_and_expect()'s FAULT_MARKERS check. RV32 runs in M-mode and
+        # reports real numbers; RV64 runs in S-mode where PMP CSRs are
+        # inaccessible, so both outcomes are accepted here. The measurement
+        # that matters is on real Hazard3 silicon -- see tests/hw/.
+        ok, log = session.send_and_expect(
+            "pmpinfo", r"PMP: (entries=\d+|unavailable)", timeout=5.0)
+        results.append(("PMP Probe Completes Without Faulting (B3 prep)", ok, log if not ok else ""))
+
         # 13d-bis. B2: the cooperative scheduler actually switches.
         # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
         # output appears: if sched_yield() were still the pre-B2 no-op, each

@@ -11,6 +11,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "arch/elf.h"
+#include "arch/pmp.h"
 #include "chibicc.h"
 #include "lisp.h"
 #include "ed.h"
@@ -73,6 +74,7 @@ static void cmd_help(void) {
     printk("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
     printk("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     printk("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
+    printk("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
     printk("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     printk("  clear           - Clear terminal screen\n\n");
 }
@@ -317,6 +319,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "p9share ", 8) == 0) {
         cmd_p9share(&cmd_line[8]);
+        return;
+    } else if (strcmp(cmd_line, "pmpinfo") == 0) {
+        pmp_report();
         return;
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();

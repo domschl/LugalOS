@@ -123,6 +123,7 @@ set(SOURCES
     arch/riscv/common/switch.S
 
     arch/riscv/common/trap.c
+    arch/riscv/common/pmp_probe.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
     drivers/flashdisk.c
