@@ -68,7 +68,7 @@ static void cmd_help(void) {
     cprintf("  mkdir <path>    - Create a new directory\n");
     cprintf("  rmdir <path>    - Remove an empty directory\n");
     cprintf("  cp <src> <dst>  - Copy file from source path to destination path\n");
-    cprintf("  write <p> <txt> - Write payload to file, /dev/uart, or /srv/lisp IPC channel\n");
+    cprintf("  write <p> <txt> - Write payload to a file, /dev/uart, or a /srv/ service endpoint\n");
     cprintf("  rm <file>       - Delete file from disk\n");
     cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
     cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
@@ -77,13 +77,18 @@ static void cmd_help(void) {
     cprintf("  ed [file]       - Launch teletype line editor\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
-    cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux, A3b)\n");
+    cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
     cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
-    cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave (B2)\n");
-    cprintf("  pmpinfo         - Probe this core's PMP entry count and granularity (B3 prep)\n");
-    cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel (B3)\n");
-    cprintf("  isolationtest   - U-mode task tries to write kernel memory; must fault (B3)\n");
-    cprintf("  deputytest      - U-mode task asks the kernel to read kernel memory (B3)\n");
+    cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
+    cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
+    cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
+    cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
+    cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
+    cprintf("  isolationtest   - U-mode task stores into kernel memory; must fault\n");
+    cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
+    cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
+    cprintf("  time            - Show system uptime\n");
+    cprintf("  version         - Alias for 'cat /proc/version'\n");
     cprintf("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     cprintf("  clear           - Clear terminal screen\n\n");
 }
