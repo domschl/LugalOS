@@ -154,6 +154,65 @@ void pmp_probe(pmp_info_t *out) {
 
 #endif
 
+#if defined(CONFIG_MODE_M)
+void pmp_dump(void) {
+    const uintptr_t all_ones = (uintptr_t)-1;
+    uintptr_t readback = 0;
+    bool faulted = false;
+    bool writable = false;
+
+    /* Zero ALL of pmpcfg0..3 (RV32: 4 entries each, covering pmpaddr0..15),
+     * not just pmpcfg0. A set lock bit makes writes to the matching pmpaddr a
+     * no-op, which would look exactly like a hardwired register -- the very
+     * distinction this dump exists to make. Saved and restored. */
+    uintptr_t cfg[4] = {0, 0, 0, 0};
+    __asm__ __volatile__("csrr %0, pmpcfg0" : "=r"(cfg[0]));
+    __asm__ __volatile__("csrr %0, pmpcfg1" : "=r"(cfg[1]));
+    __asm__ __volatile__("csrr %0, pmpcfg2" : "=r"(cfg[2]));
+    __asm__ __volatile__("csrr %0, pmpcfg3" : "=r"(cfg[3]));
+    printk("pmpcfg0..3 = %08lx %08lx %08lx %08lx\n",
+           (unsigned long)cfg[0], (unsigned long)cfg[1],
+           (unsigned long)cfg[2], (unsigned long)cfg[3]);
+    __asm__ __volatile__("csrw pmpcfg0, zero");
+    __asm__ __volatile__("csrw pmpcfg1, zero");
+    __asm__ __volatile__("csrw pmpcfg2, zero");
+    __asm__ __volatile__("csrw pmpcfg3, zero");
+
+    printk("idx  reset       wr(~0)      wr(0)       verdict\n");
+#define DUMP_ONE(n) do {                                                     \
+        uintptr_t saved = 0, hi = 0, lo = 0;                                 \
+        arch_probe_begin();                                                  \
+        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(saved));           \
+        if (arch_probe_faulted()) { printk("%3d  <traps>\n", n); break; }    \
+        arch_probe_begin();                                                  \
+        __asm__ __volatile__("csrw pmpaddr" #n ", %0" :: "r"(all_ones));     \
+        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(hi));              \
+        __asm__ __volatile__("csrw pmpaddr" #n ", zero");                    \
+        __asm__ __volatile__("csrr %0, pmpaddr" #n : "=r"(lo));              \
+        __asm__ __volatile__("csrw pmpaddr" #n ", %0" :: "r"(saved));        \
+        if (arch_probe_faulted()) { printk("%3d  <traps on write>\n", n); break; } \
+        printk("%3d  %08lx    %08lx    %08lx    %s\n", n,                    \
+               (unsigned long)saved, (unsigned long)hi, (unsigned long)lo,   \
+               (hi != lo) ? "writable" : (hi ? "hardwired" : "absent"));     \
+    } while (0);
+    DUMP_ONE(0)  DUMP_ONE(1)  DUMP_ONE(2)  DUMP_ONE(3)
+    DUMP_ONE(4)  DUMP_ONE(5)  DUMP_ONE(6)  DUMP_ONE(7)
+    DUMP_ONE(8)  DUMP_ONE(9)  DUMP_ONE(10) DUMP_ONE(11)
+    DUMP_ONE(12) DUMP_ONE(13) DUMP_ONE(14) DUMP_ONE(15)
+#undef DUMP_ONE
+
+    __asm__ __volatile__("csrw pmpcfg0, %0" :: "r"(cfg[0]));
+    __asm__ __volatile__("csrw pmpcfg1, %0" :: "r"(cfg[1]));
+    __asm__ __volatile__("csrw pmpcfg2, %0" :: "r"(cfg[2]));
+    __asm__ __volatile__("csrw pmpcfg3, %0" :: "r"(cfg[3]));
+    (void)readback; (void)faulted; (void)writable;
+}
+#else
+void pmp_dump(void) {
+    printk("PMP dump: unavailable -- this build runs in S-mode.\n");
+}
+#endif
+
 void pmp_report(void) {
     pmp_info_t info;
     pmp_probe(&info);

@@ -26,4 +26,11 @@ void pmp_probe(pmp_info_t *out);
 /* Prints a human- and test-readable summary. */
 void pmp_report(void);
 
+/* Per-register dump: reset value, readback after writing all-ones, readback
+ * after writing zero, and the derived verdict. Exists because the summary
+ * counts are a *derived* answer -- when they disagreed with RP2350's own SDK
+ * headers (which mark pmpaddr8/9/10 read-only while the silicon reported them
+ * writable), only the raw values could settle which was right. */
+void pmp_dump(void);
+
 #endif /* LUGALOS_ARCH_PMP_H */

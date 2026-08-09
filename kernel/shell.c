@@ -323,6 +323,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "pmpinfo") == 0) {
         pmp_report();
         return;
+    } else if (strcmp(cmd_line, "pmpdump") == 0) {
+        pmp_dump();
+        return;
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();
         return;
