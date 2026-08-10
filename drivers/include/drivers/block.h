@@ -12,6 +12,19 @@ typedef struct block_dev {
 } block_dev_t;
 
 block_dev_t *ramdisk_get_device(void);
+
+/* Allocates (or resizes) the RAM disk's storage from the page allocator, in
+ * 512-byte blocks. Returns 0, or -1 if the request exceeds the cap or the heap
+ * cannot supply it -- in which case any existing disk is left intact rather
+ * than destroyed on the way to reporting a failure (C5).
+ *
+ * The device reports num_blocks == 0 until this succeeds, so nothing can read
+ * or write a disk that was never allocated. */
+int ramdisk_init(uint32_t blocks);
+
+/* Returns the storage to the allocator. The device becomes unreadable, which
+ * is the honest state for a disk whose memory has been handed back. */
+void ramdisk_release(void);
 block_dev_t *virtio_blk_get_device(void);
 
 /* The ramdisk's real, compile-time-fixed backing storage size in blocks.

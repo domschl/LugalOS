@@ -794,20 +794,32 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             r'=> "uart"(.|\n)*=> #f(.|\n)*=> #t', timeout=6.0)
         results.append(("Console Device Bound By Name At Runtime (B4)", ok, log if not ok else ""))
 
-        # 13d-bis. B2: the cooperative scheduler actually switches.
-        # The assertion is the *interleaving* (A1 B1 A2 B2 A3 B3), not that
-        # output appears: if sched_yield() were still the pre-B2 no-op, each
-        # task would run to completion first (A1 A2 A3 B1 B2 B3) and every
-        # marker would still be printed. An early version of kernel/sched.c
-        # had exactly that bug -- a "currently switching" flag that a freshly
-        # created task could never clear, since it enters at the trampoline
-        # rather than returning from ctx_switch() -- and this ordering check
-        # is what caught it.
+        # 13d-bis. B2: the scheduler actually switches.
+        # The assertion is *interleaving*, not that output appears: if
+        # sched_yield() were still the pre-B2 no-op, each task would run to
+        # completion first (A1 A2 A3 B1 B2 B3) and every marker would still be
+        # printed. An early version of kernel/sched.c had exactly that bug -- a
+        # "currently switching" flag that a freshly created task could never
+        # clear, since it enters at the trampoline rather than returning from
+        # ctx_switch() -- and an ordering check is what caught it.
+        #
+        # It asks for B1 before A3 rather than strict alternation
+        # (A1 B1 A2 B2 A3 B3), which is what it used to require. Strict
+        # alternation stopped being a property of a correct system when B6
+        # added preemption: a timer tick can switch back to A after A yields
+        # but before B has printed, giving A1 A2 B1 -- correct behaviour that
+        # the old pattern called a failure. Measured at roughly one run in
+        # eight on a loaded host, on this build *and* on the commit before it,
+        # so it was the assertion that was wrong rather than anything it was
+        # watching.
+        #
+        # B1 landing before A3 still fails for the no-op-yield bug this exists
+        # to catch, which is the property worth keeping.
         ok, log = session.send_and_expect(
             "taskdemo",
-            r"A1(.|\n)*B1(.|\n)*A2(.|\n)*B2(.|\n)*A3(.|\n)*B3",
+            r"A1(.|\n)*B1(.|\n)*A3(.|\n)*B3",
             timeout=8.0)
-        results.append(("Cooperative Tasks Interleave Via sched_yield (B2)", ok, log if not ok else ""))
+        results.append(("Tasks Interleave Rather Than Run To Completion (B2)", ok, log if not ok else ""))
 
         # Both task stacks must come back to the page allocator on exit. The
         # counts are printed by the demo itself; equality is the assertion.
@@ -1662,7 +1674,8 @@ def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: st
             session.close()
 
 
-def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tuple[str, bool, str]:
+def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path,
+                                    img64: Path, img32: Path) -> tuple[str, bool, str]:
     """A4/T2: the milestone that satisfies this phase's stated goal -- two
     different memory models, two different word widths, real 9P frames over
     a real socket, no hardware required, CI-runnable. Boots two independent
@@ -1685,10 +1698,13 @@ def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Pa
     name = "9P Node-to-Node: RV32 NOMMU <-> RV64 MMU over Bridged VirtIO-Console (A4, T2)"
     port = 15590
 
-    img_b = img_path.with_name("test_multinode_b_sd.img")
-    img_a = img_path.with_name("test_multinode_a_sd.img")
-    shutil.copyfile(img_path, img_b)
-    shutil.copyfile(img_path, img_a)
+    # Each node gets an image built for *its own* target. They shared one
+    # until 2026-08-10, which meant one of the two nodes was loading user
+    # programs for the other's instruction set.
+    img_b = img64.with_name("test_multinode_b_sd.img")
+    img_a = img32.with_name("test_multinode_a_sd.img")
+    shutil.copyfile(img64, img_b)
+    shutil.copyfile(img32, img_a)
 
     session_b = QemuSession(rv64_elf, img_b, "rv64")
     session_a = QemuSession(rv32_elf, img_a, "rv32")
@@ -1738,7 +1754,8 @@ def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path, img_path: Pa
         session_b.close()
 
 
-def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tuple[str, bool, str]:
+def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path,
+                         img64: Path, img32: Path) -> tuple[str, bool, str]:
     """A5: the actual "distributed namespace" payoff -- (mount-remote ...)
     attaches Node B's entire namespace at /netb/ on Node A, and from then on
     the *standard* shell commands (ls, cat, write) work through it exactly
@@ -1760,10 +1777,10 @@ def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path, img_path: Path) -> tupl
     name = "9P Remote Mount: ls/cat/write Through /netb/ (A5, distributed namespace)"
     port = 15591
 
-    img_b = img_path.with_name("test_mount_b_sd.img")
-    img_a = img_path.with_name("test_mount_a_sd.img")
-    shutil.copyfile(img_path, img_b)
-    shutil.copyfile(img_path, img_a)
+    img_b = img64.with_name("test_mount_b_sd.img")
+    img_a = img32.with_name("test_mount_a_sd.img")
+    shutil.copyfile(img64, img_b)
+    shutil.copyfile(img32, img_a)
 
     session_b = QemuSession(rv64_elf, img_b, "rv64")
     session_a = QemuSession(rv32_elf, img_a, "rv32")
@@ -1880,7 +1897,12 @@ def main() -> int:
     """Main entry point for LugalOS Test Suite."""
     project_root = Path(__file__).resolve().parent.parent
     build_dir = project_root / "build"
-    img_path = build_dir / "lugalos_sd.img"
+    # Per target: the image carries target-specific user program binaries, so
+    # rv32 and rv64 cannot share one. They did until 2026-08-10, and an RV32
+    # binary running on the RV64 kernel merely looked odd rather than failing
+    # -- until a program that dereferences a pointer arrived.
+    def img_for(arch: str) -> Path:
+        return build_dir / arch / "lugalos_sd.img"
 
     rv64_elf = build_dir / "rv64" / "lugalos.elf"
     rv32_elf = build_dir / "rv32" / "lugalos.elf"
@@ -1905,7 +1927,7 @@ def main() -> int:
 
     # 1. Host Disk Inspection
     print("\n[Host FAT32 Storage Inspection]")
-    ok, info = test_host_fat32_image(img_path)
+    ok, info = test_host_fat32_image(img_for("rv32"))
     total_tests += 1
     if ok:
         passed_tests += 1
@@ -1916,7 +1938,7 @@ def main() -> int:
     # 2. RV64 Target
     if rv64_elf.exists():
         print("\n[Target: RV64 Sv39 MMU Virtual Memory]")
-        rv64_results = test_qemu_architecture(rv64_elf, img_path, "rv64")
+        rv64_results = test_qemu_architecture(rv64_elf, img_for("rv64"), "rv64")
         for name, ok, log in rv64_results:
             total_tests += 1
             if ok:
@@ -1925,17 +1947,17 @@ def main() -> int:
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
-        _run_single(test_terminal_crlf(rv64_elf, img_path, "rv64"))
-        _run_single(test_9p_virtio_link(rv64_elf, img_path, "rv64"))
-        _run_single(test_9p_uart_slip_link(rv64_elf, img_path, "rv64"))
-        _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_path, "rv64"))
+        _run_single(test_terminal_crlf(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
         print(f"\n[!] RV64 binary not found at '{rv64_elf}'. Skipping RV64 tests.")
 
     # 3. RV32 Target
     if rv32_elf.exists():
         print("\n[Target: RV32 NOMMU Microcontroller]")
-        rv32_results = test_qemu_architecture(rv32_elf, img_path, "rv32")
+        rv32_results = test_qemu_architecture(rv32_elf, img_for("rv32"), "rv32")
         for name, ok, log in rv32_results:
             total_tests += 1
             if ok:
@@ -1944,18 +1966,18 @@ def main() -> int:
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
-        _run_single(test_terminal_crlf(rv32_elf, img_path, "rv32"))
-        _run_single(test_9p_virtio_link(rv32_elf, img_path, "rv32"))
-        _run_single(test_9p_uart_slip_link(rv32_elf, img_path, "rv32"))
-        _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_path, "rv32"))
+        _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:
         print(f"\n[!] RV32 binary not found at '{rv32_elf}'. Skipping RV32 tests.")
 
     # 4. A4/T2: multi-node heterogeneous interconnect
     if rv64_elf.exists() and rv32_elf.exists():
         print("\n[Target: Multi-Node RV32 <-> RV64 Heterogeneous Interconnect]")
-        _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_path))
-        _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_path))
+        _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
+        _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
 

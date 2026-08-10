@@ -28,8 +28,8 @@ ninja -C "$BUILD_DIR_2"
 
 # Separate disk image copies so the two nodes don't fight over the same
 # backing file.
-cp "$ROOT_DIR/build/lugalos_sd.img" "$ROOT_DIR/build/lugalos_sd_node1.img"
-cp "$ROOT_DIR/build/lugalos_sd.img" "$ROOT_DIR/build/lugalos_sd_node2.img"
+cp "$BUILD_DIR_1/lugalos_sd.img" "$ROOT_DIR/build/lugalos_sd_node1.img"
+cp "$BUILD_DIR_2/lugalos_sd.img" "$ROOT_DIR/build/lugalos_sd_node2.img"
 
 if ! command -v qemu-system-riscv64 >/dev/null 2>&1 || ! command -v qemu-system-riscv32 >/dev/null 2>&1; then
     echo "[!] qemu-system-riscv32/riscv64 binaries not found. Install the 'qemu-system-riscv' package."

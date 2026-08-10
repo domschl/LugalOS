@@ -15,11 +15,12 @@ void uart_net_init(void) {
  * never contain SLIP_END themselves, by construction) are handed to the
  * existing, already-tested slip_decode() as a single call -- reusing it
  * exactly as-is rather than re-implementing incremental unescaping. */
-#define UART_SLIP_RAW_CAP (P9_MAX_MSIZE * 2) // SLIP escaping can double frame size worst-case
+/* Defined below, next to the block codec it replaced in the receive paths. */
+static int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
+                     uint32_t *frame_len, bool *escaping);
 
 typedef struct {
-    uint8_t raw[UART_SLIP_RAW_CAP];
-    uint32_t raw_len;
+    bool escaping;          /* mid-escape across byte boundaries */
     uint8_t frame[P9_MAX_MSIZE];
     uint32_t frame_len;
     bool frame_ready;
@@ -34,21 +35,10 @@ static int uart_slip_poll(p9_link_t *link) {
 
     while (uart_has_char()) {
         uint8_t c = (uint8_t)uart_getc(); // won't block: uart_has_char() just confirmed a byte is ready
-        if (c == SLIP_END) {
-            if (ctx->raw_len == 0) continue; // leading/duplicate delimiter
-            int n = slip_decode(ctx->raw, ctx->raw_len, ctx->frame, sizeof(ctx->frame));
-            ctx->raw_len = 0;
-            if (n > 0) {
-                ctx->frame_len = (uint32_t)n;
-                ctx->frame_ready = true;
-                return 1;
-            }
-            continue; // empty/undersized decode; keep listening for the next frame
-        }
-        if (ctx->raw_len < UART_SLIP_RAW_CAP) {
-            ctx->raw[ctx->raw_len++] = c;
-        } else {
-            ctx->raw_len = 0; // overflow: drop and resync on the next SLIP_END
+        if (slip_feed(c, ctx->frame, sizeof(ctx->frame), &ctx->frame_len,
+                      &ctx->escaping)) {
+            ctx->frame_ready = true;
+            return 1;
         }
     }
     return ctx->frame_ready ? 1 : 0;
@@ -67,10 +57,26 @@ static int uart_slip_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len)
 
 static int uart_slip_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     (void)link;
-    static uint8_t enc[UART_SLIP_RAW_CAP];
-    int n = slip_encode(buf, len, enc, sizeof(enc));
-    if (n < 0) return -1;
-    for (int i = 0; i < n; i++) uart_putc((char)enc[i]);
+    /* Encoded straight onto the wire rather than into a buffer first. The
+     * bytes were going to uart_putc() one at a time regardless, so the 8 KB
+     * staging buffer this replaces existed only to hold a copy of them (C5).
+     * slip_encode() stays for the loopback self-test below, which genuinely
+     * needs the encoded form as a block. */
+    if (!buf) return -1;
+    uart_putc((char)SLIP_END);
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t c = buf[i];
+        if (c == SLIP_END) {
+            uart_putc((char)SLIP_ESC);
+            uart_putc((char)SLIP_ESC_END);
+        } else if (c == SLIP_ESC) {
+            uart_putc((char)SLIP_ESC);
+            uart_putc((char)SLIP_ESC_ESC);
+        } else {
+            uart_putc((char)c);
+        }
+    }
+    uart_putc((char)SLIP_END);
     return (int)len;
 }
 
@@ -84,6 +90,50 @@ static p9_link_t g_uart_slip_link = {
 
 p9_link_t *uart_slip_get_link(void) {
     return &g_uart_slip_link;
+}
+
+/* Incremental SLIP decode: one received byte at a time, straight into the
+ * frame buffer (C5, plan/phase6_memory_and_processes.md).
+ *
+ * Both receive paths used to accumulate the *escaped* bytes in a raw[] buffer
+ * and hand the whole thing to slip_decode() on SLIP_END. That was the right
+ * first move -- it reused an already-tested decoder rather than writing a
+ * second one -- but it cost a second buffer per context, sized at twice
+ * P9_MAX_MSIZE because escaping can double a frame. Two contexts, 8 KB each,
+ * on a board with 512 KB of SRAM.
+ *
+ * The state a SLIP decoder needs between bytes is one boolean, so the buffer
+ * was never buying anything but the shape of the call. Returns 1 when a
+ * complete frame is ready in `frame`, 0 otherwise.
+ *
+ * Behaviour matches the buffered version exactly, including the two cases
+ * worth naming: a SLIP_END with nothing accumulated is a leading or duplicate
+ * delimiter and is ignored, and an overflowing frame is dropped so the link
+ * resynchronises on the next delimiter rather than emitting a truncated
+ * message. */
+static int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
+                     uint32_t *frame_len, bool *escaping) {
+    if (c == SLIP_END) {
+        *escaping = false;
+        if (*frame_len == 0) return 0;   /* leading/duplicate delimiter */
+        return 1;
+    }
+
+    if (*escaping) {
+        *escaping = false;
+        if (c == SLIP_ESC_END) c = SLIP_END;
+        else if (c == SLIP_ESC_ESC) c = SLIP_ESC;
+    } else if (c == SLIP_ESC) {
+        *escaping = true;
+        return 0;
+    }
+
+    if (*frame_len >= frame_cap) {
+        *frame_len = 0;                  /* overflow: resync on the next END */
+        return 0;
+    }
+    frame[(*frame_len)++] = c;
+    return 0;
 }
 
 int slip_encode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max) {
@@ -172,8 +222,7 @@ typedef struct {
     uint32_t console_head, console_tail;
 
     bool in_frame;
-    uint8_t raw[UART_SLIP_RAW_CAP];
-    uint32_t raw_len;
+    bool escaping;          /* mid-escape across byte boundaries */
     uint8_t frame[P9_MAX_MSIZE];
     uint32_t frame_len;
     bool frame_ready;
@@ -190,27 +239,26 @@ static void demux_console_push(uint8_t c) {
 
 static void demux_route_byte(uint8_t c) {
     if (c == SLIP_END) {
-        if (g_demux.in_frame && g_demux.raw_len > 0) {
-            int n = slip_decode(g_demux.raw, g_demux.raw_len, g_demux.frame, sizeof(g_demux.frame));
-            g_demux.raw_len = 0;
+        if (g_demux.in_frame && g_demux.frame_len > 0) {
             g_demux.in_frame = false;
-            if (n > 0) {
-                g_demux.frame_len = (uint32_t)n;
-                g_demux.frame_ready = true;
-            }
+            g_demux.frame_ready = true;
         } else {
-            g_demux.in_frame = true; // leading/duplicate END: (re)start frame accumulation
-            g_demux.raw_len = 0;
+            g_demux.in_frame = true; // leading/duplicate END: (re)start the frame
+            g_demux.frame_len = 0;
         }
+        g_demux.escaping = false;
         return;
     }
 
     if (g_demux.in_frame) {
-        if (g_demux.raw_len < UART_SLIP_RAW_CAP) {
-            g_demux.raw[g_demux.raw_len++] = c;
-        } else {
-            g_demux.in_frame = false; // overflow: drop and resync on the next SLIP_END
-            g_demux.raw_len = 0;
+        uint32_t before = g_demux.frame_len;
+        (void)slip_feed(c, g_demux.frame, sizeof(g_demux.frame),
+                        &g_demux.frame_len, &g_demux.escaping);
+        /* slip_feed() zeroes the length on overflow; the demux additionally
+         * has to leave frame mode so subsequent bytes go back to the console
+         * rather than being silently eaten until the next delimiter. */
+        if (before > 0 && g_demux.frame_len == 0 && !g_demux.escaping) {
+            g_demux.in_frame = false;
         }
     } else {
         demux_console_push(c);
@@ -253,7 +301,7 @@ void uart_demux_set_enabled(bool enabled) {
         // (or leftover from a previous session) surface as stale input.
         g_demux.console_head = g_demux.console_tail = 0;
         g_demux.in_frame = false;
-        g_demux.raw_len = 0;
+        g_demux.escaping = false;
         g_demux.frame_ready = false;
         g_demux.frame_len = 0;
     }

@@ -27,7 +27,7 @@ echo "----------------------------------------------------------------------"
 
 qemu-system-riscv32 -M virt -nographic -bios none \
     -d guest_errors,unimp \
-    -drive file="$ROOT_DIR/build/lugalos_sd.img",if=none,format=raw,id=hd0 \
+    -drive file="$BUILD_DIR/lugalos_sd.img",if=none,format=raw,id=hd0 \
     -device virtio-blk-device,drive=hd0 \
     -chardev serial,id=tty_hw,path="$SERIAL_DEV" \
     -serial chardev:tty_hw \

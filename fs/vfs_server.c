@@ -282,20 +282,60 @@ void vfs_server_init(void) {
     printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
 }
 
+bool vfs_volume_writable(const char *name) {
+    if (!name) return false;
+    while (*name == '/') name++;
+
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        mount_entry_t *m = &g_mounts[i];
+        if (!m->in_use || !m->name) continue;
+
+        /* Compare up to the volume name's end, tolerating a trailing slash so
+         * "/sd0/" and "sd0" both work -- a boot script should not have to
+         * know which spelling this function wants. */
+        const char *a = name;
+        const char *b = m->name;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*b != '\0') continue;
+        if (*a != '\0' && *a != '/') continue;
+
+        return mount_is_active(m) && !m->read_only;
+    }
+    return false;
+}
+
 int vfs_mount_ramdisk(int size_kb) {
     block_dev_t *ram_dev = ramdisk_get_device();
     if (ram_dev) {
-        if (size_kb > 0) {
-            uint32_t requested_blocks = ((uint32_t)size_kb * 1024) / ram_dev->block_size;
-            uint32_t max_blocks = ramdisk_max_blocks();
-            if (requested_blocks > max_blocks) {
-                uint32_t max_kb = (max_blocks * ram_dev->block_size) / 1024;
-                printk("[VFS Server] Warning: requested /ram0/ size %d KB exceeds physical "
-                       "RAMDisk capacity (%u KB); clamping.\n", size_kb, (unsigned int)max_kb);
-                requested_blocks = max_blocks;
-                size_kb = (int)max_kb;
-            }
-            ram_dev->num_blocks = requested_blocks;
+        /* The storage is allocated here rather than reserved in .bss (C5), so
+         * a mount can fail for lack of memory -- which is a better outcome
+         * than an eighth of the machine being spent on a disk nobody asked
+         * for. */
+        if (size_kb <= 0) size_kb = 64;
+        uint32_t requested_blocks = ((uint32_t)size_kb * 1024) / ram_dev->block_size;
+        uint32_t max_blocks = ramdisk_max_blocks();
+        /* Below this a volume is smaller than its own FAT32 metadata: it
+         * formats, it mounts, and then every write fails. Clamping up and
+         * saying so beats handing back a disk that reports itself healthy. */
+        if (requested_blocks < FAT32_MIN_SECTORS) {
+            uint32_t min_kb = FAT32_MIN_SECTORS * ram_dev->block_size / 1024;
+            printk("[VFS Server] Requested /ram0/ size %d KB is below the %u KB "
+                   "FAT32 minimum; using %u KB.\n", size_kb,
+                   (unsigned int)min_kb, (unsigned int)min_kb);
+            requested_blocks = FAT32_MIN_SECTORS;
+            size_kb = (int)min_kb;
+        }
+        if (requested_blocks > max_blocks) {
+            uint32_t max_kb = (max_blocks * ram_dev->block_size) / 1024;
+            printk("[VFS Server] Warning: requested /ram0/ size %d KB exceeds the "
+                   "RAMDisk cap (%u KB); clamping.\n", size_kb, (unsigned int)max_kb);
+            requested_blocks = max_blocks;
+            size_kb = (int)max_kb;
+        }
+        if (ramdisk_init(requested_blocks) != 0) {
+            printk("[VFS Server] /ram0/ not mounted: no memory for a %d KB RAM disk\n",
+                   size_kb);
+            return -1;
         }
         if (fat32_init(&g_fat32_ram, ram_dev) != 0 || g_fat32_ram.bpb.tot_sec32 != ram_dev->num_blocks) {
             fat32_format(ram_dev);

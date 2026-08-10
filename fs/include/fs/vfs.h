@@ -16,6 +16,17 @@
 
 void vfs_server_init(void);
 int vfs_mount_ramdisk(int size_kb);
+
+/* Is `name` (with or without slashes: "sd0", "/sd0", "/sd0/") a mounted,
+ * writable volume?
+ *
+ * Distinct from asking the device registry whether a device is present, which
+ * is what dev_present() answers: an SD *driver* can be probed and working
+ * while no card is inserted, and a read-only volume is mounted but is not
+ * somewhere a boot script can put scratch files. This is the question
+ * init.lisp actually needs in order to decide whether a RAM disk is worth its
+ * memory (C5). */
+bool vfs_volume_writable(const char *name);
 int vfs_register_service(const char *service_name, int target_pid);
 
 /* Mounts this node's own 9P server at /<name>/ over a local channel (B1).

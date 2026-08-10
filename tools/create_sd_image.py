@@ -182,15 +182,41 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     print(f"[SD Image] Successfully generated FAT32 disk image '{output_path}' ({len(img)} bytes)")
 
 
+def newer_than_image(sd_root: str, out_file: str) -> bool:
+    """Is anything in the staging directory newer than the built image?"""
+    try:
+        img_mtime = os.path.getmtime(out_file)
+    except OSError:
+        return True
+    for root, _dirs, files in os.walk(sd_root):
+        for f in files:
+            try:
+                if os.path.getmtime(os.path.join(root, f)) > img_mtime:
+                    return True
+            except OSError:
+                return True
+    return False
+
+
 if __name__ == "__main__":
-    if_missing: bool = "--if-missing" in sys.argv
-    args: list[str] = [a for a in sys.argv[1:] if a != "--if-missing"]
+    # --if-stale: keep an existing image unless the staged files have changed.
+    #
+    # This used to be --if-missing, which kept the image unconditionally. The
+    # intent was not to clobber a disk that tests had written to, and that part
+    # is worth keeping -- but it also meant editing init.lisp left the image
+    # holding the previous copy with nothing to say so. It surfaced twice as
+    # three unrelated *9P transport* tests failing on content that should have
+    # matched, because they compare what the image serves against what the
+    # source now says. Comparing mtimes keeps the intent and removes the trap.
+    if_stale: bool = "--if-stale" in sys.argv or "--if-missing" in sys.argv
+    args: list[str] = [a for a in sys.argv[1:]
+                       if a not in ("--if-stale", "--if-missing")]
 
     out_file: str = args[0] if len(args) > 0 else "lugalos_sd.img"
     sd_root: str = args[1] if len(args) > 1 else os.path.join(os.path.dirname(__file__), "sd_root")
 
-    if if_missing and os.path.exists(out_file):
-        print(f"[SD Image] Preserving existing disk image '{out_file}' (--if-missing specified).")
+    if if_stale and os.path.exists(out_file) and not newer_than_image(sd_root, out_file):
+        print(f"[SD Image] Preserving existing disk image '{out_file}' (up to date).")
         sys.exit(0)
 
     build_fat32_image(out_file, sd_root)

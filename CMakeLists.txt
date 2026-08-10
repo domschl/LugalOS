@@ -280,9 +280,16 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_SOURCE_DIR}/build/lugalos_sd.img ${SD_STAGE} --if-missing
+    # Per build directory, NOT shared across targets. The image carries the
+    # user programs, and those are target-specific -- an RV32 binary on an RV64
+    # kernel is not a portability question, it is a different instruction set.
+    # One shared image meant whichever target built last decided what every
+    # other target's tests loaded. It stayed hidden for a long time because a
+    # simple program survives being the wrong ISA; uargs, which dereferences
+    # pointers, does not, and faults on a 32-bit address sign-extended to 64.
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_CURRENT_BINARY_DIR}/lugalos_sd.img ${SD_STAGE} --if-stale
     COMMAND ${UF2CONV_PY} --family rp2350_riscv --base 0x10000000 lugalos.bin -o lugalos.uf2
-    COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and shared disk image build/lugalos_sd.img"
+    COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and this target's lugalos_sd.img"
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")

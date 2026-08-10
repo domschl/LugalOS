@@ -545,6 +545,23 @@ static lisp_val_t *prim_write_file(lisp_val_t *args, lisp_val_t *env) {
     return (res == 0) ? &true_val : &false_val;
 }
 
+/* (board) -- which machine this is, as opposed to (arch), which is the
+ * instruction set. They are not the same question and init.lisp needs both:
+ * RP2350 and QEMU's virt board are both "rv32", but one has 512 KB of SRAM
+ * and the other 128 MB, so a RAM disk size that is sensible on one is most of
+ * the machine on the other. Before this there was no way for a boot script to
+ * tell them apart (C5). */
+static lisp_val_t *prim_board(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+#if defined(CONFIG_BOARD_RP2350)
+    return make_str("rp2350");
+#elif defined(CONFIG_BOARD_K210)
+    return make_str("k210");
+#else
+    return make_str("qemu-virt");
+#endif
+}
+
 static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
 
     (void)args; (void)env;
@@ -553,6 +570,19 @@ static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
 #else
     return make_str("rv64");
 #endif
+}
+
+/* (mounted? "/sd0") -- is that volume mounted and writable?
+ *
+ * Not the same question as (dev-present? "spisd"): a card reader can be
+ * probed and working with no card in it, and a read-only volume is mounted
+ * but is not somewhere to put scratch files. init.lisp needs this one to
+ * decide whether a RAM disk earns its memory (C5). */
+static lisp_val_t *prim_mounted(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    return vfs_volume_writable(name) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
@@ -1059,7 +1089,9 @@ void lisp_init(void) {
     env_set(&global_env, "write-file", make_prim(prim_write_file));
 
     env_set(&global_env, "arch", make_prim(prim_arch));
+    env_set(&global_env, "board", make_prim(prim_board));
     env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
+    env_set(&global_env, "mounted?", make_prim(prim_mounted));
     env_set(&global_env, "format", make_prim(prim_format));
     env_set(&global_env, "lsh", make_prim(prim_lsh));
     env_set(&global_env, "usb-status", make_prim(prim_usb_status));
