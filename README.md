@@ -21,14 +21,17 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 153 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 9 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 157 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 10 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
   boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
   running as scheduled tasks rather than inline calls.
+- **More than one user program at a time**: each loaded program gets its own image, user stack and
+  memory domain, and hands all three back when it ends — including its Sv39 page-table tree on the
+  MMU build. `(spawn "path")` starts one without waiting; `exec` still runs one to completion.
 - **User programs**: a separately linked ELF is loaded from the filesystem into pages the allocator
   hands out, and runs as a U-mode task confined to three of them — text (R|X), data (R|W), stack
   (R|W). `exec` is that path, so a program compiled on the machine by `cc` runs confined too. The
@@ -45,10 +48,6 @@ silicon):
   hardware.
 
 **Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-- **More than one user program at a time**: there is a single user-image slot, allocated once and
-  reused, so `exec` runs one program to completion before another can start. The blocker is
-  concrete rather than structural: the Sv39 backend caches a page table per memory domain and
-  nothing can free a page-table tree yet, so a domain per program would leak pages.
 - **User programs larger than two pages**: the image model is one page of text and one of data,
   enforced at link time by `linker/user.ld`'s ASSERTs rather than discovered at run time. Growing
   it needs the loader to allocate a power-of-two page run per segment, since a PMP region must be

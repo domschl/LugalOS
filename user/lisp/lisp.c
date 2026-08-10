@@ -392,6 +392,19 @@ static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
  * Belongs in init.lisp: which volumes exist, and which should win when two
  * carry the same utility, is a property of a board rather than of the
  * kernel. Reading it back is `cat /proc/path`. */
+/* (spawn "/path/to.elf") -- start a program without waiting for it, returning
+ * its pid. (exec ...) blocks until its program is dead, so a caller using it
+ * can only ever have one resident however many slots the loader has; this is
+ * what makes concurrency observable. */
+static lisp_val_t *prim_spawn(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    char safe_path[128];
+    const char *p = get_str_val(args->u.pair.car);
+    strncpy_local(safe_path, p, 127); safe_path[127] = '\0';
+    return make_int(elf_spawn(safe_path));
+}
+
 static lisp_val_t *prim_path_set(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -1000,6 +1013,7 @@ void lisp_init(void) {
     env_set(&global_env, "rm", make_prim(prim_rm));
     env_set(&global_env, "cc", make_prim(prim_cc));
     env_set(&global_env, "exec", make_prim(prim_exec));
+    env_set(&global_env, "spawn", make_prim(prim_spawn));
     env_set(&global_env, "path-set", make_prim(prim_path_set));
     env_set(&global_env, "which", make_prim(prim_which));
     env_set(&global_env, "ps", make_prim(prim_ps));

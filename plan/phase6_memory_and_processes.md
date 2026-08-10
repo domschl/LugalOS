@@ -257,12 +257,42 @@ correctly and never consulted.
 unrelated to the search path, and worth its own small fix in `fs/fat32.c`'s path resolution rather
 than being smuggled into this one.
 
-### C2 — Loader: per-process domains, and freeing them
+### C2 — Loader: per-process domains, and freeing them — **Done (2026-08-10)**
 
-The documented blocker for concurrency is real: the Sv39 backend caches a page table per domain
-and nothing can free a page-table tree, so a domain per exec leaks pages. Fix that first —
-`vmm_free_table()` walking and returning the tree — then replace the single `g_udomain`/`g_image`
-slot with per-process allocation. **Testable on QEMU**, where the heap is 16 MB.
+The documented blocker for concurrency was real: the Sv39 backend caches a page table per domain
+and nothing could free a page-table tree, so a domain per exec leaked pages. Fixed first —
+`vmm_free_table()` walking and returning the tree — then the single `g_udomain`/`g_image` slot was
+replaced with per-process allocation. Developed on QEMU, where the heap is 16 MB, then validated on
+the board where it is fifteen pages.
+
+**Completed** on branch `phase6-c2-per-process-domains`.
+
+- `vmm_free_table()` (Sv39) walks the tree and returns only the *tables*, never the memory they
+  map. The distinction is the same R/W/X test `vmm_map_range()` uses on the way down: an entry with
+  any of those bits is a leaf describing memory this tree does not own. Freeing on the wrong side of
+  it would hand live kernel RAM back to the allocator. A no-op on NOMMU, so the loader never
+  branches on the memory model.
+- `mem_domain_destroy()` sits on top of it, and is where the two models stop differing again.
+- The loader keeps a fixed table of process slots, each owning an image, a user stack and a domain,
+  all returned when the program ends.
+- `elf_spawn()` / `(spawn "path")` starts a program without waiting. This is what makes concurrency
+  *observable*: `elf_load_and_run()` spins until its program is dead, so a caller using it can only
+  ever have one resident however many slots exist.
+
+**A bug found by the test rather than by reading.** Reaping first asked "is the recorded pid dead?",
+which is unsound: `task_create()` recycles DEAD slots, so a stale pid can name a different, living
+task, and the slot then never reaps. It showed up as a steady three-page climb across repeated
+loads on the MMU build — one Sv39 tree per load. Liveness is now asked by *domain pointer*, which is
+unique to a slot for as long as the slot is in use, and the domain is bound at `task_create()`
+rather than only in the task body so there is no window where a live task looks finished.
+
+**Measured.** An Sv39 user domain's page-table tree is exactly **3 pages** — the falsification run,
+with `vmm_free_table()` stubbed, leaks 15 pages over 5 loads. On RP2350 two concurrent programs plus
+their kernel stacks peak at **12 of 15 heap pages**, which is the number that will decide how much
+of C5 is needed before a third.
+
+Tests 153 → **157 QEMU**, 9 → **10 hardware**. Both new tests falsified: stubbing the free path
+makes the reclamation test fail, and `USER_PROC_MAX = 1` makes the concurrency test fail.
 
 ### C3 — Process ABI
 

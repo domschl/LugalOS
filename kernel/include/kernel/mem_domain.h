@@ -102,6 +102,20 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
 /* True when this build can actually enforce a domain. False on the S-mode
  * target until B5 lands Sv39 -- so a caller can report "unenforced" honestly
  * rather than implying isolation that is not there. */
+/* Releases whatever the backend cached for this domain and leaves it empty
+ * (C2, plan/phase6_memory_and_processes.md).
+ *
+ * The Sv39 backend builds a page table on first activation and caches it in
+ * arch_priv; nothing could return it, which is why the loader had a single
+ * reusable slot instead of a domain per program -- one per exec would have
+ * leaked a tree every time. The PMP backend has nothing to release, so this
+ * is where the two models stop differing again.
+ *
+ * Must not be called on a domain that is currently active: on the MMU build
+ * that would free the page table the hart is translating through. Callers
+ * destroy a program's domain only once its task is dead. */
+void mem_domain_destroy(mem_domain_t *d);
+
 bool mem_domain_enforced(void);
 
 #endif /* LUGALOS_KERNEL_MEM_DOMAIN_H */

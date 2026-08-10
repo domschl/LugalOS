@@ -30,6 +30,13 @@ int vmm_map_range(uintptr_t *root, uintptr_t va, uintptr_t pa, uintptr_t size,
 /* The kernel's root page table, for building a task space that shares it. */
 uintptr_t *vmm_kernel_root(void);
 
+/* Returns a page-table tree built for a memory domain to the allocator (C2).
+ * Frees only the tables, never the memory they map; see the Sv39
+ * implementation for why that distinction is the R/W/X bits. A no-op on the
+ * NOMMU backend, which has no tables -- callers do not branch on the memory
+ * model (Rule 0, plan/phase5_distributed_design.md §5.1). */
+void vmm_free_table(uintptr_t *root);
+
 /* False if paging could not be brought up, so callers can report honestly
  * rather than claim enforcement that is not there. */
 bool vmm_paging_enabled(void);

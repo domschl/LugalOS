@@ -259,6 +259,15 @@ int mem_domain_activate(const mem_domain_t *d) {
 
 bool mem_domain_enforced(void) { return true; }
 
+/* Nothing cached: a PMP domain is the region list itself, reprogrammed on
+ * every context switch. Present so the loader can release a domain without
+ * asking which memory model it is on (Rule 0, §5.1). */
+void mem_domain_destroy(mem_domain_t *d) {
+    if (!d) return;
+    d->count = 0;
+    d->arch_priv = NULL;
+}
+
 #else /* CONFIG_MODE_S -- Sv39 (B5) */
 
 #include "arch/vmm.h"
@@ -382,5 +391,17 @@ int mem_domain_activate(const mem_domain_t *d) {
 }
 
 bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
+
+/* Returns the page table built by build_space(). See the header on why this
+ * must not run while the domain is active -- the hart would be translating
+ * through the tree being freed. */
+void mem_domain_destroy(mem_domain_t *d) {
+    if (!d) return;
+    if (d->arch_priv) {
+        vmm_free_table((uintptr_t *)d->arch_priv);
+        d->arch_priv = NULL;
+    }
+    d->count = 0;
+}
 
 #endif

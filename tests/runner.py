@@ -305,6 +305,63 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             ok = False
         results.append(("U-mode Code Is Preemptible (B6)", ok, log if not ok else ""))
 
+        # C2: two user programs resident at once.
+        #
+        # This was the headline limitation the README carried: a single image
+        # slot, allocated once and reused, so exec ran one program to
+        # completion before another could start. The blocker was concrete --
+        # the Sv39 backend caches a page table per domain and nothing could
+        # free a tree, so a domain per exec would leak several pages every
+        # time. C2 added vmm_free_table() and mem_domain_destroy() on top of
+        # it, and the loader now gives each program its own image, stack and
+        # domain.
+        #
+        # The assertion is the *interleaving*, not that both markers appear.
+        # uspin prints USPIN_START, computes for a while, then reports; uhello
+        # runs to completion in between. Requiring uhello's marker to land
+        # between uspin's first and last is what proves two programs were
+        # resident simultaneously -- with the old single slot the second spawn
+        # is refused outright, and with slots but no concurrency the markers
+        # would appear strictly one group after the other.
+        #
+        # (spawn) rather than exec: exec waits for its program to die, so a
+        # caller using it can only ever have one resident no matter how many
+        # slots the loader has.
+        ok, log = session.send_and_expect(
+            'lisp\n(spawn "/flash0/system/bin/uspin.elf")\n'
+            '(spawn "/flash0/system/bin/uhello.elf")\nexit',
+            r"USPIN_START(.|\n)*UPROG_TEXT_OK(.|\n)*USPIN_PREEMPTED", timeout=30.0)
+        results.append(("Two User Programs Are Resident At Once (C2)", ok, log if not ok else ""))
+
+        # ...and everything they took comes back.
+        #
+        # Parses actual page counts either side of several loads rather than
+        # matching text, because this specifically catches a *quantity*
+        # regression: with vmm_free_table() stubbed out, each exec on the MMU
+        # build strands a page-table tree and the count climbs monotonically.
+        # Five loads make a per-load leak of even one page unmistakable.
+        #
+        # Reaping happens at the start of a load, so the second reading is
+        # taken after a further exec -- otherwise the last program's pages are
+        # legitimately still held and the test would fail on correct behaviour.
+        session.send_and_expect("exec /flash0/system/bin/uhello.elf", r"returned 7", timeout=25.0)
+        _, log_before = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_before = re.search(r"Pages Used: (\d+)", log_before)
+        for _ in range(5):
+            session.send_and_expect("exec /flash0/system/bin/uhello.elf", r"returned 7", timeout=25.0)
+        _, log_after = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_after = re.search(r"Pages Used: (\d+)", log_after)
+
+        used_before = int(m_before.group(1)) if m_before else None
+        used_after = int(m_after.group(1)) if m_after else None
+        ok = (used_before is not None and used_before == used_after)
+        results.append((
+            "User Program Pages And Page Tables Are Reclaimed (C2)",
+            ok,
+            f"pages used before={used_before} after={used_after} "
+            f"(five loads in between; a climb means a per-load leak)" if not ok else "",
+        ))
+
         # B6: the timer preempts a task that never yields.
         #
         # This cannot pass under cooperative scheduling, which is the point:
