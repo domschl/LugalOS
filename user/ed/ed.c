@@ -2,16 +2,60 @@
 #include "ed.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
+#include "kernel/palloc.h"
 #include "drivers/uart.h"
 #include <string.h>
+
+static void ed_main_inner(const char *filename);
 
 #define MAX_ED_LINES 256
 #define MAX_LINE_LEN 128
 
-static char ed_buf[MAX_ED_LINES][MAX_LINE_LEN];
+/* Heap-on-demand (C6/C7, plan/phase6_memory_and_processes.md): the editor's
+ * buffers are taken while it is running and returned when it exits, so an
+ * editor nobody has opened costs nothing. 44 KB on a 512 KB board is most of
+ * a user program's worth of memory to reserve for a text editor. */
+static char (*ed_buf)[MAX_LINE_LEN];
 static int line_count = 0;
 static int dot = 0; // 1-based current line index (0 if buffer empty)
 static char current_file[64];
+
+#define ED_RAW_BUF_SIZE 4096
+#define ED_OUT_BUF_SIZE 8192
+static char *raw_buf;   /* both were function-scope statics: the same memory */
+static char *out_buf;   /* under a narrower name */
+static uint8_t *g_ed_arena;
+static uint32_t g_ed_pages;
+
+/* One arena for all three, for the same reason chibicc has one: three
+ * allocations would each round up to a page and give three failure points to
+ * unwind instead of one. */
+static bool ed_buffers_acquire(void) {
+    if (g_ed_arena) return true;
+    uint32_t want = (uint32_t)(MAX_ED_LINES * MAX_LINE_LEN)
+                  + ED_RAW_BUF_SIZE + ED_OUT_BUF_SIZE;
+    g_ed_pages = (want + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    g_ed_arena = (uint8_t *)palloc_pages(g_ed_pages);
+    if (!g_ed_arena) {
+        cprintf("ed: no memory for a %u KB editor buffer\n",
+                g_ed_pages * (uint32_t)PAGE_SIZE / 1024);
+        return false;
+    }
+    ed_buf = (char (*)[MAX_LINE_LEN])g_ed_arena;
+    raw_buf = (char *)(g_ed_arena + MAX_ED_LINES * MAX_LINE_LEN);
+    out_buf = raw_buf + ED_RAW_BUF_SIZE;
+    return true;
+}
+
+static void ed_buffers_release(void) {
+    if (!g_ed_arena) return;
+    palloc_free(g_ed_arena, g_ed_pages);
+    g_ed_arena = NULL;
+    g_ed_pages = 0;
+    ed_buf = NULL;
+    raw_buf = NULL;
+    out_buf = NULL;
+}
 
 static void ed_read_line(char *out_buf, int max_len) {
     if (!out_buf || max_len <= 0) return;
@@ -44,7 +88,7 @@ static void ed_load_file(const char *filename) {
         return;
     }
 
-    static char raw_buf[4096];
+
     int bytes = vfs_read(filename, raw_buf, sizeof(raw_buf) - 1);
     if (bytes < 0) {
         cprintf("'%s': [New File]\n", filename);
@@ -85,7 +129,7 @@ static void ed_save_file(const char *filename) {
         return;
     }
 
-    static char out_buf[8192];
+
     int total_len = 0;
 
     for (int i = 0; i < line_count; i++) {
@@ -263,6 +307,15 @@ static void ed_search(const char *pattern) {
 }
 
 void ed_main(const char *filename) {
+    /* Acquired for the editor's lifetime and released on every exit path --
+     * ed_main() returns from several places, and one of them forgetting would
+     * leak 44 KB on a 160 KB heap. */
+    if (!ed_buffers_acquire()) return;
+    ed_main_inner(filename);
+    ed_buffers_release();
+}
+
+static void ed_main_inner(const char *filename) {
     if (filename && filename[0] != '\0') {
         strncpy(current_file, filename, 63);
         current_file[63] = '\0';

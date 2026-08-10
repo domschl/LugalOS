@@ -13,11 +13,40 @@
 
 #define CHIBICC_BUF_SIZE 4096
 
+/* Arena-backed (C6): see user/chibicc/pools.c. Both were function-scope
+ * statics, which is the same memory under a narrower name. */
+static char    *src_buf;
+static uint8_t *elf_buf;
+
+bool main_pools_init(void) {
+    src_buf = (char *)chibicc_pool_alloc(CHIBICC_BUF_SIZE);
+    elf_buf = (uint8_t *)chibicc_pool_alloc(CHIBICC_BUF_SIZE);
+    return src_buf && elf_buf;
+}
+
+void main_pools_clear(void) {
+    src_buf = NULL;
+    elf_buf = NULL;
+}
+
+static int compile_inner(const char *src_path, const char *dst_elf_path);
+
+/* The arena is held for exactly the duration of a compile (C6). Wrapped rather
+ * than released at each `return` inside: compile_inner() has half a dozen
+ * failure exits, and one of them forgetting would leak 112 KB on a 160 KB
+ * heap -- a bug that only shows up on the *next* command. */
 int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     if (!src_path || !dst_elf_path) return -1;
+    if (!chibicc_pools_acquire()) return -1;
+    int rc = compile_inner(src_path, dst_elf_path);
+    chibicc_pools_release();
+    return rc;
+}
 
-    static char src_buf[CHIBICC_BUF_SIZE];
-    int bytes = vfs_read(src_path, src_buf, sizeof(src_buf) - 1);
+static int compile_inner(const char *src_path, const char *dst_elf_path) {
+
+
+    int bytes = vfs_read(src_path, src_buf, CHIBICC_BUF_SIZE - 1);
     if (bytes <= 0) {
         printk("[chibicc Error] Failed to read C source file '%s'\n", src_path);
         return -1;
@@ -47,8 +76,7 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     }
     printk("[chibicc] AST parsed successfully!\n");
 
-    static uint8_t elf_buf[CHIBICC_BUF_SIZE];
-    memset(elf_buf, 0, sizeof(elf_buf));
+    memset(elf_buf, 0, CHIBICC_BUF_SIZE);
 
 #if defined(CONFIG_TARGET_RV64)
     elf64_ehdr_t *ehdr = (elf64_ehdr_t *)elf_buf;
@@ -111,4 +139,8 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     printk("[chibicc] Build clean: generated %d-byte RISC-V ELF binary at '%s'\n",
            total_elf_size, dst_elf_path);
     return 0;
+}
+
+uint32_t main_pools_bytes(void) {
+    return CHIBICC_BUF_SIZE * 2u;
 }

@@ -850,6 +850,54 @@ def test_large_image(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """C6/C7 on real silicon: cc costs nothing while idle.
+
+    chibicc's pools were about 108 KB of static arrays and ed's another 44 KB
+    -- on a 512 KB board, a third of the machine reserved for two commands that
+    are almost never running. They are taken from the heap on entry and
+    returned on exit now, which is what took this board's image from 335 KB to
+    183 KB and its heap from 40 pages to 78.
+
+    Worth checking here rather than only on QEMU for the obvious reason: the
+    QEMU targets have a 16 MB heap, so an arena that is never released is
+    invisible there for a very long time. On 78 pages it is immediate.
+
+    The assertion is that the page count *returns*. A compile that acquired and
+    never released would still emit a correct binary every time.
+    """
+    name = "C6/C7: compiler and editor memory is returned on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"cat /proc/meminfo\n",
+                        b"cc /sd0/prime.c /sd0/hwtest_cc.elf\n",
+                        b"cat /proc/meminfo\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
+
+        used = [int(m) for m in re.findall(r"Pages Used: (\d+)", out)]
+        total = re.search(r"Pages Total: (\d+)", out)
+
+        checks = [
+            ("compile succeeded",  "Build clean" in out),
+            ("two readings taken", len(used) >= 2),
+            ("arena was returned", len(used) >= 2 and used[0] == used[-1]),
+            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 70),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}; used={used}\n{out[-500:]}")
+        return (name, True,
+                f"heap {used[0]}/{total.group(1)} pages before and after a compile")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -875,6 +923,7 @@ def main() -> int:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
     tests.append(test_large_image)
+    tests.append(test_heap_on_demand)
     tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node

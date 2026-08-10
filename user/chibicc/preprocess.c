@@ -19,7 +19,7 @@ typedef struct {
     char val[MACRO_VAL_LEN];
 } Macro;
 
-static Macro macros[MAX_MACROS];
+static Macro *macros;
 static int macro_cnt = 0;
 
 static const char *builtin_lugal_h =
@@ -93,7 +93,9 @@ static bool is_ident_body(char c) {
 }
 
 #define PREPROC_BUF_SIZE 16384
-static char preproc_buf[PREPROC_BUF_SIZE];
+static char *preproc_buf;
+#define HDR_BUF_SIZE 2048
+static char *hdr_buf;
 static int preproc_out_idx = 0;
 
 static void emit_str(const char *str) {
@@ -250,7 +252,7 @@ static void preprocess_internal(const char *src, int depth) {
                 hdr_path[hidx] = '\0';
 
                 /* Check for built-in or VFS header file */
-                static char hdr_buf[2048];
+
                 char vfs_path[64];
 
                 if (hdr_path[0] == '/') {
@@ -303,4 +305,24 @@ char *preprocess(const char *src) {
 
     preprocess_internal(src, 0);
     return preproc_buf;
+}
+
+/* Arena-backed (C6): see user/chibicc/pools.c. hdr_buf was a function-scope
+ * static, which is the same memory with a narrower name -- hoisted here so the
+ * arena owns every allocation this file makes rather than most of them. */
+bool preprocess_pools_init(void) {
+    macros = (Macro *)chibicc_pool_alloc(sizeof(Macro) * MAX_MACROS);
+    preproc_buf = (char *)chibicc_pool_alloc(PREPROC_BUF_SIZE);
+    hdr_buf = (char *)chibicc_pool_alloc(HDR_BUF_SIZE);
+    return macros && preproc_buf && hdr_buf;
+}
+
+void preprocess_pools_clear(void) {
+    macros = NULL;
+    preproc_buf = NULL;
+    hdr_buf = NULL;
+}
+
+uint32_t preprocess_pools_bytes(void) {
+    return (uint32_t)(sizeof(Macro) * MAX_MACROS) + PREPROC_BUF_SIZE + HDR_BUF_SIZE;
 }
