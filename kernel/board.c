@@ -6,6 +6,9 @@
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
 #include "kernel/console.h"
+#if defined(CONFIG_BOARD_RP2350)
+#include "arch/rp2350_bootrom.h"
+#endif
 
 #if !defined(CONFIG_BOARD_RP2350)
 #include "drivers/virtio_console.h"
@@ -145,5 +148,16 @@ void board_register_devices(void) {
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);
+#endif
+}
+
+/* See kernel/device.h. Only RP2350 has something to ask; the QEMU targets have
+ * no reset path this kernel can reach, and saying so is better than pretending
+ * to reboot and continuing. */
+bool board_reset(void) {
+#if defined(CONFIG_BOARD_RP2350)
+    return rp2350_reboot();
+#else
+    return false;
 #endif
 }

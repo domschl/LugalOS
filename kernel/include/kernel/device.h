@@ -93,4 +93,13 @@ void board_text_region(uintptr_t *base, uintptr_t *size);
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 
+/* Restarts the machine. Does not return where it is supported; returns false
+ * where it is not, so a caller can say so rather than appearing to hang.
+ *
+ * Here rather than behind an #if at the call site, following this file's own
+ * rule: which hardware a board has, and what it can be asked to do, is a table
+ * in one place. Only RP2350 can currently do it -- via the bootrom's reboot
+ * entry point, the same one the BOOTSEL touch uses with a different type flag. */
+bool board_reset(void);
+
 #endif /* LUGALOS_KERNEL_DEVICE_H */
