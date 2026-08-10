@@ -382,14 +382,26 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         /* B2: the real task table. This used to be a hardcoded string
          * listing four tasks that did not exist -- kernel/sched.c was
          * bookkeeping only and nothing was ever scheduled. */
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name\n");
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----\n");
         int pid, state;
         const char *tname;
-        for (uint32_t i = 0; sched_task_info(i, &pid, &state, &tname); i++) {
+        long status;
+        bool clean;
+        for (uint32_t i = 0; sched_task_info_ex(i, &pid, &state, &tname, &status, &clean); i++) {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "%3d  ", pid);
             used = append_col(buf, used, cap, sched_state_name(state), 9);
-            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s\n", tname);
+            used = append_col(buf, used, cap, tname, 14);
+            /* Only a dead task has an outcome. "killed" rather than a number
+             * for one the fault handler ended: a status of 0 would otherwise
+             * read as a clean success, which is precisely backwards. */
+            if (state != TASK_DEAD) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
+            } else if (clean) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "%ld\n", status);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "killed\n");
+            }
         }
         return (int)used;
     } else if (strcmp(rel, "df") == 0) {

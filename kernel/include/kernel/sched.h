@@ -120,6 +120,13 @@ mem_domain_t *sched_current_domain(void);
 const char *sched_state_name(int state);
 bool        sched_task_info(uint32_t index, int *pid, int *state, const char **name);
 
+/* As above, plus how the task ended: its exit status and whether it asked to
+ * end rather than being killed by the fault handler (C3). An exit status alone
+ * cannot tell those apart -- 0 is both an ordinary return value and what a
+ * killed task leaves behind. Both are only meaningful once the task is DEAD. */
+bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
+                               long *exit_status, bool *exited_clean);
+
 /* True once sched_init() has run and switching is possible. Lets code that
  * runs both before and after scheduler bring-up (e.g. driver busy-waits)
  * call sched_yield() unconditionally. */

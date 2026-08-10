@@ -391,7 +391,7 @@ static void user_task_common(void (*entry)(void)) {
     /* ra = 0: every probe below ends with usys_exit() and an infinite loop,
      * so none of them ever returns. The ELF loader is what needs a real
      * return address. */
-    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack), 0);
+    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack), 0, 0, 0);
 }
 
 static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
@@ -689,11 +689,37 @@ static void parse_and_eval_cmd(const char *cmd_line) {
      *   searched for. That is what makes a specific build always reachable
      *   even when a higher-priority volume shadows its name.
      */
-    if (!has_space && !has_slash && cmd_line[0] != '(') {
-        char prog[128];
-        if (path_resolve("bin", cmd_line, ".elf", prog, sizeof(prog)) == 0) {
-            elf_load_and_run(prog);
-            return;
+    if (cmd_line[0] != '(') {
+        /* Split off the first word and treat the rest as arguments (C3).
+         * argv[0] is the name as typed, which is what a program expects and
+         * what the loader deliberately does not invent for itself. */
+        char argbuf[256];
+        char *argp[USER_ARGV_LIMIT];
+        int argn = 0;
+        {
+            uint32_t n = 0;
+            while (cmd_line[n] && n < sizeof(argbuf) - 1) { argbuf[n] = cmd_line[n]; n++; }
+            argbuf[n] = '\0';
+        }
+        char *q = argbuf;
+        while (*q && argn < USER_ARGV_LIMIT) {
+            while (*q == ' ' || *q == '\t') *q++ = '\0';
+            if (!*q) break;
+            argp[argn++] = q;
+            while (*q && *q != ' ' && *q != '\t') q++;
+        }
+
+        bool name_has_slash = false;
+        for (const char *c = argn ? argp[0] : ""; *c; c++) {
+            if (*c == '/') { name_has_slash = true; break; }
+        }
+
+        if (argn > 0 && !name_has_slash) {
+            char prog[128];
+            if (path_resolve("bin", argp[0], ".elf", prog, sizeof(prog)) == 0) {
+                elf_load_and_run_argv(prog, argn, (const char *const *)argp);
+                return;
+            }
         }
     }
 

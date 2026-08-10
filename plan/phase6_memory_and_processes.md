@@ -294,18 +294,39 @@ of C5 is needed before a third.
 Tests 153 → **157 QEMU**, 9 → **10 hardware**. Both new tests falsified: stubbing the free path
 makes the reclamation test fail, and `USER_PROC_MAX = 1` makes the concurrency test fail.
 
-### C3 — Process ABI
+### C3 — Process ABI — **Done (2026-08-10)**
 
-- **Parameter block**: argv strings plus argc written into the top of the process's data region
-  before entry, with `a0`/`a1` set to argc/argv. No new syscall, no kernel pointer handed to
-  U-mode.
-- **Exit status** propagated from `SYS_UEXIT` to the shell, and to `/proc/ps`.
+- **Parameter block**: argv strings plus argc written into the top of the process's *stack* page
+  before entry, with `a0`/`a1` set to argc/argv. No new syscall, and no kernel pointer handed to
+  U-mode. The stack page rather than the data page: a program that used all of its .data/.bss would
+  otherwise find its globals overwritten by its own arguments, a corruption whose presence depended
+  on how big the program was.
+- **Exit status** propagated from `SYS_UEXIT` to the shell (on the *console* stream, per C0) and to
+  `/proc/ps`, which reports `killed` rather than a number for a task the fault handler ended. A
+  status alone cannot distinguish them: 0 is both an ordinary return value and what a killed task
+  leaves behind.
 - **`SYS_CHAN_CALL`**: `(name, req, req_len, resp, resp_max)` → `chan_call()`, with both buffers
-  validated through `kernel/uaccess.c` exactly as `SYS_READ_FILE` already is. This is the item
-  that turns "a program" into "a component".
-- **Delete `sys_ipc_call`/`_reply`/`_send`/`_recv`** and the `ipc_msg_t` register-message struct,
-  in the same change that adds the above. Numbers 1–4 stay burned in `usys.h` rather than being
-  reused, so an old binary gets a clean `-ENOSYS` instead of a surprise.
+  validated through `kernel/uaccess.c` exactly as `SYS_READ_FILE` is. Services are named, never
+  addressed by pointer or pid, so a program cannot express a reference to something it was not
+  given.
+- **`sys_ipc_call`/`_reply`/`_send`/`_recv` and `ipc_msg_t` deleted**, in the same change. Numbers
+  1–4 stay burned rather than reused, so a binary built against the old ABI gets a clean "unknown
+  syscall" instead of whatever later took its number.
+
+Two new user programs carry the tests. `uargs` reads its arguments *through the pointers* — a
+vector built at a kernel address would fault there rather than appearing to work — and returns 42,
+a status that is neither 0 nor the 7 `uhello` returns, so a pass cannot come from a defaulted field.
+`uchan` makes four claims: a marker emitted by the *console server* rather than by its own
+`SYS_PRINT` (so the message demonstrably crossed the channel), an unregistered name refused, a
+request buffer it does not own refused, and syscall 1 refused.
+
+That third one is the confused-deputy case at the channel boundary, and it is the reason this item
+has a hardware test: on RP2350 the refusal is decided against PMP regions on Hazard3, with NAPOT-only
+matching and erratum E6's reversed permission bits. A boundary that holds under Sv39 demonstrates
+nothing about that.
+
+Tests 157 → **165 QEMU**, 10 → **11 hardware**.
+
 
 ### C4 — Loader: multi-page images, per-segment NAPOT
 

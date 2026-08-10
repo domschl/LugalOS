@@ -72,11 +72,26 @@ const char *sched_state_name(int state) {
 }
 
 bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
+    return sched_task_info_ex(index, pid, state, name, NULL, NULL);
+}
+
+/* As above, plus how the task ended (C3).
+ *
+ * `exited_clean` distinguishes a task that asked to end from one the fault
+ * handler killed, which an exit status alone cannot: 0 is a perfectly ordinary
+ * return value and also what an uninitialised field holds. Both are only
+ * meaningful once the task is DEAD; for a live task the status is reported as
+ * 0 and `exited_clean` as false. */
+bool sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
+                        long *exit_status, bool *exited_clean) {
     if (index >= MAX_TASKS) return false;
     if (g_tasks[index].state == TASK_UNUSED) return false;
     if (pid)   *pid = g_tasks[index].pid;
     if (state) *state = g_tasks[index].state;
     if (name)  *name = g_tasks[index].name;
+    bool dead = (g_tasks[index].state == TASK_DEAD);
+    if (exit_status) *exit_status = dead ? g_tasks[index].exit_status : 0;
+    if (exited_clean) *exited_clean = dead && g_tasks[index].exit_clean;
     return true;
 }
 

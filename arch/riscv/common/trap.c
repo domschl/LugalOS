@@ -2,6 +2,7 @@
 #include "arch/csr.h"
 #include "kernel/printk.h"
 #include "kernel/ipc.h"
+#include "kernel/chan.h"
 #include "kernel/sched.h"
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
@@ -93,27 +94,62 @@ void trap_handler(trap_frame_t *frame) {
         if (code == 8 || code == 9 || code == 11) {
             g_last_ecall_cause = code;
             uintptr_t sys_nr = frame->a0;
-            int target_pid = (int)frame->a1;
-            ipc_msg_t *msg_in = (ipc_msg_t *)frame->a2;
-            ipc_msg_t *msg_out = (ipc_msg_t *)frame->a3;
 
             long ret = 0;
             switch (sys_nr) {
                 case 0: /* SYS_EXIT / yield */
                     ret = 0;
                     break;
-                case SYS_IPC_CALL:
-                    ret = sys_ipc_call(target_pid, msg_in, msg_out);
+                case SYS_CHAN_CALL: {
+                    /* SYS_CHAN_CALL(name, req, req_len, resp, resp_max)
+                     *
+                     * U-mode's route to a service (C3,
+                     * plan/phase6_memory_and_processes.md). Until this existed
+                     * a user program could read and write files and print, and
+                     * nothing else -- so "extract a kernel subsystem into a
+                     * process" had no way for the result to be reachable. That
+                     * is why the old register-IPC entry points were deleted
+                     * rather than merely tidied: removing four stubs would have
+                     * left U-mode exactly as isolated.
+                     *
+                     * Every buffer crosses the boundary by copy, validated
+                     * against the calling task's own domain, exactly as
+                     * SYS_READ_FILE does. The endpoint is named rather than
+                     * addressed by pointer or pid, so a user program cannot
+                     * express a reference to something it was not given.
+                     *
+                     * The copies are not redundant with the ones chan_call()
+                     * already performs: those protect the *endpoint* from the
+                     * caller's buffer changing under it, while these are what
+                     * stop the kernel dereferencing a user address at all. */
+                    char kname[32];
+                    static uint8_t kreq[256];
+                    static uint8_t kresp[256];
+                    uint32_t req_len = (uint32_t)frame->a3;
+                    uint32_t resp_max = (uint32_t)frame->a5;
+
+                    if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    if (req_len > sizeof(kreq)) { ret = -1; break; }
+                    if (resp_max > sizeof(kresp)) resp_max = sizeof(kresp);
+                    if (req_len && copy_from_user(kreq, frame->a2, req_len) < 0) {
+                        ret = -1;
+                        break;
+                    }
+
+                    chan_endpoint_t *ep = chan_lookup(kname);
+                    if (!ep) { ret = -1; break; }
+
+                    int n = chan_call(ep, kreq, req_len, kresp, resp_max);
+                    if (n < 0) { ret = n; break; }
+                    /* Copied out only after the call succeeded, and only as
+                     * many bytes as the service actually produced. */
+                    ret = (resp_max && copy_to_user(frame->a4, kresp, (uint32_t)n) < 0)
+                              ? -1 : n;
                     break;
-                case SYS_IPC_REPLY:
-                    ret = sys_ipc_reply(target_pid, msg_in);
-                    break;
-                case SYS_IPC_SEND:
-                    ret = sys_ipc_send(target_pid, msg_in);
-                    break;
-                case SYS_IPC_RECV:
-                    ret = sys_ipc_recv(target_pid, msg_in);
-                    break;
+                }
                 case 10: { /* SYS_PRINT(const char *) */
                     /* Copied in, never dereferenced in place. A U-mode task
                      * cannot read kernel memory, but before this it could ask

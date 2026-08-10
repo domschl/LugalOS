@@ -701,6 +701,53 @@ def test_concurrent_user_programs(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
         return (name, False, str(e))
 
 
+def test_process_abi(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """C3 on real silicon: argv, exit status, and a service reached from U-mode.
+
+    The part that needs hardware is the last one. UCHAN_FOREIGN_OK is the
+    confused-deputy case at the channel boundary -- a program hands the kernel
+    a request buffer it does not own, and the kernel must refuse rather than
+    copy from it. On this board that refusal is decided against PMP regions on
+    Hazard3, with its NAPOT-only matching and erratum E6's reversed permission
+    bits; on the QEMU targets it is Sv39, or on RV32 a software check. A
+    boundary that holds under one does not demonstrate the other.
+
+    UCHAN_RETIRED_OK is worth having anywhere: syscall 1 was a register-IPC
+    entry point, and it must now be *gone* rather than repurposed, so a binary
+    built against the old ABI gets a clean refusal instead of whatever later
+    took its number.
+    """
+    name = "C3: argv, exit status and channel access from U-mode on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"uargs alpha beta\n", b"uchan\n", b"ps\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.8, deadline=25.0).decode("utf-8", "replace")
+
+        checks = [
+            ("argc arrived",            "UARGS_COUNT 3" in out),
+            ("argv[0] is the name",     "UARGS_ARG 0:uargs" in out),
+            ("argv strings readable",   "UARGS_ARG 2:beta" in out),
+            ("argv[argc] is NULL",      "UARGS_NULL_OK" in out),
+            ("exit status propagated",  "returned 42" in out),
+            ("service reached",         "UCHAN_VIA_SERVICE" in out),
+            ("unknown service refused", "UCHAN_NOSUCH_OK" in out),
+            ("foreign buffer refused",  "UCHAN_FOREIGN_OK" in out),
+            ("retired syscall refused", "UCHAN_RETIRED_OK" in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -724,6 +771,7 @@ def main() -> int:
     tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
+    tests.append(test_process_abi)
     tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node

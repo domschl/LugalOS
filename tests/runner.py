@@ -333,6 +333,69 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             r"USPIN_START(.|\n)*UPROG_TEXT_OK(.|\n)*USPIN_PREEMPTED", timeout=30.0)
         results.append(("Two User Programs Are Resident At Once (C2)", ok, log if not ok else ""))
 
+        # C3: a program receives its own arguments.
+        #
+        # Typed with arguments at the shell, so this exercises the whole path:
+        # the shell splits the line, the loader copies the strings into the
+        # program's own stack page and hands it a pointer to a vector there,
+        # and the program dereferences that vector. argv[0] is the name as
+        # typed -- the loader deliberately does not invent one.
+        #
+        # The program reads through the pointers rather than just counting
+        # them, which is what makes this a test of the *addresses* being valid
+        # in U-mode: a vector built at a kernel address would fault here rather
+        # than silently appearing to work.
+        ok, log = session.send_and_expect(
+            "uargs alpha beta gamma",
+            r"UARGS_COUNT 4(.|\n)*UARGS_ARG 0:uargs(.|\n)*UARGS_ARG 3:gamma"
+            r"(.|\n)*UARGS_NULL_OK(.|\n)*UARGS_DONE",
+            timeout=25.0)
+        results.append(("A User Program Receives argc/argv (C3)", ok, log if not ok else ""))
+
+        # C3: the exit status reaches the shell, and /proc/ps tells a clean
+        # exit apart from a kill.
+        #
+        # Both halves matter. A status alone cannot distinguish them -- 0 is an
+        # ordinary return value and also what a killed task leaves behind --
+        # so /proc/ps reports "killed" rather than a number for a task the
+        # fault handler ended. uargs returns 42 precisely because it is
+        # neither 0 nor the 7 uhello returns, so a passing result cannot come
+        # from a stale or defaulted field.
+        ok, log = session.send_and_expect("uargs\nps", r"uprog\s+42", timeout=25.0)
+        results.append(("Exit Status Reaches The Shell And /proc/ps (C3)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect(
+            "exec /flash0/system/bin/uisolate.elf\nps", r"uprog\s+killed", timeout=25.0)
+        results.append(("A Killed Program Is Not Reported As A Clean Exit (C3)",
+                        ok, log if not ok else ""))
+
+        # C3: a user program reaches a *service*, and the boundary holds.
+        #
+        # This is the capability the phase exists to establish: before
+        # SYS_CHAN_CALL a U-mode program could print and touch files and
+        # nothing else, so moving a kernel subsystem into a process had no way
+        # for anything to reach the result.
+        #
+        # Four claims in one program, each with its own marker:
+        #   UCHAN_VIA_SERVICE -- emitted by the *console server*, not by the
+        #                        program's own SYS_PRINT, so it proves the
+        #                        message crossed the channel
+        #   UCHAN_NOSUCH_OK   -- an unregistered name is refused; without this
+        #                        the first check would pass for a kernel that
+        #                        accepted every name and did nothing
+        #   UCHAN_FOREIGN_OK  -- the confused-deputy case at the channel
+        #                        boundary: a request buffer the program does
+        #                        not own is refused, not copied from
+        #   UCHAN_RETIRED_OK  -- syscall 1 is gone rather than repurposed, so a
+        #                        binary built against the old register-IPC ABI
+        #                        gets a refusal instead of some later syscall
+        ok, log = session.send_and_expect(
+            "uchan",
+            r"UCHAN_VIA_SERVICE(.|\n)*UCHAN_NOSUCH_OK(.|\n)*UCHAN_FOREIGN_OK"
+            r"(.|\n)*UCHAN_RETIRED_OK(.|\n)*UCHAN_DONE",
+            timeout=25.0)
+        results.append(("U-mode Reaches A Service Over A Channel (C3)", ok, log if not ok else ""))
+
         # ...and everything they took comes back.
         #
         # Parses actual page counts either side of several loads rather than
