@@ -201,7 +201,7 @@ re-injecting their defect and confirming each one fails alone.
 **Still to validate on RP2350 silicon**: the console-binding half of (2) is precisely the part
 QEMU cannot exercise, since QEMU has no USB CDC console to bind to.
 
-### C1 — `/system/bin` and `/system/etc` *(independent)*
+### C1 — `/system/bin` and `/system/etc` *(independent)* — **Done (2026-08-10)**
 
 Adopt the proposed convention. Refinements:
 
@@ -218,8 +218,44 @@ Adopt the proposed convention. Refinements:
   `tools/sd_root/`, the generated flash image, the hardcoded paths in `user/lisp/lisp.c`, and at
   least one runner assertion move with them.
 
-Deliverable: `hello` at the prompt runs `/flash0/system/bin/hello.elf`; a `hello.elf` written to
-`/ram0/system/bin/` takes precedence; a full path always wins.
+Deliverable: a bare name at the prompt runs `/<vol>/system/bin/<name>.elf`; a copy written to a
+higher-priority volume takes precedence; a full path always wins.
+
+**Completed** on branch `phase6-c1-search-path`. The deliverable is `uhello` rather than `hello` --
+the three existing user programs are what ship, and inventing a fourth to match a draft sentence
+would have been the wrong way round.
+
+- `kernel/path.c` holds the path and resolves `/<vol>/system/<subdir>/<name><suffix>`, used for
+  both `bin` (programs) and `etc` (boot scripts). Default order ram0, sd0, flash0.
+- The shell resolves a bare word after builtins and **before** Lisp, and skips anything containing
+  a `/`. Precedence and the reasoning are written out at the call site in `kernel/shell.c`.
+- `lisp_init()`'s hardcoded "try /sd0 then /flash0" for `stdlib.lisp` and `init.lisp` is gone: those
+  *were* a search path that only one function knew about. They now go through `path_resolve("etc", …)`.
+- `/proc/path` reports it; `(path-set "…")` reorders it from `init.lisp`; `(which "name")` reports
+  where a name resolves without running it.
+- `tools/sd_root/system/{init,stdlib}.lisp` moved to `system/etc/`, and the user programs stage into
+  `system/bin/` instead of the volume root. Migration touched the CMake staging, `lisp.c`, the QEMU
+  runner (7 references) and the hardware suite (3).
+
+**A build bug fell out of the migration and is fixed here.** The image generator's `DEPENDS` never
+listed the staged files, so editing `init.lisp` left both images holding the previous copy with no
+build step disagreeing. It surfaced as three unrelated *9P transport* tests failing on content that
+should have matched -- they compare what the image serves against what the source now says. Now a
+`GLOB_RECURSE CONFIGURE_DEPENDS` over `tools/sd_root/`.
+
+**Note for existing checkouts**: `build/lugalos_sd.img` is created `--if-missing` and deliberately
+survives rebuilds, so an image made before this change still has the old layout. Delete it once (or
+the whole `build/`) to pick up `system/etc` and `system/bin`.
+
+Tests 141 → **153 QEMU** (six new C1 tests per architecture). The precedence test asserts by
+*moving the answer* -- `(which)` pointing at `/ram0` after a copy when it pointed at `/sd0` before
+-- rather than by reading the path back, so it cannot pass on a path that is merely stored
+correctly and never consulted.
+
+**Deliberately not done here**: `ls /sd0/system/` with a trailing slash reports "not found" while
+`ls /sd0/system` works. Pre-existing for every subdirectory (`ls /sd0/docs/` fails the same way),
+unrelated to the search path, and worth its own small fix in `fs/fat32.c`'s path resolution rather
+than being smuggled into this one.
 
 ### C2 — Loader: per-process domains, and freeing them
 

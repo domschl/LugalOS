@@ -30,7 +30,7 @@ def expected_version() -> str:
 
 
 def expected_init_lisp() -> bytes:
-    """The bytes /sd0/system/init.lisp should contain, read from the source
+    """The bytes /sd0/system/etc/init.lisp should contain, read from the source
     that tools/create_sd_image.py copies onto the image.
 
     The three 9P tests below assert on the full length of this file to prove a
@@ -40,7 +40,7 @@ def expected_init_lisp() -> bytes:
     "unexpected content" failure. Deriving it keeps the same assertion without
     the brittleness.
     """
-    src = Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "system" / "init.lisp"
+    src = Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "system" / "etc" / "init.lisp"
     return src.read_bytes()
 
 
@@ -248,7 +248,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # syscall returning a non-negative number would satisfy a weaker test
         # without any bytes having crossed the boundary.
         ok, log = session.send_and_expect(
-            "exec /flash0/uhello.elf",
+            "exec /flash0/system/bin/uhello.elf",
             r"UPROG_TEXT_OK(.|\n)*UPROG_DATA_OK(.|\n)*UPROG_FILE_OK LugalOS v"
             + expected_version() + r"(.|\n)*returned 7",
             timeout=6.0)
@@ -265,7 +265,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # program itself if its out-of-domain store was allowed, so a build
         # that grants too much fails loudly instead of looking like a pass.
         ok, log = session.send_and_expect(
-            "exec /flash0/uisolate.elf\nhelp",
+            "exec /flash0/system/bin/uisolate.elf\nhelp",
             r"UISO_ALIVE(.|\n)*terminated before it could exit"
             r"(.|\n)*Available LugalOS Shell Commands",
             timeout=6.0)
@@ -299,7 +299,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # The program prints USPIN_NOT_PREEMPTED itself when the count did not
         # move, so a failure is a loud line rather than a missing one.
         ok, log = session.send_and_expect(
-            "exec /flash0/uspin.elf",
+            "exec /flash0/system/bin/uspin.elf",
             r"USPIN_START(.|\n)*USPIN_PREEMPTED", timeout=25.0)
         if ok and "USPIN_NOT_PREEMPTED" in log:
             ok = False
@@ -434,7 +434,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # table actually resolves arbitrary namespace paths through the VFS.
         cmd_9p_vfs_wiring = (
             "lisp\n"
-            "(p9-cat \"/sd0/system/init.lisp\")\n"
+            "(p9-cat \"/sd0/system/etc/init.lisp\")\n"
             "exit"
         )
         ok, log = session.send_and_expect(cmd_9p_vfs_wiring, r"LugalOS System Initialization Script", timeout=4.0)
@@ -468,7 +468,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(write-file \"/sd0/lisp_io.txt\" \"Lisp_File_IO_Passed\")\n"
             "(read-file \"/sd0/lisp_io.txt\")\n"
             "(display \"Lisp_Display_Msg\\n\")\n"
-            "(load \"/sd0/system/stdlib.lisp\")\n"
+            "(load \"/sd0/system/etc/stdlib.lisp\")\n"
             "(not #f)\n"
             "exit"
         )
@@ -1046,6 +1046,62 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_format, r"format_worked", timeout=5.0)
         results.append(("Explicit (format \"<path>\") Initializes a Usable Volume (B10)", ok, log if not ok else ""))
 
+        # C1: a bare name at the shell runs /<vol>/system/bin/<name>.elf.
+        #
+        # The marker comes from inside the program, so a pass means the loader
+        # actually ran a separately linked binary that nothing in the command
+        # named by path -- resolution had to find it.
+        ok, log = session.send_and_expect("uhello", r"UPROG_TEXT_OK", timeout=8.0)
+        results.append(("Bare Name Resolves Through The Search Path (C1)", ok, log if not ok else ""))
+
+        # ...and the path is the thing that decided which file that was.
+        # (which) reports the winner without running it, which is what makes
+        # the override test below checkable rather than inferred.
+        # /sd0 rather than /flash0: one staging directory builds both images, so
+        # the utility ships on every volume and the *first* one in the path is
+        # the correct answer. Asserting flash0 here would pass only by the path
+        # being broken.
+        ok, log = session.send_and_expect(
+            'lisp\n(which "uhello")\n(which "definitely_not_a_program")\nexit',
+            r'=> "/sd0/system/bin/uhello.elf"(.|\n)*=> #f', timeout=6.0)
+        results.append(("(which) Reports Resolution And Refuses Unknown Names (C1)",
+                        ok, log if not ok else ""))
+
+        # Precedence: a copy on a higher-priority volume shadows the shipped
+        # one. This is the property the whole convention exists for -- `cc`
+        # writing a new binary to /ram0/system/bin has to be reachable by name
+        # immediately -- and it is asserted by *moving the answer*, not by
+        # reading the path back. (which) pointing at /ram0 after the copy, when
+        # it pointed at /flash0 before it, can only happen if order is real.
+        session.send_and_expect("mkdir /ram0/system", r"=> ", timeout=4.0)
+        session.send_and_expect("mkdir /ram0/system/bin", r"=> ", timeout=4.0)
+        session.send_and_expect("cp /flash0/system/bin/uhello.elf /ram0/system/bin/uhello.elf",
+                                r"=> ", timeout=6.0)
+        ok, log = session.send_and_expect(
+            'lisp\n(which "uhello")\nexit', r'=> "/ram0/system/bin/uhello.elf"', timeout=6.0)
+        results.append(("Higher-Priority Volume Shadows A Shipped Utility (C1)",
+                        ok, log if not ok else ""))
+
+        # A full path is never searched for: it names exactly one file, so it
+        # still reaches the flash copy while /ram0 is shadowing the name. This
+        # is what keeps a specific build addressable no matter what is on the
+        # path in front of it.
+        ok, log = session.send_and_expect("exec /flash0/system/bin/uhello.elf",
+                                          r"UPROG_TEXT_OK", timeout=8.0)
+        results.append(("A Full Path Bypasses The Search Path (C1)", ok, log if not ok else ""))
+
+        # The path is policy, readable as a file like everything else, and
+        # settable at runtime. Reordering must change where a name resolves --
+        # asserted the same way, by the answer moving back to /flash0.
+        ok, log = session.send_and_expect("cat /proc/path", r"ram0 sd0 flash0", timeout=4.0)
+        results.append(("/proc/path Reports The Search Path (C1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect(
+            'lisp\n(path-set "flash0 sd0 ram0")\n(which "uhello")\nexit',
+            r'=> "/flash0/system/bin/uhello.elf"', timeout=6.0)
+        results.append(("(path-set) Reorders Resolution At Runtime (C1)", ok, log if not ok else ""))
+        session.send_and_expect('lisp\n(path-set "ram0 sd0 flash0")\nexit', r"=> ", timeout=4.0)
+
         # 26. /proc/meminfo reports measured runtime figures, not constants.
         #
         # Deliberately the LAST test in the suite. The stack high-water mark
@@ -1244,7 +1300,7 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
     drivers/uart_net.c). Boots its own dedicated QEMU instance with a
     virtio-serial chardev backed by a unix socket, connects tests/p9lib.py's
     independent Python 9P client to it, and reads a real pre-existing file
-    (/sd0/system/init.lisp) end to end: Tversion, Tattach("/"), a
+    (/sd0/system/etc/init.lisp) end to end: Tversion, Tattach("/"), a
     multi-component Twalk, Topen, Tread, Tclunk."""
     import shutil
     import tempfile
@@ -1281,7 +1337,7 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
                         f"could not connect to {sock_path}: {last_err}")
 
             try:
-                data = client.cat("/sd0/system/init.lisp")
+                data = client.cat("/sd0/system/etc/init.lisp")
             finally:
                 client.close()
 
@@ -1361,7 +1417,7 @@ def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tu
 
             raw_sock.settimeout(5.0)
             client = p9lib.P9Client(raw_sock, framing="slip")
-            data = client.cat("/sd0/system/init.lisp")
+            data = client.cat("/sd0/system/etc/init.lisp")
 
             _want = expected_init_lisp()
             ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
@@ -1439,7 +1495,7 @@ def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: st
             # A real 9P transaction over the now-shared wire.
             raw_sock.settimeout(5.0)
             client = p9lib.P9Client(raw_sock, framing="slip")
-            data = client.cat("/sd0/system/init.lisp")
+            data = client.cat("/sd0/system/etc/init.lisp")
             _want = expected_init_lisp()
             p9_ok = b"LugalOS System Initialization Script" in data and len(data) == len(_want)
             if not p9_ok:

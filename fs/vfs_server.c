@@ -16,6 +16,7 @@
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
+#include "kernel/path.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -494,6 +495,12 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "path") == 0) {
+        /* The search path as a file, so a remote node can read this board's
+         * command-resolution policy over 9P like anything else in /proc. */
+        used += (uint32_t)path_format(buf + used, cap - used);
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
+        return (int)used;
     } else if (strcmp(rel, "buildid") == 0) {
         /* Deliberately its own file rather than extra lines on /proc/version:
          * tests/hw/ needs to ask "is this board running the firmware I just
@@ -525,7 +532,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[7] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid" };
+static const char *g_proc_names[8] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index

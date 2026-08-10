@@ -15,6 +15,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "arch/elf.h"
+#include "kernel/path.h"
 #include "arch/pmp.h"
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -74,6 +75,9 @@ static void cmd_help(void) {
     cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
     cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
     cprintf("  exec <elf>      - Run a RISC-V ELF binary as a U-mode task, confined to its own pages\n");
+    cprintf("  <name>          - Run <vol>/system/bin/<name>.elf from the first volume on the\n");
+    cprintf("                    search path that has it (see 'cat /proc/path'); a path with a\n");
+    cprintf("                    '/' in it is always taken literally\n");
     cprintf("  e [file]        - Launch Emacs-style full-screen editor\n");
     cprintf("  ed [file]       - Launch teletype line editor\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
@@ -91,6 +95,8 @@ static void cmd_help(void) {
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
     cprintf("  time            - Show system uptime\n");
     cprintf("  version         - Alias for 'cat /proc/version'\n");
+    cprintf("  (which \"name\")   - Where a bare name resolves to, without running it\n");
+    cprintf("  (path-set \"a b\") - Reorder the search path (usually set in system/etc/init.lisp)\n");
     cprintf("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
     cprintf("  clear           - Clear terminal screen\n\n");
 }
@@ -656,8 +662,39 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 
     /* Single token variable or evaluation lookup */
     bool has_space = false;
+    bool has_slash = false;
     for (const char *c = cmd_line; *c; c++) {
         if (*c == ' ' || *c == '\t') { has_space = true; break; }
+        if (*c == '/') has_slash = true;
+    }
+
+    /* A bare word that names a program on the search path runs it (C1).
+     *
+     * Precedence is builtins, then the path, then Lisp -- and the order is
+     * the interesting part:
+     *
+     *   Builtins first, so that until `cc` and `e` actually become
+     *   executables (C6/C7) the compiled-in versions keep working. When a
+     *   builtin is replaced by a binary its `else if` arm has to go in the
+     *   same change, or the builtin silently shadows the new file and the
+     *   extraction looks like it did nothing.
+     *
+     *   The path before Lisp, because at a shell prompt a bare word means
+     *   "run this". The cost is that a program shadows a Lisp variable of the
+     *   same name, which is the usual shell trade and only bites if someone
+     *   ships a binary named after their variable.
+     *
+     *   Anything containing a '/' is skipped entirely: a path typed out in
+     *   full is an instruction to run exactly that file, never a name to be
+     *   searched for. That is what makes a specific build always reachable
+     *   even when a higher-priority volume shadows its name.
+     */
+    if (!has_space && !has_slash && cmd_line[0] != '(') {
+        char prog[128];
+        if (path_resolve("bin", cmd_line, ".elf", prog, sizeof(prog)) == 0) {
+            elf_load_and_run(prog);
+            return;
+        }
     }
 
     if (!has_space && strcmp(cmd_line, "ls") != 0 &&
