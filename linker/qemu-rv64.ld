@@ -72,6 +72,7 @@ SECTIONS
     /* 64KB Boot Stack (placed BEFORE _kernel_end so VMM heap starts safely above it) */
     .stack (NOLOAD) : {
         . = ALIGN(4096);
+        _stack_bottom = .;
         . += 0x10000;
         _stack_top = .;
     } > RAM
@@ -83,4 +84,12 @@ SECTIONS
      * bump allocator this replaced had no upper bound at all -- it walked
      * off the end of RAM given enough allocations. */
     _heap_end = ORIGIN(RAM) + LENGTH(RAM);
+
+    /* The whole writable region, so /proc/meminfo can report the heap and the
+     * stack as fractions of something real. Taken from the MEMORY block rather
+     * than written down again in C: the point of these numbers is that they
+     * come from the board's memory map, not from a constant that can drift
+     * away from it. */
+    _ram_start = ORIGIN(RAM);
+    _ram_end   = ORIGIN(RAM) + LENGTH(RAM);
 }

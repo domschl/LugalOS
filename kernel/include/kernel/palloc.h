@@ -37,9 +37,15 @@
 #define PAGE_SIZE 4096
 #endif
 
-/* Bounds the bitmap, and therefore how much of the heap is managed. RP2350
- * has ~400 KB of usable SRAM above the kernel image; QEMU has 128 MB, far
- * more than anything here needs, so it is capped rather than fully mapped. */
+/* Bounds the bitmap, and therefore how much of the heap is managed.
+ *
+ * 128 pages is 512 KB, the whole of RP2350's main SRAM -- deliberately more
+ * than the heap can ever be, so this cap is never the thing that limits it.
+ * The real limit there is what is left above _kernel_end, which as of this
+ * writing is 60 KB (15 pages): the image's .data + .bss reach nearly to the
+ * top of RAM. /proc/meminfo reports both figures, so the day one of them
+ * moves it is visible rather than inferred. QEMU has 128 MB, far more than
+ * anything here needs, so it is capped rather than fully mapped. */
 #if defined(CONFIG_BOARD_RP2350)
 #define PALLOC_MAX_PAGES 128
 #else
@@ -74,5 +80,17 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages);
 void  palloc_free(void *p, uint32_t n);
 
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages);
+
+/* The two figures palloc_stats() cannot give:
+ *
+ *   peak_used_pages  -- high-water mark since palloc_init(), never reset. The
+ *                       one number that says whether the heap is sized right;
+ *                       free-page counts only ever describe this instant.
+ *   largest_free_run -- longest run of contiguous free pages, so a
+ *                       fragmentation failure is distinguishable from simply
+ *                       running out.
+ *
+ * Either pointer may be NULL. */
+void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run);
 
 #endif /* LUGALOS_KERNEL_PALLOC_H */

@@ -13,6 +13,7 @@
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
+#include "kernel/time.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -73,17 +74,48 @@ void led_blink_phase(int count) {
     delay_cycles(8000000);
 }
 
-static uint32_t g_alive_loop_cnt = 0;
+/* Heartbeat on GP16: 0.5 Hz, brief flash.
+ *
+ * Both numbers here used to be counted in loop iterations and nop-spins --
+ * "5000000 polls ~ 2s" and "7500000 cycles = 50 ms". Neither measures time:
+ * one counts how often something calls this function, the other how fast an
+ * empty loop runs, and both are calibrations against a particular clock rate
+ * and flash wait-state configuration. When the oscillator setup changed, the
+ * period stretched to ~20 s and the flash to ~1 s -- not because the timing
+ * broke, but because there was no timing, only two constants that used to
+ * come out about right.
+ *
+ * Driven from the monotonic clock now, so the period is 2 s of real time on
+ * whatever clock the board ends up running at.
+ *
+ * And non-blocking, which matters more than the accuracy. The old pulse was a
+ * spin-wait sitting inside the character-poll path: for its whole duration
+ * the UART went unpolled and usb_cdc_task() ran only as often as
+ * delay_cycles() happened to call it. At the intended 50 ms that was
+ * survivable; at the 1 s it had drifted to, it starves USB servicing for a
+ * second at a time. The LED is a two-state machine stepped by this function
+ * instead, so nothing here ever waits. */
+#define HEARTBEAT_PERIOD_MS 2000u  /* 0.5 Hz */
+#define HEARTBEAT_ON_MS       40u  /* brief flash, not a duty cycle */
 
 void gp16_alive_tick(void) {
     usb_cdc_task();
-    g_alive_loop_cnt++;
-    if (g_alive_loop_cnt >= 5000000UL) { /* Trigger pulse every ~2s of UART polling */
-        g_alive_loop_cnt = 0;
-        /* Pulse GP16 HIGH for 50ms (ON), then return LOW (OFF) */
+
+    static uint64_t next_on_ms;
+    static uint64_t off_at_ms;
+    static bool     led_is_on;
+
+    uint64_t now = time_get_ms();
+    if (led_is_on) {
+        if (now >= off_at_ms) {
+            REG(SIO_GPIO_OUT_CLR) = (1u << 16);
+            led_is_on = false;
+        }
+    } else if (now >= next_on_ms) {
         REG(SIO_GPIO_OUT_SET) = (1u << 16);
-        delay_cycles(7500000); /* 50 ms pulse */
-        REG(SIO_GPIO_OUT_CLR) = (1u << 16);
+        led_is_on  = true;
+        off_at_ms  = now + HEARTBEAT_ON_MS;
+        next_on_ms = now + HEARTBEAT_PERIOD_MS;
     }
 }
 
@@ -138,8 +170,6 @@ void uart_init(uintptr_t base_addr) {
 
     /* Signal phase: Hardware & LEDs initialized! */
     led_blink_phase(2);
-
-    g_alive_loop_cnt = 0;
 
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
 

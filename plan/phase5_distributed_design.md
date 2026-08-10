@@ -1814,6 +1814,43 @@ Tests 125→**131 QEMU, 6/6→7/7 hardware**. Version 0.7.0→0.8.0.
 
 **B6 is complete, and with it Track B.**
 
+### Instrumented memory reporting (2026-08-10)
+
+`/proc/meminfo` reported the page allocator's instantaneous free count and nothing else, which
+answers "did the last allocation fit?" but not the question that actually matters on RP2350:
+**how much room is left, and how close has anything come to running out.**
+
+Static section sizes were never the gap — they are exact in the ELF, and this deliberately does
+not re-derive them in C. What a running kernel knows and the image cannot is three things, and
+`/proc/meminfo` now reports all three:
+
+- **Boot-stack high-water mark.** `arch/riscv/common/entry.S` paints `[_stack_bottom, sp)` with
+  `STACK_POISON` before calling `kernel_main()`; `kernel/meminfo.c` scans back for the first word
+  that survived. This is the measurement `linker/rp2350.ld` had been arguing for in prose since
+  the stack was moved out of SCRATCH_Y: preemption can push a trap frame at the deepest point of
+  the Lisp evaluator, and overflowing there corrupts the memory below rather than faulting. The
+  hazard was reasoned about; it is now a number.
+- **Heap peak and largest contiguous free run** (`palloc_extra_stats()`). The peak says whether
+  the heap is sized right; the run distinguishes fragmentation from exhaustion, which matters
+  once anything allocates multiple pages — and `palloc_pages_aligned()` does, because PMP needs
+  NAPOT.
+- **The RAM map**: how the image, the stack and the heap sit inside the board's actual RAM, from
+  linker symbols (`_ram_start`/`_ram_end`, `_stack_bottom`) rather than constants in C.
+
+**What it measured.** RP2350: 629 KB of 4 MB flash (512 KB of that is the embedded FAT32 payload,
+so ~117 KB is kernel), and 452 KB of the 520 KB SRAM statically allocated — leaving **60 KB of
+heap (15 pages)** above `_kernel_end`. That is the number to watch: it shrinks by exactly as much
+as any new static array grows, and `PALLOC_MAX_PAGES`' comment claiming "~400 KB of usable SRAM"
+was stale by a factor of seven. Corrected. Boot stack on the QEMU targets peaks around 6 KB of
+64 KB after the full suite, runaway-recursion test included.
+
+Both new tests assert *relationships between the reported figures* rather than expected sizes —
+sizes change whenever a static array does, and a test that needs re-baselining on every such
+change gets re-baselined without being read. The QEMU test runs last in the suite so the
+cumulative peaks describe everything the suite did; it was falsified by neutering the paint in
+`entry.S`, which makes the stack read as 65536/65536 and fails the check. Tests 131→**133 QEMU,
+7/7→8/8 hardware**.
+
 ---
 
 ## 6. Test topologies

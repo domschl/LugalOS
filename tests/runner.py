@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import select
 import socket
 import subprocess
 import sys
@@ -782,6 +783,65 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Log And Console Are Independent Streams (B4)",
                         shell_ok and diagnostics_silent and ok, detail))
 
+        # C0: command output belongs to the console stream, not the log ring.
+        #
+        # The B4 test above proves the two streams *can* be separated. This one
+        # proves specific commands are actually on the right side of the split
+        # -- which several were not: `ls` (fs/fat32.c) and `i2c`
+        # (drivers/i2c_rtc.c) still called printk(), so their output went into
+        # the klog ring and turned up again in `cat /proc/kmsg`.
+        #
+        # Table-driven because this is a *class* of defect, not three
+        # instances: every verb that answers a typed command is a candidate,
+        # and adding a row is how the next one gets caught. Each verb is
+        # checked in both directions, which is what makes it meaningful --
+        # "appears on the console" alone would pass for output that goes to
+        # both places, which is the bug.
+        session.send_and_expect("klog detach console", r"\Z\A", timeout=1.0)
+        stream_rows = [
+            ("ls /flash0/", "Directory Listing (FAT32)"),
+            ("i2c",         "I2C Bus Scan"),
+        ]
+        stream_fail = []
+        for verb, marker in stream_rows:
+            # 1. Still reaches the terminal with the log sink detached.
+            on_console, _ = session.send_and_expect(verb, re.escape(marker), timeout=5.0)
+            if not on_console:
+                stream_fail.append(f"'{verb}' output vanished when the log sink was detached")
+
+        # 2. And none of it landed in the ring. Read the log back once, with
+        #    the sink still detached, so the only way a marker can appear is if
+        #    the verb itself wrote it there. One read covers every row: a leak
+        #    from any verb puts its marker in the same ring.
+        _, ring = session.send_and_expect("cat /proc/kmsg", r"lsh>", timeout=6.0)
+        for verb, marker in stream_rows:
+            if marker in ring:
+                stream_fail.append(f"'{verb}' output was copied into the kernel log ring")
+        session.send_and_expect("klog attach console", r"\Z\A", timeout=1.0)
+
+        results.append(("Command Output Is On The Console Stream, Not The Log (C0)",
+                        not stream_fail, "; ".join(stream_fail)))
+
+        # C0: the editor's box always ends where it says it ends.
+        #
+        # redraw_box() cleared each line it painted with \033[K but never
+        # erased below the last one, so loading a 5-line file after a 10-line
+        # file left lines 6-10 of the previous document on screen, below the
+        # status line, looking like part of the new file.
+        #
+        # This asserts the erase sequence rather than the screen state, and
+        # that is a deliberate limit rather than laziness: the stale text is
+        # never re-transmitted -- it is already on the terminal and simply is
+        # not cleared -- so the defect is invisible in the byte stream unless
+        # the test models a screen. Position is what makes the assertion
+        # meaningful: \033[J must come immediately after the status line, the
+        # last thing the box draws. Emitted earlier it would erase the box
+        # itself, and a bare "contains \033[J" check would not notice.
+        ok, log = session.send_and_expect("e\nabc\x18\x03y\n",
+                                          r"C-X C-C: exit ───\033\[0m\033\[J",
+                                          timeout=5.0)
+        results.append(("Editor Erases Below The Status Line (C0)", ok, log if not ok else ""))
+
         # NOTE: the "unknown link name is rejected" assertion deliberately does
         # NOT live here. On this single-node session no virtconsole is
         # attached, so a broken name lookup would fall back to a default link
@@ -985,11 +1045,161 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_format, r"format_worked", timeout=5.0)
         results.append(("Explicit (format \"<path>\") Initializes a Usable Volume (B10)", ok, log if not ok else ""))
 
+        # 26. /proc/meminfo reports measured runtime figures, not constants.
+        #
+        # Deliberately the LAST test in the suite. The stack high-water mark
+        # and the heap's peak page count are cumulative since boot, so reading
+        # them here makes them cover everything the suite has just done --
+        # including test 21's runaway recursion, which drives the Lisp
+        # evaluator into the deepest call chain in the system, and the task
+        # demos, which are what actually allocate pages. Read at boot these
+        # same fields would only ever describe the boot path, and a stack
+        # measurement that never sees a deep stack proves nothing.
+        #
+        # Every assertion is a *relationship between the reported numbers*
+        # rather than an expected size. Sizes here change whenever a static
+        # array does, and a test that has to be re-baselined on every such
+        # change gets re-baselined without being read. Relationships do not
+        # move: what they catch is a field that has silently stopped being
+        # measured (peak stuck at 0), or one that has started reporting
+        # something impossible.
+        #
+        # Matching on the Storage line is itself one of the assertions. It is
+        # generated last into the handle's fixed 512-byte proc_buf, and
+        # ksnprintf() truncates rather than overruns -- so if the additions
+        # above it ever outgrow the buffer, this match is what fails.
+        ok, log = session.send_and_expect(
+            "cat /proc/meminfo", r"Storage: /flash0/", timeout=4.0)
+
+        def field(pattern: str) -> int | None:
+            m = re.search(pattern, log)
+            return int(m.group(1)) if m else None
+
+        pages_free = field(r"Pages Free: (\d+)")
+        pages_used = field(r"Pages Used: (\d+)")
+        pages_peak = field(r"Pages Peak: (\d+)")
+        largest_run = field(r"Largest Free Run: (\d+) pages")
+        ram_kb = field(r"RAM: (\d+) KB total")
+        image_kb = field(r"Image \([^)]*\): (\d+) KB")
+        stack_kb = field(r"Boot Stack: (\d+) KB")
+        stack_peak = field(r"Boot Stack: \d+ KB, peak (\d+) bytes")
+        heap_kb = field(r"Heap: \d+ KB managed of (\d+) KB")
+
+        checks: list[tuple[str, bool]] = []
+        if None in (pages_free, pages_used, pages_peak, largest_run,
+                    ram_kb, image_kb, stack_kb, stack_peak, heap_kb):
+            checks.append(("all fields present", False))
+        else:
+            checks += [
+                # The paint in entry.S ran, the scan in kernel/meminfo.c found
+                # it, and the kernel really does use stack. A 0 here means the
+                # measurement is broken, not that the stack is unused.
+                ("stack high-water is measured", stack_peak > 0),
+                # ...and the other end: no poison survived would report the
+                # full region, which is what a genuine overflow looks like.
+                ("stack did not overflow", stack_peak < stack_kb * 1024),
+                # The peak is monotonic, so it can never be below the live
+                # count taken from the same snapshot.
+                ("peak pages >= live pages", pages_peak >= pages_used),
+                # Something allocated during the suite -- task stacks at the
+                # very least. A peak of 0 pages would mean the counter is not
+                # being updated on the allocation path.
+                ("heap peak is measured", pages_peak > 0),
+                # A contiguous run is a subset of the free pages.
+                ("largest run <= free pages", largest_run <= pages_free),
+                # The RAM map's parts fit inside the region they describe.
+                ("image + heap fit in RAM", image_kb + heap_kb <= ram_kb),
+            ]
+
+        failed = [label for label, passed in checks if not passed]
+        detail = ""
+        if not ok:
+            detail = "meminfo did not render in full (truncated proc_buf?):\n" + log
+        elif failed:
+            detail = f"inconsistent figures: {', '.join(failed)}\n{log}"
+        results.append(("/proc/meminfo Reports Measured Heap, Stack And RAM Map",
+                        ok and not failed, detail))
 
     finally:
         session.close()
 
     return results
+
+
+def test_terminal_crlf(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """C0: every newline reaching the terminal carries a carriage return.
+
+    Boots its own QEMU **in binary mode**, which is the whole reason this is
+    not a test inside QemuSession. That class opens the process with
+    `text=True` and default newline handling, so Python's universal-newline
+    translation rewrites '\\r\\n' and lone '\\r' to '\\n' before any assertion
+    can see them -- fixed and broken output are byte-identical by the time
+    they reach a test there. The defect is invisible to the entire existing
+    suite, which is exactly how it survived.
+
+    The bug: vprintk_to() inserted '\\r' only for newlines written literally
+    in a format string, so bytes passed through %s went out untranslated.
+    `cat` on any multi-line file printed a staircase -- each line starting at
+    the column where the previous one ended. Now the console stream
+    (console_emit) converts on the way to the device, so it cannot depend on
+    how the bytes got there.
+
+    Asserts on the *file's own* newlines, taken from the region between the
+    first line of content and the closing brace, so an unrelated bare '\\n'
+    elsewhere in the boot log cannot mask or fake the result.
+    """
+    name = f"Terminal CRLF On File Content (C0, {arch_name})"
+    import shutil
+    arch_img = img_path.with_name(f"test_{arch_name}_crlf_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    qemu_bin = "qemu-system-riscv64" if "64" in arch_name else "qemu-system-riscv32"
+    proc = subprocess.Popen(
+        [qemu_bin, "-M", "virt", "-nographic", "-bios", "none",
+         "-drive", f"file={arch_img},if=none,format=raw,id=hd0",
+         "-device", "virtio-blk-device,drive=hd0",
+         "-kernel", str(elf_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    # Read until the file's closing brace has arrived rather than waiting for
+    # the guest to exit: `exit` returns to the shell, it does not terminate
+    # QEMU, so communicate() would always burn its full timeout here.
+    out = b""
+    try:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(b"cat /flash0/hello.c\n")
+        proc.stdin.flush()
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            if not select.select([proc.stdout], [], [], 0.2)[0]:
+                continue
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            if not chunk:
+                break
+            out += chunk
+            marker = out.find(b"#include <lugal.h>")
+            if marker >= 0 and out.find(b"}", marker) >= 0:
+                break
+    except Exception as e:
+        return (name, False, f"{e}\n{out[-400:].decode('utf-8', 'replace')}")
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+    start = out.find(b"#include <lugal.h>")
+    end = out.find(b"}", start) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return (name, False, f"cat output not found in {len(out)} bytes:\n"
+                             f"{out[-400:].decode('utf-8', 'replace')}")
+
+    body = out[start:end]
+    bare = len(re.findall(rb"(?<!\r)\n", body))
+    total = body.count(b"\n")
+    if bare:
+        return (name, False,
+                f"{bare} of {total} newlines in the file body lack a carriage return:\n"
+                f"{body.decode('utf-8', 'replace')!r}")
+    return (name, True, f"{total} newlines, all CRLF")
 
 
 def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
@@ -1504,6 +1714,7 @@ def main() -> int:
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
+        _run_single(test_terminal_crlf(rv64_elf, img_path, "rv64"))
         _run_single(test_9p_virtio_link(rv64_elf, img_path, "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_path, "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_path, "rv64"))
@@ -1522,6 +1733,7 @@ def main() -> int:
             else:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
+        _run_single(test_terminal_crlf(rv32_elf, img_path, "rv32"))
         _run_single(test_9p_virtio_link(rv32_elf, img_path, "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_path, "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_path, "rv32"))

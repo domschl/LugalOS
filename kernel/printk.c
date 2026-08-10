@@ -76,9 +76,13 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
 
     for (const char *p = fmt; *p != '\0'; p++) {
         if (*p != '%') {
-            if (*p == '\n') {
-                pc('\r');
-            }
+            /* Raw '\n', deliberately. This used to emit '\r' first, which
+             * looked like it handled the terminal convention but only ever
+             * applied to newlines written literally here -- bytes passed
+             * through %s went out untranslated, so cprintf("%s\n", file)
+             * printed a staircase. The convention now belongs to the console
+             * stream (kernel/console.h's console_emit), which sees every byte
+             * regardless of how it got here. */
             pc(*p);
             continue;
         }

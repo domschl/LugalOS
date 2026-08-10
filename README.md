@@ -21,8 +21,8 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 131 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 7 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 139 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 8 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —

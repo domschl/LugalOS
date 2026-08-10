@@ -5,6 +5,8 @@
  * Adopted from working RP2350 bare-metal image (rp2350_cld).
  */
 
+#include "kernel/meminfo.h"
+
 .equ BINARY_INFO_MARKER_START,    0x7188ebf2
 .equ BINARY_INFO_MARKER_END,      0xe71aa390
 .equ PICOBIN_BLOCK_MARKER_START,  0xffffded3
@@ -84,6 +86,28 @@ _reset_handler:
     la t0, trap_vector_entry
     csrw mtvec, t0
 
+    /* Take ownership of the boot stack.
+     *
+     * The bootrom starts us with sp at SRAM_END (0x20082000, the top of
+     * SCRATCH_Y) -- see the IMAGE_DEF header above, which is where that value
+     * comes from. linker/rp2350.ld allocates a 16 KB .stack in main RAM and
+     * explains at length why the boot stack must not live in SCRATCH: it gets
+     * 8 KB at most before it runs into the page allocator's heap at
+     * 0x20080000, and overflowing there corrupts the heap instead of
+     * faulting.
+     *
+     * That section was added, and nothing ever loaded sp from it. The kernel
+     * has been running on the scratch stack the whole time, with 16 KB of RAM
+     * reserved and untouched, and the linker script describing a layout that
+     * was not in effect. Found when the boot-stack high-water instrumentation
+     * (kernel/meminfo.c) read 100% usage on real silicon and 6 KB of 64 KB on
+     * QEMU -- the two boot paths had diverged and only one of them was ever
+     * looked at.
+     *
+     * Set before the copy and clear loops below so every `call` from here on
+     * runs on the real stack. */
+    la sp, _stack_top
+
     /* Load data/scratch sections from FLASH to RAM */
     la t0, address_mapping_table
 1:
@@ -99,6 +123,13 @@ _reset_handler:
     la a0, __bss_start
     la a1, __bss_end
     call bss_fill
+
+    /* Paint the unused stack so its high-water mark can be recovered later
+     * (kernel/meminfo.c, /proc/meminfo). After the clear, for the same reason
+     * as the QEMU path: .bss and .stack are adjacent, so a clear that ran
+     * past __bss_end would erase the paint rather than corrupt anything and
+     * the bug would present as "the stack is never used". */
+    PAINT_BOOT_STACK t0, t1, t2
 
     /* Hardware clock and timer initialization */
     call init_xosc

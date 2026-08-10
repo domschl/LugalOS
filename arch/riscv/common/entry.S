@@ -1,3 +1,5 @@
+#include "kernel/meminfo.h"
+
 .section .text.entry
 .global _start
 .global trap_vector_entry
@@ -101,6 +103,26 @@ s_mode_start:
     j 1b
 
 2:
+    /* Paint the unused boot stack so its high-water mark can be recovered
+     * later (kernel/meminfo.c, /proc/meminfo). [_stack_bottom, sp) is exactly
+     * the part nothing has touched: sp is still _stack_top for the primary
+     * hart -- the .data copy and .bss clear above use no stack, and anything
+     * that did would have pushed *below* sp and already returned. So this
+     * cannot clobber live data no matter what precedes it.
+     *
+     * Deliberately last, after .bss is cleared: .bss and .stack are adjacent
+     * in every linker script here, and clearing .bss with a length that ran
+     * past _bss_end would silently erase the paint rather than corrupt
+     * anything, making the bug look like "the stack is never used".
+     *
+     * t0-t2 are all dead at this point (the copy and clear loops are done).
+     *
+     * NOTE: this is the *QEMU* boot path only. RP2350 enters at
+     * _reset_handler in arch/riscv/rp2350/boot_header.S and never runs any of
+     * the code above, which is why the paint is a shared macro rather than
+     * something written out here. */
+    PAINT_BOOT_STACK t0, t1, t2
+
     /* Jump to C kernel entry point */
     call kernel_main
 
