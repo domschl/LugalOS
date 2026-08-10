@@ -43,12 +43,42 @@ typedef enum {
  * explicit `p9serve` / `p9share` commands (see the A3b completion notes). */
 #define DEV_F_BACKGROUND_9P (1u << 0)
 
-#define DEV_MAX 12
+/* This device coexists with others on its wire rather than owning it (C8).
+ * Set for `uartdemux`, whose entire purpose is to carry console traffic and
+ * 9P frames on the same UART -- it is the resolution of that conflict, not an
+ * instance of it, so it neither claims the wire nor collides with the holder. */
+#define DEV_F_SHARES_WIRE (1u << 1)
+
+#define DEV_MAX 14
+
+/* Which physical resource a device drives (C8,
+ * plan/phase6_memory_and_processes.md).
+ *
+ * Several *names* can be the same *wire*. The PL011 appears three times --
+ * `uart` as a console, `uartslip` as dedicated SLIP-framed 9P, `uartdemux` as
+ * both demultiplexed -- because "one wire, several possible protocols" is the
+ * model. What was missing is that nothing recorded they were the same piece of
+ * hardware, so binding the console to `uart` while `p9serve` drove `uartslip`
+ * gave two owners the same registers. It was masked only because p9serve never
+ * returns; p9share exists precisely because that conflict is real.
+ *
+ * DEV_WIRE_NONE is for devices that are not a shared channel at all -- a clock,
+ * an EEPROM, a block device -- which are never exclusive and never claimed. */
+typedef enum {
+    DEV_WIRE_NONE = 0,
+    DEV_WIRE_UART0,     /* the board's primary UART */
+    DEV_WIRE_ACM0,      /* USB CDC interface 0 */
+    DEV_WIRE_ACM1,      /* USB CDC interface 1 */
+    DEV_WIRE_VIRTIO,    /* QEMU virtio-console */
+} dev_wire_t;
 
 typedef struct {
     const char *name;
     dev_kind_t  kind;
     uint32_t    flags;
+    /* The physical resource this name drives. Devices sharing a wire are
+     * mutually exclusive; DEV_WIRE_NONE means not exclusive at all. */
+    dev_wire_t  wire;
     /* Returns 0 if the device is present and usable, <0 otherwise. NULL
      * means "present, nothing to initialize". */
     int       (*probe)(void);
@@ -80,6 +110,29 @@ bool dev_info(uint32_t index, const char **name_out, const char **kind_out,
  * kernel_main() act on DEV_F_BACKGROUND_9P without this layer needing to
  * know what 9P is. */
 void *dev_next_with_flags(uint32_t *cursor, dev_kind_t kind, uint32_t flags);
+
+/* --- Exclusive use of a wire (C8) ---
+ *
+ * Claims `name`'s wire for it. Returns 0 on success, or -1 if another device
+ * already holds that wire -- in which case the caller has been told, by name,
+ * what it is competing with. A device on DEV_WIRE_NONE always succeeds and
+ * holds nothing.
+ *
+ * Idempotent: claiming a wire a device already holds is success, so a boot
+ * script re-running a binding is not an error. */
+int dev_claim(const char *name);
+
+/* Releases `name`'s claim, if it holds one. */
+void dev_release(const char *name);
+
+/* The device currently holding `name`'s wire, or NULL if it is free. Returns
+ * `name` itself when `name` is the holder. */
+const char *dev_wire_owner(const char *name);
+
+/* Enumeration for /proc/ports: every device that drives a wire, with what it
+ * is and whether it currently owns that wire. Returns false once exhausted. */
+bool dev_binding_info(uint32_t index, const char **name_out, const char **kind_out,
+                      const char **wire_out, bool *present_out, bool *bound_out);
 
 /* --- Per-board configuration (kernel/board.c) --- */
 

@@ -425,6 +425,45 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             f"pages used before={ed_before} after={ed_after}" if not ok else "",
         ))
 
+        # C8: one wire, several protocols, exactly one owner.
+        #
+        # The UART is registered three times -- `uart` as a console,
+        # `uartslip` as dedicated SLIP-framed 9P, `uartdemux` as both
+        # demultiplexed. That was already true; what was missing is that
+        # nothing recorded they were the same piece of hardware, so binding the
+        # console to `uart` while something drove `uartslip` gave two owners the
+        # same registers. It was masked only because p9serve never returns.
+        #
+        # Asserted as a *cycle*, in both directions, because a check that only
+        # ever refuses would pass for an implementation that refuses
+        # everything:
+        #   1. uartslip is refused while the console holds the wire
+        #   2. releasing the console frees it
+        #   3. uartslip now succeeds
+        #   4. and the console is refused in turn
+        # Step 4 is what proves the rule is about the wire rather than about
+        # one privileged name.
+        ok, log = session.send_and_expect(
+            'lisp\n(bind "uartslip")\n(release "uart")\n(bind "uartslip")\n(bind "uart")\nexit',
+            r"=> #f(.|\n)*=> #t(.|\n)*=> #t(.|\n)*=> #f", timeout=8.0)
+        if ok and "already holds it" not in log:
+            ok = False  # refused, but without saying what it collided with
+        results.append(("One Wire Has One Owner, In Both Directions (C8)",
+                        ok, log if not ok else ""))
+
+        # Put the console's wire back, so later tests are not running against a
+        # UART owned by a 9P link.
+        session.send_and_expect('lisp\n(release "uartslip")\n(bind "uart")\nexit',
+                                r"=> #t", timeout=6.0)
+
+        # /proc/ports says what each name is and which wire it drives, which is
+        # what makes a refusal legible rather than mysterious.
+        ok, log = session.send_and_expect(
+            "cat /proc/ports", r"uart\s+console\s+uart0(.|\n)*uartslip\s+p9link\s+uart0",
+            timeout=5.0)
+        results.append(("/proc/ports Reports Wires And Their Holders (C8)",
+                        ok, log if not ok else ""))
+
         # C3: a program receives its own arguments.
         #
         # Typed with arguments at the shell, so this exercises the whole path:

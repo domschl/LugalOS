@@ -64,6 +64,19 @@ int console_server_init(void) {
 int console_bind_device(const char *name) {
     console_dev_t *d = (console_dev_t *)dev_get(name, DEV_KIND_CONSOLE);
     if (!d || !d->putc) return -1;
+
+    /* Claim the wire before taking it (C8). Several device names can be the
+     * same physical channel -- the UART is a console, a dedicated 9P link and
+     * a demultiplexed one under three names -- and binding the console to a
+     * wire something else is already driving used to be silently allowed. */
+    if (dev_claim(name) != 0) return -1;
+
+    /* Release the previous binding's wire, so moving the console frees what it
+     * was on rather than holding both. */
+    if (g_bound_name && strcmp(g_bound_name, name) != 0) {
+        dev_release(g_bound_name);
+    }
+
     console_bind(d->putc);
     g_bound_name = name;
     printk("[Console] Output bound to device '%s'\n", name);

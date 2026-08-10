@@ -551,6 +551,66 @@ static lisp_val_t *prim_write_file(lisp_val_t *args, lisp_val_t *env) {
  * and the other 128 MB, so a RAM disk size that is sensible on one is most of
  * the machine on the other. Before this there was no way for a boot script to
  * tell them apart (C5). */
+/* (bind "name") -- give a port to a protocol (C8).
+ *
+ * The device name says which protocol: `uart` is that wire as a console,
+ * `uartslip` is the same wire as dedicated 9P, `usbcon` is ACM1 as a console
+ * where `usbnet` is ACM1 as a 9P link. One wire, several names, one holder --
+ * so this refuses rather than creating a second owner of the same registers.
+ *
+ * Refusing rather than taking over is deliberate. A takeover that silently
+ * moved the console off the port an operator is typing on would lock them out
+ * of the machine; being told what holds the wire lets them release it on
+ * purpose. */
+static lisp_val_t *prim_bind(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+
+    /* A console device is bound as the terminal; a 9P link is served. Which
+     * one is not a parameter -- it is what the device *is*. */
+    if (dev_get(name, DEV_KIND_CONSOLE)) {
+        return (console_bind_device(name) == 0) ? &true_val : &false_val;
+    }
+    if (dev_get(name, DEV_KIND_P9LINK)) {
+        /* Claims the wire; does NOT start serving on it.
+         *
+         * Those are two different things and conflating them was actively
+         * destructive: registering a background 9P server on `uartslip` means
+         * the 9P poller starts consuming that UART's input, and on the QEMU
+         * targets that UART *is* the console -- so a bind intended as policy
+         * silently ate the session it was typed into.
+         *
+         * Binding declares who owns the wire. Starting traffic is what
+         * `p9serve`, `p9share` and the boot-time DEV_F_BACKGROUND_9P
+         * registration do, and they can now only do it on a wire this says
+         * they hold. */
+        return (dev_claim(name) == 0) ? &true_val : &false_val;
+    }
+    cprintf("bind: no such port '%s'\n", name);
+    return &false_val;
+}
+
+/* (release "name") -- give the wire back, so something else can take it. */
+static lisp_val_t *prim_release(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    if (!name) return &false_val;
+    /* Releases the claim only; anything already serving on the wire is
+     * stopped by whatever started it. Symmetric with (bind). */
+    dev_release(name);
+    return &true_val;
+}
+
+/* (ports) -- what this board can bind, and what currently holds each wire. */
+static lisp_val_t *prim_ports(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    print_proc_file("/proc/ports");
+    return &nil_val;
+}
+
 static lisp_val_t *prim_board(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
 #if defined(CONFIG_BOARD_RP2350)
@@ -1090,6 +1150,9 @@ void lisp_init(void) {
 
     env_set(&global_env, "arch", make_prim(prim_arch));
     env_set(&global_env, "board", make_prim(prim_board));
+    env_set(&global_env, "bind", make_prim(prim_bind));
+    env_set(&global_env, "release", make_prim(prim_release));
+    env_set(&global_env, "ports", make_prim(prim_ports));
     env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
     env_set(&global_env, "mounted?", make_prim(prim_mounted));
     env_set(&global_env, "format", make_prim(prim_format));

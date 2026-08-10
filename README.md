@@ -21,8 +21,8 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 177 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 13 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 181 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 14 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
@@ -32,6 +32,10 @@ silicon):
 - **More than one user program at a time**: each loaded program gets its own image, user stack and
   memory domain, and hands all three back when it ends — including its Sv39 page-table tree on the
   MMU build. `(spawn "path")` starts one without waiting; `exec` still runs one to completion.
+- **Ports bound to protocols at boot**: a physical channel can be a console, a dedicated 9P link,
+  or both demultiplexed, chosen by name in `init.lisp` — with one owner per wire, so binding the
+  same UART to two protocols is refused rather than silently allowed. `cat /proc/ports` shows what
+  each name is and which wire it drives.
 - **Memory taken only while it is used**: the C compiler and the editors hold their working
   memory (~150 KB together) on the heap for the duration of a command and return it afterwards,
   rather than reserving it in the image. On RP2350 that is what takes the kernel image from 434 KB

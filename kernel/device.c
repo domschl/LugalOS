@@ -96,3 +96,86 @@ void *dev_next_with_flags(uint32_t *cursor, dev_kind_t kind, uint32_t flags) {
     }
     return NULL;
 }
+
+
+/* --- Exclusive use of a wire (C8, plan/phase6_memory_and_processes.md) ---
+ *
+ * One holder per wire. The table is indexed by dev_wire_t and stores the
+ * holding device's name, which is what makes a refusal informative: "uart is
+ * already held by uartslip" tells the operator what to release, where a bare
+ * failure would not.
+ */
+static const char *g_wire_owner[DEV_WIRE_VIRTIO + 1];
+
+static const dev_driver_t *find_driver(const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_num_devs; i++) {
+        if (strcmp(g_devs[i].drv->name, name) == 0) return g_devs[i].drv;
+    }
+    return NULL;
+}
+
+int dev_claim(const char *name) {
+    const dev_driver_t *drv = find_driver(name);
+    if (!drv) return -1;
+    if (drv->wire == DEV_WIRE_NONE) return 0; /* not an exclusive resource */
+    /* A sharer neither takes the wire nor collides with whoever has it. */
+    if (drv->flags & DEV_F_SHARES_WIRE) return 0;
+
+    const char *owner = g_wire_owner[drv->wire];
+    if (owner && strcmp(owner, name) != 0) {
+        printk("[Device] '%s' cannot take its wire: '%s' already holds it\n",
+               name, owner);
+        return -1;
+    }
+    g_wire_owner[drv->wire] = drv->name;
+    return 0;
+}
+
+void dev_release(const char *name) {
+    const dev_driver_t *drv = find_driver(name);
+    if (!drv || drv->wire == DEV_WIRE_NONE) return;
+    if (g_wire_owner[drv->wire] &&
+        strcmp(g_wire_owner[drv->wire], name) == 0) {
+        g_wire_owner[drv->wire] = NULL;
+    }
+}
+
+const char *dev_wire_owner(const char *name) {
+    const dev_driver_t *drv = find_driver(name);
+    if (!drv || drv->wire == DEV_WIRE_NONE) return NULL;
+    return g_wire_owner[drv->wire];
+}
+
+static const char *wire_name(dev_wire_t w) {
+    switch (w) {
+        case DEV_WIRE_UART0:  return "uart0";
+        case DEV_WIRE_ACM0:   return "acm0";
+        case DEV_WIRE_ACM1:   return "acm1";
+        case DEV_WIRE_VIRTIO: return "virtio";
+        default:              return "-";
+    }
+}
+
+bool dev_binding_info(uint32_t index, const char **name_out, const char **kind_out,
+                      const char **wire_out, bool *present_out, bool *bound_out) {
+    /* Walks only the devices that drive a wire: the others are not bindable
+     * and listing them would make the interesting rows harder to find. */
+    uint32_t seen = 0;
+    for (int i = 0; i < g_num_devs; i++) {
+        if (g_devs[i].drv->wire == DEV_WIRE_NONE) continue;
+        if (seen++ != index) continue;
+
+        const dev_driver_t *drv = g_devs[i].drv;
+        if (name_out) *name_out = drv->name;
+        if (kind_out) *kind_out = kind_name(drv->kind);
+        if (wire_out) *wire_out = wire_name(drv->wire);
+        if (present_out) *present_out = g_devs[i].present;
+        if (bound_out) {
+            const char *owner = g_wire_owner[drv->wire];
+            *bound_out = owner && strcmp(owner, drv->name) == 0;
+        }
+        return true;
+    }
+    return false;
+}

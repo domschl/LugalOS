@@ -555,6 +555,26 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "ports") == 0) {
+        /* Which channels this board has, what each can be, and who holds it
+         * (C8). Several names can be one wire -- the UART is a console, a
+         * dedicated 9P link and a demultiplexed one -- so the wire column is
+         * what makes a conflict legible. */
+        used = append_col(buf, used, cap, "Port", 11);
+        used = append_col(buf, used, cap, "Role", 9);
+        used = append_col(buf, used, cap, "Wire", 8);
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "State\n");
+        const char *pname, *pkind, *pwire;
+        bool ppresent, pbound;
+        for (uint32_t i = 0;
+             dev_binding_info(i, &pname, &pkind, &pwire, &ppresent, &pbound); i++) {
+            used = append_col(buf, used, cap, pname, 11);
+            used = append_col(buf, used, cap, pkind, 9);
+            used = append_col(buf, used, cap, pwire, 8);
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s\n",
+                                        !ppresent ? "absent" : (pbound ? "bound" : "free"));
+        }
+        return (int)used;
     } else if (strcmp(rel, "path") == 0) {
         /* The search path as a file, so a remote node can read this board's
          * command-resolution policy over 9P like anything else in /proc. */
@@ -592,7 +612,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
-static const char *g_proc_names[8] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path" };
+static const char *g_proc_names[9] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
