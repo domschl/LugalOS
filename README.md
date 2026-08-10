@@ -21,8 +21,8 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 165 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 11 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 171 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 12 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
@@ -32,6 +32,10 @@ silicon):
 - **More than one user program at a time**: each loaded program gets its own image, user stack and
   memory domain, and hands all three back when it ends — including its Sv39 page-table tree on the
   MMU build. `(spawn "path")` starts one without waiting; `exec` still runs one to completion.
+- **User programs larger than two pages**: the image is sized from the program headers and rounded
+  to a power-of-two page run, with each segment granted what its ELF `p_flags` declare — so W^X
+  comes from the linker rather than from the loader assuming a layout. A segment whose page count
+  is not a power of two is granted as several NAPOT pieces.
 - **A real process ABI**: programs receive `argc`/`argv` (built in their own stack page, so no
   kernel pointer crosses the boundary), return an exit status the shell and `/proc/ps` report, and
   reach named services over copy-always channels via `SYS_CHAN_CALL` — with every buffer validated
@@ -53,10 +57,6 @@ silicon):
   hardware.
 
 **Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-- **User programs larger than two pages**: the image model is one page of text and one of data,
-  enforced at link time by `linker/user.ld`'s ASSERTs rather than discovered at run time. Growing
-  it needs the loader to allocate a power-of-two page run per segment, since a PMP region must be
-  power-of-two sized and self-aligned.
 
 Everything else described below — including the scheduler, IPC, U-mode isolation, and the
 distributed 9P namespace — is implemented and continuously tested. This section exists to stay an

@@ -46,10 +46,17 @@
 #define MEM_W (1u << 1)
 #define MEM_X (1u << 2)
 
-/* Four is comfortably under the measured budget of eight free entries, and
- * more than a task needs (its stack, plus executable text). The headroom is
- * for B4's servers, which may want a device window. */
-#define MEM_DOMAIN_MAX_REGIONS 4
+/* Five, which is exactly RP2350's dynamic budget: eight PMP entries less the
+ * three that shadow Hazard3's hardwired U-mode grants (see mem_domain.c). The
+ * QEMU targets have all eight, so this is the tighter of the two and the one
+ * worth sizing against.
+ *
+ * Four sufficed while a user image was two fixed pages: stack, text, data. C4
+ * lets an image span more, and a segment whose page count is not a power of
+ * two has to be granted as several NAPOT pieces -- so the budget is now what
+ * decides how large and how irregular an image may be, rather than an
+ * arbitrary headroom figure. */
+#define MEM_DOMAIN_MAX_REGIONS 5
 
 typedef struct {
     uintptr_t base;

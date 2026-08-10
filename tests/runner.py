@@ -333,6 +333,49 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             r"USPIN_START(.|\n)*UPROG_TEXT_OK(.|\n)*USPIN_PREEMPTED", timeout=30.0)
         results.append(("Two User Programs Are Resident At Once (C2)", ok, log if not ok else ""))
 
+        # C4: a user program larger than two pages.
+        #
+        # Under the model this replaces, ubig would not have *linked*:
+        # linker/user.ld asserted that .data + .bss fit in one page, because
+        # the loader could only ever allocate two. The image is now sized from
+        # the program headers and rounded up to a power-of-two page run.
+        #
+        # The program writes across every page of its 20 KB .bss and reads it
+        # back, which is what makes this a test of the *grants* rather than of
+        # the allocation: a .bss that is merely declared would run identically
+        # whether or not the domain covered it.
+        ok, log = session.send_and_expect(
+            "ubig", r"UBIG_WROTE 5(.|\n)*UBIG_READBACK(.|\n)*UBIG_DONE", timeout=25.0)
+        results.append(("A User Program Larger Than Two Pages Runs (C4)", ok, log if not ok else ""))
+
+        # ...and the padding that costs is visible rather than inferred.
+        # ubig spans six pages and is given eight, because a PMP region must be
+        # a power of two. On a 40-page heap that difference is worth being able
+        # to see: it is what distinguishes "the heap is full" from "the heap is
+        # full of padding".
+        ok, log = session.send_and_expect(
+            'lisp\n(spawn "/sd0/system/bin/ubig.elf")\nexit\ncat /proc/meminfo',
+            r"User Images: 8 pages, 6 spanned \(2 padding\)", timeout=25.0)
+        results.append(("NAPOT Rounding Loss Is Reported (C4)", ok, log if not ok else ""))
+
+        # C4: W^X still holds, and now for a reason that could break.
+        #
+        # The loader used to grant page 0 as R|X and page 1 as R|W *by
+        # position* -- it knew the layout because the linker script asserted
+        # it. Permissions now come from each segment's ELF p_flags, so "the
+        # text page is not writable" went from being an assumption to being a
+        # thing the loader has to read correctly. A loader that mixed the flags
+        # up, or granted a NAPOT piece with the wrong permissions, would pass
+        # every other test here.
+        #
+        # The program prints UWX_NOT_ENFORCED itself if the store succeeds, so
+        # a failure is a loud line rather than a missing one.
+        ok, log = session.send_and_expect(
+            "uwx", r"UWX_ALIVE(.|\n)*terminated before it could exit", timeout=25.0)
+        if ok and "UWX_NOT_ENFORCED" in log:
+            ok = False
+        results.append(("W^X Is Enforced From Segment Flags (C4)", ok, log if not ok else ""))
+
         # C3: a program receives its own arguments.
         #
         # Typed with arguments at the shell, so this exercises the whole path:

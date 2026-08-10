@@ -91,12 +91,23 @@
  * the natural point.
  */
 
-#define USER_IMAGE_PAGES 2u
 #define EXIT_STUB_BYTES  16u
 
-/* Everything a user program may occupy in page 0. */
+/* The largest image the loader will attempt, in pages.
+ *
+ * Not a memory reservation -- what actually limits an image is whether the
+ * heap can place a naturally aligned run that size (see the note on NAPOT
+ * placement below). This only bounds the arithmetic and keeps a corrupt
+ * header from asking for something absurd before any of that is checked. */
+#define USER_IMAGE_MAX_PAGES 64u
+
+/* How many of a domain's regions the image may use. One is kept back for the
+ * program's stack, which every image needs and which is granted separately. */
+#define USER_IMAGE_MAX_REGIONS (MEM_DOMAIN_MAX_REGIONS - 1)
+
+/* Everything a user program may occupy in its first page: the exit stub sits
+ * at the top of it (see install_exit_stub). */
 #define USER_TEXT_MAX ((uint32_t)PAGE_SIZE - EXIT_STUB_BYTES)
-#define USER_IMAGE_BYTES ((uint32_t)PAGE_SIZE * USER_IMAGE_PAGES)
 
 /* How many programs may be resident at once. The real limit is pages -- three
  * per program plus its kernel stack -- so this only has to be large enough not
@@ -106,7 +117,9 @@
 typedef struct {
     bool          in_use;
     int           pid;        /* -1 until the task exists */
-    uint8_t      *image;      /* USER_IMAGE_PAGES pages, self-aligned */
+    uint8_t      *image;      /* image_pages pages, naturally aligned */
+    uint32_t      image_pages;  /* rounded up to a power of two for NAPOT */
+    uint32_t      span_pages;   /* what the program actually spans */
     uint8_t      *ustack;     /* one page */
     uintptr_t     entry;
     uintptr_t     user_sp;    /* below the argv block, not the page top */
@@ -128,7 +141,7 @@ static user_proc_t g_procs[USER_PROC_MAX];
 static void proc_release(user_proc_t *p) {
     if (!p->in_use) return;
     mem_domain_destroy(&p->domain);
-    if (p->image) palloc_free(p->image, USER_IMAGE_PAGES);
+    if (p->image) palloc_free(p->image, p->image_pages);
     if (p->ustack) palloc_free(p->ustack, 1);
     p->image = NULL;
     p->ustack = NULL;
@@ -154,6 +167,49 @@ static int reap_finished(void) {
         reaped++;
     }
     return reaped;
+}
+
+/* Grants [first_page, first_page + count) of the image, in NAPOT pieces
+ * (C4, plan/phase6_memory_and_processes.md).
+ *
+ * A PMP region must be power-of-two sized and self-aligned, and a segment's
+ * page count is under no obligation to be either. The standard decomposition
+ * applies: at each step take the largest power of two that both divides the
+ * current offset and fits in what is left. A 5-page span at offset 0 becomes
+ * 4 + 1; at offset 1 it becomes 1 + 4.
+ *
+ * This is what makes an image bigger than two pages expressible at all
+ * without giving up W^X. The alternative considered and rejected was to round
+ * each segment up to a power of two and place them at matching boundaries,
+ * which forces text and data to be the same size -- fine when both are one
+ * page, absurd when a program has 12 KB of code and 108 KB of pools.
+ *
+ * Returns the number of regions added, or -1 if the span needs more than
+ * `budget` of them. Refusing is right: a partially granted segment is a
+ * program that faults somewhere in its own data.
+ */
+static int grant_napot_span(mem_domain_t *d, uintptr_t base, uint32_t first,
+                            uint32_t count, uint8_t perms, int budget) {
+    int used = 0;
+    uint32_t off = first;
+    uint32_t left = count;
+
+    while (left > 0) {
+        /* Largest power-of-two page run that is aligned at `off` and fits. */
+        uint32_t piece = 1;
+        while ((piece << 1) <= left && ((off & ((piece << 1) - 1)) == 0)) {
+            piece <<= 1;
+        }
+        if (used >= budget) return -1;
+        if (mem_domain_add(d, base + (uintptr_t)off * PAGE_SIZE,
+                           (uintptr_t)piece * PAGE_SIZE, perms) != 0) {
+            return -1;
+        }
+        used++;
+        off += piece;
+        left -= piece;
+    }
+    return used;
 }
 
 /* Lays out argc/argv at the top of the program's own stack page and leaves
@@ -233,7 +289,7 @@ static bool build_argv(user_proc_t *p, int argc, const char *const *argv) {
 }
 
 /* Claims a free slot and builds its image, stack and domain. */
-static user_proc_t *proc_alloc(void) {
+static user_proc_t *proc_alloc(uint32_t image_pages) {
     user_proc_t *p = NULL;
     for (int i = 0; i < USER_PROC_MAX; i++) {
         if (!g_procs[i].in_use) { p = &g_procs[i]; break; }
@@ -243,28 +299,41 @@ static user_proc_t *proc_alloc(void) {
         return NULL;
     }
 
-    p->image = (uint8_t *)palloc_pages_aligned(USER_IMAGE_PAGES, USER_IMAGE_PAGES);
+    /* Naturally aligned to its own size: a PMP region must be NAPOT, and the
+     * sub-regions granted inside this block can only be aligned if the block
+     * itself is (see grant_segment_regions).
+     *
+     * This is where an image larger than the heap can place is refused, and
+     * the diagnostic says *placement* rather than "out of memory" because
+     * those are different problems with different fixes. A k-page run needs a
+     * k-page-aligned address, and on a small heap the alignment binds long
+     * before the free page count does -- which is the whole reason C5 ran
+     * before C4. */
+    p->image = (uint8_t *)palloc_pages_aligned(image_pages, image_pages);
     if (!p->image) {
-        printk("[ELF Error] No memory for a %u-page user image\n", USER_IMAGE_PAGES);
+        uint32_t total = 0, free_pg = 0, run = 0;
+        palloc_stats(&total, &free_pg);
+        palloc_extra_stats(NULL, &run);
+        printk("[ELF Error] Cannot place a %u-page image: it needs a "
+               "%u-page-aligned run, and the heap has %u pages free with a "
+               "largest run of %u\n", image_pages, image_pages, free_pg, run);
         return NULL;
     }
+    p->image_pages = image_pages;
+
     p->ustack = (uint8_t *)palloc_pages(1);
     if (!p->ustack) {
         printk("[ELF Error] No memory for a user stack\n");
-        palloc_free(p->image, USER_IMAGE_PAGES);
+        palloc_free(p->image, image_pages);
         p->image = NULL;
         return NULL;
     }
 
     mem_domain_init(&p->domain);
-    /* Narrowest first. The three regions do not overlap, so ordering does not
-     * change the outcome here -- but PMP resolves an address against the
-     * lowest-numbered matching region, and keeping to the convention means a
-     * later region that *does* overlap cannot silently widen an earlier one. */
+    /* Narrowest first. PMP resolves an address against the lowest-numbered
+     * matching region, so a narrow grant added before a broader overlapping
+     * one cannot be silently widened by it. */
     mem_domain_add(&p->domain, (uintptr_t)p->ustack, PAGE_SIZE, MEM_R | MEM_W);
-    mem_domain_add(&p->domain, (uintptr_t)p->image, PAGE_SIZE, MEM_R | MEM_X);
-    mem_domain_add(&p->domain, (uintptr_t)p->image + PAGE_SIZE, PAGE_SIZE,
-                   MEM_R | MEM_W);
 
     p->pid = -1;
     p->in_use = true;
@@ -305,6 +374,7 @@ typedef struct {
     uint32_t vaddr;    /* offset within the image */
     uint32_t filesz;
     uint32_t memsz;
+    uint32_t flags;    /* ELF p_flags; decides R|X vs R|W (C4) */
 } seg_t;
 
 /* Reads and validates the ELF headers, filling `segs`. Returns the number of
@@ -394,16 +464,17 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
 
     int nseg = 0;
     for (uint32_t i = 0; i < phnum; i++) {
-        uint32_t p_type, p_off, p_filesz, p_vaddr, p_memsz;
+        uint32_t p_type, p_off, p_filesz, p_vaddr, p_memsz, p_flags = 0;
         if (elf_class == 1) {
             const elf32_phdr_t *ph = (const elf32_phdr_t *)(hdr + phoff) + i;
             p_type = ph->p_type; p_off = ph->p_offset; p_filesz = ph->p_filesz;
-            p_vaddr = ph->p_vaddr; p_memsz = ph->p_memsz;
+            p_vaddr = ph->p_vaddr; p_memsz = ph->p_memsz; p_flags = ph->p_flags;
         } else {
             const elf64_phdr_t *ph = (const elf64_phdr_t *)(hdr + phoff) + i;
             p_type = ph->p_type;
+            uint64_t max_bytes = (uint64_t)USER_IMAGE_MAX_PAGES * (uint64_t)PAGE_SIZE;
             if (ph->p_offset > fsize || ph->p_filesz > fsize ||
-                ph->p_vaddr > USER_IMAGE_BYTES || ph->p_memsz > USER_IMAGE_BYTES) {
+                ph->p_vaddr > max_bytes || ph->p_memsz > max_bytes) {
                 /* Out of range in 64 bits; the checks below would be
                  * meaningless after narrowing, so decide here. */
                 if (ph->p_type != PT_LOAD) continue;
@@ -412,6 +483,7 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
             }
             p_off = (uint32_t)ph->p_offset; p_filesz = (uint32_t)ph->p_filesz;
             p_vaddr = (uint32_t)ph->p_vaddr; p_memsz = (uint32_t)ph->p_memsz;
+            p_flags = ph->p_flags;
         }
         if (p_type != PT_LOAD) continue;
         if (p_memsz == 0) continue;
@@ -434,6 +506,7 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
         segs[nseg].vaddr = p_vaddr;
         segs[nseg].filesz = p_filesz;
         segs[nseg].memsz = p_memsz;
+        segs[nseg].flags = p_flags;
         nseg++;
     }
 
@@ -450,6 +523,9 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
         segs[0].vaddr = 0;
         segs[0].filesz = fsize - ehdr_size;
         segs[0].memsz = segs[0].filesz;
+        /* A flat blob is code: this fallback exists for the output of this
+         * project's own `cc`, which emits an entry point and nothing else. */
+        segs[0].flags = PF_R | PF_X;
         if (segs[0].memsz == 0) {
             printk("[ELF Error] '%s': loadable segment is empty\n", path);
             return -1;
@@ -460,28 +536,56 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
     return nseg;
 }
 
-/* Checks that the segment layout fits the image model described at the top of
- * this file, and in particular that nothing lands on the exit stub. */
-static bool layout_fits(const char *path, const seg_t *segs, int nseg) {
+/* How many pages the image needs, rounded up to a power of two -- or 0 if the
+ * segments describe something this loader will not load (C4).
+ *
+ * The size comes from the program rather than from a constant here, which is
+ * the substance of C4: an image used to be exactly two pages because
+ * linker/user.ld asserted it at link time, and growing one meant editing the
+ * loader. A power of two because the whole block has to be NAPOT-aligned for
+ * the sub-region grants inside it to be expressible at all.
+ */
+static uint32_t image_span_pages(const char *path, const seg_t *segs, int nseg,
+                                 uint32_t *span_out) {
+    uint32_t high = 0;
+
     for (int i = 0; i < nseg; i++) {
         uint32_t start = segs[i].vaddr;
         uint32_t end = start + segs[i].memsz; /* both bounded above already */
-
-        if (start > USER_IMAGE_BYTES || end > USER_IMAGE_BYTES || end < start) {
-            printk("[ELF Error] '%s': segment %d (0x%x..0x%x) does not fit in the "
-                   "%u-byte user image\n", path, i, start, end, USER_IMAGE_BYTES);
-            return false;
+        if (end < start) {
+            printk("[ELF Error] '%s': segment %d wraps (0x%x + %u)\n",
+                   path, i, start, segs[i].memsz);
+            return 0;
         }
-        /* The exit stub occupies the top of the text page. A segment crossing
+        if (end > high) high = end;
+
+        /* The exit stub occupies the top of the first page, which is where a
+         * program that simply returns from _start ends up. A segment crossing
          * into it would be silently overwritten, so refuse instead. */
         if (start < (uint32_t)PAGE_SIZE && end > USER_TEXT_MAX) {
             printk("[ELF Error] '%s': segment %d ends at 0x%x, past the %u-byte "
-                   "text limit (the last %u bytes hold the exit stub)\n",
+                   "first-page limit (the last %u bytes hold the exit stub)\n",
                    path, i, end, USER_TEXT_MAX, EXIT_STUB_BYTES);
-            return false;
+            return 0;
         }
     }
-    return true;
+
+    if (high == 0) {
+        printk("[ELF Error] '%s': image is empty\n", path);
+        return 0;
+    }
+
+    uint32_t pages = (high + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    uint32_t pow2 = 1;
+    while (pow2 < pages) pow2 <<= 1;
+    if (span_out) *span_out = pages;
+
+    if (pow2 > USER_IMAGE_MAX_PAGES) {
+        printk("[ELF Error] '%s': image spans %u pages, more than the %u-page "
+               "maximum\n", path, pages, USER_IMAGE_MAX_PAGES);
+        return 0;
+    }
+    return pow2;
 }
 
 /* The task body. Installs the domain, then leaves for U-mode and does not
@@ -550,7 +654,14 @@ static user_proc_t *load_into_slot(const char *path, int argc,
     uintptr_t entry_off = 0;
     int nseg = parse_headers(path, hdrbuf, (uint32_t)got, fsize, segs,
                              (int)(sizeof(segs) / sizeof(segs[0])), &entry_off);
-    if (nseg < 0 || !layout_fits(path, segs, nseg)) {
+    if (nseg < 0) {
+        vfs_close(fd);
+        return NULL;
+    }
+
+    uint32_t span_pages = 0;
+    uint32_t image_pages = image_span_pages(path, segs, nseg, &span_pages);
+    if (image_pages == 0) {
         vfs_close(fd);
         return NULL;
     }
@@ -562,7 +673,7 @@ static user_proc_t *load_into_slot(const char *path, int argc,
         return NULL;
     }
 
-    user_proc_t *p = proc_alloc();
+    user_proc_t *p = proc_alloc(image_pages);
     if (!p) {
         vfs_close(fd);
         return NULL;
@@ -573,7 +684,7 @@ static user_proc_t *load_into_slot(const char *path, int argc,
      * its filesz -- and it stays because the guarantee that matters is "a
      * program never sees the previous one's data", which should not depend on
      * a property of the allocator two layers away. */
-    memset(p->image, 0, USER_IMAGE_BYTES);
+    memset(p->image, 0, image_pages * (uint32_t)PAGE_SIZE);
 
     for (int i = 0; i < nseg; i++) {
         if (segs[i].filesz == 0) continue; /* .bss-only: the zeroing above is it */
@@ -587,6 +698,34 @@ static user_proc_t *load_into_slot(const char *path, int argc,
         }
     }
     vfs_close(fd);
+
+    /* Grant each segment what its own p_flags declare, as NAPOT pieces inside
+     * the block (C4). W^X therefore follows from what the linker said rather
+     * than from the loader assuming which page is which. */
+    int regions = 0;
+    for (int i = 0; i < nseg; i++) {
+        uint32_t first = segs[i].vaddr / (uint32_t)PAGE_SIZE;
+        uint32_t last  = (segs[i].vaddr + segs[i].memsz + (uint32_t)PAGE_SIZE - 1)
+                         / (uint32_t)PAGE_SIZE;
+        if (last <= first) continue;
+
+        uint8_t perms = (segs[i].flags & PF_X) ? (uint8_t)(MEM_R | MEM_X)
+                                               : (uint8_t)(MEM_R | MEM_W);
+        int n = grant_napot_span(&p->domain, (uintptr_t)p->image, first,
+                                 last - first, perms,
+                                 USER_IMAGE_MAX_REGIONS - regions);
+        if (n < 0) {
+            printk("[ELF Error] '%s': segment %d (pages %u..%u) needs more "
+                   "memory regions than the %d available; a segment whose page "
+                   "count is not a power of two costs one region per set bit\n",
+                   path, i, first, last, USER_IMAGE_MAX_REGIONS);
+            /* fd is already closed above; closing it again would release a
+             * handle this call no longer owns. */
+            proc_release(p);
+            return NULL;
+        }
+        regions += n;
+    }
 
     install_exit_stub(p->image);
 
@@ -607,6 +746,8 @@ static user_proc_t *load_into_slot(const char *path, int argc,
     printk("[ELF] '%s': %d segment(s), %d arg(s), entry 0x%lx -> U-mode task\n",
            path, nseg, p->argc, (unsigned long)entry_off);
 
+    p->span_pages = span_pages;
+
     p->pid = task_create("uprog", user_program_body, p);
     if (p->pid < 0) {
         printk("[ELF Error] Could not create a task for '%s'\n", path);
@@ -623,6 +764,17 @@ static user_proc_t *load_into_slot(const char *path, int argc,
      * hart to be meaningful. */
     task_set_domain(p->pid, &p->domain);
     return p;
+}
+
+void elf_image_stats(uint32_t *alloc_pages, uint32_t *used_pages) {
+    uint32_t alloc = 0, used = 0;
+    for (int i = 0; i < USER_PROC_MAX; i++) {
+        if (!g_procs[i].in_use) continue;
+        alloc += g_procs[i].image_pages;
+        used  += g_procs[i].span_pages;
+    }
+    if (alloc_pages) *alloc_pages = alloc;
+    if (used_pages) *used_pages = used;
 }
 
 int elf_spawn(const char *path) {

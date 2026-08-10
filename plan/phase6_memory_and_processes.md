@@ -328,20 +328,59 @@ nothing about that.
 Tests 157 → **165 QEMU**, 10 → **11 hardware**.
 
 
-### C4 — Loader: multi-page images, per-segment NAPOT *(now runs after C5)*
+### C4 — Loader: multi-page images, per-segment NAPOT — **Done (2026-08-10)**
 
-**Reordered.** C4 is fully developable on QEMU, but until C5 the RP2350 heap could not place a
-region larger than 32 KB, so nothing about it was demonstrable on the board where the constraint is
-real. C5 first raised that ceiling to 128 KB.
+Ran after C5, because until the heap could place a region worth having none of this was
+demonstrable on the board where the constraint is real.
 
-One power-of-two page run per segment (`palloc_pages_aligned`), W^X preserved, `linker/user.ld`'s
-two `ASSERT`s replaced by a real per-segment size limit. Raise `MEM_DOMAIN_MAX_REGIONS` 4 → 5 to
-match RP2350's actual dynamic budget. Report the NAPOT rounding loss in `/proc/meminfo` — a 108 KB
-program taking a 128 KB region should be visible, not silently 16% wasteful.
+The image is now sized from the program headers and rounded up to a power-of-two page run;
+`linker/user.ld`'s `_udata_end <= 0x2000` assert is gone. Each segment is granted what its own ELF
+`p_flags` declare, so W^X follows from what the linker said rather than from the loader assuming
+page 0 is text. `MEM_DOMAIN_MAX_REGIONS` 4 → 5, which is exactly RP2350's dynamic budget.
 
-**Falsification, on hardware:** a program that requests a region the heap cannot place must fail
-cleanly with a diagnostic naming the alignment, not fault. Per §2.1 this is trivially reachable on
-RP2350 today (ask for 64 KB) and *unreachable on QEMU*, which is the point.
+**A correction to §2.2.** It proposed allocating text and data as *separate* NAPOT regions —
+"16 KB text + 128 KB data + 8 KB stack". That does not work. The programs are built
+`-mcmodel=medany -mno-relax`, so data is reached PC-relative from text; separate allocations put
+them at an unpredictable distance and every data reference breaks. The image has to stay
+contiguous, with W^X granted as sub-regions inside one aligned block. Which is why a segment whose
+page count is not a power of two is decomposed into aligned pieces — `grant_napot_span()`, the
+standard largest-aligned-piece-first walk.
+
+**The region budget, not placement, is what limits image shape.** This is the useful thing the
+implementation taught, and it is worth writing down as arithmetic. With one page of text, a data
+segment starting at page 1 decomposes into pieces of 1, 2, 4, …, so *B* regions buy 2^B − 1 data
+pages. With the four regions an image gets (five less the stack), that is a 7-page data segment and
+an 8-page image. But the ceiling scales with where data starts:
+
+| Text pages | Data starts at | Max data pages with 3 regions | Max image |
+|---|---|---|---|
+| 1 | page 1 | 7 (1+2+4) | 8 pages / 32 KB |
+| 2 | page 2 | 14 (2+4+8) | 16 pages / 64 KB |
+| 4 | page 4 | 28 (4+8+16) | 32 pages / 128 KB |
+
+So a program with a few pages of code can carry a lot of data, and one with a single page cannot.
+That is a real property of NAPOT rather than an implementation limit, and the loader now reports it
+by name: exceeding the budget says which segment, which pages, and that a non-power-of-two page
+count costs one region per set bit.
+
+**Two prerequisites this leaves for C6**, both small and both now visible rather than latent:
+
+1. *The exit stub is at the top of page 0*, which caps text at one page (`user.ld` still asserts
+   4080 bytes). chibicc's text is ~12 KB, so the stub has to move to the end of the text
+   *segment* first.
+2. *Data wants to start at a well-aligned page*, or the decomposition is wasteful — data at page 3
+   costs pieces of 1+4+8 where page 4 would cost 4+8+16. A `. = ALIGN()` in the linker script,
+   not a loader change.
+
+**Measured.** `ubig` spans six pages in an eight-page run — deliberately at the region budget, its
+data decomposing into 1+2+2 — writes across all 20 KB of its `.bss` and reads it back. Under the
+previous model it would not have linked. `/proc/meminfo` reports the padding
+(`User Images: 8 pages, 6 spanned (2 padding)`), which on a 40-page heap is the difference between
+"the heap is full" and "the heap is full of padding". `uwx` stores into its own text and is
+terminated, on both memory models.
+
+Tests 165 → **171 QEMU**, 11 → **12 hardware**.
+
 
 ### C5 — Static RAM reclamation — **Done (2026-08-10)**
 

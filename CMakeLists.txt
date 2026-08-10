@@ -119,7 +119,7 @@ endif()
 # A program that violates any of this does not fault mysteriously at run time:
 # it either fails to link, or trips one of user.ld's ASSERTs by name.
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user.ld)
-set(USER_PROGRAMS uhello uisolate uspin uargs uchan)
+set(USER_PROGRAMS uhello uisolate uspin uargs uchan ubig uwx)
 set(USER_PROG_STAGED "")
 
 foreach(uprog ${USER_PROGRAMS})
@@ -177,7 +177,7 @@ add_custom_command(
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${SD_STAGE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
             ${SD_ROOT_FILES}
-            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf
+            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
     COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
 )
 
