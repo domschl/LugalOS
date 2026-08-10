@@ -19,22 +19,22 @@
 #define MAX_TYPES 256
 #endif
 
-static Node node_pool[MAX_NODES];
+static Node *node_pool;
 static int node_pool_idx = 0;
 
-static Obj obj_pool[MAX_OBJS];
+static Obj *obj_pool;
 static int obj_pool_idx = 0;
 
 #define MAX_FNS 64
-static Function fn_pool[MAX_FNS];
+static Function *fn_pool;
 static int fn_pool_idx = 0;
 
-static Type type_pool[MAX_TYPES];
+static Type *type_pool;
 static int type_pool_idx = 0;
 
 
 #define MAX_MEMBERS 128
-static Member member_pool[MAX_MEMBERS];
+static Member *member_pool;
 static int member_pool_idx = 0;
 
 Type ty_char_obj  = {TY_CHAR, 1, NULL, 0, NULL};
@@ -781,4 +781,28 @@ Function *parse(Token *tok) {
         }
     }
     return head.next;
+}
+
+/* Arena-backed (C6): see user/chibicc/pools.c. */
+bool parse_pools_init(void) {
+    node_pool = (Node *)chibicc_pool_alloc(sizeof(Node) * MAX_NODES);
+    obj_pool = (Obj *)chibicc_pool_alloc(sizeof(Obj) * MAX_OBJS);
+    fn_pool = (Function *)chibicc_pool_alloc(sizeof(Function) * MAX_FNS);
+    type_pool = (Type *)chibicc_pool_alloc(sizeof(Type) * MAX_TYPES);
+    member_pool = (Member *)chibicc_pool_alloc(sizeof(Member) * MAX_MEMBERS);
+    return node_pool && obj_pool && fn_pool && type_pool && member_pool;
+}
+
+void parse_pools_clear(void) {
+    node_pool = NULL;
+    obj_pool = NULL;
+    fn_pool = NULL;
+    type_pool = NULL;
+    member_pool = NULL;
+}
+
+uint32_t parse_pools_bytes(void) {
+    return (uint32_t)(sizeof(Node) * MAX_NODES) + (uint32_t)(sizeof(Obj) * MAX_OBJS) +
+           (uint32_t)(sizeof(Function) * MAX_FNS) + (uint32_t)(sizeof(Type) * MAX_TYPES) +
+           (uint32_t)(sizeof(Member) * MAX_MEMBERS);
 }

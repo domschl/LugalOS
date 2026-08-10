@@ -376,6 +376,55 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             ok = False
         results.append(("W^X Is Enforced From Segment Flags (C4)", ok, log if not ok else ""))
 
+        # C6/C7: cc and the editor cost nothing while idle.
+        #
+        # Their pools used to be static arrays -- about 108 KB for chibicc and
+        # 44 KB for ed, a third of an RP2350's SRAM reserved for two commands
+        # that are almost never running. They are now taken from the heap on
+        # entry and returned on exit.
+        #
+        # The assertion is that the page count *returns*, not merely that cc
+        # works: a compile that acquired and never released would still produce
+        # a correct binary and would leak an arena every time. Two compiles
+        # rather than one, so a leak of even a single arena is visible.
+        _, log_before = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_before = re.search(r"Pages Used: (\d+)", log_before)
+        session.send_and_expect("cc /sd0/hello.c /ram0/hd1.elf", r"Build clean", timeout=20.0)
+        session.send_and_expect("cc /sd0/hello.c /ram0/hd2.elf", r"Build clean", timeout=20.0)
+        _, log_after = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_after = re.search(r"Pages Used: (\d+)", log_after)
+
+        cc_before = int(m_before.group(1)) if m_before else None
+        cc_after = int(m_after.group(1)) if m_after else None
+        ok = (cc_before is not None and cc_before == cc_after)
+        results.append((
+            "Compiler Arena Is Returned After Each Compile (C6)",
+            ok,
+            f"pages used before={cc_before} after={cc_after} "
+            f"(two compiles in between; a climb means an arena leaked)" if not ok else "",
+        ))
+
+        # ...and the binary it produced still runs, so the arena being freed
+        # did not take the output with it.
+        ok, log = session.send_and_expect("exec /ram0/hd2.elf", r"returned", timeout=20.0)
+        results.append(("A Heap-Compiled Binary Still Runs (C6)", ok, log if not ok else ""))
+
+        # The editor's buffers likewise. Entering and leaving it must leave the
+        # heap where it was.
+        _, log_before = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_before = re.search(r"Pages Used: (\d+)", log_before)
+        session.send_and_expect("e\nabc\x18\x03y\n", r"lsh>", timeout=8.0)
+        _, log_after = session.send_and_expect("cat /proc/meminfo", r"Storage:", timeout=5.0)
+        m_after = re.search(r"Pages Used: (\d+)", log_after)
+        ed_before = int(m_before.group(1)) if m_before else None
+        ed_after = int(m_after.group(1)) if m_after else None
+        ok = (ed_before is not None and ed_before == ed_after)
+        results.append((
+            "Editor Buffers Are Returned On Exit (C7)",
+            ok,
+            f"pages used before={ed_before} after={ed_after}" if not ok else "",
+        ))
+
         # C3: a program receives its own arguments.
         #
         # Typed with arguments at the shell, so this exercises the whole path:

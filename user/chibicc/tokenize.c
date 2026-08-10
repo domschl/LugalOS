@@ -10,12 +10,12 @@
 #include <string.h>
 
 #define MAX_TOKENS 512
-static Token token_pool[MAX_TOKENS];
+static Token *token_pool;
 static int token_pool_idx = 0;
 
 #define MAX_STR_BUFS 64
 #define STR_BUF_LEN 128
-static char str_bufs[MAX_STR_BUFS][STR_BUF_LEN];
+static char (*str_bufs)[STR_BUF_LEN];
 static int str_buf_idx = 0;
 
 bool chibicc_pool_exhausted = false;
@@ -236,4 +236,22 @@ Token *tokenize(char *p) {
 
     cur->next = new_token(TK_EOF, p, p);
     return head.next;
+}
+
+/* Arena-backed (C6): see user/chibicc/pools.c. The declarations above became
+ * pointers rather than arrays, which is why every `token_pool[i]` in this file
+ * still reads the same. */
+bool tokenize_pools_init(void) {
+    token_pool = (Token *)chibicc_pool_alloc(sizeof(Token) * MAX_TOKENS);
+    str_bufs = (char (*)[STR_BUF_LEN])chibicc_pool_alloc(MAX_STR_BUFS * STR_BUF_LEN);
+    return token_pool && str_bufs;
+}
+
+void tokenize_pools_clear(void) {
+    token_pool = NULL;
+    str_bufs = NULL;
+}
+
+uint32_t tokenize_pools_bytes(void) {
+    return (uint32_t)(sizeof(Token) * MAX_TOKENS) + (uint32_t)(MAX_STR_BUFS * STR_BUF_LEN);
 }

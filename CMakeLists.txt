@@ -240,6 +240,7 @@ set(SOURCES
     user/lisp/lisp.c
     user/lisp/lisp_compile.c
     user/chibicc/main.c
+    user/chibicc/pools.c
     user/chibicc/preprocess.c
     user/chibicc/tokenize.c
     user/chibicc/parse.c

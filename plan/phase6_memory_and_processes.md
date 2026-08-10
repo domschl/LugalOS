@@ -442,16 +442,49 @@ commit before this work as well as after, so the assertion was wrong rather than
 watched. It now asks for B1 before A3 — still fails for the no-op-yield bug it exists to catch.
 
 
-### C6 — `cc` becomes a process
+### C6 / C7 — `cc` and the editors become heap-on-demand — **Done (2026-08-10)**
 
-Extract `user/chibicc` to `/flash0/system/bin/cc.elf`, pools trimmed per §2.2. Remove the `cc`
-builtin in the same commit (C1). Expected: static RAM −108 KB, heap 60 KB → 168 KB.
+**Revised, on the user's proposal, from "become processes" to "keep them as commands but take
+their memory only while they run."** The reasoning held up under checking, and two facts decided
+it:
 
-### C7 — `e` becomes a process
+- **Peak memory is worse as a process.** A user image is granted in NAPOT regions, so chibicc's
+  ~108 KB of pools becomes a 128 KB power-of-two region — 20 KB of padding, at a 128 KB-aligned
+  address. An arena is pages, at any address, and costs exactly what it uses.
+- **chibicc calls `vfs_read`/`vfs_write` directly**, as kernel code. In U-mode those become
+  `SYS_READ_FILE`/`SYS_WRITE_FILE`, whose kernel-side buffer is **512 bytes**, and it reads 4 KB
+  sources and writes 4 KB ELFs. A process version needs a chunked or descriptor-based file ABI
+  first — work the plan never accounted for.
 
-Same treatment for the editor (`user/ed` 44 KB + the `line_editor.c` box-redraw path). Note the
-ordering: the redraw bug is fixed in C0, *before* this, so C7 is a pure relocation with no
-behaviour change to debug simultaneously.
+The static win is identical either way, and it was objective 1 (memory) that was binding on this
+hardware, not objective 2 (componentisation). The isolation argument is real — a compiler
+consuming arbitrary input is exactly what one would want confined — and nothing here forecloses
+it: a `cc.elf` on the search path can be added later, and dynamic pools are a *prerequisite* for
+that rather than a detour. C1–C4's process infrastructure is not wasted; it serves user programs,
+and `ubig`/`uwx` exercise it.
+
+**Measured on RP2350**: `_kernel_end` `0x20058000` → `0x20032000`, so **image 335 KB → 183 KB and
+heap 160 KB → 312 KB** (40 → 78 pages). Across the whole phase: image **434 → 183 KB**, heap
+**60 → 312 KB**, which is 4× the memory available to run things in.
+
+**Implementation.** One bump arena per subsystem, acquired at the entry point and released on
+every exit. The declarations changed from `static T pool[N]` to `static T *pool`, which leaves
+every `pool[i]` use site reading the same — the diff is one line per pool plus acquire/release in
+one place. Both entry points are *wrapped* rather than releasing at each `return`: `chibicc_compile`
+has half a dozen failure exits and `ed_main` several, and one of them forgetting would leak an
+arena that only shows up on the next command.
+
+**The arena size is asked of the modules, not written down.** The first attempt hardcoded 112 KB
+and failed immediately on QEMU, which wants ~300 KB: `MAX_NODES` is 256 on RP2350 and 2048
+elsewhere, so any single constant is wrong on one target by a factor of eight. Each module now
+reports what it needs and the arena is sized from the sum. The failure was clean rather than
+mysterious only because the bump allocator range-checks, which is an argument for keeping that
+check even though it should now be unreachable.
+
+Tests 171 → **177 QEMU**, 12 → **13 hardware**. The leak test asserts the page count *returns*
+across two compiles — a compile that acquired and never released would still emit a correct binary
+every time — and was falsified by removing the release, which shows 20 → 95 pages.
+
 
 ### C8 — `init.lisp` as the component launcher
 

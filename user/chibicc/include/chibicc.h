@@ -160,4 +160,28 @@ Function *parse(Token *tok);
 int codegen(Function *prog, uint8_t *code_buf, int max_size);
 int chibicc_compile(const char *src_path, const char *dst_elf_path);
 
+/* --- Working memory (C6, plan/phase6_memory_and_processes.md) ---
+ *
+ * chibicc's pools live on the heap for the duration of a compile and are
+ * returned afterwards, so an idle compiler costs nothing. See
+ * user/chibicc/pools.c for why this rather than making cc a user process. */
+bool chibicc_pools_acquire(void);
+void chibicc_pools_release(void);
+void *chibicc_pool_alloc(uint32_t bytes);
+
+/* Each module claims its own pools out of the arena. Called only by
+ * chibicc_pools_acquire()/release(). */
+uint32_t tokenize_pools_bytes(void);
+bool tokenize_pools_init(void);
+void tokenize_pools_clear(void);
+uint32_t parse_pools_bytes(void);
+bool parse_pools_init(void);
+void parse_pools_clear(void);
+uint32_t preprocess_pools_bytes(void);
+bool preprocess_pools_init(void);
+void preprocess_pools_clear(void);
+uint32_t main_pools_bytes(void);
+bool main_pools_init(void);
+void main_pools_clear(void);
+
 #endif /* LUGALOS_USER_CHIBICC_H */
