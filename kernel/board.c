@@ -102,11 +102,11 @@ static const dev_driver_t dev_eeprom = {
     .name = "eeprom", .kind = DEV_KIND_EEPROM, .probe = probe_at24c32,
 };
 static const dev_driver_t dev_usb = {
-    .name = "usb", .kind = DEV_KIND_CONSOLE, .probe = probe_usb_cdc,
+    .name = "usb", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_ACM0, .probe = probe_usb_cdc,
     .get = get_usb_console,
 };
 static const dev_driver_t dev_uart = {
-    .name = "uart", .kind = DEV_KIND_CONSOLE, .get = get_uart_console,
+    .name = "uart", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_UART0, .get = get_uart_console,
 };
 
 /* UART-backed 9P links: present unconditionally (the UART itself is brought
@@ -114,20 +114,43 @@ static const dev_driver_t dev_uart = {
  * DEV_F_BACKGROUND_9P -- they share a wire with the console, so they stay
  * behind the explicit `p9serve` / `p9share` commands. */
 static const dev_driver_t dev_uartslip = {
-    .name = "uartslip", .kind = DEV_KIND_P9LINK, .get = get_uart_slip,
+    .name = "uartslip", .kind = DEV_KIND_P9LINK, .wire = DEV_WIRE_UART0, .get = get_uart_slip,
 };
 static const dev_driver_t dev_uartdemux = {
-    .name = "uartdemux", .kind = DEV_KIND_P9LINK, .get = get_uart_demux,
+    .name = "uartdemux", .kind = DEV_KIND_P9LINK, .flags = DEV_F_SHARES_WIRE,
+    .wire = DEV_WIRE_UART0, .get = get_uart_demux,
 };
 
 #if defined(CONFIG_BOARD_RP2350)
+/* ACM1 as a *console*, in addition to `usbnet` which is the same wire as a 9P
+ * link (C8). Both paths already existed in drivers/usb_cdc.c -- EP4 has a
+ * write for 9P frames and this wraps it a byte at a time -- so the interface
+ * that was only ever a network port can now be handed the terminal instead.
+ * The two are mutually exclusive by construction: same wire, one holder.
+ *
+ * ACM0 is deliberately not bindable this way and stays the console. It is the
+ * port a host connects to by convention and the one flash.py touches, so
+ * making it stealable would mean a boot script could lock the operator out of
+ * the machine it is booting. */
+static void usbnet_console_putc(char c) {
+    uint8_t b = (uint8_t)c;
+    usb_cdc_write_net(&b, 1);
+}
+static console_dev_t g_usbnet_console = { .putc = usbnet_console_putc };
+static void *get_usbnet_console(void) { return &g_usbnet_console; }
+
+static const dev_driver_t dev_usbnetcon = {
+    .name = "usbcon", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_ACM1,
+    .get = get_usbnet_console,
+};
+
 static const dev_driver_t dev_usbnet = {
-    .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P,
+    .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
 };
 #else
 static const dev_driver_t dev_vconsole = {
-    .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P,
+    .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
     .probe = probe_virtio_console, .get = get_virtio_console,
 };
 static const dev_driver_t dev_vblk = {
@@ -145,6 +168,7 @@ void board_register_devices(void) {
     dev_register(&dev_uartdemux);
 #if defined(CONFIG_BOARD_RP2350)
     dev_register(&dev_usbnet);
+    dev_register(&dev_usbnetcon);
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);

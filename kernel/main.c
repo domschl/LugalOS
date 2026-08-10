@@ -146,6 +146,12 @@ void kernel_main(void) {
     while ((link = dev_next_with_flags(&cursor, DEV_KIND_P9LINK, DEV_F_BACKGROUND_9P)) != NULL) {
         p9_link_register_background((p9_link_t *)link);
     }
+    /* Record that the background links hold their wires (C8), so a later
+     * binding onto the same channel is refused rather than quietly making two
+     * owners. Their wires are dedicated, so this never fails at boot -- it is
+     * the bookkeeping that makes a *later* conflict detectable. */
+    dev_claim("usbnet");
+    dev_claim("vconsole");
 
     console_server_init();
 

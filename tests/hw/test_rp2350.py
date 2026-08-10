@@ -898,6 +898,53 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_port_binding(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """C8 on real silicon: one wire, several protocols, exactly one owner.
+
+    This board is the only place the interesting pair exists. ACM1 is
+    registered twice -- `usbnet` as a 9P link and `usbcon` as a console -- and
+    the background 9P server holds it from boot, so asking for the console on
+    that wire must be refused *by name*. The QEMU targets have no second CDC
+    interface and cannot express the case at all.
+
+    The refusal is checked rather than a takeover, deliberately: a bind that
+    silently moved the console onto another port would cut the connection the
+    operator is typing on, which on a board reached only over USB means losing
+    the machine.
+
+    Nothing here is mutated -- the bind is refused, so the board is left
+    exactly as it was found.
+    """
+    name = "C8: one wire has one owner, on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"cat /proc/ports\n", b'lisp\n(bind "usbcon")\nexit\n'):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.8, deadline=20.0).decode("utf-8", "replace")
+
+        checks = [
+            ("both roles listed for acm1",
+             "usbnet" in out and "usbcon" in out),
+            ("the 9P link holds it",
+             re.search(r"usbnet\s+p9link\s+acm1\s+bound", out) is not None),
+            ("the console role is free",
+             re.search(r"usbcon\s+console\s+acm1\s+free", out) is not None),
+            ("conflicting bind refused", "=> #f" in out),
+            ("refusal names the holder", "'usbnet' already holds it" in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -924,6 +971,7 @@ def main() -> int:
     tests.append(test_process_abi)
     tests.append(test_large_image)
     tests.append(test_heap_on_demand)
+    tests.append(test_port_binding)
     tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node

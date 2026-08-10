@@ -486,12 +486,53 @@ across two compiles — a compile that acquired and never released would still e
 every time — and was falsified by removing the release, which shows 20 → 95 pages.
 
 
-### C8 — `init.lisp` as the component launcher
+### C8 — `init.lisp` as the component launcher — **Done (2026-08-10)**
 
-Once C2–C4 land, `init.lisp` stops being a configuration script and becomes the thing that decides
-what runs: mount policy, search path, which servers start. This is where the phase's story lands —
-the kernel boots a scheduler and a namespace, and a Lisp script assembles an operating system on
-top of it.
+Most of this arrived while doing the rest: `(board)`, `(mounted?)`, `(path-set)` and the
+conditional RAM disk already moved boot policy out of the kernel and into the script. What was
+left, and what this item became, is **binding ports to protocols**.
+
+**One wire, several names, one owner.** The PL011 was already registered three times -- `uart` as a
+console, `uartslip` as dedicated SLIP-framed 9P, `uartdemux` as both demultiplexed. That pattern
+was right; what was missing is that nothing recorded they were the same piece of hardware. Binding
+the console to `uart` while something drove `uartslip` gave two owners the same registers, and it
+was masked only because `p9serve` never returns. A `dev_wire_t` on each device plus a
+one-holder-per-wire table makes it detectable, and the refusal names what it collided with --
+"`uartslip` cannot take its wire: `uart` already holds it" -- because a bare failure tells an
+operator nothing about what to release.
+
+`uartdemux` carries `DEV_F_SHARES_WIRE`: it is the *resolution* of that conflict rather than an
+instance of it, so it neither claims nor collides.
+
+**ACM1 can be either.** `usbcon` registers RP2350's second CDC interface as a console alongside
+`usbnet`, which is the same wire as a 9P link. Both paths already existed in the driver -- EP4 has
+a frame write, and the console `putc` wraps it -- so this is a few lines, and it makes the model
+demonstrable on hardware: the background 9P server holds ACM1 from boot, so asking for the console
+there is refused by name.
+
+**ACM0 stays the console, deliberately.** It is the port a host connects to by convention and the
+one `flash.py` touches, so making it bindable would let a boot script lock the operator out of the
+machine it is booting.
+
+**Refusal rather than takeover**, for the same reason. A bind that silently moved the console onto
+another port would cut the connection it was typed into.
+
+**A design error found by a hung test.** `(bind ...)` on a 9P link first *claimed the wire and
+started serving on it*. Those are two different things, and conflating them was destructive: the
+background 9P poller starts consuming that UART's input, and on the QEMU targets that UART is the
+console -- so a bind intended as policy silently ate the session. `bind` now claims only; starting
+traffic remains what `p9serve`, `p9share` and the boot-time `DEV_F_BACKGROUND_9P` registration do,
+and they can only do it on a wire the claim says they hold.
+
+**A known simplification.** RP2350's `uart` console device mirrors its output to ACM0 by driver
+design, so `/proc/ports` shows `acm0` free while console bytes do appear there. Modelling that
+honestly means a device holding more than one wire, which is more machinery than the conflict it
+would prevent.
+
+Tests 177 → **181 QEMU**, 13 → **14 hardware**. The QEMU test asserts the cycle in *both*
+directions -- refused, released, succeeds, and the original is now refused in turn -- because a
+check that only ever refuses would pass for an implementation that refuses everything.
+
 
 ---
 
