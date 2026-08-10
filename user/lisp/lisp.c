@@ -72,7 +72,21 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
          * than just running out cleanly (see B6 in
          * plan/completed/2026-08-07_review_and_remediation.md). Clamp to the last slot
          * instead: further allocations alias each other and produce wrong
-         * results, but no longer corrupt the environment or earlier values. */
+         * results, but no longer corrupt the environment or earlier values.
+         *
+         * "Wrong results" understated it, and the difference cost a hung
+         * board. Two allocations from the clamped slot are the *same node*,
+         * so `cell->cdr = alloc_node(...)` makes a cons cell point at itself
+         * -- a cyclic list. Every list walker here then runs forever, and
+         * prim_add() accumulates into `sum` while it does. On QEMU that is a
+         * signed-overflow UBSan trap with a message; on RP2350, which builds
+         * without UBSan, it is an unrecoverable spin: no fault, no output,
+         * USB never serviced again, physical replug required.
+         *
+         * The clamp is kept -- allocation still has to return something
+         * writable -- but it is no longer load-bearing, because lisp_eval()
+         * refuses to descend once this flag is set. Nothing gets built out of
+         * the aliased node. */
         if (!node_pool_exhausted_warned) {
             printk("[Lisp Error] Node pool exhausted! Further evaluation will "
                    "produce wrong results until the shell restarts.\n");
@@ -204,7 +218,14 @@ static long arg_int(lisp_val_t *args, int n, long default_val) {
 static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     long sum = 0;
-    for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+    /* Bounded, belt-and-braces against a cyclic list. lisp_eval() now refuses
+     * to build one (see alloc_node), but this loop is where a cycle actually
+     * manifested -- spinning forever while accumulating into `sum` until the
+     * signed overflow at this line -- and the bound is free and exactly
+     * correct: a list cannot have more elements than the pool has nodes. */
+    int guard = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
         if (c->u.pair.car->type == LISP_INT) {
             sum += c->u.pair.car->u.i;
         }
@@ -1466,6 +1487,21 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
  * before real exhaustion rather than trying to use the full available
  * stack. */
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
+    /* An exhausted node pool is not survivable by carrying on. alloc_node()
+     * clamps to its last slot when it runs out, so every further allocation
+     * returns the same node and any cons cell built from two of them points
+     * at itself -- after which the first list walker to touch it spins
+     * forever. See alloc_node() for the full chain and what it cost.
+     *
+     * Refusing here, in the same place and the same shape as the depth guard
+     * below, is what makes that unreachable: evaluation unwinds instead of
+     * descending, so no structure is ever built out of the aliased node. The
+     * shell stays alive and answers -- degraded, returning nil for everything
+     * until it restarts, which is what the warning already promised -- rather
+     * than taking the machine down with it. */
+    if (node_pool_exhausted_warned) {
+        return &nil_val;
+    }
     if (eval_depth >= LISP_MAX_EVAL_DEPTH) {
         if (!eval_depth_exceeded_warned) {
             printk("[Lisp Error] Maximum evaluation depth (%d) exceeded -- "

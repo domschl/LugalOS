@@ -224,22 +224,10 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     the same stack. /proc/meminfo's stack and heap peaks are cumulative since
     boot, so reading them afterwards makes them describe all of it.
 
-    **This deliberately does not run a runaway Lisp recursion.** An earlier
-    version did, to drive the evaluator to the depth guard and make the
-    high-water mark describe the deepest call chain in the system. On real
-    silicon that command hangs the board hard -- no fault banner, no output,
-    USB stops being serviced, and only a physical replug recovers it. It
-    reproduces identically on firmware from before any of this work (commit
-    f953876), so it is a pre-existing defect rather than something this
-    instrumentation introduced, and it is written up with measurements in
-    plan/phase6_memory_and_processes.md §6.4.
-
-    It is left out rather than marked expected-fail because a test that bricks
-    the board is not a test: every run would need someone standing at the
-    bench to unplug it, and the six tests after this one would fail as
-    collateral with misleading messages. Measuring memory margins and
-    reproducing an unrelated hang are two jobs, and the hang has its own
-    write-up with a repro that anyone can run deliberately.
+    The runaway-recursion check lives in test_node_pool_exhaustion() below,
+    not here. Exhausting the node pool leaves the evaluator returning nil, and
+    the shell routes `cat /proc/meminfo` through the evaluator -- so a test
+    that did both would destroy its own measurement.
 
     Both margins are reported in the pass message even when everything is
     healthy -- the point of the test is the number, not just the verdict.
@@ -251,9 +239,10 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             time.sleep(0.3)
             ser.reset_input_buffer()
 
-            # Exercise the allocator before measuring: two task stacks out and
-            # back, which is the only thing in this suite that moves the heap's
-            # peak rather than just its current occupancy.
+            # Exercise the allocator before measuring:
+            # taskdemo takes two task stacks out and puts them back, the only
+            # thing in this suite that moves the heap's peak rather than just
+            # its current occupancy.
             ser.write(b"taskdemo\n")
             ser.flush()
             rp2350.drain(ser, quiet=0.8, deadline=20.0)
@@ -603,6 +592,61 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         bridge_img.unlink(missing_ok=True)
 
 
+def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """A runaway Lisp recursion must degrade the shell, not take the board down.
+
+    **This board is the only place the check means anything.** One runaway
+    recursion allocates roughly 500 nodes; RP2350's node pool is 512 while the
+    QEMU targets get 4096, so it exhausts the pool here on the first try and
+    there only on about the eighth -- which is why the QEMU suite, whose
+    depth-guard test runs the same recursion once, never reached the
+    interesting state.
+
+    What used to happen: exhaustion clamped the allocator to its last slot and
+    handed the same node out repeatedly, so a cons cell could point at itself,
+    and the first list walker to touch that cycle spun forever. On the QEMU
+    targets UBSan catches the resulting signed overflow and halts with a
+    message. This build has no UBSan, so it was an unrecoverable hang -- no
+    fault banner, no output, USB unserviced, and only a physical unplug/replug
+    recovered it. It took the board down four times before being root-caused;
+    see plan/phase6_memory_and_processes.md §6.4.
+
+    Three assertions, all on bytes the *system* emits:
+      - the exhaustion warning is reported rather than hit silently
+      - the REPL prints a result afterwards, which is the proof that
+        evaluation unwound instead of spinning
+      - `exit` still returns to the shell prompt, so the console lives
+
+    **Must run last.** It deliberately leaves the evaluator returning nil until
+    the board reboots, and every other test here drives the board through a
+    shell that evaluates.
+    """
+    name = "Node pool exhaustion degrades the shell instead of hanging the board"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"lisp\n(define (loop n) (loop (+ n 1)))\n(loop 0)\n",
+                        b"exit\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
+
+        checks = [
+            ("exhaustion reported", "Node pool exhausted" in out),
+            ("evaluation unwound",  "=> ()" in out),
+            ("console still alive", "lsh>" in out.split("Node pool exhausted")[-1]),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-500:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -623,9 +667,16 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire, test_memory_margins]
+    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
+    tests.append(test_memory_margins)
+    # Last, and it has to stay last: it deliberately exhausts the Lisp node
+    # pool, which leaves the evaluator returning nil until the board reboots.
+    # Every other test here drives the board through its shell, and the shell
+    # evaluates -- so anything after this would fail for reasons that have
+    # nothing to do with what it is testing.
+    tests.append(test_node_pool_exhaustion)
 
     total = 0
     passed = 0
