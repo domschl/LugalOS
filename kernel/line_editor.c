@@ -30,19 +30,19 @@ static char history_stack[MAX_HIST_ITEMS][MAX_LINE_LEN];
 static int history_count = 0;
 
 static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
-    uart_puts("\033[?25l"); // Hide cursor during display redraw
-    uart_puts("\r");
-    uart_puts(prompt);
+    console_puts("\033[?25l"); // Hide cursor during display redraw
+    console_puts("\r");
+    console_puts(prompt);
     for (int i = 0; i < len; i++) {
         console_putc(buf[i]);
     }
-    uart_puts("\033[K"); // Clear remaining line to the right
+    console_puts("\033[K"); // Clear remaining line to the right
 
     // Move cursor back to pos using ANSI Cursor Left (\033[D)
     for (int i = 0; i < len - pos; i++) {
-        uart_puts("\033[D");
+        console_puts("\033[D");
     }
-    uart_puts("\033[?25h"); // Show cursor at final target position
+    console_puts("\033[?25h"); // Show cursor at final target position
 }
 
 
@@ -95,12 +95,12 @@ static void add_history(const char *line) {
 static int g_prev_target_line = 1;
 
 static void redraw_box(const char *filename, const char *buf, int len, int pos, const char *status_msg) {
-    uart_puts("\033[?25l"); // Hide cursor during box redraw
+    console_puts("\033[?25l"); // Hide cursor during box redraw
     if (g_prev_target_line > 0) {
         for (int m = 0; m < g_prev_target_line; m++) {
-            uart_puts("\033[A");
+            console_puts("\033[A");
         }
-        uart_puts("\r\n");
+        console_puts("\n");
     }
 
     int line_num = 1;
@@ -127,7 +127,7 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
             console_putc(buf[i]);
             i++;
         }
-        uart_puts("\033[K\r\n");
+        console_puts("\033[K\n");
         if (i < len && buf[i] == '\n') {
             i++;
             current_line++;
@@ -137,45 +137,60 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
     }
 
     // Status Line Format: ─── <filename> ─── C-X C-E: eval | C-X C-S: save | C-X C-C: exit ───
-    uart_puts("\033[1;36m─── \033[1;33m");
+    console_puts("\033[1;36m─── \033[1;33m");
     const char *fn = (filename && strlen(filename) > 0) ? filename : "/ram0/system/scratch.lisp";
-    uart_puts(fn);
-    uart_puts("\033[1;36m ");
+    console_puts(fn);
+    console_puts("\033[1;36m ");
 
     int fn_len = strlen(fn);
     int mid_fill = 79 - 50 - fn_len;
     if (mid_fill < 1) mid_fill = 1;
-    for (int m = 0; m < mid_fill; m++) uart_puts("─");
+    for (int m = 0; m < mid_fill; m++) console_puts("─");
 
     if (status_msg && strlen(status_msg) > 0) {
         cprintf(" \033[1;32m%s\033[1;36m ───\033[0m", status_msg);
     } else {
-        uart_puts(" C-X C-E: eval | C-X C-S: save | C-X C-C: exit ───\033[0m");
+        console_puts(" C-X C-E: eval | C-X C-S: save | C-X C-C: exit ───\033[0m");
     }
+
+    /* Erase everything below the status line.
+     *
+     * Each content line above is cleared with \033[K, which only clears the
+     * line the cursor is on -- so a redraw painted exactly as many lines as
+     * the buffer currently has and left anything beyond them untouched.
+     * Loading a 5-line file after a 10-line one therefore drew the new
+     * content and status line over the first six rows and left lines 7-10 of
+     * the previous file sitting below, looking like part of the document.
+     *
+     * \033[J clears from the cursor (end of the status line, the last thing
+     * this function draws) to the end of the screen, so the box always ends
+     * where it says it ends. Must come before the cursor is walked back up to
+     * the edit position below, or it would erase the box itself. */
+    console_puts("\033[J");
 
     int total_content_lines = current_line;
     int move_up_lines = (total_content_lines - target_line) + 1;
     for (int m = 0; m < move_up_lines; m++) {
-        uart_puts("\033[A");
+        console_puts("\033[A");
     }
-    uart_puts("\r");
+    console_puts("\r");
     cprintf("\033[1;36m%3d │ \033[0m", target_line);
     for (int c = 0; c < target_col; c++) {
-        uart_puts("\033[C");
+        console_puts("\033[C");
     }
 
     g_prev_target_line = target_line;
-    uart_puts("\033[?25h"); // Show cursor at final position
+    console_puts("\033[?25h"); // Show cursor at final position
 }
 
 static bool read_status_prompt(int total_lines, int target_line, const char *prompt, char *out_buf, int max_len) {
     int move_down = (total_lines - target_line) + 1;
     for (int m = 0; m < move_down; m++) {
-        uart_puts("\033[B");
+        console_puts("\033[B");
     }
-    uart_puts("\r\033[K\033[1;33m");
-    uart_puts(prompt);
-    uart_puts("\033[0m");
+    console_puts("\r\033[K\033[1;33m");
+    console_puts(prompt);
+    console_puts("\033[0m");
 
     int len = 0;
     out_buf[0] = '\0';
@@ -192,7 +207,7 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
             if (len > 0) {
                 len--;
                 out_buf[len] = '\0';
-                uart_puts("\b \b");
+                console_puts("\b \b");
             }
         } else if (c >= 32 && c <= 126) {
             if (len < max_len - 1) {
@@ -209,9 +224,9 @@ static void exit_editor_cleanup(int len, const char *buf) {
     for (int i = 0; i < len; i++) if (buf[i] == '\n') total_lines++;
     int move_down = (total_lines - g_prev_target_line) + 1;
     for (int m = 0; m < move_down; m++) {
-        uart_puts("\033[B");
+        console_puts("\033[B");
     }
-    uart_puts("\r\n");
+    console_puts("\n");
 }
 
 int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len) {
@@ -240,7 +255,7 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
     status_msg[0] = '\0';
 
     // Print top optical separator line ONCE at editor start
-    uart_puts("\r\033[1;36m─────────────────────────────────────────────────────────────────────────────\033[0m\r\n");
+    console_puts("\r\033[1;36m─────────────────────────────────────────────────────────────────────────────\033[0m\n");
     g_prev_target_line = 1;
 
     redraw_box(active_filename, out_buf, len, pos, status_msg);
@@ -533,7 +548,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
             redraw_line(prompt, out_buf, len, pos);
             continue;
         } else if (c == 0x0C) { // Ctrl-L: Clear screen
-            uart_puts("\033[2J\033[H");
+            console_puts("\033[2J\033[H");
             redraw_line(prompt, out_buf, len, pos);
             continue;
         } else if (c == 0x10) { // Ctrl-P: History Previous
@@ -650,7 +665,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
 
         // Enter key
         if (c == '\r' || c == '\n') {
-            uart_puts("\r\n");
+            console_puts("\n");
             out_buf[len] = '\0';
             add_history(out_buf);
             return len;

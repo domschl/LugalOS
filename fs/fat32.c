@@ -1,5 +1,6 @@
 #include "fs/fat32.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include <string.h>
 
 /* A 512-byte sector buffer declared as uint8_t[512] and then cast to
@@ -858,20 +859,20 @@ int fat32_rmdir(fat32_fs_t *fs, const char *path) {
     if (fat32_find_file(fs, path, &entry) < 0) return -1;
 
     if (!(entry.attr & FAT32_ATTR_DIRECTORY)) {
-        printk("rmdir: '%s' is not a directory\n", path);
+        cprintf("rmdir: '%s' is not a directory\n", path);
         return -1;
     }
 
     uint32_t dir_clus = ((uint32_t)entry.fst_clus_hi << 16) | entry.fst_clus_lo;
     if (dir_clus == 0 || dir_clus == fs->root_dir_cluster) {
-        printk("rmdir: cannot remove root directory\n");
+        cprintf("rmdir: cannot remove root directory\n");
         return -1;
     }
 
     empty_check_ctx_t ctx = { .has_real_entries = false };
     fat32_scan_dir(fs, dir_clus, dir_empty_check_cb, &ctx);
     if (ctx.has_real_entries) {
-        printk("rmdir: directory '%s' is not empty\n", path);
+        cprintf("rmdir: directory '%s' is not empty\n", path);
         return -1;
     }
 
@@ -926,7 +927,7 @@ static bool list_dir_cb(fat32_fs_t *fs, uint32_t sector_lba,
         memcpy(namebuf, entries[i].name, 11);
         namebuf[11] = '\0';
         bool is_dir = (entries[i].attr & FAT32_ATTR_DIRECTORY) != 0;
-        printk("%s  %12u  0x%02x   %s\n",
+        cprintf("%s  %12u  0x%02x   %s\n",
                namebuf,
                (unsigned int)entries[i].file_size,
                entries[i].attr,
@@ -943,28 +944,28 @@ void fat32_list_dir(fat32_fs_t *fs, const char *path) {
     if (path && *path && strcmp(path, "/") != 0) {
         fat32_dir_entry_t entry;
         if (fat32_find_file(fs, path, &entry) < 0) {
-            printk("ls: path '%s' not found\n", path);
+            cprintf("ls: path '%s' not found\n", path);
             return;
         }
         if (!(entry.attr & FAT32_ATTR_DIRECTORY)) {
-            printk("ls: '%s' is not a directory\n", path);
+            cprintf("ls: '%s' is not a directory\n", path);
             return;
         }
         target_clus = ((uint32_t)entry.fst_clus_hi << 16) | entry.fst_clus_lo;
         if (target_clus == 0) target_clus = fs->root_dir_cluster;
     }
 
-    printk("\nDirectory Listing (FAT32):\n");
-    printk("Name        Size (Bytes)  Attr   Type\n");
-    printk("----------  ------------  -----  -----\n");
+    cprintf("\nDirectory Listing (FAT32):\n");
+    cprintf("Name        Size (Bytes)  Attr   Type\n");
+    cprintf("----------  ------------  -----  -----\n");
 
     int count = 0;
     fat32_scan_dir(fs, target_clus, list_dir_cb, &count);
 
     if (count == 0) {
-        printk("(empty directory)\n");
+        cprintf("(empty directory)\n");
     }
-    printk("\n");
+    cprintf("\n");
 }
 
 /* --- fat32_readdir --- */

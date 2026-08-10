@@ -1,5 +1,6 @@
 #include "drivers/i2c_rtc.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "kernel/time.h"
 #include "drivers/uart.h"
 #include <string.h>
@@ -266,26 +267,29 @@ bool i2c_rtc_write_time(const rtc_time_t *tm) {
 }
 
 void i2c_scan_bus(void) {
-    printk("\nI2C Bus Scan (I2C0 on GP4 SDA / GP5 SCL):\n");
-    printk("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
+    /* An answer to a typed `i2c` command, so it goes to the console stream
+     * (C0). Using printk() put the whole scan table into the kernel log
+     * ring, where it turned up again in `cat /proc/kmsg`. */
+    cprintf("\nI2C Bus Scan (I2C0 on GP4 SDA / GP5 SCL):\n");
+    cprintf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
 
     int found_count = 0;
     for (int row = 0; row < 128; row += 16) {
-        printk("%02x: ", row);
+        cprintf("%02x: ", row);
         for (int col = 0; col < 16; col++) {
             uint8_t addr = row + col;
             if (addr < 0x08 || addr > 0x77) {
-                printk("   ");
+                cprintf("   ");
             } else {
                 if (i2c_probe_addr(addr)) {
-                    printk("%02x ", addr);
+                    cprintf("%02x ", addr);
                     found_count++;
                 } else {
-                    printk("-- ");
+                    cprintf("-- ");
                 }
             }
         }
-        printk("\n");
+        cprintf("\n");
     }
-    printk("Found %d I2C device(s).\n\n", found_count);
+    cprintf("Found %d I2C device(s).\n\n", found_count);
 }

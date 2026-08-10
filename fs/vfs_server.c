@@ -15,6 +15,7 @@
 #include "kernel/device.h"
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
+#include "kernel/meminfo.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/version.h"
@@ -427,17 +428,69 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     } else if (strcmp(rel, "meminfo") == 0) {
         /* B2: real allocator numbers instead of a fixed string. The bump
          * allocator this replaced had nothing meaningful to report -- it
-         * couldn't free and had no upper bound to be a fraction of. */
-        uint32_t total_pg = 0, free_pg = 0;
+         * couldn't free and had no upper bound to be a fraction of.
+         *
+         * Extended since with the figures that cannot be read off the ELF:
+         * the heap's high-water mark, its worst-case contiguous run, and how
+         * deep the boot stack has ever been. Static section sizes are exact
+         * in the image and are not re-derived here; what the RAM map below
+         * adds is the *leftover* -- the relationship between those sizes and
+         * the board's actual RAM, which is the thing that decides whether
+         * another static array fits.
+         *
+         * The whole report has to land inside the handle's 512-byte proc_buf
+         * (see vfs_handle_t). ksnprintf() truncates safely rather than
+         * overrunning, so the failure mode is a silently short file; the
+         * Storage line is deliberately kept last so that a test asserting on
+         * it is also asserting that nothing above it was cut off. */
+        uint32_t total_pg = 0, free_pg = 0, peak_pg = 0, run_pg = 0;
         palloc_stats(&total_pg, &free_pg);
+        palloc_extra_stats(&peak_pg, &run_pg);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "Heap & Storage Status:\n  Page Size: %u bytes\n", (unsigned int)PAGE_SIZE);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Pages Total: %u\n  Pages Free: %u\n  Pages Used: %u\n",
             total_pg, free_pg, total_pg - free_pg);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Pages Peak: %u\n  Largest Free Run: %u pages\n", peak_pg, run_pg);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Heap Free: %u KB of %u KB\n",
             (free_pg * (uint32_t)PAGE_SIZE) / 1024, (total_pg * (uint32_t)PAGE_SIZE) / 1024);
+
+        mem_ram_map_t map;
+        meminfo_ram_map(&map);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "RAM: %u KB total at 0x%lx\n",
+            map.total_bytes / 1024, (unsigned long)map.ram_start);
+        /* On RP2350 .text and .rodata are in flash and appear in the Flash
+         * line below; on the QEMU targets they are in this same region and
+         * are part of this figure. Labelled per target rather than averaged
+         * into one vague word, because the two numbers are not comparable. */
+#if defined(CONFIG_BOARD_RP2350)
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Image (data+bss): %u KB\n", map.image_bytes / 1024);
+#else
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Image (text+data+bss): %u KB\n", map.image_bytes / 1024);
+#endif
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Boot Stack: %u KB, peak %u bytes\n",
+            map.stack_bytes / 1024, stack_used_bytes());
+        /* Two different sizes on purpose. The heap *region* is whatever the
+         * linker left above _kernel_end; the *managed* part is what palloc
+         * actually put in its bitmap, which PALLOC_MAX_PAGES can cap well
+         * below the region (it does on QEMU: 16 MB of 128 MB). Reporting only
+         * one of them would make the cap invisible. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "  Heap: %u KB managed of %u KB\n",
+            (total_pg * (uint32_t)PAGE_SIZE) / 1024, map.heap_bytes / 1024);
+
+        uint32_t flash_used = 0, flash_total = 0;
+        if (meminfo_flash(&flash_used, &flash_total)) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "Flash: %u KB of %u KB\n", flash_used / 1024, flash_total / 1024);
+        }
+
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;

@@ -86,6 +86,7 @@ SECTIONS
      * between sections does not move a region-assigned one. */
     .stack (NOLOAD) : {
         . = ALIGN(16);
+        _stack_bottom = .;
         . += 16k;
         _stack_top = .;
     } > RAM
@@ -115,10 +116,28 @@ SECTIONS
 
     __flash_binary_end = LOADADDR(.scratch_y) + SIZEOF(.scratch_y);
 
-    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): stops
-     * at the start of SCRATCH_X, so the heap can never grow into the scratch
-     * regions or the boot stack that lives at the top of SCRATCH_Y. The bump
-     * allocator this replaced had no upper bound and would have run straight
-     * through both. */
-    _heap_end = 0x20080000;
+    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): the end
+     * of main RAM, i.e. the start of SCRATCH_X, so the heap can never grow
+     * into the scratch regions. The bump allocator this replaced had no upper
+     * bound and would have run straight through them. (The boot stack used to
+     * sit at the top of SCRATCH_Y and was the other thing this protected; it
+     * now lives in .stack above, below _kernel_end, so the heap's lower bound
+     * protects it instead.) */
+    _heap_end = ORIGIN(RAM) + LENGTH(RAM);
+
+    /* The whole writable region, so /proc/meminfo can report the heap and the
+     * stack as fractions of something real. Taken from the MEMORY block rather
+     * than written down again in C: the point of these numbers is that they
+     * come from the board's memory map, not from a constant that can drift
+     * away from it. Note this deliberately excludes SCRATCH_X/Y -- 8 KB that
+     * exist on the die but that nothing on this board currently places into.
+     *
+     * FLASH likewise, so the flash figure covers the whole XIP window rather
+     * than just the part __flash_binary_end reaches: on this board most of the
+     * image is the embedded FAT32 payload, and the two are worth telling
+     * apart. */
+    _ram_start   = ORIGIN(RAM);
+    _ram_end     = ORIGIN(RAM) + LENGTH(RAM);
+    _flash_start = ORIGIN(FLASH);
+    _flash_end   = ORIGIN(FLASH) + LENGTH(FLASH);
 }

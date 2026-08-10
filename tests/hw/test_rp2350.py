@@ -201,6 +201,116 @@ def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """The RP2350's actual remaining headroom, measured on the board.
+
+    This is the target where the numbers are tight: .data + .bss reach to
+    within tens of KB of the top of the 512 KB SRAM, leaving a small heap
+    above _kernel_end and a 16 KB boot stack below it. QEMU has 128 MB and
+    therefore cannot fail either check no matter how much the image grows,
+    which is exactly why the measurement belongs here.
+
+    The stack figure is the one this exists for. linker/rp2350.ld records the
+    reason the boot stack was moved out of SCRATCH_Y: preemption can push a
+    trap frame at an arbitrary point in the deepest call chain in the system,
+    and overflowing the stack there corrupts the memory below it rather than
+    faulting -- a failure with no symptom at the point it happens. That was
+    reasoned about but never measured until entry.S started painting the
+    stack, and this is where the paint gets read on real silicon.
+
+    So the work comes first and the reading second: taskdemo allocates and
+    frees real pages, and by the time this test runs the suite has already
+    driven U-mode entry, PMP faults, ELF loading and two 9P transports through
+    the same stack. /proc/meminfo's stack and heap peaks are cumulative since
+    boot, so reading them afterwards makes them describe all of it.
+
+    **This deliberately does not run a runaway Lisp recursion.** An earlier
+    version did, to drive the evaluator to the depth guard and make the
+    high-water mark describe the deepest call chain in the system. On real
+    silicon that command hangs the board hard -- no fault banner, no output,
+    USB stops being serviced, and only a physical replug recovers it. It
+    reproduces identically on firmware from before any of this work (commit
+    f953876), so it is a pre-existing defect rather than something this
+    instrumentation introduced, and it is written up with measurements in
+    plan/phase6_memory_and_processes.md §6.4.
+
+    It is left out rather than marked expected-fail because a test that bricks
+    the board is not a test: every run would need someone standing at the
+    bench to unplug it, and the six tests after this one would fail as
+    collateral with misleading messages. Measuring memory margins and
+    reproducing an unrelated hang are two jobs, and the hang has its own
+    write-up with a repro that anyone can run deliberately.
+
+    Both margins are reported in the pass message even when everything is
+    healthy -- the point of the test is the number, not just the verdict.
+    """
+    name = "Memory margins: heap and boot-stack headroom on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            # Exercise the allocator before measuring: two task stacks out and
+            # back, which is the only thing in this suite that moves the heap's
+            # peak rather than just its current occupancy.
+            ser.write(b"taskdemo\n")
+            ser.flush()
+            rp2350.drain(ser, quiet=0.8, deadline=20.0)
+
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/meminfo\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.8, deadline=10.0).decode("utf-8", "replace")
+
+        def field(pattern: str) -> int | None:
+            m = re.search(pattern, out)
+            return int(m.group(1)) if m else None
+
+        pages_total = field(r"Pages Total: (\d+)")
+        pages_peak = field(r"Pages Peak: (\d+)")
+        largest_run = field(r"Largest Free Run: (\d+) pages")
+        pages_free = field(r"Pages Free: (\d+)")
+        stack_kb = field(r"Boot Stack: (\d+) KB")
+        stack_peak = field(r"Boot Stack: \d+ KB, peak (\d+) bytes")
+        flash_used = field(r"Flash: (\d+) KB of \d+ KB")
+        flash_total = field(r"Flash: \d+ KB of (\d+) KB")
+
+        if None in (pages_total, pages_peak, largest_run, pages_free,
+                    stack_kb, stack_peak, flash_used, flash_total):
+            return (name, False,
+                    "could not parse /proc/meminfo -- board may predate this field set, "
+                    f"or the report was truncated:\n{out[-500:]}")
+
+        stack_bytes = stack_kb * 1024
+        checks = [
+            # A zero here means the paint or the scan is broken, not that the
+            # stack is unused: reaching this shell took stack to get here.
+            ("boot stack high-water is measured", stack_peak > 0),
+            # No poison left would report the full region -- what a real
+            # overflow looks like. Anything at or above 3/4 is a margin worth
+            # knowing about before it becomes a corruption bug.
+            ("boot stack has headroom", stack_peak < (stack_bytes * 3) // 4),
+            # The heap survived the work above with something left.
+            ("heap peak stayed within the heap", pages_peak < pages_total),
+            ("heap has free pages left", pages_free > 0),
+            # Fragmentation, not exhaustion: a multi-page allocation needs a
+            # run, and on a 15-page heap runs go first.
+            ("heap can still serve a 2-page run", largest_run >= 2),
+        ]
+        failed = [label for label, passed in checks if not passed]
+
+        margins = (f"stack {stack_peak}/{stack_bytes} B peak, "
+                   f"heap {pages_peak}/{pages_total} pages peak "
+                   f"(largest free run {largest_run}), "
+                   f"flash {flash_used}/{flash_total} KB")
+        if failed:
+            return (name, False, f"{', '.join(failed)} -- {margins}")
+        return (name, True, margins)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """B3 prep (D2): read this silicon's actual PMP configuration.
 
@@ -513,7 +623,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire, test_memory_margins]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
 

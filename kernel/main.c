@@ -61,6 +61,17 @@ const void * const __attribute__((section(".binary_info"))) g_p_bi_binary_end = 
 extern char _kernel_end[];
 extern char _heap_end[];
 
+/* The kernel log's default sink: the physical console device, with the
+ * terminal newline convention applied on the way out (C0, see
+ * kernel/console.h). Deliberately not console_putc() -- that is the *console
+ * stream*, which init.lisp may rebind to another device, and the log sink and
+ * the shell are meant to be independently routable. This sink names its
+ * device the way the pre-C0 code did; only the CRLF conversion is new, and it
+ * is new here because printk() stopped doing it. */
+static void klog_terminal_sink(char c) {
+    console_emit(uart_putc, c);
+}
+
 void kernel_main(void) {
     /* Boot bootstrap: the console UART and the kernel log sink must both
      * exist before anything can printk(), which the device registry itself
@@ -75,7 +86,7 @@ void kernel_main(void) {
      * output is byte-identical to the pre-B0 path -- the difference is that
      * it is now detachable (`klog detach console`) and retained in the ring
      * for /proc/kmsg either way. Must precede time_init(), which logs. */
-    klog_sink_register("console", uart_putc);
+    klog_sink_register("console", klog_terminal_sink);
 
     /* B4: the user-facing stream, bound to the same device by default so
      * behaviour is unchanged until something rebinds it. It is a separate

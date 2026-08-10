@@ -187,6 +187,7 @@ set(SOURCES
     kernel/board.c
     kernel/chan.c
     kernel/palloc.c
+    kernel/meminfo.c
     kernel/uaccess.c
     kernel/ticker.c
     kernel/time.c

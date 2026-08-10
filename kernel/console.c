@@ -13,8 +13,16 @@ void console_bind(console_putc_fn putc) {
     g_console_putc = putc;
 }
 
+/* See kernel/include/kernel/console.h for why the CRLF convention lives on
+ * this stream rather than in the format engine or the UART driver. */
+void console_emit(console_putc_fn out, char c) {
+    if (!out) return;
+    if (c == '\n') out('\r');
+    out(c);
+}
+
 void console_putc(char c) {
-    if (g_console_putc) g_console_putc(c);
+    console_emit(g_console_putc, c);
 }
 
 void console_puts(const char *s) {

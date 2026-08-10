@@ -46,6 +46,34 @@ void console_bind(console_putc_fn putc);
 void console_putc(char c);
 void console_puts(const char *s);
 
+/* --- Where the CRLF convention lives (C0, plan/phase6_memory_and_processes.md §6.1) ---
+ *
+ * A terminal needs CR before LF; a 9P frame must not have one inserted into
+ * it. Those two facts decide the layer this belongs to, and it is not the one
+ * that looks most obvious.
+ *
+ * It used to live in vprintk_to(), which inserted '\r' for a '\n' *in the
+ * format string* -- and therefore not for bytes emitted through %s. So
+ * `cat file.c` printed a staircase: cprintf("%s\n", buf) translated its own
+ * trailing newline and none of the file's.
+ *
+ * The tempting fix is to translate in uart_putc(), covering everything at
+ * once. That is wrong here: drivers/uart_net.c sends SLIP-encoded 9P frames
+ * through uart_putc(), so translating there would insert 0x0D into binary
+ * protocol data and corrupt every frame containing a 0x0A byte.
+ *
+ * So it lives on the *console stream*: the thing that is by definition
+ * attached to a terminal. printk() and cprintf() now emit raw '\n', the klog
+ * ring stores raw '\n' (which is what a remote node reading /proc/kmsg over
+ * 9P wants), and the conversion happens once, on the way out to a device
+ * acting as a terminal.
+ *
+ * Exposed rather than kept static because the kernel log's "console" sink
+ * needs the same conversion while writing to a device this stream does not
+ * own -- see kernel/main.c. Callers pass the destination; the policy stays
+ * here, in one place. */
+void console_emit(console_putc_fn out, char c);
+
 /* Formatted user-facing output. Same format engine as printk(); the
  * difference is only which stream it lands on. */
 int cprintf(const char *fmt, ...);

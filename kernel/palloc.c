@@ -11,6 +11,22 @@ static uintptr_t g_base;        /* page-aligned first managed address */
 static uint32_t  g_num_pages;
 static uint8_t   g_bitmap[(PALLOC_MAX_PAGES + 7) / 8];
 
+/* Live page count and its high-water mark.
+ *
+ * g_used_pages duplicates what the bitmap already says, and only exists so
+ * that g_peak_used can be maintained in O(1) at every allocation -- deriving
+ * the peak would otherwise mean scanning the bitmap on each call, which is
+ * the one place in this allocator where cost is paid repeatedly.
+ *
+ * The peak is the number worth having. Instantaneous free pages tell you
+ * whether the last allocation fitted; the peak tells you whether the heap is
+ * the right size, which on RP2350 (60 KB above _kernel_end) is a live
+ * question rather than an academic one. Monotonic by construction: never
+ * reset, so a transient spike between two reads of /proc/meminfo cannot hide
+ * between them. */
+static uint32_t  g_used_pages;
+static uint32_t  g_peak_used;
+
 static inline bool bit_get(uint32_t i) {
     return (g_bitmap[i / 8] >> (i % 8)) & 1u;
 }
@@ -27,6 +43,8 @@ void palloc_init(uintptr_t start, uintptr_t end) {
     uintptr_t e = end & ~((uintptr_t)PAGE_SIZE - 1);
 
     memset(g_bitmap, 0, sizeof(g_bitmap));
+    g_used_pages = 0;
+    g_peak_used = 0;
 
     if (e <= s) {
         g_base = s;
@@ -83,6 +101,8 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
         if (!run_ok) continue;
 
         for (uint32_t j = 0; j < n; j++) bit_set(i + j);
+        g_used_pages += n;
+        if (g_used_pages > g_peak_used) g_peak_used = g_used_pages;
         irq_restore(irqf);
         void *p = (void *)(g_base + (uintptr_t)i * PAGE_SIZE);
         memset(p, 0, (size_t)n * PAGE_SIZE); /* outside the critical section */
@@ -104,7 +124,16 @@ void palloc_free(void *p, uint32_t n) {
     if (idx >= g_num_pages || idx + n > g_num_pages) return;
 
     uintptr_t irqf = irq_save();
-    for (uint32_t j = 0; j < n; j++) bit_clear(idx + j);
+    /* Only count down pages that were actually allocated. Clearing an already
+     * clear bit is harmless to the bitmap, so a double free was previously a
+     * no-op; an unguarded g_used_pages-- would turn it into a counter that
+     * underflows and reports a peak larger than the heap. */
+    for (uint32_t j = 0; j < n; j++) {
+        if (bit_get(idx + j)) {
+            bit_clear(idx + j);
+            g_used_pages--;
+        }
+    }
     irq_restore(irqf);
 }
 
@@ -116,5 +145,31 @@ void palloc_stats(uint32_t *total_pages, uint32_t *free_pages) {
             if (!bit_get(i)) free_count++;
         }
         *free_pages = free_count;
+    }
+}
+
+void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run) {
+    if (peak_used_pages) *peak_used_pages = g_peak_used;
+
+    if (largest_free_run) {
+        /* Free pages and *usable* free pages are not the same number once
+         * anything asks for more than one page at a time. palloc_pages() is
+         * first-fit over contiguous runs, and palloc_pages_aligned() wants a
+         * self-aligned run on top of that (PMP needs NAPOT), so a heap with
+         * plenty free but nothing contiguous fails allocations that the free
+         * count says should succeed. This is the figure that distinguishes
+         * "out of memory" from "too fragmented", which are different bugs.
+         *
+         * Reported without regard to alignment: it is the ceiling on what any
+         * request could get, not a promise that an aligned one will. */
+        uint32_t best = 0, run = 0;
+        for (uint32_t i = 0; i < g_num_pages; i++) {
+            if (bit_get(i)) {
+                run = 0;
+            } else if (++run > best) {
+                best = run;
+            }
+        }
+        *largest_free_run = best;
     }
 }
