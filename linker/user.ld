@@ -57,6 +57,10 @@ SECTIONS
     /* 4080, not 4096: the loader plants a 16-byte exit stub at the top of the
      * text page, which is where a program that simply returns from main ends
      * up. See install_exit_stub() in arch/riscv/common/elf.c. */
+    /* The exit stub sits in the last 16 bytes of the first page, which is
+     * where a program that simply returns from _start lands. That much is
+     * still a link-time contract, because it is about the *first page*
+     * specifically and not about how big the image is. */
     ASSERT(_utext_end <= 4080,
            "user program: .text + .rodata must fit in 4080 bytes (one page minus the exit stub)")
 
@@ -78,8 +82,20 @@ SECTIONS
     }
     _udata_end = .;
 
-    ASSERT(_udata_end <= 0x2000,
-           "user program: .data + .bss must fit in one 4096-byte page")
+    /* No ASSERT on the total size any more (C4).
+     *
+     * It used to be `_udata_end <= 0x2000`: two pages, checked here because
+     * the loader could not allocate anything else. The loader now sizes the
+     * image from the program headers and rounds up to a power-of-two page run,
+     * so the real limit is what the heap can *place* -- a k-page image needs a
+     * k-page-aligned run, and on a small heap the alignment binds long before
+     * the free page count does.
+     *
+     * That is not a number a linker script can know, so it is discovered at
+     * load time and reported there, naming placement rather than "out of
+     * memory". Asserting a stale figure here would only fail the build for
+     * programs that would have run. */
+    _uimage_end = .;
 
     /DISCARD/ : {
         *(.comment)

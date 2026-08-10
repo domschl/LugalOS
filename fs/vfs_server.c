@@ -16,6 +16,7 @@
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
+#include "arch/elf.h"
 #include "kernel/path.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
@@ -534,6 +535,13 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
          * actually put in its bitmap, which PALLOC_MAX_PAGES can cap well
          * below the region (it does on QEMU: 16 MB of 128 MB). Reporting only
          * one of them would make the cap invisible. */
+        uint32_t img_alloc = 0, img_used = 0;
+        elf_image_stats(&img_alloc, &img_used);
+        if (img_alloc) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "  User Images: %u pages, %u spanned (%u padding)\n",
+                img_alloc, img_used, img_alloc - img_used);
+        }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Heap: %u KB managed of %u KB\n",
             (total_pg * (uint32_t)PAGE_SIZE) / 1024, map.heap_bytes / 1024);

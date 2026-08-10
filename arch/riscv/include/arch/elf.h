@@ -66,6 +66,14 @@ typedef struct {
 } elf64_phdr_t;
 #pragma pack(pop)
 
+/* Segment permission bits (ELF p_flags). Used to decide what a loaded
+ * segment is granted: executable segments get R|X, everything else R|W, so
+ * W^X follows from what the linker declared rather than from the loader
+ * assuming a layout (C4). */
+#define PF_X 0x1
+#define PF_W 0x2
+#define PF_R 0x4
+
 /* The most arguments a program can be given. Exposed so a caller sizing its
  * own argv array agrees with the loader rather than guessing (C3). */
 #define USER_ARGV_LIMIT 8
@@ -82,6 +90,16 @@ int elf_load_and_run(const char *path);
  * The program's pages are returned at the next load once its task has ended --
  * nothing schedules on a user image, so there is no natural moment earlier
  * than that. See the reaping note in arch/riscv/common/elf.c. */
+/* Pages currently held by resident user images, and how many of those the
+ * programs actually span (C4).
+ *
+ * The difference is the NAPOT rounding loss: a region must be a power of two,
+ * so a program spanning five pages is given eight. Reported in /proc/meminfo
+ * because on a 40-page heap that is a cost worth being able to see rather than
+ * infer -- it is the difference between "the heap is full" and "the heap is
+ * full of padding". */
+void elf_image_stats(uint32_t *alloc_pages, uint32_t *used_pages);
+
 int elf_spawn(const char *path);
 
 /* As above, with arguments. `argv[0]` is the program's own name by

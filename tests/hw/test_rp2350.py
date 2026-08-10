@@ -802,6 +802,54 @@ def test_process_abi(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_large_image(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """C4 on real silicon: an image larger than two pages, and W^X from flags.
+
+    This board is where the image model's constraints are real. A PMP region
+    must be power-of-two sized and self-aligned on Hazard3 (NAPOT only), so a
+    segment whose page count is not a power of two is granted as several
+    pieces, and the number of pieces is bounded by five dynamic PMP entries --
+    eight less the three that shadow the hardwired U-mode grants. ubig is sized
+    to sit exactly at that budget: six spanned pages in an eight-page run, its
+    data segment decomposing into 1 + 2 + 2, plus text and stack.
+
+    On the QEMU targets the same program is mapped by Sv39 at page granularity
+    and none of that applies -- it would pass there with the arithmetic
+    completely wrong.
+
+    uwx checks the other half. Permissions now come from each segment's ELF
+    p_flags rather than from the loader assuming page 0 is text, so a store
+    into its own text must still fault; on this board that is decided by PMP
+    with erratum E6's reversed permission bits.
+    """
+    name = "C4: multi-page image and W^X on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"ubig\n", b"uwx\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.8, deadline=25.0).decode("utf-8", "replace")
+
+        checks = [
+            ("multi-page image ran",   "UBIG_WROTE 5" in out),
+            ("every page writable",    "UBIG_READBACK" in out),
+            ("it finished",            "UBIG_DONE" in out),
+            ("W^X program started",    "UWX_ALIVE" in out),
+            ("store into text faulted",
+             "terminated before it could exit" in out and "UWX_NOT_ENFORCED" not in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -826,6 +874,7 @@ def main() -> int:
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
+    tests.append(test_large_image)
     tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
