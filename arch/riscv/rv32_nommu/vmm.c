@@ -38,3 +38,11 @@ void vmm_switch_space(vmm_space_t *space) {
 void *vmm_alloc_page(void) {
     return palloc_pages(1);
 }
+
+/* No page tables to return: a NOMMU domain is a set of PMP registers, which
+ * are reprogrammed on the next context switch and cost nothing to abandon.
+ * Present so the loader can release a domain's resources without asking which
+ * memory model it is on (Rule 0). */
+void vmm_free_table(uintptr_t *root) {
+    (void)root;
+}

@@ -61,15 +61,34 @@
  * The last 16 bytes of page 0 are reserved for an exit stub -- see
  * install_exit_stub() for why a program needs one.
  *
- * ## One slot, allocated once
+ * ## One slot per program, released when it exits (C2)
  *
- * There is a single user-image slot, allocated on first use and then reused.
- * That is a real limit (one user program at a time), and it is deliberate
- * rather than lazy: the Sv39 backend caches a page table per domain, and
- * nothing here can free a page-table tree yet, so building a fresh domain per
- * exec would leak several pages every time. Reusing one slot keeps the domain
- * -- and therefore its page table -- built exactly once. Concurrent user
- * programs need a page-table free path first.
+ * This used to be a *single* slot, allocated once and reused, so only one user
+ * program could exist at a time. That was not laziness: the Sv39 backend
+ * caches a page table per domain and nothing could free a page-table tree, so
+ * a domain per exec would have leaked several pages every time. Reusing one
+ * slot kept the domain -- and its page table -- built exactly once.
+ *
+ * C2 added the missing free path (vmm_free_table, and mem_domain_destroy on
+ * top of it), so a program can now own its image, its user stack and its
+ * domain, and hand all three back when it ends.
+ *
+ * The slots are a fixed table rather than a dynamic list. A process descriptor
+ * is a few dozen bytes and a list of them would want an allocator that hands
+ * out sub-page objects, which this kernel deliberately does not have (see
+ * kernel/palloc.h). The bound is on descriptors, not on memory: what actually
+ * limits concurrent programs is pages, and on RP2350 that arrives first --
+ * three pages of image and stack each, out of a fifteen-page heap.
+ *
+ * ## Reaping, and why it is not automatic
+ *
+ * A program's pages cannot be freed by the program itself; it is running on
+ * them. They are freed by reap_finished(), which runs at the start of every
+ * load and can be asked for explicitly. That is the same shape as the
+ * scheduler's stack reaper (kernel/sched.c) and for the same reason -- the
+ * one difference being that a task's kernel stack is reaped by the *next*
+ * task, whereas nothing schedules on a user image, so the next loader call is
+ * the natural point.
  */
 
 #define USER_IMAGE_PAGES 2u
@@ -79,46 +98,93 @@
 #define USER_TEXT_MAX ((uint32_t)PAGE_SIZE - EXIT_STUB_BYTES)
 #define USER_IMAGE_BYTES ((uint32_t)PAGE_SIZE * USER_IMAGE_PAGES)
 
-static uint8_t     *g_image;      /* USER_IMAGE_PAGES pages, self-aligned */
-static uint8_t     *g_ustack;     /* one page */
-static mem_domain_t g_udomain;
-static bool         g_slot_ready;
-static bool         g_running;    /* one program at a time; see above */
-static uintptr_t    g_entry;      /* handed to the task body */
+/* How many programs may be resident at once. The real limit is pages -- three
+ * per program plus its kernel stack -- so this only has to be large enough not
+ * to be the thing that binds first. */
+#define USER_PROC_MAX 4
 
-/* Allocates the slot and builds its domain. Done once: see the header
- * comment on why the domain must not be rebuilt per exec. */
-static bool user_slot_init(void) {
-    if (g_slot_ready) return true;
+typedef struct {
+    bool          in_use;
+    int           pid;        /* -1 until the task exists */
+    uint8_t      *image;      /* USER_IMAGE_PAGES pages, self-aligned */
+    uint8_t      *ustack;     /* one page */
+    uintptr_t     entry;
+    mem_domain_t  domain;
+} user_proc_t;
 
-    g_image = (uint8_t *)palloc_pages_aligned(USER_IMAGE_PAGES, USER_IMAGE_PAGES);
-    if (!g_image) {
+static user_proc_t g_procs[USER_PROC_MAX];
+
+/* Releases one slot's pages and its domain. The caller must have established
+ * that the task is dead: on the MMU build this frees the page table, and
+ * doing that to a running task would pull the ground out from under it. */
+static void proc_release(user_proc_t *p) {
+    if (!p->in_use) return;
+    mem_domain_destroy(&p->domain);
+    if (p->image) palloc_free(p->image, USER_IMAGE_PAGES);
+    if (p->ustack) palloc_free(p->ustack, 1);
+    p->image = NULL;
+    p->ustack = NULL;
+    p->pid = -1;
+    p->in_use = false;
+}
+
+/* Returns the resources of every program whose task has ended. See the file
+ * header on why this is not automatic. */
+static int reap_finished(void) {
+    int reaped = 0;
+    for (int i = 0; i < USER_PROC_MAX; i++) {
+        user_proc_t *p = &g_procs[i];
+        if (!p->in_use || p->pid < 0) continue;
+        /* Asked by domain, not by pid. task_create() recycles DEAD slots, so
+         * a pid recorded here can by now belong to a different, living task --
+         * in which case this slot would never be reaped and its three pages
+         * would be stranded for the rest of the boot. The domain pointer is
+         * unique to this slot for as long as the slot is in use, so it answers
+         * the question actually being asked. */
+        if (sched_domain_in_use(&p->domain)) continue;
+        proc_release(p);
+        reaped++;
+    }
+    return reaped;
+}
+
+/* Claims a free slot and builds its image, stack and domain. */
+static user_proc_t *proc_alloc(void) {
+    user_proc_t *p = NULL;
+    for (int i = 0; i < USER_PROC_MAX; i++) {
+        if (!g_procs[i].in_use) { p = &g_procs[i]; break; }
+    }
+    if (!p) {
+        printk("[ELF Error] All %d user process slots are in use\n", USER_PROC_MAX);
+        return NULL;
+    }
+
+    p->image = (uint8_t *)palloc_pages_aligned(USER_IMAGE_PAGES, USER_IMAGE_PAGES);
+    if (!p->image) {
         printk("[ELF Error] No memory for a %u-page user image\n", USER_IMAGE_PAGES);
-        return false;
+        return NULL;
     }
-    g_ustack = (uint8_t *)palloc_pages(1);
-    if (!g_ustack) {
+    p->ustack = (uint8_t *)palloc_pages(1);
+    if (!p->ustack) {
         printk("[ELF Error] No memory for a user stack\n");
-        palloc_free(g_image, USER_IMAGE_PAGES);
-        g_image = NULL;
-        return false;
+        palloc_free(p->image, USER_IMAGE_PAGES);
+        p->image = NULL;
+        return NULL;
     }
 
-    mem_domain_init(&g_udomain);
+    mem_domain_init(&p->domain);
     /* Narrowest first. The three regions do not overlap, so ordering does not
      * change the outcome here -- but PMP resolves an address against the
      * lowest-numbered matching region, and keeping to the convention means a
      * later region that *does* overlap cannot silently widen an earlier one. */
-    mem_domain_add(&g_udomain, (uintptr_t)g_ustack, PAGE_SIZE, MEM_R | MEM_W);
-    mem_domain_add(&g_udomain, (uintptr_t)g_image, PAGE_SIZE, MEM_R | MEM_X);
-    mem_domain_add(&g_udomain, (uintptr_t)g_image + PAGE_SIZE, PAGE_SIZE,
+    mem_domain_add(&p->domain, (uintptr_t)p->ustack, PAGE_SIZE, MEM_R | MEM_W);
+    mem_domain_add(&p->domain, (uintptr_t)p->image, PAGE_SIZE, MEM_R | MEM_X);
+    mem_domain_add(&p->domain, (uintptr_t)p->image + PAGE_SIZE, PAGE_SIZE,
                    MEM_R | MEM_W);
 
-    g_slot_ready = true;
-    printk("[ELF] User slot: image 0x%lx (%u pages), stack 0x%lx\n",
-           (unsigned long)(uintptr_t)g_image, USER_IMAGE_PAGES,
-           (unsigned long)(uintptr_t)g_ustack);
-    return true;
+    p->pid = -1;
+    p->in_use = true;
+    return p;
 }
 
 /* A compiled `main` ends by *returning*, not by calling exit -- so ra has to
@@ -337,9 +403,10 @@ static bool layout_fits(const char *path, const seg_t *segs, int nseg) {
 /* The task body. Installs the domain, then leaves for U-mode and does not
  * come back: the task ends either at the exit stub or at a fault. */
 static void user_program_body(void *arg) {
-    (void)arg;
+    user_proc_t *p = (user_proc_t *)arg;
+    if (!p || !p->in_use) return;
 
-    if (task_set_domain(sched_current_pid(), &g_udomain) != 0) {
+    if (task_set_domain(sched_current_pid(), &p->domain) != 0) {
         /* The hardware did not install the domain as written, so nothing here
          * knows what this program would actually be allowed to touch.
          * Refusing is the only honest option: entering U-mode anyway would
@@ -349,37 +416,40 @@ static void user_program_body(void *arg) {
         return;
     }
 
-    arch_enter_user((void (*)(void))g_entry,
-                    (uintptr_t)g_ustack + PAGE_SIZE,
-                    (uintptr_t)g_image + PAGE_SIZE - EXIT_STUB_BYTES);
+    arch_enter_user((void (*)(void))p->entry,
+                    (uintptr_t)p->ustack + PAGE_SIZE,
+                    (uintptr_t)p->image + PAGE_SIZE - EXIT_STUB_BYTES);
 }
 
-int elf_load_and_run(const char *path) {
-    if (!path) return -1;
+/* Loads `path` into a fresh slot and starts it. Returns the slot, or NULL --
+ * having released anything it had claimed. Does not wait. */
+static user_proc_t *load_into_slot(const char *path) {
+    if (!path) return NULL;
 
-    if (g_running) {
-        printk("[ELF Error] A user program is already running in the single "
-               "image slot; not starting '%s'\n", path);
-        return -1;
-    }
+    /* Before claiming anything: a finished program's three pages are exactly
+     * what this load is about to ask for, and on RP2350's fifteen-page heap
+     * that is the difference between the second program starting and not. */
+    reap_finished();
 
     int fd = vfs_open(path, VFS_O_READ);
     if (fd < 0) {
         printk("[ELF Error] Failed to open '%s'\n", path);
-        return -1;
+        return NULL;
     }
 
     vfs_stat_t st;
     if (vfs_fstat(fd, &st) < 0) {
         printk("[ELF Error] Failed to stat '%s'\n", path);
         vfs_close(fd);
-        return -1;
+        return NULL;
     }
     uint32_t fsize = st.size;
 
     /* Big enough for an ELF header plus a normal program header table, and
-     * static because it is far too large for a task's kernel stack. Serialised
-     * by g_running above. */
+     * static because it is far too large for a task's kernel stack. Read and
+     * fully consumed before any task is created, so concurrent programs do not
+     * make this shared buffer a hazard: loading is done from the caller's
+     * thread of control, one at a time. */
     static uint8_t hdrbuf[1024];
     uint32_t want = fsize < sizeof(hdrbuf) ? fsize : (uint32_t)sizeof(hdrbuf);
     int got = vfs_pread(fd, hdrbuf, want, 0);
@@ -387,7 +457,7 @@ int elf_load_and_run(const char *path) {
         printk("[ELF Error] Failed to read the header of '%s' (%d of %u bytes)\n",
                path, got, want);
         vfs_close(fd);
-        return -1;
+        return NULL;
     }
 
     seg_t segs[4];
@@ -396,39 +466,43 @@ int elf_load_and_run(const char *path) {
                              (int)(sizeof(segs) / sizeof(segs[0])), &entry_off);
     if (nseg < 0 || !layout_fits(path, segs, nseg)) {
         vfs_close(fd);
-        return -1;
+        return NULL;
     }
 
     if (entry_off > USER_TEXT_MAX) {
         printk("[ELF Error] '%s': entry point 0x%lx is outside the text page\n",
                path, (unsigned long)entry_off);
         vfs_close(fd);
-        return -1;
+        return NULL;
     }
 
-    if (!user_slot_init()) {
+    user_proc_t *p = proc_alloc();
+    if (!p) {
         vfs_close(fd);
-        return -1;
+        return NULL;
     }
 
-    /* Zeroed before loading, not merely between allocations: the slot is
-     * reused, so without this a short program would inherit the tail of the
-     * previous one -- including whatever it had left on its .bss. */
-    memset(g_image, 0, USER_IMAGE_BYTES);
+    /* Zeroed before loading. palloc_pages() already returns zeroed memory, so
+     * this is belt and braces for the .bss of a segment whose memsz exceeds
+     * its filesz -- and it stays because the guarantee that matters is "a
+     * program never sees the previous one's data", which should not depend on
+     * a property of the allocator two layers away. */
+    memset(p->image, 0, USER_IMAGE_BYTES);
 
     for (int i = 0; i < nseg; i++) {
         if (segs[i].filesz == 0) continue; /* .bss-only: the zeroing above is it */
-        int n = vfs_pread(fd, g_image + segs[i].vaddr, segs[i].filesz, segs[i].off);
+        int n = vfs_pread(fd, p->image + segs[i].vaddr, segs[i].filesz, segs[i].off);
         if (n < 0 || (uint32_t)n != segs[i].filesz) {
             printk("[ELF Error] '%s': segment %d read %d of %u bytes\n",
                    path, i, n, segs[i].filesz);
             vfs_close(fd);
-            return -1;
+            proc_release(p);
+            return NULL;
         }
     }
     vfs_close(fd);
 
-    install_exit_stub(g_image);
+    install_exit_stub(p->image);
 
     /* The kernel just wrote instructions through the data path. Without this
      * the core may execute whatever the instruction fetch already had cached
@@ -437,18 +511,38 @@ int elf_load_and_run(const char *path) {
         "fence rw, rw; .option push; .option arch, +zifencei; fence.i; .option pop"
         ::: "memory");
 
-    g_entry = (uintptr_t)g_image + entry_off;
+    p->entry = (uintptr_t)p->image + entry_off;
 
     printk("[ELF] '%s': %d segment(s), entry 0x%lx -> U-mode task\n",
            path, nseg, (unsigned long)entry_off);
 
-    g_running = true;
-    int pid = task_create("uprog", user_program_body, NULL);
-    if (pid < 0) {
+    p->pid = task_create("uprog", user_program_body, p);
+    if (p->pid < 0) {
         printk("[ELF Error] Could not create a task for '%s'\n", path);
-        g_running = false;
-        return -1;
+        proc_release(p);
+        return NULL;
     }
+
+    /* Bound here rather than only in the task body, which is what makes the
+     * reaper's question answerable: between task_create() and the body's first
+     * instruction the task exists but has no domain, and a reaper asking "does
+     * any live task use this domain?" would say no and free the image out from
+     * under a program that had not started yet. The body still sets it -- that
+     * call is where the *verification* lives, and it must run on the task's own
+     * hart to be meaningful. */
+    task_set_domain(p->pid, &p->domain);
+    return p;
+}
+
+int elf_spawn(const char *path) {
+    user_proc_t *p = load_into_slot(path);
+    return p ? p->pid : -1;
+}
+
+int elf_load_and_run(const char *path) {
+    user_proc_t *p = load_into_slot(path);
+    if (!p) return -1;
+    int pid = p->pid;
 
     /* Wait for it. Bounded, so a program that never ends cannot wedge the
      * shell silently -- and reported honestly when the bound is hit, because
@@ -473,11 +567,14 @@ int elf_load_and_run(const char *path) {
     }
 
     if (sched_task_state(pid) != TASK_DEAD) {
-        printk("[ELF] '%s' is still running after %u yields; leaving it and "
-               "keeping the image slot reserved\n", path, max_yields);
+        /* Left running, and its slot left claimed -- which is now a statement
+         * about one program rather than about the whole machine: other
+         * programs can still be loaded, and this one's pages come back at the
+         * next load once its task finally ends. */
+        printk("[ELF] '%s' is still running after %u yields; leaving it\n",
+               path, max_yields);
         return -1;
     }
-    g_running = false;
 
     long status = 0;
     if (!sched_task_exited_cleanly(pid, &status)) {

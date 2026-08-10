@@ -88,6 +88,12 @@ void task_start(void (*entry)(void *), void *arg);
  * running task, otherwise at its next scheduling. */
 int task_set_domain(int pid, mem_domain_t *domain);
 
+/* True while any live task still references `domain` (C2). The loader uses
+ * this rather than a recorded pid to decide a program has finished: pids are
+ * reused when a DEAD slot is recycled, so a stale pid can name a different,
+ * living task. */
+bool sched_domain_in_use(const mem_domain_t *domain);
+
 /* Records how the calling task is about to end. Called by the syscall layer
  * on SYS_UEXIT, i.e. only on a *voluntary* exit -- which is precisely what
  * makes it distinguishable from a task the trap handler killed. */

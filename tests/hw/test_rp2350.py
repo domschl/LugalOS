@@ -647,6 +647,60 @@ def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str
         return (name, False, str(e))
 
 
+def test_concurrent_user_programs(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """C2 on real silicon: two user programs resident at once, in fifteen pages.
+
+    Worth running here rather than trusting QEMU for a reason that is about
+    quantity rather than semantics. The QEMU targets have a 16 MB heap, so two
+    programs cost a rounding error there; this board has **fifteen pages**, and
+    two programs plus their kernel stacks peak at twelve of them. If the loader
+    ever gets less frugal, QEMU will not notice and this will.
+
+    It is also the only place the PMP side of per-process domains is enforced:
+    each program gets its own three-region domain, and Hazard3 reprograms the
+    registers on every switch. On the MMU build the equivalent is a page table
+    per domain, which is what needed a free path before any of this was
+    possible at all.
+
+    The assertion is the interleaving. uspin prints USPIN_START, computes, then
+    reports; uhello runs to completion in between. Requiring uhello's marker to
+    land between uspin's first and last is what proves both were resident --
+    with a single image slot the second spawn is refused outright.
+    """
+    name = "C2: two user programs resident at once on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b'lisp\n(spawn "/flash0/system/bin/uspin.elf")\n'
+                        b'(spawn "/flash0/system/bin/uhello.elf")\nexit\n',
+                        b"cat /proc/meminfo\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
+
+        start = out.find("USPIN_START")
+        hello = out.find("UPROG_TEXT_OK", start if start >= 0 else 0)
+        done = out.find("USPIN_PREEMPTED", hello if hello >= 0 else 0)
+        peak = re.search(r"Pages Peak: (\d+)", out)
+        total = re.search(r"Pages Total: (\d+)", out)
+
+        checks = [
+            ("both programs started", start >= 0 and hello >= 0),
+            ("they overlapped", start >= 0 and hello > start and done > hello),
+            ("heap figures readable", peak is not None and total is not None),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-500:]}")
+        return (name, True,
+                f"interleaved; heap peak {peak.group(1)}/{total.group(1)} pages")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -670,6 +724,7 @@ def main() -> int:
     tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
+    tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
     # pool, which leaves the evaluator returning nil until the board reboots.

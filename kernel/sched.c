@@ -93,6 +93,27 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     return 0;
 }
 
+/* Is any live task still using this domain? (C2)
+ *
+ * The loader needs to know when a program has finished so it can return the
+ * program's pages, and asking "is that pid dead?" is not sound: task_create()
+ * reuses DEAD slots, so a pid recorded earlier may by then belong to an
+ * entirely different task that is very much alive. The symptom is a slot that
+ * never reaps, which showed up as a steady three-page climb across repeated
+ * loads on the MMU build.
+ *
+ * A domain pointer identifies the slot that owns it and is never recycled
+ * while that slot is in use, so it answers the question the loader is
+ * actually asking. */
+bool sched_domain_in_use(const mem_domain_t *domain) {
+    if (!domain) return false;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) continue;
+        if (g_tasks[i].domain == domain) return true;
+    }
+    return false;
+}
+
 void task_set_exit_status(long status) {
     if (!g_active) return;
     g_tasks[g_current].exit_status = status;

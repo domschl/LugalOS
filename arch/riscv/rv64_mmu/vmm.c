@@ -113,6 +113,45 @@ int vmm_map_range(uintptr_t *root, uintptr_t va, uintptr_t pa, uintptr_t size,
 
 uintptr_t *vmm_kernel_root(void) { return kernel_page_table; }
 
+/* Returns a page-table tree to the allocator (C2,
+ * plan/phase6_memory_and_processes.md).
+ *
+ * Its absence was the documented blocker for running more than one user
+ * program: mem_domain_activate() builds a table per domain and caches it, so
+ * a domain per exec leaked the whole tree every time. With 128 MB on the QEMU
+ * targets that took a long time to notice, which is exactly why it was worth
+ * fixing before anything started depending on it.
+ *
+ * Only *tables* are freed, never the memory they describe. The distinction is
+ * the same bit that vmm_map_range() uses when walking down: an entry with any
+ * of R/W/X is a leaf mapping physical memory this tree does not own -- kernel
+ * RAM, MMIO, a user image whose pages belong to the loader -- while an entry
+ * with none of them points at another table, which this function allocated
+ * and must return. Freeing on the wrong side of that test would hand live
+ * kernel memory back to the page allocator.
+ */
+static void free_table_level(uintptr_t *tab, int level) {
+    if (level > 0) {
+        for (int i = 0; i < PTE_PER_TAB; i++) {
+            uintptr_t pte = tab[i];
+            if (!(pte & PTE_V)) continue;
+            if (pte & (PTE_R | PTE_W | PTE_X)) continue; /* leaf: not ours */
+            free_table_level((uintptr_t *)pa_from_pte(pte), level - 1);
+        }
+    }
+    palloc_free(tab, 1);
+}
+
+void vmm_free_table(uintptr_t *root) {
+    if (!root) return;
+    /* The kernel's own table is not a per-domain resource and outlives every
+     * domain; freeing it would unmap the code doing the freeing. */
+    if (root == kernel_page_table) return;
+    /* Recursion is bounded at three by Sv39 itself, so this cannot be the
+     * thing that overruns a kernel stack. */
+    free_table_level(root, LEVELS - 1);
+}
+
 void vmm_init(void) {
     kernel_page_table = (uintptr_t *)palloc_pages(1);
     if (!kernel_page_table) {

@@ -68,4 +68,16 @@ typedef struct {
 
 int elf_load_and_run(const char *path);
 
+/* Loads and starts `path` without waiting for it, returning its pid or -1
+ * (C2, plan/phase6_memory_and_processes.md).
+ *
+ * This is what makes "more than one user program at a time" observable rather
+ * than merely structural: elf_load_and_run() spins until its program is dead,
+ * so however many slots exist, a caller using it can only ever have one.
+ *
+ * The program's pages are returned at the next load once its task has ended --
+ * nothing schedules on a user image, so there is no natural moment earlier
+ * than that. See the reaping note in arch/riscv/common/elf.c. */
+int elf_spawn(const char *path);
+
 #endif /* LUGALOS_ARCH_ELF_H */
