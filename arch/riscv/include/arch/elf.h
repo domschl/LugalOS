@@ -66,6 +66,10 @@ typedef struct {
 } elf64_phdr_t;
 #pragma pack(pop)
 
+/* The most arguments a program can be given. Exposed so a caller sizing its
+ * own argv array agrees with the loader rather than guessing (C3). */
+#define USER_ARGV_LIMIT 8
+
 int elf_load_and_run(const char *path);
 
 /* Loads and starts `path` without waiting for it, returning its pid or -1
@@ -79,5 +83,13 @@ int elf_load_and_run(const char *path);
  * nothing schedules on a user image, so there is no natural moment earlier
  * than that. See the reaping note in arch/riscv/common/elf.c. */
 int elf_spawn(const char *path);
+
+/* As above, with arguments. `argv[0]` is the program's own name by
+ * convention; the loader does not supply one, so a caller that wants the
+ * convention passes it. The strings are copied into the program's own stack
+ * page before it starts, so the caller's buffers need not outlive this call
+ * (C3). */
+int elf_spawn_argv(const char *path, int argc, const char *const *argv);
+int elf_load_and_run_argv(const char *path, int argc, const char *const *argv);
 
 #endif /* LUGALOS_ARCH_ELF_H */

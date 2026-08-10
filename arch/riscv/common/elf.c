@@ -109,8 +109,16 @@ typedef struct {
     uint8_t      *image;      /* USER_IMAGE_PAGES pages, self-aligned */
     uint8_t      *ustack;     /* one page */
     uintptr_t     entry;
+    uintptr_t     user_sp;    /* below the argv block, not the page top */
+    uintptr_t     argv_addr;  /* a user address inside this program's stack page */
+    int           argc;
     mem_domain_t  domain;
 } user_proc_t;
+
+/* Most of the stack page stays stack. A program that wants more argument
+ * space than this has outgrown being invoked from a command line. */
+#define USER_ARGV_MAX_BYTES 512
+#define USER_ARGV_MAX_COUNT USER_ARGV_LIMIT
 
 static user_proc_t g_procs[USER_PROC_MAX];
 
@@ -146,6 +154,82 @@ static int reap_finished(void) {
         reaped++;
     }
     return reaped;
+}
+
+/* Lays out argc/argv at the top of the program's own stack page and leaves
+ * `user_sp` below it (C3, plan/phase6_memory_and_processes.md).
+ *
+ * The stack page, not the data page, for two reasons. The data page holds the
+ * program's .data and .bss, and a program that happens to use all of it would
+ * find its globals overwritten by its own arguments -- a corruption that would
+ * depend on how big the program is. And the stack page is already R|W in the
+ * task's domain and already has a natural free end, which is what the classic
+ * Unix layout uses it for.
+ *
+ * The addresses written into the vector are *user* addresses. Both memory
+ * models identity-map the image and stack, so the kernel's pointer and the
+ * program's pointer are the same number here -- which is worth stating rather
+ * than relying on silently, because the day a model stops identity-mapping,
+ * this is the function that has to change.
+ *
+ * Layout, growing down from the top of the page:
+ *
+ *     [page top]  argument strings, packed, each NUL-terminated
+ *                 argv[] -- argc pointers plus a NULL terminator
+ *     argv ---->
+ *                 ... the program's stack, growing down from user_sp
+ *
+ * Returns false if the arguments do not fit, leaving the slot untouched: a
+ * silently truncated argument list is a wrong answer, and the program would
+ * have no way to tell.
+ */
+static bool build_argv(user_proc_t *p, int argc, const char *const *argv) {
+    uintptr_t top = (uintptr_t)p->ustack + PAGE_SIZE;
+    uintptr_t limit = top - USER_ARGV_MAX_BYTES;
+
+    if (argc < 0) argc = 0;
+    if (argc > USER_ARGV_MAX_COUNT) {
+        printk("[ELF Error] %d arguments; at most %d are supported\n",
+               argc, USER_ARGV_MAX_COUNT);
+        return false;
+    }
+
+    /* Strings first, from the top down, so the vector below them can point at
+     * their final addresses. */
+    uintptr_t sp = top;
+    uintptr_t slots[USER_ARGV_MAX_COUNT];
+    for (int i = argc - 1; i >= 0; i--) {
+        const char *a = argv && argv[i] ? argv[i] : "";
+        uint32_t len = 0;
+        while (a[len]) len++;
+        sp -= (len + 1);
+        if (sp < limit) {
+            printk("[ELF Error] Arguments exceed the %d-byte argument area\n",
+                   USER_ARGV_MAX_BYTES);
+            return false;
+        }
+        memcpy((void *)sp, a, len + 1);
+        slots[i] = sp;
+    }
+
+    /* Then the vector, naturally aligned. */
+    sp &= ~(uintptr_t)(sizeof(uintptr_t) - 1);
+    sp -= (uintptr_t)(argc + 1) * sizeof(uintptr_t);
+    if (sp < limit) {
+        printk("[ELF Error] Arguments exceed the %d-byte argument area\n",
+               USER_ARGV_MAX_BYTES);
+        return false;
+    }
+    uintptr_t *vec = (uintptr_t *)sp;
+    for (int i = 0; i < argc; i++) vec[i] = slots[i];
+    vec[argc] = 0; /* argv[argc] == NULL, as every C program is entitled to expect */
+
+    p->argv_addr = sp;
+    p->argc = argc;
+    /* 16-byte aligned: the ABI's stack alignment, and the compiler is entitled
+     * to assume it from the first instruction. */
+    p->user_sp = sp & ~(uintptr_t)15;
+    return true;
 }
 
 /* Claims a free slot and builds its image, stack and domain. */
@@ -417,13 +501,15 @@ static void user_program_body(void *arg) {
     }
 
     arch_enter_user((void (*)(void))p->entry,
-                    (uintptr_t)p->ustack + PAGE_SIZE,
-                    (uintptr_t)p->image + PAGE_SIZE - EXIT_STUB_BYTES);
+                    p->user_sp,
+                    (uintptr_t)p->image + PAGE_SIZE - EXIT_STUB_BYTES,
+                    (uintptr_t)p->argc, p->argv_addr);
 }
 
 /* Loads `path` into a fresh slot and starts it. Returns the slot, or NULL --
  * having released anything it had claimed. Does not wait. */
-static user_proc_t *load_into_slot(const char *path) {
+static user_proc_t *load_into_slot(const char *path, int argc,
+                                   const char *const *argv) {
     if (!path) return NULL;
 
     /* Before claiming anything: a finished program's three pages are exactly
@@ -513,8 +599,13 @@ static user_proc_t *load_into_slot(const char *path) {
 
     p->entry = (uintptr_t)p->image + entry_off;
 
-    printk("[ELF] '%s': %d segment(s), entry 0x%lx -> U-mode task\n",
-           path, nseg, (unsigned long)entry_off);
+    if (!build_argv(p, argc, argv)) {
+        proc_release(p);
+        return NULL;
+    }
+
+    printk("[ELF] '%s': %d segment(s), %d arg(s), entry 0x%lx -> U-mode task\n",
+           path, nseg, p->argc, (unsigned long)entry_off);
 
     p->pid = task_create("uprog", user_program_body, p);
     if (p->pid < 0) {
@@ -535,12 +626,20 @@ static user_proc_t *load_into_slot(const char *path) {
 }
 
 int elf_spawn(const char *path) {
-    user_proc_t *p = load_into_slot(path);
+    return elf_spawn_argv(path, 0, NULL);
+}
+
+int elf_spawn_argv(const char *path, int argc, const char *const *argv) {
+    user_proc_t *p = load_into_slot(path, argc, argv);
     return p ? p->pid : -1;
 }
 
 int elf_load_and_run(const char *path) {
-    user_proc_t *p = load_into_slot(path);
+    return elf_load_and_run_argv(path, 0, NULL);
+}
+
+int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
+    user_proc_t *p = load_into_slot(path, argc, argv);
     if (!p) return -1;
     int pid = p->pid;
 
@@ -585,6 +684,9 @@ int elf_load_and_run(const char *path) {
         return -1;
     }
 
-    printk("[ELF] '%s' returned %ld\n", path, status);
+    /* The console, not the log: this is the answer to a command someone
+     * typed. `klog detach console` must not swallow a program's exit status
+     * (C0). */
+    cprintf("[ELF] '%s' returned %ld\n", path, status);
     return (int)status;
 }

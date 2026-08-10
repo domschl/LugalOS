@@ -39,8 +39,10 @@
 #define TRAP_RET    mret
 #endif
 
-/* void arch_enter_user(void (*entry)(void), uintptr_t user_sp, uintptr_t user_ra);
- *   a0 = user entry point, a1 = user stack pointer, a2 = user return address
+/* void arch_enter_user(void (*entry)(void), uintptr_t user_sp, uintptr_t user_ra,
+ *                       uintptr_t argc, uintptr_t argv);
+ *   a0 = user entry point, a1 = user stack pointer, a2 = user return address,
+ *   a3 = argc, a4 = argv (a user address inside the task's own domain)
  *
  * Does not return. The task leaves U-mode only by trapping (an ecall, or a
  * fault), at which point the trap vector swaps back to the kernel stack this
@@ -122,4 +124,12 @@ arch_enter_user:
     csrs CSR_STATUS, t0
 
     mv sp, a1
+
+    /* The program's own arguments, last so that a0/a1 can be reused as
+     * scratch above (a0 held the entry point, a1 the stack pointer). A user
+     * program is entered as if it were `int _start(int argc, char **argv)`,
+     * which is why argv can be passed at all without a crt: the RISC-V
+     * calling convention already puts the first two arguments here. */
+    mv a0, a3
+    mv a1, a4
     TRAP_RET

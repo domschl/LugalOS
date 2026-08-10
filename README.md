@@ -21,8 +21,8 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 157 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 10 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 165 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 11 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
@@ -32,6 +32,11 @@ silicon):
 - **More than one user program at a time**: each loaded program gets its own image, user stack and
   memory domain, and hands all three back when it ends — including its Sv39 page-table tree on the
   MMU build. `(spawn "path")` starts one without waiting; `exec` still runs one to completion.
+- **A real process ABI**: programs receive `argc`/`argv` (built in their own stack page, so no
+  kernel pointer crosses the boundary), return an exit status the shell and `/proc/ps` report, and
+  reach named services over copy-always channels via `SYS_CHAN_CALL` — with every buffer validated
+  against the caller's own domain. The old register-IPC entry points are deleted, their numbers
+  permanently retired.
 - **User programs**: a separately linked ELF is loaded from the filesystem into pages the allocator
   hands out, and runs as a U-mode task confined to three of them — text (R|X), data (R|W), stack
   (R|W). `exec` is that path, so a program compiled on the machine by `cc` runs confined too. The
@@ -52,9 +57,6 @@ silicon):
   enforced at link time by `linker/user.ld`'s ASSERTs rather than discovered at run time. Growing
   it needs the loader to allocate a power-of-two page run per segment, since a PMP region must be
   power-of-two sized and self-aligned.
-- **The old register-IPC entry points**: `sys_ipc_call`/`sys_ipc_reply`/etc. remain fixed stubs.
-  They are superseded rather than pending — services are reached by message passing over
-  copy-always channels (`kernel/chan.h`), which is what the microkernel actually uses.
 
 Everything else described below — including the scheduler, IPC, U-mode isolation, and the
 distributed 9P namespace — is implemented and continuously tested. This section exists to stay an
@@ -64,7 +66,7 @@ honest map rather than a wish list, so it is kept accurate in both directions.
 
 ## Key Features & Architecture
 
-* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), not by the older register-based `sys_ipc_*` entry points, which remain stubs superseded by that design.
+* **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), which a U-mode program reaches through `SYS_CHAN_CALL`; the older register-based `sys_ipc_*` entry points were never more than stubs and have been deleted, their syscall numbers permanently retired.
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
   * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).

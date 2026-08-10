@@ -18,7 +18,19 @@
  * The task needs a memory domain installed (task_set_domain) before this is
  * called, or on the M-mode targets U-mode cannot fetch its first instruction
  * -- see arch/riscv/common/umode.c. */
-void arch_enter_user(void (*entry)(void), uintptr_t user_sp, uintptr_t user_ra);
+/* `argc`/`argv` are handed to the program in a0/a1, so a user program is
+ * entered as if it were `int _start(int argc, char **argv)` -- no crt needed,
+ * the calling convention already puts them there.
+ *
+ * `argv` must be an address inside the task's *own* domain. The loader builds
+ * the vector at the top of the program's stack page for exactly that reason
+ * (C3, plan/phase6_memory_and_processes.md): passing a kernel address would
+ * hand U-mode a pointer it cannot read, and copying the strings somewhere the
+ * kernel owns would be worse -- a pointer into kernel memory is the one thing
+ * the whole domain mechanism exists to prevent. Callers with no arguments
+ * pass 0, 0. */
+void arch_enter_user(void (*entry)(void), uintptr_t user_sp, uintptr_t user_ra,
+                     uintptr_t argc, uintptr_t argv);
 
 /* Grants U-mode access to the whole address space via one PMP entry.
  * NOT isolation -- the minimum that makes the mode transition observable, so
