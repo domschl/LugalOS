@@ -98,6 +98,7 @@ static void cmd_help(void) {
     cprintf("  (which \"name\")   - Where a bare name resolves to, without running it\n");
     cprintf("  (path-set \"a b\") - Reorder the search path (usually set in system/etc/init.lisp)\n");
     cprintf("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
+    cprintf("  reboot          - Restart the board (works even if the evaluator is inert)\n");
     cprintf("  clear           - Clear terminal screen\n\n");
 }
 
@@ -536,6 +537,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "uname") == 0) {
         cmd_uname();
+        return;
+    } else if (strcmp(cmd_line, "reboot") == 0) {
+        /* A builtin, and its position in this chain is the point: it is
+         * handled here, before the Lisp fallthrough, so it still works when
+         * the evaluator has stopped answering. That is exactly the state the
+         * hardware suite's node-pool test leaves the board in, and rebooting
+         * out of it is the whole reason this command exists (C5). */
+        cprintf("[Reboot] Restarting...\n");
+        if (!board_reset()) {
+            cprintf("reboot: not supported on this target\n");
+        }
         return;
     } else if (strcmp(cmd_line, "clear") == 0) {
         uart_puts("\033[2J\033[H");

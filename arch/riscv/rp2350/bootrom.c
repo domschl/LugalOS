@@ -37,6 +37,7 @@
  * absent (pico_bootrom/bootrom.c). */
 #define ROM_FUNC_REBOOT         ROM_TABLE_CODE('R', 'B')
 
+#define REBOOT2_FLAG_REBOOT_TYPE_NORMAL    0x0000
 #define REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL   0x0002
 #define REBOOT2_FLAG_NO_RETURN_ON_SUCCESS  0x0100
 
@@ -74,12 +75,34 @@ bool rp2350_reboot_to_bootsel(void) {
     return false; /* reached only if the bootrom refused the request */
 }
 
+bool rp2350_reboot(void) {
+    rom_reboot_fn reboot = (rom_reboot_fn)rom_func_lookup(ROM_FUNC_REBOOT);
+    if (!reboot) return false;
+
+    /* The same bootrom entry point as the BOOTSEL path above, with the normal
+     * reboot type: come back up running the flashed image rather than as a
+     * mass-storage device. Reusing the proven lookup is the point -- the only
+     * thing that differs between "reflash me" and "start me again" is this
+     * flag.
+     *
+     * The 10 ms delay is not cosmetic: it gives the USB host a moment to see
+     * the detach coming, which is what makes the port re-enumerate cleanly
+     * rather than the host deciding the device fell off the bus. */
+    reboot(REBOOT2_FLAG_REBOOT_TYPE_NORMAL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+           10, 0, 0);
+    return false; /* reached only if the bootrom refused the request */
+}
+
 #pragma GCC diagnostic pop
 
 #else
 
 bool rp2350_reboot_to_bootsel(void) {
     return false; /* no bootrom to call on QEMU targets */
+}
+
+bool rp2350_reboot(void) {
+    return false; /* likewise: nothing to ask for a reset here */
 }
 
 #endif

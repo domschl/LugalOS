@@ -645,9 +645,10 @@ def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str
         evaluation unwound instead of spinning
       - `exit` still returns to the shell prompt, so the console lives
 
-    **Must run last.** It deliberately leaves the evaluator returning nil until
-    the board reboots, and every other test here drives the board through a
-    shell that evaluates.
+    **Must run last**, and it reboots the board when it is done: it leaves the
+    evaluator returning nil, and every other test here drives the board through
+    a shell that evaluates. The reboot is why a second run starts clean instead
+    of failing five unrelated tests.
     """
     name = "Node pool exhaustion degrades the shell instead of hanging the board"
     try:
@@ -667,6 +668,31 @@ def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str
             ("evaluation unwound",  "=> ()" in out),
             ("console still alive", "lsh>" in out.split("Node pool exhausted")[-1]),
         ]
+
+        # Leave the board usable. This test's whole point is that the evaluator
+        # is left inert, and every other test here drives the board through a
+        # shell that evaluates -- so without this, a second run fails five
+        # tests for reasons that have nothing to do with them. `reboot` is a
+        # shell builtin handled before the Lisp fallthrough precisely so that
+        # it still works from this state.
+        try:
+            with serial.Serial(ports.console, 115200, timeout=2) as ser:
+                ser.dtr = True
+                time.sleep(0.2)
+                ser.write(b"reboot\n")
+                ser.flush()
+                time.sleep(1.0)
+            # Wait for the board back before returning. Without this the suite
+            # exits while USB is still re-enumerating, and a run started
+            # straight afterwards finds no board and skips everything -- which
+            # reads as "nothing to test" rather than "wait a moment".
+            deadline = time.time() + 25.0
+            while time.time() < deadline:
+                if rp2350.discover_ports() is not None:
+                    break
+                time.sleep(0.5)
+        except Exception:
+            pass  # the reboot is cleanup, not the assertion
         failed = [label for label, ok in checks if not ok]
         if failed:
             return (name, False, f"failed: {', '.join(failed)}\n{out[-500:]}")
@@ -828,8 +854,8 @@ def main() -> int:
     # the board through a shell that evaluates, so a second run without a
     # reboot fails five tests for reasons that have nothing to do with them.
     # Said out loud because it is not guessable from the failures.
-    print("NOTE: the node-pool test leaves the evaluator inert -- reboot "
-          "(uv run flash.py) before re-running.")
+    print("NOTE: the node-pool test exhausts the Lisp node pool and reboots the "
+          "board afterwards, so the next run starts clean.")
     print("======================================================================\n")
     return 0 if passed == total else 1
 
