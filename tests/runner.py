@@ -956,6 +956,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_depth_guard, r"=> 10", timeout=5.0)
         results.append(("Lisp Recursion Depth Guard (no crash/hang on runaway recursion, A4)", ok, log if not ok else ""))
 
+
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
         # (D2/D3), and the POSIX-shell `help` command points to it.
         ok, log = session.send_and_expect("lisp\n(help)\nexit", r"Bound Globals.*primitive", timeout=4.0)
@@ -1119,6 +1120,40 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             detail = f"inconsistent figures: {', '.join(failed)}\n{log}"
         results.append(("/proc/meminfo Reports Measured Heap, Stack And RAM Map",
                         ok and not failed, detail))
+
+        # 21b. Exhausting the node pool must not take the machine down.
+        #
+        # alloc_node() clamps to its last slot when the pool runs out, so every
+        # further allocation returns the *same node* -- and a cons cell built
+        # from two of them points at itself. The first list walker to touch
+        # that cycle never returns: prim_add() spins while accumulating into
+        # `sum`, which on these targets is a signed-overflow UBSan trap and on
+        # RP2350 (built without UBSan) an unrecoverable hang needing a physical
+        # replug. lisp_eval() now refuses to descend once the pool is gone.
+        #
+        # Ten runaway recursions rather than one, because pool size is a *per
+        # target* constant: RP2350 has 512 nodes and exhausts on the first,
+        # while these builds have 4096 and need about eight. That difference is
+        # exactly why this went unseen -- the suite's depth-guard test above
+        # runs the same recursion once and never reaches the interesting state.
+        #
+        # The assertion is two things the *system* emits, never anything typed:
+        # the exhaustion warning, then the REPL printing a result. Getting a
+        # result at all is the proof -- it means evaluation unwound and the
+        # read-eval-print loop came back round, which is precisely what a walk
+        # into a cyclic list never does. A hang fails on timeout; a UBSan trap
+        # fails on FAULT_MARKERS before the regex is even tried.
+        #
+        # Deliberately not asserting a return to the `lsh>` prompt: every
+        # command typed here appends to /sd0/system/history.lisp, and by this
+        # point in the session that file is large enough that the FAT32 writes,
+        # not the evaluator, dominate the runtime.
+        cmd_pool_exhaust = ("lisp\n(define (loop n) (loop (+ n 1)))\n"
+                            + "(loop 0)\n" * 8 + "exit\n")
+        ok, log = session.send_and_expect(
+            cmd_pool_exhaust, r"Node pool exhausted(.|\n)*=> \(\)", timeout=25.0)
+        results.append(("Node Pool Exhaustion Degrades Instead Of Hanging (P6 §6.4)",
+                        ok, log if not ok else ""))
 
     finally:
         session.close()

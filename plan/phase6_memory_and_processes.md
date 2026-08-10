@@ -192,7 +192,7 @@ process must write through the console, not through `uart_puts()`).
    refusals (`fs/fat32.c`, 11) and the whole of `i2c_scan_bus()` (`drivers/i2c_rtc.c`, 8).
    Mount/format/parse messages stay on the log, which is what they are.
 
-Tests 133 → **139 QEMU**. The CRLF test boots its own QEMU in binary mode: `QemuSession` opens the
+Tests 133 → **141 QEMU**, 7 → **9 hardware**. The CRLF test boots its own QEMU in binary mode: `QemuSession` opens the
 process with `text=True`, so Python's universal-newline translation rewrites `\r\n` to `\n` before
 any assertion can see it — fixed and broken output are byte-identical to the entire existing
 suite, which is how the defect survived this long. All three new tests were falsified by
@@ -373,54 +373,59 @@ table of verbs (`ls`, `i2c`, `df`, …) and the class stays fixed.
    paints to the wrong device. This was not in the bug report and is the more serious defect.
    **Fix:** route through `console_putc()`.
 
-### 6.4 A runaway Lisp recursion hangs RP2350 hard *(pre-existing, open)*
+### 6.4 A runaway Lisp recursion hangs RP2350 hard *(pre-existing; root-caused and fixed 2026-08-10)*
 
-**Not one of the three reported bugs.** Found on 2026-08-10 by the C0 hardware validation run, and
-serious enough to have its own entry.
+**Not one of the three reported bugs.** Found by the C0 hardware validation run, and serious
+enough to have its own entry: it takes the board down hard, and only a physical replug recovers
+it.
 
-**Symptom.** At the console:
+**Symptom.** `(define (loop n) (loop (+ n 1)))` then `(loop 0)` at the console. The board stops.
+No `[Lisp Error]`, no fault banner, no prompt; USB CDC stops being serviced, the ports stay
+enumerated but every open blocks, and the 1200-baud BOOTSEL touch no longer works. On QEMU the
+identical input is caught by the depth guard and the shell carries on -- the suite's
+"Lisp Recursion Depth Guard" test asserts exactly that, and passes.
 
-```
-lisp
-(define (loop n) (loop (+ n 1)))
-(loop 0)
-```
+Reproduced on firmware built from commit `f953876`, so it predates all Phase 6 work.
 
-The board stops. No `[Lisp Error]` line, no fault banner, no prompt. USB CDC stops being serviced:
-the ports stay enumerated but every open blocks, the 1200-baud BOOTSEL touch no longer works, and
-only a physical unplug/replug recovers it. On QEMU the identical input is caught by the depth
-guard and the shell carries on — the suite's "Lisp Recursion Depth Guard" test asserts exactly
-that, and passes on both QEMU targets.
+**Root cause**, in order:
 
-**Pre-existing, not a regression.** Reproduced on firmware built from commit `f953876`, before any
-Phase 6 work. The sixth time a Hazard3-specific truth has been invisible under emulation.
+1. `(loop 0)` recurses. The depth guard stops it at 100 levels -- but ~500 nodes were allocated
+   getting there.
+2. `NODE_POOL_SIZE` is **512 on RP2350 and 4096 on the QEMU targets** (`user/lisp/lisp.c`). So one
+   recursion exhausts the pool on RP2350 and roughly one in eight does on QEMU. **This is the
+   whole reason the suite never saw it**: the existing test runs the recursion once.
+3. On exhaustion `alloc_node()` clamps `node_pool_idx` to the last slot. Its comment reasons
+   carefully about not corrupting the environment and concludes that aliasing merely "produces
+   wrong results".
+4. It does more than that. Two allocations from the clamped slot are *the same node*, so
+   `cell->cdr = alloc_node(...)` makes a cons cell point at itself.
+5. Every list walker in the evaluator then runs forever. `prim_add()` accumulates into `sum`
+   while it spins.
+6. On QEMU that is a signed-overflow **UBSan trap** at `lisp.c:209`, which halts with a message.
+   RP2350 builds without UBSan (it is enabled only for the QEMU targets), so the same overflow is
+   plain undefined behaviour and the loop simply never ends -- a silent, unrecoverable spin. The
+   pending `printk` never appears because `usb_cdc_task()` is never reached again to drain the TX
+   ring, which is why the console goes quiet with no error.
 
-**What has been ruled out.**
+**Fix.** `lisp_eval()` refuses to descend once the pool is exhausted, in the same place and the
+same shape as the depth guard, so nothing is ever built out of the aliased node and evaluation
+unwinds instead. The clamp stays -- allocation still has to return something writable -- but it is
+no longer load-bearing. `prim_add()`'s walker additionally carries a `NODE_POOL_SIZE` iteration
+bound, which is free and exactly correct: no list can have more elements than the pool has nodes.
 
-| Hypothesis | Evidence against |
-|---|---|
-| `taskdemo` / the allocator | Runs clean in isolation on hardware: tasks interleave, `free before=13 after=13`, board alive afterwards |
-| Reading `/proc/meminfo` | Run a dozen times by hand on hardware with no effect |
-| The 8 KB scratch-stack bug (§6.5) | Fixing it did not help; the hang reproduces identically on a 16 KB stack |
-| Simple depth overflow | The recursion costs **3716 bytes** (100 levels at ~37 bytes, measured on QEMU RV32 by reading the high-water before and after). Against a 6036-byte baseline peak that is 9752 bytes, comfortably inside 16 KB |
-| Bigger frames on RP2350 | Same `MinSizeRel` for all targets; the QEMU builds additionally carry UBSan, so their frames are the *larger* ones |
-| A spin in `usb_cdc_putc` | It drops on ring-full rather than waiting |
+The shell is left alive but degraded, returning nil until restart, which is what the existing
+warning already promised. That is a large improvement on taking the machine down, and it is
+honest about the state.
 
-**What is still unknown.** Whether the board dies during the descent or at the guard trip. The
-`[Lisp Error]` message never appears on hardware, but console output is buffered through the USB
-TX ring, so its absence does not prove the guard was never reached. The cleanest next experiment
-is `klog detach console` before the recursion: if the board survives, the killer is the output path
-taken when the guard fires; if it dies, the descent itself.
+**Tests.** A QEMU regression test runs the recursion eight times to reach the state RP2350 reaches
+in one, and asserts the REPL prints a result after the exhaustion warning -- getting a result at
+all is the proof that evaluation unwound rather than spun. The RP2350 hardware test runs it once,
+which is the stronger check, on the one target where the failure mode is silent.
 
-**Likely direction for the fix**, once the cause is known: replace the depth *count* with a
-**stack-headroom check**. `LISP_MAX_EVAL_DEPTH = 100` is a proxy for "how much stack is left", and
-its own comment admits it is "a conservative default, not a profiled figure -- the smallest target
-(RP2350) has not been stack-profiled under this evaluator". It now can be: `_stack_bottom` is
-exported and `stack_used_bytes()` exists, so the evaluator can refuse to descend when the live sp
-comes within a margin of the bottom. That adapts to every target automatically instead of encoding
-one number that is wrong on at least one of them.
-
-**Cost of investigating**: each attempt needs a physical replug, so batch the experiments.
+**Still worth doing later**: the depth guard is calibrated such that a single runaway recursion
+consumes RP2350's entire node pool. Making `LISP_MAX_EVAL_DEPTH` target-aware, or deriving it from
+real stack headroom now that `_stack_bottom` and `stack_used_bytes()` exist, would stop a runaway
+from costing the whole pool in the first place.
 
 ### 6.5 RP2350 was running on the wrong stack *(fixed, 2026-08-10)*
 
