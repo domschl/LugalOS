@@ -116,9 +116,9 @@ def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             # threshold longer than the spin. A shorter one does not fail the
             # test honestly, it truncates the capture and reports the marker
             # as missing.
-            for cmd, quiet in ((b"exec /flash0/uhello.elf\n", 0.8),
-                               (b"exec /flash0/uisolate.elf\n", 0.8),
-                               (b"exec /flash0/uspin.elf\n", 3.0)):
+            for cmd, quiet in ((b"exec /flash0/system/bin/uhello.elf\n", 0.8),
+                               (b"exec /flash0/system/bin/uisolate.elf\n", 0.8),
+                               (b"exec /flash0/system/bin/uspin.elf\n", 3.0)):
                 ser.write(cmd)
                 ser.flush()
                 out += rp2350.drain(ser, quiet=quiet, deadline=30.0).decode("utf-8", "replace")

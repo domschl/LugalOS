@@ -3,6 +3,7 @@
 #include "kernel/console.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
+#include "kernel/path.h"
 #include "kernel/ticker.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
@@ -129,6 +130,9 @@ void kernel_main(void) {
      * page allocator rather than an unbounded bump pointer. */
     trap_init();
     palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
+    /* Before vfs_server_init(): the boot scripts it loads are themselves
+     * found through the path (C1). */
+    path_init();
     vmm_init();
     ipc_init();
     vfs_server_init();

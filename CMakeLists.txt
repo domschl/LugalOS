@@ -150,17 +150,33 @@ set(SD_STAGE ${CMAKE_CURRENT_BINARY_DIR}/sd_root)
 set(SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${SD_STAGE}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root ${SD_STAGE})
+# Staged into system/bin/, which is where the shell's search path looks (C1,
+# plan/phase6_memory_and_processes.md). Putting them at the volume root would
+# still work when named by full path, but then nothing on any volume would be
+# reachable by bare name and the convention would exist only on paper.
+list(APPEND SD_STAGE_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SD_STAGE}/system/bin)
 foreach(uprog ${USER_PROG_STAGED})
     list(APPEND SD_STAGE_COMMANDS
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/${uprog}.stripped
-                ${SD_STAGE}/${uprog}.elf)
+                ${SD_STAGE}/system/bin/${uprog}.elf)
 endforeach()
+
+# The staged files are inputs, so editing one has to rebuild the image.
+# Without this, changing init.lisp left the flash image holding the previous
+# copy and no build step disagreed -- which surfaces as unrelated 9P transport
+# tests failing on content that "should" match, because they compare what the
+# image serves against what the source now says. CONFIGURE_DEPENDS so that
+# adding a file re-runs the glob rather than needing a manual re-configure.
+file(GLOB_RECURSE SD_ROOT_FILES CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/*)
 
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
     ${SD_STAGE_COMMANDS}
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${SD_STAGE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
+            ${SD_ROOT_FILES}
             uhello.elf uisolate.elf uspin.elf
     COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
 )
@@ -188,6 +204,7 @@ set(SOURCES
     kernel/chan.c
     kernel/palloc.c
     kernel/meminfo.c
+    kernel/path.c
     kernel/uaccess.c
     kernel/ticker.c
     kernel/time.c

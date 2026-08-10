@@ -1,6 +1,7 @@
 #include "lisp.h"
 #include "lisp_compile.h"
 #include "kernel/printk.h"
+#include "kernel/path.h"
 #include "kernel/console.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
@@ -385,6 +386,29 @@ static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
     strncpy_local(safe_src, get_str_val(a1), sizeof(safe_src));
     strncpy_local(safe_dst, get_str_val(a2), sizeof(safe_dst));
     return (chibicc_compile(safe_src, safe_dst) == 0) ? &true_val : &false_val;
+}
+
+/* (path-set "ram0 sd0 flash0") -- reorder or replace the command search path.
+ * Belongs in init.lisp: which volumes exist, and which should win when two
+ * carry the same utility, is a property of a board rather than of the
+ * kernel. Reading it back is `cat /proc/path`. */
+static lisp_val_t *prim_path_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *spec = get_str_val(args->u.pair.car);
+    return (path_set(spec) > 0) ? &true_val : &false_val;
+}
+
+/* (which "uhello") -- where a bare name would actually resolve to, without
+ * running it. The path is a policy that can be changed at runtime, so being
+ * able to ask which file won is worth a primitive. */
+static lisp_val_t *prim_which(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    static char found[128];
+    if (path_resolve("bin", name, ".elf", found, sizeof(found)) != 0) return &false_val;
+    return make_str(found);
 }
 
 static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
@@ -976,6 +1000,8 @@ void lisp_init(void) {
     env_set(&global_env, "rm", make_prim(prim_rm));
     env_set(&global_env, "cc", make_prim(prim_cc));
     env_set(&global_env, "exec", make_prim(prim_exec));
+    env_set(&global_env, "path-set", make_prim(prim_path_set));
+    env_set(&global_env, "which", make_prim(prim_which));
     env_set(&global_env, "ps", make_prim(prim_ps));
     env_set(&global_env, "meminfo", make_prim(prim_meminfo));
     env_set(&global_env, "version", make_prim(prim_version));
@@ -1028,26 +1054,35 @@ void lisp_init(void) {
     printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
 
 
-    /* Automatically load system boot scripts if present */
+    /* Automatically load system boot scripts if present.
+     *
+     * Found through the search path (C1) rather than by trying /sd0 and then
+     * /flash0 by hand, which is what this did before. Same idea, generalised:
+     * the two hardcoded volumes *were* a search path, just one that only this
+     * function knew about and that no board could reorder. Now a board that
+     * mounts something else, or wants a different precedence, says so in one
+     * place and every lookup follows. */
     static char boot_buf[8192];
-    int len = vfs_read("/sd0/system/stdlib.lisp", boot_buf, sizeof(boot_buf) - 1);
-    if (len <= 0) {
-        len = vfs_read("/flash0/system/stdlib.lisp", boot_buf, sizeof(boot_buf) - 1);
+    char script[128];
+    int len = 0;
+
+    if (path_resolve("etc", "stdlib.lisp", "", script, sizeof(script)) == 0) {
+        len = vfs_read(script, boot_buf, sizeof(boot_buf) - 1);
     }
     if (len > 0) {
         boot_buf[len] = '\0';
         lisp_eval_string(boot_buf);
-        printk("[Lisp Boot] Loaded system/stdlib.lisp\n");
+        printk("[Lisp Boot] Loaded %s\n", script);
     }
 
-    len = vfs_read("/sd0/system/init.lisp", boot_buf, sizeof(boot_buf) - 1);
-    if (len <= 0) {
-        len = vfs_read("/flash0/system/init.lisp", boot_buf, sizeof(boot_buf) - 1);
+    len = 0;
+    if (path_resolve("etc", "init.lisp", "", script, sizeof(script)) == 0) {
+        len = vfs_read(script, boot_buf, sizeof(boot_buf) - 1);
     }
     if (len > 0) {
         boot_buf[len] = '\0';
         lisp_eval_string(boot_buf);
-        printk("[Lisp Boot] Executed system/init.lisp\n");
+        printk("[Lisp Boot] Executed %s\n", script);
     }
 }
 
