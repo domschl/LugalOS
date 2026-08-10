@@ -64,12 +64,6 @@ silicon):
 - The native RP2350 USB CDC ACM console (`/dev/ttyACM0`), written from scratch against the
   hardware.
 
-**Not yet implemented** — present as names, stubs, or partial scaffolding, not working features:
-
-Everything else described below — including the scheduler, IPC, U-mode isolation, and the
-distributed 9P namespace — is implemented and continuously tested. This section exists to stay an
-honest map rather than a wish list, so it is kept accurate in both directions.
-
 ---
 
 ## Key Features & Architecture
@@ -243,6 +237,8 @@ CP2101 Adapter          Raspberry Pi Pico 2 (RP2350)
   │  Pin 1  GPIO0  UART0 TX  ◄─── RXD    │
   │  Pin 2  GPIO1  UART0 RX  ──► TXD     │
   │  Pin 3  GND              ──► GND      │
+  │  Pin 6  GPIO4  I2C0 SDA  ◄─► SDA     │
+  │  Pin 7  GPIO5  I2C0 SCL  ──► SCL     │
   │  ...                                  │
   │  Pin 14 GPIO10 SPI1 SCK  ──► CLK      │
   │  Pin 15 GPIO11 SPI1 MOSI ──► MOSI     │
@@ -265,6 +261,21 @@ MicroSD Module          Raspberry Pi Pico 2 (RP2350)
      MISO ◄──────────  Pin 16  GPIO12 (SPI1 MISO)
        CS ──────────►  Pin 17  GPIO13 (SPI1 CS)
 ```
+
+### I2C RTC / EEPROM Wiring (Pico 2 I2C0)
+
+```
+DS1307/DS3231 RTC Module   Raspberry Pi Pico 2 (RP2350)
+──────────────────────     ─────────────────────────────
+      VCC ──────────►  Pin 36  3V3(OUT)
+      GND ──────────►  Pin 38  GND
+      SDA ──────────►  Pin  6  GPIO4  (I2C0 SDA)
+      SCL ──────────►  Pin  7  GPIO5  (I2C0 SCL)
+```
+
+> Internal pull-ups on GP4/GP5 are enabled by the driver, so no external pull-up resistors are
+> required. The same bus reaches the RTC at `0x68` (`i2c_rtc.c`) and, if present, an AT24C32
+> EEPROM at `0x57` (`at24c32.c`) — `(i2c-scan)` lists whatever actually responds.
 
 ### Build for RP2350
 
