@@ -1,9 +1,35 @@
 ;; LugalOS System Initialization Script (<vol>/system/etc/init.lisp)
 
-;; 1. Conditionally mount RAMDisk based on architecture capabilities
-(if (= (arch) "rv32")
-    (mount-ramdisk 64)       ;; 64 KB RAMDisk for RV32 NOMMU (RP2350 / Pico 2)
-    (mount-ramdisk 512))     ;; 512 KB RAMDisk for RV64 MMU
+;; 1. Mount a RAM disk -- but only where one is actually needed.
+;;
+;;    Its storage comes from the page allocator now (C5), not from a fixed
+;;    array in the kernel image, so this decision is about how much of the heap
+;;    /ram0 costs rather than about a compile-time constant.
+;;
+;;    On RP2350 that cost is sharp in a way that is worth spelling out. The
+;;    heap is 160 KB and starts at 0x20058000; a PMP region must be a
+;;    power of two and self-aligned, so the only 128 KB-aligned address inside
+;;    the heap is 0x20060000. A 64 KB RAM disk allocated first-fit lands across
+;;    exactly that boundary -- so it does not merely consume pages, it halves
+;;    the largest user image the loader can ever place. If /sd0 is there, it is
+;;    somewhere to put scratch files that costs no RAM at all, and skipping the
+;;    RAM disk is straightforwardly better.
+;;
+;;    And when there is no card, 64 KB rather than something smaller: this
+;;    FAT32 layout spends 48 of its sectors on reserved space and two FATs, so
+;;    a 32 KB volume is more than two-thirds metadata and a 16 KB one is
+;;    smaller than its own bookkeeping. There is no good small size, which is
+;;    what makes "none at all" the right answer when there is an alternative.
+;;
+;;    (board) rather than (arch): RP2350 and QEMU's virt board are both "rv32",
+;;    but one has 512 KB of SRAM and the other 128 MB.
+(if (= (board) "rp2350")
+    (if (mounted? "/sd0")
+        (display "[Init] /sd0 is writable; no RAM disk needed\n")
+        (mount-ramdisk 64))
+    (if (= (arch) "rv32")
+        (mount-ramdisk 64)
+        (mount-ramdisk 512)))
 
 ;; 2. Command search path (C1). Typing a bare name at the shell runs
 ;;    /<vol>/system/bin/<name>.elf from the first volume in this list that

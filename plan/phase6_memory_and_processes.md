@@ -328,7 +328,11 @@ nothing about that.
 Tests 157 → **165 QEMU**, 10 → **11 hardware**.
 
 
-### C4 — Loader: multi-page images, per-segment NAPOT
+### C4 — Loader: multi-page images, per-segment NAPOT *(now runs after C5)*
+
+**Reordered.** C4 is fully developable on QEMU, but until C5 the RP2350 heap could not place a
+region larger than 32 KB, so nothing about it was demonstrable on the board where the constraint is
+real. C5 first raised that ceiling to 128 KB.
 
 One power-of-two page run per segment (`palloc_pages_aligned`), W^X preserved, `linker/user.ld`'s
 two `ASSERT`s replaced by a real per-segment size limit. Raise `MEM_DOMAIN_MAX_REGIONS` 4 → 5 to
@@ -339,21 +343,65 @@ program taking a 128 KB region should be visible, not silently 16% wasteful.
 cleanly with a diagnostic naming the alignment, not fault. Per §2.1 this is trivially reachable on
 RP2350 today (ask for 64 KB) and *unreachable on QEMU*, which is the point.
 
-### C5 — Static RAM reclamation *(the enabler for everything concurrent)*
+### C5 — Static RAM reclamation — **Done (2026-08-10)**
 
-Ranked by KB per unit of risk:
+**Reordered before C4**, on the reasoning that C4 is fully developable on QEMU but not
+*demonstrable* on RP2350 until the heap can place a region worth having. Doing C5 first keeps every
+step hardware-validatable, which has been worth a great deal so far.
 
-| Target | Now | After | Note |
-|---|---|---|---|
-| `fs/` 9P buffers | 57 KB | ~25 KB | Nine 4 KB buffers → one shared pool. Highest ratio in the tree. |
-| `ramdisk_storage` | 64 KB | 0 KB static | Heap-backed, allocated by `(mount-ramdisk n)`. Net-neutral when mounted — but it becomes *policy*, and it lowers `_kernel_end`. |
-| `uart_net` | 34 KB | ~14 KB | `g_demux` 12.5 KB + `g_uart_slip_ctx` 12.3 KB + an 8 KB encoder. |
-| `history_stack` | 16 KB | ~4 KB | 16 KB of shell history on a 512 KB machine. |
+Measured on RP2350: `_kernel_end` `0x20071000` → `0x20058000`, so **image 434 KB → 335 KB and heap
+60 KB → 160 KB** (15 → 40 pages). What that buys C4 is the point: a *k*-byte NAPOT region needs a
+heap of at least *k* (§2.1), so the ceiling went from 32 KB to **128 KB**.
 
-**Be honest about the ramdisk**: moving 64 KB from `.bss` to the heap frees no memory while `/ram0`
-is mounted. It buys reclaimability and a lower `_kernel_end`, and it makes the cost a line in
-`init.lisp` instead of a constant in a driver. That is worth doing for the second reason, not the
-first.
+| Reclaimed | KB | How |
+|---|---|---|
+| `ramdisk_storage` | 64 | Heap-backed, and on RP2350 not mounted at all when `/sd0` is writable |
+| `uart_net` SLIP buffers | 24 | Encode straight onto the wire; decode incrementally into the frame |
+| `history_stack` | 12 | 32 entries → 8; the on-disk history keeps everything anyway |
+
+**The RAM disk is now a decision, not a constant.** `(mounted? "/sd0")` and `(board)` are new, so
+`init.lisp` can say "if there is a writable card, do not spend heap on a RAM disk". On RP2350 that
+matters more than the pages: the heap starts at `0x20058000`, the only 128 KB-aligned address
+inside it is `0x20060000`, and a 64 KB RAM disk allocated first-fit lands *across* that boundary.
+It would not merely consume pages, it would halve the largest user image the loader can ever place.
+When there is no card it takes 64 KB rather than something smaller, because this FAT32 layout spends
+48 sectors on reserved space and two FATs — a 32 KB volume is two-thirds metadata and a 16 KB one is
+smaller than its own bookkeeping. There is no good small size, which is what makes "none" the right
+answer when there is an alternative.
+
+**The SLIP buffers were never buying anything.** Both receive paths accumulated *escaped* bytes in
+an 8 KB `raw[]` and decoded the lot on `SLIP_END`; the state a SLIP decoder needs between bytes is
+one boolean. The transmit path encoded into another 8 KB buffer and then wrote it out one byte at a
+time. Three buffers, none of which held anything the code needed.
+
+**Two pre-existing bugs surfaced, both worth more than the memory.**
+
+*A 16 KB RAM disk mounted and then failed every write.* `fat32_format` spends 48 of its sectors on
+metadata, so a 32-sector volume is smaller than its own bookkeeping — and nothing checked. Now
+`FAT32_MIN_SECTORS`, clamped with a diagnostic at mount.
+
+*The SD image was shared across targets.* It carries user program binaries, which are
+target-specific; one image meant whichever target built last decided what every other target's
+tests loaded. It survived a long time because a simple program mostly works on the wrong ISA —
+`uargs`, which dereferences pointers, faults on a 32-bit address sign-extended to 64. Now built per
+build directory, with the runner, the multinode tests and the run scripts each using their own. The
+image also regenerates when the staging changes (`--if-stale`), which is what exposed it: `--if-missing`
+had been freezing whichever target built first.
+
+**Deliberately not done**: the `fs/` 9P buffer consolidation (~30 KB). It is the highest-risk item
+in the phase — those buffers serve potentially concurrent 9P paths in the most heavily tested
+subsystem — and it would not change what C4 can place, since 256 KB would need a 256 KB heap and
+that needs C6. Available if a later item wants it.
+
+Tests: 165 QEMU (unchanged), 11 hardware, with a new floor asserting the heap can still hold a
+128 KB image so a future static array cannot silently halve C4's ceiling.
+
+A flaky test was also fixed. "Cooperative Tasks Interleave" required strict A1 B1 A2 B2 A3 B3, which
+stopped being a property of a correct system when B6 added preemption: a tick can switch back to A
+after it yields but before B prints. Measured at about one run in eight on a loaded host, on the
+commit before this work as well as after, so the assertion was wrong rather than anything it
+watched. It now asks for B1 before A3 — still fails for the no-op-yield bug it exists to catch.
+
 
 ### C6 — `cc` becomes a process
 

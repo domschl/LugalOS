@@ -273,6 +273,14 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
 
         stack_bytes = stack_kb * 1024
         checks = [
+            # A floor on the reclaimed heap (C5). Not a size assertion for its
+            # own sake: 32 pages is what a 128 KB NAPOT region costs, and that
+            # is the largest user image this board can ever place (a k-byte
+            # region needs a heap of at least k, and the only 128 KB-aligned
+            # address in the heap is 0x20060000). If a future static array
+            # pushes the heap below this, C4's images silently halve -- so the
+            # day it happens should be a failing test rather than a puzzle.
+            ("heap can still hold a 128 KB image", pages_total >= 32),
             # A zero here means the paint or the scan is broken, not that the
             # stack is unused: reaching this shell took stack to get here.
             ("boot stack high-water is measured", stack_peak > 0),
@@ -426,10 +434,16 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     virtio-console chardev (a plain byte relay -- both ends already speak
     the same length-prefixed framing, no re-framing needed) and runs
     (p9-remote-cat ...) from *inside the QEMU guest's own Lisp REPL* against
-    a marker file this test just wrote to the RP2350's /ram0 over the
-    console. Using a freshly written, uniquely-named marker (rather than a
-    pre-existing file on the board's physical SD card) makes this
-    reproducible regardless of what's actually on that card."""
+    a marker file this test just wrote to the RP2350 over the console. Using a
+    freshly written, uniquely-named marker (rather than a pre-existing file)
+    makes this reproducible regardless of what is on the board's card.
+
+    The volume is chosen by asking the board rather than assumed. Since C5 the
+    RAM disk is conditional -- a board with a writable /sd0 does not mount one,
+    because on RP2350 a 64 KB /ram0 lands across the only 128 KB-aligned
+    address in the heap and halves the largest user image the loader can place.
+    So "/ram0 always exists" stopped being true, and a test that assumed it
+    failed on the write rather than on anything it was testing."""
     name = "T3: QEMU guest reads a real file from RP2350 hardware over the bridge"
 
     qemu_bin = shutil.which("qemu-system-riscv64")
@@ -437,13 +451,14 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, True, "SKIPPED: qemu-system-riscv64 not found in PATH")
 
     rv64_elf = REPO_ROOT / "build" / "rv64" / "lugalos.elf"
-    sd_img = REPO_ROOT / "build" / "lugalos_sd.img"
+    # The guest is RV64, so it needs the RV64 image: these carry target-specific
+    # user program binaries and cannot be shared between architectures.
+    sd_img = REPO_ROOT / "build" / "rv64" / "lugalos_sd.img"
     if not rv64_elf.exists():
         return (name, True, f"SKIPPED: {rv64_elf} not built")
 
     marker_name = f"hwbridge_{uuid.uuid4().hex[:12]}.txt"
     marker_value = uuid.uuid4().hex
-    marker_path = f"/ram0/{marker_name}"
 
     proc: subprocess.Popen | None = None
     ser: serial.Serial | None = None
@@ -452,15 +467,28 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     bridge_threads: list[threading.Thread] = []
 
     try:
-        # 1. Write a unique marker to the board's own RAM disk over the console.
+        # 1. Write a unique marker to whichever volume this board can write to.
         with serial.Serial(ports.console, 115200, timeout=2) as console:
             time.sleep(0.3)
+            console.reset_input_buffer()
+            # Asked as a *boolean*, deliberately. Returning the path from the
+            # guest would put the answer inside the command text too, and the
+            # line editor echoes every keystroke -- so a check for "/ram0"
+            # would match the echo and always say yes, which is exactly what
+            # it did on the first attempt. "#t" cannot appear in the command.
+            console.write(b'lisp\n(mounted? "/ram0")\nexit\n')
+            console.flush()
+            vol_reply = rp2350.drain(console, quiet=0.5, deadline=6.0).decode("utf-8", "replace")
+            volume = "/ram0" if "=> #t" in vol_reply else "/sd0"
+            marker_path = f"{volume}/{marker_name}"
+
             console.reset_input_buffer()
             console.write(f"write {marker_path} {marker_value}\n".encode())
             console.flush()
             reply = rp2350.drain(console, quiet=0.5, deadline=4.0)
             if b"=> #t" not in reply:
-                return (name, False, f"failed to write marker file on RP2350: {reply[:300]!r}")
+                return (name, False,
+                        f"failed to write marker file at {marker_path}: {reply[:300]!r}")
 
         # 2. Boot a QEMU node with a socket-backed virtio-console chardev.
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -795,6 +823,13 @@ def main() -> int:
 
     print("\n----------------------------------------------------------------------")
     print(f"Result: {passed} / {total} PASSED")
+    # The last test deliberately exhausts the Lisp node pool, which leaves the
+    # evaluator returning nil until the board reboots. Everything here drives
+    # the board through a shell that evaluates, so a second run without a
+    # reboot fails five tests for reasons that have nothing to do with them.
+    # Said out loud because it is not guessable from the failures.
+    print("NOTE: the node-pool test leaves the evaluator inert -- reboot "
+          "(uv run flash.py) before re-running.")
     print("======================================================================\n")
     return 0 if passed == total else 1
 

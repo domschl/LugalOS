@@ -6,7 +6,13 @@
 #include "fs/vfs.h"
 #include <string.h>
 
-#define MAX_HIST_ITEMS 32
+/* Eight, not thirty-two. At MAX_LINE_LEN each, the ring was 16 KB of a
+ * 512 KB machine spent on scrollback (C5) -- and it is only the *navigable*
+ * history: add_history() also appends every command to
+ * <vol>/system/history.lisp, which keeps everything and is where a long
+ * record belongs. Up-arrow through the last eight is what an interactive
+ * session actually uses. */
+#define MAX_HIST_ITEMS 8
 #define MAX_LINE_LEN 512
 
 /* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more
