@@ -356,3 +356,24 @@ hardware scenario needs (the `%.0f`/`%ld` UCI `info` line specifically) and on
 LugalOS's own USB CDC / port-binding (C8) semantics for a second console-like
 role. Real candidate for a follow-up phase once H1-H4 prove the on-device game
 works standalone — not a blocker for "play chess on the physical board."
+
+## Follow-up cleanup (user-flagged 2026-08-11, not yet scheduled)
+
+Three known items, explicitly deferred rather than forgotten:
+
+1. **Heap-on-demand for the engine's static pools**, matching `cc`/`ed`'s own
+   precedent (phase8) instead of `search.c`'s current permanent `.bss`
+   allocation (H4's own finding: `search_pv_movelists`/`search_q_movelists`,
+   ~65 KB, cost real heap headroom — dropped RP2350's managed pool from 78 to
+   48 pages — on every board that builds with chess enabled, whether or not
+   it's ever played).
+2. **The TM1638 function keys (8-15)** — level select, board view, info,
+   options — are still unimplemented; `chess_run()`'s `tm_read_square()`
+   currently just ignores presses in that range (H4 found live that this
+   *was* the source of the "hang" reports, once the actual key protocol was
+   corrected).
+3. **`perft` in the automated test suite**, at a depth bounded for
+   reasonable CI/QEMU runtime — the vendored engine ships `perft.c`/`.h`
+   upstream but neither was vendored into `user/chess/` (H4 only pulled in
+   the files the engine core and `chess_ui.c` actually need); a real,
+   valuable move-generation correctness check this phase didn't add.
