@@ -26,6 +26,9 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 #include "drivers/tm1638.h"
 #endif
+#if CONFIG_ENABLE_CHESS
+#include "chess_ui.h"
+#endif
 #include "arch/elf.h"
 #include <string.h>
 
@@ -372,6 +375,25 @@ static lisp_val_t *prim_tm_get_key(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     return make_int(tm1638_get_key());
 }
+#endif
+
+#if CONFIG_ENABLE_CHESS
+/* Chess primitives (H4, plan/phase9_chess_computer.md). chess-selftest has
+ * no hardware dependency (builds/runs on every target); chess-run needs
+ * the display and keypad both present, matching chess_ui.h's own guard. */
+static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    chess_selftest();
+    return &true_val;
+}
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
+static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    chess_run(); /* does not return -- reset the board to exit */
+    return &true_val;
+}
+#endif
 #endif
 
 const char *get_str_val(lisp_val_t *val) {
@@ -1222,6 +1244,12 @@ void lisp_init(void) {
     env_set(&global_env, "tm-display", make_prim(prim_tm_display));
     env_set(&global_env, "tm-set-leds", make_prim(prim_tm_set_leds));
     env_set(&global_env, "tm-get-key", make_prim(prim_tm_get_key));
+#endif
+#if CONFIG_ENABLE_CHESS
+    env_set(&global_env, "chess-selftest", make_prim(prim_chess_selftest));
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
+    env_set(&global_env, "chess-run", make_prim(prim_chess_run));
+#endif
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));

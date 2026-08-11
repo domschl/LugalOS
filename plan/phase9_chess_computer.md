@@ -1,6 +1,7 @@
 # Phase 9 — Chess computer (ST7735 canvas + TM1638 I/O + engine port)
 
-**Status:** H1-H3 complete and hardware-verified, 2026-08-11; H4 not started.
+**Status:** H1-H4 complete and hardware-verified, 2026-08-11. Phase closed
+except for the deliberately-deferred item below (UCI/GUI bridge).
 First entry from `plan/raw_ideas.md`'s "Application scenarios" with a concrete,
 already-built consumer (`~/gith/domschl/LugalChess`) rather than being purely
 speculative, and it also closes two "New hardware" backlog items (Displays,
@@ -243,32 +244,107 @@ back `Unbound symbol: tm-display`; then the inverse
 `(tm-display ...)` still works, `(canvas-fill ...)` unbound. Board reflashed
 back to the full default build afterward.
 
-## H4 — Engine port, feature-gated behind `CONFIG_ENABLE_CHESS`
+## H4 — Engine port, feature-gated behind `CONFIG_ENABLE_CHESS` *(done, 2026-08-11 — hardware-verified)*
 
-Vendor `engine/*.c` under `user/chess/` (mirroring `user/chibicc/`, `user/ed/`'s
-existing layout), replacing `firmware/main.c`'s role with a new game-loop file that
-drives H1/H2's canvas + keypad primitives instead of the original UCI/USB-CDC
-console loop. Concretely, in the order H0 found the gaps:
+Landed differently from the original plan in one deliberate, load-bearing way:
+`engine/src/console.c` (1637 lines, stdio/UCI/menu-system deeply intertwined)
+was **not vendored at all**. It was going to cost ~150 hand-edited `printf`
+call sites and ~1600 lines for behavior (UCI protocol, flash save/load, level
+menus) already out of scope for this phase. Instead, `user/chess/src/chess_ui.c`
+is a fresh, small (~330-line) implementation against the exact extension point
+`search.c` already calls through — `search_progress_callback()` /
+`search_poll_stop_callback()`, declared `extern` there and never defined there,
+upstream's console.c-only definitions. Everything else (`bitboard`, `position`,
+`movegen`, `zobrist`, `evaluation`, `tt`, `search`) is vendored under
+`user/chess/{include,src}/`, mirroring `user/chibicc/`'s layout.
 
-1. `tt.c`'s `malloc`/`free` -> one `palloc_pages()`-backed buffer.
-2. Add `|| defined(CONFIG_BOARD_RP2350)` to the `__arm__`/`PICO_BOARD` gates in
-   `tt.c` and `console.c`; audit each of `console.c`'s ~19 gated blocks
-   individually rather than trusting they're all safe once the macro fires —
-   several are almost certainly raw flash-sector writes that need rewriting
-   against LugalOS's own FAT32 volumes, not just re-gating.
-3. Hoist `MoveList` out of `pv_search()`/`quiescence()`'s recursive stack frame
-   into a per-ply array (H0's stack-safety fix).
-4. Replace the ~150 `printf`/`fprintf` call sites with `cprintf` (mechanical for
-   the overwhelming majority); hand-port the 1 `sscanf` and 4 `fgets`/`stdin`
-   sites against a small line-input helper.
-5. Wire the new `chess` shell command / Lisp primitive, gated per H3, running
-   synchronously in kernel context per H0's placement decision — no U-mode/PMP
-   work in this phase.
+Also landed with less required adaptation than H0 estimated, since two of its
+concerns had already been resolved upstream by the time implementation started
+(see this file's top-of-document correction note) or turned out to need a
+different fix than expected:
 
-**Verify:** hardware-only (no QEMU model exists for any of this, per H0) — play a
-full game via TM1638 + ST7735 on real silicon, confirm no stack overrun (H0's
-concern) across a genuinely deep search, confirm `/proc/meminfo` headroom stays
-healthy with the engine resident.
+1. **`tt.c`'s `malloc`/`free`** -> `palloc_pages(8)`/`palloc_free(...)`, exactly
+   as planned (`LUGALCHESS_EMBEDDED` always requests a fixed 32 KB table, i.e.
+   8 pages at `PAGE_SIZE=4096`).
+2. **The `__arm__`/`PICO_BOARD` gate** needed no patch at all —
+   `LUGALCHESS_EMBEDDED`'s real guard (`engine/include/version.h`) already
+   fires correctly on any freestanding RISC-V cross-compile, and since
+   `console.c` wasn't vendored, none of its ~19 gated blocks (flash
+   save/load, etc.) were ever in scope to audit.
+3. **The `MoveList`-on-recursion-stack risk** was already fixed upstream
+   (hoisted into static per-ply arrays) before this phase reached
+   implementation — confirmed present, not re-fixed.
+4. **`printf`/`fflush`/`atoi`/`srand`/`abs`** -> a small compatibility header
+   (`user/chess/include/chess_platform.h`): `#define printf cprintf` covers
+   the overwhelming majority of call sites unmodified (`cprintf`'s `%d`
+   already reads a `long` regardless of an `l` length modifier, so `%ld`
+   sites needed no cast); the real incompatibilities (`%.0f`, entirely
+   unsupported, and `%016llx`, which desyncs the whole argument stream since
+   only a single `l` is skipped) were hand-fixed at their ~5 call sites in
+   `search.c`/`tt.c`/`position.c`/`bitboard.c`. `atoi`/`srand`/`rand` are
+   ~20-line implementations in `chess_platform.c`; `abs` is a macro.
+5. **A new problem H0 didn't anticipate**, found by the RV64_MMU build, not
+   RP2350: on any LugalOS RISC-V target (no Zbb extension, confirmed even on
+   RP2350's `rv32imac_zicsr_zbs`), `__builtin_ctz`/`__builtin_popcount` lower
+   to libgcc calls (`__ctzsi2`, which itself promotes to 64-bit `__ctzdi2`
+   on this backend) whose reference to libgcc's `__clz_tab` failed to
+   relocate in the full kernel link (`relocation truncated to fit:
+   R_RISCV_HI20`) — a genuine toolchain/multilib defect, confirmed with a
+   two-line reproduction completely outside this codebase. Fixed by forcing
+   `bitboard.h`'s existing (previously unreachable) pure-software bit-scan
+   fallback on `__riscv` ahead of the GCC-builtin branch — zero library
+   calls, confirmed via the same repro, uniform across every LugalOS target
+   rather than special-casing one board.
+6. Wired as `chess-selftest` (all targets — no hardware dependency, searches
+   a fixed midgame position and reports the move via `cprintf`; this is what
+   made the engine testable on fast QEMU iteration before ever touching real
+   silicon) and `chess-run` (RP2350 + `CONFIG_ENABLE_DISPLAY` +
+   `CONFIG_ENABLE_TM1638` only — the actual interactive game, TM1638 for move
+   entry, ST7735 for the board; does not return, reset to exit, same shape
+   as `p9serve`).
+
+**Two more real, hardware-only findings, both from live play testing, neither
+visible on QEMU:**
+
+- **RP2350's Lisp node pool needed no further change, but the static heap
+  budget did.** `search.c`'s per-ply move-list pools
+  (`search_pv_movelists`/`search_q_movelists`, ~65 KB total) are plain
+  `static` arrays, not heap-on-demand like `cc`/`ed` — they cost real,
+  permanent `.bss` on every RP2350 build with chess enabled (the default),
+  dropping the board's managed heap from 78 pages to 48. `tests/hw/
+  test_rp2350.py`'s `C6/C7` test had a hardcoded `>= 70` pages assertion
+  from phase6/7's own measurement; updated to `>= 45` with the reasoning
+  recorded in the test itself. Converting these pools to `palloc`-on-demand
+  (matching `cc`/`ed`'s own precedent) is a real candidate for a follow-up,
+  not done here.
+- **The TM1638 key protocol H0/H1 assumed from `tm1638_get_key()`'s own code
+  comment — keys 0-7 for file, 8-15 for rank — was wrong**, confirmed
+  directly by the project's original author (also this repo's user):
+  keys 0-7 double up for *both* file and rank, in sequence (first press =
+  file, second = rank); 8-15 are reserved for menu functions (level/board/
+  info/options) this phase doesn't implement. The bug this produced was
+  genuinely confusing to debug live: with the wrong assumption,
+  `tm_read_square()` silently waited forever (well, up to its own 15 s
+  timeout, recurring) for a key range the physical pad never sends during
+  normal move entry — indistinguishable from a real hang without adding
+  live `raw key=N` diagnostics to `tm_wait_key()` and watching the console
+  while the user pressed keys in real time. Kept those diagnostics in the
+  shipped code (low-frequency, genuinely useful for any future TM1638
+  troubleshooting) rather than stripping them back out once the real bug
+  was found.
+
+**Verified:** all three targets build clean, 181/181 QEMU tests unchanged.
+Hardware: 15/15 `tests/hw/test_rp2350.py` (with the updated C6/C7 threshold).
+`chess-selftest` run on both QEMU rv32 and real RP2350 silicon from the exact
+same non-book midgame FEN: identical move choices and PV lines on both
+(`b1c3` at every completed depth), QEMU reaching depth 9 (~19.8 M nodes/s,
+host-speed emulation) and real Hazard3 silicon reaching depth 6 in the same
+2 s budget (~44 K nodes/s — the real, honest hardware number, not QEMU's). A
+full interactive game played live via TM1638 + ST7735 on the physical board:
+correct board rendering (with a live-diagnosed and fixed light-square/white-piece
+contrast issue), correct move entry, correct engine replies (e2e4 -> d7d6
+confirmed on both the TFT board and its text status line), correct handoff
+back to waiting for the next human move.
 
 ---
 

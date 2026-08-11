@@ -859,6 +859,17 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     returned on exit now, which is what took this board's image from 335 KB to
     183 KB and its heap from 40 pages to 78.
 
+    That 78-page baseline dropped to 48 with phase9 H4 (chess): search.c's
+    per-ply move-list pools (search_pv_movelists/search_q_movelists, ~65 KB)
+    are still plain `static` arrays, not heap-on-demand -- unlike cc/ed, they
+    weren't converted, so they cost real, permanent .bss on every board that
+    builds with LUGALOS_ENABLE_CHESS=ON (the default), whether or not chess
+    ever runs. A real candidate for a follow-up applying the same
+    heap-on-demand treatment cc/ed already got; out of scope for landing the
+    engine itself. The threshold below moved with it -- pick a number with
+    margin below the actual measured value, not the value itself, so a real
+    future regression still trips this.
+
     Worth checking here rather than only on QEMU for the obvious reason: the
     QEMU targets have a 16 MB heap, so an arena that is never released is
     invisible there for a very long time. On 78 pages it is immediate.
@@ -887,7 +898,7 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ("compile succeeded",  "Build clean" in out),
             ("two readings taken", len(used) >= 2),
             ("arena was returned", len(used) >= 2 and used[0] == used[-1]),
-            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 70),
+            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 45),
         ]
         failed = [label for label, ok in checks if not ok]
         if failed:

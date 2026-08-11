@@ -74,6 +74,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/user/lisp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/chibicc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/chess/include
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
@@ -306,6 +307,24 @@ if(LUGALOS_ENABLE_CC)
 endif()
 if(LUGALOS_ENABLE_ED)
     list(APPEND SOURCES user/ed/ed.c)
+endif()
+if(LUGALOS_ENABLE_CHESS)
+    # H4 (plan/phase9_chess_computer.md): engine core is portable (builds on
+    # every target, not just RP2350) so it's testable fast on QEMU before
+    # ever touching real hardware; chess_ui.c's interactive TM1638/ST7735
+    # game loop is itself internally guarded to RP2350 + those two flags,
+    # same file either way -- chess_selftest() (no hardware dependency)
+    # always builds.
+    list(APPEND SOURCES
+        user/chess/src/chess_platform.c
+        user/chess/src/bitboard.c
+        user/chess/src/position.c
+        user/chess/src/movegen.c
+        user/chess/src/zobrist.c
+        user/chess/src/evaluation.c
+        user/chess/src/tt.c
+        user/chess/src/search.c
+        user/chess/src/chess_ui.c)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
