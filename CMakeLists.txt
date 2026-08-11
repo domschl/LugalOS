@@ -99,6 +99,16 @@ if(ENABLE_SANITIZERS)
     endif()
 endif()
 
+# Software feature flags (F0, plan/phase8_feature_flags.md): which optional,
+# self-contained subsystems get built in at all. A build persona choice
+# ("sensor node doesn't need cc"), orthogonal to which board, so these are
+# plain cache options rather than facts in cmake/board-*.cmake. Default ON
+# everywhere -- this phase changes what *can* be built, not what tests exercise
+# by default. Baked into lugalos_config.h below so C code gates uniformly with
+# #if CONFIG_ENABLE_CC regardless of target.
+option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
+option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
+
 # --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
 #
 # Separately linked binaries, loaded from the filesystem and run in U-mode by
@@ -210,10 +220,12 @@ if(DEFINED LUGALOS_BOARD_FILE)
     set(LUGALOS_CONFIG_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_config.h)
     execute_process(COMMAND ${CMAKE_COMMAND}
         -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+        -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     add_custom_target(lugalos_config ALL
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+            -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         COMMENT "Refreshing board config")
 endif()
@@ -264,14 +276,23 @@ set(SOURCES
     libc/string.c
     user/lisp/lisp.c
     user/lisp/lisp_compile.c
-    user/chibicc/main.c
-    user/chibicc/pools.c
-    user/chibicc/preprocess.c
-    user/chibicc/tokenize.c
-    user/chibicc/parse.c
-    user/chibicc/codegen.c
-    user/ed/ed.c
 )
+
+# Optional subsystems (F1/F2, plan/phase8_feature_flags.md): each is a
+# self-contained leaf with exactly one outside touchpoint, gated to match in
+# lisp.c/shell.c via the CONFIG_ENABLE_CC/CONFIG_ENABLE_ED generated defines.
+if(LUGALOS_ENABLE_CC)
+    list(APPEND SOURCES
+        user/chibicc/main.c
+        user/chibicc/pools.c
+        user/chibicc/preprocess.c
+        user/chibicc/tokenize.c
+        user/chibicc/parse.c
+        user/chibicc/codegen.c)
+endif()
+if(LUGALOS_ENABLE_ED)
+    list(APPEND SOURCES user/ed/ed.c)
+endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)

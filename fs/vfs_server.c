@@ -618,6 +618,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "PALLOC_MAX_PAGES=%d\n", CONFIG_PALLOC_MAX_PAGES);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART0_BASE=0x%lx\n", (unsigned long)CONFIG_UART0_BASE);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "ENABLE_CC=%d\nENABLE_ED=%d\n", CONFIG_ENABLE_CC, CONFIG_ENABLE_ED);
 #if defined(CONFIG_BOARD_RP2350)
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART0_TX_GPIO=%d\nUART0_RX_GPIO=%d\n",

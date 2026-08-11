@@ -16,7 +16,10 @@
 #include "kernel/device.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
+#include "lugalos_config.h"
+#if CONFIG_ENABLE_CC
 #include "user/chibicc/include/chibicc.h"
+#endif
 #include "arch/elf.h"
 #include <string.h>
 
@@ -415,6 +418,7 @@ static lisp_val_t *prim_rm(lisp_val_t *args, lisp_val_t *env) {
     return (vfs_remove(path) == 0) ? &true_val : &false_val;
 }
 
+#if CONFIG_ENABLE_CC
 static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a1 = lisp_list_ref(args, 0);
@@ -426,6 +430,7 @@ static lisp_val_t *prim_cc(lisp_val_t *args, lisp_val_t *env) {
     strncpy_local(safe_dst, get_str_val(a2), sizeof(safe_dst));
     return (chibicc_compile(safe_src, safe_dst) == 0) ? &true_val : &false_val;
 }
+#endif
 
 /* (path-set "ram0 sd0 flash0") -- reorder or replace the command search path.
  * Belongs in init.lisp: which volumes exist, and which should win when two
@@ -1140,7 +1145,9 @@ void lisp_init(void) {
     env_set(&global_env, "rmdir", make_prim(prim_rmdir));
     env_set(&global_env, "cp", make_prim(prim_cp));
     env_set(&global_env, "rm", make_prim(prim_rm));
+#if CONFIG_ENABLE_CC
     env_set(&global_env, "cc", make_prim(prim_cc));
+#endif
     env_set(&global_env, "exec", make_prim(prim_exec));
     env_set(&global_env, "spawn", make_prim(prim_spawn));
     env_set(&global_env, "path-set", make_prim(prim_path_set));

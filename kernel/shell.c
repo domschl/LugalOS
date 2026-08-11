@@ -20,9 +20,14 @@
 #include "arch/umode.h"
 #include "arch/trap.h"
 #include "kernel/ipc.h"
-#include "chibicc.h"
+#include "lugalos_config.h"
 #include "lisp.h"
+#if CONFIG_ENABLE_CC
+#include "chibicc.h"
+#endif
+#if CONFIG_ENABLE_ED
 #include "ed.h"
+#endif
 #include <string.h>
 
 /* Bounded output buffer for the POSIX -> S-expression command transformer.
@@ -73,13 +78,17 @@ static void cmd_help(void) {
     cprintf("  write <p> <txt> - Write payload to a file, /dev/uart, or a /srv/ service endpoint\n");
     cprintf("  rm <file>       - Delete file from disk\n");
     cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
+#if CONFIG_ENABLE_CC
     cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
+#endif
     cprintf("  exec <elf>      - Run a RISC-V ELF binary as a U-mode task, confined to its own pages\n");
     cprintf("  <name>          - Run <vol>/system/bin/<name>.elf from the first volume on the\n");
     cprintf("                    search path that has it (see 'cat /proc/path'); a path with a\n");
     cprintf("                    '/' in it is always taken literally\n");
     cprintf("  e [file]        - Launch Emacs-style full-screen editor\n");
+#if CONFIG_ENABLE_ED
     cprintf("  ed [file]       - Launch teletype line editor\n");
+#endif
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
@@ -589,12 +598,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "clear") == 0) {
         uart_puts("\033[2J\033[H");
         return;
+#if CONFIG_ENABLE_ED
     } else if (strcmp(cmd_line, "ed") == 0) {
         ed_main(NULL);
         return;
     } else if (strncmp(cmd_line, "ed ", 3) == 0) {
         ed_main(&cmd_line[3]);
         return;
+#endif
     } else if (strcmp(cmd_line, "e") == 0) {
         shell_run_editor("/ram0/system/scratch.lisp");
         return;
