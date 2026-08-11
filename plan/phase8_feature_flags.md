@@ -103,8 +103,14 @@ instance shows `ENABLE_CC=1`/`ENABLE_ED=1` on the default build and
 
 Nothing — F0-F3 are done, QEMU-green (181/181, default ON build, every
 milestone) and manually verified on both a default and an all-OFF rv32 build.
-No hardware-only code paths were touched, so no `tests/hw/` run is needed for
-this phase (unlike phase7's K2 pin migration).
+No hardware-only code paths were touched, so a `tests/hw/` run wasn't strictly
+required for this phase (unlike phase7's K2 pin migration) — but one was run
+anyway as a freshness check: flashed via `tests/hw/flash.py --verify` (board
+reported build `189.31c1b2fb`, matching this phase's commit), then
+`tests/hw/test_rp2350.py` — **15/15 passed**, including `K3: /proc/config`
+(still matching all 11 pin/platform fields; `ENABLE_CC`/`ENABLE_ED` aren't
+board-optional so aren't part of that specific assertion, but the board booted
+and ran the full command surface with both flags at their default ON).
 
 Networking (`loopback_net`/`uart_net`/`usb_cdc`) and any further software options
 stay out of scope, per the theme note above — real candidates for a later phase
