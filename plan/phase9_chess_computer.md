@@ -1,6 +1,6 @@
 # Phase 9 — Chess computer (ST7735 canvas + TM1638 I/O + engine port)
 
-**Status:** H1-H2 complete and hardware-verified, 2026-08-11; H3-H4 not started.
+**Status:** H1-H3 complete and hardware-verified, 2026-08-11; H4 not started.
 First entry from `plan/raw_ideas.md`'s "Application scenarios" with a concrete,
 already-built consumer (`~/gith/domschl/LugalChess`) rather than being purely
 speculative, and it also closes two "New hardware" backlog items (Displays,
@@ -217,19 +217,31 @@ polled for 8 s while the user pressed keys returned real, varying non-idle
 values (7, 6, 5, 4, 5) rather than sticking at -1, confirming the bit-bang read,
 phantom-key rejection, and matrix decode all work end-to-end on real silicon.
 
-## H3 — `/proc/config` + feature-flag wiring
+## H3 — `/proc/config` + feature-flag wiring *(done, 2026-08-11 — hardware-verified)*
 
-Extend `/proc/config` (K3/phase7, F3/phase8's exact shape) with the new pin
-fields, and add `LUGALOS_ENABLE_DISPLAY`/`LUGALOS_ENABLE_CHESS` CMake options
-following phase8's F0-F3 mechanism exactly: option -> generator input ->
-`CONFIG_ENABLE_*` define -> gated `SOURCES` + one registration site + help text.
-Two flags rather than one because the canvas/TM1638 drivers (H1/H2) are useful
-without the chess engine (a future scenario might want the display alone), while
-chess (H4) depends on both.
+Three independent flags, not two — revised from this section's original plan at
+the user's explicit request: the TM1638 keypad/7-segment/LEDs are useful on
+their own in a board persona with no display attached, so bundling it with the
+canvas driver would have been wrong. `LUGALOS_ENABLE_DISPLAY`,
+`LUGALOS_ENABLE_TM1638`, `LUGALOS_ENABLE_CHESS` — CMake options following
+phase8's F0-F3 mechanism exactly: option -> generator input ->
+`CONFIG_ENABLE_*` define -> gated `SOURCES` + registration sites. Each of
+`CMakeLists.txt`, `cmake/gen_config.cmake`, `kernel/main.c`, `user/lisp/lisp.c`,
+and `fs/vfs_server.c`'s `/proc/config` block now has independent `#if
+CONFIG_ENABLE_DISPLAY` / `#if CONFIG_ENABLE_TM1638` guards rather than one
+shared `#if defined(CONFIG_BOARD_RP2350)`. `CONFIG_ENABLE_CHESS` is defined now
+with no consumer yet — same shape F0 defined `ENABLE_CC`/`ENABLE_ED` before
+F1/F2 had anything to gate; H4 is what makes it real.
 
-**Verify:** default build unaffected (both ON), 181/181 QEMU tests unchanged
-(this phase touches no QEMU-reachable code path), `/proc/config` reports both
-flags live on hardware.
+**Verified:** default build (all three ON) unaffected — all three targets build
+clean, 181/181 QEMU tests unchanged, 15/15 hardware tests pass. Independence
+proved on real hardware, not just by inspection: flashed a `-DLUGALOS_ENABLE_TM1638=OFF`
+build and confirmed live — `/proc/config` reports `ENABLE_TM1638=0` and omits
+the TM1638 pin fields, `(canvas-fill ...)` still works, `(tm-display ...)` comes
+back `Unbound symbol: tm-display`; then the inverse
+(`-DLUGALOS_ENABLE_DISPLAY=OFF`) — `ENABLE_DISPLAY=0`, SPI0/ST7735 pins omitted,
+`(tm-display ...)` still works, `(canvas-fill ...)` unbound. Board reflashed
+back to the full default build afterward.
 
 ## H4 — Engine port, feature-gated behind `CONFIG_ENABLE_CHESS`
 

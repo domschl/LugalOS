@@ -14,8 +14,10 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
 #include "drivers/usb_cdc.h"
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
 #include "drivers/st7735.h"
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 #include "drivers/tm1638.h"
 #endif
 #include "arch/csr.h"
@@ -128,14 +130,18 @@ void kernel_main(void) {
     board_register_devices();
     dev_probe_all();
 
-#if defined(CONFIG_BOARD_RP2350)
     /* ST7735 canvas + TM1638 keypad/7-segment (H1/H2,
      * plan/phase9_chess_computer.md): dedicated, always-wired hardware for
      * this board persona, so both are initialized eagerly here rather than
      * lazily on first Lisp call, the same shape as the LED init above rather
      * than spisd's lazy pattern (which exists because a MicroSD card is
-     * optional/hot-pluggable; neither of these is). */
+     * optional/hot-pluggable; neither of these is). Independently gated
+     * (H3) -- a board persona might want the keypad/LEDs without the
+     * display, or vice versa. */
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
     st7735_init();
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm1638_init();
 #endif
 

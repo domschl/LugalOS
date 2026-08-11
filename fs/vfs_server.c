@@ -620,6 +620,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "UART0_BASE=0x%lx\n", (unsigned long)CONFIG_UART0_BASE);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "ENABLE_CC=%d\nENABLE_ED=%d\n", CONFIG_ENABLE_CC, CONFIG_ENABLE_ED);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "ENABLE_DISPLAY=%d\nENABLE_TM1638=%d\nENABLE_CHESS=%d\n",
+            CONFIG_ENABLE_DISPLAY, CONFIG_ENABLE_TM1638, CONFIG_ENABLE_CHESS);
 #if defined(CONFIG_BOARD_RP2350)
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART0_TX_GPIO=%d\nUART0_RX_GPIO=%d\n",
@@ -633,15 +636,19 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LED_ONBOARD_GPIO=%d\nLED_EXT_GPIO=%d\n",
             CONFIG_LED_ONBOARD_GPIO, CONFIG_LED_EXT_GPIO);
+#if CONFIG_ENABLE_DISPLAY
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "SPI0_BASE=0x%lx\n", (unsigned long)CONFIG_SPI0_BASE);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "ST7735_SCK_GPIO=%d\nST7735_MOSI_GPIO=%d\nST7735_CS_GPIO=%d\nST7735_DC_GPIO=%d\nST7735_RST_GPIO=%d\n",
             CONFIG_ST7735_SCK_GPIO, CONFIG_ST7735_MOSI_GPIO,
             CONFIG_ST7735_CS_GPIO, CONFIG_ST7735_DC_GPIO, CONFIG_ST7735_RST_GPIO);
+#endif
+#if CONFIG_ENABLE_TM1638
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
             CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
+#endif
 #endif
         return (int)used;
     }

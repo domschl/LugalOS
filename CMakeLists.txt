@@ -109,6 +109,16 @@ endif()
 option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
 option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
 
+# Same mechanism, RP2350-only hardware (H3, plan/phase9_chess_computer.md).
+# Three independent flags, not one -- the TM1638 keypad/7-segment/LEDs are
+# useful on their own in a board persona with no display attached, so it
+# would be wrong to bundle it with the canvas driver. CONFIG_ENABLE_CHESS is
+# defined now with no consumer yet (H4 is what makes it real, the same shape
+# F0 defined ENABLE_CC/ENABLE_ED before F1/F2 had anything to gate).
+option(LUGALOS_ENABLE_DISPLAY "Build the ST7735 TFT canvas driver (RP2350 only)" ON)
+option(LUGALOS_ENABLE_TM1638 "Build the TM1638 7-segment/keypad/LED driver (RP2350 only)" ON)
+option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet implemented)" ON)
+
 # --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
 #
 # Separately linked binaries, loaded from the filesystem and run in U-mode by
@@ -221,11 +231,15 @@ if(DEFINED LUGALOS_BOARD_FILE)
     execute_process(COMMAND ${CMAKE_COMMAND}
         -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
         -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
+        -DENABLE_DISPLAY=${LUGALOS_ENABLE_DISPLAY} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
+        -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     add_custom_target(lugalos_config ALL
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
+            -DENABLE_DISPLAY=${LUGALOS_ENABLE_DISPLAY} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
+            -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         COMMENT "Refreshing board config")
 endif()
@@ -295,7 +309,16 @@ if(LUGALOS_ENABLE_ED)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c drivers/st7735_rp2350.c drivers/tm1638_rp2350.c arch/riscv/rp2350/bootrom.c)
+    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
+    # H1/H2 (plan/phase9_chess_computer.md): independently toggleable, per H3
+    # -- the TM1638 keypad/7-segment/LEDs are useful without the display
+    # attached at all, so they don't share a flag.
+    if(LUGALOS_ENABLE_DISPLAY)
+        list(APPEND SOURCES drivers/st7735_rp2350.c)
+    endif()
+    if(LUGALOS_ENABLE_TM1638)
+        list(APPEND SOURCES drivers/tm1638_rp2350.c)
+    endif()
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
