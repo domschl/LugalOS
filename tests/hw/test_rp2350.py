@@ -987,6 +987,9 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             "ST7735_CS_GPIO": "17",
             "ST7735_DC_GPIO": "20",
             "ST7735_RST_GPIO": "21",
+            "TM1638_STB_GPIO": "6",
+            "TM1638_CLK_GPIO": "7",
+            "TM1638_DIO_GPIO": "8",
         }
         checks = [
             (f"{key}={val}", re.search(rf"{key}={re.escape(val)}\b", out) is not None)

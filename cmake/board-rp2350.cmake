@@ -39,3 +39,11 @@ set(CONFIG_ST7735_MOSI_GPIO 19)
 set(CONFIG_ST7735_CS_GPIO   17)
 set(CONFIG_ST7735_DC_GPIO   20)
 set(CONFIG_ST7735_RST_GPIO  21)
+
+# TM1638: 8-digit 7-segment display + 4x4 keypad (phase9 H2). A bit-banged
+# 3-wire protocol, not a real SPI/I2C peripheral -- these pins were chosen
+# specifically to avoid the UART0/SPI1 claims above (see
+# drivers/tm1638_rp2350.c).
+set(CONFIG_TM1638_STB_GPIO 6)
+set(CONFIG_TM1638_CLK_GPIO 7)
+set(CONFIG_TM1638_DIO_GPIO 8)

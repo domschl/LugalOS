@@ -16,6 +16,7 @@
 #include "drivers/usb_cdc.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/st7735.h"
+#include "drivers/tm1638.h"
 #endif
 #include "arch/csr.h"
 #include "arch/trap.h"
@@ -128,12 +129,14 @@ void kernel_main(void) {
     dev_probe_all();
 
 #if defined(CONFIG_BOARD_RP2350)
-    /* ST7735 canvas (H1, plan/phase9_chess_computer.md): dedicated, always-
-     * wired hardware for this board persona, so it's initialized eagerly
-     * here rather than lazily on first Lisp (canvas-*) call, the same shape
-     * as the LED init above rather than spisd's lazy pattern (which exists
-     * because a MicroSD card is optional/hot-pluggable; this panel isn't). */
+    /* ST7735 canvas + TM1638 keypad/7-segment (H1/H2,
+     * plan/phase9_chess_computer.md): dedicated, always-wired hardware for
+     * this board persona, so both are initialized eagerly here rather than
+     * lazily on first Lisp call, the same shape as the LED init above rather
+     * than spisd's lazy pattern (which exists because a MicroSD card is
+     * optional/hot-pluggable; neither of these is). */
     st7735_init();
+    tm1638_init();
 #endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note

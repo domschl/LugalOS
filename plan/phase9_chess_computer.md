@@ -1,6 +1,6 @@
 # Phase 9 — Chess computer (ST7735 canvas + TM1638 I/O + engine port)
 
-**Status:** H1 complete and hardware-verified, 2026-08-11; H2-H4 not started.
+**Status:** H1-H2 complete and hardware-verified, 2026-08-11; H3-H4 not started.
 First entry from `plan/raw_ideas.md`'s "Application scenarios" with a concrete,
 already-built consumer (`~/gith/domschl/LugalChess`) rather than being purely
 speculative, and it also closes two "New hardware" backlog items (Displays,
@@ -183,17 +183,39 @@ exercise over the console (`(canvas-fill ...)`, `(canvas-rect ...)`,
 `(canvas-text ...)`) confirmed visually on the physical panel: correct red
 background, green rectangle, white text, after the MADCTL fix above.
 
-## H2 — TM1638: 7-segment + 4x4 keypad
+## H2 — TM1638: 7-segment + 4x4 keypad *(done, 2026-08-11 — hardware-verified)*
 
-`drivers/tm1638_rp2350.c`: near-direct port of `firmware/tm1638.c`/`.h` — it's
-already a simple bit-banged 3-wire protocol on raw GPIO (`gpio_put`/`gpio_get`
-equivalents), no HW peripheral dependency beyond what `board.c` already does for
-the LED pins. Lisp primitives: `(tm-display "string")`, `(tm-set-leds mask)`,
-`(tm-get-key)`. New `CONFIG_TM1638_{STB,CLK,DIO}_GPIO` fields, same generator
-pattern as H1.
+`drivers/tm1638_rp2350.c` + `drivers/include/drivers/tm1638.h`: near-direct port
+of `firmware/tm1638.c`/`.h` — it's a simple bit-banged 3-wire protocol on raw
+SIO GPIO (matching `drivers/uart_rp2350.c`'s LED handling: `IO_BANK0_CTRL`
+func-select 5, `SIO_GPIO_OUT_SET/CLR/OE_SET/OE_CLR`), no hardware peripheral
+dependency. Lisp primitives: `tm-display`, `tm-set-leds`, `tm-get-key`. New
+`CONFIG_TM1638_{STB,CLK,DIO}_GPIO` fields, same K0 generator pattern as H1,
+reported via `/proc/config`, asserted in `tests/hw/test_rp2350.py`'s
+`test_board_config`.
 
-**Verify:** live hardware test — display a known string, read back a physical key
-press (needs a human present to press it, same category as H1's visual check).
+**A real regression this milestone produced, found by the hardware suite
+itself:** RP2350's Lisp node pool (`NODE_POOL_SIZE = 512`, a fixed static array,
+much smaller than QEMU's 4096 since it sits outside `palloc`'s managed pages)
+was already close to the ceiling a full `tests/hw/test_rp2350.py` run reaches
+within one boot session — there's no GC, so allocations across the whole suite
+accumulate. H1+H2 together added 7 new global primitive bindings
+(`canvas-fill/-pixel/-rect/-text`, `tm-display/-set-leds/-get-key`), and that
+was enough to tip a full suite run into `[Lisp Error] Node pool exhausted!`
+partway through — reproduced twice from a clean flash, not a fluke. Fixed by
+raising `NODE_POOL_SIZE` to 768 for RP2350 (`user/lisp/lisp.c`); the pool is a
+few KB of static RAM against 520 KB of physical SRAM, so there was plenty of
+room, it just hadn't been grown since phase7/8. Re-ran the full suite twice
+after the fix with no recurrence.
+
+**Verified:** all three targets build clean, 181/181 QEMU unchanged. Hardware:
+`tests/hw/flash.py --verify`, then `tests/hw/test_rp2350.py` — **15/15 passed**,
+twice in a row (`K3: /proc/config` at 20/20 fields). Live exercise over the
+console: `(tm-display "LUgAL CH")` and `(tm-set-leds 170)` visually confirmed on
+the physical 7-segment/LED module by the user ("Lugal Ch on display"); `(tm-get-key)`
+polled for 8 s while the user pressed keys returned real, varying non-idle
+values (7, 6, 5, 4, 5) rather than sticking at -1, confirming the bit-bang read,
+phantom-key rejection, and matrix decode all work end-to-end on real silicon.
 
 ## H3 — `/proc/config` + feature-flag wiring
 

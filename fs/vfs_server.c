@@ -639,6 +639,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "ST7735_SCK_GPIO=%d\nST7735_MOSI_GPIO=%d\nST7735_CS_GPIO=%d\nST7735_DC_GPIO=%d\nST7735_RST_GPIO=%d\n",
             CONFIG_ST7735_SCK_GPIO, CONFIG_ST7735_MOSI_GPIO,
             CONFIG_ST7735_CS_GPIO, CONFIG_ST7735_DC_GPIO, CONFIG_ST7735_RST_GPIO);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
+            CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
 #endif
         return (int)used;
     }

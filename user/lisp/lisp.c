@@ -22,13 +22,21 @@
 #endif
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/st7735.h"
+#include "drivers/tm1638.h"
 #endif
 #include "arch/elf.h"
 #include <string.h>
 
 
 #if defined(CONFIG_BOARD_RP2350)
-#define NODE_POOL_SIZE 512
+/* 512 was already close to the ceiling a full hardware test-suite run
+ * reaches within one boot session (no GC, so allocations across the whole
+ * suite accumulate) -- H1+H2 (plan/phase9_chess_computer.md) added 7 new
+ * global primitive bindings (canvas-*, tm-*) and tipped it into exhaustion
+ * partway through tests/hw/test_rp2350.py. 768 restores headroom; it's a
+ * static array outside palloc's managed pages, so the RAM cost is a few KB
+ * against 520 KB of physical SRAM, not a fraction of the page budget. */
+#define NODE_POOL_SIZE 768
 #else
 #define NODE_POOL_SIZE 4096
 #endif
@@ -341,6 +349,24 @@ static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
     int size = (int)arg_int(args, 4, 1);
     st7735_draw_string(x, y, str, color, size);
     return &true_val;
+}
+
+/* TM1638 primitives (H2, plan/phase9_chess_computer.md). */
+static lisp_val_t *prim_tm_display(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    tm1638_display_string(get_str_val(lisp_list_ref(args, 0)));
+    return &true_val;
+}
+
+static lisp_val_t *prim_tm_set_leds(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    tm1638_set_leds((uint8_t)arg_int(args, 0, 0));
+    return &true_val;
+}
+
+static lisp_val_t *prim_tm_get_key(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return make_int(tm1638_get_key());
 }
 #endif
 
@@ -1187,6 +1213,9 @@ void lisp_init(void) {
     env_set(&global_env, "canvas-pixel", make_prim(prim_canvas_pixel));
     env_set(&global_env, "canvas-rect", make_prim(prim_canvas_rect));
     env_set(&global_env, "canvas-text", make_prim(prim_canvas_text));
+    env_set(&global_env, "tm-display", make_prim(prim_tm_display));
+    env_set(&global_env, "tm-set-leds", make_prim(prim_tm_set_leds));
+    env_set(&global_env, "tm-get-key", make_prim(prim_tm_get_key));
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
