@@ -29,3 +29,13 @@ set(CONFIG_SPI1_CS_GPIO   13)
 # Onboard + external status LEDs.
 set(CONFIG_LED_ONBOARD_GPIO 25)
 set(CONFIG_LED_EXT_GPIO     16)
+
+# SPI0: the ST7735 TFT canvas bus (phase9 H1, plan/phase9_chess_computer.md).
+# A second, independent PL022 controller from SPI1 above -- no contention, so
+# same as SPI1 this is not a dev_wire_t entry.
+set(CONFIG_SPI0_BASE        0x40080000)
+set(CONFIG_ST7735_SCK_GPIO  18)
+set(CONFIG_ST7735_MOSI_GPIO 19)
+set(CONFIG_ST7735_CS_GPIO   17)
+set(CONFIG_ST7735_DC_GPIO   20)
+set(CONFIG_ST7735_RST_GPIO  21)

@@ -295,7 +295,7 @@ if(LUGALOS_ENABLE_ED)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
+    set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c drivers/st7735_rp2350.c arch/riscv/rp2350/bootrom.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

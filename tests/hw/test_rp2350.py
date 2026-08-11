@@ -946,7 +946,7 @@ def test_port_binding(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
 
 
 def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
-    """K3 on real silicon: the generated pin map matches physical GP0-GP13/16/25.
+    """K3 on real silicon: the generated pin map matches physical GP0-GP13/16-21/25.
 
     K2 (plan/phase7_kernel_config.md) replaced the hand-typed GPIO literals in
     drivers/uart_rp2350.c and drivers/spisd_rp2350.c with values generated from
@@ -981,6 +981,12 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             "SPI1_CS_GPIO": "13",
             "LED_ONBOARD_GPIO": "25",
             "LED_EXT_GPIO": "16",
+            "SPI0_BASE": "0x40080000",
+            "ST7735_SCK_GPIO": "18",
+            "ST7735_MOSI_GPIO": "19",
+            "ST7735_CS_GPIO": "17",
+            "ST7735_DC_GPIO": "20",
+            "ST7735_RST_GPIO": "21",
         }
         checks = [
             (f"{key}={val}", re.search(rf"{key}={re.escape(val)}\b", out) is not None)

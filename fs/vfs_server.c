@@ -633,6 +633,12 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LED_ONBOARD_GPIO=%d\nLED_EXT_GPIO=%d\n",
             CONFIG_LED_ONBOARD_GPIO, CONFIG_LED_EXT_GPIO);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "SPI0_BASE=0x%lx\n", (unsigned long)CONFIG_SPI0_BASE);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "ST7735_SCK_GPIO=%d\nST7735_MOSI_GPIO=%d\nST7735_CS_GPIO=%d\nST7735_DC_GPIO=%d\nST7735_RST_GPIO=%d\n",
+            CONFIG_ST7735_SCK_GPIO, CONFIG_ST7735_MOSI_GPIO,
+            CONFIG_ST7735_CS_GPIO, CONFIG_ST7735_DC_GPIO, CONFIG_ST7735_RST_GPIO);
 #endif
         return (int)used;
     }

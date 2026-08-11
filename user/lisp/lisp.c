@@ -20,6 +20,9 @@
 #if CONFIG_ENABLE_CC
 #include "user/chibicc/include/chibicc.h"
 #endif
+#if defined(CONFIG_BOARD_RP2350)
+#include "drivers/st7735.h"
+#endif
 #include "arch/elf.h"
 #include <string.h>
 
@@ -298,6 +301,48 @@ static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     *(volatile uint32_t *)addr = val;
     return &true_val;
 }
+
+#if defined(CONFIG_BOARD_RP2350)
+/* Canvas primitives over the ST7735 TFT (H1, plan/phase9_chess_computer.md).
+ * Deliberately generic -- raw RGB565 ints in, no chess-specific vocabulary --
+ * so any future display consumer (not just H4's chess engine) can use them. */
+static lisp_val_t *prim_canvas_fill(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    st7735_fill_screen((uint16_t)arg_int(args, 0, ST7735_BLACK));
+    return &true_val;
+}
+
+static lisp_val_t *prim_canvas_pixel(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int x = (int)arg_int(args, 0, 0);
+    int y = (int)arg_int(args, 1, 0);
+    uint16_t color = (uint16_t)arg_int(args, 2, ST7735_WHITE);
+    st7735_draw_pixel(x, y, color);
+    return &true_val;
+}
+
+static lisp_val_t *prim_canvas_rect(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int x = (int)arg_int(args, 0, 0);
+    int y = (int)arg_int(args, 1, 0);
+    int w = (int)arg_int(args, 2, 0);
+    int h = (int)arg_int(args, 3, 0);
+    uint16_t color = (uint16_t)arg_int(args, 4, ST7735_WHITE);
+    st7735_draw_rect(x, y, w, h, color);
+    return &true_val;
+}
+
+static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int x = (int)arg_int(args, 0, 0);
+    int y = (int)arg_int(args, 1, 0);
+    const char *str = get_str_val(lisp_list_ref(args, 2));
+    uint16_t color = (uint16_t)arg_int(args, 3, ST7735_WHITE);
+    int size = (int)arg_int(args, 4, 1);
+    st7735_draw_string(x, y, str, color, size);
+    return &true_val;
+}
+#endif
 
 const char *get_str_val(lisp_val_t *val) {
     if (!val) return "";
@@ -1137,6 +1182,12 @@ void lisp_init(void) {
     env_set(&global_env, "=", make_prim(prim_eq));
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
+#if defined(CONFIG_BOARD_RP2350)
+    env_set(&global_env, "canvas-fill", make_prim(prim_canvas_fill));
+    env_set(&global_env, "canvas-pixel", make_prim(prim_canvas_pixel));
+    env_set(&global_env, "canvas-rect", make_prim(prim_canvas_rect));
+    env_set(&global_env, "canvas-text", make_prim(prim_canvas_text));
+#endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
     env_set(&global_env, "touch", make_prim(prim_touch));

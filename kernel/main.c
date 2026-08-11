@@ -14,6 +14,9 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
 #include "drivers/usb_cdc.h"
+#if defined(CONFIG_BOARD_RP2350)
+#include "drivers/st7735.h"
+#endif
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -123,6 +126,15 @@ void kernel_main(void) {
      * sequence of #ifs here. */
     board_register_devices();
     dev_probe_all();
+
+#if defined(CONFIG_BOARD_RP2350)
+    /* ST7735 canvas (H1, plan/phase9_chess_computer.md): dedicated, always-
+     * wired hardware for this board persona, so it's initialized eagerly
+     * here rather than lazily on first Lisp (canvas-*) call, the same shape
+     * as the LED init above rather than spisd's lazy pattern (which exists
+     * because a MicroSD card is optional/hot-pluggable; this panel isn't). */
+    st7735_init();
+#endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note
      * palloc_init() must precede vmm_init(): the MMU backend allocates its
