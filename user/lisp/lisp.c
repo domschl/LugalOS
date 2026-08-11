@@ -317,6 +317,45 @@ static lisp_val_t *prim_cat(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &nil_val;
     const char *path = get_str_val(args->u.pair.car);
+
+    int fd = vfs_open(path, VFS_O_READ);
+    if (fd >= 0) {
+        vfs_stat_t st;
+        /* fat32/proc/remote9p report a real size; device nodes (MOUNT_DEV)
+         * always report 0 (fs/vfs_server.c's vfs_fstat()) -- and some, like
+         * /dev/uart, never signal EOF, so a second read just blocks waiting
+         * for the next byte typed. Stream in bounded chunks only when the
+         * size is known; otherwise take the one read a device gives. */
+        bool known_size = (vfs_fstat(fd, &st) == 0) && st.size > 0;
+        char buf[4096];
+        if (known_size) {
+            /* Was a single vfs_read() into a fixed 4096-byte buffer, so a
+             * file bigger than that (e.g. a 4378-byte init.lisp) was
+             * silently truncated. Chunked reads bound only by the file's own
+             * size fix that without growing the buffer. */
+            uint64_t offset = 0;
+            for (;;) {
+                int n = vfs_pread(fd, buf, sizeof(buf) - 1, offset);
+                if (n <= 0) break;
+                buf[n] = '\0';
+                cprintf("%s", buf);
+                offset += (uint64_t)n;
+            }
+        } else {
+            int n = vfs_pread(fd, buf, sizeof(buf) - 1, 0);
+            if (n > 0) {
+                buf[n] = '\0';
+                cprintf("%s", buf);
+            }
+        }
+        vfs_close(fd);
+        cprintf("\n");
+        return &nil_val;
+    }
+
+    /* /srv/ endpoints are message channels, not handle-addressable
+     * (fs/include/fs/vfs.h) -- fall back to the legacy whole-message read,
+     * which is bounded by the IPC message size already. */
     static char buf[4096];
     int len = vfs_read(path, buf, sizeof(buf) - 1);
     if (len >= 0) {

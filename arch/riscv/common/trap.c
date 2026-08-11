@@ -1,6 +1,7 @@
 #include "arch/trap.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
 #include "kernel/sched.h"
@@ -8,7 +9,6 @@
 #include "kernel/ticker.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
-#include "drivers/uart.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
@@ -165,7 +165,23 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 }
                 case 11: /* SYS_PUTNUM */
-                    printk("%ld", (long)frame->a1);
+                    /* Was printk("%ld", ...): a user program's numeric output
+                     * has nothing to do with kernel diagnostics, but printk()
+                     * appends everything it emits to the kernel log ring
+                     * (kernel/printk.c), so a tight print loop (see
+                     * tools/sd_root/prime.c, fib.c) flooded /proc/kmsg with
+                     * program output instead of the log staying a kernel
+                     * diagnostic stream. console_putc() writes straight to
+                     * whichever wire is actually bound as the console,
+                     * without touching the log ring. */
+                    {
+                        long val = (long)frame->a1;
+                        if (val < 0) { console_putc('-'); val = -val; }
+                        char digits[20];
+                        int n = 0;
+                        do { digits[n++] = (char)('0' + (val % 10)); val /= 10; } while (val > 0);
+                        while (n > 0) console_putc(digits[--n]);
+                    }
                     ret = 0;
                     break;
                 case 12: /* SYS_PUTCHAR */
@@ -174,8 +190,14 @@ void trap_handler(trap_frame_t *frame) {
                      * NOT -- they still dereference user-supplied addresses
                      * directly, which is what B3's copy-in/copy-out step
                      * exists to fix. Until then, U-mode code must stick to
-                     * value-only syscalls. */
-                    uart_putc((char)frame->a1);
+                     * value-only syscalls.
+                     *
+                     * console_putc(), not uart_putc(): the latter hard-codes
+                     * the physical UART regardless of what the console is
+                     * actually bound to (C8 port binding), and also bypassed
+                     * the kernel log ring inconsistently with SYS_PUTNUM
+                     * above. */
+                    console_putc((char)frame->a1);
                     ret = 0;
                     break;
                 case 21: /* SYS_TICKS: the preemption tick counter */

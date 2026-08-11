@@ -528,6 +528,43 @@ static void cmd_taskdemo(void) {
            before_free, after_free);
 }
 
+/* `e`'s edit buffer used to be a fixed 2 KB stack array (bug: init.lisp is
+ * 4378 bytes and silently lost its tail). Heap-on-demand instead, sized to
+ * the file it is about to load rather than a guess -- room for the file to
+ * roughly double under editing, rounded up to a page, with a floor for new
+ * files. Refuses outright on allocation failure rather than falling back to
+ * a smaller buffer that would just reintroduce the truncation. */
+#define EDITOR_MIN_CAPACITY  8192u
+static void shell_run_editor(const char *filename) {
+    vfs_stat_t st;
+    uint32_t existing = (vfs_stat(filename, &st) == 0) ? st.size : 0;
+    uint32_t want = existing * 2;
+    if (want < EDITOR_MIN_CAPACITY) want = EDITOR_MIN_CAPACITY;
+
+    uint32_t pages = (want + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    char *edit_buf = (char *)palloc_pages(pages);
+    if (!edit_buf) {
+        cprintf("e: no memory for a %u KB edit buffer (file is %u bytes)\n",
+                pages * (uint32_t)PAGE_SIZE / 1024, existing);
+        return;
+    }
+
+    int mlen = edit_multiline_box(filename, edit_buf, (int)(pages * PAGE_SIZE));
+    if (mlen > 0) {
+        lisp_val_t *res = lisp_eval_string(edit_buf);
+        if (res) {
+            if (res->type != LISP_NIL) {
+                cprintf("=> ");
+                lisp_print(res);
+                cprintf("\n");
+            } else {
+                cprintf("\n");
+            }
+        }
+    }
+    palloc_free(edit_buf, pages);
+}
+
 static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
@@ -559,38 +596,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         ed_main(&cmd_line[3]);
         return;
     } else if (strcmp(cmd_line, "e") == 0) {
-        char edit_buf[2048];
-        int mlen = edit_multiline_box("/ram0/system/scratch.lisp", edit_buf, sizeof(edit_buf));
-        if (mlen > 0) {
-            lisp_val_t *res = lisp_eval_string(edit_buf);
-            if (res) {
-                if (res->type != LISP_NIL) {
-                    cprintf("=> ");
-                    lisp_print(res);
-                    cprintf("\n");
-                } else {
-                    cprintf("\n");
-                }
-            }
-        }
+        shell_run_editor("/ram0/system/scratch.lisp");
         return;
     } else if (strncmp(cmd_line, "e ", 2) == 0) {
-        char edit_buf[2048];
         const char *fn = &cmd_line[2];
         while (*fn == ' ') fn++;
-        int mlen = edit_multiline_box(fn, edit_buf, sizeof(edit_buf));
-        if (mlen > 0) {
-            lisp_val_t *res = lisp_eval_string(edit_buf);
-            if (res) {
-                if (res->type != LISP_NIL) {
-                    cprintf("=> ");
-                    lisp_print(res);
-                    cprintf("\n");
-                } else {
-                    cprintf("\n");
-                }
-            }
-        }
+        shell_run_editor(fn);
         return;
     } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
         i2c_scan_bus();
