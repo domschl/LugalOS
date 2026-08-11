@@ -2,7 +2,9 @@
  * LugalOS Hardware Driver: PL011 UART0 + Dual Onboard/External LEDs for RP2350 (Pico 2)
  * Adopted from working bare-metal RP2350 driver (rp2350_cld).
  *
- * Hardware Map:
+ * Hardware Map (K2, plan/phase7_kernel_config.md -- the numbers themselves
+ * live in cmake/board-rp2350.cmake now, this is documentation, not the
+ * source of truth):
  *   GP0  : UART0 TX (Function 2)
  *   GP1  : UART0 RX (Function 2)
  *   GP25 : Onboard LED (Function 5 - SIO)
@@ -14,6 +16,7 @@
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -33,11 +36,11 @@
 #define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
 #define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-#define UART0_BASE              0x40070000UL
+#define UART0_BASE              ((uintptr_t)CONFIG_UART0_BASE)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-#define LED_MASK  ((1u << 25) | (1u << 16))
+#define LED_MASK  ((1u << CONFIG_LED_ONBOARD_GPIO) | (1u << CONFIG_LED_EXT_GPIO))
 
 #include "drivers/usb_cdc.h"
 
@@ -108,11 +111,11 @@ void gp16_alive_tick(void) {
     uint64_t now = time_get_ms();
     if (led_is_on) {
         if (now >= off_at_ms) {
-            REG(SIO_GPIO_OUT_CLR) = (1u << 16);
+            REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
             led_is_on = false;
         }
     } else if (now >= next_on_ms) {
-        REG(SIO_GPIO_OUT_SET) = (1u << 16);
+        REG(SIO_GPIO_OUT_SET) = (1u << CONFIG_LED_EXT_GPIO);
         led_is_on  = true;
         off_at_ms  = now + HEARTBEAT_ON_MS;
         next_on_ms = now + HEARTBEAT_PERIOD_MS;
@@ -139,21 +142,21 @@ void uart_init(uintptr_t base_addr) {
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
     /* 3. Configure LEDs (GP25 onboard + GP16 external) for SIO (Function 5) */
-    REG(IO_BANK0_CTRL(25)) = 5;
-    REG(IO_BANK0_CTRL(16)) = 5;
-    REG(PADS_BANK0_PAD(25)) = 0x56;
-    REG(PADS_BANK0_PAD(16)) = 0x56;
+    REG(IO_BANK0_CTRL(CONFIG_LED_ONBOARD_GPIO)) = 5;
+    REG(IO_BANK0_CTRL(CONFIG_LED_EXT_GPIO)) = 5;
+    REG(PADS_BANK0_PAD(CONFIG_LED_ONBOARD_GPIO)) = 0x56;
+    REG(PADS_BANK0_PAD(CONFIG_LED_EXT_GPIO)) = 0x56;
     REG(SIO_GPIO_OE_SET) = LED_MASK;
 
     /* Default GP16 to LOW (OFF in active-high configuration) */
-    REG(SIO_GPIO_OUT_CLR) = (1u << 16);
+    REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
 
     /* 4. Mux GP0 to UART0 TX (Function 2), GP1 to UART0 RX (Function 2) */
-    REG(IO_BANK0_CTRL(0)) = 2;
-    REG(PADS_BANK0_PAD(0)) = 0x56;
+    REG(IO_BANK0_CTRL(CONFIG_UART0_TX_GPIO)) = 2;
+    REG(PADS_BANK0_PAD(CONFIG_UART0_TX_GPIO)) = 0x56;
 
-    REG(IO_BANK0_CTRL(1)) = 2;
-    REG(PADS_BANK0_PAD(1)) = 0x56;
+    REG(IO_BANK0_CTRL(CONFIG_UART0_RX_GPIO)) = 2;
+    REG(PADS_BANK0_PAD(CONFIG_UART0_RX_GPIO)) = 0x56;
 
     /* 5. Disable UART before programming baud rate and line control */
     REG(UART0_BASE + 0x30) = 0;

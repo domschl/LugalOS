@@ -608,11 +608,36 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
         return (int)used;
+    } else if (strcmp(rel, "config") == 0) {
+        /* Board config (K3, plan/phase7_kernel_config.md): the generated
+         * platform-default and pin-map values actually baked into this
+         * image, so a wrong value in cmake/board-*.cmake is visible from a
+         * running board -- including over 9P from a remote node -- rather
+         * than only from reading the generator's output by hand. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "PALLOC_MAX_PAGES=%d\n", CONFIG_PALLOC_MAX_PAGES);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "UART0_BASE=0x%lx\n", (unsigned long)CONFIG_UART0_BASE);
+#if defined(CONFIG_BOARD_RP2350)
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "UART0_TX_GPIO=%d\nUART0_RX_GPIO=%d\n",
+            CONFIG_UART0_TX_GPIO, CONFIG_UART0_RX_GPIO);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "SPI1_BASE=0x%lx\n", (unsigned long)CONFIG_SPI1_BASE);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "SPI1_SCK_GPIO=%d\nSPI1_MOSI_GPIO=%d\nSPI1_MISO_GPIO=%d\nSPI1_CS_GPIO=%d\n",
+            CONFIG_SPI1_SCK_GPIO, CONFIG_SPI1_MOSI_GPIO,
+            CONFIG_SPI1_MISO_GPIO, CONFIG_SPI1_CS_GPIO);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "LED_ONBOARD_GPIO=%d\nLED_EXT_GPIO=%d\n",
+            CONFIG_LED_ONBOARD_GPIO, CONFIG_LED_EXT_GPIO);
+#endif
+        return (int)used;
     }
     return -1;
 }
 
-static const char *g_proc_names[9] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports" };
+static const char *g_proc_names[10] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config" };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index

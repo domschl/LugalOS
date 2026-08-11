@@ -45,12 +45,13 @@
  * writing is 60 KB (15 pages): the image's .data + .bss reach nearly to the
  * top of RAM. /proc/meminfo reports both figures, so the day one of them
  * moves it is visible rather than inferred. QEMU has 128 MB, far more than
- * anything here needs, so it is capped rather than fully mapped. */
-#if defined(CONFIG_BOARD_RP2350)
-#define PALLOC_MAX_PAGES 128
-#else
-#define PALLOC_MAX_PAGES 4096
-#endif
+ * anything here needs, so it is capped rather than fully mapped.
+ *
+ * Sourced from the generated per-board config (K1,
+ * plan/phase7_kernel_config.md) rather than an #ifdef here -- the value
+ * itself, and which board gets which value, live in cmake/board-*.cmake. */
+#include "lugalos_config.h"
+#define PALLOC_MAX_PAGES CONFIG_PALLOC_MAX_PAGES
 
 /* `start`/`end` are rounded inward to page boundaries. Managing more than
  * PALLOC_MAX_PAGES is clamped (and logged) rather than silently truncated. */

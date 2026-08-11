@@ -193,6 +193,31 @@ add_custom_target(lugalos_build_id ALL
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake
     COMMENT "Refreshing build id")
 
+# Per-board config header (K0, plan/phase7_kernel_config.md): platform
+# defaults and, where the board has real GPIO pins, a pin map -- generated
+# write-if-changed before every build, same shape as lugalos_build_id above.
+# K210 has no board file yet (no real drivers reference it today); config
+# generation is skipped there rather than inventing placeholder data.
+if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
+    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
+elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
+    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
+elseif(LUGALOS_TARGET STREQUAL "RP2350")
+    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
+endif()
+
+if(DEFINED LUGALOS_BOARD_FILE)
+    set(LUGALOS_CONFIG_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_config.h)
+    execute_process(COMMAND ${CMAKE_COMMAND}
+        -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
+    add_custom_target(lugalos_config ALL
+        COMMAND ${CMAKE_COMMAND}
+            -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
+        COMMENT "Refreshing board config")
+endif()
+
 # Core Sources
 set(SOURCES
     kernel/main.c
@@ -265,6 +290,9 @@ endif()
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 add_dependencies(lugalos.elf lugalos_build_id)
+if(DEFINED LUGALOS_BOARD_FILE)
+    add_dependencies(lugalos.elf lugalos_config)
+endif()
 
 # Relink when the linker script changes. CMake does not infer this, so an
 # edit to the memory layout silently produced a stale binary -- which cost a

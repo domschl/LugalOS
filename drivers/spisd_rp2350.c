@@ -1,6 +1,8 @@
 /*
  * LugalOS Hardware Driver: SPI MicroSD Card Driver for RP2350 (Pico 2)
- * Hardware Mapping:
+ * Hardware Mapping (K2, plan/phase7_kernel_config.md -- the numbers
+ * themselves live in cmake/board-rp2350.cmake now, this is documentation,
+ * not the source of truth):
  *   GP10 : SPI1 SCK (Clock, Function 6)
  *   GP11 : SPI1 TX  (MOSI, Function 6)
  *   GP12 : SPI1 RX  (MISO, Function 6)
@@ -9,6 +11,7 @@
 
 #include "drivers/spisd.h"
 #include "kernel/printk.h"
+#include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -28,7 +31,7 @@
 #define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
 #define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-#define SPI1_BASE               0x40088000UL
+#define SPI1_BASE               ((uintptr_t)CONFIG_SPI1_BASE)
 #define SSPCR0                  (SPI1_BASE + 0x00)
 #define SSPCR1                  (SPI1_BASE + 0x04)
 #define SSPDR                   (SPI1_BASE + 0x08)
@@ -37,7 +40,7 @@
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-#define CS_PIN 13
+#define CS_PIN CONFIG_SPI1_CS_GPIO
 #define CS_MASK (1u << CS_PIN)
 
 static bool g_sd_is_sdhc = false;
@@ -102,14 +105,14 @@ static int spisd_init_hardware(void) {
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
     /* 2. Configure SPI1 GPIO pins: GP10 (SCK, F1), GP11 (TX/MOSI, F1), GP12 (RX/MISO, F1) */
-    REG(IO_BANK0_CTRL(10)) = 1;
-    REG(IO_BANK0_CTRL(11)) = 1;
-    REG(IO_BANK0_CTRL(12)) = 1;
+    REG(IO_BANK0_CTRL(CONFIG_SPI1_SCK_GPIO)) = 1;
+    REG(IO_BANK0_CTRL(CONFIG_SPI1_MOSI_GPIO)) = 1;
+    REG(IO_BANK0_CTRL(CONFIG_SPI1_MISO_GPIO)) = 1;
 
     /* Configure pad pull-ups (0x5A = PUE=1, PDE=0, IE=1) so unattached bus reads 0xFF */
-    REG(PADS_BANK0_PAD(10)) = 0x5A;
-    REG(PADS_BANK0_PAD(11)) = 0x5A;
-    REG(PADS_BANK0_PAD(12)) = 0x5A;
+    REG(PADS_BANK0_PAD(CONFIG_SPI1_SCK_GPIO)) = 0x5A;
+    REG(PADS_BANK0_PAD(CONFIG_SPI1_MOSI_GPIO)) = 0x5A;
+    REG(PADS_BANK0_PAD(CONFIG_SPI1_MISO_GPIO)) = 0x5A;
 
     /* GP13 as CS (Function 5 - SIO) */
     REG(IO_BANK0_CTRL(CS_PIN)) = 5;

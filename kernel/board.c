@@ -1,4 +1,5 @@
 #include "kernel/device.h"
+#include "lugalos_config.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #include "drivers/usb_cdc.h"
@@ -45,12 +46,13 @@ void board_text_region(uintptr_t *base, uintptr_t *size) {
     *size = 4096;
 }
 
+/* K2, plan/phase7_kernel_config.md: this used to be its own independent
+ * #ifdef ladder, hand-typing the same 0x40070000 that drivers/uart_rp2350.c
+ * separately hand-typed as its own UART0_BASE -- two copies of one fact,
+ * with nothing keeping them in sync. Both now read CONFIG_UART0_BASE from
+ * the generated per-board header (cmake/board-rp2350.cmake and friends). */
 uintptr_t board_uart_base(void) {
-#if defined(CONFIG_BOARD_RP2350)
-    return 0x40070000;
-#else
-    return 0x10000000;
-#endif
+    return CONFIG_UART0_BASE;
 }
 
 /* --- probe/get adapters ---

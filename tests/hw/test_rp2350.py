@@ -945,6 +945,55 @@ def test_port_binding(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """K3 on real silicon: the generated pin map matches physical GP0-GP13/16/25.
+
+    K2 (plan/phase7_kernel_config.md) replaced the hand-typed GPIO literals in
+    drivers/uart_rp2350.c and drivers/spisd_rp2350.c with values generated from
+    cmake/board-rp2350.cmake. The build matrix and QEMU suite can prove the
+    generator produces *a* header and that the board still boots -- neither
+    can prove the numbers are still the *right* ones, since QEMU has no pin
+    model and this board's own hardware suite talks to it over USB CDC, which
+    uses no GPIO pins at all (see plan/phase7_kernel_config.md's Verification
+    section). This is the first automated check that would catch a wrong
+    generated value on its own, independent of whether the pin it names is
+    otherwise exercised.
+    """
+    name = "K3: /proc/config reports the pins actually compiled in"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/config\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.8, deadline=10.0).decode("utf-8", "replace")
+
+        expected = {
+            "PALLOC_MAX_PAGES": "128",
+            "UART0_BASE": "0x40070000",
+            "UART0_TX_GPIO": "0",
+            "UART0_RX_GPIO": "1",
+            "SPI1_BASE": "0x40088000",
+            "SPI1_SCK_GPIO": "10",
+            "SPI1_MOSI_GPIO": "11",
+            "SPI1_MISO_GPIO": "12",
+            "SPI1_CS_GPIO": "13",
+            "LED_ONBOARD_GPIO": "25",
+            "LED_EXT_GPIO": "16",
+        }
+        checks = [
+            (f"{key}={val}", re.search(rf"{key}={re.escape(val)}\b", out) is not None)
+            for key, val in expected.items()
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-800:]}")
+        return (name, True, f"{len(checks)} fields matched")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -972,6 +1021,7 @@ def main() -> int:
     tests.append(test_large_image)
     tests.append(test_heap_on_demand)
     tests.append(test_port_binding)
+    tests.append(test_board_config)
     tests.append(test_concurrent_user_programs)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
