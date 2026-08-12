@@ -54,6 +54,13 @@ static Position g_chess_pos; /* static: ~8 KB (MAX_PLYS=256 history), never a st
 static Move g_search_best_move = 0;
 static int g_search_score = 0;
 static int g_search_depth = 0;
+static int g_search_root_side = 0; /* pos->side snapshotted once at the
+    start of chess_think() -- the live pos->side fluctuates during search
+    (make_move/unmake_move on the same object, mid-recursion), so this is
+    the only safe place for anything watching the search live (the TM1638
+    ticker/TFT status line below) to read "which side is this actually
+    for", needed to show scores from a consistent White POV regardless of
+    who's on move. */
 
 /* Returns false only if search_pools_init() (J0,
  * plan/phase10_chess_completion.md) hits genuine page-allocator exhaustion
@@ -160,6 +167,14 @@ typedef enum {
 
 static ChessAbort chess_abort_requested(void) {
     if (console_interrupt_requested()) {
+        /* Consume the latch immediately -- it stays set until cleared
+         * (kernel/console.c), and this is the only reader of it in chess_ui.c.
+         * Leaving it set after reporting the abort here meant a Ctrl-C that
+         * exited chess_run() from the idle FrOM prompt (not mid-search) was
+         * still latched the next time (chess) ran, exiting it again on the
+         * very first poll -- found live, on hardware, as the game silently
+         * refusing to start a second time after a Ctrl-C exit. */
+        console_interrupt_clear();
         return CHESS_ABORT_CTRLC;
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -175,15 +190,34 @@ static ChessAbort chess_abort_requested(void) {
     return CHESS_ABORT_NONE;
 }
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+/* Defined further down, in the TM1638-only region (needs tm1638_display_
+ * string() and friends) -- forward-declared here so search_poll_stop_
+ * callback() below (shared by every front end, defined up here next to
+ * chess_think()) can drive it without moving TM1638-only code out of its
+ * own guarded region. */
+static void tm_search_ticker_tick(void);
+#endif
+
 /* search.c's check_up_time() calls this every 2048 nodes -- a cooperative
  * poll already wired into the engine's inner loop. Sets `stop_search`,
  * which pv_search()/quiescence() already check on the way back out of
  * their own recursion. Either abort gesture stops a running search --
- * this one call site doesn't need to distinguish which. */
+ * this one call site doesn't need to distinguish which.
+ *
+ * Also drives the TM1638/TFT live search ticker (design agreed with the
+ * user 2026-08-12) -- the same 2048-node cadence the abort-check already
+ * piggybacks on is the only reentry point available while search_
+ * position() runs synchronously on this call stack, so the ticker's own
+ * ~1 Hz wall-clock gate lives inside tm_search_ticker_tick() itself
+ * rather than here. */
 void search_poll_stop_callback(void) {
     if (chess_abort_requested() != CHESS_ABORT_NONE) {
         stop_search = true;
     }
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    tm_search_ticker_tick();
+#endif
 }
 
 static void format_move(Move m, char *out) {
@@ -202,6 +236,82 @@ static void format_move(Move m, char *out) {
     }
 }
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+/* Uppercase, fixed 4 chars, no promo suffix -- the TM1638 ticker's own
+ * move format (design agreed with the user 2026-08-12), distinct from
+ * format_move() above (lowercase, promo-aware) which every other display
+ * in this file already uses. Placed here, guarded, next to format_move()
+ * rather than inside the TM1638-only region further below, since draw_
+ * chess_status_thinking() (further down still, TM1638+DISPLAY-only) also
+ * needs it and textually precedes that region. */
+static void tm_format_move4(Move m, char *out) {
+    int from = MOVE_FROM(m);
+    int to = MOVE_TO(m);
+    out[0] = (char)('A' + (from % 8));
+    out[1] = (char)('1' + (from / 8));
+    out[2] = (char)('A' + (to % 8));
+    out[3] = (char)('1' + (to / 8));
+    out[4] = '\0';
+}
+
+/* Compact White-POV score for the TM1638 search ticker and the TFT status
+ * line (design agreed with the user 2026-08-12). Always shown as if White
+ * is reading the eval, even while the engine is calculating for Black --
+ * g_search_score itself is side-to-move-relative like every other score
+ * this file prints (chess_ui.c:730's own comment), so `searching_side`
+ * (g_search_root_side) un-flips it here. Range -99.9..+99.9 pawns
+ * (clamped), no leading '+' on positive values; mate scores become
+ * "M25"/"-M25" instead -- leading minus when White is the one getting
+ * mated, mirroring search.c's own UCI "score mate -N" convention
+ * (search.c:765-771).
+ *
+ * `out` must have room for 6 bytes (worst case "-99.9\0"). The '.' relies
+ * on tm1638_display_string()'s own non-consuming decimal-point trick
+ * (drivers/tm1638_rp2350.c) -- physical digit *positions* actually
+ * consumed on the 7-segment display (`phys` below) are tracked
+ * separately from characters written (`n`), since the dot doesn't
+ * occupy one; padding to exactly 4 physical positions has to use `phys`,
+ * not the raw string length, or a short result (e.g. a single-digit
+ * whole part) would under-pad and leave a stale digit on screen from
+ * whatever was displayed before. draw_chess_status_thinking() (TFT, no
+ * such physical-digit constraint) reuses this verbatim anyway, for one
+ * shared number format across both displays rather than two. */
+static void tm_format_score_compact(int score, int searching_side, char *out) {
+    int n = 0, phys = 0;
+    if (score >= MATE_VALUE - 1000) {
+        int mate_moves = (INFINITY_VALUE - score + 1) / 2;
+        if (mate_moves > 99) mate_moves = 99;
+        bool white_delivers = (searching_side == WHITE);
+        if (!white_delivers) { out[n++] = '-'; phys++; }
+        out[n++] = 'M'; phys++;
+        if (mate_moves >= 10) { out[n++] = (char)('0' + mate_moves / 10); phys++; }
+        out[n++] = (char)('0' + mate_moves % 10); phys++;
+    } else if (score <= -MATE_VALUE + 1000) {
+        int mate_moves = (INFINITY_VALUE + score + 1) / 2;
+        if (mate_moves > 99) mate_moves = 99;
+        bool white_delivers = (searching_side != WHITE);
+        if (!white_delivers) { out[n++] = '-'; phys++; }
+        out[n++] = 'M'; phys++;
+        if (mate_moves >= 10) { out[n++] = (char)('0' + mate_moves / 10); phys++; }
+        out[n++] = (char)('0' + mate_moves % 10); phys++;
+    } else {
+        int white_cp = (searching_side == WHITE) ? score : -score;
+        bool neg = white_cp < 0;
+        int abs_cp = neg ? -white_cp : white_cp;
+        if (abs_cp > 9990) abs_cp = 9990;
+        int whole = abs_cp / 100;
+        int tenth = (abs_cp / 10) % 10;
+        if (neg) { out[n++] = '-'; phys++; }
+        if (whole >= 10) { out[n++] = (char)('0' + whole / 10); phys++; }
+        out[n++] = (char)('0' + whole % 10); phys++;
+        out[n++] = '.';
+        out[n++] = (char)('0' + tenth); phys++;
+    }
+    while (phys < 4) { out[n++] = ' '; phys++; }
+    out[n] = '\0';
+}
+#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
+
 /* Runs the engine's own iterative-deepening search and retrieves the move
  * it settled on -- the same two-step "callback, then TT fallback" shape
  * upstream's make_engine_move() uses, since search_position() itself only
@@ -212,6 +322,9 @@ static void format_move(Move m, char *out) {
 static Move chess_think(Position *pos, int max_depth, int time_limit_ms) {
     g_search_best_move = 0;
     g_search_score = 0;
+    g_search_root_side = pos->side; /* snapshot once -- pos->side itself
+        fluctuates during search (make_move/unmake_move on this same
+        object, mid-recursion), see this variable's own comment above. */
     /* Clears any Ctrl-C latched from a previous search (or typed at an idle
      * prompt) before this one starts -- otherwise a stale interrupt would
      * abort the very next search instantly, since console_interrupt_
@@ -802,18 +915,40 @@ static void draw_chess_board(const Position *pos) {
     }
 }
 
+/* Appends the decimal digits of a non-negative int, no leading zeros
+ * (except "0" itself) -- the one piece of manual formatting the two
+ * status functions below need repeatedly, no snprintf on this
+ * freestanding build (position.c's own header comment already
+ * established why). Returns the new position. */
+static int append_uint(char *buf, int pos, unsigned v) {
+    char tmp[10];
+    int n = 0;
+    if (v == 0) tmp[n++] = '0';
+    while (v > 0) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n > 0) buf[pos++] = tmp[--n];
+    return pos;
+}
+
 static void draw_chess_status(const Position *pos, const char *last_move, bool thinking) {
     st7735_draw_rect(0, 128, 128, 32, ST7735_BLACK);
     st7735_draw_rect(0, 127, 128, 1, ST7735_GRAY);
 
+    char line1[24];
+    int p = 0;
+    line1[p++] = 'M'; line1[p++] = 'o'; line1[p++] = 'v'; line1[p++] = 'e'; line1[p++] = ' ';
+    p = append_uint(line1, p, (unsigned)(pos->history_ply / 2 + 1));
+    line1[p++] = ' '; line1[p++] = ' ';
     const char *side_str = (pos->side == WHITE) ? "White" : "Black";
-    st7735_draw_string(2, 131, thinking ? "Thinking..." : side_str,
-                        thinking ? ST7735_CYAN : ST7735_YELLOW, 1);
+    const char *tail = thinking ? "Thinking..." : side_str;
+    for (const char *c = tail; *c; c++) line1[p++] = *c;
+    line1[p] = '\0';
+    st7735_draw_string(2, 131, line1, thinking ? ST7735_CYAN : ST7735_YELLOW, 1);
 
     if (last_move && last_move[0] != '\0') {
         st7735_draw_string(2, 145, last_move, ST7735_WHITE, 1);
     }
 }
+
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -821,22 +956,37 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
  * enough for "abort" -- tm_read_square()'s own retry loop already treats
  * any negative/out-of-range reading as "keep trying", which is correct
  * for a genuine timeout but wrong for a deliberate abort request, which
- * must unwind instead. Three sentinels, checked explicitly by every
- * caller in this chain:
- *   TM_KEY_ABORT_CTRLC/_STOPKEY -- chess_abort_requested()'s two gestures,
- *     kept distinct here too (not collapsed the way search_poll_stop_
- *     callback() collapses them) because J3's menus below need to tell
- *     them apart: Ctrl-C always propagates out of chess_run() entirely,
- *     the physical STOP key only does that at the top level (waiting for
- *     a move) and instead cancels a submenu back to normal play when
- *     pressed from inside one.
+ * must unwind instead. Four sentinels, checked explicitly by every caller
+ * in this chain:
+ *   TM_KEY_ABORT_CTRLC -- the universal panic button, propagates out of
+ *     chess_run() entirely from anywhere, including from inside a submenu
+ *     or an in-progress move entry.
+ *   TM_KEY_ABORT_STOPKEY -- chess_abort_requested()'s other gesture, the
+ *     physical STOP key. **Revised, found live on hardware:** STOP used
+ *     to mean "exit chess_run()" when pressed while simply waiting for a
+ *     move, the same as Ctrl-C -- this created a real race the user
+ *     flagged after testing: STOP is also what force-stops a running
+ *     search, so a human pressing STOP to interrupt a slow search, just
+ *     as the search finishes on its own, could instead find themselves
+ *     unexpectedly thrown out of the whole game. STOP now never exits
+ *     chess_run() -- it only ever aborts whatever's in progress (a
+ *     partial move entry, a submenu) back to normal play, exactly like it
+ *     already did inside board-view/level-select/options-menu. Leaving
+ *     the game deliberately via the keypad is now the options menu's own
+ *     EXIT item (TM_KEY_EXIT_GAME) instead.
  *   TM_KEY_RESTART -- the position changed underneath the current move
  *     attempt (undo/redo/new-game/load, all below), so tm_read_move()
  *     should re-prompt from FrOM rather than continue asking for a square
- *     that no longer makes sense against the new position. */
+ *     that no longer makes sense against the new position.
+ *   TM_KEY_EXIT_GAME -- the options menu's EXIT item: a deliberate,
+ *     unambiguous request to leave chess_run(), propagated the same way
+ *     TM_KEY_ABORT_CTRLC is once it reaches tm_read_move(), but kept a
+ *     distinct sentinel rather than reusing TM_KEY_ABORT_CTRLC so nothing
+ *     downstream has to guess which gesture actually asked for it. */
 #define TM_KEY_ABORT_CTRLC   (-2)
 #define TM_KEY_ABORT_STOPKEY (-3)
 #define TM_KEY_RESTART        (-4)
+#define TM_KEY_EXIT_GAME      (-5)
 
 /* Waits for the keypad to go idle, then for a key to be pressed, then for
  * it to be released again -- each stage a plain poll of tm1638_get_key(),
@@ -900,6 +1050,149 @@ static void tm_redraw_if_display(const Position *pos) {
 #else
     (void)pos;
 #endif
+}
+
+/* Resets to a fresh game -- shared by the options menu's own "new game"
+ * item and chess_run()'s game-over screen (STOP there now starts a new
+ * game rather than exiting, matching STOP never being the way to leave
+ * chess_run(), see the sentinel block's comment above), so there's one
+ * definition of what "new game" actually resets rather than two. */
+static void tm_new_game(Position *pos) {
+    parse_fen(pos, STANDARD_START_FEN);
+    clear_tt();
+    g_console_max_history_ply = 0;
+    tm_redraw_if_display(pos);
+}
+
+/* --- Live search ticker + persistent two-slot display (design agreed
+ * with the user 2026-08-12, replacing the old "FrOM"/"tO" prompt text
+ * that overwrote itself and the static "tHInKIng"/"gAME OuEr" freeze
+ * screens). Two 4-char slots instead of one 8-char message: chars 0-3
+ * are the human's (an entry cursor while typing, frozen on the locked-in
+ * move while the engine thinks), chars 4-7 are the engine's (its last
+ * completed move, frozen, except while calculating -- then it alternates
+ * once a second between its current best move and White-POV score, using
+ * exactly the same g_search_best_move/g_search_score/g_search_root_side
+ * data the console REPL's own `eval`/`go` output already reads). --- */
+static char g_tm_locked_prefix[5] = "    "; /* human's just-played move,
+    frozen here while the engine thinks -- set by chess_run() right
+    before each chess_think() call, read by the ticker below since
+    search_poll_stop_callback() runs deep inside search.c with no context
+    to pass this through as a parameter. */
+static char g_tm_engine_slot[5] = "    "; /* engine's last completed move,
+    shown whenever it isn't actively calculating; blank at game start.
+    Not perfectly re-derived across undo/redo -- an accepted, minor
+    imprecision (board view, key 10, always shows the true position if
+    the human wants to check) rather than reconstructing "the accurate
+    last engine move" through arbitrary undo/redo excursions here too. */
+static uint64_t g_tm_ticker_last_ms = 0;
+static bool g_tm_ticker_show_score = false;
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+/* The TFT half of the live search ticker (design agreed with the user
+ * 2026-08-12): line 1 becomes move number / White-POV score / depth,
+ * line 2 becomes the engine's current best line instead of "last move" --
+ * console.c's own console_engine_reply() prints exactly this triple
+ * (score/depth/pv) to the terminal already, this is the same information
+ * on the TFT instead of stdio. Called once per tick from tm_search_
+ * ticker_tick() below -- needs its own nested DISPLAY guard since this
+ * whole surrounding region is TM1638-only, and chess_run() (this
+ * function's only real caller path) needs both. */
+static void draw_chess_status_thinking(Move best, int score, int depth) {
+    st7735_draw_rect(0, 128, 128, 32, ST7735_BLACK);
+    st7735_draw_rect(0, 127, 128, 1, ST7735_GRAY);
+
+    char line1[32];
+    int p = 0;
+    line1[p++] = 'M'; line1[p++] = 'o'; line1[p++] = 'v'; line1[p++] = 'e'; line1[p++] = ' ';
+    p = append_uint(line1, p, (unsigned)(g_chess_pos.history_ply / 2 + 1));
+    line1[p++] = ' '; line1[p++] = ' ';
+    char score_buf[6];
+    tm_format_score_compact(score, g_search_root_side, score_buf);
+    for (char *c = score_buf; *c; c++) line1[p++] = *c;
+    line1[p++] = ' '; line1[p++] = 'd';
+    p = append_uint(line1, p, (unsigned)depth);
+    line1[p] = '\0';
+    st7735_draw_string(2, 131, line1, ST7735_CYAN, 1);
+
+    char line2[16] = "PV: ";
+    char mbuf[6];
+    format_move(best, mbuf); /* lowercase, matches every other move label
+        on this display -- the TM1638 ticker's own uppercase 4-char
+        format is a TM1638-specific choice, not shared here. */
+    int q = 4;
+    for (char *c = mbuf; *c; c++) line2[q++] = *c;
+    line2[q] = '\0';
+    st7735_draw_string(2, 145, line2, ST7735_WHITE, 1);
+}
+#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_DISPLAY */
+
+/* Called from search_poll_stop_callback() -- already invoked every 2048
+ * nodes, the same cadence the abort-check itself piggybacks on. Gated by
+ * a real wall-clock interval rather than the node cadence (which varies
+ * with search speed and position complexity), so the alternation reads
+ * as a steady ~1 Hz blink regardless of how fast the position searches.
+ * A no-op until the first depth completes (g_search_best_move == 0) --
+ * there's nothing real to show yet, and the blank engine-slot state set
+ * the moment calculation starts (chess_run() below) already covers that
+ * gap on screen. */
+static void tm_search_ticker_tick(void) {
+    if (g_search_best_move == 0) return;
+    uint64_t now = time_get_ms();
+    if (now - g_tm_ticker_last_ms < 1000) return;
+    g_tm_ticker_last_ms = now;
+    g_tm_ticker_show_score = !g_tm_ticker_show_score;
+
+    char disp[12];
+    for (int i = 0; i < 4; i++) disp[i] = g_tm_locked_prefix[i];
+    if (g_tm_ticker_show_score) {
+        tm_format_score_compact(g_search_score, g_search_root_side, disp + 4);
+    } else {
+        tm_format_move4(g_search_best_move, disp + 4);
+    }
+    tm1638_display_string(disp);
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+    draw_chess_status_thinking(g_search_best_move, g_search_score, g_search_depth);
+#endif
+}
+
+/* Alternates one 4-char half of an 8-char display between whatever's
+ * already there (the move that just happened) and a 4-char annotation
+ * word ("CHk ", "MAtE", a promotion piece name, ...) -- the single
+ * mechanism behind every "something notable happened" moment, replacing
+ * what used to be several different one-off full-8-char freeze screens
+ * with one that keeps the actual move visible instead of hiding it
+ * behind a fixed message. `half` is 0 for the human's slot (chars 0-3),
+ * 1 for the engine's (chars 4-7) -- whichever slot the annotated move
+ * landed in; the other half of `base8` is left untouched throughout.
+ *
+ * Flashes `cycles` times (~1.4s each); if `end_on_word` the display is
+ * left showing the word rather than the move once done. For checkmate/
+ * stalemate/draw, tm_wait_game_over() takes over afterward with its own
+ * indefinite (but static, not alternating) wait -- a deliberate scope
+ * choice, not an oversight: keeping a smooth ~1 Hz alternation going
+ * *while also* waiting indefinitely on a keypress would need tm_wait_
+ * key()'s own coarser polling loop restructured, which this round
+ * doesn't attempt. A few flashes are enough for a human to read both
+ * pieces of information before the display settles. */
+static void tm_show_move_annotation(char *base8, int half, const char *word4,
+                                     int cycles, bool end_on_word) {
+    int off = half * 4;
+    char saved[5];
+    for (int i = 0; i < 4; i++) saved[i] = base8[off + i];
+    saved[4] = '\0';
+    for (int c = 0; c < cycles; c++) {
+        for (int i = 0; i < 4; i++) base8[off + i] = word4[i];
+        tm1638_display_string(base8);
+        time_delay_us(700000);
+        for (int i = 0; i < 4; i++) base8[off + i] = saved[i];
+        tm1638_display_string(base8);
+        time_delay_us(700000);
+    }
+    if (end_on_word) {
+        for (int i = 0; i < 4; i++) base8[off + i] = word4[i];
+        tm1638_display_string(base8);
+    }
 }
 
 /* Ported from console.c's show_board_rank() (:197-225). tm1638_display_
@@ -1055,9 +1348,9 @@ static int tm_load(Position *pos) {
  * else -- nothing there actually sets up playing the other color). Level
  * select is also not duplicated in here -- key 12 already reaches it
  * directly, matching console.c's own idx-4 doing exactly that. */
-#define TM_OPTION_COUNT 7
+#define TM_OPTION_COUNT 8
 static const char *tm_option_names[TM_OPTION_COUNT] = {
-    "nEU gAnE", "ScOrE   ", "SIdES   ", "HAlF    ", "MOuES   ", "SAuE    ", "LOAd    "
+    "nEU gAnE", "ScOrE   ", "SIdES   ", "HAlF    ", "MOuES   ", "SAuE    ", "LOAd    ", "ExIt    "
 };
 
 static int tm_options_menu(Position *pos) {
@@ -1077,10 +1370,7 @@ static int tm_options_menu(Position *pos) {
             char buf[9];
             switch (idx) {
                 case 0: /* new game */
-                    parse_fen(pos, STANDARD_START_FEN);
-                    clear_tt();
-                    g_console_max_history_ply = 0;
-                    tm_redraw_if_display(pos);
+                    tm_new_game(pos);
                     return TM_KEY_RESTART;
                 case 1: /* score */
                     tm_format_score(evaluate(pos), buf);
@@ -1120,6 +1410,10 @@ static int tm_options_menu(Position *pos) {
                     return 0;
                 case 6: /* load */
                     return tm_load(pos);
+                case 7: /* exit -- the deliberate, keypad-only way to leave
+                         * chess_run() now that STOP no longer does (see
+                         * TM_KEY_EXIT_GAME's own comment above) */
+                    return TM_KEY_EXIT_GAME;
             }
         }
     }
@@ -1131,19 +1425,33 @@ static int tm_options_menu(Position *pos) {
  * file and rank entry, in sequence). Keys 8/9/10/12/14 are the J3 menu
  * entries above (undo/redo/board-view/level-select/options); 13/15 are
  * unhandled outside a submenu, same as an unrecognized key. */
-static int tm_read_square(Position *pos, const char *prompt) {
-    tm1638_display_string(prompt);
+/* Reads one square (2 keys: file then rank) into disp[slot_offset] and
+ * disp[slot_offset+1], showing a '_' cursor at the position not yet
+ * entered and redrawing the shared 8-char display (disp[9], owned by
+ * tm_read_move() below -- chars 0-3 are this square-pair's progress,
+ * chars 4-7 are the engine's slot, g_tm_engine_slot) after every digit.
+ * Both halves stay visible throughout entry this way (design agreed with
+ * the user 2026-08-12), unlike the old "FrOM"/"tO" prompt labels this
+ * replaces, which each overwrote the other's square the instant the
+ * second one started. */
+static int tm_read_square(Position *pos, char *disp, int slot_offset) {
     int file = -1, rank = -1;
+    disp[slot_offset] = '_';
+    tm1638_display_string(disp);
     while (file < 0 || rank < 0) {
         int k = tm_wait_key();
-        if (k == TM_KEY_ABORT_CTRLC || k == TM_KEY_ABORT_STOPKEY) {
-            /* Either one exits chess_run() from here -- there is no
-             * "clear the current typing, keep waiting for FrOM" state to
-             * back out to the way console.c's own line-buffer approach
-             * has (:721-726), so STOP at this level means the same thing
-             * Ctrl-C does. Menu STOP-cancel only applies inside a
-             * submenu, handled separately above. */
+        if (k == TM_KEY_ABORT_CTRLC) {
             return TM_KEY_ABORT_CTRLC;
+        }
+        if (k == TM_KEY_ABORT_STOPKEY) {
+            /* STOP never exits chess_run() (revised, see the sentinel
+             * block's own comment above) -- it aborts whatever's in
+             * progress, same as everywhere else STOP appears. There is no
+             * "clear the current typing, keep waiting" state to back out
+             * to the way console.c's own line-buffer approach has
+             * (:721-726), so this restarts the whole move entry from
+             * FrOM rather than trying to preserve a half-entered square. */
+            return TM_KEY_RESTART;
         }
         if (k == 8) { /* undo */
             if (pos->history_ply > 0) unmake_move(pos);
@@ -1159,54 +1467,73 @@ static int tm_read_square(Position *pos, const char *prompt) {
         }
         if (k == 10) { /* board view */
             if (tm_board_view(pos) == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
-            tm1638_display_string(prompt);
+            tm1638_display_string(disp);
             continue;
         }
         if (k == 12) { /* level select */
             if (tm_level_select() == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
-            tm1638_display_string(prompt);
+            tm1638_display_string(disp);
             continue;
         }
         if (k == 14) { /* options menu */
             int r = tm_options_menu(pos);
             if (r == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
             if (r == TM_KEY_RESTART) return TM_KEY_RESTART;
-            tm1638_display_string(prompt);
+            if (r == TM_KEY_EXIT_GAME) return TM_KEY_EXIT_GAME;
+            tm1638_display_string(disp);
             continue;
         }
         if (k < 0 || k > 7) continue; /* 13/15, or -1 timeout */
         if (file < 0) {
             file = k;
+            disp[slot_offset] = (char)('A' + file);
+            disp[slot_offset + 1] = '_';
         } else {
             rank = k;
+            disp[slot_offset + 1] = (char)('1' + rank);
         }
-        char buf[9] = "        ";
-        if (file >= 0) buf[0] = (char)('A' + file);
-        if (rank >= 0) buf[1] = (char)('1' + rank);
-        tm1638_display_string(buf);
+        tm1638_display_string(disp);
     }
     return rank * 8 + file;
 }
 
 /* Prompts for from/to squares and resolves them against the actual legal
  * move list, retrying on anything that doesn't resolve to a legal move.
+ * Builds and owns the shared 8-char persistent display for the whole
+ * attempt: chars 0-3 accumulate the human's entry with a cursor, chars
+ * 4-7 stay fixed on g_tm_engine_slot (the engine's last completed move)
+ * throughout -- both halves visible the whole time, replacing the old
+ * "FrOM"/"tO" labels and the static "YOUr MOu" splash chess_run() used to
+ * show first (design agreed with the user 2026-08-12).
+ *
  * Prompts for the promoting piece (J2's plan named this as J3's job
  * specifically -- a keypad-input concern, not outcome-detection) when
  * from/to only resolves to promotion moves, the same "1n2b3r4q" layout
- * console.c's own keypad picker uses (:651-677), defaulting to Queen on
- * an ambiguous or aborted choice rather than blocking on it a second
- * time. Returns 0 -- otherwise never a real return value here, since a
- * failed match falls through to "bAd MOuE" and retries -- if the read
- * was aborted (Ctrl-C or STOP at the top level); the sentinel chess_run()
- * below checks for to exit cleanly instead of treating it as an illegal
- * move. */
+ * console.c's own keypad picker uses (:651-677), then flashes the chosen
+ * move against the piece name once before returning -- the same "keep
+ * the move visible" idiom chess_run()'s own outcome announcements use
+ * below, applied here too. Defaults to Queen on an ambiguous or aborted
+ * choice rather than blocking on it a second time.
+ *
+ * Returns 0 -- otherwise never a real return value here, since a failed
+ * match falls through to "bAd MOuE" and retries -- if the read was
+ * aborted (Ctrl-C) or the options menu's EXIT item was used; the
+ * sentinel chess_run() below checks for to exit cleanly instead of
+ * treating it as an illegal move. STOP alone (TM_KEY_ABORT_STOPKEY) never
+ * reaches here -- tm_read_square() already turns it into TM_KEY_RESTART,
+ * since STOP only ever aborts input in progress, never the game. */
 static Move tm_read_move(Position *pos) {
     for (;;) {
-        int from = tm_read_square(pos, "FrOM    ");
-        if (from == TM_KEY_ABORT_CTRLC) return 0;
+        char disp[9];
+        disp[0] = ' '; disp[1] = ' '; disp[2] = ' '; disp[3] = ' ';
+        for (int i = 0; i < 4; i++) disp[4 + i] = g_tm_engine_slot[i];
+        disp[8] = '\0';
+
+        int from = tm_read_square(pos, disp, 0);
+        if (from == TM_KEY_ABORT_CTRLC || from == TM_KEY_EXIT_GAME) return 0;
         if (from == TM_KEY_RESTART) continue;
-        int to = tm_read_square(pos, "tO      ");
-        if (to == TM_KEY_ABORT_CTRLC) return 0;
+        int to = tm_read_square(pos, disp, 2);
+        if (to == TM_KEY_ABORT_CTRLC || to == TM_KEY_EXIT_GAME) return 0;
         if (to == TM_KEY_RESTART) continue;
 
         MoveList list;
@@ -1225,7 +1552,10 @@ static Move tm_read_move(Position *pos) {
         if (only_promo) {
             tm1638_display_string("1n2b3r4q");
             int choice = tm_wait_key();
-            if (choice == TM_KEY_ABORT_CTRLC || choice == TM_KEY_ABORT_STOPKEY) return 0;
+            if (choice == TM_KEY_ABORT_CTRLC) return 0;
+            if (choice == TM_KEY_ABORT_STOPKEY) continue; /* abort this move
+                entry, not the game -- back to FrOM, same as everywhere
+                else STOP appears now. */
             switch (choice) {
                 case 0: promo_piece = KNIGHT; break;
                 case 1: promo_piece = BISHOP; break;
@@ -1246,6 +1576,12 @@ static Move tm_read_move(Position *pos) {
             }
         }
         if (chosen != 0) {
+            if (only_promo) {
+                static const char *promo_words[4] = { "KNIT", "bISH", "rOOK", "QUEN" };
+                int idx = (promo_piece == KNIGHT) ? 0 : (promo_piece == BISHOP) ? 1
+                          : (promo_piece == ROOK) ? 2 : 3;
+                tm_show_move_annotation(disp, 0, promo_words[idx], 1, false);
+            }
             return chosen;
         }
         tm1638_display_string("bAd MOuE");
@@ -1254,35 +1590,91 @@ static Move tm_read_move(Position *pos) {
 }
 
 #if CONFIG_ENABLE_DISPLAY
-/* J2: TM1638 rendering of chess_game_outcome()/chess_in_check(), the same
- * literal 8-character display strings console.c itself uses
- * (:1049-1094) for the equivalent embedded-mode messages. Returns true if
- * the game just ended (caller freezes -- reset to play again, same shape
- * as the old undifferentiated "gAME OuEr" it replaces); false if play
- * continues, having already shown a brief "CHk     " if relevant. */
-static bool tm_report_outcome(Position *pos) {
-    switch (chess_game_outcome(pos)) {
+/* Maps a terminal ChessOutcome to its 4-char tm_show_move_annotation()
+ * word (design agreed with the user 2026-08-12) -- stalemate/repetition/
+ * 50-move stay collapsed into one "drAU" word, matching J2's own already-
+ * hardware-verified console/TM1638 behavior; this milestone didn't
+ * revisit that collapse, only how the word gets displayed. Callers check
+ * outcome != CHESS_ONGOING before calling this. */
+static const char *tm_outcome_word(ChessOutcome outcome) {
+    switch (outcome) {
         case CHESS_CHECKMATE_WHITE:
-            tm1638_display_string("nAtE bL "); /* mate, black wins */
-            draw_chess_status(pos, "checkmate: black wins", false);
-            return true;
         case CHESS_CHECKMATE_BLACK:
-            tm1638_display_string("nAtE UH "); /* mate, white wins ('U' for 'W') */
-            draw_chess_status(pos, "checkmate: white wins", false);
-            return true;
+            return "MATE";
         case CHESS_STALEMATE:
         case CHESS_DRAW_REPETITION:
         case CHESS_DRAW_50MOVE:
-            tm1638_display_string("drAU    ");
-            draw_chess_status(pos, "draw", false);
-            return true;
+            return "drAU";
         default:
-            if (chess_in_check(pos)) {
-                tm1638_display_string("CHk     ");
-                time_delay_us(700000);
-            }
-            return false;
+            return "    ";
     }
+}
+
+/* Game-over "wait for the human to notice" pause -- was a bare
+ * `for (;;) time_delay_us(...)` at each of this function's three call
+ * sites, with no abort check at all: an unescapable loop except by a
+ * physical power cycle, found live on hardware playing exactly this out
+ * (fool's mate, board correctly displayed "nAtE bL ", then neither the
+ * STOP key nor Ctrl-C did anything). This is the same class of bug
+ * [[standardized_interrupt_polling]] fixed for the search and the keypad
+ * wait -- it just didn't reach these three sites, since none of them call
+ * tm_wait_key() or chess_abort_requested() at all.
+ *
+ * Three outcomes, not two -- found worth adding live, the same session
+ * STOP's exit meaning was removed: a human who just got mated may want to
+ * "cheat" and take the last move back rather than either starting over or
+ * leaving, so key 8 (Back, the same key that means undo everywhere else
+ * in this file) takes back the move that ended the game and resumes play
+ * from there. EXIT (Ctrl-C) and NEWGAME (STOP) are unchanged from before. */
+typedef enum {
+    TM_GAMEOVER_EXIT,
+    TM_GAMEOVER_NEWGAME,
+    TM_GAMEOVER_UNDO,
+} TmGameOverChoice;
+
+static TmGameOverChoice tm_wait_game_over(void) {
+    for (;;) {
+        int k = tm_wait_key();
+        if (k == TM_KEY_ABORT_CTRLC) return TM_GAMEOVER_EXIT;
+        if (k == TM_KEY_ABORT_STOPKEY) return TM_GAMEOVER_NEWGAME;
+        if (k == 8) return TM_GAMEOVER_UNDO;
+    }
+}
+
+/* Common exit sequence for every path that leaves chess_run() -- found
+ * live to be inconsistent: only the top-level "waiting for a move" exit
+ * showed "bYE" before leaving, the game-over-then-Ctrl-C path exited
+ * silently, and neither cleared the displays afterward, so the last
+ * game's board and status stayed on screen after the process controlling
+ * them had already ended. One definition of "leaving" for all of them. */
+static void tm_exit_chess(void) {
+    tm1638_display_string("bYE     ");
+    time_delay_us(700000);
+    tm1638_display_string("        ");
+    st7735_fill_screen(ST7735_BLACK);
+    chess_session_end();
+}
+
+/* Runs tm_wait_game_over() and applies whichever choice comes back.
+ * Returns true if play should continue (chess_run()'s main loop keeps
+ * going, possibly against a changed position after an undo), false if
+ * the caller should return (tm_exit_chess() already ran). Shared by
+ * every "the game just ended" site in chess_run() below rather than
+ * three near-identical copies of the same three-way dispatch. */
+static bool tm_handle_game_over(Position *pos) {
+    TmGameOverChoice choice = tm_wait_game_over();
+    if (choice == TM_GAMEOVER_EXIT) {
+        tm_exit_chess();
+        return false;
+    }
+    if (choice == TM_GAMEOVER_UNDO) {
+        if (pos->history_ply > 0) unmake_move(pos);
+        g_console_max_history_ply = pos->history_ply;
+        tm_redraw_if_display(pos);
+    } else {
+        tm_new_game(pos);
+    }
+    return true;
 }
 
 void chess_run(void) {
@@ -1291,26 +1683,25 @@ void chess_run(void) {
     g_console_max_history_ply = 0; /* J3: shared with the console REPL's
                                      * own undo/redo boundary (chess_ui.c:
                                      * 352), reset fresh for this session. */
+    for (int i = 0; i < 4; i++) g_tm_engine_slot[i] = ' '; /* no engine
+        move yet this game */
 
     tm1638_display_string("LUgAL Ch");
     draw_chess_board(&g_chess_pos);
     draw_chess_status(&g_chess_pos, "", false);
     time_delay_us(1000000);
 
-    char last_move_buf[6] = "";
-
     for (;;) {
-        tm1638_display_string("YOUr MOu");
         Move human = tm_read_move(&g_chess_pos);
         if (human == 0) {
-            /* Abort requested (Ctrl-C or the TM1638 STOP key) -- the
-             * software exit path this persona lacked before J2: return
-             * cleanly to the shell instead of needing a physical board
-             * reset. Revises this function's own former "does not
-             * return" contract now that there's a real way to ask it to. */
-            tm1638_display_string("bYE     ");
-            time_delay_us(700000);
-            chess_session_end();
+            /* Ctrl-C, or the options menu's EXIT item -- the software exit
+             * path this persona lacked before J2: return cleanly to the
+             * shell instead of needing a physical board reset. Revises
+             * this function's own former "does not return" contract now
+             * that there's a real way to ask it to. STOP alone never
+             * reaches here (see TM_KEY_ABORT_STOPKEY's own comment
+             * above) -- it aborts input, never the game. */
+            tm_exit_chess();
             return;
         }
         if (!make_move(&g_chess_pos, human)) {
@@ -1325,15 +1716,45 @@ void chess_run(void) {
         g_console_max_history_ply = g_chess_pos.history_ply; /* J3: new
             move played -- the redo boundary advances, same as J1's own
             console_execute_move()/console_engine_reply() do. */
+
+        /* Lock the human's move into slot 0-3 -- already uppercase from
+         * tm_read_square()'s own cursor echo, so this reformats it with
+         * tm_format_move4() rather than reusing those exact characters,
+         * for one formatting call site instead of reaching into
+         * tm_read_move()'s local `disp` from here. */
+        char base8[9];
+        tm_format_move4(human, base8);
+        for (int i = 0; i < 4; i++) base8[4 + i] = g_tm_engine_slot[i];
+        base8[8] = '\0';
+        tm1638_display_string(base8);
+
+        char last_move_buf[6];
         format_move(human, last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
 
-        if (tm_report_outcome(&g_chess_pos)) {
-            for (;;) time_delay_us(1000000); /* game over: reset to play again */
+        ChessOutcome outcome = chess_game_outcome(&g_chess_pos);
+        if (outcome != CHESS_ONGOING) {
+            tm_show_move_annotation(base8, 0, tm_outcome_word(outcome), 3, true);
+            if (!tm_handle_game_over(&g_chess_pos)) return;
+            continue;
+        }
+        if (chess_in_check(&g_chess_pos)) {
+            tm_show_move_annotation(base8, 0, "CHk ", 1, false);
         }
 
-        tm1638_display_string("tHInKIng");
+        /* Engine's turn: freeze the human's move in slot 0-3, blank slot
+         * 4-7 -- "E2E4    " the instant calculation starts, per the
+         * agreed design -- then let the ticker (search_poll_stop_
+         * callback() -> tm_search_ticker_tick()) take over redrawing it
+         * once a second while chess_think() runs synchronously on this
+         * same call stack. */
+        for (int i = 0; i < 4; i++) {
+            g_tm_locked_prefix[i] = base8[i];
+            g_tm_engine_slot[i] = ' ';
+            base8[4 + i] = ' ';
+        }
+        tm1638_display_string(base8);
         draw_chess_status(&g_chess_pos, last_move_buf, true);
         /* J3: the level J1's console REPL and this menu's key-12 level
          * select both set (g_console_search_level) -- was a hardcoded
@@ -1341,23 +1762,40 @@ void chess_run(void) {
          * at all. */
         Move engine_move = chess_think(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
         if (engine_move == 0) {
-            /* Defensive only -- tm_report_outcome() above already returned
-             * false (ongoing, so a legal reply exists) before this search
-             * ever started; a real hit here would mean engine/outcome
-             * logic disagree, not an expected game state. */
+            /* Defensive only -- the outcome check above already returned
+             * ongoing (so a legal reply exists) before this search ever
+             * started; a real hit here would mean engine/outcome logic
+             * disagree, not an expected game state. */
             tm1638_display_string("gAME OuEr");
             draw_chess_status(&g_chess_pos, "no moves", false);
-            for (;;) time_delay_us(1000000); /* game over: reset to play again */
+            if (!tm_handle_game_over(&g_chess_pos)) return;
+            continue;
         }
         make_move(&g_chess_pos, engine_move);
         g_console_max_history_ply = g_chess_pos.history_ply;
+        tm_format_move4(engine_move, g_tm_engine_slot);
         format_move(engine_move, last_move_buf);
-        tm1638_display_string(last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
 
-        if (tm_report_outcome(&g_chess_pos)) {
-            for (;;) time_delay_us(1000000); /* game over: reset to play again */
+        /* Human's turn again: cursor resets, engine's move stays visible
+         * in slot 4-7 -- "_   E7E5", per the agreed design, replacing
+         * what used to be a bare 4-6 char engine-move-only display that
+         * dropped the rest of the board's context entirely. */
+        char base8b[9] = "_    ";
+        for (int i = 0; i < 4; i++) base8b[4 + i] = g_tm_engine_slot[i];
+        base8b[8] = '\0';
+
+        outcome = chess_game_outcome(&g_chess_pos);
+        if (outcome != CHESS_ONGOING) {
+            tm_show_move_annotation(base8b, 1, tm_outcome_word(outcome), 3, true);
+            if (!tm_handle_game_over(&g_chess_pos)) return;
+            continue;
+        }
+        if (chess_in_check(&g_chess_pos)) {
+            tm_show_move_annotation(base8b, 1, "CHk ", 1, false);
+        } else {
+            tm1638_display_string(base8b);
         }
     }
 }
