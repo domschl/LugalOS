@@ -17,8 +17,10 @@
  *     before ever touching real silicon (falsify on hardware, not QEMU,
  *     works both ways: prove the *logic* fast and cheap on QEMU first).
  *   - chess_run(): the actual interactive game, TM1638 for move entry,
- *     ST7735 for the board. RP2350 hardware only. Does not return --
- *     reset the board to exit, the same shape as p9serve.
+ *     ST7735 for the board. RP2350 hardware only. Runs until Ctrl-C or the
+ *     TM1638 STOP key (J2, plan/phase10_chess_completion.md -- chess_run()
+ *     had no software exit at all before that, only a physical board
+ *     reset), then returns cleanly to the shell.
  */
 
 #include "position.h"
@@ -125,31 +127,44 @@ void search_progress_callback(Move move, int score, int depth) {
     g_search_depth = depth;
 }
 
-/* J2 (plan/phase10_chess_completion.md): search.c calls this every 2048
- * nodes (check_up_time()) -- a cooperative poll already wired into the
- * engine's inner loop, not something this milestone needed to add. Two
- * independent ways to stop: a terminal Ctrl-C, via the general
- * console_interrupt_requested() primitive (kernel/console.c, not
- * chess-specific -- the same need recurs for run-away Lisp scripts); and
+/* Standardizes "has the user asked to abort whatever's currently
+ * blocking" into one check, used by every polling wait in this file --
+ * not just search.c's node-count poll below, but tm_wait_key() further
+ * down too. Found live, not designed up front: chess_run()'s keypad wait
+ * had *no* software escape at all before this, only a physical board
+ * reset (this is what left a board unreachable mid-session once this
+ * phase's own Ctrl-C testing entered chess_run() by mistake). Two
+ * independent gestures, either one enough: a terminal Ctrl-C, via the
+ * general console_interrupt_requested() primitive (kernel/console.c, not
+ * chess-specific -- the same need recurs for run-away Lisp scripts); or
  * the TM1638 STOP key (key 11), a physical-keypad gesture with no
- * terminal equivalent, so it stays a direct check rather than being
- * folded into the Ctrl-C path. Either sets `stop_search`, which
- * pv_search()/quiescence() already check on the way back out of their own
- * recursion. */
-void search_poll_stop_callback(void) {
+ * terminal equivalent, so it stays a direct check here rather than being
+ * folded into the Ctrl-C path itself. */
+static bool chess_abort_requested(void) {
     if (console_interrupt_requested()) {
-        stop_search = true;
+        return true;
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     if (tm1638_get_key() == 11) {
-        stop_search = true;
         /* Debounce -- wait for the key to actually release, same shape as
          * console.c:320-327, so one press doesn't register as several. */
         while (tm1638_get_key() == 11) {
             time_delay_us(10000);
         }
+        return true;
     }
 #endif
+    return false;
+}
+
+/* search.c's check_up_time() calls this every 2048 nodes -- a cooperative
+ * poll already wired into the engine's inner loop. Sets `stop_search`,
+ * which pv_search()/quiescence() already check on the way back out of
+ * their own recursion. */
+void search_poll_stop_callback(void) {
+    if (chess_abort_requested()) {
+        stop_search = true;
+    }
 }
 
 static void format_move(Move m, char *out) {
@@ -783,6 +798,15 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+/* -1 (already used below for "no key yet, keep polling") is not distinct
+ * enough for "abort" -- tm_read_square()'s own retry loop already treats
+ * any negative/out-of-range reading as "keep trying", which is correct
+ * for a genuine timeout but wrong for a deliberate abort request, which
+ * must unwind instead. A separate sentinel, checked explicitly by every
+ * caller in this chain (tm_read_square()/tm_read_move()/chess_run()
+ * below), keeps the two cases from being conflated. */
+#define TM_KEY_ABORT (-2)
+
 /* Waits for the keypad to go idle, then for a key to be pressed, then for
  * it to be released again -- each stage a plain poll of tm1638_get_key(),
  * which is an instantaneous scan, not a latch. Logs every raw reading to
@@ -790,13 +814,22 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
  * hang -- cheap, and it's the only way to see what the hardware is
  * actually reporting versus what the physical fingers are doing. Each
  * stage is also capped at ~15s so a bad reading degrades to a clear
- * console message instead of a silent, indefinite block. */
+ * console message instead of a silent, indefinite block.
+ *
+ * Also checks chess_abort_requested() (J2) in the two stages that can
+ * genuinely run long waiting on the human -- found live, not designed up
+ * front, that this loop previously had no software escape at all: a
+ * board that entered chess_run() and then received no further key
+ * presses was unreachable by anything short of a physical reset, Ctrl-C
+ * included, since nothing in this file's blocking waits ever checked for
+ * one. */
 static int tm_wait_key(void) {
     int iters;
 
     iters = 0;
     while (tm1638_get_key() != -1) {
         if (iters == 0) cprintf("chess: tm_wait_key: waiting for release before scan\n");
+        if (chess_abort_requested()) return TM_KEY_ABORT;
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: idle-wait timed out\n"); break; }
     }
@@ -806,6 +839,7 @@ static int tm_wait_key(void) {
     do {
         k = tm1638_get_key();
         if (k != -1) cprintf("chess: tm_wait_key: raw key=%d\n", k);
+        if (chess_abort_requested()) return TM_KEY_ABORT;
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: press-wait timed out\n"); return -1; }
     } while (k == -1);
@@ -832,6 +866,7 @@ static int tm_read_square(const char *prompt) {
     int file = -1, rank = -1;
     while (file < 0 || rank < 0) {
         int k = tm_wait_key();
+        if (k == TM_KEY_ABORT) return TM_KEY_ABORT; /* unwind, don't retry */
         if (k < 0 || k > 7) continue; /* 8-15: menu keys, not handled yet */
         if (file < 0) {
             file = k;
@@ -849,11 +884,17 @@ static int tm_read_square(const char *prompt) {
 /* Prompts for from/to squares and resolves them against the actual legal
  * move list (defaulting promotions to Queen -- the keypad has no piece
  * picker in this version), retrying on anything that doesn't resolve to a
- * legal move. */
+ * legal move. Returns 0 (otherwise never a real return value here -- a
+ * failed match falls through to "bAd MOuE" and retries, it never returns
+ * 0 on its own) if the read was aborted (J2's chess_abort_requested()),
+ * the sentinel chess_run() below checks for to exit cleanly instead of
+ * treating it as an illegal move. */
 static Move tm_read_move(Position *pos) {
     for (;;) {
         int from = tm_read_square("FrOM    ");
+        if (from == TM_KEY_ABORT) return 0;
         int to = tm_read_square("tO      ");
+        if (to == TM_KEY_ABORT) return 0;
 
         MoveList list;
         generate_moves(pos, &list);
@@ -919,6 +960,17 @@ void chess_run(void) {
     for (;;) {
         tm1638_display_string("YOUr MOu");
         Move human = tm_read_move(&g_chess_pos);
+        if (human == 0) {
+            /* Abort requested (Ctrl-C or the TM1638 STOP key) -- the
+             * software exit path this persona lacked before J2: return
+             * cleanly to the shell instead of needing a physical board
+             * reset. Revises this function's own former "does not
+             * return" contract now that there's a real way to ask it to. */
+            tm1638_display_string("bYE     ");
+            time_delay_us(700000);
+            chess_session_end();
+            return;
+        }
         if (!make_move(&g_chess_pos, human)) {
             /* tm_read_move() only returns pseudo-legal moves from the real
              * move list, so make_move() only fails here on a king-safety

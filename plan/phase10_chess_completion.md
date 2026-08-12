@@ -585,6 +585,45 @@ same reason as the outcome-detection rendering above (board access ended
 mid-session); same category as J3's other interactive checks (no QEMU
 model for the keypad either way).
 
+**Follow-up hardware session, same day, board back online:** the gap this
+section names above (`(chess)` on this board's persona leaves it
+unreachable except by physical reset) is now closed. What actually
+happened — this section is left as originally written for the "found the
+hard way" record — was that `chess_run()`'s own blocking waits
+(`tm_wait_key()` and the functions above it) had *no* interrupt check of
+any kind, not even the Ctrl-C primitive this very milestone had just
+built; the user asked, on seeing the earlier lockup, whether any infinite
+polling loop (a matrix-keyboard wait was their own example) should also
+consult the general interrupted state, and pointed out this needed
+standardizing rather than a one-off fix. Landed same session: a shared
+`chess_abort_requested()` (Ctrl-C or the TM1638 STOP key, either one) is
+now the single check both `search_poll_stop_callback()` and
+`tm_wait_key()` consult — search sets `stop_search` as before; a blocked
+keypad wait unwinds through a distinct sentinel (`TM_KEY_ABORT`, kept
+separate from the existing "timeout, keep retrying" `-1` so the two don't
+get conflated) up through `tm_read_square()`/`tm_read_move()`, and
+`chess_run()`'s main loop now exits cleanly back to the shell
+(`chess_session_end()`, then `return`) instead of running forever. This
+revises `chess_run()`'s own documented contract, in the file's header
+comment and `chess_ui.h`: it no longer "does not return" — it returns on
+Ctrl-C or STOP, the same as `chess_console_run()` returns on `quit`.
+
+Verified live on real RP2350 hardware, precisely reproducing and then
+fixing the earlier lockup: `(chess)` entered `chess_run()` (silent on the
+serial console, exactly as before — it only drives the TM1638/ST7735), a
+raw `0x03` sent 1s later returned the board cleanly to `lsh>` with no
+physical intervention, and a follow-up `cat /proc/version` confirmed the
+shell fully responsive. `/proc/meminfo`'s `Pages Used` read identically
+(2) before this test and after the *next* one (`chess-selftest`), with
+`Pages Peak` (27) showing the genuine climb-and-release from *both*
+sessions — incidentally also the first hardware confirmation that
+`chess_run()`'s own `chess_session_end()` call (J0's heap-release fix)
+works correctly on the TM1638 path specifically, not just the console
+path QEMU had already covered. 15/15 hardware tests still pass. The
+physical STOP-key half of this (as opposed to Ctrl-C) still needs a human
+at the keypad — unchanged from the note above, and now the only remaining
+piece of this milestone without direct hardware confirmation.
+
 ## J3 — TM1638 function keys 8-15
 
 Closes [[phase9_chess_followups]] item 2. Wires the four-mode state machine

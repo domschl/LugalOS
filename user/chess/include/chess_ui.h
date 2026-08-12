@@ -15,12 +15,13 @@ void chess_selftest(void);
 
 /* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
  * scenario 1.1, no hardware dependency. Builds and runs on every target.
- * Does return, on 'quit', unlike chess_run() below. */
+ * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */
 void chess_console_run(void);
 
 /* The interactive game: TM1638 for move entry, ST7735 for the board.
  * RP2350 hardware only (CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638).
- * Does not return -- reset the board to exit, the same shape as p9serve. */
+ * Returns to the shell on Ctrl-C or the TM1638 STOP key (J2) -- prior to
+ * that this had no software exit at all, only a physical board reset. */
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
 void chess_run(void);
 #endif

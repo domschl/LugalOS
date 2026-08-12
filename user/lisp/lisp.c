@@ -399,7 +399,7 @@ static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
 static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    chess_run(); /* does not return -- reset the board to exit */
+    chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
     return &true_val;
 }
 #endif
@@ -415,7 +415,7 @@ static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
-    chess_run(); /* does not return -- reset the board to exit */
+    chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
 #else
     chess_console_run(); /* returns on 'quit' */
 #endif
