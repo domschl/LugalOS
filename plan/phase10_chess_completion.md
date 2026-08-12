@@ -907,17 +907,24 @@ phases), via `tests/runner.py` scripting a handful of UCI commands over the
 device and asserting `bestmove` output. Real GUI interop (cutechess-cli
 against a live board) is hardware-only, same category as J3.
 
-## J6 — `init.lisp` single-purpose persona
+## J6 — `init.lisp` single-purpose persona *(done, 2026-08-12 — superseded by a more general mechanism)*
 
-Small, and last because it only makes sense once J1-J3 exist: document (and
-optionally provide as a commented-out example in `tools/sd_root/system/etc/
-init.lisp`, following that file's existing style of commented alternatives
-rather than hard-coding a board-specific choice) replacing `init.lisp`'s
-final `(lsh)` call with `(chess)` for a board persona that boots straight
-into the chess computer, matching old LugalChess's dedicated-hardware
-behavior. Not a new mechanism — `(chess)` is J0's own primitive, already
-callable from Lisp; this milestone is purely about `init.lisp` documentation/
-example, not new C code.
+Closed as a side effect of the joint hardware session's own closing item
+(see J3's own writeup above), not implemented as originally scoped. The
+original plan was a commented-out example swapping `init.lisp`'s own final
+`(lsh)` for `(chess)` directly — but the session ended up building something
+strictly more general instead: `init.lisp` now runs `/sd0/system/etc/
+usr_init.lisp` in place of `(lsh)` whenever that file exists (J3's writeup,
+"Closing item"), so a dedicated chess-computer persona is a one-line file on
+an SD card (`(chess)`) rather than a repo edit at all — the actual goal this
+milestone named ("board persona that boots straight into the chess
+computer, matching old LugalChess's dedicated-hardware behavior"), achieved
+without ever touching `init.lisp` itself or the flash image. **Confirmed
+working end-to-end on real hardware** by the user directly: created
+`/sd0/system/etc/usr_init.lisp` containing `(chess)` live with `e`, rebooted
+straight into `chess_run()`, no shell in between. No commented-out example
+was added to `init.lisp` — the general mechanism needs no example to
+demonstrate it, unlike a hardcoded `(chess)` swap would have.
 
 ---
 
