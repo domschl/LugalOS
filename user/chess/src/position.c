@@ -515,22 +515,43 @@ void print_board(const Position *pos) {
         "\xE2\x99\x9B", /* Queen  U+265B */
         "\xE2\x99\x9A", /* King   U+265A */
     };
+    /* Explicit truecolor (24-bit RGB) square backgrounds, not the 16
+     * named ANSI colors -- a terminal's color *scheme* routinely remaps
+     * what "background color 3" actually looks like (that's the whole
+     * point of a scheme), but a literal RGB triplet has nothing left for
+     * a scheme to reinterpret, so the board reads as an actual
+     * checkerboard regardless of the viewer's own theme (user's own
+     * reasoning, 2026-08-12) -- the same reason \033[48;2;R;G;Bm is used
+     * here rather than \033[4{0-7}m. Reset (\033[0m) after every square
+     * rather than once per row, so a mid-row escape sequence lost to a
+     * garbled/partial read (an unlikely but real possibility on a raw
+     * serial link) can't leave the rest of the line, or whatever prints
+     * after the board, stuck in the last square's background color. */
+    #define SQ_LIGHT_BG "\033[48;2;240;217;181m"
+    #define SQ_DARK_BG  "\033[48;2;181;136;99m"
+    #define SQ_RESET    "\033[0m"
     printf("\n");
     for (int r = 7; r >= 0; r--) {
         printf("%d  ", r + 1);
         for (int f = 0; f < 8; f++) {
             int sq = r * 8 + f;
             int piece = pos->board[sq];
+            bool light_square = ((r + f) % 2 == 1);
+            printf("%s", light_square ? SQ_LIGHT_BG : SQ_DARK_BG);
             if (piece == NO_PIECE) {
                 printf(". ");
             } else {
                 int color = get_bit(pos->color_bbs[WHITE], sq) ? WHITE : BLACK;
                 printf("%s ", (color == WHITE ? white_glyphs : black_glyphs)[piece]);
             }
+            printf(SQ_RESET);
         }
         printf("\n");
     }
     printf("   a b c d e f g h\n\n");
+    #undef SQ_LIGHT_BG
+    #undef SQ_DARK_BG
+    #undef SQ_RESET
 }
 
 // Print side to move, castling, en-passant, etc.
