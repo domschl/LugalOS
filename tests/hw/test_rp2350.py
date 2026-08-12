@@ -867,19 +867,26 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     ever runs.
 
     J0 (plan/phase10_chess_completion.md) converted them to
-    `palloc_pages()`-on-demand, allocated once on first `chess`/`chess-run`/
-    `chess-selftest` call and never freed for the process lifetime (unlike
-    cc/ed's acquire-per-use, since chess has no natural "done" boundary) --
-    matching the same treatment cc/ed already got. Re-measured on real
-    silicon the same day: idle heap is back up to 64 pages (from 48), not
-    quite the full pre-H4 78 -- the remaining gap is chess's other static
-    tables J0 deliberately left alone (zobrist/bitboard attack tables,
-    killer_moves/history_table, the opening book strings), none of which
-    were ever in scope for this conversion. 64 - 48 = 16 pages (64 KB) lines
-    up with the ~65 KB the movelist pools actually measured at, so this is
-    the expected number, not a surprise. Threshold below tightened to `>= 55`
-    -- real margin below the measured 64, not the value itself, so a future
-    regression that eats back into this budget still trips it.
+    `palloc_pages()`-on-demand -- initially allocated once on first
+    `chess`/`chess-run`/`chess-selftest` call and never freed, then
+    revised the same day once J1 gave chess a real session boundary
+    (`chess_console_run()`'s `quit`) to actually release on exit too,
+    matching cc/ed's own acquire-per-use precedent instead of J0's
+    original "never freed for the process lifetime" choice. Idle-heap
+    baseline measured twice on real silicon: 64 pages right after J0 (up
+    from H4's 48), then 60 after J1 added its own new static state (the
+    console REPL's code and two function-local `static MoveList` buffers,
+    ~1 KB, plus normal `.data`/`.bss` growth from ~500 new lines) -- a
+    legitimate one-time image-growth cost from a real feature landing, not
+    a heap-lifecycle regression (this test's own "arena was returned"
+    check, `used[0] == used[-1]`, is what actually proves the lifecycle;
+    "Pages Total" is context, re-measure and update this comment whenever
+    it moves rather than treating either figure as fixed). Threshold below
+    is `>= 50` -- real margin below the current 60, not the value itself,
+    so a future regression that eats back into this budget still trips it;
+    expect this number to drift down further as J2-J6 add their own static
+    footprint, and to widen the margin back up rather than let it go
+    flappy if it ever gets close.
 
     Worth checking here rather than only on QEMU for the obvious reason: the
     QEMU targets have a 16 MB heap, so an arena that is never released is
@@ -909,7 +916,7 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ("compile succeeded",  "Build clean" in out),
             ("two readings taken", len(used) >= 2),
             ("arena was returned", len(used) >= 2 and used[0] == used[-1]),
-            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 55),
+            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 50),
         ]
         failed = [label for label, ok in checks if not ok]
         if failed:
