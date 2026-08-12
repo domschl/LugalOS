@@ -1534,10 +1534,23 @@ static int tm_load(Position *pos) {
  * else -- nothing there actually sets up playing the other color). Level
  * select is also not duplicated in here -- key 12 already reaches it
  * directly, matching console.c's own idx-4 doing exactly that. */
-#define TM_OPTION_COUNT 8
+#define TM_OPTION_COUNT 9
 static const char *tm_option_names[TM_OPTION_COUNT] = {
-    "nEU gAnE", "ScOrE   ", "SIdES   ", "HAlF    ", "MOuES   ", "SAuE    ", "LOAd    ", "End     "
+    "nEU gAnE", "ScOrE   ", "SIdES   ", "HAlF    ", "MOuES   ", "SAuE    ", "LOAd    ", "AUtO    ", "End     "
 };
+
+/* Whether a human-typed move automatically triggers one engine reply for
+ * the other side (design agreed with the user 2026-08-12, after "go"
+ * alone turned out ambiguous about this). ON (default) is the classic
+ * "you move, computer replies" experience -- ply N is human-typed, ply
+ * N+1 is engine-computed with no separate prompt or "go" press. OFF
+ * requires "go" for *every* move, either color -- useful for entering a
+ * whole known sequence by hand (replaying a game, setting up a specific
+ * position) without the engine jumping in after the very first
+ * half-move. "go" itself never auto-chains regardless of this setting --
+ * only ever plays the one turn it was pressed for -- otherwise it could
+ * play both sides in an unstoppable loop with nothing to break it. */
+static bool g_tm_auto_reply = true;
 
 static int tm_options_menu(Position *pos) {
     int idx = 0;
@@ -1596,7 +1609,13 @@ static int tm_options_menu(Position *pos) {
                     return 0;
                 case 6: /* load */
                     return tm_load(pos);
-                case 7: /* exit -- the deliberate, keypad-only way to leave
+                case 7: /* auto-reply toggle */
+                    g_tm_auto_reply = !g_tm_auto_reply;
+                    tm1638_display_string(g_tm_auto_reply ? "AUtO On " : "AUtO OFF");
+                    time_delay_us(2000000);
+                    tm1638_display_string(tm_option_names[idx]);
+                    break;
+                case 8: /* exit -- the deliberate, keypad-only way to leave
                          * chess_run() now that STOP no longer does (see
                          * TM_KEY_EXIT_GAME's own comment above) */
                     return TM_KEY_EXIT_GAME;
@@ -1893,27 +1912,38 @@ static bool tm_handle_game_over(Position *pos) {
 
 /* After a move (human-entered or engine-computed, either color) has just
  * been made for `mover_side`, checks game-outcome/check and displays
- * accordingly -- shared by both call sites in chess_run() below (a real
- * move, and the "go"-triggered engine move) rather than two copies of
- * the same outcome/check/game-over dispatch. `disp` must already hold
- * the post-move 8-char display (White+Black slots); mutated in place by
- * the annotation flash if one fires. Returns false if the caller should
- * return (the game ended and the human chose to exit), true to keep
- * playing (possibly against a changed position, if the human chose to
- * undo instead of starting a new game). */
-static bool tm_after_move(Position *pos, char *disp, int mover_side) {
+ * accordingly -- shared by every call site in chess_run() below rather
+ * than repeated copies of the same outcome/check/game-over dispatch.
+ * `disp` must already hold the post-move 8-char display (White+Black
+ * slots); mutated in place by the annotation flash if one fires.
+ *
+ * Three outcomes, not two: TM_AFTER_EXIT (the game ended and the human
+ * chose to leave -- caller returns), TM_AFTER_RESUMED (the game ended
+ * but the human chose undo/new-game instead -- keep playing, but this
+ * specific move-completion should NOT auto-chain into an engine reply,
+ * since the position the human is now looking at didn't come from the
+ * move that just happened), or TM_AFTER_ONGOING (the normal case --
+ * keep playing, and this completion is eligible to auto-chain if the
+ * caller wants that). */
+typedef enum {
+    TM_AFTER_EXIT,
+    TM_AFTER_ONGOING,
+    TM_AFTER_RESUMED,
+} TmAfterMove;
+
+static TmAfterMove tm_after_move(Position *pos, char *disp, int mover_side) {
     int half = (mover_side == WHITE) ? 0 : 1;
     ChessOutcome outcome = chess_game_outcome(pos);
     if (outcome != CHESS_ONGOING) {
         tm_show_move_annotation(disp, half, tm_outcome_word(outcome), 3, true);
-        return tm_handle_game_over(pos);
+        return tm_handle_game_over(pos) ? TM_AFTER_RESUMED : TM_AFTER_EXIT;
     }
     if (chess_in_check(pos)) {
         tm_show_move_annotation(disp, half, "CHk ", 1, false);
     } else {
         tm1638_display_string(disp);
     }
-    return true;
+    return TM_AFTER_ONGOING;
 }
 
 void chess_run(void) {
@@ -1947,8 +1977,9 @@ void chess_run(void) {
 
         char last_move_buf[6] = "";
         char *mover_slot = (mover_side == WHITE) ? g_tm_white_slot : g_tm_black_slot;
+        bool go_pressed = (mv == TM_MOVE_GO);
 
-        if (mv != TM_MOVE_GO) {
+        if (!go_pressed) {
             if (!make_move(&g_chess_pos, mv)) {
                 /* tm_read_move() only returns pseudo-legal moves from the
                  * real move list, so make_move() only fails here on a
@@ -1969,34 +2000,54 @@ void chess_run(void) {
                 with the TM1638 slot right above rather than format_move()'s
                 lowercase, which would only differ here and nowhere else
                 any more. */
+
+            char disp[9];
+            for (int i = 0; i < 4; i++) { disp[i] = g_tm_white_slot[i]; disp[4 + i] = g_tm_black_slot[i]; }
+            disp[8] = '\0';
+            tm1638_display_string(disp);
+            draw_chess_board(&g_chess_pos);
+            draw_chess_status(&g_chess_pos, last_move_buf, false);
+
+            TmAfterMove result = tm_after_move(&g_chess_pos, disp, mover_side);
+            if (result == TM_AFTER_EXIT) return;
+            if (result == TM_AFTER_RESUMED || !g_tm_auto_reply) continue; /* back
+                to tm_read_move() for whoever's turn it is now -- human or
+                "go", either color, nothing hardcoded. */
+            /* Human's move stands, game is still ongoing, and auto-reply
+             * is on (the default, design agreed with the user 2026-08-12,
+             * after "go" alone turned out ambiguous about this): fall
+             * through and let the engine reply immediately for whichever
+             * side is now to move, no separate prompt or "go" needed --
+             * the classic "you move, computer replies" experience. */
+            mover_side = g_chess_pos.side;
+            mover_slot = (mover_side == WHITE) ? g_tm_white_slot : g_tm_black_slot;
         } else {
             /* "go" (key 13, user request 2026-08-12) -- skip entering a
              * move, let the engine play whichever side is actually to
              * move. Blank this side's own slot rather than a move, since
              * there wasn't a human one this turn -- the ticker below
              * fills it back in live once the engine has something to
-             * show. */
+             * show. Never itself auto-chains afterward (see below) --
+             * only a human-typed move can trigger the fall-through above. */
             for (int i = 0; i < 4; i++) mover_slot[i] = ' ';
+            char disp[9];
+            for (int i = 0; i < 4; i++) { disp[i] = g_tm_white_slot[i]; disp[4 + i] = g_tm_black_slot[i]; }
+            disp[8] = '\0';
+            tm1638_display_string(disp);
+            draw_chess_board(&g_chess_pos);
+            draw_chess_status(&g_chess_pos, last_move_buf, false);
         }
 
-        char disp[9];
-        for (int i = 0; i < 4; i++) { disp[i] = g_tm_white_slot[i]; disp[4 + i] = g_tm_black_slot[i]; }
-        disp[8] = '\0';
-        tm1638_display_string(disp);
-        draw_chess_board(&g_chess_pos);
-        draw_chess_status(&g_chess_pos, last_move_buf, false);
-
-        if (mv != TM_MOVE_GO) {
-            if (!tm_after_move(&g_chess_pos, disp, mover_side)) return;
-            continue; /* back to tm_read_move() for whoever's turn it is
-                now -- human or "go", either color, nothing hardcoded. */
-        }
-
-        /* "go" -- actually run the search now. The side being calculated
-         * for (mover_side) freezes into g_tm_frozen_slot's *complement*:
-         * the ticker (search_poll_stop_callback() -> tm_search_ticker_
-         * tick()) needs to know which physical half is "the other one"
-         * so it can redraw the full 8-char display once a second without
+        /* Engine actually calculates now -- reached either via "go"
+         * above, or via the auto-reply fall-through just above. Always
+         * returns to prompting afterward (below), never chains a second
+         * time -- otherwise "go" or an AUTO-on reply could set off the
+         * engine playing both sides in an unstoppable loop with nothing
+         * to break it. The side being calculated for (mover_side)
+         * freezes the *other* slot into g_tm_frozen_slot: the ticker
+         * (search_poll_stop_callback() -> tm_search_ticker_tick()) needs
+         * to know which physical half is "the other one" so it can
+         * redraw the full 8-char display once a second without
          * clobbering it. */
         g_tm_active_half = (mover_side == WHITE) ? 0 : 1;
         char *other_slot = (mover_side == WHITE) ? g_tm_black_slot : g_tm_white_slot;
@@ -2024,9 +2075,10 @@ void chess_run(void) {
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
 
-        for (int i = 0; i < 4; i++) { disp[i] = g_tm_white_slot[i]; disp[4 + i] = g_tm_black_slot[i]; }
-        disp[8] = '\0';
-        if (!tm_after_move(&g_chess_pos, disp, mover_side)) return;
+        char disp2[9];
+        for (int i = 0; i < 4; i++) { disp2[i] = g_tm_white_slot[i]; disp2[4 + i] = g_tm_black_slot[i]; }
+        disp2[8] = '\0';
+        if (tm_after_move(&g_chess_pos, disp2, mover_side) == TM_AFTER_EXIT) return;
     }
 }
 #endif /* CONFIG_ENABLE_DISPLAY */
