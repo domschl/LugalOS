@@ -22,11 +22,64 @@
  *     column alignment for the test-case name is also dropped -- this
  *     printf has no field-width support for %s at all (only %d/%u/%x pad),
  *     confirmed by reading vprintk_to() rather than assumed.
+ *
+ * Fourth platform edit, found only on real RP2350 hardware, not in QEMU
+ * (falsify_on_hardware_not_qemu, again): run_perft()'s upstream body
+ * declares `MoveList list;` as a plain stack local inside a *recursive*
+ * function. Each MoveList is ~516 bytes (MAX_MOVES=256 Move slots + count);
+ * a `(perft 7)` call -- or the "end games"/"start pos" table rows at their
+ * own native depth -- recurses 7 levels deep, ~3.6 KB of stack for the
+ * MoveList arrays alone, stacked on top of whatever the shell/lisp/console
+ * call chain above it already holds. tests/hw/test_rp2350.py's memory-
+ * margins check (3/4 of the 16 KB boot stack) failed on exactly this after
+ * manual interactive perft testing. Fixed the same way J0 already fixed
+ * search.c's own per-ply MoveList arrays: a heap-backed, ply-indexed pool
+ * (perft_pools_init()/perft_pools_free() below), not a `static` -- a plain
+ * static would alias every recursion level onto the same memory and corrupt
+ * the parent's still-in-progress move list, which is exactly why upstream
+ * used a stack local in the first place. Indexing by ply keeps each level's
+ * storage distinct while moving it off the stack, and run_perft()'s public
+ * signature is unchanged.
  */
 #include "perft.h"
 #include "movegen.h"
 #include "move.h"
 #include "kernel/time.h"
+#include "kernel/palloc.h"
+
+/* Generous relative to any depth perft is actually run at -- the deepest
+ * table entry is 7, and perft's own node counts make depth 10+ take longer
+ * than any reasonable timeout regardless of stack. Kept far below
+ * MAX_SEARCH_PLYS-scale pool sizes since perft never needs search.c's own
+ * ply range. */
+#define PERFT_MAX_PLY 32
+
+static MoveList *perft_movelists = NULL;
+static uint32_t perft_movelists_pages = 0;
+static int perft_ply = 0;
+
+static bool perft_pools_init(void) {
+    if (perft_movelists != NULL) {
+        return true; /* already allocated -- idempotent, like search_pools_init(). */
+    }
+    uint32_t bytes = (uint32_t)(PERFT_MAX_PLY * sizeof(MoveList));
+    perft_movelists_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    perft_movelists = (MoveList *)palloc_pages(perft_movelists_pages);
+    if (perft_movelists == NULL) {
+        perft_movelists_pages = 0;
+        return false;
+    }
+    return true;
+}
+
+static void perft_pools_free(void) {
+    if (perft_movelists == NULL) {
+        return;
+    }
+    palloc_free(perft_movelists, perft_movelists_pages);
+    perft_movelists = NULL;
+    perft_movelists_pages = 0;
+}
 
 typedef struct {
     const char *name;
@@ -93,18 +146,26 @@ uint64_t run_perft(Position *pos, int depth) {
     if (depth == 0) {
         return 1ULL;
     }
+    if (perft_movelists == NULL && !perft_pools_init()) {
+        return 0ULL;
+    }
+    if (perft_ply >= PERFT_MAX_PLY) {
+        return 0ULL; /* should never trigger -- see PERFT_MAX_PLY's comment. */
+    }
 
-    MoveList list;
-    generate_moves(pos, &list);
+    MoveList *list = &perft_movelists[perft_ply];
+    generate_moves(pos, list);
     uint64_t nodes = 0ULL;
 
-    for (int i = 0; i < list.count; i++) {
-        if (!make_move(pos, list.moves[i])) {
+    perft_ply++;
+    for (int i = 0; i < list->count; i++) {
+        if (!make_move(pos, list->moves[i])) {
             continue;
         }
         nodes += run_perft(pos, depth - 1);
         unmake_move(pos);
     }
+    perft_ply--;
 
     return nodes;
 }
@@ -170,6 +231,7 @@ int run_perft_tests_depth(int max_depth) {
     }
 
     printf("PERFT Results: %d passed depths, %d errors.\n", passed, errors);
+    perft_pools_free();
     return errors;
 }
 

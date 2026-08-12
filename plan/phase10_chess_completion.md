@@ -899,6 +899,35 @@ verified live on QEMU RV32 first: `(perft 3)` runs the full 24-case table,
 97862 nodes, "start pos" depth 3: 8902, below the >10000 print threshold so
 correctly suppressed) print correctly through `print_u64()`.
 
+**Third real deviation, found only on RP2350 hardware, not QEMU
+([[falsify_on_hardware_not_qemu]] again).** After flashing and running
+`tests/hw/test_rp2350.py`'s clean 15/15, manual interactive `(perft ...)`
+calls during hardware transcript-capture testing tripped the automated
+suite's "boot stack has headroom" memory-margins check on a *subsequent*
+run (`stack_peak = 12516` B against a 12288 B threshold — 3/4 of the 16 KB
+boot stack; `/proc/meminfo`'s peak fields are cumulative since boot, per
+that test's own docstring). Root cause, confirmed by reading the vendored
+code rather than assumed: upstream's `run_perft()` declares `MoveList
+list;` — ~516 B (`MAX_MOVES=256` `Move` slots + count) — as a plain stack
+local inside a function that recurses once per ply. A `(perft 7)` call (or
+the "end games"/"start pos" table rows at their own native depth) stacks
+~3.6 KB of `MoveList` frames alone on top of whatever the shell/lisp/console
+call chain above it already holds, on a board with only 16 KB of boot stack
+total. Fixed the same way [[phase10_chess_completion_planned|J0]] already
+fixed `search.c`'s own per-ply `MoveList` arrays: a heap-backed, ply-indexed
+pool (`perft_pools_init()`/`perft_pools_free()`, `PERFT_MAX_PLY=32`) instead
+of the stack local. A plain `static` (search.c's *other* precedent, used
+for its one-shot, non-recursive call sites) would have been wrong here —
+every recursion level would alias the same memory and a child call would
+overwrite the parent's still-in-progress move list before its `for` loop
+finished reading it. Indexing by ply keeps each level's storage distinct
+while moving it off the stack; `run_perft()`'s public signature is
+unchanged, and `perft_pools_free()` is called once at the end of
+`run_perft_tests_depth()`, keeping `chess_perft()`'s existing
+heap-stateless contract intact without needing to know about the pool at
+all. Re-verified 191/191 QEMU after the fix (same node counts, so
+correctness is unaffected — this was purely a stack-footprint fix).
+
 ## J5 — UCI-over-UART bridge (stretch; standard UCI only)
 
 The user's own simplification — drop `console.c`'s hacked-in bidirectional
