@@ -830,7 +830,7 @@ landed the same day as one continuous joint hardware session, each piece
 built, QEMU-regression-tested (189/189 held throughout), and hardware-
 verified live before moving to the next. Nothing here is deferred.
 
-## J4 — `perft` command + bounded perft in the automated test suite
+## J4 — `perft` command + bounded perft in the automated test suite *(done, 2026-08-12)*
 
 Closes [[phase9_chess_followups]] item 3. `perft.c`/`.h`
 (`~/gith/domschl/LugalChess/engine/src/perft.c`, 131 lines) get vendored
@@ -865,6 +865,39 @@ move generation, not a performance benchmark, so it doesn't need to run on
 hardware at all; QEMU-only is the right (and per [[falsify_on_hardware_not_qemu]],
 sufficient) place for it, since perft correctness doesn't depend on any
 board-specific code path.
+
+Landed close to plan, with two real deviations found while vendoring rather
+than assumed from the plan text above:
+
+1. **`printf`'s `%.1f` (KNPS) and `%llu` (node counts) are both unsupported
+   by `cprintf`, not just the `%f` case the plan text above already
+   flagged.** `kernel/printk.c`'s own format parser only ever consumes a
+   single `l`, never `ll`, so `%llu` against a `uint64_t` argument (wider
+   than `long` on a 32-bit target) would desync every argument after it,
+   not just print wrong — confirmed by reading `vprintk_to()` rather than
+   assumed. Fixed with a small manual-digit `print_u64()` helper (the same
+   pattern `chess_ui.c`'s own `tm_format_score_compact()`/`append_uint()`
+   already use this phase), and nodes/sec as plain integer nodes-per-second
+   instead of floating-point KNPS, matching `search.c`'s own already-
+   established `nps` fix (H4). The upstream `%-18s` column alignment for
+   the test-case name was also dropped — this `printf` has no field-width
+   support for `%s` at all, confirmed the same way, only `%d`/`%u`/`%x` pad.
+2. **`perft [n]` needed a thin wrapper, `chess_perft(int max_depth)` in
+   `chess_ui.c`/`chess_ui.h`**, rather than calling `run_perft_tests_depth()`
+   directly from the Lisp primitive — matching `chess_selftest()`'s own
+   shape exactly: `chess_ensure_init()` on the way in (`generate_moves()`'s
+   attack tables need `init_bitboards()`, even though perft never touches
+   the TT or search's own on-demand pools), `chess_session_end()` on the
+   way out (heap-stateless, [[heap_stateless_user_programs]], the same rule
+   every other chess entry point already follows).
+
+**Verify:** all three targets build clean, no new warnings. 191/191 QEMU
+tests pass (189 + the new case on both RV32 and RV64, the same per-
+architecture split every other chess QEMU test already gets). Manually
+verified live on QEMU RV32 first: `(perft 3)` runs the full 24-case table,
+"PERFT Results: 75 passed depths, 0 errors.", large node counts (kiwipete:
+97862 nodes, "start pos" depth 3: 8902, below the >10000 print threshold so
+correctly suppressed) print correctly through `print_u64()`.
 
 ## J5 — UCI-over-UART bridge (stretch; standard UCI only)
 

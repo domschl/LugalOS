@@ -396,6 +396,18 @@ static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* `(perft [n])` (J4, plan/phase10_chess_completion.md) -- move-generation
+ * correctness suite, `n` defaulting to 0 (chess_perft()'s own "<=0 means
+ * the documented default depth" convention, matching upstream's own
+ * `run_perft_tests()` no-argument wrapper) when omitted. No hardware
+ * dependency, same as chess-selftest above. */
+static lisp_val_t *prim_perft(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int max_depth = (int)arg_int(args, 0, 0);
+    chess_perft(max_depth);
+    return &true_val;
+}
+
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
 static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
@@ -1288,6 +1300,7 @@ void lisp_init(void) {
 #endif
 #if CONFIG_ENABLE_CHESS
     env_set(&global_env, "chess-selftest", make_prim(prim_chess_selftest));
+    env_set(&global_env, "perft", make_prim(prim_perft));
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
     env_set(&global_env, "chess-run", make_prim(prim_chess_run));
 #endif

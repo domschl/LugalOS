@@ -13,6 +13,12 @@
  * every target, including QEMU. */
 void chess_selftest(void);
 
+/* J4 (plan/phase10_chess_completion.md): move-generation correctness
+ * suite (perft.c's own test-case table). `max_depth <= 0` uses
+ * run_perft_tests_depth()'s own documented default (5). No hardware
+ * dependency, same as chess_selftest() above. */
+void chess_perft(int max_depth);
+
 /* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
  * scenario 1.1, no hardware dependency. Builds and runs on every target.
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */

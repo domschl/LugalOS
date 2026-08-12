@@ -324,6 +324,7 @@ if(LUGALOS_ENABLE_CHESS)
         user/chess/src/evaluation.c
         user/chess/src/tt.c
         user/chess/src/search.c
+        user/chess/src/perft.c
         user/chess/src/chess_ui.c)
 endif()
 

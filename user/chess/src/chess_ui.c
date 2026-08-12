@@ -31,6 +31,7 @@
 #include "tt.h"
 #include "bitboard.h"
 #include "zobrist.h"
+#include "perft.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/line_editor.h"
@@ -411,6 +412,24 @@ void chess_selftest(void) {
      * `quit` would (chess_console_run() below), so repeated
      * (chess-selftest) calls stay "stateless" rather than only the first
      * one paying the allocation cost forever after. */
+    chess_session_end();
+}
+
+/* J4 (plan/phase10_chess_completion.md): perft.c's own move-generation
+ * correctness suite, exposed the same no-hardware-dependency, heap-
+ * stateless way chess_selftest() is above -- `max_depth <= 0` gets
+ * run_perft_tests_depth()'s own documented default (5), matching
+ * upstream's own `run_perft_tests()` convenience wrapper. Move generation
+ * doesn't touch the transposition table or search's on-demand pools at
+ * all, but chess_ensure_init() is still the right gate here rather than a
+ * narrower one built just for this: it's the one place bitboard/zobrist
+ * init (genuinely required, `generate_moves()`'s attack tables) already
+ * happens, and every other chess entry point uses the same acquire/
+ * release pair, so a session-boundary bug fixed once for the others is
+ * fixed here too rather than needing its own copy to get right. */
+void chess_perft(int max_depth) {
+    if (!chess_ensure_init()) return;
+    run_perft_tests_depth(max_depth);
     chess_session_end();
 }
 

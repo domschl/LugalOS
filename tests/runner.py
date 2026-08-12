@@ -852,6 +852,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Chess Stalemate Detection (J2)", ok, log if not ok else ""))
         session.send_and_expect("quit", r"lsh>", timeout=4.0)
 
+        # 10e. Chess perft move-generation correctness (J4, plan/phase10
+        # _chess_completion.md). `(perft)` is a top-level Lisp primitive,
+        # not a chess-console command -- no `(chess)`/`quit` wrapper needed,
+        # same shape as the cc/exec test just above. Depth 3 across the
+        # full 24-case table (start pos, kiwipete, and 22 tactical `pej-*`
+        # positions covering castling/en-passant/promotion) is sub-second
+        # even at QEMU host speed and exercises every legal-move-generation
+        # edge case perft.c's own table was built for -- a correctness
+        # check on move generation, not a performance benchmark, so this
+        # doesn't need hardware coverage at all (per
+        # [[falsify_on_hardware_not_qemu]], perft correctness doesn't
+        # depend on any board-specific code path). Asserts "0 errors"
+        # literally rather than capturing and comparing the count -- a
+        # nonzero error count simply won't match, which is exactly the
+        # failure this test exists to catch.
+        ok, log = session.send_and_expect(
+            "(perft 3)", r"PERFT Results: \d+ passed depths, 0 errors", timeout=15.0)
+        results.append(("Chess Perft Move-Generation Correctness (depth 3, J4)", ok, log if not ok else ""))
+
         # Ctrl-C interrupting an unbounded (Level 8) search (J2) is
         # deliberately NOT an automated test here, after trying: it needs a
         # real wall-clock delay between starting an off-book search (a2a3 --
