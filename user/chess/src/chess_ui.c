@@ -133,16 +133,34 @@ void search_progress_callback(Move move, int score, int depth) {
  * down too. Found live, not designed up front: chess_run()'s keypad wait
  * had *no* software escape at all before this, only a physical board
  * reset (this is what left a board unreachable mid-session once this
- * phase's own Ctrl-C testing entered chess_run() by mistake). Two
- * independent gestures, either one enough: a terminal Ctrl-C, via the
- * general console_interrupt_requested() primitive (kernel/console.c, not
- * chess-specific -- the same need recurs for run-away Lisp scripts); or
- * the TM1638 STOP key (key 11), a physical-keypad gesture with no
- * terminal equivalent, so it stays a direct check here rather than being
- * folded into the Ctrl-C path itself. */
-static bool chess_abort_requested(void) {
+ * phase's own Ctrl-C testing entered chess_run() by mistake).
+ *
+ * Two independent gestures, distinguished rather than collapsed into one
+ * bool -- J3 needs to know which, since they mean different things once
+ * TM1638 menus exist. A terminal Ctrl-C (console_interrupt_requested(),
+ * kernel/console.c, not chess-specific -- the same need recurs for
+ * run-away Lisp scripts) always means "get me out of chess_run()
+ * entirely," everywhere, including from inside a submenu -- the universal
+ * panic button, consistent with what it means everywhere else in the OS.
+ * The TM1638 STOP key (key 11) is context-dependent instead, the same way
+ * it already was in upstream console.c: it stops a running search
+ * (unchanged), exits chess_run() when pressed while simply waiting for a
+ * move (J2's original behavior, kept -- there's no "typing in progress"
+ * to back out of first the way console.c's own line-buffer approach has),
+ * but *cancels a submenu back to normal play* rather than leaving the
+ * game when pressed inside one of J3's board-view/level-select/options
+ * screens below. Callers that care about the distinction read the enum
+ * directly; callers that don't (search_poll_stop_callback() itself) just
+ * check for anything other than CHESS_ABORT_NONE. */
+typedef enum {
+    CHESS_ABORT_NONE = 0,
+    CHESS_ABORT_CTRLC,
+    CHESS_ABORT_STOPKEY,
+} ChessAbort;
+
+static ChessAbort chess_abort_requested(void) {
     if (console_interrupt_requested()) {
-        return true;
+        return CHESS_ABORT_CTRLC;
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     if (tm1638_get_key() == 11) {
@@ -151,18 +169,19 @@ static bool chess_abort_requested(void) {
         while (tm1638_get_key() == 11) {
             time_delay_us(10000);
         }
-        return true;
+        return CHESS_ABORT_STOPKEY;
     }
 #endif
-    return false;
+    return CHESS_ABORT_NONE;
 }
 
 /* search.c's check_up_time() calls this every 2048 nodes -- a cooperative
  * poll already wired into the engine's inner loop. Sets `stop_search`,
  * which pv_search()/quiescence() already check on the way back out of
- * their own recursion. */
+ * their own recursion. Either abort gesture stops a running search --
+ * this one call site doesn't need to distinguish which. */
 void search_poll_stop_callback(void) {
-    if (chess_abort_requested()) {
+    if (chess_abort_requested() != CHESS_ABORT_NONE) {
         stop_search = true;
     }
 }
@@ -802,10 +821,22 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
  * enough for "abort" -- tm_read_square()'s own retry loop already treats
  * any negative/out-of-range reading as "keep trying", which is correct
  * for a genuine timeout but wrong for a deliberate abort request, which
- * must unwind instead. A separate sentinel, checked explicitly by every
- * caller in this chain (tm_read_square()/tm_read_move()/chess_run()
- * below), keeps the two cases from being conflated. */
-#define TM_KEY_ABORT (-2)
+ * must unwind instead. Three sentinels, checked explicitly by every
+ * caller in this chain:
+ *   TM_KEY_ABORT_CTRLC/_STOPKEY -- chess_abort_requested()'s two gestures,
+ *     kept distinct here too (not collapsed the way search_poll_stop_
+ *     callback() collapses them) because J3's menus below need to tell
+ *     them apart: Ctrl-C always propagates out of chess_run() entirely,
+ *     the physical STOP key only does that at the top level (waiting for
+ *     a move) and instead cancels a submenu back to normal play when
+ *     pressed from inside one.
+ *   TM_KEY_RESTART -- the position changed underneath the current move
+ *     attempt (undo/redo/new-game/load, all below), so tm_read_move()
+ *     should re-prompt from FrOM rather than continue asking for a square
+ *     that no longer makes sense against the new position. */
+#define TM_KEY_ABORT_CTRLC   (-2)
+#define TM_KEY_ABORT_STOPKEY (-3)
+#define TM_KEY_RESTART        (-4)
 
 /* Waits for the keypad to go idle, then for a key to be pressed, then for
  * it to be released again -- each stage a plain poll of tm1638_get_key(),
@@ -829,7 +860,9 @@ static int tm_wait_key(void) {
     iters = 0;
     while (tm1638_get_key() != -1) {
         if (iters == 0) cprintf("chess: tm_wait_key: waiting for release before scan\n");
-        if (chess_abort_requested()) return TM_KEY_ABORT;
+        ChessAbort a = chess_abort_requested();
+        if (a == CHESS_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+        if (a == CHESS_ABORT_STOPKEY) return TM_KEY_ABORT_STOPKEY;
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: idle-wait timed out\n"); break; }
     }
@@ -839,7 +872,9 @@ static int tm_wait_key(void) {
     do {
         k = tm1638_get_key();
         if (k != -1) cprintf("chess: tm_wait_key: raw key=%d\n", k);
-        if (chess_abort_requested()) return TM_KEY_ABORT;
+        ChessAbort a = chess_abort_requested();
+        if (a == CHESS_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+        if (a == CHESS_ABORT_STOPKEY) return TM_KEY_ABORT_STOPKEY;
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: press-wait timed out\n"); return -1; }
     } while (k == -1);
@@ -852,22 +887,294 @@ static int tm_wait_key(void) {
     return k;
 }
 
+/* Redraws the ST7735 board/status if this build actually has one --
+ * tm_read_square()/the menu functions below live in the TM1638-only
+ * guard, which must keep compiling on a TM1638-without-display board
+ * (H3's three independent flags), so this is the one place that
+ * optionality is handled rather than repeating the #if at every call
+ * site that wants a redraw after undo/redo/new-game/load. */
+static void tm_redraw_if_display(const Position *pos) {
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+    draw_chess_board(pos);
+    draw_chess_status(pos, "", false);
+#else
+    (void)pos;
+#endif
+}
+
+/* Ported from console.c's show_board_rank() (:197-225). tm1638_display_
+ * string() already special-cases '.' as "set the previous digit's decimal
+ * point, don't consume a digit slot of its own" (drivers/tm1638_rp2350.c),
+ * which is what lets `formatted` here safely exceed 8 characters when
+ * every square on the rank holds a White piece. */
+static void show_board_rank(const Position *pos, int rank) {
+    char rank_name[9] = "rAnK  0 ";
+    rank_name[6] = (char)('1' + rank);
+    tm1638_display_string(rank_name);
+    time_delay_us(350000);
+
+    char formatted[17];
+    int f_idx = 0;
+    for (int file = 0; file < 8; file++) {
+        int sq = file + rank * 8;
+        int piece = pos->board[sq];
+        if (piece == NO_PIECE) {
+            formatted[f_idx++] = '_';
+        } else {
+            static const char piece_chars[] = "Pnbrqk";
+            formatted[f_idx++] = piece_chars[piece];
+            int color = (pos->color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
+            if (color == WHITE) formatted[f_idx++] = '.';
+        }
+    }
+    formatted[f_idx] = '\0';
+    tm1638_display_string(formatted);
+}
+
+/* Board view (key 10): 8/9 scroll ranks, STOP exits back to the caller,
+ * Ctrl-C propagates out of chess_run() entirely. Returns TM_KEY_ABORT_
+ * CTRLC or 0 (STOP/normal exit) -- never RESTART, this menu never changes
+ * the position. */
+static int tm_board_view(const Position *pos) {
+    int rank = 0;
+    show_board_rank(pos, rank);
+    for (;;) {
+        int k = tm_wait_key();
+        if (k == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+        if (k == TM_KEY_ABORT_STOPKEY) return 0;
+        if (k == 8) {
+            if (rank < 7) { rank++; show_board_rank(pos, rank); }
+        } else if (k == 9) {
+            if (rank > 0) { rank--; show_board_rank(pos, rank); }
+        }
+    }
+}
+
+/* Level select (key 12): 0-7 pick a level directly, 15 confirms, STOP
+ * cancels -- same `level_times_ms[8]`/`g_console_search_level` J1's
+ * console REPL already uses (chess_ui.c:351-352), not a second copy, so
+ * both front ends share one level setting. */
+static const char *tm_level_names[8] = {
+    "t-1s    ", "t-2s    ", "t-5s    ", "t10s    ",
+    "t15s    ", "t30s    ", "t60s    ", "t-In    "
+};
+
+static int tm_level_select(void) {
+    tm1638_display_string(tm_level_names[g_console_search_level - 1]);
+    for (;;) {
+        int k = tm_wait_key();
+        if (k == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+        if (k == TM_KEY_ABORT_STOPKEY) return 0;
+        if (k >= 0 && k <= 7) {
+            g_console_search_level = k + 1;
+            tm1638_display_string(tm_level_names[k]);
+        } else if (k == 15) {
+            return 0;
+        }
+    }
+}
+
+/* Simple +/-dd.dd pawns format, avoiding snprintf (position.c's own
+ * header comment already established there isn't one on LugalOS) --
+ * console.c's own format_score_str() also handles mate-in-N and
+ * 100+-pawn notation, neither of which is worth the extra complexity for
+ * an 8-character status readout; chess_game_outcome() already reports
+ * mate separately (tm_report_outcome() above). */
+static void tm_format_score(int score, char *out) {
+    int abs_score = score >= 0 ? score : -score;
+    if (abs_score > 9999) abs_score = 9999;
+    out[0] = score >= 0 ? '+' : '-';
+    out[1] = (char)('0' + (abs_score / 1000) % 10);
+    out[2] = (char)('0' + (abs_score / 100) % 10);
+    out[3] = '.';
+    out[4] = (char)('0' + (abs_score / 10) % 10);
+    out[5] = (char)('0' + abs_score % 10);
+    out[6] = ' ';
+    out[7] = ' ';
+    out[8] = '\0';
+}
+
+/* Save/load, reusing J1's own path-selection and directory-creation logic
+ * (console_save_path()/console_save_dir(), chess_ui.c:365-372) -- one
+ * save format and one save file shared by both front ends, not a second
+ * copy of the /sd0-vs-/ram0 selection. Rendered on the TM1638 instead of
+ * cprintf'd, otherwise the same read/write this file already does. */
+static void tm_save(const Position *pos) {
+    const char *path = console_save_path();
+    char buf[300];
+    generate_fen(pos, buf);
+    int n = (int)strlen(buf);
+    buf[n++] = '\n';
+    buf[n++] = (char)('0' + g_console_search_level);
+    buf[n++] = '\n';
+    buf[n] = '\0';
+    vfs_mkdir(console_save_dir());
+    tm1638_display_string(vfs_write(path, buf, (uint32_t)n) == 0 ? "SAuEd   " : "nO SAuE ");
+    time_delay_us(1500000);
+}
+
+/* Returns TM_KEY_RESTART on a successful load (the position changed under
+ * the caller), 0 otherwise (nothing to load, or a corrupt save file). */
+static int tm_load(Position *pos) {
+    const char *path = console_save_path();
+    char buf[300];
+    int bytes = vfs_read(path, buf, sizeof(buf) - 1);
+    if (bytes <= 0) {
+        tm1638_display_string("nO SAuE ");
+        time_delay_us(1500000);
+        return 0;
+    }
+    buf[bytes] = '\0';
+    char *nl = strchr(buf, '\n');
+    if (nl) *nl = '\0';
+    static Position temp_pos;
+    parse_fen(&temp_pos, buf);
+    if (!is_position_valid(&temp_pos)) {
+        tm1638_display_string("bAd SAuE");
+        time_delay_us(1500000);
+        return 0;
+    }
+    *pos = temp_pos;
+    clear_tt();
+    g_console_max_history_ply = pos->history_ply;
+    if (nl && nl[1] >= '1' && nl[1] <= '8') {
+        g_console_search_level = nl[1] - '0';
+    }
+    tm1638_display_string("LOAdEd  ");
+    time_delay_us(1500000);
+    tm_redraw_if_display(pos);
+    return TM_KEY_RESTART;
+}
+
+/* Options menu (key 14): 8/9 cycle, 15 confirms, STOP cancels. Seven of
+ * console.c's ten options (:106-117) -- "Play Black"/"Play White" are
+ * dropped rather than ported: upstream's own idx-2 handler ("Play White")
+ * is just `go` (:815-820, i.e. "make the engine move now"), already
+ * covered by J1's top-level `go` without a dedicated slot, and idx-1
+ * ("Play Black") is a no-op in upstream (closes the menu and nothing
+ * else -- nothing there actually sets up playing the other color). Level
+ * select is also not duplicated in here -- key 12 already reaches it
+ * directly, matching console.c's own idx-4 doing exactly that. */
+#define TM_OPTION_COUNT 7
+static const char *tm_option_names[TM_OPTION_COUNT] = {
+    "nEU gAnE", "ScOrE   ", "SIdES   ", "HAlF    ", "MOuES   ", "SAuE    ", "LOAd    "
+};
+
+static int tm_options_menu(Position *pos) {
+    int idx = 0;
+    tm1638_display_string(tm_option_names[idx]);
+    for (;;) {
+        int k = tm_wait_key();
+        if (k == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+        if (k == TM_KEY_ABORT_STOPKEY) return 0;
+        if (k == 8) {
+            idx = (idx - 1 + TM_OPTION_COUNT) % TM_OPTION_COUNT;
+            tm1638_display_string(tm_option_names[idx]);
+        } else if (k == 9) {
+            idx = (idx + 1) % TM_OPTION_COUNT;
+            tm1638_display_string(tm_option_names[idx]);
+        } else if (k == 15) {
+            char buf[9];
+            switch (idx) {
+                case 0: /* new game */
+                    parse_fen(pos, STANDARD_START_FEN);
+                    clear_tt();
+                    g_console_max_history_ply = 0;
+                    tm_redraw_if_display(pos);
+                    return TM_KEY_RESTART;
+                case 1: /* score */
+                    tm_format_score(evaluate(pos), buf);
+                    tm1638_display_string(buf);
+                    time_delay_us(2000000);
+                    tm1638_display_string(tm_option_names[idx]);
+                    break;
+                case 2: /* side to move */
+                    tm1638_display_string(pos->side == WHITE ? "SIdE UH " : "SIdE bL ");
+                    time_delay_us(2000000);
+                    tm1638_display_string(tm_option_names[idx]);
+                    break;
+                case 3: { /* halfmove clock */
+                    int v = pos->halfmove > 999 ? 999 : pos->halfmove;
+                    char hbuf[9] = "H- 000  ";
+                    hbuf[3] = (char)('0' + (v / 100) % 10);
+                    hbuf[4] = (char)('0' + (v / 10) % 10);
+                    hbuf[5] = (char)('0' + v % 10);
+                    tm1638_display_string(hbuf);
+                    time_delay_us(2000000);
+                    tm1638_display_string(tm_option_names[idx]);
+                    break;
+                }
+                case 4: { /* move count */
+                    int v = pos->history_ply > 999 ? 999 : pos->history_ply;
+                    char nbuf[9] = "n- 000  ";
+                    nbuf[3] = (char)('0' + (v / 100) % 10);
+                    nbuf[4] = (char)('0' + (v / 10) % 10);
+                    nbuf[5] = (char)('0' + v % 10);
+                    tm1638_display_string(nbuf);
+                    time_delay_us(2000000);
+                    tm1638_display_string(tm_option_names[idx]);
+                    break;
+                }
+                case 5: /* save */
+                    tm_save(pos);
+                    return 0;
+                case 6: /* load */
+                    return tm_load(pos);
+            }
+        }
+    }
+}
+
 /* One square takes two key presses, both from the same 0-7 range -- the
  * first is the file, the second is the rank (confirmed against real
  * hardware and the project author directly: keys 0-7 double up for both
- * file and rank entry, in sequence; 8-15 are reserved for menu functions
- * (level/board/info/options) this phase doesn't implement yet, so they're
- * ignored here rather than misread as a rank digit -- an earlier version
- * of this code assumed 8-15 meant rank, which live hardware testing showed
- * was wrong: it just silently waited forever for a key range the physical
- * pad never sends for a normal move). */
-static int tm_read_square(const char *prompt) {
+ * file and rank entry, in sequence). Keys 8/9/10/12/14 are the J3 menu
+ * entries above (undo/redo/board-view/level-select/options); 13/15 are
+ * unhandled outside a submenu, same as an unrecognized key. */
+static int tm_read_square(Position *pos, const char *prompt) {
     tm1638_display_string(prompt);
     int file = -1, rank = -1;
     while (file < 0 || rank < 0) {
         int k = tm_wait_key();
-        if (k == TM_KEY_ABORT) return TM_KEY_ABORT; /* unwind, don't retry */
-        if (k < 0 || k > 7) continue; /* 8-15: menu keys, not handled yet */
+        if (k == TM_KEY_ABORT_CTRLC || k == TM_KEY_ABORT_STOPKEY) {
+            /* Either one exits chess_run() from here -- there is no
+             * "clear the current typing, keep waiting for FrOM" state to
+             * back out to the way console.c's own line-buffer approach
+             * has (:721-726), so STOP at this level means the same thing
+             * Ctrl-C does. Menu STOP-cancel only applies inside a
+             * submenu, handled separately above. */
+            return TM_KEY_ABORT_CTRLC;
+        }
+        if (k == 8) { /* undo */
+            if (pos->history_ply > 0) unmake_move(pos);
+            tm_redraw_if_display(pos);
+            return TM_KEY_RESTART;
+        }
+        if (k == 9) { /* redo */
+            if (pos->history_ply < g_console_max_history_ply) {
+                make_move(pos, pos->history[pos->history_ply].move);
+            }
+            tm_redraw_if_display(pos);
+            return TM_KEY_RESTART;
+        }
+        if (k == 10) { /* board view */
+            if (tm_board_view(pos) == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+            tm1638_display_string(prompt);
+            continue;
+        }
+        if (k == 12) { /* level select */
+            if (tm_level_select() == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+            tm1638_display_string(prompt);
+            continue;
+        }
+        if (k == 14) { /* options menu */
+            int r = tm_options_menu(pos);
+            if (r == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
+            if (r == TM_KEY_RESTART) return TM_KEY_RESTART;
+            tm1638_display_string(prompt);
+            continue;
+        }
+        if (k < 0 || k > 7) continue; /* 13/15, or -1 timeout */
         if (file < 0) {
             file = k;
         } else {
@@ -882,29 +1189,61 @@ static int tm_read_square(const char *prompt) {
 }
 
 /* Prompts for from/to squares and resolves them against the actual legal
- * move list (defaulting promotions to Queen -- the keypad has no piece
- * picker in this version), retrying on anything that doesn't resolve to a
- * legal move. Returns 0 (otherwise never a real return value here -- a
- * failed match falls through to "bAd MOuE" and retries, it never returns
- * 0 on its own) if the read was aborted (J2's chess_abort_requested()),
- * the sentinel chess_run() below checks for to exit cleanly instead of
- * treating it as an illegal move. */
+ * move list, retrying on anything that doesn't resolve to a legal move.
+ * Prompts for the promoting piece (J2's plan named this as J3's job
+ * specifically -- a keypad-input concern, not outcome-detection) when
+ * from/to only resolves to promotion moves, the same "1n2b3r4q" layout
+ * console.c's own keypad picker uses (:651-677), defaulting to Queen on
+ * an ambiguous or aborted choice rather than blocking on it a second
+ * time. Returns 0 -- otherwise never a real return value here, since a
+ * failed match falls through to "bAd MOuE" and retries -- if the read
+ * was aborted (Ctrl-C or STOP at the top level); the sentinel chess_run()
+ * below checks for to exit cleanly instead of treating it as an illegal
+ * move. */
 static Move tm_read_move(Position *pos) {
     for (;;) {
-        int from = tm_read_square("FrOM    ");
-        if (from == TM_KEY_ABORT) return 0;
-        int to = tm_read_square("tO      ");
-        if (to == TM_KEY_ABORT) return 0;
+        int from = tm_read_square(pos, "FrOM    ");
+        if (from == TM_KEY_ABORT_CTRLC) return 0;
+        if (from == TM_KEY_RESTART) continue;
+        int to = tm_read_square(pos, "tO      ");
+        if (to == TM_KEY_ABORT_CTRLC) return 0;
+        if (to == TM_KEY_RESTART) continue;
 
         MoveList list;
         generate_moves(pos, &list);
+
+        bool only_promo = false;
+        for (int i = 0; i < list.count; i++) {
+            Move m = list.moves[i];
+            if (MOVE_FROM(m) == from && MOVE_TO(m) == to && move_is_promo(m)) {
+                only_promo = true;
+                break;
+            }
+        }
+
+        int promo_piece = NO_PIECE;
+        if (only_promo) {
+            tm1638_display_string("1n2b3r4q");
+            int choice = tm_wait_key();
+            if (choice == TM_KEY_ABORT_CTRLC || choice == TM_KEY_ABORT_STOPKEY) return 0;
+            switch (choice) {
+                case 0: promo_piece = KNIGHT; break;
+                case 1: promo_piece = BISHOP; break;
+                case 2: promo_piece = ROOK; break;
+                default: promo_piece = QUEEN; break; /* 3, or anything unrecognized */
+            }
+        }
+
         Move chosen = 0;
         for (int i = 0; i < list.count; i++) {
             Move m = list.moves[i];
             if (MOVE_FROM(m) != from || MOVE_TO(m) != to) continue;
-            if (move_is_promo(m) && move_promo_piece(m) != QUEEN) continue;
-            chosen = m;
-            break;
+            if (move_is_promo(m)) {
+                if (move_promo_piece(m) == promo_piece) { chosen = m; break; }
+            } else if (!only_promo) {
+                chosen = m;
+                break;
+            }
         }
         if (chosen != 0) {
             return chosen;
@@ -949,6 +1288,9 @@ static bool tm_report_outcome(Position *pos) {
 void chess_run(void) {
     if (!chess_ensure_init()) return;
     parse_fen(&g_chess_pos, STANDARD_START_FEN);
+    g_console_max_history_ply = 0; /* J3: shared with the console REPL's
+                                     * own undo/redo boundary (chess_ui.c:
+                                     * 352), reset fresh for this session. */
 
     tm1638_display_string("LUgAL Ch");
     draw_chess_board(&g_chess_pos);
@@ -980,6 +1322,9 @@ void chess_run(void) {
             time_delay_us(700000);
             continue;
         }
+        g_console_max_history_ply = g_chess_pos.history_ply; /* J3: new
+            move played -- the redo boundary advances, same as J1's own
+            console_execute_move()/console_engine_reply() do. */
         format_move(human, last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
@@ -990,7 +1335,11 @@ void chess_run(void) {
 
         tm1638_display_string("tHInKIng");
         draw_chess_status(&g_chess_pos, last_move_buf, true);
-        Move engine_move = chess_think(&g_chess_pos, 64, 5000);
+        /* J3: the level J1's console REPL and this menu's key-12 level
+         * select both set (g_console_search_level) -- was a hardcoded
+         * 5000ms before this milestone gave chess_run() a level concept
+         * at all. */
+        Move engine_move = chess_think(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
         if (engine_move == 0) {
             /* Defensive only -- tm_report_outcome() above already returned
              * false (ongoing, so a legal reply exists) before this search
@@ -1001,6 +1350,7 @@ void chess_run(void) {
             for (;;) time_delay_us(1000000); /* game over: reset to play again */
         }
         make_move(&g_chess_pos, engine_move);
+        g_console_max_history_ply = g_chess_pos.history_ply;
         format_move(engine_move, last_move_buf);
         tm1638_display_string(last_move_buf);
         draw_chess_board(&g_chess_pos);

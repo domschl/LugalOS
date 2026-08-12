@@ -624,7 +624,72 @@ physical STOP-key half of this (as opposed to Ctrl-C) still needs a human
 at the keypad — unchanged from the note above, and now the only remaining
 piece of this milestone without direct hardware confirmation.
 
-## J3 — TM1638 function keys 8-15
+## J3 — TM1638 function keys 8-15 *(implemented, 2026-08-12 — hardware verification deferred by request)*
+
+Landed close to the design below, one real deviation: 10 upstream options
+became 7 (`tm_option_names[TM_OPTION_COUNT=7]`, `chess_ui.c`) -- "Play
+Black"/"Play White" dropped rather than ported, since upstream's own
+"Play White" handler is just `go` (already covered top-level, no dedicated
+slot needed) and "Play Black" is a no-op in upstream itself (closes the
+menu, sets up nothing). Level select isn't duplicated inside the options
+menu either -- key 12 already reaches it directly, matching what
+upstream's own idx-4 does.
+
+**A real design question resolved along the way, not anticipated when this
+section was first written:** J2 had already made the TM1638 STOP key
+always mean "abort chess_run() entirely" (paired with Ctrl-C, both
+collapsed into one boolean `chess_abort_requested()`). J3's menus need
+STOP to mean something narrower -- "cancel this submenu, back to normal
+play" -- the same as upstream's own key-11 behavior inside `MODE_BOARD_
+VIEW`/`MODE_LEVEL_SELECT`/`MODE_OPTION_MENU`. `chess_abort_requested()`
+now returns a three-value `ChessAbort` enum (`CHESS_ABORT_NONE`/`_CTRLC`/
+`_STOPKEY`) instead of a bool, and `tm_wait_key()` propagates the
+distinction as two separate sentinels. The resolution: Ctrl-C is the
+universal panic button, unconditionally exiting `chess_run()` from
+anywhere, including from inside a submenu; the physical STOP key stays
+context-dependent -- stops a running search (unchanged), exits at the top
+level while simply waiting for a move (J2's already-verified behavior,
+kept exactly as tested rather than reworked into something new and
+untested), but only cancels a submenu back to normal play when pressed
+from inside `tm_board_view()`/`tm_level_select()`/`tm_options_menu()`.
+`search_poll_stop_callback()` doesn't need the distinction (either gesture
+stops a search), so it just checks for anything other than
+`CHESS_ABORT_NONE`, unchanged in effect from before.
+
+Undo/redo (keys 8/9) and a position-changed-under-you signal
+(`TM_KEY_RESTART` -- undo, redo, new-game, and load all produce it) needed
+the same care: `tm_read_square()` gained a `Position *pos` parameter (it
+didn't have one before) specifically so it can perform undo/redo directly
+and so the menu functions it dispatches to can reach `new game`/`load`,
+and `tm_read_move()`'s own `for (;;)` loop already provided exactly the
+right place to `continue` on `TM_KEY_RESTART` -- re-prompt from `FrOM`
+rather than carry on asking for a `to` square against a position that
+just changed underneath the read in progress.
+
+The promotion picker (J2's plan explicitly named this as J3's job, not
+J2's, since it's a keypad-input concern rather than outcome-detection)
+landed inside `tm_read_move()`: the same `"1n2b3r4q"` 4-choice layout
+`console.c` itself uses, shown only when `from`/`to` resolves exclusively
+to promotion moves, defaulting to Queen on `3`, STOP, Ctrl-C, or an
+unrecognized key rather than blocking on a second, more insistent prompt.
+
+**Deferred by explicit request, not an oversight:** hardware verification.
+This entire milestone has no QEMU model to fall back on (TM1638 and the
+menu system it drives are hardware-only, per [[falsify_on_hardware_not_qemu]]
+-- confirmed unaffected by rebuilding/testing rv32/rv64/rp2350 and
+re-running the QEMU suite, 189/189 stable, since none of this code path
+compiles for a non-TM1638 target at all), so this can only be proven live,
+with a human at the physical keypad. The user asked to defer that until
+after this milestone landed, so the whole thing -- J3's new menus and
+keys, plus J2's own still-open items (the TM1638-rendered outcome
+messages, and the physical STOP key specifically as opposed to Ctrl-C) --
+gets verified together in one hardware session rather than piecemeal.
+Verified only by build (all three targets clean) and careful code review
+in place of a live run: the sentinel-propagation chain
+(`tm_wait_key()` -> `tm_read_square()` -> `tm_read_move()`/the menu
+functions -> `chess_run()`) was traced by hand for each of Ctrl-C, STOP at
+the top level, STOP inside each submenu, and `TM_KEY_RESTART` from each of
+undo/redo/new-game/load, rather than assumed correct from having compiled.
 
 Closes [[phase9_chess_followups]] item 2. Wires the four-mode state machine
 `console.c` already designs (`BoardMode` enum, :87-96) around J1/J2's shared
