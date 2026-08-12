@@ -1748,6 +1748,116 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             session.close()
 
 
+def test_chess_uci_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """J5 (plan/phase10_chess_completion.md): proves chess_uci_run() speaks
+    real UCI to an external client over the same virtio-console wire A3's
+    9P test above uses -- QEMU has no USB CDC to back RP2350's dedicated
+    ACM2, so this borrows the single virtconsole link, exactly what
+    chess_uci_run()'s own QEMU branch does (temporarily suspending
+    background 9P on it, kernel/main.c's boot registration). Boots a
+    dedicated QEMU instance with the same virtio-serial chardev A3 uses,
+    fires `(chess-uci)` on the primary console (which blocks -- there is no
+    response to wait for there), then drives a plain raw-byte client (not
+    p9lib -- this is UCI text, not 9P framing) against the chardev socket:
+    uci -> uciok, isready -> readyok, position startpos + go depth 5 ->
+    bestmove, quit -> and confirms the primary console is responsive again
+    afterward (background 9P resumed, chess_session_end() ran)."""
+    import shutil
+    import socket
+    import tempfile
+
+    arch_img = img_path.with_name(f"test_{arch_name}_uci_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    name = "Chess UCI Protocol Over VirtIO-Console Link (J5, external client)"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "uci.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        try:
+            session.start(extra_qemu_args=[
+                "-device", "virtio-serial-device",
+                "-device", "virtconsole,chardev=p9c",
+                "-chardev", f"socket,id=p9c,path={sock_path},server=on,wait=off",
+            ])
+            ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+            if not ok:
+                return (name, False, log)
+
+            # (chess-uci) blocks until 'quit' -- nothing to wait for on the
+            # console, just give chess_uci_run()'s uci_io_open() a moment to
+            # suspend background 9P and arm the read loop before dialing in.
+            if not session.process or not session.process.stdin:
+                return (name, False, "process not running")
+            session.process.stdin.write("(chess-uci)\n")
+            session.process.stdin.flush()
+            time.sleep(1.5)
+
+            client = None
+            last_err = ""
+            for _ in range(20):
+                try:
+                    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    client.settimeout(3.0)
+                    client.connect(sock_path)
+                    break
+                except OSError as e:
+                    last_err = str(e)
+                    client = None
+                    time.sleep(0.2)
+            if client is None:
+                return (name, False, f"could not connect to {sock_path}: {last_err}")
+
+            def recv_until(marker: str, timeout: float = 10.0) -> str:
+                buf = b""
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    try:
+                        chunk = client.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    buf += chunk
+                    if marker.encode() in buf:
+                        break
+                return buf.decode(errors="replace")
+
+            try:
+                client.sendall(b"uci\n")
+                r1 = recv_until("uciok")
+                if "uciok" not in r1:
+                    return (name, False, f"no uciok: {r1!r}")
+
+                client.sendall(b"isready\n")
+                r2 = recv_until("readyok")
+                if "readyok" not in r2:
+                    return (name, False, f"no readyok: {r2!r}")
+
+                client.sendall(b"position startpos\n")
+                client.sendall(b"go depth 5\n")
+                r3 = recv_until("bestmove", timeout=15.0)
+                if "bestmove" not in r3:
+                    return (name, False, f"no bestmove: {r3!r}")
+
+                client.sendall(b"quit\n")
+            finally:
+                client.close()
+
+            # Background 9P resumed and the console shell responsive again
+            # confirms chess_uci_run() actually returned and tore down
+            # cleanly (uci_io_close()/chess_session_end()), not just that
+            # this one exchange happened to work.
+            ok2, log2 = session.send_and_expect("(+ 1 1)", r"=> 2", timeout=8.0)
+            if not ok2:
+                return (name, False, f"console unresponsive after quit: {log2}")
+
+            return (name, True, "")
+        except Exception as e:
+            return (name, False, str(e))
+        finally:
+            session.close()
+
+
 def test_9p_uart_slip_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """A3a: proves the headless UART/SLIP 9P mode (kernel/shell.c's `p9serve`
     command) works over a real wire. Unlike the virtio-console test above,
@@ -2214,6 +2324,7 @@ def main() -> int:
 
         _run_single(test_terminal_crlf(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_chess_uci_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -2233,6 +2344,7 @@ def main() -> int:
 
         _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_chess_uci_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

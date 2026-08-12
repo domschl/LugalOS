@@ -24,6 +24,18 @@ void chess_perft(int max_depth);
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */
 void chess_console_run(void);
 
+/* J5 (plan/phase10_chess_completion.md): the standard UCI protocol loop, no
+ * TM1638/ST7735 coupling. Builds and runs on every target -- RP2350 talks
+ * over its dedicated ACM2/EP6 CDC interface (drivers/usb_cdc.c), QEMU
+ * borrows the single virtio-console link from background 9P for the
+ * session's duration. Returns only on 'quit', deliberately not on Ctrl-C --
+ * unlike chess_console_run() above, this front end runs on a wire separate
+ * from the operator's own console, and checking for Ctrl-C there would mean
+ * silently discarding whatever the operator is typing on that unrelated
+ * console for as long as a session is open (chess_ui.c's uci_read_line()
+ * has the full story). Same "no software escape" shape as p9serve. */
+void chess_uci_run(void);
+
 /* The interactive game: TM1638 for move entry, ST7735 for the board.
  * RP2350 hardware only (CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638).
  * Returns to the shell on Ctrl-C or the TM1638 STOP key (J2) -- prior to
