@@ -180,25 +180,6 @@ static int virtio_console_send(const uint8_t *data, uint32_t len) {
     return (int)len;
 }
 
-/* J5 (plan/phase10_chess_completion.md): raw byte read/write for
- * chess_uci_run() (chess_ui.c) on QEMU, which has no USB CDC hardware at
- * all -- unlike RP2350's dedicated ACM2/EP6 (drivers/usb_cdc.c), this is
- * the same single virtio-console link 9P already uses in the background
- * (DEV_F_BACKGROUND_9P, kernel/board.c's dev_vconsole), so a QEMU UCI test
- * session must suspend that background service first (p9_link_
- * unregister_background()) to avoid both consumers racing over g_rx_ring --
- * chess_uci_run() itself does this. Real hardware deployments don't hit
- * this at all: ACM2 is a dedicated wire, never shared with usbnet's P9. */
-int virtio_console_write_raw(const uint8_t *data, uint32_t len) {
-    return virtio_console_send(data, len);
-}
-
-uint32_t virtio_console_read_raw(uint8_t *buf, uint32_t max) {
-    if (!buf || max == 0) return 0;
-    virtio_console_drain_rx();
-    return ring_pop(&g_rx_ring, buf, max);
-}
-
 /* --- p9_link_t glue --- */
 
 static int link_poll(p9_link_t *link) {

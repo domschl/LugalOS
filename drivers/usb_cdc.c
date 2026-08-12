@@ -88,22 +88,6 @@ static volatile bool g_usb_need_set_addr = false;
 #define USB_EP4_OUT_BUF       (USB_DPRAM_BASE + 0x200)
 #define USB_EP4_IN_BUF        (USB_DPRAM_BASE + 0x240)
 
-#if CONFIG_ENABLE_CHESS
-// EP6 (Bulk, CDC ACM2 "UCI Chess" data interface -> /dev/ttyACM2, J5,
-// plan/phase10_chess_completion.md). Same DPRAM layout rules as EP4 above,
-// continued past it: endpoint-control at 0x08 + (n-1)*8 (n=6 -> 0x30/0x34),
-// buffer-control at 0x80 + n*8 (n=6 -> 0xB0/0xB4), data buffers past EP4's
-// own (which end at 0x280) with no overlap. Unlike EP2/EP4, this pair is
-// never armed at boot -- see usb_cdc_uci_ensure_init() below and this
-// file's own header comment in usb_cdc.h.
-#define USB_EP6_IN_ENDP_CTRL  (USB_DPRAM_BASE + 0x30)
-#define USB_EP6_OUT_ENDP_CTRL (USB_DPRAM_BASE + 0x34)
-#define USB_EP6_IN_BUF_CTRL   (USB_DPRAM_BASE + 0xB0)
-#define USB_EP6_OUT_BUF_CTRL  (USB_DPRAM_BASE + 0xB4)
-#define USB_EP6_OUT_BUF       (USB_DPRAM_BASE + 0x280)
-#define USB_EP6_IN_BUF        (USB_DPRAM_BASE + 0x2C0)
-#endif
-
 #define EP_CTRL_ENABLE            (1u << 31)
 #define EP_CTRL_INTERRUPT_PER_BUF (1u << 29)
 #define EP_CTRL_TYPE_BULK         (2u << 26)
@@ -160,12 +144,8 @@ static const uint8_t g_usb_dev_desc[] = {
 };
 
 static const uint8_t g_usb_cfg_desc[] = {
-    // Configuration Descriptor (Total Length: 141 bytes, 207 with J5's IAD2)
-#if CONFIG_ENABLE_CHESS
-    9, 2, 207, 0, 6, 1, 0, 0xC0, 50,
-#else
+    // Configuration Descriptor (Total Length: 141 bytes)
     9, 2, 141, 0, 4, 1, 0, 0xC0, 50,
-#endif
 
     // IAD 0 (CDC ACM 0 - Console /dev/ttyACM0)
     8, 11, 0, 2, 2, 2, 1, 0,
@@ -209,36 +189,7 @@ static const uint8_t g_usb_cfg_desc[] = {
     // Endpoint 4 OUT (Bulk)
     7, 5, 0x04, 2, 64, 0, 0,
     // Endpoint 4 IN (Bulk)
-    7, 5, 0x84, 2, 64, 0, 0,
-
-#if CONFIG_ENABLE_CHESS
-    // IAD 2 (CDC ACM 2 - UCI Chess /dev/ttyACM2, J5) -- always advertised
-    // when CONFIG_ENABLE_CHESS is on (USB descriptors can't be added later
-    // without a full re-enumeration), but EP6's hardware stays unconfigured
-    // until usb_cdc_uci_ensure_init() runs -- see usb_cdc.h.
-    8, 11, 4, 2, 2, 2, 1, 0,
-    // Interface 4 (CDC Control)
-    9, 4, 4, 0, 1, 2, 2, 1, 0,
-    // Header Functional Desc
-    5, 36, 0, 0x10, 0x01,
-    // ACM Functional Desc
-    4, 36, 2, 2,
-    // Union Functional Desc
-    5, 36, 6, 4, 5,
-    // Call Management Desc
-    5, 36, 1, 0, 5,
-    // Endpoint 5 IN (Interrupt) -- declared, never serviced, same as
-    // Endpoints 1 and 3 above (this driver's minimal CDC-ACM notification
-    // channel, tolerated by every host tested so far).
-    7, 5, 0x85, 3, 16, 0, 16,
-
-    // Interface 5 (CDC Data)
-    9, 4, 5, 0, 2, 10, 0, 0, 0,
-    // Endpoint 6 OUT (Bulk)
-    7, 5, 0x06, 2, 64, 0, 0,
-    // Endpoint 6 IN (Bulk)
-    7, 5, 0x86, 2, 64, 0, 0,
-#endif
+    7, 5, 0x84, 2, 64, 0, 0
 };
 
 static const uint8_t g_usb_str_lang[] = { 4, 3, 0x09, 0x04 };
@@ -488,78 +439,6 @@ static void ep4_tx_pump(void) {
     ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_IN_BUF_CTRL, ctrl);
 }
 
-#if CONFIG_ENABLE_CHESS
-// EP6 (ACM2 "UCI Chess", J5): same byte-ring shape as EP4 above, but never
-// configured at boot -- g_ep6_wanted stays false until usb_cdc_uci_ensure_
-// init() sets it, at which point ep6_configure() below runs immediately for
-// the current session *and* SET_CONFIGURATION (usb_cdc_task() below) starts
-// re-running it on every future bus reset/reconnect, the same resilience
-// EP2/EP4 get automatically by always being configured. UCI is a plain-text
-// line protocol, not 9P's 4-byte length-prefixed framing, so no
-// P9_MAX_MSIZE-driven sizing here -- 4 KB each way is generous for a UCI
-// session's longest realistic line (a deep "position ... moves ..." string).
-#define USB_EP6_TX_RING_SIZE 4096
-#define USB_EP6_RX_RING_SIZE 4096
-
-static volatile uint8_t g_ep6_tx_ring[USB_EP6_TX_RING_SIZE];
-static volatile uint32_t g_ep6_tx_head = 0;
-static volatile uint32_t g_ep6_tx_tail = 0;
-static volatile bool g_ep6_tx_busy = false;
-static volatile bool g_ep6_tx_pid = false; // DATA0 first, per USB 2.0 8.6
-
-static volatile uint8_t g_ep6_rx_ring[USB_EP6_RX_RING_SIZE];
-static volatile uint32_t g_ep6_rx_head = 0;
-static volatile uint32_t g_ep6_rx_tail = 0;
-static volatile uint32_t g_ep6_rx_count = 0;
-static volatile bool g_ep6_rx_pid = false; // DATA0 first
-
-static volatile bool g_ep6_configured = false;
-static volatile bool g_ep6_wanted = false; // set once, by usb_cdc_uci_ensure_init()
-
-static void ep6_configure(void) {
-    REG(USB_EP6_IN_BUF_CTRL)  = 0;
-    REG(USB_EP6_OUT_BUF_CTRL) = 0;
-
-    REG(USB_EP6_IN_ENDP_CTRL)  = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
-                                | (uint32_t)(USB_EP6_IN_BUF - USB_DPRAM_BASE);
-    REG(USB_EP6_OUT_ENDP_CTRL) = EP_CTRL_ENABLE | EP_CTRL_INTERRUPT_PER_BUF | EP_CTRL_TYPE_BULK
-                                | (uint32_t)(USB_EP6_OUT_BUF - USB_DPRAM_BASE);
-
-    g_ep6_tx_head = g_ep6_tx_tail = 0;
-    g_ep6_rx_head = g_ep6_rx_tail = g_ep6_rx_count = 0;
-    g_ep6_tx_busy = false;
-    g_ep6_tx_pid = false;
-    g_ep6_rx_pid = false;
-
-    // Arm EP6 OUT to receive the host's first packet (AVAIL | DATA0 | 64 max)
-    ep_buf_ctrl_write((volatile uint32_t *)USB_EP6_OUT_BUF_CTRL, (1u << 10) | 64);
-
-    g_ep6_configured = true;
-    printk_debug("[USB] EP6 Bulk UCI Endpoint Configured (Interface 5)\n");
-}
-
-// Copy any buffered TX bytes into an EP6 IN packet if the endpoint is free.
-static void ep6_tx_pump(void) {
-    if (!g_ep6_configured || g_ep6_tx_busy || g_ep6_tx_head == g_ep6_tx_tail) {
-        return;
-    }
-
-    volatile uint8_t *txbuf = (volatile uint8_t *)USB_EP6_IN_BUF;
-    uint32_t n = 0;
-    while (n < 64 && g_ep6_tx_tail != g_ep6_tx_head) {
-        txbuf[n++] = g_ep6_tx_ring[g_ep6_tx_tail];
-        g_ep6_tx_tail = (g_ep6_tx_tail + 1) % USB_EP6_TX_RING_SIZE;
-    }
-
-    uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10) | n; // FULL | LAST_BUFF | AVAIL | len
-    if (g_ep6_tx_pid) ctrl |= (1u << 13); // DATA1_PID
-    g_ep6_tx_pid = !g_ep6_tx_pid;
-    g_ep6_tx_busy = true;
-
-    ep_buf_ctrl_write((volatile uint32_t *)USB_EP6_IN_BUF_CTRL, ctrl);
-}
-#endif /* CONFIG_ENABLE_CHESS */
-
 void usb_cdc_task(void) {
     if (!g_usb_cdc_connected) return;
 
@@ -632,23 +511,6 @@ void usb_cdc_task(void) {
             g_ep4_tx_busy = false;
             g_ep4_tx_pid = false;
             g_ep4_rx_pid = false;
-#if CONFIG_ENABLE_CHESS
-            // Same reasoning for EP6 (ACM2 UCI endpoint, J5) -- guarded on
-            // g_ep6_wanted since, unlike EP2/EP4, this pair may never have
-            // been armed in the first place (usb_cdc_uci_ensure_init() not
-            // yet called); tearing down registers that were never
-            // configured would be harmless but pointless.
-            if (g_ep6_wanted) {
-                g_ep6_configured = false;
-                REG(USB_EP6_IN_BUF_CTRL)  = 0;
-                REG(USB_EP6_OUT_BUF_CTRL) = 0;
-                g_ep6_tx_head = g_ep6_tx_tail = 0;
-                g_ep6_rx_head = g_ep6_rx_tail = g_ep6_rx_count = 0;
-                g_ep6_tx_busy = false;
-                g_ep6_tx_pid = false;
-                g_ep6_rx_pid = false;
-            }
-#endif
             printk_debug("[USB] Bus Reset Detected\n");
             bus_reset_handled = true;
         }
@@ -718,35 +580,10 @@ void usb_cdc_task(void) {
             if (g_ep4_rx_pid) rearm4 |= (1u << 13); // DATA1_PID
             ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_OUT_BUF_CTRL, rearm4);
         }
-#if CONFIG_ENABLE_CHESS
-        if (buf_status & (1u << 12)) { // EP6 IN complete
-            g_ep6_tx_busy = false;
-        }
-        if (buf_status & (1u << 13)) { // EP6 OUT complete: data arrived from host
-            uint32_t ctrl = REG(USB_EP6_OUT_BUF_CTRL);
-            uint32_t len = ctrl & 0x3FFu;
-            volatile uint8_t *rxbuf = (volatile uint8_t *)USB_EP6_OUT_BUF;
-            for (uint32_t i = 0; i < len; i++) {
-                uint32_t next = (g_ep6_rx_head + 1) % USB_EP6_RX_RING_SIZE;
-                if (next != g_ep6_rx_tail) { // drop byte if the ring is full
-                    g_ep6_rx_ring[g_ep6_rx_head] = rxbuf[i];
-                    g_ep6_rx_head = next;
-                    g_ep6_rx_count++;
-                }
-            }
-            g_ep6_rx_pid = !g_ep6_rx_pid;
-            uint32_t rearm6 = (1u << 10) | 64; // AVAIL | 64 max
-            if (g_ep6_rx_pid) rearm6 |= (1u << 13); // DATA1_PID
-            ep_buf_ctrl_write((volatile uint32_t *)USB_EP6_OUT_BUF_CTRL, rearm6);
-        }
-#endif
     }
 
     ep2_tx_pump();
     ep4_tx_pump();
-#if CONFIG_ENABLE_CHESS
-    ep6_tx_pump();
-#endif
 
     // Continue a multi-packet EP0 IN transfer (e.g. the 141-byte config
     // descriptor) once the host has ACKed the chunk just sent. ACK_REC
@@ -828,16 +665,6 @@ void usb_cdc_task(void) {
                     if (value != 0) {
                         ep2_configure();
                         ep4_configure();
-#if CONFIG_ENABLE_CHESS
-                        // Only re-arm EP6 if UCI has actually been used this
-                        // boot (g_ep6_wanted) -- otherwise this port stays
-                        // silent, matching usb_cdc_uci_ensure_init()'s "not
-                        // active by default" contract even across a bus
-                        // reset that happens before chess-uci ever runs.
-                        if (g_ep6_wanted) {
-                            ep6_configure();
-                        }
-#endif
                     }
                     break;
                 default:
@@ -1085,70 +912,6 @@ static p9_link_t g_ep4_link = {
 p9_link_t *usb_cdc_get_net_link(void) {
     return g_usb_cdc_connected ? &g_ep4_link : NULL;
 }
-
-#if CONFIG_ENABLE_CHESS
-/* --- J5 (plan/phase10_chess_completion.md): raw byte read/write over
- * EP6/ACM2, for chess_uci_run() (chess_ui.c). Not framed like ep4_link_*
- * above -- UCI is a plain-text line protocol read by chess_ui.c itself, so
- * these hand back whatever bytes are available rather than a whole message
- * at a time. */
-
-/* Idempotent, like search_pools_init() (chess_ui.c) -- safe to call every
- * time chess_uci_run() starts a session. First call arms EP6's hardware
- * immediately for *this* boot; g_ep6_wanted also makes every later bus
- * reset (a host sleep/wake, a cable replug) re-arm it automatically via
- * SET_CONFIGURATION above, the same resilience EP2/EP4 get by always being
- * configured from boot. */
-void usb_cdc_uci_ensure_init(void) {
-    g_ep6_wanted = true;
-    if (!g_ep6_configured) {
-        ep6_configure();
-    }
-}
-
-bool usb_cdc_uci_has_char(void) {
-    return g_ep6_configured && g_ep6_rx_count > 0;
-}
-
-/* Non-blocking: pops up to `max` bytes already buffered, returns how many
- * (0 if none or not yet configured). Mirrors ep4_rx_peek()/pop() below but
- * public and single-call (chess_uci_run()'s line reader wants "give me
- * what's there now", not a peek-then-commit split -- nothing here needs to
- * inspect a length header before consuming, unlike 9P's framing). */
-uint32_t usb_cdc_uci_read(uint8_t *buf, uint32_t max) {
-    if (!buf || max == 0 || !g_ep6_configured) return 0;
-    uint32_t n = max < g_ep6_rx_count ? max : g_ep6_rx_count;
-    for (uint32_t i = 0; i < n; i++) {
-        buf[i] = g_ep6_rx_ring[g_ep6_rx_tail];
-        g_ep6_rx_tail = (g_ep6_rx_tail + 1) % USB_EP6_RX_RING_SIZE;
-    }
-    g_ep6_rx_count -= n;
-    return n;
-}
-
-/* Blocking, like ep4_link_send_frame() above: queues the whole buffer
- * (pumping usb_cdc_task() if the ring is briefly full) and waits for it to
- * fully drain over the wire before returning, so chess_uci_run() can reuse
- * its line buffer immediately afterward. */
-int usb_cdc_uci_write(const uint8_t *buf, uint32_t len) {
-    if (!g_ep6_configured || !buf || len == 0) return -1;
-
-    uint32_t sent = 0;
-    while (sent < len) {
-        uint32_t next = (g_ep6_tx_head + 1) % USB_EP6_TX_RING_SIZE;
-        if (next == g_ep6_tx_tail) {
-            usb_cdc_task();
-            continue;
-        }
-        g_ep6_tx_ring[g_ep6_tx_head] = buf[sent++];
-        g_ep6_tx_head = next;
-    }
-    while (g_ep6_tx_head != g_ep6_tx_tail || g_ep6_tx_busy) {
-        usb_cdc_task();
-    }
-    return (int)len;
-}
-#endif /* CONFIG_ENABLE_CHESS */
 
 void usb_cdc_debug_dump(void) {
 #if defined(CONFIG_BOARD_RP2350)

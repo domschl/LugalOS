@@ -429,20 +429,6 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `(chess-uci)` (J5, plan/phase10_chess_completion.md): the standard UCI
- * protocol loop -- not active by default (RP2350's ACM2 endpoint stays
- * unconfigured until this runs, drivers/usb_cdc.h's own header comment).
- * Typically invoked from /sd0/system/etc/usr_init.lisp for a dedicated
- * UCI-over-USB persona, the same way `chess` already is for a dedicated
- * TM1638/TFT chess computer -- "chess is just one specific application"
- * is why this needs an explicit call rather than being boot-time
- * infrastructure. */
-static lisp_val_t *prim_chess_uci(lisp_val_t *args, lisp_val_t *env) {
-    (void)args; (void)env;
-    chess_uci_run(); /* returns on 'quit' only -- see chess_ui.h's own comment */
-    return &true_val;
-}
-
 /* `chess` (J0/J1, plan/phase10_chess_completion.md): the by-default,
  * always-discoverable entry point the user's own proposal names --
  * dispatches to chess_run() where the hardware for it exists (same as
@@ -1319,7 +1305,6 @@ void lisp_init(void) {
     env_set(&global_env, "chess-run", make_prim(prim_chess_run));
 #endif
     env_set(&global_env, "chess-console", make_prim(prim_chess_console));
-    env_set(&global_env, "chess-uci", make_prim(prim_chess_uci));
     env_set(&global_env, "chess", make_prim(prim_chess));
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));

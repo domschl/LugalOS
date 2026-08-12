@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "fs/p9_link.h"
-#include "lugalos_config.h"
 
 void usb_cdc_init(void);
 void usb_cdc_task(void);
@@ -30,25 +29,5 @@ int usb_cdc_read_net(uint8_t *buf, size_t max_len);
 // SLIP. Returns NULL when this isn't the RP2350 hardware target (no second
 // CDC interface exists to back it).
 p9_link_t *usb_cdc_get_net_link(void);
-
-/* UCI Chess CDC Port (/dev/ttyACM2), J5 (plan/phase10_chess_completion.md).
- * Unlike ACM0 (always the console) and ACM1 (always P9), this endpoint's
- * USB descriptor is always present when CONFIG_ENABLE_CHESS is compiled in
- * (a host always enumerates the third port -- there is no way to make an
- * interface not-exist-until-later without forcing a full USB re-enumeration,
- * which this driver deliberately does not do), but its hardware is left
- * completely unconfigured -- unresponsive, nothing read or written -- until
- * usb_cdc_uci_ensure_init() runs. That only happens from chess_uci_run()
- * (chess_ui.c), itself only reachable via the `chess-uci` Lisp primitive, so
- * nothing on this port is active unless a user (typically usr_init.lisp)
- * explicitly asks for it. "Chess is just one specific application" (the
- * user's own framing) is why this lives under CONFIG_ENABLE_CHESS rather
- * than being board-level infrastructure like usbcon/usbnet in kernel/board.c. */
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_CHESS
-void usb_cdc_uci_ensure_init(void);
-bool usb_cdc_uci_has_char(void);
-uint32_t usb_cdc_uci_read(uint8_t *buf, uint32_t max);
-int usb_cdc_uci_write(const uint8_t *buf, uint32_t len);
-#endif
 
 #endif // DRIVERS_USB_CDC_H
