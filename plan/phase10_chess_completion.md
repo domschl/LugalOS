@@ -928,6 +928,18 @@ heap-stateless contract intact without needing to know about the pool at
 all. Re-verified 191/191 QEMU after the fix (same node counts, so
 correctness is unaffected — this was purely a stack-footprint fix).
 
+Ownership of that pool is documented, not enforced: `run_perft()` is a
+public function that lazily allocates the pool on first call but only
+`run_perft_tests_depth()` ever frees it. No other caller exists today, so
+this isn't a live leak, but a direct call to `run_perft()` outside that
+path would leave the pool allocated with nothing to free it. Noted at the
+declaration in `perft.h` rather than enforced with a refcount — the same
+ownership shape `search.c`'s own pool already has (owned by whoever calls
+`search_pools_init()`/`_free()`, not by every leaf function touching it).
+
+**J4 is now fully closed** — implementation, the stack-footprint fix, and
+this ownership note, all 2026-08-12.
+
 ## J5 — UCI-over-UART bridge (stretch; standard UCI only)
 
 The user's own simplification — drop `console.c`'s hacked-in bidirectional
