@@ -10,6 +10,21 @@ static uint64_t g_base_rtc_ms = 0;
 #define TIMER0_BASE      0x400B0000UL
 #define TIMER0_TIMEHR    (*(volatile uint32_t *)(TIMER0_BASE + 0x08))
 #define TIMER0_TIMELR    (*(volatile uint32_t *)(TIMER0_BASE + 0x0C))
+#elif !defined(CONFIG_MODE_S)
+/* QEMU RV32 (M-mode): the same CLINT kernel/ticker.c already reads for its
+ * preemption deadline, at the same documented 10 MHz virt-machine rate
+ * (ticker.c's own TICK_HZ). Found and fixed 2026-08-12
+ * (plan/phase10_chess_completion.md J0): this branch used to be a bare call
+ * counter (`++g_soft_us * 100`), entirely decoupled from real elapsed time
+ * -- every read advanced it by a fixed 100 "microseconds" regardless of how
+ * much wall-clock time had actually passed, so any caller measuring a time
+ * budget against it (chess's iterative-deepening search, `check_up_time()`)
+ * was really measuring "how many times has this been polled", not time.
+ * Harmless for callers that only care about relative ordering, but a search
+ * time budget silently became a *node-count* budget instead, which is easy
+ * to miss until something runs far longer than its stated time limit. */
+#define CLINT_BASE     0x02000000UL
+#define CLINT_MTIME    (*(volatile uint64_t *)(CLINT_BASE + 0xBFF8))
 #endif
 
 static inline uint64_t read_hardware_counter_us(void) {
@@ -20,9 +35,18 @@ static inline uint64_t read_hardware_counter_us(void) {
         lo = TIMER0_TIMELR;
     } while (hi != TIMER0_TIMEHR);
     return ((uint64_t)hi << 32) | lo;
+#elif !defined(CONFIG_MODE_S)
+    return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */
 #else
-    static volatile uint64_t g_soft_us = 0;
-    return ++g_soft_us * 100;
+    /* QEMU RV64 (S-mode) and K210 (S-mode, no board file yet -- same bucket
+     * ticker.c already puts it in): the Sstc `rdtime` pseudo-instruction
+     * reads the `time` CSR directly, which is what S-mode gets instead of
+     * the CLINT's raw MMIO (M-mode-only on most cores). Same 10 MHz virt
+     * rate on QEMU as the CLINT branch above -- ticker.c's own comment notes
+     * this is "the same virt machine clock, read via rdtime". */
+    uint64_t t;
+    __asm__ __volatile__("rdtime %0" : "=r"(t));
+    return t / 10;
 #endif
 }
 

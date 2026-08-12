@@ -51,12 +51,25 @@ static Move g_search_best_move = 0;
 static int g_search_score = 0;
 static int g_search_depth = 0;
 
-static void chess_ensure_init(void) {
-    if (g_chess_ready) return;
+/* Returns false only if search_pools_init() (J0,
+ * plan/phase10_chess_completion.md) hits genuine page-allocator exhaustion
+ * -- everything else here (bitboards/zobrist tables, the transposition
+ * table) is either a fixed small cost or already tolerates its own failure
+ * internally (init_tt() degrades to "no TT" rather than crashing if it
+ * can't allocate). The move-list pools have no such degraded mode -- the
+ * search recurses through them unconditionally -- so this is the one
+ * failure callers must actually check. */
+static bool chess_ensure_init(void) {
+    if (g_chess_ready) return true;
     init_bitboards();
     init_zobrist();
     init_tt(0);
+    if (!search_pools_init()) {
+        cprintf("chess: out of memory (search move-list pools)\n");
+        return false;
+    }
     g_chess_ready = true;
+    return true;
 }
 
 /* search.c calls both of these (`extern void ...` at each call site) but
@@ -116,7 +129,7 @@ static Move chess_think(Position *pos, int time_limit_ms) {
 }
 
 void chess_selftest(void) {
-    chess_ensure_init();
+    if (!chess_ensure_init()) return;
     /* A midgame position, well outside the opening book, so this exercises
      * the real iterative-deepening search (pv_search/quiescence/evaluate/tt)
      * rather than the book-move shortcut. get_book_move() (search.c,
@@ -309,7 +322,7 @@ static Move tm_read_move(Position *pos) {
 
 #if CONFIG_ENABLE_DISPLAY
 void chess_run(void) {
-    chess_ensure_init();
+    if (!chess_ensure_init()) return;
     parse_fen(&g_chess_pos, STANDARD_START_FEN);
 
     tm1638_display_string("LUgAL Ch");

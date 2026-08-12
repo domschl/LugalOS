@@ -861,14 +861,24 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
 
     That 78-page baseline dropped to 48 with phase9 H4 (chess): search.c's
     per-ply move-list pools (search_pv_movelists/search_q_movelists, ~65 KB)
-    are still plain `static` arrays, not heap-on-demand -- unlike cc/ed, they
+    were plain `static` arrays, not heap-on-demand -- unlike cc/ed, they
     weren't converted, so they cost real, permanent .bss on every board that
     builds with LUGALOS_ENABLE_CHESS=ON (the default), whether or not chess
-    ever runs. A real candidate for a follow-up applying the same
-    heap-on-demand treatment cc/ed already got; out of scope for landing the
-    engine itself. The threshold below moved with it -- pick a number with
-    margin below the actual measured value, not the value itself, so a real
-    future regression still trips this.
+    ever runs.
+
+    J0 (plan/phase10_chess_completion.md) converted them to
+    `palloc_pages()`-on-demand, allocated once on first `chess`/`chess-run`/
+    `chess-selftest` call and never freed for the process lifetime (unlike
+    cc/ed's acquire-per-use, since chess has no natural "done" boundary) --
+    matching the same treatment cc/ed already got. This should raise the
+    idle-heap page count measured here back up towards the pre-H4 78-page
+    baseline, but the exact new number hasn't been re-measured on real
+    silicon (this file's own tests only run against physical hardware, which
+    the session that wrote this comment didn't have attached) -- the `>= 45`
+    threshold below is left as a safe, still-true lower bound rather than
+    guessed at, but it is no longer tight. Tighten it (e.g. towards the
+    high-60s/70s) once someone re-runs this on the actual board and reads
+    the real idle figure back from /proc/meminfo.
 
     Worth checking here rather than only on QEMU for the obvious reason: the
     QEMU targets have a 16 MB heap, so an arena that is never released is

@@ -19,6 +19,17 @@
  * defines its own in user/chess/src/chess_ui.c. This is the exact extension
  * point that made dropping console.c/uci.c possible without touching a
  * single line of search logic.
+ *   - search_pv_movelists/search_q_movelists (~65 KB combined) were plain
+ *     `static` arrays until J0 (plan/phase10_chess_completion.md): permanent
+ *     .bss on every board with chess enabled (the default), whether or not
+ *     it was ever played -- dropped RP2350's managed heap from 78 to 48
+ *     pages (H4's own finding, phase9). search_pools_init() now allocates
+ *     them from palloc_pages() on first use instead, matching cc/ed's own
+ *     on-demand-pool precedent (phase8) rather than reinventing a different
+ *     lifetime policy. Every existing `search_pv_movelists[i]` /
+ *     `search_q_movelists[i]` access below is unchanged -- pointer indexing
+ *     reads identically to array indexing in C, so this is a declaration-only
+ *     change plus the init call.
  */
 
 #include "search.h"
@@ -29,6 +40,7 @@
 #include "evaluation.h"
 #include "tt.h"
 #include "kernel/time.h"
+#include "kernel/palloc.h"
 
 // Global search variables
 int max_search_depth = 64;
@@ -96,9 +108,35 @@ static const BookEntry book_entries[] = {
 
 #define MAX_SEARCH_PLYS 64
 
-static MoveList search_pv_movelists[MAX_SEARCH_PLYS];
-static MoveList search_q_movelists[MAX_SEARCH_PLYS];
+/* Allocated on demand by search_pools_init() (J0) rather than reserved
+ * statically -- see the file header comment above. NULL until then; every
+ * caller of search_position()/get_book_move() is required to have already
+ * called search_pools_init() successfully (chess_ui.c's chess_ensure_init()
+ * does, before any search can run), so no per-access NULL check is added to
+ * the hot recursive path below. */
+static MoveList *search_pv_movelists = NULL;
+static MoveList *search_q_movelists = NULL;
 static int sort_scores[MAX_MOVES];
+
+bool search_pools_init(void) {
+    if (search_pv_movelists != NULL) {
+        return true; /* already allocated -- idempotent, like init_tt(). */
+    }
+
+    uint32_t bytes = (uint32_t)(2 * MAX_SEARCH_PLYS * sizeof(MoveList));
+    uint32_t pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    MoveList *block = (MoveList *)palloc_pages(pages);
+    if (block == NULL) {
+        return false;
+    }
+
+    /* One allocation, not two -- halves the page-rounding waste a pair of
+     * palloc_pages() calls would each pay separately (chibicc's pools.c
+     * arena makes the same call for the same reason). */
+    search_pv_movelists = block;
+    search_q_movelists = block + MAX_SEARCH_PLYS;
+    return true;
+}
 
 __attribute__((noinline))
 static bool match_book_prefix(const char *line_ptr, const char *history_ptr, int history_len) {
@@ -689,7 +727,16 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
         long time_spent = now_ms - start_search_time_ms;
         long last_iter_time_ms = now_ms - iter_start_time_ms;
 
-        long nps = time_spent > 0 ? (nodes_searched * 1000) / time_spent : 0;
+        /* Found live while smoke-testing J0 (plan/phase10_chess_completion.md),
+         * not caused by it: on a 32-bit `long` target (rv32/RP2350's ILP32,
+         * not rv64's LP64), `nodes_searched * 1000` overflows a signed 32-bit
+         * int once nodes_searched passes ~2.1M -- reached mid-search on real
+         * hardware isn't a risk (H4 measured ~44K nodes/s there), but QEMU's
+         * host-speed emulation (H4's own ~19.8M nodes/s figure) crosses it
+         * within a couple of iterative-deepening iterations, and did, with
+         * UBSAN_PANIC halting the system. The 64-bit intermediate avoids it;
+         * the result narrows back to `long` for the unchanged `%ld` below. */
+        long nps = time_spent > 0 ? (long)(((int64_t)nodes_searched * 1000) / time_spent) : 0;
 
         // Print UCI info block with proper mate score formatting
         if (completed_best_score >= MATE_VALUE - 1000) {

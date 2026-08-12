@@ -1,6 +1,8 @@
 /*
- * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/search.h),
- * H4, plan/phase9_chess_computer.md.
+ * Vendored from ~/gith/domschl/LugalChess (engine/include/search.h), H4,
+ * plan/phase9_chess_computer.md. search_pools_init() is a LugalOS-only
+ * addition, J0 (plan/phase10_chess_completion.md) -- see search.c's header
+ * comment.
  */
 
 #ifndef SEARCH_H
@@ -18,6 +20,13 @@ extern long max_search_time_ms;
 extern long start_search_time_ms;
 extern bool stop_search;
 extern long nodes_searched;
+
+/* Allocates the PV/quiescence move-list scratch space from the page
+ * allocator on first call; a no-op returning true on every call after the
+ * first. Must be called (and must succeed) before search_position() or
+ * get_book_move() run -- chess_ui.c's chess_ensure_init() is the one call
+ * site. Returns false only on genuine page-allocator exhaustion. */
+bool search_pools_init(void);
 
 void search_position(Position *pos, int depth, int time_limit_ms);
 int quiescence(Position *pos, int ply, int alpha, int beta);
