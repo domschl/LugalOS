@@ -404,14 +404,28 @@ static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
 }
 #endif
 
+/* Found live to matter, not just theoretical: `chess` below dispatches
+ * to chess_run() unconditionally at *compile* time on a board with both
+ * TM1638 and DISPLAY -- there was no way at all to reach the console
+ * REPL there, even though chess_console_run() itself has no hardware
+ * dependency and builds on every target (chess_ui.h's own comment). This
+ * gives it a always-available name of its own, the same shape as
+ * `chess-run`/`chess-selftest` below `chess` itself. */
+static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    chess_console_run(); /* returns on 'quit' */
+    return &true_val;
+}
+
 /* `chess` (J0/J1, plan/phase10_chess_completion.md): the by-default,
  * always-discoverable entry point the user's own proposal names --
  * dispatches to chess_run() where the hardware for it exists (same as
  * `chess-run` above), otherwise to J1's text console REPL
  * (chess_console_run(), chess_ui.c) rather than chess-selftest's
  * fixed-position benchmark, which is not "playing chess" and would be a
- * misleading stand-in. chess-run/chess-selftest keep working as the
- * lower-level names either way. */
+ * misleading stand-in. chess-run/chess-console/chess-selftest keep
+ * working as the lower-level, hardware-independent-of-choice names
+ * either way. */
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
@@ -1277,6 +1291,7 @@ void lisp_init(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
     env_set(&global_env, "chess-run", make_prim(prim_chess_run));
 #endif
+    env_set(&global_env, "chess-console", make_prim(prim_chess_console));
     env_set(&global_env, "chess", make_prim(prim_chess));
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));
