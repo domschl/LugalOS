@@ -51,6 +51,7 @@
 
 ### Extensions
 
+- True allocator (malloc(), free()), not primarily for programs that use extensive dynamic allocation (with all the defragmentation issues arising from that), but to allow specific, overhead-free, allocation of state. 
 - Multi-core support
 - database server (sqlite, possible?)
 
