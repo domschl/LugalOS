@@ -74,5 +74,19 @@
 
 (display "[Init] LugalOS Lisp System Initialized successfully!\n")
 
-;; 6. Launch interactive Lugal Console Shell
-(lsh)
+;; 6. Launch interactive Lugal Console Shell -- unless a board-specific
+;;    override exists (found by request, 2026-08-12): if /sd0/system/
+;;    etc/usr_init.lisp is present, run it instead. Lets a board's boot
+;;    persona (e.g. straight into (chess) for a dedicated chess
+;;    computer, rather than the interactive shell -- to kick that off
+;;    without editing this file) be customized from a single file on
+;;    /sd0, without ever touching the flash image. Checked with
+;;    (read-file ...) first rather than calling (load ...) directly,
+;;    since load prints "cannot open file" on a miss -- expected and
+;;    silent here on every board that doesn't have one, not an error.
+;;    usr_init.lisp is expected to end with whatever persona it wants --
+;;    (chess), (lsh), or anything else -- since nothing runs after this
+;;    line either way.
+(if (not (= (read-file "/sd0/system/etc/usr_init.lisp") ""))
+    (load "/sd0/system/etc/usr_init.lisp")
+    (lsh))
