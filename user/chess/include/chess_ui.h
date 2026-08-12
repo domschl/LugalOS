@@ -13,6 +13,11 @@
  * every target, including QEMU. */
 void chess_selftest(void);
 
+/* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
+ * scenario 1.1, no hardware dependency. Builds and runs on every target.
+ * Does return, on 'quit', unlike chess_run() below. */
+void chess_console_run(void);
+
 /* The interactive game: TM1638 for move entry, ST7735 for the board.
  * RP2350 hardware only (CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638).
  * Does not return -- reset the board to exit, the same shape as p9serve. */

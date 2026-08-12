@@ -759,6 +759,33 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             cmd_lisp_cc, r"Hello from LugalOS(.|\n)*returned 0", timeout=5.0)
         results.append(("Lisp Compiler & Binary Exec Primitives (cc, exec)", ok, log if not ok else ""))
 
+        # 10b. Chess console REPL (J1, plan/phase10_chess_completion.md).
+        # `(chess)` on a QEMU target (no display/TM1638) dispatches to
+        # chess_console_run() -- the first automated test to exercise chess
+        # beyond a single fixed chess-selftest search (phase9 H4 added zero
+        # QEMU coverage for anything else). `level 1` first keeps `e2e4`'s
+        # auto engine-reply search (the only one this sequence triggers) to
+        # a 1-second budget rather than the 2-second default. Exercises the
+        # full command surface in one pass: new/level/a move (which triggers
+        # the engine reply)/board/eval/moves/undo/redo/fen/save/load/quit.
+        cmd_chess = (
+            "(chess)\n"
+            "new\n"
+            "level 1\n"
+            "e2e4\n"
+            "board\n"
+            "eval\n"
+            "moves\n"
+            "undo\n"
+            "redo\n"
+            "fen\n"
+            "save\n"
+            "load\n"
+            "quit"
+        )
+        ok, log = session.send_and_expect(cmd_chess, r"Position loaded from", timeout=15.0)
+        results.append(("Chess Console REPL: new/move+engine-reply/board/eval/moves/undo/redo/fen/save/load (J1)", ok, log if not ok else ""))
+
         # 11. Phase 3: Persistent History Logging (/sd0/system/history.lisp)
         cmd_hist_check = "cat /sd0/system/history.lisp"
         ok, log = session.send_and_expect(cmd_hist_check, r"history", timeout=4.0)

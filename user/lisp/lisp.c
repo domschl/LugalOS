@@ -395,24 +395,20 @@ static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
 }
 #endif
 
-/* `chess` (J0, plan/phase10_chess_completion.md): the by-default, always-
- * discoverable entry point the user's own proposal names -- dispatches to
- * chess_run() where the hardware for it exists, same as `chess-run` above.
- * There is deliberately no terminal-only fallback here yet: J1 is what adds
- * a text console REPL (chess_console_run(), not yet written), so on a board
- * without display+TM1638 this says so rather than silently substituting
- * chess-selftest's fixed-position benchmark, which is not "playing chess"
- * and would be a misleading stand-in. Swap the #else branch for a
- * chess_console_run() call once J1 lands; chess-run/chess-selftest keep
- * working as the lower-level names either way. */
+/* `chess` (J0/J1, plan/phase10_chess_completion.md): the by-default,
+ * always-discoverable entry point the user's own proposal names --
+ * dispatches to chess_run() where the hardware for it exists (same as
+ * `chess-run` above), otherwise to J1's text console REPL
+ * (chess_console_run(), chess_ui.c) rather than chess-selftest's
+ * fixed-position benchmark, which is not "playing chess" and would be a
+ * misleading stand-in. chess-run/chess-selftest keep working as the
+ * lower-level names either way. */
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
     chess_run(); /* does not return -- reset the board to exit */
 #else
-    cprintf("chess: no text console play yet (plan/phase10_chess_completion.md "
-            "J1) -- try (chess-selftest), or run on a board with a display "
-            "and TM1638 keypad for (chess-run)\n");
+    chess_console_run(); /* returns on 'quit' */
 #endif
     return &true_val;
 }

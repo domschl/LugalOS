@@ -31,6 +31,8 @@
 #include "zobrist.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
+#include "kernel/line_editor.h"
+#include "fs/vfs.h"
 #include "lugalos_config.h"
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
@@ -114,11 +116,14 @@ static void format_move(Move m, char *out) {
 /* Runs the engine's own iterative-deepening search and retrieves the move
  * it settled on -- the same two-step "callback, then TT fallback" shape
  * upstream's make_engine_move() uses, since search_position() itself only
- * prints a UCI bestmove line, it never returns the move directly. */
-static Move chess_think(Position *pos, int time_limit_ms) {
+ * prints a UCI bestmove line, it never returns the move directly.
+ * max_depth is a J1 addition (plan/phase10_chess_completion.md) for the
+ * console's `go depth N` -- chess_selftest()/chess_run() both still pass 64
+ * (their only ever value), so this isn't a behavior change for them. */
+static Move chess_think(Position *pos, int max_depth, int time_limit_ms) {
     g_search_best_move = 0;
     g_search_score = 0;
-    search_position(pos, 64, time_limit_ms);
+    search_position(pos, max_depth, time_limit_ms);
 
     Move best = g_search_best_move;
     if (best == 0) {
@@ -150,7 +155,7 @@ void chess_selftest(void) {
     g_chess_pos.history_ply = 1;
 
     cprintf("chess: searching a midgame position (2s)...\n");
-    Move best = chess_think(&g_chess_pos, 2000);
+    Move best = chess_think(&g_chess_pos, 64, 2000);
 
     if (best == 0) {
         cprintf("chess: no move found\n");
@@ -160,6 +165,362 @@ void chess_selftest(void) {
     format_move(best, buf);
     cprintf("chess: best move %s, score %d, depth %d, %ld nodes\n",
             buf, g_search_score, g_search_depth, nodes_searched);
+}
+
+/* ------------------------------------------------------------------ *
+ * J1 (plan/phase10_chess_completion.md): the plain-terminal console  *
+ * REPL -- LugalChess's own scenario 1.1, the baseline that had no    *
+ * LugalOS equivalent at all before this. No hardware dependency,     *
+ * unlike chess_run() below: builds and is fully testable on every    *
+ * QEMU target, same category as chess_selftest() above.              *
+ *                                                                     *
+ * Ported from ~/gith/domschl/LugalChess's console.c (console_loop()  *
+ * and execute_player_move(), line numbers below refer to that file)  *
+ * minus everything gated on LUGALCHESS_EMBEDDED or is_uci_client_mode*
+ * -- the plain-REPL command set only. save/load are the one command  *
+ * pair that couldn't port as-is: upstream writes a raw QSPI flash    *
+ * sector (hardware/flash.h), which doesn't exist on LugalOS at all;  *
+ * this uses LugalOS's own VFS instead (H0, plan/phase9_chess_computer*
+ * .md, flagged this exact incompatibility as the reason console.c    *
+ * wasn't vendored wholesale).                                        *
+ * ------------------------------------------------------------------ */
+
+/* console.c's own level_times_ms[8]/search_level (:21-22), unchanged --
+ * "level 8" is -1 (infinite / manual stop). No console-side interrupt
+ * exists yet in this milestone (J2 adds Ctrl-C, plan/
+ * phase10_chess_completion.md) -- level 8 is still selectable here,
+ * matching upstream's own command surface, but picking it and moving
+ * means the search runs to full depth-64 completion with nothing able to
+ * cut it short until J2 lands. print_console_help() says so. */
+static const int level_times_ms[8] = { 1000, 2000, 5000, 10000, 15000, 30000, 60000, -1 };
+static int g_console_search_level = 2;
+static int g_console_max_history_ply = 0;
+
+/* Picks whichever of /sd0 or /ram0 is actually mounted and writable --
+ * hardcoding /ram0 (found live: init.lisp only mounts a RAM disk *when
+ * /sd0 isn't already writable*, so a board with a working SD card never
+ * mounts /ram0 at all, and every save/load would have silently failed
+ * with no such volume) or /sd0 (fails the inverse case, QEMU's own default
+ * persona) would each be wrong on some board. Two small fixed-literal
+ * lookups, not one path built by splitting the other -- no `strrchr` in
+ * LugalOS's libc (only `strchr`, first-occurrence) to find the last '/',
+ * and no `snprintf` either (position.c's own header comment already says
+ * why) to build one path from parts. */
+static const char *console_save_dir(void) {
+    return vfs_volume_writable("/sd0") ? "/sd0/system" : "/ram0/system";
+}
+static const char *console_save_path(void) {
+    return vfs_volume_writable("/sd0") ? "/sd0/system/chess.save"
+                                        : "/ram0/system/chess.save";
+}
+
+/* Ported from console.c's execute_player_move() (:415-477), the parse
+ * direction to format_move()'s already-existing format direction above.
+ * `list` is a function-static, not a stack local, mirroring upstream's own
+ * choice for the same reason (~516 bytes, MAX_MOVES=256) and matching how
+ * every other MoveList in this file avoids the stack. */
+static bool console_execute_move(Position *pos, const char *move_str) {
+    if (move_str[0] < 'a' || move_str[0] > 'h' || move_str[1] < '1' || move_str[1] > '8' ||
+        move_str[2] < 'a' || move_str[2] > 'h' || move_str[3] < '1' || move_str[3] > '8') {
+        return false;
+    }
+
+    int from = (move_str[0] - 'a') + (move_str[1] - '1') * 8;
+    int to = (move_str[2] - 'a') + (move_str[3] - '1') * 8;
+    int promo_piece = NO_PIECE;
+    if (move_str[4] != '\0') {
+        switch (move_str[4]) {
+            case 'q': promo_piece = QUEEN; break;
+            case 'r': promo_piece = ROOK; break;
+            case 'b': promo_piece = BISHOP; break;
+            case 'n': promo_piece = KNIGHT; break;
+        }
+    }
+
+    static MoveList list;
+    generate_moves(pos, &list);
+
+    /* If the caller didn't name a promotion piece but from/to only resolves
+     * to promotion moves, default to Queen -- same nudge upstream applies. */
+    if (promo_piece == NO_PIECE) {
+        bool only_promo = false;
+        for (int i = 0; i < list.count; i++) {
+            Move m = list.moves[i];
+            if (MOVE_FROM(m) == from && MOVE_TO(m) == to && move_is_promo(m)) {
+                only_promo = true;
+                break;
+            }
+        }
+        if (only_promo) promo_piece = QUEEN;
+    }
+
+    for (int i = 0; i < list.count; i++) {
+        Move m = list.moves[i];
+        if (MOVE_FROM(m) != from || MOVE_TO(m) != to) continue;
+        if (promo_piece != NO_PIECE) {
+            if (move_is_promo(m) && move_promo_piece(m) == promo_piece) {
+                if (make_move(pos, m)) return true;
+            }
+        } else if (!move_is_promo(m)) {
+            if (make_move(pos, m)) return true;
+        }
+    }
+    return false;
+}
+
+/* cprintf has no `+` flag (confirmed live: `%+d` printed the literal
+ * characters "%+d" rather than a signed number -- kernel/printk.c's format
+ * engine only recognizes '0'/width/'.'precision/'l' before the conversion
+ * character, chess_platform.h's own header comment already said as much
+ * for %f, this is the same gap for a different flag). `%d` already emits
+ * '-' for negative values on its own; only the '+' for non-negative ones
+ * needs doing by hand. */
+static const char *sign_prefix(int v) { return v >= 0 ? "+" : ""; }
+
+/* Shared by the post-move auto-reply and the `go` command below --
+ * upstream duplicates this logic between make_engine_move() and the `go`
+ * command handler in console.c; one helper here instead. No check/
+ * checkmate/stalemate/draw text yet (J2's job) -- "resigned or found no
+ * legal moves" is the same minimal fallback upstream's own
+ * make_engine_move() already used for a position with no legal replies,
+ * ported as-is rather than guessed at. */
+static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms) {
+    Move best = chess_think(pos, max_depth, time_limit_ms);
+    if (best == 0) {
+        cprintf("Engine resigned or found no legal moves.\n");
+        return;
+    }
+    char buf[6];
+    format_move(best, buf);
+    make_move(pos, best);
+    g_console_max_history_ply = pos->history_ply;
+    cprintf("Engine plays: %s (Score: %s%d)\n", buf, sign_prefix(g_search_score), g_search_score);
+}
+
+static void console_print_help(void) {
+    cprintf("\nLugalOS chess console. Commands:\n");
+    cprintf("  help              - Show this help message\n");
+    cprintf("  new               - Start a new game from the standard starting position\n");
+    cprintf("  board (or d)      - Display the current board state\n");
+    cprintf("  level <1-8>       - Set engine search level (1:1s 2:2s 3:5s 4:10s 5:15s "
+            "6:30s 7:60s 8:Infinite -- 8 has no interrupt yet, see 'stop')\n");
+    cprintf("  fen [FEN]         - Show current FEN, or set a custom FEN position\n");
+    cprintf("  save              - Save the current position and level (/sd0 if writable, else /ram0)\n");
+    cprintf("  load              - Load the saved position and level\n");
+    cprintf("  go [depth N|movetime N] - Force the engine to think and play a move\n");
+    cprintf("  stop              - No mid-search interrupt yet (J2); accepted, has no effect\n");
+    cprintf("  undo              - Take back 1 half-move\n");
+    cprintf("  redo              - Re-apply 1 half-move\n");
+    cprintf("  eval              - Print the static evaluation of the current position\n");
+    cprintf("  moves             - List all legal moves in the current position\n");
+    cprintf("  quit              - Leave the chess console, back to the shell\n");
+    cprintf("  <move>            - Play a move in UCI format (e.g. e2e4, g1f3, e7e8q)\n\n");
+}
+
+static void console_new_game(Position *pos) {
+    parse_fen(pos, STANDARD_START_FEN);
+    clear_tt();
+    g_console_max_history_ply = 0;
+}
+
+static void console_save(const Position *pos) {
+    const char *path = console_save_path();
+    char buf[300];
+    int n = 0;
+    generate_fen(pos, buf);
+    n = (int)strlen(buf);
+    buf[n++] = '\n';
+    /* search_level is at most one digit (1-8) -- no snprintf needed. */
+    buf[n++] = (char)('0' + g_console_search_level);
+    buf[n++] = '\n';
+    buf[n] = '\0';
+
+    /* Best-effort: the volume's own "system/" directory may not exist yet
+     * (found live on a freshly formatted /ram0 -- vfs_write() does not
+     * create missing parent directories, and there is no reason to expect
+     * every volume already has this one). Ignore the result: it either
+     * already existed (this fails harmlessly) or didn't (this is what
+     * makes the write below succeed). */
+    vfs_mkdir(console_save_dir());
+
+    if (vfs_write(path, buf, (uint32_t)n) == 0) {
+        cprintf("Position and level saved to %s\n", path);
+    } else {
+        cprintf("Save failed (could not write %s)\n", path);
+    }
+}
+
+static void console_load(Position *pos) {
+    const char *path = console_save_path();
+    char buf[300];
+    int bytes = vfs_read(path, buf, sizeof(buf) - 1);
+    if (bytes <= 0) {
+        cprintf("No saved game found at %s\n", path);
+        return;
+    }
+    buf[bytes] = '\0';
+
+    char *nl = strchr(buf, '\n');
+    if (nl) *nl = '\0';
+    static Position temp_pos;
+    parse_fen(&temp_pos, buf);
+    if (!is_position_valid(&temp_pos)) {
+        cprintf("Save file is corrupt (invalid FEN)\n");
+        return;
+    }
+    *pos = temp_pos;
+    clear_tt();
+    g_console_max_history_ply = pos->history_ply;
+
+    if (nl && nl[1] >= '1' && nl[1] <= '8') {
+        g_console_search_level = nl[1] - '0';
+    }
+    cprintf("Position loaded from %s (level %d)\n", path, g_console_search_level);
+    print_board(pos);
+}
+
+/* `go [depth N | movetime N]`, ported from console.c's `go` command
+ * handler (:1441-1521) minus its UCI wtime/btime branches (this is the
+ * plain console, not a UCI session -- J5 gets its own clean `go` against
+ * uci.c's much smaller parser instead of this one). No arguments falls
+ * back to the current level's time budget, same as a bare move's
+ * auto-reply. */
+static void console_handle_go(Position *pos, const char *args) {
+    int max_depth = 64;
+    int time_limit_ms;
+    const char *p;
+    if ((p = strstr(args, "movetime")) != NULL) {
+        time_limit_ms = atoi(p + 8);
+    } else if ((p = strstr(args, "depth")) != NULL) {
+        max_depth = atoi(p + 5);
+        time_limit_ms = -1;
+    } else {
+        time_limit_ms = level_times_ms[g_console_search_level - 1];
+    }
+    console_engine_reply(pos, max_depth, time_limit_ms);
+}
+
+static void console_list_moves(Position *pos) {
+    static MoveList list;
+    generate_moves(pos, &list);
+    cprintf("Legal moves in this position:\n");
+    int legal_cnt = 0;
+    for (int i = 0; i < list.count; i++) {
+        Move m = list.moves[i];
+        if (!make_move(pos, m)) continue;
+        char buf[6];
+        format_move(m, buf);
+        cprintf("  %s\n", buf);
+        legal_cnt++;
+        unmake_move(pos);
+    }
+    cprintf("Total legal moves: %d\n", legal_cnt);
+}
+
+/* Does not return until `quit` -- the same shape as `lsh` itself
+ * (kernel/shell.c), not chess_run()'s "does not return at all" shape,
+ * since there's no hardware state to reset out of here. */
+void chess_console_run(void) {
+    if (!chess_ensure_init()) return;
+    console_new_game(&g_chess_pos);
+
+    cprintf("\nLugalOS chess console. Type 'help' for commands, 'quit' to leave.\n");
+    print_board(&g_chess_pos);
+
+    char line[300];
+    for (;;) {
+        readline_interactive("chess> ", line, sizeof(line));
+
+        if (line[0] == '\0') {
+            continue;
+        } else if (strcmp(line, "help") == 0) {
+            console_print_help();
+        } else if (strcmp(line, "new") == 0) {
+            console_new_game(&g_chess_pos);
+            cprintf("New game started.\n");
+            print_board(&g_chess_pos);
+        } else if (strcmp(line, "board") == 0 || strcmp(line, "d") == 0) {
+            print_board(&g_chess_pos);
+            print_position_info(&g_chess_pos);
+        } else if (strncmp(line, "level", 5) == 0) {
+            const char *p = line + 5;
+            while (*p == ' ') p++;
+            int val = atoi(p);
+            if (val >= 1 && val <= 8) {
+                g_console_search_level = val;
+                if (level_times_ms[val - 1] != -1) {
+                    cprintf("Search level set to %d (%ds per move).\n", val, level_times_ms[val - 1] / 1000);
+                } else {
+                    cprintf("Search level set to 8 (Infinite -- no interrupt yet, see 'help').\n");
+                }
+            } else {
+                cprintf("Invalid level. Specify 1 to 8 (see 'help').\n");
+            }
+        } else if (strncmp(line, "fen", 3) == 0) {
+            const char *p = line + 3;
+            while (*p == ' ') p++;
+            if (*p == '\0') {
+                char buf[256];
+                generate_fen(&g_chess_pos, buf);
+                cprintf("Current FEN: %s\n", buf);
+            } else {
+                static Position temp_pos;
+                parse_fen(&temp_pos, p);
+                if (!is_position_valid(&temp_pos)) {
+                    cprintf("Invalid FEN position (need exactly 1 White king, 1 Black king, valid check state).\n");
+                } else {
+                    g_chess_pos = temp_pos;
+                    clear_tt();
+                    g_console_max_history_ply = g_chess_pos.history_ply;
+                    cprintf("Position loaded.\n");
+                    print_board(&g_chess_pos);
+                }
+            }
+        } else if (strcmp(line, "save") == 0) {
+            console_save(&g_chess_pos);
+        } else if (strcmp(line, "load") == 0) {
+            console_load(&g_chess_pos);
+        } else if (strncmp(line, "go", 2) == 0 && (line[2] == '\0' || line[2] == ' ')) {
+            console_handle_go(&g_chess_pos, line);
+        } else if (strcmp(line, "undo") == 0) {
+            if (g_chess_pos.history_ply > 0) {
+                unmake_move(&g_chess_pos);
+                cprintf("Took back 1 half-move.\n");
+                print_board(&g_chess_pos);
+            } else {
+                cprintf("Nothing to undo.\n");
+            }
+        } else if (strcmp(line, "redo") == 0) {
+            if (g_chess_pos.history_ply < g_console_max_history_ply) {
+                Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
+                if (make_move(&g_chess_pos, m)) {
+                    cprintf("Re-applied 1 half-move.\n");
+                    print_board(&g_chess_pos);
+                } else {
+                    cprintf("Cannot redo move.\n");
+                }
+            } else {
+                cprintf("Nothing to redo.\n");
+            }
+        } else if (strcmp(line, "eval") == 0) {
+            int score = evaluate(&g_chess_pos);
+            cprintf("Static evaluation: %s%d centipawns (current side's perspective)\n",
+                    sign_prefix(score), score);
+        } else if (strcmp(line, "moves") == 0) {
+            console_list_moves(&g_chess_pos);
+        } else if (strcmp(line, "stop") == 0) {
+            cprintf("Nothing to stop (no mid-search interrupt yet -- J2).\n");
+        } else if (strcmp(line, "quit") == 0) {
+            return;
+        } else if (console_execute_move(&g_chess_pos, line)) {
+            g_console_max_history_ply = g_chess_pos.history_ply;
+            print_board(&g_chess_pos);
+            console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
+            print_board(&g_chess_pos);
+        } else {
+            cprintf("Unknown command or invalid move: '%s'. Type 'help' for a list.\n", line);
+        }
+    }
 }
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
@@ -350,7 +711,7 @@ void chess_run(void) {
 
         tm1638_display_string("tHInKIng");
         draw_chess_status(&g_chess_pos, last_move_buf, true);
-        Move engine_move = chess_think(&g_chess_pos, 5000);
+        Move engine_move = chess_think(&g_chess_pos, 64, 5000);
         if (engine_move == 0) {
             tm1638_display_string("gAME OuEr");
             draw_chess_status(&g_chess_pos, "no moves", false);

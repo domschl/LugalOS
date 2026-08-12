@@ -187,7 +187,60 @@ lowered from `>=70` to `>=45` in H4 for the static-pool cost) reverts back
 towards its pre-H4 value once this pool is on-demand — an explicit test
 change to make, not just a side effect to notice.
 
-## J1 — Console REPL: the missing baseline scenario
+## J1 — Console REPL: the missing baseline scenario *(done, 2026-08-12)*
+
+Landed close to the design below, with `/sd0`-vs-`/ram0` save-path
+auto-detection (found live to be necessary, see findings) as the one real
+addition. `chess_console_run()` is wired into the existing `chess` Lisp
+primitive's fallback branch (J0) — `(chess)` on any target without
+display+TM1638 hardware now runs it for real, in place of J0's placeholder
+message.
+
+**Three bugs found while verifying this, none part of J1's own design,
+all fixed:**
+
+1. **`cprintf` has no `%+d` (no flag characters at all)**, confirmed live:
+   `Score: %+d` printed the literal four characters `%+d`, not a signed
+   number. `chess_platform.h`'s own header comment already documented this
+   exact gap for `%.0f`; `+` is the same category of unsupported
+   `printf`-flag, just never hit before because nothing printed a
+   deliberately-signed integer through `cprintf` until this console did.
+   Fixed with a two-line `sign_prefix()` helper (`%s%d`) rather than
+   extending `cprintf` itself, which is out of scope for a chess milestone.
+2. **`vfs_write()` doesn't create missing parent directories**, confirmed
+   live: `/ram0/system/chess.save` failed outright on a freshly-formatted
+   `/ram0` with no `system/` subdirectory yet (`ls /ram0/` showed `(empty
+   directory)`). Fixed two ways at once: `console_save()` now calls
+   `vfs_mkdir()` on the target directory first (ignoring the result — it
+   either already existed or now does), and the save path itself became
+   runtime-selected (`vfs_volume_writable("/sd0")`) rather than hardcoded to
+   `/ram0` — `init.lisp` only ever mounts a RAM disk *when `/sd0` isn't
+   already writable*, so a board with a working SD card never mounts
+   `/ram0` at all, and the original hardcoded path would have failed with
+   "no such volume" on exactly the boards most likely to have persistent
+   storage worth saving to.
+3. **A real, pre-existing, cross-target crash — the most serious of the
+   three.** QEMU RV64 (`-march=rv64gc -mabi=lp64d`, real hardware F/D
+   register ABI, unlike RV32's soft-float `ilp32`) trapped Illegal
+   Instruction on the very first `fsd` (floating-point register spill) in
+   `search_position()`'s own prologue, the instant this milestone's new
+   QEMU test became the first thing ever to call chess search on RV64 QEMU
+   — phase9 H4's own verification only ever ran `chess-selftest` on RV32
+   QEMU and real RP2350 hardware (both soft-float), and `tests/runner.py`
+   had zero chess coverage before this milestone (J0's own finding). Root
+   cause: `search_position()`'s dynamic time-cutoff heuristic used `double`
+   arithmetic (`search.c`, branching-factor estimate `b`), and LugalOS's
+   boot code never sets `mstatus.FS` to enable the FPU at all — so any
+   target whose ABI makes GCC reach for real FP registers (RV64's `lp64d`;
+   RV32's `ilp32` never does, hence never crashed) faults immediately.
+   Fixed by removing the float dependency instead of enabling the FPU:
+   `b` is now fixed-point (tenths) integer arithmetic, sufficient for a
+   `>=` comparison and consistent with this same function's own `nps`
+   calculation a few lines up (already integer, same reasoning, from H4).
+   Enabling the FPU kernel-wide was deliberately not attempted as the fix —
+   it would have opened a second, unrelated question (nothing currently
+   saves/restores FP register state across a preemptive task switch, B6)
+   for a heuristic that doesn't need hardware float at all.
 
 A new entry point, `chess_console_run()` in `chess_ui.c`, ported from
 `console.c`'s `console_loop()` (`~/gith/domschl/LugalChess/engine/src/
@@ -219,12 +272,25 @@ hand-rolled reader — `console.c`'s own `get_line_custom()` (:609-978) is
 ~370 lines specifically because it interleaves keypad and stdio input in one
 function; the console-only path doesn't need that split.
 
-**Verify:** new QEMU tests exercising the full command set from a scripted
-input sequence (`new`, a few moves, `undo`, `redo`, `save`, `load`, `fen`,
-`quit`) added to `tests/runner.py` — this is also the first time *any*
-automated test exercises chess beyond the single fixed `chess-selftest`
-search, closing a real coverage gap phase9 left (grep confirms zero
-`tests/*.py` references to chess today).
+**Verify:** all three targets build clean. A new `tests/runner.py` case
+(`#10b`) drives `(chess)` through `new`/`level 1`/a move (which triggers a
+real engine reply, the actual thing that exposed finding 3 above)/`board`/
+`eval`/`moves`/`undo`/`redo`/`fen`/`save`/`load`/`quit` — the first time any
+automated test exercises chess beyond `chess-selftest`'s single fixed
+search, closing the coverage gap J0's own memory note flagged. 183/183 QEMU
+tests pass (181 + the new case on both RV32 and RV64). Manually verified
+live over a raw QEMU RV32 session first (every command, including a real
+save/load round-trip that landed on `/sd0` — this build's QEMU persona has
+one mounted and writable, exercising the `/sd0`-preferred branch of finding
+2's fix, not just its `/ram0` fallback) before the automated test was
+written from that same working session. RP2350 hardware was reachable
+earlier the same session (J0's own hardware verification) but had gone
+unresponsive at the USB level by the time J1 was ready to verify there —
+not blocking, since none of J1's diff touches RP2350-specific code paths
+(`chess_run()`/TM1638/ST7735 are untouched) and RP2350 is `ilp32`
+soft-float like RV32, which the float-removal fix (finding 3) already
+confirmed working; worth a hardware re-run next time the board's reachable,
+but not a gap in what J1 itself needed proven.
 
 ## J2 — Game-outcome detection, check/mate/draw announcement, promotion selector, Ctrl-C interrupt
 

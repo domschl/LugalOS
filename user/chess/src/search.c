@@ -795,19 +795,41 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
 
         // Dynamic time-based cutoff:
         // Estimate time required for the next depth iteration (d + 1) based on effective branching factor b
+        //
+        // Found and fixed 2026-08-12 (plan/phase10_chess_completion.md J1):
+        // this was `double` arithmetic until now, which built and ran fine
+        // on every target this engine had actually been exercised on
+        // (RV32 QEMU + real RP2350 hardware, both ilp32/soft-float -- no
+        // hardware FP registers exist in that ABI, so GCC lowers `double`
+        // to libgcc calls with no FPU involved at all) but crashed
+        // immediately -- Illegal Instruction trapping the `fsd` register
+        // spill in this function's own prologue -- the first time anything
+        // called search_position() on QEMU RV64 (`-march=rv64gc -mabi=lp64d`,
+        // real hardware F/D registers in the ABI), because LugalOS's boot
+        // code never sets `mstatus.FS` to enable the FPU at all. Fixed by
+        // removing the float dependency rather than enabling the FPU: `b`
+        // (the branching-factor estimate) only ever needs two decimal
+        // digits of precision for a >= comparison, so it's fixed-point
+        // (tenths) integer math below, consistent with this same function's
+        // own `nps` calculation a few lines up (already integer, same
+        // reasoning, done in H4). Enabling the FPU kernel-wide would also
+        // have opened a second question this avoids entirely: nothing
+        // currently saves/restores FP register state across a preemptive
+        // task switch (B6), so a genuinely working FPU needs that solved
+        // too before it's safe to use anywhere, not just here.
         if (max_search_time_ms != -1) {
-            double b = 3.5; // default branching factor estimate
+            long b10 = 35; // default branching factor estimate, x10 (3.5)
             if (d >= 2 && prev_iter_time_ms > 0) {
-                b = (double)last_iter_time_ms / (double)prev_iter_time_ms;
-                if (b < 2.5) b = 2.5;
-                if (b > 5.0) b = 5.0;
+                b10 = (last_iter_time_ms * 10) / prev_iter_time_ms;
+                if (b10 < 25) b10 = 25;
+                if (b10 > 50) b10 = 50;
             }
             prev_iter_time_ms = last_iter_time_ms;
 
-            double est_next_iter_ms = b * (last_iter_time_ms > 0 ? last_iter_time_ms : 5);
+            long est_next_iter_ms = (b10 * (last_iter_time_ms > 0 ? last_iter_time_ms : 5)) / 10;
 
             // If time spent plus half of estimated next iteration time exceeds allotted time, stop before launching d+1
-            if (time_spent + (long)(est_next_iter_ms / 2.0) >= max_search_time_ms) {
+            if (time_spent + est_next_iter_ms / 2 >= max_search_time_ms) {
                 break;
             }
         }
