@@ -624,7 +624,7 @@ physical STOP-key half of this (as opposed to Ctrl-C) still needs a human
 at the keypad — unchanged from the note above, and now the only remaining
 piece of this milestone without direct hardware confirmation.
 
-## J3 — TM1638 function keys 8-15 *(implemented, 2026-08-12 — hardware verification deferred by request)*
+## J3 — TM1638 function keys 8-15 *(done, 2026-08-12 — hardware-verified, joint session)*
 
 Landed close to the design below, one real deviation: 10 upstream options
 became 7 (`tm_option_names[TM_OPTION_COUNT=7]`, `chess_ui.c`) -- "Play
@@ -732,6 +732,103 @@ has no undo/redo at all, matching J1's gap on the console side.
 model for TM1638. `tests/hw/test_rp2350.py` gets a new interactive checklist
 entry (menu navigation, level change, save/load round-trip) alongside the
 existing move-entry/board-render checks from H1/H2.
+
+**Joint hardware session, same day, board back online.** The deferred
+verification happened as one long live session — undo/redo, level select,
+options menu, save/load, and the promotion picker all confirmed working
+correctly on the first pass. What followed was not just verification: real
+hardware surfaced three genuine bugs no amount of code review had caught,
+and testing the fix for one of them (the STOP key) exposed a design gap that
+turned into a substantial redesign, which then needed its own round of
+live bug-fixing before the whole thing settled. In order:
+
+1. **Three real bugs, found live, fixed same session:**
+   - `chess_abort_requested()` consumed `console_interrupt_requested()`'s
+     Ctrl-C latch (documented as sticky until cleared) without ever
+     clearing it — a Ctrl-C that exited `chess_run()` from the idle
+     prompt left the flag set, so the *next* `(chess)` call died on its
+     first poll. Reproduced live (`(chess)` → "LUgAL Ch" flash → straight
+     back to "Bye") and fixed by clearing the latch at the point of
+     consumption.
+   - The three "game over, wait for reset" screens were bare
+     `for (;;) time_delay_us(...)` loops with no abort check at all —
+     unescapable except by power cycle, reproduced by playing a real
+     checkmate to the end. This is the exact class of bug
+     [[standardized_interrupt_polling]] exists to catch, and it slipped
+     through because these loops don't call `tm_wait_key()`. Fixed with a
+     proper tri-state wait (exit / new game / undo the mating move —
+     "Back" as a way to take the ending move back, added live, was the
+     user's own idea once the fix was in front of them).
+   - STOP exiting `chess_run()` from the idle prompt created a real race:
+     STOP also force-stops a running search, so pressing it to interrupt
+     a slow search just as the search finished on its own could instead
+     throw the player out of the whole game. Confirmed by testing, not
+     guessed at. Fixed by redesigning STOP to *never* exit `chess_run()`
+     from anywhere — it only ever aborts input/menus in progress or
+     force-stops a search — with a dedicated `EXIT` item added to the
+     options menu as the deliberate way to leave via the keypad.
+2. **The STOP redesign exposed that the display itself had no real model
+   of "whose move is this."** `chess_run()`'s two-slot display had been
+   human-slot/engine-slot since J3 was first written, which only ever
+   meant something back when the human exclusively played White against
+   an engine-only Black. Redesigned, by request, into a persistent
+   White/Black two-slot display (chars 0-3 always White's, 4-7 always
+   Black's, matching real board move-pair notation) with a live search
+   ticker — the engine's current best move and White-POV score alternate
+   once a second in whichever slot is being calculated, on both TM1638
+   and the TFT (which also gained live move-number/score/depth/PV,
+   walking the transposition table for a short principal variation the
+   same way `search.c`'s own UCI `info` line does internally). A new "go"
+   key (13) lets either color be handed to the engine for a single turn;
+   a human-typed move still auto-triggers one engine reply by default
+   (an `AUTO` options-menu toggle turns that off for entering a whole
+   sequence by hand without the engine jumping in early).
+3. **The redesign needed its own round of live bug-fixing**, each found
+   by actually using the new UI rather than by re-reading the code: a
+   cursor-rendering bug leaving stale digits from the previous move
+   visible (`"_2E4E7E5"` instead of `"_   E7E5"`); the TM1638 score
+   ticker silently truncating the tenths digit (a fixed 4-raw-byte copy
+   against a formatter whose output is 4 *physical* digit positions but a
+   variable 4-6 raw bytes, the same physical-vs-raw-length class of bug
+   fixed once already inside the formatter itself, recurring one call
+   site out); and the TFT's live PV intermittently going completely blank
+   over a long session, root-caused to the small (32 KB, direct-mapped)
+   transposition table evicting even the *root* position's own entry —
+   fixed by seeding the PV with the already-known-reliable
+   `g_search_best_move` instead of also TT-probing for it.
+4. **Adjacent gaps found and closed in the same session, once actually
+   using the finished feature end to end:** `(chess)` had no way to reach
+   the console REPL on hardware with both TM1638 and DISPLAY present — a
+   *compile-time*, not runtime, dispatch — so a new `chess-console`
+   primitive was added, always wired to `chess_console_run()` regardless
+   of what hardware is present. Testing *that* surfaced a real, pre-
+   existing `kernel/shell.c` bug unrelated to chess: a bare single-word
+   command with no arguments evaluated as a raw Lisp symbol reference,
+   not a function call, so `chess-console` typed without parens printed
+   `<#primitive>` and silently did nothing — fixed by re-evaluating as a
+   call when the bare lookup resolves to something callable, while
+   leaving plain variable lookup (a real, intentional REPL feature)
+   untouched. The console board itself moved from ASCII letters (a format
+   that existed only so LugalGUI could scrape it as data, no longer
+   relevant) to Unicode chess glyphs with an explicit truecolor
+   checkerboard background, set as literal RGB rather than named ANSI
+   colors specifically so it renders correctly regardless of the
+   viewer's terminal color scheme.
+5. **Closing item, tying the whole phase together:** `init.lisp`'s final
+   `(lsh)` is now conditional on `/sd0/system/etc/usr_init.lisp` existing
+   — if present, that runs instead, no flash-image changes needed. This
+   is what a dedicated chess-computer persona (J6's own original framing)
+   actually uses: `usr_init.lisp` containing a single `(chess)` line boots
+   straight into the chess UI. **Confirmed working end-to-end on real
+   hardware** — the user created the file live with `e` (the full-screen
+   editor) and rebooted straight into `chess_run()`, no shell in between.
+
+All of it — the three original bugs, the White/Black redesign, every fix
+that redesign needed, `chess-console`, the shell bare-word fix, the console
+board's Unicode/color rendering, and the `usr_init.lisp` boot override —
+landed the same day as one continuous joint hardware session, each piece
+built, QEMU-regression-tested (189/189 held throughout), and hardware-
+verified live before moving to the next. Nothing here is deferred.
 
 ## J4 — `perft` command + bounded perft in the automated test suite
 
