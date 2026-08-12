@@ -870,15 +870,16 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     `palloc_pages()`-on-demand, allocated once on first `chess`/`chess-run`/
     `chess-selftest` call and never freed for the process lifetime (unlike
     cc/ed's acquire-per-use, since chess has no natural "done" boundary) --
-    matching the same treatment cc/ed already got. This should raise the
-    idle-heap page count measured here back up towards the pre-H4 78-page
-    baseline, but the exact new number hasn't been re-measured on real
-    silicon (this file's own tests only run against physical hardware, which
-    the session that wrote this comment didn't have attached) -- the `>= 45`
-    threshold below is left as a safe, still-true lower bound rather than
-    guessed at, but it is no longer tight. Tighten it (e.g. towards the
-    high-60s/70s) once someone re-runs this on the actual board and reads
-    the real idle figure back from /proc/meminfo.
+    matching the same treatment cc/ed already got. Re-measured on real
+    silicon the same day: idle heap is back up to 64 pages (from 48), not
+    quite the full pre-H4 78 -- the remaining gap is chess's other static
+    tables J0 deliberately left alone (zobrist/bitboard attack tables,
+    killer_moves/history_table, the opening book strings), none of which
+    were ever in scope for this conversion. 64 - 48 = 16 pages (64 KB) lines
+    up with the ~65 KB the movelist pools actually measured at, so this is
+    the expected number, not a surprise. Threshold below tightened to `>= 55`
+    -- real margin below the measured 64, not the value itself, so a future
+    regression that eats back into this budget still trips it.
 
     Worth checking here rather than only on QEMU for the obvious reason: the
     QEMU targets have a 16 MB heap, so an arena that is never released is
@@ -908,7 +909,7 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ("compile succeeded",  "Build clean" in out),
             ("two readings taken", len(used) >= 2),
             ("arena was returned", len(used) >= 2 and used[0] == used[-1]),
-            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 45),
+            ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 55),
         ]
         failed = [label for label, ok in checks if not ok]
         if failed:
