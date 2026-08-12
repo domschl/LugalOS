@@ -483,7 +483,38 @@ void unmake_null_move(Position *pos) {
 
 // Print the board to standard output
 void print_board(const Position *pos) {
-    const char piece_chars[] = "PNBRQKpnbrqk";
+    /* Unicode chess symbols (U+2654-U+265F, "Miscellaneous Symbols") --
+     * White's the hollow/outline glyphs, Black the solid ones, by
+     * Unicode's own design, so no separate color-swap logic is needed
+     * beyond picking the right table. Written as raw UTF-8 byte
+     * sequences rather than \u escapes: this is a freestanding cross-
+     * compiled build with no guarantee about the compiler's assumed
+     * execution charset, and nothing else in this tree does i18n, so
+     * there's no existing convention to lean on for encoding these
+     * correctly -- explicit bytes sidestep the question entirely.
+     * Replaces the old ASCII letters (PNBRQK/pnbrqk), which existed so
+     * LugalGUI could scrape this exact text as position state -- no
+     * longer needed now that nothing parses print_board()'s stdout as
+     * data (user's own note, 2026-08-12). cprintf's own %s (kernel/
+     * printk.c) just walks bytes to the console's putc with no encoding
+     * awareness either way, so this is a drop-in swap, not a new
+     * capability the rest of the pipe needs to understand. */
+    static const char *white_glyphs[6] = {
+        "\xE2\x99\x99", /* Pawn   U+2659 */
+        "\xE2\x99\x98", /* Knight U+2658 */
+        "\xE2\x99\x97", /* Bishop U+2657 */
+        "\xE2\x99\x96", /* Rook   U+2656 */
+        "\xE2\x99\x95", /* Queen  U+2655 */
+        "\xE2\x99\x94", /* King   U+2654 */
+    };
+    static const char *black_glyphs[6] = {
+        "\xE2\x99\x9F", /* Pawn   U+265F */
+        "\xE2\x99\x9E", /* Knight U+265E */
+        "\xE2\x99\x9D", /* Bishop U+265D */
+        "\xE2\x99\x9C", /* Rook   U+265C */
+        "\xE2\x99\x9B", /* Queen  U+265B */
+        "\xE2\x99\x9A", /* King   U+265A */
+    };
     printf("\n");
     for (int r = 7; r >= 0; r--) {
         printf("%d  ", r + 1);
@@ -494,8 +525,7 @@ void print_board(const Position *pos) {
                 printf(". ");
             } else {
                 int color = get_bit(pos->color_bbs[WHITE], sq) ? WHITE : BLACK;
-                int idx = piece + (color == BLACK ? 6 : 0);
-                printf("%c ", piece_chars[idx]);
+                printf("%s ", (color == WHITE ? white_glyphs : black_glyphs)[piece]);
             }
         }
         printf("\n");
