@@ -530,6 +530,15 @@ void print_board(const Position *pos) {
     #define SQ_LIGHT_BG "\033[48;2;240;217;181m"
     #define SQ_DARK_BG  "\033[48;2;181;136;99m"
     #define SQ_RESET    "\033[0m"
+    /* Each square is 3 columns wide (" X " for a piece, three plain
+     * spaces for an empty one) -- found live to matter, not just
+     * cosmetic: a bare "glyph + one trailing space" rendered flush
+     * against the left edge of its own background color, cramped-
+     * looking, and the empty-square "." from the old plain-ASCII
+     * rendering is redundant now that the alternating background colors
+     * already show the checkerboard on their own. The file-letter footer
+     * below is widened to the same 3-column-per-square layout so it
+     * still lines up under the board. */
     printf("\n");
     for (int r = 7; r >= 0; r--) {
         printf("%d  ", r + 1);
@@ -539,16 +548,16 @@ void print_board(const Position *pos) {
             bool light_square = ((r + f) % 2 == 1);
             printf("%s", light_square ? SQ_LIGHT_BG : SQ_DARK_BG);
             if (piece == NO_PIECE) {
-                printf(". ");
+                printf("   ");
             } else {
                 int color = get_bit(pos->color_bbs[WHITE], sq) ? WHITE : BLACK;
-                printf("%s ", (color == WHITE ? white_glyphs : black_glyphs)[piece]);
+                printf(" %s ", (color == WHITE ? white_glyphs : black_glyphs)[piece]);
             }
             printf(SQ_RESET);
         }
         printf("\n");
     }
-    printf("   a b c d e f g h\n\n");
+    printf("   " " a " " b " " c " " d " " e " " f " " g " " h " "\n\n");
     #undef SQ_LIGHT_BG
     #undef SQ_DARK_BG
     #undef SQ_RESET
