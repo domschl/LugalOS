@@ -1191,23 +1191,26 @@ static void tm_new_game(Position *pos) {
  * zero moves while a search is genuinely in progress; only the extension
  * beyond the first move is still TT-probed and can legitimately dead-end
  * early, which is normal, not an error. Writes up to `max_moves`
- * lowercase move strings (format_move()'s own convention) into `out`,
- * returns the count actually found. Uses the shared on-demand scratch
- * Position (g_chess_scratch) rather than a second permanent static --
- * safe since chess_run()'s own call stack never re-enters this while a
- * previous call is still using it (single-threaded, cooperative code). */
+ * uppercase 4-char move strings (tm_format_move4()'s own convention, the
+ * same one the TM1638 side of this ticker uses -- matching it here too
+ * rather than format_move()'s lowercase, per the user's own example)
+ * into `out`, returns the count actually found. Uses the shared
+ * on-demand scratch Position (g_chess_scratch) rather than a second
+ * permanent static -- safe since chess_run()'s own call stack never
+ * re-enters this while a previous call is still using it (single-
+ * threaded, cooperative code). */
 static int tm_probe_pv(const Position *pos, Move first_move, char out[][6], int max_moves) {
     if (first_move == 0 || max_moves <= 0) return 0;
     *g_chess_scratch = *pos;
     int n = 0;
-    format_move(first_move, out[n++]);
+    tm_format_move4(first_move, out[n++]);
     if (!make_move(g_chess_scratch, first_move)) return n;
     while (n < max_moves) {
         int score;
         Move m;
         if (!probe_tt_entry(g_chess_scratch->hash_key, &score, &m) || m == 0) break;
         if (!make_move(g_chess_scratch, m)) break;
-        format_move(m, out[n]);
+        tm_format_move4(m, out[n]);
         n++;
     }
     return n;
@@ -1253,12 +1256,21 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
     line1[p] = '\0';
     st7735_draw_string(2, 131, line1, thinking ? ST7735_CYAN : ST7735_YELLOW, 1);
 
+    /* "12. <moves>" for White (period, no dots) vs "12 ... <moves>" for
+     * Black (space + ellipsis, no period) while thinking -- standard
+     * chess move-pair notation (Black's half of a move pair is written
+     * "N..." rather than repeating "N."), per the user's own example;
+     * idle mode (a specific last move, not a PV) always uses the plain
+     * "N. " form regardless of which color just moved. */
     char line2[40];
     int q = 0;
     q = append_uint(line2, q, (unsigned)(pos->history_ply / 2 + 1));
-    line2[q++] = '.'; line2[q++] = ' ';
+    if (thinking && g_search_root_side != WHITE) {
+        line2[q++] = ' '; line2[q++] = '.'; line2[q++] = '.'; line2[q++] = '.'; line2[q++] = ' ';
+    } else {
+        line2[q++] = '.'; line2[q++] = ' ';
+    }
     if (thinking) {
-        line2[q++] = '.'; line2[q++] = '.'; line2[q++] = '.'; line2[q++] = ' ';
         char pv[3][6];
         int n = tm_probe_pv(pos, g_search_best_move, pv, 3);
         for (int i = 0; i < n && q < 34; i++) {
@@ -1709,6 +1721,14 @@ static Move tm_read_move(Position *pos) {
         for (int i = 0; i < 4; i++) disp[i] = g_tm_white_slot[i];
         for (int i = 0; i < 4; i++) disp[4 + i] = g_tm_black_slot[i];
         disp[8] = '\0';
+        /* Blank the *whole* active half before entry starts, not just
+         * the cursor position -- found live: tm_read_square() only ever
+         * sets its own single cursor character, so without this the
+         * other 3 chars of this side's own slot kept showing the tail
+         * of that side's *previous* move (e.g. "_2E4" instead of "_   "
+         * right after White's first move, since g_tm_white_slot still
+         * held "E2E4" from before this new entry began). */
+        for (int i = 0; i < 4; i++) disp[active_off + i] = ' ';
 
         int from = tm_read_square(pos, disp, active_off);
         if (from == TM_KEY_ABORT_CTRLC || from == TM_KEY_EXIT_GAME) return 0;
@@ -1934,7 +1954,11 @@ void chess_run(void) {
                 J1's own console_execute_move()/console_engine_reply()
                 do. */
             tm_format_move4(mv, mover_slot);
-            format_move(mv, last_move_buf);
+            tm_format_move4(mv, last_move_buf); /* uppercase on the TFT
+                too now, matching tm_probe_pv()'s PV line -- consistent
+                with the TM1638 slot right above rather than format_move()'s
+                lowercase, which would only differ here and nowhere else
+                any more. */
         } else {
             /* "go" (key 13, user request 2026-08-12) -- skip entering a
              * move, let the engine play whichever side is actually to
@@ -1986,7 +2010,7 @@ void chess_run(void) {
         make_move(&g_chess_pos, engine_move);
         g_console_max_history_ply = g_chess_pos.history_ply;
         tm_format_move4(engine_move, mover_slot);
-        format_move(engine_move, last_move_buf);
+        tm_format_move4(engine_move, last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
 
