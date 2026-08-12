@@ -696,10 +696,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 
     /* Single token variable or evaluation lookup */
     bool has_space = false;
-    bool has_slash = false;
     for (const char *c = cmd_line; *c; c++) {
         if (*c == ' ' || *c == '\t') { has_space = true; break; }
-        if (*c == '/') has_slash = true;
     }
 
     /* A bare word that names a program on the search path runs it (C1).
@@ -767,6 +765,33 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         strcmp(cmd_line, "time") != 0 &&
         strcmp(cmd_line, "i2c") != 0) {
         lisp_val_t *res = lisp_eval_string(cmd_line);
+        /* A bare name that resolves to something callable (a primitive
+         * or a user-defined lambda) rather than a plain value -- found
+         * live, not theoretical: a zero-argument command with no
+         * dedicated shell alias (e.g. `chess-console`) evaluated as a
+         * bare symbol lookup and printed the closure object itself
+         * (`=> <#primitive>`) instead of ever running, silently doing
+         * nothing. Standard Lisp semantics (a bare symbol is just a
+         * reference, not a call) are exactly right for a plain value --
+         * typing a variable's name to see what it holds is a real,
+         * intentional REPL feature this must not break -- but for
+         * something callable the user is at a *shell* prompt and almost
+         * certainly meant to invoke it, the same as every other bare
+         * command does via the POSIX->S-expr wrap below. The lookup
+         * above has no side effects (it never called anything, only
+         * looked up the binding), so re-evaluating as a proper zero-
+         * argument call is safe -- nothing runs twice. */
+        if (res && (res->type == LISP_PRIMITIVE || res->type == LISP_LAMBDA)) {
+            char call[600];
+            int n = 0;
+            call[n++] = '(';
+            for (const char *p = cmd_line; *p && n < (int)sizeof(call) - 2; p++) {
+                call[n++] = *p;
+            }
+            call[n++] = ')';
+            call[n] = '\0';
+            res = lisp_eval_string(call);
+        }
         if (res && res->type != LISP_NIL) {
             cprintf("=> ");
             lisp_print(res);
