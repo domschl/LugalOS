@@ -1,9 +1,13 @@
 # Phase 10 — Chess completion (console REPL, game-outcome logic, TM1638 menus, perft, UCI)
 
-**Status:** planned, 2026-08-12. Not started. Written from the user's own raw
-proposal plus a re-read of `~/gith/domschl/LugalChess/engine/src/console.c`
-(1637 lines) and `uci.c` (174 lines), against the current state of
-`user/chess/` after phase9 H1-H4.
+**Status:** done, 2026-08-12. J0-J4 and J6 shipped and hardware-verified; J5
+(UCI) was built, verified working, and then deliberately removed the same
+day once a working host-side bridge proved unreliable enough to undermine
+the actual point of it (GUI usability) — see J5's own section below for the
+full account. Originally written from the user's own raw proposal plus a
+re-read of `~/gith/domschl/LugalChess/engine/src/console.c` (1637 lines) and
+`uci.c` (174 lines), against the current state of `user/chess/` after
+phase9 H1-H4.
 
 **What phase9 actually shipped vs. what "play a game of chess" needs.**
 H4 deliberately did not vendor `console.c` at all (its own text: "~150
@@ -940,46 +944,90 @@ ownership shape `search.c`'s own pool already has (owned by whoever calls
 **J4 is now fully closed** — implementation, the stack-footprint fix, and
 this ownership note, all 2026-08-12.
 
-## J5 — UCI-over-UART bridge (stretch; standard UCI only)
+## J5 — UCI-over-UART bridge (stretch; standard UCI only) *(attempted and removed, 2026-08-12)*
 
-The user's own simplification — drop `console.c`'s hacked-in bidirectional
-control (keypad-to-GUI move sync) and expose only what `uci.c`
-(`~/gith/domschl/LugalChess/engine/src/uci.c`, 174 lines) already
-implements: a clean `uci`/`isready`/`ucinewgame`/`position`/`go`/`quit` loop
-with no menu system, no TM1638/ST7735 coupling. `uci.c` is small enough to
-port close to verbatim (`chess_uci_run()` in `chess_ui.c`), reusing J1's
-`vfs`-free save/load-less state (a UCI session doesn't persist across
-`ucinewgame`) and the same `execute_player_move()`/promotion logic J1/J2
-already share.
+Built, tested, and ultimately reverted the same day. Kept here so a later
+attempt (if any) starts from what was actually learned rather than the
+original plan text above, which undersold the real scope.
 
-**Binding decision this milestone should make explicitly, following
-`p9serve`'s own precedent rather than `console-bind`'s:** `console_bind()`
-(`kernel/console.c:12`) rebinds the *system console* — the shell's own
-stdio — to a device; that's the wrong shape here, since a UCI session and an
-interactive shell are different consumers that might both want to exist
-(one on USB, one on a UART, say). `p9serve` instead takes ownership of a
-named device directly and blocks servicing it (`kernel/shell.c`, phase5 B-series) without touching the system console at all — `chess-uci <device-name>`
-should follow that same shape: open the named UART device directly (same
-device-registry lookup `console_bind_device()` already uses internally,
-`kernel/console.c:64-80`), and loop reading/writing raw bytes against it
-until `quit`, never calling `console_bind()`. This is what lets `chess-uci`
-run on a second UART while `lsh` keeps the primary console, rather than
-forcing a choice between "shell" and "chess GUI" on one board.
+**What got built:** a dedicated third CDC-ACM interface (ACM2, RP2350's
+EP5/EP6) rather than sharing ACM1 with P9 — always advertised in the USB
+descriptor when `CONFIG_ENABLE_CHESS` is on, but the endpoint's hardware
+left completely unconfigured until `usb_cdc_uci_ensure_init()` runs, only
+reachable via the `chess-uci` Lisp primitive ("chess is just one specific
+application," the user's own framing, is why this wasn't board-level
+infrastructure like `usbcon`/`usbnet`). `chess_uci_run()` (`chess_ui.c`)
+ported `uci.c`'s command loop, building `bestmove`/`info` lines itself from
+`search_progress_callback()`'s own captured state rather than relying on
+`search.c`'s embedded prints (bound to whatever the console currently is)
+or on `console_bind()` (which would have silenced the operator's own
+terminal for the session's duration — the whole reason ACM2 existed rather
+than reusing ACM0/ACM1). QEMU has no USB CDC at all, so there
+`chess_uci_run()` temporarily borrowed the single virtio-console link from
+background 9P (new `virtio_console_read_raw()`/`write_raw()`,
+`p9_link_unregister_background()`/`register_background()` for the
+session's duration) — a QEMU-only accommodation; real hardware never
+shares a wire between P9 and UCI.
 
-**Explicitly out of scope, and belongs to a different repository:** teaching
-`~/gith/domschl/LugalChess`'s own `gui/lugalgui` PySide6 app to speak plain
-UCI instead of its current bidirectional protocol. This phase only needs
-LugalOS to emit correct, standard UCI on a port — that already makes it
-usable from any standard UCI-speaking GUI that exists today (cutechess-cli,
-Arena, a lichess bridge), which is the actual value of the simplification
-the user proposed: no GUI-side changes required to get *some* GUI working,
-even before LugalGUI itself is ever touched.
+**A real bug found and fixed along the way, not specific to the UCI work
+itself:** `chess_abort_requested()` (used by every other blocking wait in
+this file for Ctrl-C) drains the *entire* primary console's UART RX FIFO
+as a side effect (`console_interrupt_requested()`, `kernel/console.c`).
+Fine when the human typing and that UART are the same stream, as with
+`chess_run()`/`chess_console_run()` — wrong for a session meant to coexist
+with normal shell use on a separate wire, since it silently ate whatever
+the operator was typing on their own console for as long as a UCI session
+was open. `chess_uci_run()`'s own read loop was written to never call it;
+only `quit` ended a session, the same "no software escape, reset to exit"
+shape `p9serve` already has. This class of bug (a shared, non-obvious
+side effect inside a function everything else already trusted) is worth
+remembering independently of UCI specifically.
 
-**Verify:** QEMU-testable in principle (no hardware-specific code — the UART
-device abstraction already has a QEMU-side virtio/16550 backing per earlier
-phases), via `tests/runner.py` scripting a handful of UCI commands over the
-device and asserting `bestmove` output. Real GUI interop (cutechess-cli
-against a live board) is hardware-only, same category as J3.
+**Verified working, thoroughly:** 193/193 QEMU tests (both architectures,
+including a dedicated `tests/runner.py` case driving a real UCI exchange
+over the virtio-console link from an external client). On real RP2350
+hardware: ACM2 confirmed present-but-silent before `chess-uci` ran, then
+multiple full sessions via plain `pyserial` (`uci`->`uciok`,
+`isready`->`readyok`, `go`->`bestmove`, clean `quit`, console still
+responsive afterward) all succeeded reliably.
+
+**Why it was removed anyway:** the actual goal (stated by the user at the
+start of this milestone) was GUI usability — a standard UCI GUI expects to
+spawn a local executable and talk to it over stdin/stdout, not open a
+serial device itself, so a host-side bridge (`tools/uci_bridge.c`,
+stdin/stdout <-> the serial device, no runtime dependencies) was the
+actual deliverable, not `chess-uci` alone. That bridge hit a real,
+non-obvious macOS USB-CDC-ACM driver quirk with a raw C client on this
+custom third interface — open() blocking on carrier-detect, a *blocking*
+write() that never completed at all, `CLOCAL`/`CREAD` needing to be set
+explicitly (`cfmakeraw()` doesn't touch either), DTR/RTS needing explicit
+assertion via `TIOCMBIS` before the driver would transmit anything. Each
+fix was real and confirmed necessary, but even with all of them applied
+the bridge still dropped roughly one exchange in three under rapid,
+scripted use — a residual, intermittent failure mode not fully run to
+ground (Python's `pyserial`, by contrast, worked reliably throughout,
+almost certainly because its POSIX backend already encodes years of
+accumulated, mostly-undocumented platform-quirk handling a from-scratch
+150-line C program doesn't get for free). A working protocol nobody can
+reliably reach from a GUI isn't worth the added surface area (a new USB
+descriptor, new endpoint driver code, a new build-time-gated Lisp
+primitive, a new host-side tool) — the user's own call, made once the
+actual cost/benefit was visible, not a technical dead end forced by the
+protocol itself. `git revert` of the implementing commit restores exactly
+the pre-J5 state (`b24fcf4` reverting `54b6062`); 191/191 QEMU and 15/15
+hardware confirmed clean afterward, heap back to 60/60 pages (was 54 with
+J5's extra flash cost).
+
+**If this is ever revisited:** the firmware-side approach (dedicated ACM2,
+lazy activation, build-independent `bestmove`/`info` construction, the
+`chess_abort_requested()` finding) held up under real testing and would
+not need to change. What would need different treatment is the bridge —
+either accept `pyserial` (or another mature, already-quirk-hardened
+library) as the actual host-side dependency instead of a from-scratch
+POSIX C client, or budget real time for USB protocol-level tracing
+(Wireshark/USBPcap) to find the specific host-driver interaction causing
+the intermittent drops, neither of which was in scope for a same-day
+stretch milestone.
 
 ## J6 — `init.lisp` single-purpose persona *(done, 2026-08-12 — superseded by a more general mechanism)*
 
