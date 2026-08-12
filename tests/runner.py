@@ -813,6 +813,67 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             f"before={before.group(1) if before else '?'} "
             f"after={after.group(1) if after else '?'}\n{log1}"))
 
+        # 10d. Chess game-outcome detection (J2, plan/phase10_chess_completion
+        # .md): checkmate and stalemate, the "unfinished integration" the
+        # phase's own original proposal named. Fool's mate reached directly
+        # via FEN (1.f3 e5 2.g4, Black to move) rather than playing it out
+        # move by move -- cheap and deterministic, no search needed for the
+        # *detection* side. Qh4# should end the game immediately, before any
+        # engine reply is attempted.
+        #
+        # Each sub-test is two send_and_expect() calls, not one combined
+        # string ending in "quit" -- found live (the hard way: it hung the
+        # rest of the suite) that matching on the outcome message returns
+        # before `quit`, sent in the same write right after it, has actually
+        # been read and processed by the guest. The *next* test's own first
+        # write can then arrive while the guest is still mid-transition out
+        # of the previous chess session, landing at an unpredictable point
+        # relative to whatever that test assumed was a clean chess> prompt.
+        # Waiting explicitly for "lsh>" after `quit` closes that gap.
+        cmd_checkmate = (
+            "(chess)\n"
+            "fen rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2\n"
+            "d8h4"
+        )
+        ok, log = session.send_and_expect(cmd_checkmate, r"Checkmate! Black wins!", timeout=6.0)
+        results.append(("Chess Checkmate Detection (fool's mate, J2)", ok, log if not ok else ""))
+        session.send_and_expect("quit", r"lsh>", timeout=4.0)
+
+        # A textbook stalemate (Black king a8, White queen b6 covers a7/b7/b8
+        # without checking a8 itself) loaded directly via FEN, confirmed via
+        # `moves` (0 legal moves) and then `go`, which must report the
+        # outcome instead of attempting a search with no legal replies.
+        cmd_stalemate = (
+            "(chess)\n"
+            "fen k7/8/1Q6/8/8/8/8/7K b - - 0 1\n"
+            "go"
+        )
+        ok, log = session.send_and_expect(cmd_stalemate, r"Stalemate! Game is a draw", timeout=6.0)
+        results.append(("Chess Stalemate Detection (J2)", ok, log if not ok else ""))
+        session.send_and_expect("quit", r"lsh>", timeout=4.0)
+
+        # Ctrl-C interrupting an unbounded (Level 8) search (J2) is
+        # deliberately NOT an automated test here, after trying: it needs a
+        # real wall-clock delay between starting an off-book search (a2a3 --
+        # every common first move is an opening-book entry that returns
+        # instantly, so only an off-book move forces a genuine iterative-
+        # deepening search to interrupt) and sending the interrupt byte,
+        # which makes it a real-time race against this specific test
+        # session's own accumulated state and host-machine load rather than
+        # a deterministic check. It hung the *entire* suite (every test
+        # after it, on whichever architecture drew the bad timing) when the
+        # 1.5s window landed wrong, even with a synchronized setup step and
+        # a best-effort second-Ctrl-C cleanup attempt -- both tried and both
+        # still observed to hang live. The mechanism itself is verified
+        # thoroughly by hand instead, with a proper negative control: `(chess)
+        # / level 8 / a2a3` alone left the search still mid-depth-10 with no
+        # bestmove after 6 real seconds; the same sequence with a raw 0x03
+        # sent 1.5s in reliably returned a bestmove within ~3s of the
+        # interrupt, repeatedly, from a clean boot. Automating this
+        # reliably would need the search itself to expose a way to block
+        # until "in progress" rather than racing a sleep() against it --
+        # a real follow-up, not attempted here.
+
         # 11. Phase 3: Persistent History Logging (/sd0/system/history.lisp)
         cmd_hist_check = "cat /sd0/system/history.lisp"
         ok, log = session.send_and_expect(cmd_hist_check, r"history", timeout=4.0)

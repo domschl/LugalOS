@@ -2,6 +2,7 @@
 #include "kernel/chan.h"
 #include "kernel/device.h"
 #include "kernel/printk.h"
+#include "drivers/uart.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -84,3 +85,20 @@ int console_bind_device(const char *name) {
 }
 
 const char *console_bound_device(void) { return g_bound_name; }
+
+/* --- Ctrl-C interrupt (J2, plan/phase10_chess_completion.md) --- */
+
+static volatile bool g_interrupt_pending = false;
+
+bool console_interrupt_requested(void) {
+    while (uart_has_char()) {
+        if (uart_getc() == 0x03) {
+            g_interrupt_pending = true;
+        }
+    }
+    return g_interrupt_pending;
+}
+
+void console_interrupt_clear(void) {
+    g_interrupt_pending = false;
+}

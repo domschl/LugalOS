@@ -125,12 +125,31 @@ void search_progress_callback(Move move, int score, int depth) {
     g_search_depth = depth;
 }
 
+/* J2 (plan/phase10_chess_completion.md): search.c calls this every 2048
+ * nodes (check_up_time()) -- a cooperative poll already wired into the
+ * engine's inner loop, not something this milestone needed to add. Two
+ * independent ways to stop: a terminal Ctrl-C, via the general
+ * console_interrupt_requested() primitive (kernel/console.c, not
+ * chess-specific -- the same need recurs for run-away Lisp scripts); and
+ * the TM1638 STOP key (key 11), a physical-keypad gesture with no
+ * terminal equivalent, so it stays a direct check rather than being
+ * folded into the Ctrl-C path. Either sets `stop_search`, which
+ * pv_search()/quiescence() already check on the way back out of their own
+ * recursion. */
 void search_poll_stop_callback(void) {
-    /* Nothing to poll yet in this first version -- no mid-search abort key,
-     * no background housekeeping needed (the search runs synchronously on
-     * the calling context's own stack, not a task the scheduler could
-     * starve). Present because search.c always calls it every 2048 nodes;
-     * an empty body costs one function call, not a busy-wait. */
+    if (console_interrupt_requested()) {
+        stop_search = true;
+    }
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    if (tm1638_get_key() == 11) {
+        stop_search = true;
+        /* Debounce -- wait for the key to actually release, same shape as
+         * console.c:320-327, so one press doesn't register as several. */
+        while (tm1638_get_key() == 11) {
+            time_delay_us(10000);
+        }
+    }
+#endif
 }
 
 static void format_move(Move m, char *out) {
@@ -159,6 +178,12 @@ static void format_move(Move m, char *out) {
 static Move chess_think(Position *pos, int max_depth, int time_limit_ms) {
     g_search_best_move = 0;
     g_search_score = 0;
+    /* Clears any Ctrl-C latched from a previous search (or typed at an idle
+     * prompt) before this one starts -- otherwise a stale interrupt would
+     * abort the very next search instantly, since console_interrupt_
+     * requested() is sticky until cleared. Every search entry point goes
+     * through this one function, so clearing here covers all of them. */
+    console_interrupt_clear();
     search_position(pos, max_depth, time_limit_ms);
 
     Move best = g_search_best_move;
@@ -207,6 +232,80 @@ void chess_selftest(void) {
      * (chess-selftest) calls stay "stateless" rather than only the first
      * one paying the allocation cost forever after. */
     chess_session_end();
+}
+
+/* ------------------------------------------------------------------ *
+ * J2 (plan/phase10_chess_completion.md): game-outcome detection --   *
+ * checkmate/stalemate/draw -- and check status. Pure position logic, *
+ * no stdio, built entirely from primitives H4 already vendored       *
+ * (generate_moves, make_move/unmake_move, is_square_attacked).       *
+ * Shared by both front ends below: chess_console_run() and           *
+ * chess_run() each call these after every half-move rather than      *
+ * duplicating the logic per UI, ported from console.c's               *
+ * check_and_display_game_over()/check_and_update_check_status()      *
+ * (:1031-1098, :993-1009) minus their printf/TM1638-specific display  *
+ * calls, which the callers below do differently (cprintf text vs.    *
+ * an 8-character TM1638 string). *
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    CHESS_ONGOING = 0,
+    CHESS_CHECKMATE_WHITE, /* White (to move) has no legal moves and is in
+                             * check -- Black wins. */
+    CHESS_CHECKMATE_BLACK, /* Black (to move) has no legal moves and is in
+                             * check -- White wins. */
+    CHESS_STALEMATE,
+    CHESS_DRAW_REPETITION,
+    CHESS_DRAW_50MOVE,
+} ChessOutcome;
+
+static bool chess_has_legal_move(Position *pos) {
+    static MoveList list;
+    generate_moves(pos, &list);
+    for (int i = 0; i < list.count; i++) {
+        if (make_move(pos, list.moves[i])) {
+            unmake_move(pos);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Ported from console.c's is_threefold_repetition() (:1011-1029): a
+ * position (by hash) recurring 3 times (including the current one) since
+ * the last irreversible move (pawn push or capture, i.e. within
+ * pos->halfmove plies of history) is a draw. */
+static bool chess_is_threefold_repetition(const Position *pos) {
+    if (pos->history_ply < 4) return false;
+
+    int count = 1; /* the current position is the first occurrence */
+    int start_ply = pos->history_ply - 1;
+    int end_ply = pos->history_ply - pos->halfmove;
+    if (end_ply < 0) end_ply = 0;
+
+    for (int i = start_ply; i >= end_ply; i--) {
+        if (pos->history[i].hash_key == pos->hash_key) {
+            count++;
+            if (count >= 3) return true;
+        }
+    }
+    return false;
+}
+
+static bool chess_in_check(const Position *pos) {
+    return is_square_attacked(pos, get_lsb(pos->piece_bbs[KING] & pos->color_bbs[pos->side]), pos->side ^ 1);
+}
+
+static ChessOutcome chess_game_outcome(Position *pos) {
+    if (!chess_has_legal_move(pos)) {
+        if (chess_in_check(pos)) {
+            return (pos->side == WHITE) ? CHESS_CHECKMATE_WHITE : CHESS_CHECKMATE_BLACK;
+        }
+        return CHESS_STALEMATE;
+    }
+    if (chess_is_threefold_repetition(pos)) return CHESS_DRAW_REPETITION;
+    if (pos->halfmove >= 100) return CHESS_DRAW_50MOVE;
+    return CHESS_ONGOING;
 }
 
 /* ------------------------------------------------------------------ *
@@ -319,14 +418,51 @@ static bool console_execute_move(Position *pos, const char *move_str) {
  * needs doing by hand. */
 static const char *sign_prefix(int v) { return v >= 0 ? "+" : ""; }
 
+static void console_print_outcome(ChessOutcome outcome) {
+    switch (outcome) {
+        case CHESS_CHECKMATE_WHITE: cprintf("Checkmate! Black wins!\n"); break;
+        case CHESS_CHECKMATE_BLACK: cprintf("Checkmate! White wins!\n"); break;
+        case CHESS_STALEMATE:       cprintf("Stalemate! Game is a draw.\n"); break;
+        case CHESS_DRAW_REPETITION: cprintf("Draw by 3-fold repetition.\n"); break;
+        case CHESS_DRAW_50MOVE:     cprintf("Draw by 50-move rule.\n"); break;
+        default: break;
+    }
+}
+
+/* Prints the outcome message and returns true if the game just ended (no
+ * further engine work should follow); otherwise prints "Check!" when
+ * relevant and returns false. console.c's own two-function split
+ * (check_and_display_game_over()/check_and_update_check_status(),
+ * :1031-1098/:993-1009) collapses into one call here, since every caller
+ * below wants exactly this "did it end, and if not, is it check" sequence
+ * together. */
+static bool console_report_outcome(Position *pos) {
+    ChessOutcome outcome = chess_game_outcome(pos);
+    if (outcome != CHESS_ONGOING) {
+        console_print_outcome(outcome);
+        return true;
+    }
+    if (chess_in_check(pos)) {
+        cprintf("Check!\n");
+    }
+    return false;
+}
+
 /* Shared by the post-move auto-reply and the `go` command below --
  * upstream duplicates this logic between make_engine_move() and the `go`
- * command handler in console.c; one helper here instead. No check/
- * checkmate/stalemate/draw text yet (J2's job) -- "resigned or found no
- * legal moves" is the same minimal fallback upstream's own
- * make_engine_move() already used for a position with no legal replies,
- * ported as-is rather than guessed at. */
+ * command handler in console.c; one helper here instead. Checks outcome
+ * before searching (a position with no legal replies gets the real
+ * checkmate/stalemate/draw message, not the generic "resigned" fallback
+ * below, which upstream's own make_engine_move() used unconditionally --
+ * this milestone is what adds the distinction) and again after, printing
+ * the board either way so both this function's callers (a bare move's
+ * auto-reply, and the `go` command, which upstream's own console.c also
+ * prints the board after) get consistent output without duplicating the
+ * print_board() call at each call site. */
 static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms) {
+    if (console_report_outcome(pos)) {
+        return; /* game already over before the engine could reply */
+    }
     Move best = chess_think(pos, max_depth, time_limit_ms);
     if (best == 0) {
         cprintf("Engine resigned or found no legal moves.\n");
@@ -337,6 +473,8 @@ static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms
     make_move(pos, best);
     g_console_max_history_ply = pos->history_ply;
     cprintf("Engine plays: %s (Score: %s%d)\n", buf, sign_prefix(g_search_score), g_search_score);
+    print_board(pos);
+    console_report_outcome(pos);
 }
 
 static void console_print_help(void) {
@@ -345,12 +483,13 @@ static void console_print_help(void) {
     cprintf("  new               - Start a new game from the standard starting position\n");
     cprintf("  board (or d)      - Display the current board state\n");
     cprintf("  level <1-8>       - Set engine search level (1:1s 2:2s 3:5s 4:10s 5:15s "
-            "6:30s 7:60s 8:Infinite -- 8 has no interrupt yet, see 'stop')\n");
+            "6:30s 7:60s 8:Infinite -- press Ctrl-C to stop an 8/Infinite search)\n");
     cprintf("  fen [FEN]         - Show current FEN, or set a custom FEN position\n");
     cprintf("  save              - Save the current position and level (/sd0 if writable, else /ram0)\n");
     cprintf("  load              - Load the saved position and level\n");
     cprintf("  go [depth N|movetime N] - Force the engine to think and play a move\n");
-    cprintf("  stop              - No mid-search interrupt yet (J2); accepted, has no effect\n");
+    cprintf("  stop              - No mid-search effect here (not currently thinking); press "
+            "Ctrl-C instead to interrupt a running search\n");
     cprintf("  undo              - Take back 1 half-move\n");
     cprintf("  redo              - Re-apply 1 half-move\n");
     cprintf("  eval              - Print the static evaluation of the current position\n");
@@ -493,7 +632,7 @@ void chess_console_run(void) {
                 if (level_times_ms[val - 1] != -1) {
                     cprintf("Search level set to %d (%ds per move).\n", val, level_times_ms[val - 1] / 1000);
                 } else {
-                    cprintf("Search level set to 8 (Infinite -- no interrupt yet, see 'help').\n");
+                    cprintf("Search level set to 8 (Infinite -- press Ctrl-C to stop it).\n");
                 }
             } else {
                 cprintf("Invalid level. Specify 1 to 8 (see 'help').\n");
@@ -551,15 +690,25 @@ void chess_console_run(void) {
         } else if (strcmp(line, "moves") == 0) {
             console_list_moves(&g_chess_pos);
         } else if (strcmp(line, "stop") == 0) {
-            cprintf("Nothing to stop (no mid-search interrupt yet -- J2).\n");
+            /* UCI-protocol-compatibility no-op, matching console.c:1603-1606
+             * -- the engine is never "thinking" at this point in the REPL
+             * (readline_interactive() only reads this line once the
+             * previous search has already returned), so there is nothing
+             * to interrupt here specifically. Ctrl-C is what actually
+             * reaches a search in progress, since it's polled from inside
+             * search_poll_stop_callback() while search_position() itself
+             * owns the call stack -- typed input can't reach this REPL
+             * loop until that returns. */
+            cprintf("Engine is not currently thinking.\n");
         } else if (strcmp(line, "quit") == 0) {
             chess_session_end();
             return;
         } else if (console_execute_move(&g_chess_pos, line)) {
             g_console_max_history_ply = g_chess_pos.history_ply;
             print_board(&g_chess_pos);
-            console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
-            print_board(&g_chess_pos);
+            if (!console_report_outcome(&g_chess_pos)) {
+                console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
+            }
         } else {
             cprintf("Unknown command or invalid move: '%s'. Type 'help' for a list.\n", line);
         }
@@ -725,6 +874,37 @@ static Move tm_read_move(Position *pos) {
 }
 
 #if CONFIG_ENABLE_DISPLAY
+/* J2: TM1638 rendering of chess_game_outcome()/chess_in_check(), the same
+ * literal 8-character display strings console.c itself uses
+ * (:1049-1094) for the equivalent embedded-mode messages. Returns true if
+ * the game just ended (caller freezes -- reset to play again, same shape
+ * as the old undifferentiated "gAME OuEr" it replaces); false if play
+ * continues, having already shown a brief "CHk     " if relevant. */
+static bool tm_report_outcome(Position *pos) {
+    switch (chess_game_outcome(pos)) {
+        case CHESS_CHECKMATE_WHITE:
+            tm1638_display_string("nAtE bL "); /* mate, black wins */
+            draw_chess_status(pos, "checkmate: black wins", false);
+            return true;
+        case CHESS_CHECKMATE_BLACK:
+            tm1638_display_string("nAtE UH "); /* mate, white wins ('U' for 'W') */
+            draw_chess_status(pos, "checkmate: white wins", false);
+            return true;
+        case CHESS_STALEMATE:
+        case CHESS_DRAW_REPETITION:
+        case CHESS_DRAW_50MOVE:
+            tm1638_display_string("drAU    ");
+            draw_chess_status(pos, "draw", false);
+            return true;
+        default:
+            if (chess_in_check(pos)) {
+                tm1638_display_string("CHk     ");
+                time_delay_us(700000);
+            }
+            return false;
+    }
+}
+
 void chess_run(void) {
     if (!chess_ensure_init()) return;
     parse_fen(&g_chess_pos, STANDARD_START_FEN);
@@ -752,10 +932,18 @@ void chess_run(void) {
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
 
+        if (tm_report_outcome(&g_chess_pos)) {
+            for (;;) time_delay_us(1000000); /* game over: reset to play again */
+        }
+
         tm1638_display_string("tHInKIng");
         draw_chess_status(&g_chess_pos, last_move_buf, true);
         Move engine_move = chess_think(&g_chess_pos, 64, 5000);
         if (engine_move == 0) {
+            /* Defensive only -- tm_report_outcome() above already returned
+             * false (ongoing, so a legal reply exists) before this search
+             * ever started; a real hit here would mean engine/outcome
+             * logic disagree, not an expected game state. */
             tm1638_display_string("gAME OuEr");
             draw_chess_status(&g_chess_pos, "no moves", false);
             for (;;) time_delay_us(1000000); /* game over: reset to play again */
@@ -765,6 +953,10 @@ void chess_run(void) {
         tm1638_display_string(last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
+
+        if (tm_report_outcome(&g_chess_pos)) {
+            for (;;) time_delay_us(1000000); /* game over: reset to play again */
+        }
     }
 }
 #endif /* CONFIG_ENABLE_DISPLAY */

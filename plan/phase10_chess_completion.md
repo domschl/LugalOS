@@ -320,7 +320,75 @@ soft-float like RV32, which the float-removal fix (finding 3) already
 confirmed working; worth a hardware re-run next time the board's reachable,
 but not a gap in what J1 itself needed proven.
 
-## J2 — Game-outcome detection, check/mate/draw announcement, promotion selector, Ctrl-C interrupt
+## J2 — Game-outcome detection, check/mate/draw announcement, promotion selector, Ctrl-C interrupt *(done, 2026-08-12)*
+
+Landed as designed below. `chess_game_outcome()`/`chess_in_check()` live in
+`chess_ui.c` as a `ChessOutcome` enum (`CHESS_ONGOING`, `CHESS_CHECKMATE_
+WHITE`/`_BLACK`, `CHESS_STALEMATE`, `CHESS_DRAW_REPETITION`, `CHESS_DRAW_
+50MOVE`) plus a small `chess_has_legal_move()`/`chess_is_threefold_
+repetition()` pair underneath, shared by both `chess_console_run()` (J1,
+via `console_report_outcome()` — prints text, checked after every
+half-move including inside `console_engine_reply()` before searching, so a
+position with no legal replies gets the real message instead of the old
+"resigned" fallback) and `chess_run()` (via `tm_report_outcome()` — the same
+8-character TM1638 strings `console.c` itself uses: `"nAtE bL "`, `"nAtE
+UH "`, `"drAU    "`, plus a brief `"CHk     "` flash for check that isn't
+game-ending). The promotion-selector half of this milestone needed no new
+code: J1's `console_execute_move()` already carried `execute_player_move()`'s
+only-promo-defaults-to-Queen logic verbatim from its own landing; the TM1638
+keypad promotion picker is J3's, not this milestone's, since it's a
+keypad-input concern, not an outcome-detection one.
+
+The Ctrl-C primitive landed exactly as designed: `console_interrupt_
+requested()`/`console_interrupt_clear()` in `kernel/console.c`, wired into
+chess's `search_poll_stop_callback()` (alongside a direct TM1638 STOP-key
+check) and into `lisp_eval()` for run-away-but-legal scripts.
+
+**Two things found while landing this, both fixed, both worth remembering
+for any future poll-and-drain design in this codebase:**
+
+1. **The Ctrl-C poll's cadence has to be reset per top-level call, not left
+   as a single ever-incrementing counter.** `lisp_eval()`'s first version
+   polled every 1024 total calls across the *whole session*; a single
+   depth-100-bounded recursive call (`(loop n)`, an existing regression
+   test) turned out to perform far more than 1024 total `lisp_eval()`
+   invocations on its way to the depth cap (every argument sub-expression
+   is its own call, not just the tail-recursive chain), so the poll fired
+   mid-evaluation of what should have been a *fast, ordinary* command —
+   draining and discarding whatever the test harness had already queued up
+   next on the same input stream (`tests/runner.py` pipelines several
+   commands in one write). Two existing regression tests broke this way
+   before it was diagnosed. Fixed two ways together: reset the poll counter
+   whenever `eval_depth == 0` (a fresh top-level call), and raise the
+   threshold itself to ~1M calls — generous headroom above anything a
+   single bounded-depth (≤100) recursion can produce, while remaining a
+   small fraction of a second for the genuinely wide, long-running
+   computation (many separate bounded calls, e.g. over a large list) this
+   exists for. Confirmed fixed: 185/185 QEMU tests, three consecutive
+   clean runs.
+2. **A wall-clock-timed Ctrl-C test in the automated suite is a real
+   liability, not just occasionally flaky.** An attempt to automate "send
+   `a2a3` at Level 8 (opening book covers every common first move, so only
+   an off-book one forces a genuine search), sleep 1.5s, send `0x03`,
+   assert a `bestmove` follows" hung the *entire* remaining test suite
+   (every test after it, on whichever architecture's timing landed badly)
+   when the sleep window missed — even with a synchronized setup step and
+   a best-effort second-Ctrl-C cleanup attempt, both tried live. Removed
+   from the automated suite rather than fought further; the mechanism
+   itself is verified thoroughly by hand instead (see the milestone's own
+   "Verify" section below), with a proper negative control proving the
+   difference Ctrl-C actually makes. A related, smaller lesson from the
+   same debugging pass: two of J2's *own* new tests (checkmate/stalemate)
+   turned out to have the identical "matched on the outcome message, not on
+   `quit` actually being consumed" bug the Ctrl-C investigation surfaced
+   the mechanism for — `session.send_and_expect(cmd + "\nquit", pattern)`
+   returns as soon as `pattern` matches, which can be *before* the trailing
+   `quit` in the same write has been processed by the guest, leaving the
+   next test's own first write landing at an unpredictable point relative
+   to a "clean prompt" assumption. Fixed by always waiting for `"lsh>"` in
+   a *separate* `send_and_expect("quit", r"lsh>")` call rather than folding
+   `quit` into the timed command — a pattern worth applying to any future
+   multi-command QEMU test in this suite, not just chess's.
 
 The actual "unfinished integration" the user's notes name, and the piece
 both J1 and the existing `chess_run()` are missing today. Lives in
@@ -441,12 +509,15 @@ Two consumers, one primitive:
   protects against unbounded *recursion*, but not against a legitimately
   bounded-depth call that's simply expensive (an exponential-blowup
   recursive definition well under the depth-100 ceiling can still run for a
-  long time). Add a static call counter alongside `eval_depth`, check
-  `console_interrupt_requested()` every ~1024 calls (the same
-  cost-vs-responsiveness throttle `search.c` already applies at a 2048-node
-  cadence, for the same reason: `uart_has_char()` isn't free enough to call
-  on literally every recursive step, but is cheap enough every thousand or
-  so), and on a hit, print `"[Lisp] interrupted by Ctrl-C\n"` and unwind to
+  long time). A static call counter alongside `eval_depth`, reset on every
+  fresh top-level call (not left as one ever-incrementing session-wide
+  total — landed this way after an ~1024-call throttle broke two existing
+  regression tests, see this milestone's own "found while landing this"
+  note above), checks `console_interrupt_requested()` every ~2^20 (~1M)
+  calls — generous headroom above what any single depth-≤100-bounded
+  recursion can produce, while staying a small fraction of a second of
+  real time for the wide, long-running computation this actually targets
+  — and on a hit, prints `"[Lisp] interrupted by Ctrl-C\n"` and unwinds to
   `&nil_val` — the exact same shape the node-pool-exhaustion and
   depth-exceeded checks immediately above it in that function already use,
   not a new error-handling pattern.
@@ -469,14 +540,50 @@ current `check_up_time()` interval, it just checks a flag on the way back
 out of `pv_search`/`quiescence`'s recursion
 (`search.c:392,420,437,492,542`, all `if (stop_search) return 0;`).
 
-**Verify:** QEMU — a scripted test starts `go` (or `level 8` then a move)
-against a slow-to-resolve position and sends a raw `0x03` byte on a short
-delay, asserting the command returns with a `bestmove` rather than hanging
-for the test's timeout; a second test drives a deliberately expensive (but
-depth-bounded) recursive Lisp definition through `lisp_repl()` and confirms
-the same `0x03` unwinds it with the interrupted-message rather than running
-to completion. Hardware — the TM1638 STOP-key path, same category as J3's
-other interactive checks (no QEMU model for the keypad).
+**Verify:** all three targets build clean. 189/189 QEMU tests pass (185 +
+new `Chess Checkmate Detection`/`Chess Stalemate Detection` cases on both
+RV32 and RV64), stable across repeated runs. Checkmate confirmed with
+fool's mate reached directly via FEN (1.f3 e5 2.g4, then `d8h4`) — the
+console correctly prints "Checkmate! Black wins!" and never attempts an
+engine reply. Stalemate confirmed with the textbook king+queen-vs-king
+position (`k7/8/1Q6/8/8/8/8/7K b - - 0 1`) — `moves` reports 0 legal moves,
+`go` reports "Stalemate! Game is a draw." instead of searching. RP2350
+hardware: 15/15 existing hardware tests still pass post-J2 (build
+200.b3b915c7+), idle heap unchanged at 60 pages; `(chess)` on this board
+dispatches straight to `chess_run()`'s TM1638/ST7735 path (display+keypad
+both present) rather than the console, which doesn't touch the serial
+console at all and blocks on physical key input without servicing USB/CDC
+— confirmed live (the hard way: it left the board unreachable even to the
+1200-baud reflash touch until a physical power-cycle). The TM1638-specific
+`tm_report_outcome()` rendering is therefore code-reviewed and shares the
+exact `chess_game_outcome()`/`chess_in_check()` logic the console path
+already exercises on real hardware via `chess-selftest`, but wasn't
+independently confirmed by pressing physical keys this session — a real
+gap, left for whoever next has hands on the keypad (the same category as
+J3's own hardware-only checks below).
+
+Ctrl-C is **not** an automated QEMU test, after two attempts (see this
+milestone's "found while landing this" note above) — both hung the entire
+suite when a wall-clock `sleep()` raced against real search progress and
+lost. Verified manually and thoroughly instead, with a proper negative
+control, repeatably, from clean boots: `(chess)`, `level 8`, `a2a3` (off
+opening-book, forcing a genuine search — every common first move is a book
+entry and returns instantly) alone left the search still mid-depth-10 with
+no `bestmove` after 6 real seconds; the identical sequence with a raw
+`0x03` sent 1.5s in reliably produced a `bestmove` within ~3s of the
+interrupt. `lisp_eval()`'s Ctrl-C path was verified the same way the
+mechanism was designed to be trusted rather than end-to-end: this minimal
+Lisp has no `<`/loop/map primitive to build a "wide but shallow" (many
+total calls, low recursion depth) test case fast enough to interrupt but
+slow enough to catch mid-flight with an external byte — `(loop 0)` itself
+completes faster than any externally-timed Ctrl-C can arrive. Confirmed
+instead by temporarily lowering the poll threshold and observing the same
+`console_interrupt_requested()`/`lisp_interrupted` state machine chess's
+search already proved live, then restoring the production threshold.
+Hardware — the TM1638 STOP-key path is unverified this session for the
+same reason as the outcome-detection rendering above (board access ended
+mid-session); same category as J3's other interactive checks (no QEMU
+model for the keypad either way).
 
 ## J3 — TM1638 function keys 8-15
 

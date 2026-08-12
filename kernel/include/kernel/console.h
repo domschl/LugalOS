@@ -111,4 +111,38 @@ int console_bind_device(const char *name);
 /* The name currently bound, or "(none)". */
 const char *console_bound_device(void);
 
+/* --- Ctrl-C interrupt (J2, plan/phase10_chess_completion.md) ---
+ *
+ * General kernel infrastructure, not chess-specific -- the input-side
+ * counterpart to this file's output stream above, added because chess's
+ * search needed a way to stop an unbounded (Level 8 / bare `go`) search
+ * from the terminal, and the same need recurs for a run-away Lisp
+ * evaluation (user/lisp/lisp.c's lisp_eval(), which already guards
+ * unbounded *recursion* via LISP_MAX_EVAL_DEPTH but not a legitimately
+ * bounded-depth call that is simply expensive).
+ *
+ * Advisory only: LugalOS has no preemption in the paths this is for (a
+ * synchronous search, lisp_eval()'s own recursion), so this cannot stop
+ * anything by itself. A long-running foreground command polls
+ * console_interrupt_requested() at a cheap, regular interval of its own
+ * choosing (search.c's check_up_time() already does this every 2048
+ * nodes; lisp_eval() does it every ~1024 calls) and unwinds cooperatively
+ * when it returns true.
+ *
+ * Non-blocking, byte-level: drains whatever is waiting on the bound input
+ * device and latches true the instant it sees a raw 0x03 (Ctrl-C),
+ * discarding every other byte it drains along the way. That discard is a
+ * real, explicit tradeoff: there is no push-back/ungetc() on the
+ * underlying read, so anything typed *during* a synchronous foreground
+ * command that is not Ctrl-C is silently dropped, not queued for the next
+ * prompt. A single atomic byte is still a strict improvement over a
+ * multi-character command word polled the same way, which could be
+ * garbled by interleaving. */
+bool console_interrupt_requested(void);
+
+/* Clears a latched interrupt. Call once after a poll loop has acted on a
+ * true result, so a Ctrl-C typed during one command doesn't leak into the
+ * next. */
+void console_interrupt_clear(void);
+
 #endif /* LUGALOS_KERNEL_CONSOLE_H */

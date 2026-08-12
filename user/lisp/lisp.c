@@ -59,6 +59,15 @@ static bool node_pool_exhausted_warned = false;
 static int eval_depth = 0;
 static bool eval_depth_exceeded_warned = false;
 
+/* J2 (plan/phase10_chess_completion.md): Ctrl-C for a run-away-but-legal
+ * evaluation -- eval_depth above only catches unbounded *recursion*, not a
+ * legitimately bounded-depth call that is simply expensive (an
+ * exponential-blowup recursive definition well under the depth-100
+ * ceiling can still run for a long time). See lisp_eval()'s own use of
+ * these for the full mechanism. */
+static unsigned long eval_poll_count = 0;
+static bool lisp_interrupted = false;
+
 static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
 static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
@@ -1825,12 +1834,67 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     if (node_pool_exhausted_warned) {
         return &nil_val;
     }
+    if (eval_depth == 0) {
+        /* A fresh top-level call (lisp_repl()/lisp_eval_string()), not a
+         * recursive one -- eval_depth is never 0 mid-evaluation, since the
+         * caller that reaches this point has already incremented it below
+         * before making any further nested lisp_eval() call. Clear any
+         * interrupt left latched from a previous evaluation here, so
+         * Ctrl-C aborts only the call it was pressed during, not every one
+         * after it.
+         *
+         * eval_poll_count resets here too -- found live, not assumed: left
+         * as a single ever-incrementing counter across the whole session,
+         * the 1024-call poll would eventually land mid-evaluation of some
+         * ordinary *fast* command purely by cumulative chance, draining
+         * whatever a caller had already queued up next on the same input
+         * stream (tests/runner.py pipelines several commands as one write,
+         * e.g. "(loop 0)\n(+ 5 5)\nexit" -- two existing regression tests
+         * broke exactly this way). Resetting per top-level call means only
+         * a single evaluation that itself performs >=1024 lisp_eval() calls
+         * -- LISP_MAX_EVAL_DEPTH=100 keeps any ordinary recursion far below
+         * that -- can ever trigger the drain, which is the actual intent:
+         * a wide-but-depth-bounded blowup, not routine use. */
+        lisp_interrupted = false;
+        eval_poll_count = 0;
+    }
+    if (lisp_interrupted) {
+        return &nil_val;
+    }
     if (eval_depth >= LISP_MAX_EVAL_DEPTH) {
         if (!eval_depth_exceeded_warned) {
             printk("[Lisp Error] Maximum evaluation depth (%d) exceeded -- "
                    "aborting to avoid a C stack overflow\n", LISP_MAX_EVAL_DEPTH);
             eval_depth_exceeded_warned = true;
         }
+        return &nil_val;
+    }
+    /* Throttled the same way search.c's check_up_time() throttles its own
+     * poll (every 2048 nodes there) -- uart_has_char() inside
+     * console_interrupt_requested() isn't free enough to call on literally
+     * every recursive step. The interval matters more here than it does
+     * for search.c, though: console_interrupt_requested() drains and
+     * discards *everything* waiting on the input device, Ctrl-C or not
+     * (its own header comment in kernel/console.h says why), so any poll
+     * that fires while a caller has already queued up its next command on
+     * the same stream destroys that queued input. tests/runner.py does
+     * exactly this -- pipelines several commands in one write -- and an
+     * earlier, much lower threshold here (1024) broke two existing
+     * regression tests that way: found live, not a hypothetical, since a
+     * single depth-100-bounded recursive call turned out to cost more than
+     * 1024 total lisp_eval() invocations (every argument sub-expression is
+     * its own call too, not just the tail-recursive chain itself) well
+     * before LISP_MAX_EVAL_DEPTH ever cuts it off. ~1M calls in comparison
+     * gives generous headroom above what any single bounded-depth (<=100)
+     * recursive chain can produce, while still being a small fraction of a
+     * second of real time for the genuinely wide, long-running computation
+     * (many separate depth-bounded calls, e.g. over a large list) this
+     * exists for -- responsiveness to an actual runaway script is
+     * unaffected in any way a human would notice. */
+    if ((++eval_poll_count & 0xFFFFFUL) == 0 && console_interrupt_requested()) {
+        printk("[Lisp] interrupted by Ctrl-C\n");
+        lisp_interrupted = true;
+        console_interrupt_clear();
         return &nil_val;
     }
     eval_depth++;
