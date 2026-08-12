@@ -786,6 +786,33 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_chess, r"Position loaded from", timeout=15.0)
         results.append(("Chess Console REPL: new/move+engine-reply/board/eval/moves/undo/redo/fen/save/load (J1)", ok, log if not ok else ""))
 
+        # 10c. Chess heap is fully released on `quit`. Revises J0's original
+        # "never freed for the process lifetime" choice -- correct when J0
+        # made it (no chess entry point had a session boundary to free at
+        # yet), stale once J1 gave chess_console_run() one. Reads
+        # /proc/meminfo before touching chess at all, then again after a
+        # full session (a real engine-reply search included, so the
+        # move-list pools and TT both actually get touched) ending in
+        # `quit`, and asserts "Pages Used" is identical -- not just "didn't
+        # grow further" but genuinely returned, the same shape as C6/C7's
+        # own cc/ed check in tests/hw/test_rp2350.py. Two separate
+        # send_and_expect calls, not one combined string: "Pages Used"
+        # appears in both readings, and a single regex would match (and
+        # return) on the first one before chess ever ran.
+        ok0, log0 = session.send_and_expect("cat /proc/meminfo", r"Pages Used: \d+", timeout=4.0)
+        before = re.search(r"Pages Used: (\d+)", log0)
+        cmd_release = "(chess)\nlevel 1\ne2e4\nquit\ncat /proc/meminfo"
+        ok1, log1 = session.send_and_expect(cmd_release, r"Pages Used: \d+", timeout=8.0)
+        after = re.search(r"Pages Used: (\d+)", log1)
+        heap_ok = (ok0 and ok1 and before is not None and after is not None
+                   and before.group(1) == after.group(1))
+        results.append((
+            "Chess Heap Is Fully Released On quit (revises J0's never-freed choice)",
+            heap_ok,
+            "" if heap_ok else
+            f"before={before.group(1) if before else '?'} "
+            f"after={after.group(1) if after else '?'}\n{log1}"))
+
         # 11. Phase 3: Persistent History Logging (/sd0/system/history.lisp)
         cmd_hist_check = "cat /sd0/system/history.lisp"
         ok, log = session.send_and_expect(cmd_hist_check, r"history", timeout=4.0)

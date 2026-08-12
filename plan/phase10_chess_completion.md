@@ -70,6 +70,34 @@ substituting `chess-selftest`'s fixed-position benchmark, which is not
 `chess-selftest` keep working under their existing names either way. Swap
 the fallback branch for a real `chess_console_run()` call once J1 lands.
 
+**Revised after J1 landed, same day, user-flagged:** the "never freed for
+the process lifetime" choice below (still shown as originally written, for
+the reasoning) was correct *when J0 made it* — no chess entry point had a
+session boundary to free at yet — but became stale the moment J1 gave
+`chess_console_run()` one (`quit`). The user pushed back explicitly: heap is
+LugalOS's scarcest resource, and the rule for every user program should be
+that quitting leaves the heap exactly as found, the same discipline cc/ed
+already follow. `search_pools_free()` (mirroring `tt.c`'s pre-existing
+`free_tt()`, which J0 never actually called) and a new
+`chess_session_end()` now release the ~100 KB (25 pages: 32 KB TT + 68 KB
+move-list pools) chess_ensure_init() acquires, called from
+`chess_console_run()`'s `quit` and from the end of `chess_selftest()` (a
+one-shot call, so it tears down every time rather than only the first
+never returning it). `chess_run()` needed no change — its only `return` is
+the pre-`g_chess_ready` init-failure guard; it otherwise never returns at
+all (reset the board to exit), so there is no software session boundary to
+free at there, the same shape as `p9serve`. Verified live on QEMU:
+`/proc/meminfo`'s `Pages Used` reads identically before touching chess and
+after a full session ending in `quit` (`Pages Peak` shows the genuine
+25-page climb and release in between) — now a permanent regression check,
+`tests/runner.py`'s `#10c`. Correcting one detail this revision does *not*
+touch: bitboard.c's attack/mask tables (~2.1 KB) and zobrist.c's hash
+tables (~6.6 KB) were never heap at all — plain static `.bss`, a fixed cost
+of `CONFIG_ENABLE_CHESS=ON` at link time regardless of whether chess ever
+runs, checked directly rather than assumed. "On-demand" has nothing to
+apply to there; the lever for that ~9 KB is the build-time flag itself
+(phase8), not a session boundary.
+
 **Two things found in the course of verifying this, neither part of J0's
 own diff:**
 

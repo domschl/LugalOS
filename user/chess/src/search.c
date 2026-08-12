@@ -116,6 +116,7 @@ static const BookEntry book_entries[] = {
  * the hot recursive path below. */
 static MoveList *search_pv_movelists = NULL;
 static MoveList *search_q_movelists = NULL;
+static uint32_t search_pools_pages = 0;
 static int sort_scores[MAX_MOVES];
 
 bool search_pools_init(void) {
@@ -124,9 +125,10 @@ bool search_pools_init(void) {
     }
 
     uint32_t bytes = (uint32_t)(2 * MAX_SEARCH_PLYS * sizeof(MoveList));
-    uint32_t pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    MoveList *block = (MoveList *)palloc_pages(pages);
+    search_pools_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    MoveList *block = (MoveList *)palloc_pages(search_pools_pages);
     if (block == NULL) {
+        search_pools_pages = 0;
         return false;
     }
 
@@ -136,6 +138,24 @@ bool search_pools_init(void) {
     search_pv_movelists = block;
     search_q_movelists = block + MAX_SEARCH_PLYS;
     return true;
+}
+
+/* Mirrors tt.c's free_tt() -- added when chess_ui.c grew a real
+ * acquire/release lifecycle (revising J0's original "never freed for the
+ * process lifetime" choice once J1 gave chess a session boundary to free
+ * at, plan/phase10_chess_completion.md). Safe to call whether or not
+ * search_pools_init() ever ran. `search_pools_pages` is stored rather than
+ * recomputed at free time -- same reason tt.c stores `tt_pages` instead of
+ * recomputing it -- so init and free can never compute a different page
+ * count even if MAX_SEARCH_PLYS or sizeof(MoveList) ever change. */
+void search_pools_free(void) {
+    if (search_pv_movelists == NULL) {
+        return;
+    }
+    palloc_free(search_pv_movelists, search_pools_pages);
+    search_pv_movelists = NULL;
+    search_q_movelists = NULL;
+    search_pools_pages = 0;
 }
 
 __attribute__((noinline))

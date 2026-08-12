@@ -60,7 +60,13 @@ static int g_search_depth = 0;
  * internally (init_tt() degrades to "no TT" rather than crashing if it
  * can't allocate). The move-list pools have no such degraded mode -- the
  * search recurses through them unconditionally -- so this is the one
- * failure callers must actually check. */
+ * failure callers must actually check.
+ *
+ * g_chess_ready is a real acquire/release latch, not a "run once, ever"
+ * flag -- chess_session_end() below clears it, so a later call re-runs
+ * this in full. init_bitboards()/init_zobrist() are cheap and idempotent
+ * (a few thousand static-array writes, no allocation), so redoing them on
+ * every session is not worth special-casing around. */
 static bool chess_ensure_init(void) {
     if (g_chess_ready) return true;
     init_bitboards();
@@ -72,6 +78,36 @@ static bool chess_ensure_init(void) {
     }
     g_chess_ready = true;
     return true;
+}
+
+/* Releases the ~100 KB (25 pages) chess_ensure_init() acquires from the
+ * page allocator -- the transposition table (32 KB, tt.c's own
+ * pre-existing free_tt(), simply never called before this) and J0's
+ * on-demand move-list pools (68 KB, search_pools_free()) -- back to
+ * "exactly as before", matching cc/ed's own acquire-per-use precedent
+ * (phase8) instead of J0's original "never freed for the process
+ * lifetime" choice.
+ *
+ * That choice was correct when J0 made it: no chess entry point had a
+ * session boundary to free at yet. J1 added one (chess_console_run()'s
+ * `quit`), which is what makes this callable at all now -- heap is
+ * LugalOS's scarcest resource (RP2350: 512 KB total), and a program that
+ * quits back to the shell should leave the heap exactly as it found it,
+ * the same rule cc/ed already follow.
+ *
+ * Does NOT touch bitboard.c's attack/mask tables or zobrist.c's hash
+ * tables -- both are plain static `.bss` (~2.1 KB and ~6.6 KB measured
+ * directly: pawn/knight/king attack tables + file/rank masks; the
+ * zobrist piece/castling/en-passant/side hash tables), a fixed cost of
+ * `CONFIG_ENABLE_CHESS=ON` at *link* time, present in RAM from boot
+ * regardless of whether chess ever runs. There is no runtime allocation
+ * there for "on demand" to mean anything -- the lever for that ~9 KB is
+ * the build-time flag itself (phase8), not a session boundary. */
+static void chess_session_end(void) {
+    if (!g_chess_ready) return;
+    free_tt();
+    search_pools_free();
+    g_chess_ready = false;
 }
 
 /* search.c calls both of these (`extern void ...` at each call site) but
@@ -159,12 +195,18 @@ void chess_selftest(void) {
 
     if (best == 0) {
         cprintf("chess: no move found\n");
+        chess_session_end();
         return;
     }
     char buf[6];
     format_move(best, buf);
     cprintf("chess: best move %s, score %d, depth %d, %ld nodes\n",
             buf, g_search_score, g_search_depth, nodes_searched);
+    /* One-shot benchmark, not an interactive session -- tears down like a
+     * `quit` would (chess_console_run() below), so repeated
+     * (chess-selftest) calls stay "stateless" rather than only the first
+     * one paying the allocation cost forever after. */
+    chess_session_end();
 }
 
 /* ------------------------------------------------------------------ *
@@ -511,6 +553,7 @@ void chess_console_run(void) {
         } else if (strcmp(line, "stop") == 0) {
             cprintf("Nothing to stop (no mid-search interrupt yet -- J2).\n");
         } else if (strcmp(line, "quit") == 0) {
+            chess_session_end();
             return;
         } else if (console_execute_move(&g_chess_pos, line)) {
             g_console_max_history_ply = g_chess_pos.history_ply;
