@@ -1295,18 +1295,23 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
  * the moment calculation starts (chess_run() below) already covers that
  * gap on screen.
  *
- * Formats into an isolated scratch buffer first, then copies exactly 4
- * bytes of it into the correct half of `disp` -- not a stylistic choice,
- * a correctness one: tm_format_score_compact()'s *text* length varies
- * (3-6 raw chars for always-4 physical digit positions, the '.' trick),
- * and g_tm_active_half can now put that variable-length write on
- * *either* side of `disp` (White's half changed which physical side the
- * active slot lands on once the slots became color-based instead of
- * human/engine-based, see the sentinel block above) -- writing it
- * directly into `disp` at the wrong offset would let its own null
- * terminator cut off whatever was already written for the frozen half
- * next to it, the same class of bug already fixed once for the
- * single-direction version of this. */
+ * Formats into an isolated scratch buffer first, whose *text* length
+ * varies (tm_format_score_compact() is 4-6 raw chars for always-4
+ * physical digit positions, the '.' trick; tm_format_move4() is always
+ * exactly 4) -- concatenated with the frozen slot's own fixed 4 raw
+ * chars in the right order for whichever side is active, using the
+ * scratch buffer's *actual* length (strlen(), not a hardcoded 4).
+ *
+ * Found live, a second time: an earlier version of this copied a fixed
+ * 4 raw bytes out of the scratch buffer regardless of its real length,
+ * which truncated the tenths digit off every score that used the '.'
+ * trick -- "  0. " instead of "  0.7" -- since that trick means the
+ * *physical* 4-position score is routinely 5 raw characters, not 4.
+ * g_tm_active_half being able to put this variable-length write on
+ * *either* side of `disp` (color-based slots, not human/engine-based,
+ * see the sentinel block above) is also why this can't just always
+ * write first and rely on a fixed trailing offset the way the original
+ * single-direction ticker could. */
 static void tm_search_ticker_tick(void) {
     if (g_search_best_move == 0) return;
     uint64_t now = time_get_ms();
@@ -1320,12 +1325,17 @@ static void tm_search_ticker_tick(void) {
     } else {
         tm_format_move4(g_search_best_move, active4);
     }
-    char disp[9];
-    int active_off = g_tm_active_half * 4;
-    int frozen_off = 4 - active_off;
-    for (int i = 0; i < 4; i++) disp[active_off + i] = active4[i];
-    for (int i = 0; i < 4; i++) disp[frozen_off + i] = g_tm_frozen_slot[i];
-    disp[8] = '\0';
+    int active_len = (int)strlen(active4);
+    char disp[16];
+    int pos = 0;
+    if (g_tm_active_half == 0) {
+        for (int i = 0; i < active_len; i++) disp[pos++] = active4[i];
+        for (int i = 0; i < 4; i++) disp[pos++] = g_tm_frozen_slot[i];
+    } else {
+        for (int i = 0; i < 4; i++) disp[pos++] = g_tm_frozen_slot[i];
+        for (int i = 0; i < active_len; i++) disp[pos++] = active4[i];
+    }
+    disp[pos] = '\0';
     tm1638_display_string(disp);
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
     draw_chess_status(&g_chess_pos, NULL, true);
