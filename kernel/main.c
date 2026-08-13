@@ -14,11 +14,14 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/at24c32.h"
 #include "drivers/usb_cdc.h"
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 #include "drivers/st7735.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 #include "drivers/tm1638.h"
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+#include "drivers/pico_clock_green.h"
 #endif
 #include "arch/csr.h"
 #include "arch/trap.h"
@@ -138,11 +141,18 @@ void kernel_main(void) {
      * optional/hot-pluggable; neither of these is). Independently gated
      * (H3) -- a board persona might want the keypad/LEDs without the
      * display, or vice versa. */
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     st7735_init();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm1638_init();
+#endif
+    /* SM16106/SM5166P LED matrix + LDR (L2, plan/phase11_pico_clock_green.md):
+     * dedicated, always-wired hardware for the Pico-Clock-Green board
+     * persona specifically -- same eager-init rationale as ST7735/TM1638
+     * above, not this driver's own invention. */
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    pico_clock_green_init();
 #endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note

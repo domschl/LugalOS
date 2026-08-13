@@ -621,22 +621,28 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "ENABLE_CC=%d\nENABLE_ED=%d\n", CONFIG_ENABLE_CC, CONFIG_ENABLE_ED);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "ENABLE_DISPLAY=%d\nENABLE_TM1638=%d\nENABLE_CHESS=%d\n",
-            CONFIG_ENABLE_DISPLAY, CONFIG_ENABLE_TM1638, CONFIG_ENABLE_CHESS);
+            "ENABLE_ST7735=%d\nENABLE_TM1638=%d\nENABLE_CHESS=%d\nENABLE_SPISD=%d\nENABLE_PICO_CLOCK_GREEN=%d\n",
+            CONFIG_ENABLE_ST7735, CONFIG_ENABLE_TM1638, CONFIG_ENABLE_CHESS, CONFIG_ENABLE_SPISD,
+            CONFIG_ENABLE_PICO_CLOCK_GREEN);
 #if defined(CONFIG_BOARD_RP2350)
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART0_TX_GPIO=%d\nUART0_RX_GPIO=%d\n",
             CONFIG_UART0_TX_GPIO, CONFIG_UART0_RX_GPIO);
+#if CONFIG_ENABLE_SPISD
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "SPI1_BASE=0x%lx\n", (unsigned long)CONFIG_SPI1_BASE);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "SPI1_SCK_GPIO=%d\nSPI1_MOSI_GPIO=%d\nSPI1_MISO_GPIO=%d\nSPI1_CS_GPIO=%d\n",
             CONFIG_SPI1_SCK_GPIO, CONFIG_SPI1_MOSI_GPIO,
             CONFIG_SPI1_MISO_GPIO, CONFIG_SPI1_CS_GPIO);
+#endif
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LED_ONBOARD_GPIO=%d\nLED_EXT_GPIO=%d\n",
             CONFIG_LED_ONBOARD_GPIO, CONFIG_LED_EXT_GPIO);
-#if CONFIG_ENABLE_DISPLAY
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "I2C_RTC_BASE=0x%lx\nI2C_RTC_SDA_GPIO=%d\nI2C_RTC_SCL_GPIO=%d\n",
+            (unsigned long)CONFIG_I2C_RTC_BASE, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
+#if CONFIG_ENABLE_ST7735
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "SPI0_BASE=0x%lx\n", (unsigned long)CONFIG_SPI0_BASE);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
@@ -648,6 +654,14 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
             CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
+#endif
+#if CONFIG_ENABLE_PICO_CLOCK_GREEN
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "CLOCK_OE_GPIO=%d\nCLOCK_SDI_GPIO=%d\nCLOCK_CLK_GPIO=%d\nCLOCK_LE_GPIO=%d\n",
+            CONFIG_CLOCK_OE_GPIO, CONFIG_CLOCK_SDI_GPIO, CONFIG_CLOCK_CLK_GPIO, CONFIG_CLOCK_LE_GPIO);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "CLOCK_A0_GPIO=%d\nCLOCK_A1_GPIO=%d\nCLOCK_A2_GPIO=%d\nCLOCK_ADC_LIGHT_GPIO=%d\n",
+            CONFIG_CLOCK_A0_GPIO, CONFIG_CLOCK_A1_GPIO, CONFIG_CLOCK_A2_GPIO, CONFIG_CLOCK_ADC_LIGHT_GPIO);
 #endif
 #endif
         return (int)used;

@@ -3,21 +3,49 @@
 #include "kernel/console.h"
 #include "kernel/time.h"
 #include "drivers/uart.h"
+#include "lugalos_config.h"
 #include <string.h>
 
 #define DS1307_DS3231_I2C_ADDR 0x68
 
 static bool g_rtc_detected = false;
-#define I2C_SDA_PIN 4
-#define I2C_SCL_PIN 5
 
 #if defined(CONFIG_BOARD_RP2350)
+/* Board-fact-driven (L3, plan/phase11_pico_clock_green.md) rather than the
+ * GP4/GP5/I2C0 literals this file hardcoded before: the Pico-Clock-Green
+ * baseboard's DS3231 is wired to GP6/GP7, which RP2350's GPIO-to-
+ * controller mapping (alternates every 4 pins) puts on the I2C1
+ * peripheral instance, not I2C0 -- a different base address, not just
+ * different pins. cmake/board-rp2350.cmake keeps the original GP4/GP5/
+ * I2C0 values (CONFIG_I2C_RTC_BASE == I2C0's 0x40090000); cmake/board-
+ * rp2350-clock.cmake sets GP6/GP7/I2C1 (0x40098000) instead. */
+#define I2C_SDA_PIN CONFIG_I2C_RTC_SDA_GPIO
+#define I2C_SCL_PIN CONFIG_I2C_RTC_SCL_GPIO
+
 #define RESETS_BASE            0x40020000UL
 #define RESETS_RESET           (RESETS_BASE + 0x0000)
 #define RESETS_RESET_SET       (RESETS_BASE + 0x2000) // Atomic Bit SET Alias
 #define RESETS_RESET_CLR       (RESETS_BASE + 0x3000) // Atomic Bit CLR Alias
-#define RESETS_RESET_DONE      (RESETS_BASE + 0x000C) // Reset Done Register
-#define I2C0_RESET_BIT         (1u << 4) // Bit 4 = I2C0 on RP2350
+#define RESETS_RESET_DONE      (RESETS_BASE + 0x0008) // Reset Done Register --
+    // was 0x000C (off by one register); verified against
+    // ~/gith/pico/pico-sdk/src/rp2350/hardware_regs/include/hardware/regs/
+    // resets.h's RESETS_RESET_DONE_OFFSET while researching L2's own ADC
+    // reset sequence. Likely dormant rather than actually broken: the
+    // 10000-iteration poll below still burns enough real time for the
+    // peripheral's (near-instant) unreset to finish underneath it
+    // regardless of which address it polled, so this was never observed
+    // to misbehave -- but it's the wrong register, so fixed outright now
+    // that it's been found, not left in place because it happened to work.
+
+/* RESETS_RESET_I2C0 is bit 4, RESETS_RESET_I2C1 is bit 5 (resets.h) --
+ * derived from CONFIG_I2C_RTC_BASE rather than added as its own board
+ * fact, so a board file can't get this one wrong independently of the
+ * base address it already has to get right. */
+#if CONFIG_I2C_RTC_BASE == 0x40098000UL
+#define I2C_RTC_RESET_BIT (1u << 5) // RESETS_RESET_I2C1
+#else
+#define I2C_RTC_RESET_BIT (1u << 4) // RESETS_RESET_I2C0
+#endif
 
 #define IO_BANK0_BASE          0x40028000UL
 #define IO_BANK0_CTRL(n)       (IO_BANK0_BASE + 0x004 + (n) * 8)
@@ -25,34 +53,35 @@ static bool g_rtc_detected = false;
 #define PADS_BANK0_BASE        0x40038000UL
 #define PADS_BANK0_PAD(n)      (PADS_BANK0_BASE + 0x004 + (n) * 4)
 
-#define I2C0_BASE              0x40090000UL
-#define IC_CON                 (I2C0_BASE + 0x00)
-#define IC_TAR                 (I2C0_BASE + 0x04)
-#define IC_DATA_CMD            (I2C0_BASE + 0x10)
-#define IC_SS_SCL_HCNT         (I2C0_BASE + 0x14)
-#define IC_SS_SCL_LCNT         (I2C0_BASE + 0x18)
-#define IC_FS_SCL_HCNT         (I2C0_BASE + 0x1C)
-#define IC_FS_SCL_LCNT         (I2C0_BASE + 0x20)
-#define IC_INTR_STAT           (I2C0_BASE + 0x2C)
-#define IC_RAW_INTR_STAT       (I2C0_BASE + 0x34)
-#define IC_CLR_TX_ABRT         (I2C0_BASE + 0x54)
-#define IC_ENABLE              (I2C0_BASE + 0x6C)
-#define IC_STATUS              (I2C0_BASE + 0x70)
-#define IC_TXFLR               (I2C0_BASE + 0x74)
-#define IC_RXFLR               (I2C0_BASE + 0x78)
-#define IC_SDA_HOLD            (I2C0_BASE + 0x7C)
-#define IC_TX_ABRT_SOURCE      (I2C0_BASE + 0x80)
-#define IC_FS_SPKLEN           (I2C0_BASE + 0xA0)
+#define I2C_RTC_BASE            ((uintptr_t)CONFIG_I2C_RTC_BASE)
+#define IC_CON                 (I2C_RTC_BASE + 0x00)
+#define IC_TAR                 (I2C_RTC_BASE + 0x04)
+#define IC_DATA_CMD            (I2C_RTC_BASE + 0x10)
+#define IC_SS_SCL_HCNT         (I2C_RTC_BASE + 0x14)
+#define IC_SS_SCL_LCNT         (I2C_RTC_BASE + 0x18)
+#define IC_FS_SCL_HCNT         (I2C_RTC_BASE + 0x1C)
+#define IC_FS_SCL_LCNT         (I2C_RTC_BASE + 0x20)
+#define IC_INTR_STAT           (I2C_RTC_BASE + 0x2C)
+#define IC_RAW_INTR_STAT       (I2C_RTC_BASE + 0x34)
+#define IC_CLR_TX_ABRT         (I2C_RTC_BASE + 0x54)
+#define IC_ENABLE              (I2C_RTC_BASE + 0x6C)
+#define IC_STATUS              (I2C_RTC_BASE + 0x70)
+#define IC_TXFLR               (I2C_RTC_BASE + 0x74)
+#define IC_RXFLR               (I2C_RTC_BASE + 0x78)
+#define IC_SDA_HOLD            (I2C_RTC_BASE + 0x7C)
+#define IC_TX_ABRT_SOURCE      (I2C_RTC_BASE + 0x80)
+#define IC_FS_SPKLEN           (I2C_RTC_BASE + 0xA0)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
 static void i2c_hw_init(void) {
-    /* 1. Assert and then clear I2C0 reset using RP2350 Atomic Alias Registers */
-    REG(RESETS_RESET_SET) = I2C0_RESET_BIT;
+    /* 1. Assert and then clear the peripheral's reset using RP2350 Atomic
+     * Alias Registers (I2C0 or I2C1, whichever CONFIG_I2C_RTC_BASE says) */
+    REG(RESETS_RESET_SET) = I2C_RTC_RESET_BIT;
     for (volatile int i = 0; i < 1000; i++);
-    REG(RESETS_RESET_CLR) = I2C0_RESET_BIT;
+    REG(RESETS_RESET_CLR) = I2C_RTC_RESET_BIT;
     int timeout = 10000;
-    while (!(REG(RESETS_RESET_DONE) & I2C0_RESET_BIT) && --timeout > 0);
+    while (!(REG(RESETS_RESET_DONE) & I2C_RTC_RESET_BIT) && --timeout > 0);
 
     /* 2. Configure GP4 (SDA) & GP5 (SCL) strictly as Function 3 (I2C) */
     REG(IO_BANK0_CTRL(I2C_SDA_PIN)) = 3;
@@ -218,7 +247,12 @@ void i2c_rtc_init(void) {
             time_set_rtc(&tm);
             char isostr[32];
             time_format_iso(&tm, isostr, sizeof(isostr));
-            printk("[I2C RTC] DS1307/DS3231 detected at 0x68 (GP4/GP5)! Synced date: %s\n", isostr);
+#if defined(CONFIG_BOARD_RP2350)
+            printk("[I2C RTC] DS1307/DS3231 detected at 0x68 (GP%d/GP%d)! Synced date: %s\n",
+                   CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
+#else
+            printk("[I2C RTC] DS1307/DS3231 detected at 0x68! Synced date: %s\n", isostr);
+#endif
             return;
         }
     }
@@ -266,11 +300,34 @@ bool i2c_rtc_write_time(const rtc_time_t *tm) {
     return false;
 }
 
+bool i2c_rtc_read_temperature_c(int *temp_c) {
+    if (!temp_c || !g_rtc_detected) return false;
+
+    uint8_t buf[2];
+    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x11, buf, 2)) {
+        return false;
+    }
+
+    /* buf[0] = signed integer part; buf[1] bits 7:6 = quarter-degree
+     * fraction, always a non-negative offset from buf[0] (the DS3231's own
+     * representation -- e.g. -0.25C is integer=-1, fraction=0.75, not a
+     * separately-signed fraction), so no extra sign handling is needed
+     * here. */
+    int temp_x4 = (int)(int8_t)buf[0] * 4 + (buf[1] >> 6);
+    /* Round to nearest whole degree, half-away-from-zero. */
+    *temp_c = (temp_x4 >= 0) ? (temp_x4 + 2) / 4 : (temp_x4 - 2) / 4;
+    return true;
+}
+
 void i2c_scan_bus(void) {
     /* An answer to a typed `i2c` command, so it goes to the console stream
      * (C0). Using printk() put the whole scan table into the kernel log
      * ring, where it turned up again in `cat /proc/kmsg`. */
-    cprintf("\nI2C Bus Scan (I2C0 on GP4 SDA / GP5 SCL):\n");
+#if defined(CONFIG_BOARD_RP2350)
+    cprintf("\nI2C Bus Scan (GP%d SDA / GP%d SCL):\n", CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
+#else
+    cprintf("\nI2C Bus Scan:\n");
+#endif
     cprintf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
 
     int found_count = 0;

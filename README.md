@@ -186,17 +186,47 @@ sudo apt install gcc-riscv64-unknown-elf cmake ninja-build python3 qemu-system-m
 brew install riscv64-elf-gcc cmake ninja qemu python3
 ```
 
+### Build presets
+
+`CMakePresets.json` (L1, `plan/phase11_pico_clock_green.md`) bundles the toolchain file, target and board/feature-flag
+choices for each build persona this tree supports, so a build is one named preset instead of a growing pile of `-D`
+flags to remember:
+
+```bash
+cmake --list-presets
+```
+```
+Available configure presets:
+
+  "rv32-nommu"   - QEMU RV32 (NOMMU)
+  "rv64-mmu"     - QEMU RV64 (Sv39 MMU)
+  "rp2350-chess" - RP2350 (Pico 2) — chess-computer persona
+  "rp2350-clock" - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
+```
+
+Configure + build any of them the same way:
+```bash
+cmake --preset <name>
+cmake --build --preset <name>
+```
+
+Each preset's `binaryDir` is under `build/` (`rp2350-chess` keeps the historical `build/rp2350` path the hardware
+test tooling in `tests/hw/` already expects; the rest match their preset name). Adding a new board persona later
+means adding one more entry to `CMakePresets.json`, not a new directory of hand-maintained CMakeLists.txt files —
+see `cmake/board-rp2350-clock.cmake` for what a second RP2350 persona actually differs by (a handful of pin facts and
+feature flags, not a different build).
+
 ### Build & Run RV32 (NOMMU) Target
 ```bash
-cmake -B build/rv32 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv32-nommu.cmake
-ninja -C build/rv32
+cmake --preset rv32-nommu
+cmake --build --preset rv32-nommu
 ./scripts/run-qemu-rv32.sh
 ```
 
 ### Build & Run RV64 (Sv39 MMU) Target
 ```bash
-cmake -B build/rv64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rv64-mmu.cmake
-ninja -C build/rv64
+cmake --preset rv64-mmu
+cmake --build --preset rv64-mmu
 ./scripts/run-qemu-rv64.sh
 ```
 
@@ -280,12 +310,15 @@ DS1307/DS3231 RTC Module   Raspberry Pi Pico 2 (RP2350)
 ### Build for RP2350
 
 ```bash
-cmake -B build/rp2350 -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rp2350.cmake \
-    -DLUGALOS_TARGET=RP2350
-ninja -C build/rp2350
+cmake --preset rp2350-chess
+cmake --build --preset rp2350-chess
 # Generates: build/rp2350/lugalos.uf2
 ```
+
+This is the default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in
+(`plan/phase9_chess_computer.md`). The Waveshare Pico-Clock-Green baseboard (`plan/phase11_pico_clock_green.md`)
+wires several of those same pins to different hardware, so it's a separate `rp2350-clock` preset rather than a
+build flag on this one — see `cmake/board-rp2350-clock.cmake`.
 
 ### Flash to Pico 2
 

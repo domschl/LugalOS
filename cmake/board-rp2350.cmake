@@ -47,3 +47,12 @@ set(CONFIG_ST7735_RST_GPIO  21)
 set(CONFIG_TM1638_STB_GPIO 6)
 set(CONFIG_TM1638_CLK_GPIO 7)
 set(CONFIG_TM1638_DIO_GPIO 8)
+
+# DS1307/DS3231 RTC (drivers/i2c_rtc.c). GP4/GP5 land on the I2C0
+# peripheral instance on RP2350 (L3, plan/phase11_pico_clock_green.md --
+# the GPIO-to-controller mapping alternates every 4 pins, it isn't a
+# software choice). The Pico-Clock-Green baseboard's own board file uses
+# GP6/GP7/I2C1 instead, since that's what its RTC is physically wired to.
+set(CONFIG_I2C_RTC_BASE     0x40090000) # I2C0
+set(CONFIG_I2C_RTC_SDA_GPIO 4)
+set(CONFIG_I2C_RTC_SCL_GPIO 5)

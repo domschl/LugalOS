@@ -2,6 +2,15 @@
 
 **Status:** H1-H4 complete and hardware-verified, 2026-08-11. Phase closed
 except for the deliberately-deferred item below (UCI/GUI bridge).
+
+**Naming note added 2026-08-13 (L1, plan/phase11_pico_clock_green.md):**
+`LUGALOS_ENABLE_DISPLAY`/`CONFIG_ENABLE_DISPLAY`, cited by name throughout
+this doc below, was renamed to `LUGALOS_ENABLE_ST7735`/`CONFIG_ENABLE_ST7735`
+once a second RP2350 display driver (Pico-Clock-Green's LED matrix) made
+"DISPLAY" ambiguous between two actual pieces of hardware. This doc's own
+text is left as originally written (a historical record of H3's own
+reasoning at the time) rather than silently rewritten — read `ENABLE_DISPLAY`
+below as `ENABLE_ST7735` if cross-referencing against the current tree.
 First entry from `plan/raw_ideas.md`'s "Application scenarios" with a concrete,
 already-built consumer (`~/gith/domschl/LugalChess`) rather than being purely
 speculative, and it also closes two "New hardware" backlog items (Displays,

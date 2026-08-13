@@ -9,6 +9,12 @@ re-read of `~/gith/domschl/LugalChess/engine/src/console.c` (1637 lines) and
 `uci.c` (174 lines), against the current state of `user/chess/` after
 phase9 H1-H4.
 
+**Naming note added 2026-08-13 (L1, plan/phase11_pico_clock_green.md):**
+`CONFIG_ENABLE_DISPLAY`, cited below (J3), was renamed to
+`CONFIG_ENABLE_ST7735` once a second RP2350 display driver made "DISPLAY"
+ambiguous. This doc's text is left as originally written; read
+`ENABLE_DISPLAY` below as `ENABLE_ST7735` against the current tree.
+
 **What phase9 actually shipped vs. what "play a game of chess" needs.**
 H4 deliberately did not vendor `console.c` at all (its own text: "~150
 hand-edited printf call sites and ~1600 lines for behavior... explicitly out

@@ -39,7 +39,7 @@
 #include "fs/vfs.h"
 #include "lugalos_config.h"
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 #include "drivers/st7735.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -914,7 +914,7 @@ void chess_console_run(void) {
     }
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* 16x16 monochrome chess piece bitmaps, vendored from
  * ~/gith/domschl/LugalChess (firmware/st7735.c) -- presentation data, not
  * logic, and specific to this UI (H1's canvas driver deliberately doesn't
@@ -1156,7 +1156,7 @@ static void tm_sync_move_slots(const Position *pos) {
     if (!have_black) for (int i = 0; i < 4; i++) g_tm_black_slot[i] = ' ';
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Defined further down (needs g_console_search_level/tm_format_score_
  * compact()/tm_probe_pv(), all declared later) -- forward-declared here
  * so tm_redraw_if_display() below can call it. */
@@ -1170,7 +1170,7 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
  * optionality is handled rather than repeating the #if at every call
  * site that wants a redraw after undo/redo/new-game/load. */
 static void tm_redraw_if_display(const Position *pos) {
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     draw_chess_board(pos);
     draw_chess_status(pos, "", false);
 #else
@@ -1191,7 +1191,7 @@ static void tm_new_game(Position *pos) {
     tm_redraw_if_display(pos);
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Reconstructs a short PV starting from `first_move` (the caller's own
  * already-known, reliable root move -- g_search_best_move, tracked
  * directly via search_progress_callback(), not TT-dependent), then
@@ -1302,7 +1302,7 @@ static void draw_chess_status(const Position *pos, const char *last_move, bool t
     line2[q] = '\0';
     st7735_draw_string(2, 145, line2, ST7735_WHITE, 1);
 }
-#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_DISPLAY */
+#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_ST7735 */
 
 /* Called from search_poll_stop_callback() -- already invoked every 2048
  * nodes, the same cadence the abort-check itself piggybacks on. Gated by
@@ -1356,7 +1356,7 @@ static void tm_search_ticker_tick(void) {
     }
     disp[pos] = '\0';
     tm1638_display_string(disp);
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     draw_chess_status(&g_chess_pos, NULL, true);
 #endif
 }
@@ -1840,7 +1840,7 @@ static Move tm_read_move(Position *pos) {
     }
 }
 
-#if CONFIG_ENABLE_DISPLAY
+#if CONFIG_ENABLE_ST7735
 /* Maps a terminal ChessOutcome to its 4-char tm_show_move_annotation()
  * word (design agreed with the user 2026-08-12) -- stalemate/repetition/
  * 50-move stay collapsed into one "drAU" word, matching J2's own already-
@@ -2100,5 +2100,5 @@ void chess_run(void) {
         if (tm_after_move(&g_chess_pos, disp2, mover_side) == TM_AFTER_EXIT) return;
     }
 }
-#endif /* CONFIG_ENABLE_DISPLAY */
+#endif /* CONFIG_ENABLE_ST7735 */
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */

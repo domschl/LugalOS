@@ -20,7 +20,7 @@
 #if CONFIG_ENABLE_CC
 #include "user/chibicc/include/chibicc.h"
 #endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 #include "drivers/st7735.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -324,7 +324,7 @@ static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Canvas primitives over the ST7735 TFT (H1, plan/phase9_chess_computer.md).
  * Deliberately generic -- raw RGB565 ints in, no chess-specific vocabulary --
  * so any future display consumer (not just H4's chess engine) can use them. */
@@ -408,7 +408,7 @@ static lisp_val_t *prim_perft(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
 static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
@@ -440,7 +440,7 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
  * either way. */
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
 #else
     chess_console_run(); /* returns on 'quit' */
@@ -1287,7 +1287,7 @@ void lisp_init(void) {
     env_set(&global_env, "=", make_prim(prim_eq));
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     env_set(&global_env, "canvas-fill", make_prim(prim_canvas_fill));
     env_set(&global_env, "canvas-pixel", make_prim(prim_canvas_pixel));
     env_set(&global_env, "canvas-rect", make_prim(prim_canvas_rect));
@@ -1301,7 +1301,7 @@ void lisp_init(void) {
 #if CONFIG_ENABLE_CHESS
     env_set(&global_env, "chess-selftest", make_prim(prim_chess_selftest));
     env_set(&global_env, "perft", make_prim(prim_perft));
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DISPLAY && CONFIG_ENABLE_TM1638
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     env_set(&global_env, "chess-run", make_prim(prim_chess_run));
 #endif
     env_set(&global_env, "chess-console", make_prim(prim_chess_console));

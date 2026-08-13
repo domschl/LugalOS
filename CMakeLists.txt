@@ -116,9 +116,28 @@ option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
 # would be wrong to bundle it with the canvas driver. CONFIG_ENABLE_CHESS is
 # defined now with no consumer yet (H4 is what makes it real, the same shape
 # F0 defined ENABLE_CC/ENABLE_ED before F1/F2 had anything to gate).
-option(LUGALOS_ENABLE_DISPLAY "Build the ST7735 TFT canvas driver (RP2350 only)" ON)
+option(LUGALOS_ENABLE_ST7735 "Build the ST7735 TFT canvas driver (RP2350 only)" ON)
 option(LUGALOS_ENABLE_TM1638 "Build the TM1638 7-segment/keypad/LED driver (RP2350 only)" ON)
 option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet implemented)" ON)
+
+# Same mechanism again (L1, plan/phase11_pico_clock_green.md): the
+# Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
+# other RP2350 persona) to its own display hardware instead, so that persona
+# builds with this OFF. Default ON -- unlike ENABLE_ST7735/TM1638/CHESS
+# above, spisd_rp2350.c isn't gated out of CMakeLists.txt's source list at
+# all; it stubs itself internally via #if CONFIG_ENABLE_SPISD instead, so
+# fs/vfs_server.c's spisd_get_device() call sites need no matching #if.
+option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
+
+# L2 (plan/phase11_pico_clock_green.md): the SM16106/SM5166P LED matrix +
+# LDR driver for the Pico-Clock-Green baseboard persona specifically.
+# Default OFF, opposite of ENABLE_ST7735/TM1638/CHESS/SPISD above -- those
+# four all have their pin facts defined in the *default* board file
+# (cmake/board-rp2350.cmake), so defaulting ON is harmless there. This one's
+# CONFIG_CLOCK_* pins only exist in cmake/board-rp2350-clock.cmake, so
+# defaulting it ON would break the default persona's build the moment
+# something actually consumed those undefined macros.
+option(LUGALOS_ENABLE_PICO_CLOCK_GREEN "Build the Pico-Clock-Green SM16106/SM5166P LED matrix driver (RP2350 only)" OFF)
 
 # --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
 #
@@ -219,12 +238,22 @@ add_custom_target(lugalos_build_id ALL
 # write-if-changed before every build, same shape as lugalos_build_id above.
 # K210 has no board file yet (no real drivers reference it today); config
 # generation is skipped there rather than inventing placeholder data.
-if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
-    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
-elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
-    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
-elseif(LUGALOS_TARGET STREQUAL "RP2350")
-    set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
+# Overridable (L1, plan/phase11_pico_clock_green.md): a single LUGALOS_TARGET
+# can have more than one board persona sharing the same arch/ABI/linker
+# script -- e.g. RP2350's default chess-computer persona vs. the
+# Pico-Clock-Green baseboard persona, which wires several of the same pins
+# to different hardware. Callers select a non-default persona with
+# -DLUGALOS_BOARD_FILE=cmake/board-rp2350-clock.cmake (or via a
+# CMakePresets.json preset); the branch below only fires when nothing
+# overrode it already.
+if(NOT DEFINED LUGALOS_BOARD_FILE)
+    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "RP2350")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
+    endif()
 endif()
 
 if(DEFINED LUGALOS_BOARD_FILE)
@@ -232,15 +261,17 @@ if(DEFINED LUGALOS_BOARD_FILE)
     execute_process(COMMAND ${CMAKE_COMMAND}
         -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
         -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
-        -DENABLE_DISPLAY=${LUGALOS_ENABLE_DISPLAY} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
-        -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS}
+        -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
+        -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
+        -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     add_custom_target(lugalos_config ALL
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
-            -DENABLE_DISPLAY=${LUGALOS_ENABLE_DISPLAY} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
-            -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS}
+            -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
+            -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
+            -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         COMMENT "Refreshing board config")
 endif()
@@ -333,11 +364,16 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # H1/H2 (plan/phase9_chess_computer.md): independently toggleable, per H3
     # -- the TM1638 keypad/7-segment/LEDs are useful without the display
     # attached at all, so they don't share a flag.
-    if(LUGALOS_ENABLE_DISPLAY)
+    if(LUGALOS_ENABLE_ST7735)
         list(APPEND SOURCES drivers/st7735_rp2350.c)
     endif()
     if(LUGALOS_ENABLE_TM1638)
         list(APPEND SOURCES drivers/tm1638_rp2350.c)
+    endif()
+    # L2 (plan/phase11_pico_clock_green.md): Pico-Clock-Green persona only
+    # (LUGALOS_ENABLE_PICO_CLOCK_GREEN defaults OFF -- see the option() above).
+    if(LUGALOS_ENABLE_PICO_CLOCK_GREEN)
+        list(APPEND SOURCES drivers/pico_clock_green_rp2350.c)
     endif()
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)

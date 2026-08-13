@@ -16,6 +16,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Some RP2350 board personas (e.g. the Pico-Clock-Green baseboard, phase11,
+ * plan/phase11_pico_clock_green.md) wire GP10-13 to different hardware
+ * entirely and build with LUGALOS_ENABLE_SPISD=OFF, so cmake/board-*.cmake
+ * for those personas doesn't define CONFIG_SPI1_* at all. Stubbed here
+ * rather than gated out of CMakeLists.txt's source list so
+ * fs/vfs_server.c's spisd_get_device() call sites don't need a matching
+ * #if -- same shape as i2c_rtc.c's non-RP2350 #else stub below its own
+ * hardware implementation. */
+#if CONFIG_ENABLE_SPISD
+
 #define RESETS_BASE             0x40020000UL
 #define RESETS_RESET_DONE       (RESETS_BASE + 0x08)
 #define RESETS_ATOMIC_CLEAR     (RESETS_BASE + 0x3000)
@@ -317,3 +327,11 @@ block_dev_t *spisd_get_device(void) {
     }
     return &g_spisd_dev;
 }
+
+#else // !CONFIG_ENABLE_SPISD
+
+block_dev_t *spisd_get_device(void) {
+    return NULL;
+}
+
+#endif // CONFIG_ENABLE_SPISD
