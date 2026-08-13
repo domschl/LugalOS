@@ -230,6 +230,10 @@ static uint16_t adc_read_light(void) {
     return (uint16_t)(REG(ADC_RESULT) & 0xFFFu);
 }
 
+uint16_t pico_clock_green_read_light(void) {
+    return adc_read_light();
+}
+
 /* Direct port of the vendor's display_char() bit-packing (Pico-Clock-
  * Green.c:575-621), generalized from "char -> glyph lookup -> pack" to
  * "glyph -> pack" since this driver's glyph set is fixed and small enough

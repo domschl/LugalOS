@@ -12,6 +12,8 @@
 #ifndef DRIVERS_PICO_CLOCK_GREEN_H
 #define DRIVERS_PICO_CLOCK_GREEN_H
 
+#include <stdint.h>
+
 /* GPIO/ADC bring-up and a blanked display buffer. Call once at boot,
  * mirroring st7735_init()/tm1638_init() (kernel/main.c). */
 void pico_clock_green_init(void);
@@ -33,6 +35,14 @@ void pico_clock_green_clear(void);
  * 1kHz for a flicker-free ~125Hz refresh (matches the vendor firmware's
  * own cadence) -- see plan/phase11_pico_clock_green.md L2 and L4. */
 void pico_clock_green_scan_step(void);
+
+/* Raw 12-bit LDR reading (0-4095), the same single-shot conversion
+ * scan_step() itself samples once per frame for auto-brightness. A
+ * diagnostic primitive, not something the display loop needs -- exposed
+ * so LDR polarity/threshold can be checked against real ambient light on
+ * real hardware instead of assumed correct from the register-level port
+ * (see plan/phase11_pico_clock_green.md L2's LDR_DARK_THRESHOLD note). */
+uint16_t pico_clock_green_read_light(void);
 
 /* L4 (plan/phase11_pico_clock_green.md): the blocking appliance loop behind
  * the `(clock)` Lisp primitive. Alternates the display between time (most

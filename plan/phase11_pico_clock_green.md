@@ -297,10 +297,22 @@ other reasons by the time those drivers touch them). Fixed with one
 register write mirroring `uart_init()`'s own pattern exactly. Rebuilt,
 reflashed: full clock persona now boots cleanly to `lsh>` over both UART
 and USB CDC, and `i2c` reports device `0x68` on `GP6/GP7` — L3's I2C1
-fix confirmed reaching the real DS3231, not just compiling. Column
-positions, glyph legibility, LDR threshold polarity and the software-PWM
-dimming's actual visible smoothness on the physical matrix still need
-L4 (nothing calls `pico_clock_green_show_time()`/`scan_step()` yet).
+fix confirmed reaching the real DS3231, not just compiling.
+
+**LDR auto-brightness confirmed working, 2026-08-13 (L4 session), after
+one round of doubt.** First live test ("I tried to cover it?!") found no
+visible dimming — before assuming a bug, added a small diagnostic,
+`(clock-light)` (new public `pico_clock_green_read_light()` +
+`user/lisp/lisp.c` primitive, same gating as `(clock)`), returning the raw
+12-bit ADC reading on demand. Real numbers settled it fast: bright light
+directly on the LDR reads `16`; a finger reads `1520` (still well below
+`LDR_DARK_THRESHOLD`'s `2800`); a genuinely opaque dark object reads
+`3868` (comfortably above). Polarity and threshold were both already
+correct — the first test's "cover" (a finger) simply wasn't opaque enough
+to cross the threshold, not a bug. Re-tested with the same opaque object
+this time: "display gets considerably darker" — confirmed. `(clock-light)`
+kept as a permanent diagnostic primitive rather than thrown away, matching
+`(i2c)`'s own precedent of a small hardware-introspection command.
 
 **Two findings surfaced while implementing L2, out of L2's own scope,
 recorded here for L3/whoever picks it up next:**

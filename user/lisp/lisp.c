@@ -464,6 +464,15 @@ static lisp_val_t *prim_clock(lisp_val_t *args, lisp_val_t *env) {
     pico_clock_green_run(); /* returns on Ctrl-C */
     return &true_val;
 }
+
+/* `(clock-light)` -- diagnostic: raw 12-bit LDR reading (0-4095), the same
+ * single-shot conversion the display loop's own auto-brightness samples.
+ * Not needed for normal use; exists to check LDR_DARK_THRESHOLD's polarity
+ * and value against real ambient light on real hardware. */
+static lisp_val_t *prim_clock_light(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return make_int((long)pico_clock_green_read_light());
+}
 #endif
 
 const char *get_str_val(lisp_val_t *val) {
@@ -1344,6 +1353,7 @@ void lisp_init(void) {
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
     env_set(&global_env, "clock", make_prim(prim_clock));
+    env_set(&global_env, "clock-light", make_prim(prim_clock_light));
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
