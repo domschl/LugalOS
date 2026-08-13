@@ -29,6 +29,9 @@
 #if CONFIG_ENABLE_CHESS
 #include "chess_ui.h"
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+#include "drivers/pico_clock_green.h"
+#endif
 #include "arch/elf.h"
 #include <string.h>
 
@@ -449,6 +452,20 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
 }
 #endif
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+/* `clock` (L4, plan/phase11_pico_clock_green.md): the Pico-Clock-Green
+ * appliance loop. Unlike chess -- a general-purpose program also useful
+ * interactively on non-dedicated boards, so it stays opt-in via
+ * usr_init.lisp -- this hardware has no other purpose, so it's the one
+ * persona auto-started via (boot-program) below rather than requiring an
+ * SD-card override (user's own distinction, 2026-08-13). */
+static lisp_val_t *prim_clock(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    pico_clock_green_run(); /* returns on Ctrl-C */
+    return &true_val;
+}
+#endif
+
 const char *get_str_val(lisp_val_t *val) {
     if (!val) return "";
     if (val->type == LISP_STRING) return val->u.str;
@@ -823,6 +840,24 @@ static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
     return make_str("rv32");
 #else
     return make_str("rv64");
+#endif
+}
+
+/* `(boot-program)` (L4, plan/phase11_pico_clock_green.md): the name of the
+ * program init.lisp should auto-start for this build persona, or "" for
+ * none (plain interactive shell). A build-time fact, the same shape as
+ * (board)/(arch) above -- not a runtime setting, and deliberately not tied
+ * to every CONFIG_ENABLE_* flag: chess is a general-purpose program also
+ * useful interactively on a non-dedicated board, so it stays opt-in via
+ * /sd0/system/etc/usr_init.lisp rather than auto-starting here (user's own
+ * distinction, 2026-08-13) -- only single-purpose appliance hardware like
+ * the clock earns an entry. */
+static lisp_val_t *prim_boot_program(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    return make_str("clock");
+#else
+    return make_str("");
 #endif
 }
 
@@ -1307,6 +1342,9 @@ void lisp_init(void) {
     env_set(&global_env, "chess-console", make_prim(prim_chess_console));
     env_set(&global_env, "chess", make_prim(prim_chess));
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    env_set(&global_env, "clock", make_prim(prim_clock));
+#endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
     env_set(&global_env, "touch", make_prim(prim_touch));
@@ -1366,6 +1404,7 @@ void lisp_init(void) {
 
     env_set(&global_env, "arch", make_prim(prim_arch));
     env_set(&global_env, "board", make_prim(prim_board));
+    env_set(&global_env, "boot-program", make_prim(prim_boot_program));
     env_set(&global_env, "bind", make_prim(prim_bind));
     env_set(&global_env, "release", make_prim(prim_release));
     env_set(&global_env, "ports", make_prim(prim_ports));

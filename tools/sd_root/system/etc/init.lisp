@@ -74,19 +74,38 @@
 
 (display "[Init] LugalOS Lisp System Initialized successfully!\n")
 
-;; 6. Launch interactive Lugal Console Shell -- unless a board-specific
-;;    override exists (found by request, 2026-08-12): if /sd0/system/
-;;    etc/usr_init.lisp is present, run it instead. Lets a board's boot
-;;    persona (e.g. straight into (chess) for a dedicated chess
-;;    computer, rather than the interactive shell -- to kick that off
-;;    without editing this file) be customized from a single file on
-;;    /sd0, without ever touching the flash image. Checked with
-;;    (read-file ...) first rather than calling (load ...) directly,
-;;    since load prints "cannot open file" on a miss -- expected and
-;;    silent here on every board that doesn't have one, not an error.
-;;    usr_init.lisp is expected to end with whatever persona it wants --
-;;    (chess), (lsh), or anything else -- since nothing runs after this
-;;    line either way.
+;; 6. Launch interactive Lugal Console Shell -- unless something more
+;;    specific applies, checked in priority order:
+;;
+;;    a) /sd0/system/etc/usr_init.lisp, if present (found by request,
+;;       2026-08-12). A live, runtime override with no rebuild/reflash
+;;       needed -- what a *general-purpose* program like chess uses to
+;;       become a board's boot persona (e.g. straight into (chess)),
+;;       since the same chess build is just as often run interactively on
+;;       a non-dedicated board, where auto-starting it would be wrong.
+;;       Checked with (read-file ...) first rather than calling (load ...)
+;;       directly, since load prints "cannot open file" on a miss --
+;;       expected and silent here on every board that doesn't have one,
+;;       not an error. Expected to end with whatever persona it wants --
+;;       (chess), (lsh), or anything else -- since nothing runs after
+;;       this line either way.
+;;
+;;    b) (boot-program), a *build-time* fact (L4,
+;;       plan/phase11_pico_clock_green.md) for hardware that has no
+;;       other purpose to opt out of -- the clock persona has no SD card
+;;       to put a usr_init.lisp on even if it wanted one, and unlike
+;;       chess there is no "interactive, non-dedicated" use of this
+;;       board to preserve.
+;;
+;;    c) Otherwise, the interactive shell.
+;;    (clock) is followed by (lsh) rather than being the true last form the
+;;    way usr_init.lisp's own choice of persona is (comment (a) above) --
+;;    an appliance with no SD card to set the time from needs some way
+;;    back to a shell after Ctrl-C, to run `date`. Harmless for every
+;;    other persona too: (boot-program) is "" there, so this is just
+;;    (lsh) alone, same as always.
 (if (not (= (read-file "/sd0/system/etc/usr_init.lisp") ""))
     (load "/sd0/system/etc/usr_init.lisp")
-    (lsh))
+    (if (= (boot-program) "clock")
+        (begin (clock) (lsh))
+        (lsh)))

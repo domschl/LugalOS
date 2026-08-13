@@ -37,6 +37,8 @@
  */
 
 #include "drivers/pico_clock_green.h"
+#include "drivers/i2c_rtc.h"
+#include "kernel/console.h"
 #include "kernel/time.h"
 #include "lugalos_config.h"
 #include <stdint.h>
@@ -322,4 +324,86 @@ void pico_clock_green_scan_step(void) {
     }
 
     g_row = (g_row + 1) & 7;
+}
+
+/* Show time most of the time, temperature briefly and only when the DS3231
+ * is actually present -- a board with no RTC just never leaves time mode
+ * (re-checked every cycle rather than latched once, so a board that starts
+ * without one can still pick it up if that ever changes, at negligible
+ * cost). Re-renders only on an actual value change, not every loop
+ * iteration -- draw_glyph()'s bit-packing is cheap, but there is no reason
+ * to redo it 1000 times/sec for a value that changes once/minute. */
+#define CLOCK_TIME_DISPLAY_MS 8000
+#define CLOCK_TEMP_DISPLAY_MS 2000
+#define CLOCK_ROW_PERIOD_US   1000
+
+/* How often to poll the RTC over I2C -- deliberately *not* every
+ * scan_step() call. Found on real hardware, not predicted: an I2C
+ * transaction at 100kHz blocks for real time (~800us-1ms for the 7-byte
+ * time read, ~300-400us for the 2-byte temperature read -- long enough,
+ * relative to the ~1ms row period, to visibly disrupt the row-scan cadence
+ * whichever row it lands on), so doing it every row made the display
+ * flicker -- worse for time than temperature, matching the two reads'
+ * different lengths exactly. Reading once/sec instead means only 1 row in
+ * roughly 1000 ever pays that cost, not every row. */
+#define CLOCK_READ_INTERVAL_MS 1000
+
+void pico_clock_green_run(void) {
+    /* Matches chess_run()'s own precedent (chess_ui.c): a stale interrupt
+     * latched by an unrelated earlier Ctrl-C must not abort this run
+     * before it does anything. */
+    console_interrupt_clear();
+
+    bool showing_temp = false;
+    uint64_t mode_deadline_ms = time_get_ms() + CLOCK_TIME_DISPLAY_MS;
+    uint64_t next_read_ms = 0; /* due immediately on the first iteration */
+    bool have_rendered = false;
+    unsigned last_hour = 0, last_minute = 0;
+    int last_temp_c = 0;
+
+    for (;;) {
+        uint64_t now = time_get_ms();
+
+        if (now >= mode_deadline_ms) {
+            showing_temp = !showing_temp && i2c_rtc_is_detected();
+            mode_deadline_ms = now + (showing_temp ? CLOCK_TEMP_DISPLAY_MS : CLOCK_TIME_DISPLAY_MS);
+            have_rendered = false;
+            next_read_ms = 0; /* refresh right away on a mode switch too */
+        }
+
+        if (now >= next_read_ms) {
+            if (showing_temp) {
+                int temp_c;
+                if (i2c_rtc_read_temperature_c(&temp_c) && (!have_rendered || temp_c != last_temp_c)) {
+                    pico_clock_green_show_temperature_c(temp_c);
+                    last_temp_c = temp_c;
+                    have_rendered = true;
+                }
+            } else {
+                rtc_time_t tm;
+                if (i2c_rtc_read_time(&tm) && (!have_rendered || tm.hour != last_hour || tm.min != last_minute)) {
+                    pico_clock_green_show_time(tm.hour, tm.min);
+                    last_hour = tm.hour;
+                    last_minute = tm.min;
+                    have_rendered = true;
+                }
+            }
+            next_read_ms = now + CLOCK_READ_INTERVAL_MS;
+        }
+
+        pico_clock_green_scan_step();
+
+        if (console_interrupt_requested()) {
+            console_interrupt_clear();
+            break;
+        }
+
+        time_delay_us(CLOCK_ROW_PERIOD_US);
+    }
+
+    /* Blank physically, not just in the buffer -- nothing calls
+     * scan_step() once this returns, so a lit row would otherwise stay lit
+     * (whatever it last shifted out) rather than actually going dark. */
+    pico_clock_green_clear();
+    oe_close();
 }

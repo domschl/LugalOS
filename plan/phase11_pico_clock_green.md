@@ -1,15 +1,14 @@
 # Phase 11 — Pico-Clock-Green (SM16106/SM5166P LED matrix + DS3231 temp)
 
-**Status:** L0-L3 done, 2026-08-13 (feasibility research, board profile +
-CMake plumbing, the SM16106/SM5166P/LDR driver, and DS3231 temperature
-read + the I2C0/I2C1 gap + a dormant reset-offset bug fixed along the way).
-**Hardware-verified same day**: found and fixed a real `clk_adc`
-clock-enable bug the first flash surfaced (L2's own section has the full
-account) — board now boots the full clock persona cleanly on real RP2350W
-hardware, and `i2c` confirms the DS3231 responds on GP6/GP7 as L3 predicted.
-L4 (`(clock)` Lisp primitive) planned, not yet implemented. From
-`plan/raw_ideas.md`'s "Application scenarios": "clock with matrix led
-display (waveshare pico-clock-green)".
+**Status:** L0-L4 all done and hardware-verified, 2026-08-13 — same day,
+one continuous session from feasibility research through a working clock
+on real hardware. Two real hardware-only bugs found and fixed along the
+way (a `clk_adc` clock-enable boot hang, L2; an I2C-read-cadence display
+flicker, L4), neither of which QEMU or code review alone would have
+caught — see those sections for the full accounts. Phase closed except
+for the deliberately-out-of-scope items below. From `plan/raw_ideas.md`'s
+"Application scenarios": "clock with matrix led display (waveshare
+pico-clock-green)".
 
 **Target board.** Waveshare Pico-Clock-Green baseboard
 (https://www.waveshare.com/wiki/Pico-Clock-Green), populated with an RP2350W
@@ -402,20 +401,62 @@ not just correct at the register-fact level. The temperature-read function
 itself (`i2c_rtc_read_temperature_c()`) has no shell/Lisp command wired to
 it yet, so its actual reading is still unverified pending L4.
 
-## L4 — `(clock)` Lisp primitive + boot wiring *(planned)*
+## L4 — `(clock)` Lisp primitive + boot wiring *(done, 2026-08-13 — hardware-verified: real matrix shows time and temperature)*
 
-- Mirrors `(chess)` (`user/lisp/lisp.c:1308`, `chess_ui.c`'s
-  `chess_console_run()`): a blocking loop that refreshes the display
-  continuously, reads RTC+temperature once/sec, and exits cleanly via
-  [[standardized_interrupt_polling]] (`console_interrupt_requested()`/
-  `console_interrupt_clear()`, the same Ctrl-C convention `chess_ui.c` already
-  uses — not a new mechanism).
-- `pico_clock_green_init()`'s own eager boot call already landed in L2
-  (`kernel/main.c`, alongside the ST7735/TM1638 block) — L4 only needs the
-  `(clock)` primitive itself, not any further boot wiring.
-- [[heap_stateless_user_programs]] applies if `(clock)` allocates anything on
-  the heap for its run — must return it to pre-run state on exit like
-  `cc`/`ed`.
+Mirrors `(chess)` (`user/lisp/lisp.c`, `chess_ui.c`'s pattern): a blocking
+loop, `pico_clock_green_run()` (`drivers/pico_clock_green_rp2350.c`), that
+refreshes the display continuously and exits cleanly via
+[[standardized_interrupt_polling]] (`console_interrupt_requested()`/
+`console_interrupt_clear()`, the same Ctrl-C convention `chess_ui.c` already
+uses — not a new mechanism). Allocates nothing on the heap, so
+[[heap_stateless_user_programs]] is satisfied trivially rather than by
+effort. `pico_clock_green_init()`'s eager boot call already landed in L2, so
+L4 only needed the primitive itself.
+
+**Boot wiring ended up bigger than planned, from a design conversation with
+the user, not from a technical finding.** The original plan bullet ("boot
+wiring") undersold it: the user drew a real distinction between chess (a
+general-purpose program also run interactively on non-dedicated boards, so
+it must stay *opt-in*) and the clock (single-purpose appliance hardware,
+where auto-start is simply correct). Landed as a new `(boot-program)` Lisp
+primitive (`user/lisp/lisp.c`, same shape as the existing `(board)`/`(arch)`
+— a build-time fact, not a runtime setting), returning `"clock"` only when
+`CONFIG_ENABLE_PICO_CLOCK_GREEN` is set, `""` otherwise — deliberately
+*not* wired to `CONFIG_ENABLE_CHESS`, so chess keeps using
+`/sd0/system/etc/usr_init.lisp` exactly as before, unchanged. `init.lisp`
+gained one dispatch tier between the existing SD-card override and the
+plain shell: `(boot-program)` = `"clock"` runs `(begin (clock) (lsh))`
+rather than `(clock)` alone — an appliance with no SD card has no
+`usr_init.lisp` escape hatch, so Ctrl-C needs to land somewhere useful
+(a shell, to run `date`), not nowhere. Harmless for every other persona:
+`(boot-program)` is `""` there, so it's just `(lsh)`, unchanged.
+
+**Hardware-verified 2026-08-13, first real flash of the finished feature:**
+matrix showed `HH:MM` and, cycling in every ~8s, temperature — both legible
+and correct in kind (temperature reading ~28°C was accurate; the time was
+wrong only because the DS3231 had never been set, not a bug — fixed the
+same session by Ctrl-C into the new `(lsh)` fallback and running `date`).
+
+**Real bug found on first flash, fixed same session — a second one QEMU
+could not have caught:** the display flickered, visibly worse for time
+than temperature. Root cause: `pico_clock_green_run()`'s original loop
+called `i2c_rtc_read_time()`/`i2c_rtc_read_temperature_c()` on *every*
+iteration (~once/row, ~1kHz) — only the redraw was value-gated, not the
+I2C read itself. An I2C transaction at 100kHz blocks for real wall-clock
+time (~800µs-1ms for time's 7-byte read, ~300-400µs for temperature's
+2-byte read) — comparable to or longer than the entire ~1ms row period —
+so it visibly disrupted `scan_step()`'s cadence on whichever row it landed
+on, worse for time exactly in proportion to its longer transaction length
+(matches the user's own observation precisely, which is what pointed at
+this rather than a more generic "the LDR-dimming logic is wrong" guess).
+Fixed by decoupling the two cadences entirely: poll I2C once/second
+(`CLOCK_READ_INTERVAL_MS`), independent of `scan_step()`'s own ~1ms
+per-row loop — reduces the disruption from every row to roughly 1 row in
+1000. Confirmed fixed live: "Flicker is gone!"
+
+Both RP2350 presets + both QEMU presets rebuilt clean after each change;
+191/191 QEMU tests unaffected throughout (none of this touches anything a
+QEMU target's own tests exercise).
 
 ---
 

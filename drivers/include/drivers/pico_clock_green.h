@@ -34,4 +34,14 @@ void pico_clock_green_clear(void);
  * own cadence) -- see plan/phase11_pico_clock_green.md L2 and L4. */
 void pico_clock_green_scan_step(void);
 
+/* L4 (plan/phase11_pico_clock_green.md): the blocking appliance loop behind
+ * the `(clock)` Lisp primitive. Alternates the display between time (most
+ * of the time) and temperature (briefly, only when the DS3231 is actually
+ * detected), driving pico_clock_green_scan_step() continuously. Returns on
+ * Ctrl-C, same console_interrupt_requested()/_clear() convention chess_ui.c
+ * already uses ([[standardized_interrupt_polling]]) -- not a new mechanism.
+ * Allocates nothing on the heap, so there is nothing to free on return
+ * ([[heap_stateless_user_programs]] is satisfied trivially, not by effort). */
+void pico_clock_green_run(void);
+
 #endif /* DRIVERS_PICO_CLOCK_GREEN_H */
