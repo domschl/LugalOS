@@ -2,9 +2,12 @@
 
 **Status:** L0-L3 done, 2026-08-13 (feasibility research, board profile +
 CMake plumbing, the SM16106/SM5166P/LDR driver, and DS3231 temperature
-read + the I2C0/I2C1 gap + a dormant reset-offset bug fixed along the way —
-all build-verified, not yet hardware-verified, board unplugged). L4
-(`(clock)` Lisp primitive) planned, not yet implemented. From
+read + the I2C0/I2C1 gap + a dormant reset-offset bug fixed along the way).
+**Hardware-verified same day**: found and fixed a real `clk_adc`
+clock-enable bug the first flash surfaced (L2's own section has the full
+account) — board now boots the full clock persona cleanly on real RP2350W
+hardware, and `i2c` confirms the DS3231 responds on GP6/GP7 as L3 predicted.
+L4 (`(clock)` Lisp primitive) planned, not yet implemented. From
 `plan/raw_ideas.md`'s "Application scenarios": "clock with matrix led
 display (waveshare pico-clock-green)".
 
@@ -213,7 +216,7 @@ session on this machine:** if a board is present in BOOTSEL mode, *any*
 `cmake --build`/`ninja` for an RP2350 target will flash it, silently, with
 whatever was just built — not just an explicit flash command.
 
-## L2 — `drivers/pico_clock_green_rp2350.c`: matrix driver + LDR auto-brightness *(done, 2026-08-13 — build-verified, not yet hardware-verified)*
+## L2 — `drivers/pico_clock_green_rp2350.c`: matrix driver + LDR auto-brightness *(done, 2026-08-13 — hardware-verified)*
 
 Landed as `drivers/pico_clock_green_rp2350.c` (`_rp2350` suffix, matching
 `uart_rp2350.c`/`spisd_rp2350.c`/`st7735_rp2350.c`/`tm1638_rp2350.c` — every
@@ -268,16 +271,37 @@ rationale already documented there.
   direct register writes, no hardware SPI peripheral involved — the vendor
   firmware doesn't use one either).
 
-**Build-verified 2026-08-13**, `rp2350-clock` preset: compiles and links
-clean (zero warnings from the new file itself). Re-confirmed `rp2350-chess`
-(default `LUGALOS_ENABLE_PICO_CLOCK_GREEN=OFF` is a no-op there) and both QEMU
-presets unaffected — 191/191 tests still pass. **Not hardware-verified** —
-the clock board is unplugged (no hardware to flash yet; see the real-world
-side-effect note above about `tools/uf2conv.py`'s auto-flash behavior found
-while verifying L1). Column positions, glyph legibility, LDR threshold
-polarity and the software-PWM dimming's actual visible smoothness all need
-a human looking at the real matrix once L3/L4 give it something worth
-flashing.
+**Build-verified 2026-08-13** on all presets, 191/191 QEMU tests unaffected.
+
+**Hardware-verified 2026-08-13, and it found a real bug QEMU could never
+have caught** ([[falsify_on_hardware_not_qemu]] again). First flash of the
+full clock persona onto real RP2350W hardware hung completely — no shell,
+no boot banner past `uart_init()`'s own startup line, over both USB CDC and
+a physical CP2102 UART (the UART test is what proved it wasn't a USB/DTR
+quirk: a real UART with a mature host driver, same total silence). Root-
+caused by binary bisection on real hardware rather than guessing: a build
+with `LUGALOS_ENABLE_PICO_CLOCK_GREEN=OFF` (same board file otherwise)
+booted fine; re-enabling it with just `adc_hw_init()`'s call skipped also
+booted fine; that isolated the fault to `adc_hw_init()` itself, immune to
+every timeout-bounded poll already in that function because the actual
+hang was a **bus transaction stalling on an unclocked peripheral**, not a
+software loop — `clk_adc` has no glitchless mux and is disabled at reset
+(`CLOCKS_CLK_ADC_CTRL_ENABLE_RESET=0`, `clocks.h`), so any register access
+before explicitly enabling it (`CLOCKS_BASE+0x6C` bit 11) hangs the bus
+waiting for a clock edge that never arrives. `uart_rp2350.c` already
+handles the identical requirement for `clk_peri` (`CLOCKS_BASE+0x48` bit
+11) — L0's own SDK cross-referencing checked register *addresses* and
+*bit positions* thoroughly but never checked whether a peripheral's clock
+needed enabling at all, since none of this tree's other drivers (I2C,
+SPI, UART) needed it explicitly (their clocks are already running for
+other reasons by the time those drivers touch them). Fixed with one
+register write mirroring `uart_init()`'s own pattern exactly. Rebuilt,
+reflashed: full clock persona now boots cleanly to `lsh>` over both UART
+and USB CDC, and `i2c` reports device `0x68` on `GP6/GP7` — L3's I2C1
+fix confirmed reaching the real DS3231, not just compiling. Column
+positions, glyph legibility, LDR threshold polarity and the software-PWM
+dimming's actual visible smoothness on the physical matrix still need
+L4 (nothing calls `pico_clock_green_show_time()`/`scan_step()` yet).
 
 **Two findings surfaced while implementing L2, out of L2's own scope,
 recorded here for L3/whoever picks it up next:**
@@ -312,7 +336,7 @@ recorded here for L3/whoever picks it up next:**
    other direction — fixing things nobody asked about, mid-task); flagged
    for a deliberate decision instead.
 
-## L3 — DS3231 temperature read + the I2C0/I2C1 gap + the dormant reset-offset bug *(done, 2026-08-13 — build-verified, not yet hardware-verified)*
+## L3 — DS3231 temperature read + the I2C0/I2C1 gap + the dormant reset-offset bug *(done, 2026-08-13 — hardware-verified: `i2c` shows 0x68 on GP6/GP7)*
 
 All three landed together, since the I2C0-vs-I2C1 gap (found while doing L2)
 and the temperature read both touch the same file and the reset-offset fix
@@ -368,9 +392,15 @@ sits directly in the code path both needed anyway.
 **Build-verified 2026-08-13**: both RP2350 presets compile and link clean;
 `rp2350-chess`'s generated `lugalos_config.h` confirmed unchanged in effect
 (`CONFIG_I2C_RTC_BASE=0x40090000`, GP4/GP5); `rp2350-clock`'s confirmed
-correct (`0x40098000`, GP6/GP7). 191/191 QEMU tests still pass. **Not
-hardware-verified** — same as L2, board unplugged, nothing to test the
-actual DS3231 read against yet.
+correct (`0x40098000`, GP6/GP7). 191/191 QEMU tests still pass.
+
+**Hardware-verified 2026-08-13** (after L2's `clk_adc` fix unblocked boot
+entirely — see L2's own section): the `i2c` shell command on real
+RP2350W hardware reports `I2C Bus Scan (GP6 SDA / GP7 SCL)` with device
+`0x68` found — the DS3231 is genuinely reachable over I2C1 on this board,
+not just correct at the register-fact level. The temperature-read function
+itself (`i2c_rtc_read_temperature_c()`) has no shell/Lisp command wired to
+it yet, so its actual reading is still unverified pending L4.
 
 ## L4 — `(clock)` Lisp primitive + boot wiring *(planned)*
 

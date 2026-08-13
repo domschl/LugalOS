@@ -61,6 +61,10 @@
 #define RESETS_RESET_DONE       (RESETS_BASE + 0x0008)
 #define ADC_RESET_BIT           (1u << 0) /* RESETS_RESET_ADC, resets.h */
 
+#define CLOCKS_BASE              0x40010000UL
+#define CLOCKS_CLK_ADC_CTRL      (CLOCKS_BASE + 0x6C)
+#define CLOCKS_CLK_ADC_ENABLE_BIT (1u << 11) /* CLOCKS_CLK_ADC_CTRL_ENABLE, clocks.h */
+
 #define ADC_BASE                0x400a0000UL
 #define ADC_CS                  (ADC_BASE + 0x00)
 #define ADC_RESULT              (ADC_BASE + 0x04)
@@ -183,6 +187,16 @@ static void set_row_address(unsigned row) {
 }
 
 static void adc_hw_init(void) {
+    /* clk_adc has no glitchless mux and is disabled at reset
+     * (CLOCKS_CLK_ADC_CTRL_ENABLE_RESET=0, clocks.h) -- found on real
+     * hardware, not in any QEMU run: without this, every register access
+     * below hangs the bus waiting for a clock edge that never comes, a
+     * hang no software timeout in this function can catch since it's the
+     * bus transaction itself that never completes, not a polling loop.
+     * Same requirement drivers/uart_rp2350.c already handles for clk_peri
+     * (CLOCKS_BASE+0x48 bit 11) -- not unique to the ADC. */
+    REG(CLOCKS_CLK_ADC_CTRL) = CLOCKS_CLK_ADC_ENABLE_BIT;
+
     REG(RESETS_RESET_SET) = ADC_RESET_BIT;
     for (volatile int i = 0; i < 1000; i++);
     REG(RESETS_RESET_CLR) = ADC_RESET_BIT;
