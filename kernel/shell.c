@@ -3,6 +3,7 @@
 #include "kernel/console.h"
 #include "kernel/klog.h"
 #include "kernel/palloc.h"
+#include "kernel/balloc.h"
 #include "kernel/mem_domain.h"
 #include "kernel/device.h"
 #include "kernel/ticker.h"
@@ -96,6 +97,7 @@ static void cmd_help(void) {
     cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
     cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
+    cprintf("  priotest        - Prove a high-priority task wins the next reschedule over hogs\n");
     cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
     cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
     cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
@@ -415,7 +417,15 @@ static void run_user_task(const char *name, void (*body)(void *)) {
         printk("[UserTest] Could not create the task\n");
         return;
     }
-    for (int i = 0; i < 64; i++) sched_yield();
+    /* Polls actual task state rather than spinning a fixed guessed count of
+     * yields -- see cmd_taskdemo()'s comment (this same fix, applied
+     * earlier) for why a fixed count assumes every yield here hands off
+     * directly to the new task, which round-robin among other READY tasks
+     * (p9srv above all) does not guarantee. A safety cap still bounds this
+     * in case a probe somehow never reaches usys_exit(). */
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
 }
 
 static void cmd_usertest(void) {
@@ -516,6 +526,92 @@ static void cmd_preempttest(void) {
                            : "NOT PREEMPTED");
 }
 
+/* M3, plan/phase12_microkernel_migration.md: proves next_runnable() picks by
+ * priority tier, not merely by ring position. Four never-yielding hogs are
+ * created first specifically to sit in the ring between the boot task and
+ * "urgent" -- under the old plain round-robin, urgent would have to wait its
+ * turn behind however many hogs came first; under tier-aware selection its
+ * TASK_PRIO_INTERRUPT must win the very next reschedule regardless of how
+ * many NORMAL-tier tasks are ahead of it. Both hog and urgent loops are
+ * bounded, same reason as preempttest's: a failure reports rather than
+ * wedging the machine.
+ *
+ * g_urgent_ran is uint32_t, not bool -- found the hard way while building
+ * this test. A `volatile bool` flag set by urgent and polled by a
+ * non-yielding busy-wait in the boot task was not reliably observed as
+ * updated after the boot task was preempted mid-spin and later resumed:
+ * the task genuinely ran (visible in the log) and the flag was genuinely
+ * set, but the resumed spin loop kept spinning to its full bound as though
+ * it never had been. Switching only the flag's type to `uint32_t` --
+ * nothing else, verified by isolating every other variable one at a time --
+ * made it reliable. preempttest's own g_preempt_flag already happened to be
+ * uint32_t, which is presumably why B6 never hit this. Not chased to a root
+ * cause in the toolchain; recorded as a real constraint instead of
+ * papered over: a volatile flag polled across a preemption boundary in this
+ * tree should be word-sized, not bool. */
+static volatile uint32_t g_urgent_ran;
+static volatile uint64_t g_urgent_woken_tick;
+
+static void priotest_hog_body(void *arg) {
+    (void)arg;
+    /* No yield, on purpose -- these exist purely to occupy ring slots a
+     * plain round-robin would have to cycle through, and must still be
+     * READY (not already exited) at the moment urgent is unblocked, or this
+     * test would pass without ever actually exercising the tie-break it
+     * claims to. Bounded so they don't outlive the command by much and
+     * dilute round-robin for whatever runs next. */
+    for (volatile uint32_t i = 0; i < 20000000u; i++) { }
+}
+
+static void priotest_urgent_body(void *arg) {
+    (void)arg;
+    task_block(); /* parks until cmd_priotest() unblocks it below */
+    g_urgent_woken_tick = ticker_ticks();
+    g_urgent_ran = 1;
+}
+
+static void cmd_priotest(void) {
+    if (!ticker_enabled()) {
+        cprintf("[PrioTest] No preemption timer on this build -- cannot test.\n");
+        return;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (task_create("hog", priotest_hog_body, NULL) < 0) {
+            cprintf("[PrioTest] Could not create hog tasks\n");
+            return;
+        }
+    }
+
+    int urgent = task_create("urgent", priotest_urgent_body, NULL);
+    if (urgent < 0 || task_set_priority(urgent, TASK_PRIO_INTERRUPT) < 0) {
+        cprintf("[PrioTest] Could not create/prioritize the urgent task\n");
+        return;
+    }
+
+    /* Let urgent actually reach its task_block() -- it must be BLOCKED, not
+     * merely READY, before task_unblock() below means anything. Urgent's
+     * TASK_PRIO_INTERRUPT wins it the very first of these yields regardless
+     * of the hogs, so a handful is generous margin, not a real wait. */
+    for (int i = 0; i < 8; i++) sched_yield();
+
+    g_urgent_ran = 0;
+    uint64_t before = ticker_ticks();
+    task_unblock(urgent);
+
+    /* Deliberately no sched_yield() here: the hogs never yield either, so
+     * only the preemption timer -- and now, which tier it picks -- can give
+     * urgent a chance to run. */
+    volatile uint64_t spins = 0;
+    while (!g_urgent_ran && spins < 400000000ULL) spins++;
+
+    uint64_t ticks_to_run = g_urgent_ran ? (g_urgent_woken_tick - before) : 0;
+    cprintf("[PrioTest] ran=%u ticks_to_run=%lu -- %s\n",
+            (unsigned)g_urgent_ran, (unsigned long)ticks_to_run,
+            (g_urgent_ran && ticks_to_run <= 2) ? "BOUNDED (priority won)"
+                                                : "NOT BOUNDED");
+}
+
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -528,13 +624,114 @@ static void cmd_taskdemo(void) {
     }
 
     /* Drive the demo from this (the boot) task by yielding until both have
-     * exited. Cooperative scheduling means they only advance when we do. */
-    for (int spin = 0; spin < 64; spin++) sched_yield();
+     * actually exited, not for a fixed guessed number of turns -- a fixed
+     * count assumes every yield from here hands off directly to demoA/demoB,
+     * which round-robin among other READY tasks (p9srv above all) does not
+     * guarantee. With a fixed count, "Done" could fire while both tasks were
+     * still alive and mid-exchange, reporting pages still legitimately in
+     * use by their live stacks as though they'd leaked. A safety cap still
+     * bounds this -- if task creation somehow left one of them permanently
+     * unschedulable, this must not hang the shell. */
+    for (int spin = 0;
+         spin < 10000 &&
+         (sched_task_state(a) != TASK_DEAD || sched_task_state(b) != TASK_DEAD);
+         spin++) {
+        sched_yield();
+    }
 
     uint32_t after_total = 0, after_free = 0;
     palloc_stats(&after_total, &after_free);
     printk("[TaskDemo] Done. Heap pages free before=%u after=%u\n",
            before_free, after_free);
+}
+
+/* M0, plan/phase12_microkernel_migration.md: proves task_create_sized() works
+ * at a stack size other than TASK_STACK_PAGES, and that palloc_free() is
+ * called for exactly the number of pages that were actually allocated (not
+ * TASK_STACK_PAGES, which sched.c's task_exit()/sched_reap() path used to be
+ * able to assume back when every task had the same size). One page is
+ * enough for this body -- one printk/sched_yield frame, nothing recursive. */
+static void sizedtaskdemo_body(void *arg) {
+    (void)arg;
+    printk("[SizedTaskDemo] Running on a 1-page stack\n");
+    sched_yield();
+}
+
+static void cmd_sizedtaskdemo(void) {
+    uint32_t before_total = 0, before_free = 0;
+    palloc_stats(&before_total, &before_free);
+
+    int pid = task_create_sized("sized1", sizedtaskdemo_body, NULL, 1);
+    if (pid < 0) {
+        printk("[SizedTaskDemo] Could not create the task\n");
+        return;
+    }
+
+    /* Drive it to completion the same way cmd_taskdemo() does -- see that
+     * function's comment for why this polls sched_task_state() rather than
+     * spinning a fixed count of yields. before_free/after_free matching
+     * (asserted by tests/runner.py) is the actual proof that a non-default
+     * page count was both allocated and freed correctly -- a leak here
+     * would show up as a page short on the "after" count. */
+    for (int spin = 0; spin < 10000 && sched_task_state(pid) != TASK_DEAD; spin++) {
+        sched_yield();
+    }
+
+    uint32_t after_total = 0, after_free = 0;
+    palloc_stats(&after_total, &after_free);
+    printk("[SizedTaskDemo] Done. Heap pages free before=%u after=%u\n",
+           before_free, after_free);
+}
+
+/* M1, plan/phase12_microkernel_migration.md: exercises balloc_alloc()/
+ * balloc_free() -- rounding to the next power of two, self-alignment to
+ * that size (Rule 6: this is what makes a block usable as a PMP region
+ * later), and coalescing all the way back to one arena-sized free block
+ * after a mixed-size churn. A leftover fragment at the end would mean
+ * split or merge lost track of a block somewhere in the run. */
+static void cmd_ballocdemo(void) {
+    uint32_t arena_bytes = 0, free_before = 0;
+    balloc_stats(&arena_bytes, &free_before);
+
+    void *a = balloc_alloc(33);   /* rounds up to 64 B */
+    void *b = balloc_alloc(65);   /* rounds up to 128 B */
+    void *c = balloc_alloc(1025); /* rounds up to 2048 B */
+    if (!a || !b || !c) {
+        printk("[BAllocDemo] Allocation failed\n");
+        return;
+    }
+    bool aligned = ((uintptr_t)a % 64) == 0 &&
+                  ((uintptr_t)b % 128) == 0 &&
+                  ((uintptr_t)c % 2048) == 0;
+    printk("[BAllocDemo] Rounding/alignment: %s\n", aligned ? "OK" : "FAIL");
+
+    balloc_free(a);
+    balloc_free(b);
+    balloc_free(c);
+
+    /* Churn: repeatedly allocate and free a mix of sizes across a fixed set
+     * of slots, so split and merge are stressed together rather than one
+     * pair at a time. */
+    static const uint32_t sizes[8] = {32, 96, 200, 500, 1500, 4000, 100, 60};
+    void *slots[8] = {0};
+    for (int round = 0; round < 50; round++) {
+        for (int i = 0; i < 8; i++) {
+            if (slots[i]) {
+                balloc_free(slots[i]);
+                slots[i] = NULL;
+            } else {
+                slots[i] = balloc_alloc(sizes[(i + round) % 8]);
+            }
+        }
+    }
+    for (int i = 0; i < 8; i++) {
+        if (slots[i]) { balloc_free(slots[i]); slots[i] = NULL; }
+    }
+
+    uint32_t free_after = 0;
+    balloc_stats(NULL, &free_after);
+    printk("[BAllocDemo] Done. After churn: largest=%u arena=%u\n",
+           free_after, arena_bytes);
 }
 
 /* `e`'s edit buffer used to be a fixed 2 KB stack array (bug: init.lisp is
@@ -666,8 +863,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "preempttest") == 0) {
         cmd_preempttest();
         return;
+    } else if (strcmp(cmd_line, "priotest") == 0) {
+        cmd_priotest();
+        return;
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();
+        return;
+    } else if (strcmp(cmd_line, "sizedtaskdemo") == 0) {
+        cmd_sizedtaskdemo();
+        return;
+    } else if (strcmp(cmd_line, "ballocdemo") == 0) {
+        cmd_ballocdemo();
         return;
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);

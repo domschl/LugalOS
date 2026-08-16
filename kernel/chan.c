@@ -1,5 +1,6 @@
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/irq.h"
 #include <string.h>
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
@@ -65,9 +66,16 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
 
     /* Re-entrancy: the endpoint's buffers are single-slot, so an inner call
      * would overwrite the outer call's request mid-flight. See the header --
-     * a recursive local 9P mount is the concrete way to reach this. */
-    if (ep->busy) return -1;
+     * a recursive local 9P mount is the concrete way to reach this.
+     *
+     * Check-then-set, so it must be atomic against a timer tick landing
+     * between the two (M3 preemption): without the mask, two callers whose
+     * check-and-set straddle a preemption both see busy == false and both
+     * proceed, and their memcpy()s below race on the same ep->req_buf. */
+    uintptr_t flags = irq_save();
+    if (ep->busy) { irq_restore(flags); return -1; }
     ep->busy = true;
+    irq_restore(flags);
 
     /* Copy IN. The handler must never see the caller's pointer -- that is
      * Rule 1, and it is what keeps this identical to the MMU case (where the

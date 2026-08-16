@@ -286,12 +286,14 @@ set(SOURCES
     kernel/board.c
     kernel/chan.c
     kernel/palloc.c
+    kernel/balloc.c
     kernel/meminfo.c
     kernel/path.c
     kernel/uaccess.c
     kernel/ticker.c
     kernel/time.c
     kernel/ipc.c
+    kernel/devirq.c
     kernel/sched.c
     kernel/shell.c
     kernel/line_editor.c

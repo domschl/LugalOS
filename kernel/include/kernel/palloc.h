@@ -20,7 +20,9 @@
  * Deliberately a *page* allocator, not a malloc: everything B2 needs is
  * page-granular (task stacks, and later page tables for B5's Sv39), and a
  * bitmap over a fixed page range is small enough to be obviously correct.
- * A general heap can come later if something actually needs one.
+ * A general heap can come later if something actually needs one -- that
+ * need arrived at M1 (plan/phase12_microkernel_migration.md); see
+ * kernel/balloc.h for the sub-page allocator built on top of this one.
  *
  * Rule 0 (§5.1): identical on both builds. NOMMU has no reason to allocate
  * differently from MMU, and once B5's Sv39 needs page tables it will draw

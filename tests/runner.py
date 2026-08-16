@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import os
-import queue
+import pty
 import re
 import select
 import socket
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -57,22 +56,8 @@ class QemuSession:
         self.elf_path: Path = elf_path
         self.img_path: Path = img_path
         self.arch: str = arch
-        self.process: subprocess.Popen[str] | None = None
-        self.output_queue: queue.Queue[str] = queue.Queue()
-        self._reader_thread: threading.Thread | None = None
-        self._running: bool = False
-
-    def _reader(self) -> None:
-        if not self.process or not self.process.stdout:
-            return
-        while self._running:
-            try:
-                char = self.process.stdout.read(1)
-                if not char:
-                    break
-                self.output_queue.put(char)
-            except Exception:
-                break
+        self.process: subprocess.Popen[bytes] | None = None
+        self._master_fd: int | None = None
 
     def start(self, extra_qemu_args: list[str] | None = None) -> None:
 
@@ -90,27 +75,41 @@ class QemuSession:
         if extra_qemu_args:
             cmd.extend(extra_qemu_args)
 
+        master_fd, slave_fd = pty.openpty()
         self.process = subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
         )
-        self._running = True
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True)
-        self._reader_thread.start()
+        # The child (QEMU) inherited its own copy of the slave fd across
+        # fork(); this process's copy must close so the master's read()
+        # eventually sees EOF when QEMU exits, instead of staying open
+        # forever against a duplicate descriptor nothing else will close.
+        os.close(slave_fd)
+        self._master_fd = master_fd
 
     def _drain(self) -> None:
         """Discard any output left over from a previous call. Without this, a
         pattern from the *next* test's own echoed command (or trailing output
         the previous test never consumed) can bleed in and produce a false
-        PASS before the new command has even been sent."""
-        while True:
+        PASS before the new command has even been sent.
+
+        Also actively reads and discards whatever is sitting in the PTY
+        right now (non-blocking select, stop once nothing more is
+        immediately available) -- there is no background thread keeping
+        this drained between calls any more (see send_and_expect()'s
+        comment for why), so unlike the old queue-based drain, bytes can
+        genuinely still be waiting at the OS level here, not just in a
+        Python-side buffer. """
+        if self._master_fd is None:
+            return
+        while select.select([self._master_fd], [], [], 0)[0]:
             try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
+                if not os.read(self._master_fd, 4096):
+                    break
+            except OSError:
                 break
 
     @staticmethod
@@ -137,38 +136,72 @@ class QemuSession:
         return re.sub(echo_pattern, "", text, count=1)
 
     def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0) -> tuple[bool, str]:
-        if not self.process or not self.process.stdin:
+        """Writes `command`, then reads the PTY inline -- select()+os.read()
+        in this same loop, no background thread -- until `expected_pattern`
+        matches or `timeout` elapses.
+
+        This used to run a separate reader thread continuously queuing
+        individual characters into a queue.Queue, with this loop draining
+        that queue and re-running the regex against the whole accumulated
+        string on every single character. That shape -- not the pipe vs PTY
+        choice it was first mistaken for -- was the actual cause of QEMU's
+        '-nographic' stdio chardev intermittently going 60+ real seconds
+        without flushing new guest output at all once the guest fell idle
+        at a prompt (confirmed by breaking into the QEMU monitor mid-"hang":
+        the guest had already finished everything correctly in well under a
+        second of simulated time; the bytes were just never arriving here).
+        Reading directly in this loop, in chunks, exactly mirrors every
+        manual reproduction that never showed the problem -- including this
+        file's other, long-unaffected QEMU subprocess reader (the C0 CRLF
+        test, further down) -- and switching to it (removing the thread and
+        queue entirely, not just changing their read size) was what
+        actually made the full test sequence reliable, not the earlier PTY
+        or chunked-read changes on their own.
+
+        Bytes accumulate raw; the whole buffer is (re-)decoded on every
+        check, not just each new chunk. Decoding chunks independently split
+        the line editor's multi-byte box-drawing borders across a read
+        boundary and corrupted them into U+FFFD whenever a border character
+        happened to straddle two os.read() calls -- decoding the same
+        growing buffer from the start every time costs a little CPU but
+        can never land mid-codepoint. """
+        if not self.process or self._master_fd is None:
             return False, "Process not running"
 
         self._drain()
 
         if command:
-            self.process.stdin.write(command + "\n")
-            self.process.stdin.flush()
+            os.write(self._master_fd, (command + "\n").encode())
 
-        accumulated: list[str] = []
+        accumulated = b""
         start_time = time.time()
         regex = re.compile(expected_pattern, re.MULTILINE | re.DOTALL)
 
+        def check(raw: bytes) -> tuple[bool, str]:
+            text = raw.decode("utf-8", "replace")
+            return bool(regex.search(self._strip_echo(text, command))), text
+
         while time.time() - start_time < timeout:
+            remaining = timeout - (time.time() - start_time)
+            if not select.select([self._master_fd], [], [], min(0.2, max(0.0, remaining)))[0]:
+                continue
             try:
-                char = self.output_queue.get(timeout=0.05)
-                accumulated.append(char)
-                text = "".join(accumulated)
+                chunk = os.read(self._master_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            accumulated += chunk
 
-                if any(marker in text for marker in self.FAULT_MARKERS):
-                    return False, text
+            if any(marker.encode() in accumulated for marker in self.FAULT_MARKERS):
+                return False, accumulated.decode("utf-8", "replace")
+            matched, text = check(accumulated)
+            if matched:
+                return True, text
 
-                visible = self._strip_echo(text, command)
-                if regex.search(visible):
-                    return True, text
-            except queue.Empty:
-                pass
-
-        return False, "".join(accumulated)
+        return False, accumulated.decode("utf-8", "replace")
 
     def close(self) -> None:
-        self._running = False
         if self.process:
             try:
                 self.process.terminate()
@@ -176,6 +209,12 @@ class QemuSession:
             except Exception:
                 self.process.kill()
             self.process = None
+        if self._master_fd is not None:
+            try:
+                os.close(self._master_fd)
+            except OSError:
+                pass
+            self._master_fd = None
 
 
 def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> list[tuple[str, bool, str]]:
@@ -316,13 +355,26 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # it, and the loader now gives each program its own image, stack and
         # domain.
         #
-        # The assertion is the *interleaving*, not that both markers appear.
-        # uspin prints USPIN_START, computes for a while, then reports; uhello
-        # runs to completion in between. Requiring uhello's marker to land
-        # between uspin's first and last is what proves two programs were
-        # resident simultaneously -- with the old single slot the second spawn
-        # is refused outright, and with slots but no concurrency the markers
-        # would appear strictly one group after the other.
+        # The assertion is residency overlap: uhello's task must exist while
+        # uspin's is still alive, proving the loader gave both a slot at
+        # once -- with the old single slot the second spawn was refused
+        # outright.
+        #
+        # This used to check marker *print* order (USPIN_START ...
+        # UPROG_TEXT_OK ... USPIN_PREEMPTED), on the assumption that spawning
+        # uspin first meant it would always be the one to print first too.
+        # That held under the old scheduler by accident of table-layout
+        # proximity, not by any real guarantee, and a correctly fair
+        # scheduler doesn't owe it: two freshly-created, identically-tied
+        # tasks racing for the very first CPU turn is legitimately
+        # non-deterministic (kernel/sched.c's next_runnable()), and uhello
+        # winning that race (then finishing before uspin ever gets a turn)
+        # is just as valid a proof of concurrent residency as the reverse --
+        # both tasks plainly existed together regardless of which one
+        # happened to run, or print, first. Checking kernel-emitted
+        # "Created"/"exited" log lines instead of the programs' own racing
+        # print statements is what makes this order-agnostic: those lines
+        # are strictly chronological, whichever task the CPU favors.
         #
         # (spawn) rather than exec: exec waits for its program to die, so a
         # caller using it can only ever have one resident no matter how many
@@ -330,7 +382,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(
             'lisp\n(spawn "/flash0/system/bin/uspin.elf")\n'
             '(spawn "/flash0/system/bin/uhello.elf")\nexit',
-            r"USPIN_START(.|\n)*UPROG_TEXT_OK(.|\n)*USPIN_PREEMPTED", timeout=30.0)
+            r"(?=(.|\n)*USPIN_PREEMPTED)(?=(.|\n)*UPROG_FILE_OK)", timeout=30.0)
+        if ok:
+            created = re.findall(r"\[Sched\] Created task #(\d+) 'uprog'", log)
+            if len(created) < 2:
+                ok = False
+            else:
+                uspin_pid, uhello_pid = created[0], created[1]
+                uhello_created_pos = log.index(f"Created task #{uhello_pid} 'uprog'")
+                uspin_exit_match = re.search(rf"\[Sched\] Task #{uspin_pid} 'uprog' exited", log)
+                ok = bool(uspin_exit_match) and uhello_created_pos < uspin_exit_match.start()
         results.append(("Two User Programs Are Resident At Once (C2)", ok, log if not ok else ""))
 
         # C4: a user program larger than two pages.
@@ -569,6 +630,22 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(
             "preempttest", r"PREEMPTED \(a task ran without anyone yielding\)", timeout=30.0)
         results.append(("Timer Preempts A Task That Never Yields (B6)", ok, log if not ok else ""))
+
+        # M3 (plan/phase12_microkernel_migration.md): next_runnable() picks by
+        # priority tier, not ring position. priotest creates four
+        # never-yielding NORMAL-tier hogs (each long enough to still be READY,
+        # not already exited, at the moment the check below fires -- that's
+        # what makes this test actually exercise the tie-break rather than
+        # pass by the hogs having gotten out of the way on their own),
+        # task_blocks() a TASK_PRIO_INTERRUPT "urgent" task, then unblocks it
+        # and measures how many ticks pass before it actually runs. Bounded to
+        # <=2 ticks: under the plain round-robin this replaced, wake-to-run
+        # latency would scale with how many equal-priority tasks sit ahead of
+        # urgent in the ring, not stay flat regardless of them.
+        ok, log = session.send_and_expect(
+            "priotest", r"ran=1 ticks_to_run=(\d+) -- BOUNDED \(priority won\)", timeout=30.0)
+        results.append(("A Higher-Priority Task Wins The Next Reschedule Over Hogs (M3)",
+                        ok, log if not ok else ""))
 
         # B4/D4: the 9P server -- which is also the filesystem server, since
         # its handlers are VFS calls -- is a scheduled task rather than
@@ -1099,6 +1176,40 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Task Stacks Are Reclaimed On Exit, Via The Reaper (B2/B6)",
                         ok, log if not ok else ""))
 
+        # M0 (plan/phase12_microkernel_migration.md): task_create_sized() lets
+        # a caller ask for fewer pages than TASK_STACK_PAGES. Two things have
+        # to both be true, and either failing alone would be a regression:
+        # the requested size actually took effect (a 1-page stack, not the
+        # default 2), and it was freed for exactly that many pages rather
+        # than TASK_STACK_PAGES -- the latter is the more dangerous failure,
+        # since it would either leak a page per run or free one page too many
+        # into a neighboring allocation's territory.
+        ok, log = session.send_and_expect("sizedtaskdemo", r"stack \w+, 4 KB", timeout=8.0)
+        results.append(("task_create_sized() Honors A Non-Default Page Count (M0)",
+                        ok, log if not ok else ""))
+        ok, log = session.send_and_expect("sizedtaskdemo", r"free before=(\d+) after=\1", timeout=8.0)
+        results.append(("A Non-Default-Size Stack Is Reclaimed For Its Real Page Count (M0)",
+                        ok, log if not ok else ""))
+
+        # M1 (plan/phase12_microkernel_migration.md): the buddy allocator.
+        # First assertion is rounding *and* self-alignment together (Rule 6)
+        # -- a 33/65/1025-byte request must come back as a 64/128/2048-byte
+        # block whose address is itself a multiple of that size, the
+        # property that makes a block usable as a PMP region later. Second
+        # is the actual fragmentation claim the milestone exists to make: a
+        # 50-round mixed-size churn across 8 concurrently-live slots must
+        # still coalesce all the way back to exactly one arena-sized free
+        # block, not merely "some free space" -- split/merge losing track of
+        # a single block anywhere in the run would leave a permanent
+        # fragment here instead.
+        ok, log = session.send_and_expect("ballocdemo", r"Rounding/alignment: OK", timeout=8.0)
+        results.append(("Buddy Blocks Round Up And Stay Self-Aligned (M1, Rule 6)",
+                        ok, log if not ok else ""))
+        ok, log = session.send_and_expect(
+            "ballocdemo", r"largest=(\d+) arena=\1", timeout=8.0)
+        results.append(("Buddy Allocator Fully Coalesces After Mixed-Size Churn (M1)",
+                        ok, log if not ok else ""))
+
         # 13e. B1: this node's own namespace, mounted over a local copy-always
         # channel (kernel/chan.c) and reached through the *same* 9P client code
         # that talks to a peer over a wire. Nothing above the channel can tell
@@ -1611,6 +1722,55 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
     finally:
         session.close()
 
+    return results
+
+
+def test_qemu_architecture_with_retry(
+    elf_path: Path, img_path: Path, arch_name: str, max_attempts: int = 3,
+) -> list[tuple[str, bool, str]]:
+    """test_qemu_architecture(), retried once on a specific failure shape.
+
+    Confirmed (not guessed) by breaking into QEMU's own monitor mid-"hang"
+    and reading back its already-buffered log: QEMU's '-nographic' chardev
+    can, rarely, stop flushing already-produced guest output to the host
+    for tens of real seconds even though the guest itself finished the
+    exact same exchange correctly in well under a second of simulated time.
+    QemuSession's PTY + inline-read shape (see send_and_expect()'s comment)
+    makes this rare rather than routine, but does not claim to make it
+    impossible -- it is QEMU's own event loop behaving this way, not
+    anything this process controls.
+
+    Retrying is deliberately narrow, not "retry any failure": a genuine
+    kernel hang would produce the exact same *shape* of failure (output
+    stops, timeout elapses) as this host artifact, so retrying indiscrimin-
+    ately would risk quietly re-running past a real regression instead of
+    reporting it -- the opposite of what this suite exists to catch. Only
+    retried when every failing result's log is silent on FAULT_MARKERS
+    (nothing crashed) -- consistent with "guest finished cleanly, host
+    never saw it" and not with a fault the guest itself reported. Retries
+    the whole architecture's run from a fresh boot, not just the one
+    failing step: QemuSession's state is one continuous session across
+    every test in test_qemu_architecture(), so there is no way to resume
+    just the failing step without re-deriving everything the tests after
+    it already assumed. Bounded at max_attempts (3): a flake this suite
+    cannot shake after that many full fresh boots is worth seeing as a real
+    failure, not retried away indefinitely. """
+    results = test_qemu_architecture(elf_path, img_path, arch_name)
+    for attempt in range(2, max_attempts + 1):
+        failed = [(name, log) for name, ok, log in results if not ok]
+        if not failed:
+            return results
+        looks_like_host_stall = all(
+            not any(marker in log for marker in QemuSession.FAULT_MARKERS)
+            for _, log in failed
+        )
+        if not looks_like_host_stall:
+            return results
+        print(f"  [Retry] {arch_name}: {len(failed)} failure(s) with no fault "
+              f"marker (possible QEMU host-stdio stall, not a guest crash) -- "
+              f"retrying the whole run from a fresh boot "
+              f"(attempt {attempt}/{max_attempts}) before treating as real.")
+        results = test_qemu_architecture(elf_path, img_path, arch_name)
     return results
 
 
@@ -2203,7 +2363,7 @@ def main() -> int:
     # 2. RV64 Target
     if rv64_elf.exists():
         print("\n[Target: RV64 Sv39 MMU Virtual Memory]")
-        rv64_results = test_qemu_architecture(rv64_elf, img_for("rv64"), "rv64")
+        rv64_results = test_qemu_architecture_with_retry(rv64_elf, img_for("rv64"), "rv64")
         for name, ok, log in rv64_results:
             total_tests += 1
             if ok:
@@ -2222,7 +2382,7 @@ def main() -> int:
     # 3. RV32 Target
     if rv32_elf.exists():
         print("\n[Target: RV32 NOMMU Microcontroller]")
-        rv32_results = test_qemu_architecture(rv32_elf, img_for("rv32"), "rv32")
+        rv32_results = test_qemu_architecture_with_retry(rv32_elf, img_for("rv32"), "rv32")
         for name, ok, log in rv32_results:
             total_tests += 1
             if ok:

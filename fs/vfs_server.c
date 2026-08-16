@@ -102,7 +102,18 @@ typedef struct {
     fat32_dir_entry_t entry;     /* valid for MOUNT_FAT32, non-dir */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
-    char proc_buf[512];          /* generated /proc file content (PROC, non-dir) */
+    /* Generated /proc file content (PROC, non-dir), shared by every /proc/*
+     * file this VFS serves. 512 silently truncated /proc/config on RP2350
+     * once every board feature's pin fields were in it -- caught by
+     * tests/hw/test_rp2350.py's K3, not by anything that runs on QEMU,
+     * since QEMU has no pin model to report. Measured, not assumed: the
+     * worst case (every ENABLE_* flag on at once, including the clock
+     * persona's fields alongside chess's) is 690 bytes including the NUL:
+     *
+     *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...CLOCK_ADC_LIGHT_GPIO=99\n
+     *
+     * 768 gives headroom without padding arbitrarily. */
+    char proc_buf[768];
     uint32_t proc_len;
     /* /proc/kmsg only: served straight from the klog ring rather than
      * generated into proc_buf, which is far too small to hold it. The window

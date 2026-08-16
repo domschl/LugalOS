@@ -7,12 +7,79 @@
 #include "kernel/sched.h"
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
+#include "kernel/devirq.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
 #define REG(addr) (*(volatile uint32_t *)(addr))
+#endif
+
+/* M2, plan/phase12_microkernel_migration.md: identifying which external IRQ
+ * fired is genuinely different hardware on each target -- there is no Rule 0
+ * to apply here, only real controllers. What sits above this (devirq.h) is
+ * arch-independent; this is the seam.
+ *
+ * The discriminator is CONFIG_BOARD_RP2350, deliberately NOT CONFIG_MODE_M:
+ * QEMU RV32 is also CONFIG_MODE_M (a plain M-mode target, no S-mode
+ * transition -- see entry.S), but it is not RP2350 and has none of Hazard3's
+ * Xh3irq CSRs. Conflating "M-mode" with "Hazard3" here is exactly the
+ * mistake that would make QEMU hide a real RP2350 divergence in the other
+ * direction: not "QEMU is more permissive than hardware" but "QEMU is a
+ * different CPU than hardware", and an meinext read on QEMU RV32 is an
+ * illegal instruction, not a hardware validation of anything. Found by
+ * exactly that: RV32 hung during boot the first time this shipped gated on
+ * CONFIG_MODE_M, while RV64 (CONFIG_MODE_S, never reaches this branch) was
+ * unaffected -- the asymmetry was the tell. */
+#if defined(CONFIG_BOARD_RP2350)
+/* Hazard3's Xh3irq external interrupt array (RP2350 datasheet §3.6.7.5
+ * region; register layout confirmed against the Pico SDK's own
+ * hardware/regs/rvcsr.h and hardware_irq/irq.c rather than guessed --
+ * exactly the kind of RP2350-specific register work this tree has gotten
+ * wrong before by not doing that (mem_domain.c's erratum E6 notes).
+ *
+ * meinext, plain-read (no UPDATE bit): bit 31 (NOIRQ) set means nothing is
+ * both pending and enabled; otherwise bits [10:2] hold the IRQ number,
+ * pre-shifted by 2 for a jump table this kernel does not use. UPDATE (bit 0)
+ * is what the Pico SDK's own vectored dispatch writes to advance
+ * meicontext's preemption-priority floor -- deliberately never written here:
+ * this kernel has one flat interrupt priority, the same way the timer
+ * interrupt is already handled with no nesting, so there is no floor to
+ * track. A bare read has no side effect beyond returning the current
+ * pending+enabled IRQ, which is all this needs. */
+static inline uint32_t meinext_irq(bool *valid) {
+    uintptr_t v;
+    __asm__ __volatile__("csrr %0, 0xbe4" : "=r"(v)); /* RVCSR_MEINEXT */
+    *valid = (v & 0x80000000u) == 0;
+    return (uint32_t)((v >> 2) & 0x1ffu);
+}
+#else
+/* QEMU virt's PLIC -- shared by both QEMU targets, which differ only in
+ * which context and cause code they see: standard PLIC convention numbers
+ * hart N's M-mode context 2N and its S-mode context 2N+1, and RV64 is the
+ * only target that delegates external interrupts to S-mode at all (see
+ * entry.S's mideleg, CONFIG_MODE_S-only). Base, context numbering and the
+ * claim/complete protocol verified against qemu/include/hw/riscv/virt.h's
+ * own memory map rather than assumed, since this is the one target where
+ * "standard" still deserves a source. */
+#define QEMU_PLIC_BASE     0x0c000000UL
+#if defined(CONFIG_MODE_S)
+#define QEMU_PLIC_CONTEXT  1u  /* hart 0, S-mode */
+#define QEMU_EXT_CAUSE     9u  /* Supervisor external interrupt */
+#else
+#define QEMU_PLIC_CONTEXT  0u  /* hart 0, M-mode */
+#define QEMU_EXT_CAUSE     11u /* Machine external interrupt */
+#endif
+#define QEMU_PLIC_CLAIM \
+    (QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u + 4u)
+
+static inline uint32_t plic_claim(void) {
+    return *(volatile uint32_t *)QEMU_PLIC_CLAIM;
+}
+static inline void plic_complete(uint32_t irq_num) {
+    *(volatile uint32_t *)QEMU_PLIC_CLAIM = irq_num;
+}
 #endif
 
 void trap_init(void) {
@@ -28,6 +95,55 @@ void trap_init(void) {
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus_val));
     mstatus_val |= (1u << 3);
     __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
+#else
+    /* M2, plan/phase12_microkernel_migration.md: the arch-global gate for
+     * QEMU's PLIC path (both targets -- see the CONFIG_MODE_S/M split above
+     * for why this is one branch, not two), mirroring ticker.c's own STIE
+     * enable for the same reason: unmasking the *source* here is what makes
+     * it safe for a driver's later per-IRQ PLIC enable bit to actually take
+     * effect, without that driver also needing to know this CSR exists. The
+     * global interrupt gate itself (sstatus.SIE / mstatus.MIE) is left alone
+     * here, same as it always was -- main.c's irq_restore(IRQ_ENABLE_BIT),
+     * after ticker_init(), is still what turns any of this on. */
+#if defined(CONFIG_MODE_S)
+    set_csr(sie, 1UL << 9);  /* SEIE */
+#else
+    set_csr(mie, 1UL << 11); /* MEIE -- plain M-mode QEMU RV32, not RP2350 */
+#endif
+
+    /* PLIC priority threshold for this hart's context: 0 accepts any
+     * interrupt with priority > 0, i.e. every priority a driver could set
+     * (arch_irq_enable() below). One flat priority level, the same choice
+     * trap_handler()'s meinext path makes for RP2350 -- there is no
+     * nested/preemptive interrupt priority anywhere in this kernel yet. */
+    *(volatile uint32_t *)(QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u) = 0;
+#endif
+}
+
+/* See arch/trap.h. */
+void arch_irq_enable(uint32_t irq_num) {
+#if defined(CONFIG_BOARD_RP2350)
+    /* MEIEA (0xbe0): a window-indexed enable array. Writing INDEX (bits
+     * [4:0]) selects a 16-IRQ window; the same write's WINDOW bits
+     * (dependent on the CSR instruction's semantics -- csrrs here, so this
+     * *sets* bits rather than replacing the whole window) OR the given mask
+     * into that window's enable bits. Confirmed against the Pico SDK's
+     * hazard3_irqarray_set() macro (hardware/hazard3.h) rather than derived
+     * from the field description alone. */
+    uint32_t index = irq_num / 16u;
+    uint32_t mask  = 1u << (irq_num % 16u);
+    uintptr_t v = index | ((uintptr_t)mask << 16);
+    __asm__ __volatile__("csrrs zero, 0xbe0, %0" :: "r"(v)); /* RVCSR_MEIEA */
+#else
+    /* PLIC: give the IRQ a nonzero priority (0 permanently masks it,
+     * independent of any enable bit -- the PLIC spec's own "never
+     * interrupt" value) and set its per-context enable bit. Priority 1 is
+     * "the lowest priority that still fires", correct for a kernel with one
+     * flat interrupt level. */
+    *(volatile uint32_t *)(QEMU_PLIC_BASE + 4u * irq_num) = 1;
+    volatile uint32_t *enable = (volatile uint32_t *)
+        (QEMU_PLIC_BASE + 0x2000u + QEMU_PLIC_CONTEXT * 0x80u + (irq_num / 32u) * 4u);
+    *enable |= (1u << (irq_num % 32u));
 #endif
 }
 
@@ -88,6 +204,28 @@ void trap_handler(trap_frame_t *frame) {
             sched_yield();
             return;
         }
+
+        /* External (device) interrupt. Same CONFIG_BOARD_RP2350 discriminator
+         * as the controller code above -- not CONFIG_MODE_M, for the same
+         * reason: QEMU RV32 is CONFIG_MODE_M without being RP2350. M2,
+         * plan/phase12_microkernel_migration.md. */
+#if defined(CONFIG_BOARD_RP2350)
+        if (code == 11) {
+            bool valid;
+            uint32_t irq_num = meinext_irq(&valid);
+            if (valid) devirq_dispatch(irq_num);
+            return;
+        }
+#else
+        if (code == QEMU_EXT_CAUSE) {
+            uint32_t irq_num = plic_claim();
+            if (irq_num != 0) { /* 0 means "nothing claimable" per the PLIC spec */
+                devirq_dispatch(irq_num);
+                plic_complete(irq_num);
+            }
+            return;
+        }
+#endif
         printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */

@@ -16,6 +16,9 @@
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/devirq.h"
+#include "kernel/irq.h"
+#include "arch/trap.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -128,6 +131,46 @@ void gp16_alive_tick(void) {
 static bool hw_uart_has_char(void);
 static uint8_t hw_uart_getc(void);
 
+/* M2, revised M2.5 (plan/phase12_microkernel_migration.md): PL011 UART0's
+ * own IRQ line (RP2350 datasheet §2.1 IRQ table, confirmed against the Pico
+ * SDK's hardware/regs/intctrl.h). Wired up in M2, unwired the same
+ * milestone after hardware testing showed it corrupting console output, and
+ * back now that kernel/printk.c's printk_lock()/printk_unlock() make a
+ * whole message atomic across a block rather than just across a spin -- see
+ * that file's comment for the full story.
+ *
+ * TX only, still deliberately: uart_getc()/uart_has_char() below poll THREE
+ * independent sources every iteration -- the physical UART, USB CDC
+ * (itself software-polled, not interrupt-driven), and gp16_alive_tick()'s
+ * heartbeat state machine -- and this tree has no "block with timeout" or
+ * "wait on any of N sources" primitive yet. That reasoning is unrelated to
+ * the printk fix above and unchanged by it: RX stays exactly as it was
+ * until a future milestone gives USB CDC its own interrupt path or this
+ * tree gains a real multi-wait primitive. */
+#define UART0_IRQ 33u
+
+/* At most one TX waiter: every caller now arrives through printk_lock()
+ * (kernel/printk.c) already serialized to a single writer, so a second,
+ * concurrent blocker here should not happen -- kept as a defensive
+ * fallback below, not a load-bearing path, the same shape as
+ * drivers/uart_16550.c's equivalent. */
+static volatile int g_tx_waiter = -1;
+
+#define UART0_FR    (UART0_BASE + 0x18)
+#define UART0_IMSC  (UART0_BASE + 0x38)
+#define UART0_FR_TXFF (1u << 5)
+#define UART0_IMSC_TXIM (1u << 5)
+
+static void uart_isr(void *ctx) {
+    (void)ctx;
+    if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
+        REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+        int pid = g_tx_waiter;
+        g_tx_waiter = -1;
+        task_unblock(pid);
+    }
+}
+
 void uart_init(uintptr_t base_addr) {
     (void)base_addr;
 
@@ -176,11 +219,45 @@ void uart_init(uintptr_t base_addr) {
 
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
 
+    /* Handler before enable (arch/trap.h): so that if the IRQ somehow fires
+     * before this returns, there is a handler to find it rather than an
+     * unmasked source with nothing behind it. */
+    devirq_attach(UART0_IRQ, uart_isr, NULL);
+    arch_irq_enable(UART0_IRQ);
+
     uart_puts("\r\n[RP2350 Hardware UART0 Online] LugalOS Microkernel Starting...\r\n");
 }
 
+/* M2.5, plan/phase12_microkernel_migration.md: safe now that every caller
+ * arrives through printk_lock() (kernel/printk.c) or is otherwise the sole
+ * writer -- see that file's comment for the full story of what M2's first
+ * attempt at this got wrong (real hardware caught `[Sche5d]` where `[Sched]`
+ * should have been -- interleaved output, not a PMP failure, despite the
+ * symptom initially reading like one). Same continuous-irq_save()
+ * requirement as drivers/uart_16550.c's uart_putc(): nothing between the
+ * fast-path miss and task_block() can restore interrupts early, or a TX
+ * interrupt landing in the gap finds this task still RUNNING (not yet
+ * BLOCKED), task_unblock() no-ops, and the ISR has already disabled TXIM
+ * having "served" a wakeup nobody was asleep for -- a silent, permanent
+ * lost wakeup. */
 static void uart_hw_putc(char c) {
-    while (REG(UART0_BASE + 0x18) & (1u << 5));
+    if (!(REG(UART0_FR) & UART0_FR_TXFF)) {
+        REG(UART0_BASE + 0x00) = (uint8_t)c;
+        return;
+    }
+    uintptr_t flags = irq_save();
+    if (REG(UART0_FR) & UART0_FR_TXFF) {
+        if (g_tx_waiter < 0) {
+            g_tx_waiter = sched_current_pid();
+            REG(UART0_IMSC) |= UART0_IMSC_TXIM;
+            task_block();
+        } else {
+            irq_restore(flags);
+            while (REG(UART0_FR) & UART0_FR_TXFF) sched_yield();
+            flags = irq_save();
+        }
+    }
+    irq_restore(flags);
     REG(UART0_BASE + 0x00) = (uint8_t)c;
 }
 

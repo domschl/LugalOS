@@ -6,6 +6,15 @@
 
 int printk(const char *fmt, ...);
 
+// The lock printk()/cprintf()/printk_debug() take to make one call's output
+// one uninterrupted run (see kernel/printk.c's top comment) -- exposed so
+// kernel/console.c's console_putc()/console_puts() can take the same lock
+// around raw console writes (the line editor's redraws, SYS_PUTNUM/
+// SYS_PUTCHAR). Reentrant by task, so nesting under an outer printk() (or
+// another console_putc()) is free rather than a self-deadlock.
+void printk_lock(void);
+void printk_unlock(void);
+
 // Physical-UART-only diagnostics: never mirrored to a USB CDC console. Use
 // this (not printk()) for low-level driver tracing that could itself be
 // caused by, or cause, USB traffic (e.g. inside drivers/usb_cdc.c) -- mixing

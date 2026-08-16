@@ -49,4 +49,16 @@ uintptr_t arch_last_ecall_cause(void);
 void arch_probe_begin(void);
 bool arch_probe_faulted(void);
 
+/* Unmasks external IRQ `irq_num` at the interrupt-controller level -- not
+ * the peripheral's own registers, which stay the driver's business, but the
+ * layer between them that trap_handler() reads to know an IRQ fired at all
+ * (M2, plan/phase12_microkernel_migration.md). RP2350 sets the bit in
+ * Hazard3's Xh3irq `meiea` array; QEMU sets the PLIC's per-context enable
+ * bit and gives the IRQ a nonzero priority (0 means "never interrupt" in
+ * the PLIC spec). A driver calls this once at init, after devirq_attach()
+ * has already registered its handler -- so that if this unmasks something
+ * before the handler exists, there is nothing left un-dispatchable, only a
+ * dispatch that has not happened yet. */
+void arch_irq_enable(uint32_t irq_num);
+
 #endif /* LUGALOS_ARCH_TRAP_H */

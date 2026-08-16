@@ -3,6 +3,7 @@
 #include "kernel/console.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
+#include "kernel/balloc.h"
 #include "kernel/path.h"
 #include "kernel/ticker.h"
 #include "kernel/irq.h"
@@ -161,6 +162,11 @@ void kernel_main(void) {
      * page allocator rather than an unbounded bump pointer. */
     trap_init();
     palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
+    /* M1, plan/phase12_microkernel_migration.md: reserves its arena out of
+     * what palloc_init() just brought up, so it must follow it and nothing
+     * needs to follow *it* -- no other subsystem below depends on balloc
+     * yet. */
+    balloc_init();
     /* Before vfs_server_init(): the boot scripts it loads are themselves
      * found through the path (C1). */
     path_init();

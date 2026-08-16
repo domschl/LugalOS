@@ -34,11 +34,42 @@
 #define TASK_BLOCKED 3
 #define TASK_DEAD    4
 
-#define MAX_TASKS 8
+/* M3, plan/phase12_microkernel_migration.md: a handful of static tiers, not
+ * a numeric range -- "a handful of tiers... covers everything in the tree
+ * today" was the milestone's own scope, and a wider range would be
+ * precision this scheduler has no way to use yet (no priority inheritance,
+ * no decay, one hart). Higher wins. Assigned once, normally at creation via
+ * task_set_priority() (mirroring task_set_domain()'s "attach after create"
+ * shape) -- not boosted transiently on wake, so a task's tier describes its
+ * *role* (a driver task is always latency-sensitive) rather than its
+ * momentary history.
+ *
+ * TASK_PRIO_NORMAL is every task's default until told otherwise, which is
+ * what keeps every pre-M3 caller of task_create()/task_create_sized()
+ * unaffected: with nothing yet assigned a different tier, next_runnable()'s
+ * tie-break (see kernel/sched.c) reduces to exactly the round-robin order
+ * this tree already tests (taskdemo's A1 B1 A2 B2 A3 B3 interleaving). */
+#define TASK_PRIO_IDLE       0
+#define TASK_PRIO_BACKGROUND 1
+#define TASK_PRIO_NORMAL     2
+#define TASK_PRIO_INTERRUPT  3
 
-/* Kernel stack size per task, in pages. 8 KB: the deepest paths here are the
+/* M0, plan/phase12_microkernel_migration.md: raised from 8 so that a fully
+ * decomposed board persona (one task per driver, per Rule 4) doesn't hit the
+ * slot ceiling on its own drivers alone -- chess's persona reached 8 using
+ * only its own devices plus the shell, before any of RTC/EEPROM/net existed
+ * as tasks. Cost is a static array: (24-8) * sizeof(task_t), well under 1 KB. */
+#define MAX_TASKS 24
+
+/* Default kernel stack size per task, in pages, for task_create()'s callers
+ * that don't ask for a specific size. 8 KB: the deepest paths here are the
  * Lisp evaluator (bounded at LISP_MAX_EVAL_DEPTH) and the 9P server's
- * re-entrant VFS calls, both of which have modest frames. */
+ * re-entrant VFS calls, both of which have modest frames.
+ *
+ * Not every task needs this much -- a driver task that only scans a keypad
+ * or reads an RTC register has nowhere near this call depth. task_create_sized()
+ * (M0) lets such a caller ask for fewer pages; task_create() keeps this
+ * default so every pre-M0 caller is unaffected. */
 #define TASK_STACK_PAGES 2
 
 #include "kernel/mem_domain.h" /* B3: per-task restriction set */
@@ -62,14 +93,26 @@ typedef struct task {
      * return value. */
     long         exit_status;
     bool         exit_clean;
+    /* M3: TASK_PRIO_NORMAL by default (task_create_sized() sets it), raised
+     * or lowered only via task_set_priority(). */
+    int          priority;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
  * always a valid "current task" to switch away from. */
 void sched_init(void);
 
-/* Creates a READY task with its own kernel stack. Returns the pid, or -1 if
- * the table is full or no stack could be allocated. */
+/* Creates a READY task with its own kernel stack of `stack_pages` pages.
+ * Returns the pid, or -1 if the table is full, `stack_pages` is 0, or no
+ * stack could be allocated. The primitive M4 (plan/phase12_microkernel_migration.md)
+ * needs: a driver task that never gets near TASK_STACK_PAGES's depth
+ * shouldn't have to pay for it. */
+int task_create_sized(const char *name, void (*entry)(void *), void *arg,
+                      uint32_t stack_pages);
+
+/* Creates a READY task with the default (TASK_STACK_PAGES) kernel stack.
+ * Thin wrapper over task_create_sized() -- every caller from before M0
+ * keeps this and is unaffected by it existing. */
 int task_create(const char *name, void (*entry)(void *), void *arg);
 
 /* Round-robin to the next READY task. A no-op when nothing else can run, so
@@ -87,6 +130,13 @@ void task_start(void (*entry)(void *), void *arg);
 /* Attaches a memory domain (B3). Takes effect immediately if `pid` is the
  * running task, otherwise at its next scheduling. */
 int task_set_domain(int pid, mem_domain_t *domain);
+
+/* Sets a task's scheduling tier to one of the TASK_PRIO_* constants above
+ * (M3). Takes effect at the next call to next_runnable() -- immediately if
+ * `pid` is not currently RUNNING, at the next preemption or yield if it is.
+ * Returns -1 for an out-of-range pid, an unused slot, or a value outside
+ * [TASK_PRIO_IDLE, TASK_PRIO_INTERRUPT]. */
+int task_set_priority(int pid, int priority);
 
 /* True while any live task still references `domain` (C2). The loader uses
  * this rather than a recorded pid to decide a program has finished: pids are

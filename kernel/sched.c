@@ -46,6 +46,7 @@ void sched_init(void) {
     g_tasks[0].state = TASK_RUNNING;
     g_tasks[0].name = "kernel";
     g_tasks[0].stack_base = NULL;
+    g_tasks[0].priority = TASK_PRIO_NORMAL;
     g_current = 0;
     g_active = true;
 
@@ -108,6 +109,21 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     return 0;
 }
 
+/* Sets a task's scheduling tier (M3). Separate from task_create() for the
+ * same reason task_set_domain() is: a caller usually only knows what a task
+ * *is* -- a driver, a background server -- once it exists, and this can be
+ * called any time after, not just once at birth. Takes effect at the next
+ * call to next_runnable(); no immediate re-yield is forced, since the
+ * caller may be raising or lowering its *own* priority and forcing a
+ * self-switch here would be a surprise side effect of a setter. */
+int task_set_priority(int pid, int priority) {
+    if (pid < 0 || pid >= MAX_TASKS) return -1;
+    if (g_tasks[pid].state == TASK_UNUSED) return -1;
+    if (priority < TASK_PRIO_IDLE || priority > TASK_PRIO_INTERRUPT) return -1;
+    g_tasks[pid].priority = priority;
+    return 0;
+}
+
 /* Is any live task still using this domain? (C2)
  *
  * The loader needs to know when a program has finished so it can return the
@@ -154,12 +170,22 @@ void task_start(void (*entry)(void *), void *arg) {
      * never passes the irq_restore() that every later resume goes through.
      * Enabling interrupts here is what makes a new task preemptible. */
     irq_restore(IRQ_ENABLE_BIT);
+    /* ...nor does a first run pass sched_yield()'s own leading sched_reap()
+     * call, which is where every *later* resume frees whatever task_exit()
+     * handed off right before switching to it. If task_exit() picks a task
+     * that has never run before as `next`, and that task then exits itself
+     * before ever reaching its own first sched_yield(), the stack it was
+     * handed off is never reclaimed here. Reaping explicitly here closes
+     * that gap the same way sched_yield() already does for every other
+     * resume. */
+    sched_reap();
     entry(arg);
     task_exit();
 }
 
-int task_create(const char *name, void (*entry)(void *), void *arg) {
-    if (!entry) return -1;
+int task_create_sized(const char *name, void (*entry)(void *), void *arg,
+                      uint32_t stack_pages) {
+    if (!entry || stack_pages == 0) return -1;
 
     /* Claiming a slot must be atomic with respect to anything else that scans
      * the table, or two creators could pick the same one. */
@@ -179,10 +205,10 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
         return -1;
     }
 
-    void *stack = palloc_pages(TASK_STACK_PAGES);
+    void *stack = palloc_pages(stack_pages);
     if (!stack) {
-        printk("[Sched] Out of memory for '%s' stack (%d pages)\n",
-               name ? name : "?", TASK_STACK_PAGES);
+        printk("[Sched] Out of memory for '%s' stack (%u pages)\n",
+               name ? name : "?", stack_pages);
         g_tasks[slot].state = TASK_UNUSED; /* release the reservation */
         return -1;
     }
@@ -191,18 +217,19 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
     t->pid = slot;
     t->name = name ? name : "unnamed";
     t->stack_base = stack;
-    t->stack_pages = TASK_STACK_PAGES;
+    t->stack_pages = stack_pages;
     t->domain = NULL; /* unrestricted until a caller attaches one */
     /* Cleared explicitly: a slot is reused from TASK_DEAD, so a previous
      * occupant's clean exit would otherwise be reported as this task's. */
     t->exit_status = 0;
     t->exit_clean = false;
+    t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
 
     /* Prime the stack so the first ctx_switch() into this task "returns" to
      * task_trampoline with s0 = entry and s1 = arg. The frame layout must
      * match arch/riscv/common/switch.S exactly: slot 0 is ra, slots 1..12
      * are s0..s11, and the frame is 16 registers wide for ABI alignment. */
-    uintptr_t top = (uintptr_t)stack + (uintptr_t)TASK_STACK_PAGES * PAGE_SIZE;
+    uintptr_t top = (uintptr_t)stack + (uintptr_t)stack_pages * PAGE_SIZE;
     top &= ~(uintptr_t)15; /* 16-byte aligned, per the RISC-V ABI */
     uintptr_t *frame = (uintptr_t *)top - 16;
     for (int i = 0; i < 16; i++) frame[i] = 0;
@@ -213,20 +240,37 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
     t->sp = (uintptr_t)frame;
     t->state = TASK_READY;
 
-    printk("[Sched] Created task #%d '%s' (stack %p, %d KB)\n",
-           slot, t->name, stack, (TASK_STACK_PAGES * PAGE_SIZE) / 1024);
+    printk("[Sched] Created task #%d '%s' (stack %p, %u KB)\n",
+           slot, t->name, stack, (stack_pages * (uint32_t)PAGE_SIZE) / 1024);
     return slot;
 }
 
-/* Next runnable task after `from`, or -1 if none. The current task counts as
+int task_create(const char *name, void (*entry)(void *), void *arg) {
+    return task_create_sized(name, entry, arg, TASK_STACK_PAGES);
+}
+
+/* Highest-priority runnable task, or -1 if none (M3,
+ * plan/phase12_microkernel_migration.md). The current task counts as
  * runnable only if it is still RUNNING -- so a task that just blocked or
- * exited is never picked again here. */
+ * exited is never picked again here.
+ *
+ * One linear scan from `from`, tracking the best candidate seen so far and
+ * replacing it only on a *strictly* higher priority -- which is what makes
+ * this collapse to exactly the pre-M3 round-robin scan whenever every ready
+ * task shares one tier (equal priority never replaces the earlier find, so
+ * the first READY task found after `from` wins, same as before). */
 static int next_runnable(int from) {
+    int chosen = -1;
+    int chosen_prio = -1;
     for (int step = 1; step <= MAX_TASKS; step++) {
         int i = (from + step) % MAX_TASKS;
-        if (g_tasks[i].state == TASK_READY) return i;
+        if (g_tasks[i].state != TASK_READY) continue;
+        if (g_tasks[i].priority > chosen_prio) {
+            chosen = i;
+            chosen_prio = g_tasks[i].priority;
+        }
     }
-    return -1;
+    return chosen;
 }
 
 void sched_yield(void) {
@@ -321,7 +365,19 @@ void task_exit(void) {
     }
 
     /* Hand the stack to the reaper rather than freeing it here: this code is
-     * still executing on it. */
+     * still executing on it.
+     *
+     * "The next task reaps before anything else can exit" (see g_reap_stack's
+     * comment) holds under cooperative scheduling and ordinary preemption,
+     * since the printk() above is too fast for a second task to reach its
+     * own task_exit() in the gap. This slot is still only one deep, but it
+     * does not trust the handoff to land before it's needed again: if a
+     * previous dead task's stack is somehow still sitting here unreaped,
+     * free it now -- we are provably not running on it, only on our own --
+     * instead of silently overwriting the only reference to it. */
+    if (g_reap_stack) {
+        palloc_free(g_reap_stack, g_reap_pages);
+    }
     g_reap_stack = t->stack_base;
     g_reap_pages = t->stack_pages;
 

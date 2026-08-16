@@ -50,7 +50,11 @@
  * particular protocol needs.
  */
 
-#define CHAN_MAX_ENDPOINTS 4
+/* M0, plan/phase12_microkernel_migration.md: raised from 4 for headroom as
+ * more services register endpoints of their own. Cost is a static array of
+ * chan_endpoint_t (~40 bytes each); the buffers a registrant supplies are
+ * the real per-endpoint cost and are unaffected by this constant. */
+#define CHAN_MAX_ENDPOINTS 16
 
 /* Consumes `req_len` bytes at `req`, writes a response into `resp` (at most
  * `resp_max` bytes), returns the response length or <0 on failure. Both

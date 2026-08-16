@@ -716,10 +716,23 @@ def test_concurrent_user_programs(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
     per domain, which is what needed a free path before any of this was
     possible at all.
 
-    The assertion is the interleaving. uspin prints USPIN_START, computes, then
-    reports; uhello runs to completion in between. Requiring uhello's marker to
-    land between uspin's first and last is what proves both were resident --
-    with a single image slot the second spawn is refused outright.
+    The assertion is residency overlap: uhello's task must exist while
+    uspin's is still alive, proving the loader gave both a slot at once --
+    with a single image slot the second spawn would be refused outright.
+
+    This used to check marker *print* order (USPIN_START before
+    UPROG_TEXT_OK before USPIN_PREEMPTED), on the assumption that spawning
+    uspin first meant it would always be the one to print first too. That
+    held by accident of table-layout proximity, not by any real guarantee:
+    two freshly-created, identically-tied tasks racing for the very first
+    CPU turn is legitimately non-deterministic (kernel/sched.c's
+    next_runnable()), and uhello winning that race -- finishing entirely
+    before uspin ever gets a turn -- is just as valid a proof of concurrent
+    residency as the reverse; both plainly existed together regardless of
+    which one happened to run, or print, first. Checking kernel-emitted
+    "Created"/"exited" log lines instead of the programs' own racing print
+    statements is what makes this order-agnostic: those lines are strictly
+    chronological, whichever task the CPU favors.
     """
     name = "C2: two user programs resident at once on real silicon"
     try:
@@ -735,15 +748,19 @@ def test_concurrent_user_programs(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
                 ser.flush()
                 out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
 
-        start = out.find("USPIN_START")
-        hello = out.find("UPROG_TEXT_OK", start if start >= 0 else 0)
-        done = out.find("USPIN_PREEMPTED", hello if hello >= 0 else 0)
+        created = re.findall(r"\[Sched\] Created task #(\d+) 'uprog'", out)
+        overlapped = False
+        if len(created) >= 2:
+            uspin_pid, uhello_pid = created[0], created[1]
+            uhello_created_pos = out.index(f"Created task #{uhello_pid} 'uprog'")
+            uspin_exit_match = re.search(rf"\[Sched\] Task #{uspin_pid} 'uprog' exited", out)
+            overlapped = bool(uspin_exit_match) and uhello_created_pos < uspin_exit_match.start()
         peak = re.search(r"Pages Peak: (\d+)", out)
         total = re.search(r"Pages Total: (\d+)", out)
 
         checks = [
-            ("both programs started", start >= 0 and hello >= 0),
-            ("they overlapped", start >= 0 and hello > start and done > hello),
+            ("both programs started", len(created) >= 2),
+            ("they overlapped", overlapped),
             ("heap figures readable", peak is not None and total is not None),
         ]
         failed = [label for label, ok in checks if not ok]
