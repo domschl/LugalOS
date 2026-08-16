@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import os
-import pty
 import re
 import select
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 
 def expected_version() -> str:
@@ -57,7 +58,8 @@ class QemuSession:
         self.img_path: Path = img_path
         self.arch: str = arch
         self.process: subprocess.Popen[bytes] | None = None
-        self._master_fd: int | None = None
+        self._log_path: Path | None = None
+        self._log_file: "BinaryIO | None" = None  # read-mode file object, opened in start()
 
     def start(self, extra_qemu_args: list[str] | None = None) -> None:
 
@@ -75,42 +77,65 @@ class QemuSession:
         if extra_qemu_args:
             cmd.extend(extra_qemu_args)
 
-        master_fd, slave_fd = pty.openpty()
+        # QEMU's '-nographic' stdio chardev sets O_NONBLOCK on its console
+        # fd(s), and a write() that returns EAGAIN because the reading side
+        # has not drained fast enough is not always retried -- documented,
+        # longstanding QEMU behavior, not something specific to this
+        # harness or a PTY vs. pipe choice. The Linux kernel's own nolibc
+        # selftests hit exactly this running QEMU the same way (Willy
+        # Tarreau, LKML thread on QEMU-based selftests, 2023): piping
+        # QEMU's '-nographic' output "randomly mangled and/or missing
+        # contents... I suspect it has something to do with non-blocking
+        # writes being used to avoid blocking the emulation." Their fix,
+        # adopted here: "It's only when sent to a file that it's OK." A
+        # regular file's write() essentially never returns EAGAIN, so
+        # QEMU's console output goes to a real log file instead of a pipe
+        # or PTY, and this class tails that file rather than reading a
+        # chardev fd directly. Commands still go in over a plain pipe on
+        # stdin -- the documented issue and every report of it are
+        # specifically about QEMU's *output* side.
+        #
+        # Worth keeping despite the *actual* cause of this suite's own
+        # multi-hundred-second stalls turning out to be different (see
+        # send_and_expect()'s comment): breaking into QEMU's monitor
+        # mid-stall, while this was still suspect #1, read back a fully
+        # completed guest exchange from well under a second of simulated
+        # time -- proof the *guest* was never at fault, even though the
+        # real proximate cause on the *host* side was elsewhere. The
+        # O_NONBLOCK/EAGAIN behavior above is still real, still documented,
+        # and still the shape every external report of "QEMU output piped
+        # somewhere unreliable" describes, so this stays as a genuine
+        # defense against a class of failure this harness cannot fully
+        # rule out having also hit, just no longer the presumed sole cause.
+        log_fd, log_path_str = tempfile.mkstemp(prefix="lugalos_qemu_", suffix=".log")
+        self._log_path = Path(log_path_str)
         self.process = subprocess.Popen(
             cmd,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
+            stdin=subprocess.PIPE,
+            stdout=log_fd,
+            stderr=log_fd,
             close_fds=True,
         )
-        # The child (QEMU) inherited its own copy of the slave fd across
-        # fork(); this process's copy must close so the master's read()
-        # eventually sees EOF when QEMU exits, instead of staying open
-        # forever against a duplicate descriptor nothing else will close.
-        os.close(slave_fd)
-        self._master_fd = master_fd
+        # The child (QEMU) received its own duplicated copy of log_fd via
+        # dup2() when Popen() set up its stdout/stderr; this process's copy
+        # is no longer needed once that handoff has happened; nothing here
+        # reads or writes through log_fd itself; reading happens in the
+        # separate read-mode handle below.
+        os.close(log_fd)
+        self._log_file = open(self._log_path, "rb")
 
     def _drain(self) -> None:
-        """Discard any output left over from a previous call. Without this, a
-        pattern from the *next* test's own echoed command (or trailing output
-        the previous test never consumed) can bleed in and produce a false
-        PASS before the new command has even been sent.
-
-        Also actively reads and discards whatever is sitting in the PTY
-        right now (non-blocking select, stop once nothing more is
-        immediately available) -- there is no background thread keeping
-        this drained between calls any more (see send_and_expect()'s
-        comment for why), so unlike the old queue-based drain, bytes can
-        genuinely still be waiting at the OS level here, not just in a
-        Python-side buffer. """
-        if self._master_fd is None:
+        """Discard any output left over from a previous call by seeking
+        past it, rather than reading and throwing it away -- the log file
+        keeps growing underneath this session for its whole lifetime, so
+        "discard" here means "start the next read from here", not "erase".
+        Without this, a pattern from the *next* test's own echoed command
+        (or trailing output the previous test never consumed) can bleed in
+        and produce a false PASS before the new command has even been
+        sent. """
+        if self._log_file is None:
             return
-        while select.select([self._master_fd], [], [], 0)[0]:
-            try:
-                if not os.read(self._master_fd, 4096):
-                    break
-            except OSError:
-                break
+        self._log_file.seek(0, os.SEEK_END)
 
     @staticmethod
     def _strip_echo(text: str, command: str) -> str:
@@ -136,42 +161,54 @@ class QemuSession:
         return re.sub(echo_pattern, "", text, count=1)
 
     def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0) -> tuple[bool, str]:
-        """Writes `command`, then reads the PTY inline -- select()+os.read()
-        in this same loop, no background thread -- until `expected_pattern`
+        """Writes `command` to QEMU's stdin, then tails its log file --
+        read()-what's-new, sleep briefly, repeat -- until `expected_pattern`
         matches or `timeout` elapses.
 
-        This used to run a separate reader thread continuously queuing
-        individual characters into a queue.Queue, with this loop draining
-        that queue and re-running the regex against the whole accumulated
-        string on every single character. That shape -- not the pipe vs PTY
-        choice it was first mistaken for -- was the actual cause of QEMU's
-        '-nographic' stdio chardev intermittently going 60+ real seconds
-        without flushing new guest output at all once the guest fell idle
-        at a prompt (confirmed by breaking into the QEMU monitor mid-"hang":
-        the guest had already finished everything correctly in well under a
-        second of simulated time; the bytes were just never arriving here).
-        Reading directly in this loop, in chunks, exactly mirrors every
-        manual reproduction that never showed the problem -- including this
-        file's other, long-unaffected QEMU subprocess reader (the C0 CRLF
-        test, further down) -- and switching to it (removing the thread and
-        queue entirely, not just changing their read size) was what
-        actually made the full test sequence reliable, not the earlier PTY
-        or chunked-read changes on their own.
+        This method (and how it reads QEMU's output -- see start()'s
+        comment for that half) went through several revisions chasing what
+        looked, for a long time, like an external QEMU stdio quirk: a
+        pipe- or PTY-based reader would go 60+ real seconds without seeing
+        already-produced guest output at all, on two different host
+        platforms, confirmed by breaking into QEMU's own monitor mid-stall
+        and reading back a fully completed guest exchange from well under
+        a second of simulated time. That evidence was real, but pointed at
+        the wrong layer: QEMU's chardev *is* documented to have exactly
+        this failure shape (O_NONBLOCK on its console fd, a write() that
+        returns EAGAIN when the reader hasn't drained fast enough, not
+        always retried -- see start()'s comment), so every symptom lined
+        up. The switch to a log file (this method's actual current shape)
+        was made on that basis and is kept -- it is still a real, cheap
+        defense against that documented class of failure.
 
-        Bytes accumulate raw; the whole buffer is (re-)decoded on every
-        check, not just each new chunk. Decoding chunks independently split
-        the line editor's multi-byte box-drawing borders across a read
-        boundary and corrupted them into U+FFFD whenever a border character
-        happened to straddle two os.read() calls -- decoding the same
-        growing buffer from the start every time costs a little CPU but
-        can never land mid-codepoint. """
-        if not self.process or self._master_fd is None:
+        It did not fix the stalls, though -- not on its own. The actual
+        cause, found only once a stall reproduced with the *file* already
+        holding the correct, complete answer while this method still
+        hadn't returned: `check()` below calls `regex.search()` against
+        `expected_pattern` compiled with re.DOTALL, and roughly forty of
+        this suite's patterns wrote `(.|\\n)*` for "any text, including
+        newlines" -- redundant under DOTALL, since `.` already matches
+        `\\n` there, but not *harmless*: an alternation between two things
+        that can both match the same character, repeated with `*`, is a
+        textbook catastrophic-backtracking shape, and Python's `re` engine
+        has no protection against it. On specific accumulated-output
+        lengths this took tens of seconds to minutes to fail to complete
+        at all -- indistinguishable, from outside this function, from "no
+        new output arrived," which is exactly why it read as a QEMU/host
+        problem for so long. Replacing `(.|\\n)*` with `.*` throughout this
+        file (semantically identical under DOTALL) removed the pathological
+        case entirely; every stall this suite had been hitting, across two
+        platforms and every I/O transport tried, stopped reproducing once
+        that one change landed -- the file-based read stayed in as
+        legitimate hardening, not as the fix that actually mattered. """
+        if not self.process or self.process.stdin is None or self._log_file is None:
             return False, "Process not running"
 
         self._drain()
 
         if command:
-            os.write(self._master_fd, (command + "\n").encode())
+            self.process.stdin.write((command + "\n").encode())
+            self.process.stdin.flush()
 
         accumulated = b""
         start_time = time.time()
@@ -182,15 +219,10 @@ class QemuSession:
             return bool(regex.search(self._strip_echo(text, command))), text
 
         while time.time() - start_time < timeout:
-            remaining = timeout - (time.time() - start_time)
-            if not select.select([self._master_fd], [], [], min(0.2, max(0.0, remaining)))[0]:
-                continue
-            try:
-                chunk = os.read(self._master_fd, 4096)
-            except OSError:
-                break
+            chunk = self._log_file.read()
             if not chunk:
-                break
+                time.sleep(0.02)
+                continue
             accumulated += chunk
 
             if any(marker.encode() in accumulated for marker in self.FAULT_MARKERS):
@@ -208,13 +240,24 @@ class QemuSession:
                 self.process.wait(timeout=1.0)
             except Exception:
                 self.process.kill()
+            if self.process.stdin:
+                try:
+                    self.process.stdin.close()
+                except OSError:
+                    pass
             self.process = None
-        if self._master_fd is not None:
+        if self._log_file is not None:
             try:
-                os.close(self._master_fd)
+                self._log_file.close()
             except OSError:
                 pass
-            self._master_fd = None
+            self._log_file = None
+        if self._log_path is not None:
+            try:
+                self._log_path.unlink()
+            except OSError:
+                pass
+            self._log_path = None
 
 
 def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> list[tuple[str, bool, str]]:
@@ -258,7 +301,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # second half real -- under UBSan an out-of-bounds read halts the guest.
         ok, log = session.send_and_expect(
             "exec /sd0/badelf.bin\nhelp",
-            r"(does not fit|past end of file)(.|\n)*Available LugalOS Shell Commands",
+            r"(does not fit|past end of file).*Available LugalOS Shell Commands",
             timeout=6.0)
         results.append(("ELF Loader Rejects Malformed Program Headers (B12)",
                         ok, log if not ok else ""))
@@ -288,8 +331,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # without any bytes having crossed the boundary.
         ok, log = session.send_and_expect(
             "exec /flash0/system/bin/uhello.elf",
-            r"UPROG_TEXT_OK(.|\n)*UPROG_DATA_OK(.|\n)*UPROG_FILE_OK LugalOS v"
-            + expected_version() + r"(.|\n)*returned 7",
+            r"UPROG_TEXT_OK.*UPROG_DATA_OK.*UPROG_FILE_OK LugalOS v"
+            + expected_version() + r".*returned 7",
             timeout=6.0)
         results.append(("Separately Linked ELF Runs In U-mode (B6)", ok, log if not ok else ""))
 
@@ -305,8 +348,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # that grants too much fails loudly instead of looking like a pass.
         ok, log = session.send_and_expect(
             "exec /flash0/system/bin/uisolate.elf\nhelp",
-            r"UISO_ALIVE(.|\n)*terminated before it could exit"
-            r"(.|\n)*Available LugalOS Shell Commands",
+            r"UISO_ALIVE.*terminated before it could exit"
+            r".*Available LugalOS Shell Commands",
             timeout=6.0)
         if ok and "UISO_NOT_ISOLATED" in log:
             ok = False
@@ -339,7 +382,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # move, so a failure is a loud line rather than a missing one.
         ok, log = session.send_and_expect(
             "exec /flash0/system/bin/uspin.elf",
-            r"USPIN_START(.|\n)*USPIN_PREEMPTED", timeout=25.0)
+            r"USPIN_START.*USPIN_PREEMPTED", timeout=25.0)
         if ok and "USPIN_NOT_PREEMPTED" in log:
             ok = False
         results.append(("U-mode Code Is Preemptible (B6)", ok, log if not ok else ""))
@@ -382,7 +425,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(
             'lisp\n(spawn "/flash0/system/bin/uspin.elf")\n'
             '(spawn "/flash0/system/bin/uhello.elf")\nexit',
-            r"(?=(.|\n)*USPIN_PREEMPTED)(?=(.|\n)*UPROG_FILE_OK)", timeout=30.0)
+            r"(?=.*USPIN_PREEMPTED)(?=.*UPROG_FILE_OK)", timeout=30.0)
         if ok:
             created = re.findall(r"\[Sched\] Created task #(\d+) 'uprog'", log)
             if len(created) < 2:
@@ -406,7 +449,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # the allocation: a .bss that is merely declared would run identically
         # whether or not the domain covered it.
         ok, log = session.send_and_expect(
-            "ubig", r"UBIG_WROTE 5(.|\n)*UBIG_READBACK(.|\n)*UBIG_DONE", timeout=25.0)
+            "ubig", r"UBIG_WROTE 5.*UBIG_READBACK.*UBIG_DONE", timeout=25.0)
         results.append(("A User Program Larger Than Two Pages Runs (C4)", ok, log if not ok else ""))
 
         # ...and the padding that costs is visible rather than inferred.
@@ -432,7 +475,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # The program prints UWX_NOT_ENFORCED itself if the store succeeds, so
         # a failure is a loud line rather than a missing one.
         ok, log = session.send_and_expect(
-            "uwx", r"UWX_ALIVE(.|\n)*terminated before it could exit", timeout=25.0)
+            "uwx", r"UWX_ALIVE.*terminated before it could exit", timeout=25.0)
         if ok and "UWX_NOT_ENFORCED" in log:
             ok = False
         results.append(("W^X Is Enforced From Segment Flags (C4)", ok, log if not ok else ""))
@@ -506,7 +549,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # one privileged name.
         ok, log = session.send_and_expect(
             'lisp\n(bind "uartslip")\n(release "uart")\n(bind "uartslip")\n(bind "uart")\nexit',
-            r"=> #f(.|\n)*=> #t(.|\n)*=> #t(.|\n)*=> #f", timeout=8.0)
+            r"=> #f.*=> #t.*=> #t.*=> #f", timeout=8.0)
         if ok and "already holds it" not in log:
             ok = False  # refused, but without saying what it collided with
         results.append(("One Wire Has One Owner, In Both Directions (C8)",
@@ -520,7 +563,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # /proc/ports says what each name is and which wire it drives, which is
         # what makes a refusal legible rather than mysterious.
         ok, log = session.send_and_expect(
-            "cat /proc/ports", r"uart\s+console\s+uart0(.|\n)*uartslip\s+p9link\s+uart0",
+            "cat /proc/ports", r"uart\s+console\s+uart0.*uartslip\s+p9link\s+uart0",
             timeout=5.0)
         results.append(("/proc/ports Reports Wires And Their Holders (C8)",
                         ok, log if not ok else ""))
@@ -539,8 +582,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # than silently appearing to work.
         ok, log = session.send_and_expect(
             "uargs alpha beta gamma",
-            r"UARGS_COUNT 4(.|\n)*UARGS_ARG 0:uargs(.|\n)*UARGS_ARG 3:gamma"
-            r"(.|\n)*UARGS_NULL_OK(.|\n)*UARGS_DONE",
+            r"UARGS_COUNT 4.*UARGS_ARG 0:uargs.*UARGS_ARG 3:gamma"
+            r".*UARGS_NULL_OK.*UARGS_DONE",
             timeout=25.0)
         results.append(("A User Program Receives argc/argv (C3)", ok, log if not ok else ""))
 
@@ -583,8 +626,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         #                        gets a refusal instead of some later syscall
         ok, log = session.send_and_expect(
             "uchan",
-            r"UCHAN_VIA_SERVICE(.|\n)*UCHAN_NOSUCH_OK(.|\n)*UCHAN_FOREIGN_OK"
-            r"(.|\n)*UCHAN_RETIRED_OK(.|\n)*UCHAN_DONE",
+            r"UCHAN_VIA_SERVICE.*UCHAN_NOSUCH_OK.*UCHAN_FOREIGN_OK"
+            r".*UCHAN_RETIRED_OK.*UCHAN_DONE",
             timeout=25.0)
         results.append(("U-mode Reaches A Service Over A Channel (C3)", ok, log if not ok else ""))
 
@@ -700,7 +743,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # so the greeting is now also evidence that a syscall crossed the
         # privilege boundary and came back.
         ok, log = session.send_and_expect(
-            cmd_cc, r"Hello from LugalOS(.|\n)*returned 0", timeout=5.0)
+            cmd_cc, r"Hello from LugalOS.*returned 0", timeout=5.0)
         results.append(("chibicc C11 Compiler & Exec", ok, log if not ok else ""))
 
         # 5b. Filesystem Usage Metrics (df) & System Monitor (top)
@@ -833,7 +876,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "(exec \"/sd0/hello_lisp.elf\")"
         )
         ok, log = session.send_and_expect(
-            cmd_lisp_cc, r"Hello from LugalOS(.|\n)*returned 0", timeout=5.0)
+            cmd_lisp_cc, r"Hello from LugalOS.*returned 0", timeout=5.0)
         results.append(("Lisp Compiler & Binary Exec Primitives (cc, exec)", ok, log if not ok else ""))
 
         # 10b. Chess console REPL (J1, plan/phase10_chess_completion.md).
@@ -1022,7 +1065,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # with no probe function is still reported present and typed.
         ok, log = session.send_and_expect(
             "cat /proc/devices",
-            r"uartslip\s+p9link\s+present(.|\n)*vblk\s+block\s+present",
+            r"uartslip\s+p9link\s+present.*vblk\s+block\s+present",
             timeout=4.0)
         results.append(("Device Registry Enumerated Via /proc/devices (B0)", ok, log if not ok else ""))
 
@@ -1034,7 +1077,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             '(dev-present? "vblk")\n'
             '(dev-present? "no-such-device")'
         )
-        ok, log = session.send_and_expect(cmd_bind, r"=> #t(.|\n)*=> #f", timeout=4.0)
+        ok, log = session.send_and_expect(cmd_bind, r"=> #t.*=> #f", timeout=4.0)
         results.append(("Lisp (dev-present?) Queries Device Registry (B0)", ok, log if not ok else ""))
 
         ok, log = session.send_and_expect("(klog-sinks)", r"console: attached", timeout=3.0)
@@ -1066,7 +1109,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # stack it was running on.
         ok, log = session.send_and_expect(
             "usertest",
-            r"UMODE_OK(.|\n)*cause: 8 \(U-mode(.|\n)*ended cleanly",
+            r"UMODE_OK.*cause: 8 \(U-mode.*ended cleanly",
             timeout=10.0)
         results.append(("U-mode Task Runs And Syscalls Back (B3)", ok, log if not ok else ""))
 
@@ -1081,7 +1124,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # target and Sv39 page tables on the other, asserted identically.
         ok, log = session.send_and_expect(
             "isolationtest",
-            r"faulted: cause \d+(.|\n)*ISOLATED \(kernel memory untouched\)",
+            r"faulted: cause \d+.*ISOLATED \(kernel memory untouched\)",
             timeout=12.0)
         results.append(("U-mode Task Cannot Write Kernel Memory (B3/B5, both models)",
                         ok, log if not ok else ""))
@@ -1104,7 +1147,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # still B5.
         ok, log = session.send_and_expect(
             "deputytest",
-            r"DEPUTY_REFUSED(.|\n)*OWNBUF_OK(.|\n)*UNTOUCHED",
+            r"DEPUTY_REFUSED.*OWNBUF_OK.*UNTOUCHED",
             timeout=12.0)
         results.append(("Syscall Boundary Rejects A Foreign Pointer (B3, copy-in/out)",
                         ok, log if not ok else ""))
@@ -1133,7 +1176,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # whatever it had -- otherwise "bound" would mean nothing.
         ok, log = session.send_and_expect(
             'lisp\n(console-device)\n(console-bind "nosuchdev")\n(console-bind "uart")\nexit',
-            r'=> "uart"(.|\n)*=> #f(.|\n)*=> #t', timeout=6.0)
+            r'=> "uart".*=> #f.*=> #t', timeout=6.0)
         results.append(("Console Device Bound By Name At Runtime (B4)", ok, log if not ok else ""))
 
         # 13d-bis. B2: the scheduler actually switches.
@@ -1159,7 +1202,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # to catch, which is the property worth keeping.
         ok, log = session.send_and_expect(
             "taskdemo",
-            r"A1(.|\n)*B1(.|\n)*A3(.|\n)*B3",
+            r"A1.*B1.*A3.*B3",
             timeout=8.0)
         results.append(("Tasks Interleave Rather Than Run To Completion (B2)", ok, log if not ok else ""))
 
@@ -1571,7 +1614,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # being broken.
         ok, log = session.send_and_expect(
             'lisp\n(which "uhello")\n(which "definitely_not_a_program")\nexit',
-            r'=> "/sd0/system/bin/uhello.elf"(.|\n)*=> #f', timeout=6.0)
+            r'=> "/sd0/system/bin/uhello.elf".*=> #f', timeout=6.0)
         results.append(("(which) Reports Resolution And Refuses Unknown Names (C1)",
                         ok, log if not ok else ""))
 
@@ -1715,7 +1758,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         cmd_pool_exhaust = ("lisp\n(define (loop n) (loop (+ n 1)))\n"
                             + "(loop 0)\n" * 8 + "exit\n")
         ok, log = session.send_and_expect(
-            cmd_pool_exhaust, r"Node pool exhausted(.|\n)*=> \(\)", timeout=25.0)
+            cmd_pool_exhaust, r"Node pool exhausted.*=> \(\)", timeout=25.0)
         results.append(("Node Pool Exhaustion Degrades Instead Of Hanging (P6 §6.4)",
                         ok, log if not ok else ""))
 
@@ -1728,21 +1771,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 def test_qemu_architecture_with_retry(
     elf_path: Path, img_path: Path, arch_name: str, max_attempts: int = 3,
 ) -> list[tuple[str, bool, str]]:
-    """test_qemu_architecture(), retried once on a specific failure shape.
+    """test_qemu_architecture(), retried on a specific, narrow failure shape.
 
-    Confirmed (not guessed) by breaking into QEMU's own monitor mid-"hang"
-    and reading back its already-buffered log: QEMU's '-nographic' chardev
-    can, rarely, stop flushing already-produced guest output to the host
-    for tens of real seconds even though the guest itself finished the
-    exact same exchange correctly in well under a second of simulated time.
-    QemuSession's PTY + inline-read shape (see send_and_expect()'s comment)
-    makes this rare rather than routine, but does not claim to make it
-    impossible -- it is QEMU's own event loop behaving this way, not
-    anything this process controls.
+    The stalls this was originally built to paper over turned out to have
+    a different, now-fixed root cause -- catastrophic regex backtracking
+    in send_and_expect()'s own matching, not QEMU (see that method's
+    comment for the full story: every reproduction stopped once
+    `(.|\\n)*` was replaced with `.*` throughout this file's patterns, on
+    both platforms tested). This wrapper stays anyway, because the
+    reasoning it was built on is still independently true and still not
+    fully ruled out: QEMU's '-nographic' chardev sets O_NONBLOCK on its
+    console fd and is documented not to always retry a write() that
+    returns EAGAIN (see start()'s comment) -- a real, external failure
+    mode this harness cannot fully control, only make unlikely. Cheap
+    insurance against a class of flake that is no longer the *known*
+    cause of anything, kept in case it is ever the cause of something new.
 
     Retrying is deliberately narrow, not "retry any failure": a genuine
     kernel hang would produce the exact same *shape* of failure (output
-    stops, timeout elapses) as this host artifact, so retrying indiscrimin-
+    stops, timeout elapses) as a host artifact, so retrying indiscrimin-
     ately would risk quietly re-running past a real regression instead of
     reporting it -- the opposite of what this suite exists to catch. Only
     retried when every failing result's log is silent on FAULT_MARKERS
