@@ -1,10 +1,12 @@
 # Phase 12 — Fine-Grained Process Architecture: A QNX-Shaped Migration
 
 **Status:** M0-M3 complete (2026-08-15). M4 attempted (2026-08-15/16),
-reverted, and reformulated (2026-08-16) — see M4's own section below for
-what the first attempt got wrong and why. Written to be detailed and
-executed one milestone at a time, not implemented from this document
-directly.
+reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
+(2026-08-16) — RP2350's own uart-task conversion still open, and the rest
+of the driver list (SD/SPI, display/keypad/RTC/EEPROM) not yet started.
+See M4's own section below for what the first attempt got wrong and why.
+Written to be detailed and executed one milestone at a time, not
+implemented from this document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -534,6 +536,61 @@ mechanism itself (`chan_register_task()`/`chan_serve_wait()`/
 was never the problem and is fine to re-add from scratch following this
 document's original M4 description — only the per-byte call granularity
 and the scheduler work done to compensate for it should *not* reappear.
+
+#### M4 completion notes (2026-08-16, uart only — QEMU rv32/rv64)
+
+Implemented as reformulated above, built fresh rather than resumed from
+`phase12-m4-uart-task-wip`. `kernel/chan.c` gained the task-owned endpoint
+mechanism (`chan_register_task()`, `chan_serve_wait()`/`chan_serve_reply()`,
+the anti-cycle wait-for graph) exactly as originally designed — none of it
+needed to change. `drivers/uart_16550.c` converted to a task; RP2350's
+own driver is still a stub (`uart_task_start()` returns -1, direct hardware
+access unchanged) for the same one-board-at-a-time reasoning as before.
+
+The batching half: `uart_putc()` accumulates into a 256-byte buffer
+(`g_tx_batch`, protected by a short `irq_save()` critical section, never
+held across the blocking `chan_call()` itself) and sends one `UART_REQ_WRITE`
+covering the whole buffer on flush, instead of one `chan_call()` per
+character. Flush is triggered by: the buffer filling; `printk_unlock()`'s
+*outermost* unlock (nested/reentrant unlocks don't flush early); and
+`uart_getc()`/`uart_has_char()`, so a prompt or redraw is guaranteed visible
+before this driver blocks waiting for the next keystroke rather than
+whenever some *later*, unrelated flush happens to fire. Found three more
+call sites during verification that write a complete message through
+`uart_putc()` directly and don't hit any of those triggers on their own —
+`uart_net.c`'s SLIP frame sender (the actual bug the first QEMU run of this
+attempt caught: A3b's demux test timed out because a completed 9P reply sat
+batched, unflushed, since nothing ever told it to go out), `vfs_server.c`'s
+`/dev/uart` write handler, and `lisp.c`/`ed.c`'s raw per-keystroke echo
+loops (cosmetic, not a test failure — echo would have lagged by exactly
+one keystroke otherwise, visible only once the *next* key's `uart_getc()`
+flushed it). Each gained its own explicit `uart_flush()` call at its own
+natural message boundary.
+
+Verified the plan's own success criterion directly rather than assuming
+it: `git diff` for this milestone touches no line of `kernel/sched.c` or
+`kernel/sched.h` — `next_runnable()` is byte-for-byte the M0-M3 shape.
+Added `uart_write_call_count()` (`drivers/uart.h`) and a `uartstats` shell
+command specifically to make "IPC volume tracks messages, not characters"
+a real, checked assertion instead of an eyeballed log: `help` (~50 lines,
+~2000 characters) costs ~60 `chan_call()`s, and the new "Console Output Is
+Batched, Not Per-Character (M4)" test in `tests/runner.py` asserts the
+delta stays under 200 (generous margin below character-scale, comfortably
+above the ~60 actually measured) across a real `help` invocation.
+
+Full QEMU suite 203/203 (two new assertions, rv32+rv64) across 4
+consecutive clean runs, no scheduler-fairness retries triggered at any
+point — the instability this milestone's first attempt spent a full day
+chasing simply did not reproduce once IPC volume was fixed at the source.
+Real RP2350 hardware 15/15 across 2 consecutive runs, on a rig with both
+a physical UART dongle and a real SD card (unlike the partial x86_64
+Linux rig used for cross-platform QEMU verification, which is missing
+both) — this board's own driver is unconverted this round, so hardware
+verification here is a regression check on the shared `kernel/chan.c`/
+`kernel/main.c` changes, not new coverage; RP2350's own uart-task
+conversion (with whatever board-specific batching shape its USB CDC
+mirroring and heartbeat LED turn out to need) remains a separate,
+not-yet-scheduled piece of this milestone.
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 
