@@ -154,8 +154,52 @@ uint32_t chan_serve_wait(chan_endpoint_t *ep);
  * blocked caller with that response. */
 void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len);
 
+/* M5 Phase 2, plan/phase12_microkernel_migration.md: the same two
+ * operations, for a server that cannot hold a raw pointer into the
+ * endpoint's own req_buf/resp_buf -- a U-mode driver task, reaching these
+ * through SYS_CHAN_SERVE_WAIT/SYS_CHAN_SERVE_REPLY (arch/riscv/common/
+ * trap.c). chan_endpoint_t stays opaque; both copy through a caller-owned
+ * buffer instead, the same shape chan_call() already uses for its own
+ * copy-in/copy-out.
+ *
+ * chan_serve_wait_copy() blocks exactly as chan_serve_wait() does, then
+ * copies min(request length, out_max) bytes of the endpoint's own request
+ * buffer into `out` and returns the *full* request length -- which may
+ * exceed out_max if the caller's buffer was too small, so truncation is
+ * detectable rather than silent (same discipline chan_call()'s resp_max
+ * enforces). */
+uint32_t chan_serve_wait_copy(chan_endpoint_t *ep, uint8_t *out, uint32_t out_max);
+
+/* Copies min(resp_len, the endpoint's own resp_cap) bytes from `in` into
+ * the endpoint's response buffer, then finishes the reply as
+ * chan_serve_reply() does. */
+void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp_len);
+
 /* Enumeration for /proc and the /srv/ namespace. Returns false once
  * exhausted. */
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
+
+/* M5 Phase 2, plan/phase12_microkernel_migration.md: called from
+ * task_exit() (kernel/sched.c) for every exiting task, clean or faulted.
+ * chan_call_task()'s owner-liveness check only covers a caller *starting*
+ * a call against an already-dead owner -- its own comment names the gap
+ * this closes: "does not close the race where the owner dies after this
+ * check but before it replies". That race stopped being rare the moment a
+ * driver task's own code could take a real PMP fault (U-mode conversions,
+ * M5): a caller mid-chan_call() into a task that then faults would
+ * otherwise block forever, since nothing else will ever call
+ * chan_serve_reply() on its behalf. Found this exact way on real
+ * hardware -- a faulted tm1638 task left the calling shell task
+ * permanently blocked, indistinguishable from a full board hang from the
+ * console's own vantage point, needing a physical BOOTSEL recovery.
+ *
+ * Scans every endpoint `owner_pid` owns (at most one in practice; nothing
+ * enforces that structurally) and, for one with a request currently
+ * pending, unblocks its caller with an error rather than leaving it
+ * blocked -- which in turn makes every existing "fall back to direct
+ * hardware access if the task isn't alive" facade (uart_putc(),
+ * tm1638_display_string(), ...) actually reachable when a task dies
+ * mid-request, not just when it never started. */
+void chan_owner_exited(int owner_pid);
 
 #endif /* LUGALOS_KERNEL_CHAN_H */

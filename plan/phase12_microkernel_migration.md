@@ -13,7 +13,15 @@ originally written below achieves nothing (M-mode/S-mode kernel privilege
 means PMP/Sv39-U doesn't restrict driver tasks at all), rescoped to real
 U-mode driver-task isolation and proven end-to-end on one driver
 (heartbeat) — see M5's own section for the corrected scope, the RP2350
-Secure/Non-secure SIO finding, and what's still deferred. Written to be
+Secure/Non-secure SIO finding, and what's still deferred. M5 Phase 2
+complete (2026-08-16): the server half of the channel API
+(`SYS_CHAN_SERVE_WAIT`/`_REPLY`) built and proven on tm1638, the first
+U-mode driver conversion with a real `chan_call()` endpoint — three real
+findings along the way (a string-literal-in-`.rodata` bug that hung the
+board rather than failing cleanly, a `memset()`-under-`-fno-builtin` bug
+with the same root shape, and a genuine architectural gap where a faulted
+driver task left its caller blocked forever, now fixed generally via
+`chan_owner_exited()`) — see M5 Phase 2's own section. Written to be
 detailed and executed one milestone at a time, not implemented from this
 document directly.
 
@@ -1338,6 +1346,116 @@ again after the isolation-test code and heap-allocation change landed.
 canary stays untouched, and the shell/kernel stay healthy and responsive
 immediately afterward. Full `tests/hw/test_rp2350.py` suite 22/22 across 3
 consecutive clean runs on the final build.
+
+### M5 Phase 2 — U-mode isolation for a driver with a real IPC endpoint *(done, 2026-08-16)*
+
+Phase 1 deliberately proved the mechanism on heartbeat, the one driver
+with no `chan_call()` endpoint. Every other M4.5 driver task does serve
+one, via `chan_serve_wait()`/`chan_serve_reply()` — kernel-only calls with
+no U-mode route. This phase built that route and converted tm1638 (7-segment
+display + 4x4 keypad), the next-lowest-risk driver: no dependents, tiny
+messages (33-byte request, 1-byte response), and its whole runtime
+footprint is GPIO bit-banging through the same `SIO_BASE` window heartbeat
+already uses — no new MMIO region needed.
+
+**What landed:** three new syscalls (`SYS_DELAY_US=24`, matching
+`SYS_TIME_MS`'s shape but microsecond-granular, for the bit-bang protocol's
+~3 µs pulse timing without exposing RP2350's TIMER0 peripheral to U-mode;
+`SYS_CHAN_SERVE_WAIT=25`/`SYS_CHAN_SERVE_REPLY=26`, the server half of the
+channel API, copying through a kernel scratch buffer the same way
+`SYS_CHAN_CALL` already does for the client half). `kernel/chan.c` gained
+`chan_serve_wait_copy()`/`chan_serve_reply_copy()` so `chan_endpoint_t`
+stays opaque. `drivers/tm1638_rp2350.c` gained a second, independent,
+`.utext`-tagged implementation of the whole bit-bang protocol (not a
+refactor of the existing kernel-mode one — the two must never run
+concurrently, and the kernel-mode fallback path has to keep working
+unmodified when the task isn't alive); its 16-byte persistent RAM-cache
+state lives inside the last 16 bytes of the task's own dedicated stack
+page rather than costing a fourth PMP region. `tm1638isotest` mirrors
+`heartbeatisotest` exactly, against tm1638's real domain shape.
+
+**Three real findings on hardware, in the order they were hit:**
+
+1. **A full board hang, not a clean fault.** The first attempt at
+   `tm1638_umode_body()` passed the endpoint name as an ordinary C string
+   literal (`"tm1638"`) into the new syscalls. A literal lands in ordinary
+   `.rodata`, outside every region the task's domain grants — exactly the
+   class of bug `kernel/shell.c`'s `user_deputy()` already has a comment
+   about, for the same reason, just never previously hit for a channel
+   endpoint name. `strncpy_from_user()` correctly refused to read it, but
+   on real RP2350 silicon that refusal path (reached from inside a task
+   blocking mid-ecall-trap, itself a code path nothing had ever exercised
+   before — `SYS_CHAN_CALL`'s only other task-owned-endpoint precedent,
+   "console", is an inline handler with no blocking involved) produced a
+   silent, total hang rather than a clean -1, needing a physical BOOTSEL
+   recovery. Root-caused not on hardware but by reproducing the same
+   mechanism on QEMU via a new synthetic probe, `chanechotest`
+   (`kernel/shell.c`) — a real client blocking on `chan_call()` into a real
+   U-mode server that itself blocks inside `SYS_CHAN_SERVE_WAIT` — which
+   hit the identical bug but failed *cleanly* there (`chan_lookup()`
+   returning `NULL`, not a hang), letting the actual defect be found and
+   fixed in seconds of iteration instead of a physical recovery cycle.
+   Fixed the same way `user_deputy()`'s own `path[]` already does: the
+   endpoint name built character-by-character into a `volatile` stack
+   array instead of a literal. `chanechotest` is now a permanent QEMU
+   regression test (`tests/runner.py`), specifically so the *mechanism*
+   itself — not any one driver's use of it — is falsified before any
+   future U-mode driver conversion risks a hardware hang on it again.
+2. **A real hardware instruction-access fault**, immediately after fix
+   #1: `tm1638_usys_display_string()`'s `memset(buffer, 0, sizeof(buffer))`
+   compiled, under this tree's `-fno-builtin` build flags, to a genuine
+   call to libc's own `memset()` — which lives in ordinary kernel `.text`,
+   outside `.utext`. The same "an ordinary-looking C construct silently
+   reaches outside the granted region" class of bug as #1, a different
+   construct. Confirmed via disassembly (`riscv64-elf-objdump`) that every
+   `jal` target inside `.utext` stays inside it once fixed — written out as
+   an explicit loop instead, matching `user_deputy()`'s established
+   discipline again.
+3. **A structural gap, not a code bug**: the fault in #2 correctly
+   terminated the tm1638 task, but the *caller* — in this case the
+   interactive shell itself, evaluating `(tm-display ...)` — stayed
+   permanently blocked, indistinguishable from a full hang from the
+   console's own vantage point, again needing a physical BOOTSEL recovery.
+   `chan_call_task()`'s own comment already named this exact gap ("does not
+   close the race where the owner dies after this check but before it
+   replies"), written when it was a theoretical race for a kernel-mode
+   driver task; it stopped being theoretical the moment a driver's own code
+   could take a real PMP fault as a normal, designed failure mode.
+   Fixed generally, not just for tm1638: a new `chan_owner_exited()`
+   (`kernel/chan.c`), called from `task_exit()` for every exiting task,
+   clean or faulted, unblocks any caller left waiting on an endpoint that
+   task owned. This also means every existing "fall back to direct
+   hardware access when the task isn't alive" facade (`uart_putc()`,
+   `tm1638_display_string()`, ...) now actually triggers when a task dies
+   *mid-request*, not only when it never started — strengthening the whole
+   M4.5/M5 driver-task architecture, not a narrow patch for this one bug.
+
+**Explicitly deferred, not this phase:** converting i2c (now unblocked —
+the user confirmed a future EEPROM redesign will cap single writes at 128
+bytes, well within a syscall-sized buffer, removing the "~4 KB payload"
+reason this was deferred in Phase 1's own plan), st7735 (still needs a
+second MMIO region for its SPI0 controller), blk, uart, usb_cdc.
+
+**Heap budget, continuing to drift as flagged in Phase 1:** idle baseline
+now 48 total pages / 23 free (was 52/27 after Phase 1) — tm1638's real
+conversion costs a permanent dedicated stack page the same way heartbeat's
+did. `test_heap_on_demand` (C6/C7) fails again as a direct result (chibicc's
+108 KB arena no longer fits even at idle, before any other test runs) —
+same class of failure as Phase 1's, not a new one, and not fixed here per
+the user's own explicit direction to track a real heap-budget
+re-analysis as separate follow-up work rather than patch around it again.
+
+Verified: full QEMU suite 217/217 across 3 consecutive clean runs on rv64
+(`chanechotest` and the new `uspin` `SYS_DELAY_US`/refusal checks
+included; rv32 covered by the same suite invocation). All four board
+personas build clean. Real RP2350 hardware: `(tm-display "m5 ok")`,
+`(tm-set-leds 255)`, and `(tm-get-key)` all round-trip cleanly through the
+real U-mode task (`tm1638stats` call count advancing, no fault, shell
+stays responsive) — text visually confirmed correct on the physical
+module by the user. `tm1638isotest` 3/3 consecutive clean runs. Full
+`tests/hw/test_rp2350.py` 21/22 across 2 consecutive runs (the one
+pre-flagged, isolated heap-budget failure above; everything else clean,
+including the real tm1638 task test and every U-mode isolation test).
 
 ### M6 — Process visibility parity
 

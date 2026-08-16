@@ -376,6 +376,88 @@ void trap_handler(trap_frame_t *frame) {
                      * directly. */
                     ret = (long)time_get_ms();
                     break;
+                case SYS_DELAY_US:
+                    /* M5 Phase 2, plan/phase12_microkernel_migration.md:
+                     * SYS_TIME_MS's millisecond granularity is useless for a
+                     * bit-bang protocol's microsecond-wide pulses (tm1638's
+                     * ~3us clock high/low times). time_delay_us() itself
+                     * reads RP2350's TIMER0 peripheral directly and, on this
+                     * build, also services usb_cdc_task() inline inside its
+                     * busy loop -- both kernel-only operations no U-mode
+                     * domain has ever needed to be granted directly, so the
+                     * delay runs here, in the kernel, rather than exposing
+                     * that MMIO region to U-mode. Costs one ecall round-trip
+                     * per call; for a display that updates a few times a
+                     * second this is immaterial, and "coarse but honest" beats
+                     * a calibrated busy-loop that would only be as reliable
+                     * as its calibration (see user/progs/uspin.c's own
+                     * SPIN_ITERATIONS comment for why that's fragile). */
+                    time_delay_us((uint64_t)frame->a1);
+                    ret = 0;
+                    break;
+                case SYS_CHAN_SERVE_WAIT: {
+                    /* SYS_CHAN_SERVE_WAIT(name, buf, buf_max) -> request
+                     * length, or -1. M5 Phase 2: the server half of the
+                     * channel API SYS_CHAN_CALL's client half has had since
+                     * C3 -- what a U-mode *driver* task needs to receive the
+                     * request a chan_call() sent it. Blocks (via
+                     * chan_serve_wait_copy()'s task_block()) exactly as a
+                     * kernel-mode driver task's own chan_serve_wait() call
+                     * already does; SYS_CHAN_CALL calling into a task-owned
+                     * endpoint already blocks its caller inside a syscall
+                     * the same way, so this is not a new risk, just the
+                     * same mechanism used from the other side.
+                     *
+                     * The endpoint's own request buffer is kernel memory
+                     * (chan_register_task()'s req_buf) -- never directly
+                     * readable from U-mode, so the request is copied out
+                     * through a kernel-owned scratch buffer, validated
+                     * against this task's domain the same way SYS_CHAN_CALL
+                     * validates its own buffers. */
+                    char kname[32];
+                    static uint8_t kbuf[256];
+                    if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    chan_endpoint_t *ep = chan_lookup(kname);
+                    if (!ep) { ret = -1; break; }
+                    uint32_t buf_max = (uint32_t)frame->a3;
+                    if (buf_max > sizeof(kbuf)) buf_max = sizeof(kbuf);
+                    uint32_t len = chan_serve_wait_copy(ep, kbuf, buf_max);
+                    /* Truncation is a failure, not a short read -- same
+                     * discipline chan_call()'s resp_max enforces on the
+                     * client side. */
+                    if (len > buf_max) { ret = -1; break; }
+                    ret = (len && copy_to_user(frame->a2, kbuf, len) < 0)
+                              ? -1 : (long)len;
+                    break;
+                }
+                case SYS_CHAN_SERVE_REPLY: {
+                    /* SYS_CHAN_SERVE_REPLY(name, buf, len) -> 0, or -1. The
+                     * response is copied in through a kernel-owned scratch
+                     * buffer and written into the endpoint's own response
+                     * buffer by chan_serve_reply_copy(), which also wakes
+                     * the blocked caller -- mirrors SYS_CHAN_CALL's own
+                     * copy-in-then-hand-to-the-endpoint shape. */
+                    char kname[32];
+                    static uint8_t kbuf[256];
+                    if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    chan_endpoint_t *ep = chan_lookup(kname);
+                    if (!ep) { ret = -1; break; }
+                    uint32_t resp_len = (uint32_t)frame->a3;
+                    if (resp_len > sizeof(kbuf)) { ret = -1; break; }
+                    if (resp_len && copy_from_user(kbuf, frame->a2, resp_len) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    chan_serve_reply_copy(ep, kbuf, resp_len);
+                    ret = 0;
+                    break;
+                }
                 case SYS_UEXIT:
                     /* A U-mode task asking to end. task_exit() switches away
                      * and never returns, so this call does not come back here

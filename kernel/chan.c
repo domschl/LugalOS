@@ -238,6 +238,35 @@ void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len) {
     if (caller >= 0) task_unblock(caller);
 }
 
+void chan_owner_exited(int owner_pid) {
+    for (uint32_t i = 0; i < g_num_endpoints; i++) {
+        chan_endpoint_t *ep = &g_endpoints[i];
+        if (ep->in_use && ep->owner_pid == owner_pid && ep->request_pending) {
+            /* Same shape as chan_serve_reply(), just with a failure result
+             * instead of whatever the owner would have produced -- there
+             * is no answer to hand back, the owner is gone. */
+            ep->reply_len = -1;
+            ep->request_pending = false;
+            int caller = ep->caller_pid;
+            ep->caller_pid = -1;
+            if (caller >= 0) task_unblock(caller);
+        }
+    }
+}
+
+uint32_t chan_serve_wait_copy(chan_endpoint_t *ep, uint8_t *out, uint32_t out_max) {
+    uint32_t len = chan_serve_wait(ep);
+    uint32_t n = len < out_max ? len : out_max;
+    if (n && out) memcpy(out, ep->req_buf, n);
+    return len;
+}
+
+void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp_len) {
+    uint32_t n = resp_len < ep->resp_cap ? resp_len : ep->resp_cap;
+    if (n && in) memcpy(ep->resp_buf, in, n);
+    chan_serve_reply(ep, n);
+}
+
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out) {
     if (index >= g_num_endpoints || !g_endpoints[index].in_use) return false;
     if (name_out) *name_out = g_endpoints[index].name;

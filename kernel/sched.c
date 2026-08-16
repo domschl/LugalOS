@@ -1,6 +1,7 @@
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
 #include "kernel/mem_domain.h"
+#include "kernel/chan.h"
 #include "kernel/irq.h"
 #include "kernel/printk.h"
 #include <string.h>
@@ -353,6 +354,14 @@ void task_exit(void) {
     printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
     uintptr_t flags = irq_save();
+
+    /* M5 Phase 2: if this task owned a chan endpoint with a request
+     * pending, its caller would otherwise block forever waiting for a
+     * reply nothing will ever send -- see chan_owner_exited()'s own
+     * comment for why this stopped being a theoretical gap. Before
+     * next_runnable() below, so an unblocked caller is eligible to be
+     * picked as the very next task to run. */
+    chan_owner_exited(t->pid);
 
     int next = next_runnable(g_current);
     if (next < 0) {

@@ -5,6 +5,7 @@
 #include "kernel/palloc.h"
 #include "kernel/balloc.h"
 #include "kernel/mem_domain.h"
+#include "kernel/chan.h"
 #include "kernel/device.h"
 #include "kernel/ticker.h"
 #include "kernel/line_editor.h"
@@ -120,7 +121,11 @@ static void cmd_help(void) {
 #if defined(CONFIG_BOARD_RP2350)
     cprintf("  heartbeatisotest - Same, under the real heartbeat driver task's own SIO-window domain\n");
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    cprintf("  tm1638isotest   - Same, under the real tm1638 driver task's own SIO-window domain\n");
+#endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
+    cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
     cprintf("  time            - Show system uptime\n");
     cprintf("  version         - Alias for 'cat /proc/version'\n");
@@ -474,6 +479,122 @@ static void cmd_deputytest(void) {
                                          : "OVERWRITTEN VIA THE KERNEL");
 }
 
+/* M5 Phase 2, plan/phase12_microkernel_migration.md: does a real client
+ * blocking on chan_call() into a real U-mode server -- which itself blocks
+ * mid-ecall-trap inside SYS_CHAN_SERVE_WAIT, waiting to be woken by that
+ * same call -- actually work? Everything about SYS_CHAN_CALL's own client-
+ * side blocking (chan_call_task()) was already proven on real hardware, but
+ * that never exercised the *server* side blocking from inside a trap
+ * handler: chan.h's only other task-owned-endpoint precedent ("console") is
+ * an inline handler with no task_block() involved at all. Built and run
+ * here, on every QEMU target, before trusting this mechanism on real
+ * hardware -- exactly the "falsify on hardware, not QEMU" discipline this
+ * project holds everywhere else, applied to the mechanism itself rather
+ * than to a specific driver's PMP grant. */
+static uint8_t         g_echo_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t    g_echo_domain;
+static uint8_t         g_echo_req[16];
+static uint8_t         g_echo_resp[16];
+static chan_endpoint_t *g_echo_ep;
+static volatile bool    g_echo_entered;
+
+__attribute__((always_inline)) static inline long echo_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = buf_max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long echo_usys_chan_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+
+UATTR static void echo_umode_body(void) {
+    /* Not a string literal: a literal lands in ordinary .rodata, outside
+     * every region this task's domain grants, so strncpy_from_user()
+     * (arch/riscv/common/trap.c) correctly refuses to read it -- the same
+     * failure user_deputy()'s own path[] comment already documents for
+     * this file, applied here for the first time to a chan_serve_wait()/
+     * chan_serve_reply() endpoint name. volatile, for the same reason
+     * user_deputy()'s path[] is: gcc recognises a run of consecutive
+     * stores and turns it back into a copy from a .rodata blob otherwise. */
+    volatile char name[9];
+    name[0]='c'; name[1]='h'; name[2]='a'; name[3]='n'; name[4]='e';
+    name[5]='c'; name[6]='h'; name[7]='o'; name[8]='\0';
+
+    uint8_t buf[16];
+    long n = echo_usys_chan_serve_wait((const char *)name, buf, sizeof(buf));
+    if (n < 0) n = 0;
+    echo_usys_chan_serve_reply((const char *)name, buf, n);
+    usys_exit();
+    for (;;) { }
+}
+
+static void echo_task_body(void *arg) {
+    (void)arg;
+    /* task_create() can hand control to this task before
+     * cmd_chan_echo_test() has gone on to call chan_register_task() --
+     * same race drivers/tm1638_rp2350.c's own task_body() already guards
+     * against with an identical wait. Without it, chan_lookup() inside
+     * SYS_CHAN_SERVE_WAIT would find nothing yet. */
+    while (!g_echo_ep) sched_yield();
+
+    mem_domain_init(&g_echo_domain);
+    mem_domain_add(&g_echo_domain, (uintptr_t)g_echo_ustack, sizeof(g_echo_ustack),
+                   MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_echo_domain, tbase, tsize, MEM_R | MEM_X);
+
+    if (task_set_domain(sched_current_pid(), &g_echo_domain) != 0) {
+        printk("[ChanEcho] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_echo_entered = true;
+    arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + sizeof(g_echo_ustack), 0, 0, 0);
+}
+
+static void cmd_chan_echo_test(void) {
+    g_echo_entered = false;
+    int pid = task_create("chanecho", echo_task_body, NULL);
+    if (pid < 0) {
+        printk("[ChanEcho] Could not create the server task\n");
+        return;
+    }
+    if (chan_register_task("chanecho", pid, g_echo_req, sizeof(g_echo_req),
+                           g_echo_resp, sizeof(g_echo_resp)) != 0) {
+        printk("[ChanEcho] Could not register the endpoint\n");
+        return;
+    }
+    g_echo_ep = chan_lookup("chanecho");
+
+    /* Give the server every chance to actually reach chan_serve_wait() and
+     * block there before we call it -- not required for correctness
+     * (chan_serve_wait() returns immediately if the request is already
+     * pending either way), but this is deliberately trying to hit the
+     * "server genuinely blocked mid-trap, then woken" case, not the race
+     * where the request beats the server to its own wait call. */
+    for (int i = 0; i < 10000 && !g_echo_entered; i++) sched_yield();
+    for (int i = 0; i < 1000; i++) sched_yield();
+
+    const char msg[] = "PING";
+    uint8_t resp[16];
+    printk("[ChanEcho] Calling chanecho...\n");
+    int n = chan_call(g_echo_ep, (const uint8_t *)msg, sizeof(msg), resp, sizeof(resp));
+    printk("[ChanEcho] chan_call returned %d\n", n);
+    if (n == (int)sizeof(msg) && memcmp(resp, msg, sizeof(msg)) == 0) {
+        printk("[ChanEcho] ECHO_OK\n");
+    } else {
+        printk("[ChanEcho] ECHO_MISMATCH\n");
+    }
+}
+
 static void cmd_usertest_isolation(void) {
     /* State the enforcement capability here, not only in usertest: this is
      * the command whose result is meaningless without it. A "BREACHED" line
@@ -526,6 +647,33 @@ static void cmd_heartbeat_isolation_test(void) {
            canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
                               : "BREACHED (task wrote kernel memory)");
     printk("[HeartbeatIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
+#endif
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+/* M5 Phase 2, plan/phase12_microkernel_migration.md: same idea as
+ * heartbeatisotest above, against tm1638's own domain shape
+ * (drivers/tm1638_rp2350.c) -- the first driver task converted to U-mode
+ * that also serves a real chan_call() endpoint (heartbeat has none). */
+extern bool tm1638_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_tm1638_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[TM1638Iso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = tm1638_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[TM1638Iso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[TM1638Iso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[TM1638Iso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
            exited_clean ? "yes" : "no");
 }
 #endif
@@ -1010,8 +1158,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_heartbeat_isolation_test();
         return;
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    } else if (strcmp(cmd_line, "tm1638isotest") == 0) {
+        cmd_tm1638_isolation_test();
+        return;
+#endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {
         cmd_deputytest();
+        return;
+    } else if (strcmp(cmd_line, "chanechotest") == 0) {
+        cmd_chan_echo_test();
         return;
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();

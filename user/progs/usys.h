@@ -33,6 +33,9 @@
 #define SYS_TICKS      21
 #define SYS_YIELD      22
 #define SYS_TIME_MS    23
+#define SYS_DELAY_US         24
+#define SYS_CHAN_SERVE_WAIT  25
+#define SYS_CHAN_SERVE_REPLY 26
 
 static inline long usyscall(long nr, long a1, long a2, long a3) {
     register long r_a0 __asm__("a0") = nr;
@@ -113,6 +116,35 @@ static inline void uyield(void) {
  * task's own pacing -- e.g. the heartbeat LED's on/off timing. */
 static inline long utime_ms(void) {
     return usyscall(SYS_TIME_MS, 0, 0, 0);
+}
+
+/* Busy-delays the calling task for `us` microseconds, run inside the
+ * kernel rather than U-mode (kernel/time.c's time_delay_us() touches
+ * hardware no U-mode domain has ever needed direct access to). M5 Phase 2,
+ * plan/phase12_microkernel_migration.md: what a bit-bang driver task's
+ * timing-sensitive pulses need in place of calling time_delay_us()
+ * directly -- SYS_TIME_MS's millisecond granularity is too coarse. */
+static inline void udelay_us(long us) {
+    (void)usyscall(SYS_DELAY_US, us, 0, 0);
+}
+
+/* The server half of the channel API SYS_CHAN_CALL (via uchan_call()
+ * above) has had since C3. M5 Phase 2: what a U-mode *driver* task's own
+ * serve loop needs in place of calling chan_serve_wait()/chan_serve_reply()
+ * directly -- those are kernel code manipulating another task's endpoint
+ * state, off limits from U-mode the same way task_exit() is (see uexit()
+ * below). The endpoint is named, not addressed, for the same reason
+ * uchan_call() names one: nothing a program was not given.
+ *
+ * uchan_serve_wait() returns the request length, or a negative value if
+ * the named endpoint does not exist or the request did not fit `buf_max`
+ * (truncation is refused, not silently handed back short). */
+static inline long uchan_serve_wait(const char *name, void *buf, long buf_max) {
+    return usyscall5(SYS_CHAN_SERVE_WAIT, (long)name, (long)buf, buf_max, 0, 0);
+}
+
+static inline long uchan_serve_reply(const char *name, const void *buf, long len) {
+    return usyscall5(SYS_CHAN_SERVE_REPLY, (long)name, (long)buf, len, 0, 0);
 }
 
 /* Ends the program with `status`. A program may equally just return from

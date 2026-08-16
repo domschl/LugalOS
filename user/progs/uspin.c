@@ -80,5 +80,37 @@ int _start(void) {
     uputnum(t1 - t0);
     uputchar('\n');
 
+    /* M5 Phase 2, plan/phase12_microkernel_migration.md: exercises the
+     * three syscalls a U-mode driver task with a real chan_call() endpoint
+     * needs, before the tm1638-to-U-mode conversion that depends on them
+     * touches real hardware.
+     *
+     * SYS_DELAY_US: a real timing check, not just "didn't crash" -- elapsed
+     * wall-clock time across the delay must be at least what was asked for.
+     * QEMU's timer is not cycle-accurate, so this only asserts a lower
+     * bound, the same margin uticks()'s own SPIN_ITERATIONS calibration
+     * above leaves itself. */
+    long d0 = utime_ms();
+    udelay_us(2000);
+    long d1 = utime_ms();
+    uprint("USPIN_DELAY_OK ");
+    uputnum(d1 - d0);
+    uputchar('\n');
+
+    /* SYS_CHAN_SERVE_WAIT/SYS_CHAN_SERVE_REPLY: no endpoint is registered
+     * under this name on any target, so both must refuse rather than hang
+     * or fault -- proves the argument plumbing (name lookup, buffer
+     * validation) without needing a live counterpart server. Whether two
+     * tasks can actually hand a real message through these is what the
+     * real tm1638 hardware conversion itself demonstrates. */
+    char scratch[8];
+    long swait = uchan_serve_wait("uspin_no_such_endpoint", scratch, sizeof(scratch));
+    long sreply = uchan_serve_reply("uspin_no_such_endpoint", scratch, 1);
+    if (swait < 0 && sreply < 0) {
+        uprint("USPIN_SERVE_REFUSED\n");
+    } else {
+        uprint("USPIN_SERVE_NOT_REFUSED\n");
+    }
+
     return 0;
 }

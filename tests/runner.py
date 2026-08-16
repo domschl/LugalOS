@@ -382,7 +382,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # move, so a failure is a loud line rather than a missing one.
         ok, log = session.send_and_expect(
             "exec /flash0/system/bin/uspin.elf",
-            r"USPIN_START.*USPIN_PREEMPTED.*USPIN_YIELD_OK", timeout=25.0)
+            r"USPIN_START.*USPIN_PREEMPTED.*USPIN_YIELD_OK.*USPIN_SERVE_REFUSED",
+            timeout=25.0)
         if ok and "USPIN_NOT_PREEMPTED" in log:
             ok = False
         results.append(("U-mode Code Is Preemptible (B6)", ok, log if not ok else ""))
@@ -397,6 +398,36 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # rather than only showing up as a symptom of the B6 test above.
         results.append(("U-mode SYS_YIELD/SYS_TIME_MS Round-Trip (M5)",
                         "USPIN_YIELD_OK" in log, log if "USPIN_YIELD_OK" not in log else ""))
+
+        # M5 Phase 2, plan/phase12_microkernel_migration.md: SYS_DELAY_US and
+        # the SYS_CHAN_SERVE_WAIT/SYS_CHAN_SERVE_REPLY plumbing, verified
+        # here before the tm1638-to-U-mode conversion that depends on them
+        # touches real hardware. USPIN_SERVE_NOT_REFUSED would mean either
+        # call somehow succeeded against a name nothing ever registered --
+        # a false pass wearing a "refused" label, not just a missing marker.
+        results.append(("U-mode SYS_DELAY_US Round-Trip (M5 Phase 2)",
+                        "USPIN_DELAY_OK" in log, log if "USPIN_DELAY_OK" not in log else ""))
+        serve_ok = "USPIN_SERVE_REFUSED" in log and "USPIN_SERVE_NOT_REFUSED" not in log
+        results.append(("U-mode SYS_CHAN_SERVE_WAIT/REPLY Refuse Unknown Endpoint (M5 Phase 2)",
+                        serve_ok, log if not serve_ok else ""))
+
+        # M5 Phase 2: a real client blocking on chan_call() into a real
+        # U-mode server, which itself blocks mid-ecall-trap inside
+        # SYS_CHAN_SERVE_WAIT waiting to be woken by that same call --
+        # `chanechotest` (kernel/shell.c). Found and fixed here, on QEMU,
+        # before this mechanism ever touched real hardware again: the
+        # string literal endpoint name in the first attempt at this landed
+        # in ordinary .rodata, outside every region the task's domain
+        # grants, so strncpy_from_user() correctly refused it -- on real
+        # RP2350 silicon that refusal manifested as a full board hang
+        # rather than a clean error, which is exactly why this generic
+        # probe exists (kept, not thrown away once the bug was found) --
+        # so the *mechanism itself* is falsified on QEMU before any driver
+        # built on top of it ever risks a hardware hang again.
+        ok, log = session.send_and_expect("chanechotest\n", r"ECHO_OK|ECHO_MISMATCH", timeout=10.0)
+        echo_ok = ok and "ECHO_OK" in log
+        results.append(("U-mode chan_call() Round-Trip Into A Real U-mode Server (M5 Phase 2)",
+                        echo_ok, log if not echo_ok else ""))
 
         # C2: two user programs resident at once.
         #
