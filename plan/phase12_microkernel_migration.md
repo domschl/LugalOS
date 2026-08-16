@@ -1,7 +1,10 @@
 # Phase 12 — Fine-Grained Process Architecture: A QNX-Shaped Migration
 
-**Status:** M0-M3 complete (2026-08-15). Written to be detailed and executed
-one milestone at a time, not implemented from this document directly.
+**Status:** M0-M3 complete (2026-08-15). M4 attempted (2026-08-15/16),
+reverted, and reformulated (2026-08-16) — see M4's own section below for
+what the first attempt got wrong and why. Written to be detailed and
+executed one milestone at a time, not implemented from this document
+directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -415,7 +418,122 @@ each one moves.
 device unchanged; `ps`-equivalent output shows the new task with a real
 name; killing/restarting the task (manually, at first) doesn't take the
 kernel down with it structurally, even before M5 makes that also true under
-enforcement.
+enforcement. **Also:** the driver conversion must not change how often
+`sched_yield()`/`next_runnable()` gets called under ordinary use by more
+than a small constant factor — see "What the first attempt got wrong"
+below for why this is now a first-class check, not an afterthought.
+
+#### What the first attempt got wrong (2026-08-15/16, reverted)
+
+Converted `uart` to a task-owned `chan_call()` endpoint exactly as
+described above, but routed *every single character* of console I/O
+through it — `uart_putc()`, called once per byte by `printk()`/`cprintf()`/
+the line editor's redraws/`SYS_PUTCHAR`, became one full `chan_call()`
+(caller blocks, owner task wakes, replies, caller wakes) per byte instead
+of a same-task register write. That is a real scheduling event —
+`task_block()`/`task_unblock()`/a context switch — where there used to be
+none, and it turned something that ran near-never (a scheduling *decision*
+between two tasks that both want to run right now) into something that ran
+on every character any task printed. The plain round-robin tie-break in
+`next_runnable()` had never been exercised at that frequency or in that
+specific shape (a repeatedly-reused server task as `from`) and it broke:
+"Two User Programs Are Resident At Once (C2)" started failing, tracing
+back to the tie-break systematically favoring whichever ready task sat
+closest to the uart task's own table index.
+
+Nine-plus redesigns of the tie-break followed (run_ticks/wait_credit
+fair-share scoring, several charging models, decay, a scan-order hint at
+`chan_serve_reply()`, and combinations of these) over roughly a day,
+each fixing its target case and breaking another, never converging cleanly
+on both QEMU and real RP2350 hardware together. The instruction that
+actually ended the loop wasn't a better scheduler idea — it was stepping
+back and asking whether the *scheduler* was the right thing to be fixing
+at all, given a plain round-robin had already been correct and stable
+through M0-M3, on both targets, before this milestone touched it. It
+was not: reverting M4 back to M0-M3's plain `next_runnable()` (see
+`kernel/sched.c`'s own comment there for the two-tier, no-scoring shape
+that shipped) and testing the exact same scenarios showed the kernel side
+was never actually broken — a QEMU test-harness bug (catastrophic regex
+backtracking making the test runner itself hang for tens of seconds to
+minutes on unrelated pattern matches, unrelated to M4, to the scheduler,
+or to IPC volume at all — see `tests/runner.py`'s own history) had been
+misdiagnosed as scheduler flakiness for a large part of that day, because
+both failure shapes look identical from outside: output stops, a timeout
+elapses.
+
+The lesson worth keeping, independent of that test-harness confound: a
+plain round-robin tie-break is fine at low decision frequency and starts
+mattering the moment something makes scheduling decisions frequent enough
+that *scan position relative to whichever task keeps triggering
+decisions* becomes a real, exploitable bias. M4's actual mistake was
+manufacturing that frequency in the first place, not the tie-break
+algorithm's shape — see below.
+
+#### The reformulated design: batch, don't chatter
+
+`chan_call()` already takes a request buffer and a length — nothing about
+the IPC primitive itself forces one call per byte. M4's first attempt
+did that anyway because it kept `uart_putc(char)`'s existing byte-at-a-time
+signature and routed it through `chan_call()` unchanged, the smallest
+possible diff at the call site. That is exactly backwards for a driver
+whose callers already mostly operate on whole strings (`printk()`,
+`cprintf()`, `uart_puts()`) or could easily be made to: the fix is not a
+smarter scheduler that copes with high-frequency IPC, it's not generating
+high-frequency IPC in the first place.
+
+Concretely, for the uart task (and the driver-task conversions that follow
+it — SD/SPI block transfers are *naturally* buffer-sized already, this
+problem is specific to a byte-oriented device being wrapped byte-at-a-time):
+
+- The wire protocol gains a batched write op (`UART_REQ_WRITE_BUF`,
+  buffer + length, alongside or replacing the single-byte
+  `UART_REQ_WRITE`) sized to the endpoint's existing request buffer.
+- `printk()`/`cprintf()`/`console_puts()`/`uart_puts()` format or copy into
+  a local buffer first (stack-sized, bounded — these are already
+  line-oriented in practice) and issue *one* `chan_call()` for the whole
+  string, not one per character. `uart_putc()` stays as a real primitive
+  (still needed for genuinely single-character call sites) but stops being
+  what the high-volume paths funnel through.
+- Reads (`uart_getc()`, the interactive line editor's per-keystroke echo
+  loop) are **not** in scope for batching — a human typing is inherently
+  low-frequency (single digits of characters per second, nowhere near a
+  scheduling-relevant rate), and batching a request that's fundamentally
+  "block until the next keystroke" doesn't make sense. M4's actual problem
+  was always the write side.
+- `chan_call()`'s own endpoint `busy` flag already serializes concurrent
+  callers at the message level (one caller's whole buffer copied in,
+  handled, copied out, before the next caller's `chan_call()` can start) —
+  worth checking during implementation whether this makes some of the
+  M4-attempt's `printk_lock()` widening (console.c/line_editor.c taking it
+  around raw writes) redundant now that a whole *message* is naturally
+  atomic at the IPC layer, rather than needing a separate lock to simulate
+  that atomicity across many small calls. Not decided here; a detail-time
+  question once the batched path exists to check it against.
+
+**Verify (in addition to the per-driver criteria above):** a representative
+console-heavy workload (e.g. printing `/proc/ps` or a multi-line help
+text) generates IPC round trips on the order of *lines*, not characters —
+countable directly (a call counter on the uart endpoint, checked in a
+test, is cheap and worth adding). `next_runnable()` stays exactly the
+M0-M3 shape (see `kernel/sched.c`) through this milestone — if implementing
+it turns out to need scheduler changes to pass its own tests, that is a
+signal the batching didn't actually cut IPC frequency enough, not a cue to
+add scheduler complexity to compensate. `taskdemo`'s interleaving assertion
+and the full QEMU + real-hardware suites pass with *no* scheduler changes
+from their M0-M3 state.
+
+**Explicitly starting fresh, not resuming:** the first attempt's commits
+are preserved on the `phase12-m4-uart-task-wip` branch for reference (what
+was tried, in what order, and why each scheduler variant failed), but
+implementation should not resume from or cherry-pick that branch — nine-
+plus scheduler redesigns layered on a since-abandoned premise (per-
+character IPC) are exactly the kind of history that pollutes a clean
+re-attempt built on the corrected premise above. The task-owned endpoint
+mechanism itself (`chan_register_task()`/`chan_serve_wait()`/
+`chan_serve_reply()`, the anti-cycle wait-for graph in `kernel/chan.c`)
+was never the problem and is fine to re-add from scratch following this
+document's original M4 description — only the per-byte call granularity
+and the scheduler work done to compensate for it should *not* reappear.
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 
