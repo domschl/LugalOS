@@ -2,11 +2,13 @@
 
 **Status:** M0-M3 complete (2026-08-15). M4 attempted (2026-08-15/16),
 reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
-(2026-08-16) — RP2350's own uart-task conversion still open, and the rest
-of the driver list (SD/SPI, display/keypad/RTC/EEPROM) not yet started.
-See M4's own section below for what the first attempt got wrong and why.
-Written to be detailed and executed one milestone at a time, not
-implemented from this document directly.
+(2026-08-16) — see M4's own section below for what the first attempt got
+wrong and why. M4.5 planned (2026-08-16): a scheduler stress test to
+settle whether priority scheduling needs more than M3 already built, plus
+the remaining driver-task conversions (SD/SPI, RTC/EEPROM, display/keypad,
+RP2350's own uart/console) M4's original ordering deferred. Written to be
+detailed and executed one milestone at a time, not implemented from this
+document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -591,6 +593,89 @@ verification here is a regression check on the shared `kernel/chan.c`/
 conversion (with whatever board-specific batching shape its USB CDC
 mirroring and heartbeat LED turn out to need) remains a separate,
 not-yet-scheduled piece of this milestone.
+
+### M4.5 — Scheduler reevaluation + the remaining driver-task conversions
+
+Two independent pieces of leftover M4 scope, tracked under one milestone
+because both follow directly from what M4's uart conversion actually
+proved rather than what a day of misdiagnosed scheduler work assumed.
+
+**Part A — Does priority scheduling actually need to be more than what M3
+already built?** The nine-plus scheduler redesigns during the first M4
+attempt were chasing a test-harness bug (catastrophic regex backtracking,
+see M4's own section above), not a real kernel problem — plain
+round-robin plus M3's flat priority tiers were never actually broken. That
+leaves a real question unanswered rather than resolved, though: the tiers
+have only ever been exercised with *one* `TASK_PRIO_INTERRUPT` task
+(`uart`) ready at a time. Part B below adds several more driver tasks,
+some of which will plausibly want that same tier — untested territory,
+since two or more `INTERRUPT`-tier tasks contending for the CPU
+simultaneously has never actually happened yet.
+
+Before converting any more drivers: extend `priotest`'s shape (four
+never-yielding hogs, one `task_block()`-parked high-priority task) into a
+stress test with **two or more** concurrently-busy `TASK_PRIO_INTERRUPT`
+tasks and check for real starvation between them — trustworthy now, since
+the harness bug that made this kind of evidence unreadable all of last
+time is fixed. Decide with that evidence, not by guessing: does a flat
+tier plus plain round-robin tie-break hold up, or does same-tier fairness
+need something. Starting hypothesis, to be falsified rather than assumed:
+the current design is fine as-is — M4's actual lesson was "don't
+manufacture IPC frequency," not "the scheduler needs to be smarter," and
+Part B's conversions are deliberately chosen to be low-frequency,
+buffer-already-sized transfers unlikely to reproduce anything like uart's
+original mistake. If the stress test does find a real problem, prefer the
+smallest, most targeted fix that addresses the specific measured failure
+over reintroducing the abandoned fair-share scoring machinery wholesale.
+
+**Verify:** the new multi-interrupt-tier stress test, on both QEMU and
+real RP2350 hardware; a written conclusion (in this section's completion
+notes) on whether `next_runnable()` needs to change before Part B assigns
+`TASK_PRIO_INTERRUPT` to any more tasks.
+
+**Part B — Convert the remaining drivers.** Same template that worked for
+`uart`, applied one driver at a time (Rule 4 — verify full QEMU + real
+hardware suites clean across multiple runs before moving to the next, not
+after converting several at once):
+
+1. Identify the natural message granularity first. Block I/O is already
+   buffer-sized — the batching lesson uart had to learn the hard way is
+   structurally satisfied before writing any code. Anything byte- or
+   register-oriented needs its own batching wrapper, uart_putc()'s shape
+   as the template.
+2. Convert via `chan_register_task()` + a serve loop
+   (`chan_serve_wait()`/`chan_serve_reply()`); the anti-cycle wait-for
+   graph in `kernel/chan.c` already covers every new endpoint for free.
+3. Assign a priority tier deliberately, informed by Part A's conclusion —
+   not `TASK_PRIO_INTERRUPT` by default just because uart used it.
+4. Add an IPC-volume counter and a test asserting real usage stays
+   message-scaled, not byte-scaled (`uart_write_call_count()`/`uartstats`
+   is the pattern).
+
+Proposed order, by dependency weight and expected conversion risk (lowest
+first):
+
+| Driver | Notes |
+|---|---|
+| SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion — nothing like uart's per-character mistake is structurally possible here. |
+| RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) | Low frequency, small fixed-size transfers, no console-speed hazard. |
+| Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) | Same low-risk shape as RTC/EEPROM. |
+| RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the heartbeat LED, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
+| `drivers/usb_cdc.c` | By far the largest and most structurally different of this list (989 lines, dual role as interactive console *and* 9P link) — scope this one separately, once the simpler conversions above have re-validated the template against real evidence rather than assumption. |
+
+**Explicitly out of scope for this milestone:** `kernel/console.c` — it is
+already a thin dispatch onto whatever device is bound (for `uart`, now
+transitively task-backed anyway), so giving it its own task would add an
+indirection layer for no isolation gain; `drivers/flashdisk.c`/
+`drivers/ramdisk.c` — in-memory, always-fast, nothing blocking to isolate
+against. Any further to-task conversion beyond the table above (further
+peripherals, `console` should the calculus above ever change) is a later
+milestone's decision, not this one's.
+
+**Verify (Part B):** per driver converted — existing functional tests for
+that device unchanged; the new IPC-volume test for it passes; full QEMU
+suite and real RP2350 hardware suite both clean across multiple
+consecutive runs before starting the next driver in the table.
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 
