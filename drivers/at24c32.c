@@ -1,5 +1,6 @@
 #include "drivers/at24c32.h"
 #include "drivers/i2c_rtc.h"
+#include "lugalos_config.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include <string.h>
@@ -7,13 +8,24 @@
 static bool g_at24c32_detected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
-#define I2C0_BASE              0x40090000UL
-#define IC_DATA_CMD            (I2C0_BASE + 0x10)
-#define IC_CLR_TX_ABRT         (I2C0_BASE + 0x54)
-#define IC_ENABLE              (I2C0_BASE + 0x6C)
-#define IC_STATUS              (I2C0_BASE + 0x70)
-#define IC_RAW_INTR_STAT       (I2C0_BASE + 0x34)
-#define IC_TAR                 (I2C0_BASE + 0x04)
+/* M5 Phase 3, plan/phase12_microkernel_migration.md: was hardcoded to
+ * I2C0's base regardless of board persona -- harmless only because
+ * rp2350-clock (I2C1, cmake/board-rp2350-clock.cmake) has no EEPROM
+ * wired, so every access here against the wrong peripheral just failed
+ * cleanly (reported as "no EEPROM detected"), not because it was
+ * correct. drivers/i2c_rtc.c's own I2C_RTC_BASE already reads this
+ * correctly; RTC and EEPROM share one physical bus (drivers/i2c_rtc.h),
+ * so they must always agree on which peripheral that is. Found while
+ * this file's own hardware access was being rewritten for U-mode
+ * anyway, fixed here rather than left next to code that just got it
+ * right. */
+#define I2C_EE_BASE             ((uintptr_t)CONFIG_I2C_RTC_BASE)
+#define IC_DATA_CMD            (I2C_EE_BASE + 0x10)
+#define IC_CLR_TX_ABRT         (I2C_EE_BASE + 0x54)
+#define IC_ENABLE              (I2C_EE_BASE + 0x6C)
+#define IC_STATUS              (I2C_EE_BASE + 0x70)
+#define IC_RAW_INTR_STAT       (I2C_EE_BASE + 0x34)
+#define IC_TAR                 (I2C_EE_BASE + 0x04)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
@@ -206,44 +218,87 @@ int at24c32_hw_write(uint16_t addr, const uint8_t *buf, size_t len) {
  * nothing for an explicit byte-order encoding to protect against here. */
 #define I2C_EE_OP_READ  ((uint8_t)'R')
 #define I2C_EE_OP_WRITE ((uint8_t)'X')
-#define I2C_EE_REQ_CAP  (5u + AT24C32_SIZE_BYTES)
-#define I2C_EE_RESP_CAP (4u + AT24C32_SIZE_BYTES)
+
+/* M5 Phase 3, plan/phase12_microkernel_migration.md: capped at 128 bytes
+ * per wire message (was AT24C32_SIZE_BYTES, ~4 KB) -- far more than a
+ * syscall-sized buffer inside a U-mode task should carry, and the reason
+ * i2c was deferred when tm1638 converted to U-mode in Phase 2.
+ * at24c32_read()/at24c32_write() below loop internally for anything
+ * larger, so this is invisible to every existing caller (user/lisp/
+ * lisp.c's (eeprom-read)/(eeprom-write), fs/vfs_server.c's EEPROM device
+ * node) -- none of them need to change. */
+#define I2C_EE_REQ_CAP  (5u + AT24C32_CHUNK_MAX)
+#define I2C_EE_RESP_CAP (4u + AT24C32_CHUNK_MAX)
 
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 static int32_t get_i32(const uint8_t *p) { int32_t v; memcpy(&v, p, sizeof(v)); return v; }
 
+/* One wire round trip, at most AT24C32_CHUNK_MAX bytes -- the chunking
+ * loops below call this repeatedly for anything larger. */
+static int at24c32_read_chunk(uint16_t addr, uint8_t *buf, uint16_t len) {
+    uint8_t req[5];
+    req[0] = I2C_EE_OP_READ;
+    put_u16(&req[1], addr);
+    put_u16(&req[3], len);
+    uint8_t resp[I2C_EE_RESP_CAP];
+    int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+    if (n < 4) return -1;
+    int32_t result = get_i32(resp);
+    if (result < 0) return -1;
+    if ((uint32_t)n < 4u + (uint32_t)result) return -1;
+    if (result > 0) memcpy(buf, &resp[4], (size_t)result);
+    return result;
+}
+
+static int at24c32_write_chunk(uint16_t addr, const uint8_t *buf, uint16_t len) {
+    uint8_t req[I2C_EE_REQ_CAP];
+    req[0] = I2C_EE_OP_WRITE;
+    put_u16(&req[1], addr);
+    put_u16(&req[3], len);
+    memcpy(&req[5], buf, len);
+    uint8_t resp[4];
+    int n = i2c_task_call(req, 5u + (uint32_t)len, resp, sizeof(resp));
+    if (n < 4) return -1;
+    return (int)get_i32(resp);
+}
+
 int at24c32_read(uint16_t addr, uint8_t *buf, size_t len) {
+    size_t got = 0;
     if (len <= AT24C32_SIZE_BYTES && i2c_task_alive()) {
-        uint8_t req[5];
-        req[0] = I2C_EE_OP_READ;
-        put_u16(&req[1], addr);
-        put_u16(&req[3], (uint16_t)len);
-        uint8_t resp[I2C_EE_RESP_CAP];
-        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 4) {
-            int32_t result = get_i32(resp);
-            if (result < 0) return -1;
-            if ((uint32_t)n >= 4u + (uint32_t)result) {
-                if (result > 0) memcpy(buf, &resp[4], (size_t)result);
-                return result;
-            }
+        while (got < len) {
+            uint16_t chunk = (len - got) > AT24C32_CHUNK_MAX
+                                 ? (uint16_t)AT24C32_CHUNK_MAX : (uint16_t)(len - got);
+            int n = at24c32_read_chunk((uint16_t)(addr + got), &buf[got], chunk);
+            if (n < 0) break; /* IPC failed -- fall through to direct access below, same as every other M4.5 facade */
+            got += (size_t)n;
+            /* Short read: the device gave back less than asked, so more
+             * would only repeat the same shortfall -- stop rather than
+             * loop on it. */
+            if ((uint16_t)n < chunk) return (int)got;
         }
-        /* IPC failed -- fall through to direct access. */
+        if (got >= len) return (int)got;
     }
-    return at24c32_hw_read(addr, buf, len);
+    /* Covers both "task never alive" (got == 0) and "IPC failed partway
+     * through the chunking loop" (got > 0) -- direct access picks up
+     * wherever IPC left off, rather than abandoning bytes IPC had already
+     * fetched. */
+    int n = at24c32_hw_read((uint16_t)(addr + got), &buf[got], len - got);
+    return n >= 0 ? (int)(got + (size_t)n) : (got > 0 ? (int)got : -1);
 }
 
 int at24c32_write(uint16_t addr, const uint8_t *buf, size_t len) {
+    size_t written = 0;
     if (len <= AT24C32_SIZE_BYTES && i2c_task_alive()) {
-        uint8_t req[I2C_EE_REQ_CAP];
-        req[0] = I2C_EE_OP_WRITE;
-        put_u16(&req[1], addr);
-        put_u16(&req[3], (uint16_t)len);
-        memcpy(&req[5], buf, len);
-        uint8_t resp[4];
-        int n = i2c_task_call(req, 5u + (uint32_t)len, resp, sizeof(resp));
-        if (n >= 4) return get_i32(resp);
-        /* IPC failed -- fall through to direct access. */
+        while (written < len) {
+            uint16_t chunk = (len - written) > AT24C32_CHUNK_MAX
+                                  ? (uint16_t)AT24C32_CHUNK_MAX : (uint16_t)(len - written);
+            int n = at24c32_write_chunk((uint16_t)(addr + written), &buf[written], chunk);
+            if (n < 0) break;
+            written += (size_t)n;
+            if ((uint16_t)n < chunk) return (int)written;
+        }
+        if (written >= len) return (int)written;
     }
-    return at24c32_hw_write(addr, buf, len);
+    int n = at24c32_hw_write((uint16_t)(addr + written), &buf[written], len - written);
+    return n >= 0 ? (int)(written + (size_t)n) : (written > 0 ? (int)written : -1);
 }

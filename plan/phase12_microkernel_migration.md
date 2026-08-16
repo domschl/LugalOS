@@ -21,9 +21,17 @@ findings along the way (a string-literal-in-`.rodata` bug that hung the
 board rather than failing cleanly, a `memset()`-under-`-fno-builtin` bug
 with the same root shape, and a genuine architectural gap where a faulted
 driver task left its caller blocked forever, now fixed generally via
-`chan_owner_exited()`) — see M5 Phase 2's own section. Written to be
-detailed and executed one milestone at a time, not implemented from this
-document directly.
+`chan_owner_exited()`) — see M5 Phase 2's own section. M5 Phase 3
+complete (2026-08-16): the shared RTC/EEPROM "i2c" task converted to
+U-mode, the first driver talking to a real hardware controller (I2C0/I2C1)
+rather than bit-banged GPIO — a boot-time bus fault from a missing
+ACCESSCTRL write-password prefix (the third physical board recovery this
+project has needed), a byte-order bug, and a lost-fallback regression in
+the new EEPROM chunking, all found and fixed — see M5 Phase 3's own
+section, including the heap-budget trend now flagged as needing action
+before the next conversion, not after. Written to be detailed and
+executed one milestone at a time, not implemented from this document
+directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -1456,6 +1464,141 @@ module by the user. `tm1638isotest` 3/3 consecutive clean runs. Full
 `tests/hw/test_rp2350.py` 21/22 across 2 consecutive runs (the one
 pre-flagged, isolated heap-budget failure above; everything else clean,
 including the real tm1638 task test and every U-mode isolation test).
+
+### M5 Phase 3 — U-mode isolation for the shared RTC/EEPROM driver (i2c) *(done, 2026-08-16)*
+
+i2c was deferred in Phase 2 because its EEPROM path carried up to ~4 KB
+per `chan_call()` message — far more than a syscall-sized U-mode buffer
+should carry. The user resolved that by capping a single EEPROM
+read/write at 128 bytes (`AT24C32_CHUNK_MAX`, `drivers/at24c32.h`);
+`drivers/at24c32.c`'s `at24c32_read()`/`at24c32_write()` now loop
+internally in that chunk size for anything larger, transparent to every
+existing caller (`user/lisp/lisp.c`'s `(eeprom-read)`/`(eeprom-write)`,
+`fs/vfs_server.c`'s EEPROM device node). This phase converted the whole
+shared "i2c" task (RTC *and* EEPROM — one task, one physical bus,
+`drivers/i2c_rtc.h`) to real U-mode — the first driver task in M5 to talk
+to a genuine hardware controller (DesignWare-style I2C0/I2C1 registers)
+rather than bit-banged GPIO.
+
+**What landed:** the domain's third region (after stack + `.utext`,
+Phase 1/2's shape) is one page at `CONFIG_I2C_RTC_BASE` — I2C0 on
+`rp2350-chess`, I2C1 on `rp2350-clock`. Two generalized primitives
+(`i2c_usys_write_bytes()`, `i2c_usys_read_reg()`) replace what would
+otherwise have been four separately duplicated ones (RTC's and EEPROM's
+I2C transactions are the same DesignWare handshake, differing only in how
+many address bytes precede the payload) — `drivers/i2c_rtc.c`'s own
+`i2c_umode_body()` dispatches all five wire ops (`'T'`/`'S'`/`'C'` RTC,
+`'R'`/`'X'` EEPROM) onto them. `SYS_DELAY_US` (Phase 2) covers the one
+place this driver needs a delay at all: AT24C32's ~10 ms page-write cycle,
+crossing the chip's 32-byte page boundaries within a single wire message.
+`i2c_rtc.c` is shared across every target (unlike heartbeat/tm1638's
+entirely RP2350-only files), so the U-mode implementation and the
+original plain kernel-mode server both live in this one file now, split
+by `#if defined(CONFIG_BOARD_RP2350)` — QEMU keeps the kernel-mode path
+unchanged, since there is no real I2C hardware there to isolate.
+`i2cisotest` mirrors `heartbeatisotest`/`tm1638isotest`.
+
+**Found in passing, fixed as part of this work:** `drivers/at24c32.c`'s
+kernel-mode fallback hardcoded I2C0's base address regardless of board
+persona, while `drivers/i2c_rtc.c`'s own `I2C_RTC_BASE` already read
+`CONFIG_I2C_RTC_BASE` correctly. Harmless today only because
+`rp2350-clock` (I2C1) has no EEPROM wired, so every access against the
+wrong peripheral failed cleanly ("no EEPROM detected"), not because it
+was correct — fixed since the new U-mode code needed the correct
+board-parameterized base anyway.
+
+**Three real bugs found on hardware, in the order hit** — none of them a
+new *class* of hazard (each is a variant of something Phase 2 already
+found, or the general fix Phase 2 already built), but each still cost a
+full debug cycle to actually hit and fix:
+
+1. **A boot-time bus fault, board hung before USB ever came up** — the
+   third physical BOOTSEL recovery this project has needed. RP2350's
+   ACCESSCTRL write-protection is more specific than Phase 1's GPIO fix
+   implied: *every* ACCESSCTRL register except `GPIO_NSMASK0`/`_1`
+   (heartbeat's own fix, the only ones this tree had touched before)
+   requires the 16-bit value `0xacce` present in the write's upper 16
+   bits, or the write both fails *and* raises a bus fault instead of
+   silently doing nothing — straight from the datasheet's own ACCESSCTRL
+   overview section (not the per-register field tables Phase 1's own
+   research had already read closely). The first `ACCESSCTRL_I2C0`/`_I2C1`
+   write here was missing that password prefix, faulting during
+   `i2c_hw_init()`, before the scheduler or USB CDC existed to report
+   anything -- indistinguishable from a full hang until the user checked
+   the heartbeat LED and found it still blinking (confirming the fault was
+   local to boot-time I2C setup, not a whole-machine lockup). Fixed by
+   OR'ing `0xacce0000` into the write, same as the datasheet's own
+   worked example.
+2. **A byte-order bug**, found immediately after fix #1 via a wrong
+   return value (`(eeprom-write 0 "hello m5 phase3")` returned `251658240`
+   instead of `15`): the new U-mode `i2c_usys_put_i32()` wrote the
+   `int32_t` result field big-endian, matching `i2c_usys_put_u16()`
+   right above it in the same file -- but the client side's `get_i32()`
+   (`drivers/at24c32.c`) decodes that field via a raw `memcpy()`, native
+   (little-endian) byte order by construction, matching the *original*
+   kernel-mode `put_i32()` this replaced (also a `memcpy()`). The u16
+   address/length fields and the i32 result field were never on the same
+   byte order in this protocol to begin with; the rewrite just needed to
+   preserve that inconsistency rather than "fixing" it into a new bug.
+3. **A control-flow regression in the new chunking loops**
+   (`at24c32_read()`/`at24c32_write()`, `drivers/at24c32.c`): a chunk
+   failing via IPC returned `-1` directly from inside the loop, never
+   reaching the `at24c32_hw_read()`/`_write()` fallback call below it --
+   losing the "IPC failed, fall through to direct access" contract every
+   other M4.5 facade already honors. Restructured so any IPC failure
+   (immediate or partway through a multi-chunk request) falls through to
+   direct hardware access for whatever was not already transferred via
+   IPC, combining partial IPC success with the hardware fallback into one
+   total count rather than abandoning either.
+
+**Not exercised on real hardware, noted rather than chased further:** a
+single `at24c32_read()`/`at24c32_write()` call spanning more than one
+128-byte wire chunk. The interactive Lisp reader's own string-literal
+buffer truncates around 127 characters (an unrelated, pre-existing limit,
+not this phase's 128-byte cap, coincidentally close to it), so no shell
+one-liner could construct a payload large enough to reach the client-side
+chunking loop through the REPL. The higher-risk half of the new code --
+the *server*-side page-boundary chunking inside one wire message, using
+`SYS_DELAY_US` in a loop -- was exercised directly (a 127-byte write spans
+four `AT24C32_PAGE_SIZE` pages) and round-tripped correctly; the
+client-side multi-message loop is comparatively simple, already-reviewed
+boilerplate. Worth a real test once there's a non-interactive way to drive
+it (a file write through `/dev/eeprom` larger than 128 bytes would do it).
+
+**Explicitly deferred, not this phase:** converting st7735 (needs a
+second MMIO region for its SPI0 controller, the same *shape* of work as
+this phase, not started), blk, uart, usb_cdc. The heap-budget
+re-analysis, tracked since Phase 1 and growing more pressing each phase
+(see the number below).
+
+Verified: full QEMU suite 217/217 across 3 consecutive clean runs on
+rv64 (rv32 covered by the same suite invocation; the new code is
+RP2350-only, so this confirms no regression rather than exercising the
+new path). All four board personas build clean. Real RP2350 hardware, on
+`rp2350-chess` (I2C0, RTC + EEPROM both wired): `(set-date ...)` round-trips
+through the real U-mode task (`i2cstats` call count advancing, no fault);
+`(eeprom-write ...)`/`(eeprom-read ...)` round-trip correctly for both a
+15-byte and a 127-byte payload (the latter crossing 4 AT24C32 page
+boundaries within one wire message); `i2cisotest` 3/3 consecutive clean
+runs; full `tests/hw/test_rp2350.py` 21/22 across 2 consecutive runs (the
+same pre-flagged heap-budget failure, nothing new). Real RP2350 hardware,
+on `rp2350-clock` (I2C1, RTC only): boot log confirms the RTC detected
+correctly over I2C1 (`GP6/GP7`, not chess's `GP4/GP5`) with no fault;
+`(set-date ...)` round-trips through the real U-mode task; `i2cisotest`
+passes -- confirming the board-parameterized `CONFIG_I2C_RTC_BASE`/
+`ACCESSCTRL_I2C1` path works, not just I2C0.
+
+Heap budget, continuing to drift as flagged in Phase 1 and Phase 2: idle
+baseline on `rp2350-chess` now 47 total pages (was 48 after Phase 2, 52
+after Phase 1) -- i2c's own dedicated stack page, the same cost every
+U-mode conversion has had. Still passing `test_heap_on_demand`'s own
+`>= 50`-pages sanity floor by a shrinking margin only because that test
+already runs before any ELF-loading test (Phase 1's own fix); the
+C6/C7-specific failure recorded above is about contiguous free space at
+idle, a tighter constraint than that floor. Three driver-task conversions
+in, the trend is unambiguous -- flagging this explicitly, not waiting to
+be asked, per the standing note since Phase 2: the re-analysis needs to
+happen before, not after, the next conversion tips something else over.
 
 ### M6 — Process visibility parity
 

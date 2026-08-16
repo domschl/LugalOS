@@ -5,6 +5,11 @@
 #include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
+#include "kernel/ipc.h"
+#include "kernel/palloc.h"
+#include "arch/umode.h"
 #include "drivers/uart.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -50,6 +55,40 @@ static bool g_rtc_detected = false;
 #define I2C_RTC_RESET_BIT (1u << 4) // RESETS_RESET_I2C0
 #endif
 
+/* M5 Phase 3, plan/phase12_microkernel_migration.md: RP2350's Secure/
+ * Non-secure split -- the same mechanism found for GPIO in M5 Phase 1
+ * (drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0 comment has the full
+ * datasheet citation, not repeated here) -- also gates I2C0/I2C1, but
+ * through a differently-shaped register: one register per peripheral
+ * (not one bit per GPIO), with SP/SU/NSP/NSU bits (Secure/Non-secure x
+ * Privileged/Unprivileged). Checked directly against
+ * ~/gith/pico/pico-sdk's accessctrl.h: reset value 0xfc, i.e. Secure
+ * access enabled (SP=1) and Non-secure access disabled (NSP=NSU=0) by
+ * default. U-mode is Non-secure+Unprivileged -- NSU -- and that header's
+ * own comment notes NSU "is writable... if and only if NSP is set", so
+ * both bits need setting together, from M-mode, before the task exists
+ * (i2c_hw_init() below). Same conditional shape as I2C_RTC_RESET_BIT
+ * above, for the same reason. */
+#define ACCESSCTRL_BASE 0x40060000UL
+#if CONFIG_I2C_RTC_BASE == 0x40098000UL
+#define ACCESSCTRL_I2C_RTC (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
+#else
+#define ACCESSCTRL_I2C_RTC (ACCESSCTRL_BASE + 0x84) // ACCESSCTRL_I2C0
+#endif
+#define ACCESSCTRL_I2C_NSP (1u << 1)
+#define ACCESSCTRL_I2C_NSU (1u << 0)
+
+/* Found the hard way, as a boot-time bus fault, immediately after adding
+ * the write below without it: every ACCESSCTRL register *except*
+ * GPIO_NSMASK0/1 (the two heartbeat's own fix, drivers/uart_rp2350.c,
+ * happened to use) requires the 16-bit value 0xacce present in the
+ * write's upper 16 bits, or the write both fails *and* raises a bus
+ * fault rather than silently doing nothing -- straight from the
+ * datasheet's own ACCESSCTRL overview section, not something either of
+ * this tree's two prior ACCESSCTRL fixes (GPIO_NSMASK0, both exempt) had
+ * ever needed to learn. */
+#define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
+
 #define IO_BANK0_BASE          0x40028000UL
 #define IO_BANK0_CTRL(n)       (IO_BANK0_BASE + 0x004 + (n) * 8)
 
@@ -85,6 +124,14 @@ static void i2c_hw_init(void) {
     REG(RESETS_RESET_CLR) = I2C_RTC_RESET_BIT;
     int timeout = 10000;
     while (!(REG(RESETS_RESET_DONE) & I2C_RTC_RESET_BIT) && --timeout > 0);
+
+    /* M5 Phase 3: the I2C controller needs to be Non-secure-accessible for
+     * the U-mode task's own serve loop below to actually touch it -- must
+     * happen here, from M-mode, before the task exists. See
+     * ACCESSCTRL_I2C_RTC's own comment above -- including the write
+     * password prefix that comment explains. */
+    REG(ACCESSCTRL_I2C_RTC) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_I2C_RTC)
+                              | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
 
     /* 2. Configure GP4 (SDA) & GP5 (SCL) strictly as Function 3 (I2C) */
     REG(IO_BANK0_CTRL(I2C_SDA_PIN)) = 3;
@@ -377,19 +424,22 @@ void i2c_scan_bus(void) {
  *   'R' (EEPROM read)      req: [op] + addr(2) + len(2)  resp: [result:int32(4)] + data
  *   'X' (EEPROM write)     req: [op] + addr(2) + len(2) + data  resp: [result:int32(4)]
  *
- * The EEPROM ops' buffers are sized to the whole 4KB AT24C32 device rather
- * than to a measured caller (contrast BLK_MAX_COUNT): unlike an SD card,
- * this device's entire address space is small and fixed, so "cover all of
- * it" is a bounded, known cost (~8KB of static buffers), not open-ended
- * headroom for a hypothetical future caller. */
+ * The EEPROM ops' buffers were originally sized to the whole 4KB AT24C32
+ * device; M5 Phase 3, plan/phase12_microkernel_migration.md, capped a
+ * single EEPROM read/write at AT24C32_CHUNK_MAX (drivers/at24c32.h) bytes
+ * instead -- far more than a syscall-sized U-mode buffer should carry, and
+ * the reason i2c was deferred when tm1638 converted to U-mode in Phase 2.
+ * drivers/at24c32.c's at24c32_read()/at24c32_write() loop internally in
+ * chunks this size for anything larger, so this is invisible to every
+ * existing caller. */
 #define I2C_OP_RTC_READ_TIME  ((uint8_t)'T')
 #define I2C_OP_RTC_WRITE_TIME ((uint8_t)'S')
 #define I2C_OP_RTC_READ_TEMP  ((uint8_t)'C')
 #define I2C_OP_EE_READ        ((uint8_t)'R')
 #define I2C_OP_EE_WRITE       ((uint8_t)'X')
 
-#define I2C_REQ_CAP  (5u + AT24C32_SIZE_BYTES)
-#define I2C_RESP_CAP (4u + AT24C32_SIZE_BYTES)
+#define I2C_REQ_CAP  (5u + AT24C32_CHUNK_MAX)
+#define I2C_RESP_CAP (4u + AT24C32_CHUNK_MAX)
 
 static uint8_t         g_i2c_req[I2C_REQ_CAP];
 static uint8_t         g_i2c_resp[I2C_RESP_CAP];
@@ -408,8 +458,350 @@ bool i2c_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-static uint16_t get_u16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
-static void put_i32(uint8_t *p, int32_t v) { memcpy(p, &v, sizeof(v)); }
+/* Only RP2350 has real I2C hardware to isolate -- the #else branch below
+ * (QEMU rv64/rv32) keeps the plain kernel-mode server every M4.5 driver
+ * task had before M5, unchanged. Unlike drivers/uart_rp2350.c/
+ * tm1638_rp2350.c (entirely separate, RP2350-only files), i2c_rtc.c is
+ * shared across every target, so the split lives inside this one file. */
+#if defined(CONFIG_BOARD_RP2350)
+
+/* ---- U-mode implementation, M5 Phase 3, plan/phase12_microkernel_migration.md ----
+ *
+ * A second, independent implementation of the I2C register handshake
+ * above (i2c_write_bytes/i2c_read_bytes) and drivers/at24c32.c's
+ * (i2c_write_at24/i2c_read_at24, at24c32_hw_write()'s page-boundary
+ * chunking), tagged I2C_UATTR and reachable only from the U-mode task's
+ * own serve loop below -- not a refactor of the existing kernel-mode
+ * ones into something shared. Those keep serving the direct-hardware
+ * fallback path exactly as before, unreachable from U-mode. The two
+ * copies never run concurrently -- the facade functions route to one or
+ * the other depending on i2c_task_alive() -- so nothing needs to agree
+ * between them beyond the wire protocol both sides already share.
+ *
+ * Unlike drivers/tm1638_rp2350.c's four separate bit-bang primitives,
+ * RTC's and EEPROM's I2C transactions are the same DesignWare handshake
+ * with different address-byte counts (RTC: 1-byte register pointer;
+ * EEPROM: 2-byte memory address), so this is two generalized primitives
+ * instead of four duplicated ones. */
+#define I2C_UATTR __attribute__((section(".utext"))) __attribute__((no_sanitize("undefined")))
+
+/* Hand-rolled per translation unit, not shared with drivers/uart_rp2350.c's
+ * or drivers/tm1638_rp2350.c's own usys_*() stubs or user/progs/usys.h --
+ * an I2C_UATTR function must not call anything the compiler might place
+ * outside .utext, and a cross-file inline is not a guarantee. */
+__attribute__((always_inline)) static inline void i2c_usys_delay_us(long us) {
+    register long r_a0 __asm__("a0") = SYS_DELAY_US;
+    register long r_a1 __asm__("a1") = us;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1) : "memory");
+}
+__attribute__((always_inline)) static inline long i2c_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = buf_max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long i2c_usys_chan_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+/* Tiny one-liners, but still hand-rolled/always_inline rather than reused
+ * from the kernel-mode bcd2dec()/dec2bcd() above (get_u16()/put_i32()
+ * were only ever used by the kernel-mode i2c_task_body() this replaces,
+ * and are gone with it) -- same reasoning as the syscall stubs, applied
+ * to arithmetic helpers too:
+ * "obviously inlined" is an optimizer heuristic, not a structural
+ * guarantee (drivers/uart_rp2350.c's heartbeat_usleep_until() comment has
+ * the fuller story of finding that out the hard way). */
+__attribute__((always_inline)) static inline uint8_t i2c_usys_bcd2dec(uint8_t v) { return ((v >> 4) * 10) + (v & 0x0F); }
+__attribute__((always_inline)) static inline uint8_t i2c_usys_dec2bcd(uint8_t v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
+__attribute__((always_inline)) static inline uint16_t i2c_usys_get_u16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
+__attribute__((always_inline)) static inline void i2c_usys_put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+/* Native (little-endian) byte order, NOT the big-endian i2c_usys_put_u16()
+ * above uses -- matches the client side's get_i32() (drivers/at24c32.c),
+ * which decodes via a raw memcpy() of the wire bytes into an int32_t and
+ * so is native-endian by construction, same as the original kernel-mode
+ * put_i32() this replaces (also a memcpy()). Found on real hardware, not
+ * predicted: writing this field big-endian, matching put_u16() instead of
+ * matching get_i32(), sent (eeprom-write)'s own 15-byte result back as
+ * 251658240 -- the client reading 0x0F000000 where the wire held
+ * 0x0000000F. */
+__attribute__((always_inline)) static inline void i2c_usys_put_i32(uint8_t *p, int32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+I2C_UATTR static void i2c_usys_target(uint8_t addr) {
+    REG(IC_ENABLE) = 0;
+    REG(IC_TAR) = addr;
+    REG(IC_ENABLE) = 1;
+    (void)REG(IC_CLR_TX_ABRT);
+}
+
+/* Writes len bytes already TAR-targeted by the caller, STOP after the
+ * last byte only if stop_at_end -- false is for a register/address
+ * prefix that a read phase (i2c_usys_read_reg() below) continues past. */
+I2C_UATTR static bool i2c_usys_write_raw(const uint8_t *data, int len, bool stop_at_end) {
+    for (int i = 0; i < len; i++) {
+        bool last = (i == len - 1);
+        uint32_t cmd = data[i];
+        if (last && stop_at_end) cmd |= (1u << 9);
+
+        int timeout = 10000;
+        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0);
+        if (timeout == 0) return false;
+
+        REG(IC_DATA_CMD) = cmd;
+
+        timeout = 10000;
+        bool abort = false;
+        do {
+            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) {
+                abort = true;
+                (void)REG(IC_CLR_TX_ABRT);
+                break;
+            }
+        } while (--timeout > 0 && !(REG(IC_RAW_INTR_STAT) & (1u << 4)));
+
+        if (abort || timeout == 0) return false;
+    }
+    return true;
+}
+
+/* Sends len bytes to addr, STOP after the last -- RTC's register-pointer
+ * + payload writes and EEPROM's 2-byte-address + payload writes alike. */
+I2C_UATTR static bool i2c_usys_write_bytes(uint8_t addr, const uint8_t *data, int len) {
+    i2c_usys_target(addr);
+    return i2c_usys_write_raw(data, len, true);
+}
+
+/* Writes reg_len address/register bytes (no STOP), then re-targets and
+ * reads len bytes -- RTC's 1-byte register reads (time at 0x00,
+ * temperature at 0x11) and EEPROM's 2-byte address reads alike. */
+I2C_UATTR static bool i2c_usys_read_reg(uint8_t addr, const uint8_t *reg, int reg_len, uint8_t *dst, int len) {
+    i2c_usys_target(addr);
+    if (!i2c_usys_write_raw(reg, reg_len, false)) return false;
+
+    i2c_usys_target(addr);
+    for (int i = 0; i < len; i++) {
+        bool last = (i == len - 1);
+        uint32_t cmd = (1u << 8);
+        if (last) cmd |= (1u << 9);
+
+        int timeout = 10000;
+        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0);
+        if (timeout == 0) return false;
+
+        REG(IC_DATA_CMD) = cmd;
+
+        timeout = 10000;
+        bool abort = false;
+        do {
+            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) {
+                abort = true;
+                (void)REG(IC_CLR_TX_ABRT);
+                break;
+            }
+        } while (--timeout > 0 && (REG(IC_STATUS) & (1u << 3)) == 0);
+
+        if (abort || timeout == 0) return false;
+
+        dst[i] = (uint8_t)REG(IC_DATA_CMD);
+    }
+    return true;
+}
+
+/* EEPROM writes cross AT24C32_PAGE_SIZE (32-byte) boundaries in separate
+ * transactions with a real ~10ms page-write cycle between them -- the
+ * same chunking drivers/at24c32.c's at24c32_hw_write() already does, via
+ * SYS_DELAY_US instead of time_delay_us() (which touches hardware no
+ * U-mode domain has ever needed to be granted, and, on this build,
+ * services usb_cdc_task() inline inside its own busy loop -- see
+ * arch/riscv/common/trap.c's own SYS_DELAY_US comment). AT24C32_CHUNK_MAX
+ * (drivers/at24c32.h) already bounds len to well under one stack frame's
+ * worth of scratch space. */
+I2C_UATTR static int i2c_usys_ee_write(uint16_t addr, const uint8_t *buf, int len) {
+    int written = 0;
+    while (written < len) {
+        uint16_t curr_addr = (uint16_t)(addr + written);
+        int page_offset = curr_addr % AT24C32_PAGE_SIZE;
+        int chunk = AT24C32_PAGE_SIZE - page_offset;
+        if (chunk > (len - written)) chunk = len - written;
+
+        uint8_t wbuf[2 + AT24C32_PAGE_SIZE];
+        wbuf[0] = (uint8_t)(curr_addr >> 8);
+        wbuf[1] = (uint8_t)curr_addr;
+        for (int i = 0; i < chunk; i++) wbuf[2 + i] = buf[written + i];
+
+        if (!i2c_usys_write_bytes(AT24C32_I2C_ADDR, wbuf, 2 + chunk)) {
+            return written > 0 ? written : -1;
+        }
+        written += chunk;
+        i2c_usys_delay_us(10000);
+    }
+    return written;
+}
+
+I2C_UATTR static void i2c_umode_body(void) {
+    /* Not a string literal: a literal lands in ordinary .rodata, outside
+     * every region this task's domain grants -- the bug that hung the
+     * board the first time this exact mechanism ran on real hardware in
+     * M5 Phase 2 (see drivers/tm1638_rp2350.c's own comment on it).
+     * volatile, for the reason kernel/shell.c's user_deputy() already
+     * documents: gcc recognises a run of consecutive stores and turns it
+     * back into a copy from a .rodata blob otherwise. */
+    volatile char name[4];
+    name[0] = 'i'; name[1] = '2'; name[2] = 'c'; name[3] = '\0';
+
+    for (;;) {
+        uint8_t req[I2C_REQ_CAP];
+        long req_len = i2c_usys_chan_serve_wait((const char *)name, req, sizeof(req));
+        if (req_len < 1) {
+            i2c_usys_chan_serve_reply((const char *)name, NULL, 0);
+            continue;
+        }
+
+        uint8_t op = req[0];
+        uint8_t resp[I2C_RESP_CAP];
+        uint32_t resp_len = 0;
+        switch (op) {
+        case I2C_OP_RTC_READ_TIME: {
+            uint8_t buf[7];
+            uint8_t reg = 0x00;
+            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &reg, 1, buf, 7);
+            resp[0] = ok ? 1 : 0;
+            if (ok) {
+                /* Same field layout rtc_time_t's own decode uses
+                 * (i2c_rtc_hw_read_time() above) -- written out field by
+                 * field into the wire buffer rather than building a
+                 * local rtc_time_t and copying it, so there is no
+                 * struct-sized copy for the compiler to consider
+                 * lowering into a call outside .utext. */
+                uint8_t sec  = i2c_usys_bcd2dec(buf[0] & 0x7F);
+                uint8_t min  = i2c_usys_bcd2dec(buf[1] & 0x7F);
+                uint8_t hour = i2c_usys_bcd2dec(buf[2] & 0x3F);
+                uint8_t day   = i2c_usys_bcd2dec(buf[4] & 0x3F);
+                uint8_t month = i2c_usys_bcd2dec(buf[5] & 0x1F);
+                uint16_t year = (uint16_t)(2000 + i2c_usys_bcd2dec(buf[6]));
+                i2c_usys_put_u16(&resp[1], year);
+                resp[3] = month; resp[4] = day; resp[5] = hour;
+                resp[6] = min; resp[7] = sec;
+                resp[8] = 0; resp[9] = 0; /* ms: always 0, see i2c_rtc_hw_read_time() */
+                resp_len = 10;
+            } else {
+                resp_len = 1;
+            }
+            break;
+        }
+        case I2C_OP_RTC_WRITE_TIME: {
+            bool ok = false;
+            if (req_len >= 10) {
+                uint16_t year = i2c_usys_get_u16(&req[1]);
+                uint8_t reg_buf[8];
+                reg_buf[0] = 0x00;
+                reg_buf[1] = i2c_usys_dec2bcd(req[7]); /* sec */
+                reg_buf[2] = i2c_usys_dec2bcd(req[6]); /* min */
+                reg_buf[3] = i2c_usys_dec2bcd(req[5]); /* hour */
+                reg_buf[4] = 1; /* day of week default */
+                reg_buf[5] = i2c_usys_dec2bcd(req[4]); /* day */
+                reg_buf[6] = i2c_usys_dec2bcd(req[3]); /* month */
+                reg_buf[7] = i2c_usys_dec2bcd((uint8_t)(year >= 2000 ? (year - 2000) : year));
+                ok = i2c_usys_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8);
+            }
+            resp[0] = ok ? 1 : 0;
+            resp_len = 1;
+            break;
+        }
+        case I2C_OP_RTC_READ_TEMP: {
+            uint8_t buf[2];
+            uint8_t reg = 0x11;
+            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &reg, 1, buf, 2);
+            resp[0] = ok ? 1 : 0;
+            if (ok) {
+                int temp_x4 = (int)(int8_t)buf[0] * 4 + (buf[1] >> 6);
+                int temp_c = (temp_x4 >= 0) ? (temp_x4 + 2) / 4 : (temp_x4 - 2) / 4;
+                i2c_usys_put_i32(&resp[1], (int32_t)temp_c);
+                resp_len = 5;
+            } else {
+                resp_len = 1;
+            }
+            break;
+        }
+        case I2C_OP_EE_READ: {
+            int32_t result = -1;
+            if (req_len >= 5) {
+                uint16_t addr = i2c_usys_get_u16(&req[1]);
+                uint16_t len  = i2c_usys_get_u16(&req[3]);
+                if (len <= AT24C32_CHUNK_MAX) {
+                    uint8_t reg[2] = { (uint8_t)(addr >> 8), (uint8_t)addr };
+                    if (i2c_usys_read_reg(AT24C32_I2C_ADDR, reg, 2, &resp[4], len)) {
+                        result = (int32_t)len;
+                    }
+                }
+            }
+            i2c_usys_put_i32(&resp[0], result);
+            resp_len = (result > 0) ? 4u + (uint32_t)result : 4u;
+            break;
+        }
+        case I2C_OP_EE_WRITE: {
+            int32_t result = -1;
+            if (req_len >= 5) {
+                uint16_t addr = i2c_usys_get_u16(&req[1]);
+                uint16_t len  = i2c_usys_get_u16(&req[3]);
+                if (len <= AT24C32_CHUNK_MAX && (uint32_t)req_len >= 5u + (uint32_t)len) {
+                    result = (int32_t)i2c_usys_ee_write(addr, &req[5], (int)len);
+                }
+            }
+            i2c_usys_put_i32(&resp[0], result);
+            resp_len = 4;
+            break;
+        }
+        default:
+            resp_len = 0;
+            break;
+        }
+        i2c_usys_chan_serve_reply((const char *)name, resp, resp_len);
+    }
+}
+
+static uint8_t      g_i2c_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t g_i2c_domain;
+
+/* This task's own kernel-mode entry point: task_create_sized() calls this
+ * (ordinary kernel stack, kernel privilege) to build the domain and make
+ * the one-way jump into U-mode. Mirrors drivers/tm1638_rp2350.c's
+ * tm1638_task_body() shape: the same 3-region domain (own stack, the
+ * shared .utext page, one MMIO window -- I2C_RTC_BASE's controller
+ * registers here instead of SIO), the same refuse-rather-than-claim-
+ * unverified-isolation rule. */
+static void i2c_task_body(void *arg) {
+    (void)arg;
+    while (!g_i2c_ep) sched_yield();
+
+    mem_domain_init(&g_i2c_domain);
+    mem_domain_add(&g_i2c_domain, (uintptr_t)g_i2c_ustack, sizeof(g_i2c_ustack),
+                   MEM_R | MEM_W);
+
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_i2c_domain, tbase, tsize, MEM_R | MEM_X);
+
+    mem_domain_add(&g_i2c_domain, I2C_RTC_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &g_i2c_domain) != 0) {
+        printk("[I2C] Refusing to enter U-mode: memory domain not enforceable; RTC/EEPROM stay on direct hardware access.\n");
+        return;
+    }
+    arch_enter_user(i2c_umode_body, (uintptr_t)g_i2c_ustack + sizeof(g_i2c_ustack), 0, 0, 0);
+}
+
+#else /* !CONFIG_BOARD_RP2350: plain kernel-mode server, as every M4.5
+       * driver task had it before M5 -- no real I2C hardware to isolate
+       * on QEMU, so no reason to build a domain for it. */
 
 /* This task, and only this task, may call the *_hw_* functions in this file
  * and drivers/at24c32.c while alive -- see uart_16550.c's uart_task_body()
@@ -422,7 +814,6 @@ static void i2c_task_body(void *arg) {
     for (;;) {
         uint32_t req_len = chan_serve_wait(g_i2c_ep);
         if (req_len < 1) { chan_serve_reply(g_i2c_ep, 0); continue; }
-        g_i2c_calls++;
 
         uint8_t op = g_i2c_req[0];
         switch (op) {
@@ -449,31 +840,36 @@ static void i2c_task_body(void *arg) {
             int temp_c = 0;
             bool ok = i2c_rtc_hw_read_temperature_c(&temp_c);
             g_i2c_resp[0] = ok ? 1 : 0;
-            put_i32(&g_i2c_resp[1], (int32_t)temp_c);
+            {
+                int32_t v = (int32_t)temp_c;
+                memcpy(&g_i2c_resp[1], &v, sizeof(v)); /* native byte order -- matches get_i32() */
+            }
             chan_serve_reply(g_i2c_ep, ok ? 5u : 1u);
             break;
         }
         case I2C_OP_EE_READ: {
             int32_t result = -1;
             if (req_len >= 5) {
-                uint16_t addr = get_u16(&g_i2c_req[1]);
-                uint16_t len  = get_u16(&g_i2c_req[3]);
-                result = (int32_t)at24c32_hw_read(addr, &g_i2c_resp[4], len);
+                uint16_t addr = ((uint16_t)g_i2c_req[1] << 8) | g_i2c_req[2];
+                uint16_t len  = ((uint16_t)g_i2c_req[3] << 8) | g_i2c_req[4];
+                if (len <= AT24C32_CHUNK_MAX) {
+                    result = (int32_t)at24c32_hw_read(addr, &g_i2c_resp[4], len);
+                }
             }
-            put_i32(&g_i2c_resp[0], result);
+            memcpy(&g_i2c_resp[0], &result, sizeof(result)); /* native byte order -- matches get_i32() */
             chan_serve_reply(g_i2c_ep, (result > 0) ? 4u + (uint32_t)result : 4u);
             break;
         }
         case I2C_OP_EE_WRITE: {
             int32_t result = -1;
             if (req_len >= 5) {
-                uint16_t addr = get_u16(&g_i2c_req[1]);
-                uint16_t len  = get_u16(&g_i2c_req[3]);
-                if (req_len >= 5u + len) {
+                uint16_t addr = ((uint16_t)g_i2c_req[1] << 8) | g_i2c_req[2];
+                uint16_t len  = ((uint16_t)g_i2c_req[3] << 8) | g_i2c_req[4];
+                if (len <= AT24C32_CHUNK_MAX && req_len >= 5u + len) {
                     result = (int32_t)at24c32_hw_write(addr, &g_i2c_req[5], len);
                 }
             }
-            put_i32(&g_i2c_resp[0], result);
+            memcpy(&g_i2c_resp[0], &result, sizeof(result)); /* native byte order -- matches get_i32() */
             chan_serve_reply(g_i2c_ep, 4);
             break;
         }
@@ -483,6 +879,8 @@ static void i2c_task_body(void *arg) {
         }
     }
 }
+
+#endif /* CONFIG_BOARD_RP2350 */
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
  * i2c_rtc_read_time()/write_time()/read_temperature_c() and
@@ -509,11 +907,86 @@ int i2c_task_start(void) {
 int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
+        /* M5 Phase 3: counted here, on the client side -- see
+         * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
+         * same reasoning: a U-mode server cannot touch g_i2c_calls, an
+         * ordinary kernel .bss global no domain grants it. */
+        if (n >= 0) { g_i2c_calls++; return n; }
         sched_yield();
     }
     return -1;
 }
+
+#if defined(CONFIG_BOARD_RP2350)
+/* M5 Phase 3's own "Verify" deliverable: does the real i2c domain shape
+ * (stack + .utext + a 4096-byte I2C_RTC_BASE window) actually confine the
+ * task to the I2C controller, or does the grant's width accidentally
+ * cover more? Modeled directly on drivers/tm1638_rp2350.c's
+ * tm1638_isolation_test() -- same idea (a deliberate out-of-domain
+ * store, asserted to fault), a separate canary rather than reaching into
+ * another file's, for the same reason the syscall stubs above are
+ * hand-rolled per file. Only meaningful where the "i2c" task actually runs
+ * in U-mode -- see this file's own #if defined(CONFIG_BOARD_RP2350) split
+ * above. */
+static volatile uintptr_t g_i2c_canary = 0xC0FFEE;
+
+I2C_UATTR static void i2c_intruder(void) {
+    g_i2c_canary = 0xDEAD;
+    for (;;) { } /* only reached if the store was NOT stopped */
+}
+
+static volatile bool g_i2c_intruder_entered;
+
+/* `arg` is the U-mode stack -- allocated by i2c_isolation_test() below,
+ * not here, so it can free it once the task is confirmed DEAD (same
+ * shape as tm1638_isolation_test()'s own probe). */
+static void i2c_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    /* The exact grant real i2c runs under -- this is what's on trial. */
+    mem_domain_add(&dom, I2C_RTC_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[I2CIso] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_i2c_intruder_entered = true;
+    arch_enter_user(i2c_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_i2c_canary = 0xC0FFEE;
+    g_i2c_intruder_entered = false;
+
+    void *ustack = palloc_pages(1);
+    if (!ustack) {
+        *out_canary = g_i2c_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+
+    int pid = task_create("i2c_intruder", i2c_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        *out_canary = g_i2c_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    long status;
+    *out_exited_clean = sched_task_exited_cleanly(pid, &status);
+    *out_canary = g_i2c_canary;
+    palloc_free(ustack, 1);
+    return g_i2c_intruder_entered;
+}
+#endif /* CONFIG_BOARD_RP2350 */
 
 bool i2c_rtc_read_time(rtc_time_t *tm) {
     if (!tm) return false;

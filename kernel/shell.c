@@ -124,6 +124,9 @@ static void cmd_help(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     cprintf("  tm1638isotest   - Same, under the real tm1638 driver task's own SIO-window domain\n");
 #endif
+#if defined(CONFIG_BOARD_RP2350)
+    cprintf("  i2cisotest      - Same, under the real i2c driver task's own I2C-controller-window domain\n");
+#endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
@@ -678,6 +681,35 @@ static void cmd_tm1638_isolation_test(void) {
 }
 #endif
 
+#if defined(CONFIG_BOARD_RP2350)
+/* M5 Phase 3, plan/phase12_microkernel_migration.md: same idea as
+ * heartbeatisotest/tm1638isotest above, against i2c's own domain shape
+ * (drivers/i2c_rtc.c) -- the first driver task converted to U-mode that
+ * talks to a real hardware controller (I2C0/I2C1) rather than bit-banged
+ * GPIO. Not CONFIG_ENABLE_TM1638-gated like tm1638isotest: i2c_rtc.c is
+ * built unconditionally for every RP2350 persona. */
+extern bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_i2c_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[I2CIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = i2c_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[I2CIso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[I2CIso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[I2CIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
+#endif
+
 /* B6: preemption, tested by something that cannot work without it.
  *
  * The spinner never yields. The waiter never yields either. Under cooperative
@@ -1161,6 +1193,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     } else if (strcmp(cmd_line, "tm1638isotest") == 0) {
         cmd_tm1638_isolation_test();
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350)
+    } else if (strcmp(cmd_line, "i2cisotest") == 0) {
+        cmd_i2c_isolation_test();
         return;
 #endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {
