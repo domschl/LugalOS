@@ -6,6 +6,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# Emits build/<target>/compile_commands.json -- editor tooling (clangd) has
+# no other way to learn this project's real include paths, which are
+# cross-compilation flags set below, not anything a default heuristic would
+# guess. Without this, clangd falls back to guessing and gets nearly every
+# header wrong; see the repo-root .clangd file for which build directory's
+# database it's pointed at.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Determine Target Configuration (Default: RV32 NOMMU)
 if(NOT DEFINED LUGALOS_TARGET)
     set(LUGALOS_TARGET "RV32_NOMMU" CACHE STRING "LugalOS target architecture (RV32_NOMMU, RV64_MMU, RP2350, K210)")

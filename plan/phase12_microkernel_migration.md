@@ -677,6 +677,59 @@ that device unchanged; the new IPC-volume test for it passes; full QEMU
 suite and real RP2350 hardware suite both clean across multiple
 consecutive runs before starting the next driver in the table.
 
+#### M4.5 Part A completion notes (2026-08-16) — conclusion: no scheduler change needed
+
+Built `priostress` (`kernel/shell.c`): two `TASK_PRIO_INTERRUPT` tasks,
+each spinning a fixed 150M iterations with no yields and no syscalls,
+using the same self-measurement idea as `user/progs/uspin.c` (read the
+tick counter, spin, read it again) to record how many preemption ticks
+each took to finish. No new scheduler bookkeeping added to
+`kernel/sched.c` to measure this — deliberately, since the question was
+whether the tiers already built are sufficient using only what a task can
+observe about itself.
+
+Result, measured directly rather than assumed: both tasks finish within 0-3
+ticks of each other (out of ~70-250 ticks total, depending on target),
+every single run —
+
+- QEMU rv64: 150/150, 151/151, 152/152 (3 consecutive runs).
+- QEMU rv32: 70/70, 70/71, 68/70 (3 consecutive runs).
+- Real RP2350 hardware: 248/251, 248/251, 250/251 (3 consecutive runs).
+
+A starved task would show roughly a 2x gap (it waits out ~all of the
+other's run, then does its own on top); what was actually measured is a
+gap of well under 2%, consistent with fine-grained alternation rather
+than either task-table slot being favoured. **Conclusion: M3's flat
+priority tiers plus `next_runnable()`'s plain round-robin tie-break
+already share the CPU fairly between multiple same-tier
+`TASK_PRIO_INTERRUPT` tasks — no scheduler change is needed before Part B
+assigns that tier to more driver tasks.** The starting hypothesis in this
+section's own text is confirmed, not merely assumed: M4's actual lesson
+really was "don't manufacture IPC frequency," not "the scheduler needs to
+be smarter," and Part B should proceed without adding any fairness
+machinery beyond what M0-M3 already built.
+
+One real bug found and fixed while building the test, unrelated to the
+scheduler question itself: the first version of `priostress_body()`
+accumulated `sink += i` across all 150M iterations. `long` is 32 bits on
+rv32 (64 on rv64), and UBSan caught the accumulation overflowing it
+almost immediately as a real signed-integer-overflow fault, halting the
+board — invisible on rv64, where `long`'s wider range absorbed it,
+exactly the kind of target-specific gap Rule 0 exists to catch. Fixed by
+overwriting instead of accumulating (`sink = i`); only a volatile write
+was ever needed to keep the optimizer from eliminating the loop, the
+summed value itself was never meaningful.
+
+Also fixed in passing, unrelated to M4.5 itself: `CMakeLists.txt` now sets
+`CMAKE_EXPORT_COMPILE_COMMANDS ON` and a repo-root `.clangd` points at
+`build/rv64`'s database — editor tooling had no other way to learn this
+project's real (cross-compilation) include paths and was guessing wrong
+on nearly every file.
+
+Verified: full QEMU suite 205/205 (two new assertions, rv32+rv64) across
+3 consecutive clean runs. Real RP2350 hardware 16/16 (one new assertion)
+across 2 consecutive clean runs.
+
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 
 Every task from `task_create()` onward gets at least a domain covering its

@@ -98,6 +98,7 @@ static void cmd_help(void) {
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
     cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
     cprintf("  priotest        - Prove a high-priority task wins the next reschedule over hogs\n");
+    cprintf("  priostress      - Prove two same-tier busy tasks share the CPU fairly\n");
     cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
     cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
     cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
@@ -612,6 +613,110 @@ static void cmd_priotest(void) {
                                                 : "NOT BOUNDED");
 }
 
+/* M4.5, plan/phase12_microkernel_migration.md, Part A: priotest above only
+ * ever proves one TASK_PRIO_INTERRUPT task against a field of NORMAL-tier
+ * hogs -- it says nothing about what happens when *two* INTERRUPT-tier
+ * tasks are both genuinely busy at once, which M4's driver-task
+ * conversions are about to make a real, not hypothetical, situation (more
+ * than one driver task plausibly wants this tier). That case has never
+ * actually been exercised: `uart` is the only TASK_PRIO_INTERRUPT task
+ * that has ever existed in this tree.
+ *
+ * Same self-measurement idea user/progs/uspin.c uses (read the tick
+ * counter, spin with no yields and no syscalls, read it again), run by two
+ * same-tier tasks concurrently instead of one task measuring itself in
+ * isolation. Deliberately does NOT add any bookkeeping to kernel/sched.c
+ * to measure this -- the whole point is to find out whether the tiers
+ * already built are sufficient using only what a task can observe about
+ * itself, not to build new scheduler introspection for the occasion. If
+ * next_runnable()'s plain round-robin tie-break shares the CPU between two
+ * equal-tier ready tasks the way it is supposed to, both should finish
+ * their equal, fixed amount of work at close to the same tick -- each
+ * effectively getting about half of it, interleaved. If one task-table
+ * slot is favoured over the other (the specific failure shape table
+ * position bias took before, when a repeatedly-reused server task's own
+ * index was the scan-start -- see kernel/sched.c's next_runnable()
+ * comment), the favoured task finishes quickly while the other is starved
+ * until it, which shows up as a large gap between the two finish ticks
+ * instead of a small one. */
+static volatile uint32_t g_stress_done[2];
+static volatile uint64_t g_stress_finish_tick[2];
+
+/* Same order of magnitude as uspin.c's SPIN_ITERATIONS, not copied
+ * verbatim: this runs in kernel mode (no syscall trap overhead at all,
+ * unlike a U-mode program) and must comfortably span dozens of ticks even
+ * when *sharing* the CPU with an equally-busy sibling, not just when
+ * running alone -- calibrated on QEMU, see cmd_priostress()'s own
+ * completion notes for measured values before trusting this margin on
+ * real RP2350 hardware too. */
+#define PRIOSTRESS_ITERATIONS 150000000L
+
+static volatile long g_stress_sink[2]; /* per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
+
+static void priostress_body(void *arg) {
+    int id = (int)(intptr_t)arg;
+    /* Overwrite, not accumulate: `long` is 32 bits on rv32, and summing i
+     * across PRIOSTRESS_ITERATIONS iterations overflows it almost
+     * immediately -- UBSan caught this as a real fault (signed integer
+     * addition overflow) the first time this ran on rv32. Only a volatile
+     * write is actually needed to keep the optimizer from eliminating the
+     * loop; the value itself was never meaningful. */
+    for (long i = 0; i < PRIOSTRESS_ITERATIONS; i++) g_stress_sink[id] = i;
+    g_stress_finish_tick[id] = ticker_ticks();
+    g_stress_done[id] = 1;
+}
+
+static void cmd_priostress(void) {
+    if (!ticker_enabled()) {
+        cprintf("[PrioStress] No preemption timer on this build -- cannot test.\n");
+        return;
+    }
+
+    g_stress_done[0] = 0;
+    g_stress_done[1] = 0;
+    g_stress_finish_tick[0] = 0;
+    g_stress_finish_tick[1] = 0;
+
+    int a = task_create("stressA", priostress_body, (void *)(intptr_t)0);
+    int b = task_create("stressB", priostress_body, (void *)(intptr_t)1);
+    if (a < 0 || b < 0 ||
+        task_set_priority(a, TASK_PRIO_INTERRUPT) < 0 ||
+        task_set_priority(b, TASK_PRIO_INTERRUPT) < 0) {
+        cprintf("[PrioStress] Could not create/prioritize both stress tasks\n");
+        return;
+    }
+
+    uint64_t start = ticker_ticks();
+
+    /* Bounded the same way preempttest/priotest are: a failure reports
+     * rather than wedging the machine. Generous relative to either task's
+     * own expected duration -- this is a safety cap on the *test*, not
+     * part of the fairness measurement itself, which is the tick gap
+     * computed below. */
+    for (int i = 0; i < 20000 &&
+                    (sched_task_state(a) != TASK_DEAD || sched_task_state(b) != TASK_DEAD);
+         i++) {
+        sched_yield();
+    }
+
+    uint64_t total_a = g_stress_done[0] ? g_stress_finish_tick[0] - start : 0;
+    uint64_t total_b = g_stress_done[1] ? g_stress_finish_tick[1] - start : 0;
+    uint64_t lo = total_a < total_b ? total_a : total_b;
+    uint64_t hi = total_a < total_b ? total_b : total_a;
+    /* Fair sharing: both finish within a small factor of each other (some
+     * skew is expected -- they don't start in exactly the same tick, and
+     * ties still resolve by scan order). One task starved until the other
+     * finishes looks like hi ~= 2*lo (the starved task waits out ~all of
+     * the other's run, then does its own on top) -- comfortably outside
+     * this bound. */
+    bool fair = g_stress_done[0] && g_stress_done[1] && lo > 0 && hi <= lo + lo / 2;
+    cprintf("[PrioStress] done=%u,%u total_ticks=%lu,%lu -- %s\n",
+            (unsigned)g_stress_done[0], (unsigned)g_stress_done[1],
+            (unsigned long)total_a, (unsigned long)total_b,
+            fair ? "FAIR (both same-tier tasks shared the CPU)"
+                 : "UNFAIR (one task-table slot starved the other)");
+}
+
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -865,6 +970,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "priotest") == 0) {
         cmd_priotest();
+        return;
+    } else if (strcmp(cmd_line, "priostress") == 0) {
+        cmd_priostress();
         return;
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();

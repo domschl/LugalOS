@@ -382,6 +382,61 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
+    scheduler share the CPU fairly between two same-tier
+    TASK_PRIO_INTERRUPT tasks, on real silicon and not just under QEMU's
+    timing?
+
+    priotest (kernel/shell.c) only ever proves one INTERRUPT-tier task
+    against a field of NORMAL-tier hogs -- it says nothing about what
+    happens once *two* INTERRUPT-tier tasks are both genuinely busy at
+    once, which M4.5's remaining driver-task conversions are about to make
+    a real situation rather than a hypothetical one. `priostress` creates
+    two same-tier, equally-sized, never-yielding tasks and compares how
+    many preemption ticks each took to finish its fixed amount of work --
+    fair sharing means both finish within a small factor of each other;
+    one task-table slot being favoured over the other would show up as
+    roughly a 2x gap instead of a near-zero one (see that command's own
+    comment for the full reasoning, shared with the QEMU-side assertion of
+    the same name).
+
+    The 150M-iteration spin takes several real seconds on this silicon
+    (measured ~2.5-3s, slower than QEMU's emulated throughput) with no
+    output at all until it completes -- `quiet` has to clear that whole
+    silent stretch, not just the usual command-echo settling time, or
+    drain() gives up before the result line ever arrives."""
+    name = "priostress: two same-tier interrupt tasks share the CPU fairly, on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"priostress\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=6.0, deadline=15.0)
+
+        text = out.decode("utf-8", errors="replace")
+        m = re.search(r"done=1,1 total_ticks=(\d+),(\d+) -- (FAIR|UNFAIR)", text)
+        if not m:
+            if "Unbound symbol: priostress" in text or "Unknown command" in text:
+                return (name, False,
+                        "board firmware predates the `priostress` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run.")
+            return (name, False, f"no PrioStress report in console output:\n{text[:300]}")
+
+        ticks_a, ticks_b, verdict = int(m.group(1)), int(m.group(2)), m.group(3)
+        detail = f"ticks={ticks_a},{ticks_b} verdict={verdict}"
+        if verdict != "FAIR":
+            return (name, False, f"scheduler favoured one same-tier task over the other ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_uart_demux_shared_wire(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """p9share (A3b UART demux) standalone: arms the demux over the physical
     UART, drives one real SLIP-framed 9P transaction, then sends a
@@ -1069,7 +1124,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

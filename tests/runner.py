@@ -690,6 +690,23 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("A Higher-Priority Task Wins The Next Reschedule Over Hogs (M3)",
                         ok, log if not ok else ""))
 
+        # M4.5 Part A (plan/phase12_microkernel_migration.md): priotest above
+        # only ever proves one TASK_PRIO_INTERRUPT task against a field of
+        # NORMAL-tier hogs -- it says nothing about what happens when *two*
+        # INTERRUPT-tier tasks are both genuinely busy at once, which M4.5's
+        # driver-task conversions are about to make a real situation (more
+        # than one driver task plausibly wants this tier). priostress creates
+        # two same-tier, equally-sized, never-yielding tasks and checks they
+        # finish within a small factor of each other -- fair sharing -- rather
+        # than one running to completion while the other is starved until it,
+        # which would show up as roughly a 2x gap between their finish ticks
+        # instead of a near-zero one. Measured on QEMU: both finish at the
+        # same tick, or within 1-2 ticks, every time on both rv64 and rv32.
+        ok, log = session.send_and_expect(
+            "priostress", r"done=1,1 total_ticks=(\d+),(\d+) -- FAIR", timeout=30.0)
+        results.append(("Two Same-Tier Interrupt Tasks Share The CPU Fairly (M4.5)",
+                        ok, log if not ok else ""))
+
         # B4/D4: the 9P server -- which is also the filesystem server, since
         # its handlers are VFS calls -- is a scheduled task rather than
         # something pumped from the console's busy-wait. Before this a node
