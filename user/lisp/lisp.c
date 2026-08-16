@@ -2007,6 +2007,11 @@ void lisp_repl(void) {
                 if (idx < 127) {
                     buf[idx++] = c;
                     uart_putc(c);
+                    /* M4: uart_putc() batches now -- without this, this
+                     * keystroke's echo only becomes visible whenever the
+                     * *next* uart_getc() call happens to flush it, a
+                     * one-character lag a real user would notice. */
+                    uart_flush();
                 }
             }
         }

@@ -875,6 +875,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "ballocdemo") == 0) {
         cmd_ballocdemo();
         return;
+    } else if (strcmp(cmd_line, "uartstats") == 0) {
+        /* M4 verify, plan/phase12_microkernel_migration.md: exposes
+         * uart_write_call_count() so a test can confirm console output
+         * generates chan_call() traffic on the order of messages/lines,
+         * not characters -- the property the batching redesign exists to
+         * guarantee. */
+        printk("[UartStats] write_calls=%u\n", uart_write_call_count());
+        return;
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);
         return;

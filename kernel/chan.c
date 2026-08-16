@@ -1,15 +1,24 @@
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
 #include "kernel/irq.h"
 #include <string.h>
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
- * two copies below are deliberate rather than wasteful. */
+ * two copies below are deliberate rather than wasteful, and for the
+ * task-owned endpoint design (M4). */
 
 struct chan_endpoint {
     const char     *name;
+    /* Inline-handler endpoints (B1: p9, console): handler != NULL. */
     chan_handler_fn handler;
     void           *ctx;
+    /* Task-owned endpoints (M4): owner_pid >= 0, handler == NULL. */
+    int             owner_pid;
+    int             caller_pid;      /* who chan_call_task() is blocking, -1 if none */
+    uint32_t        req_len;         /* valid once request_pending */
+    int             reply_len;       /* set by chan_serve_reply(); -1 until then */
+    bool            request_pending;
     uint8_t        *req_buf;
     uint32_t        req_cap;
     uint8_t        *resp_buf;
@@ -20,6 +29,33 @@ struct chan_endpoint {
 
 static chan_endpoint_t g_endpoints[CHAN_MAX_ENDPOINTS];
 static uint32_t        g_num_endpoints;
+
+/* Anti-cycle guard: a wait-for graph over task-owned endpoint calls.
+ * g_wait_for[pid] is the owner_pid that task `pid` is currently blocked
+ * inside chan_call_task() waiting on, or -1 if it is not calling anyone.
+ * chan_call_task() adds the edge caller->target for the duration of the
+ * block; a call is refused before the edge is added if target can already
+ * (transitively) reach caller, which is exactly "task A can call B, or be
+ * called by B, never both -- and no longer chains either" (the rule this
+ * exists to enforce structurally, not just by convention, before any
+ * further driver gets converted into a task). */
+static int  g_wait_for[MAX_TASKS];
+static bool g_wait_for_ready;
+
+static void wait_for_init(void) {
+    if (g_wait_for_ready) return;
+    for (int i = 0; i < MAX_TASKS; i++) g_wait_for[i] = -1;
+    g_wait_for_ready = true;
+}
+
+static bool would_cycle(int caller_pid, int target_pid) {
+    int cur = target_pid;
+    for (int guard = 0; cur >= 0 && cur < MAX_TASKS && guard < MAX_TASKS; guard++) {
+        if (cur == caller_pid) return true;
+        cur = g_wait_for[cur];
+    }
+    return false;
+}
 
 int chan_register(const char *name, chan_handler_fn handler, void *ctx,
                   uint8_t *req_buf, uint32_t req_cap,
@@ -40,6 +76,41 @@ int chan_register(const char *name, chan_handler_fn handler, void *ctx,
     ep->name     = name;
     ep->handler  = handler;
     ep->ctx      = ctx;
+    ep->owner_pid = -1;
+    ep->req_buf  = req_buf;
+    ep->req_cap  = req_cap;
+    ep->resp_buf = resp_buf;
+    ep->resp_cap = resp_cap;
+    ep->in_use   = true;
+    ep->busy     = false;
+    return 0;
+}
+
+int chan_register_task(const char *name, int owner_pid,
+                       uint8_t *req_buf, uint32_t req_cap,
+                       uint8_t *resp_buf, uint32_t resp_cap) {
+    if (!name || owner_pid < 0 || !req_buf || !resp_buf || req_cap == 0 || resp_cap == 0) {
+        return -1;
+    }
+    if (sched_task_state(owner_pid) == TASK_UNUSED) return -1;
+    if (chan_lookup(name)) {
+        printk("[Chan] Duplicate endpoint name '%s' ignored\n", name);
+        return -1;
+    }
+    if (g_num_endpoints >= CHAN_MAX_ENDPOINTS) {
+        printk("[Chan] Endpoint table full, dropping '%s'\n", name);
+        return -1;
+    }
+
+    chan_endpoint_t *ep = &g_endpoints[g_num_endpoints++];
+    ep->name     = name;
+    ep->handler  = NULL;
+    ep->ctx      = NULL;
+    ep->owner_pid = owner_pid;
+    ep->caller_pid = -1;
+    ep->req_len = 0;
+    ep->reply_len = -1;
+    ep->request_pending = false;
     ep->req_buf  = req_buf;
     ep->req_cap  = req_cap;
     ep->resp_buf = resp_buf;
@@ -57,6 +128,54 @@ chan_endpoint_t *chan_lookup(const char *name) {
         }
     }
     return NULL;
+}
+
+/* The task-owned half of chan_call(). Everything from setting up the
+ * request through task_block() runs under one continuous irq_save() -- the
+ * same requirement M2's UART TX/RX waiters have, and for the same reason:
+ * releasing the mask before task_block() actually runs would let a
+ * scheduling event land in the gap, where the owner task could be woken
+ * (found not yet BLOCKED, a no-op) before the caller ever blocks, losing
+ * the wakeup permanently. See drivers/uart_16550.c's uart_flush() for the
+ * fuller explanation of why this specific pattern is safe to hold across a
+ * context switch (kernel/include/kernel/irq.h's nesting contract) without
+ * itself deadlocking anything that needs interrupts enabled to make
+ * progress. */
+static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
+    /* Refuse rather than hang if the owner cannot possibly answer. Does not
+     * close the race where the owner dies *after* this check but before it
+     * replies -- a known, accepted gap for this milestone, not a promise
+     * this covers every case. */
+    if (sched_task_state(ep->owner_pid) == TASK_UNUSED ||
+        sched_task_state(ep->owner_pid) == TASK_DEAD) {
+        return -1;
+    }
+
+    wait_for_init();
+    int me = sched_current_pid();
+
+    /* Refuse rather than deadlock if this call would close a cycle in the
+     * wait-for graph -- see g_wait_for's comment above. Caught here, before
+     * anything is written to the endpoint, so a rejected call leaves no
+     * state for the next attempt to trip over. */
+    if (would_cycle(me, ep->owner_pid)) {
+        printk("[Chan] Refusing '%s': task %d -> %d would close a circular wait\n",
+              ep->name, me, ep->owner_pid);
+        return -1;
+    }
+
+    uintptr_t flags = irq_save();
+    ep->req_len = req_len;
+    ep->caller_pid = me;
+    ep->reply_len = -1;
+    ep->request_pending = true;
+    g_wait_for[me] = ep->owner_pid;
+    task_unblock(ep->owner_pid); /* no-op if the owner is not yet waiting; it will see the request when it next asks */
+    task_block();
+    g_wait_for[me] = -1;
+    irq_restore(flags);
+
+    return ep->reply_len;
 }
 
 int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
@@ -83,8 +202,9 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
      * is on another machine entirely). */
     memcpy(ep->req_buf, req, req_len);
 
-    int resp_len = ep->handler(ep->ctx, ep->req_buf, req_len,
-                               ep->resp_buf, ep->resp_cap);
+    int resp_len = ep->owner_pid >= 0
+        ? chan_call_task(ep, req_len)
+        : ep->handler(ep->ctx, ep->req_buf, req_len, ep->resp_buf, ep->resp_cap);
 
     ep->busy = false;
 
@@ -98,6 +218,24 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
     if ((uint32_t)resp_len > resp_max) return -1;
     if (resp && resp_len > 0) memcpy(resp, ep->resp_buf, (uint32_t)resp_len);
     return resp_len;
+}
+
+uint32_t chan_serve_wait(chan_endpoint_t *ep) {
+    if (ep->request_pending) return ep->req_len;
+    uintptr_t flags = irq_save();
+    if (!ep->request_pending) {
+        task_block();
+    }
+    irq_restore(flags);
+    return ep->req_len;
+}
+
+void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len) {
+    ep->reply_len = (int)resp_len;
+    ep->request_pending = false;
+    int caller = ep->caller_pid;
+    ep->caller_pid = -1;
+    if (caller >= 0) task_unblock(caller);
 }
 
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out) {

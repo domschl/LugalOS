@@ -48,6 +48,52 @@
  * no malloc (each arch's vmm.c is a bump allocator that never frees), and it
  * keeps this layer free of any assumption about how large a message any
  * particular protocol needs.
+ *
+ * ## Task-owned endpoints (M4, plan/phase12_microkernel_migration.md)
+ *
+ * An endpoint registered with chan_register() runs its handler *inline, on
+ * the caller's own stack* -- fine for a stateless protocol like local 9P,
+ * wrong for a driver, because a bug in the handler then corrupts the
+ * caller's context, not the driver's own. There is nothing to "kill and
+ * restart" when the code never had an identity apart from whoever happened
+ * to call it.
+ *
+ * chan_register_task() is the other kind: the request is handed to a named
+ * task instead of a function pointer, the caller genuinely blocks
+ * (task_block()), and the owning task calls chan_serve_wait() /
+ * chan_serve_reply() to receive and answer it on its *own* stack, in its
+ * own scheduling and (from M5) memory-domain context. Rule 1 still holds --
+ * both sides only ever touch the endpoint's own buffers, never a caller's
+ * or a server's raw pointer.
+ *
+ * Still no queue: one request in flight per endpoint, same as before,
+ * enforced the same way (chan_call()'s busy flag). A second caller while
+ * one is already being served is refused, not queued.
+ *
+ * Message-oriented, not byte-oriented: a caller with more than one thing to
+ * say sends *one* call carrying all of it (see drivers/uart_16550.c's
+ * batched write op for why this matters in practice -- the first version
+ * of this milestone called a task-owned endpoint once per character and
+ * turned an ordinary scheduling decision into a several-times-per-line
+ * event, which is a load this primitive was never meant to carry routinely).
+ *
+ * ## Communication must be strictly top-down: no cycles
+ *
+ * A task-owned endpoint's owner must never itself become a caller of a task
+ * that is (directly, or transitively through other endpoints) already
+ * waiting on it. Concretely: task A may call B, or serve calls from B, but
+ * never both -- and a longer chain (A calls B, B calls C, C calls A) is
+ * exactly as forbidden as the direct case. A driver task that ever
+ * chan_call()s a client while serving it, even indirectly, is one bad day
+ * away from deadlocking.
+ *
+ * chan_call_task() enforces this structurally rather than leaving it to
+ * driver-author discipline: it maintains a wait-for graph (which task is
+ * blocked calling which) and refuses any call that would close a cycle in
+ * it, before touching the endpoint. Keep new driver-task conversions
+ * strictly layered underneath their callers (uart, then SD/SPI, then
+ * display/keypad/RTC/EEPROM, per the M4 plan) precisely so this check is
+ * never the thing standing between a caller and its answer.
  */
 
 /* M0, plan/phase12_microkernel_migration.md: raised from 4 for headroom as
@@ -73,18 +119,40 @@ int chan_register(const char *name, chan_handler_fn handler, void *ctx,
 
 chan_endpoint_t *chan_lookup(const char *name);
 
+/* Registers a task-owned endpoint (M4): `owner_pid` -- not a handler
+ * function -- is what chan_call() wakes. `owner_pid` must already exist
+ * (task_create() first); it does not need to have reached its serve loop
+ * yet. Same buffer-ownership rules as chan_register(). */
+int chan_register_task(const char *name, int owner_pid,
+                       uint8_t *req_buf, uint32_t req_cap,
+                       uint8_t *resp_buf, uint32_t resp_cap);
+
 /* Synchronous call: copy `req` in, run the handler against endpoint-owned
  * buffers, copy the response back out to `resp`. Returns the response length,
  * or -1 on failure -- including when the request exceeds the endpoint's
- * capacity, or when the endpoint is already executing a call.
+ * capacity, when the endpoint is already executing a call, or (task-owned
+ * endpoints only) when the owning task is not alive to answer.
  *
  * That re-entrancy check is a real safety property, not defensive noise: a
  * locally-mounted 9P namespace can be walked into recursively (/local/local/…),
  * which would otherwise re-enter this endpoint and clobber the request buffer
  * out from under the outer call. Failing the inner call is the correct answer
- * and keeps the recursion bounded. */
+ * and keeps the recursion bounded. For a task-owned endpoint it also means a
+ * caller can never be left waiting on an owner that is itself stuck waiting
+ * on a nested call back into the same endpoint. */
 int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
               uint8_t *resp, uint32_t resp_max);
+
+/* Called by a task-owned endpoint's owner. Blocks until a request is
+ * pending, then returns its length -- already copied into the endpoint's
+ * own request buffer by chan_call(), so the caller reads it from there
+ * directly rather than through a second copy. */
+uint32_t chan_serve_wait(chan_endpoint_t *ep);
+
+/* Called by a task-owned endpoint's owner once it has written up to
+ * `resp_len` bytes into the endpoint's own response buffer. Wakes the
+ * blocked caller with that response. */
+void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len);
 
 /* Enumeration for /proc and the /srv/ namespace. Returns false once
  * exhausted. */

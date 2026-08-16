@@ -75,6 +75,11 @@ static void ed_read_line(char *out_buf, int max_len) {
             if (idx < max_len - 1) {
                 out_buf[idx++] = c;
                 uart_putc(c);
+                /* M4: uart_putc() batches now -- without this, this
+                 * keystroke's echo only becomes visible whenever the
+                 * *next* uart_getc() call happens to flush it, a
+                 * one-character lag a real user would notice. */
+                uart_flush();
             }
         }
     }

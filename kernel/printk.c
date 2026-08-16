@@ -115,6 +115,15 @@ void printk_unlock(void) {
     g_printk_waiter = -1;
     irq_restore(flags);
     if (waiter >= 0) task_unblock(waiter);
+    /* M4: send whatever this message batched into uart_putc()'s buffer
+     * (drivers/uart.h) now that the message is complete -- the *outermost*
+     * unlock only, matching "one message, one flush" rather than flushing
+     * once per reentrant printk() nested inside another. Not the only
+     * place this is called (uart_getc()/uart_has_char() also flush, for
+     * output that never goes through printk_lock() at all -- line editor
+     * redraws, raw console_putc() sequences), but the natural one for the
+     * printk/cprintf/printk_debug family specifically. */
+    uart_flush();
 }
 
 static void print_num(putc_fn pc, unsigned long num, int base) {

@@ -209,6 +209,15 @@ void kernel_main(void) {
         irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
     }
 
+    /* M4, plan/phase12_microkernel_migration.md: the uart driver as a task,
+     * the first one converted from "library called synchronously by
+     * whoever needs them" to "long-lived task reachable via chan_call()".
+     * Must follow sched_init() (task_create() needs a table) and precede
+     * anything that does real console output, so as little boot text as
+     * possible falls back to the pre-M4 direct-access path for no reason
+     * other than the task not existing yet. */
+    uart_task_start();
+
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
     p9_server_task_start();

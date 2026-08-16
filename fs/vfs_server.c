@@ -861,6 +861,7 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
             if (strcmp(h->rel_path, "uart") == 0) {
                 const char *str = (const char *)buf;
                 for (uint32_t i = 0; i < count; i++) uart_putc(str[i]);
+                uart_flush(); /* M4: this write is its own message; nothing else here would */
                 return (int)count;
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_write((uint16_t)offset, (const uint8_t *)buf, count);

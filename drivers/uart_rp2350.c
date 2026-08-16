@@ -261,6 +261,20 @@ static void uart_hw_putc(char c) {
     REG(UART0_BASE + 0x00) = (uint8_t)c;
 }
 
+/* M4, plan/phase12_microkernel_migration.md: RP2350's own conversion to a
+ * dedicated uart task is tracked separately (this board's driver has real
+ * extra complexity M2.5 already carved out once -- USB CDC mirroring, the
+ * heartbeat LED, the demux -- and deserves the same careful, one-board-at-
+ * a-time treatment those got, on real hardware, not a rushed copy of
+ * uart_16550.c's shape). This stub exists only so kernel/main.c can call
+ * uart_task_start() unconditionally across every board; uart_putc()/
+ * uart_getc()/uart_has_char() below are unchanged and still talk to the
+ * hardware directly. uart_flush() is correspondingly a no-op here: nothing
+ * on this board batches, so there is never anything pending to send. */
+int uart_task_start(void) { return -1; }
+void uart_flush(void) { }
+uint32_t uart_write_call_count(void) { return 0; }
+
 void uart_putc(char c) {
     uart_hw_putc(c);
     usb_cdc_putc(c); // mirror interactive shell output to /dev/ttyACM0 when connected

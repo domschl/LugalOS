@@ -697,6 +697,34 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("cat /proc/ps", r"\d+\s+\w+\s+p9srv", timeout=3.0)
         results.append(("9P/Filesystem Server Runs As A Task (B4, D4)", ok, log if not ok else ""))
 
+        # M4 (plan/phase12_microkernel_migration.md): the uart driver runs as
+        # a task, reachable only via chan_call(), and console output batches
+        # into whole-message writes rather than one chan_call() per
+        # character. The first version of this milestone got the second half
+        # wrong -- routed every byte through its own chan_call(), which
+        # manufactured scheduling frequency next_runnable() had never been
+        # exercised at and triggered a day of scheduler redesigns chasing a
+        # problem that was never in the scheduler. Reverted, reformulated,
+        # and rebuilt around batching (see that document's M4 section for
+        # the fuller account); this is the regression test the reformulation
+        # promised: `help` prints on the order of 50 lines and ~2000
+        # characters, so a per-character design would cost on that order of
+        # chan_call()s too. A generous bound (200) still leaves a wide margin
+        # below "character-scale" while comfortably clearing the ~60 calls
+        # actually measured, so a real regression back toward per-character
+        # batching trips this long before the margin gets tight.
+        ok, log = session.send_and_expect("uartstats", r"write_calls=(\d+)", timeout=3.0)
+        before_calls = int(re.search(r"write_calls=(\d+)", log).group(1)) if ok else None
+        ok2, log2 = session.send_and_expect("help", r"reboot", timeout=5.0)
+        ok3, log3 = session.send_and_expect("uartstats", r"write_calls=(\d+)", timeout=3.0)
+        after_calls = int(re.search(r"write_calls=(\d+)", log3).group(1)) if ok3 else None
+        batched = (before_calls is not None and after_calls is not None
+                  and 0 < (after_calls - before_calls) < 200)
+        results.append(("Console Output Is Batched, Not Per-Character (M4)",
+                        ok and ok2 and ok3 and batched,
+                        "" if (ok and ok2 and ok3 and batched) else
+                        f"before={before_calls} after={after_calls}\n{log2[-300:]}"))
+
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
             "mkdir /sd0/testdir\n"

@@ -77,6 +77,13 @@ static int uart_slip_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t le
         }
     }
     uart_putc((char)SLIP_END);
+    /* M4, plan/phase12_microkernel_migration.md: uart_putc() batches now
+     * (drivers/uart_16550.c) instead of writing straight through, so a
+     * complete frame sitting in that batch is not actually on the wire
+     * until something flushes it. Nothing else in this call path ever
+     * would -- this function *is* the natural per-message boundary for a
+     * SLIP frame, the same role printk_unlock() plays for a printk() call. */
+    uart_flush();
     return (int)len;
 }
 
