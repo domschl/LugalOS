@@ -4,6 +4,7 @@
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
+#include "fs/9p.h"
 #include <string.h>
 
 static bool g_usb_cdc_connected = false;
@@ -857,13 +858,46 @@ static uint32_t ep4_rx_pop(uint8_t *out, uint32_t max) {
     return n;
 }
 
+/* Resync-on-garbage: this framing has no SLIP-style byte-stuffing to
+ * recognize a frame boundary out of context, so an implausible length
+ * prefix (a stray/partial write landing here -- see this link's own README
+ * note on why a probe must never send anything less than a complete valid
+ * frame) used to leave the stream wedged *permanently*: this same 4-byte
+ * window would keep failing the same check forever, since nothing ever
+ * advanced past it, and only a real USB bus reset (unplug/replug) cleared
+ * it. Found reproducing it directly while bringing up the M4.5 uart task on
+ * real hardware -- a manual probe script's own stray writes desynced this
+ * exact link mid-session.
+ *
+ * Discards exactly one byte and reports "not ready yet" instead of
+ * "corrupt" whenever the window doesn't look like a plausible header, so
+ * the *next* poll() re-examines the window shifted by one -- the standard
+ * byte-at-a-time resync a length-prefixed protocol can still do without a
+ * sync marker. Recovers within at most a few poll() rounds (each pass here
+ * is sub-millisecond) once real frame-aligned traffic resumes, rather than
+ * requiring a bus reset. Not a stronger guarantee than that -- a
+ * sufficiently adversarial byte sequence could still coincidentally look
+ * like a plausible header and misframe what follows -- but strictly better
+ * than wedging outright, which is the actual failure mode this closes.
+ *
+ * Upper bound tightened to P9_MAX_MSIZE (recv_frame()'s own real ceiling,
+ * fs/p9_link.c's rx_buf size) rather than the ring's own larger capacity:
+ * poll() previously could report "ready" for a length recv_frame() would
+ * then refuse anyway, which used to fall through to p9_link_pump()'s
+ * "corrupt" path with nothing discarded there either -- now unreachable,
+ * since poll() itself already rejects (and resyncs past) anything outside
+ * the length recv_frame() could ever actually accept. */
 static int ep4_link_poll(p9_link_t *link) {
     (void)link;
     if (g_ep4_rx_count < 4) return 0;
     uint8_t hdr[4];
     ep4_rx_peek(hdr, 4);
     uint32_t declared = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
-    if (declared < 7 || declared > USB_EP4_RX_RING_SIZE) return -1; // corrupt stream
+    if (declared < 7 || declared > P9_MAX_MSIZE) {
+        uint8_t discard;
+        ep4_rx_pop(&discard, 1);
+        return 0;
+    }
     return (g_ep4_rx_count >= declared) ? 1 : 0;
 }
 

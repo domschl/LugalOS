@@ -6,15 +6,16 @@
 
 void uart_init(uintptr_t base_addr);
 
-// M4, plan/phase12_microkernel_migration.md: starts the dedicated uart
+// M4/M4.5, plan/phase12_microkernel_migration.md: starts the dedicated uart
 // task, which becomes the sole owner of the hardware for uart_putc()/
 // uart_getc()/uart_has_char() below. Must run after sched_init() -- unlike
 // uart_init(), which only brings the hardware itself up and runs long
 // before a task table exists. Returns the task's pid, or -1 if it could
 // not be started (not fatal: the facade functions below fall back to
-// direct hardware access whenever the task is not alive) or if this board's
-// driver does not implement the conversion yet (drivers/uart_rp2350.c: a
-// stub, tracked separately -- see that file's comment).
+// direct hardware access whenever the task is not alive). Both
+// drivers/uart_16550.c (QEMU) and drivers/uart_rp2350.c (real hardware,
+// converted in M4.5 Part B -- the extra USB CDC mirror and the A3b demux
+// bypass are that file's own, not duplicated here) implement this.
 int uart_task_start(void);
 
 void uart_putc(char c);
@@ -22,9 +23,9 @@ char uart_getc(void);
 bool uart_has_char(void);
 void uart_puts(const char *s);
 
-// M4 verify: how many batched-write chan_call()s the uart task has served
-// since boot -- see drivers/uart_16550.c's g_uart_write_calls comment.
-// Always 0 on a board whose driver does not batch (drivers/uart_rp2350.c).
+// M4/M4.5 verify: how many batched-write chan_call()s the uart task has
+// served since boot -- see drivers/uart_16550.c's g_uart_write_calls
+// comment.
 uint32_t uart_write_call_count(void);
 
 // Sends whatever uart_putc() has batched but not yet transmitted. See
@@ -33,8 +34,7 @@ uint32_t uart_write_call_count(void);
 // character) and for the two places this must be called explicitly
 // (printk_unlock()'s outermost unlock, and before this driver itself
 // blocks waiting for the next keystroke) rather than relying only on the
-// batch filling up. A no-op wherever nothing is pending, and on any board
-// whose driver does not batch (drivers/uart_rp2350.c).
+// batch filling up. A no-op wherever nothing is pending.
 void uart_flush(void);
 
 // Kernel debug log output (used by printk()) only: physical UART, never

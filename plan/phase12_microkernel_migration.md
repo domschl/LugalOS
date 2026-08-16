@@ -5,9 +5,9 @@ reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
 (2026-08-16) — see M4's own section below for what the first attempt got
 wrong and why. M4.5 in progress (2026-08-16): Part A (scheduler stress
 test) concluded no scheduler change is needed; Part B has converted the
-heartbeat LED, SD/block storage, RTC/EEPROM, and display/keypad
-(ST7735/TM1638/Pico-Clock-Green) so far, with only RP2350's own
-uart/console and `usb_cdc.c` still open. Written to be
+heartbeat LED, SD/block storage, RTC/EEPROM, display/keypad
+(ST7735/TM1638/Pico-Clock-Green), and RP2350's own uart/console so far,
+with only `usb_cdc.c` still open. Written to be
 detailed and executed one milestone at a time, not implemented from this
 document directly.
 
@@ -662,7 +662,7 @@ first):
 | SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) — **done, 2026-08-16** | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
 | RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) — **done, 2026-08-16** | Low frequency, small fixed-size transfers, no console-speed hazard. Converted as one shared task, not two, since both devices sit on the same physical I2C bus. |
 | Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) — **done, 2026-08-16** | Turned out *not* to be the same low-risk shape as RTC/EEPROM once read closely -- see its own completion notes below for the two real batching-design questions this raised (st7735's internal pixel-level fan-out, pico_clock_green's ~1kHz scan loop). |
-| RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
+| RP2350's own `uart`/console task — **done, 2026-08-16** | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. Found and fixed two real races on real hardware in the process (priority-tier starvation of `p9srv`, and a write-vs-write hardware race in the shared retry/fallback shape — fixed in both this file and `uart_16550.c`); see its own completion notes. |
 | `drivers/usb_cdc.c` | By far the largest and most structurally different of this list (989 lines, dual role as interactive console *and* 9P link) — scope this one separately, once the simpler conversions above have re-validated the template against real evidence rather than assumption. |
 
 **Explicitly out of scope for this milestone:** `kernel/console.c` — it is
@@ -1009,6 +1009,109 @@ rather than silently falling back; `(clock-light)` returned a real 12-bit
 ADC reading (183) and grew `clockstats` to `calls=2`, confirming the second
 wire op independently. The board owner confirmed the actual rendering
 directly: "Display of time & temperature work fine!"
+
+#### M4.5 Part B, RP2350's own uart/console task completion notes (2026-08-16)
+
+Finished what M4 deferred: `drivers/uart_rp2350.c` now runs the same task-
+owned `"uart"` endpoint `drivers/uart_16550.c` (QEMU) already had, batching
+console output into whole `chan_call()`s and adding two things that file
+doesn't need -- a USB CDC mirror on every write (`uart_putc()`'s original
+behavior, preserved, now inside the task), and RX handled by polling rather
+than an ISR (this board has none to block on for RX, unlike TX, which
+already had one from M2.5 -- see `uart_init()`'s own comment). Same
+structural move as every other M4.5 conversion: `uart_hw_putc()`/
+`hw_uart_has_char()`/`hw_uart_getc()` stay the direct-hardware primitives,
+now called only from the task; `uart_putc()`/`uart_getc()`/`uart_has_char()`
+became public facades routing through `chan_call("uart", ...)` when the
+task is alive, falling back to direct access otherwise -- zero changes
+needed anywhere that calls them.
+
+Two real bugs found bringing this up on real hardware, neither visible on
+QEMU, both closed before this milestone was considered done:
+
+1. **Priority-tier starvation of `p9srv`.** RX has no interrupt on this
+   board, so waiting for a keystroke means the task genuinely loops
+   (`sched_yield()`-paced), unlike `uart_16550.c`'s true ISR-driven
+   `task_block()`. Started at `TASK_PRIO_INTERRUPT` (matching that file's
+   own task) for the whole wait, this starved `p9srv` (`fs/p9_link.c`,
+   `TASK_PRIO_NORMAL`, services the ACM1 background 9P link) badly enough
+   that `link_usb_cdc` stopped answering `Tversion` probes entirely --
+   confirmed by isolating firmware-only (stashing this milestone's changes,
+   rebuilding the prior commit, reflashing the *same* physical board/cable/
+   port: clean; restoring the changes and reflashing: broken), then by
+   flipping just this one task's priority as a diagnostic (`TASK_PRIO_NORMAL`
+   fixed it immediately). Fixed by dropping to `TASK_PRIO_NORMAL` only for
+   the READ handler's own wait loop, restoring `TASK_PRIO_INTERRUPT`
+   afterward -- WRITE/HASCHAR (genuinely near-instant) keep the fast-handoff
+   tier `uart_16550.c`'s task uses; the one open-ended wait no longer holds
+   it.
+2. **A write-vs-write race in the shared bounded-retry-then-fallback shape**
+   (`uart_call_with_retry()`, both this file and `uart_16550.c` -- the QEMU
+   file had the identical defect, just far harder to trigger). A `WRITE`
+   `chan_call()` that finds the endpoint busy retries a bounded number of
+   times, then falls back to direct hardware access -- correct when the
+   endpoint is busy with a pending, unbounded-duration READ (a printk()
+   call must never wait out a human's keystroke), *wrong* when it's busy
+   with another WRITE still being transmitted: on real 115200-baud
+   hardware, a full 256-byte batch takes tens of milliseconds, far longer
+   than a bounded retry loop patiently waits, so a second WRITE's fallback
+   raced the first WRITE's own in-flight transmission at the hardware
+   level. Observed directly as byte-level interleaved console garbage
+   (`"[SUSPIN_STARTched] Created task #8 'uprog'..."` -- a kernel `printk()`
+   line and a just-spawned user program's own stdout, landing on the wire
+   at once) while testing concurrent user-program spawning on real
+   hardware -- QEMU's C2-equivalent test never caught it because its
+   emulated UART is fast enough that retries essentially never exhaust in
+   practice. Fixed in both files with one new flag
+   (`g_uart_write_in_flight`, true only while the task's WRITE handler is
+   actually pushing bytes) that lets `uart_flush()`'s retry loop distinguish
+   "busy with a bounded WRITE -- wait it out, never race it" from "busy
+   with an unbounded READ -- fall back right away," rather than treating
+   all busy-ness the same way.
+
+Verified: full QEMU suite 209/209 (both `uart_16550.c` and `uart_rp2350.c`
+share the fix's shape now) across clean runs on both rv64 and rv32; all
+four board personas build clean. Real RP2350 hardware (chess persona)
+21/21 (two new assertions: batching stays message-scaled via `uartstats`,
+and C2's concurrent-user-program test, which the write-race bug had been
+failing) across 3 consecutive clean runs.
+
+#### Unscheduled: `link_usb_cdc` framing resync (2026-08-16, found and fixed while diagnosing the above)
+
+Not on this milestone's own list, but found directly while manually
+probing ports during the uart-task bring-up above, and closed the same
+day per this project's zero-defects standard rather than filed away for
+later. `drivers/usb_cdc.c`'s ACM1 net link (`ep4_link_poll()`) used a
+4-byte length-prefixed frame header with no resync path: an implausible
+length (a stray/partial write landing on the port -- exactly what a
+manual probing script's own mistakes produced) made every subsequent
+`poll()` re-examine the *same* corrupt 4-byte window forever, since
+nothing ever advanced past it -- a real USB bus reset (unplug/replug) was
+the only way out, matching `tests/hw/README.md`'s own long-standing
+troubleshooting note about this exact symptom.
+
+Fixed to discard one byte and report "not ready yet" instead of "corrupt"
+whenever the window doesn't look like a plausible header, so the stream
+re-syncs itself within a few `poll()` rounds once real, frame-aligned
+traffic resumes -- the standard byte-at-a-time resync a length-prefixed
+protocol can still do without a sync marker, not as strong a guarantee as
+SLIP's own byte-stuffed self-delimiting framing (`drivers/uart_net.c`'s
+A3b demux already has that), but strictly better than wedging outright,
+which was the actual failure mode. Also tightened the upper-bound check
+from the ring's own capacity (8192 bytes) to `P9_MAX_MSIZE` (4096,
+`recv_frame()`'s real ceiling), closing a second, narrower gap where
+`poll()` could report "ready" for a length `recv_frame()` would then
+refuse anyway with nothing discarded there either.
+
+Verified directly: deliberately wrote 41 bytes of garbage to the net port,
+confirmed a subsequent real `Tversion` frame still got a real `Rversion`
+back with no reset in between (previously this wedged permanently). Added
+as a permanent regression test (`test_usb_cdc_net_resync`,
+`tests/hw/test_rp2350.py`) rather than left as a one-off manual check.
+Real RP2350 hardware 22/22 (one new assertion) across 3 consecutive clean
+runs. QEMU unaffected (`drivers/usb_cdc.c` is RP2350-only hardware; the
+file still compiles for every target via its own stub, confirmed via a
+full rv64/rv32 rebuild and 209/209 suite pass).
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 

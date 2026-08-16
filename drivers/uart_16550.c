@@ -177,6 +177,27 @@ static uint32_t g_uart_write_calls;
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 
+/* M4.5, found while bringing up drivers/uart_rp2350.c's own uart task on
+ * real hardware -- see that file's own comment on this same flag for the
+ * full account. True only while UART_REQ_WRITE below is actually pushing
+ * bytes to the hardware, false at every other time (including the whole
+ * duration of a pending READ, which can legitimately run for as long as a
+ * human takes to press a key). uart_flush()'s retry loop uses this to
+ * distinguish "busy with a bounded WRITE -- wait it out, never race it"
+ * from "busy with an unbounded READ -- fall back to direct access right
+ * away" (READ never touches the TX-side hardware this WRITE handler does,
+ * so a concurrent direct-access WRITE cannot collide with it).
+ *
+ * Without this distinction, a second WRITE that outlasts a plain bounded
+ * retry can fall back to direct hardware access *while the task is still
+ * transmitting the first one* -- on QEMU's near-instant emulated 16550
+ * this essentially never manifests (retries essentially never exhaust),
+ * but it is the exact same defect that produced reliably reproducible,
+ * byte-level interleaved console garbage on real RP2350 hardware, where a
+ * full batch takes real, non-negligible time to transmit. Fixed here too
+ * rather than left as a latent, harder-to-trigger version of the same bug. */
+static volatile bool g_uart_write_in_flight;
+
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;
     int st = sched_task_state(g_uart_task_pid);
@@ -220,9 +241,11 @@ static void uart_task_body(void *arg) {
                 break;
             case UART_REQ_WRITE:
                 g_uart_write_calls++;
+                g_uart_write_in_flight = true;
                 for (uint32_t i = 1; i < req_len; i++) {
                     uart_hw_putc_blocking((char)g_uart_req[i]);
                 }
+                g_uart_write_in_flight = false;
                 chan_serve_reply(g_uart_ep, 0);
                 break;
             default:
@@ -340,9 +363,19 @@ void uart_flush(void) {
     req[0] = UART_REQ_WRITE;
     memcpy(&req[1], local, len);
     uint8_t resp[1];
-    if (uart_call_with_retry(req, 1 + len, resp, sizeof(resp)) < 0) {
-        for (uint32_t i = 0; i < len; i++) uart_hw_putc_blocking(local[i]);
+    /* Not uart_call_with_retry()'s plain bounded retry: see
+     * g_uart_write_in_flight's own comment for why a WRITE specifically
+     * must never give up and fall back to direct access while another
+     * WRITE is actually in flight, while still falling back promptly --
+     * not waiting out a human's keystroke -- when the endpoint is merely
+     * busy with a pending READ instead. */
+    for (;;) {
+        int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
+        if (n >= 0) return;
+        if (!g_uart_write_in_flight) break;
+        sched_yield();
     }
+    for (uint32_t i = 0; i < len; i++) uart_hw_putc_blocking(local[i]);
 }
 
 void uart_putc(char c) {

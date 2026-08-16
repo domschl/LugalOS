@@ -144,10 +144,14 @@ def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
 
 def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """link_usb_cdc standalone: a host 9P client reads /proc/version over
-    ACM1 (plain length-prefixed framing -- no SLIP, matching virtio-console's
-    own reasoning: a reliable USB bulk pipe needs no escape/resync
-    machinery). /proc/version is synthetic (A1) so this doesn't depend on
-    whatever happens to be on the board's physical SD card."""
+    ACM1 (plain length-prefixed framing -- no SLIP byte-stuffing, matching
+    virtio-console's own reasoning: a reliable USB bulk pipe needs no
+    escape machinery to protect message *content*). That reliability
+    doesn't cover a stray write landing on the port from something other
+    than a well-behaved 9P client, though -- see test_usb_cdc_net_resync
+    below for the case this link's own framing has to recover from on its
+    own. /proc/version is synthetic (A1) so this doesn't depend on whatever
+    happens to be on the board's physical SD card."""
     name = "link_usb_cdc: 9P /proc/version read over ACM1"
     try:
         with serial.Serial(ports.net, 115200, timeout=5) as ser:
@@ -161,6 +165,44 @@ def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             data = client.cat("/proc/version")
             ok = b"LugalOS" in data
             return (name, ok, "" if ok else f"unexpected content: {data!r}")
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_usb_cdc_net_resync(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 (plan/phase12_microkernel_migration.md): link_usb_cdc's 4-byte
+    length-prefixed framing (drivers/usb_cdc.c's ep4_link_poll()) used to
+    treat an implausible length prefix as permanently fatal -- the same
+    4-byte window kept failing the same check forever, since nothing ever
+    advanced past it, and only a real USB bus reset (unplug/replug) cleared
+    it. Found reproducing it directly: a manual probing script's own stray
+    writes desynced this exact link mid-session while bringing up the
+    M4.5 uart task on this board.
+
+    Fixed to discard one byte and report "not ready yet" instead of
+    "corrupt" whenever the window doesn't look like a plausible header, so
+    the stream re-syncs itself within a few poll() rounds once real,
+    frame-aligned traffic resumes -- this test deliberately writes garbage
+    that is not a valid frame, then checks a real Tversion still gets a
+    real Rversion back afterward, without needing any reset in between."""
+    name = "link_usb_cdc: framing resyncs after garbage instead of wedging permanently (M4.5)"
+    try:
+        with serial.Serial(ports.net, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"\r\nnot a 9P frame, just garbage bytes 1234567890\r\n")
+            ser.flush()
+            time.sleep(0.5)
+            ser.read(ser.in_waiting or 1)  # discard whatever (if anything) came back
+
+            adapter = rp2350.SerialSocketAdapter(ser)
+            client = p9lib.P9Client(adapter, framing="raw")
+            if not rp2350.warm_up_9p(client, adapter):
+                return (name, False,
+                        "no Rversion after garbage -- the link did not resync")
+            return (name, True, "recovered a real Rversion after garbage, no reset needed")
     except Exception as e:
         return (name, False, str(e))
 
@@ -430,6 +472,55 @@ def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         detail = f"ticks={ticks_a},{ticks_b} verdict={verdict}"
         if verdict != "FAIR":
             return (name, False, f"scheduler favoured one same-tier task over the other ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_uart_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part B (plan/phase12_microkernel_migration.md): finishes what M4
+    deferred -- RP2350's own console (drivers/uart_rp2350.c) now runs as the
+    same "uart" task drivers/uart_16550.c (QEMU) already had, batching
+    console output into whole chan_call()s instead of one per character, and
+    additionally mirroring every write to USB CDC from inside the task.
+    Same assertion as the QEMU regression test for this (tests/runner.py):
+    `help` prints on the order of 50 lines / ~2000 characters, so a
+    per-character design would cost that order of chan_call()s too; a
+    generous bound (200) stays far below "character-scale" while clearing
+    the much smaller call count batching actually produces."""
+    name = "uart task: console output is batched over chan_call(), not per-character, on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"uartstats\n")
+            ser.flush()
+            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_before = re.search(r"write_calls=(\d+)", out_before)
+
+            ser.write(b"help\n")
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+            ser.write(b"uartstats\n")
+            ser.flush()
+            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_after = re.search(r"write_calls=(\d+)", out_after)
+
+        if not m_before or not m_after:
+            return (name, False, f"no UartStats report in console output:\n{out_before[:200]} / {out_after[:200]}")
+
+        before, after = int(m_before.group(1)), int(m_after.group(1))
+        detail = f"write_calls before={before} after={after}"
+        grown = after - before
+        if grown <= 0:
+            return (name, False, f"call count did not grow -- console output is not reaching the task ({detail})")
+        if grown >= 200:
+            return (name, False, f"call count grew by {grown} for one `help` -- looks per-character, not batched ({detail})")
 
         print(f"    ...measured: {detail}")
         return (name, True, detail)
@@ -1327,7 +1418,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
