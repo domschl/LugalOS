@@ -117,6 +117,9 @@ static void cmd_help(void) {
     cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
     cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
     cprintf("  isolationtest   - U-mode task stores into kernel memory; must fault\n");
+#if defined(CONFIG_BOARD_RP2350)
+    cprintf("  heartbeatisotest - Same, under the real heartbeat driver task's own SIO-window domain\n");
+#endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
     cprintf("  time            - Show system uptime\n");
@@ -497,6 +500,35 @@ static void cmd_usertest_isolation(void) {
            g_kernel_canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
                                        : "BREACHED (user task wrote kernel memory)");
 }
+
+#if defined(CONFIG_BOARD_RP2350)
+/* M5 phase 1, plan/phase12_microkernel_migration.md: the same isolation
+ * claim as isolationtest above, but against the real heartbeat driver
+ * task's own domain shape (drivers/uart_rp2350.c) rather than the generic
+ * 2-region usertest domain -- proving the SIO GPIO window a real,
+ * long-lived driver task runs under is as narrow as intended, not just
+ * that U-mode isolation works in the abstract. */
+extern bool heartbeat_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_heartbeat_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[HeartbeatIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = heartbeat_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[HeartbeatIso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[HeartbeatIso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[HeartbeatIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
+#endif
 
 /* B6: preemption, tested by something that cannot work without it.
  *
@@ -973,6 +1005,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "isolationtest") == 0) {
         cmd_usertest_isolation();
         return;
+#if defined(CONFIG_BOARD_RP2350)
+    } else if (strcmp(cmd_line, "heartbeatisotest") == 0) {
+        cmd_heartbeat_isolation_test();
+        return;
+#endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {
         cmd_deputytest();
         return;

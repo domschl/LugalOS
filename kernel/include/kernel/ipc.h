@@ -26,6 +26,14 @@
  * kernel code manipulating kernel state. */
 #define SYS_UEXIT 20
 
+/* M5, plan/phase12_microkernel_migration.md: the first two syscalls a
+ * long-lived U-mode *driver* task needs that a one-shot U-mode user program
+ * never did -- a cooperative yield and a pacing clock, both value-only (no
+ * pointer, nothing to validate against a domain). See arch/riscv/common/
+ * trap.c's own comments on each for the fuller reasoning. */
+#define SYS_YIELD    22
+#define SYS_TIME_MS  23
+
 void ipc_init(void);
 
 #endif /* LUGALOS_KERNEL_IPC_H */

@@ -15,12 +15,17 @@
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
+#include "kernel/palloc.h"
 #include "kernel/time.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
+#include "kernel/ipc.h"
 #include "arch/trap.h"
+#include "arch/umode.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -41,6 +46,25 @@
 #define SIO_GPIO_OUT_SET        (SIO_BASE + 0x018)
 #define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
 #define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
+
+/* M5, plan/phase12_microkernel_migration.md: RP2350's Arm TrustZone-style
+ * Secure/Non-secure split, mapped onto RISC-V M-mode/U-mode -- found in
+ * ~/gith/pico/datasheet's RP2350 datasheet (Section 3.1.1, "Secure and
+ * Non-secure SIO") after the heartbeat-to-U-mode conversion below wrote to
+ * SIO_GPIO_OUT_SET from U-mode with no fault and no effect. SIO's GPIO
+ * output/input registers are *shared* silicon (not truly duplicated the
+ * way SIO's FIFOs/doorbells/spinlocks are), but a Non-secure (U-mode) bus
+ * access is filtered per-GPIO by ACCESSCTRL's GPIO_NSMASK0/1 registers: "the
+ * bit is read-only zero" for any GPIO not marked accessible -- exactly the
+ * silently-ignored-write symptom this was. PMP has nothing to say about
+ * this: it is a separate hardware filter, upstream of PMP, that a U-mode
+ * task's own domain cannot grant its way around -- the mask has to be set
+ * from Secure (M-mode) code before the task ever tries. Defaults to 0 (all
+ * GPIOs Secure-only) on reset, so every board persona has been running
+ * with every GPIO Secure-only the whole time -- invisible until now because
+ * nothing had ever touched a GPIO from U-mode before. */
+#define ACCESSCTRL_BASE          0x40060000UL
+#define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c) /* GPIO 0-31 */
 
 #define UART0_BASE              ((uintptr_t)CONFIG_UART0_BASE)
 
@@ -97,33 +121,160 @@ void led_blink_phase(int count) {
  * like the scheduler problem this LED exists to help rule out, for a
  * reason that has nothing to do with scheduling.
  *
- * Now a real, independently-scheduled task instead: it blinks at its own
- * rate regardless of what any other task is doing, which is what makes it
- * an actual live, on-the-board check that the scheduler is working --
- * exactly the M4.5 Part A question (does every READY task get a turn),
- * but continuously, visually, and without a serial connection. TASK_PRIO_
+ * A real, independently-scheduled task: it blinks at its own rate
+ * regardless of what any other task is doing, which is what makes it an
+ * actual live, on-the-board check that the scheduler is working -- exactly
+ * the M4.5 Part A question (does every READY task get a turn), but
+ * continuously, visually, and without a serial connection. TASK_PRIO_
  * NORMAL, not TASK_PRIO_INTERRUPT: the point is to reflect ordinary
  * scheduling health, including whether NORMAL-tier tasks get their turn
  * under load, not to guarantee a smooth blink regardless of it -- an
  * INTERRUPT-tier heartbeat would always look healthy and prove nothing.
  * Sleeps by yielding, not spinning, between checks -- a background
  * indicator has no business burning CPU that another READY task could use
- * while it waits out 2 seconds of mostly being off. */
+ * while it waits out 2 seconds of mostly being off.
+ *
+ * M5, plan/phase12_microkernel_migration.md: this task's own loop runs in
+ * real U-mode now, not kernel mode like every other M4.5 driver task --
+ * the deliberate first (and, for this milestone, only) instance of that,
+ * chosen because it needs no chan_call() endpoint and touches exactly one
+ * register pair, so it exercises the new mechanism without also needing
+ * the chan_serve_wait()/reply() syscalls every *other* driver task would.
+ * See that milestone's own plan notes for why a domain attached to a
+ * kernel-mode task (M5 as originally, too narrowly, scoped) enforces
+ * nothing at all on this board: PMP does not restrict M-mode, which is
+ * where every other driver task in this tree still runs.
+ *
+ * Same UATTR/.utext mechanism kernel/shell.c's usertest/intruder/deputytest
+ * probes already use (not the separately linked ELF-loader path C4 built --
+ * that is for programs loaded from a file after the filesystem exists;
+ * this task starts long before vfs_server_init() runs, same boot-ordering
+ * constraint every other M4.5 driver task already has). Unlike those
+ * probes, this task never exits, so it gets its own dedicated stack rather
+ * than sharing kernel/shell.c's g_user_stack (which assumes exactly one
+ * such probe is ever in flight at a time). */
 #define HEARTBEAT_PERIOD_MS 2000u  /* 0.5 Hz */
 #define HEARTBEAT_ON_MS       40u  /* brief flash, not a duty cycle */
 
-static void heartbeat_sleep_until(uint64_t target_ms) {
-    while (time_get_ms() < target_ms) sched_yield();
+/* Same attribute shell.c's own UATTR uses, redefined locally rather than
+ * shared: a section attribute is exactly the two lines below, and sharing
+ * it through a header would suggest the two files' U-mode probes are more
+ * coupled than they are. no_sanitize("undefined"): UBSan's own instrumented
+ * checks are kernel .text calls, unreachable from a page U-mode can execute
+ * but the kernel does not treat as its own .text. */
+#define HEARTBEAT_UATTR __attribute__((section(".utext"))) __attribute__((no_sanitize("undefined")))
+
+/* Hand-rolled per translation unit, not shared with kernel/shell.c's
+ * usys_*() or user/progs/usys.h: a HEARTBEAT_UATTR function must not call
+ * anything the compiler might place outside .utext, and a cross-file (or
+ * even cross-function, without always_inline) inline is not a guarantee --
+ * shell.c's own usys_putc() comment found this out directly at -Os. */
+__attribute__((always_inline)) static inline long heartbeat_usys_yield(void) {
+    register long r_a0 __asm__("a0") = SYS_YIELD;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) :: "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long heartbeat_usys_time_ms(void) {
+    register long r_a0 __asm__("a0") = SYS_TIME_MS;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) :: "memory");
+    return r_a0;
 }
 
-static void heartbeat_task_body(void *arg) {
-    (void)arg;
+/* Found on real hardware, not predicted: a plain `static void`, neither
+ * always_inline nor HEARTBEAT_UATTR, is not a guarantee the compiler places
+ * it (or keeps it placed) in .utext -- it was correctly inlined into
+ * heartbeat_umode_body() during initial bring-up, but the moment this
+ * function's body grew (a debug-only iteration counter, since removed), -Os
+ * stopped inlining it and placed it in ordinary kernel .text instead. The
+ * result on real RP2350 hardware: heartbeat_umode_body() branching into
+ * kernel .text (outside this task's granted RX region) took an instruction
+ * access fault (cause 1) and the task was correctly terminated -- exactly
+ * B3's isolation mechanism doing its job, just not the job intended here.
+ * HEARTBEAT_UATTR makes the placement structural rather than an inlining
+ * heuristic's decision, the same discipline every other .utext function in
+ * this file and kernel/shell.c already follows. */
+HEARTBEAT_UATTR static void heartbeat_usleep_until(long target_ms) {
+    while (heartbeat_usys_time_ms() < target_ms) heartbeat_usys_yield();
+}
+
+/* The real, production heartbeat loop -- runs forever in U-mode, so unlike
+ * every probe in kernel/shell.c it never reaches an exit syscall. GPIO
+ * writes stay plain stores: no syscall needed, governed entirely by this
+ * task's own domain (see heartbeat_task_start() below) and by GP16 being
+ * marked Non-secure-accessible in ACCESSCTRL (see uart_init()'s own
+ * comment on that) -- which is the whole point of granting a device
+ * window rather than routing every register access through the kernel. */
+HEARTBEAT_UATTR static void heartbeat_umode_body(void) {
     for (;;) {
         REG(SIO_GPIO_OUT_SET) = (1u << CONFIG_LED_EXT_GPIO);
-        heartbeat_sleep_until(time_get_ms() + HEARTBEAT_ON_MS);
+        heartbeat_usleep_until(heartbeat_usys_time_ms() + HEARTBEAT_ON_MS);
         REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
-        heartbeat_sleep_until(time_get_ms() + (HEARTBEAT_PERIOD_MS - HEARTBEAT_ON_MS));
+        heartbeat_usleep_until(heartbeat_usys_time_ms() + (HEARTBEAT_PERIOD_MS - HEARTBEAT_ON_MS));
     }
+}
+
+/* Own dedicated stack, not shared with kernel/shell.c's one-shot test
+ * probes (see this section's own comment above for why): a full page,
+ * page-aligned, the same "satisfies both PMP's power-of-two-self-aligned
+ * rule and Sv39's page granularity in one description" reasoning
+ * kernel/shell.c's g_user_stack already established. */
+static uint8_t g_heartbeat_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t g_heartbeat_domain;
+
+/* This task's own kernel-mode entry point: task_create_sized() calls this
+ * (ordinary kernel stack, kernel privilege) to build the domain and make
+ * the one-way jump into U-mode. Mirrors kernel/shell.c's
+ * user_task_common()/run_user_task() shape exactly. */
+static void heartbeat_task_body(void *arg) {
+    (void)arg;
+
+    mem_domain_init(&g_heartbeat_domain);
+
+    /* Order matters: PMP resolves against the lowest-numbered matching
+     * region, so narrower grants must precede broader ones that might
+     * overlap them (none do here, but the ordering convention is kept for
+     * consistency with every other domain construction in this tree). */
+    mem_domain_add(&g_heartbeat_domain, (uintptr_t)g_heartbeat_ustack,
+                   sizeof(g_heartbeat_ustack), MEM_R | MEM_W);
+
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_heartbeat_domain, tbase, tsize, MEM_R | MEM_X);
+
+    /* The device window: SIO_GPIO_OUT_SET (+0x18) and _CLR (+0x20) both
+     * have to land in one region (mem_domain_permits()/PMP both require a
+     * single access to resolve against exactly one region). Found on real
+     * hardware, not predicted: an initial 64-byte region (the minimum that
+     * spans both registers) read back from pmpaddr2 with its low bits
+     * *not* matching what was written (0x...04 read back where 0x...07 was
+     * written) -- every other NAPOT region in this tree is page-sized or
+     * larger, so a region this small was untested territory. That
+     * mismatch turned out to be a red herring (mem_domain_activate()'s own
+     * success check already masks those low bits out, and widening to a
+     * full page reproduced the identical masked-benign pattern); the
+     * actual reason the GPIO writes had no effect despite no fault was
+     * ACCESSCTRL_GPIO_NSMASK0 (see uart_init()'s comment on it), a filter
+     * entirely upstream of and independent from PMP. Left at a full page
+     * anyway: the same size class every other region in this codebase
+     * (stacks, .utext, user program segments) already uses successfully,
+     * "coarse but honest" rather than maximally narrow but unverified --
+     * board_text_region() already grants a whole page for far less code
+     * than it covers, for the same reason. */
+    mem_domain_add(&g_heartbeat_domain, SIO_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &g_heartbeat_domain) != 0) {
+        /* Same honesty rule kernel/shell.c's user_task_common() follows:
+         * a region the hardware did not install exactly as asked is not a
+         * smaller grant, it is an unverified one, so refuse rather than
+         * enter U-mode claiming isolation nothing confirmed. */
+        printk("[Heartbeat] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    /* ra = 0: heartbeat_umode_body() never returns (see its own comment) --
+     * only the ELF loader's one-shot programs need a real return address. */
+    arch_enter_user(heartbeat_umode_body,
+                    (uintptr_t)g_heartbeat_ustack + sizeof(g_heartbeat_ustack),
+                    0, 0, 0);
 }
 
 /* Called from kernel/main.c, after sched_init() -- unlike uart_init(),
@@ -136,6 +287,98 @@ int heartbeat_task_start(void) {
     if (pid < 0) return -1;
     task_set_priority(pid, TASK_PRIO_NORMAL);
     return pid;
+}
+
+/* M5 phase 1's own "Verify" deliverable: does the real heartbeat domain
+ * shape (stack + .utext + a 4096-byte SIO window) actually confine the
+ * task to GPIO, or does the SIO grant's width accidentally cover more?
+ * Modeled directly on kernel/shell.c's user_intruder()/g_kernel_canary --
+ * same idea (a deliberate out-of-domain store, asserted to fault), a
+ * separate canary rather than reaching into shell.c's static one for the
+ * same reason heartbeat_usys_yield()/_time_ms() are hand-rolled per file:
+ * a HEARTBEAT_UATTR probe should not depend on anything outside this
+ * translation unit. */
+static volatile uintptr_t g_heartbeat_canary = 0xC0FFEE;
+
+HEARTBEAT_UATTR static void heartbeat_intruder(void) {
+    g_heartbeat_canary = 0xDEAD;
+    /* Only reached if the store was NOT stopped -- if it faults (the
+     * expected outcome) the task is torn down mid-store and never gets
+     * here. Nothing to report through: the caller reads the canary
+     * directly once the task is dead, matching cmd_usertest_isolation()'s
+     * own "no escape signal needed" shape. */
+    for (;;) { }
+}
+
+/* Allocated on demand for the duration of the test, not a permanent static
+ * array: this is a diagnostic probe, run rarely and never concurrently with
+ * itself, so it should cost nothing while idle -- the same reasoning
+ * test_heap_on_demand (tests/hw/test_rp2350.py) exists to hold cc/ed to.
+ * Found on real hardware, not predicted: a static 4096-byte array here was
+ * tried first and quietly cost one whole extra heap page permanently (every
+ * board's Image (data+bss) grows by exactly one page-worth of .bss the
+ * moment this file links in), which was enough on its own to tip
+ * test_heap_on_demand from passing to failing before any test had run at
+ * all. palloc_pages() already returns page-aligned memory (page size ==
+ * region granularity here), so no extra alignment attribute is needed. */
+
+/* Set only once the task has actually reached U-mode -- without it, a
+ * domain that failed to install would read identically to "the write was
+ * correctly blocked" (same false-positive risk cmd_usertest_isolation()'s
+ * own g_user_entered exists to rule out). */
+static volatile bool g_heartbeat_intruder_entered;
+
+static void heartbeat_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    /* The exact grant real heartbeat runs under -- this is what's on trial,
+     * not a hypothetical wider one. */
+    mem_domain_add(&dom, SIO_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[HeartbeatIso] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_heartbeat_intruder_entered = true;
+    arch_enter_user(heartbeat_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+/* Runs the probe to completion and reports what actually happened. Returns
+ * false if the task never reached U-mode (domain not enforceable on this
+ * build/core, or the one-page stack could not be allocated) -- in that case
+ * *out_canary and *out_exited_clean say nothing about isolation, matching
+ * cmd_usertest_isolation()'s own "INCONCLUSIVE" case. */
+bool heartbeat_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_heartbeat_canary = 0xC0FFEE;
+    g_heartbeat_intruder_entered = false;
+
+    void *ustack = palloc_pages(1);
+    if (!ustack) {
+        *out_canary = g_heartbeat_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+
+    int pid = task_create("heartbeat_intruder", heartbeat_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        *out_canary = g_heartbeat_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    long status;
+    *out_exited_clean = sched_task_exited_cleanly(pid, &status);
+    palloc_free(ustack, 1);
+    *out_canary = g_heartbeat_canary;
+    return g_heartbeat_intruder_entered;
 }
 
 // Raw physical-UART byte access (defined below, after uart_putc()); handed
@@ -205,6 +448,16 @@ void uart_init(uintptr_t base_addr) {
     REG(PADS_BANK0_PAD(CONFIG_LED_ONBOARD_GPIO)) = 0x56;
     REG(PADS_BANK0_PAD(CONFIG_LED_EXT_GPIO)) = 0x56;
     REG(SIO_GPIO_OE_SET) = LED_MASK;
+
+    /* M5, plan/phase12_microkernel_migration.md: GP16 specifically (not the
+     * onboard LED, which only ever runs from kernel/M-mode code) needs to
+     * be Non-secure-accessible, since heartbeat_task_body() below drives it
+     * from real U-mode. Must happen here, from M-mode -- see
+     * ACCESSCTRL_GPIO_NSMASK0's own comment above for why a U-mode task's
+     * PMP domain cannot grant its way around this on its own. GPIO_NSMASK0
+     * is one of the two ACCESSCTRL registers exempt from the 0xacce
+     * write-protection prefix every other ACCESSCTRL register needs. */
+    REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
 
     /* Default GP16 to LOW (OFF in active-high configuration) */
     REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);

@@ -1434,12 +1434,23 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire]
+    # test_heap_on_demand needs a clean, unfragmented heap for chibicc's fixed
+    # 108 KB arena, so it has to run before *any* test that loads a U-mode ELF
+    # program -- every distinct program's image stays cached in heap for the
+    # rest of the boot (a real design tradeoff, not a leak: confirmed by
+    # re-running the same program twice and seeing usage NOT grow further),
+    # and with enough distinct programs run first there is no longer enough
+    # contiguous space free for the arena. 2026-08-16: found on real hardware
+    # once M4.5's cumulative static footprint growth finally tipped this over
+    # (running it only before test_large_image was not enough -- test_
+    # umode_isolation/test_user_elf/test_process_abi each load their own
+    # program before that point too); a heap-budget re-analysis is tracked as
+    # M5 follow-up work rather than fixed here.
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
     tests.append(test_large_image)
-    tests.append(test_heap_on_demand)
     tests.append(test_port_binding)
     tests.append(test_board_config)
     tests.append(test_concurrent_user_programs)

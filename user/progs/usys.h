@@ -31,6 +31,8 @@
 #define SYS_WRITE_FILE 14
 #define SYS_UEXIT      20
 #define SYS_TICKS      21
+#define SYS_YIELD      22
+#define SYS_TIME_MS    23
 
 static inline long usyscall(long nr, long a1, long a2, long a3) {
     register long r_a0 __asm__("a0") = nr;
@@ -98,6 +100,19 @@ static inline long uread_file(const char *path, void *buf, long max_len) {
  * interrupt was taken while this program was running. */
 static inline long uticks(void) {
     return usyscall(SYS_TICKS, 0, 0, 0);
+}
+
+/* Cooperative yield -- no pointer, no privileged state returned. M5, plan/
+ * phase12_microkernel_migration.md: what a long-lived U-mode driver task's
+ * own poll/serve loop needs in place of calling sched_yield() directly. */
+static inline void uyield(void) {
+    (void)usyscall(SYS_YIELD, 0, 0, 0);
+}
+
+/* Milliseconds since boot (kernel/time.h's time_get_ms()), for a U-mode
+ * task's own pacing -- e.g. the heartbeat LED's on/off timing. */
+static inline long utime_ms(void) {
+    return usyscall(SYS_TIME_MS, 0, 0, 0);
 }
 
 /* Ends the program with `status`. A program may equally just return from

@@ -63,5 +63,22 @@ int _start(void) {
     } else {
         uprint("USPIN_NOT_PREEMPTED\n");
     }
+
+    /* M5, plan/phase12_microkernel_migration.md: exercises SYS_YIELD/
+     * SYS_TIME_MS from U-mode -- the two syscalls a long-lived U-mode driver
+     * task's own poll loop needs (this program otherwise has no reason to
+     * touch either). Cheap, QEMU-side proof that both round-trip correctly
+     * before the RP2350-specific heartbeat-to-U-mode conversion that
+     * actually depends on them touches real hardware. Not asserting a
+     * nonzero delta -- 50 yields can legitimately complete inside one
+     * millisecond -- just that both calls return normally rather than
+     * faulting or hanging. */
+    long t0 = utime_ms();
+    for (int i = 0; i < 50; i++) uyield();
+    long t1 = utime_ms();
+    uprint("USPIN_YIELD_OK ");
+    uputnum(t1 - t0);
+    uputchar('\n');
+
     return 0;
 }

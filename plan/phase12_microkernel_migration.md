@@ -8,9 +8,14 @@ concluded no scheduler change is needed; Part B converted every driver in
 its table — heartbeat LED, SD/block storage, RTC/EEPROM, display/keypad
 (ST7735/TM1638/Pico-Clock-Green), RP2350's own uart/console, and finally
 `usb_cdc.c` (which needed a different shape than the rest — see its own
-completion notes). M5 not yet started. Written to be detailed and
-executed one milestone at a time, not implemented from this document
-directly.
+completion notes). M5 Phase 1 complete (2026-08-16): the milestone as
+originally written below achieves nothing (M-mode/S-mode kernel privilege
+means PMP/Sv39-U doesn't restrict driver tasks at all), rescoped to real
+U-mode driver-task isolation and proven end-to-end on one driver
+(heartbeat) — see M5's own section for the corrected scope, the RP2350
+Secure/Non-secure SIO finding, and what's still deferred. Written to be
+detailed and executed one milestone at a time, not implemented from this
+document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -1209,22 +1214,130 @@ confirmation the new "usbcdc" task appears in `cat /proc/ps` and that the
 board-id-verified flash workflow itself now works reliably without a
 manual `touch` workaround.
 
-### M5 — Minimal domain by default (Rules 5 & 6 land)
+### M5 — Real U-mode isolation for driver tasks *(Phase 1 done, 2026-08-16 — scope corrected by a real finding)*
 
-Every task from `task_create()` onward gets at least a domain covering its
-own now-buddy-allocated (hence NAPOT-legal) stack. Drivers identified as
-handling external/untrusted input get additional regions for their device
-window and private buffers, spent from PMP's 5-dynamic-region budget per
-active domain — a reprogrammed-on-switch register cost, not a per-task RAM
-cost, so this scales with how many *isolated* regions one task needs, not
-with how many tasks exist system-wide.
+**As originally written above ("every task gets a domain covering its
+stack"), this milestone achieves nothing.** `mem_domain_activate()`'s own
+code comment already said so: *"a kernel task runs with no restriction at
+all, and M-mode ignores an unlocked region anyway."* Confirmed via
+`entry.S`: RP2350 (`CONFIG_MODE_M`) runs the kernel, and therefore every
+M4/M4.5 driver task, permanently in M-mode; PMP only restricts privilege
+levels *below* the one that programs it. rv64 (`CONFIG_MODE_S`) has the
+same gap through `sstatus.SUM` and S-mode's own unrestricted CSR access.
+Attaching a domain to a driver task as scoped above would compile and
+"activate" with zero enforcement — exactly the "claiming isolation that
+hasn't been verified" failure this document's own earlier milestones warn
+against.
 
-**Verify:** the hardware isolation-probe tests from B3
-(`plan/phase5_distributed_design.md`) extended to cover at least one
-converted driver task; a deliberately corrupted build of that driver faults
-and is reaped as `DEAD`/`exit_clean=false` rather than corrupting kernel
-state — reproduced and confirmed the way B3/B6 findings always were, on
-real RP2350 silicon, not only QEMU.
+The only way to get real, hardware-enforced isolation for a driver task is
+to run it at the same privilege U-mode *user programs* already run at,
+through the same `mem_domain`/PMP mechanism B3 built for them. That is
+substantially bigger than this section's original 15 lines implied —
+comparable in size to all of M4.5, not an extension of it — so Phase 1
+deliberately converts exactly **one** driver task (heartbeat: no
+`chan_call()` endpoint, one MMIO register pair, no shared request/response
+buffers) and builds only the infrastructure that one conversion needs.
+Converting the rest needs `chan_serve_wait()`/`chan_serve_reply()` as new
+syscalls (heartbeat has no endpoint, so didn't need them) and, once a
+*second* U-mode driver task needs isolation from the *first*, probably a
+proper separately-linked-image loader in place of the shared `.utext` page
+— both explicitly deferred, not attempted here.
+
+**What Phase 1 built:**
+
+- Two new syscalls (`SYS_YIELD=22`, `SYS_TIME_MS=23`) — a long-lived U-mode
+  driver task's poll loop needs both, and neither existed (`SYS_TICKS` is a
+  raw preemption-tick counter, not wall-clock-ish time; syscall 0 was a dead
+  stub, not wired to `sched_yield()`). Exercised from QEMU first, via
+  `user/progs/uspin.c`, before anything PMP-specific touched hardware.
+- `drivers/uart_rp2350.c`'s `heartbeat_task_body()`/`heartbeat_umode_body()`
+  converted to real U-mode, via the same `.utext`/`UATTR` mechanism
+  `kernel/shell.c`'s `usertest`/`isolationtest`/`deputytest` already used —
+  the simpler, lower-risk option over a new embedded-ELF loader, since only
+  one U-mode driver task exists so far. Domain: own dedicated stack (RW),
+  the shared `.utext` page (RX), and a 4096-byte window at `SIO_BASE` (RW)
+  for the GPIO registers.
+- `heartbeatisotest` (`kernel/shell.c` + `drivers/uart_rp2350.c`): this
+  phase's actual "Verify" deliverable, on real silicon. A probe built from
+  the *exact* domain shape the real heartbeat task runs under, deliberately
+  storing to a kernel canary instead of GPIO — proving the SIO grant is
+  narrow (governs GPIO, nothing else), not just that U-mode isolation works
+  in the abstract. The intruder's own stack is `palloc_pages(1)`'d for the
+  duration of the test and freed right after, not a permanent static array
+  — see the heap-margin finding below for why that distinction turned out
+  to matter on this board.
+
+**The real hardware finding — RP2350's Secure/Non-secure SIO split:**
+after the conversion above, the heartbeat LED did not blink, with no PMP
+fault, no error, nothing — the domain, PMP configuration, and control flow
+were all independently confirmed correct (PMP register readback matched,
+task ran fault-free, timestamps advanced correctly), yet the GPIO write
+had silently no effect. Root-caused via the locally available RP2350
+datasheet (`~/gith/pico/datasheet`, Section 3.1.1, "Secure and Non-secure
+SIO") and pico-sdk headers (`accessctrl.h`), per the user's explicit
+"local sources first" direction: RP2350 implements an Arm TrustZone-style
+Secure/Non-secure hardware partition that RISC-V's M-mode/U-mode maps
+directly onto. SIO's GPIO output/input registers are shared silicon, but a
+Non-secure (U-mode) bus access is filtered *per-GPIO* by ACCESSCTRL's
+`GPIO_NSMASK0`/`GPIO_NSMASK1` registers — a bit not set there makes the
+GPIO's SIO bit "read-only zero" from U-mode, with no fault. This defaults
+to all-zero (every GPIO Secure-only) on reset, so every board persona has
+silently had every GPIO Secure-only the entire session, invisible until
+this was the first thing to ever touch a GPIO from U-mode. It is a filter
+entirely upstream of and independent from PMP: a U-mode task's own PMP
+domain cannot grant its way around it, only M-mode/Secure code can, before
+the task ever runs. Fix: `uart_init()` (M-mode, runs long before any task
+exists) now sets `ACCESSCTRL_GPIO_NSMASK0`'s bit for `CONFIG_LED_EXT_GPIO`.
+Two smaller, genuine bugs were found and fixed along the way to this
+finding: an unconstrained inline-asm syscall stub in a throwaway diagnostic
+clobbering a register across consecutive calls (found via disassembly, not
+present in the final code), and `heartbeat_usleep_until()` initially being
+a plain `static void` rather than tagged `HEARTBEAT_UATTR` — the compiler
+inlined it during early bring-up and stopped once its body grew, silently
+placing it in ordinary kernel `.text` outside the task's granted RX region,
+which took a real instruction-access fault on hardware. Now tagged
+explicitly rather than relying on the optimizer, matching `kernel/shell.c`'s
+own "a helper that is 'obviously' inlined is not a guarantee" precedent.
+
+**A second, unrelated real hardware finding — heap fragmentation from
+cached ELF images:** running the full hardware suite end-to-end (not just
+the new heartbeat-specific tests) surfaced a pre-existing fragility in
+`tests/hw/test_rp2350.py`, unrelated to the U-mode work above. Every
+distinct U-mode ELF program's loaded image stays resident in heap
+permanently after a clean exit — confirmed a cache, not a per-run leak, by
+re-running the same program twice and seeing usage not grow further. With
+enough of the suite's own test programs (`ubig`, `uwx`, the B3/B6/C3
+probes) run before the C6/C7 compiler test, their cached images leave too
+little contiguous heap for chibicc's fixed 108 KB arena. Fixed by moving
+`test_heap_on_demand` to run before any ELF-loading test in `main()`'s
+test list, so it always sees a clean heap; a real heap-budget re-analysis
+(what the image-cache tradeoff should cost long-term, whether it should
+release under memory pressure) is tracked as separate M5-follow-up work,
+not attempted here. Also fed directly into the design choice above: the
+isolation probe's own stack is heap-allocated on demand rather than a
+static array for exactly this reason — a static 4096-byte array was tried
+first, cost one permanent heap page from every board's image size, and
+was on its own enough to tip this same test from passing to failing before
+any test had even run.
+
+**Explicitly deferred to a later phase, not this milestone:** converting
+any other driver task to U-mode; a separately-linked-image loader for
+driver tasks; any change to the M-mode-vs-S-mode kernel privilege model
+itself; the heap-budget re-analysis noted above.
+
+Verified: full QEMU suite 211/211 across 3 consecutive clean runs on both
+rv64 and rv32 (`uspin`'s new `SYS_YIELD`/`SYS_TIME_MS` round-trip included;
+`uart_rp2350.c`/the new shell command are RP2350-only and compile out
+elsewhere, unaffected functionally). All four board personas build and
+link clean. Real RP2350 hardware: heartbeat LED confirmed blinking
+correctly by visual inspection (brief ~40 ms flash every ~2 s, matching
+the pre-U-mode behavior) both immediately after the ACCESSCTRL fix and
+again after the isolation-test code and heap-allocation change landed.
+`heartbeatisotest` 3/3 consecutive clean runs: intruder task faults (cause
+7, store access fault), is reaped `DEAD`/`exit_clean=false`, the kernel
+canary stays untouched, and the shell/kernel stay healthy and responsive
+immediately afterward. Full `tests/hw/test_rp2350.py` suite 22/22 across 3
+consecutive clean runs on the final build.
 
 ### M6 — Process visibility parity
 

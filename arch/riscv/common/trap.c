@@ -8,6 +8,7 @@
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
 #include "kernel/devirq.h"
+#include "kernel/time.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 
@@ -351,6 +352,29 @@ void trap_handler(trap_frame_t *frame) {
                      * interrupts masked in U-mode the count cannot move
                      * across that window, however long the spin. */
                     ret = (long)ticker_ticks();
+                    break;
+                case SYS_YIELD:
+                    /* No pointer, no privileged state to hand out -- a plain
+                     * cooperative yield. M5, plan/phase12_microkernel_migration.md:
+                     * the first syscall a U-mode *driver* task (as opposed to
+                     * a one-shot user program) needs, since its serve/poll
+                     * loop must yield the way every kernel-mode driver task
+                     * already does via sched_yield(). Completes case 0's own
+                     * apparent original intent (see that case's comment)
+                     * without touching it -- a new, unambiguous number costs
+                     * nothing and leaves 0's existing (if dead) behavior
+                     * alone. */
+                    sched_yield();
+                    ret = 0;
+                    break;
+                case SYS_TIME_MS:
+                    /* A value, not a pointer -- same shape as SYS_TICKS
+                     * above, just wall-clock-ish milliseconds instead of the
+                     * raw preemption-tick count. M5: what a U-mode driver
+                     * task's own pacing loop (e.g. the heartbeat LED's
+                     * on/off timing) needs in place of calling time_get_ms()
+                     * directly. */
+                    ret = (long)time_get_ms();
                     break;
                 case SYS_UEXIT:
                     /* A U-mode task asking to end. task_exit() switches away

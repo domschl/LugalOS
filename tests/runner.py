@@ -382,10 +382,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # move, so a failure is a loud line rather than a missing one.
         ok, log = session.send_and_expect(
             "exec /flash0/system/bin/uspin.elf",
-            r"USPIN_START.*USPIN_PREEMPTED", timeout=25.0)
+            r"USPIN_START.*USPIN_PREEMPTED.*USPIN_YIELD_OK", timeout=25.0)
         if ok and "USPIN_NOT_PREEMPTED" in log:
             ok = False
         results.append(("U-mode Code Is Preemptible (B6)", ok, log if not ok else ""))
+
+        # M5, plan/phase12_microkernel_migration.md: SYS_YIELD/SYS_TIME_MS
+        # round-trip correctly from U-mode -- the two syscalls a long-lived
+        # U-mode driver task's own poll loop needs, verified here (cheaply,
+        # on QEMU) before the RP2350-specific heartbeat-to-U-mode conversion
+        # that actually depends on them touches real hardware. Already
+        # exercised as part of the uspin run above; this just asserts the
+        # marker specifically, so a regression here fails with its own name
+        # rather than only showing up as a symptom of the B6 test above.
+        results.append(("U-mode SYS_YIELD/SYS_TIME_MS Round-Trip (M5)",
+                        "USPIN_YIELD_OK" in log, log if "USPIN_YIELD_OK" not in log else ""))
 
         # C2: two user programs resident at once.
         #
