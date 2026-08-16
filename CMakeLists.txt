@@ -241,6 +241,23 @@ add_custom_target(lugalos_build_id ALL
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake
     COMMENT "Refreshing build id")
 
+# fs/vfs_server.c embeds LUGALOS_BUILD_ID (served as /proc/buildid) -- without
+# this, ninja has no ordering edge between "regenerate the header" and
+# "compile the one file that includes it" (add_dependencies() below only
+# orders the custom target before the final *link*, not before individual
+# compiles), so vfs_server.c.o could be compiled from the *previous* run's
+# header content while this run's freshly-regenerated header sits on disk
+# unused until the next build. Found by hand: tests/hw/flash.py's --verify
+# reported a build-id mismatch on three consecutive real flashes even
+# though the board visibly had the new firmware (a working heartbeat LED
+# that could not have existed in the old build) -- `touch fs/vfs_server.c`
+# and rebuilding made the mismatch vanish, confirming a stale object, not a
+# bad flash. OBJECT_DEPENDS is the property that actually closes this: it
+# forces both the ordering and the rebuild-on-change ninja would otherwise
+# only get by accident of GCC's own header-scanning already having seen a
+# newer mtime by the time it ran.
+set_source_files_properties(fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_BUILD_ID_HEADER})
+
 # Per-board config header (K0, plan/phase7_kernel_config.md): platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
 # write-if-changed before every build, same shape as lugalos_build_id above.

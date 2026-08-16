@@ -657,10 +657,11 @@ first):
 
 | Driver | Notes |
 |---|---|
-| SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion — nothing like uart's per-character mistake is structurally possible here. |
+| Heartbeat LED (GP16, `drivers/uart_rp2350.c`) | Not in the original table — added because it is uniquely valuable as a *visual* scheduler-health check, not for isolation or IPC-volume reasons like the rest of this list. No `chan_call()` endpoint at all: nothing calls it, it is a self-scheduled periodic task rather than a request server. Done first, out of dependency-weight order, precisely because it is the lowest-risk possible conversion (no protocol, no other task's correctness depends on it) and immediately doubles as a live confirmation of M4.5 Part A's conclusion on real hardware, continuously, without a serial connection. |
+| SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
 | RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) | Low frequency, small fixed-size transfers, no console-speed hazard. |
 | Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) | Same low-risk shape as RTC/EEPROM. |
-| RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the heartbeat LED, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
+| RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
 | `drivers/usb_cdc.c` | By far the largest and most structurally different of this list (989 lines, dual role as interactive console *and* 9P link) — scope this one separately, once the simpler conversions above have re-validated the template against real evidence rather than assumption. |
 
 **Explicitly out of scope for this milestone:** `kernel/console.c` — it is
@@ -676,6 +677,64 @@ milestone's decision, not this one's.
 that device unchanged; the new IPC-volume test for it passes; full QEMU
 suite and real RP2350 hardware suite both clean across multiple
 consecutive runs before starting the next driver in the table.
+
+#### M4.5 Part B, heartbeat LED completion notes (2026-08-16)
+
+Pulled the GP16 heartbeat out of `gp16_alive_tick()`, which stepped it as
+a side effect of `uart_has_char()`/`uart_getc()`'s console-polling loop,
+and into its own task (`heartbeat_task_start()`, `drivers/uart_rp2350.c`).
+`usb_cdc_task()` — the other thing that poll used to carry — stays exactly
+where it was, called directly at both original sites; only the LED state
+machine moved. `TASK_PRIO_NORMAL`, deliberately not `TASK_PRIO_INTERRUPT`:
+the point is a live check on ordinary scheduling health (does a NORMAL-
+tier task still get its turn under load), which an INTERRUPT-tier
+heartbeat would trivially satisfy regardless of whether anything else in
+the system is actually healthy. Sleeps by yielding between checks
+(`time_get_ms()` polled in a loop, not a busy spin) rather than burning
+CPU another READY task could use for two seconds at a time.
+
+Confirmed on real hardware: after flashing, the board's external LED
+blinks at the expected ~0.5 Hz rate, continuously, independent of any
+serial activity — direct visual confirmation the scheduler keeps giving
+this task its turn, matching Part A's measured conclusion rather than
+merely restating it.
+
+Two real, unrelated bugs found and fixed while verifying this on real
+hardware, neither specific to the heartbeat feature itself:
+
+1. **rv32 UBSan halt in the *other* new M4.5 test.** `priostress_body()`
+   (Part A) accumulated `sink += i` across 150M iterations into a `long`
+   -- 32 bits on rv32, 64 on rv64 -- and overflowed it almost immediately;
+   UBSan correctly caught this as a real fault and halted the board,
+   invisible on rv64 where the wider type absorbed it. Fixed by
+   overwriting (`sink = i`) instead of accumulating; only a volatile write
+   was ever needed to keep the optimizer from eliminating the loop.
+2. **A stale-object build-id bug in `CMakeLists.txt`, found by flashing
+   this milestone's own work.** `fs/vfs_server.c` embeds
+   `LUGALOS_BUILD_ID` (served as `/proc/buildid`, and what
+   `tests/hw/flash.py --verify` checks), but nothing established a ninja
+   dependency edge between "regenerate the header" (an `ALL` custom
+   target, reruns every build) and "compile the one file that includes
+   it" -- `add_dependencies(lugalos.elf lugalos_build_id)` only orders the
+   custom target before the final *link*, not before individual compiles.
+   Three consecutive real flashes each reported a build-id mismatch even
+   though the board visibly had the new firmware (a blinking heartbeat
+   LED that could not have existed in the old build) -- `touch
+   fs/vfs_server.c` and rebuilding made the mismatch vanish, confirming a
+   stale object rather than a bad flash. Fixed with
+   `set_source_files_properties(fs/vfs_server.c PROPERTIES OBJECT_DEPENDS
+   ...)`, the CMake property that actually closes this gap rather than
+   relying on GCC's own header-scanning having already seen a newer mtime
+   by chance. Also hardened `tests/hw/flash.py`'s UF2 copy itself while
+   investigating (`os.fsync()` after the write, and waiting for the
+   BOOTSEL volume to actually disappear before considering the flash
+   done) — did not turn out to be the cause of this specific bug, but is
+   a real gap in its own right and cheap to close.
+
+Verified: full QEMU suite 205/205 (unaffected — this driver is RP2350-only)
+across 2 consecutive clean runs. Real RP2350 hardware: heartbeat confirmed
+blinking by direct observation after a verified-matching flash; full
+hardware suite run to confirm no regression from the polling-loop split.
 
 #### M4.5 Part A completion notes (2026-08-16) — conclusion: no scheduler change needed
 

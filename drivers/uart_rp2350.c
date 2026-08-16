@@ -82,47 +82,57 @@ void led_blink_phase(int count) {
 
 /* Heartbeat on GP16: 0.5 Hz, brief flash.
  *
- * Both numbers here used to be counted in loop iterations and nop-spins --
- * "5000000 polls ~ 2s" and "7500000 cycles = 50 ms". Neither measures time:
- * one counts how often something calls this function, the other how fast an
- * empty loop runs, and both are calibrations against a particular clock rate
- * and flash wait-state configuration. When the oscillator setup changed, the
- * period stretched to ~20 s and the flash to ~1 s -- not because the timing
- * broke, but because there was no timing, only two constants that used to
- * come out about right.
+ * M4.5, plan/phase12_microkernel_migration.md, Part B: this used to be a
+ * two-state machine stepped as a side effect of uart_has_char()/
+ * uart_getc()'s console-polling loop (a function called gp16_alive_tick(),
+ * folded into that poll specifically so a blocking spin here could not
+ * starve USB CDC servicing -- see the git history of this file for that
+ * fix). That made the heartbeat a proxy for "is anything polling the
+ * console" rather than "is the scheduler giving every READY task its
+ * turn" -- a program that reads no input for an extended stretch (uspin,
+ * for one) would silently stop the heartbeat too, which looks exactly
+ * like the scheduler problem this LED exists to help rule out, for a
+ * reason that has nothing to do with scheduling.
  *
- * Driven from the monotonic clock now, so the period is 2 s of real time on
- * whatever clock the board ends up running at.
- *
- * And non-blocking, which matters more than the accuracy. The old pulse was a
- * spin-wait sitting inside the character-poll path: for its whole duration
- * the UART went unpolled and usb_cdc_task() ran only as often as
- * delay_cycles() happened to call it. At the intended 50 ms that was
- * survivable; at the 1 s it had drifted to, it starves USB servicing for a
- * second at a time. The LED is a two-state machine stepped by this function
- * instead, so nothing here ever waits. */
+ * Now a real, independently-scheduled task instead: it blinks at its own
+ * rate regardless of what any other task is doing, which is what makes it
+ * an actual live, on-the-board check that the scheduler is working --
+ * exactly the M4.5 Part A question (does every READY task get a turn),
+ * but continuously, visually, and without a serial connection. TASK_PRIO_
+ * NORMAL, not TASK_PRIO_INTERRUPT: the point is to reflect ordinary
+ * scheduling health, including whether NORMAL-tier tasks get their turn
+ * under load, not to guarantee a smooth blink regardless of it -- an
+ * INTERRUPT-tier heartbeat would always look healthy and prove nothing.
+ * Sleeps by yielding, not spinning, between checks -- a background
+ * indicator has no business burning CPU that another READY task could use
+ * while it waits out 2 seconds of mostly being off. */
 #define HEARTBEAT_PERIOD_MS 2000u  /* 0.5 Hz */
 #define HEARTBEAT_ON_MS       40u  /* brief flash, not a duty cycle */
 
-void gp16_alive_tick(void) {
-    usb_cdc_task();
+static void heartbeat_sleep_until(uint64_t target_ms) {
+    while (time_get_ms() < target_ms) sched_yield();
+}
 
-    static uint64_t next_on_ms;
-    static uint64_t off_at_ms;
-    static bool     led_is_on;
-
-    uint64_t now = time_get_ms();
-    if (led_is_on) {
-        if (now >= off_at_ms) {
-            REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
-            led_is_on = false;
-        }
-    } else if (now >= next_on_ms) {
+static void heartbeat_task_body(void *arg) {
+    (void)arg;
+    for (;;) {
         REG(SIO_GPIO_OUT_SET) = (1u << CONFIG_LED_EXT_GPIO);
-        led_is_on  = true;
-        off_at_ms  = now + HEARTBEAT_ON_MS;
-        next_on_ms = now + HEARTBEAT_PERIOD_MS;
+        heartbeat_sleep_until(time_get_ms() + HEARTBEAT_ON_MS);
+        REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
+        heartbeat_sleep_until(time_get_ms() + (HEARTBEAT_PERIOD_MS - HEARTBEAT_ON_MS));
     }
+}
+
+/* Called from kernel/main.c, after sched_init() -- unlike uart_init(),
+ * which brings the hardware (including this LED's GPIO mux/OE bits) up
+ * long before a task table exists. Not fatal if it fails: the board just
+ * loses its visual heartbeat, the same as if this milestone had not
+ * landed yet. */
+int heartbeat_task_start(void) {
+    int pid = task_create_sized("heartbeat", heartbeat_task_body, NULL, 1);
+    if (pid < 0) return -1;
+    task_set_priority(pid, TASK_PRIO_NORMAL);
+    return pid;
 }
 
 // Raw physical-UART byte access (defined below, after uart_putc()); handed
@@ -139,14 +149,16 @@ static uint8_t hw_uart_getc(void);
  * whole message atomic across a block rather than just across a spin -- see
  * that file's comment for the full story.
  *
- * TX only, still deliberately: uart_getc()/uart_has_char() below poll THREE
- * independent sources every iteration -- the physical UART, USB CDC
- * (itself software-polled, not interrupt-driven), and gp16_alive_tick()'s
- * heartbeat state machine -- and this tree has no "block with timeout" or
- * "wait on any of N sources" primitive yet. That reasoning is unrelated to
- * the printk fix above and unchanged by it: RX stays exactly as it was
- * until a future milestone gives USB CDC its own interrupt path or this
- * tree gains a real multi-wait primitive. */
+ * TX only, still deliberately: uart_getc()/uart_has_char() below poll TWO
+ * independent sources every iteration -- the physical UART and USB CDC
+ * (itself software-polled, not interrupt-driven) -- and this tree has no
+ * "block with timeout" or "wait on any of N sources" primitive yet. That
+ * reasoning is unrelated to the printk fix above and unchanged by it: RX
+ * stays exactly as it was until a future milestone gives USB CDC its own
+ * interrupt path or this tree gains a real multi-wait primitive. (The
+ * heartbeat LED used to be a third thing stepped from this same poll --
+ * M4.5, plan/phase12_microkernel_migration.md, Part B gave it its own
+ * task instead, so it is no longer part of this reasoning.) */
 #define UART0_IRQ 33u
 
 /* At most one TX waiter: every caller now arrives through printk_lock()
@@ -302,7 +314,7 @@ static uint8_t hw_uart_getc(void) {
 // ACM0 (below) is a channel of its own with no shared-wire ambiguity, so it
 // keeps being checked directly and unconditionally, same as before.
 bool uart_has_char(void) {
-    gp16_alive_tick();
+    usb_cdc_task();
     if (uart_demux_is_enabled()) {
         if (uart_demux_console_has_char()) return true;
     } else if (hw_uart_has_char()) {
@@ -313,7 +325,6 @@ bool uart_has_char(void) {
 
 char uart_getc(void) {
     while (!uart_has_char()) {
-        gp16_alive_tick();
         usb_cdc_task();
         sched_yield(); /* B2: see drivers/uart_16550.c's equivalent */
     }

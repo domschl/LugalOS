@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
 import re
 import shutil
 import sys
@@ -129,8 +130,27 @@ def main() -> int:
             return 1
         print(f"[*] BOOTSEL volume mounted: {vol}")
 
-    shutil.copyfile(uf2, Path(vol) / uf2.name)
-    print("[*] UF2 copied; board is rebooting into the new firmware...")
+    # Not shutil.copyfile(): its close() flushes this process's own
+    # buffers, but not necessarily all the way through the OS/USB stack to
+    # the device -- found the hard way, three consecutive flashes each
+    # reporting success while the board kept coming back reporting the
+    # *previous* build's id. os.fsync() forces the write out before this
+    # function considers the copy done.
+    dest = Path(vol) / uf2.name
+    with open(uf2, "rb") as src, open(dest, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+        dst.flush()
+        os.fsync(dst.fileno())
+    print("[*] UF2 copied and synced; waiting for the board to leave BOOTSEL...")
+
+    # The definitive signal the bootrom has actually consumed the whole
+    # write and is resetting into the new firmware -- not just that the
+    # write call above returned. A board that resets on a write still only
+    # partially delivered (or hasn't reset yet at all) is exactly the
+    # silent-old-firmware failure this waits out instead of racing.
+    bootsel_gone_deadline = time.time() + 10.0
+    while time.time() < bootsel_gone_deadline and bootsel_volumes():
+        time.sleep(0.2)
 
     console = wait_for_console()
     if not console:

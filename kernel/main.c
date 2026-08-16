@@ -40,6 +40,7 @@
 #include "arch/riscv/rp2350/binary_info.h"
 
 extern void led_blink_phase(int count);
+extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
 extern char __binary_info_end;
 extern char __flash_binary_end;
@@ -217,6 +218,15 @@ void kernel_main(void) {
      * possible falls back to the pre-M4 direct-access path for no reason
      * other than the task not existing yet. */
     uart_task_start();
+
+#if defined(CONFIG_BOARD_RP2350)
+    /* M4.5, plan/phase12_microkernel_migration.md, Part B: the GP16
+     * heartbeat LED as its own task, not a side effect of console polling
+     * -- a live, on-the-board visual check that the scheduler is actually
+     * giving every READY task a turn, independent of a serial connection.
+     * Must follow sched_init() for the same reason uart_task_start() does. */
+    heartbeat_task_start();
+#endif
 
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
