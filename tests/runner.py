@@ -742,6 +742,29 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                         "" if (ok and ok2 and ok3 and batched) else
                         f"before={before_calls} after={after_calls}\n{log2[-300:]}"))
 
+        # M4.5 Part B (plan/phase12_microkernel_migration.md): the SD/block
+        # storage driver ("blk" on QEMU, "sdblk" on real RP2350 hardware) as
+        # a task, reachable only via chan_call(). Unlike uart, this needed
+        # no batching redesign -- a read_blocks()/write_blocks() call was
+        # already exactly one message's worth of work -- so the check here
+        # is simpler than the console one above: not "did IPC volume stay
+        # low" but "is the task actually being used at all", i.e. a real,
+        # growing call count rather than every caller silently falling back
+        # to direct hardware access the whole time (which would still pass
+        # every functional test, just prove nothing about this milestone).
+        ok, log = session.send_and_expect("blkstats", r"calls=(\d+)", timeout=3.0)
+        before_blk = int(re.search(r"calls=(\d+)", log).group(1)) if ok else None
+        ok2, log2 = session.send_and_expect(
+            "cat /flash0/system/etc/init.lisp", r"\(lsh\)\)\)", timeout=5.0)
+        ok3, log3 = session.send_and_expect("blkstats", r"calls=(\d+)", timeout=3.0)
+        after_blk = int(re.search(r"calls=(\d+)", log3).group(1)) if ok3 else None
+        blk_used = (before_blk is not None and after_blk is not None
+                   and after_blk > before_blk)
+        results.append(("SD/Block Storage Driver Task Is Actually Serving Requests (M4.5)",
+                        ok and ok2 and ok3 and blk_used,
+                        "" if (ok and ok2 and ok3 and blk_used) else
+                        f"before={before_blk} after={after_blk}\n{log2[-300:]}"))
+
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
             "mkdir /sd0/testdir\n"

@@ -3,10 +3,10 @@
 **Status:** M0-M3 complete (2026-08-15). M4 attempted (2026-08-15/16),
 reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
 (2026-08-16) — see M4's own section below for what the first attempt got
-wrong and why. M4.5 planned (2026-08-16): a scheduler stress test to
-settle whether priority scheduling needs more than M3 already built, plus
-the remaining driver-task conversions (SD/SPI, RTC/EEPROM, display/keypad,
-RP2350's own uart/console) M4's original ordering deferred. Written to be
+wrong and why. M4.5 in progress (2026-08-16): Part A (scheduler stress
+test) concluded no scheduler change is needed; Part B has converted the
+heartbeat LED and SD/block storage so far, with RTC/EEPROM, display/
+keypad, and RP2350's own uart/console still open. Written to be
 detailed and executed one milestone at a time, not implemented from this
 document directly.
 
@@ -658,7 +658,7 @@ first):
 | Driver | Notes |
 |---|---|
 | Heartbeat LED (GP16, `drivers/uart_rp2350.c`) | Not in the original table — added because it is uniquely valuable as a *visual* scheduler-health check, not for isolation or IPC-volume reasons like the rest of this list. No `chan_call()` endpoint at all: nothing calls it, it is a self-scheduled periodic task rather than a request server. Done first, out of dependency-weight order, precisely because it is the lowest-risk possible conversion (no protocol, no other task's correctness depends on it) and immediately doubles as a live confirmation of M4.5 Part A's conclusion on real hardware, continuously, without a serial connection. |
-| SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
+| SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) — **done, 2026-08-16** | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
 | RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) | Low frequency, small fixed-size transfers, no console-speed hazard. |
 | Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) | Same low-risk shape as RTC/EEPROM. |
 | RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
@@ -787,6 +787,60 @@ on nearly every file.
 
 Verified: full QEMU suite 205/205 (two new assertions, rv32+rv64) across
 3 consecutive clean runs. Real RP2350 hardware 16/16 (one new assertion)
+across 2 consecutive clean runs.
+
+#### M4.5 Part B, SD/block storage completion notes (2026-08-16)
+
+Converted both block-storage backends -- `drivers/spisd_rp2350.c` (real SD
+hardware, endpoint `"sdblk"`) and `drivers/virtio_blk.c` (QEMU, endpoint
+`"blk"`) -- to task-owned `chan_call()` endpoints. Confirmed the plan's
+own risk assessment directly: `block_dev_t`'s `read_blocks()`/
+`write_blocks()` signature (an explicit `lba`+`count`) already carried
+exactly one message's worth of work per call, so this needed no batching
+redesign at all, unlike uart -- the wire protocol is a straight
+opcode+lba+count header plus the raw block data, `BLK_MAX_COUNT=4` giving
+4x headroom over the only usage pattern that actually exists in this tree
+(`fs/fat32.c` calls every `read_blocks()`/`write_blocks()` with `count=1`;
+this codebase's own `fat32_format()` always uses `sec_per_clus = 1`).
+
+Both drivers share one structural move: the original hardware access
+function (`spisd_read_blocks`/`spisd_write_blocks`,
+`virtio_blk_read`/`virtio_blk_write`) split into an internal `_hw_`-style
+primitive callable from the task's serve loop, and a new public facade
+(reusing the *original* function names, so `block_dev_t`'s function
+pointers and every caller in `fs/fat32.c` needed no changes at all) that
+routes through `chan_call()` when the task is alive and falls back to
+direct access otherwise -- the same shape `uart_16550.c` established, and
+for the same boot-ordering reason: `vfs_server_init()` mounts the
+filesystem *before* `sched_init()` creates a task table at all, so every
+read during early boot necessarily uses the fallback, and only reads
+after `spisd_task_start()`/`virtio_blk_task_start()` (called right after
+`sched_init()`) route through the task.
+
+Added `blk_task_call_count()` (`blkstats`) as the IPC-volume verification
+this milestone's own template calls for -- but unlike uart's "did the call
+count stay message-scaled, not character-scaled" question (never in doubt
+here, see above), the real question was simpler: is the task actually
+being used, or did every caller silently take the fallback path the whole
+time (which would still pass every functional filesystem test and prove
+nothing)? Measured directly: a single file read (`cat`) grows the count by
+double-digits on both QEMU (+27) and real hardware (+29 to +31 across
+runs), confirming genuine task-routed traffic, not a fallback that happens
+to work.
+
+One real cost observed, not a defect: `virtio_blk_write()`/
+`spisd_write_blocks()`'s request buffer (`BLK_HDR_LEN + BLK_MAX_COUNT *
+512` = ~2 KB) is stack-allocated in the facade function rather than
+static, and real hardware's own boot-stack-peak measurement moved from
+~6.5 KB to ~9.5 KB of its 16 KB budget between this milestone and the
+last one measured -- comfortable margin remains, but worth having on
+record given RP2350's stack budget is a real, previously-tracked resource
+(see M4.5's own heartbeat notes and the `Memory margins` hardware test),
+and `BLK_MAX_COUNT` is the knob that would need revisiting first if that
+margin ever tightens.
+
+Verified: full QEMU suite 207/207 (two new assertions, rv32+rv64) across
+3 consecutive clean runs. Real RP2350 hardware 17/17 (one new assertion)
 across 2 consecutive clean runs.
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)

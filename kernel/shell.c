@@ -13,6 +13,11 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
+#if defined(CONFIG_BOARD_RP2350)
+#include "drivers/spisd.h"
+#else
+#include "drivers/virtio_blk.h"
+#endif
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "arch/elf.h"
@@ -990,6 +995,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * not characters -- the property the batching redesign exists to
          * guarantee. */
         printk("[UartStats] write_calls=%u\n", uart_write_call_count());
+        return;
+    } else if (strcmp(cmd_line, "blkstats") == 0) {
+        /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
+         * exposes blk_task_call_count() so a test can confirm the sdblk/blk
+         * task is genuinely serving requests (a nonzero, growing count)
+         * rather than every caller silently using the direct-hardware
+         * fallback the whole time. */
+        printk("[BlkStats] calls=%u\n", blk_task_call_count());
         return;
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);

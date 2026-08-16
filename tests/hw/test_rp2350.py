@@ -437,6 +437,59 @@ def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_blk_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part B (plan/phase12_microkernel_migration.md): the SD/block
+    storage driver ("sdblk" on real hardware, drivers/spisd_rp2350.c) runs
+    as a task, reachable only via chan_call() -- the lowest-risk conversion
+    in the remaining driver list, since a read_blocks()/write_blocks() call
+    was already exactly one message's worth of work, unlike uart's original
+    per-character mistake.
+
+    Unlike the uart batching test, the assertion here isn't "did IPC volume
+    stay low" -- it was never at risk of being high -- it's "is the task
+    actually being used at all". blk_task_call_count() (`blkstats`) is a
+    real, growing counter of chan_call()s served; a caller that silently
+    fell back to direct SPI access the whole time would still pass every
+    functional filesystem test and prove nothing about this milestone."""
+    name = "blk task: SD/block storage driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"blkstats\n")
+            ser.flush()
+            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_before = re.search(r"calls=(\d+)", out_before)
+
+            ser.write(b"cat /sd0/prime.c\n")
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+            ser.write(b"blkstats\n")
+            ser.flush()
+            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_after = re.search(r"calls=(\d+)", out_after)
+
+        if not m_before or not m_after:
+            if "Unbound symbol: blkstats" in out_before or "Unknown command" in out_before:
+                return (name, False,
+                        "board firmware predates the `blkstats` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run.")
+            return (name, False, f"no BlkStats report in console output:\n{out_before[:200]} / {out_after[:200]}")
+
+        before, after = int(m_before.group(1)), int(m_after.group(1))
+        detail = f"calls before={before} after={after}"
+        if after <= before:
+            return (name, False, f"call count did not grow -- reads are not reaching the task ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_uart_demux_shared_wire(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """p9share (A3b UART demux) standalone: arms the demux over the physical
     UART, drives one real SLIP-framed 9P transaction, then sends a
@@ -1124,7 +1177,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

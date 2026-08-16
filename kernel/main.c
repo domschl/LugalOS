@@ -34,6 +34,9 @@
 
 #if !defined(CONFIG_BOARD_RP2350)
 #include "drivers/virtio_console.h"
+#include "drivers/virtio_blk.h"
+#else
+#include "drivers/spisd.h"
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -226,6 +229,23 @@ void kernel_main(void) {
      * giving every READY task a turn, independent of a serial connection.
      * Must follow sched_init() for the same reason uart_task_start() does. */
     heartbeat_task_start();
+#endif
+
+    /* M4.5, plan/phase12_microkernel_migration.md, Part B: the SD/block
+     * storage driver as a task -- the lowest-risk conversion in the
+     * remaining driver list, since a read_blocks()/write_blocks() call was
+     * already exactly one message's worth of work, no batching redesign
+     * needed. Must follow sched_init(); every read before this point
+     * (vfs_server_init() above mounts the filesystem before a task table
+     * even exists) already used, and keeps using, direct hardware access --
+     * this only changes the path for whatever reads happen after it. Split
+     * by board the same way the driver source list itself is: spisd_rp2350.c
+     * (real SD hardware) only builds for RP2350, virtio_blk.c (QEMU) only
+     * for everything else. */
+#if defined(CONFIG_BOARD_RP2350)
+    spisd_task_start();
+#else
+    virtio_blk_task_start();
 #endif
 
     /* The 9P/filesystem server, now a scheduled task rather than something

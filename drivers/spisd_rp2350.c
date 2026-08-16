@@ -11,10 +11,13 @@
 
 #include "drivers/spisd.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
+#include "kernel/chan.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Some RP2350 board personas (e.g. the Pico-Clock-Green baseboard, phase11,
  * plan/phase11_pico_clock_green.md) wire GP10-13 to different hardware
@@ -220,18 +223,20 @@ static int spisd_init_hardware(void) {
     return 0;
 }
 
-static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: the actual SPI/SD
+ * hardware access, pulled out of the block_dev_t function pointers so both
+ * the "sdblk" task's serve loop below and the direct-access fallback (task
+ * not alive yet -- true for every read during boot, since vfs_server_init()
+ * mounts the filesystem before sched_init() creates a task table at all)
+ * can share one implementation, the same split uart_16550.c's
+ * uart_hw_putc_blocking() established for the same reason. Unlike uart,
+ * this needed no batching redesign: a read_blocks()/write_blocks() call
+ * was already exactly one message's worth of work (a bounded lba+count
+ * request), never one IPC round trip per byte -- the plan's own
+ * lowest-risk-first reasoning for putting this driver ahead of uart's
+ * remaining board-specific work. */
+static int spisd_hw_read_blocks(uint32_t lba, uint32_t count, void *buf) {
     if (!g_sd_initialized) return -1;
-    /* Unlike the other three block-device drivers (virtio_blk, flashdisk,
-     * ramdisk), this one sent whatever LBA it was given straight to the
-     * card over SPI with no bound check at all. On real hardware that's
-     * confined to the SD card's own address space (not a kernel
-     * memory-safety issue), but a filesystem-layer bug that computes a
-     * bad cluster number -- e.g. the fat_alloc_cluster() bug fixed
-     * alongside this, see B9 in
-     * plan/completed/2026-08-07_review_and_remediation.md -- could still silently
-     * read/write sectors outside the mounted FAT32 volume's real bounds. */
-    if (!buf || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
     uint8_t *dst = (uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
@@ -269,9 +274,8 @@ static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
     return 0;
 }
 
-static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
+static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) {
     if (!g_sd_initialized) return -1;
-    if (!buf || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
     const uint8_t *src = (const uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
@@ -311,6 +315,164 @@ static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
     return 0;
 }
 
+/* --- M4.5 Part B: the "sdblk" driver task ---
+ *
+ * Wire protocol, one opcode byte then a fixed 8-byte lba+count header:
+ *   'R', lba(4 BE), count(4 BE)          -> resp: status(1), data(count*512)
+ *   'W', lba(4 BE), count(4 BE), data... -> resp: status(1)
+ * status is 0 for success, 1 for failure -- matches read_blocks()/
+ * write_blocks()'s own 0/-1 contract, just not signed (the wire is bytes).
+ *
+ * BLK_MAX_COUNT bounds both buffers: every real caller in this tree
+ * (fs/fat32.c) only ever requests count=1 (checked directly: this
+ * codebase's own fat32_format() always uses sec_per_clus = 1), so 4 is
+ * headroom for a future multi-sector caller, not a measured need -- a
+ * request larger than this falls back to direct access below rather than
+ * being refused outright. */
+#define BLK_REQ_READ  ((uint8_t)'R')
+#define BLK_REQ_WRITE ((uint8_t)'W')
+#define BLK_MAX_COUNT 4u
+#define BLK_HDR_LEN   9u /* opcode + lba(4) + count(4) */
+#define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
+#define BLK_RESP_CAP  (1u + BLK_MAX_COUNT * 512u)
+
+static uint8_t         g_blk_req[BLK_REQ_CAP];
+static uint8_t         g_blk_resp[BLK_RESP_CAP];
+static chan_endpoint_t *g_blk_ep;
+static int              g_blk_task_pid = -1;
+
+/* M4.5 verify: counts chan_call()s actually served -- see
+ * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning
+ * (a nonzero, growing count is what distinguishes "the task is genuinely
+ * serving requests" from "every caller silently fell back to direct
+ * access the whole time"). */
+static uint32_t g_blk_calls;
+
+uint32_t blk_task_call_count(void) { return g_blk_calls; }
+
+static bool blk_task_alive(void) {
+    if (g_blk_task_pid < 0) return false;
+    int st = sched_task_state(g_blk_task_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+static uint32_t be32_load(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void be32_store(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+/* This task, and only this task, may call spisd_hw_read_blocks()/
+ * spisd_hw_write_blocks() while alive -- see uart_16550.c's uart_task_body()
+ * for the fuller reasoning (never call back into anything that could
+ * chan_call() this same endpoint; never take printk_lock() from here). */
+static void blk_task_body(void *arg) {
+    (void)arg;
+    while (!g_blk_ep) sched_yield();
+
+    for (;;) {
+        uint32_t req_len = chan_serve_wait(g_blk_ep);
+        if (req_len < BLK_HDR_LEN) { chan_serve_reply(g_blk_ep, 0); continue; }
+        g_blk_calls++;
+
+        uint8_t  op    = g_blk_req[0];
+        uint32_t lba   = be32_load(&g_blk_req[1]);
+        uint32_t count = be32_load(&g_blk_req[5]);
+
+        if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
+            int rc = spisd_hw_read_blocks(lba, count, &g_blk_resp[1]);
+            g_blk_resp[0] = (rc == 0) ? 0 : 1;
+            chan_serve_reply(g_blk_ep, (rc == 0) ? (1u + count * 512u) : 1u);
+        } else if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
+                  req_len >= BLK_HDR_LEN + count * 512u) {
+            int rc = spisd_hw_write_blocks(lba, count, &g_blk_req[BLK_HDR_LEN]);
+            g_blk_resp[0] = (rc == 0) ? 0 : 1;
+            chan_serve_reply(g_blk_ep, 1);
+        } else {
+            g_blk_resp[0] = 1;
+            chan_serve_reply(g_blk_ep, 1);
+        }
+    }
+}
+
+/* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
+ * spisd_read_blocks()/spisd_write_blocks() below fall back to direct
+ * hardware access whenever the task is not alive, same as every boot-time
+ * read before this ever runs. */
+int spisd_task_start(void) {
+    int pid = task_create_sized("sdblk", blk_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[SPI SD] Could not start the sdblk task; storage stays on direct hardware access.\n");
+        return -1;
+    }
+    if (chan_register_task("sdblk", pid, g_blk_req, sizeof(g_blk_req),
+                           g_blk_resp, sizeof(g_blk_resp)) != 0) {
+        printk("[SPI SD] Could not register the sdblk channel endpoint; falling back to direct hardware access.\n");
+        return -1;
+    }
+    g_blk_ep = chan_lookup("sdblk");
+    g_blk_task_pid = pid;
+    printk("[SPI SD] Driver running as task #%d, reachable via chan_call(\"sdblk\", ...)\n", pid);
+    return pid;
+}
+
+static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
+                               uint8_t *resp, uint32_t resp_max) {
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
+        if (n >= 0) return n;
+        sched_yield();
+    }
+    return -1;
+}
+
+static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
+    /* Unlike virtio_blk/flashdisk/ramdisk, this driver sends whatever LBA
+     * it's given straight to the card over SPI with no bound check of its
+     * own. On real hardware that's confined to the SD card's own address
+     * space (not a kernel memory-safety issue), but a filesystem-layer bug
+     * that computes a bad cluster number could still silently read/write
+     * sectors outside the mounted FAT32 volume's real bounds -- checked
+     * here, once, regardless of which path (task or direct) serves it. */
+    if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
+
+    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
+        uint8_t req[BLK_HDR_LEN];
+        req[0] = BLK_REQ_READ;
+        be32_store(&req[1], lba);
+        be32_store(&req[5], count);
+        uint8_t resp[BLK_RESP_CAP];
+        int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
+            memcpy(buf, &resp[1], count * 512u);
+            return 0;
+        }
+        /* IPC failed or the task answered with an error -- fall through to
+         * direct access rather than propagate a failure that might only be
+         * about the channel, not the card. */
+    }
+    return spisd_hw_read_blocks(lba, count, buf);
+}
+
+static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
+    if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
+
+    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
+        uint8_t req[BLK_HDR_LEN + BLK_MAX_COUNT * 512u];
+        req[0] = BLK_REQ_WRITE;
+        be32_store(&req[1], lba);
+        be32_store(&req[5], count);
+        memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
+        uint8_t resp[1];
+        int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+        if (n >= 1 && resp[0] == 0) return 0;
+    }
+    return spisd_hw_write_blocks(lba, count, buf);
+}
+
 static block_dev_t g_spisd_dev = {
     .name = "spisd0",
     .block_size = 512,
@@ -332,6 +494,14 @@ block_dev_t *spisd_get_device(void) {
 
 block_dev_t *spisd_get_device(void) {
     return NULL;
+}
+
+int spisd_task_start(void) {
+    return -1;
+}
+
+uint32_t blk_task_call_count(void) {
+    return 0;
 }
 
 #endif // CONFIG_ENABLE_SPISD
