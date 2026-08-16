@@ -20,9 +20,14 @@
 
 #include "drivers/st7735.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
+#include "kernel/chan.h"
+#include "kernel/printk.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
+#include <string.h>
 
 #define RESETS_BASE             0x40020000UL
 #define RESETS_RESET_DONE       (RESETS_BASE + 0x08)
@@ -249,12 +254,16 @@ static int st7735_init_hardware(void) {
     return 0;
 }
 
+/* Forward declaration: st7735_init() (boot-time, before the task exists) is
+ * the only caller of this outside the task body below. */
+static void st7735_hw_fill_screen(uint16_t color);
+
 void st7735_init(void) {
     st7735_init_hardware();
-    st7735_fill_screen(ST7735_BLACK);
+    st7735_hw_fill_screen(ST7735_BLACK);
 }
 
-void st7735_fill_screen(uint16_t color) {
+static void st7735_hw_fill_screen(uint16_t color) {
     st7735_set_window(0, 0, ST7735_WIDTH - 1, ST7735_HEIGHT - 1);
     uint8_t color_bytes[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
 
@@ -269,14 +278,14 @@ void st7735_fill_screen(uint16_t color) {
     }
 }
 
-void st7735_draw_pixel(int x, int y, uint16_t color) {
+static void st7735_hw_draw_pixel(int x, int y, uint16_t color) {
     if (x < 0 || x >= ST7735_WIDTH || y < 0 || y >= ST7735_HEIGHT) return;
     st7735_set_window((uint8_t)x, (uint8_t)y, (uint8_t)x, (uint8_t)y);
     uint8_t data[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
     st7735_write_data_buf(data, 2);
 }
 
-void st7735_draw_rect(int x, int y, int w, int h, uint16_t color) {
+static void st7735_hw_draw_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0 || x + w > ST7735_WIDTH || y < 0 || y + h > ST7735_HEIGHT) return;
     st7735_set_window((uint8_t)x, (uint8_t)y, (uint8_t)(x + w - 1), (uint8_t)(y + h - 1));
     uint8_t color_bytes[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
@@ -299,7 +308,7 @@ void st7735_draw_rect(int x, int y, int w, int h, uint16_t color) {
     }
 }
 
-void st7735_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap, uint16_t fg_color, uint16_t bg_color) {
+static void st7735_hw_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap, uint16_t fg_color, uint16_t bg_color) {
     if (x < 0 || x + w > ST7735_WIDTH || y < 0 || y + h > ST7735_HEIGHT) return;
     st7735_set_window((uint8_t)x, (uint8_t)y, (uint8_t)(x + w - 1), (uint8_t)(y + h - 1));
 
@@ -376,7 +385,7 @@ static const uint8_t font5x7[96][5] = {
     {0x08, 0x08, 0x2a, 0x1c, 0x08}, {0x00, 0x00, 0x00, 0x00, 0x00}
 };
 
-void st7735_draw_char(int x, int y, char c, uint16_t color, int size) {
+static void st7735_hw_draw_char(int x, int y, char c, uint16_t color, int size) {
     if (c < 32 || c > 127) return;
     int font_idx = c - 32;
 
@@ -385,9 +394,9 @@ void st7735_draw_char(int x, int y, char c, uint16_t color, int size) {
         for (int row = 0; row < 8; row++) {
             if (line & 1) {
                 if (size == 1) {
-                    st7735_draw_pixel(x + col, y + row, color);
+                    st7735_hw_draw_pixel(x + col, y + row, color);
                 } else {
-                    st7735_draw_rect(x + col * size, y + row * size, size, size, color);
+                    st7735_hw_draw_rect(x + col * size, y + row * size, size, size, color);
                 }
             }
             line >>= 1;
@@ -395,11 +404,263 @@ void st7735_draw_char(int x, int y, char c, uint16_t color, int size) {
     }
 }
 
-void st7735_draw_string(int x, int y, const char *str, uint16_t color, int size) {
+static void st7735_hw_draw_string(int x, int y, const char *str, uint16_t color, int size) {
     while (*str) {
-        st7735_draw_char(x, y, *str, color, size);
+        st7735_hw_draw_char(x, y, *str, color, size);
         x += 6 * size; /* 5 pixels width + 1 pixel padding */
         if (x > 120) break; /* wrap limit */
         str++;
     }
+}
+
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: the driver as a task.
+ * Unlike RTC/EEPROM's low-frequency wire, a full chess-board redraw makes
+ * ~64 of these calls back to back (one draw_bitmap_mono or draw_rect per
+ * square) -- still nowhere near uart's original per-character mistake (a
+ * "how many calls does one real operation cost" question, not "does this
+ * scale with bytes/pixels"): each call already carries one whole logical
+ * drawing operation, same granularity the direct-call API always had.
+ * draw_char()/draw_string()'s internal pixel-level fan-out (already present
+ * before this conversion, see st7735_hw_draw_char/string above) stays
+ * exactly that -- plain C calls on the task's own stack, never re-entering
+ * chan_call() on this same endpoint (which the busy-endpoint check would
+ * refuse anyway, see kernel/chan.h's own reentrancy note).
+ *
+ * Wire protocol, one opcode byte then a fixed-shape payload per op. x/y/w/h/
+ * size travel as plain int16_t (not the uint8_t the hardware register
+ * writes ultimately narrow to) so a negative or oversized value reaches the
+ * same bounds checks st7735_hw_draw_pixel()/rect() already had, unchanged,
+ * rather than wrapping earlier on the wire. Like drivers/i2c_rtc.c's wire,
+ * there is no real byte-order boundary to defend (kernel-internal IPC, not
+ * a real wire), so no explicit big-endian encoding either.
+ *
+ *   'F' fill_screen      req: [op] + color(2)
+ *   'P' draw_pixel       req: [op] + x(2) + y(2) + color(2)
+ *   'R' draw_rect        req: [op] + x(2) + y(2) + w(2) + h(2) + color(2)
+ *   'B' draw_bitmap_mono req: [op] + x(2) + y(2) + w(2) + h(2) + fg(2) + bg(2) + bitmap(h*2)
+ *   'C' draw_char        req: [op] + x(2) + y(2) + c(1) + color(2) + size(2)
+ *   'S' draw_string      req: [op] + x(2) + y(2) + color(2) + size(2) + str(len)
+ *
+ * Every reply is a 0-length ack -- these all return void today, so there is
+ * nothing to report beyond "the call reached the task", which chan_call()'s
+ * own >=0-vs--1 return already signals. ST7735_BITMAP_MAX_ROWS/
+ * ST7735_STR_MAX bound the two variable-length ops; every real caller in
+ * this tree (user/chess/src/chess_ui.c) only ever draws 16-row piece
+ * bitmaps and status strings well under 64 bytes, so these are headroom,
+ * not a measured ceiling -- a request over either bound falls back to
+ * direct access below rather than being refused outright, same shape as
+ * drivers/spisd_rp2350.c's BLK_MAX_COUNT. */
+#define ST7735_OP_FILL_SCREEN ((uint8_t)'F')
+#define ST7735_OP_DRAW_PIXEL  ((uint8_t)'P')
+#define ST7735_OP_DRAW_RECT   ((uint8_t)'R')
+#define ST7735_OP_DRAW_BITMAP ((uint8_t)'B')
+#define ST7735_OP_DRAW_CHAR   ((uint8_t)'C')
+#define ST7735_OP_DRAW_STRING ((uint8_t)'S')
+
+#define ST7735_BITMAP_MAX_ROWS 32u
+#define ST7735_STR_MAX         64u
+
+#define ST7735_REQ_CAP  (9u + (ST7735_BITMAP_MAX_ROWS * 2u > ST7735_STR_MAX ? \
+                               ST7735_BITMAP_MAX_ROWS * 2u : ST7735_STR_MAX))
+#define ST7735_RESP_CAP 4u
+
+static uint8_t         g_st7735_req[ST7735_REQ_CAP];
+static uint8_t         g_st7735_resp[ST7735_RESP_CAP];
+static chan_endpoint_t *g_st7735_ep;
+static int              g_st7735_task_pid = -1;
+
+/* M4.5 verify: counts chan_call()s actually served -- see
+ * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
+static uint32_t g_st7735_calls;
+
+uint32_t st7735_task_call_count(void) { return g_st7735_calls; }
+
+static bool st7735_task_alive(void) {
+    if (g_st7735_task_pid < 0) return false;
+    int st = sched_task_state(g_st7735_task_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+static void put_i16(uint8_t *p, int v) { uint16_t u = (uint16_t)(int16_t)v; p[0] = (uint8_t)(u >> 8); p[1] = (uint8_t)u; }
+static int get_i16(const uint8_t *p) { return (int)(int16_t)(((uint16_t)p[0] << 8) | p[1]); }
+static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static uint16_t get_u16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
+
+/* This task, and only this task, may call the st7735_hw_* functions in this
+ * file while alive -- see uart_16550.c's uart_task_body() for the fuller
+ * reasoning (never call back into anything that could chan_call() this same
+ * endpoint; never take printk_lock() from here). */
+static void st7735_task_body(void *arg) {
+    (void)arg;
+    while (!g_st7735_ep) sched_yield();
+
+    for (;;) {
+        uint32_t req_len = chan_serve_wait(g_st7735_ep);
+        if (req_len < 1) { chan_serve_reply(g_st7735_ep, 0); continue; }
+        g_st7735_calls++;
+
+        uint8_t op = g_st7735_req[0];
+        switch (op) {
+        case ST7735_OP_FILL_SCREEN:
+            if (req_len >= 3) st7735_hw_fill_screen(get_u16(&g_st7735_req[1]));
+            break;
+        case ST7735_OP_DRAW_PIXEL:
+            if (req_len >= 7) {
+                st7735_hw_draw_pixel(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
+                                     get_u16(&g_st7735_req[5]));
+            }
+            break;
+        case ST7735_OP_DRAW_RECT:
+            if (req_len >= 11) {
+                st7735_hw_draw_rect(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
+                                    get_i16(&g_st7735_req[5]), get_i16(&g_st7735_req[7]),
+                                    get_u16(&g_st7735_req[9]));
+            }
+            break;
+        case ST7735_OP_DRAW_BITMAP: {
+            int h = req_len >= 13 ? get_i16(&g_st7735_req[7]) : 0;
+            if (req_len >= 13 && h > 0 && (uint32_t)h <= ST7735_BITMAP_MAX_ROWS &&
+                req_len >= 13u + (uint32_t)h * 2u) {
+                uint16_t bitmap[ST7735_BITMAP_MAX_ROWS];
+                for (int r = 0; r < h; r++) bitmap[r] = get_u16(&g_st7735_req[13 + r * 2]);
+                st7735_hw_draw_bitmap_mono(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
+                                           get_i16(&g_st7735_req[5]), h, bitmap,
+                                           get_u16(&g_st7735_req[9]), get_u16(&g_st7735_req[11]));
+            }
+            break;
+        }
+        case ST7735_OP_DRAW_CHAR:
+            if (req_len >= 10) {
+                st7735_hw_draw_char(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
+                                    (char)g_st7735_req[5], get_u16(&g_st7735_req[6]),
+                                    get_i16(&g_st7735_req[8]));
+            }
+            break;
+        case ST7735_OP_DRAW_STRING:
+            if (req_len >= 9) {
+                char str[ST7735_STR_MAX + 1];
+                uint32_t len = req_len - 9;
+                if (len > ST7735_STR_MAX) len = ST7735_STR_MAX;
+                memcpy(str, &g_st7735_req[9], len);
+                str[len] = '\0';
+                st7735_hw_draw_string(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
+                                      str, get_u16(&g_st7735_req[5]), get_i16(&g_st7735_req[7]));
+            }
+            break;
+        default:
+            break;
+        }
+        chan_serve_reply(g_st7735_ep, 0);
+    }
+}
+
+/* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
+ * every function below falls back to direct hardware access whenever the
+ * task is not alive, same as every boot-time draw before this ever ran. */
+int st7735_task_start(void) {
+    int pid = task_create_sized("st7735", st7735_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[ST7735] Could not start the st7735 task; canvas stays on direct hardware access.\n");
+        return -1;
+    }
+    if (chan_register_task("st7735", pid, g_st7735_req, sizeof(g_st7735_req),
+                           g_st7735_resp, sizeof(g_st7735_resp)) != 0) {
+        printk("[ST7735] Could not register the st7735 channel endpoint; falling back to direct hardware access.\n");
+        return -1;
+    }
+    g_st7735_ep = chan_lookup("st7735");
+    g_st7735_task_pid = pid;
+    printk("[ST7735] Driver running as task #%d, reachable via chan_call(\"st7735\", ...)\n", pid);
+    return pid;
+}
+
+static int st7735_call_with_retry(const uint8_t *req, uint32_t req_len) {
+    uint8_t resp[ST7735_RESP_CAP];
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int n = chan_call(g_st7735_ep, req, req_len, resp, sizeof(resp));
+        if (n >= 0) return n;
+        sched_yield();
+    }
+    return -1;
+}
+
+void st7735_fill_screen(uint16_t color) {
+    if (st7735_task_alive()) {
+        uint8_t req[3];
+        req[0] = ST7735_OP_FILL_SCREEN;
+        put_u16(&req[1], color);
+        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+    }
+    st7735_hw_fill_screen(color);
+}
+
+void st7735_draw_pixel(int x, int y, uint16_t color) {
+    if (st7735_task_alive()) {
+        uint8_t req[7];
+        req[0] = ST7735_OP_DRAW_PIXEL;
+        put_i16(&req[1], x);
+        put_i16(&req[3], y);
+        put_u16(&req[5], color);
+        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+    }
+    st7735_hw_draw_pixel(x, y, color);
+}
+
+void st7735_draw_rect(int x, int y, int w, int h, uint16_t color) {
+    if (st7735_task_alive()) {
+        uint8_t req[11];
+        req[0] = ST7735_OP_DRAW_RECT;
+        put_i16(&req[1], x);
+        put_i16(&req[3], y);
+        put_i16(&req[5], w);
+        put_i16(&req[7], h);
+        put_u16(&req[9], color);
+        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+    }
+    st7735_hw_draw_rect(x, y, w, h, color);
+}
+
+void st7735_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap, uint16_t fg_color, uint16_t bg_color) {
+    if (h > 0 && (uint32_t)h <= ST7735_BITMAP_MAX_ROWS && st7735_task_alive()) {
+        uint8_t req[13 + ST7735_BITMAP_MAX_ROWS * 2];
+        req[0] = ST7735_OP_DRAW_BITMAP;
+        put_i16(&req[1], x);
+        put_i16(&req[3], y);
+        put_i16(&req[5], w);
+        put_i16(&req[7], h);
+        put_u16(&req[9], fg_color);
+        put_u16(&req[11], bg_color);
+        for (int r = 0; r < h; r++) put_u16(&req[13 + r * 2], bitmap[r]);
+        if (st7735_call_with_retry(req, 13u + (uint32_t)h * 2u) >= 0) return;
+    }
+    st7735_hw_draw_bitmap_mono(x, y, w, h, bitmap, fg_color, bg_color);
+}
+
+void st7735_draw_char(int x, int y, char c, uint16_t color, int size) {
+    if (st7735_task_alive()) {
+        uint8_t req[10];
+        req[0] = ST7735_OP_DRAW_CHAR;
+        put_i16(&req[1], x);
+        put_i16(&req[3], y);
+        req[5] = (uint8_t)c;
+        put_u16(&req[6], color);
+        put_i16(&req[8], size);
+        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+    }
+    st7735_hw_draw_char(x, y, c, color, size);
+}
+
+void st7735_draw_string(int x, int y, const char *str, uint16_t color, int size) {
+    size_t len = strlen(str);
+    if (len <= ST7735_STR_MAX && st7735_task_alive()) {
+        uint8_t req[9 + ST7735_STR_MAX];
+        req[0] = ST7735_OP_DRAW_STRING;
+        put_i16(&req[1], x);
+        put_i16(&req[3], y);
+        put_u16(&req[5], color);
+        put_i16(&req[7], size);
+        memcpy(&req[9], str, len);
+        if (st7735_call_with_retry(req, 9u + (uint32_t)len) >= 0) return;
+    }
+    st7735_hw_draw_string(x, y, str, color, size);
 }

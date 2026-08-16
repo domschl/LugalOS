@@ -18,26 +18,8 @@
  * mirroring st7735_init()/tm1638_init() (kernel/main.c). */
 void pico_clock_green_init(void);
 
-/* Render into the internal 8x24 buffer. Neither of these touches the
- * physical LEDs directly -- pico_clock_green_scan_step() is what shifts
- * the buffer out; call one of these first, then keep calling scan_step().
- * hour is 0-23, minute is 0-59 (24h only, out-of-range values are clamped
- * rather than producing garbage on the matrix). temp_c may be negative. */
-void pico_clock_green_show_time(unsigned hour, unsigned minute);
-void pico_clock_green_show_temperature_c(int temp_c);
-void pico_clock_green_clear(void);
-
-/* Advances the row scan by one row (0..7): shifts that row's column data
- * out to the two SM16106s (SDI/CLK), latches it (LE), addresses the row on
- * the SM5166P (A0-A2), and un-blanks (OE) for either the full row period
- * (bright ambient) or a short software-PWM pulse (dim ambient, sampled
- * from the LDR once per full 8-row frame). Call in a tight loop at roughly
- * 1kHz for a flicker-free ~125Hz refresh (matches the vendor firmware's
- * own cadence) -- see plan/phase11_pico_clock_green.md L2 and L4. */
-void pico_clock_green_scan_step(void);
-
-/* Raw 12-bit LDR reading (0-4095), the same single-shot conversion
- * scan_step() itself samples once per frame for auto-brightness. A
+/* Raw 12-bit LDR reading (0-4095), the same single-shot conversion the
+ * (task-internal) scan loop samples once per frame for auto-brightness. A
  * diagnostic primitive, not something the display loop needs -- exposed
  * so LDR polarity/threshold can be checked against real ambient light on
  * real hardware instead of assumed correct from the register-level port
@@ -47,11 +29,31 @@ uint16_t pico_clock_green_read_light(void);
 /* L4 (plan/phase11_pico_clock_green.md): the blocking appliance loop behind
  * the `(clock)` Lisp primitive. Alternates the display between time (most
  * of the time) and temperature (briefly, only when the DS3231 is actually
- * detected), driving pico_clock_green_scan_step() continuously. Returns on
- * Ctrl-C, same console_interrupt_requested()/_clear() convention chess_ui.c
- * already uses ([[standardized_interrupt_polling]]) -- not a new mechanism.
+ * detected), driving the ~1kHz row scan continuously. Returns on Ctrl-C,
+ * same console_interrupt_requested()/_clear() convention chess_ui.c already
+ * uses ([[standardized_interrupt_polling]]) -- not a new mechanism.
  * Allocates nothing on the heap, so there is nothing to free on return
- * ([[heap_stateless_user_programs]] is satisfied trivially, not by effort). */
+ * ([[heap_stateless_user_programs]] is satisfied trivially, not by effort).
+ *
+ * M4.5, plan/phase12_microkernel_migration.md, Part B: as a task, this
+ * whole loop runs as ONE chan_call() -- not one per row-scan step, which
+ * would put chan_call() on a ~1kHz hot path nothing else in this codebase
+ * comes close to. The caller (whatever evaluates `(clock)`) simply blocks
+ * for the call's duration, same as any other chan_call(), just a much
+ * longer one; the task-side loop still polls Ctrl-C every ~1ms internally,
+ * so responsiveness is unchanged. show_time()/show_temperature_c()/clear()/
+ * the per-row scan step used to be separate public entry points here; none
+ * of them had a caller outside this driver, so they are file-internal now
+ * rather than wire ops nothing would ever address individually. */
 void pico_clock_green_run(void);
+
+/* Must run after sched_init(); pico_clock_green_init() itself stays a
+ * direct-hardware call (it runs before a task table exists). Returns the
+ * task's pid, or -1. */
+int pico_clock_green_task_start(void);
+
+// M4.5 verify: how many chan_call()s the shared "clock" task has served
+// since boot -- see drivers/spisd_rp2350.c's g_blk_calls comment.
+uint32_t pico_clock_green_task_call_count(void);
 
 #endif /* DRIVERS_PICO_CLOCK_GREEN_H */

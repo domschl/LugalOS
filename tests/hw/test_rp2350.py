@@ -544,6 +544,102 @@ def test_i2c_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_st7735_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part B (plan/phase12_microkernel_migration.md): the ST7735 TFT
+    canvas (drivers/st7735_rp2350.c) runs as a task. Every public draw
+    function is its own wire op -- a full chess-board redraw makes ~64 of
+    these calls back to back, still nowhere near uart's original per-
+    character mistake, since each call already carries one whole logical
+    drawing operation (draw_char()/draw_string()'s internal pixel-level
+    fan-out stays plain C calls inside the task, never back over the wire).
+    Same shape as test_blk_task: the claim is "is the task actually serving
+    these", via st7735_task_call_count() (`st7735stats`)."""
+    name = "st7735 task: TFT canvas driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"st7735stats\n")
+            ser.flush()
+            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_before = re.search(r"calls=(\d+)", out_before)
+
+            ser.write(b'(canvas-fill 0)\n')
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+            ser.write(b"st7735stats\n")
+            ser.flush()
+            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_after = re.search(r"calls=(\d+)", out_after)
+
+        if not m_before or not m_after:
+            if "Unbound symbol: st7735stats" in out_before or "Unknown command" in out_before:
+                return (name, False,
+                        "board firmware predates the `st7735stats` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run.")
+            return (name, False, f"no St7735Stats report in console output:\n{out_before[:200]} / {out_after[:200]}")
+
+        before, after = int(m_before.group(1)), int(m_after.group(1))
+        detail = f"calls before={before} after={after}"
+        if after <= before:
+            return (name, False, f"call count did not grow -- canvas-fill is not reaching the task ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_tm1638_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part B (plan/phase12_microkernel_migration.md): the TM1638
+    7-segment/keypad/LED driver (drivers/tm1638_rp2350.c) runs as a task.
+    tm1638_get_key() is polled at a paced 20ms interval from
+    user/chess/src/chess_ui.c while waiting on a human -- one call already
+    carries one whole scan, no batching redesign needed. Same shape as
+    test_blk_task: the claim is "is the task actually serving these", via
+    tm1638_task_call_count() (`tm1638stats`)."""
+    name = "tm1638 task: 7-segment/keypad/LED driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"tm1638stats\n")
+            ser.flush()
+            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_before = re.search(r"calls=(\d+)", out_before)
+
+            ser.write(b'(tm-get-key)\n')
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+            ser.write(b"tm1638stats\n")
+            ser.flush()
+            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_after = re.search(r"calls=(\d+)", out_after)
+
+        if not m_before or not m_after:
+            if "Unbound symbol: tm1638stats" in out_before or "Unknown command" in out_before:
+                return (name, False,
+                        "board firmware predates the `tm1638stats` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run.")
+            return (name, False, f"no Tm1638Stats report in console output:\n{out_before[:200]} / {out_after[:200]}")
+
+        before, after = int(m_before.group(1)), int(m_after.group(1))
+        detail = f"calls before={before} after={after}"
+        if after <= before:
+            return (name, False, f"call count did not grow -- tm-get-key is not reaching the task ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_uart_demux_shared_wire(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """p9share (A3b UART demux) standalone: arms the demux over the physical
     UART, drives one real SLIP-framed 9P transaction, then sends a
@@ -1231,7 +1327,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_i2c_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

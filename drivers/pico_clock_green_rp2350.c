@@ -40,6 +40,9 @@
 #include "drivers/i2c_rtc.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
+#include "kernel/chan.h"
+#include "kernel/printk.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -230,7 +233,7 @@ static uint16_t adc_read_light(void) {
     return (uint16_t)(REG(ADC_RESULT) & 0xFFFu);
 }
 
-uint16_t pico_clock_green_read_light(void) {
+static uint16_t pico_clock_green_hw_read_light(void) {
     return adc_read_light();
 }
 
@@ -255,6 +258,10 @@ static void draw_glyph(unsigned col, const uint8_t glyph[7]) {
     }
 }
 
+/* Forward declaration: pico_clock_green_init() (boot-time, before the task
+ * exists) is the only caller of this outside the task body below. */
+static void pico_clock_green_clear(void);
+
 void pico_clock_green_init(void) {
     gpio_out_init(OE_PIN);
     gpio_out_init(SDI_PIN);
@@ -274,11 +281,11 @@ void pico_clock_green_init(void) {
     g_dim_on_us = 0;
 }
 
-void pico_clock_green_clear(void) {
+static void pico_clock_green_clear(void) {
     memset(g_disp_buf, 0, sizeof(g_disp_buf));
 }
 
-void pico_clock_green_show_time(unsigned hour, unsigned minute) {
+static void pico_clock_green_show_time(unsigned hour, unsigned minute) {
     if (hour > 23) hour = 23;
     if (minute > 59) minute = 59;
 
@@ -290,7 +297,7 @@ void pico_clock_green_show_time(unsigned hour, unsigned minute) {
     draw_glyph(COL_MIN_ONES, GLYPH_DIGIT[minute % 10]);
 }
 
-void pico_clock_green_show_temperature_c(int temp_c) {
+static void pico_clock_green_show_temperature_c(int temp_c) {
     bool negative = temp_c < 0;
     int mag = negative ? -temp_c : temp_c;
     if (mag > 99) mag = 99; /* display is two digits wide */
@@ -306,7 +313,7 @@ void pico_clock_green_show_temperature_c(int temp_c) {
     draw_glyph(COL_TEMP_DEGC, GLYPH_DEGC);
 }
 
-void pico_clock_green_scan_step(void) {
+static void pico_clock_green_scan_step(void) {
     oe_close();
 
     for (unsigned group = 0; group < 4; group++) {
@@ -352,7 +359,7 @@ void pico_clock_green_scan_step(void) {
  * roughly 1000 ever pays that cost, not every row. */
 #define CLOCK_READ_INTERVAL_MS 1000
 
-void pico_clock_green_run(void) {
+static void pico_clock_green_hw_run(void) {
     /* Matches chess_run()'s own precedent (chess_ui.c): a stale interrupt
      * latched by an unrelated earlier Ctrl-C must not abort this run
      * before it does anything. */
@@ -410,4 +417,126 @@ void pico_clock_green_run(void) {
      * (whatever it last shifted out) rather than actually going dark. */
     pico_clock_green_clear();
     oe_close();
+}
+
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: the driver as a task
+ * -- see drivers/include/drivers/pico_clock_green.h's comment on
+ * pico_clock_green_run() for why the whole appliance loop is one
+ * chan_call(), not one per ~1kHz row-scan step. Only two wire ops: nothing
+ * else here ever had a caller outside this file.
+ *
+ *   'R' run        req: [op]  resp: 0 bytes (replied once Ctrl-C breaks the loop)
+ *   'L' read_light req: [op]  resp: light(2, uint16_t) */
+#define CLOCK_OP_RUN        ((uint8_t)'R')
+#define CLOCK_OP_READ_LIGHT ((uint8_t)'L')
+
+#define CLOCK_REQ_CAP  1u
+#define CLOCK_RESP_CAP 2u
+
+static uint8_t         g_clock_req[CLOCK_REQ_CAP];
+static uint8_t         g_clock_resp[CLOCK_RESP_CAP];
+static chan_endpoint_t *g_clock_ep;
+static int              g_clock_task_pid = -1;
+
+/* M4.5 verify: counts chan_call()s actually served -- see
+ * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. Note
+ * this stays small even across a long clock session -- a `run` call is one
+ * served request no matter how many hours it blocks for, matching the
+ * whole point of not putting scan_step() on the wire. */
+static uint32_t g_clock_calls;
+
+uint32_t pico_clock_green_task_call_count(void) { return g_clock_calls; }
+
+static bool clock_task_alive(void) {
+    if (g_clock_task_pid < 0) return false;
+    int st = sched_task_state(g_clock_task_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+/* This task, and only this task, may call pico_clock_green_hw_run()/
+ * pico_clock_green_hw_read_light() while alive -- see uart_16550.c's
+ * uart_task_body() for the fuller reasoning (never call back into anything
+ * that could chan_call() this same endpoint; never take printk_lock() from
+ * here). pico_clock_green_hw_run() itself calls i2c_rtc_read_time()/
+ * read_temperature_c() (drivers/i2c_rtc.c's own public facades, not that
+ * driver's _hw_ internals) -- a call from this task into the "i2c" task,
+ * which is a valid strictly-top-down layering (this task never serves a
+ * call from "i2c", so there is no cycle for chan.c's wait-for graph to
+ * catch), not a violation of the same rule this file's own endpoint relies
+ * on. */
+static void clock_task_body(void *arg) {
+    (void)arg;
+    while (!g_clock_ep) sched_yield();
+
+    for (;;) {
+        uint32_t req_len = chan_serve_wait(g_clock_ep);
+        if (req_len < 1) { chan_serve_reply(g_clock_ep, 0); continue; }
+        g_clock_calls++;
+
+        uint8_t op = g_clock_req[0];
+        uint32_t resp_len = 0;
+        switch (op) {
+        case CLOCK_OP_RUN:
+            pico_clock_green_hw_run();
+            break;
+        case CLOCK_OP_READ_LIGHT: {
+            uint16_t light = pico_clock_green_hw_read_light();
+            g_clock_resp[0] = (uint8_t)(light >> 8);
+            g_clock_resp[1] = (uint8_t)light;
+            resp_len = 2;
+            break;
+        }
+        default:
+            break;
+        }
+        chan_serve_reply(g_clock_ep, resp_len);
+    }
+}
+
+/* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
+ * pico_clock_green_run()/read_light() fall back to direct hardware access
+ * whenever the task is not alive, same as every other M4.5 conversion. */
+int pico_clock_green_task_start(void) {
+    int pid = task_create_sized("clock", clock_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[Clock] Could not start the clock task; the appliance stays on direct hardware access.\n");
+        return -1;
+    }
+    if (chan_register_task("clock", pid, g_clock_req, sizeof(g_clock_req),
+                           g_clock_resp, sizeof(g_clock_resp)) != 0) {
+        printk("[Clock] Could not register the clock channel endpoint; falling back to direct hardware access.\n");
+        return -1;
+    }
+    g_clock_ep = chan_lookup("clock");
+    g_clock_task_pid = pid;
+    printk("[Clock] Driver running as task #%d, reachable via chan_call(\"clock\", ...)\n", pid);
+    return pid;
+}
+
+void pico_clock_green_run(void) {
+    if (clock_task_alive()) {
+        uint8_t req[1] = { CLOCK_OP_RUN };
+        uint8_t resp[CLOCK_RESP_CAP];
+        /* No retry-on-failure loop here, deliberately: a failed first
+         * attempt (endpoint busy, or the task not yet reachable) should
+         * fall back to direct access below rather than spin waiting on a
+         * call that -- once it does succeed -- blocks for the whole clock
+         * session anyway. */
+        if (chan_call(g_clock_ep, req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    }
+    pico_clock_green_hw_run();
+}
+
+uint16_t pico_clock_green_read_light(void) {
+    if (clock_task_alive()) {
+        uint8_t req[1] = { CLOCK_OP_READ_LIGHT };
+        uint8_t resp[CLOCK_RESP_CAP];
+        for (int attempt = 0; attempt < 8; attempt++) {
+            int n = chan_call(g_clock_ep, req, sizeof(req), resp, sizeof(resp));
+            if (n >= 2) return ((uint16_t)resp[0] << 8) | resp[1];
+            if (n >= 0) break; /* short reply -- treat as failure, fall through */
+            sched_yield();
+        }
+    }
+    return pico_clock_green_hw_read_light();
 }

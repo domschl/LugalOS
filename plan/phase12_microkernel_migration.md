@@ -5,8 +5,9 @@ reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
 (2026-08-16) — see M4's own section below for what the first attempt got
 wrong and why. M4.5 in progress (2026-08-16): Part A (scheduler stress
 test) concluded no scheduler change is needed; Part B has converted the
-heartbeat LED, SD/block storage, and RTC/EEPROM so far, with display/
-keypad and RP2350's own uart/console still open. Written to be
+heartbeat LED, SD/block storage, RTC/EEPROM, and display/keypad
+(ST7735/TM1638/Pico-Clock-Green) so far, with only RP2350's own
+uart/console and `usb_cdc.c` still open. Written to be
 detailed and executed one milestone at a time, not implemented from this
 document directly.
 
@@ -660,7 +661,7 @@ first):
 | Heartbeat LED (GP16, `drivers/uart_rp2350.c`) | Not in the original table — added because it is uniquely valuable as a *visual* scheduler-health check, not for isolation or IPC-volume reasons like the rest of this list. No `chan_call()` endpoint at all: nothing calls it, it is a self-scheduled periodic task rather than a request server. Done first, out of dependency-weight order, precisely because it is the lowest-risk possible conversion (no protocol, no other task's correctness depends on it) and immediately doubles as a live confirmation of M4.5 Part A's conclusion on real hardware, continuously, without a serial connection. |
 | SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) — **done, 2026-08-16** | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
 | RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) — **done, 2026-08-16** | Low frequency, small fixed-size transfers, no console-speed hazard. Converted as one shared task, not two, since both devices sit on the same physical I2C bus. |
-| Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) | Same low-risk shape as RTC/EEPROM. |
+| Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) — **done, 2026-08-16** | Turned out *not* to be the same low-risk shape as RTC/EEPROM once read closely -- see its own completion notes below for the two real batching-design questions this raised (st7735's internal pixel-level fan-out, pico_clock_green's ~1kHz scan loop). |
 | RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
 | `drivers/usb_cdc.c` | By far the largest and most structurally different of this list (989 lines, dual role as interactive console *and* 9P link) — scope this one separately, once the simpler conversions above have re-validated the template against real evidence rather than assumption. |
 
@@ -908,6 +909,106 @@ rv64 and rv32. All four board personas (`rv64-mmu`, `rv32-nommu`,
 persona) 18/18 (one new assertion) across 3 consecutive clean runs,
 including direct confirmation that `eeprom-write` reaches the shared task
 on real silicon.
+
+#### M4.5 Part B, display/keypad completion notes (2026-08-16)
+
+Converted all three remaining chess/clock-persona drivers -- ST7735 TFT
+canvas (`drivers/st7735_rp2350.c`), TM1638 7-segment/keypad/LEDs
+(`drivers/tm1638_rp2350.c`), and the Pico-Clock-Green LED matrix
+(`drivers/pico_clock_green_rp2350.c`) -- to task-owned `chan_call()`
+endpoints ("st7735", "tm1638", "clock"). Unlike RTC/EEPROM, this table
+entry's "same low-risk shape" note did not survive reading the actual code:
+two real batching-design questions turned up, both resolved by extending
+the template rather than by adding new machinery.
+
+**ST7735.** `st7735_draw_char()`/`draw_string()` already fan out internally
+into many `draw_pixel()`/`draw_rect()` calls (a full glyph can be dozens of
+pixel writes, a status string dozens more per character) -- exactly the
+per-primitive shape that made uart's first M4 attempt a mistake, if naively
+put on the wire one primitive at a time. The fix is the same one every
+other M4.5 conversion already uses without naming it: only *public* entry
+points became wire ops (`fill_screen`, `draw_pixel`, `draw_rect`,
+`draw_bitmap_mono`, `draw_char`, `draw_string`), and the internal fan-out
+(`st7735_hw_draw_string` -> `st7735_hw_draw_char` -> `st7735_hw_draw_pixel`/
+`draw_rect`) stays plain C calls on the task's own stack, never re-entering
+`chan_call()` on the same endpoint (which the busy-endpoint check would
+refuse anyway). A full 64-square chess-board redraw is therefore ~64
+`chan_call()`s, not thousands -- confirmed comparable in kind to
+blk's "double-digit calls per `cat`," not a regression toward uart's
+original mistake. Measured before converting (SPI0's prescaler is 6 against
+a 150MHz clock, ~25MHz SPI): a 16x16 bitmap is ~150-200us of real SPI time,
+so IPC overhead across a full redraw is on the order of 1-2ms against an
+already ~10-15ms operation -- not perceptible, confirmed directly by
+running `chess` on real hardware after flashing (board owner's own words:
+"Chess & 7-segment + keypad are all working fine!").
+
+**TM1638.** `tm1638_get_key()` is polled from
+`user/chess/src/chess_ui.c`'s `tm_wait_key()` at a paced 20ms interval
+(~50/sec, only while actively waiting on a human, never a tight loop) --
+already the right granularity, no redesign needed, same shape as SD/block.
+
+**Pico-Clock-Green.** The real hazard: `pico_clock_green_run()` drives the
+row-scan step at ~1kHz, continuously, for as long as the appliance runs
+(minutes to hours) -- an order of magnitude past anything else converted
+under this milestone, and putting one `chan_call()` per scan step on the
+wire would have dwarfed every other driver's IPC volume combined. Resolved
+by converting the *whole loop* into one long-blocking `chan_call()`: the
+task's own body runs `pico_clock_green_hw_run()` (the renamed, unchanged
+original loop, including its Ctrl-C poll) to completion and only then
+replies, so the calling task simply blocks for the session's duration --
+mechanically identical to any other `chan_call()`, just a much longer one.
+`show_time()`/`show_temperature_c()`/`clear()`/the per-row scan step had no
+caller anywhere outside this file, so they became `static` rather than wire
+ops nothing would ever address individually; only `run` and `read_light`
+needed endpoints. `pico_clock_green_hw_run()` itself calls
+`i2c_rtc_read_time()`/`read_temperature_c()` -- the *public* facades from
+the already-converted "i2c" task (M4.5's own RTC/EEPROM section above), not
+that driver's `_hw_` internals -- meaning the "clock" task becomes a
+*caller* of the "i2c" task. Checked against `kernel/chan.h`'s no-cycles
+rule before writing any code: "clock" never serves a call from "i2c", so
+this is a valid strictly-top-down chain (shell/lisp task -> "clock" ->
+"i2c"), not a violation of the same rule this file's own endpoint relies on.
+
+All three drivers share the established structural move: each original
+function split into an internal `_hw_`-suffixed primitive (bodies
+unchanged) and a public facade (original name preserved) routing through
+`chan_call()` when the task is alive, falling back to direct access
+otherwise -- so every caller (`user/chess/src/chess_ui.c`,
+`user/lisp/lisp.c`'s `canvas-*`/`tm-*`/`clock`/`clock-light` primitives)
+needed zero changes. Init calls (`st7735_init()`, `tm1638_init()`,
+`pico_clock_green_init()`) stay direct-hardware, unconverted, for the same
+boot-ordering reason as every prior conversion: `kernel/main.c` calls them
+before `sched_init()` exists.
+
+Verified: all four board personas build clean (`rv64-mmu`/`rv32-nommu`
+unaffected -- these three drivers are RP2350-only; `rp2350-chess` links
+both st7735+tm1638; `rp2350-clock` links pico_clock_green with the other
+two off, confirming the CMake persona split still holds). Full QEMU suite
+209/209 across 3 consecutive clean runs on both rv64 and rv32 (unaffected).
+
+Real RP2350 hardware, chess persona (st7735 + tm1638): `st7735stats`/
+`tm1638stats` IPC-volume assertions added to `tests/hw/test_rp2350.py`,
+full suite 20/20 across 3 consecutive clean runs, plus the board owner
+directly ran `chess` after flashing and confirmed both the display and
+keypad work correctly -- the actual feature, not just IPC reachability.
+
+Real RP2350 hardware, Pico-Clock-Green persona (`pico_clock_green`): no
+automated suite (`tests/hw/test_rp2350.py` targets the chess persona's
+command set), so verified manually over a direct serial session instead.
+The appliance persona auto-starts `(clock)` at boot, which -- correctly,
+unchanged from before this conversion -- leaves the console unresponsive
+to typed input until Ctrl-C, since the "clock" task's one long served call
+is what's occupying the display loop. Sent Ctrl-C, got the shell prompt
+back, then confirmed directly: `clockstats` read `calls=1` for the entire
+auto-started session (auto-start to Ctrl-C, several seconds of real
+alternating time/temperature display) -- exactly the "one call for the
+whole loop, not one per row-scan step" the design set out to achieve;
+`i2cstats` read `calls=20`, confirming the "clock" -> "i2c" cross-task call
+chain genuinely executed (about once/sec, matching `CLOCK_READ_INTERVAL_MS`)
+rather than silently falling back; `(clock-light)` returned a real 12-bit
+ADC reading (183) and grew `clockstats` to `calls=2`, confirming the second
+wire op independently. The board owner confirmed the actual rendering
+directly: "Display of time & temperature work fine!"
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 

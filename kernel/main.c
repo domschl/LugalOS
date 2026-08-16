@@ -256,6 +256,23 @@ void kernel_main(void) {
      * path if this fails or hasn't run yet. */
     i2c_task_start();
 
+    /* M4.5, plan/phase12_microkernel_migration.md, Part B: display/keypad as
+     * tasks. Independently gated the same way their init calls above are
+     * (H3) -- a board persona might have the keypad without the display, or
+     * vice versa; the Pico-Clock-Green persona has neither of these and its
+     * own "clock" task instead. Must follow sched_init(); every function
+     * these drivers expose keeps using direct hardware access if this fails
+     * or hasn't run yet. */
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
+    st7735_task_start();
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    tm1638_task_start();
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    pico_clock_green_task_start();
+#endif
+
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
     p9_server_task_start();

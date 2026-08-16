@@ -18,6 +18,15 @@
 #else
 #include "drivers/virtio_blk.h"
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
+#include "drivers/st7735.h"
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+#include "drivers/tm1638.h"
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+#include "drivers/pico_clock_green.h"
+#endif
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "arch/elf.h"
@@ -1011,6 +1020,23 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * blkstats above. */
         printk("[I2cStats] calls=%u\n", i2c_task_call_count());
         return;
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
+    } else if (strcmp(cmd_line, "st7735stats") == 0) {
+        // M4.5 verify, plan/phase12_microkernel_migration.md, Part B: same
+        // reasoning as blkstats/i2cstats above.
+        printk("[St7735Stats] calls=%u\n", st7735_task_call_count());
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    } else if (strcmp(cmd_line, "tm1638stats") == 0) {
+        printk("[Tm1638Stats] calls=%u\n", tm1638_task_call_count());
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    } else if (strcmp(cmd_line, "clockstats") == 0) {
+        printk("[ClockStats] calls=%u\n", pico_clock_green_task_call_count());
+        return;
+#endif
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);
         return;
