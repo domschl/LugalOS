@@ -231,15 +231,46 @@ add_custom_command(
 
 # Build-id header, regenerated (write-if-changed) before every build so it
 # tracks commits without a re-configure. See cmake/gen_build_id.cmake.
+#
+# M4.5, plan/phase12_microkernel_migration.md: the OBJECT_DEPENDS fix below
+# (fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_BUILD_ID_HEADER})
+# turned out not to fully close the staleness gap it was written to close --
+# found recurring again, months later, on a build that had nothing to do
+# with vfs_server.c itself. Root cause: OBJECT_DEPENDS only tells ninja "this
+# object depends on this *file*"; it does not tell ninja *what produces that
+# file*, since add_custom_target() (used below) has no OUTPUT of its own for
+# CMake to wire in. Ninja was therefore free to check vfs_server.c.o against
+# whatever mtime lugalos_build_id.h already happened to have -- possibly
+# *before* this run's regeneration had touched it -- rather than being forced
+# to run the regeneration first. `touch fs/vfs_server.c` before rebuilding
+# masked the symptom every time it was tried (a real recompile always picks
+# up the current header content off disk regardless of ninja's dependency
+# graph), which is exactly why it looked fixed each time.
+#
+# Fixed properly this time with a real producer/consumer edge: an
+# add_custom_command(OUTPUT ...) actually tells CMake "this command produces
+# this file," which is what makes OBJECT_DEPENDS below wire in a real
+# ordering edge, not just an mtime comparison against an orphan path. The
+# SYMBOLIC _always_rebuild marker is the standard CMake+Ninja idiom for
+# "always considered out of date" (Ninja otherwise assumes any OUTPUT that
+# already exists on disk, with no changed input, needs no rework) -- an empty
+# command with no real output file, marked SYMBOLIC so its own "existence"
+# is never mtime-checked, only ever treated as permanently dirty.
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
+    COMMAND ${CMAKE_COMMAND} -E true)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild PROPERTIES SYMBOLIC 1)
+
 set(LUGALOS_BUILD_ID_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_build_id.h)
 execute_process(COMMAND ${CMAKE_COMMAND}
     -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${LUGALOS_BUILD_ID_HEADER}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake)
-add_custom_target(lugalos_build_id ALL
+add_custom_command(OUTPUT ${LUGALOS_BUILD_ID_HEADER}
     COMMAND ${CMAKE_COMMAND}
         -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${LUGALOS_BUILD_ID_HEADER}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_build_id.cmake
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
     COMMENT "Refreshing build id")
+add_custom_target(lugalos_build_id ALL DEPENDS ${LUGALOS_BUILD_ID_HEADER})
 
 # fs/vfs_server.c embeds LUGALOS_BUILD_ID (served as /proc/buildid) -- without
 # this, ninja has no ordering edge between "regenerate the header" and

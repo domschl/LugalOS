@@ -3,6 +3,7 @@
 #include "arch/rp2350_bootrom.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
 #include "drivers/uart.h"
 #include "fs/9p.h"
 #include <string.h>
@@ -972,6 +973,69 @@ void usb_cdc_debug_dump(void) {
 #endif
 }
 
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: unlike every other
+ * driver in this milestone, usb_cdc_task() is not exclusive-hardware-access
+ * that needed a chan_call() endpoint to isolate -- EP2 (console) is already
+ * exclusively touched by the "uart" task (drivers/uart_rp2350.c) and EP4
+ * (net) already exclusively by "p9srv" (fs/p9_link.c); a third indirection
+ * layer in front of either would add IPC overhead without adding isolation
+ * neither already has. What this driver actually needed was what
+ * arch/riscv/common/elf.c's own comment on its former usb_cdc_task() call
+ * already named directly: "USB is serviced by polling from whatever
+ * happens to be busy-waiting" -- kernel/time.c's time_delay_us(),
+ * kernel/line_editor.c, this same elf.c loop, user/lisp/lisp.c's REPL, and
+ * drivers/uart_rp2350.c's own task all had to remember to pump it
+ * opportunistically, and a caller that didn't (any future one, or an
+ * existing one taking a code path that skips its usual pump site) silently
+ * stops USB from draining -- exactly the "spinning program's own output
+ * never appeared at all" bug elf.c's comment already documented as having
+ * been mistaken for a preemption failure once.
+ *
+ * A dedicated background task, same shape as heartbeat_task_start()
+ * (drivers/uart_rp2350.c) -- no chan_call() endpoint, nothing calls it as a
+ * request/response operation, it simply guarantees usb_cdc_task() a
+ * scheduled turn on its own, regardless of what any other task is doing.
+ * TASK_PRIO_NORMAL: matches heartbeat's own reasoning (an ordinary
+ * scheduling citizen, not an urgent hardware handoff) and next_runnable()'s
+ * round-robin already shares NORMAL-tier turns fairly with whatever else is
+ * READY, closing elf.c's exact "the only other thing running" scenario
+ * structurally rather than by remembering to poll from inside it. Every
+ * caller that used to pump directly (see the six sites listed above) has
+ * either been removed (post-boot code, guaranteed this task is already
+ * alive by the time it runs) or made conditional on usb_cdc_task_alive()
+ * (kernel/time.c's time_delay_us(), which also fires during early boot
+ * before this task -- or any task -- exists). */
+static int g_usb_cdc_task_pid = -1;
+
+bool usb_cdc_task_alive(void) {
+    if (g_usb_cdc_task_pid < 0) return false;
+    int st = sched_task_state(g_usb_cdc_task_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+static void usb_cdc_task_body(void *arg) {
+    (void)arg;
+    for (;;) {
+        usb_cdc_task();
+        sched_yield();
+    }
+}
+
+/* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
+ * usb_cdc_task_alive() reports so, and kernel/time.c's time_delay_us()
+ * falls back to pumping directly, same as before this task existed. */
+int usb_cdc_task_start(void) {
+    int pid = task_create_sized("usbcdc", usb_cdc_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[USB] Could not start the usbcdc background task; servicing stays opportunistic.\n");
+        return -1;
+    }
+    task_set_priority(pid, TASK_PRIO_NORMAL);
+    g_usb_cdc_task_pid = pid;
+    printk("[USB] Background servicing task #%d running.\n", pid);
+    return pid;
+}
+
 #else
 
 void usb_cdc_task(void) {}
@@ -1019,5 +1083,8 @@ p9_link_t *usb_cdc_get_net_link(void) {
 void usb_cdc_debug_dump(void) {
     printk_debug("[USB Debug] Host Pass-Through Mode (No hardware registers).\n");
 }
+
+int usb_cdc_task_start(void) { return -1; }
+bool usb_cdc_task_alive(void) { return false; }
 
 #endif

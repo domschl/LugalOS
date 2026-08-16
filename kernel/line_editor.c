@@ -2,7 +2,6 @@
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "drivers/uart.h"
-#include "drivers/usb_cdc.h"
 #include "fs/vfs.h"
 #include <string.h>
 
@@ -201,7 +200,6 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
     int len = 0;
     out_buf[0] = '\0';
     while (1) {
-        usb_cdc_task();
         char c = uart_getc();
         if (c == '\r' || c == '\n') {
             out_buf[len] = '\0';
@@ -267,7 +265,6 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
     redraw_box(active_filename, out_buf, len, pos, status_msg);
 
     while (1) {
-        usb_cdc_task();
         char c = uart_getc();
 
         int num_lines = 1;
@@ -518,7 +515,6 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
     redraw_line(prompt, out_buf, len, pos);
 
     while (1) {
-        usb_cdc_task();
         char c = uart_getc();
 
         // Control character handling

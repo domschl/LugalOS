@@ -11,6 +11,19 @@ void usb_cdc_task(void);
 void usb_cdc_debug_dump(void);
 bool usb_cdc_is_connected(void);
 
+// M4.5, plan/phase12_microkernel_migration.md, Part B: starts a dedicated
+// background task that services usb_cdc_task() on its own continuous
+// schedule, replacing the "whatever happens to be busy-waiting" opportunistic
+// polling this driver used to depend on -- no chan_call() endpoint, same
+// shape as heartbeat_task_start() (drivers/uart_rp2350.c): nothing calls
+// this as a request/response operation. Must run after sched_init(). Not
+// fatal if it fails: usb_cdc_task_alive() reports so, and the one caller
+// that still needs to know (kernel/time.c's time_delay_us(), which also
+// runs during early boot before this task exists) falls back to pumping
+// usb_cdc_task() directly.
+int usb_cdc_task_start(void);
+bool usb_cdc_task_alive(void);
+
 // Console CDC Port (/dev/ttyACM0)
 void usb_cdc_putc(char c);
 char usb_cdc_getc(void);

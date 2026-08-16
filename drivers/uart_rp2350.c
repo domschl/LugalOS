@@ -410,7 +410,12 @@ static void uart_task_body(void *arg) {
                  * this open-ended wait ever holding it. */
                 task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
                 for (;;) {
-                    usb_cdc_task();
+                    /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c,
+                     * started before this one in kernel/main.c) now services
+                     * this on its own schedule; only pump it directly here
+                     * as a fallback for the case that task failed to
+                     * start. */
+                    if (!usb_cdc_task_alive()) usb_cdc_task();
                     if (hw_uart_has_char()) { g_uart_resp[0] = hw_uart_getc(); break; }
                     if (usb_cdc_has_char()) { g_uart_resp[0] = usb_cdc_getc(); break; }
                     sched_yield();
@@ -544,7 +549,10 @@ void uart_debug_putc(char c) {
 // usually precedes -- same reasoning as drivers/uart_16550.c's equivalent.
 bool uart_has_char(void) {
     uart_flush();
-    usb_cdc_task();
+    /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c) now services
+     * this on its own schedule; only pump it directly here as a fallback
+     * for the (untested-in-practice) case that task failed to start. */
+    if (!usb_cdc_task_alive()) usb_cdc_task();
     if (uart_demux_is_enabled()) {
         if (uart_demux_console_has_char()) return true;
         return usb_cdc_has_char();
@@ -562,7 +570,7 @@ char uart_getc(void) {
     uart_flush();
     if (uart_demux_is_enabled()) {
         while (!uart_demux_console_has_char()) {
-            usb_cdc_task();
+            if (!usb_cdc_task_alive()) usb_cdc_task();
             sched_yield();
         }
         return uart_demux_console_getc();
@@ -573,7 +581,7 @@ char uart_getc(void) {
         if (uart_call_with_retry(req, 1, resp, 1) == 1) return (char)resp[0];
     }
     for (;;) {
-        usb_cdc_task();
+        if (!usb_cdc_task_alive()) usb_cdc_task();
         if (hw_uart_has_char()) return (char)hw_uart_getc();
         if (usb_cdc_has_char()) return usb_cdc_getc();
         sched_yield();

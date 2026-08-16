@@ -3,7 +3,6 @@
 #include "arch/vmm.h"
 #include "fs/vfs.h"
 #include "kernel/console.h"
-#include "drivers/usb_cdc.h"
 #include "kernel/mem_domain.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
@@ -801,18 +800,17 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
     const uint32_t max_yields = 2000000u;
     uint32_t spins = 0;
     while (sched_task_state(pid) != TASK_DEAD && spins < max_yields) {
-        /* Keep the console alive while the program runs.
-         *
-         * On RP2350 the console is USB, and USB is serviced by polling from
-         * whatever happens to be busy-waiting -- the line editor, the UART
-         * driver, time_delay_us(). A user program that computes for a while
-         * enters the kernel only on its own syscalls and on timer ticks, and
-         * this loop is the only other thing running, so without the poll here
-         * nothing drains the CDC TX ring for the duration. The symptom is
-         * specific and was initially mistaken for a preemption failure: a
-         * spinning program's own output never appeared at all, while a
-         * short-lived one's did. A no-op on the QEMU targets. */
-        usb_cdc_task();
+        /* Used to also pump usb_cdc_task() here directly: on RP2350 a user
+         * program that computes for a while enters the kernel only on its
+         * own syscalls and on timer ticks, and this loop was the only other
+         * thing running, so nothing else drained the CDC TX ring for the
+         * duration -- a spinning program's own output never appeared at
+         * all, initially mistaken for a preemption failure rather than a
+         * missing poll. M4.5 (plan/phase12_microkernel_migration.md, Part
+         * B) closed this structurally instead: drivers/usb_cdc.c now runs
+         * its own background task guaranteed a scheduled turn regardless of
+         * what this loop does, so sched_yield() alone is enough for it (and
+         * everything else) to get serviced. */
         sched_yield();
         spins++;
     }

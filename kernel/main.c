@@ -213,6 +213,17 @@ void kernel_main(void) {
         irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
     }
 
+#if defined(CONFIG_BOARD_RP2350)
+    /* M4.5, plan/phase12_microkernel_migration.md, Part B: usb_cdc.c's own
+     * background servicing task, started before uart_task_start() below --
+     * RP2350's console mirrors every write to USB CDC, so the task that
+     * drains it should already exist by the time that starts happening,
+     * even though nothing strictly deadlocks if the order were reversed
+     * (both are independent, already-running tasks by the time any real
+     * interactive use occurs). Must follow sched_init(). */
+    usb_cdc_task_start();
+#endif
+
     /* M4, plan/phase12_microkernel_migration.md: the uart driver as a task,
      * the first one converted from "library called synchronously by
      * whoever needs them" to "long-lived task reachable via chan_call()".
