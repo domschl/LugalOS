@@ -39,9 +39,17 @@ def bootsel_volumes() -> list[str]:
 
     The label differs across silicon and bootrom versions (RP2350, RPI-RP2,
     RP2-…), so this matches loosely rather than pinning one name and silently
-    failing on a board that presents a different one."""
+    failing on a board that presents a different one.
+
+    Three auto-mount conventions covered: macOS (/Volumes/<label>),
+    /media/<user>/<label> (some Linux distros' older automounters), and
+    /run/media/<user>/<label> (udisks2's default on most current
+    distros -- Arch among them). Found missing the third the first time
+    this ran against a non-macOS host with the board already mounted: the
+    mount was real and correct, this glob just never looked there. """
     out = []
-    for v in glob.glob("/Volumes/*") + glob.glob("/media/*/*"):
+    for v in (glob.glob("/Volumes/*") + glob.glob("/media/*/*")
+              + glob.glob("/run/media/*/*")):
         base = Path(v).name.upper()
         if base.startswith("RP") or base.startswith("RPI-") or "PICO" in base:
             out.append(v)
