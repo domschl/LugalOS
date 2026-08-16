@@ -1,7 +1,10 @@
 #include "drivers/i2c_rtc.h"
+#include "drivers/at24c32.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
+#include "kernel/chan.h"
 #include "drivers/uart.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -235,13 +238,22 @@ static inline uint8_t dec2bcd(uint8_t val) {
     return ((val / 10) << 4) | (val % 10);
 }
 
+/* Forward declarations: direct-hardware access, defined further down this
+ * file. Only i2c_rtc_init() (once, at boot, before the task exists) and
+ * i2c_task_body() (below) may call these -- every other caller goes through
+ * the public i2c_rtc_read_time()/write_time()/read_temperature_c() facades,
+ * which route via the shared "i2c" task when it is alive. */
+static bool i2c_rtc_hw_read_time(rtc_time_t *tm);
+static bool i2c_rtc_hw_write_time(const rtc_time_t *tm);
+static bool i2c_rtc_hw_read_temperature_c(int *temp_c);
+
 void i2c_rtc_init(void) {
     i2c_hw_init();
 
     rtc_time_t tm;
     g_rtc_detected = false;
 
-    if (i2c_rtc_read_time(&tm)) {
+    if (i2c_rtc_hw_read_time(&tm)) {
         if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             g_rtc_detected = true;
             time_set_rtc(&tm);
@@ -264,7 +276,7 @@ bool i2c_rtc_is_detected(void) {
     return g_rtc_detected;
 }
 
-bool i2c_rtc_read_time(rtc_time_t *tm) {
+static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
     if (!tm) return false;
     uint8_t buf[7];
     if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x00, buf, 7)) {
@@ -282,7 +294,7 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
     return true;
 }
 
-bool i2c_rtc_write_time(const rtc_time_t *tm) {
+static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
     if (!tm) return false;
     uint8_t reg_buf[8];
     reg_buf[0] = 0x00; // Register index
@@ -300,7 +312,7 @@ bool i2c_rtc_write_time(const rtc_time_t *tm) {
     return false;
 }
 
-bool i2c_rtc_read_temperature_c(int *temp_c) {
+static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {
     if (!temp_c || !g_rtc_detected) return false;
 
     uint8_t buf[2];
@@ -349,4 +361,208 @@ void i2c_scan_bus(void) {
         cprintf("\n");
     }
     cprintf("Found %d I2C device(s).\n\n", found_count);
+}
+
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC and EEPROM share
+ * one physical I2C bus, so this one "i2c" task serves both -- see i2c_rtc.h
+ * for the fuller reasoning. Wire protocol, one opcode byte then a
+ * fixed-shape payload per op; unlike drivers/spisd_rp2350.c's BLK_REQ_*
+ * (a real wire onto an SD card), addr/len/temperature here are plain native
+ * types, copied as-is between endpoint-owned buffers in the same address
+ * space -- there is no external byte order to defend against.
+ *
+ *   'T' (read time)        req: [op]                    resp: [ok(1)] + rtc_time_t
+ *   'S' (write time)       req: [op] + rtc_time_t        resp: [ok(1)]
+ *   'C' (read temperature) req: [op]                     resp: [ok(1)] + int(4)
+ *   'R' (EEPROM read)      req: [op] + addr(2) + len(2)  resp: [result:int32(4)] + data
+ *   'X' (EEPROM write)     req: [op] + addr(2) + len(2) + data  resp: [result:int32(4)]
+ *
+ * The EEPROM ops' buffers are sized to the whole 4KB AT24C32 device rather
+ * than to a measured caller (contrast BLK_MAX_COUNT): unlike an SD card,
+ * this device's entire address space is small and fixed, so "cover all of
+ * it" is a bounded, known cost (~8KB of static buffers), not open-ended
+ * headroom for a hypothetical future caller. */
+#define I2C_OP_RTC_READ_TIME  ((uint8_t)'T')
+#define I2C_OP_RTC_WRITE_TIME ((uint8_t)'S')
+#define I2C_OP_RTC_READ_TEMP  ((uint8_t)'C')
+#define I2C_OP_EE_READ        ((uint8_t)'R')
+#define I2C_OP_EE_WRITE       ((uint8_t)'X')
+
+#define I2C_REQ_CAP  (5u + AT24C32_SIZE_BYTES)
+#define I2C_RESP_CAP (4u + AT24C32_SIZE_BYTES)
+
+static uint8_t         g_i2c_req[I2C_REQ_CAP];
+static uint8_t         g_i2c_resp[I2C_RESP_CAP];
+static chan_endpoint_t *g_i2c_ep;
+static int              g_i2c_task_pid = -1;
+
+/* M4.5 verify: counts chan_call()s actually served -- see
+ * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
+static uint32_t g_i2c_calls;
+
+uint32_t i2c_task_call_count(void) { return g_i2c_calls; }
+
+bool i2c_task_alive(void) {
+    if (g_i2c_task_pid < 0) return false;
+    int st = sched_task_state(g_i2c_task_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+static uint16_t get_u16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
+static void put_i32(uint8_t *p, int32_t v) { memcpy(p, &v, sizeof(v)); }
+
+/* This task, and only this task, may call the *_hw_* functions in this file
+ * and drivers/at24c32.c while alive -- see uart_16550.c's uart_task_body()
+ * for the fuller reasoning (never call back into anything that could
+ * chan_call() this same endpoint; never take printk_lock() from here). */
+static void i2c_task_body(void *arg) {
+    (void)arg;
+    while (!g_i2c_ep) sched_yield();
+
+    for (;;) {
+        uint32_t req_len = chan_serve_wait(g_i2c_ep);
+        if (req_len < 1) { chan_serve_reply(g_i2c_ep, 0); continue; }
+        g_i2c_calls++;
+
+        uint8_t op = g_i2c_req[0];
+        switch (op) {
+        case I2C_OP_RTC_READ_TIME: {
+            rtc_time_t tm;
+            bool ok = i2c_rtc_hw_read_time(&tm);
+            g_i2c_resp[0] = ok ? 1 : 0;
+            if (ok) memcpy(&g_i2c_resp[1], &tm, sizeof(tm));
+            chan_serve_reply(g_i2c_ep, ok ? 1u + sizeof(tm) : 1u);
+            break;
+        }
+        case I2C_OP_RTC_WRITE_TIME: {
+            bool ok = false;
+            if (req_len >= 1 + sizeof(rtc_time_t)) {
+                rtc_time_t tm;
+                memcpy(&tm, &g_i2c_req[1], sizeof(tm));
+                ok = i2c_rtc_hw_write_time(&tm);
+            }
+            g_i2c_resp[0] = ok ? 1 : 0;
+            chan_serve_reply(g_i2c_ep, 1);
+            break;
+        }
+        case I2C_OP_RTC_READ_TEMP: {
+            int temp_c = 0;
+            bool ok = i2c_rtc_hw_read_temperature_c(&temp_c);
+            g_i2c_resp[0] = ok ? 1 : 0;
+            put_i32(&g_i2c_resp[1], (int32_t)temp_c);
+            chan_serve_reply(g_i2c_ep, ok ? 5u : 1u);
+            break;
+        }
+        case I2C_OP_EE_READ: {
+            int32_t result = -1;
+            if (req_len >= 5) {
+                uint16_t addr = get_u16(&g_i2c_req[1]);
+                uint16_t len  = get_u16(&g_i2c_req[3]);
+                result = (int32_t)at24c32_hw_read(addr, &g_i2c_resp[4], len);
+            }
+            put_i32(&g_i2c_resp[0], result);
+            chan_serve_reply(g_i2c_ep, (result > 0) ? 4u + (uint32_t)result : 4u);
+            break;
+        }
+        case I2C_OP_EE_WRITE: {
+            int32_t result = -1;
+            if (req_len >= 5) {
+                uint16_t addr = get_u16(&g_i2c_req[1]);
+                uint16_t len  = get_u16(&g_i2c_req[3]);
+                if (req_len >= 5u + len) {
+                    result = (int32_t)at24c32_hw_write(addr, &g_i2c_req[5], len);
+                }
+            }
+            put_i32(&g_i2c_resp[0], result);
+            chan_serve_reply(g_i2c_ep, 4);
+            break;
+        }
+        default:
+            chan_serve_reply(g_i2c_ep, 0);
+            break;
+        }
+    }
+}
+
+/* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
+ * i2c_rtc_read_time()/write_time()/read_temperature_c() and
+ * at24c32_read()/write() all fall back to direct hardware access whenever
+ * the task is not alive, same as every boot-time read before this ever
+ * ran. */
+int i2c_task_start(void) {
+    int pid = task_create_sized("i2c", i2c_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[I2C] Could not start the i2c task; RTC/EEPROM stay on direct hardware access.\n");
+        return -1;
+    }
+    if (chan_register_task("i2c", pid, g_i2c_req, sizeof(g_i2c_req),
+                           g_i2c_resp, sizeof(g_i2c_resp)) != 0) {
+        printk("[I2C] Could not register the i2c channel endpoint; falling back to direct hardware access.\n");
+        return -1;
+    }
+    g_i2c_ep = chan_lookup("i2c");
+    g_i2c_task_pid = pid;
+    printk("[I2C] Driver running as task #%d, reachable via chan_call(\"i2c\", ...)\n", pid);
+    return pid;
+}
+
+int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
+        if (n >= 0) return n;
+        sched_yield();
+    }
+    return -1;
+}
+
+bool i2c_rtc_read_time(rtc_time_t *tm) {
+    if (!tm) return false;
+    if (i2c_task_alive()) {
+        uint8_t req[1] = { I2C_OP_RTC_READ_TIME };
+        uint8_t resp[1 + sizeof(rtc_time_t)];
+        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 1) {
+            if (resp[0] == 0) return false;
+            if ((uint32_t)n >= 1 + sizeof(rtc_time_t)) {
+                memcpy(tm, &resp[1], sizeof(*tm));
+                return true;
+            }
+        }
+        /* IPC failed -- fall through to direct access. */
+    }
+    return i2c_rtc_hw_read_time(tm);
+}
+
+bool i2c_rtc_write_time(const rtc_time_t *tm) {
+    if (!tm) return false;
+    if (i2c_task_alive()) {
+        uint8_t req[1 + sizeof(rtc_time_t)];
+        req[0] = I2C_OP_RTC_WRITE_TIME;
+        memcpy(&req[1], tm, sizeof(*tm));
+        uint8_t resp[1];
+        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 1) return resp[0] != 0;
+        /* IPC failed -- fall through to direct access. */
+    }
+    return i2c_rtc_hw_write_time(tm);
+}
+
+bool i2c_rtc_read_temperature_c(int *temp_c) {
+    if (!temp_c) return false;
+    if (i2c_task_alive()) {
+        uint8_t req[1] = { I2C_OP_RTC_READ_TEMP };
+        uint8_t resp[5];
+        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 1) {
+            if (resp[0] == 0) return false;
+            if ((uint32_t)n >= 5) {
+                int32_t v;
+                memcpy(&v, &resp[1], sizeof(v));
+                *temp_c = (int)v;
+                return true;
+            }
+        }
+        /* IPC failed -- fall through to direct access. */
+    }
+    return i2c_rtc_hw_read_temperature_c(temp_c);
 }

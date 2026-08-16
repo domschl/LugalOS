@@ -248,6 +248,14 @@ void kernel_main(void) {
     virtio_blk_task_start();
 #endif
 
+    /* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC + EEPROM as
+     * one shared "i2c" task -- both devices sit on the same physical I2C
+     * bus (see drivers/i2c_rtc.h), so one task, not two. Must follow
+     * sched_init(); dev_probe_all() above already detected both devices via
+     * direct hardware access, and every RTC/EEPROM call keeps using that
+     * path if this fails or hasn't run yet. */
+    i2c_task_start();
+
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
     p9_server_task_start();

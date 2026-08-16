@@ -1004,6 +1004,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * fallback the whole time. */
         printk("[BlkStats] calls=%u\n", blk_task_call_count());
         return;
+    } else if (strcmp(cmd_line, "i2cstats") == 0) {
+        /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
+         * exposes i2c_task_call_count() so a test can confirm the shared
+         * RTC/EEPROM task is genuinely serving requests, same reasoning as
+         * blkstats above. */
+        printk("[I2cStats] calls=%u\n", i2c_task_call_count());
+        return;
     } else if (strcmp(cmd_line, "klog") == 0) {
         cmd_klog(NULL);
         return;

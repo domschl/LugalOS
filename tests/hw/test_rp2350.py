@@ -490,6 +490,60 @@ def test_blk_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_i2c_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """M4.5 Part B (plan/phase12_microkernel_migration.md): RTC (DS1307/
+    DS3231, drivers/i2c_rtc.c) and EEPROM (AT24C32, drivers/at24c32.c) share
+    one physical I2C bus, so they were converted into a single "i2c" driver
+    task rather than two independent ones -- see drivers/i2c_rtc.h's comment
+    for why. Same shape as test_blk_task above: the real claim isn't "does
+    EEPROM read/write still work" (already covered by ordinary functional
+    use) but "is the task actually serving these requests", via
+    i2c_task_call_count() (`i2cstats`), a real, growing counter.
+
+    This chess-persona board has no RTC/EEPROM module physically wired up,
+    so `(eeprom-write ...)` genuinely fails at the hardware level here -- but
+    it still has to reach the task (and back) to fail that way, which is
+    exactly what this test checks; it does not require the write to
+    succeed."""
+    name = "i2c task: shared RTC/EEPROM driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+
+            ser.write(b"i2cstats\n")
+            ser.flush()
+            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_before = re.search(r"calls=(\d+)", out_before)
+
+            ser.write(b'(eeprom-write 100 "i2c_task_probe")\n')
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+
+            ser.write(b"i2cstats\n")
+            ser.flush()
+            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            m_after = re.search(r"calls=(\d+)", out_after)
+
+        if not m_before or not m_after:
+            if "Unbound symbol: i2cstats" in out_before or "Unknown command" in out_before:
+                return (name, False,
+                        "board firmware predates the `i2cstats` command -- reflash it with the "
+                        "current build/rp2350/lugalos.uf2 and re-run.")
+            return (name, False, f"no I2cStats report in console output:\n{out_before[:200]} / {out_after[:200]}")
+
+        before, after = int(m_before.group(1)), int(m_after.group(1))
+        detail = f"calls before={before} after={after}"
+        if after <= before:
+            return (name, False, f"call count did not grow -- eeprom-write is not reaching the task ({detail})")
+
+        print(f"    ...measured: {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_uart_demux_shared_wire(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """p9share (A3b UART demux) standalone: arms the demux over the physical
     UART, drives one real SLIP-framed 9P transaction, then sends a
@@ -1177,7 +1231,7 @@ def main() -> int:
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_blk_task, test_i2c_task, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_uart_demux_shared_wire]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

@@ -765,6 +765,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                         "" if (ok and ok2 and ok3 and blk_used) else
                         f"before={before_blk} after={after_blk}\n{log2[-300:]}"))
 
+        # M4.5 Part B: the shared "i2c" driver task (RTC + EEPROM, one task
+        # since both sit on the same physical bus -- drivers/i2c_rtc.h).
+        # Same "is it actually serving requests" shape as blkstats above;
+        # the EEPROM read/write itself is already covered functionally by
+        # the AT24C32 test below (which now transparently exercises this
+        # same task, since at24c32_read()/write() kept their original names).
+        ok, log = session.send_and_expect("i2cstats", r"calls=(\d+)", timeout=3.0)
+        before_i2c = int(re.search(r"calls=(\d+)", log).group(1)) if ok else None
+        ok2, log2 = session.send_and_expect(
+            "(eeprom-write 100 \"i2c_task_probe\")", r".", timeout=4.0)
+        ok3, log3 = session.send_and_expect("i2cstats", r"calls=(\d+)", timeout=3.0)
+        after_i2c = int(re.search(r"calls=(\d+)", log3).group(1)) if ok3 else None
+        i2c_used = (before_i2c is not None and after_i2c is not None
+                   and after_i2c > before_i2c)
+        results.append(("RTC/EEPROM Shared I2C Driver Task Is Actually Serving Requests (M4.5)",
+                        ok and ok2 and ok3 and i2c_used,
+                        "" if (ok and ok2 and ok3 and i2c_used) else
+                        f"before={before_i2c} after={after_i2c}\n{log2[-300:]}"))
+
         # 3. VFS & Storage Engine (mkdir, rmdir, cp, touch, write, cat, rm)
         cmd_vfs = (
             "mkdir /sd0/testdir\n"

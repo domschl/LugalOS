@@ -5,8 +5,8 @@ reverted, reformulated, and re-implemented for `uart`/QEMU rv32/rv64
 (2026-08-16) — see M4's own section below for what the first attempt got
 wrong and why. M4.5 in progress (2026-08-16): Part A (scheduler stress
 test) concluded no scheduler change is needed; Part B has converted the
-heartbeat LED and SD/block storage so far, with RTC/EEPROM, display/
-keypad, and RP2350's own uart/console still open. Written to be
+heartbeat LED, SD/block storage, and RTC/EEPROM so far, with display/
+keypad and RP2350's own uart/console still open. Written to be
 detailed and executed one milestone at a time, not implemented from this
 document directly.
 
@@ -659,7 +659,7 @@ first):
 |---|---|
 | Heartbeat LED (GP16, `drivers/uart_rp2350.c`) | Not in the original table — added because it is uniquely valuable as a *visual* scheduler-health check, not for isolation or IPC-volume reasons like the rest of this list. No `chan_call()` endpoint at all: nothing calls it, it is a self-scheduled periodic task rather than a request server. Done first, out of dependency-weight order, precisely because it is the lowest-risk possible conversion (no protocol, no other task's correctness depends on it) and immediately doubles as a live confirmation of M4.5 Part A's conclusion on real hardware, continuously, without a serial connection. |
 | SD/SPI block (`drivers/spisd_rp2350.c`, `drivers/virtio_blk.c`) — **done, 2026-08-16** | Every filesystem operation depends on it; already block-buffer-sized, so the lowest-risk conversion of the *service* drivers — nothing like uart's per-character mistake is structurally possible here. |
-| RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) | Low frequency, small fixed-size transfers, no console-speed hazard. |
+| RTC / EEPROM (`drivers/i2c_rtc.c`, `drivers/at24c32.c`) — **done, 2026-08-16** | Low frequency, small fixed-size transfers, no console-speed hazard. Converted as one shared task, not two, since both devices sit on the same physical I2C bus. |
 | Display / keypad (`drivers/st7735_rp2350.c`, `drivers/tm1638_rp2350.c`, `drivers/pico_clock_green_rp2350.c`) | Same low-risk shape as RTC/EEPROM. |
 | RP2350's own `uart`/console task | Finishes what M4 deferred — this board's driver has real extra complexity (USB CDC mirroring, the A3b demux) that earned its own careful pass rather than a copy of `uart_16550.c`'s shape. |
 | `drivers/usb_cdc.c` | By far the largest and most structurally different of this list (989 lines, dual role as interactive console *and* 9P link) — scope this one separately, once the simpler conversions above have re-validated the template against real evidence rather than assumption. |
@@ -842,6 +842,72 @@ margin ever tightens.
 Verified: full QEMU suite 207/207 (two new assertions, rv32+rv64) across
 3 consecutive clean runs. Real RP2350 hardware 17/17 (one new assertion)
 across 2 consecutive clean runs.
+
+#### M4.5 Part B, RTC/EEPROM completion notes (2026-08-16)
+
+Converted `drivers/i2c_rtc.c` (DS1307/DS3231 RTC, including the DS3231-only
+temperature sensor) and `drivers/at24c32.c` (4 KB EEPROM) into **one** shared
+task, `"i2c"`, rather than two independent ones — the deciding fact,
+found while reading both files before writing any code, is that they sit on
+the *same physical I2C bus* (both target I2C0's registers in the default
+chess persona; the Pico-Clock-Green persona's `CONFIG_I2C_RTC_BASE` moves
+the RTC to I2C1, but `at24c32.c`'s own bit-banging is a separate, pre-
+existing implementation that hardcodes I2C0 regardless — a real, pre-
+existing inconsistency, left alone as out of scope for this pass, same as
+the decision to not touch unrelated code during a driver conversion). One
+task means a `chan_call()` from either device serializes against the other
+automatically, closing a latent hole that existed before this milestone:
+a preempted `i2c_rtc_write_time()` and an interleaved `at24c32_write()` had
+no mutual exclusion at all.
+
+Same structural move as every other M4.5 driver conversion: each original
+function split into an internal `_hw_`-suffixed direct-hardware primitive
+(`i2c_rtc_hw_read_time`/`write_time`/`read_temperature_c`,
+`at24c32_hw_read`/`write` — bodies byte-for-byte unchanged, including
+`at24c32_hw_write`'s existing page-boundary chunking and 10 ms inter-chunk
+delay, preserved as a single unit inside the task rather than re-implemented
+at a lower level), and a new public facade reusing the *original* names
+(`i2c_rtc_read_time`, `i2c_rtc_write_time`, `i2c_rtc_read_temperature_c`,
+`at24c32_read`, `at24c32_write`) that routes through `chan_call()` when the
+task is alive, falling back to direct access otherwise — so every existing
+caller (`kernel/board.c`'s boot-time `dev_probe_all()`, `kernel/shell.c`'s
+`date`/`i2c` commands, `user/lisp/lisp.c`'s `eeprom-read`/`write`/
+`(clock-light)` family, `fs/vfs_server.c`'s `/dev/eeprom`, and the
+Pico-Clock-Green persona's own display-update loop) needed zero changes.
+
+The wire protocol deliberately does *not* copy `spisd_rp2350.c`'s explicit
+big-endian `be32_load`/`store` encoding: that discipline exists to defend a
+real wire (an SD card's SPI protocol), where this IPC never leaves the
+kernel's own address space, so `addr`/`len` travel as plain `uint16_t` and
+`rtc_time_t`/the temperature travel as a raw `memcpy()` between endpoint-
+owned buffers — simpler, and there's no real byte-order boundary here for
+an explicit encoding to protect. The EEPROM buffers are sized to the whole
+4 KB AT24C32 device (`AT24C32_SIZE_BYTES`) rather than to a measured caller
+the way `BLK_MAX_COUNT` was: unlike an SD card, this device's entire address
+space is small and fixed, so covering all of it is a bounded, known cost
+(~8 KB of static request/response buffers) instead of open-ended headroom
+for a hypothetical future caller.
+
+Added `i2c_task_call_count()` (`i2cstats`) as the IPC-volume verification
+this milestone's template calls for — the same "is the task actually being
+used" question as `blkstats`, not a "did volume stay message-scaled"
+question (never in doubt for a low-frequency device like this one). On real
+hardware (the chess persona board, which has no RTC/EEPROM module
+physically wired up) an `(eeprom-write ...)` still has to reach the task —
+and come back with a hardware-level failure — to be observed at all, which
+is exactly what the test checks; it does not require the write to succeed
+at the silicon level. Confirmed the count grows on both QEMU (where the
+EEPROM half is backed by a synthetic in-RAM buffer and genuinely succeeds)
+and real hardware (where it reaches the task and correctly fails at the
+I2C level, count still grows by exactly one call).
+
+Verified: full QEMU suite 209/209 (two new assertions, rv32+rv64, doubled
+by the multi-node test battery) across 3 consecutive clean runs on both
+rv64 and rv32. All four board personas (`rv64-mmu`, `rv32-nommu`,
+`rp2350-chess`, `rp2350-clock`) build clean. Real RP2350 hardware (chess
+persona) 18/18 (one new assertion) across 3 consecutive clean runs,
+including direct confirmation that `eeprom-write` reaches the shared task
+on real silicon.
 
 ### M5 — Minimal domain by default (Rules 5 & 6 land)
 

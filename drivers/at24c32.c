@@ -163,7 +163,7 @@ bool at24c32_is_detected(void) {
     return g_at24c32_detected;
 }
 
-int at24c32_read(uint16_t addr, uint8_t *buf, size_t len) {
+int at24c32_hw_read(uint16_t addr, uint8_t *buf, size_t len) {
     if (addr >= AT24C32_SIZE_BYTES) return 0;
     if (addr + len > AT24C32_SIZE_BYTES) len = AT24C32_SIZE_BYTES - addr;
     if (len == 0) return 0;
@@ -174,7 +174,7 @@ int at24c32_read(uint16_t addr, uint8_t *buf, size_t len) {
     return -1;
 }
 
-int at24c32_write(uint16_t addr, const uint8_t *buf, size_t len) {
+int at24c32_hw_write(uint16_t addr, const uint8_t *buf, size_t len) {
     if (addr >= AT24C32_SIZE_BYTES) return 0;
     if (addr + len > AT24C32_SIZE_BYTES) len = AT24C32_SIZE_BYTES - addr;
     if (len == 0) return 0;
@@ -193,4 +193,57 @@ int at24c32_write(uint16_t addr, const uint8_t *buf, size_t len) {
         time_delay_us(10000); // Wait 10ms EEPROM internal page write cycle
     }
     return (int)written;
+}
+
+/* M4.5, plan/phase12_microkernel_migration.md, Part B: public facades routed
+ * through the shared "i2c" driver task (drivers/i2c_rtc.c owns it -- see
+ * drivers/i2c_rtc.h's comment on why RTC and EEPROM share one task) whenever
+ * it is alive, falling back to at24c32_hw_read()/write() above otherwise --
+ * same fallback shape as every other M4.5 driver-task conversion. The wire
+ * request carries addr/len as plain uint16_t and the response as a plain
+ * int32_t result: this call never leaves the kernel's own address space (no
+ * real wire, unlike the SD card's SPI protocol or a 9P message), so there is
+ * nothing for an explicit byte-order encoding to protect against here. */
+#define I2C_EE_OP_READ  ((uint8_t)'R')
+#define I2C_EE_OP_WRITE ((uint8_t)'X')
+#define I2C_EE_REQ_CAP  (5u + AT24C32_SIZE_BYTES)
+#define I2C_EE_RESP_CAP (4u + AT24C32_SIZE_BYTES)
+
+static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static int32_t get_i32(const uint8_t *p) { int32_t v; memcpy(&v, p, sizeof(v)); return v; }
+
+int at24c32_read(uint16_t addr, uint8_t *buf, size_t len) {
+    if (len <= AT24C32_SIZE_BYTES && i2c_task_alive()) {
+        uint8_t req[5];
+        req[0] = I2C_EE_OP_READ;
+        put_u16(&req[1], addr);
+        put_u16(&req[3], (uint16_t)len);
+        uint8_t resp[I2C_EE_RESP_CAP];
+        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 4) {
+            int32_t result = get_i32(resp);
+            if (result < 0) return -1;
+            if ((uint32_t)n >= 4u + (uint32_t)result) {
+                if (result > 0) memcpy(buf, &resp[4], (size_t)result);
+                return result;
+            }
+        }
+        /* IPC failed -- fall through to direct access. */
+    }
+    return at24c32_hw_read(addr, buf, len);
+}
+
+int at24c32_write(uint16_t addr, const uint8_t *buf, size_t len) {
+    if (len <= AT24C32_SIZE_BYTES && i2c_task_alive()) {
+        uint8_t req[I2C_EE_REQ_CAP];
+        req[0] = I2C_EE_OP_WRITE;
+        put_u16(&req[1], addr);
+        put_u16(&req[3], (uint16_t)len);
+        memcpy(&req[5], buf, len);
+        uint8_t resp[4];
+        int n = i2c_task_call(req, 5u + (uint32_t)len, resp, sizeof(resp));
+        if (n >= 4) return get_i32(resp);
+        /* IPC failed -- fall through to direct access. */
+    }
+    return at24c32_hw_write(addr, buf, len);
 }
