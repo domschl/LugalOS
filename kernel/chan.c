@@ -273,3 +273,7 @@ bool chan_info(uint32_t index, const char **name_out, bool *busy_out) {
     if (busy_out) *busy_out = g_endpoints[index].busy;
     return true;
 }
+
+bool chan_endpoint_busy(chan_endpoint_t *ep) {
+    return ep && ep->in_use && ep->busy;
+}

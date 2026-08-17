@@ -47,10 +47,20 @@ driver needing its own dedicated text page (`.blktext`, tried the shared
 `.utext` first and let the linker refuse it) and the first whose wire
 protocol had to shrink to fit `trap.c`'s shared syscall scratch buffer
 (`BLK_MAX_COUNT` 4→1, transparent client-side chunking added, `kbuf`
-grown 256→576 bytes) — see M5 Phase 5's own section. uart and usb_cdc
-remain before the deferred heap-budget analysis. Written to be detailed
-and executed one milestone at a time, not implemented from this document
-directly.
+grown 256→576 bytes) — see M5 Phase 5's own section. M5 Phase 6 complete
+(2026-08-17): uart (the console itself, the highest-risk conversion)
+converted — the first driver whose TX path relied on a real interrupt
+(`irq_save()`/`task_block()`, which U-mode cannot call at all) and the
+first coupled to a *different*, still-unconverted driver (`usb_cdc.c`).
+Resolved by splitting the duty across the privilege boundary: the U-mode
+task owns physical UART0 only (poll-and-yield TX, non-blocking RX); the
+USB CDC mirror and the old `g_uart_write_in_flight` flag moved to the
+kernel-mode client facades, the latter replaced by a new shared
+`chan_endpoint_busy()` accessor rather than reinvented — see M5 Phase 6's
+own section. usb_cdc is now the only M4.5 driver left unconverted, and
+the deferred heap-budget analysis still waits for it. Written to be
+detailed and executed one milestone at a time, not implemented from this
+document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -1828,6 +1838,118 @@ Five driver-task conversions in (heartbeat, tm1638, i2c, st7735, blk);
 uart and usb_cdc remain. Per the user's own explicit direction: the
 heap/static-buffer analysis still waits for both of those, not
 triggered by this phase's own numbers landing flat.
+
+### M5 Phase 6 — U-mode isolation for the RP2350 console driver (uart) *(done, 2026-08-17)*
+
+The highest-risk conversion flagged from the start (the console itself),
+and structurally different from every driver before it, not just bigger:
+its TX path currently blocks via a real interrupt
+(`irq_save()`/`task_block()`, woken by `uart_isr()`), and both its TX
+and RX paths reach into `usb_cdc.c` -- a *different*, still-kernel-mode,
+separately-scoped driver with its own USB controller hardware. Neither
+problem has a "duplicate the code as UATTR" answer the way every prior
+phase's did.
+
+**The resolving design: split the duty across the privilege boundary.**
+The U-mode task now owns physical UART0 hardware *only*. Everything
+that isn't physical-UART0 register access moved to the client facades
+(`uart_putc()`/`uart_flush()`/`uart_has_char()`/`uart_getc()`, already
+kernel-mode, already doing the task-alive-vs-fallback branching):
+
+- **TX**: the U-mode WRITE handler polls `UART0_FR_TXFF` and yields
+  (`SYS_YIELD`) instead of blocking via IRQ -- U-mode cannot call
+  `irq_save()`/`task_block()` at all. The USB CDC mirror moved into
+  `uart_flush()`, run once after the `chan_call()` returns; UART0 and
+  USB CDC are independent channels with no cross-channel ordering
+  requirement, so relocating *when* the mirror happens is not
+  observable to either listener.
+- **RX**: HASCHAR/READ became non-blocking, bounded,
+  physical-UART0-only checks (the old READ blocked server-side for as
+  long as a human took to press a key, at a priority dropped to NORMAL
+  specifically to avoid starving other tasks during that wait -- both
+  the blocking and the priority dance are gone, since the server never
+  waits at all now). `uart_getc()`/`uart_has_char()` grew the loop that
+  used to live server-side: poll the task, check `usb_cdc_has_char()`/
+  `getc()` directly, yield, repeat.
+- `g_uart_write_in_flight` (set/cleared *inside* the old server's WRITE
+  case -- something a U-mode server cannot do to a kernel `.bss`
+  global) turned out to be redundant with something `chan_call()`
+  already tracks correctly: `ep->busy`, true from request-copied-in to
+  reply-received. One new two-line accessor,
+  `chan_endpoint_busy(chan_endpoint_t *)` (`kernel/chan.c`/
+  `kernel/include/kernel/chan.h`), replaces it -- shared infrastructure,
+  not uart-specific, same category as Phase 5's `trap.c` buffer growth.
+- Found and fixed in passing (not a new bug, a latent one uncovered
+  while rewriting these exact functions): `uart_has_char()`/
+  `uart_getc()`'s old fallback touched `hw_uart_has_char()`/
+  `hw_uart_getc()` directly whenever a retry budget ran out, even with
+  the task still alive -- a race against the task's own exclusive
+  hardware access. Direct access is now gated on `!uart_task_alive()`
+  only, never on retry exhaustion.
+
+Net result: a *simpler* server than before (three small bounded ops,
+always `TASK_PRIO_INTERRUPT`, no priority juggling) plus `usb_cdc.c`
+itself completely untouched -- it's still exactly the driver it was
+before this phase, only reached from a different privilege level than
+`uart_flush()` runs at, no different than always.
+
+**ACCESSCTRL**: one fix in `uart_init()` (M-mode, before the task
+exists) -- `ACCESSCTRL_UART0` (checked against `~/gith/pico/pico-sdk`'s
+`accessctrl.h`: offset `0xa0`, same shape and `0xacce0000`
+write-password requirement as every prior non-GPIO register this
+project has touched).
+
+**Domain**: simpler than st7735/blk -- uart's runtime hot path never
+touches SIO (pin muxing is `uart_init()`-time only), so this is the
+same 3-region shape (stack + text + `UART0_BASE`) tm1638/i2c already
+proved, not the 4-region SIO-plus-controller shape.
+
+**`.utext` capacity**: fit the shared page cleanly this time (unlike
+Phase 5's blk, which overflowed it by 84 bytes) -- `u_uart_putc()`/
+`u_uart_has_char()`/`u_uart_getc()` all inlined away entirely at `-Os`,
+leaving only `uart_umode_body()` itself in the disassembly. No
+dedicated `.uarttext` page needed.
+
+`UART_TX_BATCH_CAP` (256) unchanged, so the wire cap (257 bytes) still
+fits `trap.c`'s `CHAN_SERVE_KBUF_CAP` (576, grown in Phase 5) with
+room to spare -- no further growth needed this phase.
+
+`uartisotest` mirrors the prior five isolation tests exactly: same
+3-region domain, a deliberate out-of-domain store, asserted to fault.
+Not gated on a `CONFIG_ENABLE_*` flag (unlike st7735/blk's optional
+peripherals) -- uart is always built for RP2350.
+
+Verified: 217/217 QEMU across 3 consecutive clean runs (one extra pass
+needed after the first hardware attempt surfaced a real gap: the
+isolation test function existed in `drivers/uart_rp2350.c` but was
+never wired into `kernel/shell.c` -- caught immediately by
+`uartisotest` returning "Unbound symbol" on real hardware rather than
+silently doing nothing, fixed, then QEMU and all four personas
+rebuilt and reverified from that point). All four board personas build
+clean. Real RP2350 hardware, on `rp2350-chess`: the console answered
+immediately after flashing (the first, unmissable signal for this
+particular driver); `uartisotest` 3/3 consecutive clean runs (real
+load access fault, canary intact, task did not exit cleanly); sustained
+interactive use (`ls`, `cat` of a 394-byte file, `help`) with
+`uartstats`' `write_calls` advancing throughout (311 -> 421 across one
+probe), not stuck at 0. Full `tests/hw/test_rp2350.py` 21/22 across 3
+consecutive runs -- including its own `link_usb_cdc` (ACM1 9P) and
+`p9share` (console+9P sharing the physical UART) tests, both passing
+unchanged, confirming the USB-mirror relocation didn't change externally
+visible behavior; the one failure is the same pre-tracked heap-budget
+shortfall (C6/C7) every phase since it was first tracked has hit.
+
+Heap budget: idle baseline on `rp2350-chess` now 44 total pages (45 at
+Phase 5's end) -- uart's new dedicated U-mode stack page, the only new
+static RAM cost this phase (its own domain reuses the shared `.utext`
+page, no new text page; `chan_endpoint_busy()` is a few bytes of new
+kernel `.text`, not `.bss`). Image (data+bss) 312 -> 316 KB, heap
+managed 180 -> 176 KB, both consistent with exactly one new page.
+
+Six driver-task conversions in (heartbeat, tm1638, i2c, st7735, blk,
+uart); **usb_cdc is the only M4.5 driver left unconverted.** Per the
+user's own explicit direction, the heap/static-buffer analysis across
+every converted task still waits for it.
 
 ### M6 — Process visibility parity
 

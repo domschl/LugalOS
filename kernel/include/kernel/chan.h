@@ -202,4 +202,17 @@ bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
  * mid-request, not just when it never started. */
 void chan_owner_exited(int owner_pid);
 
+/* M5 Phase 6, plan/phase12_microkernel_migration.md: exposes ep->busy
+ * (chan_call()'s own request-in-flight flag, kernel/chan.c) to a single
+ * named endpoint a caller already holds a pointer to -- chan_info()
+ * above only offers it by enumeration index. Added so
+ * drivers/uart_rp2350.c's uart_flush() could stop tracking its own
+ * separate "a WRITE is in flight" flag (the original, g_uart_write_in_flight,
+ * was set from *inside* the server's WRITE case -- something a U-mode
+ * server cannot do to an ordinary kernel .bss global) and instead read
+ * the channel layer's own already-correct window directly: true from the
+ * moment a caller's request is copied in until that caller's reply comes
+ * back, exactly the span a competing client needs to see. */
+bool chan_endpoint_busy(chan_endpoint_t *ep);
+
 #endif /* LUGALOS_KERNEL_CHAN_H */

@@ -66,6 +66,16 @@
 #define ACCESSCTRL_BASE          0x40060000UL
 #define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c) /* GPIO 0-31 */
 
+/* M5 Phase 6, plan/phase12_microkernel_migration.md: same per-peripheral
+ * register shape as every non-GPIO ACCESSCTRL register this project has
+ * touched (SPI0/SPI1/I2C0/I2C1) -- checked directly against
+ * ~/gith/pico/pico-sdk's accessctrl.h: offset 0xa0, needs the
+ * 0xacce0000 write-password prefix. */
+#define ACCESSCTRL_UART0         (ACCESSCTRL_BASE + 0xa0)
+#define ACCESSCTRL_UART0_NSP     (1u << 1)
+#define ACCESSCTRL_UART0_NSU     (1u << 0)
+#define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
+
 #define UART0_BASE              ((uintptr_t)CONFIG_UART0_BASE)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
@@ -459,6 +469,12 @@ void uart_init(uintptr_t base_addr) {
      * write-protection prefix every other ACCESSCTRL register needs. */
     REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
 
+    /* M5 Phase 6: UART0 itself needs the same Non-secure grant, for the
+     * "uart" task's own U-mode serve loop further below -- see
+     * ACCESSCTRL_UART0's own comment above. */
+    REG(ACCESSCTRL_UART0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_UART0)
+                            | ACCESSCTRL_UART0_NSP | ACCESSCTRL_UART0_NSU;
+
     /* Default GP16 to LOW (OFF in active-high configuration) */
     REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
 
@@ -543,30 +559,29 @@ static uint8_t hw_uart_getc(void) {
     return (uint8_t)(REG(UART0_BASE + 0x00) & 0xFF);
 }
 
-/* --- M4.5, plan/phase12_microkernel_migration.md, Part B: the uart task ---
+/* --- M4.5/M5, plan/phase12_microkernel_migration.md: the uart task ---
  *
- * Finishes what M4 deferred (see this file's own note, since removed, that
- * tracked this separately): the same batched wire protocol
- * drivers/uart_16550.c's "uart" task uses, adapted for two things that file
- * does not have -- a USB CDC mirror on every write, and RX polled rather
- * than ISR-driven (this board's own long-standing reason, unchanged by this
- * conversion: uart_getc()/has_char() must watch two independent sources,
- * the physical UART and software-polled USB CDC, and this tree has no
- * "wait on any of N sources" primitive yet).
+ * M5 Phase 6 narrowed this task's own duty to physical UART0 only -- see
+ * this milestone's own plan notes ("split the duty across the privilege
+ * boundary") for the full reasoning. The USB CDC mirror/read that used to
+ * happen server-side now happens in the client facades below
+ * (uart_flush()/uart_has_char()/uart_getc()), which already run in
+ * ordinary kernel mode: usb_cdc.c is a *different* driver's hardware,
+ * already exclusively owned by its own "usbcdc" task, and a U-mode uart
+ * task cannot call into usb_cdc.c's kernel .text at all.
  *
- *   'H'      -> has-char query (physical UART OR USB CDC).  resp: 1 byte, 0 or 1.
- *   'R'      -> read (blocks internally, polling both sources, pumping
- *               usb_cdc_task() each iteration -- exactly what uart_getc()'s
- *               own wait loop used to do on the caller's stack, moved here).
- *               resp: 1 byte, the char read; physical UART preferred over
- *               USB CDC when both have one, same order uart_getc() always
- *               used.
- *   'W', ... -> write the req_len-1 bytes following the opcode to BOTH the
- *               physical UART and USB CDC (uart_putc()'s original mirror,
- *               preserved exactly, just batched -- see uart_putc()/
- *               uart_flush() below for the batching half, and
- *               uart_16550.c's own uart task comment for why a whole batch,
- *               not one byte, is what actually fixes IPC volume). resp: empty.
+ *   'H'      -> has-char query, physical UART0 only, non-consuming.
+ *               resp: 1 byte, 0 or 1.
+ *   'R'      -> read-if-ready, physical UART0 only, non-blocking (unlike
+ *               the pre-M5-Phase-6 version, which blocked here for as
+ *               long as a human took to press a key -- U-mode code
+ *               cannot task_block()/irq_save(), so waiting now happens
+ *               in the client's own loop instead, see uart_getc()
+ *               below). resp: 2 bytes -- status (1 if a char was read, 0
+ *               if none was ready), char (valid only if status is 1).
+ *   'W', ... -> write the req_len-1 bytes following the opcode to
+ *               physical UART0 only (no USB mirror -- see above).
+ *               resp: empty.
  *
  * Deliberately NOT reachable when the A3b demux is enabled (`p9share`): the
  * facade functions below fall straight to direct hardware access in that
@@ -581,41 +596,22 @@ static uint8_t hw_uart_getc(void) {
  * byte -- the largest single 'W' request the endpoint can accept. */
 #define UART_TX_BATCH_CAP 256
 #define UART_REQ_CAP (UART_TX_BATCH_CAP + 1)
+#define UART_RESP_CAP 2 /* 'R''s (status, char) -- the widest reply */
 
 static uint8_t         g_uart_req[UART_REQ_CAP];
-static uint8_t         g_uart_resp[1];
+static uint8_t         g_uart_resp[UART_RESP_CAP];
 static chan_endpoint_t *g_uart_ep;
 static int              g_uart_task_pid = -1;
 
 /* M4.5 verify: counts UART_REQ_WRITE calls actually served -- one per
  * uart_flush() that reached the task, not per character -- see
- * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
+ * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning.
+ * M5 Phase 6: counted client-side now (uart_flush() below), matching
+ * every other U-mode driver's own g_*_calls -- a U-mode server cannot
+ * touch this ordinary kernel .bss global. */
 static uint32_t g_uart_write_calls;
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
-
-/* M4.5, found on real hardware: true only while the task's WRITE handler is
- * actually pushing bytes to the physical UART/USB CDC below, false at every
- * other time (including the whole duration of a pending READ, which can run
- * for as long as a human takes to press a key). uart_flush()'s retry loop
- * uses this to tell "the endpoint is busy with a bounded WRITE -- wait it
- * out, never race it" apart from "busy with an unbounded READ -- falling
- * back to direct access right away is the correct, safe behavior" (the READ
- * side never touches the TX-side registers/ring this WRITE handler does, so
- * a concurrent direct-access WRITE cannot collide with it).
- *
- * Without this distinction, the original bounded-retry-then-fallback shape
- * (drivers/uart_16550.c had this first) can let a second WRITE that
- * outlasts its retry budget fall back to direct hardware access *while the
- * task is still transmitting the first one* -- safe on QEMU's near-instant
- * emulated UART (retries essentially never exhaust), reliably reproducible
- * on real 115200-baud hardware, where a full 256-byte batch takes tens of
- * milliseconds to transmit. Observed directly while bringing up this task:
- * a kernel printk() line ("[Sched] Created task #8 'uprog'...") and a
- * just-spawned user program's own stdout ("USPIN_START"), both landing in
- * the batch/hardware access at once, interleaved into byte-level garbage
- * ("[SUSPIN_STARTched] Created task #8 'uprog'..."). */
-static volatile bool g_uart_write_in_flight;
 
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;
@@ -623,74 +619,144 @@ static bool uart_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-/* This task, and only this task, may call uart_hw_putc()/hw_uart_has_char()/
- * hw_uart_getc() while alive -- everything else reaches the hardware
- * through chan_call("uart", ...) via the facade functions below. Must never
- * call uart_putc()/uart_getc()/uart_has_char() itself (would chan_call()
- * into its own endpoint -- refused by the busy flag, but should simply
- * never happen), and must never call printk()/cprintf() (or anything that
- * takes printk_lock()) from within this loop -- see drivers/uart_16550.c's
- * uart_task_body() for the fuller reasoning on both. */
+/* ---- U-mode implementation, M5 Phase 6, plan/phase12_microkernel_migration.md ----
+ *
+ * A second, independent copy of the UART0 TX fast-path and RX peek/read,
+ * tagged UART_UATTR and reachable only from the U-mode task's own serve
+ * loop below -- not a refactor of uart_hw_putc()/hw_uart_has_char()/
+ * hw_uart_getc(), which keep serving the direct-hardware fallback path
+ * (including every boot-time uart_puts() call, which happens before this
+ * task exists at all) exactly as before, unreachable from U-mode.
+ *
+ * TX has no ISR/task_block() equivalent here: irq_save()/task_block() are
+ * M-mode-only operations U-mode cannot call. u_uart_putc() below busy-polls
+ * TXFF and yields on a full FIFO instead -- the same "no interrupt
+ * available here, so poll and yield" shape this file's own (pre-Phase-6)
+ * RX loop, and drivers/uart_rp2350.c's own heartbeat_usleep_until(),
+ * already used. uart_isr()/g_tx_waiter/UART0_IMSC are untouched and keep
+ * serving uart_hw_putc()'s own block/wake path, used only when this task
+ * is not alive or a WRITE gives up -- the two TX paths never run
+ * concurrently, same "two independent copies" shape every prior driver's
+ * domain-routed pair already has. */
+#define UART_UATTR __attribute__((section(".utext"))) __attribute__((no_sanitize("undefined")))
+
+/* Hand-rolled per translation unit -- see the syscall stubs further below
+ * for why these aren't shared with any other file's own usys_*(). */
+__attribute__((always_inline)) static inline long uart_usys_yield(void) {
+    register long r_a0 __asm__("a0") = SYS_YIELD;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) :: "memory");
+    return r_a0;
+}
+
+UART_UATTR static void u_uart_putc(char c) {
+    while (REG(UART0_BASE + 0x18) & (1u << 5) /* TXFF */) {
+        uart_usys_yield();
+    }
+    REG(UART0_BASE + 0x00) = (uint8_t)c;
+}
+
+UART_UATTR static bool u_uart_has_char(void) {
+    return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0; /* RX FIFO not empty */
+}
+
+UART_UATTR static uint8_t u_uart_getc(void) {
+    return (uint8_t)(REG(UART0_BASE + 0x00) & 0xFF);
+}
+
+/* Hand-rolled per translation unit, not shared with any other driver's own
+ * usys_*() stubs -- a UART_UATTR function must not call anything the
+ * compiler might place outside .utext, and a cross-file inline is not a
+ * guarantee. */
+__attribute__((always_inline)) static inline long uart_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = buf_max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long uart_usys_chan_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+
+UART_UATTR static void uart_umode_body(void) {
+    /* Not a string literal: see drivers/tm1638_rp2350.c's own comment for
+     * why (M5 Phase 2's first board-hanging bug) -- a literal lands in
+     * ordinary .rodata, outside every region this task's domain grants.
+     * volatile so gcc doesn't recognise the stores and reconstruct a
+     * .rodata copy anyway. */
+    volatile char name[5];
+    name[0]='u'; name[1]='a'; name[2]='r'; name[3]='t'; name[4]='\0';
+
+    /* Three cases, an if/else, never a switch -- see
+     * drivers/st7735_rp2350.c's st7735_umode_body() comment for why
+     * (jump tables outside the granted region); -fno-jump-tables is
+     * applied to this file regardless, per that phase's own
+     * "check preemptively" conclusion. */
+    for (;;) {
+        uint8_t req[UART_REQ_CAP];
+        long req_len = uart_usys_chan_serve_wait((const char *)name, req, sizeof(req));
+        if (req_len < 1) {
+            uart_usys_chan_serve_reply((const char *)name, NULL, 0);
+            continue;
+        }
+
+        uint8_t op = req[0];
+        uint8_t resp[UART_RESP_CAP];
+        if (op == UART_REQ_HASCHAR) {
+            resp[0] = u_uart_has_char() ? 1 : 0;
+            uart_usys_chan_serve_reply((const char *)name, resp, 1);
+        } else if (op == UART_REQ_READ) {
+            if (u_uart_has_char()) {
+                resp[0] = 1;
+                resp[1] = u_uart_getc();
+            } else {
+                resp[0] = 0;
+            }
+            uart_usys_chan_serve_reply((const char *)name, resp, 2);
+        } else if (op == UART_REQ_WRITE) {
+            for (long i = 1; i < req_len; i++) u_uart_putc((char)req[i]);
+            uart_usys_chan_serve_reply((const char *)name, NULL, 0);
+        } else {
+            uart_usys_chan_serve_reply((const char *)name, NULL, 0);
+        }
+    }
+}
+
+static uint8_t      g_uart_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t g_uart_domain;
+
+/* This task's own kernel-mode entry point: task_create_sized() calls this
+ * (ordinary kernel stack, kernel privilege) to build the domain and make
+ * the one-way jump into U-mode. Simpler than st7735/blk's 4-region shape
+ * (stack + text + SIO + a controller): uart's runtime hot path never
+ * touches SIO (TX/RX pin muxing is uart_init()-time only, M-mode), so
+ * this is the same 3-region shape tm1638/i2c already proved -- stack +
+ * text + UART0_BASE. */
 static void uart_task_body(void *arg) {
     (void)arg;
     while (!g_uart_ep) sched_yield();
 
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_uart_ep);
-        if (req_len == 0) { chan_serve_reply(g_uart_ep, 0); continue; }
-        switch (g_uart_req[0]) {
-            case UART_REQ_HASCHAR:
-                g_uart_resp[0] = (hw_uart_has_char() || usb_cdc_has_char()) ? 1 : 0;
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_READ:
-                /* Found on real hardware, not predicted: this loop's own
-                 * wait can run for as long as a human takes to press a key
-                 * -- unlike drivers/uart_16550.c's RX (a true ISR-driven
-                 * task_block(), consuming zero scheduler cycles while
-                 * idle), this board has no RX interrupt to block on (see
-                 * uart_init()'s own comment on why), so waiting here means
-                 * actually looping, at whatever tier this task runs at.
-                 * Sitting at TASK_PRIO_INTERRUPT for the whole wait
-                 * strangled the "p9srv" task (NORMAL tier, services the
-                 * ACM1 background 9P link) badly enough to make it
-                 * unresponsive for the wait's entire duration -- confirmed
-                 * by flashing both ways and watching ACM1 stop answering
-                 * Tversion probes only with this loop at INTERRUPT tier.
-                 * Dropped to NORMAL just for this loop, restored after, so
-                 * WRITE/HASCHAR below (genuinely near-instant) keep the
-                 * fast-handoff tier uart_16550.c's own task uses, without
-                 * this open-ended wait ever holding it. */
-                task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
-                for (;;) {
-                    /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c,
-                     * started before this one in kernel/main.c) now services
-                     * this on its own schedule; only pump it directly here
-                     * as a fallback for the case that task failed to
-                     * start. */
-                    if (!usb_cdc_task_alive()) usb_cdc_task();
-                    if (hw_uart_has_char()) { g_uart_resp[0] = hw_uart_getc(); break; }
-                    if (usb_cdc_has_char()) { g_uart_resp[0] = usb_cdc_getc(); break; }
-                    sched_yield();
-                }
-                task_set_priority(sched_current_pid(), TASK_PRIO_INTERRUPT);
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_WRITE:
-                g_uart_write_calls++;
-                g_uart_write_in_flight = true;
-                for (uint32_t i = 1; i < req_len; i++) {
-                    uart_hw_putc((char)g_uart_req[i]);
-                    usb_cdc_putc((char)g_uart_req[i]);
-                }
-                g_uart_write_in_flight = false;
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-            default:
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-        }
+    mem_domain_init(&g_uart_domain);
+    mem_domain_add(&g_uart_domain, (uintptr_t)g_uart_ustack, sizeof(g_uart_ustack),
+                   MEM_R | MEM_W);
+
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&g_uart_domain, tbase, tsize, MEM_R | MEM_X);
+
+    mem_domain_add(&g_uart_domain, UART0_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &g_uart_domain) != 0) {
+        printk("[UART] Refusing to enter U-mode: memory domain not enforceable; console stays on direct hardware access.\n");
+        return;
     }
+    arch_enter_user(uart_umode_body, (uintptr_t)g_uart_ustack + sizeof(g_uart_ustack), 0, 0, 0);
 }
 
 /* Called from kernel/main.c, after sched_init() -- unlike uart_init(),
@@ -705,7 +771,11 @@ int uart_task_start(void) {
     }
     /* TASK_PRIO_INTERRUPT: matches drivers/uart_16550.c's own uart task --
      * a caller that chan_call()s "uart" should not sit behind an arbitrary
-     * NORMAL-tier queue for what is meant to be a near-instant handoff. */
+     * NORMAL-tier queue for what is meant to be a near-instant handoff.
+     * M5 Phase 6: every op this task now serves is small and bounded (no
+     * more open-ended READ wait), so unlike the pre-Phase-6 version there
+     * is no priority-drop dance needed inside the loop -- INTERRUPT tier
+     * the whole time is simply correct now. */
     task_set_priority(pid, TASK_PRIO_INTERRUPT);
     if (chan_register_task("uart", pid, g_uart_req, sizeof(g_uart_req),
                            g_uart_resp, sizeof(g_uart_resp)) != 0) {
@@ -726,6 +796,77 @@ static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
         sched_yield();
     }
     return -1;
+}
+
+/* M5 Phase 6's own "Verify" deliverable: does the real uart domain shape
+ * (stack + .utext + a 4096-byte UART0_BASE window) actually confine the
+ * task to UART0, or does the MMIO grant's width accidentally cover more?
+ * Modeled directly on drivers/blk's/st7735's own isolation tests -- same
+ * idea (a deliberate out-of-domain store, asserted to fault), a separate
+ * canary rather than reaching into another file's, for the same reason
+ * the syscall stubs above are hand-rolled per file. */
+static volatile uintptr_t g_uart_canary = 0xC0FFEE;
+
+UART_UATTR static void uart_intruder(void) {
+    g_uart_canary = 0xDEAD;
+    for (;;) { } /* only reached if the store was NOT stopped */
+}
+
+static volatile bool g_uart_intruder_entered;
+
+/* `arg` is the U-mode stack -- allocated by uart_isolation_test() below,
+ * not here, so it can free it once the task is confirmed DEAD (same
+ * shape as every prior driver's own probe). */
+static void uart_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    /* The exact grant real uart runs under -- this is what's on trial. */
+    mem_domain_add(&dom, UART0_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[UartIso] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_uart_intruder_entered = true;
+    arch_enter_user(uart_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+/* Runs the probe to completion and reports what actually happened. Returns
+ * false if the task never reached U-mode (domain not enforceable on this
+ * build/core, or the one-page stack could not be allocated) -- in that
+ * case *out_canary and *out_exited_clean say nothing about isolation,
+ * matching cmd_usertest_isolation()'s own "INCONCLUSIVE" case. */
+bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_uart_canary = 0xC0FFEE;
+    g_uart_intruder_entered = false;
+
+    void *ustack = palloc_pages(1);
+    if (!ustack) {
+        *out_canary = g_uart_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+
+    int pid = task_create("uart_intruder", uart_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        *out_canary = g_uart_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    long status;
+    *out_exited_clean = sched_task_exited_cleanly(pid, &status);
+    *out_canary = g_uart_canary;
+    palloc_free(ustack, 1);
+    return g_uart_intruder_entered;
 }
 
 /* M4.5: batches characters and sends one chan_call() per chunk (or per
@@ -760,17 +901,32 @@ void uart_flush(void) {
     req[0] = UART_REQ_WRITE;
     memcpy(&req[1], local, len);
     uint8_t resp[1];
-    /* Not uart_call_with_retry()'s plain bounded retry: see
-     * g_uart_write_in_flight's own comment for why a WRITE specifically
-     * must never give up and fall back to direct access while another
+    /* Not uart_call_with_retry()'s plain bounded retry: a WRITE must never
+     * give up and fall back to direct hardware access while another
      * WRITE is actually in flight (a real race on real hardware, not a
-     * theoretical one), while still falling back promptly -- not waiting
-     * out a human's keystroke -- when the endpoint is merely busy with a
-     * pending READ instead. */
+     * theoretical one -- see the git history of this comment for the
+     * exact interleaved-output symptom it was found by), while still
+     * falling back promptly when the endpoint is merely busy with some
+     * other, near-instant op instead.
+     *
+     * M5 Phase 6: chan_endpoint_busy(g_uart_ep) (kernel/chan.c) replaces
+     * the old server-set g_uart_write_in_flight flag -- a U-mode server
+     * cannot write an ordinary kernel .bss global, but chan_call()
+     * itself already tracks exactly this window (ep->busy, true from
+     * the moment a caller's request is copied in until that caller's
+     * reply comes back), so this reads that directly instead of keeping
+     * a second, redundant flag. Every op this task now serves is small
+     * and bounded (no more open-ended READ), so "busy" here can only
+     * ever mean "a few register pokes are in flight", never "someone is
+     * waiting on a human keystroke". */
     for (;;) {
         int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
-        if (n >= 0) return;
-        if (!g_uart_write_in_flight) break;
+        if (n >= 0) {
+            g_uart_write_calls++;
+            for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
+            return;
+        }
+        if (!chan_endpoint_busy(g_uart_ep)) break;
         sched_yield();
     }
     for (uint32_t i = 0; i < len; i++) {
@@ -800,6 +956,17 @@ void uart_debug_putc(char c) {
 // conversion. Flushed first: an outstanding write (a prompt, most often)
 // should be visible before anything checks for or waits on the reply it
 // usually precedes -- same reasoning as drivers/uart_16550.c's equivalent.
+/* M5 Phase 6: when uart_task_alive(), physical UART0 is checked through
+ * chan_call() only -- see "this task, and only this task, may call
+ * uart_hw_putc()/hw_uart_has_char()/hw_uart_getc() while alive" above;
+ * hw_uart_has_char()/hw_uart_getc() are reached directly only when the
+ * task is NOT alive, never as a same-caller fallback after a retry
+ * budget runs out (the pre-Phase-6 version of both facades did exactly
+ * that, a latent race against the task's own exclusive hardware access
+ * -- harmless in practice since chan_call() only fails this way under
+ * real contention, but incorrect on its own terms; fixed here rather
+ * than carried forward while this function was already being rewritten
+ * for the U-mode split). */
 bool uart_has_char(void) {
     uart_flush();
     /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c) now services
@@ -813,9 +980,10 @@ bool uart_has_char(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (uart_call_with_retry(req, 1, resp, 1) == 1 && resp[0]) return true;
+    } else if (hw_uart_has_char()) {
+        return true;
     }
-    if (hw_uart_has_char()) return true;
     return usb_cdc_has_char();
 }
 
@@ -828,14 +996,22 @@ char uart_getc(void) {
         }
         return uart_demux_console_getc();
     }
-    if (uart_task_alive()) {
-        uint8_t req[1] = { UART_REQ_READ };
-        uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return (char)resp[0];
-    }
+    /* M5 Phase 6: the wait that used to live server-side (blocking inside
+     * the task's own READ handler for as long as a human took to press a
+     * key) moves here -- U-mode code cannot task_block(), so the U-mode
+     * READ op is now a single non-blocking check (see uart_umode_body()
+     * above), and this loop polls it the same way it already polled
+     * usb_cdc_has_char()/getc() before this phase. */
     for (;;) {
         if (!usb_cdc_task_alive()) usb_cdc_task();
-        if (hw_uart_has_char()) return (char)hw_uart_getc();
+        if (uart_task_alive()) {
+            uint8_t req[1] = { UART_REQ_READ };
+            uint8_t resp[2];
+            int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+            if (n >= 2 && resp[0]) return (char)resp[1];
+        } else if (hw_uart_has_char()) {
+            return (char)hw_uart_getc();
+        }
         if (usb_cdc_has_char()) return usb_cdc_getc();
         sched_yield();
     }
