@@ -143,6 +143,14 @@ uintptr_t board_uart_base(void);
 /* Power-of-two, self-aligned executable region for U-mode tasks (B3). */
 void board_text_region(uintptr_t *base, uintptr_t *size);
 
+/* M5 Phase 4, plan/phase12_microkernel_migration.md: st7735's own
+ * dedicated U-mode-executable page (linker: .st7735text), separate from
+ * board_text_region()'s shared .utext -- which ran out of room once
+ * st7735's font table and draw functions needed to fit alongside
+ * heartbeat/tm1638/i2c's own U-mode code. RP2350-only, like the driver
+ * that uses it. */
+void board_st7735_text_region(uintptr_t *base, uintptr_t *size);
+
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 

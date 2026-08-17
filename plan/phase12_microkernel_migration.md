@@ -29,9 +29,21 @@ ACCESSCTRL write-password prefix (the third physical board recovery this
 project has needed), a byte-order bug, and a lost-fallback regression in
 the new EEPROM chunking, all found and fixed — see M5 Phase 3's own
 section, including the heap-budget trend now flagged as needing action
-before the next conversion, not after. Written to be detailed and
-executed one milestone at a time, not implemented from this document
-directly.
+before the next conversion, not after. M5 Phase 4 complete (2026-08-17):
+st7735 converted, the first driver needing two MMIO grants at once (SPI0
++ SIO); a new dedicated `.st7735text` page after the shared `.utext`
+page ran out of room; and a real hazard found that retroactively applies
+to every earlier phase too — a `UATTR` dispatch with enough cases
+compiles into a jump table GCC stores outside the granted region, which
+the disassembly check used since Phase 2 does not catch (`jr` through a
+loaded table, not a `jal`) and which converting the `switch` to if/else
+does not fix (GCC reconstructs the same table from the comparison
+chain) — fixed generally with `-fno-jump-tables` across every driver
+file with `UATTR` code, not just this one. The heap-budget re-analysis
+itself is now explicitly deferred until blk/uart/usb_cdc are also
+converted, per the user's own direction — see M5 Phase 4's own section.
+Written to be detailed and executed one milestone at a time, not
+implemented from this document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -1599,6 +1611,112 @@ idle, a tighter constraint than that floor. Three driver-task conversions
 in, the trend is unambiguous -- flagging this explicitly, not waiting to
 be asked, per the standing note since Phase 2: the re-analysis needs to
 happen before, not after, the next conversion tips something else over.
+Superseded by Phase 4's own note below: the user has since set the actual
+order -- finish converting every remaining driver first, then do one
+heap/static-buffer analysis across all of them together.
+
+### M5 Phase 4 — U-mode isolation for the ST7735 TFT canvas driver *(done, 2026-08-17)*
+
+st7735 is the first M5 driver needing two MMIO grants at once: a real
+PL022 SPI controller (SPI0, `CONFIG_SPI0_BASE`) for clock/data, plus SIO
+GPIO for CS/DC/RST -- heartbeat/tm1638 only ever needed SIO, i2c only
+ever needed its own controller. Domain: stack + text page + SIO + SPI0,
+4 of the 5 available PMP regions. `st7735_init_hardware()`'s
+`time_delay_us()` calls are all boot-time reset/init sequencing; nothing
+in the runtime draw path needs `SYS_DELAY_US`.
+
+**A new physical-capacity problem, not just a design one:** the shared
+`.utext` page (heartbeat + tm1638 + i2c + `kernel/shell.c`'s own probes)
+was already at ~3300/4096 bytes. st7735's `font5x7[96][5]` (480 bytes)
+plus six draw functions and a dispatch loop didn't fit in what was left.
+Fixed with a second, dedicated page, `.st7735text` (`linker/rp2350.ld`,
+mirrors `.utext`'s own definition; exposed via a new
+`board_st7735_text_region()`, `kernel/board.c`) -- st7735's domain uses
+this instead of the shared `.utext`, so it still costs exactly one RX
+region, just not the *same* one the other three drivers share. The three
+`static uint8_t foo[512]` scratch buffers in the kernel-mode
+`fill_screen`/`draw_rect`/`draw_bitmap_mono` are not persistent state
+(each is fully overwritten before use, unlike tm1638's RAM-cache) --
+their U-mode counterparts are plain stack locals instead, no
+stack-reservation trick needed.
+
+**ACCESSCTRL**, both fixes in `st7735_init_hardware()` (M-mode, before
+the task exists): `GPIO_NSMASK0` for CS/DC/RST (heartbeat/tm1638's own
+register, no write-password needed) and `ACCESSCTRL_SPI0` (checked
+against `~/gith/pico/pico-sdk`'s `accessctrl.h`: offset `0x90`, same
+`SP`/`SU`/`NSP`/`NSU` shape as `ACCESSCTRL_I2C0`/`_I2C1` -- **does** need
+the `0xacce0000` write-password prefix, applied correctly this time from
+Phase 3's own finding, no fourth board recovery needed for this one).
+
+**The real finding this phase, and it generalizes to every earlier
+phase too:** `st7735_umode_body()`'s six-case dispatch took a real load
+access fault (cause 5) on the very first real hardware call
+(`(canvas-fill ...)`), even after passing `st7735isotest` and every
+QEMU run. Root cause: GCC compiled the dispatch into a **jump table** --
+an array of case-target addresses stored in ordinary `.rodata`, outside
+`.st7735text`, that an indirect `jr` then jumps through. The disassembly
+check every phase since M5 Phase 2 has relied on (`objdump -d`, grep for
+`jal` targets) does not catch this: a jump table is loaded via
+`auipc`/`lw` and entered via `jr`, not `jal`, and does not appear as a
+named symbol at all. Converting the `switch` to an if/else-if chain did
+**not** fix it -- GCC's switch-conversion optimization pass recognizes a
+dense enough chain of equality comparisons and reconstructs the same
+jump table regardless of surface syntax, since the fix has to be
+structural, not textual. Fixed with `-fno-jump-tables`, applied via
+`set_source_files_properties()` (`CMakeLists.txt`) to every driver file
+with `UATTR`-tagged code (`uart_rp2350.c`, `tm1638_rp2350.c`,
+`i2c_rtc.c`, `st7735_rp2350.c`) -- not just this one. This exact flag
+already existed in this tree, for `user/progs/*.elf`'s own
+position-independence contract, with its own comment naming the
+mechanism ("a switch table is absolute addresses in .rodata") -- the
+same fact, an entirely different reason to care about it, missed until
+a dispatch loop big enough (six cases, versus tm1638/i2c's three and
+five) to make GCC's cost model actually choose a table over branches.
+tm1638/i2c were never structurally safe, only lucky not to have enough
+cases to trigger it -- worth remembering for [[umode_code_hazards]] as a
+new, generalized entry, and worth treating this class of hazard as "any
+UATTR dispatch with several cases" from now on, not "st7735 specifically."
+Thanks to `chan_owner_exited()` (Phase 2), the fault correctly reaped the
+task and its caller fell through to direct hardware access rather than
+hanging -- the bug was caught by a wrong-looking `st7735stats` call count
+(`calls=0` after four operations that all visibly worked, meaning every
+one silently used the fallback path) rather than a hang or a crash.
+
+`st7735isotest` mirrors `heartbeatisotest`/`tm1638isotest`/`i2cisotest`,
+against the full 4-region domain (stack + `.st7735text` + SIO + SPI0).
+
+Verified: full QEMU suite 217/217 across 3 consecutive clean runs on
+rv64 (rv32 covered by the same suite invocation; RP2350-only code,
+confirming no regression rather than exercising the new path -- run both
+before and after the jump-table fix, since that fix touched three
+already-verified drivers too). All four board personas build clean.
+Real RP2350 hardware, on `rp2350-chess` (the only persona with an
+ST7735 wired): `(canvas-fill)`/`(canvas-rect)`/`(canvas-pixel)`/
+`(canvas-text)` all round-trip cleanly through the real U-mode task
+after the jump-table fix (`st7735stats` call count advancing correctly,
+no fault) -- visually confirmed correct on the physical panel by the
+user (red fill, green rect, blue pixel, white text all present and
+correctly placed). `st7735isotest` 3/3 consecutive clean runs. Full
+`tests/hw/test_rp2350.py` 21/22 across 2 consecutive runs (the same
+pre-flagged, isolated heap-budget failure, nothing new). The sixth wire
+op, `draw_bitmap_mono`, was not separately exercised on hardware this
+phase (no simple shell/lisp primitive reaches it directly, unlike the
+other five) -- it shares the same `u_write_data_buf`/`u_set_window`
+primitives the four tested ops already proved, and its own row-decode
+loop is an unchanged port of the already-reviewed kernel-mode logic, so
+this is a real but low gap, not a blocker.
+
+Heap budget: idle baseline on `rp2350-chess` now 45 total pages (47
+after Phase 3) -- st7735's own dedicated stack page plus the whole new
+`.st7735text` page (4096 bytes of image, not heap, but the two shrink
+the same idle-heap number together). Four driver-task conversions in.
+Per the user's own explicit direction this phase: the heap/static-buffer
+analysis happens once blk, uart, and usb_cdc are *also* converted to
+U-mode, not before and not between phases -- this phase's own real
+measured costs (the new dedicated-text-page pattern chief among them,
+since any future driver whose own code doesn't fit `.utext` will need
+one too) are recorded here to feed that analysis when it happens, not
+acted on piecemeal now.
 
 ### M6 — Process visibility parity
 

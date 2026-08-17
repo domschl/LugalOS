@@ -31,6 +31,18 @@ SECTIONS
         . = _utext_start + 4096;
     } > FLASH
 
+    /* M5 Phase 4, plan/phase12_microkernel_migration.md: st7735's own
+     * dedicated U-mode-executable page -- the shared .utext page above
+     * ran out of room (font5x7[96][5] alone is 480 bytes, more than what
+     * was left after heartbeat/tm1638/i2c). Same shape as .utext, a
+     * second, separate region so PMP still only has to grant one RX
+     * region per driver, just not always the *same* one. */
+    .st7735text : ALIGN(4096) {
+        _st7735text_start = .;
+        *(.st7735text .st7735text.*)
+        . = _st7735text_start + 4096;
+    } > FLASH
+
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)

@@ -445,6 +445,30 @@ else()
     list(APPEND SOURCES arch/riscv/rv64_mmu/vmm.c)
 endif()
 
+# M5, plan/phase12_microkernel_migration.md: -fno-jump-tables for every
+# driver file with UATTR-tagged U-mode code (kernel/shell.c's own probes
+# are small enough to have never triggered this, but every driver's
+# dispatch loop is squarely at risk). user/progs/${uprog}.elf's own
+# COMMON_CFLAGS comment already names the reason ("a switch table is
+# absolute addresses in .rodata") for a different motivation
+# (position-independence); the same fact bites UATTR code for its own
+# reason -- a switch (or, found on real hardware in M5 Phase 4, an
+# if/else chain GCC's switch-conversion pass reconstructs into a table
+# just the same) compiles into a jump table stored in ordinary .rodata,
+# outside the .utext/.st7735text page the U-mode domain actually grants,
+# so the indirect jump through it takes a load access fault. Applied to
+# the whole file rather than only the UATTR functions within it -- CMake
+# has no finer granularity than a translation unit, and the cost (a
+# marginally larger, marginally slower jump table-free dispatch for any
+# *other* switch in these same files) is immaterial next to what a silent
+# jump table would risk again elsewhere in the same file later.
+set_source_files_properties(
+    drivers/uart_rp2350.c
+    drivers/tm1638_rp2350.c
+    drivers/i2c_rtc.c
+    drivers/st7735_rp2350.c
+    PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
+
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})
 add_dependencies(lugalos.elf lugalos_build_id)

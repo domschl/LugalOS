@@ -46,6 +46,15 @@ void board_text_region(uintptr_t *base, uintptr_t *size) {
     *size = 4096;
 }
 
+#if defined(CONFIG_BOARD_RP2350)
+extern char _st7735text_start[];
+
+void board_st7735_text_region(uintptr_t *base, uintptr_t *size) {
+    *base = (uintptr_t)_st7735text_start;
+    *size = 4096;
+}
+#endif
+
 /* K2, plan/phase7_kernel_config.md: this used to be its own independent
  * #ifdef ladder, hand-typing the same 0x40070000 that drivers/uart_rp2350.c
  * separately hand-typed as its own UART0_BASE -- two copies of one fact,

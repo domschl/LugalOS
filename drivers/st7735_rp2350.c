@@ -23,6 +23,11 @@
 #include "kernel/sched.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
+#include "kernel/ipc.h"
+#include "kernel/palloc.h"
+#include "arch/umode.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -52,6 +57,21 @@
 #define SSPCPSR                 (SPI0_BASE + 0x10)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
+
+/* M5 Phase 4, plan/phase12_microkernel_migration.md: RP2350's Secure/
+ * Non-secure split -- see drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0
+ * comment (Phase 1) for the datasheet citation, and drivers/i2c_rtc.c's
+ * ACCESSCTRL_I2C_RTC comment (Phase 3) for the write-password one. SPI0
+ * is the same per-peripheral register shape as I2C0/I2C1 -- checked
+ * directly against ~/gith/pico/pico-sdk's accessctrl.h -- and so needs
+ * the same 0xacce0000 write-password prefix I2C0/I2C1 did; the GPIO mask
+ * below does not (GPIO_NSMASK0/1 are the documented exemption). */
+#define ACCESSCTRL_BASE          0x40060000UL
+#define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c)
+#define ACCESSCTRL_SPI0          (ACCESSCTRL_BASE + 0x90)
+#define ACCESSCTRL_SPI0_NSP      (1u << 1)
+#define ACCESSCTRL_SPI0_NSU      (1u << 0)
+#define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
 
 #define CS_PIN  CONFIG_ST7735_CS_GPIO
 #define DC_PIN  CONFIG_ST7735_DC_GPIO
@@ -147,6 +167,14 @@ static int st7735_init_hardware(void) {
     cs_deselect();
     dc_command();
     REG(SIO_GPIO_OUT_SET) = RST_MASK;
+
+    /* M5 Phase 4: CS/DC/RST and SPI0 need to be Non-secure-accessible for
+     * the U-mode task's own serve loop below to actually touch them --
+     * must happen here, from M-mode, before the task exists. See
+     * ACCESSCTRL_SPI0's own comment above. */
+    REG(ACCESSCTRL_GPIO_NSMASK0) |= (CS_MASK | DC_MASK | RST_MASK);
+    REG(ACCESSCTRL_SPI0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI0)
+                           | ACCESSCTRL_SPI0_NSP | ACCESSCTRL_SPI0_NSU;
 
     /* 4. Disable SPI0 before programming, then set the clock for ~25 MHz
      * (clk_peri 150 MHz / (CPSDVSR=6 * (1+SCR=0))), closest achievable step
@@ -333,8 +361,27 @@ static void st7735_hw_draw_bitmap_mono(int x, int y, int w, int h, const uint16_
     st7735_write_data_buf(buffer, (size_t)(w * h * 2));
 }
 
-/* Standard 5x7 pixel ASCII font, covering ASCII 32 to 127. */
-static const uint8_t font5x7[96][5] = {
+/* M5 Phase 4, plan/phase12_microkernel_migration.md: this file's own
+ * dedicated U-mode-executable page (linker: .st7735text,
+ * board_st7735_text_region() -- kernel/board.c) rather than the shared
+ * .utext heartbeat/tm1638/i2c already use, which ran out of room once
+ * font5x7 below (480 bytes) needed to join them. Same
+ * section/no_sanitize shape those files' own UATTR macros use.
+ * ST7735_UDATA is separate from ST7735_UATTR for the same reason
+ * drivers/tm1638_rp2350.c's TM1638_UDATA is separate from TM1638_UATTR:
+ * GCC refuses to mix const data and executable code in one section (a
+ * "section type conflict" error), even though both land in the same
+ * linked page via the linker script's `*(.st7735text .st7735text.*)`
+ * wildcard. */
+#define ST7735_UATTR __attribute__((section(".st7735text"))) __attribute__((no_sanitize("undefined")))
+#define ST7735_UDATA __attribute__((section(".st7735text.rodata")))
+
+/* Standard 5x7 pixel ASCII font, covering ASCII 32 to 127. In
+ * .st7735text (not ordinary .rodata) so the U-mode task's own draw_char
+ * below can read it -- a single shared table, safe across the privilege
+ * boundary because it is never written; the kernel-mode fallback path
+ * below keeps reading the same one. */
+ST7735_UDATA static const uint8_t font5x7[96][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5f, 0x00, 0x00},
     {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7f, 0x14, 0x7f, 0x14},
     {0x24, 0x2a, 0x7f, 0x2a, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62},
@@ -482,76 +529,323 @@ static bool st7735_task_alive(void) {
 }
 
 static void put_i16(uint8_t *p, int v) { uint16_t u = (uint16_t)(int16_t)v; p[0] = (uint8_t)(u >> 8); p[1] = (uint8_t)u; }
-static int get_i16(const uint8_t *p) { return (int)(int16_t)(((uint16_t)p[0] << 8) | p[1]); }
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
-static uint16_t get_u16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
 
-/* This task, and only this task, may call the st7735_hw_* functions in this
- * file while alive -- see uart_16550.c's uart_task_body() for the fuller
- * reasoning (never call back into anything that could chan_call() this same
- * endpoint; never take printk_lock() from here). */
+/* ---- U-mode implementation, M5 Phase 4, plan/phase12_microkernel_migration.md ----
+ *
+ * A second, independent copy of the SPI/GPIO helpers above
+ * (cs_select/cs_deselect/dc_command/dc_data, spi_write_byte/spi_write_buf,
+ * st7735_write_cmd/_data/_data_buf, st7735_set_window) and the six
+ * st7735_hw_* draw functions, tagged ST7735_UATTR and reachable only
+ * from the U-mode task's own serve loop below -- not a refactor of the
+ * existing kernel-mode ones, which keep serving the direct-hardware
+ * fallback path exactly as before, unreachable from U-mode. The two
+ * copies never run concurrently -- the facade functions below route to
+ * one or the other depending on st7735_task_alive() -- so nothing needs
+ * to agree between them beyond the wire protocol and font5x7, both
+ * already shared.
+ *
+ * The three `static uint8_t foo[512]` buffers the kernel-mode versions
+ * use (fill_screen/draw_rect/draw_bitmap_mono) are not persistent state
+ * -- each is fully overwritten before use on every call, unlike
+ * drivers/tm1638_rp2350.c's RAM-cache, which genuinely has to survive
+ * across separate chan_serve_wait()/chan_serve_reply() round trips. Here
+ * they are plain U-mode-stack locals instead -- no fourth PMP region or
+ * stack-reservation trick needed. */
+ST7735_UATTR static void u_cs_select(void)   { REG(SIO_GPIO_OUT_CLR) = CS_MASK; }
+ST7735_UATTR static void u_cs_deselect(void) { REG(SIO_GPIO_OUT_SET) = CS_MASK; }
+ST7735_UATTR static void u_dc_command(void)  { REG(SIO_GPIO_OUT_CLR) = DC_MASK; }
+ST7735_UATTR static void u_dc_data(void)     { REG(SIO_GPIO_OUT_SET) = DC_MASK; }
+
+ST7735_UATTR static void u_spi_write_byte(uint8_t tx) {
+    while (REG(SSPSR) & (1u << 2)) {
+        (void)REG(SSPDR);
+    }
+    int timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 1)) && --timeout > 0);
+    REG(SSPDR) = tx;
+    timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 2)) && --timeout > 0);
+    (void)REG(SSPDR);
+}
+
+ST7735_UATTR static void u_spi_write_buf(const uint8_t *buf, size_t len) {
+    for (size_t i = 0; i < len; i++) u_spi_write_byte(buf[i]);
+}
+
+ST7735_UATTR static void u_write_cmd(uint8_t cmd) {
+    u_dc_command();
+    u_cs_select();
+    u_spi_write_byte(cmd);
+    u_cs_deselect();
+}
+
+ST7735_UATTR static void u_write_data(uint8_t data) {
+    u_dc_data();
+    u_cs_select();
+    u_spi_write_byte(data);
+    u_cs_deselect();
+}
+
+ST7735_UATTR static void u_write_data_buf(const uint8_t *buf, size_t len) {
+    u_dc_data();
+    u_cs_select();
+    u_spi_write_buf(buf, len);
+    u_cs_deselect();
+}
+
+ST7735_UATTR static void u_set_window(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1) {
+    u_write_cmd(0x2A);
+    u_write_data(0x00);
+    u_write_data(x0);
+    u_write_data(0x00);
+    u_write_data(x1);
+
+    u_write_cmd(0x2B);
+    u_write_data(0x00);
+    u_write_data(y0);
+    u_write_data(0x00);
+    u_write_data(y1);
+
+    u_write_cmd(0x2C);
+}
+
+ST7735_UATTR static void u_fill_screen(uint16_t color) {
+    u_set_window(0, 0, ST7735_WIDTH - 1, ST7735_HEIGHT - 1);
+    uint8_t color_bytes[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
+
+    uint8_t chunk[512];
+    for (int i = 0; i < 512; i += 2) {
+        chunk[i] = color_bytes[0];
+        chunk[i + 1] = color_bytes[1];
+    }
+    for (int i = 0; i < 80; i++) {
+        u_write_data_buf(chunk, 512);
+    }
+}
+
+ST7735_UATTR static void u_draw_pixel(int x, int y, uint16_t color) {
+    if (x < 0 || x >= ST7735_WIDTH || y < 0 || y >= ST7735_HEIGHT) return;
+    u_set_window((uint8_t)x, (uint8_t)y, (uint8_t)x, (uint8_t)y);
+    uint8_t data[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
+    u_write_data_buf(data, 2);
+}
+
+ST7735_UATTR static void u_draw_rect(int x, int y, int w, int h, uint16_t color) {
+    if (x < 0 || x + w > ST7735_WIDTH || y < 0 || y + h > ST7735_HEIGHT) return;
+    u_set_window((uint8_t)x, (uint8_t)y, (uint8_t)(x + w - 1), (uint8_t)(y + h - 1));
+    uint8_t color_bytes[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
+
+    uint8_t block[512];
+    size_t block_pixels = 256;
+    if (block_pixels > (size_t)(w * h)) block_pixels = (size_t)(w * h);
+    for (size_t i = 0; i < block_pixels * 2; i += 2) {
+        block[i] = color_bytes[0];
+        block[i + 1] = color_bytes[1];
+    }
+
+    int total_pixels = w * h;
+    int written = 0;
+    while (written < total_pixels) {
+        int to_write = total_pixels - written;
+        if (to_write > (int)block_pixels) to_write = (int)block_pixels;
+        u_write_data_buf(block, (size_t)to_write * 2);
+        written += to_write;
+    }
+}
+
+ST7735_UATTR static void u_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap, uint16_t fg_color, uint16_t bg_color) {
+    if (x < 0 || x + w > ST7735_WIDTH || y < 0 || y + h > ST7735_HEIGHT) return;
+    u_set_window((uint8_t)x, (uint8_t)y, (uint8_t)(x + w - 1), (uint8_t)(y + h - 1));
+
+    uint8_t buffer[512];
+    int idx = 0;
+
+    uint8_t fg_h = (uint8_t)(fg_color >> 8), fg_l = (uint8_t)(fg_color & 0xFF);
+    uint8_t bg_h = (uint8_t)(bg_color >> 8), bg_l = (uint8_t)(bg_color & 0xFF);
+
+    for (int r = 0; r < h; r++) {
+        uint16_t row_bits = bitmap[r];
+        for (int c = 0; c < w; c++) {
+            if ((row_bits >> (15 - c)) & 1) {
+                buffer[idx++] = fg_h;
+                buffer[idx++] = fg_l;
+            } else {
+                buffer[idx++] = bg_h;
+                buffer[idx++] = bg_l;
+            }
+        }
+    }
+    u_write_data_buf(buffer, (size_t)(w * h * 2));
+}
+
+ST7735_UATTR static void u_draw_char(int x, int y, char c, uint16_t color, int size) {
+    if (c < 32 || c > 127) return;
+    int font_idx = c - 32;
+
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = font5x7[font_idx][col];
+        for (int row = 0; row < 8; row++) {
+            if (line & 1) {
+                if (size == 1) {
+                    u_draw_pixel(x + col, y + row, color);
+                } else {
+                    u_draw_rect(x + col * size, y + row * size, size, size, color);
+                }
+            }
+            line >>= 1;
+        }
+    }
+}
+
+ST7735_UATTR static void u_draw_string(int x, int y, const char *str, uint16_t color, int size) {
+    while (*str) {
+        u_draw_char(x, y, *str, color, size);
+        x += 6 * size;
+        if (x > 120) break;
+        str++;
+    }
+}
+
+/* Hand-rolled per translation unit, not shared with any other driver's
+ * own usys_*() stubs or user/progs/usys.h -- an ST7735_UATTR function
+ * must not call anything the compiler might place outside .st7735text,
+ * and a cross-file inline is not a guarantee. */
+__attribute__((always_inline)) static inline long st7735_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = buf_max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long st7735_usys_chan_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline int st7735_usys_get_i16(const uint8_t *p) {
+    return (int)(int16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+__attribute__((always_inline)) static inline uint16_t st7735_usys_get_u16(const uint8_t *p) {
+    return ((uint16_t)p[0] << 8) | p[1];
+}
+
+ST7735_UATTR static void st7735_umode_body(void) {
+    /* Not a string literal: a literal lands in ordinary .rodata, outside
+     * every region this task's domain grants -- the bug that hung the
+     * board the first time this exact mechanism ran on real hardware in
+     * M5 Phase 2 (see drivers/tm1638_rp2350.c's own comment). volatile,
+     * for the reason kernel/shell.c's user_deputy() already documents:
+     * gcc recognises a run of consecutive stores and turns it back into
+     * a copy from a .rodata blob otherwise. */
+    volatile char name[8];
+    name[0]='s'; name[1]='t'; name[2]='7'; name[3]='7';
+    name[4]='3'; name[5]='5'; name[6]='\0';
+
+    for (;;) {
+        uint8_t req[ST7735_REQ_CAP];
+        long req_len = st7735_usys_chan_serve_wait((const char *)name, req, sizeof(req));
+        if (req_len < 1) {
+            st7735_usys_chan_serve_reply((const char *)name, NULL, 0);
+            continue;
+        }
+
+        /* Not a switch: with six cases, GCC compiles a switch into a
+         * jump table -- an array of addresses stored in ordinary
+         * .rodata, outside .st7735text, that the dispatch then does an
+         * indirect jump through. Found on real hardware, not predicted
+         * by the disassembly check (which greps for jal/call targets --
+         * an indirect jump through a loaded table entry is neither): a
+         * real load access fault (cause 5) reading the table itself,
+         * which lives outside every region this task's domain grants.
+         * tm1638_umode_body()/i2c_umode_body() have fewer cases and
+         * happened not to trigger this GCC codegen choice, not because
+         * a switch is inherently safe here -- an if/else chain is,
+         * structurally, since GCC never turns one into a jump table. */
+        uint8_t op = req[0];
+        if (op == ST7735_OP_FILL_SCREEN) {
+            if (req_len >= 3) u_fill_screen(st7735_usys_get_u16(&req[1]));
+        } else if (op == ST7735_OP_DRAW_PIXEL) {
+            if (req_len >= 7) {
+                u_draw_pixel(st7735_usys_get_i16(&req[1]), st7735_usys_get_i16(&req[3]),
+                            st7735_usys_get_u16(&req[5]));
+            }
+        } else if (op == ST7735_OP_DRAW_RECT) {
+            if (req_len >= 11) {
+                u_draw_rect(st7735_usys_get_i16(&req[1]), st7735_usys_get_i16(&req[3]),
+                           st7735_usys_get_i16(&req[5]), st7735_usys_get_i16(&req[7]),
+                           st7735_usys_get_u16(&req[9]));
+            }
+        } else if (op == ST7735_OP_DRAW_BITMAP) {
+            int h = req_len >= 13 ? st7735_usys_get_i16(&req[7]) : 0;
+            if (req_len >= 13 && h > 0 && (uint32_t)h <= ST7735_BITMAP_MAX_ROWS &&
+                (uint32_t)req_len >= 13u + (uint32_t)h * 2u) {
+                uint16_t bitmap[ST7735_BITMAP_MAX_ROWS];
+                for (int r = 0; r < h; r++) bitmap[r] = st7735_usys_get_u16(&req[13 + r * 2]);
+                u_draw_bitmap_mono(st7735_usys_get_i16(&req[1]), st7735_usys_get_i16(&req[3]),
+                                  st7735_usys_get_i16(&req[5]), h, bitmap,
+                                  st7735_usys_get_u16(&req[9]), st7735_usys_get_u16(&req[11]));
+            }
+        } else if (op == ST7735_OP_DRAW_CHAR) {
+            if (req_len >= 10) {
+                u_draw_char(st7735_usys_get_i16(&req[1]), st7735_usys_get_i16(&req[3]),
+                           (char)req[5], st7735_usys_get_u16(&req[6]),
+                           st7735_usys_get_i16(&req[8]));
+            }
+        } else if (op == ST7735_OP_DRAW_STRING) {
+            if (req_len >= 9) {
+                /* Not memcpy(): under -fno-builtin (this whole tree's
+                 * build flags), a memcpy() call is not inlined -- it
+                 * compiles to a real call outside .st7735text. Found
+                 * this exact class of bug in drivers/tm1638_rp2350.c
+                 * (M5 Phase 2); written out explicitly here from the
+                 * start instead of rediscovering it. */
+                char str[ST7735_STR_MAX + 1];
+                uint32_t len = (uint32_t)req_len - 9;
+                if (len > ST7735_STR_MAX) len = ST7735_STR_MAX;
+                for (uint32_t i = 0; i < len; i++) str[i] = (char)req[9 + i];
+                str[len] = '\0';
+                u_draw_string(st7735_usys_get_i16(&req[1]), st7735_usys_get_i16(&req[3]),
+                             str, st7735_usys_get_u16(&req[5]), st7735_usys_get_i16(&req[7]));
+            }
+        }
+        st7735_usys_chan_serve_reply((const char *)name, NULL, 0);
+    }
+}
+
+static uint8_t      g_st7735_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t g_st7735_domain;
+
+/* This task's own kernel-mode entry point: task_create_sized() calls this
+ * (ordinary kernel stack, kernel privilege) to build the domain and make
+ * the one-way jump into U-mode. Mirrors drivers/i2c_rtc.c's
+ * i2c_task_body() shape, with a fourth region: this is the first M5
+ * driver needing both an SIO grant (CS/DC/RST) and a hardware-controller
+ * grant (SPI0) at once. */
 static void st7735_task_body(void *arg) {
     (void)arg;
     while (!g_st7735_ep) sched_yield();
 
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_st7735_ep);
-        if (req_len < 1) { chan_serve_reply(g_st7735_ep, 0); continue; }
-        g_st7735_calls++;
+    mem_domain_init(&g_st7735_domain);
+    mem_domain_add(&g_st7735_domain, (uintptr_t)g_st7735_ustack, sizeof(g_st7735_ustack),
+                   MEM_R | MEM_W);
 
-        uint8_t op = g_st7735_req[0];
-        switch (op) {
-        case ST7735_OP_FILL_SCREEN:
-            if (req_len >= 3) st7735_hw_fill_screen(get_u16(&g_st7735_req[1]));
-            break;
-        case ST7735_OP_DRAW_PIXEL:
-            if (req_len >= 7) {
-                st7735_hw_draw_pixel(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
-                                     get_u16(&g_st7735_req[5]));
-            }
-            break;
-        case ST7735_OP_DRAW_RECT:
-            if (req_len >= 11) {
-                st7735_hw_draw_rect(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
-                                    get_i16(&g_st7735_req[5]), get_i16(&g_st7735_req[7]),
-                                    get_u16(&g_st7735_req[9]));
-            }
-            break;
-        case ST7735_OP_DRAW_BITMAP: {
-            int h = req_len >= 13 ? get_i16(&g_st7735_req[7]) : 0;
-            if (req_len >= 13 && h > 0 && (uint32_t)h <= ST7735_BITMAP_MAX_ROWS &&
-                req_len >= 13u + (uint32_t)h * 2u) {
-                uint16_t bitmap[ST7735_BITMAP_MAX_ROWS];
-                for (int r = 0; r < h; r++) bitmap[r] = get_u16(&g_st7735_req[13 + r * 2]);
-                st7735_hw_draw_bitmap_mono(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
-                                           get_i16(&g_st7735_req[5]), h, bitmap,
-                                           get_u16(&g_st7735_req[9]), get_u16(&g_st7735_req[11]));
-            }
-            break;
-        }
-        case ST7735_OP_DRAW_CHAR:
-            if (req_len >= 10) {
-                st7735_hw_draw_char(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
-                                    (char)g_st7735_req[5], get_u16(&g_st7735_req[6]),
-                                    get_i16(&g_st7735_req[8]));
-            }
-            break;
-        case ST7735_OP_DRAW_STRING:
-            if (req_len >= 9) {
-                char str[ST7735_STR_MAX + 1];
-                uint32_t len = req_len - 9;
-                if (len > ST7735_STR_MAX) len = ST7735_STR_MAX;
-                memcpy(str, &g_st7735_req[9], len);
-                str[len] = '\0';
-                st7735_hw_draw_string(get_i16(&g_st7735_req[1]), get_i16(&g_st7735_req[3]),
-                                      str, get_u16(&g_st7735_req[5]), get_i16(&g_st7735_req[7]));
-            }
-            break;
-        default:
-            break;
-        }
-        chan_serve_reply(g_st7735_ep, 0);
+    uintptr_t tbase, tsize;
+    board_st7735_text_region(&tbase, &tsize);
+    mem_domain_add(&g_st7735_domain, tbase, tsize, MEM_R | MEM_X);
+
+    mem_domain_add(&g_st7735_domain, SIO_BASE, 4096, MEM_R | MEM_W);
+    mem_domain_add(&g_st7735_domain, SPI0_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &g_st7735_domain) != 0) {
+        printk("[ST7735] Refusing to enter U-mode: memory domain not enforceable; canvas stays on direct hardware access.\n");
+        return;
     }
+    arch_enter_user(st7735_umode_body, (uintptr_t)g_st7735_ustack + sizeof(g_st7735_ustack), 0, 0, 0);
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
@@ -578,10 +872,87 @@ static int st7735_call_with_retry(const uint8_t *req, uint32_t req_len) {
     uint8_t resp[ST7735_RESP_CAP];
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_st7735_ep, req, req_len, resp, sizeof(resp));
-        if (n >= 0) return n;
+        /* M5 Phase 4: counted here, on the client side -- see
+         * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
+         * same reasoning: a U-mode server cannot touch g_st7735_calls,
+         * an ordinary kernel .bss global no domain grants it. */
+        if (n >= 0) { g_st7735_calls++; return n; }
         sched_yield();
     }
     return -1;
+}
+
+/* M5 Phase 4's own "Verify" deliverable: does the real st7735 domain
+ * shape (stack + .st7735text + SIO + SPI0) actually confine the task to
+ * its own hardware, or does one of the two MMIO grants' width
+ * accidentally cover more? Modeled directly on drivers/i2c_rtc.c's
+ * i2c_isolation_test() -- same idea (a deliberate out-of-domain store,
+ * asserted to fault), a separate canary rather than reaching into
+ * another file's, for the same reason the syscall stubs above are
+ * hand-rolled per file. */
+static volatile uintptr_t g_st7735_canary = 0xC0FFEE;
+
+ST7735_UATTR static void st7735_intruder(void) {
+    g_st7735_canary = 0xDEAD;
+    for (;;) { } /* only reached if the store was NOT stopped */
+}
+
+static volatile bool g_st7735_intruder_entered;
+
+/* `arg` is the U-mode stack -- allocated by st7735_isolation_test()
+ * below, not here, so it can free it once the task is confirmed DEAD
+ * (same shape as i2c_isolation_test()'s own probe). */
+static void st7735_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_st7735_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    /* The exact grants real st7735 runs under -- this is what's on trial. */
+    mem_domain_add(&dom, SIO_BASE, 4096, MEM_R | MEM_W);
+    mem_domain_add(&dom, SPI0_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[ST7735Iso] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_st7735_intruder_entered = true;
+    arch_enter_user(st7735_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+/* Runs the probe to completion and reports what actually happened. Returns
+ * false if the task never reached U-mode (domain not enforceable on this
+ * build/core, or the one-page stack could not be allocated) -- in that
+ * case *out_canary and *out_exited_clean say nothing about isolation,
+ * matching cmd_usertest_isolation()'s own "INCONCLUSIVE" case. */
+bool st7735_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_st7735_canary = 0xC0FFEE;
+    g_st7735_intruder_entered = false;
+
+    void *ustack = palloc_pages(1);
+    if (!ustack) {
+        *out_canary = g_st7735_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+
+    int pid = task_create("st7735_intruder", st7735_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        *out_canary = g_st7735_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    long status;
+    *out_exited_clean = sched_task_exited_cleanly(pid, &status);
+    *out_canary = g_st7735_canary;
+    palloc_free(ustack, 1);
+    return g_st7735_intruder_entered;
 }
 
 void st7735_fill_screen(uint16_t color) {
