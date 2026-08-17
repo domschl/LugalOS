@@ -4,10 +4,17 @@
 
 The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
 were aspirational, on the principle that a name should describe what the code does. It is restored
-as of v0.6.0 (preemptive scheduling landed in v0.7.0, separately linked user programs in v0.8.0):
-message-passing IPC, a real scheduler, **user programs that run in U-mode from files on disk**, and
-**hardware-enforced per-task memory isolation on both memory models** — PMP regions on NOMMU RISC-V (verified on real RP2350
-silicon) and Sv39 page tables on the 64-bit MMU target — are implemented and continuously tested.
+as of v0.6.0 (preemptive scheduling landed in v0.7.0, separately linked user programs in v0.8.0,
+**every driver task confined to its own hardware-enforced memory domain in v0.9.0**):
+message-passing IPC, a real scheduler, **user programs and device drivers that both run in U-mode**,
+and **hardware-enforced per-task memory isolation on both memory models** — PMP regions on NOMMU
+RISC-V (verified on real RP2350 silicon) and Sv39 page tables on the 64-bit MMU target — are
+implemented and continuously tested. As of v0.9.0 this is no longer only true for user-loaded
+programs: the RP2350's own drivers (console/UART, USB CDC, SD/SPI block storage, the shared
+I2C/RTC/EEPROM controller, the ST7735 display, the TM1638 keypad, and a heartbeat LED task) each
+run as an independent U-mode task confined to only the registers and RAM it actually needs, verified
+by a real PMP fault when a per-driver isolation probe deliberately tries to write outside its own
+grant. `ps` reports which tasks that isolation actually covers and by which backend (`PMP`/`Sv39`).
 [Implementation Status](#implementation-status) below still states exactly what is and is not real,
 including what remains roadmap.
 
@@ -21,14 +28,27 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 181 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 14 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 217 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 22 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
   boundary that validates and copies every user pointer; and the console and 9P/filesystem servers
   running as scheduled tasks rather than inline calls.
+- **Every RP2350 driver task confined to its own PMP domain** (`plan/phase12_microkernel_migration.md`,
+  milestone M5): console/UART, the native USB CDC dual-ACM stack, SD/SPI block storage, the shared
+  I2C RTC/EEPROM controller, the ST7735 TFT canvas, the TM1638 keypad/display, and a heartbeat LED
+  task each run as an independent U-mode task, PMP-restricted to only the registers and RAM it
+  actually uses — a bug in one driver's code cannot corrupt another's state or touch hardware it
+  doesn't own. Verified per driver by a real fault: each has its own `<driver>isotest` shell command
+  (`heartbeatisotest`, `tm1638isotest`, `i2cisotest`, `st7735isotest`, `blkisotest`, `uartisotest`,
+  `usbisotest`) that deliberately stores outside the driver's own grant and asserts the store faults
+  and a canary in kernel memory stays untouched.
+- **`ps` reports which tasks that isolation actually covers**: an `Isol` column shows `PMP`, `Sv39`,
+  or `-` per task, reading the same domain state the scheduler and PMP/Sv39 backend already track —
+  so the isolation claims above are something you can point at in a running system, not just in the
+  test suite.
 - **More than one user program at a time**: each loaded program gets its own image, user stack and
   memory domain, and hands all three back when it ends — including its Sv39 page-table tree on the
   MMU build. `(spawn "path")` starts one without waiting; `exec` still runs one to completion.
@@ -38,8 +58,11 @@ silicon):
   each name is and which wire it drives.
 - **Memory taken only while it is used**: the C compiler and the editors hold their working
   memory (~150 KB together) on the heap for the duration of a command and return it afterwards,
-  rather than reserving it in the image. On RP2350 that is what takes the kernel image from 434 KB
-  to 183 KB and the heap from 60 KB to 312 KB.
+  rather than reserving it in the image. Every driver task's own U-mode stack is sized from a real
+  measured worst-case call depth (not a flat guess) and tiled into a zero-gap linker layout rather
+  than scattered — together with the compiler/editor reclaim, this is what took a representative
+  RP2350 board's idle free-page baseline from 33 pages to 55 after a driver-task memory audit
+  (`plan/phase12_microkernel_migration.md`'s M5 Heap-Reclaim section has the full accounting).
 - **User programs larger than two pages**: the image is sized from the program headers and rounded
   to a power-of-two page run, with each segment granted what its ELF `p_flags` declare — so W^X
   comes from the linker rather than from the loader assuming a layout. A segment whose page count
@@ -53,7 +76,8 @@ silicon):
   hands out, and runs as a U-mode task confined to three of them — text (R|X), data (R|W), stack
   (R|W). `exec` is that path, so a program compiled on the machine by `cc` runs confined too. The
   loader validates every header offset against the file size before using it.
-- Boots to an interactive shell (`lsh`) on all three targets.
+- Boots to an interactive shell (`lsh`) on all supported targets, including two distinct RP2350
+  board personas (`rp2350-chess`, `rp2350-clock` — see [Build presets](#build-presets)).
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
 - The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the
@@ -62,7 +86,14 @@ silicon):
 - The native C11 compiler (`chibicc`), producing real RISC-V ELF binaries, and the Thompson
   `ed`-style line editor.
 - The native RP2350 USB CDC ACM console (`/dev/ttyACM0`), written from scratch against the
-  hardware.
+  hardware, now running as a U-mode task like every other RP2350 driver.
+- **An onboard chess engine** (`user/chess/`) with a console REPL (`chess-console`), alpha-beta
+  search, checkmate/stalemate detection, and full game state (undo/redo/FEN save-load) — reachable
+  interactively over the same `lsh` shell, on both QEMU and real RP2350 hardware.
+- **A second RP2350 board persona**: `rp2350-clock` targets the Waveshare Pico-Clock-Green baseboard
+  — a 7-segment clock display with LDR-driven auto-brightness, wired through the same driver-task
+  architecture as the default `rp2350-chess` persona, demonstrating that "which hardware this board
+  has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a fork of the kernel.
 
 ---
 
@@ -93,7 +124,10 @@ silicon):
     a service on another machine are the same code path.
   * **U-mode tasks with hardware-enforced per-task memory domains**, behind a single interface
     (`kernel/mem_domain.h`): **PMP regions** on the NOMMU/M-mode targets and **Sv39 page tables** on
-    RV64. A task that stores into kernel memory faults and is terminated; the kernel survives.
+    RV64. A task that stores into kernel memory faults and is terminated; the kernel survives. Not
+    only user programs run confined this way — every RP2350 driver task does too (console/UART, USB
+    CDC, SD/SPI block, I2C RTC/EEPROM, ST7735, TM1638, heartbeat), each restricted to only the
+    registers and RAM it actually needs.
   * **Validated syscall boundary** (`kernel/uaccess.h`): every user pointer is checked against the
     calling task's own domain and then copied, so the kernel never dereferences a caller-supplied
     address and cannot be used as a confused deputy.
@@ -114,6 +148,8 @@ silicon):
   | `taskdemo` | Two tasks interleaving at explicit yield points, which is what distinguishes real switching from a no-op yield. |
   | `preempttest` | A task that **never yields** still gets switched away from. This cannot pass without a timer interrupt, which is exactly why it exists separately from `taskdemo`. |
   | `klog detach console` | Kernel diagnostics stop reaching the terminal while the shell keeps working. |
+  | `heartbeatisotest`, `tm1638isotest`, `i2cisotest`, `st7735isotest`, `blkisotest`, `uartisotest`, `usbisotest` (RP2350) | The same isolation-fault proof as `isolationtest`, run against each driver task's *actual production domain* — the exact PMP grant that driver runs under, not a synthetic stand-in. |
+  | `ps` | The live task table, including an `Isol` column: `PMP`/`Sv39` for a task with a real memory domain attached, `-` for one that doesn't have one (the kernel task itself, or a driver not yet converted). |
 
 * **Storage Engine & VirtIO Block Device**:
   * Native FAT32 filesystem engine supporting 32-bit cluster allocation, subdirectories (`.`, `..`), BPB formatting, file read/write, deletion, directory creation (`mkdir`), removal (`rmdir`), and copying (`cp`).
@@ -133,7 +169,7 @@ silicon):
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 75 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time).
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 217 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 22 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 
 
 
@@ -145,22 +181,26 @@ silicon):
 ```
 lugalos/
 ├── arch/riscv/
-│   ├── common/              # RISC-V assembly entry point, traps, ELF loader
+│   ├── common/              # RISC-V assembly entry point, traps, PMP/Sv39 memory domains, ELF loader
 │   ├── include/arch/        # CSRs, Trap frames, VMM, ELF headers
-│   ├── rv32_nommu/          # 32-bit physical identity memory mapping
-│   ├── rv64_mmu/            # Sv39 page-table scaffolding (not yet wired up, see Implementation Status)
-│   ├── rp2350/              # RP2350 boot header, binary_info metadata
-├── cmake/                   # Cross-compilation toolchains (RV32, RV64, RP2350)
-├── drivers/                 # UART drivers (16550 / PL011 / RP2350), VirtIO Block, RAMDisk
+│   ├── rv32_nommu/          # 32-bit physical identity memory mapping (PMP-backed domains)
+│   ├── rv64_mmu/            # Sv39 page-table backend for memory domains
+│   ├── rp2350/              # RP2350 boot header, binary_info metadata, BOOTSEL/bootrom glue
+├── cmake/                   # Cross-compilation toolchains and per-board-persona config (RV32, RV64, RP2350 x2)
+├── drivers/                 # UART (16550/PL011/RP2350), USB CDC, SD/SPI block, I2C RTC/EEPROM,
+│                             # ST7735 TFT, TM1638 keypad, VirtIO Block/Console, RAMDisk — every
+│                             # RP2350 driver here also runs as its own U-mode task (see plan/phase12_*.md)
 ├── fs/                      # FAT32 filesystem engine (Subdirectories, BPB) & Plan 9 VFS Server
 ├── kernel/                  # Microkernel main, scheduler, IPC, shell, printk
 ├── libc/                    # Freestanding C string library
 ├── linker/                  # Linker scripts (QEMU virt RV32/64, RP2350 XIP Flash)
+├── plan/                    # Dated, phase-by-phase design and completion notes (the project's own history)
 ├── tools/                   # SD root template, FAT32 disk image generator, UF2 packager
 └── user/
-    ├── chibicc/             # Native C11 compiler (`chibicc`)
-    ├── ed/                  # Extended Unix teletype line editor (`ed`)
-    └── lisp/                # Scheme REPL & RISC-V S-expression ELF compiler
+    ├── chess/                # Onboard chess engine (movegen, search, eval) + console REPL
+    ├── chibicc/               # Native C11 compiler (`chibicc`)
+    ├── ed/                    # Extended Unix teletype line editor (`ed`)
+    └── lisp/                  # Scheme REPL & RISC-V S-expression ELF compiler
 ```
 
 ---
@@ -320,6 +360,12 @@ This is the default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad 
 wires several of those same pins to different hardware, so it's a separate `rp2350-clock` preset rather than a
 build flag on this one — see `cmake/board-rp2350-clock.cmake`.
 
+**Skip building from source**: a maintainer build populates a local `dist/` directory with pre-built
+UF2 images for both RP2350 personas, one per release (`dist/README.md` documents the exact naming and
+how to regenerate it — the images themselves are build output, not checked into git, same as `build/`).
+If you have one, flash `dist/lugalos-<version>-rp2350-chess.uf2` or `dist/lugalos-<version>-rp2350-clock.uf2`
+directly with the same steps below.
+
 ### Flash to Pico 2
 
 1. Hold **BOOTSEL** button on Pico 2 while plugging in USB (or while powering on via CP2101 5V).  
@@ -371,14 +417,40 @@ picocom -b 115200 /dev/tty.usbmodem*
 ```
 `/dev/ttyACM0` (Linux) or `/dev/tty.usbmodem*` (macOS) carries the same interactive `lsh` session as the UART console above (output is mirrored to both). Output only starts flowing once the terminal asserts DTR (i.e. once something actually opens the port), so connecting doesn't dump a backlog of boot-time log lines. `/dev/ttyACM1` / the second CDC ACM interface is `link_usb_cdc` — a real 9P transport, not a console; see [`tests/hw/`](tests/hw/) for hardware-in-the-loop tests exercising it (including bridging it to a live QEMU node). The `p9share` shell command offers the same coexisting-9P-and-console story over the single physical UART instead, for a one-cable setup.
 
-Expected output after boot:
+Expected output after boot (`rp2350-chess` persona; `cat /proc/kmsg` shows the full log any time
+after boot, this is what streams live):
 ```
-LugalOS Lisp Machine v0.6.0 (build 152.3ce6e4e2)
-[Dev] Registry: rtc, eeprom, usb, uart, uartslip, uartdemux, usbnet
-[PAlloc] Page allocator: 18 pages of 4096 bytes at 0x2006e000 (72 KB)
+==================================================
+       LugalOS Lisp Machine v0.9.0 (build 252.f0b1a461)
+==================================================
+[Dev] Registry: rtc, eeprom, usb, uart, uartslip, uartdemux, usbnet, usbcon
+[PAlloc] Page allocator: 55 pages of 4096 bytes at 0x20049000 (220 KB)
 [9P Chan] Local 9P server endpoint '/srv/p9' online (copy-always IPC).
-[Sched] Cooperative round-robin scheduler online (max 8 tasks)
-lsh>
+[Sched] Cooperative round-robin scheduler online (max 24 tasks)
+[Sched] Created task #1 'usbcdc' (stack 20049000, 4 KB)
+[USB] Background servicing task #1 running.
+[Sched] Created task #2 'uart' (stack 2004a000, 4 KB)
+[UART] Driver running as task #2, reachable via chan_call("uart", ...)
+[Sched] Created task #3 'heartbeat' (stack 2004b000, 4 KB)
+[Sched] Created task #4 'sdblk' (stack 2004c000, 4 KB)
+[SPI SD] Driver running as task #4, reachable via chan_call("sdblk", ...)
+[Sched] Created task #5 'i2c' (stack 2004d000, 4 KB)
+[Sched] Created task #6 'st7735' (stack 2004e000, 4 KB)
+[Sched] Created task #7 'tm1638' (stack 2004f000, 4 KB)
+[Sched] Created task #8 'p9srv' (stack 20060000, 8 KB)
+[Shell] Interactive Lugal Shell (lsh) initialized with Plan 9 Universal Namespace.
+lsh> ps
+PID  State    Name          Exit   Isol
+---  -------  ------------  ----   ----
+  0  RUNNING  kernel        -      -
+  1  READY    usbcdc        -      PMP
+  2  BLOCKED  uart          -      PMP
+  3  READY    heartbeat     -      PMP
+  4  BLOCKED  sdblk         -      PMP
+  5  BLOCKED  i2c           -      PMP
+  6  BLOCKED  st7735        -      PMP
+  7  BLOCKED  tm1638        -      PMP
+  8  READY    p9srv         -      -
 ```
 
 ### RP2350 UF2 Packager

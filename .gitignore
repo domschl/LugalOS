@@ -1,6 +1,11 @@
 # Build directories
 build/
 .cache/
+
+# Packaged release UF2s (dist/README.md documents how to regenerate them --
+# binary build output, same reasoning as build/ above, not source).
+dist/*.uf2
+dist/SHA256SUMS
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
