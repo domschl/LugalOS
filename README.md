@@ -2,23 +2,9 @@
 
 **LugalOS** is a bare-metal, dependency-free microkernel operating system written in pure freestanding C11 and RISC-V assembly.
 
-The "Microkernel" in the title was dropped for a long time while the IPC, scheduler and MMU work
-were aspirational, on the principle that a name should describe what the code does. It is restored
-as of v0.6.0 (preemptive scheduling landed in v0.7.0, separately linked user programs in v0.8.0,
-**every driver task confined to its own hardware-enforced memory domain in v0.9.0**):
-message-passing IPC, a real scheduler, **user programs and device drivers that both run in U-mode**,
-and **hardware-enforced per-task memory isolation on both memory models** — PMP regions on NOMMU
-RISC-V (verified on real RP2350 silicon) and Sv39 page tables on the 64-bit MMU target — are
-implemented and continuously tested. As of v0.9.0 this is no longer only true for user-loaded
-programs: the RP2350's own drivers (console/UART, USB CDC, SD/SPI block storage, the shared
-I2C/RTC/EEPROM controller, the ST7735 display, the TM1638 keypad, and a heartbeat LED task) each
-run as an independent U-mode task confined to only the registers and RAM it actually needs, verified
-by a real PMP fault when a per-driver isolation probe deliberately tries to write outside its own
-grant. `ps` reports which tasks that isolation actually covers and by which backend (`PMP`/`Sv39`).
-[Implementation Status](#implementation-status) below still states exactly what is and is not real,
-including what remains roadmap.
+It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (QEMU only currently).
 
-It is designed to scale dynamically from embedded **NOMMU** microcontrollers (like the **RP2350** / Pico 2) up to 64-bit **MMU** application processors (like the **Kendryte K210** and **VisionFive 2**).
+Note: this is a guided AI development project. Coding was done by Claude Code. It is in early proof-of-concept stage.
 
 ---
 
@@ -170,9 +156,6 @@ silicon):
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
 * **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 217 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 22 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
-
-
-
 
 ---
 
