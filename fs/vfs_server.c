@@ -20,6 +20,7 @@
 #include "kernel/path.h"
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
+#include "kernel/mem_domain.h"
 #include "kernel/version.h"
 #include <string.h>
 #include <stdbool.h>
@@ -433,27 +434,54 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     if (strcmp(rel, "ps") == 0) {
         /* B2: the real task table. This used to be a hardcoded string
          * listing four tasks that did not exist -- kernel/sched.c was
-         * bookkeeping only and nothing was ever scheduled. */
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit\n");
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----\n");
+         * bookkeeping only and nothing was ever scheduled.
+         *
+         * M6: "Isol" makes the vision statement at the top of
+         * plan/phase12_microkernel_migration.md a thing you can point at
+         * rather than describe -- whether each task actually runs under
+         * hardware-enforced isolation (task_set_domain() was called on
+         * it) rather than just "is alive". Every M5 driver task shows the
+         * real backend name once it enters U-mode (PMP on the RP2350/
+         * RV32_NOMMU builds, Sv39 on RV64_MMU); the kernel task itself
+         * and anything not yet converted (M4.5's own p9srv) correctly
+         * show "-". Same shape on both backends -- the one thing that
+         * differs is which name appears, not whether the column exists. */
+        /* "Isol" trails Exit rather than sitting between Name and Exit --
+         * tests/hw and tests/runner.py both have existing patterns
+         * (`uprog\s+42`, `uprog\s+killed`) asserting Name is immediately
+         * followed by the exit outcome; keeping that adjacency means this
+         * column addition costs nothing elsewhere instead of needing every
+         * such pattern hunted down and loosened. Found the hard way (a
+         * QEMU rv64 run that looked like a hang was actually 3 full
+         * retries failing the same two now-broken regexes). */
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----\n");
         int pid, state;
         const char *tname;
         long status;
-        bool clean;
-        for (uint32_t i = 0; sched_task_info_ex(i, &pid, &state, &tname, &status, &clean); i++) {
+        bool clean, has_domain;
+        for (uint32_t i = 0; sched_task_info_ex(i, &pid, &state, &tname, &status, &clean, &has_domain); i++) {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "%3d  ", pid);
             used = append_col(buf, used, cap, sched_state_name(state), 9);
             used = append_col(buf, used, cap, tname, 14);
             /* Only a dead task has an outcome. "killed" rather than a number
              * for one the fault handler ended: a status of 0 would otherwise
              * read as a clean success, which is precisely backwards. */
+            char exitbuf[8];
             if (state != TASK_DEAD) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
+                ksnprintf(exitbuf, sizeof(exitbuf), "-");
             } else if (clean) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "%ld\n", status);
+                ksnprintf(exitbuf, sizeof(exitbuf), "%ld", status);
             } else {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "killed\n");
+                ksnprintf(exitbuf, sizeof(exitbuf), "killed");
             }
+            /* Width 7, not 6: "killed" (6 chars) would otherwise exactly
+             * fill a 6-wide column and glue onto Isol with no separating
+             * space at all -- found live on real hardware (`usbisotest`
+             * prints "killed" for the intruder task it deliberately kills). */
+            used = append_col(buf, used, cap, exitbuf, 7);
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s\n",
+                                        has_domain ? mem_domain_backend_name() : "-");
         }
         return (int)used;
     } else if (strcmp(rel, "df") == 0) {

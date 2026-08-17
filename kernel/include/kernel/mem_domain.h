@@ -125,4 +125,11 @@ void mem_domain_destroy(mem_domain_t *d);
 
 bool mem_domain_enforced(void);
 
+/* M6: "PMP" or "Sv39" -- which backend this build's domains are enforced by,
+ * so a reporting surface (`ps`'s own "Isol" column) can say which kind of
+ * hardware-backed isolation a task actually has, not just that it has one.
+ * A compile-time fact (CONFIG_MODE_M vs CONFIG_MODE_S), so this is one
+ * function rather than every caller re-deriving it from the same macros. */
+const char *mem_domain_backend_name(void);
+
 #endif /* LUGALOS_KERNEL_MEM_DOMAIN_H */

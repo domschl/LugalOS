@@ -173,9 +173,17 @@ bool        sched_task_info(uint32_t index, int *pid, int *state, const char **n
 /* As above, plus how the task ended: its exit status and whether it asked to
  * end rather than being killed by the fault handler (C3). An exit status alone
  * cannot tell those apart -- 0 is both an ordinary return value and what a
- * killed task leaves behind. Both are only meaningful once the task is DEAD. */
+ * killed task leaves behind. Both are only meaningful once the task is DEAD.
+ *
+ * M6: plus whether the task has a memory domain attached at all
+ * (task_set_domain() was called on it) -- true for every U-mode driver
+ * task once M5 gave it a real one, and for a loaded user program while
+ * it runs; false for the kernel task itself and for any task that still
+ * runs kernel-mode only (M4.5's own p9srv, still unconverted). This is
+ * what makes `ps`'s "Isol" column a fact about the running system rather
+ * than a claim: it reads the same field mem_domain_activate() reads. */
 bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
-                               long *exit_status, bool *exited_clean);
+                               long *exit_status, bool *exited_clean, bool *has_domain);
 
 /* True once sched_init() has run and switching is possible. Lets code that
  * runs both before and after scheduler bring-up (e.g. driver busy-waits)

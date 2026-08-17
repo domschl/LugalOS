@@ -259,6 +259,8 @@ int mem_domain_activate(const mem_domain_t *d) {
 
 bool mem_domain_enforced(void) { return true; }
 
+const char *mem_domain_backend_name(void) { return "PMP"; }
+
 /* Nothing cached: a PMP domain is the region list itself, reprogrammed on
  * every context switch. Present so the loader can release a domain without
  * asking which memory model it is on (Rule 0, §5.1). */
@@ -391,6 +393,8 @@ int mem_domain_activate(const mem_domain_t *d) {
 }
 
 bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
+
+const char *mem_domain_backend_name(void) { return "Sv39"; }
 
 /* Returns the page table built by build_space(). See the header on why this
  * must not run while the domain is active -- the hart would be translating

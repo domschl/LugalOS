@@ -82,9 +82,21 @@ flat 4096 -- took the `rp2350-chess` idle baseline from 33 to 55 pages,
 recovering Phase 7's own regression outright: `tests/hw/test_rp2350.py`
 went from 19/22 to a clean 22/22, including `C6/C7`, which no phase in
 this milestone had passed before. C and D found nothing further worth
-taking — see M5 Heap-Reclaim's own section. Written to be detailed and
-executed one milestone at a time, not implemented from this
-document directly.
+taking — see M5 Heap-Reclaim's own section. A persona-driven
+driver-fusion idea (joining several drivers into one shared domain to
+trade isolation for footprint) was considered next and explicitly
+discarded: the marginal benefit had already shrunk to the same order of
+magnitude A+B delivered for free, against real, non-hypothetical costs
+(every M5 phase found a real driver bug; fusing removes the PMP boundary
+that caught each one, dilutes a fused domain's hardware grants to the
+union of its constituents', and several drivers are already at the
+5-region PMP ceiling alone). **M6 complete (2026-08-17): `ps`/`/proc/ps`
+gained an `Isol` column reporting each task's real isolation backend
+(`PMP`/`Sv39`/`-`), reading `task_set_domain()`'s own existing state --
+closing Phase 12.** M0 through M6 are all done; see M6's own section for
+the two real bugs the QEMU/hardware suites caught in the process.
+Written to be detailed and executed one milestone at a time, not
+implemented from this document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -2239,18 +2251,56 @@ one shared domain) -- held in reserve, but A+B alone turned out to be
 enough that reaching for either would have traded working design
 principles for savings the project didn't end up needing.
 
-### M6 — Process visibility parity
+### M6 — Process visibility parity *(done, 2026-08-17)*
 
-The `ps` north star made real. Extend `sched_task_info_ex()`'s existing
-reporting (already carries pid/state/name/exit info) into a real listing
-command, same output shape on RP2350 and RV64/MMU. Deliberately last: it's
-mostly a reporting layer over state M4/M5 already populate, and it's the
-milestone where the vision statement at the top of this document becomes a
-thing you can point at rather than describe.
+The `ps` north star made real. `/proc/ps` (and the `ps`/`top` shell
+commands and Lisp primitives that already printed it) already carried
+pid/state/name/exit -- the one thing genuinely missing, per this
+section's own original "differing only in which have hardware-backed
+isolation" verify criterion, was isolation status itself. Added:
 
-**Verify:** side-by-side `ps` output from an RP2350 build and a QEMU RV64
-build of a comparable persona shows the same task set, same shape, differing
-only in which have hardware-backed isolation behind them.
+- `sched_task_info_ex()` gained a `bool *has_domain` out-param, reading
+  the same `g_tasks[index].domain != NULL` field `mem_domain_activate()`
+  itself reads -- not a new fact the scheduler had to start tracking,
+  just one it already had that nothing exposed.
+- `mem_domain_backend_name()` (`arch/riscv/common/mem_domain.c`, one line
+  in each of the two existing `#if defined(CONFIG_MODE_M)`/`#else`
+  halves): `"PMP"` or `"Sv39"`, a compile-time fact, so the report can
+  say *which kind* of hardware-backed isolation a task has, not just
+  that it has one.
+- `/proc/ps` gained an `Isol` column: the backend name for any task with
+  a domain attached, `-` otherwise (the kernel task itself; `p9srv`,
+  M4.5's own still-unconverted driver).
+
+**A real regression found by the QEMU suite, not predicted:** inserting
+`Isol` between `Name` and `Exit` broke two existing patterns
+(`tests/runner.py`'s `uprog\s+42` and `uprog\s+killed`, both asserting a
+task's name is immediately followed by its exit outcome) -- surfaced as
+what looked like a QEMU host-stdio stall (the suite's own retry-3x-before
+-failing machinery masked the real cause for several minutes of wall
+clock before the actual two `[FAIL]`s appeared). Fixed by moving `Isol`
+to trail `Exit` instead of touching either test pattern, preserving the
+adjacency they depend on. A second, smaller bug found the same way on
+real hardware: a 6-wide `Exit` column exactly fit `"killed"` (6
+characters) with no room for a separating space, gluing it directly onto
+the following `Isol` value (`killedPMP`) -- widened to 7.
+
+**Verified:** side-by-side `ps` output confirmed the exact shape this
+section asked for -- QEMU `rv32` (PMP/RV32_NOMMU) and `rv64`
+(Sv39/RV64_MMU) show the identical task set and column layout for a
+loaded user program, differing only in `PMP` vs `Sv39` in the `Isol`
+column. Real RP2350 hardware shows every one of the seven M5 driver
+tasks as `PMP`, and `kernel`/`p9srv` correctly as `-`. 217/217 QEMU
+across 3 consecutive clean runs, all four board personas build clean,
+`tests/hw/test_rp2350.py` 22/22 across 3 consecutive runs, `usbisotest`
+reconfirmed clean with the corrected column widths.
+
+This closes Phase 12: M0 through M6 are all complete, every M4.5 driver
+is a real U-mode task with hardware-enforced PMP isolation, the deferred
+heap analysis landed with A+B alone, a driver-fusion idea was considered
+and explicitly discarded (see the critique in this project's own
+conversation history / memory), and the task table now reports which
+tasks that isolation actually covers.
 
 ---
 

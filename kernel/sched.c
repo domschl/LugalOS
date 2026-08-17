@@ -74,7 +74,7 @@ const char *sched_state_name(int state) {
 }
 
 bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
-    return sched_task_info_ex(index, pid, state, name, NULL, NULL);
+    return sched_task_info_ex(index, pid, state, name, NULL, NULL, NULL);
 }
 
 /* As above, plus how the task ended (C3).
@@ -83,9 +83,13 @@ bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
  * handler killed, which an exit status alone cannot: 0 is a perfectly ordinary
  * return value and also what an uninitialised field holds. Both are only
  * meaningful once the task is DEAD; for a live task the status is reported as
- * 0 and `exited_clean` as false. */
+ * 0 and `exited_clean` as false. `has_domain` is M6's own addition: whether
+ * this task ever had task_set_domain() called on it, i.e. whether it runs
+ * under real hardware-enforced isolation rather than unrestricted kernel
+ * privilege -- see this function's own header comment for the fuller
+ * reasoning. */
 bool sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
-                        long *exit_status, bool *exited_clean) {
+                        long *exit_status, bool *exited_clean, bool *has_domain) {
     if (index >= MAX_TASKS) return false;
     if (g_tasks[index].state == TASK_UNUSED) return false;
     if (pid)   *pid = g_tasks[index].pid;
@@ -94,6 +98,7 @@ bool sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
     bool dead = (g_tasks[index].state == TASK_DEAD);
     if (exit_status) *exit_status = dead ? g_tasks[index].exit_status : 0;
     if (exited_clean) *exited_clean = dead && g_tasks[index].exit_clean;
+    if (has_domain) *has_domain = (g_tasks[index].domain != NULL);
     return true;
 }
 
