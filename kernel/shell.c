@@ -130,6 +130,9 @@ static void cmd_help(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     cprintf("  st7735isotest   - Same, under the real st7735 driver task's own SIO+SPI0-window domain\n");
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+    cprintf("  blkisotest      - Same, under the real blk driver task's own SIO+SPI1-window domain\n");
+#endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
@@ -741,6 +744,34 @@ static void cmd_st7735_isolation_test(void) {
 }
 #endif
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+/* M5 Phase 5, plan/phase12_microkernel_migration.md: same idea as
+ * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest above, against
+ * blk's own domain shape (drivers/spisd_rp2350.c) -- SIO (CS) + SPI1
+ * (the SD card's own PL022 controller, a second independent instance
+ * from st7735's SPI0). */
+extern bool blk_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_blk_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[BlkIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = blk_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[BlkIso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[BlkIso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[BlkIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
+#endif
+
 /* B6: preemption, tested by something that cannot work without it.
  *
  * The spinner never yields. The waiter never yields either. Under cooperative
@@ -1234,6 +1265,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     } else if (strcmp(cmd_line, "st7735isotest") == 0) {
         cmd_st7735_isolation_test();
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+    } else if (strcmp(cmd_line, "blkisotest") == 0) {
+        cmd_blk_isolation_test();
         return;
 #endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {

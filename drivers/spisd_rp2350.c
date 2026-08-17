@@ -13,6 +13,11 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
+#include "kernel/ipc.h"
+#include "kernel/palloc.h"
+#include "arch/umode.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -52,6 +57,21 @@
 #define SSPCPSR                 (SPI1_BASE + 0x10)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
+
+/* M5 Phase 5, plan/phase12_microkernel_migration.md: RP2350's Secure/
+ * Non-secure split -- see drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0
+ * comment (Phase 1) for the datasheet citation, and drivers/i2c_rtc.c's
+ * ACCESSCTRL_I2C_RTC comment (Phase 3) for the write-password one. SPI1
+ * is the same per-peripheral register shape as SPI0/I2C0/I2C1 -- checked
+ * directly against ~/gith/pico/pico-sdk's accessctrl.h -- and so needs
+ * the same 0xacce0000 write-password prefix those did; the GPIO mask
+ * below does not (GPIO_NSMASK0/1 are the documented exemption). */
+#define ACCESSCTRL_BASE          0x40060000UL
+#define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c)
+#define ACCESSCTRL_SPI1          (ACCESSCTRL_BASE + 0x94)
+#define ACCESSCTRL_SPI1_NSP      (1u << 1)
+#define ACCESSCTRL_SPI1_NSU      (1u << 0)
+#define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
 
 #define CS_PIN CONFIG_SPI1_CS_GPIO
 #define CS_MASK (1u << CS_PIN)
@@ -132,6 +152,14 @@ static int spisd_init_hardware(void) {
     REG(PADS_BANK0_PAD(CS_PIN)) = 0x5A;
     REG(SIO_GPIO_OE_SET) = CS_MASK;
     cs_deselect();
+
+    /* M5 Phase 5: CS and SPI1 need to be Non-secure-accessible for the
+     * U-mode task's own serve loop below to actually touch them -- must
+     * happen here, from M-mode, before the task exists. See
+     * ACCESSCTRL_SPI1's own comment above. */
+    REG(ACCESSCTRL_GPIO_NSMASK0) |= CS_MASK;
+    REG(ACCESSCTRL_SPI1) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI1)
+                           | ACCESSCTRL_SPI1_NSP | ACCESSCTRL_SPI1_NSU;
 
     /* 3. Disable SPI1 before programming */
     REG(SSPCR1) = 0;
@@ -323,15 +351,24 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
  * status is 0 for success, 1 for failure -- matches read_blocks()/
  * write_blocks()'s own 0/-1 contract, just not signed (the wire is bytes).
  *
- * BLK_MAX_COUNT bounds both buffers: every real caller in this tree
- * (fs/fat32.c) only ever requests count=1 (checked directly: this
- * codebase's own fat32_format() always uses sec_per_clus = 1), so 4 is
- * headroom for a future multi-sector caller, not a measured need -- a
- * request larger than this falls back to direct access below rather than
- * being refused outright. */
+ * BLK_MAX_COUNT bounds both buffers and, as of M5 Phase 5,
+ * plan/phase12_microkernel_migration.md, is capped at a single sector:
+ * every real caller in this tree (fs/fat32.c) only ever requests count=1
+ * (checked directly: this codebase's own fat32_format() always uses
+ * sec_per_clus = 1) -- this file's own prior comment already said the
+ * former BLK_MAX_COUNT=4 was headroom, not a measured need. The cap
+ * shrank from 4 to 1 because U-mode conversion moved this wire protocol
+ * onto the same kernel-side scratch buffer (arch/riscv/common/trap.c's
+ * SYS_CHAN_SERVE_WAIT/_REPLY kbuf) every other driver task shares, and a
+ * 2048-byte request would have forced that buffer far past what any other
+ * driver needs. spisd_read_blocks()/spisd_write_blocks() below chunk
+ * transparently for any caller requesting more than one sector, mirroring
+ * drivers/at24c32.c's own AT24C32_CHUNK_MAX chunking loop -- no real
+ * caller's behavior changes, a hypothetical future multi-sector caller
+ * just costs more IPC round trips. */
 #define BLK_REQ_READ  ((uint8_t)'R')
 #define BLK_REQ_WRITE ((uint8_t)'W')
-#define BLK_MAX_COUNT 4u
+#define BLK_MAX_COUNT 1u
 #define BLK_HDR_LEN   9u /* opcode + lba(4) + count(4) */
 #define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
 #define BLK_RESP_CAP  (1u + BLK_MAX_COUNT * 512u)
@@ -356,46 +393,237 @@ static bool blk_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-static uint32_t be32_load(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
 static void be32_store(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
 }
 
-/* This task, and only this task, may call spisd_hw_read_blocks()/
- * spisd_hw_write_blocks() while alive -- see uart_16550.c's uart_task_body()
- * for the fuller reasoning (never call back into anything that could
- * chan_call() this same endpoint; never take printk_lock() from here). */
+/* ---- U-mode implementation, M5 Phase 5, plan/phase12_microkernel_migration.md ----
+ *
+ * A second, independent copy of the SD/SPI primitives above (cs_select/
+ * cs_deselect, spi_transfer, sd_send_cmd, and spisd_hw_read_blocks/
+ * _write_blocks' own logic), tagged BLK_UATTR and reachable only from the
+ * U-mode task's own serve loop below -- not a refactor of the existing
+ * kernel-mode ones, which keep serving the direct-hardware fallback path
+ * (including every boot-time read, which happens before this task exists
+ * at all) exactly as before, unreachable from U-mode. The two copies
+ * never run concurrently -- blk_task_alive() routes callers to one or the
+ * other -- so nothing needs to agree between them beyond the wire
+ * protocol.
+ *
+ * Tried the shared .utext page first (see drivers/tm1638_rp2350.c/
+ * drivers/i2c_rtc.c): the linker refused it ("cannot move location
+ * counter backwards", 84 bytes over), so this is its own dedicated page
+ * instead, same shape as drivers/st7735_rp2350.c's .st7735text (linker:
+ * .blktext, board_blk_text_region() -- kernel/board.c) -- one more RX
+ * region for PMP to grant, just not the *same* one heartbeat/tm1638/i2c
+ * share. */
+#define BLK_UATTR __attribute__((section(".blktext"))) __attribute__((no_sanitize("undefined")))
+
+BLK_UATTR static inline void u_cs_select(void)   { REG(SIO_GPIO_OUT_CLR) = CS_MASK; }
+BLK_UATTR static inline void u_cs_deselect(void) { REG(SIO_GPIO_OUT_SET) = CS_MASK; }
+
+BLK_UATTR static uint8_t u_spi_transfer(uint8_t tx) {
+    while (REG(SSPSR) & (1u << 2)) {
+        (void)REG(SSPDR);
+    }
+    int timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 1)) && --timeout > 0);
+    REG(SSPDR) = tx;
+    timeout = 10000;
+    while (!(REG(SSPSR) & (1u << 2)) && --timeout > 0);
+    return (uint8_t)(REG(SSPDR) & 0xFF);
+}
+
+BLK_UATTR static uint8_t u_sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
+    uint8_t res;
+    int retry = 0;
+
+    u_cs_deselect();
+    u_spi_transfer(0xFF);
+    u_cs_select();
+    u_spi_transfer(0xFF);
+
+    u_spi_transfer(0x40 | (cmd & 0x3F));
+    u_spi_transfer((uint8_t)(arg >> 24));
+    u_spi_transfer((uint8_t)(arg >> 16));
+    u_spi_transfer((uint8_t)(arg >> 8));
+    u_spi_transfer((uint8_t)arg);
+    u_spi_transfer(crc);
+
+    do {
+        res = u_spi_transfer(0xFF);
+    } while ((res & 0x80) && (++retry < 1000));
+
+    return res;
+}
+
+/* is_sdhc arrives as a plain function argument, not a read of the
+ * kernel-mode g_sd_is_sdhc global -- that global is ordinary kernel .bss,
+ * outside every region this task's domain grants, so U-mode code cannot
+ * read it directly. spisd_init_hardware() (M-mode, called from
+ * vfs_server_init(), well before spisd_task_start() -- see
+ * kernel/main.c's own ordering comment) has already settled its value by
+ * the time blk_task_body() below reads it once and hands it to
+ * arch_enter_user() as argc, which the ABI lands in a0 -- exactly the
+ * parameter blk_umode_body() reads here. It never changes after boot, so
+ * one read at task-entry time is as current as any later read would be. */
+BLK_UATTR static int u_read_blocks(uint32_t lba, uint32_t count, uint8_t *dst, int is_sdhc) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t addr = is_sdhc ? (lba + i) : ((lba + i) * 512);
+        uint8_t r1 = u_sd_send_cmd(17, addr, 0xFF);
+        if (r1 != 0x00) { u_cs_deselect(); return -1; }
+
+        int timeout = 0;
+        uint8_t token;
+        do {
+            token = u_spi_transfer(0xFF);
+        } while (token != 0xFE && ++timeout < 10000);
+        if (token != 0xFE) { u_cs_deselect(); return -1; }
+
+        for (int b = 0; b < 512; b++) dst[b] = u_spi_transfer(0xFF);
+        u_spi_transfer(0xFF);
+        u_spi_transfer(0xFF);
+
+        u_cs_deselect();
+        dst += 512;
+    }
+    return 0;
+}
+
+BLK_UATTR static int u_write_blocks(uint32_t lba, uint32_t count, const uint8_t *src, int is_sdhc) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t addr = is_sdhc ? (lba + i) : ((lba + i) * 512);
+        uint8_t r1 = u_sd_send_cmd(24, addr, 0xFF);
+        if (r1 != 0x00) { u_cs_deselect(); return -1; }
+
+        u_spi_transfer(0xFE);
+        for (int b = 0; b < 512; b++) u_spi_transfer(src[b]);
+        u_spi_transfer(0xFF);
+        u_spi_transfer(0xFF);
+
+        uint8_t resp = u_spi_transfer(0xFF);
+        if ((resp & 0x1F) != 0x05) { u_cs_deselect(); return -1; }
+
+        int timeout = 0;
+        while (u_spi_transfer(0xFF) != 0xFF && ++timeout < 100000);
+
+        u_cs_deselect();
+        src += 512;
+    }
+    return 0;
+}
+
+/* Hand-rolled per translation unit, not shared with any other driver's
+ * own usys_*() stubs -- a BLK_UATTR function must not call anything the
+ * compiler might place outside .utext, and a cross-file inline is not a
+ * guarantee. blk_usys_be32() is always_inline for the same reason
+ * drivers/st7735_rp2350.c's st7735_usys_get_i16()/get_u16() are: it
+ * compiles to inlined arithmetic, never an out-of-section call, so it is
+ * safe without being BLK_UATTR-tagged itself -- the same big-endian
+ * decode be32_store() below encodes, kept as a separate always_inline
+ * copy since the two never run in the same privilege mode. */
+__attribute__((always_inline)) static inline long blk_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = buf_max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline long blk_usys_chan_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+__attribute__((always_inline)) static inline uint32_t blk_usys_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
+    /* Not a string literal: see drivers/tm1638_rp2350.c's own comment for
+     * why (M5 Phase 2's first board-hanging bug) -- a literal lands in
+     * ordinary .rodata, outside every region this task's domain grants.
+     * volatile so gcc doesn't recognise the stores and reconstruct a
+     * .rodata copy anyway. */
+    volatile char name[6];
+    name[0]='s'; name[1]='d'; name[2]='b'; name[3]='l'; name[4]='k'; name[5]='\0';
+
+    /* Only two real cases -- an if/else, never a switch. M5 Phase 4 found
+     * that a UATTR dispatch with enough cases compiles to a jump table
+     * GCC stores outside the granted section (see
+     * drivers/st7735_rp2350.c's st7735_umode_body() comment); two cases
+     * is unlikely to cross GCC's cost-model threshold, but
+     * -fno-jump-tables is applied to this file in CMakeLists.txt
+     * regardless, per that phase's own "check preemptively" conclusion. */
+    for (;;) {
+        uint8_t req[BLK_REQ_CAP];
+        long req_len = blk_usys_chan_serve_wait((const char *)name, req, sizeof(req));
+        if (req_len < (long)BLK_HDR_LEN) {
+            blk_usys_chan_serve_reply((const char *)name, NULL, 0);
+            continue;
+        }
+
+        uint8_t  op    = req[0];
+        uint32_t lba   = blk_usys_be32(&req[1]);
+        uint32_t count = blk_usys_be32(&req[5]);
+        uint8_t  resp[BLK_RESP_CAP];
+
+        if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
+            int rc = u_read_blocks(lba, count, &resp[1], (int)is_sdhc);
+            resp[0] = (rc == 0) ? 0 : 1;
+            blk_usys_chan_serve_reply((const char *)name, resp, (rc == 0) ? (1u + count * 512u) : 1u);
+        } else if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
+                  (uint32_t)req_len >= BLK_HDR_LEN + count * 512u) {
+            int rc = u_write_blocks(lba, count, &req[BLK_HDR_LEN], (int)is_sdhc);
+            resp[0] = (rc == 0) ? 0 : 1;
+            blk_usys_chan_serve_reply((const char *)name, resp, 1);
+        } else {
+            resp[0] = 1;
+            blk_usys_chan_serve_reply((const char *)name, resp, 1);
+        }
+    }
+}
+
+static uint8_t      g_blk_ustack[4096] __attribute__((aligned(4096)));
+static mem_domain_t g_blk_domain;
+
+/* This task's own kernel-mode entry point: task_create_sized() calls this
+ * (ordinary kernel stack, kernel privilege) to build the domain and make
+ * the one-way jump into U-mode. Same "SIO + one hardware controller"
+ * 4-region shape drivers/st7735_rp2350.c's st7735_task_body() proved --
+ * SIO for CS, SPI1_BASE for the controller. */
 static void blk_task_body(void *arg) {
     (void)arg;
     while (!g_blk_ep) sched_yield();
 
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_blk_ep);
-        if (req_len < BLK_HDR_LEN) { chan_serve_reply(g_blk_ep, 0); continue; }
-        g_blk_calls++;
+    mem_domain_init(&g_blk_domain);
+    mem_domain_add(&g_blk_domain, (uintptr_t)g_blk_ustack, sizeof(g_blk_ustack),
+                   MEM_R | MEM_W);
 
-        uint8_t  op    = g_blk_req[0];
-        uint32_t lba   = be32_load(&g_blk_req[1]);
-        uint32_t count = be32_load(&g_blk_req[5]);
+    uintptr_t tbase, tsize;
+    board_blk_text_region(&tbase, &tsize);
+    mem_domain_add(&g_blk_domain, tbase, tsize, MEM_R | MEM_X);
 
-        if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
-            int rc = spisd_hw_read_blocks(lba, count, &g_blk_resp[1]);
-            g_blk_resp[0] = (rc == 0) ? 0 : 1;
-            chan_serve_reply(g_blk_ep, (rc == 0) ? (1u + count * 512u) : 1u);
-        } else if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
-                  req_len >= BLK_HDR_LEN + count * 512u) {
-            int rc = spisd_hw_write_blocks(lba, count, &g_blk_req[BLK_HDR_LEN]);
-            g_blk_resp[0] = (rc == 0) ? 0 : 1;
-            chan_serve_reply(g_blk_ep, 1);
-        } else {
-            g_blk_resp[0] = 1;
-            chan_serve_reply(g_blk_ep, 1);
-        }
+    mem_domain_add(&g_blk_domain, SIO_BASE, 4096, MEM_R | MEM_W);
+    mem_domain_add(&g_blk_domain, SPI1_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &g_blk_domain) != 0) {
+        printk("[SPI SD] Refusing to enter U-mode: memory domain not enforceable; storage stays on direct hardware access.\n");
+        return;
     }
+    /* blk_umode_body() takes is_sdhc as a real parameter (see its own
+     * comment) rather than the `void (*)(void)` every other driver's
+     * umode body uses -- the ABI lands argc in a0 regardless of the
+     * pointed-to prototype (arch/riscv/common/umode.S: `mv a0, a3` right
+     * before the mode switch), so this cast changes nothing at the call
+     * site, only what the compiler is told to expect. */
+    arch_enter_user((void (*)(void))blk_umode_body,
+                    (uintptr_t)g_blk_ustack + sizeof(g_blk_ustack), 0,
+                    g_sd_is_sdhc ? 1u : 0u, 0);
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
@@ -423,9 +651,43 @@ static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
                                uint8_t *resp, uint32_t resp_max) {
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
+        /* M5 Phase 5: counted here, on the client side -- see
+         * drivers/st7735_rp2350.c's st7735_call_with_retry() comment,
+         * same reasoning: a U-mode server cannot touch g_blk_calls, an
+         * ordinary kernel .bss global no domain grants it. */
+        if (n >= 0) { g_blk_calls++; return n; }
         sched_yield();
     }
+    return -1;
+}
+
+/* One wire round trip, at most BLK_MAX_COUNT (one) sector -- the
+ * chunking loops in spisd_read_blocks()/spisd_write_blocks() below call
+ * these repeatedly for anything larger, mirroring
+ * drivers/at24c32.c's at24c32_read_chunk()/write_chunk(). */
+static int blk_read_chunk(uint32_t lba, uint32_t count, void *buf) {
+    uint8_t req[BLK_HDR_LEN];
+    req[0] = BLK_REQ_READ;
+    be32_store(&req[1], lba);
+    be32_store(&req[5], count);
+    uint8_t resp[BLK_RESP_CAP];
+    int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
+    if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
+        memcpy(buf, &resp[1], count * 512u);
+        return (int)count;
+    }
+    return -1;
+}
+
+static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
+    uint8_t req[BLK_HDR_LEN + BLK_MAX_COUNT * 512u];
+    req[0] = BLK_REQ_WRITE;
+    be32_store(&req[1], lba);
+    be32_store(&req[5], count);
+    memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
+    uint8_t resp[1];
+    int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+    if (n >= 1 && resp[0] == 0) return (int)count;
     return -1;
 }
 
@@ -439,38 +701,108 @@ static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
      * here, once, regardless of which path (task or direct) serves it. */
     if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
-    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
-        uint8_t req[BLK_HDR_LEN];
-        req[0] = BLK_REQ_READ;
-        be32_store(&req[1], lba);
-        be32_store(&req[5], count);
-        uint8_t resp[BLK_RESP_CAP];
-        int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
-            memcpy(buf, &resp[1], count * 512u);
-            return 0;
+    uint32_t done = 0;
+    uint8_t *dst = (uint8_t *)buf;
+    if (blk_task_alive()) {
+        while (done < count) {
+            uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
+            int n = blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u);
+            if (n < 0) break; /* IPC failed -- fall through to direct access below for whatever wasn't already transferred, same as at24c32_read()/at24c32_write() */
+            done += (uint32_t)n;
         }
-        /* IPC failed or the task answered with an error -- fall through to
-         * direct access rather than propagate a failure that might only be
-         * about the channel, not the card. */
+        if (done >= count) return 0;
     }
-    return spisd_hw_read_blocks(lba, count, buf);
+    return spisd_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
 }
 
 static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
     if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
-    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
-        uint8_t req[BLK_HDR_LEN + BLK_MAX_COUNT * 512u];
-        req[0] = BLK_REQ_WRITE;
-        be32_store(&req[1], lba);
-        be32_store(&req[5], count);
-        memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
-        uint8_t resp[1];
-        int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
-        if (n >= 1 && resp[0] == 0) return 0;
+    uint32_t done = 0;
+    const uint8_t *src = (const uint8_t *)buf;
+    if (blk_task_alive()) {
+        while (done < count) {
+            uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
+            int n = blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u);
+            if (n < 0) break;
+            done += (uint32_t)n;
+        }
+        if (done >= count) return 0;
     }
-    return spisd_hw_write_blocks(lba, count, buf);
+    return spisd_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
+}
+
+/* M5 Phase 5's own "Verify" deliverable: does the real blk domain shape
+ * (stack + .utext + SIO + SPI1) actually confine the task to its own
+ * hardware, or does one of the two MMIO grants' width accidentally cover
+ * more? Modeled directly on drivers/st7735_rp2350.c's
+ * st7735_isolation_test() -- same idea (a deliberate out-of-domain
+ * store, asserted to fault), a separate canary rather than reaching into
+ * another file's, for the same reason the syscall stubs above are
+ * hand-rolled per file. */
+static volatile uintptr_t g_blk_canary = 0xC0FFEE;
+
+BLK_UATTR static void blk_intruder(void) {
+    g_blk_canary = 0xDEAD;
+    for (;;) { } /* only reached if the store was NOT stopped */
+}
+
+static volatile bool g_blk_intruder_entered;
+
+/* `arg` is the U-mode stack -- allocated by blk_isolation_test() below,
+ * not here, so it can free it once the task is confirmed DEAD (same
+ * shape as st7735_isolation_test()'s own probe). */
+static void blk_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_blk_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    /* The exact grants real blk runs under -- this is what's on trial. */
+    mem_domain_add(&dom, SIO_BASE, 4096, MEM_R | MEM_W);
+    mem_domain_add(&dom, SPI1_BASE, 4096, MEM_R | MEM_W);
+
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[BlkIso] Refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_blk_intruder_entered = true;
+    arch_enter_user(blk_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+/* Runs the probe to completion and reports what actually happened. Returns
+ * false if the task never reached U-mode (domain not enforceable on this
+ * build/core, or the one-page stack could not be allocated) -- in that
+ * case *out_canary and *out_exited_clean say nothing about isolation,
+ * matching cmd_usertest_isolation()'s own "INCONCLUSIVE" case. */
+bool blk_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_blk_canary = 0xC0FFEE;
+    g_blk_intruder_entered = false;
+
+    void *ustack = palloc_pages(1);
+    if (!ustack) {
+        *out_canary = g_blk_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+
+    int pid = task_create("blk_intruder", blk_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        *out_canary = g_blk_canary;
+        *out_exited_clean = true;
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    long status;
+    *out_exited_clean = sched_task_exited_cleanly(pid, &status);
+    *out_canary = g_blk_canary;
+    palloc_free(ustack, 1);
+    return g_blk_intruder_entered;
 }
 
 static block_dev_t g_spisd_dev = {

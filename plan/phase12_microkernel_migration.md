@@ -42,8 +42,15 @@ chain) — fixed generally with `-fno-jump-tables` across every driver
 file with `UATTR` code, not just this one. The heap-budget re-analysis
 itself is now explicitly deferred until blk/uart/usb_cdc are also
 converted, per the user's own direction — see M5 Phase 4's own section.
-Written to be detailed and executed one milestone at a time, not
-implemented from this document directly.
+M5 Phase 5 complete (2026-08-17): blk (SD/SPI) converted, the second
+driver needing its own dedicated text page (`.blktext`, tried the shared
+`.utext` first and let the linker refuse it) and the first whose wire
+protocol had to shrink to fit `trap.c`'s shared syscall scratch buffer
+(`BLK_MAX_COUNT` 4→1, transparent client-side chunking added, `kbuf`
+grown 256→576 bytes) — see M5 Phase 5's own section. uart and usb_cdc
+remain before the deferred heap-budget analysis. Written to be detailed
+and executed one milestone at a time, not implemented from this document
+directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
 needed a rewrite or restart: monolithic structure, inconsistent polling,
@@ -1717,6 +1724,110 @@ measured costs (the new dedicated-text-page pattern chief among them,
 since any future driver whose own code doesn't fit `.utext` will need
 one too) are recorded here to feed that analysis when it happens, not
 acted on piecemeal now.
+
+### M5 Phase 5 — U-mode isolation for the SD/SPI block driver (blk) *(done, 2026-08-17)*
+
+blk (`drivers/spisd_rp2350.c`, task `"sdblk"`) is the same "SIO + one
+hardware controller" 4-region domain shape Phase 4 proved: SIO for CS,
+`SPI1_BASE` (a second, independent PL022 instance from st7735's SPI0)
+for clock/data. `spisd_init_hardware()`'s own timing is retry-loop
+based, no `time_delay_us()` anywhere in the file, so -- like st7735 --
+no `SYS_DELAY_US` needed in the runtime path.
+
+**The real new problem this phase, flagged going in rather than found
+the hard way: message size.** Every prior driver's wire messages fit
+inside `arch/riscv/common/trap.c`'s `SYS_CHAN_SERVE_WAIT`/`_REPLY`
+scratch buffer (`kbuf[256]`, built in Phase 2). blk moves whole 512-byte
+SD sectors -- even one sector already overflowed 256 bytes before
+counting its 9-byte header. Fixed two ways together: `BLK_MAX_COUNT`
+shrank from 4 (headroom, per the driver's own prior comment -- every
+real caller, `fs/fat32.c`, only ever requests count=1) to 1, and
+`spisd_read_blocks()`/`spisd_write_blocks()` gained transparent
+client-side chunking for any caller requesting more than one sector,
+mirroring `drivers/at24c32.c`'s own `AT24C32_CHUNK_MAX` loop exactly
+(including its "fall through to direct access for whatever wasn't
+already transferred via IPC" fix from Phase 3, applied here from the
+start rather than rediscovered). `kbuf` grew from 256 to 576 bytes (one
+512-byte sector plus 64 bytes of protocol headroom) -- a shared
+infrastructure change in `trap.c`, not blk-specific, and the first
+change to that buffer since Phase 2 built it.
+
+**`.utext` capacity, tried and found wanting, not just estimated:** blk's
+SD/SPI primitives (`cs_select`/`spi_transfer`/`sd_send_cmd` and the
+sector read/write loops) were tried in the shared `.utext` page first,
+per the plan's own "let the linker decide" reasoning -- it refused
+("cannot move location counter backwards", 84 bytes over budget).
+Fixed the same way st7735 was: a dedicated `.blktext` page
+(`linker/rp2350.ld`, `board_blk_text_region()` -- `kernel/board.c`/
+`kernel/include/kernel/device.h`), same shape as `.st7735text`. This is
+now the second driver needing its own page, not a one-off -- worth
+treating as a recurring cost class for the eventual heap/static-buffer
+analysis, not an exception.
+
+**ACCESSCTRL**, both fixes in `spisd_init_hardware()` (M-mode, before the
+task exists): `GPIO_NSMASK0` for CS (no write-password needed) and
+`ACCESSCTRL_SPI1` (checked against `~/gith/pico/pico-sdk`'s
+`accessctrl.h`: offset `0x94`, same shape as `_SPI0`/`_I2C0`/`_I2C1` --
+**does** need the `0xacce0000` prefix, applied correctly from the start).
+
+**`g_sd_is_sdhc` (whether the card is SDHC/SDXC block-addressed or
+byte-addressed) is the first piece of driver-specific config a U-mode
+task has needed that isn't itself hardware.** It's an ordinary
+kernel-mode `static bool`, outside every region the task's domain
+grants, settled once at `spisd_init_hardware()` (M-mode, well before
+`spisd_task_start()` -- see `kernel/main.c`'s own ordering comment) and
+never changed after. Rather than a domain grant for one bit of state,
+`blk_task_body()` reads it once and hands it to `arch_enter_user()` as
+`argc`, which the ABI (`arch/riscv/common/umode.S`: `mv a0, a3` right
+before the mode switch) lands in `blk_umode_body()`'s own first
+parameter -- the first M5 driver whose U-mode entry point takes a real
+argument instead of `void (*)(void)`. A cast at the call site
+(`(void (*)(void))blk_umode_body`) satisfies the prototype
+`arch_enter_user()` declares; the ABI doesn't care what the pointed-to
+signature says.
+
+`blk_umode_body()`'s dispatch is only two real cases (read/write), an
+if/else like every prior phase's -- `-fno-jump-tables` added to
+`drivers/spisd_rp2350.c` regardless, per Phase 4's "check preemptively"
+conclusion. Confirmed by disassembly: zero `jalr`/`jr` anywhere in
+`.blktext`, every `jal` target resolves inside it (`u_spi_transfer`,
+`u_sd_send_cmd.constprop.0`), dispatch compiled to plain `beq`/`bne`.
+
+`blkisotest` mirrors `heartbeatisotest`/`tm1638isotest`/`i2cisotest`/
+`st7735isotest`, against the real 4-region domain (stack + `.blktext` +
+SIO + SPI1).
+
+Verified: full QEMU suite 217/217 across 3 consecutive clean runs
+(RP2350-only code; also re-verifies the `kbuf` resize doesn't regress
+every other driver's own syscalls). All four board personas build
+clean. Real RP2350 hardware, on `rp2350-chess`: `blkisotest` 3/3
+consecutive clean runs (real load access fault on the intruder's store,
+canary intact, task did not exit cleanly -- correctly isolated).
+Read-after-write verified directly (`(write ...)`/`(cat ...)` round-trip
+on `/sd0/`, exact byte match) and via ordinary use of the filesystem
+that was already on the card before this phase (`cat /sd0/prime.c`, a
+394-byte, multi-sector file, byte-exact) -- `blkstats` call count
+advanced under both (63 -> 118 idle-to-cc-attempt; 265 -> 294 across one
+full hardware-suite run), confirming genuine IPC traffic, not a silent
+fallback. (One read-after-write method turned out to be a dead end, not
+a driver bug: LugalOS's own `lisp_read()` truncates string literals at
+127 bytes -- `char buf[128]` in `user/lisp/lisp.c` -- a pre-existing,
+unrelated reader limit hit trying to write long test payloads through
+`(write ...)`; confirmed by reproducing the identical 128-byte
+truncation against `/ram0/` too. Not this phase's bug, not fixed here.)
+Full `tests/hw/test_rp2350.py` 21/22 across 3 consecutive runs -- same
+pre-flagged, isolated heap-budget failure (C6/C7, `cc` wants a 108 KB
+arena, 80 KB free at idle) as every phase since it was first tracked,
+nothing new.
+
+Heap budget: idle baseline on `rp2350-chess` now still 45 total pages,
+unchanged from Phase 4's own end value -- blk's wire buffers shrinking
+by ~3 KB (`BLK_MAX_COUNT` 4->1) roughly offsets its new 4 KB U-mode
+stack plus `trap.c`'s +640-byte `kbuf` growth, netting under one page.
+Five driver-task conversions in (heartbeat, tm1638, i2c, st7735, blk);
+uart and usb_cdc remain. Per the user's own explicit direction: the
+heap/static-buffer analysis still waits for both of those, not
+triggered by this phase's own numbers landing flat.
 
 ### M6 — Process visibility parity
 

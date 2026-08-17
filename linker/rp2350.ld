@@ -43,6 +43,19 @@ SECTIONS
         . = _st7735text_start + 4096;
     } > FLASH
 
+    /* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own
+     * dedicated U-mode-executable page, same reasoning as .st7735text
+     * above -- the shared .utext page overflowed by 84 bytes once blk's
+     * SD/SPI primitives (cs_select/spi_transfer/sd_send_cmd and the
+     * sector read/write loops) joined heartbeat/tm1638/i2c there, found
+     * by the linker itself ("cannot move location counter backwards"),
+     * not predicted in advance. */
+    .blktext : ALIGN(4096) {
+        _blktext_start = .;
+        *(.blktext .blktext.*)
+        . = _blktext_start + 4096;
+    } > FLASH
+
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)

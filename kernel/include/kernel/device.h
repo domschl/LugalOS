@@ -151,6 +151,13 @@ void board_text_region(uintptr_t *base, uintptr_t *size);
  * that uses it. */
 void board_st7735_text_region(uintptr_t *base, uintptr_t *size);
 
+/* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own dedicated
+ * U-mode-executable page (linker: .blktext), same reasoning as
+ * board_st7735_text_region() above -- the shared .utext page overflowed
+ * once blk's SD/SPI primitives joined it. RP2350-only, like the driver
+ * that uses it. */
+void board_blk_text_region(uintptr_t *base, uintptr_t *size);
+
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 

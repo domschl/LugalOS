@@ -467,6 +467,7 @@ set_source_files_properties(
     drivers/tm1638_rp2350.c
     drivers/i2c_rtc.c
     drivers/st7735_rp2350.c
+    drivers/spisd_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
 # Executable Output

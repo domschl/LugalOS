@@ -17,6 +17,19 @@
 #define REG(addr) (*(volatile uint32_t *)(addr))
 #endif
 
+/* M5 Phase 5, plan/phase12_microkernel_migration.md: SYS_CHAN_SERVE_WAIT/
+ * _REPLY's own kernel-side scratch buffer, shared by every U-mode driver
+ * task's serve loop (SYS_CHAN_SERVE_WAIT/_REPLY cases below). Grown from
+ * the original 256 bytes (M5 Phase 2) because drivers/spisd_rp2350.c's
+ * blk moves whole 512-byte SD sectors -- even a single sector already
+ * overflows 256 bytes before counting its 9-byte header. Sized to one
+ * sector (512) plus 64 bytes of header/opcode headroom, comfortably
+ * covering blk's 521-byte request (BLK_HDR_LEN 9 + 512) and every other
+ * driver's much smaller messages -- not sized past a single block
+ * transfer, since drivers/spisd_rp2350.c's own chunking keeps every wire
+ * message capped at one sector regardless of caller-requested count. */
+#define CHAN_SERVE_KBUF_CAP 576
+
 /* M2, plan/phase12_microkernel_migration.md: identifying which external IRQ
  * fired is genuinely different hardware on each target -- there is no Rule 0
  * to apply here, only real controllers. What sits above this (devirq.h) is
@@ -415,7 +428,7 @@ void trap_handler(trap_frame_t *frame) {
                      * against this task's domain the same way SYS_CHAN_CALL
                      * validates its own buffers. */
                     char kname[32];
-                    static uint8_t kbuf[256];
+                    static uint8_t kbuf[CHAN_SERVE_KBUF_CAP];
                     if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
                         ret = -1;
                         break;
@@ -441,7 +454,7 @@ void trap_handler(trap_frame_t *frame) {
                      * the blocked caller -- mirrors SYS_CHAN_CALL's own
                      * copy-in-then-hand-to-the-endpoint shape. */
                     char kname[32];
-                    static uint8_t kbuf[256];
+                    static uint8_t kbuf[CHAN_SERVE_KBUF_CAP];
                     if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
                         ret = -1;
                         break;
