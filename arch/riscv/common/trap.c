@@ -14,6 +14,7 @@
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
+#include "arch/rp2350_bootrom.h"
 #define REG(addr) (*(volatile uint32_t *)(addr))
 #endif
 
@@ -486,6 +487,24 @@ void trap_handler(trap_frame_t *frame) {
                     task_set_exit_status((long)frame->a1);
                     task_exit();
                     ret = 0; /* unreachable */
+                    break;
+                case SYS_REBOOT_BOOTSEL:
+                    /* A U-mode task asking to reboot into BOOTSEL --
+                     * drivers/usb_cdc.c's own U-mode "1200-baud touch"
+                     * handler can detect the condition but cannot call
+                     * rp2350_reboot_to_bootsel() itself (a bootrom
+                     * ROM-table lookup and jump, privileged), the same
+                     * shape SYS_UEXIT's own comment already describes.
+                     * Does not return on success, same as the function
+                     * it wraps; ret is only meaningful on the failure
+                     * path (bootrom function not found, or a non-RP2350
+                     * build, where this syscall is simply refused). */
+#if defined(CONFIG_BOARD_RP2350)
+                    rp2350_reboot_to_bootsel();
+                    ret = -1; /* only reached if the reboot failed */
+#else
+                    ret = -1;
+#endif
                     break;
                 case 13: { /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
                     char kpath[128];

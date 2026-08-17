@@ -57,9 +57,23 @@ task owns physical UART0 only (poll-and-yield TX, non-blocking RX); the
 USB CDC mirror and the old `g_uart_write_in_flight` flag moved to the
 kernel-mode client facades, the latter replaced by a new shared
 `chan_endpoint_busy()` accessor rather than reinvented — see M5 Phase 6's
-own section. usb_cdc is now the only M4.5 driver left unconverted, and
-the deferred heap-budget analysis still waits for it. Written to be
-detailed and executed one milestone at a time, not implemented from this
+own section. M5 Phase 7 complete (2026-08-17): `usb_cdc` converted, the
+last M4.5 driver and the largest single conversion of the milestone —
+the full USB device stack (EP0 enumeration, EP2/EP4 pump/drain, the
+whole `SETUP_REQ` dispatch) bundled into one 16KB combined-state region,
+the domain's 5th and last slot at the `MEM_DOMAIN_MAX_REGIONS` cap with
+zero headroom left, plus a new `SYS_REBOOT_BOOTSEL` syscall so the
+"1200-baud touch" `flash.py` itself depends on keeps working from
+U-mode. Found on real hardware, not predicted: the region's own NAPOT
+alignment cost nearly *double* its declared size in linker padding
+before it, which starved every other driver task's boot-time stack and
+newly failed two hardware tests (`C2`, `C4`) that every prior phase
+passed — see M5 Phase 7's own section for the full accounting and the
+user's own explicit call to accept and document it rather than trim
+ring capacity to chase the old baseline. All seven M4.5 drivers are now
+real U-mode tasks; the deferred heap/static-buffer analysis is next.
+Written to be detailed and executed one milestone at a time, not
+implemented from this
 document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
@@ -1950,6 +1964,167 @@ Six driver-task conversions in (heartbeat, tm1638, i2c, st7735, blk,
 uart); **usb_cdc is the only M4.5 driver left unconverted.** Per the
 user's own explicit direction, the heap/static-buffer analysis across
 every converted task still waits for it.
+
+### M5 Phase 7 — U-mode isolation for usb_cdc (full conversion) *(done, 2026-08-17)*
+
+The last M4.5 driver, and the first with no clean partial-conversion
+seam: EP0 enumeration and EP2/EP4 pump/drain all touch the same
+SIE/DPRAM hardware this driver fully owns, so — unlike uart's
+TX-vs-USB-mirror split (Phase 6) — the whole polling loop had to move
+together or not at all. User confirmed full conversion up front,
+accepting three tradeoffs known before writing any code: the region
+budget would be exactly, not comfortably, sufficient (`USBCTRL_DPRAM_BASE`
++ `USBCTRL_REGS_BASE` + stack + text + one combined-state region is the
+domain's 5th and last slot at the `MEM_DOMAIN_MAX_REGIONS` cap); every
+`printk_debug()` in the hot polling loop would go silent in the U-mode
+copy (no UATTR-safe replacement exists, so the kept kernel-mode
+`usb_cdc_task()` keeps all of its own logging unchanged); and the
+"1200-baud touch" BOOTSEL reboot -- `rp2350_reboot_to_bootsel()`, a
+bootrom ROM-table lookup and jump -- cannot run from U-mode at all,
+needing a new syscall.
+
+**`SYS_REBOOT_BOOTSEL` (27):** handled in `arch/riscv/common/trap.c` by
+calling `rp2350_reboot_to_bootsel()` directly from the trap handler's
+own kernel context, the same shape `SYS_UEXIT`'s own comment already
+describes. Does not return on success. This is the exact mechanism
+`tests/hw/flash.py` depends on for every hardware flash this whole
+project's workflow uses, so it got the highest-stakes verification of
+this phase (see below) rather than "the syscall exists" being taken on
+faith.
+
+**ACCESSCTRL:** one register (`ACCESSCTRL_USBCTRL`, offset `0x48`,
+checked against `~/gith/pico/pico-sdk`'s `accessctrl.h`) covers *both*
+MMIO windows this driver uses -- RP2350's ACCESSCTRL is per-peripheral,
+not per-window, so unlike every earlier phase there was only one write
+to add, in `usb_cdc_init()` before the task exists.
+
+**The combined-state region.** ~20 scattered globals (EP0's in-flight
+control-transfer state, both CDC interfaces' byte-ring buffers and
+bookkeeping, the BOOTSEL/line-coding scalars) bundled into one struct,
+`usb_umode_fields_t`/`g_usb` (accessed via a `g_usb.field` macro over
+the real object, `g_usb_region`), so the U-mode task's domain can grant
+itself read/write access to all of it in a single region. Both the
+kept kernel-mode `usb_cdc_task()` and the new U-mode
+`usb_cdc_umode_body()` operate on the *same* instance -- kernel/M-mode
+code is never restricted by another task's domain grant, so this
+sharing is safe, and it's what makes it possible for `usb_cdc_task()`
+to stay genuinely load-bearing after this phase (still called from
+`usb_cdc_init()`'s boot-time enumeration pump, and from this task's own
+per-task-lifetime kernel-mode fallback if `task_set_domain()` ever
+fails -- unlike every other driver's per-*call* fallback, since
+usb_cdc has no request/response call site to route per-call). Verified,
+not assumed, that no new race was introduced: the ring buffers are
+single-producer/single-consumer on both TX and RX, and
+`usb_cdc_putc()`'s existing `irq_save()` already protected only
+*multiple kernel-mode producers* racing each other, a concern entirely
+orthogonal to which privilege level drains the consumer side.
+
+The descriptor tables (`g_usb_dev_desc`, `g_usb_cfg_desc`, the string
+descriptors, `g_usb_line_coding`) didn't join the struct -- they ride
+along read-only in the text region's own `USB_UDATA` rodata
+subsection, the same trick st7735's `font5x7`/tm1638's `font7seg`
+already use.
+
+**A real bug found on real hardware, not predicted: the region's own
+NAPOT alignment cost far more than its declared size.** The struct's
+natural size (~15KB) isn't a power of two, so it was padded to exactly
+32768 bytes (a union with a `pad[32768]` member, chosen over granting
+32768 over a smaller object and trusting the linker not to place some
+*other* symbol in the leftover space -- this codebase's own "reject
+rather than round" isolation policy applied to itself). First hardware
+boot: `[Sched] Out of memory for 'uart' stack (1 pages)`, and six more
+driver tasks failing identically right behind it -- only `usbcdc` itself
+(created first) got a kernel stack. Root cause, found by reading the
+link map rather than guessing: `g_usb_region`'s `aligned(32768)`
+attribute doesn't just cost its own 32768 bytes, it forces the linker to
+skip forward to the next 32768-aligned address in `.bss` first -- here,
+24576 bytes of *pure padding* with nothing placed in it, on top of the
+32768-byte region itself. 57344 bytes (14 pages) consumed by one
+object, out of a boot-time page pool that only had 17 pages total.
+Fixed by shrinking the actual struct (trimming `USB_EP4_RX_RING_SIZE`
+8192 → 6144, still comfortably above `P9_MAX_MSIZE` with headroom for
+an in-flight partial frame) until it fit a 16384-byte pad instead of
+32768 -- halving both the region's own cost *and* its worst-case
+preceding alignment gap at once (confirmed on the resulting link map:
+gap shrank from 24576 to 8192 bytes). A `_Static_assert` guards the fit
+so a future struct regrowth fails the build instead of silently making
+`mem_domain_add()`'s power-of-two check fail at runtime. Boot-time pool
+went from 17 to 33 pages and every driver task started cleanly.
+
+**A second real, honest cost that shrinking the region only partly
+absorbed:** idle baseline on `rp2350-chess` is now 33 total pages, down
+from Phase 6's 44 -- usb_cdc's own new U-mode stack page (1, the same
+cost every other driver already pays) plus the combined-state region's
+16384-byte pad and its own remaining 8192-byte alignment gap (6 pages,
+unique to this phase; every other driver's own state fit within an
+already-page-aligned object with no extra padding cost). Confirmed on
+real hardware, 3 consecutive `tests/hw/test_rp2350.py` runs: `C6/C7`
+(compiler/editor memory) is the same pre-tracked failure every phase
+since it was first tracked has hit, but `C2` (two resident user
+programs) and `C4` (multi-page image, `ubig`/`uwx`) now newly fail too
+-- both purely from reduced heap headroom during test runs (`ubig`
+reporting "No memory for a user stack"), not from any logic bug in the
+U-mode conversion itself (`B3`, `B6`, `C3`, `C8`, both `link_usb_cdc`
+tests, and `p9share` all pass unchanged). Further shrinking the region
+to claw back more headroom was rejected -- it would have meant cutting
+into EP2/EP4 TX ring capacity, and the file's own long-standing comment
+on why those rings are sized generously (`ls`-sized shell output is
+produced in one tight burst with no poll in between, so anything that
+doesn't fit is silently dropped) makes that a worse, *silent*
+regression rather than a `[FAIL]` a test suite can name. User's
+explicit call: accept and document 19/22 rather than trade a visible,
+understood test failure for an invisible one -- and hand the whole
+tradeoff to the now-unblocked heap/static-buffer analysis as its first,
+concrete, quantified input.
+
+**`.usbtext`:** the shared `.utext` page was tried first (established
+policy since Phase 5) and the linker refused it outright ("cannot move
+location counter backwards") -- unsurprising, usb_cdc's dispatch is by
+far the largest single polling loop of any driver converted so far. A
+dedicated page, same shape as `.st7735text`/`.blktext`
+(`board_usb_text_region()`, `_usbtext_start`). Disassembly confirmed
+clean: every `jal` target lands inside `[0x10026000, 0x10026934)`
+(well within the 4096-byte page), zero `jr`/`jalr` anywhere in it --
+`u_ep2_configure`/`u_ep2_tx_pump`/`u_ep4_configure`/`u_ep4_tx_pump` all
+inlined away at `-Os`, leaving only `u_ep_buf_ctrl_write`,
+`u_ep0_send*`, `usb_cdc_umode_body`, and `usb_intruder` as real symbols.
+
+**`usbisotest`** mirrors the prior six isolation tests exactly: the real
+5-region domain (stack + text + `USBCTRL_DPRAM_BASE` + `USBCTRL_REGS_BASE`
++ the combined-state region), a deliberate out-of-domain store, asserted
+to fault.
+
+**`ep4_link_send_frame()` fix**, the one change outside `usb_cdc.c`'s own
+task-lifecycle code flagged by the plan: its TX-ring-full wait used to
+call `usb_cdc_task()` (the kernel-mode copy) inline, safe only because
+that function was one bounded pass. Now gated on `usb_cdc_task_alive()`
+-- `sched_yield()` (let the U-mode task's own scheduled turn drain it)
+when alive, the direct call only as the same fallback the task-lifetime
+wrapper itself uses.
+
+**Verified:** 217/217 QEMU across 3 consecutive clean runs. All four
+board personas build clean. Real RP2350 hardware, `rp2350-chess`: the
+1200-baud BOOTSEL touch verified end to end, not just "the syscall
+exists" -- `flash.py`'s own touch-and-reflash cycle used to reach and
+flash this exact build (twice: once before the heap fix above, once
+after, both times the board came back up and answered). `usbisotest`
+3/3 consecutive clean runs (real load access fault, canary intact, task
+did not exit cleanly). Sustained interactive use over ACM0 (`ls`,
+multiple `cat`s, `help`, repeated `cat /proc/ps` across the whole
+session) with `usbcdc` staying READY throughout, never DEAD or missing.
+Full `tests/hw/test_rp2350.py` 19/22 across 3 consecutive runs -- see
+the heap-budget finding above for exactly which three and why; every
+non-heap-budget test, including both `link_usb_cdc` (ACM1 9P) tests and
+`p9share`, passes unchanged.
+
+All seven M4.5 drivers (heartbeat, tm1638, i2c, st7735, blk, uart,
+usb_cdc) are now real U-mode tasks with hardware-enforced PMP isolation.
+The deferred heap/static-buffer analysis across all of them together is
+the next piece of work, not started in this sitting, per the user's own
+explicit instruction -- this phase's own finding above (one NAPOT-aligned
+region can cost far more in linker padding than its declared size) is
+now a concrete, quantified example for that analysis to weigh, not a
+hypothetical.
 
 ### M6 — Process visibility parity
 

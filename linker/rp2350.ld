@@ -56,6 +56,20 @@ SECTIONS
         . = _blktext_start + 4096;
     } > FLASH
 
+    /* M5 Phase 7, plan/phase12_microkernel_migration.md: usb_cdc's own
+     * dedicated U-mode-executable page, same reasoning as .st7735text/
+     * .blktext above -- the shared .utext page overflowed once usb_cdc's
+     * dispatch (by far the largest of any driver converted so far: EP0
+     * enumeration, EP2/EP4 pump/drain, the full SETUP_REQ dispatch)
+     * joined heartbeat/tm1638/i2c/uart there, found by the linker itself
+     * ("cannot move location counter backwards"), not predicted in
+     * advance (though expected -- see this phase's own plan doc entry). */
+    .usbtext : ALIGN(4096) {
+        _usbtext_start = .;
+        *(.usbtext .usbtext.*)
+        . = _usbtext_start + 4096;
+    } > FLASH
+
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)

@@ -158,6 +158,14 @@ void board_st7735_text_region(uintptr_t *base, uintptr_t *size);
  * that uses it. */
 void board_blk_text_region(uintptr_t *base, uintptr_t *size);
 
+/* M5 Phase 7, plan/phase12_microkernel_migration.md: usb_cdc's own
+ * dedicated U-mode-executable page (linker: .usbtext), same reasoning as
+ * board_st7735_text_region()/board_blk_text_region() above -- the shared
+ * .utext page overflowed once usb_cdc's dispatch (EP0 enumeration,
+ * EP2/EP4 pump/drain, the full SETUP_REQ dispatch) joined it. RP2350-only,
+ * like the driver that uses it. */
+void board_usb_text_region(uintptr_t *base, uintptr_t *size);
+
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 

@@ -135,6 +135,7 @@ static void cmd_help(void) {
 #endif
 #if defined(CONFIG_BOARD_RP2350)
     cprintf("  uartisotest     - Same, under the real uart driver task's own UART0-window domain\n");
+    cprintf("  usbisotest      - Same, under the real usb_cdc driver task's own DPRAM+USBCTRL+state domain\n");
 #endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
@@ -802,6 +803,34 @@ static void cmd_uart_isolation_test(void) {
     printk("[UartIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
            exited_clean ? "yes" : "no");
 }
+
+/* M5 Phase 7, plan/phase12_microkernel_migration.md: same idea as
+ * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest/blkisotest/
+ * uartisotest above, against usb_cdc's own domain shape
+ * (drivers/usb_cdc.c) -- stack + text + USB_DPRAM_BASE + USB_BASE + the
+ * combined g_usb_region state, the MEM_DOMAIN_MAX_REGIONS cap with zero
+ * headroom left. Not gated on a CONFIG_ENABLE_* flag: usb_cdc is always
+ * built for RP2350, same as uart. */
+extern bool usb_cdc_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_usb_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[UsbIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = usb_cdc_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[UsbIso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[UsbIso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[UsbIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
 #endif
 
 /* B6: preemption, tested by something that cannot work without it.
@@ -1307,6 +1336,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strcmp(cmd_line, "uartisotest") == 0) {
         cmd_uart_isolation_test();
+        return;
+    } else if (strcmp(cmd_line, "usbisotest") == 0) {
+        cmd_usb_isolation_test();
         return;
 #endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {

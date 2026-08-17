@@ -45,6 +45,18 @@
 #define SYS_CHAN_SERVE_WAIT  25
 #define SYS_CHAN_SERVE_REPLY 26
 
+/* M5 Phase 7, plan/phase12_microkernel_migration.md: drivers/usb_cdc.c's
+ * U-mode task can detect the "1200-baud touch" BOOTSEL condition (the
+ * host dropped DTR after configuring 1200 baud) but cannot act on it --
+ * rp2350_reboot_to_bootsel() (arch/riscv/rp2350/bootrom.c) is a bootrom
+ * ROM-table lookup and jump, genuinely privileged. Same shape SYS_UEXIT's
+ * own comment already describes: a user task cannot call this itself,
+ * since it is kernel/bootrom code manipulating kernel state. Handled in
+ * arch/riscv/common/trap.c by calling it directly from the trap
+ * handler's own kernel context; does not return on success, same as the
+ * function it wraps. */
+#define SYS_REBOOT_BOOTSEL   27
+
 void ipc_init(void);
 
 #endif /* LUGALOS_KERNEL_IPC_H */
