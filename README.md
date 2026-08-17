@@ -8,6 +8,9 @@ Note: this is a guided AI development project. Coding was done by Claude Code. I
 
 ---
 
+![LugalOS and chess hardware](https://github.com/domschl/LugalOS/blob/main/doc/LugalOS_chess.jpg)<br>
+_LugalOS running driver tasks for TFT, keypad, leds, SD-card, and a chess application on RP2350_
+
 ## Implementation Status
 
 LugalOS is early-stage. The section below reflects what's actually implemented today, not the
