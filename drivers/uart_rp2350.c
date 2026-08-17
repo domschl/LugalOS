@@ -224,11 +224,15 @@ HEARTBEAT_UATTR static void heartbeat_umode_body(void) {
 }
 
 /* Own dedicated stack, not shared with kernel/shell.c's one-shot test
- * probes (see this section's own comment above for why): a full page,
- * page-aligned, the same "satisfies both PMP's power-of-two-self-aligned
- * rule and Sv39's page granularity in one description" reasoning
- * kernel/shell.c's g_user_stack already established. */
-static uint8_t g_heartbeat_ustack[4096] __attribute__((aligned(4096)));
+ * probes (see this section's own comment above for why). M5 heap-reclaim
+ * (plan/phase12_microkernel_migration.md): 256 bytes, not a full page --
+ * heartbeat_umode_body() makes no calls at all post-inlining (measured
+ * deepest stack use: 0 bytes), so 256 is pure headroom. This file is
+ * RP2350-only, so (unlike kernel/shell.c's g_user_stack) there is no
+ * Sv39-page-granularity reason to keep this at a full page. See
+ * .ustacks256's own comment in linker/rp2350.ld for the grouping. */
+static uint8_t g_heartbeat_ustack[256] __attribute__((aligned(256)))
+                                        __attribute__((section(".ustacks256")));
 static mem_domain_t g_heartbeat_domain;
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this
@@ -728,7 +732,12 @@ UART_UATTR static void uart_umode_body(void) {
     }
 }
 
-static uint8_t      g_uart_ustack[4096] __attribute__((aligned(4096)));
+/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 512 bytes, not
+ * 4096 -- uart_umode_body() makes no calls post-inlining (measured
+ * deepest stack use: 272 bytes). See g_heartbeat_ustack's own comment
+ * above and .ustacks512's in linker/rp2350.ld. */
+static uint8_t      g_uart_ustack[512] __attribute__((aligned(512)))
+                                        __attribute__((section(".ustacks512")));
 static mem_domain_t g_uart_domain;
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this

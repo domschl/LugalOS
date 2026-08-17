@@ -88,6 +88,56 @@ SECTIONS
     __binary_info_start = ADDR(.binary_info);
     __binary_info_end = ADDR(.binary_info) + SIZEOF(.binary_info);
 
+    /* M5 heap-reclaim (plan/phase12_microkernel_migration.md): every
+     * RP2350-only driver's own NAPOT-aligned static region -- U-mode
+     * stacks plus usb_cdc's combined-state region -- grouped by required
+     * alignment and packed contiguously, largest first, instead of
+     * scattered across .bss in link order. Found on real hardware in M5
+     * Phase 7: a NAPOT `aligned(N)` object costs not just its own size but
+     * (empirically) up to another N-1 bytes of *preceding* linker padding
+     * to reach that alignment wherever it happens to land -- across all
+     * eight of these objects that padding totalled ~51 KB, more than the
+     * objects themselves. Packing them here instead, first-to-last:
+     *
+     *   - Each tier's own total size is a whole multiple of that tier's
+     *     alignment (e.g. two 2048-byte objects sum to 4096, itself
+     *     2048-aligned), so the *next* tier's smaller alignment requirement
+     *     is satisfied automatically at zero cost -- no per-object gap
+     *     survives once objects are grouped this way.
+     *   - Placed as the very first thing in RAM: ORIGIN(RAM) (0x20000000)
+     *     is already 16384-aligned on its own, so even the widest tier
+     *     (.ustacks16384, currently just usb_cdc's own g_usb_region) pays
+     *     no leading gap either -- the one gap this scheme can't remove
+     *     structurally (something has to be first) costs nothing here
+     *     because what's first is already maximally aligned by construction.
+     *
+     * Each driver opts in with `__attribute__((section(".ustacksN")))`
+     * alongside its existing `aligned(N)`, matching the array's own real
+     * size -- N must still be its own PMP grant size (mem_domain_add()'s
+     * own power-of-two-and-self-aligned check is unchanged and unrelated
+     * to this placement). Deliberately NOT applied to kernel/shell.c's
+     * g_user_stack/g_echo_ustack: those are common code, built for the
+     * Sv39/QEMU targets too, where a sub-page PMP-style shrink either does
+     * nothing (Sv39 can't grant finer than a page) or, worse, could
+     * silently over-grant the rest of the page around a smaller region --
+     * a hazard that file's own comment already names. Scoped to RP2350
+     * driver files only, where PMP genuinely honors these sizes. */
+    .ustacks16384 (NOLOAD) : ALIGN(16384) {
+        *(.ustacks16384)
+    } > RAM
+
+    .ustacks2048 (NOLOAD) : ALIGN(2048) {
+        *(.ustacks2048)
+    } > RAM
+
+    .ustacks512 (NOLOAD) : ALIGN(512) {
+        *(.ustacks512)
+    } > RAM
+
+    .ustacks256 (NOLOAD) : ALIGN(256) {
+        *(.ustacks256)
+    } > RAM
+
     .data : {
         . = ALIGN(4);
         __data_start = .;

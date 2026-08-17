@@ -71,9 +71,19 @@ newly failed two hardware tests (`C2`, `C4`) that every prior phase
 passed — see M5 Phase 7's own section for the full accounting and the
 user's own explicit call to accept and document it rather than trim
 ring capacity to chase the old baseline. All seven M4.5 drivers are now
-real U-mode tasks; the deferred heap/static-buffer analysis is next.
-Written to be detailed and executed one milestone at a time, not
-implemented from this
+real U-mode tasks. M5 Heap-Reclaim complete (2026-08-17): the deferred
+cross-driver analysis, done as four agreed review criteria (A: NAPOT
+alignment-gap audit, B: measured stack right-sizing, C: buffer
+minimality, D: const-to-flash placement). A and B alone -- a new
+descending-alignment linker layout (`.ustacks16384/2048/512/256`) that
+tiles every driver's static region with zero gap, plus each ustack
+shrunk to its real measured worst-case call-chain depth rather than a
+flat 4096 -- took the `rp2350-chess` idle baseline from 33 to 55 pages,
+recovering Phase 7's own regression outright: `tests/hw/test_rp2350.py`
+went from 19/22 to a clean 22/22, including `C6/C7`, which no phase in
+this milestone had passed before. C and D found nothing further worth
+taking — see M5 Heap-Reclaim's own section. Written to be detailed and
+executed one milestone at a time, not implemented from this
 document directly.
 
 **Origin.** `plan/redesign_eval.md` asked whether LugalOS's core architecture
@@ -2125,6 +2135,109 @@ explicit instruction -- this phase's own finding above (one NAPOT-aligned
 region can cost far more in linker padding than its declared size) is
 now a concrete, quantified example for that analysis to weigh, not a
 hypothetical.
+
+### M5 Heap-Reclaim — cross-driver static-RAM analysis and fix *(done, 2026-08-17)*
+
+The deferred analysis Phase 7 flagged, run once across all seven
+converted drivers as the user's own standing instruction required. Four
+review criteria agreed with the user up front (Level 1, no design
+changes; Level 2 architectural compromises held in reserve as a last
+resort):
+
+- **A. NAPOT alignment-gap audit.** Phase 7's own finding (an
+  `aligned(N)` object costs its preceding linker padding, not just its
+  declared size) generalized to every 4096-aligned static object in the
+  codebase, not just `g_usb_region`. It turned out to be universal: all
+  seven driver ustacks (plus `kernel/shell.c`'s two one-shot test
+  probes) each pay this tax, wherever they happen to land relative to
+  whatever non-4096-aligned symbol the linker placed just before them.
+  Two objects that happened to link adjacent to each other (`g_uart_ustack`
+  /`g_heartbeat_ustack`, `g_echo_ustack`/`g_user_stack`) paid zero gap --
+  proof by existence that the fix is placement, not size.
+- **B. U-mode stack right-sizing**, made rigorous rather than guessed:
+  confirmed first that `arch/riscv/common/entry.S` swaps to a kernel
+  scratch stack (`csrrw sp, CSR_SCRATCH, sp`) *before* saving any trap
+  state, so a preempting timer interrupt never touches a U-mode task's
+  own stack -- and confirmed every `jal` in all four UATTR text sections
+  (`.utext`/`.st7735text`/`.blktext`/`.usbtext`) targets a symbol inside
+  those same sections, zero escapes to ordinary kernel `.text` or a
+  libgcc helper, with zero `jr`/`jalr` anywhere (no jump tables, no
+  indirect calls at all). With interrupts and escaped calls both ruled
+  out, a static sum of each `umode_body`'s deepest reachable call chain
+  (read straight off each function's own `addi sp,sp,-N` prologue) is
+  the *true* worst case, not a lower bound -- measured, not estimated.
+  Isolation-test intruders are unaffected: every one already uses its
+  own separate, transient `palloc_pages(1)`, never the production
+  ustack.
+- **C. Buffer minimality + wire consistency.** Tabulated every driver's
+  `chan_call()` req/resp pair against `trap.c`'s shared
+  `CHAN_SERVE_KBUF_CAP` (576). Already tight across the board -- `blk`'s
+  (521/513) is Phase 5's own prior reduction, nothing else comes close
+  to the shared buffer's size, no mismatches found. One minor candidate
+  (`usb_cdc`'s `USB_EP2_RX_RING_SIZE`, 512 bytes of buffered keystrokes,
+  likely oversized relative to real typing/drain rates) identified but
+  **not applied** -- A+B alone already exceeded the target, so this
+  stayed a documented option rather than a change.
+- **D. CONST-to-flash audit.** `.data` (the only section that would
+  reveal a const-in-spirit global misplaced into RAM) is 616 bytes total
+  across the entire kernel -- a handful of legitimately mutable small
+  structs, nothing resembling a leaked table. Font tables and USB
+  descriptors were already correctly UDATA-tagged in earlier phases.
+  Nothing to fix.
+
+**Implemented: A and B together**, per the user's own choice once the
+estimates were in front of them (combined, projected ~13 pages reclaimed
+against the Level 1 target of matching Phase 6's 44-page baseline).
+Four new linker-script output sections (`linker/rp2350.ld`:
+`.ustacks16384`, `.ustacks2048`, `.ustacks512`, `.ustacks256`), placed as
+literally the first thing in RAM and in descending-alignment order, so
+each tier's own total size (always a whole multiple of that tier's
+alignment) hands the next, smaller tier a boundary it already satisfies
+-- zero gap between or within tiers, and zero leading gap before the
+first (`ORIGIN(RAM)`, 0x20000000, is already 16384-aligned on its own).
+Every RP2350 driver ustack opts in via
+`__attribute__((section(".ustacksN")))` alongside its own `aligned(N)`,
+right-sized to B's measured worst case with 2-4x headroom rounded to the
+next power of two: `heartbeat` 4096→256 (measured 0), `tm1638` 4096→256
+(measured 112, 16 of which is `TM1638_URAM_SIZE`'s existing carve-out,
+still 240 usable), `usb_cdc` 4096→256 (measured 64), `uart` 4096→512
+(measured 272), `i2c` 4096→512 (measured 384), `blk` 4096→2048 (measured
+1104), `st7735` 4096→2048 (measured 1392). `g_usb_region` (16384,
+already right-sized in Phase 7) joined the same scheme via
+`.ustacks16384` rather than being shrunk further. **Deliberately not
+applied to `kernel/shell.c`'s `g_user_stack`/`g_echo_ustack`** -- common
+code built for the Sv39/QEMU targets too, where a sub-page PMP-style
+shrink either does nothing (Sv39 can't grant finer than a page) or risks
+silently over-granting the rest of the page around a smaller region, a
+hazard that file's own comment already named; scoped to RP2350-only
+driver files, where PMP genuinely honors these sizes.
+
+**Result, confirmed on the real link map**: every one of the eight
+retiled objects lands with exactly zero gap, `.data` continuing
+immediately after with zero gap too -- `0x20000000` (`g_usb_region`)
+through `0x20005700` (`.data` start) with nothing but the objects
+themselves in between. Real RP2350 hardware, `rp2350-chess`: idle
+baseline **33 → 55 total pages** (image `data+bss` 360 → 274 KB),
+exceeding both the pre-analysis estimate (~46) and Phase 6's own
+44-page baseline by a wide margin. All eight driver tasks (including
+`heartbeat`, confirmed blinking again by the user) start cleanly.
+`tests/hw/test_rp2350.py` **22/22 across 3 consecutive runs** -- not
+just the pre-Phase-7 21/22, but a clean sweep: `C6/C7` (the
+compiler/editor heap-budget shortfall every phase since it was first
+tracked had hit) passes for the first time in this milestone, alongside
+`C2`/`C4` (Phase 7's own new regressions) both recovering outright.
+All seven `*isotest` commands re-verified 100% clean under their new,
+smaller production stacks (real PMP fault, canary intact, task did not
+exit cleanly, each) -- confirming the measured-not-guessed stack sizes
+hold under the same fault probe as before. 217/217 QEMU across 3
+consecutive clean runs, all four board personas build clean.
+
+**Not pursued, and not needed**: Check C's minor `EP2_RX` trim, and
+every Level 2 architectural compromise (a finer-grained allocator for
+driver-owned regions; joining related tasks like `st7735`+`tm1638` onto
+one shared domain) -- held in reserve, but A+B alone turned out to be
+enough that reaching for either would have traded working design
+principles for savings the project didn't end up needing.
 
 ### M6 — Process visibility parity
 

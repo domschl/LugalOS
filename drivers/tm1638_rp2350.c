@@ -359,9 +359,17 @@ static bool tm1638_task_alive(void) {
  * bytes of the task's own dedicated stack page -- already RW-granted,
  * already page-aligned, and actual stack usage (a handful of small local
  * buffers) stays nowhere near that boundary. */
-#define TM1638_USTACK_SIZE 4096u
+/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 256 bytes, not
+ * 4096 -- tm1638_umode_body()'s deepest call chain (through
+ * tm1638_usys_flush -> tm1638_usys_write_byte) measures 112 bytes on the
+ * real disassembly. 256 - TM1638_URAM_SIZE(16) = 240 bytes usable for the
+ * call stack itself, still over 2x the measured need. See
+ * g_heartbeat_ustack's own comment in uart_rp2350.c and .ustacks256's in
+ * linker/rp2350.ld. */
+#define TM1638_USTACK_SIZE 256u
 #define TM1638_URAM_SIZE   16u
-static uint8_t g_tm1638_ustack[TM1638_USTACK_SIZE] __attribute__((aligned(4096)));
+static uint8_t g_tm1638_ustack[TM1638_USTACK_SIZE] __attribute__((aligned(TM1638_USTACK_SIZE)))
+                                                    __attribute__((section(".ustacks256")));
 #define tm1638_usys_ram (&g_tm1638_ustack[TM1638_USTACK_SIZE - TM1638_URAM_SIZE])
 
 /* Hand-rolled per translation unit, not shared with drivers/uart_rp2350.c's

@@ -588,7 +588,13 @@ BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
     }
 }
 
-static uint8_t      g_blk_ustack[4096] __attribute__((aligned(4096)));
+/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 2048 bytes, not
+ * 4096 -- blk_umode_body()'s deepest call chain (through
+ * u_sd_send_cmd.constprop.0 -> u_spi_transfer) measures 1104 bytes on the
+ * real disassembly. See drivers/uart_rp2350.c's g_heartbeat_ustack
+ * comment and .ustacks2048's in linker/rp2350.ld. */
+static uint8_t      g_blk_ustack[2048] __attribute__((aligned(2048)))
+                                        __attribute__((section(".ustacks2048")));
 static mem_domain_t g_blk_domain;
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this

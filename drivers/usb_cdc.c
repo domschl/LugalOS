@@ -336,7 +336,8 @@ typedef union {
 _Static_assert(sizeof(usb_umode_fields_t) <= USB_STATE_REGION_SIZE,
                "usb_umode_fields_t no longer fits its padded PMP region -- see USB_EP4_RX_RING_SIZE's own comment");
 
-static volatile usb_umode_state_t g_usb_region __attribute__((aligned(USB_STATE_REGION_SIZE)));
+static volatile usb_umode_state_t g_usb_region __attribute__((aligned(USB_STATE_REGION_SIZE)))
+                                                __attribute__((section(".ustacks16384")));
 #define g_usb (g_usb_region.fields)
 
 /* --- "1200-baud touch" BOOTSEL reset ---
@@ -1571,7 +1572,20 @@ bool usb_cdc_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-static uint8_t      g_usb_ustack[4096] __attribute__((aligned(4096)));
+/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 256 bytes, not
+ * 4096 -- usb_cdc_umode_body()'s own deepest call chain (through
+ * u_ep0_send -> u_ep0_send_next_chunk -> u_ep_buf_ctrl_write, the only
+ * calls it makes that don't inline away at -Os) measures 64 bytes on the
+ * real disassembly, confirmed exhaustive: entry.S swaps to a kernel
+ * scratch stack before saving any trap state, so a preempting interrupt
+ * never touches this stack, and every `jal` in .usbtext targets a symbol
+ * inside .usbtext itself (checked directly, zero escapes to ordinary
+ * kernel .text or a libgcc helper) -- so 64 bytes is the true worst case,
+ * not a lower bound. 256 keeps 4x headroom. See .ustacks256's own comment
+ * in linker/rp2350.ld for why this is grouped into a dedicated section
+ * rather than just shrunk in place. */
+static uint8_t      g_usb_ustack[256] __attribute__((aligned(256)))
+                                       __attribute__((section(".ustacks256")));
 static mem_domain_t g_usb_domain;
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this

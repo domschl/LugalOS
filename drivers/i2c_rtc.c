@@ -768,7 +768,13 @@ I2C_UATTR static void i2c_umode_body(void) {
     }
 }
 
-static uint8_t      g_i2c_ustack[4096] __attribute__((aligned(4096)));
+/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 512 bytes, not
+ * 4096 -- i2c_umode_body()'s deepest call chain (through
+ * i2c_usys_read_reg -> i2c_usys_target/i2c_usys_write_raw) measures 384
+ * bytes on the real disassembly. See drivers/uart_rp2350.c's
+ * g_heartbeat_ustack comment and .ustacks512's in linker/rp2350.ld. */
+static uint8_t      g_i2c_ustack[512] __attribute__((aligned(512)))
+                                       __attribute__((section(".ustacks512")));
 static mem_domain_t g_i2c_domain;
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this
