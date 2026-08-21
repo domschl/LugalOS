@@ -484,6 +484,54 @@ here) -- everything checkable from the host-tooling side confirms the
 same class of hang that hit `/dev/uart` no longer exists for
 `/dev/eeprom` either, which was the last unguarded path under `/dev/`.
 
+### Follow-up 6: the /dev/ hang confirmed fixed, but two more real bugs surfaced under Nautilus *(done, 2026-08-21)*
+
+Reported: the `/dev/` hang is gone under Nautilus, but browsing file
+*properties/attributes* eventually crashed `lugal9pfuse` outright, with
+a `struct.error: ushort format requires 0 <= number <= 65535` repeating
+on every subsequent `getattr`. Separately, `/flash0` was showing as
+owner-read-write in Nautilus despite being permanently read-only.
+
+**Bug 1 -- tag counter never wrapped.** `P9Client._next_tag` incremented
+by one on every single 9P round trip, forever, with nothing capping it
+at 16 bits -- but tag is a wire `u16` (`fs/9p.c` packs it with
+`wcur_u16()`), so `struct.pack("<H", tag)` starts raising the moment the
+counter exceeds 65535. Nautilus polling file attributes is exactly the
+kind of sustained, long-running load (far more total requests over a
+mount's lifetime than any manual test session) that actually reaches
+that count, where a quick `tree` or a few edits never would. Fixed:
+`P9Client._tag()` now cycles back to 1 once it reaches `0xFFFE`, safe
+because this client only ever has one request outstanding at a time (see
+the class's own docstring) -- there's never a second live tag a wrapped
+value could collide with. Also skips `0xFFFF` (`P9_NOTAG`, `fs/include/
+fs/9p.h`), which `fs/9p.c` reserves for its own "invalid frame" error
+reply, so a wrapped real tag can never collide with that sentinel either.
+
+**Bug 2 -- read-only volumes reported as writable.** `_attrs()` reported
+a flat `0o644`/`0o755` for every file and directory regardless of which
+volume it lives under. `fs/vfs_server.c`'s `vfs_pwrite()` only has real
+write paths for `MOUNT_FAT32`, `MOUNT_DEV`, and `MOUNT_REMOTE9P` --
+`MOUNT_PROC` falls through to its default `-1` branch, and `/flash0` is
+that same branch's own named exception (its comment calls it out as the
+read-only "Embedded Flash ROMDisk"). Every write attempt under `/flash0`
+or `/proc` already correctly failed with an I/O error no matter what
+`getattr()` said, but *advertising* write permissions on something that
+can never actually be written is a real, if purely cosmetic, bug -- it's
+exactly what a file manager reads to decide whether to offer editing at
+all. Fixed: paths under `/flash0` or `/proc` now report `0o444`/`0o555`
+(no write bits) instead of `0o644`/`0o755`; `/sd0` and `/dev/*` are
+unaffected.
+
+**Verified**: 245/245 QEMU tests unaffected. Real hardware: the tag
+counter forced to just below its wraparound point and driven through it
+directly -- every request past the boundary still succeeds, confirmed via
+a live sequence of `stat()` calls straddling the wrap. `ls -la` on
+`/flash0` and `/proc` now shows `dr-xr-xr-x`/`-r--r--r--`; `/sd0` and
+`/dev/*` are still `drwxr-xr-x`/`-rw-r--r--`; `/flash0` writes still
+cleanly fail (unchanged behavior, now with honest permission bits); a
+full `tree` plus `/sd0` write/read/remove cycle still succeeds
+afterward.
+
 ---
 
 ## 14b, 14c-14e — not started

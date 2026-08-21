@@ -193,8 +193,19 @@ class P9Client:
         self._sock.close()
 
     def _tag(self) -> int:
+        # Tag is a wire u16 (fs/9p.c packs it with wcur_u16()), so it has
+        # to wrap -- a long-lived connection (a FUSE mount left mounted
+        # for a while under heavy use, e.g. Nautilus polling attributes
+        # repeatedly, is enough) will genuinely issue more than 65536
+        # requests, and struct.pack("<H", ...) raises struct.error the
+        # moment an unwrapped counter exceeds that. Safe to just cycle
+        # back to 1, not track what's "still in use": this client only
+        # ever has one request outstanding at a time (see the class
+        # docstring), so there's never a second live tag a wrapped value
+        # could collide with. Reserves 0xFFFF (P9_NOTAG, fs/include/
+        # fs/9p.h) rather than ever issuing it as a real tag.
         t = self._next_tag
-        self._next_tag += 1
+        self._next_tag = 1 if self._next_tag >= 0xFFFE else self._next_tag + 1
         return t
 
     def _recv_exact(self, n: int) -> bytes:

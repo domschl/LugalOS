@@ -133,6 +133,22 @@ class P9FS(Operations):
     def _untouch(self, path: str) -> None:
         self._mtimes.pop(path, None)
 
+    # Volumes with no write path at all server-side (fs/vfs_server.c's
+    # vfs_pwrite() only has cases for MOUNT_FAT32, MOUNT_DEV, and
+    # MOUNT_REMOTE9P -- MOUNT_PROC falls through to its default, "return
+    # -1" branch, and /flash0 specifically is called out in that same
+    # branch's own comment as the read-only "Embedded Flash ROMDisk").
+    # Every write attempt under these already correctly fails with an
+    # I/O error regardless of what getattr() reports -- this is purely
+    # about not *advertising* rw-r--r-- permissions on something that can
+    # never actually be written, which is real, if cosmetic: it's what a
+    # file manager reads to decide whether to offer editing at all.
+    _READONLY_PREFIXES = ("/flash0/", "/proc/")
+    _READONLY_ROOTS = ("/flash0", "/proc")
+
+    def _is_readonly_path(self, path: str) -> bool:
+        return path in self._READONLY_ROOTS or path.startswith(self._READONLY_PREFIXES)
+
     def _attrs(self, path: str, st: p9lib.Stat) -> dict:
         # Reporting /dev/* as S_IFCHR (character special) instead of
         # S_IFREG was tried and reverted: it does stop file managers from
@@ -143,7 +159,11 @@ class P9FS(Operations):
         # node -- "Permission denied" for a deliberate `cat` too, not just
         # for automatic sniffing. See open()'s own guard for the actual
         # fix for the one path (/dev/uart) that needed one.
-        mode = (statmod.S_IFDIR | 0o755) if st.is_dir else (statmod.S_IFREG | 0o644)
+        readonly = self._is_readonly_path(path)
+        if st.is_dir:
+            mode = statmod.S_IFDIR | (0o555 if readonly else 0o755)
+        else:
+            mode = statmod.S_IFREG | (0o444 if readonly else 0o644)
         # The server has no wall clock at all (Stat.atime/mtime are
         # always 0), so there's no real timestamp to report -- but
         # reporting time.time() fresh on every single stat() call (an
