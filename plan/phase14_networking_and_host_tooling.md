@@ -226,21 +226,75 @@ allocated would raise a second, more confusing error masking the original.
   - After both fixes: full `lugal9pfuse` write/append/`cp`/`mkdir`/nested-
     write/`rm`/`rmdir` cycle verified clean against the real board, `/sd0`
     confirmed left exactly as found.
-- **New, separate finding — not fixed, not in scope here:** `Tstat` on two
-  specific real-hardware paths (`/sd0/P1.ELF`, `/sd0/SYSTEM`) never
-  returns at all — confirmed via a bare `P9Client.stat()` call (no
-  `Session`, no FUSE) with a 30-second timeout, while `Twalk`/`Topen` on
-  the exact same paths return in ~4ms. Genuinely hangs, not just slow;
-  reproduces every time; unrelated to anything changed this session (both
-  fat32.c's `filename_to_83()` and the two p9lib fixes above were traced
-  through by hand for these exact names — neither is implicated). Most
-  likely a pre-existing server-side (`fs/9p.c`/`fs/fat32.c`) lock or
-  contention issue specific to a file/directory a currently-running
-  on-board process has open (`P1.ELF` reads like "process 1's own
-  backing binary"). Surfaces in `fuse-p9` as those two names showing
-  `?????` rows in `ls -la` (each one blocking for the full timeout before
-  FUSE reports `ENOENT`) — worth a dedicated investigation later, not
-  patched over here.
+### Follow-up: a real firmware bug, root-caused and fixed *(done, 2026-08-21)*
+
+The user reported `fuse-p9` as unstable in real use ("after a few
+operations, system stalls... execution seems very slow") — `tree`/`ls -la`
+against the board hung on specific entries (`/sd0/P1.ELF`, `/sd0/SYSTEM`,
+`/dev/eeprom`) and, worse, seemed to degrade the whole mount afterward.
+The `Tstat`-hangs-on-two-paths finding recorded above turned out not to be
+a lock/contention issue at all once actually root-caused:
+
+**Root cause: a missing USB zero-length packet.** RP2350's USB bulk
+endpoints (EP2 console, EP4 `link_usb_cdc` net) have a 64-byte max packet
+size. Whenever a 9P reply's *total* wire frame lands on an exact multiple
+of 64 bytes, USB has no way to mark that bulk IN transfer complete other
+than a trailing zero-length packet — the firmware wasn't sending one, so
+the host's USB core held the transfer open forever, and since this server
+only ever has one request in flight, every request after it hung too
+("the whole system stalls" was the whole 9P server being starved by one
+stuck transfer, not a per-file problem). Root-caused with a systematic
+sweep on real hardware: stat-ing synthetic filenames of length 2-12 hung
+*only* at length 6 (giving an exactly-64-byte `Rstat`) and worked
+instantly at every other length; a parallel sweep of file-read sizes
+confirmed the same boundary for `Rread` (hangs exactly at a 53-byte file,
+whose reply frame is exactly 64 bytes). `P1.ELF`, `SYSTEM`, and `eeprom`
+all happened to produce exactly-64-byte stat replies, hence the original,
+narrower-looking symptom. Never reproducible on QEMU, which has no
+packet-size concept at all.
+
+**Fixed in `drivers/usb_cdc.c`**: `ep4_link_send_frame()` (the one
+function that actually knows a queued frame's total length) now sets a
+new `ep4_tx_zlp_pending` flag whenever `len % 64 == 0`; `ep4_tx_pump()`
+and its U-mode twin `u_ep4_tx_pump()` check that flag once the ring
+genuinely empties and send an explicit zero-length packet, clearing it —
+and the blocking send's own drain-wait now waits for that flag too, so a
+caller can't get its buffer back before the ZLP actually went out. EP2
+(console) shares the same low-level pump but has no discrete
+message-length concept to hang the fix off (it's a raw byte-stream, not
+framed messages) — left alone for this fix; console output has no
+systematic reason to land on a 64-byte boundary the way structured 9P
+replies do, but the same class of bug is theoretically possible there too
+if ever observed.
+
+**Verified**: rebuilt all three targets, 245/245 QEMU tests unaffected
+(`usb_cdc.c` isn't part of the QEMU builds). Reflashed the real board
+(build id `265.794d252f+`, matching the tree) and reran the exact sweep
+that found the bug — every length 2-12 now stats instantly, including the
+original `P1.ELF`/`SYSTEM`/`eeprom`. `tree` over the whole namespace via
+`fuse-p9` now resolves `/dev` (including `eeprom`) and all of `/flash0`
+(previously unwalkable, now fully browsable down to nested `SYSTEM/BIN/
+*.ELF`) correctly.
+
+**Remaining, separate, lower-severity finding — not fixed here:** the same
+`tree` run still shows `/sd0 [error opening dir]`, traced to an ordinary
+`Twalk` (not one exercising the 64-byte boundary at all — its reply is a
+fixed, small size) hitting a genuine transport-level read timeout after a
+long, rapid sequence of prior calls (`tree` walks the whole namespace
+depth-first, dozens of requests deep by the time it reaches `sd0`). A
+`Session.stat()`/`read()`/`write()`/`mkdir()` call whose *walk* itself
+times out (as opposed to raising a clean `P9Error` from the server) never
+reaches `_walk_or_raise()`'s clunk-on-partial-failure logic at all, since
+the exception happens inside `P9Client.walk()`'s own round trip before
+`_walk_or_raise` gets a return value to inspect — so if the server actually
+completed the walk just as the client gave up waiting, the fid it bound
+is never cleaned up, and every later attempt to reuse that same fid number
+sees `walk: newfid already in use`, cascading the same way the earlier,
+now-fixed partial-walk leak did. Unlike the ZLP bug, this is occasional and
+self-contained (one `ls -la`/`opendir` fails cleanly and quickly, not a
+multi-second-per-file or whole-mount hang) rather than a deterministic,
+guaranteed failure — a real remaining rough edge, not chased down further
+in this session.
 
 ---
 

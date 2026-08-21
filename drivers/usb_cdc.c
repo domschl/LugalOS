@@ -303,6 +303,7 @@ typedef struct {
     uint32_t ep4_tx_tail;
     bool     ep4_tx_busy;
     bool     ep4_tx_pid;
+    bool     ep4_tx_zlp_pending; /* see ep4_link_send_frame()'s docstring */
     uint8_t  ep4_rx_ring[USB_EP4_RX_RING_SIZE];
     uint32_t ep4_rx_head;
     uint32_t ep4_rx_tail;
@@ -506,6 +507,7 @@ static void ep4_configure(void) {
     g_usb.ep4_tx_head = g_usb.ep4_tx_tail = 0;
     g_usb.ep4_rx_head = g_usb.ep4_rx_tail = g_usb.ep4_rx_count = 0;
     g_usb.ep4_tx_busy = false;
+    g_usb.ep4_tx_zlp_pending = false;
     g_usb.ep4_tx_pid = false;
     g_usb.ep4_rx_pid = false;
 
@@ -517,8 +519,22 @@ static void ep4_configure(void) {
 }
 
 // Copy any buffered TX bytes into an EP4 IN packet if the endpoint is free.
+// Also sends the trailing zero-length packet ep4_link_send_frame() may have
+// requested (see its docstring) once the ring is fully drained -- checked
+// FIRST, since the ring being empty is exactly the state that request waits
+// for, and the ordinary early-return below would otherwise never let a ZLP
+// go out at all.
 static void ep4_tx_pump(void) {
-    if (!g_usb.ep4_configured || g_usb.ep4_tx_busy || g_usb.ep4_tx_head == g_usb.ep4_tx_tail) {
+    if (!g_usb.ep4_configured || g_usb.ep4_tx_busy) return;
+
+    if (g_usb.ep4_tx_head == g_usb.ep4_tx_tail) {
+        if (!g_usb.ep4_tx_zlp_pending) return;
+        g_usb.ep4_tx_zlp_pending = false;
+        uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10); // FULL | LAST_BUFF | AVAIL | len=0
+        if (g_usb.ep4_tx_pid) ctrl |= (1u << 13);
+        g_usb.ep4_tx_pid = !g_usb.ep4_tx_pid;
+        g_usb.ep4_tx_busy = true;
+        ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_IN_BUF_CTRL, ctrl);
         return;
     }
 
@@ -1018,7 +1034,23 @@ static int ep4_link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) 
 /* Blocking, like drivers/virtio_console.c's virtio_console_send(): queues
  * the whole frame into the TX ring (pumping usb_cdc_task() if it's briefly
  * full) and then waits for the ring to fully drain out over the wire before
- * returning, so the caller can reuse/free `buf` immediately afterward. */
+ * returning, so the caller can reuse/free `buf` immediately afterward.
+ *
+ * A frame whose length is an exact multiple of the endpoint's 64-byte max
+ * packet size needs an explicit trailing zero-length packet: USB has no
+ * other way to mark a bulk IN transfer complete once it exactly fills a
+ * whole number of max-size packets (a *short* final packet is already
+ * self-terminating; an exact multiple isn't). Without it, the host's own
+ * USB core holds the transfer open waiting for either more data or that
+ * ZLP, so the request that triggered it never gets a reply -- and since
+ * this server only ever has one request in flight, every request after it
+ * hangs too. Confirmed on real RP2350 hardware (never over QEMU's
+ * virtio-console, which has no packet-size concept at all): any 9P Rstat
+ * or Rread whose *total* wire frame lands on an exact 64-byte boundary
+ * (e.g. stat()'ing a 6-character filename) hung forever, while one byte
+ * either side of that boundary was instant. ep4_tx_pump()/u_ep4_tx_pump()
+ * are the ones that actually send it, once the ring genuinely drains --
+ * see their own comments. */
 static int ep4_link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     (void)link;
     if (!g_usb.ep4_configured || !buf || len == 0) return -1;
@@ -1041,7 +1073,8 @@ static int ep4_link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len
         g_usb.ep4_tx_ring[g_usb.ep4_tx_head] = buf[sent++];
         g_usb.ep4_tx_head = next;
     }
-    while (g_usb.ep4_tx_head != g_usb.ep4_tx_tail || g_usb.ep4_tx_busy) {
+    if (len % 64 == 0) g_usb.ep4_tx_zlp_pending = true;
+    while (g_usb.ep4_tx_head != g_usb.ep4_tx_tail || g_usb.ep4_tx_busy || g_usb.ep4_tx_zlp_pending) {
         if (usb_cdc_task_alive()) sched_yield(); else usb_cdc_task();
     }
     return (int)len;
@@ -1242,6 +1275,7 @@ USB_UATTR static void u_ep4_configure(void) {
     g_usb.ep4_tx_head = g_usb.ep4_tx_tail = 0;
     g_usb.ep4_rx_head = g_usb.ep4_rx_tail = g_usb.ep4_rx_count = 0;
     g_usb.ep4_tx_busy = false;
+    g_usb.ep4_tx_zlp_pending = false;
     g_usb.ep4_tx_pid = false;
     g_usb.ep4_rx_pid = false;
 
@@ -1250,8 +1284,18 @@ USB_UATTR static void u_ep4_configure(void) {
     g_usb.ep4_configured = true;
 }
 
+// U-mode twin of ep4_tx_pump() above -- see its comment for the ZLP logic.
 USB_UATTR static void u_ep4_tx_pump(void) {
-    if (!g_usb.ep4_configured || g_usb.ep4_tx_busy || g_usb.ep4_tx_head == g_usb.ep4_tx_tail) {
+    if (!g_usb.ep4_configured || g_usb.ep4_tx_busy) return;
+
+    if (g_usb.ep4_tx_head == g_usb.ep4_tx_tail) {
+        if (!g_usb.ep4_tx_zlp_pending) return;
+        g_usb.ep4_tx_zlp_pending = false;
+        uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10);
+        if (g_usb.ep4_tx_pid) ctrl |= (1u << 13);
+        g_usb.ep4_tx_pid = !g_usb.ep4_tx_pid;
+        g_usb.ep4_tx_busy = true;
+        u_ep_buf_ctrl_write((volatile uint32_t *)USB_EP4_IN_BUF_CTRL, ctrl);
         return;
     }
 
