@@ -647,6 +647,26 @@ is near-instant (0.02s, 0.23s) instead of repeating the scan; writing a
 full scan cost again, confirming the invalidation path is real and not
 just always-hit-the-cache.
 
+**Placement, asked and settled deliberately, not by default**: the user
+asked whether client-side (`host/fuse-p9`) was really the right layer,
+versus caching server-side in the RP2350 firmware instead, which would
+have a real advantage -- the kernel is the one place that knows about
+*every* write from *any* client, so it could invalidate the cache
+precisely, with no TTL needed at all, and every client would benefit,
+not just this one mount. Weighed against that: this is a resource-
+constrained embedded target that has been carefully budgeted throughout
+(bump-pointer allocators, no free, `P9_MAX_FIDS = 8` deliberately small),
+and the actual problem is specific to this one client's usage pattern --
+nobody's complaining that typing `df` once at the console is slow, only
+that `fuse-p9`'s automatic, repeated `getattr()` polling (driven by
+Nautilus) pays that cost on every single poll. A server-side cache would
+also change behavior for every client uniformly, including ones that
+might specifically want a fresh scan. Decided: kept client-side as
+implemented above, accepting the client-side cache's real ceiling (the
+30s TTL exists specifically to cover the one thing it can't know -- a
+write from some other connection -- which a server-side cache wouldn't
+need at all).
+
 ---
 
 ## 14b, 14c-14e — not started
