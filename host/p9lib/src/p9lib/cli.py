@@ -17,7 +17,8 @@ from .client import P9Error
 
 def _connect(args: argparse.Namespace) -> Session:
     if args.serial:
-        client = connect_serial(args.serial, baudrate=args.baud, framing=args.framing)
+        client = connect_serial(args.serial, baudrate=args.baud, framing=args.framing,
+                                 timeout=args.timeout)
     elif args.unix:
         client = connect_unix(args.unix, framing=args.framing)
     else:
@@ -94,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--framing", choices=("raw", "slip"), default="raw",
                     help="'raw' for virtio-console/USB-CDC (default), 'slip' for a UART link")
     p.add_argument("--aname", default="/", help="attach root (default '/')")
+    p.add_argument("--timeout", type=float, default=30.0,
+                    help="serial read timeout in seconds (default 30.0 -- /proc/df's real "
+                         "FAT-table scan alone took 7-13s across two different SD cards in "
+                         "testing, so this needs real margin over any one measurement, not "
+                         "just enough for an ordinary request; raise it further for a bigger "
+                         "card)")
 
     sub = p.add_subparsers(dest="command", required=True)
 

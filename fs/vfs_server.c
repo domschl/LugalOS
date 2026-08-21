@@ -767,6 +767,20 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
         if (rel[0] == '\0') {
             h->is_dir = true;
         } else {
+            /* Unlike the MOUNT_PROC branch just above (which rejects
+             * anything vfs_generate_proc_content() doesn't recognize),
+             * this used to accept *any* name unconditionally, opening a
+             * phantom zero-length handle for something like
+             * /dev/totally-bogus-name instead of failing -- found via a
+             * host tool's 9P client walking to a nonexistent path (a file
+             * manager's own routine "does a .Trash-NNNN already exist
+             * here?" probe) and getting back a false "yes, and it's a
+             * 0-byte file" instead of the expected walk failure. */
+            bool known = false;
+            for (int i = 0; i < 4; i++) {
+                if (strcmp(rel, g_dev_names[i]) == 0) { known = true; break; }
+            }
+            if (!known) return -1;
             strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
             h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         }

@@ -532,6 +532,74 @@ cleanly fail (unchanged behavior, now with honest permission bits); a
 full `tree` plus `/sd0` write/read/remove cycle still succeeds
 afterward.
 
+### Follow-up 7: `/dev` accepted any name at all; `/proc/df`'s timeout was too short *(done, 2026-08-21)*
+
+Reported: `ls -la /proc` showed `df` as `?????????` (a failed `stat`), and
+separately, a plain `ls -la srv` failed even though `srv` lists at the
+root. Investigating the first surfaced a real, previously-undiscovered
+kernel bug while ruling out other explanations for the `?????` (a
+misleading first lead, kept below for the record).
+
+**Real kernel bug found**: `fs/vfs_server.c`'s `vfs_open()` validates a
+requested name against the fixed set for `MOUNT_PROC` (rejecting
+anything `vfs_generate_proc_content()` doesn't recognize) but never did
+the equivalent for `MOUNT_DEV` -- it accepted *any* non-empty name under
+`/dev/` unconditionally, handing back a phantom zero-length, non-directory
+handle instead of failing. Confirmed directly: `stat("/dev/totally-bogus-
+name")` succeeded. This is what made a `.Trash-1000`/`.hidden`-style probe
+(the kind GVFS/Nautilus routinely does at the root of anything it treats
+as a volume) appear to find something at `/dev/.Trash-1000` that doesn't
+really exist, rather than getting the clean "doesn't exist" answer FAT32-
+backed `/sd0`/`/flash0` already gave for the same probe. **Fixed** in
+`vfs_open()`'s `MOUNT_DEV` branch: now checks the requested name against
+`g_dev_names` (`uart`/`null`/`zero`/`eeprom`) the same way the `MOUNT_PROC`
+branch already did, returning -1 for anything else. A firmware change --
+rebuilt all three targets, reflashed, reverified: bogus names under
+`/dev/` now fail cleanly; `null`/`uart`/etc. are unaffected.
+
+**The actual `?????` cause, unrelated to the bug above**: `/proc/df`'s
+real cost (`fs/fat32.c`'s `fat32_statfs()`, a genuine full FAT-table
+free-space scan across every mounted volume) measured at ~7s on one test
+run and ~13s on another against a larger `/sd0` -- both comfortably past
+`connect_serial()`'s previous 5-second default timeout, so `stat`/`read`
+on it failed outright rather than just being slow (indistinguishable,
+from the client's own perspective, from a real hang like `/dev/uart`'s).
+**Fixed**: default timeout raised to 30s (from 5s, via an intermediate
+20s that a second, larger-card measurement showed still wasn't
+comfortable headroom), and `--timeout` exposed as a CLI flag on both
+`lugal9p` and `lugal9pfuse` for a card that needs even more. Host-side
+only, no firmware change.
+
+**`srv`'s "cannot access" is not a bug, and not new**: confirmed as the
+same pre-existing quirk phase 14a's own QEMU testing already found --
+`/srv` *lists* at the root but isn't itself walkable, because nothing is
+currently bound there this boot (an unbound Plan-9-style service mount
+point). Genuinely reflects the server's own answer.
+
+**Verified**: 245/245 QEMU tests unaffected by either fix. Real hardware,
+after reflashing: bogus `/dev/*` names (including a literal
+`/dev/.Trash-1000` probe) now fail cleanly instead of phantom-matching;
+`/proc/df` now succeeds within the new default timeout (`ls -la /proc`
+shows a real size for `df`, no more `?????????`); a full `tree` and
+`/sd0` write/read/remove cycle still succeed afterward.
+
+**Still open**: the user separately asked "is Nautilus hammering the
+fs?", reporting that root-level directories (`/dev`, `/flash0`, `/sd0`,
+`/srv`) take ~5s to *open* specifically in Nautilus (not in `ls`, and not
+for subdirectories) -- `/proc`'s own delay there is already expected and
+accounted for above. The `/dev` phantom-match bug fixed in this same
+follow-up was the leading candidate, but doesn't actually explain a
+5-second delay on its own (the phantom stat itself was fast, ~2ms, both
+before and after the fix); querying `.Trash`/`.hidden`-style paths
+directly under `/sd0` and `/flash0` was already fast (correctly failing)
+even before this fix, so the delay isn't that lookup either. Not
+root-caused yet -- would need a `lugal9pfuse` debug-log capture
+(`logging.basicConfig(level=logging.DEBUG)`, matching earlier follow-ups'
+debugging approach) taken *while* reproducing the delay in Nautilus to
+see what it's actually doing differently for a root-level folder versus
+a subdirectory, since nothing tested directly against the protocol so
+far reproduces it.
+
 ---
 
 ## 14b, 14c-14e — not started

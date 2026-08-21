@@ -56,7 +56,7 @@ def connect_unix(path: str, timeout: float = 5.0, framing: str = "raw") -> P9Cli
     return P9Client(s, framing=framing)
 
 
-def connect_serial(port: str, baudrate: int = 115200, timeout: float = 5.0,
+def connect_serial(port: str, baudrate: int = 115200, timeout: float = 30.0,
                     framing: str = "raw", warm_up: bool = True) -> P9Client:
     """A real serial port -- RP2350's USB-CDC ACM1 "net" port (framing=
     "raw") or a UART/SLIP link (framing="slip"). Requires pyserial, only
@@ -69,7 +69,23 @@ def connect_serial(port: str, baudrate: int = 115200, timeout: float = 5.0,
     settle_timeout, for every request afterward -- passing settle_timeout=
     5.0 unconditionally here (warm_up_9p's own default) used to silently
     discard whatever timeout the caller asked for the moment warm-up
-    finished."""
+    finished.
+
+    The default was 5.0 until real hardware showed it was too short for a
+    genuinely slow, legitimate operation: /proc/df's full FAT-table free-
+    space scan (fs/fat32.c's fat32_statfs(), across every mounted FAT32
+    volume) made stat()/read() on it fail outright (visibly, as a
+    `?????` row in `ls -la /proc`) rather than just being slow --
+    indistinguishable, from the client's own perspective, from a real
+    hang like the /dev/uart or /dev/eeprom ones fuse-p9 refuses outright.
+    How slow depends directly on card size, not just a fixed cost: ~7s on
+    one test board's /sd0, ~13s on the same code against a larger card a
+    day later -- so this needs real headroom above any single
+    measurement, not just enough for the one card this was tested
+    against. 30s leaves that headroom without making an actual hang
+    (there is no way to tell the two apart in advance) take dramatically
+    longer to report as a clean error; pass a larger `timeout` explicitly
+    if an even bigger card needs more."""
     import serial  # local import: only real-hardware callers need this
 
     ser = serial.Serial(port, baudrate, timeout=timeout)

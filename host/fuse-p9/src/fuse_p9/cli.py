@@ -28,13 +28,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--framing", choices=("raw", "slip"), default="raw",
                     help="'raw' for virtio-console/USB-CDC (default), 'slip' for a UART link")
     p.add_argument("--aname", default="/", help="attach root (default '/')")
+    p.add_argument("--timeout", type=float, default=30.0,
+                    help="serial read timeout in seconds (default 30.0 -- /proc/df's real "
+                         "FAT-table scan alone took 7-13s across two different SD cards in "
+                         "testing, so this needs real margin over any one measurement, not "
+                         "just enough for an ordinary request; raise it further for a bigger "
+                         "card)")
     p.add_argument("--allow-other", action="store_true",
                     help="allow other host users to access the mount (needs user_allow_other in /etc/fuse.conf)")
     p.add_argument("mountpoint", help="an existing, empty local directory to mount onto")
     args = p.parse_args(argv)
 
     if args.serial:
-        client = connect_serial(args.serial, baudrate=args.baud, framing=args.framing)
+        client = connect_serial(args.serial, baudrate=args.baud, framing=args.framing,
+                                 timeout=args.timeout)
     elif args.unix:
         client = connect_unix(args.unix, framing=args.framing)
     else:
