@@ -226,6 +226,7 @@ allocated would raise a second, more confusing error masking the original.
   - After both fixes: full `lugal9pfuse` write/append/`cp`/`mkdir`/nested-
     write/`rm`/`rmdir` cycle verified clean against the real board, `/sd0`
     confirmed left exactly as found.
+
 ### Follow-up: a real firmware bug, root-caused and fixed *(done, 2026-08-21)*
 
 The user reported `fuse-p9` as unstable in real use ("after a few
@@ -276,25 +277,58 @@ original `P1.ELF`/`SYSTEM`/`eeprom`. `tree` over the whole namespace via
 (previously unwalkable, now fully browsable down to nested `SYSTEM/BIN/
 *.ELF`) correctly.
 
-**Remaining, separate, lower-severity finding — not fixed here:** the same
-`tree` run still shows `/sd0 [error opening dir]`, traced to an ordinary
-`Twalk` (not one exercising the 64-byte boundary at all — its reply is a
-fixed, small size) hitting a genuine transport-level read timeout after a
-long, rapid sequence of prior calls (`tree` walks the whole namespace
-depth-first, dozens of requests deep by the time it reaches `sd0`). A
-`Session.stat()`/`read()`/`write()`/`mkdir()` call whose *walk* itself
-times out (as opposed to raising a clean `P9Error` from the server) never
-reaches `_walk_or_raise()`'s clunk-on-partial-failure logic at all, since
-the exception happens inside `P9Client.walk()`'s own round trip before
-`_walk_or_raise` gets a return value to inspect — so if the server actually
-completed the walk just as the client gave up waiting, the fid it bound
-is never cleaned up, and every later attempt to reuse that same fid number
-sees `walk: newfid already in use`, cascading the same way the earlier,
-now-fixed partial-walk leak did. Unlike the ZLP bug, this is occasional and
-self-contained (one `ls -la`/`opendir` fails cleanly and quickly, not a
-multi-second-per-file or whole-mount hang) rather than a deterministic,
-guaranteed failure — a real remaining rough edge, not chased down further
-in this session.
+### Follow-up 2: `/sd0` still failed, permanently, across remounts *(done, 2026-08-21)*
+
+The user reported the ZLP fix wasn't enough: `tree` still stalled ~1-2s on
+`/proc` before listing it, then *always* failed opening `/sd0` -- and once
+that happened, every FUSE operation failed instantly (`~0.003s`, not a
+hang) until the mount was redone, even though the underlying `lugal9pfuse`
+daemon process was confirmed still alive throughout.
+
+**Root cause: a single, reused work fid can't survive an ambiguous
+timeout.** `Session` used one fixed fid number for every walk. A 9P round
+trip's *read* can genuinely time out on a real serial link without any
+clean server error (`/proc/df`'s ~6.7s full FAT-table scan -- legitimate,
+expensive work, confirmed in `fs/fat32.c`'s `fat32_statfs()`, not a bug --
+was the actual source of "stalls 1-2s on /proc" and was slow enough to
+occasionally trip this). When that happens *during a walk*, the client
+genuinely cannot tell whether the server finished binding the fid it was
+given right as the client's read gave up -- the exception is raised
+inside `P9Client.walk()`'s own round trip, before `_walk_or_raise()` (the
+fix from the previous follow-up) ever gets a return value to inspect, so
+its clunk-on-partial-failure logic never runs. With only one fid number
+ever in use, that single ambiguous case wedges it permanently server-side
+-- every later call reusing that same number then sees `walk: newfid
+already in use`, which is exactly `/sd0`'s deterministic failure (it's
+simply next in `tree`'s alphabetical traversal after the slow `/proc`
+scan) and exactly why *everything* failed afterward, forever, until a
+fresh mount opened a fresh connection.
+
+**Fixed in `host/p9lib`**: `Session` now hands out a fresh, monotonically
+increasing work fid for every logical call (`_alloc_work_fid()`) instead
+of reusing one fixed number. A fid left in an ambiguous state after a
+timeout just becomes one permanently "used up" slot in the server's small
+8-slot table (`P9_MAX_FIDS = 8`) rather than wedging the whole session --
+sizable headroom before that could matter again. Also fixed the same
+open()-outside-the-try/finally gap `read()` and `listdir()` still had
+(mirroring the walk fix, in case `open()` itself is what times out).
+
+**Also changed `host/fuse-p9`**: while investigating, switched
+`lugal9pfuse` from `FUSE(..., nothreads=True)` to fusepy's normal
+multi-threaded dispatch, with a `threading.Lock` in `P9FS` serializing
+actual `Session`/wire access. `nothreads=True` meant one slow-but-legitimate
+call (again, `/proc/df`) blocked libfuse's *entire* request queue for its
+duration -- not the root cause of the `/sd0` failure itself, but a real,
+independent stability improvement kept alongside the fid fix (see
+`operations.py`'s updated docstring).
+
+**Verified**: 245/245 QEMU tests unaffected. Reflashed nothing (both fixes
+are host-side Python only); re-ran `tree` three times in a row against the
+real board with no remount in between -- identical, complete output every
+time (`/sd0` fully resolved, including nested `SYSTEM/BIN/PRIME.ELF`), each
+run's ~6.9s consistent with `/proc/df`'s real scan cost rather than a
+hang. Full write/append/`mkdir`/nested-write/`rm`/`rmdir` cycle re-verified
+clean afterward, board left exactly as found.
 
 ---
 

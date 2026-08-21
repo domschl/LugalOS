@@ -42,7 +42,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     session = Session(client, aname=args.aname)
-    fuse_kwargs = {"foreground": True, "nothreads": True}
+    # Multi-threaded (fusepy's default -- no nothreads=True): P9FS's own
+    # lock is what keeps the single Session safe now, not single-threaded
+    # dispatch. See operations.py's docstring for why nothreads=True was
+    # actually a stability bug, not just a missed optimization: a slow but
+    # legitimate real-hardware operation (e.g. /proc/df) blocked libfuse's
+    # entire request queue for its whole duration, degrading everything
+    # else using the mount at the same time.
+    fuse_kwargs = {"foreground": True}
     if args.allow_other:
         fuse_kwargs["allow_other"] = True
     FUSE(P9FS(session), args.mountpoint, **fuse_kwargs)

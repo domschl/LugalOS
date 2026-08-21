@@ -434,18 +434,38 @@ class P9Client:
 class Session:
     """Path-based convenience layer over P9Client -- the actual "file
     utility" surface this phase is about, so callers don't have to juggle
-    fids/walks by hand. Deliberately uses only a small, fixed handful of
-    fids (the server's own P9_MAX_FIDS is 8, and its own comment notes it
-    expects one peer at a time -- a Session that hoarded fids across many
-    open paths would starve itself, let alone anyone else)."""
+    fids/walks by hand.
+
+    Every call gets its OWN, never-reused work fid (see _alloc_work_fid()),
+    not a single fixed number -- deliberately not "just 2 fids total"
+    despite the server's small fid table (P9_MAX_FIDS = 8, and its own
+    comment notes it expects one peer at a time). The reason is a real,
+    unavoidable ambiguity: if a 9P round trip's *read* genuinely times out
+    (a slow real link, not a clean server error), the client has no way to
+    know whether the server actually finished the walk it was waiting on --
+    it may have bound the fid it was given right as the client gave up on
+    it. A single shared, reused fid number turns that one ambiguous timeout
+    into a permanent "walk: newfid already in use" for every later call
+    (confirmed on real RP2350 hardware under host/fuse-p9: a `tree` deep
+    enough to hit one slow, real operation -- /proc/df's own full FAT-table
+    scan -- would occasionally hit this exact race, after which the entire
+    Session was wedged until reconnecting). A fresh fid number every time
+    can't collide with whatever an earlier, still-ambiguous call may have
+    left bound -- one bad timeout costs one permanently "used up" slot in
+    the server's 8-slot table, not the whole session."""
 
     _ROOT_FID = 1
-    _WORK_FID = 2
 
     def __init__(self, client: P9Client, aname: str = "") -> None:
         self.client = client
         self.client.version()
         self.client.attach(self._ROOT_FID, aname=aname)
+        self._next_work_fid = self._ROOT_FID + 1
+
+    def _alloc_work_fid(self) -> int:
+        fid = self._next_work_fid
+        self._next_work_fid += 1
+        return fid
 
     def close(self) -> None:
         self.client.close()
@@ -470,10 +490,7 @@ class Session:
         bound to wherever it stopped -- fs/9p.c's p9_handle_twalk() only
         rejects a *fresh* Twalk whose newfid number is already in use, not
         one that's genuinely still walking, so a caller that doesn't
-        clunk it back here leaks that fid permanently. Since Session only
-        ever has _WORK_FID to give out, one leaked partial walk (e.g.
-        stat()'ing a path whose last component doesn't exist yet) used to
-        wedge the entire Session for every call after it."""
+        clunk it back here leaks that fid permanently."""
         nwqid = self.client.walk(self._ROOT_FID, fid, names)
         if nwqid != len(names):
             if nwqid > 0:
@@ -484,18 +501,24 @@ class Session:
                 f"(stopped at {stopped_at})"
             )
 
-    def _walk_to(self, path: str, fid: int = _WORK_FID) -> list[str]:
+    def _walk_to(self, path: str, fid: int) -> list[str]:
         names = self._split(path)
         self._walk_or_raise(fid, names, path, "walk to")
         return names
 
     def read(self, path: str) -> bytes:
-        self._walk_to(path)
-        self.client.open(self._WORK_FID, mode=OREAD)
+        fid = self._alloc_work_fid()
+        self._walk_to(path, fid)
+        # open() is inside the try, not just read_all() -- a fid that's
+        # been walked but fails to open (a real transport timeout, say)
+        # is still a live, clunkable fid server-side; leaving it outside
+        # this try/finally would leak it exactly like the partial-walk
+        # case _walk_or_raise() guards against, just one step later.
         try:
-            return self.client.read_all(self._WORK_FID)
+            self.client.open(fid, mode=OREAD)
+            return self.client.read_all(fid)
         finally:
-            self.client.clunk(self._WORK_FID)
+            self.client.clunk(fid)
 
     def write(self, path: str, data: bytes, create: bool = True, truncate: bool = True) -> int:
         """Writes `data` to `path`, starting at offset 0. `create=True`
@@ -509,21 +532,22 @@ class Session:
             raise P9Error("cannot write to '/'")
         parent, name = parts[:-1], parts[-1]
 
-        self._walk_or_raise(self._WORK_FID, parent, path, "parent directory of")
+        fid = self._alloc_work_fid()
+        self._walk_or_raise(fid, parent, path, "parent directory of")
 
-        # Walk WORK_FID (now at the parent) onto the final component, IN
+        # Walk `fid` (now at the parent) onto the final component, IN
         # PLACE (fid == newfid is explicitly legal -- fs/9p.c's
         # p9_handle_twalk() special-cases it). A single-element walk either
         # fully succeeds or errors outright (the server only tolerates a
         # partial walk past the FIRST component; failing at i==0 -- exactly
         # what a 1-element walk risks -- is always an Rerror, never a
         # zero-nwqid Rwalk), so catching P9Error here is an unambiguous
-        # "doesn't exist", not a guess. On failure WORK_FID is left
+        # "doesn't exist", not a guess. On failure `fid` is left
         # unaffected (per spec) -- still positioned at the parent, ready
         # for Tcreate.
         exists = True
         try:
-            self.client.walk(self._WORK_FID, self._WORK_FID, [name])
+            self.client.walk(fid, fid, [name])
         except P9Error:
             exists = False
 
@@ -532,45 +556,52 @@ class Session:
                 # Twrite never shortens a file on its own; recreating gives
                 # the same truncating effect as P9_OTRUNC, since this
                 # server's Tcreate already truncates (VFS_O_TRUNC).
-                self.client.clunk(self._WORK_FID)
-                self.client.walk(self._ROOT_FID, self._WORK_FID, parent)
-                self.client.create(self._WORK_FID, name, perm=0o644, mode=OWRITE)
+                self.client.clunk(fid)
+                fid = self._alloc_work_fid()
+                self.client.walk(self._ROOT_FID, fid, parent)
+                self.client.create(fid, name, perm=0o644, mode=OWRITE)
             elif exists:
-                self.client.open(self._WORK_FID, mode=OWRITE)
+                self.client.open(fid, mode=OWRITE)
             elif create:
-                self.client.create(self._WORK_FID, name, perm=0o644, mode=OWRITE)
+                self.client.create(fid, name, perm=0o644, mode=OWRITE)
             else:
                 raise P9Error(f"{path!r} does not exist and create=False")
-            return self.client.write_all(self._WORK_FID, data)
+            return self.client.write_all(fid, data)
         finally:
-            self.client.clunk(self._WORK_FID)
+            self.client.clunk(fid)
 
     def remove(self, path: str) -> None:
-        self._walk_to(path)
-        self.client.remove(self._WORK_FID)  # clunks itself, per Tremove semantics
+        fid = self._alloc_work_fid()
+        self._walk_to(path, fid)
+        self.client.remove(fid)  # clunks itself, per Tremove semantics
 
     def mkdir(self, path: str) -> None:
         parts = self._split(path)
         if not parts:
             raise P9Error("cannot mkdir '/'")
         parent, name = parts[:-1], parts[-1]
-        self._walk_or_raise(self._WORK_FID, parent, path, "parent directory of")
+        fid = self._alloc_work_fid()
+        self._walk_or_raise(fid, parent, path, "parent directory of")
         try:
-            self.client.create(self._WORK_FID, name, perm=DMDIR | 0o755, mode=OREAD)
+            self.client.create(fid, name, perm=DMDIR | 0o755, mode=OREAD)
         finally:
-            self.client.clunk(self._WORK_FID)
+            self.client.clunk(fid)
 
     def stat(self, path: str) -> Stat:
-        self._walk_to(path)
+        fid = self._alloc_work_fid()
+        self._walk_to(path, fid)
         try:
-            return self.client.stat(self._WORK_FID)
+            return self.client.stat(fid)
         finally:
-            self.client.clunk(self._WORK_FID)
+            self.client.clunk(fid)
 
     def listdir(self, path: str) -> list[Stat]:
-        self._walk_to(path)
-        self.client.open(self._WORK_FID, mode=OREAD)
+        fid = self._alloc_work_fid()
+        self._walk_to(path, fid)
+        # See read()'s comment just above: open() has to be inside the
+        # try/finally too, not just read_dir().
         try:
-            return self.client.read_dir(self._WORK_FID)
+            self.client.open(fid, mode=OREAD)
+            return self.client.read_dir(fid)
         finally:
-            self.client.clunk(self._WORK_FID)
+            self.client.clunk(fid)
