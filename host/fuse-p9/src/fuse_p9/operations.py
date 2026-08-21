@@ -53,6 +53,27 @@ import p9lib
 
 
 class P9FS(Operations):
+    # fs/vfs_server.c's vfs_pread() services /dev/uart with a bare
+    # uart_getc(), which blocks on the real physical UART line until a
+    # byte actually arrives -- correct, expected behavior for a real
+    # serial device, but catastrophic for anything that opens it
+    # incidentally rather than deliberately: this project's 9P server
+    # appears to process one client request to completion (including
+    # whatever blocking IPC it triggers) before reading its next one, so
+    # a stuck read here doesn't just block the requesting client, it
+    # stalls the *entire* 9P server -- every other request on the mount,
+    # forever, recoverable only by power-cycling the board. Confirmed
+    # live: GNOME Files (Nautilus) auto-opens+reads a little of every
+    # "regular-looking" file it lists to sniff its MIME type, and that
+    # alone was enough to trigger this just from browsing to /dev/.
+    # Reporting /dev/* as a character device (S_IFCHR) to stop that
+    # sniffing was tried and reverted -- see _attrs()'s comment -- so
+    # this is refused directly at open()/truncate() instead: still a
+    # visible, listable, stat-able regular file (ls/tree are unaffected,
+    # since neither touches vfs_pread()), just never actually readable
+    # through this bridge, deliberately or not.
+    _NEVER_OPEN = frozenset({"/dev/uart"})
+
     def __init__(self, session: p9lib.Session) -> None:
         self.sess = session
         self._lock = threading.Lock()
@@ -71,6 +92,15 @@ class P9FS(Operations):
         return fh
 
     def _attrs(self, st: p9lib.Stat) -> dict:
+        # Reporting /dev/* as S_IFCHR (character special) instead of
+        # S_IFREG was tried and reverted: it does stop file managers from
+        # auto-probing their content, but FUSE mounts a non-root user
+        # creates always carry the kernel's own "nodev" option (there is
+        # no way to opt out of it without CAP_SYS_ADMIN), and under nodev
+        # the kernel refuses to even open() anything reported as a device
+        # node -- "Permission denied" for a deliberate `cat` too, not just
+        # for automatic sniffing. See open()'s own guard for the actual
+        # fix for the one path (/dev/uart) that needed one.
         now = time.time()
         mode = (statmod.S_IFDIR | 0o755) if st.is_dir else (statmod.S_IFREG | 0o644)
         return {
@@ -124,6 +154,8 @@ class P9FS(Operations):
     # --- files ---
 
     def open(self, path, flags):
+        if path in self._NEVER_OPEN:
+            raise FuseOSError(errno.EIO)
         with self._lock:
             try:
                 data = b"" if (flags & os.O_TRUNC) else self.sess.read(path)
@@ -154,6 +186,8 @@ class P9FS(Operations):
             return len(data)
 
     def truncate(self, path, length, fh=None):
+        if fh is None and path in self._NEVER_OPEN:
+            raise FuseOSError(errno.EIO)
         with self._lock:
             if fh is not None and fh in self._handles:
                 buf = self._handles[fh]

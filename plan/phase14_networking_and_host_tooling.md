@@ -330,6 +330,68 @@ run's ~6.9s consistent with `/proc/df`'s real scan cost rather than a
 hang. Full write/append/`mkdir`/nested-write/`rm`/`rmdir` cycle re-verified
 clean afterward, board left exactly as found.
 
+### Follow-up 3: `/dev/uart` blocks forever on read -- a real device, not a file *(done, 2026-08-21)*
+
+The user reported an even harder hang: browsing to `/dev/` in GNOME Files
+(Nautilus) displayed its contents, then hung completely -- and
+`lugal9pfuse` itself stopped responding even to Ctrl-C, recoverable only
+by physically unplugging the board.
+
+**Root cause**: `fs/vfs_server.c`'s `vfs_pread()` services `/dev/uart`
+reads with a bare `uart_getc()`, which blocks on the real physical UART
+line until a byte actually arrives -- correct, expected behavior for a
+real serial device (mirroring how reading a real `/dev/ttyS0` with
+nothing sending behaves), not a bug in the kernel. The problem is what
+`fuse-p9` let happen to it: file managers automatically `open()`+`read()`
+a little of every "regular-looking" file they list, to sniff its MIME
+type for an icon/preview -- and `getattr()` reported every non-directory
+entry as a plain `S_IFREG` regular file, giving GVFS no reason to treat
+`/dev/uart` any differently. With nothing external sending data over the
+real UART line, that automatic read blocked forever, and since `open()`
+fetches a file's whole content before returning (see the class docstring)
+while holding `P9FS`'s lock, every other operation on the mount queued up
+behind it too -- Nautilus, `lugal9pfuse`, and anything else touching the
+mount, all stuck on the same blocked native call, which is exactly why
+Ctrl-C couldn't reach it either.
+
+**First attempt, tried and reverted**: reporting `/dev/*` as `S_IFCHR`
+(character special) instead of `S_IFREG` in `getattr()` is the standard
+signal GIO/Nautilus uses to skip content-based MIME sniffing entirely --
+in principle the right fix. In practice it broke *all* access, not just
+the automatic kind: every FUSE mount a non-root user creates always
+carries the kernel's own `nodev` option (there's no way to opt out of it
+without `CAP_SYS_ADMIN`), and under `nodev` the kernel refuses to even
+`open()` anything reported as a device node at all -- confirmed live,
+`cat`-ing any `/dev/*` entry started returning "Permission denied"
+instead of working, which is worse than the original problem for the
+three paths (`null`, `zero`, `eeprom`) that were never actually dangerous
+to read.
+
+**Actual fix, in `host/fuse-p9`**: `getattr()` reports `/dev/*` as
+ordinary `S_IFREG` files again (`ls`/`tree`/`stat` all still work exactly
+as before), and `open()`/`truncate()` instead refuse `/dev/uart`
+specifically -- a new `P9FS._NEVER_OPEN` set, checked before the shared
+lock is even touched, raising a clean `EIO` immediately. This is
+deliberately narrower than the reverted attempt: it accepts that a
+deliberate `cat .../dev/uart` no longer behaves like a real serial port
+(it fails instead of blocking), in exchange for making the catastrophic
+failure mode -- an automatic, incidental read wedging the entire board's
+9P server -- structurally impossible rather than merely discouraged.
+`null`/`zero`/`eeprom` are untouched and still fully readable/writable,
+since none of them can actually block (`vfs_pread()` answers `null`/
+`zero` immediately with no I/O at all, and `eeprom`'s `at24c32_read()` is
+a bounded real I2C transaction, not an open-ended wait for an external
+event).
+
+**Verified**: 245/245 QEMU tests unaffected; `_attrs()`'s mode logic and
+the `_NEVER_OPEN` set unit tested directly. Reflashed nothing (host-side
+Python only). Real hardware, board reattached: `ls -la /dev` shows
+ordinary `-rw-r--r--` regular files again (no more `nodev`-induced
+`Permission denied`); `cat /dev/uart` now fails in ~2ms with a clean I/O
+error instead of hanging; `cat /dev/null` still works normally; `tree` run
+twice in a row over the whole namespace succeeds identically both times;
+a full write/read/`rm` cycle on `/sd0` re-verified clean afterward.
+
 ---
 
 ## 14b, 14c-14e — not started
