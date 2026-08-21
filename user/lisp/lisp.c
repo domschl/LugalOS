@@ -51,9 +51,17 @@
  * reclaims genuine garbage, not live definitions still hanging off
  * global_env, and every one of those ~20 tests' own top-level `define`s is
  * exactly that -- live, by construction, for the rest of the session.
- * 1024 restores headroom again; it's a static array outside palloc's
- * managed pages, so the RAM cost is a few more KB against 520 KB of
- * physical SRAM, not a fraction of the page budget. */
+ * 1024 restores headroom again. Contrary to what this comment used to
+ * claim, that RAM cost is *not* outside palloc's managed page budget:
+ * node_pool is .bss, every linker script's _heap_end is a fixed physical-
+ * RAM address, and _kernel_end (.bss's own end, palloc_init()'s heap
+ * *start*) moves up as .bss grows -- so growing this array shrinks the
+ * managed heap by exactly its own growth, page for page. Confirmed the
+ * hard way (plan/phase14_networking_and_host_tooling.md's chess-won't-
+ * start regression): STRING_POOL_SIZE below scaling 1:1 with this
+ * constant's own past growth (512->768->1024) had, by the time chess's
+ * own on-demand move-list pools (user/chess/src/search.c) needed to
+ * allocate, quietly eaten enough of the heap that they no longer fit. */
 #define NODE_POOL_SIZE 1024
 #else
 #define NODE_POOL_SIZE 4096
@@ -167,8 +175,25 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
  * call's parameter binding), so on typical usage a meaningful fraction but
  * not the majority of node allocations are strings/symbols -- reserving a
  * full string_pool slot for every possible node would erase the memory
- * savings this pool split exists to capture. */
+ * savings this pool split exists to capture.
+ *
+ * Deliberately NOT scaled off the *current* NODE_POOL_SIZE on RP2350
+ * (unlike every other board): the two constants used to move together
+ * (384 when NODE_POOL_SIZE was 768, 512 once S4 raised it to 1024), but
+ * only node_pool's own growth was ever actually validated against a real
+ * exhaustion failure (test_rp2350.py's C2, "Node pool exhausted" -- see
+ * NODE_POOL_SIZE's own comment) -- string_pool's matching growth was
+ * along for the ride on the ratio, not because anything demonstrated it
+ * needed to be bigger, and every extra slot is 128 bytes straight out of
+ * the same shrinking heap chess's own on-demand pools (user/chess/src/
+ * search.c) need room in too. 384 is what this constant was already
+ * proven sufficient at, so it stays fixed at that regardless of how much
+ * further NODE_POOL_SIZE grows for its own, separately-justified reasons. */
+#if defined(CONFIG_BOARD_RP2350)
+#define STRING_POOL_SIZE 384
+#else
 #define STRING_POOL_SIZE (NODE_POOL_SIZE / 2)
+#endif
 #define STRING_SLOT_LEN 128
 
 static char string_pool[STRING_POOL_SIZE][STRING_SLOT_LEN];

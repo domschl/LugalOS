@@ -1,6 +1,11 @@
 # Phase 13 — Scheme/Lisp engine extensions (GC, TCO, macros, stdlib)
 
-**Status: CONCLUDED, 2026-08-21.** S0-S5, every phase actually scheduled,
+**Status: CONCLUDED, 2026-08-21. Follow-up regression found and fixed,
+2026-08-21** (see bottom of this doc) — S4's `NODE_POOL_SIZE` growth
+quietly shrank the RP2350 chess persona's heap enough that chess stopped
+starting at all ("out of memory") on a completely fresh boot, months
+later, discovered during phase 14 work. S0-S5, every phase actually
+scheduled,
 done (243/243 QEMU tests passing, both targets; confirmed on real RP2350
 hardware, chess persona every single phase — 20/22, 21/22, 21/22, 20/22,
 then 20/22 hardware tests passing, every failure reproduced as passing when
@@ -673,3 +678,90 @@ layer itself adds, which cuts against this whole phase's own RAM-first
 priority. Revisit once S4/S5 finish the language work itself; the current
 coupling is understood and safely handled now, not an open landmine forcing
 this ahead of schedule.
+
+---
+
+## Follow-up: S4's NODE_POOL_SIZE growth quietly broke chess *(fixed, 2026-08-21)*
+
+Reported months later, during phase 14's host-tooling work, on a
+completely fresh boot of the chess persona -- no prior commands, no
+accumulated state: `chess` failed outright with `chess: out of memory
+(search move-list pools)`, and a subsequent `meminfo` showed only 24 of
+49 total heap pages free even at boot, dropping to 16 after the failed
+attempt.
+
+**Root cause.** S4 raised `NODE_POOL_SIZE` from 768 to 1024 (see that
+constant's own comment, above) to fix a real, validated problem:
+`test_rp2350.py`'s C2 test failing with "Node pool exhausted" once S4's
+~38 new stdlib primitives pushed `global_env`'s permanent, live bindings
+too close to the old ceiling. `STRING_POOL_SIZE` was defined as
+`NODE_POOL_SIZE / 2`, a deliberate ratio (not a typo) chosen when the pool
+split was first introduced -- so it grew from 384 to 512 right along with
+`NODE_POOL_SIZE`, without that growth ever being separately justified
+against a real string-pool exhaustion the way `NODE_POOL_SIZE`'s own
+growth was.
+
+The comment justifying `NODE_POOL_SIZE = 1024` at the time claimed this
+was free: "a static array outside palloc's managed pages... not a
+fraction of the page budget." That claim was wrong. Every linker script's
+`_heap_end` is a fixed physical-RAM address (`ORIGIN(RAM) + LENGTH(RAM)`),
+while `_kernel_end` -- `.bss`'s own end, and exactly what `kernel/main.c`
+hands `palloc_init()` as the heap's *start* -- moves up as `.bss` grows.
+`node_pool` and `string_pool` are both plain `static` arrays, i.e. `.bss`.
+Growing them by X bytes shrinks the palloc-managed heap by exactly X
+bytes, page for page -- confirmed directly against the built ELF
+(`nm -S --size-sort build/rp2350/lugalos.elf`): `string_pool` was
+`0x10000` (64 KB, 512 × 128-byte slots) before this fix, `node_pool` was
+`0x4000` (16 KB, 1024 × 16-byte cells, `sizeof(lisp_val_t) == 16` on
+RP2350's 32-bit target).
+
+Chess's own move-list pools (`user/chess/src/search.c`'s
+`search_pools_init()`, already made on-demand rather than static back in
+phase 10's J0, specifically to avoid this exact class of problem for
+*chess's own* structures) need `2 * MAX_SEARCH_PLYS * sizeof(MoveList)`
+bytes in one contiguous `palloc_pages()` call -- comfortably under the
+heap's total free space, but not under what remained free by the time
+`search_pools_init()` actually ran (other chess init, e.g. the
+transposition table, had already claimed some pages first). The margin
+was narrow: 1 page short.
+
+**Fixed** in `user/lisp/lisp.c`: `STRING_POOL_SIZE` is no longer derived
+from `NODE_POOL_SIZE` on RP2350 -- it's now an independent constant,
+fixed at 384 (its own value from before S4, the size it was already
+proven sufficient at; `test_rp2350.py`'s hardware suite has never once
+reported a string-pool exhaustion, only ever a node-pool one).
+`NODE_POOL_SIZE` itself is untouched at 1024, preserving S4's actual,
+validated fix. This recovers exactly `(512-384) * 128 = 16384` bytes = 4
+pages back into the managed heap. The misleading "not a fraction of the
+page budget" comment is corrected in place, with a pointer to this
+section.
+
+**Verified.** 245/245 QEMU tests unaffected (non-RP2350 boards keep the
+original `NODE_POOL_SIZE / 2` ratio, untouched). Real hardware, rebuilt
+and reflashed: fresh-boot `meminfo` now reports 53 total pages (up from
+49) and 28 free at boot (up from 24) -- `Image (data+bss)` dropped from
+299 KB to 283 KB, `Heap: 212 KB managed` (up from 196 KB), matching the
+predicted 16 KB/4-page recovery exactly. `chess` now starts successfully
+on a fresh boot; `meminfo` immediately after shows `Pages Peak: 53` --
+chess's own peak usage now fills the *entire* available heap, a tight fit
+with zero spare pages, but it fits. Ran the full real-hardware suite
+(`tests/hw/test_rp2350.py`) twice: 21/22 both times, including "Node pool
+exhaustion degrades the shell instead of hanging the board" (confirming
+`NODE_POOL_SIZE`'s own headroom is unaffected) and "C2: two user programs
+resident at once... heap peak 53/53 pages" (chess's own new peak,
+observed independently). The one consistent failure ("uart task: console
+output is batched...") is a pre-existing test-harness timing issue
+capturing a `uartstats` command's own output (the measured behavior
+itself succeeded, `calls before=153 after=182`) -- unrelated to this fix,
+which touches only `user/lisp/lisp.c`.
+
+**Worth flagging, not fixing here:** chess's peak now uses 100% of the
+available heap on this board. There is no headroom left for anything
+else concurrent with a chess session, and no margin if chess's own
+requirements grow even slightly (a deeper default search, a bigger
+transposition table) or if any future phase adds even a few more bytes of
+permanent `.bss` anywhere in the shared kernel image. The next time
+either happens, this same failure mode will resurface, and the fix will
+have to come from actually reducing something's footprint (chess's own
+`MAX_SEARCH_PLYS`/`MAX_MOVES`, the transposition table size, or another
+`.bss` array), not from another few-page reshuffle like this one.
