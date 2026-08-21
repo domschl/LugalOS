@@ -25,11 +25,27 @@ they still queue safely for the one thing that actually may not run
 concurrently, talking to the board.
 
 9P doesn't give this filesystem everything POSIX wants: there's no
-Twstat support server-side (no rename, no chmod/chown persistence, no
-mtimes -- fs/9p.c's Stat always reports atime/mtime as 0), and no
-symlinks or special files. Those are declared absent up front (rename
-raises ENOSYS; chmod/chown/utimens are silent no-ops so ordinary tools
-like `cp -p` don't hard-fail) rather than half-emulated.
+Twstat support server-side (no real rename, no chmod/chown persistence,
+no mtimes -- fs/9p.c's Stat always reports atime/mtime as 0), and no
+symlinks or special files. chmod/chown/utimens are silent no-ops so
+ordinary tools like `cp -p` don't hard-fail. rename() *is* emulated for
+files (read the source, write it over the destination, remove the
+source) despite there being no server-side primitive for it -- not
+optional: it's the routine, automatic save strategy nearly every real
+editor uses (write a temp file, then rename it over the real target),
+and refusing it outright (an earlier version of this file did exactly
+that) silently broke every ordinary editor save. Directory renames are
+still refused (ENOSYS) -- recursively copying a whole tree over 9P to
+fake one is a much bigger, riskier undertaking for something that's a
+rare, deliberate action rather than an automatic one.
+
+Every path's reported mtime is stable for the life of the mount unless
+*this* session actually wrote, created, or renamed it (see _touch()) --
+not time.time() freshly on every stat() call, which an earlier version
+of this file did and which broke any tool that compares mtimes to decide
+whether a file changed externally (concretely: Emacs's save path always
+saw a "different" mtime and always warned the file had changed on disk,
+regardless of whether anything actually had).
 
 Reads and writes are whole-file, buffered in memory between open() and
 release()/flush(): open() (or create()) fetches or starts a bytearray,
@@ -82,6 +98,13 @@ class P9FS(Operations):
         self._handles: dict[int, bytearray] = {}
         self._dirty: set[int] = set()
         self._next_fh = 1
+        # See _attrs()'s comment: every path's reported mtime/ctime is this
+        # mount's own start time until _touch() below records that *this*
+        # session actually modified it -- never time.time() on every
+        # stat(), which used to report a file as having just changed on
+        # literally every single check.
+        self._mount_time = time.time()
+        self._mtimes: dict[str, float] = {}
 
     # --- helpers (always called with self._lock already held) ---
 
@@ -91,7 +114,13 @@ class P9FS(Operations):
         self._handles[fh] = bytearray(initial)
         return fh
 
-    def _attrs(self, st: p9lib.Stat) -> dict:
+    def _touch(self, path: str) -> None:
+        self._mtimes[path] = time.time()
+
+    def _untouch(self, path: str) -> None:
+        self._mtimes.pop(path, None)
+
+    def _attrs(self, path: str, st: p9lib.Stat) -> dict:
         # Reporting /dev/* as S_IFCHR (character special) instead of
         # S_IFREG was tried and reverted: it does stop file managers from
         # auto-probing their content, but FUSE mounts a non-root user
@@ -101,20 +130,31 @@ class P9FS(Operations):
         # node -- "Permission denied" for a deliberate `cat` too, not just
         # for automatic sniffing. See open()'s own guard for the actual
         # fix for the one path (/dev/uart) that needed one.
-        now = time.time()
         mode = (statmod.S_IFDIR | 0o755) if st.is_dir else (statmod.S_IFREG | 0o644)
+        # The server has no wall clock at all (Stat.atime/mtime are
+        # always 0), so there's no real timestamp to report -- but
+        # reporting time.time() fresh on every single stat() call (an
+        # earlier version of this method did exactly that) is actively
+        # wrong, not just imprecise: every path's mtime then changes on
+        # every check, so any tool comparing "has this changed since I
+        # last looked" -- Emacs's save path being the concrete case that
+        # found this -- always sees a mismatch and always concludes the
+        # file was modified externally, even though nothing touched it.
+        # A path this session hasn't written gets one fixed value (this
+        # mount's own start time) for its entire lifetime; _touch() records
+        # a fresh timestamp only for a path *this* session actually wrote,
+        # created, or renamed, so those correctly look "just modified"
+        # without every untouched path also appearing to change forever.
+        mtime = self._mtimes.get(path, self._mount_time)
         return {
             "st_mode": mode,
             "st_nlink": 2 if st.is_dir else 1,
             "st_size": 0 if st.is_dir else st.length,
             "st_uid": self._uid,
             "st_gid": self._gid,
-            # The server has no wall clock (Stat.atime/mtime are always 0)
-            # -- reporting "now" rather than the epoch avoids tools that
-            # treat a 1970 mtime as "obviously stale" misbehaving.
-            "st_atime": now,
-            "st_mtime": now,
-            "st_ctime": now,
+            "st_atime": mtime,
+            "st_mtime": mtime,
+            "st_ctime": mtime,
         }
 
     # --- metadata ---
@@ -125,7 +165,7 @@ class P9FS(Operations):
                 st = self.sess.stat(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
-            return self._attrs(st)
+            return self._attrs(path, st)
 
     def readdir(self, path, fh):
         with self._lock:
@@ -169,6 +209,7 @@ class P9FS(Operations):
                 self.sess.write(path, b"", create=True, truncate=True)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.EIO) from e
+            self._touch(path)
             return self._alloc_fh(b"")
 
     def read(self, path, size, offset, fh):
@@ -206,6 +247,7 @@ class P9FS(Operations):
                 self.sess.write(path, data, create=True, truncate=True)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.EIO) from e
+            self._touch(path)
 
     def _commit(self, path, fh):
         # Always called with self._lock already held.
@@ -215,6 +257,7 @@ class P9FS(Operations):
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.EIO) from e
             self._dirty.discard(fh)
+            self._touch(path)
 
     def flush(self, path, fh):
         with self._lock:
@@ -235,6 +278,7 @@ class P9FS(Operations):
                 self.sess.mkdir(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.EIO) from e
+            self._touch(path)
 
     def unlink(self, path):
         with self._lock:
@@ -242,6 +286,7 @@ class P9FS(Operations):
                 self.sess.remove(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
+            self._untouch(path)
 
     def rmdir(self, path):
         with self._lock:
@@ -249,13 +294,42 @@ class P9FS(Operations):
                 self.sess.remove(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
+            self._untouch(path)
 
     def rename(self, old, new):
         # fs/9p.c has no Twstat handler -- there is no server-side rename
-        # to call. Emulating it as read+write+remove would silently
-        # discard a real directory move, so this is refused outright
-        # rather than half-working. No Session access, no lock needed.
-        raise FuseOSError(errno.ENOSYS)
+        # to call, so this can't be a real atomic namespace operation.
+        # For a *directory*, emulating one by recursively copying the
+        # whole tree over 9P and then removing the original would be
+        # slow, is easy to get subtly wrong, and a directory rename is a
+        # rare, deliberate action anyway -- still refused outright.
+        #
+        # A *file* rename is different: it's the routine, automatic save
+        # strategy nearly every real editor uses (write the new content
+        # to a temp file, then rename it over the real target) --
+        # confirmed concretely with Emacs, whose default save silently
+        # never landed at all once this unconditionally refused every
+        # rename. Emulating it here (read the temp file's already-
+        # committed content, write it over `new`, remove `old`) isn't
+        # atomic the way a real rename is, but the temp file's own
+        # write+close already happened before this call, so the content
+        # being moved is never in question -- worth the small window of
+        # non-atomicity to make ordinary editor saves actually work.
+        with self._lock:
+            try:
+                st = self.sess.stat(old)
+            except p9lib.P9Error as e:
+                raise FuseOSError(errno.ENOENT) from e
+            if st.is_dir:
+                raise FuseOSError(errno.ENOSYS)
+            try:
+                data = self.sess.read(old)
+                self.sess.write(new, data, create=True, truncate=True)
+                self.sess.remove(old)
+            except p9lib.P9Error as e:
+                raise FuseOSError(errno.EIO) from e
+            self._untouch(old)
+            self._touch(new)
 
     # --- POSIX metadata the server has no model for: accepted, not stored ---
 

@@ -392,6 +392,69 @@ error instead of hanging; `cat /dev/null` still works normally; `tree` run
 twice in a row over the whole namespace succeeds identically both times;
 a full write/read/`rm` cycle on `/sd0` re-verified clean afterward.
 
+### Follow-up 4: editors couldn't actually save through the mount *(done, 2026-08-21)*
+
+The user reported editing `/flash0/CAT.C` in Emacs: saving always warned
+"File changed on disk", and regardless of the user's choice at that
+prompt, the file was never actually updated.
+
+**Two compounding host-side bugs, both in `host/fuse-p9`:**
+- `_attrs()` reported `time.time()` (current wall-clock) as `st_mtime` on
+  *every single* `stat()` call. Every path's mtime was therefore
+  different every time anything checked it -- Emacs's save path compares
+  the file's mtime against what it recorded when the buffer was loaded,
+  saw a mismatch unconditionally, and always warned of an external
+  change, whether or not one had happened.
+- `rename()` unconditionally refused with `ENOSYS`. Emacs's (and nearly
+  every other real editor's) default save strategy is to write the new
+  content to a temp file, then rename it over the real target -- so even
+  after confirming "save anyway" at the mtime prompt, the actual save
+  silently failed at the rename step and the original file was never
+  touched.
+
+**Fixed**: `_attrs()` now reports a stable mtime for the life of the
+mount for any path *this session* hasn't modified (`self._mount_time`,
+captured once at `P9FS.__init__`), and a fresh timestamp only for a path
+this session actually wrote, created, or renamed (`_touch()`/`_untouch()`,
+called from `create()`, `_commit()`, `mkdir()`, `unlink()`, `rmdir()`, and
+`rename()`). `rename()` is now emulated for *files* -- read the (already
+fully written and closed) source, write it over the destination, remove
+the source -- while directory renames are still refused (`ENOSYS`):
+recursively copying a whole tree over 9P to fake one is a much bigger,
+riskier undertaking for something that's a rare, deliberate action rather
+than an automatic one every editor save triggers.
+
+**Not a bug, and not fixable here**: `/flash0` is `fs/vfs_server.c`'s
+"Embedded Flash ROMDisk" -- permanently read-only by design (confirmed:
+writing there returns a clean I/O error, original content untouched).
+Editing a file *there* specifically was never going to persist, with or
+without this fix; `/sd0` is the writable volume to actually test editor
+saves against.
+
+**Verified**: 245/245 QEMU tests unaffected; the mtime-stability logic
+unit tested directly. Real hardware: repeated `stat` on an untouched file
+now returns an identical mtime every time; a live simulation of exactly
+Emacs's save pattern (write a temp file on `/sd0`, `mv` it over the
+target) now correctly updates the target's content; directory rename
+still correctly refused; `/flash0` write attempts still cleanly fail with
+original content intact, confirming that specific case is expected
+behavior, not a regression.
+
+### Open: Nautilus still hangs after opening `/dev/` *(not yet resolved)*
+
+Reported after the `/dev/uart`-open guard (follow-up 3) landed: GNOME
+Files still hangs browsing to `/dev/`, unrecoverable short of unplugging
+the board. Checked and ruled out as the cause: `/dev/eeprom`'s
+`at24c32_read()` (`drivers/at24c32.c`) has explicit, bounded per-step
+spin timeouts (10000 iterations each) rather than an unbounded wait, so
+it can't reproduce the same class of hang `/dev/uart` did; `/dev/null`
+and `/dev/zero` both answer reads with an immediate 0-length response,
+also not a candidate. Not yet root-caused -- needs either confirmation
+that the reattached daemon is actually running the follow-up-3 fix (a
+stale, un-restarted `lugal9pfuse` process would still exhibit the old
+behavior), or a different, not-yet-identified GVFS/Nautilus interaction
+with the mount to chase down.
+
 ---
 
 ## 14b, 14c-14e — not started
