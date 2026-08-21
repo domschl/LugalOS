@@ -103,6 +103,27 @@ class P9FS(Operations):
     # rather than a repeat of the same incident under a different name.
     _NEVER_OPEN = frozenset({"/dev/uart", "/dev/eeprom"})
 
+    # /proc/df's content (fs/vfs_server.c's vfs_generate_proc_content(),
+    # backed by fs/fat32.c's fat32_statfs()) is a genuine full FAT-table
+    # free-space scan across every mounted volume -- measured at ~7-13s
+    # on real hardware depending on card size, and the KERNEL regenerates
+    # it from scratch not just for an actual read, but for a bare stat()
+    # too (vfs_stat() calls the same vfs_open() that computes it). A file
+    # manager enumerating a folder tree that has /proc visible anywhere
+    # in it does a getattr() per entry as a matter of course, so /proc/df
+    # alone can cost seconds on every single enumeration pass -- observed
+    # concretely as GNOME Files taking 10+ seconds to do practically
+    # anything while /proc was visible. Caching this specific path (nothing
+    # else under /proc is anywhere near this expensive) trades bounded
+    # staleness for that cost: df can't change from outside this mount's
+    # own knowledge without either a write through this same session
+    # (which invalidates the cache immediately -- see _invalidate_proc_df())
+    # or the SD card being modified through some entirely different
+    # connection at the same time, which is already a real risk this
+    # bridge doesn't try to protect against anywhere else either.
+    _PROC_DF_PATH = "/proc/df"
+    _PROC_DF_CACHE_TTL = 30.0  # seconds
+
     def __init__(self, session: p9lib.Session) -> None:
         self.sess = session
         self._lock = threading.Lock()
@@ -118,6 +139,7 @@ class P9FS(Operations):
         # literally every single check.
         self._mount_time = time.time()
         self._mtimes: dict[str, float] = {}
+        self._proc_df_cache: tuple[float, bytes] | None = None
 
     # --- helpers (always called with self._lock already held) ---
 
@@ -129,9 +151,29 @@ class P9FS(Operations):
 
     def _touch(self, path: str) -> None:
         self._mtimes[path] = time.time()
+        self._invalidate_proc_df()
 
     def _untouch(self, path: str) -> None:
         self._mtimes.pop(path, None)
+        self._invalidate_proc_df()
+
+    def _invalidate_proc_df(self) -> None:
+        # Called on every successful write/create/mkdir/remove/rename,
+        # regardless of path -- the only ones that can actually happen are
+        # on /sd0 or /dev (everything else this bridge could write to is
+        # already refused or read-only), and both are exactly the volumes
+        # /proc/df reports free space for. Cheap and always safe to call
+        # unconditionally; the alternative (matching the exact set of
+        # paths df's own text mentions) buys nothing but fragility.
+        self._proc_df_cache = None
+
+    def _get_proc_df(self) -> bytes:
+        cached = self._proc_df_cache
+        if cached is not None and time.time() - cached[0] < self._PROC_DF_CACHE_TTL:
+            return cached[1]
+        data = self.sess.read(self._PROC_DF_PATH)
+        self._proc_df_cache = (time.time(), data)
+        return data
 
     # Volumes with no write path at all server-side (fs/vfs_server.c's
     # vfs_pwrite() only has cases for MOUNT_FAT32, MOUNT_DEV, and
@@ -149,7 +191,7 @@ class P9FS(Operations):
     def _is_readonly_path(self, path: str) -> bool:
         return path in self._READONLY_ROOTS or path.startswith(self._READONLY_PREFIXES)
 
-    def _attrs(self, path: str, st: p9lib.Stat) -> dict:
+    def _attrs(self, path: str, is_dir: bool, length: int) -> dict:
         # Reporting /dev/* as S_IFCHR (character special) instead of
         # S_IFREG was tried and reverted: it does stop file managers from
         # auto-probing their content, but FUSE mounts a non-root user
@@ -159,8 +201,13 @@ class P9FS(Operations):
         # node -- "Permission denied" for a deliberate `cat` too, not just
         # for automatic sniffing. See open()'s own guard for the actual
         # fix for the one path (/dev/uart) that needed one.
+        #
+        # Takes is_dir/length directly rather than a p9lib.Stat so
+        # getattr() can synthesize one for /proc/df from its own cache
+        # without a real Stat object (see _get_proc_df()) -- the only two
+        # fields this method actually needs.
         readonly = self._is_readonly_path(path)
-        if st.is_dir:
+        if is_dir:
             mode = statmod.S_IFDIR | (0o555 if readonly else 0o755)
         else:
             mode = statmod.S_IFREG | (0o444 if readonly else 0o644)
@@ -181,8 +228,8 @@ class P9FS(Operations):
         mtime = self._mtimes.get(path, self._mount_time)
         return {
             "st_mode": mode,
-            "st_nlink": 2 if st.is_dir else 1,
-            "st_size": 0 if st.is_dir else st.length,
+            "st_nlink": 2 if is_dir else 1,
+            "st_size": 0 if is_dir else length,
             "st_uid": self._uid,
             "st_gid": self._gid,
             "st_atime": mtime,
@@ -194,11 +241,17 @@ class P9FS(Operations):
 
     def getattr(self, path, fh=None):
         with self._lock:
+            if path == self._PROC_DF_PATH:
+                try:
+                    data = self._get_proc_df()
+                except p9lib.P9Error as e:
+                    raise FuseOSError(errno.ENOENT) from e
+                return self._attrs(path, is_dir=False, length=len(data))
             try:
                 st = self.sess.stat(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
-            return self._attrs(path, st)
+            return self._attrs(path, is_dir=st.is_dir, length=st.length)
 
     def readdir(self, path, fh):
         with self._lock:
@@ -231,7 +284,12 @@ class P9FS(Operations):
             raise FuseOSError(errno.EIO)
         with self._lock:
             try:
-                data = b"" if (flags & os.O_TRUNC) else self.sess.read(path)
+                if flags & os.O_TRUNC:
+                    data = b""
+                elif path == self._PROC_DF_PATH:
+                    data = self._get_proc_df()
+                else:
+                    data = self.sess.read(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
             return self._alloc_fh(data)

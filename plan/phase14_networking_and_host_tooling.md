@@ -600,6 +600,53 @@ see what it's actually doing differently for a root-level folder versus
 a subdirectory, since nothing tested directly against the protocol so
 far reproduces it.
 
+### Follow-up 8: cache `/proc/df`'s content, since re-scanning it can't be made fast *(done, 2026-08-21)*
+
+Following up on "is Nautilus hammering the fs?": whenever `/proc` was
+visible anywhere in a Nautilus enumeration, every operation seemed to
+pay `/proc/df`'s full ~7-13s FAT-table scan cost -- and critically, the
+KERNEL regenerates that content not just for an actual read, but for a
+bare `stat()` too (`vfs_stat()` calls the same `vfs_open()` that computes
+it), so a plain `getattr()` -- which any directory enumeration does once
+per entry, `ls -la`/`tree`/Nautilus alike -- pays the same cost as
+actually reading the file.
+
+**Trade-off, addressed directly rather than ignored**: caching this
+trades guaranteed freshness for responsiveness. The risk is bounded and
+specific, not open-ended: `/proc/df` reports free space on `/flash0` and
+`/sd0`; `/flash0` is permanently read-only so its number never changes;
+`/sd0`'s free space only changes via a write, and the only writes that
+can happen are through *this same mount* (nothing else this bridge does
+could plausibly change on-disk free space without this process knowing).
+So the cache is invalidated immediately whenever this session completes
+any write/create/mkdir/remove/rename, and only needs its 30-second TTL
+to cover the disjoint case: the SD card being modified through some
+entirely different connection at the same moment -- a risk this bridge
+already doesn't protect against anywhere else (nothing here detects an
+external modification to any other file either).
+
+**Implemented** in `host/fuse-p9`: `_get_proc_df()` caches `/proc/df`'s
+raw content for 30s, used by both `getattr()` (to answer `st_size`
+without a real `stat()` round trip) and `open()` (to answer a read
+without a real `read()`); `_touch()`/`_untouch()` (already called from
+every mutating operation for the mtime-tracking follow-up 4 added)
+now also invalidate the cache unconditionally on every call, regardless
+of path -- simpler and just as correct as trying to match the exact set
+of volumes df's own text happens to mention. `_attrs()` was refactored to
+take `is_dir`/`length` directly instead of a full `p9lib.Stat`, so
+`getattr()` can synthesize an entry from the cached length without a real
+`Stat` object.
+
+**Verified**: 245/245 QEMU tests unaffected; the cache/invalidate logic
+unit tested directly. Real hardware: first `ls -la /proc` after mounting
+still pays the real ~13.5s scan (unavoidable, and correct -- there's
+nothing to cache yet); every subsequent `ls -la`/`tree` immediately after
+is near-instant (0.02s, 0.23s) instead of repeating the scan; writing a
+100KB file to `/sd0` and reading `/proc/df` again immediately shows the
+`Used` figure correctly updated (not a stale cached value) and pays the
+full scan cost again, confirming the invalidation path is real and not
+just always-hit-the-cache.
+
 ---
 
 ## 14b, 14c-14e — not started
