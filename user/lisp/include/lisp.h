@@ -72,5 +72,16 @@ lisp_val_t *lisp_read(const char **str);
 void lisp_print(lisp_val_t *val);
 void lisp_repl(void);
 
+/* S3 (plan/phase13_lisp_engine_extensions.md): the collector's one safe
+ * point, exposed so any genuinely top-level, non-nested per-command
+ * dispatch loop can call it between commands -- not just lisp_repl()'s own
+ * loop internally. kernel/shell.c's POSIX-shell command loop
+ * (parse_and_eval_cmd() via lisp_eval_string()) is exactly this shape: a
+ * fresh top-level form each iteration, driven by raw interactive input,
+ * never itself nested inside another expression's still-in-progress
+ * evaluation. See gc_collect()'s own comment (user/lisp/lisp.c) for why a
+ * collection is only exact right here and nowhere mid-expression. */
+void lisp_gc_safepoint(void);
+
 
 #endif /* LUGALOS_USER_LISP_H */

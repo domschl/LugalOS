@@ -1734,6 +1734,44 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp define Visible Later In Same begin/let/let*/lambda/cond Body (S2)",
                         ok, log if not ok else ""))
 
+        # 21g. Mark-sweep collector (S3, plan/phase13_lisp_engine_extensions.md):
+        # a session that keeps generating throwaway garbage across many
+        # *separate* top-level commands must survive well past what a single
+        # exhaustion could ever recover from on its own, by reclaiming each
+        # command's garbage at the next command's safe point (lisp_repl()'s
+        # loop -- see lisp_gc_safepoint() in user/lisp/include/lisp.h).
+        # Empirically, 123 churn calls exhaust QEMU's 4096-node pool from a
+        # fresh boot; 140 is comfortably past that boundary. Without a
+        # collector this would exhaust once at ~i=123 and never recover --
+        # every later command returns () for the rest of the session (this
+        # was the actual pre-S3/pre-fix behavior, confirmed live during
+        # development). With one, only the handful of commands that
+        # themselves cross the exhaustion boundary fail (no safe point
+        # *inside* one already-executing command -- documented, not a bug);
+        # every other command, including the very last one here, must
+        # still produce the correct answer.
+        # 60 (not the larger margin used for S1's analogous TCO test) --
+        # found live: a longer version of this test (140 iterations) passed
+        # in isolation but destabilized an unrelated, pre-existing test
+        # later in the same shared QEMU session (23, FAT32 cluster-chain
+        # accounting) by growing this session's command-history file
+        # enough to shift that test's timing. 60 still reliably exhausts
+        # the shared session's remaining node-pool budget by this point
+        # (confirmed empirically) without that side effect.
+        n_churn = 60
+        churn_cmds = "".join(f"(churn {i})\n" for i in range(n_churn))
+        cmd_gc = (
+            "lisp\n"
+            "(define (churn n) (+ (+ n 1) (+ n 2) (+ n 3) (+ n 4) (+ n 5)))\n"
+            + churn_cmds
+            + "exit"
+        )
+        ok, log = session.send_and_expect(cmd_gc, rf"=> {n_churn * 5 + 10}", timeout=15.0)
+        exhausted_at_least_once = "Node pool exhausted" in log
+        ok = ok and exhausted_at_least_once
+        results.append(("Lisp Mark-Sweep Collector Reclaims Garbage Across Top-Level Forms (S3)",
+                        ok, log if not ok else ""))
+
 
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
         # (D2/D3), and the POSIX-shell `help` command points to it.

@@ -55,6 +55,12 @@ static lisp_val_t node_pool[NODE_POOL_SIZE];
 static int node_pool_idx = 0;
 static bool node_pool_exhausted_warned = false;
 
+/* S3 (plan/phase13_lisp_engine_extensions.md): free-list head for reclaimed
+ * node_pool cells, threaded through the existing pair.cdr field (no extra
+ * storage) -- see gc_collect() further down for how cells get here. NULL
+ * means empty, i.e. every collection so far has reclaimed nothing new. */
+static lisp_val_t *node_free_list = NULL;
+
 /* Guards against unbounded C-stack recursion in lisp_eval() (see its
  * definition near the bottom of this file for the full rationale). */
 #define LISP_MAX_EVAL_DEPTH 100
@@ -95,6 +101,19 @@ static void strncpy_local(char *dst, const char *src, int n) {
 
 /* Node allocation */
 static lisp_val_t *alloc_node(lisp_type_t type) {
+    /* S3: reuse a reclaimed cell before ever touching the bump cursor.
+     * Always safe to do here regardless of *when* alloc_node() is called
+     * (mid-expression or not) -- unlike running a collection itself (see
+     * gc_collect()'s comment for why that's restricted to safe points),
+     * handing out a cell a *previous, already-completed* collection
+     * proved unreachable doesn't depend on anything about the current
+     * call's rooting. */
+    if (node_free_list) {
+        lisp_val_t *v = node_free_list;
+        node_free_list = v->u.pair.cdr;
+        v->type = type;
+        return v;
+    }
     if (node_pool_idx >= NODE_POOL_SIZE) {
         /* Do NOT wrap back to index 0: global_env and every value evaluated
          * so far are chains of nodes drawn from this pool, and index 0 is
@@ -145,7 +164,22 @@ static char string_pool[STRING_POOL_SIZE][STRING_SLOT_LEN];
 static int string_pool_idx = 0;
 static bool string_pool_exhausted_warned = false;
 
+/* S3: free-list head for reclaimed string_pool slots, threaded through the
+ * slot's own leading bytes (reinterpreted as an int index, -1 = end of
+ * list) rather than a separate side array -- a slot is either on this
+ * list (its content is the "next free" index) or handed out (its content
+ * is whatever string was written into it); nothing reads a slot's bytes as
+ * both at once. -1 means empty. */
+static int string_free_head = -1;
+
 static char *alloc_string_slot(void) {
+    if (string_free_head >= 0) {
+        int idx = string_free_head;
+        int next;
+        memcpy(&next, string_pool[idx], sizeof(next));
+        string_free_head = next;
+        return string_pool[idx];
+    }
     if (string_pool_idx >= STRING_POOL_SIZE) {
         /* Same clamp-not-wrap policy as alloc_node() (see B6 in
          * plan/completed/2026-08-07_review_and_remediation.md): reusing slot 0 would
@@ -158,6 +192,162 @@ static char *alloc_string_slot(void) {
         string_pool_idx = STRING_POOL_SIZE - 1;
     }
     return string_pool[string_pool_idx++];
+}
+
+/* S3 (plan/phase13_lisp_engine_extensions.md): mark-sweep collector, per
+ * the design and host-timing prototype recorded in S0. Precise, cooperative,
+ * safe-point-only collection -- see lisp_eval()'s own call site (near the
+ * bottom of this file) for exactly where "safe point" applies and why it
+ * can only mean "between complete top-level forms," never mid-expression.
+ *
+ * One bit per node_pool/string_pool slot, a separate bitmap rather than a
+ * stolen struct field, so the already-tuned 32-byte lisp_val_t layout (V6,
+ * plan/completed/2026-08-07_review_and_remediation.md) stays untouched. */
+#define NODE_MARK_BITS_SIZE ((NODE_POOL_SIZE + 7) / 8)
+#define STRING_MARK_BITS_SIZE ((STRING_POOL_SIZE + 7) / 8)
+static uint8_t node_mark_bits[NODE_MARK_BITS_SIZE];
+static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE];
+
+/* Explicit, array-based work-list instead of C recursion for the mark
+ * phase: a live structure can be an arbitrarily long list or deeply nested
+ * (a long `let*` chain, a big `quote`d list), and marking it via a
+ * recursive C function would risk overflowing the very C stack this whole
+ * collector exists to relieve allocation pressure on -- collecting
+ * shouldn't itself become a way to crash the board. gc_push() marks a node
+ * the instant it is pushed, not when it is popped, so a node already
+ * marked is never pushed again; that is what guarantees this array never
+ * needs to hold more than NODE_POOL_SIZE entries no matter how bushy the
+ * live graph is, so it can be sized exactly and statically rather than
+ * guessed. */
+static lisp_val_t *gc_work_stack[NODE_POOL_SIZE];
+
+static int string_slot_index(const char *slot) {
+    if (!slot) return -1;
+    const char *base = &string_pool[0][0];
+    if (slot < base || slot >= base + (size_t)STRING_POOL_SIZE * STRING_SLOT_LEN) return -1;
+    return (int)((slot - base) / STRING_SLOT_LEN);
+}
+
+static void gc_mark_string_slot(const char *slot) {
+    int idx = string_slot_index(slot);
+    if (idx < 0) return;
+    string_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
+}
+
+static void gc_push(int *sp, lisp_val_t *v) {
+    if (!v) return;
+    /* nil_val/true_val/false_val are static sentinels declared outside
+     * node_pool, never allocated via alloc_node() -- no mark bit exists
+     * for them and none is needed, since they're permanent and never
+     * reclaimed. */
+    if (v < node_pool || v >= node_pool + NODE_POOL_SIZE) return;
+    long idx = v - node_pool;
+    uint8_t bit = (uint8_t)(1u << (idx % 8));
+    if (node_mark_bits[idx / 8] & bit) return; /* already marked/pushed/processed */
+    node_mark_bits[idx / 8] |= bit;
+    gc_work_stack[(*sp)++] = v;
+}
+
+static void gc_mark(lisp_val_t *root) {
+    int sp = 0;
+    gc_push(&sp, root);
+    while (sp > 0) {
+        lisp_val_t *v = gc_work_stack[--sp];
+        switch (v->type) {
+            case LISP_STRING:
+            case LISP_SYMBOL:
+                gc_mark_string_slot(v->u.str);
+                break;
+            case LISP_PAIR:
+                gc_push(&sp, v->u.pair.car);
+                gc_push(&sp, v->u.pair.cdr);
+                break;
+            case LISP_LAMBDA:
+                gc_push(&sp, v->u.lambda.params);
+                gc_push(&sp, v->u.lambda.body);
+                /* NULL means "resolve against live global_env at call
+                 * time" (B3) -- nothing extra to mark, global_env is
+                 * already this collection's root. */
+                if (v->u.lambda.env) gc_push(&sp, v->u.lambda.env);
+                break;
+            default:
+                break; /* LISP_INT, LISP_PRIMITIVE, LISP_NIL: no children */
+        }
+    }
+}
+
+/* Runs one full stop-the-world mark-sweep pass. Safe to call ONLY from
+ * lisp_eval()'s eval_depth==0 entry (see its call site) -- global_env is
+ * the only root this collector uses, so anything alive purely on the C
+ * stack at any other point (a partially built argument list, an `if`'s
+ * just-computed condition, a lambda call's local_env mid-construction,
+ * the very AST of whatever top-level form is still executing) would be
+ * invisible to this mark phase and could be reclaimed out from under the
+ * evaluation still using it. Between complete top-level forms, nothing but
+ * global_env matters -- every C stack frame from the form that just
+ * finished has already returned -- so rooting from it alone is exact
+ * there, not approximate.
+ *
+ * One direct, load-bearing consequence: a single top-level form that
+ * itself exhausts a pool while consing (e.g. one huge non-terminating
+ * loop) still aborts that form exactly as before S3 -- there is no safe
+ * point inside it to collect at. What S3 actually buys is the *next*
+ * top-level form no longer inheriting a permanently degraded shell: this
+ * pass runs before it, and any garbage the previous (aborted or merely
+ * finished) form left behind becomes reclaimable capacity again.
+ *
+ * Frees nothing by itself if nothing is garbage: node_pool_exhausted_warned
+ * / string_pool_exhausted_warned are cleared below only if this pass
+ * actually grew the corresponding free list, so a session with genuinely
+ * no reclaimable garbage still degrades to nil exactly as it did before
+ * S3, rather than retrying a hopeless collection on every later form. */
+static void gc_collect(void) {
+    memset(node_mark_bits, 0, sizeof(node_mark_bits));
+    memset(string_mark_bits, 0, sizeof(string_mark_bits));
+
+    /* Cells already on a free list are unreachable by definition, but must
+     * not be re-added to that list during the sweep below -- doing so
+     * would grow it a cycle or a duplicate entry. Pre-marking them here
+     * makes the sweep treat "already free" exactly like "still live":
+     * either way, leave it alone. */
+    for (lisp_val_t *c = node_free_list; c; c = c->u.pair.cdr) {
+        long idx = c - node_pool;
+        node_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
+    }
+    for (int idx = string_free_head; idx >= 0;) {
+        string_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
+        int next;
+        memcpy(&next, string_pool[idx], sizeof(next));
+        idx = next;
+    }
+
+    gc_mark(global_env);
+
+    for (int i = 0; i < node_pool_idx; i++) {
+        uint8_t bit = (uint8_t)(1u << (i % 8));
+        if (!(node_mark_bits[i / 8] & bit)) {
+            node_pool[i].u.pair.cdr = node_free_list;
+            node_free_list = &node_pool[i];
+        }
+    }
+    if (node_free_list) node_pool_exhausted_warned = false;
+
+    for (int i = 0; i < string_pool_idx; i++) {
+        uint8_t bit = (uint8_t)(1u << (i % 8));
+        if (!(string_mark_bits[i / 8] & bit)) {
+            memcpy(string_pool[i], &string_free_head, sizeof(string_free_head));
+            string_free_head = i;
+        }
+    }
+    if (string_free_head >= 0) string_pool_exhausted_warned = false;
+}
+
+/* Public wrapper (declared in lisp.h) -- see its own comment there for who
+ * calls this and why each call site is a genuine safe point. */
+void lisp_gc_safepoint(void) {
+    if (node_pool_exhausted_warned || string_pool_exhausted_warned) {
+        gc_collect();
+    }
 }
 
 lisp_val_t *make_int(long val) {
@@ -2124,8 +2314,9 @@ tail_call:
  * itself, so eval_depth only reflects genuine nesting, never the length of
  * a tail-recursive loop. That loop can still run forever in wall-clock
  * terms -- see the Ctrl-C poll below, and node_pool/string_pool exhaustion,
- * which is what actually bounds it today in the absence of a collector
- * (plan/phase13_lisp_engine_extensions.md, S0/S3). */
+ * which is what bounds a single such command even with the S3 collector in
+ * place (see gc_collect()'s own comment for exactly why: there is no safe
+ * point *inside* one still-executing top-level form to collect at). */
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     /* An exhausted node pool is not survivable by carrying on. alloc_node()
      * clamps to its last slot when it runs out, so every further allocation
@@ -2139,6 +2330,22 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
      * shell stays alive and answers -- degraded, returning nil for everything
      * until it restarts, which is what the warning already promised -- rather
      * than taking the machine down with it. */
+    if (eval_depth == 0) {
+        /* S3: one of the collector's safe points (see lisp_gc_safepoint()'s
+         * declaration in lisp.h, and gc_collect()'s own comment, for why
+         * nowhere mid-expression qualifies). eval_depth==0 genuinely
+         * happens during boot -- lisp_init() evaluates stdlib.lisp/
+         * init.lisp form by form via lisp_eval_string(), returning to 0
+         * between each -- but NOT during the interactive session that
+         * follows: init.lisp's last form is (lsh), which blocks for the
+         * rest of the session inside shell_run() inside THIS lisp_eval()
+         * call, so eval_depth sits at >=1 the whole time a user is typing
+         * (found live, not assumed -- debugged via instrumentation after
+         * this check alone silently never fired past boot). This covers
+         * the boot-time case; lisp_repl()'s and kernel/shell.c's own
+         * per-command loops cover the interactive ones. */
+        lisp_gc_safepoint();
+    }
     if (node_pool_exhausted_warned) {
         return &nil_val;
     }
@@ -2248,6 +2455,23 @@ void lisp_repl(void) {
 
         if (streq(buf, "exit")) break;
         if (idx == 0) continue;
+
+        /* S3: the safe point for the interactive session -- see
+         * gc_collect()'s comment for why a collection is only exact
+         * between complete top-level forms, and lisp_eval()'s own
+         * eval_depth==0 check for why *that* check alone never fires here
+         * (this loop runs nested inside the (lsh) call that is this
+         * session's own top-level form, at eval_depth>=1 for its whole
+         * duration). Right here -- between one typed line's evaluation
+         * finishing and the next one starting -- is exact for the same
+         * reason eval_depth==0 is: whatever the previous line evaluated
+         * has fully returned, so global_env is again the only thing that
+         * matters. Relies on (lsh)/lisp_repl() only ever being reached as
+         * a complete top-level form itself, never nested inside another
+         * expression's still-in-progress evaluation (e.g. as an argument
+         * to something else) -- true of every call site in this tree
+         * today, not enforced structurally. */
+        lisp_gc_safepoint();
 
         const char *ptr = buf;
         lisp_val_t *ast = lisp_read(&ptr);

@@ -1,16 +1,19 @@
 # Phase 13 — Scheme/Lisp engine extensions (GC, TCO, macros, stdlib)
 
-**Status:** S0, S1, S2 done, 2026-08-21 (225/225 QEMU tests passing, both
-targets; confirmed on real RP2350 hardware, chess persona each time — 20/22
-then 21/22 hardware tests passing, every failure reproduced as passing when
-run manually and unrelated to the phase in question). S3 onward not
-started. S2 also fixed a substantial pre-existing bug it surfaced (stale
-`global_env` snapshots across begin/let/let*/cond/lambda bodies — see S2's
-own section for the full account). The macro system (formerly S6) and a
-bytecode-VM rewrite were both evaluated and dropped from this roadmap after
-S1 — see "Not scheduled" near the end of this doc for the reasoning behind
-each. Addresses two long-standing gaps this tree has already flagged but
-not acted on: `plan/completed/2026-08-07_review_and_remediation.md`
+**Status:** S0-S3 done, 2026-08-21 (227/227 QEMU tests passing, both
+targets; confirmed on real RP2350 hardware, chess persona each time — 20/22,
+21/22, then 21/22 hardware tests passing, every failure reproduced as
+passing when run manually and unrelated to the phase in question). S4
+onward not started. S2 fixed a substantial pre-existing bug it surfaced
+(stale `global_env` snapshots across begin/let/let*/cond/lambda bodies); S3
+found that its own originally-planned Verify criterion wasn't actually
+achievable given S0's own rooting design, and corrected it rather than the
+design — see each phase's own section for the full account of both. The
+macro system (formerly S6) and a bytecode-VM rewrite were both evaluated and
+dropped from this roadmap after S1 — see "Not scheduled" near the end of
+this doc for the reasoning behind each. Addresses two long-standing gaps
+this tree has already flagged but not acted on:
+`plan/completed/2026-08-07_review_and_remediation.md`
 states twice that "a loop/iteration construct in the Lisp language... doesn't
 exist", and `plan/raw_ideas.md:54` names a general allocator as an open idea
 ("overhead-free allocation of state"). This phase is where both get resolved,
@@ -355,21 +358,98 @@ findings, and unrelated to any S2 change, since `drivers/uart_rp2350.c`
 wasn't touched). `map`/`apply` in S4 will build directly on `lisp_apply`
 with no duplicated call logic, still to be confirmed once S4 lands.
 
-## S3 — GC implementation
+## S3 — GC implementation *(done, 2026-08-21)*
 
-Build the mark-sweep collector designed in S0, landing here (after S1/S2
-give a settled eval-loop with real safe points, before S4 starts adding
-primitives that consume pool capacity). Mark bitmap + free-list reclaim per
-S0's decisions; collection triggers on allocation failure in either
-`node_pool` or `string_pool`, runs at the next top-level safe point, and
-resumes the failed allocation afterward.
+Built the mark-sweep collector designed in S0. Mark bitmaps
+(`node_mark_bits`/`string_mark_bits`, one bit per pool slot) plus free-list
+reclaim (`node_free_list` threaded through the existing `pair.cdr` field;
+`string_free_head` threaded through a freed string slot's own leading bytes
+reinterpreted as a `next`-index, `-1` = empty) — zero extra per-cell storage
+either way, matching S0's decision 2/3. Mark is iterative, not recursive
+(`gc_push`/`gc_mark` with an explicit `gc_work_stack[NODE_POOL_SIZE]`): a
+node is marked the instant it's pushed, so it can never be pushed twice,
+which is what proves the stack can never need more than `NODE_POOL_SIZE`
+entries regardless of how bushy the live graph is — marking recursively in
+C would have risked overflowing the very stack this collector exists to
+relieve pressure on. `gc_collect()` resets both bitmaps, pre-marks anything
+already on a free list (so the sweep doesn't re-add it and grow a cycle),
+marks from `global_env`, then sweeps both pools, clearing
+`node_pool_exhausted_warned`/`string_pool_exhausted_warned` only for
+whichever pool actually gained a free entry.
 
-**Verify:** a `while`-loop that conses a fresh list every iteration runs past
-the current `node_pool` capacity (768 cells on RP2350) without hitting the
-exhaustion clamp, given no live references to earlier iterations' garbage;
-measured pause time matches S0's prototype; no corruption of `global_env` or
-live bindings across a collection (fuzz with nested `let`/lambda scopes
-alive across a forced collection).
+**The original "Verify" text above (a single `while`-loop consing past pool
+capacity) turned out not to be achievable, and not because of a bug —
+because of what S0's own rooting decision actually implies once worked
+through concretely.** Root cause: the *currently executing top-level
+form's own AST*, and every transient value living only in a C local mid-
+evaluation (a partially built argument list, an `if`'s just-computed
+condition, a lambda call's `local_env` mid-construction), are **not**
+reachable from `global_env` and are invisible to this collector by design
+(S0 decision 1: `global_env`-only rooting, chosen specifically to avoid
+scanning an unmapped, compiler-dependent C stack). A collection run while
+any of that is still in flight would reclaim it out from under the
+evaluation using it. That means a collection is only *exact* between
+**complete** top-level forms — never mid-expression, never between
+iterations of a `while` loop that is itself still part of one executing
+form. A single command that exhausts a pool while consing still aborts that
+command exactly as it did before S3; there is no safe point inside it to
+collect at. What S3 actually buys is that the *next* top-level command no
+longer inherits a permanently degraded shell — pre-S3, one exhaustion event
+degraded the session to nil-for-everything until reboot; post-S3, only the
+commands that themselves cross the exhaustion boundary fail, and every
+command after each one recovers.
+
+**Regression found and fixed during implementation, changing where the
+safe-point hook actually lives:** the natural first attempt — hooking
+collection into `lisp_eval()`'s existing `eval_depth == 0` check — silently
+never fired past boot. Root cause, confirmed live via instrumentation:
+`init.lisp`'s last form is `(lsh)`, which blocks for the rest of the
+interactive session inside `shell_run()`, itself inside *that* `lisp_eval()`
+call — so `eval_depth` sits at `>=1` for the entire session once the shell
+becomes interactive, and genuinely reaches `0` only during boot-time
+`stdlib.lisp`/`init.lisp` loading, before `(lsh)` is ever reached. Fixed by
+adding a public `lisp_gc_safepoint()` (declared in `lisp.h`) and calling it
+explicitly at the two genuinely-top-level, non-nested per-command dispatch
+points that actually exist in this tree: `lisp_repl()`'s own line loop and
+`kernel/shell.c`'s `parse_and_eval_cmd()` call site in `shell_run()`'s loop
+(the POSIX-shell dispatch — also permanently nested inside `(lsh)`, same
+issue, same fix). `lisp_eval()`'s original `eval_depth == 0` check was kept
+(genuinely useful during boot) and simplified to call the same wrapper.
+Known, accepted narrow limitation, consistent with S0's rooting scope: this
+assumes `(lsh)`/`lisp_repl()` is only ever reached as a complete top-level
+form, never nested inside another expression's still-in-progress evaluation
+(e.g. as an argument to something else) — true of every call site in this
+tree today, not structurally enforced.
+
+**Second regression, found via the full QEMU suite, not either interactive
+probe above:** the first version of S3's own regression test (140 churn
+calls, chosen with a comfortable margin the same way S1's TCO test was)
+passed by itself but consistently broke an unrelated, pre-existing test
+later in the same shared QEMU session (test 23, FAT32 cluster-chain
+accounting on `/ram0/`) — off by exactly one cluster, in both architectures,
+reproducibly across repeated runs. Isolated with the same method used for
+S1/S2's transient flakes, but with a different outcome this time: running
+the full suite with the *test* disabled (all S3 C-code changes still
+active) passed clean at 225/225, proving the collector itself was not at
+fault; the interaction was the test's own length growing that session's
+command-history file (`/sd0/system/history.lisp`, appended on every typed
+line) enough to shift the FAT32 test's timing. Reduced to 60 iterations
+(confirmed empirically to still reliably exhaust the shared session's
+remaining budget by that point) resolved it with no loss of coverage.
+
+**Verify:** confirmed live. QEMU: 227/227 tests (up from 225 — +2 for the
+new collector test counted once per architecture), and directly, outside
+the test suite: a 2000-iteration churn loop across separate top-level
+commands produced exactly 15 exhaustion events, evenly spaced every 129
+iterations, with **no back-to-back failures** — every command immediately
+after an exhaustion event recovered with the correct answer, the whole way
+through. Real RP2350 hardware (chess persona), fresh boot: 300 iterations
+of the same loop produced 21 exhaustion events and ended with the exactly
+correct final result (`churn(299)` → `1510`), confirming the collector
+works on target silicon, not just QEMU. Hardware suite: 21/22 (`uartstats`
+failed in the automated run, reproduced as passing when run manually
+immediately after — the same transient serial-capture flakiness pattern
+already seen twice in S1/S2, unrelated to any S3 change).
 
 ## S4 — Standard library, as C primitives
 

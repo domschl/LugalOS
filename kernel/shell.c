@@ -1644,6 +1644,14 @@ void shell_run(void) {
     while (1) {
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
         if (idx == 0) continue;
+        /* S3 (plan/phase13_lisp_engine_extensions.md): the Lisp engine's
+         * one safe point to collect garbage at -- see lisp_gc_safepoint()'s
+         * declaration in user/lisp/include/lisp.h. This loop qualifies for
+         * the same reason lisp_repl()'s own loop does: a fresh top-level
+         * command each iteration, driven by raw interactive input, never
+         * itself nested inside another expression's still-in-progress
+         * evaluation. */
+        lisp_gc_safepoint();
         parse_and_eval_cmd(buf);
     }
 }
