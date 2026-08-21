@@ -14,6 +14,11 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
+# host/p9lib is the promoted, product-grade home of the 9P client this file
+# used to import as a same-directory sibling (tests/p9lib.py, now retired) --
+# see host/p9lib/README.md.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+
 
 def expected_version() -> str:
     """The version string kernel/include/kernel/version.h defines, as a regex.
@@ -2356,7 +2361,7 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
     (drivers/virtio_console.c) by an external host process -- not any of
     LugalOS's own in-kernel 9P client code (drivers/loopback_net.c /
     drivers/uart_net.c). Boots its own dedicated QEMU instance with a
-    virtio-serial chardev backed by a unix socket, connects tests/p9lib.py's
+    virtio-serial chardev backed by a unix socket, connects host/p9lib's
     independent Python 9P client to it, and reads a real pre-existing file
     (/sd0/system/etc/init.lisp) end to end: Tversion, Tattach("/"), a
     multi-component Twalk, Topen, Tread, Tclunk."""
@@ -2385,7 +2390,7 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             last_err = ""
             for _ in range(20):  # the chardev socket file can lag slightly behind boot output
                 try:
-                    client = p9lib.P9Client.connect_unix(sock_path, timeout=2.0)
+                    client = p9lib.connect_unix(sock_path, timeout=2.0)
                     break
                 except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
                     last_err = str(e)
@@ -2405,6 +2410,107 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", ok, log)
         except Exception as e:
             return ("9P Server Reachable Over VirtIO-Console Link (A3, external client)", False, str(e))
+        finally:
+            session.close()
+
+
+def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """A6: exercises host/p9lib's Session (the "product-p9lib" file-utility
+    layer, not just the low-level P9Client the A3 test above uses) through a
+    full write/read/truncate/stat/mkdir/remove cycle over the same
+    virtio-console link as test_9p_virtio_link. This is the regression test
+    that would have caught fs/fat32.c's filename_to_83() dropping the
+    extension of any 9+ character base name (e.g. "host_test.txt" and
+    "host_test_dir" both silently collapsed to the bare 8.3 name
+    "HOST_TES", so creating one made vfs_mkdir()'s fat32_find_file() see a
+    false "already exists" for the other) -- every prior 9P test only ever
+    read pre-existing short 8.3-named files, never wrote or mkdir'd a
+    long name of its own."""
+    import shutil
+    import tempfile
+    import p9lib
+
+    name = "9P Read/Write/Mkdir CRUD Cycle Via host/p9lib Session (A6, external client)"
+    arch_img = img_path.with_name(f"test_{arch_name}_9p_crud_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "p9crud.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        try:
+            session.start(extra_qemu_args=[
+                "-device", "virtio-serial-device",
+                "-device", "virtconsole,chardev=p9c",
+                "-chardev", f"socket,id=p9c,path={sock_path},server=on,wait=off",
+            ])
+            ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+            if not ok:
+                return (name, False, log)
+
+            client = None
+            last_err = ""
+            for _ in range(20):
+                try:
+                    client = p9lib.connect_unix(sock_path, timeout=2.0)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                    last_err = str(e)
+                    time.sleep(0.2)
+            if client is None:
+                return (name, False, f"could not connect to {sock_path}: {last_err}")
+
+            with p9lib.Session(client, aname="/") as sess:
+                n = sess.write("/sd0/host_test.txt", b"hello from product-p9lib\n")
+                if n != len(b"hello from product-p9lib\n"):
+                    return (name, False, f"write returned {n} bytes")
+
+                back = sess.read("/sd0/host_test.txt")
+                if back != b"hello from product-p9lib\n":
+                    return (name, False, f"round-trip mismatch: {back!r}")
+
+                sess.write("/sd0/host_test.txt", b"short\n")
+                back2 = sess.read("/sd0/host_test.txt")
+                if back2 != b"short\n":
+                    return (name, False, f"truncate-on-overwrite failed: {back2!r}")
+
+                # Tstat's name comes back as the requested path's own last
+                # component (fs/9p.c's p9_handle_tstat resolves it from the
+                # fid's tracked path, not a FAT32 8.3 round-trip), unlike a
+                # directory *listing*, which reflects the on-disk 8.3 name
+                # via fat83_to_display_name() -- see the mkdir check below.
+                st = sess.stat("/sd0/host_test.txt")
+                if st.is_dir or st.length != len(b"short\n") or st.name != "host_test.txt":
+                    return (name, False,
+                             f"stat mismatch: name={st.name!r} length={st.length} is_dir={st.is_dir}")
+
+                # filename_to_83()'s bug dropped the extension of any 9+
+                # char base name, so the on-disk 8.3 name (as reported by a
+                # directory listing) would show up as bare "HOST_TES" here
+                # instead of "HOST_TES.TXT".
+                entries = sess.listdir("/sd0")
+                by_name = {e.name: e for e in entries}
+                if "HOST_TES.TXT" not in by_name:
+                    return (name, False, f"expected on-disk name HOST_TES.TXT, got: {sorted(by_name)}")
+
+                # A long base name (>8 chars) sharing host_test.txt's first 8
+                # characters -- the collision filename_to_83()'s bug caused.
+                sess.mkdir("/sd0/host_test_dir")
+                st_dir = sess.stat("/sd0/host_test_dir")
+                if not st_dir.is_dir:
+                    return (name, False, "mkdir'd entry is not reported as a directory")
+
+                sess.write("/sd0/host_test_dir/nested.txt", b"nested\n")
+                nested = sess.read("/sd0/host_test_dir/nested.txt")
+                if nested != b"nested\n":
+                    return (name, False, f"nested write/read mismatch: {nested!r}")
+
+                sess.remove("/sd0/host_test_dir/nested.txt")
+                sess.remove("/sd0/host_test_dir")
+                sess.remove("/sd0/host_test.txt")
+
+            return (name, True, "")
+        except Exception as e:
+            return (name, False, str(e))
         finally:
             session.close()
 
@@ -2875,6 +2981,7 @@ def main() -> int:
 
         _run_single(test_terminal_crlf(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -2894,6 +3001,7 @@ def main() -> int:
 
         _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

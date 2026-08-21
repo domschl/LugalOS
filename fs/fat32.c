@@ -43,17 +43,38 @@ static void safe_strncpy(char *dst, const char *src, int dst_size) {
 static void filename_to_83(const char *src, char *dst) {
     if (!src || !dst) return;
     memset(dst, ' ', 11);
+    if (!*src) return;
+
+    /* Find the last '.' (an extension separator), if any. Scanning for the
+     * base name and the extension separately -- rather than stopping the
+     * base-name loop the moment it sees a '.' -- matters because a base
+     * name of 8+ characters (e.g. "host_test.txt") would otherwise exit
+     * that loop via the i<8 bound without ever consuming the '.', so the
+     * following "if next char is '.'" check would see the *9th* base
+     * character instead and silently drop the extension. That collapsed
+     * "host_test.txt" and "host_test_dir" to the same bare "HOST_TES" 8.3
+     * name, so creating one made the other's own vfs_mkdir()/fat32_mkdir()
+     * see a false "already exists" from fat32_find_file(). */
+    const char *dot = NULL;
+    for (const char *p = src; *p && *p != '/'; p++) {
+        if (*p == '.') dot = p;
+    }
+    if (dot == src) dot = NULL; /* leading dot ("dotfile"): no extension */
+
+    size_t base_len = dot ? (size_t)(dot - src) : strlen(src);
+    if (base_len > 8) base_len = 8;
     int i = 0;
-    while (*src && *src != '.' && *src != '/' && i < 8) {
-        char c = *src++;
+    for (size_t k = 0; k < base_len && src[k] != '/'; k++) {
+        char c = src[k];
         if (c >= 'a' && c <= 'z') c -= 32;
         dst[i++] = c;
     }
-    if (*src == '.') {
-        src++;
+
+    if (dot) {
+        const char *ext = dot + 1;
         int j = 8;
-        while (*src && *src != '/' && j < 11) {
-            char c = *src++;
+        while (*ext && *ext != '/' && j < 11) {
+            char c = *ext++;
             if (c >= 'a' && c <= 'z') c -= 32;
             dst[j++] = c;
         }

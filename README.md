@@ -161,6 +161,7 @@ silicon):
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
 * **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 217 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 22 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
+* **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
 
 ---
 
@@ -179,6 +180,7 @@ lugalos/
 │                             # ST7735 TFT, TM1638 keypad, VirtIO Block/Console, RAMDisk — every
 │                             # RP2350 driver here also runs as its own U-mode task (see plan/phase12_*.md)
 ├── fs/                      # FAT32 filesystem engine (Subdirectories, BPB) & Plan 9 VFS Server
+├── host/                    # Host-side (macOS/Linux) tooling: p9lib, a real 9P2000 client + `lugal9p` CLI
 ├── kernel/                  # Microkernel main, scheduler, IPC, shell, printk
 ├── libc/                    # Freestanding C string library
 ├── linker/                  # Linker scripts (QEMU virt RV32/64, RP2350 XIP Flash)

@@ -21,76 +21,14 @@ from pathlib import Path
 
 import serial
 
-# tests/p9lib.py lives one directory up; it's the same independent 9P
-# client tests/runner.py uses against QEMU, reused as-is here rather than
-# duplicated -- protocol bugs should only ever need fixing in one place.
+# host/p9lib is the promoted, product-grade home of the 9P client this file
+# used to duplicate a copy of (tests/p9lib.py, now retired) -- both this file
+# and tests/runner.py import it from there, so protocol bugs only ever need
+# fixing in one place.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "tests"))
+sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 import p9lib  # noqa: E402
-
-
-class SerialSocketAdapter:
-    """Adapts a pyserial `Serial` to the minimal socket-like interface
-    p9lib.P9Client expects (sendall/recv/settimeout/close).
-
-    recv(n) honors the real socket.recv() contract of "at most n bytes,
-    possibly fewer" -- p9lib's _recv_exact() buffers by looping until it
-    has exactly what it asked for, which silently breaks (a struct.unpack
-    on a too-long buffer) if a mock over-delivers past `n`. Worth calling
-    out because it's exactly what an earlier, ad hoc version of this
-    adapter got wrong."""
-
-    def __init__(self, ser: serial.Serial) -> None:
-        self._s = ser
-
-    def sendall(self, data: bytes) -> None:
-        self._s.write(data)
-        self._s.flush()
-
-    def recv(self, n: int) -> bytes:
-        data = self._s.read(1)
-        if not data:
-            return b""
-        extra = min(self._s.in_waiting, n - 1)
-        if extra > 0:
-            data += self._s.read(extra)
-        return data
-
-    def settimeout(self, t: float) -> None:
-        self._s.timeout = t
-
-    def close(self) -> None:
-        self._s.close()
-
-
-def warm_up_9p(client: p9lib.P9Client, adapter: SerialSocketAdapter,
-                attempts: int = 5, attempt_timeout: float = 1.0, settle_timeout: float = 5.0) -> bool:
-    """The first 9P frame sent to a freshly (re)opened CDC-ACM port
-    occasionally gets silently dropped by the device -- observed in testing
-    against real RP2350 hardware, most likely a DATA0/DATA1 toggle
-    assumption mismatch between the host driver's fresh `open()` and the
-    device's own toggle state, which has persisted since USB enumeration
-    and has no protocol-level reason to resync just because a *host-side*
-    file descriptor closed and reopened (no bus reset occurs). Tversion is
-    cheap and idempotent (it resets the server's fid table either way, by
-    design -- see fs/9p.c), so retrying it a few times with a short timeout
-    is a safe, low-risk way past a dropped first frame without chasing the
-    firmware-level root cause blind, matching how tests/runner.py's own
-    QEMU-facing tests already retry a not-yet-ready socket/chardev rather
-    than assuming a fixed boot delay is always enough.
-
-    Returns True once a real Rversion comes back; leaves `adapter`'s
-    timeout at `settle_timeout` for the caller's actual work either way."""
-    for _ in range(attempts):
-        adapter.settimeout(attempt_timeout)
-        try:
-            client.version()
-            adapter.settimeout(settle_timeout)
-            return True
-        except p9lib.P9Error:
-            continue
-    adapter.settimeout(settle_timeout)
-    return False
+from p9lib import SerialSocketAdapter, warm_up_9p  # noqa: E402,F401
 
 
 def drain(ser: serial.Serial, quiet: float = 0.4, deadline: float = 3.0) -> bytes:
