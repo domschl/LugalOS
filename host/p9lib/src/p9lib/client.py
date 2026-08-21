@@ -224,12 +224,12 @@ class P9Client:
             if decoded:
                 return decoded
 
-    def _roundtrip(self, msg_type: int, body: bytes) -> tuple[int, bytes]:
-        tag = self._tag()
-        raw_frame = _frame(msg_type, tag, body)
-
+    def _recv_one_frame(self) -> tuple[int, int, bytes]:
+        """Receives and parses exactly one reply frame, in whichever
+        framing this connection uses. Returns (resp_type, resp_tag,
+        resp_body) without checking the tag -- _roundtrip() does that,
+        since it may need to read (and discard) more than one frame."""
         if self._framing == "slip":
-            self._sock.sendall(slip_encode(raw_frame))
             rest = self._recv_slip_frame()
             if len(rest) < 7:
                 raise P9Error(f"malformed reply: {len(rest)} bytes < 7")
@@ -239,16 +239,47 @@ class P9Client:
             resp_type, resp_tag = struct.unpack_from("<BH", rest, 4)
             resp_body = rest[7:]
         else:
-            self._sock.sendall(raw_frame)
             size = struct.unpack("<I", self._recv_exact(4))[0]
             if size < 7:
                 raise P9Error(f"malformed reply: declared size {size} < 7")
             rest = self._recv_exact(size - 4)
             resp_type, resp_tag = struct.unpack("<BH", rest[:3])
             resp_body = rest[3:]
+        return resp_type, resp_tag, resp_body
 
-        if resp_tag != tag:
-            raise P9Error(f"tag mismatch: sent {tag}, got {resp_tag}")
+    def _roundtrip(self, msg_type: int, body: bytes) -> tuple[int, bytes]:
+        tag = self._tag()
+        raw_frame = _frame(msg_type, tag, body)
+
+        if self._framing == "slip":
+            self._sock.sendall(slip_encode(raw_frame))
+        else:
+            self._sock.sendall(raw_frame)
+
+        # This client only ever has one request outstanding at a time, so
+        # any frame that comes back with the WRONG tag can only be a late
+        # reply to a request WE already gave up on -- observed happening
+        # for real over a physical CDC-ACM link (never over QEMU's
+        # virtio-console, which is effectively instant): warm_up_9p()'s
+        # retried Tversion can still be in flight when a retry gives up
+        # and resends, so its late Rversion, and possibly more than one,
+        # ends up queued ahead of a later, completely unrelated reply.
+        # Discarding stale-tagged frames and reading on until the real one
+        # (or a small bounded number of frames have been discarded) turns
+        # that into a self-healing skip instead of a permanent desync --
+        # raw framing has no other resync mechanism, so once a stale frame
+        # is left unread ahead of a real one, every reply after it is
+        # silently one frame behind, forever.
+        stale = 0
+        max_stale = 4
+        while True:
+            resp_type, resp_tag, resp_body = self._recv_one_frame()
+            if resp_tag == tag:
+                break
+            stale += 1
+            if stale > max_stale:
+                raise P9Error(f"tag mismatch: sent {tag}, got {resp_tag}")
+
         if resp_type == RERROR:
             (elen,) = struct.unpack_from("<H", resp_body, 0)
             raise P9Error(resp_body[2 : 2 + elen].decode(errors="replace"))

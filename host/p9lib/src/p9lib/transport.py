@@ -64,7 +64,12 @@ def connect_serial(port: str, baudrate: int = 115200, timeout: float = 5.0,
 
     `warm_up=True` (the default) retries an initial Tversion a few times
     before returning -- see warm_up_9p()'s own docstring for why a freshly
-    (re)opened CDC-ACM port can silently drop its first frame."""
+    (re)opened CDC-ACM port can silently drop its first frame. `timeout`
+    is used both for that initial connection and, via warm_up_9p's
+    settle_timeout, for every request afterward -- passing settle_timeout=
+    5.0 unconditionally here (warm_up_9p's own default) used to silently
+    discard whatever timeout the caller asked for the moment warm-up
+    finished."""
     import serial  # local import: only real-hardware callers need this
 
     ser = serial.Serial(port, baudrate, timeout=timeout)
@@ -73,7 +78,7 @@ def connect_serial(port: str, baudrate: int = 115200, timeout: float = 5.0,
     ser.reset_input_buffer()
     adapter = SerialSocketAdapter(ser)
     client = P9Client(adapter, framing=framing)
-    if warm_up and not warm_up_9p(client, adapter):
+    if warm_up and not warm_up_9p(client, adapter, settle_timeout=timeout):
         raise P9Error(f"no Rversion from {port} after warm-up retries")
     return client
 

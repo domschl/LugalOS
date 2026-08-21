@@ -202,11 +202,45 @@ allocated would raise a second, more confusing error masking the original.
   *lists* in the root namespace but isn't currently walkable (nothing
   bound there this boot) — surfaces as a `?????` row in `ls -la`, an
   accurate reflection of the server's own answer, not a FUSE defect.
-- Not yet done: verified against real RP2350 hardware (only QEMU so far,
-  unlike 14a which got both) — deferred, can happen whenever useful; no
-  firmware changes were needed for this phase either, so it's the same
-  "verify a host tool against an already-running board" situation 14a's
-  own hardware pass was.
+- Verified against real RP2350 hardware (chess persona), 2026-08-21, over
+  `connect_serial("/dev/ttyACM1")`. This surfaced two more real, host-side
+  bugs that QEMU's effectively-instant virtio-console link never could:
+  - **Tag desync on a real serial link.** `_roundtrip()` raised on the
+    first mismatched-tag reply it saw and never read again, but this
+    client only ever has one request outstanding — so any wrong-tag reply
+    can only be a *late* reply to something it already gave up on (e.g.
+    `warm_up_9p()`'s retried Tversion attempts racing a slow first
+    response), and leaving it unread desyncs every reply after it by
+    exactly one frame, forever (raw framing has no other resync
+    mechanism). Fixed by having `_roundtrip()` discard up to 4
+    wrong-tagged frames and keep reading for the real one, instead of
+    raising on the first mismatch.
+  - **`connect_serial()`'s `timeout` silently discarded after warm-up.**
+    It only reached the *initial* `Serial(...)` timeout — `warm_up_9p()`
+    always reset the adapter back to its own hardcoded 5.0s default
+    afterward, so passing a longer `timeout=` had no effect on any request
+    made once the session actually settled. Fixed by threading `timeout`
+    through as `warm_up_9p`'s `settle_timeout`.
+  - Both fixed in `host/p9lib`; `tests/runner.py` (245/245) unaffected by
+    either (QEMU's transport never exercises either failure mode).
+  - After both fixes: full `lugal9pfuse` write/append/`cp`/`mkdir`/nested-
+    write/`rm`/`rmdir` cycle verified clean against the real board, `/sd0`
+    confirmed left exactly as found.
+- **New, separate finding — not fixed, not in scope here:** `Tstat` on two
+  specific real-hardware paths (`/sd0/P1.ELF`, `/sd0/SYSTEM`) never
+  returns at all — confirmed via a bare `P9Client.stat()` call (no
+  `Session`, no FUSE) with a 30-second timeout, while `Twalk`/`Topen` on
+  the exact same paths return in ~4ms. Genuinely hangs, not just slow;
+  reproduces every time; unrelated to anything changed this session (both
+  fat32.c's `filename_to_83()` and the two p9lib fixes above were traced
+  through by hand for these exact names — neither is implicated). Most
+  likely a pre-existing server-side (`fs/9p.c`/`fs/fat32.c`) lock or
+  contention issue specific to a file/directory a currently-running
+  on-board process has open (`P1.ELF` reads like "process 1's own
+  backing binary"). Surfaces in `fuse-p9` as those two names showing
+  `?????` rows in `ls -la` (each one blocking for the full timeout before
+  FUSE reports `ENOENT`) — worth a dedicated investigation later, not
+  patched over here.
 
 ---
 
