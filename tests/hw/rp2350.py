@@ -31,21 +31,48 @@ import p9lib  # noqa: E402
 from p9lib import SerialSocketAdapter, warm_up_9p  # noqa: E402,F401
 
 
-def drain(ser: serial.Serial, quiet: float = 0.4, deadline: float = 3.0) -> bytes:
+def drain(ser: serial.Serial, quiet: float = 0.4, deadline: float = 3.0,
+          kick_after: float | None = None) -> bytes:
     """Reads until `quiet` seconds pass with nothing new arriving, or
     `deadline` total seconds elapse. For human-readable console output
     (shell banners, help text, ...) only -- 9P frames go through
     SerialSocketAdapter + p9lib instead, which know their own exact framing
-    and don't need to guess "is more coming?" from silence."""
+    and don't need to guess "is more coming?" from silence.
+
+    `kick_after`, if set, is a real firmware quirk workaround, not a made-up
+    knob: the RP2350's USB peripheral is Full-Speed-only silicon, and when
+    it sits behind a High-Speed hub (as it does on at least one dev
+    machine), a bulk IN transfer the device has armed after the console has
+    been otherwise quiet for a while (in the worst observed case, after
+    priostress's multi-second uninterrupted CPU spin) can sit host-side
+    unpolled seemingly indefinitely -- waiting alone, even up to 40+
+    seconds, was observed to never recover it. Sending *anything* new on
+    the OUT direction reliably does, in every trial tried, within a few
+    hundred ms -- empirically consistent with the host driver only
+    re-examining a device's other endpoints in response to fresh I/O on it,
+    not on its own schedule. So instead of gambling on an ever-larger
+    passive deadline, if `kick_after` seconds pass with nothing new, send
+    one bare newline to nudge the host and keep waiting -- fast on the
+    common path, and self-healing on the slow one instead of just slower."""
     out = b""
     end = time.time() + deadline
     last = time.time()
+    last_kick = time.time()
     while time.time() < end:
         ser.timeout = 0.1
         chunk = ser.read(4096)
         if chunk:
             out += chunk
             last = time.time()
+            last_kick = time.time()  # the kick's own echo counts; don't immediately re-kick
+        elif kick_after is not None and time.time() - last_kick > kick_after:
+            # Re-kicks every kick_after seconds rather than just once: a
+            # single kick has resolved every case seen so far, but there is
+            # no proof it always will, and `quiet` (above kick_after) still
+            # bounds how many of these actually happen before giving up.
+            ser.write(b"\n")
+            ser.flush()
+            last_kick = time.time()
         elif time.time() - last > quiet:
             break
     return out

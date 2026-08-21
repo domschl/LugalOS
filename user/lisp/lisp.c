@@ -57,8 +57,8 @@
  * RAM address, and _kernel_end (.bss's own end, palloc_init()'s heap
  * *start*) moves up as .bss grows -- so growing this array shrinks the
  * managed heap by exactly its own growth, page for page. Confirmed the
- * hard way (plan/phase14_networking_and_host_tooling.md's chess-won't-
- * start regression): STRING_POOL_SIZE below scaling 1:1 with this
+ * hard way (this file's own plan/phase13_lisp_engine_extensions.md's
+ * chess-won't-start regression): STRING_POOL_SIZE below scaling 1:1 with this
  * constant's own past growth (512->768->1024) had, by the time chess's
  * own on-demand move-list pools (user/chess/src/search.c) needed to
  * allocate, quietly eaten enough of the heap that they no longer fit. */

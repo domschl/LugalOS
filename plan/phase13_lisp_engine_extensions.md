@@ -1,11 +1,13 @@
 # Phase 13 — Scheme/Lisp engine extensions (GC, TCO, macros, stdlib)
 
-**Status: CONCLUDED, 2026-08-21. Follow-up regression found and fixed,
+**Status: CONCLUDED, 2026-08-21. Two follow-ups found and fixed,
 2026-08-21** (see bottom of this doc) — S4's `NODE_POOL_SIZE` growth
 quietly shrank the RP2350 chess persona's heap enough that chess stopped
 starting at all ("out of memory") on a completely fresh boot, months
-later, discovered during phase 14 work. S0-S5, every phase actually
-scheduled,
+later, discovered during phase 14 work; and the hardware suite's own
+`uart task` test turned out to have a real, previously-mischaracterized
+bug rooted in RP2350's USB peripheral being Full-Speed-only silicon. S0-S5,
+every phase actually scheduled,
 done (243/243 QEMU tests passing, both targets; confirmed on real RP2350
 hardware, chess persona every single phase — 20/22, 21/22, 21/22, 20/22,
 then 20/22 hardware tests passing, every failure reproduced as passing when
@@ -750,10 +752,9 @@ exhaustion degrades the shell instead of hanging the board" (confirming
 `NODE_POOL_SIZE`'s own headroom is unaffected) and "C2: two user programs
 resident at once... heap peak 53/53 pages" (chess's own new peak,
 observed independently). The one consistent failure ("uart task: console
-output is batched...") is a pre-existing test-harness timing issue
-capturing a `uartstats` command's own output (the measured behavior
-itself succeeded, `calls before=153 after=182`) -- unrelated to this fix,
-which touches only `user/lisp/lisp.c`.
+output is batched...") turned out to be a real, previously-mischaracterized
+bug in the test harness, not "unrelated to this fix" as first reported here
+-- see the follow-up section below for the actual root cause and fix.
 
 **Worth flagging, not fixing here:** chess's peak now uses 100% of the
 available heap on this board. There is no headroom left for anything
@@ -765,3 +766,64 @@ either happens, this same failure mode will resurface, and the fix will
 have to come from actually reducing something's footprint (chess's own
 `MAX_SEARCH_PLYS`/`MAX_MOVES`, the transposition table size, or another
 `.bss` array), not from another few-page reshuffle like this one.
+
+## Follow-up: `uart task` hardware test's real bug, and its real cause *(fixed, 2026-08-21)*
+
+**Root cause.** Not a test-harness timing artifact as first reported above.
+Direct serial probing (bypassing the test harness entirely) reproduced it
+reliably: a shell command's own response can sit fully formed and queued
+for USB delivery indefinitely -- observed still undelivered 40+ seconds
+later -- specifically after the console has gone quiet for a while (a
+human-typing-speed pause, or worse, `priostress`'s ~2.5s of two
+never-yielding `TASK_PRIO_INTERRUPT` tasks spinning with no console output
+at all).
+
+Traced with temporary register-level instrumentation (added and then fully
+removed this session -- `drivers/usb_cdc.c`'s EP2 TX ring head/tail/busy
+state, an iteration counter on the USB task's own poll loop, and counters
+on the SIE's `NAK_REC` / "EP2 IN armed" / "EP2 IN complete" events,
+correlated with `/dev/ttyUSB0`'s independent physical-UART mirror so the
+firmware's own timing could be observed without the act of querying it
+disturbing what was being measured):
+
+- The firmware's own bookkeeping is correct throughout. `uart_flush()`
+  arms the USB bulk IN transfer within about 1ms of the response being
+  ready, confirmed via `nm`-verified counters, not guesswork.
+- The USB task's own poll loop keeps running the whole time (confirmed via
+  its own iteration counter advancing ~25,000/s during a stall) -- not a
+  LugalOS scheduler starvation bug.
+- `NAK_REC` (SIE_STATUS bit 28, latched whenever the device sends a NAK in
+  response to a host poll) stayed at *zero* for the entire multi-hundred-ms
+  to multi-second stall in every case observed. The host was not even
+  attempting to poll this endpoint, let alone getting rejected.
+- Ruled out USB autosuspend directly (`/sys/.../power/control` reads `on`,
+  not `auto`, on the machine this was diagnosed on -- runtime PM was never
+  engaging).
+- `lsusb -v` confirmed the board negotiates Full Speed (12 Mbps) --
+  RP2350's USB peripheral has no High-Speed silicon at all, this is not a
+  descriptor bug -- and `lsusb -t` confirmed it sits behind a High-Speed
+  hub, meaning every transaction crosses that hub's Transaction Translator.
+  A Full-Speed bulk endpoint left idle behind a TT going a while before the
+  host polls it again, worse the longer the idle stretch, is a documented
+  characteristic of that combination, not something a device-side firmware
+  fix can reach.
+- Passively waiting longer does not reliably resolve it (tried up to 40s).
+  Sending *anything* new on the OUT direction does, in every trial tried
+  this session, within a few hundred ms -- empirically consistent with the
+  host only re-examining this device's other endpoints in response to
+  fresh I/O on it, not on its own schedule.
+
+**Fixed** in `tests/hw/rp2350.py` and `tests/hw/test_rp2350.py` only --
+no firmware change. `rp2350.drain()` gained an opt-in `kick_after`
+parameter: if that many seconds pass with nothing new arriving, it sends a
+bare `\n` (a no-op to the shell -- an empty line is never dispatched) and
+keeps waiting, repeating every `kick_after` seconds rather than gambling on
+one attempt. `test_uart_task()` is the only caller that passes it
+(`kick_after=1.2`, `quiet=5.0`, `deadline=15.0`), since it is the only test
+this was ever observed to affect.
+
+**Verified.** Reproduced the failure directly against the reverted (no
+`kick_after`) test twice, confirmed it was gone with the fix, then ran the
+full real-hardware suite (`tests/hw/test_rp2350.py`) twice more: 22/22 both
+times. QEMU regression suite unaffected (245/245) -- this fix touches only
+the host-side Python test harness, no `.uf2` content changed.

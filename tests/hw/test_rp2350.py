@@ -513,18 +513,34 @@ def test_uart_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             time.sleep(0.3)
             ser.reset_input_buffer()
 
+            # kick_after (not this file's usual quiet=0.4-0.5 default, no
+            # kick): the RP2350's USB peripheral is Full-Speed-only silicon,
+            # and on a host where it sits behind a High-Speed hub, the hub's
+            # Transaction Translator can leave the device's bulk IN transfer
+            # sitting armed but unpolled after the console has been quiet for
+            # a while -- not a LugalOS bug (register-level counters show the
+            # firmware arms the transfer within ~1ms; the host's own NAK
+            # count stays at zero throughout, meaning it isn't even
+            # attempting the poll yet). Passively waiting does not reliably
+            # resolve this -- observed still unpolled 40+ seconds later after
+            # this suite's own priostress test (which spins the CPU
+            # uninterrupted for ~2.5s beforehand, about as quiet as this
+            # console gets). Sending anything new on the OUT direction does,
+            # every time this was tried, within a few hundred ms --
+            # rp2350.drain()'s kick_after leans on exactly that instead of
+            # gambling on an ever-larger passive deadline.
             ser.write(b"uartstats\n")
             ser.flush()
-            out_before = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            out_before = rp2350.drain(ser, quiet=5.0, deadline=15.0, kick_after=1.2).decode("utf-8", "replace")
             m_before = re.search(r"write_calls=(\d+)", out_before)
 
             ser.write(b"help\n")
             ser.flush()
-            rp2350.drain(ser, quiet=0.5, deadline=5.0)
+            rp2350.drain(ser, quiet=5.0, deadline=15.0, kick_after=1.2)
 
             ser.write(b"uartstats\n")
             ser.flush()
-            out_after = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+            out_after = rp2350.drain(ser, quiet=5.0, deadline=15.0, kick_after=1.2).decode("utf-8", "replace")
             m_after = re.search(r"write_calls=(\d+)", out_after)
 
         if not m_before or not m_after:
