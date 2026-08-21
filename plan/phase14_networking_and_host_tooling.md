@@ -440,20 +440,49 @@ still correctly refused; `/flash0` write attempts still cleanly fail with
 original content intact, confirming that specific case is expected
 behavior, not a regression.
 
-### Open: Nautilus still hangs after opening `/dev/` *(not yet resolved)*
+### Follow-up 5: `/dev/eeprom` hangs too -- the uart guard alone wasn't enough *(done, 2026-08-21)*
 
-Reported after the `/dev/uart`-open guard (follow-up 3) landed: GNOME
-Files still hangs browsing to `/dev/`, unrecoverable short of unplugging
-the board. Checked and ruled out as the cause: `/dev/eeprom`'s
-`at24c32_read()` (`drivers/at24c32.c`) has explicit, bounded per-step
-spin timeouts (10000 iterations each) rather than an unbounded wait, so
-it can't reproduce the same class of hang `/dev/uart` did; `/dev/null`
-and `/dev/zero` both answer reads with an immediate 0-length response,
-also not a candidate. Not yet root-caused -- needs either confirmation
-that the reattached daemon is actually running the follow-up-3 fix (a
-stale, un-restarted `lugal9pfuse` process would still exhibit the old
-behavior), or a different, not-yet-identified GVFS/Nautilus interaction
-with the mount to chase down.
+Reported after the `/dev/uart`-open guard (follow-up 3) landed, with a
+fresh daemon and a fresh Nautilus (ruling out a stale process running the
+old code): GNOME Files still hung completely browsing to `/dev/`, still
+unrecoverable short of unplugging the board -- and this time even Ctrl-C
+on `lugal9pfuse` itself only produced a garbled, unraisable
+`ctypes`-callback exception (a Python/ctypes quirk when a signal lands
+mid-exception-handling inside a C callback -- itself just noise, not a
+clue about the underlying cause), never actually stopping the process
+short of physically unplugging the board.
+
+The traceback did confirm the hang was inside an `open()` call -- and
+since `/dev/uart` is refused before ever touching the Session (an
+immediate, cheap set-membership check), it structurally cannot hang, so
+this had to be a different path. `/dev/eeprom`'s own read code
+(`drivers/at24c32.c`'s `i2c_read_at24()`) has bounded, small per-step
+iteration-count timeouts, and reading it via the kernel's own console
+`(help)`/interactive commands was assumed safe on that basis -- but a
+direct read straight over `p9lib` (bypassing Nautilus, `fuse-p9`, and
+this plan's own earlier guard entirely) confirmed the assumption wrong:
+the read never returned, even past 30 seconds, on this board's actual
+hardware configuration (no EEPROM chip physically wired -- an optional
+peripheral per the README's I2C wiring section). Wherever the real block
+happens (evidently not the bounded polling code that was checked, so a
+lower task/IPC layer this file has no visibility into), the observed
+behavior at this layer is identical to `/dev/uart`'s: an unbounded hang,
+not a bounded, if slow, real operation like `/proc/df`'s FAT scan.
+
+**Fixed**: `/dev/eeprom` added to the same `P9FS._NEVER_OPEN` set
+`/dev/uart` already used -- refused at `open()`/`truncate()` with a clean
+`EIO` before the shared lock is even touched, exactly the same treatment
+and the same reasoning as follow-up 3.
+
+**Verified**: 245/245 QEMU tests unaffected. Real hardware: `cat
+/dev/eeprom` now fails in ~6ms with a clean I/O error instead of hanging;
+`cat /dev/uart` still does too; `cat /dev/null` still works normally;
+`ls -la /dev` unchanged (still ordinary regular files, `tree` run twice in
+a row still succeeds identically both times). Nautilus itself not
+re-verified directly (no desktop environment available to drive it from
+here) -- everything checkable from the host-tooling side confirms the
+same class of hang that hit `/dev/uart` no longer exists for
+`/dev/eeprom` either, which was the last unguarded path under `/dev/`.
 
 ---
 

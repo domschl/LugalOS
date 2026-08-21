@@ -88,7 +88,20 @@ class P9FS(Operations):
     # visible, listable, stat-able regular file (ls/tree are unaffected,
     # since neither touches vfs_pread()), just never actually readable
     # through this bridge, deliberately or not.
-    _NEVER_OPEN = frozenset({"/dev/uart"})
+    #
+    # /dev/eeprom joined this set after the uart guard alone turned out
+    # not to be enough -- Nautilus still hung the whole board opening
+    # /dev/, and reading /dev/eeprom directly (bypassing Nautilus and
+    # this guard entirely, straight over p9lib) confirmed it: on a board
+    # with no EEPROM chip actually wired up (an optional peripheral --
+    # see the README's I2C wiring section), the read never returns,
+    # despite drivers/at24c32.c's own register-polling code
+    # (i2c_read_at24()) having bounded, small iteration-count timeouts at
+    # every step. Wherever the real block is (a lower task/IPC layer this
+    # file has no visibility into), the observed behavior is the same
+    # unbounded hang uart caused, so it gets the same treatment here
+    # rather than a repeat of the same incident under a different name.
+    _NEVER_OPEN = frozenset({"/dev/uart", "/dev/eeprom"})
 
     def __init__(self, session: p9lib.Session) -> None:
         self.sess = session
