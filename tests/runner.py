@@ -1620,21 +1620,119 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_multi_body, r"multi_body_side_effect.*=> 42", timeout=4.0)
         results.append(("Lisp Multi-Body Lambda Evaluates All Forms In Sequence", ok, log if not ok else ""))
 
-        # 21. Regression: a runaway/non-terminating recursive definition
-        # must be stopped by the evaluation-depth guard (A4) instead of
-        # overflowing the C stack. The trailing "(+ 5 5)" check on the same
+        # 21. Regression: a runaway/non-terminating NON-tail recursive
+        # definition must be stopped by the evaluation-depth guard (A4)
+        # instead of overflowing the C stack. The recursive call here is an
+        # argument to `+`, not the whole result, so it is not a tail call --
+        # tail-call optimization (S1, plan/phase13_lisp_engine_extensions.md)
+        # does not apply, and every level still recurses through the C
+        # stack/eval_depth exactly as before, tripping LISP_MAX_EVAL_DEPTH
+        # quickly and cheaply. This used to be `(loop (+ n 1))` (a tail
+        # call): post-TCO that shape no longer touches eval_depth at all and
+        # instead runs until it exhausts the whole node/string pool for the
+        # rest of the session (see test 21b below, and 21c for the
+        # tail-call-optimized case this replaces testing here), which would
+        # break every later test sharing this QEMU session -- not what this
+        # test is meant to exercise. The trailing "(+ 5 5)" check on the same
         # session proves the shell survived and is still evaluating
         # correctly afterward, not just that it failed to print a fault
         # banner.
         cmd_depth_guard = (
             "lisp\n"
-            "(define (loop n) (loop (+ n 1)))\n"
+            "(define (loop n) (+ 1 (loop (+ n 1))))\n"
             "(loop 0)\n"
             "(+ 5 5)\n"
             "exit"
         )
         ok, log = session.send_and_expect(cmd_depth_guard, r"=> 10", timeout=5.0)
-        results.append(("Lisp Recursion Depth Guard (no crash/hang on runaway recursion, A4)", ok, log if not ok else ""))
+        results.append(("Lisp Recursion Depth Guard (no crash/hang on runaway non-tail recursion, A4)", ok, log if not ok else ""))
+
+        # 21c. Tail-call optimization (S1, plan/phase13_lisp_engine_extensions.md):
+        # a self-recursive call in tail position -- (loop (+ n 1)) is the
+        # entire result of the `if`'s else-branch, which is itself the whole
+        # lambda body -- must NOT grow eval_depth per iteration. 60
+        # iterations is comfortably past the old LISP_MAX_EVAL_DEPTH=100
+        # ceiling for this shape (a tail call used to cost one eval_depth
+        # level exactly like a non-tail one, and this shape's extra non-tail
+        # levels per iteration -- the `if` test, the operator lookup, the
+        # argument evaluation -- meant it previously stalled at "Maximum
+        # evaluation depth exceeded" well under n=60), while staying modest
+        # against the shared node/string pool: this session has already run
+        # 20 earlier tests against the same never-reclaimed pool (no GC --
+        # see S0/S3 in the same plan doc) by the time this one runs, so this
+        # deliberately does not push anywhere near the budget the way 21b
+        # immediately below intentionally does.
+        cmd_tco = (
+            "lisp\n"
+            "(define (loop n) (if (= n 60) n (loop (+ n 1))))\n"
+            "(loop 0)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_tco, r"=> 60", timeout=8.0)
+        results.append(("Lisp Tail-Call Optimization (self-recursive tail call does not grow eval_depth, S1)", ok, log if not ok else ""))
+
+        # 21d. let* (S2, plan/phase13_lisp_engine_extensions.md): each
+        # binding's initializer sees every binding before it -- the same
+        # form under plain `let` would report "Unbound symbol: a", since
+        # `let` evaluates every initializer against the outer scope only.
+        ok, log = session.send_and_expect(
+            "lisp\n(let* ((a 1) (b (+ a 1))) b)\nexit",
+            r"=> 2", timeout=4.0)
+        results.append(("Lisp let* Sequential Binding Visibility (S1)", ok, log if not ok else ""))
+
+        # 21e. while (S2): a genuine multi-iteration loop. Comparison
+        # operators and cons cells don't exist until S4, so this proves
+        # real repeated execution the only way currently possible -- global
+        # state mutated via `define` (which always rebinds global_env
+        # regardless of nesting) inside the loop body, re-checked by the
+        # condition on each pass, `not`/`cond`/`=` being the only tools on
+        # hand. A zero-iteration case (false from the start) is folded in
+        # first to prove the body genuinely doesn't run when it shouldn't.
+        cmd_while = (
+            "lisp\n"
+            "(while #f (define should_not_exist 999))\n"
+            "(define counter 0)\n"
+            "(while (not (= counter 3)) "
+            "(cond ((= counter 0) (define counter 1)) "
+            "((= counter 1) (define counter 2)) "
+            "(else (define counter 3))))\n"
+            "counter\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_while, r"=> 3", timeout=5.0)
+        results.append(("Lisp while Loop (zero and multi-iteration, S2)", ok, log if not ok else ""))
+
+        # 21f. Regression found while building 21e, predating S1/S2 entirely
+        # -- not fixed until now because nothing exercised it: `define`
+        # always writes into the *global_env* variable itself (reassigning
+        # it to a new pointer), but begin/let/let*/cond/lambda-body all
+        # capture `env` once and reuse that snapshot for the rest of their
+        # own sequence, so a `define` earlier in the same body used to be
+        # invisible to a later form in it -- `(begin (define zzz 1) zzz)`
+        # reported "Unbound symbol: zzz" before this fix. refresh_global_tail()
+        # closes it for every affected form; this is one assertion per form,
+        # not just `while`, since all of them shared the one root cause.
+        cmd_stale_env = (
+            "lisp\n"
+            "(begin (define s21f_a 1) s21f_a)\n"
+            "(let ((q 1)) (define s21f_b 5) s21f_b)\n"
+            "(let* ((q 1)) (define s21f_c 9) s21f_c)\n"
+            "(define (s21f_f) (define s21f_d 11) s21f_d)\n"
+            "(s21f_f)\n"
+            "(cond (#t (define s21f_e 22) s21f_e))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_stale_env, r"=> 22", timeout=6.0)
+        # The final "=> 22" alone doesn't prove every earlier form also
+        # worked -- a regression isolated to just one of begin/let/let*/
+        # lambda-body wouldn't prevent this test from still reaching "=> 22"
+        # at the end. Every one of the 5 forms above is set up to fail as
+        # "Unbound symbol: s21f_*" specifically if its own fix regressed,
+        # so also require that text never appears anywhere in the session.
+        no_unbound = "Unbound symbol" not in log
+        ok = ok and no_unbound
+        results.append(("Lisp define Visible Later In Same begin/let/let*/lambda/cond Body (S2)",
+                        ok, log if not ok else ""))
 
 
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
@@ -1867,11 +1965,18 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # RP2350 (built without UBSan) an unrecoverable hang needing a physical
         # replug. lisp_eval() now refuses to descend once the pool is gone.
         #
-        # Ten runaway recursions rather than one, because pool size is a *per
-        # target* constant: RP2350 has 512 nodes and exhausts on the first,
-        # while these builds have 4096 and need about eight. That difference is
-        # exactly why this went unseen -- the suite's depth-guard test above
-        # runs the same recursion once and never reaches the interesting state.
+        # Ten runaway recursions rather than one -- historically because pool
+        # size is a *per target* constant (RP2350's 512-768 nodes exhausted on
+        # the first, these builds' 4096 needed about eight) and because each
+        # individual call used to be capped by LISP_MAX_EVAL_DEPTH long before
+        # it could allocate enough to exhaust 4096 nodes by itself. Since S1
+        # (plan/phase13_lisp_engine_extensions.md) added tail-call
+        # optimization, `(loop (+ n 1))` -- a tail call -- no longer costs
+        # eval_depth at all, so a *single* call now runs until it exhausts the
+        # pool on its own; the repeated calls are redundant but harmless
+        # (each subsequent one degrades to nil immediately, per the abort
+        # check added alongside TCO). Left as 8 rather than trimmed to 1,
+        # since this is not a case that benefits from being minimal.
         #
         # The assertion is two things the *system* emits, never anything typed:
         # the exhaustion warning, then the REPL printing a result. Getting a

@@ -1,5 +1,4 @@
 #include "lisp.h"
-#include "lisp_compile.h"
 #include "kernel/printk.h"
 #include "kernel/path.h"
 #include "kernel/console.h"
@@ -1309,7 +1308,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
     }
     cprintf("-------------------------------------------------\n");
     cprintf("%d bound symbols. Special forms (not primitives, so not listed\n"
-           "above): define, lambda, quote / ', if, begin, let, cond.\n\n", count);
+           "above): define, lambda, quote / ', if, begin, let, let*, while, cond.\n\n", count);
     return &nil_val;
 }
 
@@ -1404,7 +1403,6 @@ void lisp_init(void) {
     env_set(&global_env, "p9-serve", make_prim(prim_p9_serve));
     env_set(&global_env, "p9-unserve", make_prim(prim_p9_unserve));
     env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
-    env_set(&global_env, "compile-file", make_prim(prim_compile_file));
 
     env_set(&global_env, "load", make_prim(prim_load));
     env_set(&global_env, "display", make_prim(prim_display));
@@ -1667,12 +1665,140 @@ lisp_val_t *lisp_read(const char **str) {
     return make_sym(buf);
 }
 
-/* Evaluator. lisp_eval_step() holds the actual logic; every recursive
- * descent inside it calls the public lisp_eval() below (unchanged call
- * sites -- lisp_eval_step() is simply the renamed body of what used to be
- * lisp_eval() itself), so the depth guard in the wrapper sees every level
- * of nesting, not just the outermost call. */
+/* S2 (plan/phase13_lisp_engine_extensions.md), fixing a bug found while
+ * testing `while`, pre-existing since long before S1/S2 and not specific
+ * to either: `define` always writes into the *global_env* variable itself
+ * (env_set(&global_env, ...) reassigns it to a new pointer) rather than
+ * mutating an existing binding in place. B3 (plan/completed/
+ * 2026-08-07_review_and_remediation.md) already fixed the resulting
+ * staleness for a lambda closure's *initial* environment (a closure
+ * defined at global scope stores env=NULL and re-resolves live global_env
+ * at call time instead of a frozen snapshot from definition time) -- but
+ * every special form that evaluates a *sequence* of forms/bindings had the
+ * same staleness for its own internal sequence: `env`/`local_env` is
+ * captured once and reused for every later form, so a `define` earlier in
+ * the same body/binding-list is invisible to a later form in it. Concretely,
+ * `(begin (define x 1) x)` at the top level reported "Unbound symbol: x",
+ * and (this is what surfaced it) a `(while cond body...)` loop whose body
+ * mutates state via `define` never saw its own updates and spun until pool
+ * exhaustion.
+ *
+ * `refresh_global_tail` closes this for every affected form (if, begin,
+ * let, let*, cond, while, lambda application -- both here and in
+ * lisp_apply()) by
+ * keeping the form's own local environment extension's fallthrough pointed
+ * at the LIVE global_env instead of the frozen snapshot it started with.
+ * `original_tail` is what `local_env` was before this particular form added
+ * anything to it (itself, if it added nothing at all -- true for if/begin/
+ * cond/while, which don't introduce bindings); `was_global` is whether that
+ * starting point was global_env's identity at entry, computed once per form
+ * invocation before any nested evaluation could have moved global_env on.
+ * If not was_global (a genuine lexical/non-global scope), this is a no-op --
+ * correct, since `define` never targets a non-global scope's own bindings,
+ * so there is nothing to keep in sync there.
+ *
+ * Safe to call before every nested evaluation: at most a scan proportional
+ * to the bindings *this form itself* added (typically a handful), and
+ * idempotent -- re-patching an already-current tail is harmless. */
+static lisp_val_t *refresh_global_tail(lisp_val_t *local_env, lisp_val_t *original_tail, bool was_global) {
+    if (!was_global) return local_env;
+    if (local_env == original_tail) return global_env;
+    lisp_val_t *c = local_env;
+    while (c->type == LISP_PAIR && c->u.pair.cdr != original_tail) {
+        c = c->u.pair.cdr;
+    }
+    if (c->type == LISP_PAIR) c->u.pair.cdr = global_env;
+    return local_env;
+}
+
+/* Shared by begin/let/cond-clause/lambda-body, all of which have the same
+ * "evaluate a sequence, the value is the last form's value" shape. Evaluates
+ * every form but the last as a non-tail side effect (still going through the
+ * real, depth-guarded lisp_eval(), and through refresh_global_tail() so an
+ * earlier form's `define` is visible to a later one) and hands the last
+ * form back unevaluated -- NULL if `body` is empty -- so the caller can
+ * splice it into the trampoline in lisp_eval_step() as a tail position
+ * instead of recursing into it. This is the one piece of plumbing tail-call
+ * optimization needs: everywhere a form used to be evaluated via "res =
+ * lisp_eval(last, env); return res;", it instead becomes "val = last;
+ * goto tail_call;". */
+static lisp_val_t *eval_all_but_last(lisp_val_t *body, lisp_val_t *env, lisp_val_t *original_tail, bool was_global) {
+    if (!body || body->type != LISP_PAIR) return NULL;
+    lisp_val_t *c = body;
+    while (c->u.pair.cdr && c->u.pair.cdr->type == LISP_PAIR) {
+        lisp_eval(c->u.pair.car, refresh_global_tail(env, original_tail, was_global));
+        c = c->u.pair.cdr;
+    }
+    return c->u.pair.car;
+}
+
+/* S2 (plan/phase13_lisp_engine_extensions.md): applies an already-resolved
+ * callable `fn` to an already-evaluated `args` list -- the shape `map`/
+ * `filter`/`for-each`/a future `apply` primitive need (they hold a function
+ * value and a list of values, not raw call syntax to evaluate), factored
+ * out of what used to be inlined at the bottom of lisp_eval_step().
+ *
+ * Deliberately NOT part of the tail-call trampoline: a lambda's body here
+ * is evaluated fully, form by form, through the real depth-guarded
+ * lisp_eval() -- including its last form -- and returns a genuine C value,
+ * at the cost of one more eval_depth level than the trampoline would use.
+ * That is the right trade for a caller that needs an actual answer back
+ * (it's a nested, non-tail operation from the caller's point of view no
+ * matter what). lisp_eval_step()'s OWN tail-position lambda application
+ * (below) deliberately does NOT call this -- it needs the goto-based
+ * continuation instead of a real return to stay tail-call optimized, which
+ * this function structurally cannot provide. */
+static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env) {
+    if (!fn) return &nil_val;
+
+    if (fn->type == LISP_PRIMITIVE) {
+        return fn->u.prim(args, env);
+    }
+
+    if (fn->type == LISP_LAMBDA) {
+        lisp_val_t *local_env = fn->u.lambda.env ? fn->u.lambda.env : global_env;
+        bool was_global = (local_env == global_env);
+        lisp_val_t *original_tail = local_env;
+        lisp_val_t *p = fn->u.lambda.params;
+        lisp_val_t *a = args;
+        while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
+            if (p->u.pair.car->type == LISP_SYMBOL) {
+                env_set(&local_env, p->u.pair.car->u.sym, a->u.pair.car);
+            }
+            p = p->u.pair.cdr;
+            a = a->u.pair.cdr;
+        }
+        lisp_val_t *last = eval_all_but_last(fn->u.lambda.body, local_env, original_tail, was_global);
+        if (!last) return &nil_val;
+        return lisp_eval(last, refresh_global_tail(local_env, original_tail, was_global));
+    }
+
+    return &nil_val;
+}
+
+/* Evaluator. lisp_eval_step() holds the actual logic; every NON-tail
+ * descent inside it (argument evaluation, an `if`/`cond` test, an operator
+ * lookup, all but the last form of a body) calls the public lisp_eval()
+ * below, so the depth guard in that wrapper sees every level of genuine
+ * C-stack nesting. A form in TAIL position -- the branch an `if` selects,
+ * the last form of `begin`/`let`/a matched `cond` clause/a lambda body, or
+ * a lambda application appearing in one of those spots -- does NOT recurse:
+ * it rewrites `val`/`env` in place and jumps back to `tail_call` below,
+ * reusing this same C stack frame and never touching eval_depth. That is
+ * what makes an ordinary tail-recursive loop, e.g.
+ * (define (loop n) (if (done? n) n (loop (next n)))), run in *this* call
+ * indefinitely instead of growing the call stack by one lisp_eval() per
+ * iteration -- previously the only way to loop, and hard-capped at
+ * LISP_MAX_EVAL_DEPTH (100) regardless of available stack.
+ *
+ * This bounds C-stack growth and the depth counter, not memory: node_pool /
+ * string_pool allocation (e.g. binding a lambda's parameters into a fresh
+ * env on every iteration) still accumulates every trampoline pass, since
+ * nothing here is freed. A collector is tracked separately (plan/
+ * phase13_lisp_engine_extensions.md, S0/S3) as the fix for that; this only
+ * fixes unbounded call-stack/eval_depth growth. */
 static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
+tail_call:
     if (!val) return &nil_val;
 
     if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE || val->type == LISP_LAMBDA) {
@@ -1690,38 +1816,50 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
     if (val->type == LISP_PAIR) {
         lisp_val_t *op = val->u.pair.car;
         lisp_val_t *args = val->u.pair.cdr;
+        /* See refresh_global_tail()'s comment: whether `env` is exactly
+         * global_env's identity right now, computed once per trampoline
+         * iteration before any nested evaluation below could move
+         * global_env on. Used throughout this PAIR branch to keep a
+         * `define` earlier in the same form visible to a later part of it. */
+        bool was_global = (env == global_env);
 
         /* Special form: quote */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "quote")) {
             return (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
         }
 
-        /* Special form: if */
+        /* Special form: if -- the taken branch is a tail position. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "if")) {
             if (args && args->type == LISP_PAIR && args->u.pair.cdr) {
-                lisp_val_t *cond_val = lisp_eval(args->u.pair.car, env);
+                lisp_val_t *cond_val = lisp_eval(args->u.pair.car, refresh_global_tail(env, env, was_global));
                 bool is_true = (cond_val != &false_val) &&
                                !(cond_val->type == LISP_SYMBOL && streq(cond_val->u.sym, "#f")) &&
                                !(cond_val->type == LISP_NIL);
                 if (is_true) {
-                    return lisp_eval(args->u.pair.cdr->u.pair.car, env);
+                    val = args->u.pair.cdr->u.pair.car;
+                    env = refresh_global_tail(env, env, was_global);
+                    goto tail_call;
                 } else if (args->u.pair.cdr->u.pair.cdr) {
-                    return lisp_eval(args->u.pair.cdr->u.pair.cdr->u.pair.car, env);
+                    val = args->u.pair.cdr->u.pair.cdr->u.pair.car;
+                    env = refresh_global_tail(env, env, was_global);
+                    goto tail_call;
                 }
             }
             return &nil_val;
         }
 
-        /* Special form: begin */
+        /* Special form: begin -- the last form is a tail position. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "begin")) {
-            lisp_val_t *res = &nil_val;
-            for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                res = lisp_eval(c->u.pair.car, env);
-            }
-            return res;
+            lisp_val_t *last = eval_all_but_last(args, env, env, was_global);
+            if (!last) return &nil_val;
+            val = last;
+            env = refresh_global_tail(env, env, was_global);
+            goto tail_call;
         }
 
-        /* Special form: let */
+        /* Special form: let -- bindings are evaluated against the outer
+         * env, not each other (that's let*, right below), the last body
+         * form is a tail position in the extended env. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "let")) {
             if (args && args->type == LISP_PAIR) {
                 lisp_val_t *bindings = args->u.pair.car;
@@ -1731,34 +1869,95 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
                 for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
                     lisp_val_t *pair = b->u.pair.car;
                     if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
-                        lisp_val_t *val = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, env);
-                        env_set(&local_env, pair->u.pair.car->u.sym, val);
+                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(env, env, was_global));
+                        env_set(&local_env, pair->u.pair.car->u.sym, bound);
                     }
                 }
 
-                lisp_val_t *res = &nil_val;
-                for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                    res = lisp_eval(c->u.pair.car, local_env);
-                }
-                return res;
+                lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
+                if (!last) return &nil_val;
+                val = last;
+                env = refresh_global_tail(local_env, env, was_global);
+                goto tail_call;
             }
         }
 
-        /* Special form: cond */
+        /* Special form: let* (S2, plan/phase13_lisp_engine_extensions.md)
+         * -- identical to `let` above except each binding's init-expr is
+         * evaluated against `local_env` (already containing every
+         * preceding binding) rather than the outer `env`, giving the
+         * sequential visibility `let` doesn't: (let* ((a 1) (b a)) b)
+         * sees `a` while computing `b`; the same form under plain `let`
+         * would report an unbound symbol. */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "let*")) {
+            if (args && args->type == LISP_PAIR) {
+                lisp_val_t *bindings = args->u.pair.car;
+                lisp_val_t *body = args->u.pair.cdr;
+                lisp_val_t *local_env = env;
+
+                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                    lisp_val_t *pair = b->u.pair.car;
+                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(local_env, env, was_global));
+                        env_set(&local_env, pair->u.pair.car->u.sym, bound);
+                    }
+                }
+
+                lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
+                if (!last) return &nil_val;
+                val = last;
+                env = refresh_global_tail(local_env, env, was_global);
+                goto tail_call;
+            }
+        }
+
+        /* Special form: while (S2, plan/phase13_lisp_engine_extensions.md)
+         * -- (while cond body...). A plain C loop, not part of the tail
+         * trampoline at all: it never recurses for control flow, so it
+         * needs neither TCO nor a depth-guard bound to be safe, and is the
+         * cheapest possible looping construct here. Each iteration's
+         * condition/body evaluation still goes through the real, depth-
+         * guarded lisp_eval(), so an interrupt or node-pool exhaustion
+         * mid-loop is caught the same way it always is: that call returns
+         * nil, `is_true` treats nil as false (see the `if` special form
+         * above for the same truthiness rule), and the loop exits on its
+         * own next condition check -- no separate abort check needed here.
+         * Returns nil always, matching Scheme convention that `while` is
+         * for side effects, not a value. */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "while")) {
+            if (args && args->type == LISP_PAIR) {
+                lisp_val_t *cond_expr = args->u.pair.car;
+                lisp_val_t *body = args->u.pair.cdr;
+                for (;;) {
+                    lisp_val_t *cond_val = lisp_eval(cond_expr, refresh_global_tail(env, env, was_global));
+                    bool is_true = (cond_val != &false_val) &&
+                                   !(cond_val->type == LISP_SYMBOL && streq(cond_val->u.sym, "#f")) &&
+                                   !(cond_val->type == LISP_NIL);
+                    if (!is_true) break;
+                    for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                        lisp_eval(c->u.pair.car, refresh_global_tail(env, env, was_global));
+                    }
+                }
+            }
+            return &nil_val;
+        }
+
+        /* Special form: cond -- the last form of the matched clause is a
+         * tail position. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "cond")) {
             for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
                 lisp_val_t *clause = c->u.pair.car;
                 if (clause && clause->type == LISP_PAIR) {
                     lisp_val_t *pred = clause->u.pair.car;
                     bool is_else = (pred->type == LISP_SYMBOL && streq(pred->u.sym, "else"));
-                    lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, env);
+                    lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, refresh_global_tail(env, env, was_global));
                     bool is_true = (pval != &false_val) && !(pval->type == LISP_SYMBOL && streq(pval->u.sym, "#f")) && !(pval->type == LISP_NIL);
                     if (is_true) {
-                        lisp_val_t *res = &nil_val;
-                        for (lisp_val_t *expr = clause->u.pair.cdr; expr && expr->type == LISP_PAIR; expr = expr->u.pair.cdr) {
-                            res = lisp_eval(expr->u.pair.car, env);
-                        }
-                        return res;
+                        lisp_val_t *last = eval_all_but_last(clause->u.pair.cdr, env, env, was_global);
+                        if (!last) return &nil_val;
+                        val = last;
+                        env = refresh_global_tail(env, env, was_global);
+                        goto tail_call;
                     }
                 }
             }
@@ -1826,19 +2025,26 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
 
 
         /* Evaluate Operator */
-        lisp_val_t *fn = lisp_eval(op, env);
+        lisp_val_t *fn = lisp_eval(op, refresh_global_tail(env, env, was_global));
         if (!fn) return &nil_val;
-
-        if (fn->type == LISP_PRIMITIVE && fn->u.prim == prim_compile_file) {
-            return fn->u.prim(args, env);
-        }
+        /* An abort (pool exhaustion, Ctrl-C, depth exceeded) discovered
+         * during this lisp_eval() call surfaces here as fn == &nil_val,
+         * not as a clean unwind all the way to lisp_eval()'s own caller --
+         * the trampoline above means this call frame IS the top for a
+         * whole tail-recursive loop, not just one link in a recursing
+         * chain. Left unchecked, `fn` is simply not callable below and the
+         * fallback at the end of this function returns the raw, unevaluated
+         * tail-call form instead of nil, which is confusing and, more
+         * importantly, breaks the documented contract that an aborted
+         * evaluation degrades to nil (see lisp_eval()'s own comments). */
+        if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
 
         /* Evaluate Arguments */
         lisp_val_t *eval_args_head = &nil_val;
         lisp_val_t *eval_args_tail = NULL;
 
         for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-            lisp_val_t *ev = lisp_eval(c->u.pair.car, env);
+            lisp_val_t *ev = lisp_eval(c->u.pair.car, refresh_global_tail(env, env, was_global));
             lisp_val_t *new_p = make_pair(ev, &nil_val);
             if (!eval_args_tail) {
                 eval_args_head = new_p;
@@ -1850,16 +2056,27 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
         }
 
         if (fn->type == LISP_PRIMITIVE) {
-            return fn->u.prim(eval_args_head, env);
+            return lisp_apply(fn, eval_args_head, env);
         }
 
         if (fn->type == LISP_LAMBDA) {
-            /* Create new scope extending lambda environment. NULL means
+            /* Deliberately NOT routed through lisp_apply() (S2, plan/
+             * phase13_lisp_engine_extensions.md) even though that function
+             * handles this exact case too: this call is in tail position
+             * of the trampoline, and lisp_apply() always fully recurses
+             * and returns, which would undo S1's tail-call optimization.
+             * The logic below is the same as lisp_apply()'s LISP_LAMBDA
+             * branch up through parameter binding, then diverges for the
+             * body's last form (goto tail_call instead of a real return).
+             *
+             * Create new scope extending lambda environment. NULL means
              * this closure was defined at global scope -- resolve against
              * whatever global_env is *right now*, not a stale snapshot
              * (see the lambda special form above and B3 in
              * plan/completed/2026-08-07_review_and_remediation.md). */
             lisp_val_t *local_env = fn->u.lambda.env ? fn->u.lambda.env : global_env;
+            bool lambda_was_global = (local_env == global_env);
+            lisp_val_t *original_tail = local_env;
             lisp_val_t *p = fn->u.lambda.params;
             lisp_val_t *a = eval_args_head;
             while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
@@ -1870,12 +2087,15 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
                 a = a->u.pair.cdr;
             }
             /* Body is a list of forms (see the lambda special form above),
-             * evaluated in sequence like `begin` -- not just the first. */
-            lisp_val_t *res = &nil_val;
-            for (lisp_val_t *c = fn->u.lambda.body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                res = lisp_eval(c->u.pair.car, local_env);
-            }
-            return res;
+             * evaluated in sequence like `begin` -- the last is a tail
+             * position: this is what lets a self- or mutually-recursive
+             * call in tail position loop instead of recursing (see the
+             * lisp_eval_step() comment above). */
+            lisp_val_t *last = eval_all_but_last(fn->u.lambda.body, local_env, original_tail, lambda_was_global);
+            if (!last) return &nil_val;
+            val = last;
+            env = refresh_global_tail(local_env, original_tail, lambda_was_global);
+            goto tail_call;
         }
     }
 
@@ -1883,18 +2103,29 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
 }
 
 /* This interpreter recurses on the C stack with no other bound, and every
- * `if`/`begin`/`let`/`cond`/function-call branch above descends through
- * this wrapper -- so a runaway or accidentally-nonterminating recursive
- * definition (or e.g. a `let` that calls itself) would otherwise overflow
- * the C stack directly (see A4 in
- * plan/completed/2026-08-07_review_and_remediation.md), which on a freestanding
- * kernel has no guard page and no signal handler to recover from it.
- * LISP_MAX_EVAL_DEPTH (defined near the top of this file, with
+ * NON-tail `if`/`begin`/`let`/`cond`/function-call sub-evaluation above
+ * (argument evaluation, a test expression, all but the last form of a body)
+ * descends through this wrapper -- so a runaway or accidentally-
+ * nonterminating NON-tail-recursive definition (e.g. `(+ 1 (f (+ n 1)))`,
+ * where the recursive call is an argument, not the whole result) would
+ * otherwise overflow the C stack directly (see A4 in
+ * plan/completed/2026-08-07_review_and_remediation.md), which on a
+ * freestanding kernel has no guard page and no signal handler to recover
+ * from it. LISP_MAX_EVAL_DEPTH (defined near the top of this file, with
  * eval_depth/eval_depth_exceeded_warned) is a conservative default, not a
  * profiled figure -- the smallest target (RP2350) has not been
  * stack-profiled under this evaluator, so this errs toward stopping well
  * before real exhaustion rather than trying to use the full available
- * stack. */
+ * stack.
+ *
+ * A *tail*-recursive definition, e.g. `(define (loop n) (loop (+ n 1)))`,
+ * does not hit this guard at all: lisp_eval_step()'s trampoline (see its own
+ * comment) reuses this same call instead of recursing for the tail call
+ * itself, so eval_depth only reflects genuine nesting, never the length of
+ * a tail-recursive loop. That loop can still run forever in wall-clock
+ * terms -- see the Ctrl-C poll below, and node_pool/string_pool exhaustion,
+ * which is what actually bounds it today in the absence of a collector
+ * (plan/phase13_lisp_engine_extensions.md, S0/S3). */
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     /* An exhausted node pool is not survivable by carrying on. alloc_node()
      * clamps to its last slot when it runs out, so every further allocation

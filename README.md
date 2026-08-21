@@ -146,7 +146,7 @@ silicon):
 * **Native C11 Compiler (`chibicc`)**: Integrated C11 compiler (`cc <src.c> <dst.elf>`) generating native RISC-V ELF binaries directly on LugalOS!
 * **Unified Lisp Machine Shell (`lsh`)**:
   * **POSIX $\rightarrow$ S-Expression Transformation**: All standard POSIX shell inputs (`ls /sd0`, `cp a b`, `cc src dst`) are automatically transformed into Lisp S-Expressions (`(ls "/sd0")`, `(cp "a" "b")`) and executed directly by the core Lisp engine!
-  * **Complete Scheme / Lisp Core**: Full support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `cond`, arithmetic (`+`, `-`, `*`, `=`), memory `peek`/`poke`, and string data types.
+  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, `while`, `cond`, arithmetic (`+`, `-`, `*`, `=`), memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position).
   * **System Boot Scripts**: Automatically loads `/sd0/system/stdlib.lisp` and executes `/sd0/system/init.lisp` at system startup.
   * **Dual-Mode Interactive Line Editor & Emacs Multi-Line Canvas**: Single-line editing with ANSI escape sequences (`Ctrl-A/E/K/L/P/N`, Arrow keys, Delete), clean session history logging, and a full Emacs-style multi-line editor (`e [filename]` or `Ctrl-X Ctrl-M`) featuring a top optical separator, line numbers (`%3d │ `), an active status line, and keybindings:
     * `Ctrl-X Ctrl-E`: Evaluate buffer in Lisp engine
@@ -523,7 +523,11 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 * `(quote expr)` / `'expr`: Prevents evaluation of literal S-expressions and lists.
 * `(if condition then-expr else-expr)`: Evaluates conditional branches.
 * `(begin expr1 expr2 ...)`: Evaluates sequential expressions, returning the value of the final S-expression.
-* `(let ((var val) ...) body...)`: Establishes local lexical bindings.
+* `(let ((var val) ...) body...)`: Establishes local lexical bindings; each binding's initializer sees
+  the outer scope, not the other bindings.
+* `(let* ((var val) ...) body...)`: Like `let`, but each binding's initializer also sees every binding
+  before it.
+* `(while condition body...)`: Repeats `body` while `condition` is true; a plain loop, not recursion.
 * `(cond (clause1) (clause2) ... (else default))`: Multi-branch conditional selection.
 
 ### Built-in Primitives & Standard Library

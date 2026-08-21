@@ -60,10 +60,8 @@ lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr);
 lisp_val_t *make_prim(lisp_prim_fn fn);
 
 /* Safe argument-list accessors for primitives (see user/lisp/lisp.c for the
- * rationale). Every primitive -- in this file or elsewhere, e.g.
- * prim_compile_file in user/lisp/lisp_compile.c -- should read its
- * arguments through these rather than walking args->u.pair.cdr->u.pair.car
- * chains directly. */
+ * rationale). Every primitive should read its arguments through these rather
+ * than walking args->u.pair.cdr->u.pair.car chains directly. */
 int lisp_list_len(lisp_val_t *args);
 lisp_val_t *lisp_list_ref(lisp_val_t *args, int n);
 const char *get_str_val(lisp_val_t *val);

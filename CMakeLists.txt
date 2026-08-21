@@ -379,7 +379,6 @@ set(SOURCES
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c
-    user/lisp/lisp_compile.c
 )
 
 # Optional subsystems (F1/F2, plan/phase8_feature_flags.md): each is a
