@@ -1,14 +1,20 @@
 # Phase 13 — Scheme/Lisp engine extensions (GC, TCO, macros, stdlib)
 
-**Status:** S0-S3 done, 2026-08-21 (227/227 QEMU tests passing, both
-targets; confirmed on real RP2350 hardware, chess persona each time — 20/22,
-21/22, then 21/22 hardware tests passing, every failure reproduced as
-passing when run manually and unrelated to the phase in question). S4
-onward not started. S2 fixed a substantial pre-existing bug it surfaced
+**Status:** S0-S4 done, 2026-08-21 (241/241 QEMU tests passing, both
+targets; confirmed on real RP2350 hardware, chess persona every phase —
+20/22, 21/22, 21/22, then 20/22 hardware tests passing, every failure
+reproduced as passing when run manually and unrelated to the phase in
+question). S5 onward not started, plus the Lisp engine's isolation from
+`lsh` as its own service, raised after S3 and explicitly deferred (see "Not
+scheduled" below). S2 fixed a substantial pre-existing bug it surfaced
 (stale `global_env` snapshots across begin/let/let*/cond/lambda bodies); S3
 found that its own originally-planned Verify criterion wasn't actually
 achievable given S0's own rooting design, and corrected it rather than the
-design — see each phase's own section for the full account of both. The
+design; S4 fixed two more pre-existing gaps it surfaced (negative number
+literals never parsed; the printer had no notation for an improper/dotted
+pair) and re-tripped RP2350's fixed node-pool ceiling the same way
+`plan/phase9_chess_computer.md`'s H1/H2 once did, fixed the same way (bump
+it) — see each phase's own section for the full account of all of this. The
 macro system (formerly S6) and a bytecode-VM rewrite were both evaluated and
 dropped from this roadmap after S1 — see "Not scheduled" near the end of
 this doc for the reasoning behind each. Addresses two long-standing gaps
@@ -451,9 +457,9 @@ failed in the automated run, reproduced as passing when run manually
 immediately after — the same transient serial-capture flakiness pattern
 already seen twice in S1/S2, unrelated to any S3 change).
 
-## S4 — Standard library, as C primitives
+## S4 — Standard library, as C primitives *(done, 2026-08-21)*
 
-Implement directly in C, registered via `env_set` in `lisp_init` like the
+Implemented directly in C, registered via `env_set` in `lisp_init` like the
 existing `+ - * =`:
 
 - **Comparison**: `<`, `>`, `<=`, `>=`, `/=`; generalize `=` to N args (it's
@@ -482,9 +488,57 @@ values (`string-append`, `list`) still permanently consumes pool slots
 wherever the logic lives — S3's GC is what actually bounds that, not where
 the primitive is implemented.
 
-**Verify:** each new primitive has a QEMU test; `README.md`'s builtin list is
-corrected to match what actually exists (it currently claims `/`, `<`, `>`,
-etc. that don't exist in code).
+**Two real, pre-existing reader/printer gaps found and fixed while testing
+these, not introduced by S4:**
+
+1. **Negative number literals never worked.** `is_number_token()` (used to
+   validate a digit-first token) has always correctly handled a leading
+   sign, but the *outer gate* deciding whether to even try parsing a number
+   only checked for a leading digit — a token starting with `-`/`+` fell
+   straight through to the symbol reader, so `-5` read as the symbol `-5`,
+   not the integer. Invisible until now because nothing before S4 needed to
+   *type* a negative literal (arithmetic on negatives worked fine via
+   `(- 0 5)`); `abs`/`modulo`/`remainder`/`number->string` all needed it to
+   be usable at all. Fixed with one small, additional, narrowly-scoped gate
+   — `**str` is `-`/`+` **and** the very next character is a digit — placed
+   just before the symbol reader, so it doesn't touch the existing
+   digit-first branch and can't misparse the bare `-`/`+` primitives or a
+   peculiar identifier like `->foo` (no digit immediately follows the sign
+   in either case).
+2. **The printer had no way to show an improper (dotted) pair's cdr.**
+   `lisp_print()`'s `LISP_PAIR` case walked `cdr` only while it stayed a
+   pair, silently stopping (and printing nothing further) the moment it
+   wasn't — correct for every pair this engine had ever produced before
+   `cons`, since all of them were built nil-terminated by the reader or by
+   `env_set()`. `(cons 1 2)` was the first way to construct a pair whose
+   cdr is neither a pair nor nil, and it printed as `(1)`, silently losing
+   the `2`. Fixed by printing `" . " <cdr>` when the walk stops on a
+   non-nil, non-pair value, giving the standard `(1 . 2)` notation.
+
+**Regression found via the full hardware suite, not QEMU:** RP2350's fixed
+`NODE_POOL_SIZE` (768, last bumped for the same reason in
+`plan/phase9_chess_computer.md`'s H1/H2) was tipped into exhaustion again —
+this time by S4's ~38 new permanent global bindings, on top of
+`tests/hw/test_rp2350.py`'s own ~20 tests' accumulated (and entirely
+legitimate, still-*reachable*) `define`s. S3's collector does not change
+this calculus: it reclaims genuine garbage, not live bindings still hanging
+off `global_env`, and every test's own top-level `define` is exactly that —
+correctly permanent for the rest of the session. Bumped to 1024, following
+the exact precedent already in the source comment for the 512→768 move.
+
+**Verify:** confirmed live. QEMU: 241/241 tests (up from 227 — +7 for one
+test per S4 category, counted once per architecture), covering every new
+primitive plus the two reader/printer fixes. Real RP2350 hardware (chess
+persona): every new primitive checked interactively and correct (`(< 1 2 3)`
+→ `#t`, `(/ 5 0)` → `()` without a UBSan trap or hang, `(cons 1 2)` →
+`(1 . 2)`, `map`/`filter`/`string-append`/`apply` all correct); hardware
+suite 20/22 after the pool-size fix (previously failing test — C2 — now
+passes; the 2 remaining failures, `uartstats` and `C6/C7`, are the same
+transient serial-capture flakiness pattern confirmed unrelated to code
+changes multiple times across S1-S3). `README.md`'s builtin list corrected
+to match what actually exists (previously claimed `/`, `<`, `>`, etc. that
+didn't exist in code — now true — plus the entire predicates/list/string/
+apply-eval sections, which didn't exist in the README at all before).
 
 ## S5 — Named-let / `do` sugar
 
@@ -552,3 +606,40 @@ VM's two strongest selling points (portability without per-arch codegen,
 no W^X concern) were specifically framed as answers to problems the native
 compiler had and the tree-walker never did, so removing that compiler in
 S1 made both moot rather than making the VM more urgent.
+
+## Not scheduled: the Lisp engine as its own isolated service
+
+Raised after S3, prompted directly by a real pain point hit while building
+it: `lisp_eval()`/`lisp_repl()` are called by plain function call from
+`kernel/shell.c`, sharing an address space and a call stack with the shell
+itself, not isolated as a task the way this project's drivers are
+progressively becoming (M4.5/`plan/phase12_microkernel_migration.md`'s
+`chan_call()`-based U-mode services — `blk`/`i2c`/`st7735`/`tm1638` tasks,
+all verified on real hardware in S1-S3's own test runs). That coupling is
+exactly what made S3's rooting bug possible in the first place: `init.lisp`'s
+last form, `(lsh)`, blocks for the *entire* interactive session inside
+`shell_run()`, itself inside that one `lisp_eval()` call — a direct
+consequence of the shell being reached via a plain nested function call
+rather than a request/response exchange with a natural return between
+commands.
+
+Splitting the engine into its own isolated service, talked to over
+`chan_call()` the way other subsystems now are, would trade that away for
+real fault containment (a wild pointer or a bug past the depth guard would
+be confined the way B3/B6's U-mode isolation already confines other
+services, instead of risking the whole kernel/shell) and would remove the
+specific reentrancy shape that caused S3's bug outright, rather than just
+routing around it with `lisp_gc_safepoint()`. It would also open the door
+to other callers submitting expressions for evaluation without themselves
+being the interactive shell.
+
+Not scheduled, because it's a genuinely large, separate undertaking, not a
+small follow-on: it needs a real wire protocol (submit an expression, stream
+back print output and a result), and a design for how the *interactive*
+REPL's character-by-character line editing, history, and Ctrl-C handling
+(currently direct calls to `uart_getc()`/`console_interrupt_requested()`)
+cross a service boundary at all — plus whatever RAM/latency cost the IPC
+layer itself adds, which cuts against this whole phase's own RAM-first
+priority. Revisit once S4/S5 finish the language work itself; the current
+coupling is understood and safely handled now, not an open landmine forcing
+this ahead of schedule.

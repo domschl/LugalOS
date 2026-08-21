@@ -533,7 +533,23 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
 ### Built-in Primitives & Standard Library
 
 #### Arithmetic & Logic
-`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`
+`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`, `/=` (`<`/`>`/`<=`/`>=`/`=` chain across any number of
+arguments, e.g. `(< 1 2 3)`; `/=` means every argument differs from every other), `quotient`,
+`remainder`, `modulo`, `abs`, `min`, `max`.
+
+#### Predicates
+`null?`, `pair?`, `symbol?`, `string?`, `integer?`, `procedure?`, `zero?`, `boolean?`
+
+#### List Processing
+`cons`, `car`, `cdr`, `list`, `length`, `append`, `reverse`, `list-ref` (alias `nth`), `map`,
+`filter`, `for-each`
+
+#### String Processing
+`string-append`, `string-length`, `substring`, `string->number`, `number->string`, `string=?`
+
+#### Procedure Invocation
+* `(apply fn arg-list)` / `(apply fn a1 a2 ... arg-list)`: Calls `fn` with the given arguments.
+* `(eval expr)`: Evaluates an already-constructed S-expression against the global environment.
 
 #### File I/O & Script Execution
 * `(read-file path)`: Reads content from Plan 9 VFS into a string.

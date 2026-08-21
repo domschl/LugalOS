@@ -1772,6 +1772,162 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Mark-Sweep Collector Reclaims Garbage Across Top-Level Forms (S3)",
                         ok, log if not ok else ""))
 
+        # 21h. S4 (plan/phase13_lisp_engine_extensions.md): standard library,
+        # as C primitives. One test per category from the plan, chained --
+        # each `and`s its own check into the running total so a single
+        # failure anywhere is visible without 30 separate round trips.
+        # Each chain below ends with a command whose result cannot also
+        # match earlier in the same chain -- send_and_expect() returns on
+        # the *first* match of its pattern anywhere in the accumulated
+        # output, so an ambiguous final pattern (e.g. "=> #t" when an
+        # earlier line in the same chain also prints "=> #t") would return
+        # before the later commands even finish executing, silently
+        # truncating the `log` this test's own count-based assertions
+        # then check. A distinct sentinel value at the end of each chain
+        # sidesteps this regardless of what the "real" commands produce.
+        cmd_s4_compare = (
+            "lisp\n"
+            "(< 1 2 3)\n"
+            "(< 1 3 2)\n"
+            "(> 3 2 1)\n"
+            "(<= 1 1 2)\n"
+            "(>= 2 2 1)\n"
+            "(/= 1 2 3)\n"
+            "(/= 1 2 1)\n"
+            "(= 5 5 5)\n"
+            "12345\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_compare, r"=> 12345", timeout=6.0)
+        # Every line above except (< 1 3 2) and (/= 1 2 1) must be #t --
+        # count rather than pattern-match each individually, so a single
+        # wrong chained-comparison result can't hide behind the others.
+        compare_correct = log.count("=> #t") == 6 and log.count("=> #f") == 2
+        ok = ok and compare_correct
+        results.append(("Lisp Comparison Operators <,>,<=,>=,/= Chained N-ary (S4)", ok, log if not ok else ""))
+
+        cmd_s4_math = (
+            "lisp\n"
+            "(/ 20 2 5)\n"
+            "(/ 5 0)\n"
+            "(quotient 7 2)\n"
+            "(remainder -7 2)\n"
+            "(modulo -7 2)\n"
+            "(abs -5)\n"
+            "(min 3 1 2)\n"
+            "(max 3 1 2)\n"
+            "12345\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_math, r"=> 12345", timeout=6.0)
+        # Division by zero must degrade to nil, not trap UBSan (this build
+        # runs with -fsanitize=undefined -fno-sanitize-recover=all) or hang.
+        div_by_zero_safe = "=> ()" in log
+        ok = ok and div_by_zero_safe
+        results.append(("Lisp Integer Math /,quotient,remainder,modulo,abs,min,max (S4)",
+                        ok, log if not ok else ""))
+
+        cmd_s4_pred = (
+            "lisp\n"
+            "(null? (list))\n"
+            "(pair? (cons 1 2))\n"
+            "(symbol? 'x)\n"
+            "(string? \"x\")\n"
+            "(integer? 5)\n"
+            "(procedure? car)\n"
+            "(zero? 0)\n"
+            "(boolean? #t)\n"
+            "(boolean? 5)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_pred, r"=> #f", timeout=6.0)
+        no_false_positive = log.count("=> #f") == 1  # only the final (boolean? 5) should be #f
+        ok = ok and no_false_positive
+        results.append(("Lisp Predicates null?,pair?,symbol?,string?,integer?,procedure?,zero?,boolean? (S4)",
+                        ok, log if not ok else ""))
+
+        cmd_s4_lists = (
+            "lisp\n"
+            "(cons 1 2)\n"
+            "(car (list 1 2 3))\n"
+            "(cdr (list 1 2 3))\n"
+            "(length (list 1 2 3 4))\n"
+            "(append (list 1 2) (list 3 4))\n"
+            "(reverse (list 1 2 3))\n"
+            "(list-ref (list 10 20 30) 1)\n"
+            "(nth (list 10 20 30) 2)\n"
+            "(map (lambda (x) (* x x)) (list 1 2 3))\n"
+            "(filter (lambda (x) (= x 2)) (list 1 2 3 2))\n"
+            "(for-each (lambda (x) (display x)) (list 1 2 3))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_lists, r"123=> \(\)", timeout=6.0)
+        # (cons 1 2) must print as the dotted pair "(1 . 2)" -- the printer
+        # previously had no way to show an improper pair's cdr at all (every
+        # pair built anywhere else was always nil-terminated until `cons`
+        # existed to build one directly), silently printing "(1)" instead.
+        dotted_pair_shown = "(1 . 2)" in log
+        map_correct = "(1 4 9)" in log
+        filter_correct = "(2 2)" in log
+        ok = ok and dotted_pair_shown and map_correct and filter_correct
+        results.append(("Lisp List Processing cons,car,cdr,length,append,reverse,list-ref,map,filter,for-each (S4)",
+                        ok, log if not ok else ""))
+
+        cmd_s4_strings = (
+            "lisp\n"
+            "(string-append \"foo\" \"bar\" \"baz\")\n"
+            "(string-length \"hello\")\n"
+            "(substring \"hello world\" 6 11)\n"
+            "(string->number \"42\")\n"
+            "(string->number \"-7\")\n"
+            "(number->string -42)\n"
+            "(string=? \"abc\" \"abc\")\n"
+            "(string=? \"abc\" \"xyz\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_strings, r"=> #f", timeout=6.0)
+        strings_correct = ('"foobarbaz"' in log and '"world"' in log and
+                            "=> 42" in log and "=> -7" in log and '"-42"' in log)
+        ok = ok and strings_correct
+        results.append(("Lisp String Processing string-append,length,substring,string<->number,string=? (S4)",
+                        ok, log if not ok else ""))
+
+        cmd_s4_apply_eval = (
+            "lisp\n"
+            "(apply + (list 1 2 3))\n"
+            "(apply + 1 2 (list 3 4))\n"
+            "(eval (list (quote +) 1 2))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_apply_eval, r"=> 3", timeout=6.0)
+        apply_correct = "=> 6" in log and "=> 10" in log
+        ok = ok and apply_correct
+        results.append(("Lisp apply/eval Procedure Invocation (S4)", ok, log if not ok else ""))
+
+        # 21i. Reader fix, found while testing S4's math primitives on
+        # negative numbers: a leading sign immediately followed by a digit
+        # (-5, +3) was never recognized as a number literal at all -- the
+        # sign-handling code for it has existed in the digit-first parsing
+        # branch all along, but the *gate* deciding whether to even enter
+        # that branch only checked for a leading digit, so "-5" was always
+        # read as the symbol "-5" instead, predating S1-S4 entirely. Must
+        # not regress the bare `-`/`+` primitives or peculiar identifiers
+        # like `->foo`, which still need to read as symbols.
+        cmd_s4_signed_literals = (
+            "lisp\n"
+            "(- 10 3)\n"
+            "(+ 10 3)\n"
+            "(define ->foo 99)\n"
+            "->foo\n"
+            "(- -5 -3)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_s4_signed_literals, r"=> -2", timeout=6.0)
+        signed_literals_correct = "=> 7" in log and "=> 13" in log and "=> 99" in log
+        ok = ok and signed_literals_correct
+        results.append(("Lisp Signed Number Literals -5/+3 Without Breaking -/->foo (S4)",
+                        ok, log if not ok else ""))
+
 
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
         # (D2/D3), and the POSIX-shell `help` command points to it.

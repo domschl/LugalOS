@@ -37,13 +37,24 @@
 
 #if defined(CONFIG_BOARD_RP2350)
 /* 512 was already close to the ceiling a full hardware test-suite run
- * reaches within one boot session (no GC, so allocations across the whole
- * suite accumulate) -- H1+H2 (plan/phase9_chess_computer.md) added 7 new
- * global primitive bindings (canvas-*, tm-*) and tipped it into exhaustion
- * partway through tests/hw/test_rp2350.py. 768 restores headroom; it's a
- * static array outside palloc's managed pages, so the RAM cost is a few KB
- * against 520 KB of physical SRAM, not a fraction of the page budget. */
-#define NODE_POOL_SIZE 768
+ * reaches within one boot session -- H1+H2 (plan/phase9_chess_computer.md)
+ * added 7 new global primitive bindings (canvas-*, tm-*) and tipped it into
+ * exhaustion partway through tests/hw/test_rp2350.py. 768 restored
+ * headroom then; S4 (plan/phase13_lisp_engine_extensions.md) tipped it
+ * again by registering ~38 new stdlib primitives, found live the same way
+ * H1+H2 was -- test_rp2350.py's C2 failed with "Node pool exhausted"
+ * partway through an unrelated command, not because of anything wrong with
+ * the new primitives themselves, but because global_env's accumulated,
+ * still-*reachable* bindings across ~20 hardware tests plus 38 more
+ * permanent boot-time registrations left too little headroom. S3's
+ * collector (added the phase before S4) does not change this calculus: it
+ * reclaims genuine garbage, not live definitions still hanging off
+ * global_env, and every one of those ~20 tests' own top-level `define`s is
+ * exactly that -- live, by construction, for the rest of the session.
+ * 1024 restores headroom again; it's a static array outside palloc's
+ * managed pages, so the RAM cost is a few more KB against 520 KB of
+ * physical SRAM, not a fraction of the page budget. */
+#define NODE_POOL_SIZE 1024
 #else
 #define NODE_POOL_SIZE 4096
 #endif
@@ -435,6 +446,23 @@ static long arg_int(lisp_val_t *args, int n, long default_val) {
     return (v && v->type == LISP_INT) ? v->u.i : default_val;
 }
 
+/* S4 (plan/phase13_lisp_engine_extensions.md): the truthiness rule `if`/
+ * `cond`/`while` each already had inline and identically -- anything except
+ * #f (either the true_val/false_val singletons or a freshly read/quoted
+ * symbol whose text is "#f", per the `(= #t #t)` comment on prim_eq below)
+ * and nil is true. Factored out once there was a fourth, real user of it
+ * (`filter`, further down) rather than duplicating it a fourth time. */
+static bool lisp_truthy(lisp_val_t *v) {
+    return v && v != &false_val &&
+           !(v->type == LISP_SYMBOL && streq(v->u.sym, "#f")) &&
+           !(v->type == LISP_NIL);
+}
+
+/* Forward declaration: lisp_apply() (S2) is defined much further down,
+ * next to the evaluator it was factored out of, but map/filter/for-each/
+ * apply below -- all added in S4 -- need to call it. */
+static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env);
+
 /* Built-in primitives */
 static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -477,23 +505,485 @@ static lisp_val_t *prim_mul(lisp_val_t *args, lisp_val_t *env) {
     return make_int(prod);
 }
 
-static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    lisp_val_t *a1 = lisp_list_ref(args, 0);
-    lisp_val_t *a2 = lisp_list_ref(args, 1);
-    if (!a1 || !a2 || a1->type != a2->type) return &false_val;
-    switch (a1->type) {
+static bool lisp_values_equal(lisp_val_t *a, lisp_val_t *b) {
+    if (!a || !b || a->type != b->type) return false;
+    switch (a->type) {
         case LISP_INT:
-            return (a1->u.i == a2->u.i) ? &true_val : &false_val;
+            return a->u.i == b->u.i;
         case LISP_STRING:
-            return (strcmp(a1->u.str, a2->u.str) == 0) ? &true_val : &false_val;
+            return strcmp(a->u.str, b->u.str) == 0;
         case LISP_SYMBOL:
             /* #t/#f are themselves LISP_SYMBOL ("#t"/"#f"), so this also
              * makes (= #t #t) behave sensibly rather than always false. */
-            return streq(a1->u.sym, a2->u.sym) ? &true_val : &false_val;
+            return streq(a->u.sym, b->u.sym);
         default:
-            return &false_val;
+            return false;
     }
+}
+
+/* S4 (plan/phase13_lisp_engine_extensions.md): generalized from strictly
+ * 2-arg to N-ary (all args equal to the first, which for equality is the
+ * same thing as all-equal-to-each-other) -- everything else about it,
+ * including cross-type behavior, is unchanged. */
+static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int n = lisp_list_len(args);
+    if (n < 2) return &false_val;
+    lisp_val_t *first = lisp_list_ref(args, 0);
+    for (int i = 1; i < n; i++) {
+        if (!lisp_values_equal(first, lisp_list_ref(args, i))) return &false_val;
+    }
+    return &true_val;
+}
+
+/* S4: chained numeric comparison shared by </>/<=/>=, matching the
+ * standard Scheme reading of e.g. (< 1 2 3) as "1<2 AND 2<3", not just
+ * "first < last". Requires at least 2 int args, same as prim_eq requiring
+ * at least 2 -- a single or missing argument returns #f rather than
+ * vacuously #t, for consistency with the existing `=` behavior this
+ * generalizes rather than chasing full R7RS single-argument semantics. */
+static lisp_val_t *prim_chain_compare(lisp_val_t *args, bool (*cmp)(long, long)) {
+    int n = lisp_list_len(args);
+    if (n < 2) return &false_val;
+    lisp_val_t *prev = lisp_list_ref(args, 0);
+    if (!prev || prev->type != LISP_INT) return &false_val;
+    long prev_val = prev->u.i;
+    for (int i = 1; i < n; i++) {
+        lisp_val_t *cur = lisp_list_ref(args, i);
+        if (!cur || cur->type != LISP_INT) return &false_val;
+        if (!cmp(prev_val, cur->u.i)) return &false_val;
+        prev_val = cur->u.i;
+    }
+    return &true_val;
+}
+
+static bool cmp_lt(long a, long b) { return a < b; }
+static bool cmp_gt(long a, long b) { return a > b; }
+static bool cmp_le(long a, long b) { return a <= b; }
+static bool cmp_ge(long a, long b) { return a >= b; }
+
+static lisp_val_t *prim_lt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_lt); }
+static lisp_val_t *prim_gt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_gt); }
+static lisp_val_t *prim_le(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_le); }
+static lisp_val_t *prim_ge(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_ge); }
+
+/* (/= a b c ...) -- R7RS semantics are "every pair is different", not just
+ * adjacent chaining like </>/<=/>=, since a<b<c doesn't imply a!=c the way
+ * it implies a<c, but it DOES already imply a!=b and b!=c specifically --
+ * "not equal" has no transitive shortcut the ordering relations get for
+ * free. O(n^2) is fine: argument counts here are always small. */
+static lisp_val_t *prim_ne(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int n = lisp_list_len(args);
+    if (n < 2) return &false_val;
+    for (int i = 0; i < n; i++) {
+        lisp_val_t *a = lisp_list_ref(args, i);
+        if (!a || a->type != LISP_INT) return &false_val;
+        for (int j = i + 1; j < n; j++) {
+            lisp_val_t *b = lisp_list_ref(args, j);
+            if (!b || b->type != LISP_INT || a->u.i == b->u.i) return &false_val;
+        }
+    }
+    return &true_val;
+}
+
+/* (/ a b c ...) -- chained integer division, matching prim_sub's shape.
+ * Guards division by zero explicitly: this build runs with
+ * -fsanitize=undefined -fno-sanitize-recover=all, so an actual C division
+ * by zero here would be a fatal UBSan trap on QEMU and an unrecoverable
+ * fault on RP2350, not a catchable error -- degrading to nil (the same
+ * signal used elsewhere for malformed input, e.g. B1's arity fixes) is the
+ * only acceptable outcome. */
+static lisp_val_t *prim_div(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(0);
+    long res = arg_int(args, 0, 0);
+    int guard = 0;
+    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        if (c->u.pair.car->type == LISP_INT) {
+            long divisor = c->u.pair.car->u.i;
+            if (divisor == 0) return &nil_val;
+            res /= divisor;
+        }
+    }
+    return make_int(res);
+}
+
+static lisp_val_t *prim_quotient(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long b = arg_int(args, 1, 0);
+    if (b == 0) return &nil_val;
+    return make_int(arg_int(args, 0, 0) / b);
+}
+
+static lisp_val_t *prim_remainder(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long b = arg_int(args, 1, 0);
+    if (b == 0) return &nil_val;
+    return make_int(arg_int(args, 0, 0) % b);
+}
+
+/* modulo differs from remainder when signs differ: the result takes the
+ * divisor's sign (R7RS), not the dividend's. */
+static lisp_val_t *prim_modulo(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long a = arg_int(args, 0, 0);
+    long b = arg_int(args, 1, 0);
+    if (b == 0) return &nil_val;
+    long r = a % b;
+    if (r != 0 && ((r < 0) != (b < 0))) r += b;
+    return make_int(r);
+}
+
+static lisp_val_t *prim_abs(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long a = arg_int(args, 0, 0);
+    return make_int(a < 0 ? -a : a);
+}
+
+static lisp_val_t *prim_min(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(0);
+    long best = arg_int(args, 0, 0);
+    int guard = 0;
+    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        if (c->u.pair.car->type == LISP_INT && c->u.pair.car->u.i < best) best = c->u.pair.car->u.i;
+    }
+    return make_int(best);
+}
+
+static lisp_val_t *prim_max(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(0);
+    long best = arg_int(args, 0, 0);
+    int guard = 0;
+    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        if (c->u.pair.car->type == LISP_INT && c->u.pair.car->u.i > best) best = c->u.pair.car->u.i;
+    }
+    return make_int(best);
+}
+
+/* --- Predicates --- */
+
+static lisp_val_t *prim_null_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_NIL) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_pair_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_PAIR) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_symbol_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_SYMBOL) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_string_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_STRING) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_integer_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_INT) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_procedure_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && (a->type == LISP_PRIMITIVE || a->type == LISP_LAMBDA)) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_zero_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_INT && a->u.i == 0) ? &true_val : &false_val;
+}
+
+/* #t/#f are LISP_SYMBOL, same as every other symbol -- distinguished only
+ * by text, not by a dedicated type (see prim_eq's comment) -- so this
+ * checks symbol text, matching lisp_truthy()'s own convention, rather than
+ * pointer identity against &true_val/&false_val alone (which would miss a
+ * freshly read/quoted '#t or '#f that isn't literally one of those two
+ * singleton nodes). */
+static lisp_val_t *prim_boolean_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (a && a->type == LISP_SYMBOL && (streq(a->u.sym, "#t") || streq(a->u.sym, "#f"))) {
+        return &true_val;
+    }
+    return &false_val;
+}
+
+/* --- List processing --- */
+
+static lisp_val_t *prim_cons(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    return make_pair(a ? a : &nil_val, b ? b : &nil_val);
+}
+
+static lisp_val_t *prim_car(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_PAIR) ? a->u.pair.car : &nil_val;
+}
+
+static lisp_val_t *prim_cdr(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_PAIR) ? a->u.pair.cdr : &nil_val;
+}
+
+/* (list a b c ...) -- `args` is already the proper, already-evaluated
+ * list of arguments the caller built; that IS the answer, with no further
+ * allocation needed. */
+static lisp_val_t *prim_list(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return args ? args : &nil_val;
+}
+
+static lisp_val_t *prim_length(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type == LISP_NIL) return make_int(0);
+    if (a->type != LISP_PAIR) return &nil_val;
+    int n = 0;
+    int guard = 0;
+    for (lisp_val_t *c = a; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) n++;
+    return make_int(n);
+}
+
+/* (append list1 list2 ... listN) -- every list but the last is shallow-
+ * copied (its own cons cells must not be shared, since e.g. `(append a a)`
+ * would otherwise make cdr'ing past the first copy of `a` immediately
+ * re-enter it, an infinite list); the last list is linked in directly,
+ * matching standard Scheme append semantics. */
+static lisp_val_t *prim_append(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int n = lisp_list_len(args);
+    if (n == 0) return &nil_val;
+    lisp_val_t *head = &nil_val;
+    lisp_val_t *tail = NULL;
+    for (int i = 0; i < n - 1; i++) {
+        lisp_val_t *lst = lisp_list_ref(args, i);
+        int guard = 0;
+        for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+            lisp_val_t *new_p = make_pair(c->u.pair.car, &nil_val);
+            if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+        }
+    }
+    lisp_val_t *last = lisp_list_ref(args, n - 1);
+    if (!tail) return last ? last : &nil_val;
+    tail->u.pair.cdr = last ? last : &nil_val;
+    return head;
+}
+
+static lisp_val_t *prim_reverse(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *lst = lisp_list_ref(args, 0);
+    lisp_val_t *result = &nil_val;
+    int guard = 0;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        result = make_pair(c->u.pair.car, result);
+    }
+    return result;
+}
+
+static lisp_val_t *prim_list_ref(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *lst = lisp_list_ref(args, 0);
+    long n = arg_int(args, 1, -1);
+    if (n < 0) return &nil_val;
+    lisp_val_t *r = lisp_list_ref(lst, (int)n);
+    return r ? r : &nil_val;
+}
+
+static lisp_val_t *prim_map(lisp_val_t *args, lisp_val_t *env) {
+    lisp_val_t *fn = lisp_list_ref(args, 0);
+    lisp_val_t *lst = lisp_list_ref(args, 1);
+    if (!fn) return &nil_val;
+    lisp_val_t *head = &nil_val;
+    lisp_val_t *tail = NULL;
+    int guard = 0;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+        lisp_val_t *result = lisp_apply(fn, call_args, env);
+        lisp_val_t *new_p = make_pair(result, &nil_val);
+        if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+    }
+    return head;
+}
+
+static lisp_val_t *prim_filter(lisp_val_t *args, lisp_val_t *env) {
+    lisp_val_t *fn = lisp_list_ref(args, 0);
+    lisp_val_t *lst = lisp_list_ref(args, 1);
+    if (!fn) return &nil_val;
+    lisp_val_t *head = &nil_val;
+    lisp_val_t *tail = NULL;
+    int guard = 0;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+        if (lisp_truthy(lisp_apply(fn, call_args, env))) {
+            lisp_val_t *new_p = make_pair(c->u.pair.car, &nil_val);
+            if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+        }
+    }
+    return head;
+}
+
+static lisp_val_t *prim_for_each(lisp_val_t *args, lisp_val_t *env) {
+    lisp_val_t *fn = lisp_list_ref(args, 0);
+    lisp_val_t *lst = lisp_list_ref(args, 1);
+    if (!fn) return &nil_val;
+    int guard = 0;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+        lisp_apply(fn, call_args, env);
+    }
+    return &nil_val;
+}
+
+/* --- String processing --- */
+
+static lisp_val_t *prim_string_append(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    char buf[STRING_SLOT_LEN];
+    size_t used = 0;
+    buf[0] = '\0';
+    int guard = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE && used < sizeof(buf) - 1;
+         c = c->u.pair.cdr, guard++) {
+        const char *s = get_str_val(c->u.pair.car);
+        size_t len = strlen(s);
+        if (used + len > sizeof(buf) - 1) len = sizeof(buf) - 1 - used;
+        memcpy(buf + used, s, len);
+        used += len;
+        buf[used] = '\0';
+    }
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_string_length(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_STRING) return make_int(0);
+    return make_int((long)strlen(a->u.str));
+}
+
+/* (substring str start end) -- end defaults to the string's own length. */
+static lisp_val_t *prim_substring(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_STRING) return make_str("");
+    const char *s = a->u.str;
+    long len = (long)strlen(s);
+    long start = arg_int(args, 1, 0);
+    long end = arg_int(args, 2, len);
+    if (start < 0) start = 0;
+    if (end > len) end = len;
+    if (start > end) start = end;
+    long n = end - start;
+    char buf[STRING_SLOT_LEN];
+    if (n >= (long)sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, s + start, (size_t)n);
+    buf[n] = '\0';
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_string_to_number(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *s = get_str_val(lisp_list_ref(args, 0));
+    if (!s || !*s) return &false_val;
+    const char *p = s;
+    int sign = 1;
+    if (*p == '-') { sign = -1; p++; } else if (*p == '+') { p++; }
+    if (!*p) return &false_val;
+    long val = 0;
+    for (; *p; p++) {
+        if (*p < '0' || *p > '9') return &false_val;
+        val = val * 10 + (*p - '0');
+    }
+    return make_int(sign * val);
+}
+
+/* Converts via unsigned magnitude rather than negating the value directly,
+ * so LONG_MIN (whose negation is undefined behavior -- this build runs
+ * with UBSan trapping on it) converts correctly instead of crashing on the
+ * one input where naive negation breaks. */
+static lisp_val_t *prim_number_to_string(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_INT) return make_str("");
+    long v = a->u.i;
+    bool neg = v < 0;
+    unsigned long uv = neg ? (unsigned long)(-(v + 1)) + 1UL : (unsigned long)v;
+    char digits[24];
+    int i = 0;
+    if (uv == 0) digits[i++] = '0';
+    while (uv > 0) { digits[i++] = (char)('0' + (uv % 10)); uv /= 10; }
+    char buf[26];
+    int j = 0;
+    if (neg) buf[j++] = '-';
+    while (i > 0) buf[j++] = digits[--i];
+    buf[j] = '\0';
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_string_eq(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!a || !b) return &false_val;
+    return (strcmp(get_str_val(a), get_str_val(b)) == 0) ? &true_val : &false_val;
+}
+
+/* --- Procedure invocation --- */
+
+/* (apply fn a1 a2 ... args-list) -- R7RS shape: every argument except the
+ * first (the function) and the last (a list) is passed through as-is; the
+ * last argument's own elements are appended to the call. (apply fn list)
+ * is the common 2-arg case, handled the same way with zero passed-through
+ * args in between. */
+static lisp_val_t *prim_apply(lisp_val_t *args, lisp_val_t *env) {
+    lisp_val_t *fn = lisp_list_ref(args, 0);
+    if (!fn) return &nil_val;
+    int n = lisp_list_len(args);
+    if (n < 2) return lisp_apply(fn, &nil_val, env);
+    lisp_val_t *head = &nil_val;
+    lisp_val_t *tail = NULL;
+    for (int i = 1; i < n - 1; i++) {
+        lisp_val_t *new_p = make_pair(lisp_list_ref(args, i), &nil_val);
+        if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+    }
+    int guard = 0;
+    for (lisp_val_t *c = lisp_list_ref(args, n - 1); c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        lisp_val_t *new_p = make_pair(c->u.pair.car, &nil_val);
+        if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+    }
+    return lisp_apply(fn, head, env);
+}
+
+/* (eval expr) -- always against global_env: this engine has no first-class
+ * environment object to evaluate against another one, matching the scope
+ * of everything else here. */
+static lisp_val_t *prim_eval(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *expr = lisp_list_ref(args, 0);
+    if (!expr) return &nil_val;
+    return lisp_eval(expr, global_env);
 }
 
 static lisp_val_t *prim_peek(lisp_val_t *args, lisp_val_t *env) {
@@ -1518,6 +2008,53 @@ void lisp_init(void) {
     env_set(&global_env, "-", make_prim(prim_sub));
     env_set(&global_env, "*", make_prim(prim_mul));
     env_set(&global_env, "=", make_prim(prim_eq));
+
+    /* S4 (plan/phase13_lisp_engine_extensions.md): standard library,
+     * as C primitives -- see prim_map()/prim_filter()'s own comments for
+     * why (touching existing cons cells directly costs no interpreter-
+     * level node allocation for the traversal itself, unlike a Lisp-
+     * defined equivalent recursing through the evaluator). */
+    env_set(&global_env, "<", make_prim(prim_lt));
+    env_set(&global_env, ">", make_prim(prim_gt));
+    env_set(&global_env, "<=", make_prim(prim_le));
+    env_set(&global_env, ">=", make_prim(prim_ge));
+    env_set(&global_env, "/=", make_prim(prim_ne));
+    env_set(&global_env, "/", make_prim(prim_div));
+    env_set(&global_env, "quotient", make_prim(prim_quotient));
+    env_set(&global_env, "remainder", make_prim(prim_remainder));
+    env_set(&global_env, "modulo", make_prim(prim_modulo));
+    env_set(&global_env, "abs", make_prim(prim_abs));
+    env_set(&global_env, "min", make_prim(prim_min));
+    env_set(&global_env, "max", make_prim(prim_max));
+    env_set(&global_env, "null?", make_prim(prim_null_p));
+    env_set(&global_env, "pair?", make_prim(prim_pair_p));
+    env_set(&global_env, "symbol?", make_prim(prim_symbol_p));
+    env_set(&global_env, "string?", make_prim(prim_string_p));
+    env_set(&global_env, "integer?", make_prim(prim_integer_p));
+    env_set(&global_env, "procedure?", make_prim(prim_procedure_p));
+    env_set(&global_env, "zero?", make_prim(prim_zero_p));
+    env_set(&global_env, "boolean?", make_prim(prim_boolean_p));
+    env_set(&global_env, "cons", make_prim(prim_cons));
+    env_set(&global_env, "car", make_prim(prim_car));
+    env_set(&global_env, "cdr", make_prim(prim_cdr));
+    env_set(&global_env, "list", make_prim(prim_list));
+    env_set(&global_env, "length", make_prim(prim_length));
+    env_set(&global_env, "append", make_prim(prim_append));
+    env_set(&global_env, "reverse", make_prim(prim_reverse));
+    env_set(&global_env, "list-ref", make_prim(prim_list_ref));
+    env_set(&global_env, "nth", make_prim(prim_list_ref));
+    env_set(&global_env, "map", make_prim(prim_map));
+    env_set(&global_env, "filter", make_prim(prim_filter));
+    env_set(&global_env, "for-each", make_prim(prim_for_each));
+    env_set(&global_env, "string-append", make_prim(prim_string_append));
+    env_set(&global_env, "string-length", make_prim(prim_string_length));
+    env_set(&global_env, "substring", make_prim(prim_substring));
+    env_set(&global_env, "string->number", make_prim(prim_string_to_number));
+    env_set(&global_env, "number->string", make_prim(prim_number_to_string));
+    env_set(&global_env, "string=?", make_prim(prim_string_eq));
+    env_set(&global_env, "apply", make_prim(prim_apply));
+    env_set(&global_env, "eval", make_prim(prim_eval));
+
     env_set(&global_env, "peek", make_prim(prim_peek));
     env_set(&global_env, "poke", make_prim(prim_poke));
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -1672,15 +2209,29 @@ void lisp_print(lisp_val_t *val) {
         case LISP_LAMBDA:
             cprintf("<#closure>");
             break;
-        case LISP_PAIR:
+        case LISP_PAIR: {
+            /* S4 (plan/phase13_lisp_engine_extensions.md): now that `cons`
+             * exists, an improper (dotted) pair -- (cons 1 2), whose cdr is
+             * neither a pair nor nil -- is reachable for the first time.
+             * Previously every pair the reader or the evaluator built was
+             * always nil-terminated, so this loop silently stopping at a
+             * non-pair cdr without printing it was never visible: `(cons 1
+             * 2)` printed as "(1)", quietly losing the 2. */
             cprintf("(");
             lisp_print(val->u.pair.car);
-            for (lisp_val_t *c = val->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+            lisp_val_t *c = val->u.pair.cdr;
+            while (c && c->type == LISP_PAIR) {
                 cprintf(" ");
                 lisp_print(c->u.pair.car);
+                c = c->u.pair.cdr;
+            }
+            if (c && c->type != LISP_NIL) {
+                cprintf(" . ");
+                lisp_print(c);
             }
             cprintf(")");
             break;
+        }
         default:
             cprintf("?");
             break;
@@ -1842,6 +2393,27 @@ lisp_val_t *lisp_read(const char **str) {
             }
             return make_int(sign * val);
         }
+    }
+
+    /* S4 (plan/phase13_lisp_engine_extensions.md): a leading sign
+     * immediately followed by a digit is a signed number literal (-5,
+     * +3) -- found missing while testing `abs`/`modulo`/`number->string`
+     * on negative numbers, all of which need to be typeable as literals
+     * to be usable at all. The sign-handling code in the digit-first
+     * branch just above has existed all along but was unreachable: this
+     * is the gate that was missing, not new number-parsing logic. Must
+     * check for a following digit specifically -- the bare symbols `-`/`+`
+     * (the subtraction/addition primitives themselves) and identifiers
+     * like `->foo` still need to fall through to the symbol reader below. */
+    if ((**str == '-' || **str == '+') && (*str)[1] >= '0' && (*str)[1] <= '9') {
+        int sign = (**str == '-') ? -1 : 1;
+        (*str)++;
+        long val = 0;
+        while (**str >= '0' && **str <= '9') {
+            val = val * 10 + (**str - '0');
+            (*str)++;
+        }
+        return make_int(sign * val);
     }
 
     /* Symbols */
@@ -2022,9 +2594,7 @@ tail_call:
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "if")) {
             if (args && args->type == LISP_PAIR && args->u.pair.cdr) {
                 lisp_val_t *cond_val = lisp_eval(args->u.pair.car, refresh_global_tail(env, env, was_global));
-                bool is_true = (cond_val != &false_val) &&
-                               !(cond_val->type == LISP_SYMBOL && streq(cond_val->u.sym, "#f")) &&
-                               !(cond_val->type == LISP_NIL);
+                bool is_true = lisp_truthy(cond_val);
                 if (is_true) {
                     val = args->u.pair.cdr->u.pair.car;
                     env = refresh_global_tail(env, env, was_global);
@@ -2120,10 +2690,7 @@ tail_call:
                 lisp_val_t *body = args->u.pair.cdr;
                 for (;;) {
                     lisp_val_t *cond_val = lisp_eval(cond_expr, refresh_global_tail(env, env, was_global));
-                    bool is_true = (cond_val != &false_val) &&
-                                   !(cond_val->type == LISP_SYMBOL && streq(cond_val->u.sym, "#f")) &&
-                                   !(cond_val->type == LISP_NIL);
-                    if (!is_true) break;
+                    if (!lisp_truthy(cond_val)) break;
                     for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
                         lisp_eval(c->u.pair.car, refresh_global_tail(env, env, was_global));
                     }
@@ -2141,8 +2708,7 @@ tail_call:
                     lisp_val_t *pred = clause->u.pair.car;
                     bool is_else = (pred->type == LISP_SYMBOL && streq(pred->u.sym, "else"));
                     lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, refresh_global_tail(env, env, was_global));
-                    bool is_true = (pval != &false_val) && !(pval->type == LISP_SYMBOL && streq(pval->u.sym, "#f")) && !(pval->type == LISP_NIL);
-                    if (is_true) {
+                    if (lisp_truthy(pval)) {
                         lisp_val_t *last = eval_all_but_last(clause->u.pair.cdr, env, env, was_global);
                         if (!last) return &nil_val;
                         val = last;
