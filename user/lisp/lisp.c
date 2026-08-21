@@ -1988,7 +1988,8 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
     }
     cprintf("-------------------------------------------------\n");
     cprintf("%d bound symbols. Special forms (not primitives, so not listed\n"
-           "above): define, lambda, quote / ', if, begin, let, let*, while, cond.\n\n", count);
+           "above): define, lambda, quote / ', if, begin, let, named let\n"
+           "(let name ((v init)...) body...), let*, while, cond.\n\n", count);
     return &nil_val;
 }
 
@@ -2621,6 +2622,67 @@ tail_call:
          * env, not each other (that's let*, right below), the last body
          * form is a tail position in the extended env. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "let")) {
+            /* S5 (plan/phase13_lisp_engine_extensions.md): named let --
+             * (let name ((v init) ...) body...) -- distinguished from
+             * plain `let` by its first argument being a symbol instead of
+             * a bindings list, exactly like real Scheme dispatches the two
+             * shapes. Desugars to a self-referential closure (a fresh
+             * frame binding `name` to the closure itself, so the closure's
+             * OWN captured env lets its body call itself by that name --
+             * the same "tie the knot" problem (define ...)'s NULL-env
+             * marker solves for global recursion, solved explicitly here
+             * since a named-let's `name` is local, not global) applied via
+             * the same tail-position machinery plain lambda application
+             * uses below, so a named-let loop gets S1's TCO for free
+             * without needing a macro system to exist at all. */
+            if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_SYMBOL &&
+                args->u.pair.cdr && args->u.pair.cdr->type == LISP_PAIR) {
+                lisp_val_t *name_sym = args->u.pair.car;
+                lisp_val_t *bindings = args->u.pair.cdr->u.pair.car;
+                lisp_val_t *body = args->u.pair.cdr->u.pair.cdr;
+
+                lisp_val_t *params_head = &nil_val, *params_tail = NULL;
+                lisp_val_t *call_args_head = &nil_val, *call_args_tail = NULL;
+                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                    lisp_val_t *pair = b->u.pair.car;
+                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val,
+                                                       refresh_global_tail(env, env, was_global));
+                        lisp_val_t *pnode = make_pair(pair->u.pair.car, &nil_val);
+                        lisp_val_t *anode = make_pair(bound, &nil_val);
+                        if (!params_tail) { params_head = pnode; params_tail = pnode; } else { params_tail->u.pair.cdr = pnode; params_tail = pnode; }
+                        if (!call_args_tail) { call_args_head = anode; call_args_tail = anode; } else { call_args_tail->u.pair.cdr = anode; call_args_tail = anode; }
+                    }
+                }
+
+                lisp_val_t *loop_env = refresh_global_tail(env, env, was_global);
+                lisp_val_t *lam = alloc_node(LISP_LAMBDA);
+                lam->u.lambda.params = params_head;
+                lam->u.lambda.body = body;
+                env_set(&loop_env, name_sym->u.sym, lam);
+                lam->u.lambda.env = loop_env; /* ties the knot: name now resolves to lam within lam's own captured env */
+
+                /* Apply lam to call_args_head in tail position -- mirrors
+                 * the LISP_LAMBDA application branch further down exactly. */
+                lisp_val_t *local_env = lam->u.lambda.env;
+                bool nl_was_global = (local_env == global_env);
+                lisp_val_t *nl_original_tail = local_env;
+                lisp_val_t *p = lam->u.lambda.params;
+                lisp_val_t *a = call_args_head;
+                while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
+                    if (p->u.pair.car->type == LISP_SYMBOL) {
+                        env_set(&local_env, p->u.pair.car->u.sym, a->u.pair.car);
+                    }
+                    p = p->u.pair.cdr;
+                    a = a->u.pair.cdr;
+                }
+                lisp_val_t *last = eval_all_but_last(lam->u.lambda.body, local_env, nl_original_tail, nl_was_global);
+                if (!last) return &nil_val;
+                val = last;
+                env = refresh_global_tail(local_env, nl_original_tail, nl_was_global);
+                goto tail_call;
+            }
+
             if (args && args->type == LISP_PAIR) {
                 lisp_val_t *bindings = args->u.pair.car;
                 lisp_val_t *body = args->u.pair.cdr;

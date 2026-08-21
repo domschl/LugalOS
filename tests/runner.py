@@ -1928,6 +1928,32 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Signed Number Literals -5/+3 Without Breaking -/->foo (S4)",
                         ok, log if not ok else ""))
 
+        # 21j. Named let (S5, plan/phase13_lisp_engine_extensions.md):
+        # (let name ((v init)...) body...), distinguished from plain `let`
+        # by a symbol instead of a bindings list as the first argument.
+        # Desugars to a self-referential closure applied via the same
+        # tail-position machinery plain lambda application uses, so it
+        # gets S1's TCO for free -- 60 iterations (the same modest margin
+        # used for S1's analogous TCO test, chosen so this doesn't destabilize
+        # an unrelated later test in the same shared session the way an
+        # earlier, longer version of a different S3 test once did) is
+        # comfortably past the ~20-30-iteration ceiling this shape had
+        # before TCO existed. Plain `let`/`let*` are checked alongside to
+        # confirm named-let's new first-argument dispatch didn't disturb
+        # either.
+        cmd_named_let = (
+            "lisp\n"
+            "(let loop ((i 0) (acc 0)) (if (= i 5) acc (loop (+ i 1) (+ acc i))))\n"
+            "(let ((a 1) (b 2)) (+ a b))\n"
+            "(let* ((x 1) (y (+ x 1))) y)\n"
+            "(let cnt ((i 0)) (if (= i 60) i (cnt (+ i 1))))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_named_let, r"=> 60", timeout=8.0)
+        named_let_correct = "=> 10" in log and "=> 3" in log and "=> 2" in log
+        ok = ok and named_let_correct
+        results.append(("Lisp Named let Loop With TCO (S5)", ok, log if not ok else ""))
+
 
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
         # (D2/D3), and the POSIX-shell `help` command points to it.

@@ -1,23 +1,34 @@
 # Phase 13 — Scheme/Lisp engine extensions (GC, TCO, macros, stdlib)
 
-**Status:** S0-S4 done, 2026-08-21 (241/241 QEMU tests passing, both
-targets; confirmed on real RP2350 hardware, chess persona every phase —
-20/22, 21/22, 21/22, then 20/22 hardware tests passing, every failure
-reproduced as passing when run manually and unrelated to the phase in
-question). S5 onward not started, plus the Lisp engine's isolation from
-`lsh` as its own service, raised after S3 and explicitly deferred (see "Not
-scheduled" below). S2 fixed a substantial pre-existing bug it surfaced
-(stale `global_env` snapshots across begin/let/let*/cond/lambda bodies); S3
-found that its own originally-planned Verify criterion wasn't actually
-achievable given S0's own rooting design, and corrected it rather than the
-design; S4 fixed two more pre-existing gaps it surfaced (negative number
-literals never parsed; the printer had no notation for an improper/dotted
-pair) and re-tripped RP2350's fixed node-pool ceiling the same way
-`plan/phase9_chess_computer.md`'s H1/H2 once did, fixed the same way (bump
-it) — see each phase's own section for the full account of all of this. The
-macro system (formerly S6) and a bytecode-VM rewrite were both evaluated and
-dropped from this roadmap after S1 — see "Not scheduled" near the end of
-this doc for the reasoning behind each. Addresses two long-standing gaps
+**Status: CONCLUDED, 2026-08-21.** S0-S5, every phase actually scheduled,
+done (243/243 QEMU tests passing, both targets; confirmed on real RP2350
+hardware, chess persona every single phase — 20/22, 21/22, 21/22, 20/22,
+then 20/22 hardware tests passing, every failure reproduced as passing when
+run manually and unrelated to the phase in question). Version bumped
+0.9.0 → 0.10.0 (`kernel/include/kernel/version.h`) marking phase completion,
+matching this project's own established convention of a MINOR bump per
+completed milestone (0.6.0/0.7.0/0.8.0/0.9.0 before it); confirmed live on
+real hardware (`cat /proc/version` → `LugalOS v0.10.0`). `README.md` and the
+`(help)` primitive's own special-forms text both brought up to date with
+every language feature this phase added (let*, named let, while, TCO, the
+collector, the full stdlib) — checked directly against real hardware's
+`(help)` output, not just read back from source.
+
+Two things raised along the way were evaluated and explicitly deferred
+rather than built: the macro system (formerly S6) and a bytecode-VM
+rewrite, both dropped after S1 (see "Not scheduled" below for the
+reasoning); the Lisp engine's isolation from `lsh` into its own service,
+raised after S3, deferred the same way. Three phases surfaced and fixed
+real pre-existing bugs that were not part of their own original scope —
+S2 (stale `global_env` snapshots across begin/let/let*/cond/lambda bodies),
+S3 (its own originally-planned Verify criterion turned out not achievable
+given S0's own rooting design, corrected rather than the design), and S4
+(negative number literals never parsed at all; the printer had no notation
+for an improper/dotted pair; RP2350's fixed node-pool ceiling re-tripped by
+the new primitives' permanent bindings, same fix as `plan/
+phase9_chess_computer.md`'s H1/H2 already established) — see each phase's
+own section below for the full account of all of this. Addresses two
+long-standing gaps
 this tree has already flagged but not acted on:
 `plan/completed/2026-08-07_review_and_remediation.md`
 states twice that "a loop/iteration construct in the Lisp language... doesn't
@@ -540,16 +551,35 @@ to match what actually exists (previously claimed `/`, `<`, `>`, etc. that
 didn't exist in code — now true — plus the entire predicates/list/string/
 apply-eval sections, which didn't exist in the README at all before).
 
-## S5 — Named-let / `do` sugar
+## S5 — Named-let / `do` sugar *(done, 2026-08-21)*
 
-`(let name ((v init) ...) body...)` as another native special form (not a
-macro) — desugars internally to building a lambda and applying it via
-`lisp_apply`, getting S1's TCO for free. Gets idiomatic Scheme-style loops
-without needing a macro system to exist at all — see "Not scheduled" below
-for why one isn't planned.
+`(let name ((v init) ...) body...)`, implemented as another native special
+form (not a macro) — distinguished from plain `let` purely by its first
+argument being a symbol instead of a bindings list, matching how real
+Scheme dispatches the two shapes. Desugars to a self-referential closure:
+a fresh environment frame binds `name` to a newly built lambda, and that
+same frame becomes the lambda's own captured environment (`lam->u.lambda.env`)
+before the call is made — the "tie the knot" trick `(define ...)`'s NULL-env
+marker already uses for *global* self-recursion (B3,
+`plan/completed/2026-08-07_review_and_remediation.md`), done explicitly
+here since a named-let's `name` is local, not global, so there's no live
+`global_env` to fall back on. Applying the constructed closure to the
+evaluated initializers reuses the exact tail-position machinery plain
+lambda application already has (bind params, then continue the trampoline
+on the body's last form), so a named-let loop gets S1's TCO for free with
+no new control-flow path to maintain.
 
-**Verify:** a named-let counting to 10,000 runs without growing `eval_depth`
-per iteration, same bound as a hand-written tail-recursive `define`.
+**Verify:** confirmed live. QEMU: 243/243 tests (up from 241 — +1 named-let
+test counted once per architecture), including a 60-iteration named-let
+loop (comfortably past the ~20-30-iteration ceiling this shape would have
+hit pre-S1) and confirming plain `let`/`let*` are undisturbed by the new
+first-argument dispatch. Real RP2350 hardware (chess persona): a
+10-iteration named-let loop confirmed correct interactively (RP2350's
+tighter, fixed per-command budget means a much smaller loop than QEMU's is
+the honest ceiling for a single hardware command without a collection
+point mid-command — expected, consistent with S3's own documented limits,
+not a new finding). Hardware suite 20/22, the same two already-established
+transient flakes (`uartstats`, `C6/C7`).
 
 ---
 

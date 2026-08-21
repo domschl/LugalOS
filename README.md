@@ -70,8 +70,10 @@ silicon):
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
 - The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the
-  `(define (fn args...) body...)` signature form both work), `if`, `begin`, `let`, `cond`,
-  `quote`, and around 40 built-in primitives — run `(help)` for the current list.
+  `(define (fn args...) body...)` signature form both work), `if`, `begin`, `let`/`let*`/named let,
+  `while`, `cond`, `quote`, tail-call optimization, a mark-sweep collector, a standard library of
+  list/string/predicate/comparison/integer-math primitives, and dozens of system/hardware
+  primitives — run `(help)` for the current list.
 - The native C11 compiler (`chibicc`), producing real RISC-V ELF binaries, and the Thompson
   `ed`-style line editor.
 - The native RP2350 USB CDC ACM console (`/dev/ttyACM0`), written from scratch against the
@@ -146,7 +148,7 @@ silicon):
 * **Native C11 Compiler (`chibicc`)**: Integrated C11 compiler (`cc <src.c> <dst.elf>`) generating native RISC-V ELF binaries directly on LugalOS!
 * **Unified Lisp Machine Shell (`lsh`)**:
   * **POSIX $\rightarrow$ S-Expression Transformation**: All standard POSIX shell inputs (`ls /sd0`, `cp a b`, `cc src dst`) are automatically transformed into Lisp S-Expressions (`(ls "/sd0")`, `(cp "a" "b")`) and executed directly by the core Lisp engine!
-  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, `while`, `cond`, arithmetic (`+`, `-`, `*`, `=`), memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position).
+  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, named let, `while`, `cond`, a standard library of list/string/predicate/comparison/integer-math primitives, memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position, including named-let loops), and a mark-sweep collector reclaims unreachable values between top-level commands.
   * **System Boot Scripts**: Automatically loads `/sd0/system/stdlib.lisp` and executes `/sd0/system/init.lisp` at system startup.
   * **Dual-Mode Interactive Line Editor & Emacs Multi-Line Canvas**: Single-line editing with ANSI escape sequences (`Ctrl-A/E/K/L/P/N`, Arrow keys, Delete), clean session history logging, and a full Emacs-style multi-line editor (`e [filename]` or `Ctrl-X Ctrl-M`) featuring a top optical separator, line numbers (`%3d │ `), an active status line, and keybindings:
     * `Ctrl-X Ctrl-E`: Evaluate buffer in Lisp engine
@@ -527,8 +529,27 @@ The LugalOS kernel hosts an embedded **Lisp Machine Engine** that serves as the 
   the outer scope, not the other bindings.
 * `(let* ((var val) ...) body...)`: Like `let`, but each binding's initializer also sees every binding
   before it.
+* `(let name ((var init) ...) body...)`: Named let — builds a self-recursive loop callable as `name`
+  from within `body`; tail calls to `name` run in constant stack space (see Tail-Call Optimization
+  below).
 * `(while condition body...)`: Repeats `body` while `condition` is true; a plain loop, not recursion.
 * `(cond (clause1) (clause2) ... (else default))`: Multi-branch conditional selection.
+
+### Tail-Call Optimization & Garbage Collection
+
+A call in tail position — the branch an `if` selects, the last form of `begin`/`let`/`let*`/a matched
+`cond` clause/a lambda body, or a named-let's own recursive call to itself — does not grow the C call
+stack: the interpreter loops in place instead of recursing, so an ordinary counting loop written as
+self-recursion (`(define (loop n) (if (done? n) n (loop (next n))))`) or as a named let runs in constant
+stack space regardless of how many iterations it performs. Non-tail recursion (a recursive call that is
+itself an argument to something else, e.g. `(* n (factorial (- n 1)))`) is unaffected and still bounded
+by the evaluator's stack-depth guard.
+
+Values that become unreachable are reclaimed by a mark-sweep collector between top-level commands (not
+mid-expression), so a long interactive session does not exhaust available memory the way a single
+unbounded computation still can — a command that itself allocates more than the pool can hold still
+degrades that one command to `()`, but the shell recovers on the next command rather than staying
+degraded for the rest of the session.
 
 ### Built-in Primitives & Standard Library
 
