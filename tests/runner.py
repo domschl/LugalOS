@@ -2425,7 +2425,10 @@ def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tu
     "HOST_TES", so creating one made vfs_mkdir()'s fat32_find_file() see a
     false "already exists" for the other) -- every prior 9P test only ever
     read pre-existing short 8.3-named files, never wrote or mkdir'd a
-    long name of its own."""
+    long name of its own. Also guards against a second bug found the same
+    way, later, by host/fuse-p9: Session leaking WORK_FID on a partial-walk
+    stat() failure (see the inline comment below) -- fixed in
+    p9lib/client.py's _walk_or_raise()."""
     import shutil
     import tempfile
     import p9lib
@@ -2460,6 +2463,23 @@ def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tu
                 return (name, False, f"could not connect to {sock_path}: {last_err}")
 
             with p9lib.Session(client, aname="/") as sess:
+                # Regression check for a real bug host/fuse-p9 (phase14
+                # 14a-follow-on) found: stat'ing a path whose LAST
+                # component doesn't exist yet (a common check-before-create
+                # pattern -- FUSE's getattr() does exactly this before
+                # every create()) is a *partial* Twalk (the parent
+                # resolves, the leaf doesn't). fs/9p.c leaves WORK_FID
+                # bound to the parent in that case, and Session used to
+                # never clunk it before raising, permanently wedging the
+                # shared fid ("walk: newfid already in use") for every
+                # call after it. Confirm the Session survives this and is
+                # still fully usable afterward.
+                try:
+                    sess.stat("/sd0/does_not_exist_yet.txt")
+                    return (name, False, "stat of a missing path should have raised P9Error")
+                except p9lib.P9Error:
+                    pass
+
                 n = sess.write("/sd0/host_test.txt", b"hello from product-p9lib\n")
                 if n != len(b"hello from product-p9lib\n"):
                     return (name, False, f"write returned {n} bytes")

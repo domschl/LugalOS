@@ -1,6 +1,8 @@
 # Phase 14 — 9P distribution, real networking & host tooling
 
-**Status: 14a CONCLUDED, 2026-08-21.** 14b-14e not started.
+**Status: 14a CONCLUDED, 2026-08-21. 14a-2 (`host/fuse-p9`) CONCLUDED,
+2026-08-21.** 14b explicitly deferred by user request in favor of 14a-2;
+14c-14e not started.
 
 ## Background: five topics, sequenced
 
@@ -138,6 +140,78 @@ built.
 
 ---
 
-## 14b-14e — not started
+## 14a-2 — `host/fuse-p9`: mount the namespace, don't just script it *(done, 2026-08-21)*
 
-See "Background: five topics, sequenced" above for what each covers.
+**Goal.** After 14a landed, chess PGN save-games (14b) was explicitly
+deferred in favor of a more general win: a Linux FUSE filesystem exposing
+LugalOS's entire 9P namespace as a real host directory, so ordinary tools
+(`cat`, `cp`, editors, `find`) work against a board unmodified instead of
+needing `lugal9p` invocations for every access. Scoped deliberately small
+per direction given at the time: a single shared `p9lib.Session` (no
+per-mount fid pool), single-threaded dispatch, concurrency work explicitly
+deferred; exposing the *entire* tree (not just `/sd0`) as the first step.
+
+**What was built.** `host/fuse-p9/` (new `uv` package, depends on
+`host/p9lib` via a local path source): `src/fuse_p9/operations.py`
+(`P9FS(fuse.Operations)` wrapping one `p9lib.Session`) and `cli.py`
+(`lugal9pfuse`, same `--serial`/`--unix`/`--framing`/`--aname` flags as
+`lugal9p`, running `FUSE(..., nothreads=True)` so libfuse's own
+single-threaded dispatch is what actually makes the shared, unlocked
+Session safe — not a design assumption left unenforced). Supports
+browsing, reading, writing (arbitrary offset, whole-file-buffered between
+open/close), `mkdir`, `unlink`/`rmdir`. Deliberately refuses `rename`
+(`ENOSYS` — 9P has no `Twstat` to call, and copy+delete would silently
+misrepresent a real directory move) and no-ops `chmod`/`chown`/`utimens`
+(the server has no permission or wall-clock model to persist them to).
+
+**Bug found and fixed along the way (in `host/p9lib`, not FUSE-specific):**
+mounting and running ordinary tools against it immediately wedged the
+whole mount after the first write. Root cause: `Session.stat()` (and
+`read()`/`write()`/`mkdir()`) walks `WORK_FID` to the target path and, on
+failure, raised `P9Error` without checking whether the walk had *partially*
+succeeded. Stat-ing a path whose last component doesn't exist yet — which
+is exactly what FUSE's `getattr()` does before every `create()`, e.g. on
+every `echo > newfile`— is a partial walk: the parent resolves, the leaf
+doesn't, and per `fs/9p.c`'s `p9_handle_twalk()`, the server leaves
+`WORK_FID` bound to the parent in that case rather than leaving it
+untouched (that guarantee only holds for a single-element, walk-in-place
+failure, which is all any earlier test had ever exercised). `Session` never
+clunked it back, so the fid stayed permanently "in use" server-side, and
+every subsequent call using it failed with `walk: newfid already in use` —
+not a FUSE bug, but the first workload that ever exercised this path.
+Fixed by adding `_walk_or_raise()`, a shared helper (used by
+`_walk_to()`, `write()`'s and `mkdir()`'s parent-directory walks) that
+clunks the fid before raising whenever `nwqid > 0` (partial resolution) but
+correctly skips the clunk when `nwqid == 0`, since a first-component
+failure is an outright `Rerror` — raised inside `P9Client.walk()` itself,
+before any fid is allocated at all — and clunking an fid the server never
+allocated would raise a second, more confusing error masking the original.
+
+**Verify.**
+- Full QEMU regression suite: **245/245 tests passing**, both rv32 and
+  rv64 — `test_9p_crud_via_p9lib` (A6) extended with a check that stat-ing
+  a not-yet-existing path raises cleanly *and* leaves the Session usable
+  for every operation that follows (the exact scenario the bug above
+  broke).
+- Manually mounted against a dedicated QEMU instance (virtio-console) and
+  exercised with real, unmodified host tools: `ls`/`cat` across the whole
+  namespace (`/sd0`, `/proc`, `/ram0`, ...); `echo >`/`>>` (write, then
+  append-via-reopen); `cp` a real host file in and `diff`-verified the
+  round trip; `mkdir` plus a nested write/read; `rm`/`rmdir` cleanup,
+  confirmed to leave `/sd0` exactly as found. Noted, not a bug: `/srv`
+  *lists* in the root namespace but isn't currently walkable (nothing
+  bound there this boot) — surfaces as a `?????` row in `ls -la`, an
+  accurate reflection of the server's own answer, not a FUSE defect.
+- Not yet done: verified against real RP2350 hardware (only QEMU so far,
+  unlike 14a which got both) — deferred, can happen whenever useful; no
+  firmware changes were needed for this phase either, so it's the same
+  "verify a host tool against an already-running board" situation 14a's
+  own hardware pass was.
+
+---
+
+## 14b, 14c-14e — not started
+
+14b (chess PGN save-games) was explicitly deferred in favor of 14a-2
+above. See "Background: five topics, sequenced" above for what 14c-14e
+each cover.

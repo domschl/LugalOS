@@ -429,14 +429,33 @@ class Session:
     def _split(path: str) -> list[str]:
         return [p for p in path.split("/") if p]
 
-    def _walk_to(self, path: str, fid: int = _WORK_FID) -> list[str]:
-        names = self._split(path)
+    def _walk_or_raise(self, fid: int, names: list[str], path: str, what: str) -> None:
+        """Shared by _walk_to() and every direct self.client.walk() call
+        below: walks `names` onto `fid` and raises if it doesn't fully
+        resolve. A partial walk (some names resolved, not all -- only
+        possible for failures past the very first component; failing at
+        the first is always an outright Rerror, raised inside walk()
+        itself, before nwqid is even returned here) still leaves `fid`
+        bound to wherever it stopped -- fs/9p.c's p9_handle_twalk() only
+        rejects a *fresh* Twalk whose newfid number is already in use, not
+        one that's genuinely still walking, so a caller that doesn't
+        clunk it back here leaks that fid permanently. Since Session only
+        ever has _WORK_FID to give out, one leaked partial walk (e.g.
+        stat()'ing a path whose last component doesn't exist yet) used to
+        wedge the entire Session for every call after it."""
         nwqid = self.client.walk(self._ROOT_FID, fid, names)
         if nwqid != len(names):
+            if nwqid > 0:
+                self.client.clunk(fid)
+            stopped_at = "/".join(names[:nwqid]) or "/"
             raise P9Error(
-                f"walk to {path!r} only resolved {nwqid}/{len(names)} components "
-                f"(stopped at {'/'.join(names[:nwqid]) or '/'})"
+                f"{what} {path!r} only resolved {nwqid}/{len(names)} components "
+                f"(stopped at {stopped_at})"
             )
+
+    def _walk_to(self, path: str, fid: int = _WORK_FID) -> list[str]:
+        names = self._split(path)
+        self._walk_or_raise(fid, names, path, "walk to")
         return names
 
     def read(self, path: str) -> bytes:
@@ -459,9 +478,7 @@ class Session:
             raise P9Error("cannot write to '/'")
         parent, name = parts[:-1], parts[-1]
 
-        nwqid = self.client.walk(self._ROOT_FID, self._WORK_FID, parent)
-        if nwqid != len(parent):
-            raise P9Error(f"parent directory of {path!r} does not exist")
+        self._walk_or_raise(self._WORK_FID, parent, path, "parent directory of")
 
         # Walk WORK_FID (now at the parent) onto the final component, IN
         # PLACE (fid == newfid is explicitly legal -- fs/9p.c's
@@ -506,9 +523,7 @@ class Session:
         if not parts:
             raise P9Error("cannot mkdir '/'")
         parent, name = parts[:-1], parts[-1]
-        nwqid = self.client.walk(self._ROOT_FID, self._WORK_FID, parent)
-        if nwqid != len(parent):
-            raise P9Error(f"parent directory of {path!r} does not exist")
+        self._walk_or_raise(self._WORK_FID, parent, path, "parent directory of")
         try:
             self.client.create(self._WORK_FID, name, perm=DMDIR | 0o755, mode=OREAD)
         finally:
