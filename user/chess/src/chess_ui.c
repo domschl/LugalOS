@@ -301,6 +301,31 @@ typedef struct {
 
 typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
 
+/* --- One state change, every output (phase 16) ---
+ *
+ * The session has two input devices and up to three output devices, and until
+ * now which outputs got updated depended on *which loop noticed the change*
+ * rather than on the change itself. Typing a move at the terminal redrew the
+ * ASCII board and left the TFT showing the previous position; playing one on
+ * the keypad updated the TFT and 7-segment and left the terminal showing only
+ * raw key codes. Both halves were correct in isolation and the combination was
+ * unusable: whichever device you were not looking at was silently stale.
+ *
+ * So rendering hangs off the position changing, not off the input path. Every
+ * site that alters g_chess_pos calls this, and it updates everything the board
+ * actually has:
+ *
+ *   - the terminal's ASCII board, always;
+ *   - the ST7735 board and status line, where one is built in;
+ *   - the TM1638 move slots, recomputed from the position's own history
+ *     (tm_sync_move_slots()) rather than from "the move we just made", so it
+ *     is equally right after an undo, a redo, a `fen`, a load or a new game --
+ *     none of which have a "move just made" to pass.
+ *
+ * The output side is now symmetric with the input side that phase 15's
+ * chess_next_event() already made symmetric. */
+static void chess_show(const Position *pos);
+
 static ChessCmdResult console_dispatch_line(const char *line);
 
 /* 300, matching what chess_console_run()'s own `line` buffer always was --
@@ -362,16 +387,21 @@ static ChessEventKind chess_next_event(ChessEvent *ev, int timeout_ms,
     }
 }
 
-/* Non-blocking: handle whatever the terminal has to say, and nothing else.
+/* Only tm_wait_key() calls this, so it exists only where a keypad does --
+ * otherwise it is an unused-function warning on both QEMU targets.
+ *
+ * Non-blocking: handle whatever the terminal has to say, and nothing else.
  * Used from the keypad debounce phases in tm_wait_key(), where a key press is
  * precisely what is being waited *out* rather than read, so KEY events are
  * left for the phase that wants them. Returns true if the session should end.
  */
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 static bool chess_pump_console(const char *prompt) {
     ChessEvent ev;
     if (chess_next_event(&ev, 0, prompt) != CHESS_EVENT_LINE) return false;
     return console_dispatch_line(ev.line) == CHESS_CMD_QUIT;
 }
+#endif
 
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -828,7 +858,7 @@ static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms
     make_move(pos, best);
     g_console_max_history_ply = pos->history_ply;
     cprintf("Engine plays: %s (Score: %s%d)\n", buf, sign_prefix(g_search_score), g_search_score);
-    print_board(pos);
+    chess_show(pos);
     console_report_outcome(pos);
 }
 
@@ -913,7 +943,7 @@ static void console_load(Position *pos) {
         g_console_search_level = nl[1] - '0';
     }
     cprintf("Position loaded from %s (level %d)\n", path, g_console_search_level);
-    print_board(pos);
+    chess_show(pos);
 }
 
 /* `go [depth N | movetime N]`, ported from console.c's `go` command
@@ -979,9 +1009,9 @@ static ChessCmdResult console_dispatch_line(const char *line) {
     } else if (strcmp(line, "new") == 0) {
         console_new_game(&g_chess_pos);
         cprintf("New game started.\n");
-        print_board(&g_chess_pos);
+        chess_show(&g_chess_pos);
     } else if (strcmp(line, "board") == 0 || strcmp(line, "d") == 0) {
-        print_board(&g_chess_pos);
+        chess_show(&g_chess_pos);
         print_position_info(&g_chess_pos);
     } else if (strncmp(line, "level", 5) == 0) {
         const char *p = line + 5;
@@ -1013,7 +1043,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
                 clear_tt();
                 g_console_max_history_ply = g_chess_pos.history_ply;
                 cprintf("Position loaded.\n");
-                print_board(&g_chess_pos);
+                chess_show(&g_chess_pos);
             }
         }
     } else if (strcmp(line, "save") == 0) {
@@ -1026,7 +1056,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
         if (g_chess_pos.history_ply > 0) {
             unmake_move(&g_chess_pos);
             cprintf("Took back 1 half-move.\n");
-            print_board(&g_chess_pos);
+            chess_show(&g_chess_pos);
         } else {
             cprintf("Nothing to undo.\n");
         }
@@ -1035,7 +1065,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
             Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
             if (make_move(&g_chess_pos, m)) {
                 cprintf("Re-applied 1 half-move.\n");
-                print_board(&g_chess_pos);
+                chess_show(&g_chess_pos);
             } else {
                 cprintf("Cannot redo move.\n");
             }
@@ -1063,7 +1093,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
         return CHESS_CMD_QUIT;
     } else if (console_execute_move(&g_chess_pos, line)) {
         g_console_max_history_ply = g_chess_pos.history_ply;
-        print_board(&g_chess_pos);
+        chess_show(&g_chess_pos);
         if (!console_report_outcome(&g_chess_pos)) {
             console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
         }
@@ -1391,6 +1421,7 @@ static void tm_sync_move_slots(const Position *pos) {
     if (!have_black) for (int i = 0; i < 4; i++) g_tm_black_slot[i] = ' ';
 }
 
+
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Defined further down (needs g_console_search_level/tm_format_score_
  * compact()/tm_probe_pv(), all declared later) -- forward-declared here
@@ -1412,6 +1443,7 @@ static void tm_redraw_if_display(const Position *pos) {
     (void)pos;
 #endif
 }
+
 
 /* Resets to a fresh game -- shared by the options menu's own "new game"
  * item and chess_run()'s game-over screen (STOP there now starts a new
@@ -2261,6 +2293,13 @@ void chess_run(void) {
             tm1638_display_string(disp);
             draw_chess_board(&g_chess_pos);
             draw_chess_status(&g_chess_pos, last_move_buf, false);
+            /* And the terminal, which until now saw only tm_wait_key()'s raw
+             * key codes while a game was played on the board (phase 16). The
+             * TFT/7-segment writes above stay explicit rather than deferring
+             * to chess_show(): this path has a real `last_move_buf` for the
+             * status line, which chess_show() -- built for the state changes
+             * that have no "move just made" -- deliberately does not take. */
+            print_board(&g_chess_pos);
 
             TmAfterMove result = tm_after_move(&g_chess_pos, disp, mover_side);
             if (result == TM_AFTER_EXIT) return;
@@ -2328,6 +2367,16 @@ void chess_run(void) {
         tm_format_move4(engine_move, last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
+        /* The engine's own reply, on the terminal too (phase 16), and named
+         * the way the console REPL names it so a session driven from both
+         * devices reads as one transcript rather than two. */
+        {
+            char mbuf[6];
+            format_move(engine_move, mbuf);
+            cprintf("Engine plays: %s (Score: %s%d)\n",
+                    mbuf, sign_prefix(g_search_score), g_search_score);
+        }
+        print_board(&g_chess_pos);
 
         char disp2[9];
         for (int i = 0; i < 4; i++) { disp2[i] = g_tm_white_slot[i]; disp2[4 + i] = g_tm_black_slot[i]; }
@@ -2337,3 +2386,28 @@ void chess_run(void) {
 }
 #endif /* CONFIG_ENABLE_ST7735 */
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
+
+/* See the forward declaration near the top of this file for why this exists.
+ *
+ * Defined out here, past every hardware guard, because it is the one function
+ * that must exist on *every* build: the terminal is the only output a QEMU
+ * target has, and it is precisely the output that was being skipped. The
+ * display and keypad halves are guarded individually, so a board with a
+ * keypad and no TFT (H3's three independent flags) gets exactly the outputs it
+ * has. */
+static void chess_show(const Position *pos) {
+    print_board(pos);
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+    tm_redraw_if_display(pos);
+    tm_sync_move_slots(pos);
+    {
+        char disp[9];
+        for (int i = 0; i < 4; i++) {
+            disp[i] = g_tm_white_slot[i];
+            disp[4 + i] = g_tm_black_slot[i];
+        }
+        disp[8] = '\0';
+        tm1638_display_string(disp);
+    }
+#endif
+}
