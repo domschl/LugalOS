@@ -82,7 +82,7 @@ silicon):
   search, checkmate/stalemate detection, and full game state (undo/redo/FEN save-load) — reachable
   interactively over the same `lsh` shell, on both QEMU and real RP2350 hardware.
 - **A second RP2350 board persona**: `rp2350-clock` targets the Waveshare Pico-Clock-Green baseboard
-  — a 7-segment clock display with LDR-driven auto-brightness, wired through the same driver-task
+  — a led-matrix clock display with LDR-driven auto-brightness, wired through the same driver-task
   architecture as the default `rp2350-chess` persona, demonstrating that "which hardware this board
   has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a fork of the kernel.
 
