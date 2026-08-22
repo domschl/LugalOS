@@ -243,6 +243,131 @@ def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_type_ahead(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """Typing during a long foreground command survives instead of being eaten.
+
+    console_interrupt_requested() used to drain the input device hunting for
+    Ctrl-C and *discard* every byte that was not one. search.c's
+    check_up_time() polls it every 2048 nodes, so anything typed while the
+    engine was thinking was not merely left unqueued -- it was consumed and
+    destroyed by the interrupt check itself. kernel/console.c now parks those
+    bytes in a push-back ring instead.
+
+    **This test lives here rather than in the QEMU suite because only here can
+    it fail.** The equivalent was written for tests/runner.py first and passed
+    with the bug deliberately reintroduced, which makes it worthless as a
+    guard: QEMU's 16550 has a 16-byte FIFO and its chardev does not push a
+    host-side write into the guest until the guest reads, so the typed-ahead
+    bytes are simply not present during the search for the drain to eat. On
+    real silicon the USB CDC path buffers 512 bytes and hands them over
+    immediately, so the drain reaches them -- which is why this was only ever
+    observable on the board.
+
+    Shaped so the *drop* is what fails, not the timing: `board` is written
+    while `go` is still searching, and the `fen` after it is what the
+    assertion looks for. If the input is eaten, that line never appears.
+    """
+    name = "Type-ahead survives an engine search instead of being eaten"
+    KIWI = ("fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/"
+            "R3K2R w KQkq - 0 1\n")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.5)
+            ser.reset_input_buffer()
+            ser.write(b"(chess-console)\nlevel 3\n" + KIWI.encode())
+            ser.flush()
+            rp2350.drain(ser, quiet=2.0, deadline=45.0)
+
+            ser.write(b"go\n")
+            ser.flush()
+            time.sleep(1.5)              # let the search get properly under way
+            ser.write(b"board\nfen\n")   # typed while it is thinking
+            ser.flush()
+            out = rp2350.drain(ser, quiet=6.0, deadline=120.0).decode("utf-8", "replace")
+
+            ser.write(b"quit\n")
+            ser.flush()
+            rp2350.drain(ser, quiet=2.0, deadline=30.0)
+
+        checks = [
+            ("the search actually ran", "bestmove" in out),
+            ("type-ahead reached the REPL", "Current FEN: r3k2r" in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "typed during a search, executed after it")
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_balloc_arena(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """§1.1, plan/phase15_memory_reclamation.md: the buddy arena on this board.
+
+    Two things are asserted here that the QEMU suite structurally cannot,
+    because both are about RP2350's own value of CONFIG_BALLOC_ARENA_PAGES
+    (4 pages / 16 KB, against 16 / 64 KB on the QEMU targets -- see
+    cmake/board-rp2350.cmake):
+
+      - **The board's arena is actually big enough.** `ballocdemo`'s churn
+        holds 7264 bytes of buddy blocks at its peak across 8 concurrently
+        live slots. That fits 16 KB with better than 2x headroom, but the
+        margin is a property of the board's constant, and nothing else in
+        either suite ever calls balloc_alloc() at all. A future lowering of
+        this constant past what the demo needs would otherwise surface as
+        "[BAllocDemo] Allocation failed" the first time a human typed the
+        command on hardware, months later.
+
+      - **The arena is not held at boot.** M1 reserved it in balloc_init(),
+        which on this board meant 64 KB of a 212 KB heap permanently owned by
+        an allocator whose only caller in the tree is this very command. It
+        is reserved on the first balloc_alloc() now, so on a fresh boot the
+        first `ballocdemo` should be visible as the heap's used-page count
+        stepping up by exactly BALLOC_ARENA_PAGES and staying there.
+
+    The step is reported rather than strictly required to be 4: this suite is
+    normally run from a fresh boot, but a re-run without one would find the
+    arena already reserved and see a step of 0. Both are correct states; a
+    step of anything else is not.
+    """
+    name = "Buddy arena: board-sized, and not reserved until first use"
+    ARENA_BYTES = 4 * 4096
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd in (b"cat /proc/meminfo\n", b"ballocdemo\n", b"cat /proc/meminfo\n"):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.8, deadline=20.0).decode("utf-8", "replace")
+
+        used = [int(m) for m in re.findall(r"Pages Used: (\d+)", out)]
+        churn = re.search(r"largest=(\d+) arena=(\d+)", out)
+        step = (used[-1] - used[0]) if len(used) >= 2 else None
+
+        checks = [
+            ("allocation succeeded", "[BAllocDemo] Allocation failed" not in out),
+            ("blocks round up and stay self-aligned", "Rounding/alignment: OK" in out),
+            ("arena is this board's size",
+             churn is not None and int(churn.group(2)) == ARENA_BYTES),
+            ("fully coalesced after churn",
+             churn is not None and churn.group(1) == churn.group(2)),
+            ("arena reservation is lazy", step in (0, 4)),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False,
+                    f"failed: {', '.join(failed)}; used={used}\n{out[-600:]}")
+        return (name, True,
+                f"{ARENA_BYTES // 1024} KB arena, coalesced clean, "
+                f"heap step on first use = {step} pages")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """The RP2350's actual remaining headroom, measured on the board.
 
@@ -306,9 +431,10 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         stack_peak = field(r"Boot Stack: \d+ KB, peak (\d+) bytes")
         flash_used = field(r"Flash: (\d+) KB of \d+ KB")
         flash_total = field(r"Flash: \d+ KB of (\d+) KB")
+        ram_kb = field(r"RAM: (\d+) KB total")
 
         if None in (pages_total, pages_peak, largest_run, pages_free,
-                    stack_kb, stack_peak, flash_used, flash_total):
+                    stack_kb, stack_peak, flash_used, flash_total, ram_kb):
             return (name, False,
                     "could not parse /proc/meminfo -- board may predate this field set, "
                     f"or the report was truncated:\n{out[-500:]}")
@@ -323,6 +449,17 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             # pushes the heap below this, C4's images silently halve -- so the
             # day it happens should be a failing test rather than a puzzle.
             ("heap can still hold a 128 KB image", pages_total >= 32),
+            # §1.2, plan/phase15_memory_reclamation.md: RP2350 has 520 KB of
+            # SRAM, not 512 -- SRAM8/SRAM9 sit at 0x20080000/0x20081000,
+            # contiguous with the striped main banks. linker/rp2350.ld used to
+            # stop _heap_end (and _ram_end, which this line reads) at the end
+            # of main RAM, leaving those two 4 KB banks allocated to nothing at
+            # all. This is the on-board proof that they are now in the map: a
+            # revert would report 512 here. The link-time half of the same
+            # guarantee is the ASSERT in the linker script that nothing places
+            # into either bank, since anything there would now be handed out
+            # as heap.
+            ("both scratch banks are in the RAM map", ram_kb == 520),
             # A zero here means the paint or the scan is broken, not that the
             # stack is unused: reaching this shell took stack to get here.
             ("boot stack high-water is measured", stack_peak > 0),
@@ -1279,12 +1416,22 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     a heap-lifecycle regression (this test's own "arena was returned"
     check, `used[0] == used[-1]`, is what actually proves the lifecycle;
     "Pages Total" is context, re-measure and update this comment whenever
-    it moves rather than treating either figure as fixed). Threshold below
-    is `>= 50` -- real margin below the current 60, not the value itself,
-    so a future regression that eats back into this budget still trips it;
-    expect this number to drift down further as J2-J6 add their own static
-    footprint, and to widen the margin back up rather than let it go
-    flappy if it ever gets close.
+    it moves rather than treating either figure as fixed).
+
+    Re-measured 2026-08-22 against the built ELF: 53, not the 60 claimed
+    here -- this had gone stale across phase 13, whose own STRING_POOL_SIZE
+    regression and fix both moved the figure without it being updated. Now
+    **54**, after §1.1 of plan/phase15_memory_reclamation.md shrank the
+    buddy tree's permanent .bss by board-scaling CONFIG_BALLOC_ARENA_PAGES.
+    The far larger half of that change is invisible in this number and
+    shows up in "Pages Used" instead: the arena is no longer reserved at
+    boot, so 16 pages that used to be permanently occupied are simply never
+    taken (see test_balloc_arena).
+
+    Threshold below is `>= 50` -- real margin below the current 54, not the
+    value itself, so a future regression that eats back into this budget
+    still trips it; widen the margin back up rather than let it go flappy
+    if it ever gets close.
 
     Worth checking here rather than only on QEMU for the obvious reason: the
     QEMU targets have a 16 MB heap, so an arena that is never released is
@@ -1470,6 +1617,8 @@ def main() -> int:
     tests.append(test_port_binding)
     tests.append(test_board_config)
     tests.append(test_concurrent_user_programs)
+    tests.append(test_type_ahead)
+    tests.append(test_balloc_arena)
     tests.append(test_memory_margins)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
     # pool, which leaves the evaluator returning nil until the board reboots.

@@ -1,6 +1,7 @@
 #include "kernel/line_editor.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/scratch.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include <string.h>
@@ -200,7 +201,7 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
     int len = 0;
     out_buf[0] = '\0';
     while (1) {
-        char c = uart_getc();
+        char c = console_getc();
         if (c == '\r' || c == '\n') {
             out_buf[len] = '\0';
             return (len > 0);
@@ -265,13 +266,13 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
     redraw_box(active_filename, out_buf, len, pos, status_msg);
 
     while (1) {
-        char c = uart_getc();
+        char c = console_getc();
 
         int num_lines = 1;
         for (int i = 0; i < len; i++) if (out_buf[i] == '\n') num_lines++;
 
         if (c == 0x18) { // Ctrl-X
-            char c2 = uart_getc();
+            char c2 = console_getc();
             if (c2 == 0x05 || c2 == 'e' || c2 == 'E') { // Ctrl-E: Eval
                 out_buf[len] = '\0';
                 exit_editor_cleanup(len, out_buf);
@@ -324,21 +325,29 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
             } else if (c2 == 0x12 || c2 == 'r' || c2 == 'R') { // Ctrl-R: Insert File at cursor
                 char fn_in[128];
                 if (read_status_prompt(num_lines, g_prev_target_line, "Insert file: ", fn_in, sizeof(fn_in))) {
-                    static char ins_buf[2048];
-                    int r = vfs_read(fn_in, ins_buf, sizeof(ins_buf) - 1);
-                    if (r > 0) {
-                        ins_buf[r] = '\0';
-                        if (len + r < max_len - 1) {
-                            for (int i = len - 1; i >= pos; i--) out_buf[i + r] = out_buf[i];
-                            memcpy(out_buf + pos, ins_buf, r);
-                            pos += r;
-                            len += r;
-                            out_buf[len] = '\0';
-                            modified = true;
-                            strcpy(status_msg, "Inserted file");
-                        }
+                    /* §3.1: on-demand rather than 2 KB of .bss for a
+                     * keystroke almost nobody presses. */
+                    scratch_t ins_sc;
+                    if (!scratch_acquire(&ins_sc, 2048)) {
+                        strcpy(status_msg, "Insert failed: out of memory");
                     } else {
-                        strcpy(status_msg, "File not found");
+                        char *ins_buf = (char *)ins_sc.base;
+                        int r = vfs_read(fn_in, ins_buf, 2048 - 1);
+                        if (r > 0) {
+                            ins_buf[r] = '\0';
+                            if (len + r < max_len - 1) {
+                                for (int i = len - 1; i >= pos; i--) out_buf[i + r] = out_buf[i];
+                                memcpy(out_buf + pos, ins_buf, r);
+                                pos += r;
+                                len += r;
+                                out_buf[len] = '\0';
+                                modified = true;
+                                strcpy(status_msg, "Inserted file");
+                            }
+                        } else {
+                            strcpy(status_msg, "File not found");
+                        }
+                        scratch_release(&ins_sc);
                     }
                 }
                 redraw_box(active_filename, out_buf, len, pos, status_msg);
@@ -410,9 +419,9 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
 
         // Escape Sequences (Arrow keys, Home, End, Delete)
         if (c == 0x1B) {
-            char seq1 = uart_getc();
+            char seq1 = console_getc();
             if (seq1 == '[' || seq1 == 'O') {
-                char seq2 = uart_getc();
+                char seq2 = console_getc();
                 if (seq2 == 'A') { // Up Arrow
                     int line_start = pos;
                     while (line_start > 0 && out_buf[line_start - 1] != '\n') line_start--;
@@ -448,15 +457,15 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
                     if (pos > 0) pos--;
                     redraw_box(active_filename, out_buf, len, pos, status_msg);
                 } else if (seq2 == 'H' || seq2 == '1') { // Home key
-                    if (seq2 == '1') uart_getc();
+                    if (seq2 == '1') console_getc();
                     while (pos > 0 && out_buf[pos - 1] != '\n') pos--;
                     redraw_box(active_filename, out_buf, len, pos, status_msg);
                 } else if (seq2 == 'F' || seq2 == '4') { // End key
-                    if (seq2 == '4') uart_getc();
+                    if (seq2 == '4') console_getc();
                     while (pos < len && out_buf[pos] != '\n') pos++;
                     redraw_box(active_filename, out_buf, len, pos, status_msg);
                 } else if (seq2 == '3') { // Delete key
-                    uart_getc();
+                    console_getc();
                     if (pos < len) {
                         for (int i = pos; i < len - 1; i++) out_buf[i] = out_buf[i + 1];
                         len--;
@@ -504,36 +513,79 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
 
 
 
-int readline_interactive(const char *prompt, char *out_buf, int max_len) {
-    int len = 0;
-    int pos = 0;
-    int hist_nav_idx = history_count;
+/* --- The editing state machine, and its two drivers ---
+ *
+ * Everything below the state struct used to be the body of
+ * readline_interactive()'s own `while (1)`. It was lifted out unchanged so a
+ * second driver could exist: readline_poll(), which consumes only the
+ * characters already available and returns instead of waiting for the rest of
+ * the line.
+ *
+ * Extracted rather than reimplemented, deliberately. Writing a separate,
+ * simpler non-blocking reader was the obvious alternative and would have left
+ * two divergent notions of what a line is -- the polled caller quietly losing
+ * history, cursor movement, Home/End/Delete and the Ctrl-X multiline escape
+ * that the blocking one has. One body, two drivers, so both callers get the
+ * same editor.
+ *
+ * The nested console_getc() calls inside the escape-sequence branches stay
+ * blocking even under readline_poll(), which is worth being explicit about
+ * rather than leaving as a lurking surprise: they are reached only *after* the
+ * ESC that begins a sequence has arrived, and a terminal emits the remainder
+ * of an escape sequence in the same burst. The wait is for bytes already in
+ * flight -- microseconds -- never for the user to press something.
+ *
+ * (§"chess_next_event", plan/phase15_memory_reclamation.md.) */
+
+#define LINE_INCOMPLETE (-1)
+
+typedef struct {
+    int  len;
+    int  pos;
+    int  hist_nav_idx;
     char temp_saved_line[MAX_LINE_LEN];
-    temp_saved_line[0] = '\0';
+} line_state_t;
 
+static void line_begin(line_state_t *st, const char *prompt, char *out_buf) {
+    st->len = 0;
+    st->pos = 0;
+    st->hist_nav_idx = history_count;
+    st->temp_saved_line[0] = '\0';
     out_buf[0] = '\0';
-    redraw_line(prompt, out_buf, len, pos);
+    redraw_line(prompt, out_buf, st->len, st->pos);
+}
 
-    while (1) {
-        char c = uart_getc();
+/* Consumes one character. Returns the completed line's length, or
+ * LINE_INCOMPLETE while the line is still being edited. */
+static int line_feed(line_state_t *st, char c, const char *prompt,
+                     char *out_buf, int max_len) {
+    /* Aliased so the body below is the original, unedited code. Written back
+     * in one place at `done:`, which is also where every former `continue`
+     * now lands. */
+    int len = st->len;
+    int pos = st->pos;
+    int hist_nav_idx = st->hist_nav_idx;
+    char *temp_saved_line = st->temp_saved_line;
+    int ret = LINE_INCOMPLETE;
+
 
         // Control character handling
         if (c == 0x01) { // Ctrl-A: Move to beginning of line
             pos = 0;
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x05) { // Ctrl-E: Move to end of line
             pos = len;
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x02) { // Ctrl-B: Left
             if (pos > 0) pos--;
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x06) { // Ctrl-F: Right
             if (pos < len) pos++;
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x04) { // Ctrl-D: Delete char under cursor
             if (pos < len) {
                 for (int i = pos; i < len - 1; i++) {
@@ -543,16 +595,16 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 out_buf[len] = '\0';
                 redraw_line(prompt, out_buf, len, pos);
             }
-            continue;
+            goto done;
         } else if (c == 0x0B) { // Ctrl-K: Kill to end of line
             len = pos;
             out_buf[len] = '\0';
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x0C) { // Ctrl-L: Clear screen
             console_puts("\033[2J\033[H");
             redraw_line(prompt, out_buf, len, pos);
-            continue;
+            goto done;
         } else if (c == 0x10) { // Ctrl-P: History Previous
             if (hist_nav_idx > 0) {
                 if (hist_nav_idx == history_count) {
@@ -564,7 +616,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 pos = len;
                 redraw_line(prompt, out_buf, len, pos);
             }
-            continue;
+            goto done;
         } else if (c == 0x0E) { // Ctrl-N: History Next
             if (hist_nav_idx < history_count) {
                 hist_nav_idx++;
@@ -577,23 +629,24 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 pos = len;
                 redraw_line(prompt, out_buf, len, pos);
             }
-            continue;
+            goto done;
         } else if (c == 0x18) { // Ctrl-X
-            char c2 = uart_getc();
+            char c2 = console_getc();
             if (c2 == 0x0D || c2 == 0x0A || c2 == 0x05 || c2 == 'm' || c2 == 'M' || c2 == 'e' || c2 == 'E') { // Ctrl-M or Ctrl-E
                 int mlen = edit_multiline_box("/ram0/system/scratch.lisp", out_buf, max_len);
                 add_history(out_buf);
-                return mlen;
+                ret = mlen;
+                goto done;
             }
-            continue;
+            goto done;
         }
 
 
         // Escape Sequences (Arrow keys, Home, End, Delete)
         if (c == 0x1B) {
-            char seq1 = uart_getc();
+            char seq1 = console_getc();
             if (seq1 == '[' || seq1 == 'O') {
-                char seq2 = uart_getc();
+                char seq2 = console_getc();
 
                 if (seq2 == 'A') { // Up Arrow (History Prev)
                     if (hist_nav_idx > 0) {
@@ -630,14 +683,14 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                     }
                 } else if (seq2 == 'H' || seq2 == '1') { // Home key
                     pos = 0;
-                    if (seq2 == '1') uart_getc(); // consume '~'
+                    if (seq2 == '1') console_getc(); // consume '~'
                     redraw_line(prompt, out_buf, len, pos);
                 } else if (seq2 == 'F' || seq2 == '4') { // End key
                     pos = len;
-                    if (seq2 == '4') uart_getc(); // consume '~'
+                    if (seq2 == '4') console_getc(); // consume '~'
                     redraw_line(prompt, out_buf, len, pos);
                 } else if (seq2 == '3') { // Delete key
-                    uart_getc(); // consume '~'
+                    console_getc(); // consume '~'
                     if (pos < len) {
                         for (int i = pos; i < len - 1; i++) {
                             out_buf[i] = out_buf[i + 1];
@@ -648,7 +701,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                     }
                 }
             }
-            continue;
+            goto done;
         }
 
         // Backspace handling
@@ -662,7 +715,7 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 out_buf[len] = '\0';
                 redraw_line(prompt, out_buf, len, pos);
             }
-            continue;
+            goto done;
         }
 
         // Enter key
@@ -670,7 +723,16 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
             console_puts("\n");
             out_buf[len] = '\0';
             add_history(out_buf);
-            return len;
+            /* A Ctrl-C typed while composing this line cancelled nothing --
+             * there was no command running to cancel. Clear it here, as the
+             * line is handed over, so it cannot be mistaken for an interrupt
+             * aimed at the command about to run. Ctrl-C pressed *during* that
+             * command still latches normally, which is the case that matters.
+             * (Ctrl-C never arrives here as a character: kernel/console.c
+             * latches it at the pump and never delivers it as data.) */
+            console_interrupt_clear();
+            ret = len;
+            goto done;
         }
 
         // Standard printable character
@@ -694,6 +756,61 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
                 }
             }
         }
+    
+done:
+    st->len = len;
+    st->pos = pos;
+    st->hist_nav_idx = hist_nav_idx;
+    return ret;
+}
+
+int readline_interactive(const char *prompt, char *out_buf, int max_len) {
+    line_state_t st;
+    line_begin(&st, prompt, out_buf);
+
+    for (;;) {
+        int r = line_feed(&st, console_getc(), prompt, out_buf, max_len);
+        if (r != LINE_INCOMPLETE) return r;
     }
 }
 
+/* Non-blocking counterpart. Consumes whatever input is already available and
+ * returns LINE_INCOMPLETE if that did not finish a line; call it again later.
+ *
+ * The partial line lives in the caller's own `out_buf` between calls, and the
+ * editing state lives here, so **one caller at a time, always the same
+ * buffer**. That is a real constraint rather than an oversight: this exists
+ * for an event loop that also has other input sources to poll (see
+ * chess_next_event() in user/chess/src/chess_ui.c), and such a loop has one
+ * line being typed into it by definition. readline_poll_reset() abandons a
+ * half-typed line for a caller that gives up on one.
+ *
+ * The prompt is drawn once, when a fresh line starts. */
+static line_state_t g_poll_state;
+static bool         g_poll_in_progress = false;
+
+int readline_poll(const char *prompt, char *out_buf, int max_len) {
+    if (!g_poll_in_progress) {
+        line_begin(&g_poll_state, prompt, out_buf);
+        g_poll_in_progress = true;
+    }
+
+    while (console_has_char()) {
+        int r = line_feed(&g_poll_state, console_getc(), prompt, out_buf, max_len);
+        if (r != LINE_INCOMPLETE) {
+            g_poll_in_progress = false;
+            return r;
+        }
+    }
+    return LINE_INCOMPLETE;
+}
+
+void readline_poll_reset(void) {
+    /* Only the latch needs clearing: line_begin() rebuilds the rest, and
+     * redraws the prompt, on the next call. */
+    g_poll_in_progress = false;
+}
+
+bool readline_poll_active(void) {
+    return g_poll_in_progress && g_poll_state.len > 0;
+}

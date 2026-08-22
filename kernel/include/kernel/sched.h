@@ -117,6 +117,18 @@ int task_create(const char *name, void (*entry)(void *), void *arg);
 
 /* Round-robin to the next READY task. A no-op when nothing else can run, so
  * it is safe to call from any busy-wait, including before any task exists. */
+/* A task's stack high-water mark and its total size, in bytes (§6,
+ * plan/phase15_memory_reclamation.md). 0 for an unused slot or the boot task,
+ * whose stack is the linker's and is reported by meminfo.c instead.
+ *
+ * The figure is a true high-water, not a current depth: task_create_sized()
+ * paints the stack, and this returns the distance from the top down to the
+ * deepest word that pattern no longer covers. That is what makes a *finished*
+ * task's number meaningful, which is the case that matters -- you want to know
+ * how deep a driver task got, after it got there. */
+uint32_t sched_stack_used(int pid);
+uint32_t sched_stack_size(int pid);
+
 void sched_yield(void);
 
 /* Marks the calling task DEAD, frees its stack, and yields permanently.

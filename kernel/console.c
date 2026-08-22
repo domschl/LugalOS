@@ -3,6 +3,7 @@
 #include "kernel/device.h"
 #include "kernel/printk.h"
 #include "drivers/uart.h"
+#include "kernel/irq.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -90,12 +91,120 @@ const char *console_bound_device(void) { return g_bound_name; }
 
 static volatile bool g_interrupt_pending = false;
 
-bool console_interrupt_requested(void) {
-    while (uart_has_char()) {
-        if (uart_getc() == 0x03) {
-            g_interrupt_pending = true;
-        }
+/* Push-back ring. See kernel/console.h for why this exists and what it is
+ * not. 128 bytes: enough for a few typed-ahead commands, small enough that
+ * it can never be mistaken for a real input queue.
+ *
+ * Guarded with irq_save()/irq_restore() rather than left bare. The producer
+ * (console_interrupt_requested(), from whichever task is running a long
+ * command) and the consumer (console_getc(), from whichever task is
+ * reading a line) are the same task in every path today, but preemption is
+ * on -- and the whole point of this ring is to be written from inside a
+ * hot loop that can be interrupted at any instruction. */
+#define CONSOLE_PUSHBACK_SIZE 128u
+
+static char     g_pushback[CONSOLE_PUSHBACK_SIZE];
+static uint32_t g_pb_head;   /* next slot to write */
+static uint32_t g_pb_tail;   /* next slot to read */
+
+static bool pushback_full(void) {
+    uintptr_t f = irq_save();
+    bool full = (((g_pb_head + 1u) % CONSOLE_PUSHBACK_SIZE) == g_pb_tail);
+    irq_restore(f);
+    return full;
+}
+
+static void pushback_put(char c) {
+    uintptr_t f = irq_save();
+    uint32_t next = (g_pb_head + 1u) % CONSOLE_PUSHBACK_SIZE;
+    if (next != g_pb_tail) {          /* full: drop, but see console_pump() */
+        g_pushback[g_pb_head] = c;
+        g_pb_head = next;
     }
+    irq_restore(f);
+}
+
+/* -1 when empty. */
+static int pushback_get(void) {
+    uintptr_t f = irq_save();
+    int c = -1;
+    if (g_pb_head != g_pb_tail) {
+        c = (unsigned char)g_pushback[g_pb_tail];
+        g_pb_tail = (g_pb_tail + 1u) % CONSOLE_PUSHBACK_SIZE;
+    }
+    irq_restore(f);
+    return c;
+}
+
+/* The single point where bytes leave the device, so there is exactly one
+ * policy about what a Ctrl-C is.
+ *
+ * Everything that reads console input funnels through here: the interrupt
+ * poll, console_has_char(), console_getc(). 0x03 is latched and never
+ * delivered onward; every other byte queues. Having one pump is what makes
+ * that statement true regardless of *who* reads first -- which matters
+ * because both a line reader and an interrupt poll can be live at the same
+ * time (see chess_next_event(), user/chess/src/chess_ui.c). With separate
+ * drain paths, whichever ran first would decide the byte's fate, and a
+ * Ctrl-C consumed by the line editor -- which has no handling for it -- would
+ * simply vanish. */
+static void console_pump(void) {
+    /* Moves device bytes into the ring, latching Ctrl-C on the way past.
+     *
+     * Two things, and it is worth being precise about why both:
+     *
+     * **It latches 0x03 but still queues it.** An earlier version treated
+     * Ctrl-C as "a signal, never data" and dropped the byte. That broke
+     * edit_multiline_box() (kernel/line_editor.c), whose documented exit is
+     * Ctrl-X Ctrl-C -- it reads the 0x03 as an ordinary character, so
+     * swallowing it made the editor impossible to leave and it redrew
+     * forever. Latching at the pump, rather than at whoever happens to read
+     * first, is what makes the latch reliable *without* having to steal the
+     * byte: a poller sees the interrupt even if a line reader consumes the
+     * character, because the two no longer compete for it.
+     *
+     * **It stops when the ring is full**, leaving the rest in the device.
+     * That bound is the whole correctness of the pump, not a refinement: an
+     * earlier version drained the device dry on every call and silently
+     * destroyed everything past the 128th byte -- reintroducing, one layer
+     * down, exactly the input-eating this ring exists to fix. The test
+     * runner submits multi-line command blocks well over that size, and
+     * their tails vanished. Surplus left in the device is also the right
+     * back-pressure: the UART's own buffering holds it until a reader makes
+     * room. */
+    while (!pushback_full() && uart_has_char()) {
+        char c = uart_getc();
+        if (c == 0x03) g_interrupt_pending = true;
+        pushback_put(c);
+    }
+}
+
+bool console_has_char(void) {
+    console_pump();
+    uintptr_t f = irq_save();
+    bool queued = (g_pb_head != g_pb_tail);
+    irq_restore(f);
+    return queued;
+}
+
+char console_getc(void) {
+    console_pump();
+    int c = pushback_get();
+    if (c >= 0) return (char)c;
+
+    /* Nothing queued: block on the device, latching a Ctrl-C that arrives
+     * this way too, and still handing it on. */
+    char raw = uart_getc();
+    if (raw == 0x03) g_interrupt_pending = true;
+    return raw;
+}
+
+void console_ungetc(char c) {
+    pushback_put(c);
+}
+
+bool console_interrupt_requested(void) {
+    console_pump();
     return g_interrupt_pending;
 }
 

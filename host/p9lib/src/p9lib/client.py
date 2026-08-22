@@ -39,6 +39,11 @@ TSTAT, RSTAT = 124, 125
 
 NOFID = 0xFFFFFFFF
 
+# Plan 9's IOHDRSZ: the framing that must fit alongside a read/write
+# payload inside one msize-bounded message. Mirrors P9_IOHDRSZ in
+# fs/include/fs/9p.h -- if one moves, so must the other.
+IOHDRSZ = 24
+
 # 9P open/create mode bits (fs/include/fs/9p.h) -- the low 2 bits select the
 # access mode, the rest are independent flags.
 OREAD = 0x00
@@ -188,6 +193,11 @@ class P9Client:
         self._next_tag = 1
         self._framing = framing
         self._pending = bytearray()  # unprocessed bytes, SLIP framing only
+        # What Tversion last agreed with this server. Until version() runs
+        # there is no connection, so the request default stands in.
+        self.msize = 4096
+        # The iounit the last open() was answered with; 0 before any open.
+        self.last_iounit = 0
 
     def close(self) -> None:
         self._sock.close()
@@ -299,10 +309,28 @@ class P9Client:
     # --- Wire-level operations, one per 9P message type ---
 
     def version(self, msize: int = 4096) -> int:
+        """Negotiates the maximum message size, and remembers the answer.
+
+        The server may agree to less than was asked -- a LugalOS RP2350 node
+        answers 2048, because ten frame buffers of this size are a
+        significant fraction of its RAM (see P9_MAX_MSIZE in
+        fs/include/fs/9p.h). The reply used to be returned and discarded by
+        both callers here, leaving read_all()/write_all() chunking at a
+        hardcoded 1024 that merely *happened* to fit. It now sets .msize, and
+        those defaults derive from it."""
         rtype, body = self._roundtrip(TVERSION, struct.pack("<I", msize) + _pack_str("9P2000"))
         if rtype != RVERSION:
             raise P9Error(f"expected Rversion, got type {rtype}")
-        return struct.unpack_from("<I", body, 0)[0]
+        self.msize = struct.unpack_from("<I", body, 0)[0]
+        return self.msize
+
+    def io_chunk(self) -> int:
+        """The largest payload one Tread/Twrite may carry on this connection.
+
+        IOHDRSZ (24) is Plan 9's own figure and matches the server's
+        P9_IOHDRSZ: Twrite needs 23 bytes of header before a single payload
+        byte, so a chunk of exactly .msize could not be framed."""
+        return max(self.msize - IOHDRSZ, 1)
 
     def attach(self, fid: int, aname: str = "", uname: str = "lugal") -> Qid:
         body = struct.pack("<II", fid, NOFID) + _pack_str(uname) + _pack_str(aname)
@@ -325,10 +353,17 @@ class P9Client:
         return nwqid
 
     def open(self, fid: int, mode: int = OREAD) -> Qid:
+        """Topen. Also records the server's advertised iounit.
+
+        Ropen carries qid[13] iounit[4]; the iounit was parsed past and
+        thrown away here. It is the server's own statement of the largest
+        payload one Tread/Twrite against this fid may carry, and it must not
+        exceed msize - IOHDRSZ -- see .last_iounit."""
         rtype, body = self._roundtrip(TOPEN, struct.pack("<IB", fid, mode))
         if rtype != ROPEN:
             raise P9Error(f"expected Ropen, got type {rtype}")
-        qid, _ = _parse_qid(body, 0)
+        qid, off = _parse_qid(body, 0)
+        self.last_iounit = struct.unpack_from("<I", body, off)[0] if len(body) >= off + 4 else 0
         return qid
 
     def create(self, fid: int, name: str, perm: int = 0o644, mode: int = OWRITE) -> Qid:
@@ -353,7 +388,7 @@ class P9Client:
         (n,) = struct.unpack_from("<I", body, 0)
         return body[4 : 4 + n]
 
-    def read_all(self, fid: int, chunk_size: int = 1024) -> bytes:
+    def read_all(self, fid: int, chunk_size: int | None = None) -> bytes:
         """Reads a file (or, for a directory fid, the raw concatenated-stat
         byte stream -- see read_dir()) to EOF. Directory reads rely on the
         server's own opaque read-cursor convention (fs/9p.c's
@@ -361,6 +396,8 @@ class P9Client:
         any nonzero offset just continues its internal cursor) -- passing
         monotonically increasing offsets here (as an ordinary file read
         would) satisfies that convention for free."""
+        if chunk_size is None:
+            chunk_size = min(self.io_chunk(), 1024)
         out = b""
         offset = 0
         while True:
@@ -370,7 +407,7 @@ class P9Client:
             out += chunk
             offset += len(chunk)
 
-    def read_dir(self, fid: int, chunk_size: int = 1024) -> list[Stat]:
+    def read_dir(self, fid: int, chunk_size: int | None = None) -> list[Stat]:
         """Reads an opened directory fid's full entry list."""
         raw = self.read_all(fid, chunk_size=chunk_size)
         entries: list[Stat] = []
@@ -388,7 +425,9 @@ class P9Client:
         (n,) = struct.unpack_from("<I", resp, 0)
         return n
 
-    def write_all(self, fid: int, data: bytes, chunk_size: int = 1024) -> int:
+    def write_all(self, fid: int, data: bytes, chunk_size: int | None = None) -> int:
+        if chunk_size is None:
+            chunk_size = min(self.io_chunk(), 1024)
         offset = 0
         while offset < len(data):
             chunk = data[offset : offset + chunk_size]

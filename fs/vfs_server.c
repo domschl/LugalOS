@@ -454,8 +454,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
          * such pattern hunted down and loosened. Found the hard way (a
          * QEMU rv64 run that looked like a hang was actually 3 full
          * retries failing the same two now-broken regexes). */
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol\n");
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol  Stack\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----  ---------\n");
         int pid, state;
         const char *tname;
         long status;
@@ -480,8 +480,22 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
              * space at all -- found live on real hardware (`usbisotest`
              * prints "killed" for the intruder task it deliberately kills). */
             used = append_col(buf, used, cap, exitbuf, 7);
-            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s\n",
-                                        has_domain ? mem_domain_backend_name() : "-");
+            used = append_col(buf, used, cap,
+                              has_domain ? mem_domain_backend_name() : "-", 6);
+            /* Stack high-water against the size it was given (§6,
+             * plan/phase15_memory_reclamation.md). "-" for the boot task,
+             * whose stack is the linker's and is reported by the Boot Stack
+             * line in /proc/meminfo instead. */
+            {
+                uint32_t su = sched_stack_used(pid);
+                uint32_t ss = sched_stack_size(pid);
+                if (ss == 0) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
+                } else {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                                                "%u/%u B\n", su, ss);
+                }
+            }
         }
         return (int)used;
     } else if (strcmp(rel, "df") == 0) {
@@ -566,6 +580,17 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Image (text+data+bss): %u KB\n", map.image_bytes / 1024);
 #endif
+        /* The static side in the parts it is made of (§6,
+         * plan/phase15_memory_reclamation.md). The one Image figure above
+         * shows that it moved; these show what moved -- and on this board
+         * every byte of them is a heap byte nothing else can have. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "    .data %u B, .bss %u KB", map.data_bytes, map.bss_bytes / 1024);
+        if (map.ustacks_bytes) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                ", ustacks %u KB", map.ustacks_bytes / 1024);
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Boot Stack: %u KB, peak %u bytes\n",
             map.stack_bytes / 1024, stack_used_bytes());
@@ -870,7 +895,7 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
         }
         case MOUNT_DEV:
             if (strcmp(h->rel_path, "uart") == 0) {
-                ((char *)buf)[0] = uart_getc();
+                ((char *)buf)[0] = console_getc();
                 return 1;
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_read((uint16_t)offset, (uint8_t *)buf, count);

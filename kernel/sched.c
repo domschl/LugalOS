@@ -1,5 +1,6 @@
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
+#include "kernel/meminfo.h"
 #include "kernel/mem_domain.h"
 #include "kernel/chan.h"
 #include "kernel/irq.h"
@@ -231,6 +232,22 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
 
+    /* Paint it before priming, so a high-water mark can be recovered later
+     * (§6, plan/phase15_memory_reclamation.md).
+     *
+     * The boot stack has had this since entry.S started painting it, and
+     * reading it is what found that the RP2350 boot path had been running on
+     * the wrong stack entirely. Task stacks had no equivalent, so every
+     * per-task size in this tree -- TASK_STACK_PAGES, and the 1-page choice
+     * each driver task makes -- was a judgement with no way to check it.
+     * Now `cat /proc/ps` reports what each actually touched.
+     *
+     * palloc_pages() already zeroed this; the second pass is what makes
+     * "never written" distinguishable from "written, then zeroed". */
+    for (uint32_t i = 0; i < stack_pages * (uint32_t)PAGE_SIZE / sizeof(uintptr_t); i++) {
+        ((uintptr_t *)stack)[i] = STACK_POISON_WORD;
+    }
+
     /* Prime the stack so the first ctx_switch() into this task "returns" to
      * task_trampoline with s0 = entry and s1 = arg. The frame layout must
      * match arch/riscv/common/switch.S exactly: slot 0 is ra, slots 1..12
@@ -277,6 +294,27 @@ static int next_runnable(int from) {
         }
     }
     return chosen;
+}
+
+uint32_t sched_stack_used(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return 0;
+    task_t *t = &g_tasks[pid];
+    if (t->state == TASK_UNUSED || !t->stack_base) return 0;
+
+    /* Scan up from the base: the first word still carrying the pattern is the
+     * deepest point never written, so everything above it has been used. Same
+     * direction and reasoning as meminfo.c's boot-stack scan. */
+    const uintptr_t *p = (const uintptr_t *)t->stack_base;
+    const uintptr_t *top = p + (t->stack_pages * (uint32_t)PAGE_SIZE) / sizeof(uintptr_t);
+    while (p < top && *p == STACK_POISON_WORD) p++;
+    return (uint32_t)((uintptr_t)top - (uintptr_t)p);
+}
+
+uint32_t sched_stack_size(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return 0;
+    task_t *t = &g_tasks[pid];
+    if (t->state == TASK_UNUSED || !t->stack_base) return 0;
+    return t->stack_pages * (uint32_t)PAGE_SIZE;
 }
 
 void sched_yield(void) {

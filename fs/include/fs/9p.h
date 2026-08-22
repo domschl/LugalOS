@@ -7,7 +7,45 @@
 
 #define P9_NOFID   ((uint32_t)~0U)
 #define P9_NOTAG   ((uint16_t)~0U)
+/* The largest 9P message this node will send or accept, and therefore the
+ * size of every frame buffer in fs/. There are ten of them across p9_chan.c,
+ * p9_link.c and 9p.c, so this constant is multiplied by ten in .bss -- 48 KB
+ * at 4096, which on RP2350 is 12 of the heap's 62 pages, since .bss and the
+ * heap are the same budget there (§2.3,
+ * plan/phase15_memory_reclamation.md).
+ *
+ * Board-scoped for that reason, the same way user/lisp/lisp.c's pools and
+ * search.c's MAX_SEARCH_PLYS are. It costs round trips, not correctness:
+ * msize is negotiated per connection (see p9_server_process()'s P9_TVERSION
+ * case), so a peer asking for more is simply answered with this and must
+ * respect it. */
+#if defined(CONFIG_BOARD_RP2350)
+#define P9_MAX_MSIZE 2048
+#else
 #define P9_MAX_MSIZE 4096
+#endif
+
+/* Bytes of framing that must fit alongside a read's or write's payload
+ * inside one msize-bounded message.
+ *
+ * 24 is Plan 9's own IOHDRSZ, and it is the *write* direction that sets it:
+ * Twrite is size[4] type[1] tag[2] fid[4] offset[8] count[4] = 23 bytes of
+ * header before a single payload byte, rounded up. Rread's own framing is
+ * smaller (11), so one conservative number covers both directions.
+ *
+ * This is what an iounit must be computed from. Advertising an iounit equal
+ * to the msize -- which this server did, hardcoded, until §2.3 -- promises a
+ * client a transfer that provably cannot fit: a 4096-byte Tread against a
+ * 4096 msize needs 4107 bytes on the wire for its reply. */
+#define P9_IOHDRSZ 24
+
+/* The largest payload a single Tread/Twrite can carry at this node's own
+ * msize. Derived, never written down twice. */
+#define P9_MAX_IOUNIT (P9_MAX_MSIZE - P9_IOHDRSZ)
+
+/* The iounit for the connection as currently negotiated -- at most
+ * P9_MAX_IOUNIT, less if the peer asked for a smaller msize. */
+uint32_t p9_negotiated_iounit(void);
 
 /* Bounds for the in-kernel fid table and Twalk's name list -- both are
  * per-connection resource limits, not protocol limits (9P itself allows up

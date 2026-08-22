@@ -77,6 +77,35 @@ typedef uint16_t Move;
 #endif
 #define MAX_MOVES 256
 
+/* Capacity of a CaptureList (movegen.h), the narrower list generate_captures()
+ * fills for quiescence search -- 96 against MAX_MOVES's 256.
+ *
+ * Quiescence keeps one of these per ply, so the width is multiplied by
+ * MAX_SEARCH_PLYS: at 256 wide the quiescence pool cost as much as the
+ * full-width pool beside it, for lists that cannot come close to filling.
+ * On RP2350 that was 8 of the heap's 62 pages against 3 (§2.1,
+ * plan/phase15_memory_reclamation.md).
+ *
+ * 96 was chosen against a measurement, not a guess: instrumenting
+ * generate_captures() across tactical positions (Kiwipete and friends, to
+ * depth 6+) put the largest list it ever produced at **18** moves. The margin
+ * is therefore better than 5x over anything observed.
+ *
+ * It is deliberately not a proof. A constructed position -- and parse_fen()
+ * will accept any -- can in principle stack more capture moves than this,
+ * since several attackers may share one target square and a pawn capture onto
+ * the eighth rank counts four times over. That is exactly why add_capture()
+ * (movegen.h) bounds-checks rather than trusting the number: overflowing this
+ * list drops a capture from one quiescence node, which costs a little search
+ * quality in a position no game will reach, instead of writing past the end
+ * of a pool entry into its neighbour.
+ *
+ * One value on every target, unlike MAX_SEARCH_PLYS. This is not really a
+ * capability being traded away for RAM -- 96 is far beyond real play -- and
+ * keeping it uniform means the QEMU suites exercise the same bound, and the
+ * same overflow path, that the board runs. */
+#define MAX_CAPTURES 96
+
 #define MATE_VALUE 29000
 #define INFINITY_VALUE 30000
 

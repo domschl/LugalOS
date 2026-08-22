@@ -17,8 +17,8 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 217 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 22 tests against real RP2350
+**Working today**, verified by the automated test suite (`tests/runner.py`, 249 tests on QEMU RV32
+NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 24 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
@@ -80,7 +80,21 @@ silicon):
   hardware, now running as a U-mode task like every other RP2350 driver.
 - **An onboard chess engine** (`user/chess/`) with a console REPL (`chess-console`), alpha-beta
   search, checkmate/stalemate detection, and full game state (undo/redo/FEN save-load) — reachable
-  interactively over the same `lsh` shell, on both QEMU and real RP2350 hardware.
+  interactively over the same `lsh` shell, on both QEMU and real RP2350 hardware. On the chess-computer
+  persona the keypad/TFT board UI and the terminal are **one session with two live input devices**:
+  every console command (`level 4`, `fen …`, `save`) works while a game is being played on the board,
+  and typing during an engine search is queued rather than discarded.
+- **RAM budgeting as a first-class concern, with the tooling to keep it that way**: on RP2350 `.bss`
+  and the heap are literally the same budget — the page allocator starts where the image ends — so a
+  static buffer serving an idle subsystem is heap no *other* subsystem can have. Reclaiming that took
+  the managed heap from 53 pages (212 KB) to **89 pages (356 KB)** and the chess persona's peak from
+  100% of the heap to 28 of 89 pages. Rare-but-large working memory (the compiler's pools, the chess
+  engine's move-list pools and position scratch, Lisp's file buffers, the U-mode probe stacks) is
+  taken from the heap on demand and given straight back via `kernel/scratch.h`; constant tables that
+  were computed into RAM at boot now live in flash. Guarded going forward by a **link-time heap
+  floor** (`linker/rp2350.ld` fails the build if the heap drops below 256 KB), a `sizecheck` build
+  target that fails on any static-RAM growth against a recorded per-file baseline, and `/proc/meminfo`
+  and `/proc/ps` reporting the static breakdown and per-task stack high-water marks.
 - **A second RP2350 board persona**: `rp2350-clock` targets the Waveshare Pico-Clock-Green baseboard
   — a led-matrix clock display with LDR-driven auto-brightness, wired through the same driver-task
   architecture as the default `rp2350-chess` persona, demonstrating that "which hardware this board
@@ -160,7 +174,7 @@ silicon):
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 217 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 22 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 249 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 24 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 * **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
 * **FUSE Filesystem (`host/fuse-p9`, Linux)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos` (see [`host/fuse-p9/README.md`](host/fuse-p9/README.md)).
 
@@ -246,6 +260,27 @@ test tooling in `tests/hw/` already expects; the rest match their preset name). 
 means adding one more entry to `CMakePresets.json`, not a new directory of hand-maintained CMakeLists.txt files —
 see `cmake/board-rp2350-clock.cmake` for what a second RP2350 persona actually differs by (a handful of pin facts and
 feature flags, not a different build).
+
+### Static RAM budgeting (`sizereport` / `sizecheck`)
+
+On RP2350 the page allocator's heap begins where the image ends, so every byte of `.data`/`.bss` is a
+byte the heap does not get. Two targets make that visible instead of something to rediscover:
+
+```bash
+cmake --build build/rp2350 --target sizereport   # per-source-file static RAM, and the heap it leaves
+cmake --build build/rp2350 --target sizecheck    # fails if static RAM grew vs the recorded baseline
+```
+
+`sizecheck` compares against `tools/sizereport-rp2350.json` and exits non-zero on **any** growth. When
+growth is intended, re-baseline deliberately so the new numbers land in a reviewable diff:
+
+```bash
+python3 tools/sizereport.py build/rp2350/lugalos.elf --update tools/sizereport-rp2350.json
+```
+
+The hard limit is enforced independently at link time: `linker/rp2350.ld` asserts the heap never falls
+below 256 KB, so a regression is a build error naming the cause rather than a board that fails to start
+something weeks later.
 
 ### Build & Run RV32 (NOMMU) Target
 ```bash
@@ -630,6 +665,24 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 1. Loads `/sd0/system/stdlib.lisp` (standard library extensions written in pure Lisp).
 2. Executes `/sd0/system/init.lisp` to initialize system settings and launch startup tasks.
 
+
+---
+
+## History
+
+- **2026-08-22: Release 0.11.0 — Heap space optimization.** Reclaimed RP2350 RAM by moving rare-but-large
+  working buffers out of `.bss` onto an on-demand heap, tiering the Lisp string pool, board-scaling the
+  9P and chess engine limits, and putting constant tables in flash — taking the managed heap from 212 KB
+  to 356 KB (53 → 89 pages) and the chess persona's peak from 100% of the heap down to 31%. Also brings
+  the previously unreleased 0.10.0 work (Lisp tail-call optimization, mark-sweep GC, a C-primitive
+  standard library, and the `host/p9lib` + `host/fuse-p9` 9P host tooling), a link-time heap floor and
+  `sizecheck` target to keep the budget from silently eroding again, and a chess board UI that accepts
+  keypad and terminal input in one session.
+
+- **2026-08-17: Release 0.9.0 — Microkernel with hardware-isolated drivers.** Every RP2350 driver runs as
+  an independent U-mode task confined to its own PMP domain, verified per driver by a deliberate fault.
+  Ships two proof-of-concept board personas: a chess computer (1.8" TFT + 4x4 keypad with 7-segment move
+  entry) and a Pico-Clock-Green LED-matrix clock.
 
 ---
 

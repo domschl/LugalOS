@@ -23,6 +23,7 @@ import glob
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -55,6 +56,53 @@ def bootsel_volumes() -> list[str]:
         if base.startswith("RP") or base.startswith("RPI-") or "PICO" in base:
             out.append(v)
     return out
+
+
+def bootsel_block_device() -> str | None:
+    """An RP2350 in BOOTSEL that udev can see but that nothing has mounted.
+
+    Linux only, and additive: macOS auto-mounts, and so do desktop Linux
+    setups running an automounter. A headless or minimally-configured host
+    does not, and then the board enumerates perfectly (`lsusb` shows
+    2e8a:000f "RP2350 Boot", /dev/disk/by-label/RP2350 appears) while
+    bootsel_volumes() above -- which only ever looks at mount points --
+    reports nothing.
+
+    That gap made the failure message in main() actively misleading: it
+    concluded the *firmware's* 1200-baud touch was broken or missing, and
+    told the reader to fall back to a manual BOOTSEL press, when the touch
+    had in fact worked and the only thing missing was a mount. Found on an
+    Arch host on 2026-08-22 during §1.2/§1.3 of
+    plan/phase15_memory_reclamation.md.
+    """
+    for dev in sorted(glob.glob("/dev/disk/by-label/*")):
+        base = Path(dev).name.upper()
+        if base.startswith("RP") or base.startswith("RPI-") or "PICO" in base:
+            return dev
+    return None
+
+
+def try_mount(dev: str) -> str | None:
+    """Mount `dev` with udisksctl and return the mount point, or None.
+
+    udisksctl rather than mount(8) deliberately: it goes through udisks2 and
+    needs no root for a removable device, so this stays runnable as the same
+    unprivileged user as the rest of this suite. Absent udisksctl, the caller
+    prints the manual command instead of escalating.
+    """
+    if not shutil.which("udisksctl"):
+        return None
+    try:
+        res = subprocess.run(["udisksctl", "mount", "-b", dev],
+                             capture_output=True, text=True, timeout=30)
+    except Exception:
+        return None
+    # "Mounted /dev/sda1 at /run/media/dsc/RP2350" -- also matches the
+    # "already mounted at" form, which is just as good an answer.
+    m = re.search(r" at (\S+)", res.stdout)
+    if m:
+        return m.group(1).rstrip(".")
+    return None
 
 
 def touch_1200(port: str) -> None:
@@ -121,14 +169,32 @@ def main() -> int:
         touch_1200(ports.console)
         vol = wait_for_bootsel()
         if not vol:
-            print("[!] The board did not enter BOOTSEL.")
-            print("    Most likely its current firmware predates the 1200-baud touch, or")
-            print("    implements it against the RP2040-only bootrom symbol (which returns")
-            print("    NULL on RP2350 -- see arch/riscv/rp2350/bootrom.c).")
-            print("    Flash once manually: hold BOOTSEL while connecting, copy the UF2,")
-            print("    and this script will work from then on.")
-            return 1
-        print(f"[*] BOOTSEL volume mounted: {vol}")
+            # Before blaming the firmware: did the board actually enter
+            # BOOTSEL and simply not get mounted? Those are different
+            # failures with different fixes, and only one of them is the
+            # board's fault.
+            dev = bootsel_block_device()
+            if dev:
+                print(f"[*] Board is in BOOTSEL ({dev}) but nothing mounted it.")
+                vol = try_mount(dev)
+                if vol:
+                    print(f"[*] Mounted at {vol}")
+                    time.sleep(0.7)  # let the mount settle before writing
+                else:
+                    print("[!] Could not mount it automatically. Mount it and re-run:")
+                    print(f"        udisksctl mount -b {dev}")
+                    print("    (this script skips the touch when a volume is already mounted)")
+                    return 1
+            else:
+                print("[!] The board did not enter BOOTSEL.")
+                print("    Most likely its current firmware predates the 1200-baud touch, or")
+                print("    implements it against the RP2040-only bootrom symbol (which returns")
+                print("    NULL on RP2350 -- see arch/riscv/rp2350/bootrom.c).")
+                print("    Flash once manually: hold BOOTSEL while connecting, copy the UF2,")
+                print("    and this script will work from then on.")
+                return 1
+        else:
+            print(f"[*] BOOTSEL volume mounted: {vol}")
 
     # Not shutil.copyfile(): its close() flushes this process's own
     # buffers, but not necessarily all the way through the OS/USB stack to

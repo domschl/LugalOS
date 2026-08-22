@@ -6,4 +6,11 @@
 # physical silicon, so this board file only carries platform defaults.
 
 set(CONFIG_PALLOC_MAX_PAGES 4096)
+
+# Buddy-allocator arena (kernel/balloc.h), in pages: 16 = 64 KB, M1's
+# original figure. Kept here where the heap is 128 MB and the tree's 8190
+# bytes of .bss are immaterial; RP2350 lowers it to 4 because there .bss and
+# the heap are the same 512 KB budget (§1.1,
+# plan/phase15_memory_reclamation.md).
+set(CONFIG_BALLOC_ARENA_PAGES 16)
 set(CONFIG_UART0_BASE       0x10000000)

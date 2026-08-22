@@ -100,6 +100,15 @@
  * not distinguished from the other case that produces it, an entry path that
  * never painted at all. Both need looking at, and inventing a separate
  * sentinel would only make the alarming one easier to explain away. */
+/* The poison as a full machine word, shared with kernel/sched.c's per-task
+ * scan so the paint and every reader of it cannot disagree. Defined here
+ * rather than in meminfo.c, where it used to be private, for that reason. */
+#if UINTPTR_MAX > 0xFFFFFFFFu
+#define STACK_POISON_WORD (((uintptr_t)STACK_POISON << 32) | (uintptr_t)STACK_POISON)
+#else
+#define STACK_POISON_WORD ((uintptr_t)STACK_POISON)
+#endif
+
 uint32_t stack_used_bytes(void);
 
 /* Total size of the boot stack region, from the linker script. */
@@ -125,6 +134,21 @@ typedef struct {
     uint32_t  image_bytes;
     uint32_t  stack_bytes;
     uint32_t  heap_bytes;
+    /* The static footprint broken into the parts it is actually made of
+     * (§6, plan/phase15_memory_reclamation.md).
+     *
+     * image_bytes above is one number covering everything below _kernel_end,
+     * which is enough to see *that* the static side moved and useless for
+     * seeing *what* moved. On RP2350 that matters more than it sounds: .bss
+     * and the heap are the same budget, so every one of these is a heap page
+     * somebody is not getting, and "which of these grew" is the first
+     * question anyone asks when the heap shrinks.
+     *
+     * ustacks_bytes is RP2350-only (the driver U-mode PMP regions grouped by
+     * linker/rp2350.ld); it reports 0 where the sections do not exist. */
+    uint32_t  data_bytes;
+    uint32_t  bss_bytes;
+    uint32_t  ustacks_bytes;
 } mem_ram_map_t;
 
 void meminfo_ram_map(mem_ram_map_t *out);

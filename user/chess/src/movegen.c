@@ -270,7 +270,7 @@ void generate_moves(const Position *pos, MoveList *list) {
 }
 
 // Generate captures only (and promotions) for Quiescence Search
-void generate_captures(const Position *pos, MoveList *list) {
+void generate_captures(const Position *pos, CaptureList *list) {
     list->count = 0;
 
     int us = pos->side;
@@ -288,10 +288,10 @@ void generate_captures(const Position *pos, MoveList *list) {
         while (single_push) {
             int to = pop_lsb(&single_push);
             int from = to - 8;
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_Q));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_R));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_B));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_N));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_Q));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_R));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_B));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_N));
         }
 
         // Captures East
@@ -300,12 +300,12 @@ void generate_captures(const Position *pos, MoveList *list) {
             int to = pop_lsb(&cap_east);
             int from = to - 9;
             if (to >= A8) {
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
             } else {
-                add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+                add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
             }
         }
 
@@ -315,12 +315,12 @@ void generate_captures(const Position *pos, MoveList *list) {
             int to = pop_lsb(&cap_west);
             int from = to - 7;
             if (to >= A8) {
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
             } else {
-                add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+                add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
             }
         }
 
@@ -330,13 +330,13 @@ void generate_captures(const Position *pos, MoveList *list) {
             if (ep_sq % 8 != 0) { // not File A
                 int from = ep_sq - 9;
                 if (get_bit(pawns, from)) {
-                    add_move(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
+                    add_capture(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
                 }
             }
             if (ep_sq % 8 != 7) { // not File H
                 int from = ep_sq - 7;
                 if (get_bit(pawns, from)) {
-                    add_move(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
+                    add_capture(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
                 }
             }
         }
@@ -346,10 +346,10 @@ void generate_captures(const Position *pos, MoveList *list) {
         while (single_push) {
             int to = pop_lsb(&single_push);
             int from = to + 8;
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_Q));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_R));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_B));
-            add_move(list, build_move(from, to, MOVE_FLAG_PROMO_N));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_Q));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_R));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_B));
+            add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_N));
         }
 
         // Captures East
@@ -358,12 +358,12 @@ void generate_captures(const Position *pos, MoveList *list) {
             int to = pop_lsb(&cap_east);
             int from = to + 7;
             if (to <= H1) {
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
             } else {
-                add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+                add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
             }
         }
 
@@ -373,12 +373,12 @@ void generate_captures(const Position *pos, MoveList *list) {
             int to = pop_lsb(&cap_west);
             int from = to + 9;
             if (to <= H1) {
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
-                add_move(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_Q));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_R));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_B));
+                add_capture(list, build_move(from, to, MOVE_FLAG_PROMO_CAP_N));
             } else {
-                add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+                add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
             }
         }
 
@@ -388,13 +388,13 @@ void generate_captures(const Position *pos, MoveList *list) {
             if (ep_sq % 8 != 0) { // not File A
                 int from = ep_sq + 7;
                 if (get_bit(pawns, from)) {
-                    add_move(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
+                    add_capture(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
                 }
             }
             if (ep_sq % 8 != 7) { // not File H
                 int from = ep_sq + 9;
                 if (get_bit(pawns, from)) {
-                    add_move(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
+                    add_capture(list, build_move(from, ep_sq, MOVE_FLAG_EN_PASSANT));
                 }
             }
         }
@@ -407,7 +407,7 @@ void generate_captures(const Position *pos, MoveList *list) {
         uint64_t attacks = get_knight_attacks(from) & them_pieces;
         while (attacks) {
             int to = pop_lsb(&attacks);
-            add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+            add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
         }
     }
 
@@ -418,7 +418,7 @@ void generate_captures(const Position *pos, MoveList *list) {
         uint64_t attacks = get_bishop_attacks(from, occupied) & them_pieces;
         while (attacks) {
             int to = pop_lsb(&attacks);
-            add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+            add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
         }
     }
 
@@ -429,7 +429,7 @@ void generate_captures(const Position *pos, MoveList *list) {
         uint64_t attacks = get_rook_attacks(from, occupied) & them_pieces;
         while (attacks) {
             int to = pop_lsb(&attacks);
-            add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+            add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
         }
     }
 
@@ -440,7 +440,7 @@ void generate_captures(const Position *pos, MoveList *list) {
         uint64_t attacks = get_queen_attacks(from, occupied) & them_pieces;
         while (attacks) {
             int to = pop_lsb(&attacks);
-            add_move(list, build_move(from, to, MOVE_FLAG_CAPTURE));
+            add_capture(list, build_move(from, to, MOVE_FLAG_CAPTURE));
         }
     }
 
@@ -450,6 +450,6 @@ void generate_captures(const Position *pos, MoveList *list) {
     uint64_t king_attacks_bb = get_king_attacks(king_sq) & them_pieces;
     while (king_attacks_bb) {
         int to = pop_lsb(&king_attacks_bb);
-        add_move(list, build_move(king_sq, to, MOVE_FLAG_CAPTURE));
+        add_capture(list, build_move(king_sq, to, MOVE_FLAG_CAPTURE));
     }
 }

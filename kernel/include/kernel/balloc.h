@@ -62,15 +62,45 @@
 /* Total arena size, in pages. Power of two, so the arena's base address
  * (reserved via palloc_pages_aligned(BALLOC_ARENA_PAGES, BALLOC_ARENA_PAGES))
  * is itself naturally aligned to the arena's full byte size -- see the file
- * comment above for why that is load-bearing rather than tidy. 16 pages =
- * 64 KB on every target; see the file comment for why this is deliberately
- * small for M1. */
-#define BALLOC_ARENA_PAGES 16u
+ * comment above for why that is load-bearing rather than tidy.
+ *
+ * Per-board, from cmake/board-*.cmake, for the reason palloc.h's own
+ * CONFIG_PALLOC_MAX_PAGES gives: which board gets which value is a board
+ * fact, not something an #ifdef here should decide. 16 pages (64 KB) on the
+ * QEMU targets, 4 (16 KB) on RP2350 -- see §1.1 of
+ * plan/phase15_memory_reclamation.md, and the two costs below.
+ *
+ * ## This constant is paid twice, and only one half is lazy
+ *
+ *   - The arena itself, BALLOC_ARENA_PAGES pages of heap, is reserved on
+ *     the first balloc_alloc() and not before (see balloc_init()). A board
+ *     that never calls this allocator pays nothing for it.
+ *   - g_longest, the tree (kernel/balloc.c), is
+ *     `(2 * pages * PAGE_SIZE / BALLOC_MIN_BLOCK - 1) * sizeof(uint16_t)`
+ *     bytes of permanent .bss, sized at compile time, present from boot
+ *     **whether or not the arena is ever reserved**: 8190 bytes at 16
+ *     pages, 2046 at 4. On RP2350 .bss and the heap are the same budget
+ *     (palloc_init() starts the heap at _kernel_end), so raising this
+ *     constant costs heap even on a boot that never allocates from it.
+ *     That is why it is 4 there and not 16. */
+#include "lugalos_config.h"
+#define BALLOC_ARENA_PAGES ((uint32_t)CONFIG_BALLOC_ARENA_PAGES)
 
-/* Reserves the arena from the page allocator and initializes the buddy tree.
- * Must run after palloc_init(). Idempotent only in the sense that calling it
- * twice reserves two arenas and leaks the tracking state of the first --
- * call it exactly once, from kernel/main.c, the way palloc_init() itself is. */
+/* Marks the allocator ready to reserve. Must run after palloc_init().
+ *
+ * Deliberately does NOT reserve the arena (M1 did; §1.1 of
+ * plan/phase15_memory_reclamation.md is why it stopped). M1 sized the arena
+ * for the callers M4/M5 were expected to bring -- driver task stacks, chan
+ * endpoint buffers -- and those callers never arrived: as of this writing
+ * the only balloc_alloc() in the tree is kernel/shell.c's `ballocdemo`, and
+ * an eager reservation was handing 64 KB of RP2350's 212 KB heap to a
+ * command nobody runs outside the QEMU test suite. Reserving on first use
+ * instead makes an unused allocator genuinely free rather than nearly free,
+ * and means the same thing cannot recur if a future arena is sized for
+ * callers that again do not materialise.
+ *
+ * Call exactly once, from kernel/main.c, the way palloc_init() is: a second
+ * call after something has allocated would abandon a live arena. */
 void balloc_init(void);
 
 /* Smallest power-of-two block >= max(size, BALLOC_MIN_BLOCK), naturally

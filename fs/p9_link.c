@@ -3,6 +3,7 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/irq.h"
+#include "kernel/scratch.h"
 #include <string.h>
 
 /* Small fixed set, not one global pointer: RP2350 wants both its USB-CDC
@@ -327,15 +328,36 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     if (!link || !link->poll || !link->send_frame || !link->recv_frame || !path) return -1;
     while (*path == '/') path++;
 
-    static uint8_t tx[P9_MAX_MSIZE];
-    static uint8_t rx[P9_MAX_MSIZE];
+    /* §3.1 (plan/phase15_memory_reclamation.md): on-demand, not .bss.
+     *
+     * This is the *client* side -- one `p9cat` against a peer, start to
+     * finish -- so it is exactly the "not live at boot, not on a hot path"
+     * case the rule is for. The server-side buffers further up this file
+     * (resp_buf, rx_buf, g_waiters) deliberately stay static: those are
+     * touched once per inbound frame by a task whose whole job is serving
+     * frames, and a page allocation per 9P message would be the wrong trade. */
+    scratch_t sc;
+    if (!scratch_acquire(&sc, 2u * P9_MAX_MSIZE)) { scratch_release(&sc); return -1; }
+    uint8_t *tx = (uint8_t *)sc.base;
+    uint8_t *rx = tx + P9_MAX_MSIZE;
     p9_msg_t req, resp;
 
     memset(&req, 0, sizeof(req));
     req.type = P9_TVERSION;
     req.tag = 1;
     req.msize = P9_MAX_MSIZE;
-    if (p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)) < 0 || resp.type != P9_RVERSION) return -1;
+    if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RVERSION) { scratch_release(&sc); return -1; }
+
+    /* What the peer agreed to, which may be less than we asked for -- an
+     * RP2350 node answers 2048 (§2.3, plan/phase15_memory_reclamation.md).
+     * The Tread chunk below is sized from this rather than from a constant,
+     * so it cannot outgrow what the far side will accept. The reply is
+     * clamped to our own maximum too: a peer is free to answer with more
+     * than it was offered, and our receive buffer is P9_MAX_MSIZE. */
+    uint32_t peer_msize = resp.msize;
+    if (peer_msize == 0 || peer_msize > P9_MAX_MSIZE) peer_msize = P9_MAX_MSIZE;
+    uint32_t chunk = (peer_msize > P9_IOHDRSZ) ? (peer_msize - P9_IOHDRSZ) : 0;
+    if (chunk > 1024) chunk = 1024;   /* the long-standing read granularity */
 
     memset(&req, 0, sizeof(req));
     req.type = P9_TATTACH;
@@ -343,7 +365,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     req.fid = 1;
     strncpy(req.uname, "lugal", sizeof(req.uname) - 1);
     // aname left empty -> namespace root "/"
-    if (p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)) < 0 || resp.type != P9_RATTACH) return -1;
+    if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RATTACH) { scratch_release(&sc); return -1; }
 
     memset(&req, 0, sizeof(req));
     req.type = P9_TWALK;
@@ -366,14 +388,14 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
         tok = slash + 1;
     }
     req.nwname = n;
-    if (p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)) < 0 || resp.type != P9_RWALK || resp.nwqid != n) return -1;
+    if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RWALK || resp.nwqid != n) { scratch_release(&sc); return -1; }
 
     memset(&req, 0, sizeof(req));
     req.type = P9_TOPEN;
     req.tag = 4;
     req.fid = 2;
     req.mode = P9_OREAD;
-    if (p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)) < 0 || resp.type != P9_ROPEN) return -1;
+    if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_ROPEN) { scratch_release(&sc); return -1; }
 
     uint32_t total = 0;
     uint64_t offset = 0;
@@ -381,7 +403,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     bool read_failed = false;
     for (;;) {
         uint32_t room = (out_buf && out_max > 0 && total + 1 < out_max) ? (out_max - 1 - total) : 0;
-        uint32_t want = room < 1024 ? room : 1024;
+        uint32_t want = room < chunk ? room : chunk;
         if (want == 0) break;
 
         memset(&req, 0, sizeof(req));
@@ -390,7 +412,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
         req.fid = 2;
         req.offset = offset;
         req.count = want;
-        if (p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)) < 0 || resp.type != P9_RREAD) { read_failed = true; break; }
+        if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RREAD) { read_failed = true; break; }
         if (resp.count == 0) break;
 
         if (out_buf) memcpy(out_buf + total, resp.data, resp.count);
@@ -403,8 +425,9 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     req.type = P9_TCLUNK;
     req.tag = tag;
     req.fid = 2;
-    p9_link_roundtrip(link, &req, &resp, tx, rx, sizeof(tx)); // best-effort cleanup
+    p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE); // best-effort cleanup
 
+    scratch_release(&sc);
     return read_failed ? -1 : (int)total;
 }
 
@@ -423,11 +446,25 @@ struct p9_remote_mount {
     uint32_t root_fid;
     uint32_t next_fid;
     uint16_t next_tag;
+    /* What this peer's Rversion agreed to. Every Tread against the mount is
+     * chunked from it rather than from a constant, so a peer with a smaller
+     * msize than ours -- an RP2350 node, §2.3 -- is never asked for more
+     * than it can frame. */
+    uint32_t msize;
 };
 
 static p9_remote_mount_t g_remote_mounts[P9_REMOTE_MAX_MOUNTS];
 static uint8_t g_remote_tx[P9_MAX_MSIZE];
 static uint8_t g_remote_rx[P9_MAX_MSIZE];
+
+/* The largest Tread this mount may ask for: bounded by what the peer's
+ * Rversion agreed, and by the 1024-byte granularity these directory scans
+ * have always used. */
+static uint32_t p9_remote_read_chunk(const p9_remote_mount_t *m) {
+    uint32_t msize = (m && m->msize > 0) ? m->msize : P9_MAX_MSIZE;
+    uint32_t chunk = (msize > P9_IOHDRSZ) ? (msize - P9_IOHDRSZ) : 0;
+    return chunk > 1024 ? 1024 : chunk;
+}
 
 static uint16_t p9_remote_next_tag(p9_remote_mount_t *m) {
     uint16_t t = m->next_tag++;
@@ -459,6 +496,8 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
     req.tag = p9_remote_next_tag(m);
     req.msize = P9_MAX_MSIZE;
     if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RVERSION) return NULL;
+
+    m->msize = (resp.msize > 0 && resp.msize <= P9_MAX_MSIZE) ? resp.msize : P9_MAX_MSIZE;
 
     uint32_t root_fid = m->next_fid++;
     memset(&req, 0, sizeof(req));
@@ -676,7 +715,7 @@ int p9_remote_readdir(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, ch
         req.tag = p9_remote_next_tag(mount);
         req.fid = fid;
         req.offset = offset;
-        req.count = 1024;
+        req.count = p9_remote_read_chunk(mount);
         if (p9_remote_xchg(mount, &req, &resp) < 0 || resp.type != P9_RREAD) return -1;
         if (resp.count == 0) return -1; // EOF -- index out of range
 

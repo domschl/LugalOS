@@ -12,6 +12,18 @@
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
+# Buddy-allocator arena (kernel/balloc.h), in pages. 4 = 16 KB, against 16
+# (64 KB) on the QEMU targets.
+#
+# This board is the reason the constant is per-board at all (§1.1,
+# plan/phase15_memory_reclamation.md). It is paid twice: the arena itself
+# comes out of the heap on first use, and the buddy tree is permanent .bss
+# whose size scales with this number -- 2046 bytes at 4 pages, 8190 at 16 --
+# and on RP2350 .bss and the heap are the same 512 KB budget. 4 pages still
+# leaves better than 2x headroom for the largest thing that actually calls
+# this allocator (`ballocdemo`'s churn holds 7264 bytes of blocks at peak).
+set(CONFIG_BALLOC_ARENA_PAGES 4)
+
 # UART0: PL011, the board's console/9P wire (kernel/device.h's DEV_WIRE_UART0).
 set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  0)

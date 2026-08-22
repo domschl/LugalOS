@@ -19,6 +19,20 @@
  * defines its own in user/chess/src/chess_ui.c. This is the exact extension
  * point that made dropping console.c/uci.c possible without touching a
  * single line of search logic.
+ *   - the quiescence pool is CaptureList-wide, not MoveList-wide (see
+ *     movegen.h and MAX_CAPTURES in defs.h), and sort_moves() takes
+ *     (Move *moves, int count) so it can serve both list types.
+ *   - MAX_SEARCH_PLYS is 32 on RP2350 and 64 everywhere else, where it was
+ *     unconditionally 64 -- see that constant's own comment below for the
+ *     measurement behind the number.
+ *   - the PV-printing block in search_position() had its own permanent
+ *     `static Position temp_pos` (~8 KB, almost all of it history[MAX_PLYS]).
+ *     It now borrows chess_ui.c's already-existing on-demand scratch via
+ *     chess_scratch_position(), declared extern at the call site the same way
+ *     search_progress_callback()/search_poll_stop_callback() already are --
+ *     see §1.3 of plan/phase15_memory_reclamation.md, and that function's own
+ *     comment in chess_ui.c for why sharing one scratch between the engine
+ *     and the UI cannot race.
  *   - search_pv_movelists/search_q_movelists (~65 KB combined) were plain
  *     `static` arrays until J0 (plan/phase10_chess_completion.md): permanent
  *     .bss on every board with chess enabled (the default), whether or not
@@ -106,7 +120,48 @@ static const BookEntry book_entries[] = {
     { "Bird's Op.",      book_move_15 }
 };
 
+/* How many plies of move-list pool search_pools_init() reserves, and, via
+ * the guards in pv_search()/quiescence() below, the hard ceiling on how far
+ * ahead a search may look at all.
+ *
+ * Board-scoped (§2.1, plan/phase15_memory_reclamation.md): the pools are
+ * `2 * MAX_SEARCH_PLYS * sizeof(MoveList)` bytes taken from the page
+ * allocator, which at 64 is 66,048 bytes -- 17 of RP2350's pages, by a wide
+ * margin the largest single thing chess asks the heap for. 32 makes it 9.
+ * Guarded on CONFIG_BOARD_RP2350 rather than LUGALCHESS_EMBEDDED, which
+ * defs.h's MAX_PLYS uses: that macro is true on the QEMU targets too (see
+ * version.h -- it means "bare metal", not "small"), and this split is about
+ * one board having 512 KB of RAM while the others have 128 MB. Same axis,
+ * and the same spelling, as user/lisp/lisp.c's own pool constants.
+ *
+ * ## Why 32 is not a functional regression here
+ *
+ * This is a ceiling on *total* lookahead, iterative-deepening depth plus
+ * whatever quiescence extends on top, and hitting it is graceful -- the
+ * guards return a static evaluation rather than recursing further, which is
+ * what they already did at 64.
+ *
+ * Measured before choosing it, rather than argued from the constant's size.
+ * A temporary counter on the guard itself (added and fully removed) was run
+ * against the 32-ply value on QEMU, which at ~19.8M nodes/s searches vastly
+ * deeper in a given wall-clock budget than RP2350's ~44K -- so it is a
+ * strictly harder test than this board can ever face:
+ *
+ *     Kiwipete (tactical, 48 legal moves)   depth 7    guard hits: 0
+ *     promotion tactics                     depth 9    guard hits: 0
+ *     rook-and-pawn endgame                 depth 11   guard hits: 0
+ *     bare K+P endgame (deepest by far)     depth 15   guard hits: 0
+ *
+ * Separate instrumentation put the peak ply reached at roughly d+3..d+4
+ * (quiescence's extension beyond the iterative-deepening depth), so a
+ * 31-ply ceiling corresponds to an iterative-deepening depth near 27 --
+ * about twice the deepest figure above, on hardware some 450x slower than
+ * the machine that produced it. */
+#if defined(CONFIG_BOARD_RP2350)
+#define MAX_SEARCH_PLYS 32
+#else
 #define MAX_SEARCH_PLYS 64
+#endif
 
 /* Allocated on demand by search_pools_init() (J0) rather than reserved
  * statically -- see the file header comment above. NULL until then; every
@@ -115,7 +170,7 @@ static const BookEntry book_entries[] = {
  * does, before any search can run), so no per-access NULL check is added to
  * the hot recursive path below. */
 static MoveList *search_pv_movelists = NULL;
-static MoveList *search_q_movelists = NULL;
+static CaptureList *search_q_movelists = NULL;
 static uint32_t search_pools_pages = 0;
 static int sort_scores[MAX_MOVES];
 
@@ -124,9 +179,21 @@ bool search_pools_init(void) {
         return true; /* already allocated -- idempotent, like init_tt(). */
     }
 
-    uint32_t bytes = (uint32_t)(2 * MAX_SEARCH_PLYS * sizeof(MoveList));
+    /* Two different element widths since §2.1 (see CaptureList), so the two
+     * halves are sized separately and the split is a byte offset rather than
+     * the pointer arithmetic this used before. sizeof(MoveList) is a multiple
+     * of 4 and both structs align to 4 (their widest member is an int), so
+     * the second half lands aligned with no padding step needed -- asserted
+     * rather than assumed, since it is the kind of thing that silently stops
+     * being true if either struct gains a wider field. */
+    _Static_assert(sizeof(MoveList) % _Alignof(CaptureList) == 0,
+                   "the capture pool would start misaligned inside the shared block");
+
+    uint32_t pv_bytes = (uint32_t)(MAX_SEARCH_PLYS * sizeof(MoveList));
+    uint32_t q_bytes  = (uint32_t)(MAX_SEARCH_PLYS * sizeof(CaptureList));
+    uint32_t bytes = pv_bytes + q_bytes;
     search_pools_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    MoveList *block = (MoveList *)palloc_pages(search_pools_pages);
+    uint8_t *block = (uint8_t *)palloc_pages(search_pools_pages);
     if (block == NULL) {
         search_pools_pages = 0;
         return false;
@@ -135,8 +202,8 @@ bool search_pools_init(void) {
     /* One allocation, not two -- halves the page-rounding waste a pair of
      * palloc_pages() calls would each pay separately (chibicc's pools.c
      * arena makes the same call for the same reason). */
-    search_pv_movelists = block;
-    search_q_movelists = block + MAX_SEARCH_PLYS;
+    search_pv_movelists = (MoveList *)block;
+    search_q_movelists = (CaptureList *)(block + pv_bytes);
     return true;
 }
 
@@ -420,25 +487,32 @@ static int score_move(const Position *pos, Move move, Move tt_move, int ply) {
     return history_table[piece][to];
 }
 
-// Insertion sort for move list (fast for small arrays)
-static void sort_moves(const Position *pos, MoveList *list, Move tt_move, int ply) {
-    if (list->count <= 1) return;
+/* Insertion sort for move list (fast for small arrays).
+ *
+ * Takes the array and its length rather than a list struct: since §2.1
+ * (plan/phase15_memory_reclamation.md) there are two list types, MoveList and
+ * the narrower CaptureList, and this function only ever reads and permutes
+ * `moves[]` -- it never needs to know which struct the array came out of, and
+ * it never changes the count. */
+static void sort_moves(const Position *pos, Move *moves, int count,
+                       Move tt_move, int ply) {
+    if (count <= 1) return;
 
     int safe_ply = (ply >= 0 && ply < MAX_PLYS) ? ply : 0;
-    for (int i = 0; i < list->count; i++) {
-        sort_scores[i] = score_move(pos, list->moves[i], tt_move, safe_ply);
+    for (int i = 0; i < count; i++) {
+        sort_scores[i] = score_move(pos, moves[i], tt_move, safe_ply);
     }
 
-    for (int i = 1; i < list->count; i++) {
-        Move temp_m = list->moves[i];
+    for (int i = 1; i < count; i++) {
+        Move temp_m = moves[i];
         int temp_s = sort_scores[i];
         int j = i - 1;
         while (j >= 0 && sort_scores[j] < temp_s) {
-            list->moves[j + 1] = list->moves[j];
+            moves[j + 1] = moves[j];
             sort_scores[j + 1] = sort_scores[j];
             j--;
         }
-        list->moves[j + 1] = temp_m;
+        moves[j + 1] = temp_m;
         sort_scores[j + 1] = temp_s;
     }
 }
@@ -464,9 +538,9 @@ int quiescence(Position *pos, int ply, int alpha, int beta) {
     }
 
     int safe_ply = ply % MAX_SEARCH_PLYS;
-    MoveList *list = &search_q_movelists[safe_ply];
+    CaptureList *list = &search_q_movelists[safe_ply];
     generate_captures(pos, list);
-    sort_moves(pos, list, 0, safe_ply);
+    sort_moves(pos, list->moves, list->count, 0, safe_ply);
 
     for (int i = 0; i < list->count; i++) {
         if (!make_move(pos, list->moves[i])) {
@@ -558,7 +632,7 @@ int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_
     int safe_ply = ply % MAX_SEARCH_PLYS;
     MoveList *list = &search_pv_movelists[safe_ply];
     generate_moves(pos, list);
-    sort_moves(pos, list, tt_move, safe_ply);
+    sort_moves(pos, list->moves, list->count, tt_move, safe_ply);
 
     int legal_moves = 0;
     int best_score = -INFINITY_VALUE;
@@ -775,28 +849,36 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
         }
 
         // Print Principal Variation (PV) path
-        static Position temp_pos;
-        temp_pos = *pos;
+        extern Position *chess_scratch_position(void);
+        Position *temp_pos = chess_scratch_position();
         int pv_ply = 0;
         Move pv_move = completed_best_move;
 
-        while (pv_move != 0 && pv_ply < d) {
-            int from = MOVE_FROM(pv_move);
-            int to = MOVE_TO(pv_move);
-            printf("%c%d%c%d", 'a' + (from % 8), (from / 8) + 1, 'a' + (to % 8), (to / 8) + 1);
-            if (move_is_promo(pv_move)) {
-                int promo = move_promo_piece(pv_move);
-                const char promo_chars[] = "pnbrqk";
-                printf("%c", promo_chars[promo]);
+        /* Non-NULL for every reachable caller (see chess_scratch_position()'s
+         * own comment), so this guard should never fire -- it exists because
+         * the failure it prevents is a null dereference partway through a
+         * search on real hardware, which is worth one branch per depth. */
+        if (temp_pos != NULL) {
+            *temp_pos = *pos;
+
+            while (pv_move != 0 && pv_ply < d) {
+                int from = MOVE_FROM(pv_move);
+                int to = MOVE_TO(pv_move);
+                printf("%c%d%c%d", 'a' + (from % 8), (from / 8) + 1, 'a' + (to % 8), (to / 8) + 1);
+                if (move_is_promo(pv_move)) {
+                    int promo = move_promo_piece(pv_move);
+                    const char promo_chars[] = "pnbrqk";
+                    printf("%c", promo_chars[promo]);
+                }
+                printf(" ");
+
+                if (!make_move(temp_pos, pv_move)) break;
+                pv_ply++;
+
+                // Look up next move in PV
+                int dummy_score;
+                read_tt(temp_pos->hash_key, d - pv_ply, pv_ply, -INFINITY_VALUE, INFINITY_VALUE, &dummy_score, &pv_move);
             }
-            printf(" ");
-
-            if (!make_move(&temp_pos, pv_move)) break;
-            pv_ply++;
-
-            // Look up next move in PV
-            int dummy_score;
-            read_tt(temp_pos.hash_key, d - pv_ply, pv_ply, -INFINITY_VALUE, INFINITY_VALUE, &dummy_score, &pv_move);
         }
         printf("\n");
         fflush(stdout);

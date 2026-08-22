@@ -14,17 +14,18 @@ extern char _stack_bottom[];
 extern char _stack_top[];
 extern char _kernel_end[];
 extern char _heap_end[];
+extern char _data_start[];
+extern char _data_end[];
+extern char _bss_start[];
 
 /* The poison as a full machine word. Built from STACK_POISON rather than
  * written out again, so the paint in entry.S and the scan here cannot
  * disagree. The 32-bit shift appears only in the branch where it is defined
  * behaviour -- on RV32 `(uintptr_t)x << 32` would be UB, and this build runs
  * UBSan on the QEMU targets. */
-#if UINTPTR_MAX > 0xFFFFFFFFu
-#define POISON_WORD (((uintptr_t)STACK_POISON << 32) | (uintptr_t)STACK_POISON)
-#else
-#define POISON_WORD ((uintptr_t)STACK_POISON)
-#endif
+/* STACK_POISON_WORD now lives in kernel/meminfo.h, shared with sched.c's
+ * per-task scan (§6). */
+#define POISON_WORD STACK_POISON_WORD
 
 uint32_t stack_used_bytes(void) {
     const uintptr_t *p   = (const uintptr_t *)(const void *)_stack_bottom;
@@ -53,6 +54,19 @@ void meminfo_ram_map(mem_ram_map_t *out) {
     out->total_bytes  = (uint32_t)((uintptr_t)_ram_end - (uintptr_t)_ram_start);
     out->image_bytes  = (uint32_t)((uintptr_t)_bss_end - (uintptr_t)_ram_start);
     out->stack_bytes  = stack_size_bytes();
+
+    out->data_bytes = (uint32_t)((uintptr_t)_data_end - (uintptr_t)_data_start);
+    out->bss_bytes  = (uint32_t)((uintptr_t)_bss_end - (uintptr_t)_bss_start);
+#if defined(CONFIG_BOARD_RP2350)
+    {
+        extern char _ustacks_start[];
+        extern char _ustacks_end[];
+        out->ustacks_bytes = (uint32_t)((uintptr_t)_ustacks_end -
+                                        (uintptr_t)_ustacks_start);
+    }
+#else
+    out->ustacks_bytes = 0;
+#endif
 
     /* Exactly the range kernel_main() hands to palloc_init(), so the heap
      * line here and the page counts from palloc always describe the same

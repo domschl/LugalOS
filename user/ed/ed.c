@@ -61,7 +61,7 @@ static void ed_read_line(char *out_buf, int max_len) {
     if (!out_buf || max_len <= 0) return;
     int idx = 0;
     while (1) {
-        char c = uart_getc();
+        char c = console_getc();
         if (c == '\r' || c == '\n') {
             uart_puts("\r\n");
             out_buf[idx] = '\0';

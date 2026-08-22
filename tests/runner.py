@@ -1022,6 +1022,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # a 1-second budget rather than the 2-second default. Exercises the
         # full command surface in one pass: new/level/a move (which triggers
         # the engine reply)/board/eval/moves/undo/redo/fen/save/load/quit.
+        #
+        # `fen <position>` (the argument form) is here as well as bare `fen`,
+        # and the two are different code paths: bare `fen` *prints* the
+        # current position, the argument form *parses* one. Only the printing
+        # side was covered until §1.3 of
+        # plan/phase15_memory_reclamation.md routed both of this file's
+        # FEN-parsing sites -- this one and `load`'s -- through chess_ui.c's
+        # shared scratch Position instead of a permanent static each. `load`
+        # was already exercised below; this was the parse path that was not.
+        # The position used is a real mid-game one, so a parse that silently
+        # produced the start position would still fail the board check.
         cmd_chess = (
             "(chess)\n"
             "new\n"
@@ -1033,12 +1044,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "undo\n"
             "redo\n"
             "fen\n"
+            "fen r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3\n"
             "save\n"
             "load\n"
             "quit"
         )
         ok, log = session.send_and_expect(cmd_chess, r"Position loaded from", timeout=15.0)
         results.append(("Chess Console REPL: new/move+engine-reply/board/eval/moves/undo/redo/fen/save/load (J1)", ok, log if not ok else ""))
+
+        # The argument form of `fen` specifically (§1.3). Separate assertion
+        # from the sequence above rather than folded into it: "the whole REPL
+        # still works" and "this one parse path still works" fail for
+        # different reasons and should be readable apart.
+        ok, log = session.send_and_expect(
+            "(chess)\n"
+            "fen r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3\n"
+            "quit",
+            r"Position loaded\.", timeout=15.0)
+        results.append(("Chess Console: `fen <position>` parses into the shared scratch (§1.3)",
+                        ok, log if not ok else ""))
 
         # 10c. Chess heap is fully released on `quit`. Revises J0's original
         # "never freed for the process lifetime" choice -- correct when J0
@@ -2414,6 +2438,76 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             session.close()
 
 
+def test_9p_iounit(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """An Ropen's iounit must fit inside the negotiated msize.
+
+    fs/9p.c wrote a hardcoded `4096` here, described in a comment as "no
+    restriction beyond the negotiated msize". It was a restriction, and the
+    number could not be honoured: Rread frames its payload behind
+    size[4] type[1] tag[2] count[4], so a 4096-byte read against a 4096 msize
+    needs 4107 bytes on the wire. A conforming client that believed the
+    advertised iounit and issued a read that size would be asking for a reply
+    the connection cannot carry. It is now derived from what Tversion actually
+    agreed (§2.3, plan/phase15_memory_reclamation.md).
+
+    Asserted as the protocol invariant rather than against a fixed number, so
+    it holds on every target: RP2350 negotiates 2048 and the QEMU builds 4096,
+    and both must satisfy `0 < iounit <= msize - IOHDRSZ`. The old hardcoded
+    value fails it on both.
+    """
+    import shutil
+    import tempfile
+    import p9lib
+    from p9lib.client import IOHDRSZ
+
+    name = "9P Ropen iounit fits the negotiated msize (protocol invariant)"
+    arch_img = img_path.with_name(f"test_{arch_name}_9p_iounit_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = str(Path(tmpdir) / "p9iou.sock")
+        session = QemuSession(elf_path, arch_img, arch_name)
+        try:
+            session.start(extra_qemu_args=[
+                "-device", "virtio-serial-device",
+                "-device", "virtconsole,chardev=p9c",
+                "-chardev", f"socket,id=p9c,path={sock_path},server=on,wait=off",
+            ])
+            ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+            if not ok:
+                return (name, False, log)
+
+            last_err = ""
+            for _ in range(20):
+                try:
+                    client = p9lib.connect_unix(sock_path, timeout=2.0)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                    last_err = str(e)
+                    time.sleep(0.2)
+            else:
+                return (name, False, f"could not connect to {sock_path}: {last_err}")
+
+            try:
+                msize = client.version()
+                client.attach(0)
+                client.walk(0, 1, ["proc", "version"])
+                client.open(1)
+                iounit = client.last_iounit
+                client.clunk(1)
+            finally:
+                client.close()
+
+            limit = msize - IOHDRSZ
+            ok = 0 < iounit <= limit
+            detail = f"msize={msize} iounit={iounit} limit={limit}"
+            return (name, ok, "" if ok else f"iounit outside the msize: {detail}")
+        except Exception as e:
+            return (name, False, str(e))
+        finally:
+            session.close()
+
+
 def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """A6: exercises host/p9lib's Session (the "product-p9lib" file-utility
     layer, not just the low-level P9Client the A3 test above uses) through a
@@ -3002,6 +3096,7 @@ def main() -> int:
         _run_single(test_terminal_crlf(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -3022,6 +3117,7 @@ def main() -> int:
         _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

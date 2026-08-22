@@ -1,42 +1,20 @@
 /*
- * Vendored verbatim from ~/gith/domschl/LugalChess (engine/src/zobrist.c),
- * H4, plan/phase9_chess_computer.md. Self-contained xorshift PRNG, no
- * platform dependency at all.
+ * Vendored from ~/gith/domschl/LugalChess (engine/src/zobrist.c), H4,
+ * plan/phase9_chess_computer.md.
+ *
+ * Now empty of everything it used to hold. The keys it filled at run time are
+ * a mathematical constant -- a fixed xorshift, a fixed seed, 849 numbers that
+ * cannot change without changing how positions hash -- so they are generated
+ * once by tools/gen_zobrist.py and live in flash as const data
+ * (user/chess/include/zobrist_tables.h). See section 3.2 of
+ * plan/phase15_memory_reclamation.md, including the measurement showing that
+ * reading them from flash costs nothing on this silicon.
+ *
+ * The file stays so the build's source list and this note have somewhere to
+ * live; the translation unit is deliberately empty apart from that.
  */
 
 #include "zobrist.h"
 
-uint64_t zobrist_pieces[6][2][64];
-uint64_t zobrist_castling[16];
-uint64_t zobrist_en_passant[64];
-uint64_t zobrist_side;
-
-static uint64_t prng_state = 1802ULL;
-
-static uint64_t prng_next(void) {
-    prng_state ^= prng_state >> 12;
-    prng_state ^= prng_state << 25;
-    prng_state ^= prng_state >> 27;
-    return prng_state * 2685821657736338717ULL;
-}
-
-void init_zobrist(void) {
-    // Deterministic key generation using Xorshift PRNG
-    for (int p = 0; p < 6; p++) {
-        for (int c = 0; c < 2; c++) {
-            for (int sq = 0; sq < 64; sq++) {
-                zobrist_pieces[p][c][sq] = prng_next();
-            }
-        }
-    }
-
-    for (int i = 0; i < 16; i++) {
-        zobrist_castling[i] = prng_next();
-    }
-
-    for (int sq = 0; sq < 64; sq++) {
-        zobrist_en_passant[sq] = prng_next();
-    }
-
-    zobrist_side = prng_next();
-}
+/* ISO C forbids an empty translation unit. */
+typedef int zobrist_translation_unit_not_empty;

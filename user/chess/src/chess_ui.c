@@ -35,6 +35,7 @@
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/line_editor.h"
+#include "kernel/sched.h"
 #include "kernel/palloc.h"
 #include "fs/vfs.h"
 #include "lugalos_config.h"
@@ -66,6 +67,45 @@ static Position g_chess_pos; /* static: ~8 KB (MAX_PLYS=256 history), never a st
 static Position *g_chess_scratch = NULL;
 static uint32_t g_chess_scratch_pages = 0;
 
+/* The same scratch, reached from search.c (§1.3,
+ * plan/phase15_memory_reclamation.md).
+ *
+ * search.c had a third permanent `static Position` of its own, for walking
+ * the principal variation while printing it. Three such statics existed --
+ * that one plus two in this file, one per FEN-parsing site -- costing 25 KB
+ * of `.bss` between them, which on RP2350 is 6 pages taken straight out of
+ * the heap (palloc_init() starts at _kernel_end). None of them is ever live
+ * at the same time as any other, or as this one.
+ *
+ * Exposed through an accessor rather than the variable itself so the
+ * allocate/free lifecycle stays wholly in chess_ensure_init()/
+ * chess_session_end(), where it already was. Declared `extern` at search.c's
+ * call site rather than in a header, matching exactly how
+ * search_progress_callback()/search_poll_stop_callback() -- the only other
+ * two things search.c reaches into this file for -- are already wired.
+ *
+ * ## Why it is safe for the engine and the UI to share one
+ *
+ * The overlap that would break this is search.c's PV walk running while
+ * tm_probe_pv() below is mid-walk of its own, since both mutate the scratch.
+ * It cannot happen. tm_probe_pv() is reached only from
+ * search_poll_stop_callback() -> tm_search_ticker_tick(), and that callback
+ * fires only from search.c's check_up_time(), i.e. only while pv_search()
+ * or quiescence() is on the stack. search.c's PV walk runs between
+ * iterative-deepening iterations, after pv_search() has returned for that
+ * depth. Same task, no interrupt path into either, so the two are strictly
+ * sequential.
+ *
+ * NULL before chess_ensure_init() and after chess_session_end(). Every
+ * search_position() call is gated behind a successful chess_ensure_init()
+ * (there is exactly one call site, chess_think() below, and all four entry
+ * points into this file gate first), so search.c's use can never see NULL --
+ * it checks anyway, because the cost of being wrong about that on a board is
+ * a null dereference in the middle of a search. */
+Position *chess_scratch_position(void) {
+    return g_chess_scratch;
+}
+
 static Move g_search_best_move = 0;
 static int g_search_score = 0;
 static int g_search_depth = 0;
@@ -88,13 +128,14 @@ static int g_search_root_side = 0; /* pos->side snapshotted once at the
  *
  * g_chess_ready is a real acquire/release latch, not a "run once, ever"
  * flag -- chess_session_end() below clears it, so a later call re-runs
- * this in full. init_bitboards()/init_zobrist() are cheap and idempotent
- * (a few thousand static-array writes, no allocation), so redoing them on
- * every session is not worth special-casing around. */
+ * this in full. init_bitboards() is cheap and idempotent (a few thousand
+ * static-array writes, no allocation), so redoing it on every session is not
+ * worth special-casing around. init_zobrist() used to sit beside it and no
+ * longer exists at all: its tables are const in flash now (section 3.2,
+ * plan/phase15_memory_reclamation.md), so there is nothing to initialise. */
 static bool chess_ensure_init(void) {
     if (g_chess_ready) return true;
     init_bitboards();
-    init_zobrist();
     init_tt(0);
     if (!search_pools_init()) {
         cprintf("chess: out of memory (search move-list pools)\n");
@@ -217,6 +258,121 @@ static ChessAbort chess_abort_requested(void) {
 #endif
     return CHESS_ABORT_NONE;
 }
+
+/* --- One session, two input devices (§"chess_next_event",
+ *     plan/phase15_memory_reclamation.md) ---
+ *
+ * Before this, the keypad and the terminal were two separate programs over
+ * one game: `(chess)` entered the TM1638 loop and `(chess-console)` the text
+ * REPL, each with its own blocking wait, and neither could hear the other's
+ * device. Playing on the board meant no way to type `level 6` or `save`
+ * without leaving the session.
+ *
+ * They are now one loop with one event source. chess_next_event() polls
+ * whichever devices exist and reports the first thing to happen:
+ *
+ *   CHESS_EVENT_KEY    a TM1638 keypad press (hardware only)
+ *   CHESS_EVENT_LINE   a complete command line typed at the terminal
+ *   CHESS_EVENT_ABORT  Ctrl-C, or the keypad's STOP key
+ *   CHESS_EVENT_NONE   `timeout_ms` elapsed with nothing (never, if < 0)
+ *
+ * A line arrives through readline_poll() (kernel/line_editor.h), which is
+ * the *same* editor readline_interactive() drives -- history, cursor keys and
+ * all -- rather than a cut-down reader, so typing into a game feels like
+ * typing at the shell. Lines are dispatched by console_dispatch_line(), so
+ * every command means the same thing from either loop.
+ *
+ * Ordering here is deliberate: abort, then line, then key. Abort first
+ * because a user reaching for Ctrl-C wants out now, not after whatever else
+ * is queued. */
+typedef enum {
+    CHESS_EVENT_NONE = 0,
+    CHESS_EVENT_KEY,
+    CHESS_EVENT_LINE,
+    CHESS_EVENT_ABORT,
+} ChessEventKind;
+
+typedef struct {
+    ChessEventKind kind;
+    int            key;    /* CHESS_EVENT_KEY */
+    ChessAbort     abort;  /* CHESS_EVENT_ABORT */
+    const char    *line;   /* CHESS_EVENT_LINE; owned by chess_ui.c */
+} ChessEvent;
+
+typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
+
+static ChessCmdResult console_dispatch_line(const char *line);
+
+/* 300, matching what chess_console_run()'s own `line` buffer always was --
+ * a FEN plus a level fits with room to spare. Static rather than a stack
+ * local for the reason every other buffer in this file is: the deepest call
+ * chain in the system runs through here. */
+static char g_event_line[300];
+
+/* The poll interval. 20 ms is tm_wait_key()'s own long-standing debounce
+ * cadence, kept so keypad timing is unchanged by this rework; it is also far
+ * below anything a typist notices. */
+#define CHESS_EVENT_POLL_US 20000
+
+static ChessEventKind chess_next_event(ChessEvent *ev, int timeout_ms,
+                                       const char *prompt) {
+    int waited_ms = 0;
+
+    ev->kind = CHESS_EVENT_NONE;
+    ev->key = -1;
+    ev->abort = CHESS_ABORT_NONE;
+    ev->line = NULL;
+
+    for (;;) {
+        ChessAbort a = chess_abort_requested();
+        if (a != CHESS_ABORT_NONE) {
+            ev->kind = CHESS_EVENT_ABORT;
+            ev->abort = a;
+            return ev->kind;
+        }
+
+        int n = readline_poll(prompt, g_event_line, (int)sizeof(g_event_line));
+        if (n >= 0) {
+            ev->kind = CHESS_EVENT_LINE;
+            ev->line = g_event_line;
+            return ev->kind;
+        }
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+        int k = tm1638_get_key();
+        if (k != -1) {
+            ev->kind = CHESS_EVENT_KEY;
+            ev->key = k;
+            return ev->kind;
+        }
+#endif
+
+        if (timeout_ms >= 0 && waited_ms >= timeout_ms) return CHESS_EVENT_NONE;
+
+        /* Yield before sleeping. time_delay_us() busy-waits (it services
+         * usb_cdc_task() in the spin, which is why it is still used here --
+         * dropping it would stall USB console output during a wait), so
+         * without this the loop would hold the CPU against the 9P server and
+         * the driver tasks between polls. The blocking uart_getc() this
+         * replaced in the console REPL parked in a sched_yield() loop of its
+         * own, so yielding here keeps that behaviour rather than changing it. */
+        sched_yield();
+        time_delay_us(CHESS_EVENT_POLL_US);
+        waited_ms += CHESS_EVENT_POLL_US / 1000;
+    }
+}
+
+/* Non-blocking: handle whatever the terminal has to say, and nothing else.
+ * Used from the keypad debounce phases in tm_wait_key(), where a key press is
+ * precisely what is being waited *out* rather than read, so KEY events are
+ * left for the phase that wants them. Returns true if the session should end.
+ */
+static bool chess_pump_console(const char *prompt) {
+    ChessEvent ev;
+    if (chess_next_event(&ev, 0, prompt) != CHESS_EVENT_LINE) return false;
+    return console_dispatch_line(ev.line) == CHESS_CMD_QUIT;
+}
+
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 /* Defined further down, in the TM1638-only region (needs tm1638_display_
@@ -742,13 +898,14 @@ static void console_load(Position *pos) {
 
     char *nl = strchr(buf, '\n');
     if (nl) *nl = '\0';
-    static Position temp_pos;
-    parse_fen(&temp_pos, buf);
-    if (!is_position_valid(&temp_pos)) {
+    /* The shared scratch, not a static of its own -- same shape as tm_load()
+     * further down, which already parses into it for the same reason. */
+    parse_fen(g_chess_scratch, buf);
+    if (!is_position_valid(g_chess_scratch)) {
         cprintf("Save file is corrupt (invalid FEN)\n");
         return;
     }
-    *pos = temp_pos;
+    *pos = *g_chess_scratch;
     clear_tt();
     g_console_max_history_ply = pos->history_ply;
 
@@ -800,6 +957,122 @@ static void console_list_moves(Position *pos) {
 /* Does not return until `quit` -- the same shape as `lsh` itself
  * (kernel/shell.c), not chess_run()'s "does not return at all" shape,
  * since there's no hardware state to reset out of here. */
+/* One command surface, reachable from either input device.
+ *
+ * This was the body of chess_console_run()'s own `for (;;)`. Lifting it out
+ * is what lets a typed command work while the TM1638 game loop is the thing
+ * actually running -- chess_run() dispatches console lines through exactly
+ * this function, so `level 4`, `fen ...`, `save` and a typed move behave
+ * identically whether the keypad or the terminal is driving the session.
+ * (§"chess_next_event", plan/phase15_memory_reclamation.md.)
+ *
+ * `quit` no longer returns out of the REPL directly; it reports
+ * CHESS_CMD_QUIT and lets the caller decide what leaving means, since that
+ * differs between the two loops -- the console REPL returns to `lsh`, the
+ * keypad loop has hardware state to put back first. Note it deliberately
+ * does NOT call chess_session_end() itself for the same reason. */
+static ChessCmdResult console_dispatch_line(const char *line) {
+    if (line[0] == '\0') {
+        return CHESS_CMD_OK;
+    } else if (strcmp(line, "help") == 0) {
+        console_print_help();
+    } else if (strcmp(line, "new") == 0) {
+        console_new_game(&g_chess_pos);
+        cprintf("New game started.\n");
+        print_board(&g_chess_pos);
+    } else if (strcmp(line, "board") == 0 || strcmp(line, "d") == 0) {
+        print_board(&g_chess_pos);
+        print_position_info(&g_chess_pos);
+    } else if (strncmp(line, "level", 5) == 0) {
+        const char *p = line + 5;
+        while (*p == ' ') p++;
+        int val = atoi(p);
+        if (val >= 1 && val <= 8) {
+            g_console_search_level = val;
+            if (level_times_ms[val - 1] != -1) {
+                cprintf("Search level set to %d (%ds per move).\n", val, level_times_ms[val - 1] / 1000);
+            } else {
+                cprintf("Search level set to 8 (Infinite -- press Ctrl-C to stop it).\n");
+            }
+        } else {
+            cprintf("Invalid level. Specify 1 to 8 (see 'help').\n");
+        }
+    } else if (strncmp(line, "fen", 3) == 0) {
+        const char *p = line + 3;
+        while (*p == ' ') p++;
+        if (*p == '\0') {
+            char buf[256];
+            generate_fen(&g_chess_pos, buf);
+            cprintf("Current FEN: %s\n", buf);
+        } else {
+            parse_fen(g_chess_scratch, p);
+            if (!is_position_valid(g_chess_scratch)) {
+                cprintf("Invalid FEN position (need exactly 1 White king, 1 Black king, valid check state).\n");
+            } else {
+                g_chess_pos = *g_chess_scratch;
+                clear_tt();
+                g_console_max_history_ply = g_chess_pos.history_ply;
+                cprintf("Position loaded.\n");
+                print_board(&g_chess_pos);
+            }
+        }
+    } else if (strcmp(line, "save") == 0) {
+        console_save(&g_chess_pos);
+    } else if (strcmp(line, "load") == 0) {
+        console_load(&g_chess_pos);
+    } else if (strncmp(line, "go", 2) == 0 && (line[2] == '\0' || line[2] == ' ')) {
+        console_handle_go(&g_chess_pos, line);
+    } else if (strcmp(line, "undo") == 0) {
+        if (g_chess_pos.history_ply > 0) {
+            unmake_move(&g_chess_pos);
+            cprintf("Took back 1 half-move.\n");
+            print_board(&g_chess_pos);
+        } else {
+            cprintf("Nothing to undo.\n");
+        }
+    } else if (strcmp(line, "redo") == 0) {
+        if (g_chess_pos.history_ply < g_console_max_history_ply) {
+            Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
+            if (make_move(&g_chess_pos, m)) {
+                cprintf("Re-applied 1 half-move.\n");
+                print_board(&g_chess_pos);
+            } else {
+                cprintf("Cannot redo move.\n");
+            }
+        } else {
+            cprintf("Nothing to redo.\n");
+        }
+    } else if (strcmp(line, "eval") == 0) {
+        int score = evaluate(&g_chess_pos);
+        cprintf("Static evaluation: %s%d centipawns (current side's perspective)\n",
+                sign_prefix(score), score);
+    } else if (strcmp(line, "moves") == 0) {
+        console_list_moves(&g_chess_pos);
+    } else if (strcmp(line, "stop") == 0) {
+        /* UCI-protocol-compatibility no-op, matching console.c:1603-1606
+         * -- the engine is never "thinking" at this point in the REPL
+         * (readline_interactive() only reads this line once the
+         * previous search has already returned), so there is nothing
+         * to interrupt here specifically. Ctrl-C is what actually
+         * reaches a search in progress, since it's polled from inside
+         * search_poll_stop_callback() while search_position() itself
+         * owns the call stack -- typed input can't reach this REPL
+         * loop until that returns. */
+        cprintf("Engine is not currently thinking.\n");
+    } else if (strcmp(line, "quit") == 0) {
+        return CHESS_CMD_QUIT;
+    } else if (console_execute_move(&g_chess_pos, line)) {
+        g_console_max_history_ply = g_chess_pos.history_ply;
+        print_board(&g_chess_pos);
+        if (!console_report_outcome(&g_chess_pos)) {
+            console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
+        }
+    } else {
+        cprintf("Unknown command or invalid move: '%s'. Type 'help' for a list.\n", line);
+    }
+    return CHESS_CMD_OK;
+}
+
 void chess_console_run(void) {
     if (!chess_ensure_init()) return;
     console_new_game(&g_chess_pos);
@@ -807,109 +1080,39 @@ void chess_console_run(void) {
     cprintf("\nLugalOS chess console. Type 'help' for commands, 'quit' to leave.\n");
     print_board(&g_chess_pos);
 
-    char line[300];
-    for (;;) {
-        readline_interactive("chess> ", line, sizeof(line));
+    bool keypad_hint_shown = false;
 
-        if (line[0] == '\0') {
-            continue;
-        } else if (strcmp(line, "help") == 0) {
-            console_print_help();
-        } else if (strcmp(line, "new") == 0) {
-            console_new_game(&g_chess_pos);
-            cprintf("New game started.\n");
-            print_board(&g_chess_pos);
-        } else if (strcmp(line, "board") == 0 || strcmp(line, "d") == 0) {
-            print_board(&g_chess_pos);
-            print_position_info(&g_chess_pos);
-        } else if (strncmp(line, "level", 5) == 0) {
-            const char *p = line + 5;
-            while (*p == ' ') p++;
-            int val = atoi(p);
-            if (val >= 1 && val <= 8) {
-                g_console_search_level = val;
-                if (level_times_ms[val - 1] != -1) {
-                    cprintf("Search level set to %d (%ds per move).\n", val, level_times_ms[val - 1] / 1000);
-                } else {
-                    cprintf("Search level set to 8 (Infinite -- press Ctrl-C to stop it).\n");
-                }
-            } else {
-                cprintf("Invalid level. Specify 1 to 8 (see 'help').\n");
+    for (;;) {
+        ChessEvent ev;
+        /* Blocks until either device speaks. The keypad is polled here too,
+         * so a board sitting next to the terminal stays live: pressing a
+         * square registers as a move without having to leave this REPL. */
+        switch (chess_next_event(&ev, -1, "chess> ")) {
+        case CHESS_EVENT_LINE:
+            if (console_dispatch_line(ev.line) == CHESS_CMD_QUIT) {
+                chess_session_end();
+                return;
             }
-        } else if (strncmp(line, "fen", 3) == 0) {
-            const char *p = line + 3;
-            while (*p == ' ') p++;
-            if (*p == '\0') {
-                char buf[256];
-                generate_fen(&g_chess_pos, buf);
-                cprintf("Current FEN: %s\n", buf);
-            } else {
-                static Position temp_pos;
-                parse_fen(&temp_pos, p);
-                if (!is_position_valid(&temp_pos)) {
-                    cprintf("Invalid FEN position (need exactly 1 White king, 1 Black king, valid check state).\n");
-                } else {
-                    g_chess_pos = temp_pos;
-                    clear_tt();
-                    g_console_max_history_ply = g_chess_pos.history_ply;
-                    cprintf("Position loaded.\n");
-                    print_board(&g_chess_pos);
-                }
+            break;
+        case CHESS_EVENT_KEY:
+            /* The keypad reached us, but this loop has no square-selection
+             * state machine -- that lives in chess_run(), along with the
+             * board display a keypad move is meaningless without. Rather
+             * than half-implement it here, say so once and carry on; the
+             * session is not disturbed. */
+            if (!keypad_hint_shown) {
+                cprintf("\n(keypad input needs the board UI -- leave with 'quit' "
+                        "and start (chess) for keypad play; typed commands work "
+                        "there too.)\n");
+                keypad_hint_shown = true;
             }
-        } else if (strcmp(line, "save") == 0) {
-            console_save(&g_chess_pos);
-        } else if (strcmp(line, "load") == 0) {
-            console_load(&g_chess_pos);
-        } else if (strncmp(line, "go", 2) == 0 && (line[2] == '\0' || line[2] == ' ')) {
-            console_handle_go(&g_chess_pos, line);
-        } else if (strcmp(line, "undo") == 0) {
-            if (g_chess_pos.history_ply > 0) {
-                unmake_move(&g_chess_pos);
-                cprintf("Took back 1 half-move.\n");
-                print_board(&g_chess_pos);
-            } else {
-                cprintf("Nothing to undo.\n");
-            }
-        } else if (strcmp(line, "redo") == 0) {
-            if (g_chess_pos.history_ply < g_console_max_history_ply) {
-                Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
-                if (make_move(&g_chess_pos, m)) {
-                    cprintf("Re-applied 1 half-move.\n");
-                    print_board(&g_chess_pos);
-                } else {
-                    cprintf("Cannot redo move.\n");
-                }
-            } else {
-                cprintf("Nothing to redo.\n");
-            }
-        } else if (strcmp(line, "eval") == 0) {
-            int score = evaluate(&g_chess_pos);
-            cprintf("Static evaluation: %s%d centipawns (current side's perspective)\n",
-                    sign_prefix(score), score);
-        } else if (strcmp(line, "moves") == 0) {
-            console_list_moves(&g_chess_pos);
-        } else if (strcmp(line, "stop") == 0) {
-            /* UCI-protocol-compatibility no-op, matching console.c:1603-1606
-             * -- the engine is never "thinking" at this point in the REPL
-             * (readline_interactive() only reads this line once the
-             * previous search has already returned), so there is nothing
-             * to interrupt here specifically. Ctrl-C is what actually
-             * reaches a search in progress, since it's polled from inside
-             * search_poll_stop_callback() while search_position() itself
-             * owns the call stack -- typed input can't reach this REPL
-             * loop until that returns. */
-            cprintf("Engine is not currently thinking.\n");
-        } else if (strcmp(line, "quit") == 0) {
+            break;
+        case CHESS_EVENT_ABORT:
+            cprintf("\n");
             chess_session_end();
             return;
-        } else if (console_execute_move(&g_chess_pos, line)) {
-            g_console_max_history_ply = g_chess_pos.history_ply;
-            print_board(&g_chess_pos);
-            if (!console_report_outcome(&g_chess_pos)) {
-                console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
-            }
-        } else {
-            cprintf("Unknown command or invalid move: '%s'. Type 'help' for a list.\n", line);
+        default:
+            break;
         }
     }
 }
@@ -1028,6 +1231,11 @@ static int append_uint(char *buf, int pos, unsigned v) {
  *     chess_run() into a self-play viewer -- each press only ever
  *     substitutes for *this* side's input, the engine already plays
  *     every move on the other side automatically regardless. */
+/* The prompt the terminal shows while the board UI has the session. Distinct
+ * from chess_console_run()'s "chess> " so it is obvious which loop is live
+ * and that the keypad is also active. */
+#define TM_CONSOLE_PROMPT "chess[board]> "
+
 #define TM_KEY_ABORT_CTRLC   (-2)
 #define TM_KEY_ABORT_STOPKEY (-3)
 #define TM_KEY_RESTART        (-4)
@@ -1060,34 +1268,61 @@ static int append_uint(char *buf, int pos, unsigned v) {
 static int tm_wait_key(void) {
     int iters;
 
+    /* This one function is every keypad wait in the board UI -- tm_read_move()
+     * and each of J3's menus reach the hardware only through here. That is
+     * what makes terminal commands work across the whole board loop from a
+     * single change: the console is pumped in all three phases below, so a
+     * typed `level 6` or `save` lands whether the UI is between moves, mid
+     * square-selection, or inside a menu. (§"chess_next_event",
+     * plan/phase15_memory_reclamation.md.) */
     iters = 0;
     while (tm1638_get_key() != -1) {
         if (iters == 0) cprintf("chess: tm_wait_key: waiting for release before scan\n");
         ChessAbort a = chess_abort_requested();
         if (a == CHESS_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
         if (a == CHESS_ABORT_STOPKEY) return TM_KEY_ABORT_STOPKEY;
+        if (chess_pump_console(TM_CONSOLE_PROMPT)) return TM_KEY_ABORT_CTRLC;
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: idle-wait timed out\n"); break; }
     }
 
-    int k;
+    /* The press phase is the event loop proper: whichever device speaks
+     * first wins. A typed command is dispatched and the wait resumes, so
+     * issuing one does not cost the user the move they were about to make. */
     iters = 0;
-    do {
-        k = tm1638_get_key();
-        if (k != -1) cprintf("chess: tm_wait_key: raw key=%d\n", k);
-        ChessAbort a = chess_abort_requested();
-        if (a == CHESS_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
-        if (a == CHESS_ABORT_STOPKEY) return TM_KEY_ABORT_STOPKEY;
-        time_delay_us(20000);
+    int key = -1;
+    int pressed_key = -1;
+    for (;;) {
+        ChessEvent ev;
+        switch (chess_next_event(&ev, 20, TM_CONSOLE_PROMPT)) {
+        case CHESS_EVENT_KEY:
+            cprintf("chess: tm_wait_key: raw key=%d\n", ev.key);
+            pressed_key = ev.key;
+            goto pressed;
+        case CHESS_EVENT_LINE:
+            if (console_dispatch_line(ev.line) == CHESS_CMD_QUIT) {
+                return TM_KEY_ABORT_CTRLC;
+            }
+            iters = 0;  /* the user is present and typing; don't time out */
+            continue;
+        case CHESS_EVENT_ABORT:
+            return (ev.abort == CHESS_ABORT_STOPKEY) ? TM_KEY_ABORT_STOPKEY
+                                                     : TM_KEY_ABORT_CTRLC;
+        default:
+            break;
+        }
         if (++iters > 750) { cprintf("chess: tm_wait_key: press-wait timed out\n"); return -1; }
-    } while (k == -1);
+    }
+pressed:
+    key = pressed_key;
 
     iters = 0;
     while (tm1638_get_key() != -1) {
+        (void)chess_pump_console(TM_CONSOLE_PROMPT);
         time_delay_us(20000);
         if (++iters > 750) { cprintf("chess: tm_wait_key: release-wait timed out\n"); break; }
     }
-    return k;
+    return key;
 }
 
 /* --- Live search ticker + persistent two-slot display (design agreed

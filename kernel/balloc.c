@@ -40,16 +40,33 @@ static uint32_t next_pow2(uint32_t v) {
 }
 
 void balloc_init(void) {
+    /* No reservation here -- see the header. This only establishes the
+     * "nothing reserved yet" state that balloc_alloc() reserves out of, so
+     * that the ordering contract with palloc_init() stays where it was and
+     * the boot log still says the allocator exists. */
+    g_ready = false;
+    g_arena_base = 0;
+    printk("[BAlloc] Buddy allocator: %u KB arena on first use (floor %u B)\n",
+           ARENA_BYTES / 1024, BALLOC_MIN_BLOCK);
+}
+
+/* Claims the arena and builds the tree. Called from balloc_alloc() on the
+ * first allocation and never again while that arena is held. */
+static bool balloc_reserve(void) {
     /* Self-aligned: BALLOC_ARENA_PAGES is a power of two, so this call asks
      * palloc for a run whose *address*, not just its offset, is a multiple
      * of ARENA_BYTES -- the property every block handed out below relies on
      * (see the header's "Arena, not the whole heap" section). */
     void *arena = palloc_pages_aligned(BALLOC_ARENA_PAGES, BALLOC_ARENA_PAGES);
     if (!arena) {
+        /* Reachable now in a way it was not when this ran at boot: the heap
+         * is no longer empty by construction at this point, so this can mean
+         * "too fragmented to place an ARENA_BYTES-aligned run" as well as
+         * "full". Left as a failed allocation rather than a retry -- the
+         * next balloc_alloc() will try again on its own. */
         printk("[BAlloc] Could not reserve %u-page arena; buddy allocator offline\n",
                BALLOC_ARENA_PAGES);
-        g_ready = false;
-        return;
+        return false;
     }
     g_arena_base = (uintptr_t)arena;
 
@@ -59,12 +76,16 @@ void balloc_init(void) {
         g_longest[i] = (uint16_t)node_size;
     }
     g_ready = true;
-    printk("[BAlloc] Buddy allocator: %u KB arena at %p (floor %u B)\n",
+    printk("[BAlloc] Reserved %u KB arena at %p (floor %u B)\n",
            ARENA_BYTES / 1024, arena, BALLOC_MIN_BLOCK);
+    return true;
 }
 
 void *balloc_alloc(uint32_t size) {
-    if (!g_ready || size == 0 || size > ARENA_BYTES) return NULL;
+    /* Size checked before reserving, so a request this allocator could never
+     * satisfy does not drag an arena out of the heap on its way to NULL. */
+    if (size == 0 || size > ARENA_BYTES) return NULL;
+    if (!g_ready && !balloc_reserve()) return NULL;
     if (size < BALLOC_MIN_BLOCK) size = BALLOC_MIN_BLOCK;
 
     /* Safe from next_pow2()'s wraparound on a huge `size`: the ARENA_BYTES
@@ -138,6 +159,17 @@ void balloc_free(void *ptr) {
 void balloc_stats(uint32_t *arena_bytes, uint32_t *largest_free_bytes) {
     if (arena_bytes) *arena_bytes = ARENA_BYTES;
     if (largest_free_bytes) {
-        *largest_free_bytes = g_ready ? (uint32_t)g_longest[0] * BALLOC_MIN_BLOCK : 0;
+        /* Before the arena is reserved the answer is ARENA_BYTES, not 0: the
+         * question this reports on is "the biggest single request
+         * balloc_alloc() could satisfy right now", and an unreserved
+         * allocator would reserve a whole empty arena to serve one. Zero
+         * would describe a full allocator, which is the opposite state.
+         *
+         * It is a forecast rather than a fact in exactly one case -- the
+         * reservation itself can still fail if the heap cannot place an
+         * ARENA_BYTES-aligned run -- and balloc_alloc() says so on the spot
+         * when that happens. */
+        if (!g_ready) *largest_free_bytes = ARENA_BYTES;
+        else *largest_free_bytes = (uint32_t)g_longest[0] * BALLOC_MIN_BLOCK;
     }
 }

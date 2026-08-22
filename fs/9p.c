@@ -579,7 +579,12 @@ int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {
         case P9_ROPEN:
         case P9_RCREATE:
             wcur_qid(&c, &msg->qid);
-            wcur_u32(&c, 4096); // iounit: no restriction beyond the negotiated msize
+            /* iounit: the most one Tread/Twrite can move on this
+             * connection. Derived from what Tversion actually agreed, not
+             * assumed -- a hardcoded 4096 here was a promise the transport
+             * could not keep even at the old default msize of 4096, since
+             * the reply framing needs room too (see P9_IOHDRSZ). */
+            wcur_u32(&c, p9_negotiated_iounit());
             break;
         case P9_TCREATE:
             wcur_u32(&c, msg->fid);
@@ -764,6 +769,25 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
     return 0;
 }
 
+/* The msize agreed with the current peer, as answered in the last Rversion.
+ *
+ * One global, matching the connection model this server already has: the fid
+ * table (g_fid_table) is global too, and Tversion resets it, so "the
+ * connection" is singular here by construction. If this server ever serves
+ * two peers at once, this and the fid table become per-connection together.
+ *
+ * Starts at this node's own maximum so a peer that skips Tversion -- which
+ * is a protocol error, but should not produce a nonsense iounit -- is
+ * answered with something legal. */
+static uint32_t g_negotiated_msize = P9_MAX_MSIZE;
+
+/* What an Ropen/Rcreate may advertise as its iounit: the largest payload one
+ * Tread/Twrite can carry within the agreed msize. Never larger than the
+ * connection can actually deliver -- see P9_IOHDRSZ. */
+uint32_t p9_negotiated_iounit(void) {
+    return (g_negotiated_msize > P9_IOHDRSZ) ? (g_negotiated_msize - P9_IOHDRSZ) : 0;
+}
+
 int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
     p9_msg_t req;
     if (p9_deserialize(req_buf, req_len, &req) < 0) {
@@ -788,6 +812,10 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_bu
             p9_fid_reset_all(); // Tversion (re)initializes the connection
             resp.type = P9_RVERSION;
             resp.msize = (req.msize > 0 && req.msize < P9_MAX_MSIZE) ? req.msize : P9_MAX_MSIZE;
+            /* Remember what was agreed. It used to be computed here, sent,
+             * and forgotten, which left p9_serialize() with nothing to
+             * derive an honest iounit from -- so it hardcoded one. */
+            g_negotiated_msize = resp.msize;
             break;
         case P9_TATTACH:
             p9_handle_tattach(&req, &resp);

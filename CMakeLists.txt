@@ -321,7 +321,29 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
-    add_custom_target(lugalos_config ALL
+    # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
+    # -- the same distinction lugalos_build_id.h above already depends on, and
+    # for the same reason. A target that merely *runs* the generator declares
+    # no producer/consumer edge on the file it writes, so OBJECT_DEPENDS below
+    # would have nothing real to hang an ordering edge from, and
+    # add_dependencies(lugalos.elf lugalos_config) only orders the target
+    # before the final *link*, never before an individual compile.
+    #
+    # Found 2026-08-22 while board-scaling CONFIG_BALLOC_ARENA_PAGES (§1.1,
+    # plan/phase15_memory_reclamation.md): editing only cmake/board-*.cmake
+    # and rebuilding produced a binary whose kernel/balloc.c.obj had been
+    # compiled against the *previous* config -- the boot log reported the old
+    # 64 KB arena while build/rv32/lugalos_config.h on disk already said 4
+    # pages. A second, otherwise-identical `cmake --build` fixed it. This is
+    # exactly the stale-object failure the build-id block above records
+    # ("a build-id mismatch on three consecutive real flashes"), which was
+    # fixed there and left unfixed here.
+    #
+    # Worse here than there, too: the build id is a cosmetic string, while
+    # this header carries the board's pin map and its memory sizing. A stale
+    # object means a flashed image driving the wrong GPIOs, or sizing an
+    # allocator against a heap that is not the one it got.
+    add_custom_command(OUTPUT ${LUGALOS_CONFIG_HEADER}
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
@@ -329,7 +351,11 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
+                ${LUGALOS_BOARD_FILE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         COMMENT "Refreshing board config")
+    add_custom_target(lugalos_config ALL DEPENDS ${LUGALOS_CONFIG_HEADER})
 endif()
 
 # Core Sources
@@ -342,6 +368,7 @@ set(SOURCES
     kernel/board.c
     kernel/chan.c
     kernel/palloc.c
+    kernel/scratch.c
     kernel/balloc.c
     kernel/meminfo.c
     kernel/path.c
@@ -469,6 +496,60 @@ set_source_files_properties(
     drivers/spisd_rp2350.c
     drivers/usb_cdc.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
+
+# Every object, not an enumerated subset: lugalos_config.h is reached
+# transitively (kernel/palloc.h and kernel/balloc.h both include it, and most
+# of the tree includes one of those), so a hand-maintained list would go stale
+# silently -- which is the failure this edge exists to prevent in the first
+# place. Costs nothing when the config is unchanged: gen_config.cmake is
+# write-if-changed, so the header's mtime does not move and ninja rebuilds
+# nothing.
+#
+# Set last, after every list(APPEND SOURCES ...) above has run, and folded
+# together with fs/vfs_server.c's pre-existing build-id dependency rather than
+# overwriting it -- OBJECT_DEPENDS is a single property, so a second
+# set_source_files_properties() on the same file would silently replace the
+# first and reintroduce the stale-build-id bug this file already fixed once.
+if(DEFINED LUGALOS_BOARD_FILE)
+    set_source_files_properties(${SOURCES}
+        PROPERTIES OBJECT_DEPENDS ${LUGALOS_CONFIG_HEADER})
+    set_source_files_properties(fs/vfs_server.c
+        PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+endif()
+
+# `sizereport` (§6, plan/phase15_memory_reclamation.md): where static RAM went,
+# per source file, and what that leaves for the heap.
+#
+# A companion to the ASSERT in linker/rp2350.ld rather than a substitute. The
+# linker floor catches a regression; this one attributes it. Not part of `all`
+# -- it is a question you ask, not a step every build pays for.
+#
+#     cmake --build build/rp2350 --target sizereport
+#     cmake --build build/rp2350 --target sizecheck    # fails if it grew
+#
+# `sizecheck` compares against tools/sizereport-<board>.json; re-baseline with
+# `python3 tools/sizereport.py <elf> --update <baseline>` when growth is
+# intended, so the new numbers land in a reviewable diff.
+if(DEFINED LUGALOS_BOARD_FILE)
+    get_filename_component(_board_stem "${LUGALOS_BOARD_FILE}" NAME_WE)
+    string(REPLACE "board-" "" _board_stem "${_board_stem}")
+    set(LUGALOS_SIZE_BASELINE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport-${_board_stem}.json)
+
+    add_custom_target(sizereport
+        COMMAND ${CMAKE_COMMAND} -E echo "== static RAM, ${_board_stem} =="
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
+                $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
+        DEPENDS lugalos.elf
+        USES_TERMINAL)
+
+    add_custom_target(sizecheck
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
+                $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
+                --check ${LUGALOS_SIZE_BASELINE}
+        DEPENDS lugalos.elf
+        USES_TERMINAL)
+endif()
 
 # Executable Output
 add_executable(lugalos.elf ${SOURCES})

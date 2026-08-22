@@ -3,6 +3,7 @@
 #include "kernel/console.h"
 #include "kernel/klog.h"
 #include "kernel/palloc.h"
+#include "kernel/scratch.h"
 #include "kernel/balloc.h"
 #include "kernel/mem_domain.h"
 #include "kernel/chan.h"
@@ -404,8 +405,16 @@ UATTR static void user_deputy(void) {
 /* A full page, page-aligned: one rule that satisfies both backends. PMP needs
  * power-of-two and self-aligned; Sv39 cannot grant anything finer than a page,
  * so a sub-page region would silently hand U-mode the rest of the page. Taking
- * the stricter of the two keeps a single description working on both. */
-static uint8_t g_user_stack[4096] __attribute__((aligned(4096)));
+ * the stricter of the two keeps a single description working on both.
+ *
+ * §3.1 (plan/phase15_memory_reclamation.md): taken from the heap for the
+ * duration of the probe rather than held in .bss for the life of the board.
+ * `usertest` is a diagnostic command; this page spent every boot reserved
+ * against someone typing it. palloc_pages() returns page-aligned memory on
+ * every target, which is exactly the property the paragraph above needs, so
+ * the grant is unchanged -- only where the page comes from moved. */
+static scratch_t g_user_stack_sc;
+static uint8_t *g_user_stack;
 static mem_domain_t g_user_domain;
 
 /* Set only once a task has actually reached U-mode. Without it the isolation
@@ -420,7 +429,7 @@ static void user_task_common(void (*entry)(void)) {
     /* Order matters: PMP resolves against the lowest-numbered matching
      * region, so the narrow RW grant for this task's own stack must come
      * before the broad RX grant that also covers it. */
-    mem_domain_add(&g_user_domain, (uintptr_t)g_user_stack, sizeof(g_user_stack),
+    mem_domain_add(&g_user_domain, (uintptr_t)g_user_stack, 4096,
                    MEM_R | MEM_W);
 
     uintptr_t tbase, tsize;
@@ -439,7 +448,7 @@ static void user_task_common(void (*entry)(void)) {
     /* ra = 0: every probe below ends with usys_exit() and an infinite loop,
      * so none of them ever returns. The ELF loader is what needs a real
      * return address. */
-    arch_enter_user(entry, (uintptr_t)g_user_stack + sizeof(g_user_stack), 0, 0, 0);
+    arch_enter_user(entry, (uintptr_t)g_user_stack + 4096, 0, 0, 0);
 }
 
 static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
@@ -448,9 +457,19 @@ static void deputy_body(void *arg)    { (void)arg; user_task_common(user_deputy)
 
 static void run_user_task(const char *name, void (*body)(void *)) {
     g_user_entered = false;
+
+    /* §3.1: the probe's U-mode stack, for exactly as long as the probe. */
+    if (!scratch_acquire(&g_user_stack_sc, 4096)) {
+        printk("[UserTest] No memory for the U-mode stack\n");
+        return;
+    }
+    g_user_stack = (uint8_t *)g_user_stack_sc.base;
+
     int pid = task_create(name, body, NULL);
     if (pid < 0) {
         printk("[UserTest] Could not create the task\n");
+        scratch_release(&g_user_stack_sc);
+        g_user_stack = NULL;
         return;
     }
     /* Polls actual task state rather than spinning a fixed guessed count of
@@ -461,6 +480,18 @@ static void run_user_task(const char *name, void (*body)(void *)) {
      * in case a probe somehow never reaches usys_exit(). */
     for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
         sched_yield();
+    }
+
+    /* Only reclaim once the task is genuinely gone. The loop above is capped,
+     * so "we stopped waiting" and "it finished" are not the same thing, and
+     * handing this page back while U-mode might still be running on it would
+     * be far worse than leaking it. */
+    if (sched_task_state(pid) == TASK_DEAD) {
+        scratch_release(&g_user_stack_sc);
+        g_user_stack = NULL;
+    } else {
+        printk("[UserTest] Task did not exit; keeping its stack rather than "
+               "freeing memory still in use\n");
     }
 }
 
@@ -504,7 +535,10 @@ static void cmd_deputytest(void) {
  * hardware -- exactly the "falsify on hardware, not QEMU" discipline this
  * project holds everywhere else, applied to the mechanism itself rather
  * than to a specific driver's PMP grant. */
-static uint8_t         g_echo_ustack[4096] __attribute__((aligned(4096)));
+/* Same treatment as g_user_stack above (§3.1): heap for the duration of the
+ * `chanechotest` probe rather than permanent .bss. */
+static scratch_t       g_echo_ustack_sc;
+static uint8_t        *g_echo_ustack;
 static mem_domain_t    g_echo_domain;
 static uint8_t         g_echo_req[16];
 static uint8_t         g_echo_resp[16];
@@ -559,7 +593,7 @@ static void echo_task_body(void *arg) {
     while (!g_echo_ep) sched_yield();
 
     mem_domain_init(&g_echo_domain);
-    mem_domain_add(&g_echo_domain, (uintptr_t)g_echo_ustack, sizeof(g_echo_ustack),
+    mem_domain_add(&g_echo_domain, (uintptr_t)g_echo_ustack, 4096,
                    MEM_R | MEM_W);
     uintptr_t tbase, tsize;
     board_text_region(&tbase, &tsize);
@@ -570,20 +604,47 @@ static void echo_task_body(void *arg) {
         return;
     }
     g_echo_entered = true;
-    arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + sizeof(g_echo_ustack), 0, 0, 0);
+    arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + 4096, 0, 0, 0);
 }
 
 static void cmd_chan_echo_test(void) {
+    /* Refuse a repeat run before committing anything to it.
+     *
+     * kernel/chan.h has no unregister, so the endpoint this registers below
+     * outlives the probe: a second `chanechotest` has always failed at
+     * chan_register_task(). What it did *not* used to do was fail after
+     * spawning a task and taking a page for its U-mode stack -- which, once
+     * that stack became on-demand (§3.1), leaked a page per attempt, since a
+     * live task is standing on it and freeing it would be worse than keeping
+     * it. Detected here instead, where nothing has been claimed yet, and the
+     * message says what is actually true rather than reporting a registration
+     * failure the caller cannot act on. */
+    if (chan_lookup("chanecho") != NULL) {
+        printk("[ChanEcho] Endpoint already registered by an earlier run; "
+               "reboot to run this again\n");
+        return;
+    }
+
     g_echo_entered = false;
+
+    /* §3.1, same lifetime rule as run_user_task() above. */
+    if (!scratch_acquire(&g_echo_ustack_sc, 4096)) {
+        printk("[ChanEcho] No memory for the U-mode stack\n");
+        return;
+    }
+    g_echo_ustack = (uint8_t *)g_echo_ustack_sc.base;
+
     int pid = task_create("chanecho", echo_task_body, NULL);
     if (pid < 0) {
         printk("[ChanEcho] Could not create the server task\n");
+        scratch_release(&g_echo_ustack_sc);
+        g_echo_ustack = NULL;
         return;
     }
     if (chan_register_task("chanecho", pid, g_echo_req, sizeof(g_echo_req),
                            g_echo_resp, sizeof(g_echo_resp)) != 0) {
         printk("[ChanEcho] Could not register the endpoint\n");
-        return;
+        return;   /* task is live on this stack; leave it held (see above) */
     }
     g_echo_ep = chan_lookup("chanecho");
 
@@ -605,6 +666,19 @@ static void cmd_chan_echo_test(void) {
         printk("[ChanEcho] ECHO_OK\n");
     } else {
         printk("[ChanEcho] ECHO_MISMATCH\n");
+    }
+
+    /* The server task returns from chan_serve_wait() and exits once the call
+     * above completes; give it the turns to do so, then reclaim -- and only
+     * if it really finished, per run_user_task()'s reasoning. */
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) {
+        sched_yield();
+    }
+    if (sched_task_state(pid) == TASK_DEAD) {
+        scratch_release(&g_echo_ustack_sc);
+        g_echo_ustack = NULL;
+    } else {
+        printk("[ChanEcho] Task did not exit; keeping its stack\n");
     }
 }
 

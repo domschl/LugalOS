@@ -130,19 +130,52 @@ const char *console_bound_device(void);
  * when it returns true.
  *
  * Non-blocking, byte-level: drains whatever is waiting on the bound input
- * device and latches true the instant it sees a raw 0x03 (Ctrl-C),
- * discarding every other byte it drains along the way. That discard is a
- * real, explicit tradeoff: there is no push-back/ungetc() on the
- * underlying read, so anything typed *during* a synchronous foreground
- * command that is not Ctrl-C is silently dropped, not queued for the next
- * prompt. A single atomic byte is still a strict improvement over a
- * multi-character command word polled the same way, which could be
- * garbled by interleaving. */
+ * device and latches true the instant it sees a raw 0x03 (Ctrl-C). Nothing
+ * is discarded -- every byte, the 0x03 included, is queued for whoever reads
+ * next (see console_getc() below). Latching where bytes *enter* rather than
+ * where they are consumed is what lets the latch be reliable without the
+ * byte being stolen: edit_multiline_box() legitimately reads a Ctrl-C as
+ * data (its Ctrl-X Ctrl-C exit), and a poller still sees the interrupt.
+ *
+ * It used to discard them, which this comment described as "a real,
+ * explicit tradeoff: there is no push-back/ungetc() on the underlying
+ * read". The tradeoff was not worth what it cost. search.c's
+ * check_up_time() polls this every 2048 nodes, so during any engine think
+ * *every keystroke that was not Ctrl-C was actively thrown away* -- type-
+ * ahead did not merely fail to queue, it was consumed and destroyed by the
+ * interrupt check itself. The push-back the old comment said did not exist
+ * is now the few lines below it, and typing during a long command works.
+ * (§"input-eater", plan/phase15_memory_reclamation.md.) */
 bool console_interrupt_requested(void);
 
 /* Clears a latched interrupt. Call once after a poll loop has acted on a
  * true result, so a Ctrl-C typed during one command doesn't leak into the
  * next. */
 void console_interrupt_clear(void);
+
+/* --- Console input, with push-back ---
+ *
+ * The input counterpart to console_putc()/console_puts(). Every reader of
+ * console input should use these rather than uart_getc()/uart_has_char()
+ * directly, because bytes can be sitting in the push-back ring instead of
+ * the device: console_interrupt_requested() above drains the device while
+ * hunting for Ctrl-C, and parks everything else here. A reader that went
+ * straight to the UART would not see those bytes at all, in the exact
+ * situation (a long foreground command) where they matter most.
+ *
+ * The ring is small and deliberately bounded -- it is type-ahead, not a
+ * buffer anything should rely on. Nothing is discarded to keep it that way:
+ * when it fills, the drain simply stops and the surplus stays in the device,
+ * where the UART's own buffering holds it until a reader makes room. */
+bool console_has_char(void);
+
+/* Blocks (yielding, via the underlying device read) until a byte is
+ * available. Serves push-back first, in arrival order, then the device. */
+char console_getc(void);
+
+/* Returns a byte to the front of the stream, for a reader that has looked
+ * at one and decided it belongs to someone else. Bounded by the same ring;
+ * a push-back that does not fit is dropped. */
+void console_ungetc(char c);
 
 #endif /* LUGALOS_KERNEL_CONSOLE_H */

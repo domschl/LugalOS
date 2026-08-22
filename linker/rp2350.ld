@@ -138,6 +138,20 @@ SECTIONS
         *(.ustacks256)
     } > RAM
 
+    /* What these tiers cost, so /proc/meminfo can report it (§6): 22 KB of
+     * RAM that is neither .data nor .bss, and was invisible in the image
+     * figure until now.
+     *
+     * From ADDR()/SIZEOF() rather than by bracketing with the location
+     * counter. `.` between output sections is not the address of the next
+     * one: everything above here is assigned `> FLASH`, so a
+     * `_ustacks_start = .;` placed before .ustacks16384 picks up a *flash*
+     * address, and subtracting it from a RAM one produced a 261435 KB
+     * "ustacks" line on the board. Found by reading the number, not by
+     * reasoning about the script. */
+    _ustacks_start = ADDR(.ustacks16384);
+    _ustacks_end   = ADDR(.ustacks256) + SIZEOF(.ustacks256);
+
     .data : {
         . = ALIGN(4);
         __data_start = .;
@@ -205,28 +219,96 @@ SECTIONS
 
     __flash_binary_end = LOADADDR(.scratch_y) + SIZEOF(.scratch_y);
 
-    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): the end
-     * of main RAM, i.e. the start of SCRATCH_X, so the heap can never grow
-     * into the scratch regions. The bump allocator this replaced had no upper
-     * bound and would have run straight through them. (The boot stack used to
-     * sit at the top of SCRATCH_Y and was the other thing this protected; it
-     * now lives in .stack above, below _kernel_end, so the heap's lower bound
-     * protects it instead.) */
-    _heap_end = ORIGIN(RAM) + LENGTH(RAM);
+    /* Upper bound of the page allocator's heap (B2, kernel/palloc.c): the top
+     * of SCRATCH_Y, i.e. the end of every SRAM bank this chip has.
+     *
+     * This used to stop at ORIGIN(RAM) + LENGTH(RAM) (0x20080000) to keep the
+     * heap out of the scratch banks, protecting two things that were once in
+     * them: the .scratch_x/.scratch_y output sections, and the boot stack,
+     * which lived at the top of SCRATCH_Y before it moved into .stack above.
+     * Neither is there any more. The boot stack moved; the two sections have
+     * always linked to size 0, because nothing in this tree has ever placed
+     * an object into either (the only `__scratch_*` references anywhere are
+     * boot_header.S's own copy table, whose scratch entries are no-ops for
+     * exactly that reason: its `bltu a1, a2` sees start == end and returns).
+     *
+     * So the bound was protecting 8 KB of real SRAM from being used at all.
+     * RP2350 has 520 KB, not 512: SRAM0-7 striped at 0x20000000, then SRAM8
+     * at 0x20080000 and SRAM9 at 0x20081000 -- **contiguous with main RAM in
+     * the address map**, which is what lets one page bitmap span all of it
+     * with no special case in palloc.c. (§1.2,
+     * plan/phase15_memory_reclamation.md.)
+     *
+     * The bootrom's own initial stack pointer is SRAM_END, this same address
+     * (boot_header.S's IMAGE_DEF, `.word SRAM_END`), so the bootrom does push
+     * into these banks before handing over -- harmless, because
+     * _reset_handler's first action on core 0 is `la sp, _stack_top`, with no
+     * call or push between entry and that instruction, and core 1 never
+     * leaves its `wfi` loop to acquire a stack at all. Whatever the bootrom
+     * left there is dead by the time palloc_init() runs. */
+    _heap_end = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
+
+    /* --- The heap floor (§6, plan/phase15_memory_reclamation.md) ---
+     *
+     * Every heap regression this project has had was discovered the same way:
+     * a board failing to do something, days or weeks after the commit that
+     * caused it. S4's NODE_POOL_SIZE growth surfaced as "chess will not
+     * start", months later, on a completely fresh boot. The size of this heap
+     * is known at *link* time, so that is where it should be caught.
+     *
+     * 256 KB, chosen against measurements rather than as a round number:
+     *
+     *   - The whole system's observed peak, with two U-mode programs resident
+     *     at once, is 38 pages (152 KB) -- tests/hw/test_rp2350.py's C2.
+     *   - The largest user image this board can place needs a 32-page (128 KB)
+     *     NAPOT-aligned run, which is a *contiguous* requirement on top of the
+     *     above, not a share of it.
+     *
+     * 64 pages leaves both satisfiable together with room to spare. At the
+     * time of writing the heap is 89 pages, so there are 25 pages of slack
+     * before this fires: enough that ordinary work never trips it, little
+     * enough that a subsystem quietly claiming 100 KB of .bss does.
+     *
+     * When it does fire, the answer is not to lower it reflexively. It is to
+     * ask which of the two figures above the change has invalidated -- and if
+     * neither, then lowering it is a deliberate, reviewable decision with the
+     * reasoning right here to argue against.
+     *
+     * Only on this board. The QEMU targets link into 128 MB, where a floor
+     * would never fire and would only be one more number to keep plausible.
+     * cmake/board-rp2350-clock.cmake's persona shares this script, so it is
+     * covered too. */
+    ASSERT(_heap_end - _kernel_end >= 256K,
+           "RP2350 heap has fallen below its 256 KB floor -- something grew .bss; see plan/phase15_memory_reclamation.md")
+
+    /* The scratch banks are the heap's now, so nothing may be placed into
+     * them -- an object here would be handed out as heap memory and silently
+     * overwritten. This is the guard that keeps _heap_end above honest: it is
+     * a link error naming the cause, rather than corruption on the board. If
+     * a future driver genuinely wants a scratch bank (they are unstriped, so
+     * they behave differently under contention), take it back out of the heap
+     * here at the same time. */
+    ASSERT(SIZEOF(.scratch_x) == 0 && SIZEOF(.scratch_y) == 0,
+           "something now places into a scratch bank, but _heap_end hands both to the page allocator -- see plan/phase15_memory_reclamation.md")
 
     /* The whole writable region, so /proc/meminfo can report the heap and the
      * stack as fractions of something real. Taken from the MEMORY block rather
      * than written down again in C: the point of these numbers is that they
      * come from the board's memory map, not from a constant that can drift
-     * away from it. Note this deliberately excludes SCRATCH_X/Y -- 8 KB that
-     * exist on the die but that nothing on this board currently places into.
+     * away from it. Now includes SCRATCH_X/Y, because as of §1.2
+     * (plan/phase15_memory_reclamation.md) the heap does -- this used to stop
+     * at the end of main RAM and describe the two scratch banks as "8 KB that
+     * exist on the die but that nothing on this board currently places into",
+     * which was true and was precisely the argument for giving them to the
+     * page allocator instead. Reporting 512 KB while the heap ran to 520
+     * would make /proc/meminfo's heap-as-a-fraction-of-RAM figure wrong.
      *
      * FLASH likewise, so the flash figure covers the whole XIP window rather
      * than just the part __flash_binary_end reaches: on this board most of the
      * image is the embedded FAT32 payload, and the two are worth telling
      * apart. */
     _ram_start   = ORIGIN(RAM);
-    _ram_end     = ORIGIN(RAM) + LENGTH(RAM);
+    _ram_end     = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     _flash_start = ORIGIN(FLASH);
     _flash_end   = ORIGIN(FLASH) + LENGTH(FLASH);
 }
