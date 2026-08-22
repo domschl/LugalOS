@@ -674,6 +674,12 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 
 ## History
 
+- **2026-08-22: Release 0.12.1 — Chess two-device polish.** Completed 0.12.0's mirroring: the keypad
+  no longer prints raw key codes to the terminal, completed moves and engine replies are named in SAN
+  on both front ends, and level/auto-reply/save/load changed from the keypad menu now report there
+  too. Fixes a data-loss bug where the keypad's own *new game* item discarded the previous game
+  instead of archiving it.
+
 - **2026-08-22: Release 0.12.0 — Chess as a two-headed appliance.** The keypad/TFT board and the
   terminal are now one session with two live inputs *and* mirrored outputs — a move entered on either
   device redraws the ASCII board, the TFT and the 7-segment display alike, so neither is ever silently
