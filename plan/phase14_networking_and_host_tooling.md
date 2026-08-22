@@ -1,8 +1,8 @@
 # Phase 14 — 9P distribution, real networking & host tooling
 
 **Status: 14a CONCLUDED, 2026-08-21. 14a-2 (`host/fuse-p9`) CONCLUDED,
-2026-08-21.** 14b explicitly deferred by user request in favor of 14a-2;
-14c-14e not started.
+2026-08-21. 14b CONCLUDED, 2026-08-22** (deferred at the time in favour of
+14a-2, built in phase 16). 14c-14e not started.
 
 ## Background: five topics, sequenced
 
@@ -669,7 +669,102 @@ need at all).
 
 ---
 
-## 14b, 14c-14e — not started
+## 14b — chess PGN save-games *(done, 2026-08-22, in phase 16)*
+
+**Design settled with the user before building**, since three questions forked
+the work materially: full SAN vs a cheaper notation, auto-save vs on-demand,
+and one save slot vs many. All three took the recommended option.
+
+### SAN is the substance, not the file I/O
+
+PGN's movetext is Standard Algebraic Notation, and the engine had none --
+`format_move()` emits long algebraic (`g1f3`) everywhere. SAN is
+*position-dependent*: naming a move requires knowing what else could have
+reached that square, so it cannot be derived from the Move word. That is
+~150 lines (`user/chess/src/pgn.c`) and it is what makes a file another
+program will open, which is the only reason to choose PGN over a private
+format.
+
+`parse_move_san()` deliberately does **not** parse SAN's grammar. It formats
+every legal move and compares, so the two directions cannot disagree about
+disambiguation or suffixes -- which is exactly where a hand-written parser and
+formatter drift apart. It costs a move generation per call, which at load time
+is nothing.
+
+### The self-test earned its keep immediately
+
+`pgn_selftest()` round-trips every legal move in six positions chosen for the
+cases that break naive implementations, then saves and reloads two whole
+games requiring an identical FEN and move count back. Run for the first time,
+it found:
+
+- **a real file/rank inversion** in the disambiguation: two knights on b1 and
+  f1 bearing on d2 produced `N1d2` -- a *rank* disambiguator between pieces
+  that share a rank, distinguishing nothing. Correct is `Nbd2`.
+- **two of my own test positions wrong before the code was.** One expected
+  `Rag1` where the white king blocks a1's path, so correct SAN is the
+  undisambiguated `Rg1`. Its replacement put the black king where the a8 rook
+  already checked it with White to move -- an illegal position the generator
+  accepts, making every move come back with a `+`.
+
+The round-trip is the strong half: it cannot be satisfied by a formatter that
+under-disambiguates, because two moves formatting identically means one parses
+back as the other. The literal expectations catch the opposite error, since a
+formatter that disambiguates everything unconditionally round-trips perfectly
+and is still wrong.
+
+### Storage
+
+`/sd0/chess/` (or `/ram0/chess/`), replacing the single FEN-plus-level
+`chess.save` in the volume's `system/` area -- these are the user's data, and
+there are several of them now.
+
+- **Auto-save** to `current.pgn` after every completed move, from either input
+  device. Silent in both directions: it does not announce success, and it does
+  not report failure, because a full or absent card must not stop the board
+  being a chess computer.
+- **Auto-restore** on entering a session. *The user caught this gap*: auto-save
+  without it is half a promise -- a board that saves every move and boots to an
+  empty position has kept the game and hidden it. It matters most on the
+  persona that boots straight into chess with no shell to type `load` at.
+- **`new` archives** the outgoing game to `games/game-NNN.pgn` first (the
+  user's own suggestion, and it closes a real hole auto-save would otherwise
+  have opened: the next move would silently overwrite the previous game).
+  Numbered rather than timestamped, because the RTC is optional on this board
+  and a timestamp would collide or read as the software clock's epoch without
+  one; the real date still reaches the `[Date]` tag, or `????.??.??` when
+  there is no clock to ask.
+- **Named saves on the terminal, single slot on the keypad.** `save <name>`,
+  `load <name>` and `games` at a terminal; the keypad's SAVE/LOAD keep using
+  the current game, because an eight-character seven-segment display is a poor
+  file picker. Both front ends write through the same `console_write_pgn()`,
+  so they cannot produce different files for the same game.
+
+`[SetUp]`/`[FEN]` tags are emitted when a game did not start from the initial
+array, so a game begun with `fen <position>` reloads as itself. That lets PGN
+be the only format rather than keeping two.
+
+### A bug the design change exposed
+
+Adding the archive to `console_new_game()` broke session start, which called
+the same function -- so merely *entering* chess would archive the game it was
+about to resume. Split into `console_reset_game()` (plain) and
+`console_new_game()` (archive then reset), with `console_resume_or_new()` for
+session start.
+
+### Verified
+
+QEMU **253/253** (four new tests: the notation round-trip, and PGN
+save/archive/load-by-name), hardware **24/24**, plus the self-test run
+directly on the board.
+
+**One environment bug found only on hardware:** the self-test wrote to a
+hardcoded `/ram0`, which is *unmounted* on the RP2350 chess persona -- that
+board has an SD card and the RAM disk costs heap. It passed on QEMU and failed
+on the only hardware anyone runs it on. It now picks whichever volume is
+writable.
+
+## 14c-14e — not started
 
 14b (chess PGN save-games) was explicitly deferred in favor of 14a-2
 above. See "Background: five topics, sequenced" above for what 14c-14e

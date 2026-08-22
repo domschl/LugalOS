@@ -1049,7 +1049,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "load\n"
             "quit"
         )
-        ok, log = session.send_and_expect(cmd_chess, r"Position loaded from", timeout=15.0)
+        ok, log = session.send_and_expect(cmd_chess, r"Game loaded from", timeout=15.0)
         results.append(("Chess Console REPL: new/move+engine-reply/board/eval/moves/undo/redo/fen/save/load (J1)", ok, log if not ok else ""))
 
         # The argument form of `fen` specifically (§1.3). Separate assertion
@@ -1063,6 +1063,35 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             r"Position loaded\.", timeout=15.0)
         results.append(("Chess Console: `fen <position>` parses into the shared scratch (§1.3)",
                         ok, log if not ok else ""))
+
+        # 10b-3. SAN/PGN notation (14b).
+        #
+        # Separate from the search tests: this exercises *notation*, which
+        # fails silently by nature -- a mis-disambiguated SAN string is still a
+        # legal-looking move, and a PGN that loses a move still loads. The
+        # primitive round-trips every legal move in six positions chosen for
+        # the cases that break naive implementations (file and rank
+        # disambiguation, castling, capture-promotion, mate suffix) and then
+        # saves and reloads two whole games, requiring an identical FEN and
+        # move count back. It found a real file/rank inversion when first run.
+        ok, log = session.send_and_expect("(chess-san-selftest)",
+                                          r"SAN Results: \d+ moves checked, 0 errors", timeout=30.0)
+        results.append(("Chess SAN/PGN Notation Round-Trips (14b)", ok, log if not ok else ""))
+
+        # 10b-4. PGN save/load/archive through the console, end to end -- named
+        # saves, `new` retiring the previous game to games/, and loading it
+        # back by name. The assertion is the reload, since it can only succeed
+        # if the write, the archive rename and the SAN round-trip all worked.
+        ok, log = session.send_and_expect(
+            "(chess-console)\n"
+            "level 1\n"
+            "e2e4\n"
+            "save keeper\n"
+            "new\n"
+            "load keeper\n"
+            "quit",
+            r"Game loaded from .*keeper\.pgn \(\d+ half-moves\)", timeout=40.0)
+        results.append(("Chess PGN Save/Archive/Load By Name (14b)", ok, log if not ok else ""))
 
         # 10c. Chess heap is fully released on `quit`. Revises J0's original
         # "never freed for the process lifetime" choice -- correct when J0

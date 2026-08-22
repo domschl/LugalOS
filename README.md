@@ -81,9 +81,13 @@ silicon):
 - **An onboard chess engine** (`user/chess/`) with a console REPL (`chess-console`), alpha-beta
   search, checkmate/stalemate detection, and full game state (undo/redo/FEN save-load) — reachable
   interactively over the same `lsh` shell, on both QEMU and real RP2350 hardware. On the chess-computer
-  persona the keypad/TFT board UI and the terminal are **one session with two live input devices**:
-  every console command (`level 4`, `fen …`, `save`) works while a game is being played on the board,
-  and typing during an engine search is queued rather than discarded.
+  persona the keypad/TFT board UI and the terminal are **one session with two live input devices and
+  fully mirrored output**: every console command (`level 4`, `fen …`, `save`) works while a game is
+  played on the board, a move entered on either device redraws the ASCII board, the TFT and the
+  7-segment slots alike, and typing during an engine search is queued rather than discarded.
+  Games are stored as **real PGN** (proper SAN, so any chess GUI opens them) under `/sd0/chess/`,
+  auto-saved after every move and auto-restored when a session starts; `new` retires the previous
+  game to `chess/games/`, and `save <name>` / `load <name>` / `games` archive by name.
 - **RAM budgeting as a first-class concern, with the tooling to keep it that way**: on RP2350 `.bss`
   and the heap are literally the same budget — the page allocator starts where the image ends — so a
   static buffer serving an idle subsystem is heap no *other* subsystem can have. Reclaiming that took

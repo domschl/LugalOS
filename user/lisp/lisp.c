@@ -28,6 +28,7 @@
 #endif
 #if CONFIG_ENABLE_CHESS
 #include "chess_ui.h"
+#include "pgn.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
 #include "drivers/pico_clock_green.h"
@@ -1218,6 +1219,15 @@ static lisp_val_t *prim_tm_get_key(lisp_val_t *args, lisp_val_t *env) {
 /* Chess primitives (H4, plan/phase9_chess_computer.md). chess-selftest has
  * no hardware dependency (builds/runs on every target); chess-run needs
  * the display and keypad both present, matching chess_ui.h's own guard. */
+/* SAN/PGN notation self-test (14b). Separate from chess-selftest, which
+ * exercises the *search*: this exercises notation, has no time budget, and is
+ * the regression guard for a class of bug that is silent by nature -- a
+ * mis-disambiguated SAN string is still a legal-looking move. */
+static lisp_val_t *prim_chess_san_selftest(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return pgn_selftest() == 0 ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     chess_selftest();
@@ -2243,6 +2253,7 @@ void lisp_init(void) {
 #endif
 #if CONFIG_ENABLE_CHESS
     env_set(&global_env, "chess-selftest", make_prim(prim_chess_selftest));
+    env_set(&global_env, "chess-san-selftest", make_prim(prim_chess_san_selftest));
     env_set(&global_env, "perft", make_prim(prim_perft));
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     env_set(&global_env, "chess-run", make_prim(prim_chess_run));

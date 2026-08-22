@@ -440,6 +440,7 @@ if(LUGALOS_ENABLE_CHESS)
         user/chess/src/tt.c
         user/chess/src/search.c
         user/chess/src/perft.c
+        user/chess/src/pgn.c
         user/chess/src/chess_ui.c)
 endif()
 

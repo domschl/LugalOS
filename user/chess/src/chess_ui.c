@@ -48,6 +48,8 @@
 #endif
 
 #include "chess_ui.h"
+#include "pgn.h"
+#include "kernel/scratch.h"
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -732,12 +734,47 @@ static int g_console_max_history_ply = 0;
  * LugalOS's libc (only `strchr`, first-occurrence) to find the last '/',
  * and no `snprintf` either (position.c's own header comment already says
  * why) to build one path from parts. */
+/* Games live in their own directory rather than the volume's system/ area
+ * (14b): there are several of them now, and they are the user's data, not the
+ * board's. SD when writable, RAM disk otherwise -- the latter is volatile, so
+ * auto-save there lasts only until reboot, which still beats nothing on a
+ * board with no card in it. */
 static const char *console_save_dir(void) {
-    return vfs_volume_writable("/sd0") ? "/sd0/system" : "/ram0/system";
+    return vfs_volume_writable("/sd0") ? "/sd0/chess" : "/ram0/chess";
 }
+
+/* Where `new` retires the outgoing game to. */
+static const char *console_archive_dir(void) {
+    return vfs_volume_writable("/sd0") ? "/sd0/chess/games" : "/ram0/chess/games";
+}
+/* The auto-saved game in progress. */
 static const char *console_save_path(void) {
-    return vfs_volume_writable("/sd0") ? "/sd0/system/chess.save"
-                                        : "/ram0/system/chess.save";
+    return vfs_volume_writable("/sd0") ? "/sd0/chess/current.pgn"
+                                        : "/ram0/chess/current.pgn";
+}
+
+/* Builds "<dir>/<name>.pgn". The name is bounded and may contain no path
+ * separators or spaces, so it cannot address anything outside the games
+ * directory. Returns false rather than silently sanitising: a name the user
+ * typed and a different name being written is worse than a refusal. */
+static bool console_named_path(const char *dir, const char *name, char *out, int max) {
+    if (!name || !*name) return false;
+    int n = 0;
+    for (const char *q = dir; *q && n < max - 1; q++) out[n++] = *q;
+    if (n < max - 1) out[n++] = '/';
+    for (const char *q = name; *q; q++) {
+        if (*q == '/' || *q == '\\' || *q == ' ' || n >= max - 6) return false;
+        out[n++] = *q;
+    }
+    for (const char *q = ".pgn"; *q && n < max - 1; q++) out[n++] = *q;
+    out[n] = '\0';
+    return true;
+}
+
+static void console_path_current(char *out, int max) {
+    int n = 0;
+    for (const char *q = console_save_path(); *q && n < max - 1; q++) out[n++] = *q;
+    out[n] = '\0';
 }
 
 /* Ported from console.c's execute_player_move() (:415-477), the parse
@@ -844,6 +881,10 @@ static bool console_report_outcome(Position *pos) {
  * auto-reply, and the `go` command, which upstream's own console.c also
  * prints the board after) get consistent output without duplicating the
  * print_board() call at each call site. */
+/* Defined below with the rest of the save machinery; used here, one call site
+ * earlier, because every completed move auto-saves (14b). */
+static void console_autosave(Position *pos);
+
 static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms) {
     if (console_report_outcome(pos)) {
         return; /* game already over before the engine could reply */
@@ -859,6 +900,7 @@ static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms
     g_console_max_history_ply = pos->history_ply;
     cprintf("Engine plays: %s (Score: %s%d)\n", buf, sign_prefix(g_search_score), g_search_score);
     chess_show(pos);
+    console_autosave(pos);   /* 14b: after every completed move */
     console_report_outcome(pos);
 }
 
@@ -870,8 +912,9 @@ static void console_print_help(void) {
     cprintf("  level <1-8>       - Set engine search level (1:1s 2:2s 3:5s 4:10s 5:15s "
             "6:30s 7:60s 8:Infinite -- press Ctrl-C to stop an 8/Infinite search)\n");
     cprintf("  fen [FEN]         - Show current FEN, or set a custom FEN position\n");
-    cprintf("  save              - Save the current position and level (/sd0 if writable, else /ram0)\n");
-    cprintf("  load              - Load the saved position and level\n");
+    cprintf("  save [name]       - Save the game as PGN (no name: the auto-saved current game)\n");
+    cprintf("  load [name]       - Load a PGN game (no name: the auto-saved current game)\n");
+    cprintf("  games             - List saved and archived games\n");
     cprintf("  go [depth N|movetime N] - Force the engine to think and play a move\n");
     cprintf("  stop              - No mid-search effect here (not currently thinking); press "
             "Ctrl-C instead to interrupt a running search\n");
@@ -883,67 +926,204 @@ static void console_print_help(void) {
     cprintf("  <move>            - Play a move in UCI format (e.g. e2e4, g1f3, e7e8q)\n\n");
 }
 
-static void console_new_game(Position *pos) {
+/* Retires the auto-saved game before `new` lets it be overwritten (user's
+ * own suggestion, and it closes a real hole: with auto-save on, the first
+ * move of a new game would silently replace the previous one).
+ *
+ * Numbered, not timestamped. The RTC is optional on this board -- "No
+ * DS1307/DS3231 RTC module found" is an ordinary boot line -- so a
+ * timestamped filename would collide or read as the software clock's epoch on
+ * a board without one. A counter derived from what is already in the
+ * directory always works, and the real date still reaches the file: pgn_save()
+ * writes it into the [Date] tag when an RTC is present, and "????.??.??" when
+ * it is not.
+ *
+ * The file is copied rather than regenerated from the live position, so what
+ * is archived is exactly what was saved -- including a game that was loaded
+ * and never moved in. */
+static void console_archive_current(void) {
+    const char *dir = console_archive_dir();
+    char cur[128];
+    console_path_current(cur, (int)sizeof(cur));
+
+    scratch_t sc;
+    if (!scratch_acquire(&sc, 4096)) return;
+    char *buf = (char *)sc.base;
+    int len = vfs_read(cur, buf, 4095);
+    if (len <= 0) { scratch_release(&sc); return; }   /* nothing to retire */
+
+    vfs_mkdir(console_save_dir());
+    vfs_mkdir(dir);
+
+    /* First free slot. Bounded rather than unbounded: 999 archived games is
+     * far past anything this board will see, and a loop with no end is worse
+     * than a full archive. */
+    char path[160];
+    for (int n = 1; n <= 999; n++) {
+        char name[16];
+        int k = 0;
+        name[k++] = 'g'; name[k++] = 'a'; name[k++] = 'm'; name[k++] = 'e'; name[k++] = '-';
+        name[k++] = (char)('0' + (n / 100) % 10);
+        name[k++] = (char)('0' + (n / 10) % 10);
+        name[k++] = (char)('0' + n % 10);
+        name[k] = '\0';
+        if (!console_named_path(dir, name, path, (int)sizeof(path))) break;
+        vfs_stat_t st;
+        if (vfs_stat(path, &st) != 0) {          /* free slot */
+            if (vfs_write(path, buf, (uint32_t)len) == 0) {
+                cprintf("Previous game archived to %s\n", path);
+            }
+            break;
+        }
+    }
+    scratch_release(&sc);
+}
+
+/* A fresh board, and nothing else. Split out from console_new_game() because
+ * starting a *session* and asking for a *new game* are different things that
+ * used to be the same call: the session start must not archive the game it is
+ * about to resume. */
+static void console_reset_game(Position *pos) {
     parse_fen(pos, STANDARD_START_FEN);
     clear_tt();
     g_console_max_history_ply = 0;
 }
 
-static void console_save(const Position *pos) {
-    const char *path = console_save_path();
-    char buf[300];
-    int n = 0;
-    generate_fen(pos, buf);
-    n = (int)strlen(buf);
-    buf[n++] = '\n';
-    /* search_level is at most one digit (1-8) -- no snprintf needed. */
-    buf[n++] = (char)('0' + g_console_search_level);
-    buf[n++] = '\n';
-    buf[n] = '\0';
+/* The `new` command: retire whatever was in progress, then reset. */
+static void console_new_game(Position *pos) {
+    console_archive_current();
+    console_reset_game(pos);
+}
 
-    /* Best-effort: the volume's own "system/" directory may not exist yet
-     * (found live on a freshly formatted /ram0 -- vfs_write() does not
-     * create missing parent directories, and there is no reason to expect
-     * every volume already has this one). Ignore the result: it either
-     * already existed (this fails harmlessly) or didn't (this is what
-     * makes the write below succeed). */
+/* Session start (14b). Auto-save is only half a promise without this -- a
+ * board that saves every move and then boots to an empty position has kept
+ * the game and hidden it. Resuming is what makes the pair worth having, and
+ * it matters most on the persona that boots straight into chess with no shell
+ * to type `load` at.
+ *
+ * Announced rather than silent: the board not being in the start position is
+ * exactly the kind of surprise that needs one line of explanation, and the
+ * line also says how to get a fresh board. */
+static void console_resume_or_new(Position *pos) {
+    char path[128];
+    console_path_current(path, (int)sizeof(path));
+
+    if (pgn_load(pos, path) == 0 && is_position_valid(pos) && pos->history_ply > 0) {
+        clear_tt();
+        g_console_max_history_ply = pos->history_ply;
+        cprintf("Resumed game from %s (%d half-moves). 'new' starts a fresh game.\n",
+                path, pos->history_ply);
+        return;
+    }
+    /* No game, an empty one, or a file this build cannot read: start clean
+     * without archiving -- there is nothing worth keeping in any of those
+     * cases, and archiving here would fill the directory with empty games
+     * every time the board powers on. */
+    console_reset_game(pos);
+}
+
+/* The PGN result tag implied by the position itself, so a finished game is
+ * archived as finished rather than as "*". */
+static const char *console_result_tag(Position *pos) {
+    static MoveList l;
+    generate_moves(pos, &l);
+    for (int i = 0; i < l.count; i++) {
+        if (make_move(pos, l.moves[i])) { unmake_move(pos); return "*"; }
+    }
+    uint64_t kb = pos->piece_bbs[KING] & pos->color_bbs[pos->side];
+    if (kb) {
+        int ksq = 0; uint64_t t = kb;
+        while (!(t & 1ULL)) { t >>= 1; ksq++; }
+        if (is_square_attacked(pos, ksq, pos->side ^ 1)) {
+            return (pos->side == WHITE) ? "0-1" : "1-0";
+        }
+    }
+    return "1/2-1/2";
+}
+
+/* Every save route goes through here -- the explicit command, the keypad
+ * menu, and the auto-save after each move -- so all three write the same
+ * file. The mkdir is best-effort: vfs_write() does not create missing
+ * parents, and a freshly formatted volume has none, so this either fails
+ * harmlessly (it existed) or is what makes the write below succeed. */
+static bool console_write_pgn(Position *pos, const char *path) {
     vfs_mkdir(console_save_dir());
+    return pgn_save(pos, path, console_result_tag(pos)) == 0;
+}
 
-    if (vfs_write(path, buf, (uint32_t)n) == 0) {
-        cprintf("Position and level saved to %s\n", path);
+/* Auto-save (14b), after every completed move from either input device.
+ *
+ * Deliberately silent, in both directions: it does not announce success,
+ * because a chess computer interrupting a game to say it saved is noise; and
+ * it does not report failure, because a full or absent card must not stop the
+ * board being a chess computer. Failure is still visible where it matters --
+ * an explicit `save` reports properly. */
+static void console_autosave(Position *pos) {
+    (void)console_write_pgn(pos, console_save_path());
+}
+
+static void console_save(Position *pos, const char *name) {
+    char path[128];
+    if (name && *name) {
+        if (!console_named_path(console_save_dir(), name, path, (int)sizeof(path))) {
+            cprintf("save: bad name '%s' (no spaces or path separators)\n", name);
+            return;
+        }
+    } else {
+        console_path_current(path, (int)sizeof(path));
+    }
+
+    if (console_write_pgn(pos, path)) {
+        cprintf("Game saved to %s\n", path);
     } else {
         cprintf("Save failed (could not write %s)\n", path);
     }
 }
 
-static void console_load(Position *pos) {
-    const char *path = console_save_path();
-    char buf[300];
-    int bytes = vfs_read(path, buf, sizeof(buf) - 1);
-    if (bytes <= 0) {
-        cprintf("No saved game found at %s\n", path);
-        return;
+static void console_load(Position *pos, const char *name) {
+    char path[128];
+    if (name && *name) {
+        if (!console_named_path(console_save_dir(), name, path, (int)sizeof(path))) {
+            cprintf("load: bad name '%s'\n", name);
+            return;
+        }
+    } else {
+        console_path_current(path, (int)sizeof(path));
     }
-    buf[bytes] = '\0';
 
-    char *nl = strchr(buf, '\n');
-    if (nl) *nl = '\0';
-    /* The shared scratch, not a static of its own -- same shape as tm_load()
-     * further down, which already parses into it for the same reason. */
-    parse_fen(g_chess_scratch, buf);
-    if (!is_position_valid(g_chess_scratch)) {
-        cprintf("Save file is corrupt (invalid FEN)\n");
+    if (pgn_load(pos, path) != 0) {
+        cprintf("No saved game at %s\n", path);
         return;
     }
-    *pos = *g_chess_scratch;
+    if (!is_position_valid(pos)) {
+        cprintf("Save file is corrupt\n");
+        return;
+    }
     clear_tt();
     g_console_max_history_ply = pos->history_ply;
-
-    if (nl && nl[1] >= '1' && nl[1] <= '8') {
-        g_console_search_level = nl[1] - '0';
-    }
-    cprintf("Position loaded from %s (level %d)\n", path, g_console_search_level);
+    cprintf("Game loaded from %s (%d half-moves)\n", path, pos->history_ply);
     chess_show(pos);
+}
+
+/* Lists the games directory and the archive, so `load <name>` has something
+ * to name. */
+static void console_list_games(void) {
+    const char *dirs[2] = { console_save_dir(), console_archive_dir() };
+    for (int d = 0; d < 2; d++) {
+        int fd = vfs_open(dirs[d], VFS_O_READ);
+        if (fd < 0) continue;
+        cprintf("%s:\n", dirs[d]);
+        char name[64];
+        vfs_stat_t st;
+        int shown = 0;
+        for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
+            if (st.is_dir) continue;
+            cprintf("  %s (%lu bytes)\n", name, (unsigned long)st.size);
+            shown++;
+        }
+        if (!shown) cprintf("  (empty)\n");
+        vfs_close(fd);
+    }
 }
 
 /* `go [depth N | movetime N]`, ported from console.c's `go` command
@@ -1046,10 +1226,16 @@ static ChessCmdResult console_dispatch_line(const char *line) {
                 chess_show(&g_chess_pos);
             }
         }
-    } else if (strcmp(line, "save") == 0) {
-        console_save(&g_chess_pos);
-    } else if (strcmp(line, "load") == 0) {
-        console_load(&g_chess_pos);
+    } else if (strncmp(line, "save", 4) == 0 && (line[4] == '\0' || line[4] == ' ')) {
+        const char *nm = line + 4;
+        while (*nm == ' ') nm++;
+        console_save(&g_chess_pos, nm);
+    } else if (strncmp(line, "load", 4) == 0 && (line[4] == '\0' || line[4] == ' ')) {
+        const char *nm = line + 4;
+        while (*nm == ' ') nm++;
+        console_load(&g_chess_pos, nm);
+    } else if (strcmp(line, "games") == 0) {
+        console_list_games();
     } else if (strncmp(line, "go", 2) == 0 && (line[2] == '\0' || line[2] == ' ')) {
         console_handle_go(&g_chess_pos, line);
     } else if (strcmp(line, "undo") == 0) {
@@ -1094,6 +1280,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
     } else if (console_execute_move(&g_chess_pos, line)) {
         g_console_max_history_ply = g_chess_pos.history_ply;
         chess_show(&g_chess_pos);
+        console_autosave(&g_chess_pos);   /* 14b */
         if (!console_report_outcome(&g_chess_pos)) {
             console_engine_reply(&g_chess_pos, 64, level_times_ms[g_console_search_level - 1]);
         }
@@ -1105,7 +1292,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
 
 void chess_console_run(void) {
     if (!chess_ensure_init()) return;
-    console_new_game(&g_chess_pos);
+    console_resume_or_new(&g_chess_pos);
 
     cprintf("\nLugalOS chess console. Type 'help' for commands, 'quit' to leave.\n");
     print_board(&g_chess_pos);
@@ -1764,35 +1951,25 @@ static void tm_format_score(int score, char *out) {
  * save format and one save file shared by both front ends, not a second
  * copy of the /sd0-vs-/ram0 selection. Rendered on the TM1638 instead of
  * cprintf'd, otherwise the same read/write this file already does. */
-static void tm_save(const Position *pos) {
-    const char *path = console_save_path();
-    char buf[300];
-    generate_fen(pos, buf);
-    int n = (int)strlen(buf);
-    buf[n++] = '\n';
-    buf[n++] = (char)('0' + g_console_search_level);
-    buf[n++] = '\n';
-    buf[n] = '\0';
-    vfs_mkdir(console_save_dir());
-    tm1638_display_string(vfs_write(path, buf, (uint32_t)n) == 0 ? "SAuEd   " : "nO SAuE ");
+static void tm_save(Position *pos) {
+    /* PGN, through the same writer the terminal uses (14b) -- the keypad and
+     * the console must not produce different files for the same game. The
+     * keypad deliberately has no *named* saves: an eight-character
+     * seven-segment display is a poor file picker, so this writes the one
+     * current game and `save <name>` at a terminal does the rest. */
+    tm1638_display_string(console_write_pgn(pos, console_save_path())
+                          ? "SAuEd   " : "nO SAuE ");
     time_delay_us(1500000);
 }
 
 /* Returns TM_KEY_RESTART on a successful load (the position changed under
  * the caller), 0 otherwise (nothing to load, or a corrupt save file). */
 static int tm_load(Position *pos) {
-    const char *path = console_save_path();
-    char buf[300];
-    int bytes = vfs_read(path, buf, sizeof(buf) - 1);
-    if (bytes <= 0) {
+    if (pgn_load(g_chess_scratch, console_save_path()) != 0) {
         tm1638_display_string("nO SAuE ");
         time_delay_us(1500000);
         return 0;
     }
-    buf[bytes] = '\0';
-    char *nl = strchr(buf, '\n');
-    if (nl) *nl = '\0';
-    parse_fen(g_chess_scratch, buf);
     if (!is_position_valid(g_chess_scratch)) {
         tm1638_display_string("bAd SAuE");
         time_delay_us(1500000);
@@ -1801,9 +1978,6 @@ static int tm_load(Position *pos) {
     *pos = *g_chess_scratch;
     clear_tt();
     g_console_max_history_ply = pos->history_ply;
-    if (nl && nl[1] >= '1' && nl[1] <= '8') {
-        g_console_search_level = nl[1] - '0';
-    }
     tm1638_display_string("LOAdEd  ");
     time_delay_us(1500000);
     tm_sync_move_slots(pos);
@@ -2234,10 +2408,12 @@ static TmAfterMove tm_after_move(Position *pos, char *disp, int mover_side) {
 
 void chess_run(void) {
     if (!chess_ensure_init()) return;
-    parse_fen(&g_chess_pos, STANDARD_START_FEN);
-    g_console_max_history_ply = 0; /* J3: shared with the console REPL's
-                                     * own undo/redo boundary (chess_ui.c:
-                                     * 352), reset fresh for this session. */
+    /* 14b: resume the auto-saved game rather than always starting fresh --
+     * this is the persona that boots straight into chess with no shell to
+     * type `load` at, so it is where resuming matters most. Sets
+     * g_console_max_history_ply itself (the undo/redo boundary shared with
+     * the console REPL), whether it resumed or reset. */
+    console_resume_or_new(&g_chess_pos);
     for (int i = 0; i < 4; i++) { g_tm_white_slot[i] = ' '; g_tm_black_slot[i] = ' '; }
 
     tm1638_display_string("LUgAL Ch");
@@ -2300,6 +2476,7 @@ void chess_run(void) {
              * status line, which chess_show() -- built for the state changes
              * that have no "move just made" -- deliberately does not take. */
             print_board(&g_chess_pos);
+            console_autosave(&g_chess_pos);   /* 14b */
 
             TmAfterMove result = tm_after_move(&g_chess_pos, disp, mover_side);
             if (result == TM_AFTER_EXIT) return;
@@ -2377,6 +2554,7 @@ void chess_run(void) {
                     mbuf, sign_prefix(g_search_score), g_search_score);
         }
         print_board(&g_chess_pos);
+        console_autosave(&g_chess_pos);   /* 14b */
 
         char disp2[9];
         for (int i = 0; i < 4; i++) { disp2[i] = g_tm_white_slot[i]; disp2[4 + i] = g_tm_black_slot[i]; }
