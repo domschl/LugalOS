@@ -37,8 +37,9 @@
     "kernel/time.c": 26,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 10268,
+    "user/chess/src/chess_ui.c": 10784,
     "user/chess/src/perft.c": 12,
+    "user/chess/src/pgn.c": 2580,
     "user/chess/src/position.c": 48,
     "user/chess/src/search.c": 5665,
     "user/chess/src/tt.c": 13,
@@ -51,5 +52,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 147353
+  "total": 150449
 }

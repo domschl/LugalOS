@@ -950,7 +950,21 @@ ownership shape `search.c`'s own pool already has (owned by whoever calls
 **J4 is now fully closed** — implementation, the stack-footprint fix, and
 this ownership note, all 2026-08-12.
 
-## J5 — UCI-over-UART bridge (stretch; standard UCI only) *(attempted and removed, 2026-08-12)*
+## J5 — UCI-over-UART bridge (stretch; standard UCI only) *(attempted and removed, 2026-08-12; not to be retried for now, 2026-08-22)*
+
+**Standing decision, 2026-08-22 (user).** Revisited when phase 16 audited the
+remaining chess work and found this the only item still open. Not being
+resumed, for two reasons the original attempt below supports: it "ended up
+being too fragile to be useful when we tried last", and it "deviates quite a
+bit from a LugalOS-centric point of view" -- the value of this board is that
+it is a Plan 9-ish machine you talk to over its own namespace, and a
+GUI-protocol shim on a dedicated third CDC interface pulls against that rather
+than with it. A host that wants this board's games already has a better route
+now that 14b writes real PGN: mount it over 9P (`host/fuse-p9`) and read
+`/sd0/chess/`.
+
+Kept below rather than deleted, since a later attempt should start from what
+was actually learned.
 
 Built, tested, and ultimately reverted the same day. Kept here so a later
 attempt (if any) starts from what was actually learned rather than the

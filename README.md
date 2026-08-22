@@ -17,7 +17,7 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 249 tests on QEMU RV32
+**Working today**, verified by the automated test suite (`tests/runner.py`, 253 tests on QEMU RV32
 NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 24 tests against real RP2350
 silicon):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
@@ -178,7 +178,7 @@ silicon):
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 249 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 24 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 253 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 24 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 * **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
 * **FUSE Filesystem (`host/fuse-p9`, Linux)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos` (see [`host/fuse-p9/README.md`](host/fuse-p9/README.md)).
 
@@ -673,6 +673,13 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 ---
 
 ## History
+
+- **2026-08-22: Release 0.12.0 — Chess as a two-headed appliance.** The keypad/TFT board and the
+  terminal are now one session with two live inputs *and* mirrored outputs — a move entered on either
+  device redraws the ASCII board, the TFT and the 7-segment display alike, so neither is ever silently
+  stale. Games are stored as real PGN with proper SAN (any chess GUI opens them), auto-saved after
+  every move and auto-restored when a session starts, with `new` retiring the previous game to an
+  archive and `save <name>` / `load <name>` / `games` for named slots.
 
 - **2026-08-22: Release 0.11.0 — Heap space optimization.** Reclaimed RP2350 RAM by moving rare-but-large
   working buffers out of `.bss` onto an on-demand heap, tiering the Lisp string pool, board-scaling the
