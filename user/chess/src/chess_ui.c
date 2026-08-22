@@ -894,8 +894,12 @@ static void console_engine_reply(Position *pos, int max_depth, int time_limit_ms
         cprintf("Engine resigned or found no legal moves.\n");
         return;
     }
-    char buf[6];
-    format_move(best, buf);
+    /* SAN, like everywhere else the session names a move since 14b -- one
+     * notation across both front ends and the PGN files, rather than the
+     * terminal speaking long algebraic while the saved game speaks SAN.
+     * Formatted before the move, which is what SAN requires. */
+    char buf[SAN_MAX];
+    format_move_san(pos, best, buf);
     make_move(pos, best);
     g_console_max_history_ply = pos->history_ply;
     cprintf("Engine plays: %s (Score: %s%d)\n", buf, sign_prefix(g_search_score), g_search_score);
@@ -1485,7 +1489,16 @@ static int append_uint(char *buf, int pos, unsigned v) {
 static int tm_wait_key(void) {
     int iters;
 
-    /* This one function is every keypad wait in the board UI -- tm_read_move()
+    /* The per-keypress traces this used to print are gone (phase 16). They were
+     * scaffolding from when the key protocol itself was being worked out --
+     * H4 found the "hang" reports that way -- and reading them cost nothing
+     * while the terminal was a debugging channel. It is now the session's
+     * other half: four "raw key=N" lines per move, interleaved with the board
+     * a human is reading, is noise where the move itself is the news. What a
+     * completed move actually was is announced by the caller instead, in
+     * algebraic notation.
+     *
+     * This one function is every keypad wait in the board UI -- tm_read_move()
      * and each of J3's menus reach the hardware only through here. That is
      * what makes terminal commands work across the whole board loop from a
      * single change: the console is pumped in all three phases below, so a
@@ -1494,13 +1507,12 @@ static int tm_wait_key(void) {
      * plan/phase15_memory_reclamation.md.) */
     iters = 0;
     while (tm1638_get_key() != -1) {
-        if (iters == 0) cprintf("chess: tm_wait_key: waiting for release before scan\n");
         ChessAbort a = chess_abort_requested();
         if (a == CHESS_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
         if (a == CHESS_ABORT_STOPKEY) return TM_KEY_ABORT_STOPKEY;
         if (chess_pump_console(TM_CONSOLE_PROMPT)) return TM_KEY_ABORT_CTRLC;
         time_delay_us(20000);
-        if (++iters > 750) { cprintf("chess: tm_wait_key: idle-wait timed out\n"); break; }
+        if (++iters > 750) break;   /* stuck key: scan anyway rather than hang */
     }
 
     /* The press phase is the event loop proper: whichever device speaks
@@ -1513,7 +1525,6 @@ static int tm_wait_key(void) {
         ChessEvent ev;
         switch (chess_next_event(&ev, 20, TM_CONSOLE_PROMPT)) {
         case CHESS_EVENT_KEY:
-            cprintf("chess: tm_wait_key: raw key=%d\n", ev.key);
             pressed_key = ev.key;
             goto pressed;
         case CHESS_EVENT_LINE:
@@ -1528,7 +1539,7 @@ static int tm_wait_key(void) {
         default:
             break;
         }
-        if (++iters > 750) { cprintf("chess: tm_wait_key: press-wait timed out\n"); return -1; }
+        if (++iters > 750) return -1;   /* nobody is pressing anything */
     }
 pressed:
     key = pressed_key;
@@ -1537,7 +1548,7 @@ pressed:
     while (tm1638_get_key() != -1) {
         (void)chess_pump_console(TM_CONSOLE_PROMPT);
         time_delay_us(20000);
-        if (++iters > 750) { cprintf("chess: tm_wait_key: release-wait timed out\n"); break; }
+        if (++iters > 750) break;   /* stuck key: stop waiting for a release */
     }
     return key;
 }
@@ -1638,11 +1649,13 @@ static void tm_redraw_if_display(const Position *pos) {
  * chess_run(), see the sentinel block's comment above), so there's one
  * definition of what "new game" actually resets rather than two. */
 static void tm_new_game(Position *pos) {
-    parse_fen(pos, STANDARD_START_FEN);
-    clear_tt();
-    g_console_max_history_ply = 0;
-    tm_sync_move_slots(pos);
-    tm_redraw_if_display(pos);
+    /* Through console_new_game(), so the keypad archives the outgoing game
+     * exactly as the console's `new` does (14b). It did not, which left the
+     * board's own new-game key as the one route that could still discard a
+     * game auto-save had been carefully keeping. */
+    console_new_game(pos);
+    cprintf("New game started.\n");
+    chess_show(pos);
 }
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -1920,6 +1933,15 @@ static int tm_level_select(void) {
         if (k >= 0 && k <= 7) {
             g_console_search_level = k + 1;
             tm1638_display_string(tm_level_names[k]);
+            /* Worded exactly as the console's own `level` command, so a
+             * session driven from both devices reads as one transcript
+             * whichever one changed the setting (phase 16). */
+            if (level_times_ms[k] != -1) {
+                cprintf("Search level set to %d (%ds per move).\n",
+                        k + 1, level_times_ms[k] / 1000);
+            } else {
+                cprintf("Search level set to 8 (Infinite -- press Ctrl-C to stop it).\n");
+            }
         } else if (k == 15) {
             return 0;
         }
@@ -1957,8 +1979,10 @@ static void tm_save(Position *pos) {
      * keypad deliberately has no *named* saves: an eight-character
      * seven-segment display is a poor file picker, so this writes the one
      * current game and `save <name>` at a terminal does the rest. */
-    tm1638_display_string(console_write_pgn(pos, console_save_path())
-                          ? "SAuEd   " : "nO SAuE ");
+    bool ok = console_write_pgn(pos, console_save_path());
+    cprintf(ok ? "Game saved to %s\n" : "Save failed (could not write %s)\n",
+            console_save_path());
+    tm1638_display_string(ok ? "SAuEd   " : "nO SAuE ");
     time_delay_us(1500000);
 }
 
@@ -1978,6 +2002,8 @@ static int tm_load(Position *pos) {
     *pos = *g_chess_scratch;
     clear_tt();
     g_console_max_history_ply = pos->history_ply;
+    cprintf("Game loaded from %s (%d half-moves)\n",
+            console_save_path(), pos->history_ply);
     tm1638_display_string("LOAdEd  ");
     time_delay_us(1500000);
     tm_sync_move_slots(pos);
@@ -2071,6 +2097,7 @@ static int tm_options_menu(Position *pos) {
                     return tm_load(pos);
                 case 7: /* auto-reply toggle */
                     g_tm_auto_reply = !g_tm_auto_reply;
+                    cprintf("Auto-reply %s.\n", g_tm_auto_reply ? "on" : "off");
                     tm1638_display_string(g_tm_auto_reply ? "AUtO On " : "AUtO OFF");
                     time_delay_us(2000000);
                     tm1638_display_string(tm_option_names[idx]);
@@ -2442,6 +2469,12 @@ void chess_run(void) {
         bool go_pressed = (mv == TM_MOVE_GO);
 
         if (!go_pressed) {
+            /* Named before it is played: SAN describes a move in terms of what
+             * else could have been played instead, so the pre-move position is
+             * the input, not a convenience (see pgn.h). */
+            char mv_san[SAN_MAX];
+            format_move_san(&g_chess_pos, mv, mv_san);
+
             if (!make_move(&g_chess_pos, mv)) {
                 /* tm_read_move() only returns pseudo-legal moves from the
                  * real move list, so make_move() only fails here on a
@@ -2475,6 +2508,10 @@ void chess_run(void) {
              * to chess_show(): this path has a real `last_move_buf` for the
              * status line, which chess_show() -- built for the state changes
              * that have no "move just made" -- deliberately does not take. */
+            /* What was entered on the keypad, in the notation the rest of
+             * the session and the PGN files use. The terminal has no other
+             * way to know: the keys themselves are the board's business. */
+            cprintf("Board plays: %s\n", mv_san);
             print_board(&g_chess_pos);
             console_autosave(&g_chess_pos);   /* 14b */
 
@@ -2538,6 +2575,9 @@ void chess_run(void) {
             if (!tm_handle_game_over(&g_chess_pos)) return;
             continue;
         }
+        char eng_san[SAN_MAX];
+        format_move_san(&g_chess_pos, engine_move, eng_san);   /* before the move */
+
         make_move(&g_chess_pos, engine_move);
         g_console_max_history_ply = g_chess_pos.history_ply;
         tm_format_move4(engine_move, mover_slot);
@@ -2547,12 +2587,8 @@ void chess_run(void) {
         /* The engine's own reply, on the terminal too (phase 16), and named
          * the way the console REPL names it so a session driven from both
          * devices reads as one transcript rather than two. */
-        {
-            char mbuf[6];
-            format_move(engine_move, mbuf);
-            cprintf("Engine plays: %s (Score: %s%d)\n",
-                    mbuf, sign_prefix(g_search_score), g_search_score);
-        }
+        cprintf("Engine plays: %s (Score: %s%d)\n",
+                eng_san, sign_prefix(g_search_score), g_search_score);
         print_board(&g_chess_pos);
         console_autosave(&g_chess_pos);   /* 14b */
 

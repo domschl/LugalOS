@@ -752,11 +752,42 @@ about to resume. Split into `console_reset_game()` (plain) and
 `console_new_game()` (archive then reset), with `console_resume_or_new()` for
 session start.
 
+### Follow-up from live use, same day
+
+The user played a game on the board and reported the keypad path spamming the
+terminal with `tm_wait_key: raw key=6 / 0 / 5 / 2` -- four lines per move.
+Those traces were scaffolding from when the key protocol itself was being
+worked out (H4 found the "hang" reports that way), and cost nothing while the
+terminal was a debugging channel. It is now the session's other half, so they
+are gone; a completed move announces itself instead, in SAN
+(`Board plays: Nf3`).
+
+That prompted the same question one level up -- should the *function* keys
+report anything? Not the presses, no: which keys a human is pushing is the
+board's business. But the state they change is not. A level set from the
+keypad menu now prints the same line the console's `level` command does, and
+the same for the auto-reply toggle, save and load. Read-only menu items
+(score, side to move, halfmove clock, move count) stay silent: they are
+queries, and a query leaves nothing stale.
+
+The engine's own replies moved to SAN too, on both front ends, so one session
+speaks one notation and it is the notation the PGN files use.
+
+**And a real bug the question exposed:** `tm_new_game()` -- the keypad's own
+new-game menu item -- did not archive the outgoing game, because it predated
+14b and reset the board directly instead of going through
+`console_new_game()`. It was the one remaining route that could still discard
+a game auto-save had been carefully keeping. Now routed through the same
+function, so both new-game paths archive.
+
 ### Verified
 
 QEMU **253/253** (four new tests: the notation round-trip, and PGN
 save/archive/load-by-name), hardware **24/24**, plus the self-test run
-directly on the board.
+directly on the board. Live on hardware after the follow-up: resume
+("Resumed game from /sd0/chess/current.pgn (4 half-moves)"), archive-on-new
+("Previous game archived to /sd0/chess/games/game-003.pgn"), and SAN output
+("Engine plays: e5").
 
 **One environment bug found only on hardware:** the self-test wrote to a
 hardcoded `/ram0`, which is *unmounted* on the RP2350 chess persona -- that
