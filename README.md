@@ -103,6 +103,10 @@ silicon):
   — a led-matrix clock display with LDR-driven auto-brightness, wired through the same driver-task
   architecture as the default `rp2350-chess` persona, demonstrating that "which hardware this board
   has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a fork of the kernel.
+- **A radio-set clock that runs unattended**: a DCF-77 longwave receiver decodes the time signal from
+  Mainflingen, a three-button menu drives the whole UI on the panel itself, and the kernel clock keeps
+  **UTC** with local time computed from a POSIX `TZ` rule. Both RP2350 personas boot from a bare USB
+  power adapter with no host attached — see [Appliance mode](#appliance-mode).
 
 ---
 
@@ -632,8 +636,10 @@ arguments, e.g. `(< 1 2 3)`; `/=` means every argument differs from every other)
 
 #### Hardware I2C, RTC & EEPROM Storage
 * `(time)`: Returns monotonic milliseconds elapsed since system boot.
-* `(date)`: Returns ISO 8601 formatted date and time string.
-* `(set-date "YYYY-MM-DD HH:MM:SS")`: Updates LugalOS clock and persists to DS1307/DS3231 RTC hardware.
+* `(date)`: Returns ISO 8601 local date and time. The kernel clock itself runs on UTC — local time is computed from it through the timezone rule, never stored.
+* `(date-utc)`: The same instant as UTC, which is what the kernel and the DS3231 actually hold.
+* `(tz)` / `(tz "CET-1CEST,M3.5.0,M10.5.0/3")`: Read or set the POSIX TZ rule (default Europe/Berlin). Returns `#f` and keeps the old rule if the string does not parse.
+* `(set-date "YYYY-MM-DD HH:MM:SS")`: Sets the clock from a **local** time, storing UTC in LugalOS and in the DS1307/DS3231 RTC hardware.
 * `(i2c-scan)`: Scans I2C bus (`I2C0` on `GP4` SDA / `GP5` SCL) and outputs responsive slave matrix.
 * `(eeprom-read [offset] [len])`: Reads non-volatile string from AT24C32 4KB I2C EEPROM (`0x57` / `/dev/eeprom`).
 * `(eeprom-write offset string)`: Writes persistent string to AT24C32 4KB I2C EEPROM.
@@ -672,7 +678,43 @@ On boot, LugalOS initializes the Lisp Machine engine and executes the boot lifec
 
 ---
 
+## Appliance mode
+
+Both RP2350 personas boot standalone from a USB power adapter, with no computer and no console. That
+is a feature with teeth: on a board whose only outputs are an LED matrix and a buzzer, anything that
+goes wrong before the display exists is invisible. Two pieces of the system exist because of that:
+
+- **`CONFIG_CLOCK_BOOT_BEACON`** — one buzzer click per `CLOCK_BOOT_MARK(n)` and a *latching* count on
+  the top LED row, so a hang leaves its last mark lit instead of merely stopping. Off by default, with
+  no call sites at rest; set it and scatter marks over whatever is suspect.
+- **`tests/hw/flash.py`** — flashes over the 1200-baud DTR touch with no BOOTSEL press, so a debug
+  cycle does not mean opening the case.
+
+The clock persona additionally needs no console for anything routine: **SIG** (signal monitor) is two
+presses from the clock face, and **SYNC**, **LAST**, **AUTO**, **TSET**, **BRT**, **OFFS**, **24H** and
+**BEEP** are all in the same menu.
+
+---
+
 ## History
+
+- **2026-08-23: Release 0.13.0 — A clock that sets itself, and appliance mode.** The Pico-Clock-Green
+  persona becomes a finished appliance. A **DCF-77 receiver** decodes the longwave time signal and sets
+  the clock; the whole UI moved onto the board itself with a three-button menu (`SIG` signal monitor,
+  `SYNC`, `LAST`, `AUTO` nightly sync, `TSET`, `BRT`, `OFFS`, `24H`, `BEEP`), a proportional 7-row font,
+  weekday and indicator LEDs, and idle-screen shortcuts for temperature and date. The kernel clock now
+  keeps **UTC**, with local time derived from a POSIX `TZ` rule (`CET-1CEST,M3.5.0,M10.5.0/3` by
+  default) — because GPS and NTP speak UTC and a stored local time has no correct value during the hour
+  that repeats every October.
+
+  Three bugs found along the way were not clock bugs at all. The RP2350's **TIMER0 tick divisor** was
+  OR-ed rather than written, so every clock in the system — uptime, delays, the display refresh, chess's
+  search budget — had been running at 42.9% of real time. The **DS3231's I²C wire format** memcpy'd a
+  native struct onto a byte protocol, silently disabling the read path and byte-swapping the year. And
+  the PMP-granted **`.ustacksN` driver regions were never zeroed at boot**, so `usb_cdc.c`'s state came
+  up as whatever SRAM held — which is why neither persona would boot from a plain USB power adapter
+  unless it had just been flashed. All three were found on hardware; none was visible from a build or
+  from QEMU. See `plan/phase17_clock_ui_and_dcf77.md` §9.
 
 - **2026-08-22: Release 0.12.1 — Chess two-device polish.** Completed 0.12.0's mirroring: the keypad
   no longer prints raw key codes to the terminal, completed moves and engine replies are named in SAN
