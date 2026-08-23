@@ -13,6 +13,9 @@
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/dcf77_decode.h"
+#include "drivers/pico_clock_ui.h"
+#include "kernel/timezone.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #if defined(CONFIG_BOARD_RP2350)
@@ -140,6 +143,11 @@ static void cmd_help(void) {
 #endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
+    cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
+    cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
+    cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
+    cprintf("  tz [POSIX TZ]   - show or set the timezone rule, e.g. CET-1CEST,M3.5.0,M10.5.0/3\n");
+    cprintf("  tzselftest      - timezone rules against known DST transitions\n");
     cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
     cprintf("  time            - Show system uptime\n");
     cprintf("  version         - Alias for 'cat /proc/version'\n");
@@ -1339,27 +1347,68 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*fn == ' ') fn++;
         shell_run_editor(fn);
         return;
+    } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
+        dcf77_selftest();
+        return;
+    } else if (strcmp(cmd_line, "clockuiselftest") == 0) {
+        clock_ui_selftest();
+        return;
     } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
         i2c_scan_bus();
         return;
     } else if (strcmp(cmd_line, "date") == 0) {
-        rtc_time_t tm;
-        time_get_rtc(&tm);
+        /* Local first, because that is what the question means, and UTC
+         * underneath, because that is what the clock actually holds. */
+        rtc_time_t utc, loc;
         char isostr[32];
-        time_format_iso(&tm, isostr, sizeof(isostr));
-        cprintf("%s\n", isostr);
+        const char *abbrev = "";
+        time_get_utc(&utc);
+        tz_utc_to_local(&utc, &loc);
+        tz_offset_min(&utc, &abbrev, NULL);
+        time_format_iso(&loc, isostr, sizeof(isostr));
+        cprintf("%s %s\n", isostr, abbrev);
+        time_format_iso(&utc, isostr, sizeof(isostr));
+        cprintf("%s UTC  (TZ=%s)\n", isostr, tz_get());
         return;
     } else if (strncmp(cmd_line, "date ", 5) == 0) {
         const char *arg = &cmd_line[5];
         while (*arg == ' ') arg++;
         rtc_time_t tm;
         if (time_parse_iso(arg, &tm)) {
-            time_set_rtc(&tm);
-            i2c_rtc_write_time(&tm);
-            cprintf("System clock updated: %s\n", arg);
+            /* Typed by a human, so it is local time. The DS3231 gets UTC --
+             * it is storage, not a display. */
+            rtc_time_t utc;
+            tz_local_to_utc(&tm, &utc);
+            time_set_utc(&utc);
+            i2c_rtc_write_time(&utc);
+            char isostr[32];
+            time_format_iso(&utc, isostr, sizeof(isostr));
+            cprintf("System clock updated: %s local = %s UTC\n", arg, isostr);
         } else {
             cprintf("Invalid date format. Expected: YYYY-MM-DD HH:MM:SS\n");
         }
+        return;
+    } else if (strcmp(cmd_line, "tz") == 0) {
+        rtc_time_t utc;
+        const char *abbrev = "";
+        bool dst = false;
+        time_get_utc(&utc);
+        int off = tz_offset_min(&utc, &abbrev, &dst);
+        cprintf("TZ=%s\n", tz_get());
+        cprintf("  now %s, UTC%c%02d:%02d, %s\n", abbrev,
+                off < 0 ? '-' : '+', (off < 0 ? -off : off) / 60,
+                (off < 0 ? -off : off) % 60,
+                dst ? "summer time" : "standard time");
+        return;
+    } else if (strncmp(cmd_line, "tz ", 3) == 0) {
+        const char *arg = &cmd_line[3];
+        while (*arg == ' ') arg++;
+        if (tz_set(arg)) cprintf("Timezone set: %s\n", tz_get());
+        else cprintf("Not a POSIX TZ rule: '%s' (kept %s).\n"
+                     "Expected e.g. CET-1CEST,M3.5.0,M10.5.0/3 or UTC0\n", arg, tz_get());
+        return;
+    } else if (strcmp(cmd_line, "tzselftest") == 0) {
+        tz_selftest();
         return;
     } else if (strcmp(cmd_line, "lisp") == 0) {
         lisp_repl();

@@ -80,7 +80,15 @@
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
+/* The onboard-LED pin is optional: on the clock persona (a Pico 2 W) there is
+ * no such pin to name -- the user LED is on the wireless module and GP25 is
+ * its chip select -- so that board file omits the key and the heartbeat is
+ * GP9 alone (phase17 C1). */
+#ifdef CONFIG_LED_ONBOARD_GPIO
 #define LED_MASK  ((1u << CONFIG_LED_ONBOARD_GPIO) | (1u << CONFIG_LED_EXT_GPIO))
+#else
+#define LED_MASK  (1u << CONFIG_LED_EXT_GPIO)
+#endif
 
 #include "drivers/usb_cdc.h"
 
@@ -105,16 +113,6 @@ void led_on(void) {
 
 void led_off(void) {
     REG(SIO_GPIO_OUT_CLR) = LED_MASK;
-}
-
-void led_blink_phase(int count) {
-    for (int i = 0; i < count; i++) {
-        led_on();
-        delay_cycles(4000000);
-        led_off();
-        delay_cycles(4000000);
-    }
-    delay_cycles(8000000);
 }
 
 /* Heartbeat on GP16: 0.5 Hz, brief flash.
@@ -456,10 +454,13 @@ void uart_init(uintptr_t base_addr) {
     /* Wait for RESET_DONE status register @ 0x40020008 */
     while ((REG(RESETS_RESET_DONE) & unreset_mask) != unreset_mask);
 
-    /* 3. Configure LEDs (GP25 onboard + GP16 external) for SIO (Function 5) */
+    /* 3. Configure the heartbeat LED pin(s) for SIO (Function 5). The onboard
+     *    one exists only on boards that have one -- see LED_MASK above. */
+#ifdef CONFIG_LED_ONBOARD_GPIO
     REG(IO_BANK0_CTRL(CONFIG_LED_ONBOARD_GPIO)) = 5;
-    REG(IO_BANK0_CTRL(CONFIG_LED_EXT_GPIO)) = 5;
     REG(PADS_BANK0_PAD(CONFIG_LED_ONBOARD_GPIO)) = 0x56;
+#endif
+    REG(IO_BANK0_CTRL(CONFIG_LED_EXT_GPIO)) = 5;
     REG(PADS_BANK0_PAD(CONFIG_LED_EXT_GPIO)) = 0x56;
     REG(SIO_GPIO_OE_SET) = LED_MASK;
 
@@ -502,9 +503,6 @@ void uart_init(uintptr_t base_addr) {
     /* 8. Enable UART0, Transmit (TXE) & Receive (RXE) */
     REG(UART0_BASE + 0x30) = (1u << 0) | (1u << 8) | (1u << 9); // UARTCR
 
-    /* Signal phase: Hardware & LEDs initialized! */
-    led_blink_phase(2);
-
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
 
     /* Handler before enable (arch/trap.h): so that if the IRQ somehow fires
@@ -533,6 +531,36 @@ static void uart_hw_putc(char c) {
         REG(UART0_BASE + 0x00) = (uint8_t)c;
         return;
     }
+
+    /* The FIFO is full. Everything below assumes a scheduler: it registers
+     * this task as the TX waiter, enables the TX interrupt and blocks. During
+     * boot none of that exists -- there is no task to block and no handler to
+     * wake it -- so task_block() there is simply a stop, and the machine ends
+     * its life inside a printk.
+     *
+     * Which is exactly what happened (user, 2026-08-23). `[Dev] Registry: ...`
+     * is around 60 characters and runs from dev_probe_all(), well before
+     * sched_init(): the first 32 bytes filled the FIFO and byte 33 walked into
+     * task_block() and never came out. It was the first boot-time message long
+     * enough to overflow 32 bytes, which is why nothing earlier ever tripped
+     * over it, and it looked maddeningly like a USB or power-source problem
+     * because whether the FIFO had drained in time depended on how much delay
+     * happened to precede it -- the boot beacon's own clicking was enough to
+     * hide it completely.
+     *
+     * Before the scheduler, spin instead, and bound the spin: 50 ms is fifteen
+     * times what 32 bytes need at 115200 baud, so it costs nothing in the
+     * normal case, and a UART that is unclocked or misconfigured drops the
+     * character rather than taking the kernel down with it. Losing a byte of
+     * boot log is a bad outcome; not booting is a worse one. */
+    if (!sched_is_active()) {
+        uint64_t deadline = time_get_ms() + 50u;
+        while ((REG(UART0_FR) & UART0_FR_TXFF) && time_get_ms() < deadline) { }
+        if (REG(UART0_FR) & UART0_FR_TXFF) return;   /* wire is dead; drop it */
+        REG(UART0_BASE + 0x00) = (uint8_t)c;
+        return;
+    }
+
     uintptr_t flags = irq_save();
     if (REG(UART0_FR) & UART0_FR_TXFF) {
         if (g_tx_waiter < 0) {

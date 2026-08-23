@@ -95,11 +95,15 @@ static bool arch_ticker_init(void) {
     /* ticks per second, from the measurement */
     uint64_t measured_hz = (elapsed_ticks * 1000000UL) / elapsed_us;
     g_measured_hz = measured_hz;
-    /* Measured, not assumed -- it came out near 2.33 MHz rather than the 1 MHz
-     * a 12 MHz clk_ref would imply, so assuming would have made the tick more
-     * than twice as fast as asked for. The absolute figure is only as good as
-     * time.c's microsecond timer, whose own tick generator this kernel has
-     * never configured either; the ratio is what preemption actually needs. */
+    /* Measured, not assumed. This used to come out near 2.33 MHz rather than
+     * the 1 MHz a 12 MHz clk_ref implies, and the note here blamed this
+     * generator. It was the other way round: this one was right and the
+     * reference it was measured against was slow, because the boot code
+     * OR-ed 12 into a TIMER0 CYCLES register the bootrom had left non-zero
+     * and got 28 cycles per tick (fixed 2026-08-23, arch/riscv/rp2350/
+     * boot_header.S). It should now read close to 1 MHz. The absolute figure
+     * is still only as good as time.c's microsecond timer; the ratio is what
+     * preemption actually needs. */
     g_interval = measured_hz / g_hz;
     if (g_interval == 0) g_interval = 1;
 

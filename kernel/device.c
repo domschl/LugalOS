@@ -2,6 +2,18 @@
 #include "kernel/printk.h"
 #include <string.h>
 
+/* Kept even though nothing in this file needs a CONFIG_* today. When the boot
+ * beacon was temporarily wired in here (drivers/pico_clock_green.h's
+ * CLOCK_BOOT_MARK), its `#if defined(CONFIG_BOARD_RP2350) ...` guard was
+ * simply false without this line, so the header went un-included and the
+ * macro fell back to its no-op -- the instrumentation compiled away to
+ * nothing, silently, and the board reported exactly what an uninstrumented
+ * probe loop reports. That cost a debugging round on real hardware
+ * (2026-08-23). A feature switch that disables itself when a header is
+ * missing is worse than one that fails to build, and the cheapest guard
+ * against a repeat is for the config to already be here. */
+#include "lugalos_config.h"
+
 /* See kernel/include/kernel/device.h for the rationale. */
 
 typedef struct {
@@ -47,6 +59,12 @@ void dev_probe_all(void) {
     for (uint32_t i = 0; i < g_num_devs; i++) {
         dev_slot_t *s = &g_devs[i];
         if (s->probed) continue;
+        /* The per-probe marks that used to be here found what they were for:
+         * every probe completes, on both power sources. Removed rather than
+         * left in, because eight two-part numbers before the interesting part
+         * is eight chances to miscount (user, 2026-08-23). Put them back by
+         * restoring CLOCK_BOOT_MARK(10 + i) here if a probe is ever suspect
+         * again. */
         s->probed = true;
         /* A NULL probe means "present, nothing to initialize" -- e.g. the
          * UART links, whose hardware was already brought up during boot
@@ -54,6 +72,13 @@ void dev_probe_all(void) {
         s->present = s->drv->probe ? (s->drv->probe() == 0) : true;
     }
 
+    /* Ordinary printk() again. It was printk_debug() for a while during the
+     * hunt of 2026-08-23, to prove the fault was in the layers printk() adds
+     * rather than in the formatter or the UART -- which it was, though the
+     * root cause turned out to be further down still (uninitialised
+     * .ustacksN state; see arch/riscv/rp2350/boot_header.S). Restored,
+     * because printk_debug() bypasses the klog ring and this line belongs in
+     * /proc/kmsg like every other boot message. */
     printk("[Dev] Registry: ");
     for (uint32_t i = 0; i < g_num_devs; i++) {
         printk("%s%s%s", i ? ", " : "", g_devs[i].drv->name,

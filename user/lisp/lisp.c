@@ -33,6 +33,11 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
 #include "drivers/pico_clock_green.h"
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+#include "drivers/dcf77.h"
+#include "drivers/dcf77_service.h"
+#endif
+#include "kernel/timezone.h"
 #include "arch/elf.h"
 #include <string.h>
 
@@ -1304,9 +1309,231 @@ static lisp_val_t *prim_clock(lisp_val_t *args, lisp_val_t *env) {
  * single-shot conversion the display loop's own auto-brightness samples.
  * Not needed for normal use; exists to check LDR_DARK_THRESHOLD's polarity
  * and value against real ambient light on real hardware. */
+/* `(clock-keys [secs])` -- C1 diagnostic: print every button event as it
+ * happens, with the idle pin levels first, so a miswired button is one line
+ * of output rather than a menu that mysteriously does nothing. */
+static lisp_val_t *prim_clock_keys(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 30);
+    pico_clock_green_keys((unsigned)(secs < 1 ? 1 : secs));
+    return &true_val;
+}
+
+/* `(clock-leds)` -- C1 diagnostic: walk every weekday LED and every indicator
+ * LED in turn, naming each on the console as it lights. */
+static lisp_val_t *prim_clock_leds(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    pico_clock_green_led_walk();
+    return &true_val;
+}
+
+/* `(clock-text "STR" [secs])` -- C2 diagnostic: render a string on the panel,
+ * centred if it fits and scrolling if it does not. The only way to find out
+ * whether a 5x7 letter is actually legible on this hardware. */
+static lisp_val_t *prim_clock_text(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    lisp_val_t *a = args->u.pair.car;
+    if (a->type != LISP_STRING && a->type != LISP_SYMBOL) return &false_val;
+    const char *str = (a->type == LISP_STRING) ? a->u.str : a->u.sym;
+    long secs = arg_int(args, 1, 5);
+    pico_clock_green_show_text(str, (unsigned)(secs < 1 ? 1 : secs));
+    return &true_val;
+}
+
+#if CONFIG_ENABLE_DCF77
+/* `(dcf-status)` -- D4: what the receiver has been doing, without waiting for
+ * it to do anything. The same numbers as /proc/dcf77, laid out for a human
+ * rather than for a parser. */
+static lisp_val_t *prim_dcf_status(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    dcf_status_t st;
+    dcf77_service_status(&st);
+
+    static const char *const STATE[] = { "idle (listening)", "SYNCING",
+                                         "last sync succeeded", "last sync FAILED" };
+    cprintf("\nDCF-77 service: %s\n",
+            STATE[(unsigned)st.state <= 3 ? (unsigned)st.state : 0]);
+    if (st.state == DCF_SYNCING)
+        cprintf("  giving up in %u s\n", (unsigned)st.timeout_left_s);
+
+    char iso[32];
+    uint32_t age = dcf77_service_age_s();
+    if (st.ever_synced) {
+        time_format_iso(&st.last_sync_utc, iso, sizeof(iso));
+        cprintf("  clock last set : %s UTC, %u min ago\n", iso, (unsigned)(age / 60));
+    } else {
+        cprintf("  clock last set : never from the radio\n");
+    }
+    /* Deliberately separate from the line above: the radio can be decoding
+     * perfectly while the clock has not been touched, and that distinction is
+     * the whole design. */
+    if (st.have_radio_time) {
+        time_format_iso(&st.radio_utc, iso, sizeof(iso));
+        cprintf("  radio says     : %s UTC (decoded %u s ago)\n", iso,
+                (unsigned)((time_get_ms() - st.radio_at_ms) / 1000));
+    } else {
+        cprintf("  radio says     : nothing decoded yet\n");
+    }
+    cprintf("  nightly sync   : %s, at %02d:%02d local\n",
+            dcf77_service_auto() ? "on" : "off",
+            CONFIG_DCF77_AUTO_HOUR, CONFIG_DCF77_AUTO_MIN);
+    cprintf("  attempts       : %u, of which %u succeeded\n",
+            (unsigned)st.attempts, (unsigned)st.successes);
+    cprintf("  pulses         : %u (%u bad), %u glitches, %u sync losses\n",
+            (unsigned)st.decoder.pulses_seen, (unsigned)st.decoder.pulses_bad,
+            (unsigned)st.decoder.glitches, (unsigned)st.decoder.sync_losses);
+    cprintf("  frames         : %u seen, %u accepted\n",
+            (unsigned)st.decoder.frames_seen, (unsigned)st.decoder.frames_accepted);
+    cprintf("  longest run    : %u s (59 consecutive needed for one frame)\n",
+            (unsigned)st.decoder.clean_run_max);
+    {
+        unsigned m10 = st.decoder.quality_total
+            ? (unsigned)((st.decoder.quality_sum * 10u) / st.decoder.quality_total) : 0;
+        cprintf("  mean quality   : %u.%u / 7 over %u seconds\n",
+                m10 / 10, m10 % 10, (unsigned)st.decoder.quality_total);
+    }
+    cprintf("  last 24 s      : ");
+    for (unsigned i = 0; i < st.decoder.quality_count; i++)
+        cprintf("%c", '0' + (st.decoder.quality[i] > 7 ? 7 : st.decoder.quality[i]));
+    cprintf("\n");
+    return &true_val;
+}
+
+/* `(dcf-monitor [secs] [dark])` -- D3/D5: the signal-quality bar chart on the
+ * panel, with a console commentary, for tuning an antenna by hand. With
+ * `dark` non-zero the panel is blanked and only the console reports, which
+ * makes a pair of runs an actual interference measurement. */
+static lisp_val_t *prim_dcf_monitor(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 120);
+    long dark = arg_int(args, 1, 0);
+    pico_clock_green_dcf_monitor((unsigned)(secs < 1 ? 1 : secs), dark != 0);
+    return &true_val;
+}
+#endif
+
+/* `(beep n)` -- the boot beacon from Lisp, so init.lisp can mark its own
+ * progress on a board with no console. `n` clicks and `n` LEDs, latched, so a
+ * script that hangs leaves its last mark lit on the panel. */
+static lisp_val_t *prim_beep(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long n = arg_int(args, 0, 1);
+#if CONFIG_CLOCK_BOOT_BEACON
+    pico_clock_green_boot_mark((unsigned)(n < 1 ? 1 : n));
+#else
+    (void)n;
+#endif
+    return &true_val;
+}
+
 static lisp_val_t *prim_clock_light(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     return make_int((long)pico_clock_green_read_light());
+}
+#endif
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+/* `(dcf-raw [secs])` (D2, plan/phase17_clock_ui_and_dcf77.md): power the
+ * DCF-77 receiver up, work out its PON and OUT polarities from what the pin
+ * actually does, and print every pulse it sees for `secs` seconds (default
+ * 30). The bring-up diagnostic -- it answers "is the module wired right and
+ * is there a signal here at all", which has to be true before a frame
+ * decoder is worth writing. Run from the shell, where the LED matrix is not
+ * scanning, this is also the quiet-reference measurement for the
+ * interference work (phase17 D5 step 1). */
+static lisp_val_t *prim_dcf_raw(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 30);
+    if (secs < 1) secs = 1;
+    dcf77_probe((unsigned)secs);
+    return &true_val;
+}
+
+/* `(dcf-pins)` (D2, plan/phase17_clock_ui_and_dcf77.md): the electrical
+ * diagnostic behind dcf77_pin_report() -- what voltage each DCF-77 pin is
+ * actually sitting at, and what that implies about the wiring. Runs in a
+ * couple of seconds and decodes nothing; it answers "is this thing connected
+ * and powered", which is the question that comes before any radio. */
+static lisp_val_t *prim_dcf_pins(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    dcf77_pin_report();
+    return &true_val;
+}
+
+/* `(dcf-hunt [secs])`: sweep PON through all three states (low/high/float)
+ * and watch OUT in each, digitally and with the ADC. The test that needs no
+ * radio signal -- it asks whether the module reacts to PON at all -- plus a
+ * swapped-wires check in the floating state, where nothing is driven. */
+static lisp_val_t *prim_dcf_hunt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 20);
+    dcf77_hunt((unsigned)(secs < 1 ? 1 : secs));
+    return &true_val;
+}
+
+/* `(dcf-pinscan)`: is the load on the OUT pin the module, or the baseboard?
+ * Compares against the persona's other unused pins, pulls only. */
+static lisp_val_t *prim_dcf_pinscan(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    dcf77_free_pin_survey();
+    return &true_val;
+}
+
+/* `(dcf-listen [secs] [load])`: watch the receiver for minutes, printing every
+ * pulse and a progress line every 10 s, so an antenna can be moved around
+ * while someone watches. A non-zero second argument lights one matrix row as
+ * a pure DC load -- the M0 experiment: more current on 3V3 may push the
+ * Pico's regulator out of power-save mode, whose ripple is a documented
+ * problem for this module. */
+/* `(dcf-mirror [secs])`: light a matrix row whenever the DCF-77 OUT line is
+ * high, so the signal can be watched on the display. The answer to "can I put
+ * an LED on OUT" -- not on that pin (a micropower output cannot drive one),
+ * but the matrix can show the same thing without loading anything. */
+static lisp_val_t *prim_dcf_mirror(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 60);
+    dcf77_mirror((unsigned)(secs < 1 ? 1 : secs));
+    return &true_val;
+}
+
+/* `(dcf-poweron [secs])`: assert PON and watch OUT from that instant, with no
+ * warm-up delay -- the window dcf77_hunt() skips, and the one an RC8000's
+ * documented startup transient lives in. */
+static lisp_val_t *prim_dcf_poweron(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 30);
+    dcf77_power_on_capture((unsigned)(secs < 1 ? 1 : secs));
+    return &true_val;
+}
+
+/* `(dcf-drivetest)`: drive the OUT pin and read it back, to tell a dead or
+ * shorted pad apart from a healthy one looking at a module that is driving
+ * low. The only DCF-77 diagnostic that drives that pin -- 2 mA, 50 ms. */
+static lisp_val_t *prim_dcf_drivetest(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    dcf77_drive_test();
+    return &true_val;
+}
+
+static lisp_val_t *prim_dcf_listen(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 120);
+    long load = arg_int(args, 1, 0);
+    dcf77_listen((unsigned)(secs < 1 ? 1 : secs), load != 0);
+    return &true_val;
+}
+
+/* `(dcf-sync [secs] [set])`: decode an actual time off the radio, as opposed
+ * to every other dcf- primitive here, which measures the signal. `set` is
+ * off by default -- a diagnostic that silently changes the clock is a bad
+ * diagnostic, and nothing is written on failure either way. */
+static lisp_val_t *prim_dcf_sync(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long secs = arg_int(args, 0, 300);
+    long set  = arg_int(args, 1, 0);
+    dcf77_sync((unsigned)(secs < 0 ? 0 : secs), set != 0);
+    return &true_val;
 }
 #endif
 
@@ -1763,10 +1990,34 @@ static lisp_val_t *prim_time(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_date(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     rtc_time_t tm;
-    time_get_rtc(&tm);
+    time_get_local(&tm);
     char buf[32];
     time_format_iso(&tm, buf, sizeof(buf));
     return make_str(buf);
+}
+
+/* `(date-utc)`: the clock as the kernel actually keeps it. `(date)` is local
+ * time, which is a rendering of this and not a second clock. */
+static lisp_val_t *prim_date_utc(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    rtc_time_t tm;
+    time_get_utc(&tm);
+    char buf[32];
+    time_format_iso(&tm, buf, sizeof(buf));
+    return make_str(buf);
+}
+
+/* `(tz)` -> the rule in force; `(tz "CET-1CEST,M3.5.0,M10.5.0/3")` sets it,
+ * returning #f and keeping the old rule if it does not parse. */
+static lisp_val_t *prim_tz(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (args && args->type == LISP_PAIR &&
+        (args->u.pair.car->type == LISP_STRING || args->u.pair.car->type == LISP_SYMBOL)) {
+        const char *spec = (args->u.pair.car->type == LISP_STRING)
+                             ? args->u.pair.car->u.str : args->u.pair.car->u.sym;
+        return tz_set(spec) ? &true_val : &false_val;
+    }
+    return make_str(tz_get());
 }
 
 static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
@@ -1776,8 +2027,11 @@ static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
     if (args->u.pair.car->type == LISP_STRING || args->u.pair.car->type == LISP_SYMBOL) {
         const char *str = (args->u.pair.car->type == LISP_STRING) ? args->u.pair.car->u.str : args->u.pair.car->u.sym;
         if (time_parse_iso(str, &tm)) {
-            time_set_rtc(&tm);
-            i2c_rtc_write_time(&tm);
+            /* Typed by a human: local time in, UTC stored. */
+            rtc_time_t utc;
+            tz_local_to_utc(&tm, &utc);
+            time_set_utc(&utc);
+            i2c_rtc_write_time(&utc);
             return &true_val;
         }
     } else if (args->u.pair.car->type == LISP_INT) {
@@ -1791,8 +2045,10 @@ static lisp_val_t *prim_set_date(lisp_val_t *args, lisp_val_t *env) {
         }
         tm.year = (uint16_t)vals[0]; tm.month = (uint8_t)vals[1]; tm.day = (uint8_t)vals[2];
         tm.hour = (uint8_t)vals[3]; tm.min = (uint8_t)vals[4]; tm.sec = (uint8_t)vals[5]; tm.ms = 0;
-        time_set_rtc(&tm);
-        i2c_rtc_write_time(&tm);
+        rtc_time_t utc;
+        tz_local_to_utc(&tm, &utc);
+        time_set_utc(&utc);
+        i2c_rtc_write_time(&utc);
         return &true_val;
     }
     return &false_val;
@@ -2264,6 +2520,25 @@ void lisp_init(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
     env_set(&global_env, "clock", make_prim(prim_clock));
     env_set(&global_env, "clock-light", make_prim(prim_clock_light));
+    env_set(&global_env, "clock-keys", make_prim(prim_clock_keys));
+    env_set(&global_env, "clock-leds", make_prim(prim_clock_leds));
+    env_set(&global_env, "clock-text", make_prim(prim_clock_text));
+    env_set(&global_env, "beep", make_prim(prim_beep));
+#if CONFIG_ENABLE_DCF77
+    env_set(&global_env, "dcf-monitor", make_prim(prim_dcf_monitor));
+    env_set(&global_env, "dcf-status", make_prim(prim_dcf_status));
+#endif
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+    env_set(&global_env, "dcf-raw", make_prim(prim_dcf_raw));
+    env_set(&global_env, "dcf-pins", make_prim(prim_dcf_pins));
+    env_set(&global_env, "dcf-hunt", make_prim(prim_dcf_hunt));
+    env_set(&global_env, "dcf-pinscan", make_prim(prim_dcf_pinscan));
+    env_set(&global_env, "dcf-listen", make_prim(prim_dcf_listen));
+    env_set(&global_env, "dcf-drivetest", make_prim(prim_dcf_drivetest));
+    env_set(&global_env, "dcf-poweron", make_prim(prim_dcf_poweron));
+    env_set(&global_env, "dcf-mirror", make_prim(prim_dcf_mirror));
+    env_set(&global_env, "dcf-sync", make_prim(prim_dcf_sync));
 #endif
     env_set(&global_env, "ls", make_prim(prim_ls));
     env_set(&global_env, "cat", make_prim(prim_cat));
@@ -2287,6 +2562,8 @@ void lisp_init(void) {
     env_set(&global_env, "top", make_prim(prim_top));
     env_set(&global_env, "time", make_prim(prim_time));
     env_set(&global_env, "date", make_prim(prim_date));
+    env_set(&global_env, "date-utc", make_prim(prim_date_utc));
+    env_set(&global_env, "tz", make_prim(prim_tz));
     env_set(&global_env, "set-date", make_prim(prim_set_date));
     env_set(&global_env, "set-time", make_prim(prim_set_date));
     env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));

@@ -25,6 +25,11 @@
 #include <string.h>
 #include <stdbool.h>
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+/* Last, deliberately: the CONFIG_* guard arrives with the headers above. */
+#include "drivers/dcf77_service.h"
+#endif
+
 static fat32_fs_t g_fat32_sd;
 static fat32_fs_t g_fat32_ram;
 static fat32_fs_t g_fat32_flash;
@@ -109,12 +114,16 @@ typedef struct {
      * tests/hw/test_rp2350.py's K3, not by anything that runs on QEMU,
      * since QEMU has no pin model to report. Measured, not assumed: the
      * worst case (every ENABLE_* flag on at once, including the clock
-     * persona's fields alongside chess's) is 690 bytes including the NUL:
+     * persona's fields alongside chess's) is 791 bytes including the NUL:
      *
-     *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...CLOCK_ADC_LIGHT_GPIO=99\n
+     *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...DCF77_WARMUP_MS=5000\n
      *
-     * 768 gives headroom without padding arbitrarily. */
-    char proc_buf[768];
+     * That was 690 before D2 (plan/phase17_clock_ui_and_dcf77.md) added
+     * ENABLE_DCF77 plus four DCF77_* pin lines -- 95 bytes, which is what
+     * took it past the old 768 and would have silently truncated the tail of
+     * /proc/config all over again. 896 gives headroom without padding
+     * arbitrarily. */
+    char proc_buf[896];
     uint32_t proc_len;
     /* /proc/kmsg only: served straight from the klog ring rather than
      * generated into proc_buf, which is far too small to hold it. The window
@@ -685,9 +694,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "ENABLE_CC=%d\nENABLE_ED=%d\n", CONFIG_ENABLE_CC, CONFIG_ENABLE_ED);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "ENABLE_ST7735=%d\nENABLE_TM1638=%d\nENABLE_CHESS=%d\nENABLE_SPISD=%d\nENABLE_PICO_CLOCK_GREEN=%d\n",
+            "ENABLE_ST7735=%d\nENABLE_TM1638=%d\nENABLE_CHESS=%d\nENABLE_SPISD=%d\nENABLE_PICO_CLOCK_GREEN=%d\nENABLE_DCF77=%d\n",
             CONFIG_ENABLE_ST7735, CONFIG_ENABLE_TM1638, CONFIG_ENABLE_CHESS, CONFIG_ENABLE_SPISD,
-            CONFIG_ENABLE_PICO_CLOCK_GREEN);
+            CONFIG_ENABLE_PICO_CLOCK_GREEN, CONFIG_ENABLE_DCF77);
 #if defined(CONFIG_BOARD_RP2350)
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART0_TX_GPIO=%d\nUART0_RX_GPIO=%d\n",
@@ -700,9 +709,15 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             CONFIG_SPI1_SCK_GPIO, CONFIG_SPI1_MOSI_GPIO,
             CONFIG_SPI1_MISO_GPIO, CONFIG_SPI1_CS_GPIO);
 #endif
+#ifdef CONFIG_LED_ONBOARD_GPIO
+        /* Optional: the clock persona has no onboard LED to name (its GP25 is
+         * the wireless module's chip select, phase17 C1), so the key is simply
+         * absent there rather than carrying a wrong number. */
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "LED_ONBOARD_GPIO=%d\nLED_EXT_GPIO=%d\n",
-            CONFIG_LED_ONBOARD_GPIO, CONFIG_LED_EXT_GPIO);
+            "LED_ONBOARD_GPIO=%d\n", CONFIG_LED_ONBOARD_GPIO);
+#endif
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "LED_EXT_GPIO=%d\n", CONFIG_LED_EXT_GPIO);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "I2C_RTC_BASE=0x%lx\nI2C_RTC_SDA_GPIO=%d\nI2C_RTC_SCL_GPIO=%d\n",
             (unsigned long)CONFIG_I2C_RTC_BASE, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
@@ -726,14 +741,112 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "CLOCK_A0_GPIO=%d\nCLOCK_A1_GPIO=%d\nCLOCK_A2_GPIO=%d\nCLOCK_ADC_LIGHT_GPIO=%d\n",
             CONFIG_CLOCK_A0_GPIO, CONFIG_CLOCK_A1_GPIO, CONFIG_CLOCK_A2_GPIO, CONFIG_CLOCK_ADC_LIGHT_GPIO);
+#ifdef CONFIG_CLOCK_BTN_SET_GPIO
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "CLOCK_BTN_SET_GPIO=%d\nCLOCK_BTN_UP_GPIO=%d\nCLOCK_BTN_DOWN_GPIO=%d\nCLOCK_BUZZER_GPIO=%d\n",
+            CONFIG_CLOCK_BTN_SET_GPIO, CONFIG_CLOCK_BTN_UP_GPIO,
+            CONFIG_CLOCK_BTN_DOWN_GPIO, CONFIG_CLOCK_BUZZER_GPIO);
+#endif
+#ifdef CONFIG_CLOCK_TEMP_OFFSET_C
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "CLOCK_TEMP_OFFSET_C=%d\nCLOCK_COLON_BLINK=%d\n",
+            CONFIG_CLOCK_TEMP_OFFSET_C, CONFIG_CLOCK_COLON_BLINK);
+#endif
+#endif
+#if CONFIG_ENABLE_DCF77
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "DCF77_OUT_GPIO=%d\nDCF77_PON_GPIO=%d\nDCF77_PON_ACTIVE_LOW=%d\n"
+            "DCF77_OUT_ACTIVE_LOW=%d\nDCF77_WARMUP_MS=%d\n",
+            CONFIG_DCF77_OUT_GPIO, CONFIG_DCF77_PON_GPIO,
+            CONFIG_DCF77_PON_ACTIVE_LOW, CONFIG_DCF77_OUT_ACTIVE_LOW,
+            CONFIG_DCF77_WARMUP_MS);
 #endif
 #endif
         return (int)used;
     }
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+    else if (strcmp(rel, "dcf77") == 0) {
+        /* The radio's health, without a serial console (D4,
+         * plan/phase17_clock_ui_and_dcf77.md). The clock persona's only other
+         * window on this is a 24-column LED panel, so a 9P-attached host
+         * reading this file is how the receiver gets watched over days rather
+         * than minutes -- which is the timescale reception problems actually
+         * live on. */
+        dcf_status_t st;
+        dcf77_service_status(&st);
+        uint32_t used = 0;
+        char iso[32];
+
+        static const char *const STATE[] = { "idle", "syncing", "done", "failed" };
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "state=%s\nauto=%s\nauto_at=%02d:%02d\n",
+            STATE[(unsigned)st.state <= 3 ? (unsigned)st.state : 0],
+            dcf77_service_auto() ? "on" : "off",
+            CONFIG_DCF77_AUTO_HOUR, CONFIG_DCF77_AUTO_MIN);
+        if (st.state == DCF_SYNCING) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "timeout_left_s=%u\n", (unsigned)st.timeout_left_s);
+        }
+
+        uint32_t age = dcf77_service_age_s();
+        if (st.ever_synced) {
+            time_format_iso(&st.last_sync_utc, iso, sizeof(iso));
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "last_sync=%s UTC\nlast_sync_age_s=%u\n", iso, (unsigned)age);
+        } else {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "last_sync=never\nlast_sync_age_s=-1\n");
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "sync_attempts=%u\nsync_ok=%u\n",
+            (unsigned)st.attempts, (unsigned)st.successes);
+
+        /* Distinct from last_sync: the radio can be decoding perfectly while
+         * the clock has deliberately not been touched. */
+        if (st.have_radio_time) {
+            time_format_iso(&st.radio_utc, iso, sizeof(iso));
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "radio_time=%s UTC\n", iso);
+        } else {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "radio_time=none\n");
+        }
+
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "pulses=%u\npulses_bad=%u\nglitches=%u\nsync_losses=%u\n"
+            "frames_seen=%u\nframes_accepted=%u\n"
+            "parity_errors=%u\nframing_errors=%u\nrange_errors=%u\nweekday_errors=%u\n"
+            "spacing_err_max_ms=%u\nbit_index=%d\nduty_permille=%u\n"
+            "quality_mean_tenths=%u\nquality_samples=%u\nlongest_clean_run_s=%u\n",
+            (unsigned)st.decoder.pulses_seen, (unsigned)st.decoder.pulses_bad,
+            (unsigned)st.decoder.glitches, (unsigned)st.decoder.sync_losses,
+            (unsigned)st.decoder.frames_seen, (unsigned)st.decoder.frames_accepted,
+            (unsigned)st.decoder.parity_errors, (unsigned)st.decoder.framing_errors,
+            (unsigned)st.decoder.range_errors, (unsigned)st.decoder.weekday_errors,
+            (unsigned)st.decoder.spacing_err_max_ms, st.decoder.bit_index,
+            (unsigned)st.decoder.high_permille,
+            (unsigned)(st.decoder.quality_total
+                ? (st.decoder.quality_sum * 10u) / st.decoder.quality_total : 0),
+            (unsigned)st.decoder.quality_total,
+            (unsigned)st.decoder.clean_run_max);
+
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "quality=");
+        for (unsigned i = 0; i < st.decoder.quality_count && used + 2 < cap; i++) {
+            buf[used++] = (char)('0' + (st.decoder.quality[i] > 7 ? 7 : st.decoder.quality[i]));
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
+        return (int)used;
+    }
+#endif
     return -1;
 }
 
-static const char *g_proc_names[10] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config" };
+/* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
+ * one caller that walks this list already derives the count with sizeof. */
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config",
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+    "dcf77",
+#endif
+};
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index

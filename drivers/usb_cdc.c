@@ -834,6 +834,31 @@ void usb_cdc_task(void) {
 void usb_cdc_init(void) {
     g_usb_cdc_connected = false;
 
+    /* Every field of g_usb, explicitly, before anything can read one.
+     *
+     * arch/riscv/rp2350/boot_header.S now zeroes the whole .ustacksN range at
+     * boot, which is the real fix and the one that protects any future driver
+     * that keeps state there. This is the driver owning its own state anyway,
+     * for two reasons: it must not silently depend on a linker section being
+     * cleared by code in another file, and usb_cdc_init() can be called again
+     * after a 1200-baud BOOTSEL touch, where boot-time zeroing is long past.
+     *
+     * The cost of getting this wrong was the whole of 2026-08-23: the ring
+     * indices and the ep2_configured/ep2_dtr flags came up as whatever SRAM
+     * held, usb_cdc_putc()'s guard passed on garbage, and it then indexed its
+     * ring with an unmasked garbage head -- an out-of-bounds store into a PMP
+     * boundary, faulting before any handler existed to say so. The board
+     * stopped mid-printk, and survived every reflash because a BOOTSEL
+     * session leaves that SRAM holding values that happen to fail the guard.
+     *
+     * A byte loop rather than memset(): g_usb_region is volatile, and casting
+     * that away to hand it to memset() is exactly the kind of shortcut that
+     * makes a compiler free to drop the write. */
+    {
+        volatile uint8_t *p = (volatile uint8_t *)&g_usb_region;
+        for (size_t i = 0; i < sizeof(g_usb_region); i++) p[i] = 0;
+    }
+
     /* M5 Phase 7: both MMIO windows this driver uses need to be
      * Non-secure-accessible for the "usbcdc" task's own U-mode serve
      * loop further below -- must happen here, from M-mode, before the
@@ -893,9 +918,36 @@ void usb_cdc_init(void) {
     printk_debug("[USB CDC Init] MUXING: 0x%08x, MAIN_CTRL: 0x%08x, SIE_CTRL: 0x%08x, SIE_STATUS: 0x%08x, INTE: 0x%08x\n",
            REG(USB_MUXING), REG(USB_MAIN_CTRL), REG(USB_SIE_CTRL), REG(USB_SIE_STATUS), REG(USB_INTE));
 
-    // Process initial USB enumeration setup packets during boot
-    for (volatile int i = 0; i < 500000; i++) {
-        usb_cdc_task();
+    /* Service the initial enumeration handshake, bounded by TIME and with an
+     * early exit -- not by an iteration count.
+     *
+     * This was `for (i = 0; i < 500000; i++) usb_cdc_task();`: half a million
+     * unconditional passes over a function that does several MMIO reads, with
+     * no way out once the host had finished. It cost seconds of every boot on
+     * every RP2350 board even when enumeration completed in the first few
+     * hundred passes, and on a plain USB power adapter -- a charger, with no
+     * host behind it and nothing that will ever answer -- it ran the whole
+     * count while the board looked dead (user, 2026-08-23).
+     *
+     * The deadline has to be generous, and 250 ms was not: it left the board
+     * not enumerating at all (found immediately, on hardware). Nothing
+     * services USB again between here and usb_cdc_task_start(), which is
+     * eighty lines of driver and scheduler bring-up away, so this loop is not
+     * a courtesy to a quick host -- it is the *only* thing answering the host
+     * for the whole of enumeration. Cutting it short simply drops the
+     * handshake on the floor.
+     *
+     * So: two seconds, but leave the instant SET_CONFIGURATION lands, which
+     * is what the early exit is for and what makes the normal case fast
+     * anyway. A charger pays the two seconds and then boots, which is the
+     * whole point; before this it paid a fixed half-million passes and looked
+     * dead throughout. */
+    {
+        uint64_t deadline = time_get_ms() + 2000u;
+        while (time_get_ms() < deadline) {
+            usb_cdc_task();
+            if (g_usb.ep2_configured) break;
+        }
     }
 
     printk_debug("[USB CDC] Native RP2350 Dual CDC ACM Controller Initialized (/dev/ttyACM0, /dev/ttyACM1).\n");
@@ -922,9 +974,19 @@ void usb_cdc_putc(char c) {
     // did. printk() now masks around a whole message (kernel/printk.c), but
     // this is the lower-level guarantee and other callers reach it directly.
     uintptr_t flags = irq_save();
-    uint32_t next = (g_usb.ep2_tx_head + 1) % USB_EP2_TX_RING_SIZE;
-    if (next != g_usb.ep2_tx_tail) { // ring full; drop
-        g_usb.ep2_tx_ring[g_usb.ep2_tx_head] = (uint8_t)c;
+    /* Both indices masked, not just the incremented one. The write used to
+     * use g_usb.ep2_tx_head raw, which is safe only if that field is known to
+     * be in range -- and it was not: this whole struct lives in
+     * .ustacks16384, outside the range boot cleared, so on a cold start the
+     * head was whatever SRAM held and this line wrote outside the ring
+     * (2026-08-23). boot_header.S now zeroes the region, which is the real
+     * fix; this is the belt to its braces, because an index that comes from
+     * memory the linker placed by hand should never be trusted to be sane. */
+    uint32_t head = g_usb.ep2_tx_head % USB_EP2_TX_RING_SIZE;
+    uint32_t tail = g_usb.ep2_tx_tail % USB_EP2_TX_RING_SIZE;
+    uint32_t next = (head + 1) % USB_EP2_TX_RING_SIZE;
+    if (next != tail) { // else: ring full, drop
+        g_usb.ep2_tx_ring[head] = (uint8_t)c;
         g_usb.ep2_tx_head = next;
     }
     irq_restore(flags);

@@ -186,11 +186,20 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
         }
 
         p++; // Skip '%'
+        /* Flags. '-' (left-justify) used to be missing entirely, which is
+         * worse than unsupported: an unrecognised flag left the '-' sitting
+         * where the conversion character was expected, so `%-4s` fell through
+         * to the default branch and printed itself literally. Found by a
+         * column-aligned diagnostic printing "%-4s %-6s" instead of its own
+         * data (phase17 C1). */
+        bool left_pad = false;
         bool zero_pad = false;
-        if (*p == '0') {
-            zero_pad = true;
-            p++;
+        for (;;) {
+            if (*p == '-')      { left_pad = true; p++; }
+            else if (*p == '0') { zero_pad = true; p++; }
+            else break;
         }
+        if (left_pad) zero_pad = false;   /* '0' is meaningless left-justified */
 
         int width = -1;
         if (*p >= '1' && *p <= '9') {
@@ -212,19 +221,21 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
         if (*p == 'l') p++; // Handle %ld / %lx / %lu
 
         switch (*p) {
-            case 'c':
-                pc((char)va_arg(args, int));
+            case 'c': {
+                char c = (char)va_arg(args, int);
+                if (!left_pad) { for (int w = 1; w < width; w++) pc(' '); }
+                pc(c);
+                if (left_pad)  { for (int w = 1; w < width; w++) pc(' '); }
                 break;
+            }
             case 's': {
                 const char *s = va_arg(args, const char *);
                 if (!s) s = "(null)";
-                if (max_len >= 0) {
-                    for (int i = 0; i < max_len && s[i] != '\0'; i++) {
-                        pc(s[i]);
-                    }
-                } else {
-                    ps(s);
-                }
+                int len = 0;
+                while (s[len] != '\0' && (max_len < 0 || len < max_len)) len++;
+                if (!left_pad) { for (int w = len; w < width; w++) pc(' '); }
+                for (int i = 0; i < len; i++) pc(s[i]);
+                if (left_pad)  { for (int w = len; w < width; w++) pc(' '); }
                 break;
             }
             case 'd':
@@ -233,7 +244,7 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 long temp = (val < 0) ? -val : val;
                 int digits = (val <= 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
-                if (width > digits) {
+                if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(pad);
                 }
@@ -242,6 +253,9 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                     val = -val;
                 }
                 print_num(pc, (unsigned long)val, 10);
+                if (width > digits && left_pad) {
+                    for (int w = 0; w < width - digits; w++) pc(' ');
+                }
                 break;
             }
             case 'u': {
@@ -249,11 +263,14 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
-                if (width > digits) {
+                if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(pad);
                 }
                 print_num(pc, val, 10);
+                if (width > digits && left_pad) {
+                    for (int w = 0; w < width - digits; w++) pc(' ');
+                }
                 break;
             }
             case 'x':
@@ -263,11 +280,14 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 16; }
-                if (width > digits) {
+                if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(pad);
                 }
                 print_num(pc, val, 16);
+                if (width > digits && left_pad) {
+                    for (int w = 0; w < width - digits; w++) pc(' ');
+                }
                 break;
             }
             case '%':

@@ -303,14 +303,20 @@ void i2c_rtc_init(void) {
     if (i2c_rtc_hw_read_time(&tm)) {
         if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             g_rtc_detected = true;
-            time_set_rtc(&tm);
+            /* The DS3231 holds UTC, not local time (user, 2026-08-23). It is
+             * storage for a clock that runs on UTC, and storing local time
+             * there would make the hour that repeats every October
+             * unrecoverable after a reset. A chip written by an older build
+             * therefore reads an hour or two out until the next `date` or
+             * (dcf-sync ... 1) rewrites it. */
+            time_set_utc(&tm);
             char isostr[32];
             time_format_iso(&tm, isostr, sizeof(isostr));
 #if defined(CONFIG_BOARD_RP2350)
-            printk("[I2C RTC] DS1307/DS3231 detected at 0x68 (GP%d/GP%d)! Synced date: %s\n",
+            printk("[I2C RTC] DS1307/DS3231 detected at 0x68 (GP%d/GP%d)! Synced UTC: %s\n",
                    CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
 #else
-            printk("[I2C RTC] DS1307/DS3231 detected at 0x68! Synced date: %s\n", isostr);
+            printk("[I2C RTC] DS1307/DS3231 detected at 0x68! Synced UTC: %s\n", isostr);
 #endif
             return;
         }
@@ -458,9 +464,65 @@ bool i2c_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
+/* --------------------------------------------------- the RTC wire ------ */
+
+/*
+ * Nine bytes, laid out explicitly:
+ *
+ *   [0..1] year, BIG-endian   [2] month  [3] day
+ *   [4] hour   [5] min   [6] sec        [7..8] ms, big-endian
+ *
+ * Explicit because the U-mode server above cannot call anything outside
+ * .utext and so decodes these bytes by hand -- which means the client has to
+ * agree with a *byte layout*, not with a struct.
+ *
+ * It used to `memcpy()` an `rtc_time_t` instead, which agreed with neither
+ * server. `rtc_time_t` is little-endian and carries a pad byte before `ms`,
+ * so the U-mode server read the year byte-swapped: 2026 (0x07EA) arrived as
+ * 0xEA07 = 59911, and `(uint8_t)(59911 - 2000)` is 55, written as BCD 0x55
+ * and read back as the year 2055. Month and day, being single bytes, were
+ * perfectly correct the whole time -- which is exactly what made it look like
+ * a bad RTC chip rather than a bad wire format (found on hardware
+ * 2026-08-23, on a clock the DCF-77 receiver had just set correctly).
+ *
+ * The read direction was broken differently and more quietly: the server
+ * replies with 1 + 9 bytes and the client demanded 1 + sizeof(rtc_time_t) =
+ * 1 + 10, so the check never passed and *every* read silently fell through to
+ * direct hardware access from whatever task asked. It worked, which is why
+ * nobody noticed, but it meant the display task was driving the I2C bus
+ * itself and the i2c task was serving nothing.
+ *
+ * The lesson is the one i2c_usys_put_i32()'s comment already records from the
+ * other direction: a wire format is a format, not a struct.
+ */
+#define RTC_WIRE_LEN 9u
+
+static void rtc_to_wire(const rtc_time_t *tm, uint8_t *w) {
+    w[0] = (uint8_t)(tm->year >> 8);
+    w[1] = (uint8_t)tm->year;
+    w[2] = tm->month;
+    w[3] = tm->day;
+    w[4] = tm->hour;
+    w[5] = tm->min;
+    w[6] = tm->sec;
+    w[7] = (uint8_t)(tm->ms >> 8);
+    w[8] = (uint8_t)tm->ms;
+}
+
+static void rtc_from_wire(const uint8_t *w, rtc_time_t *tm) {
+    tm->year  = (uint16_t)(((uint16_t)w[0] << 8) | w[1]);
+    tm->month = w[2];
+    tm->day   = w[3];
+    tm->hour  = w[4];
+    tm->min   = w[5];
+    tm->sec   = w[6];
+    tm->ms    = (uint16_t)(((uint16_t)w[7] << 8) | w[8]);
+}
+
 /* Only RP2350 has real I2C hardware to isolate -- the #else branch below
  * (QEMU rv64/rv32) keeps the plain kernel-mode server every M4.5 driver
  * task had before M5, unchanged. Unlike drivers/uart_rp2350.c/
+
  * tm1638_rp2350.c (entirely separate, RP2350-only files), i2c_rtc.c is
  * shared across every target, so the split lives inside this one file. */
 #if defined(CONFIG_BOARD_RP2350)
@@ -777,6 +839,7 @@ static uint8_t      g_i2c_ustack[512] __attribute__((aligned(512)))
                                        __attribute__((section(".ustacks512")));
 static mem_domain_t g_i2c_domain;
 
+
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Mirrors drivers/tm1638_rp2350.c's
@@ -827,15 +890,15 @@ static void i2c_task_body(void *arg) {
             rtc_time_t tm;
             bool ok = i2c_rtc_hw_read_time(&tm);
             g_i2c_resp[0] = ok ? 1 : 0;
-            if (ok) memcpy(&g_i2c_resp[1], &tm, sizeof(tm));
-            chan_serve_reply(g_i2c_ep, ok ? 1u + sizeof(tm) : 1u);
+            if (ok) rtc_to_wire(&tm, &g_i2c_resp[1]);
+            chan_serve_reply(g_i2c_ep, ok ? 1u + RTC_WIRE_LEN : 1u);
             break;
         }
         case I2C_OP_RTC_WRITE_TIME: {
             bool ok = false;
-            if (req_len >= 1 + sizeof(rtc_time_t)) {
+            if (req_len >= 1 + RTC_WIRE_LEN) {
                 rtc_time_t tm;
-                memcpy(&tm, &g_i2c_req[1], sizeof(tm));
+                rtc_from_wire(&g_i2c_req[1], &tm);
                 ok = i2c_rtc_hw_write_time(&tm);
             }
             g_i2c_resp[0] = ok ? 1 : 0;
@@ -887,6 +950,7 @@ static void i2c_task_body(void *arg) {
 }
 
 #endif /* CONFIG_BOARD_RP2350 */
+
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
  * i2c_rtc_read_time()/write_time()/read_temperature_c() and
@@ -998,12 +1062,12 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
     if (!tm) return false;
     if (i2c_task_alive()) {
         uint8_t req[1] = { I2C_OP_RTC_READ_TIME };
-        uint8_t resp[1 + sizeof(rtc_time_t)];
+        uint8_t resp[1 + RTC_WIRE_LEN];
         int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
         if (n >= 1) {
             if (resp[0] == 0) return false;
-            if ((uint32_t)n >= 1 + sizeof(rtc_time_t)) {
-                memcpy(tm, &resp[1], sizeof(*tm));
+            if ((uint32_t)n >= 1 + RTC_WIRE_LEN) {
+                rtc_from_wire(&resp[1], tm);
                 return true;
             }
         }
@@ -1015,9 +1079,9 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
 bool i2c_rtc_write_time(const rtc_time_t *tm) {
     if (!tm) return false;
     if (i2c_task_alive()) {
-        uint8_t req[1 + sizeof(rtc_time_t)];
+        uint8_t req[1 + RTC_WIRE_LEN];
         req[0] = I2C_OP_RTC_WRITE_TIME;
-        memcpy(&req[1], tm, sizeof(*tm));
+        rtc_to_wire(tm, &req[1]);
         uint8_t resp[1];
         int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
         if (n >= 1) return resp[0] != 0;

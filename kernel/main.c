@@ -24,6 +24,14 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
 #include "drivers/pico_clock_green.h"
 #endif
+#ifndef CLOCK_BOOT_MARK
+/* Every other target: the boot beacon is a Pico-Clock-Green thing, because it
+ * is the only board with no console, no LED and no card to report with. */
+#define CLOCK_BOOT_MARK(n) ((void)0)
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+#include "drivers/dcf77.h"
+#endif
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -42,7 +50,6 @@
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
 
-extern void led_blink_phase(int count);
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
 extern char __binary_info_end;
@@ -92,9 +99,18 @@ void kernel_main(void) {
      * exist before anything can printk(), which the device registry itself
      * does -- so these two cannot go through it, and stay explicit here. */
     uart_init(board_uart_base());
-#if defined(CONFIG_BOARD_RP2350)
-    led_blink_phase(3);  /* 3 blinks = kernel_main reached */
-#endif
+    /* The 2-and-3-blink boot signal that used to be here and in
+     * uart_rp2350.c is gone (user, 2026-08-23). It dates from bring-up, when
+     * "did we reach kernel_main at all" was a live question; it answered that
+     * with a GPIO the clock persona does not even have, and charged roughly a
+     * second of dead busy-wait to every boot on every board to do it.
+     *
+     * Its replacement is CLOCK_BOOT_MARK() (drivers/pico_clock_green.h), off
+     * by default and with no call sites at rest: set CONFIG_CLOCK_BOOT_BEACON
+     * and scatter marks over whatever is suspect. It clicks the buzzer once
+     * per mark and latches a count on the LED row, so a hang leaves its last
+     * mark lit rather than merely stopping -- which is how the charger-boot
+     * fault was found. */
 
     /* B0: attach the default kernel log sink before anything can printk().
      * uart_putc() is exactly what printk() used to call directly, so boot
@@ -137,7 +153,6 @@ void kernel_main(void) {
      * sequence of #ifs here. */
     board_register_devices();
     dev_probe_all();
-
     /* ST7735 canvas + TM1638 keypad/7-segment (H1/H2,
      * plan/phase9_chess_computer.md): dedicated, always-wired hardware for
      * this board persona, so both are initialized eagerly here rather than
@@ -158,6 +173,13 @@ void kernel_main(void) {
      * above, not this driver's own invention. */
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
     pico_clock_green_init();
+#endif
+    /* DCF-77 receiver pins (D2, plan/phase17_clock_ui_and_dcf77.md). Init
+     * only: this leaves the module powered *down* (PON released), so an
+     * unpopulated GP27/GP28 pair costs nothing and a populated one draws
+     * nothing until something asks for a sync or a probe. */
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+    dcf77_init();
 #endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note

@@ -434,6 +434,56 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("U-mode chan_call() Round-Trip Into A Real U-mode Server (M5 Phase 2)",
                         echo_ok, log if not echo_ok else ""))
 
+        # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder,
+        # against synthetic sample streams rather than a radio.
+        #
+        # This runs on the QEMU targets deliberately, and it is the only part
+        # of the DCF-77 work that can be tested at all without hardware: the
+        # decoder consumes timestamped pin samples, never a register, so the
+        # frame logic -- parity, the two-frame agreement rule, polarity
+        # auto-detection, the "time is the NEXT minute" rule, and date
+        # rollover -- is exercised here in milliseconds instead of by flashing
+        # a board and waiting minutes for a signal that may not arrive.
+        # Everything downstream of it stays hardware-only, per
+        # [[falsify_on_hardware_not_qemu]]; this is the half that is portable.
+        ok, log = session.send_and_expect("dcf77selftest\n",
+                                          r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
+        sel_ok = ok and "DCF77_SELFTEST_OK" in log
+        results.append(("DCF-77 Frame Decoder Against Synthetic Frames (D1)",
+                        sel_ok, log if not sel_ok else ""))
+
+        # The timezone rules the clock renders local time with. Pure
+        # arithmetic over a table of known transitions -- both sides of both
+        # European switchovers, a southern-hemisphere zone whose summer spans
+        # the new year, and a full-year round trip -- so it belongs on QEMU
+        # for the same reason the DCF-77 decoder does. The kernel clock runs
+        # on UTC (kernel/timezone.h); this is the half that turns it into
+        # something a person reads.
+        ok, log = session.send_and_expect("tzselftest\n",
+                                          r"TZ_SELFTEST_(OK|FAIL)", timeout=30.0)
+        tz_ok = ok and "TZ_SELFTEST_OK" in log
+        results.append(("Timezone Rules Against Known DST Transitions",
+                        tz_ok, log if not tz_ok else ""))
+
+        # C3: the Pico-Clock-Green menu. Key events in, screen descriptions
+        # out, no hardware anywhere in it -- so the whole navigation contract
+        # (wrapping, long-press-is-back, the inactivity timeout, an abandoned
+        # edit changing nothing, a day that stops existing when the month
+        # moves under it) is checked here rather than by standing in front of
+        # a clock pressing buttons.
+        ok, log = session.send_and_expect("clockuiselftest\n",
+                                          r"CLOCKUI_SELFTEST_(OK|FAIL)", timeout=30.0)
+        ui_ok = ok and "CLOCKUI_SELFTEST_OK" in log
+        results.append(("Pico-Clock-Green Menu Against Synthetic Key Presses (C3/C6)",
+                        ui_ok, log if not ui_ok else ""))
+
+        # The clock is UTC and `date` renders it: both lines, and the
+        # abbreviation that says which side of a switchover we are on.
+        ok, log = session.send_and_expect("date\n", r"UTC  \(TZ=", timeout=10.0)
+        date_ok = ok and ("CET" in log or "CEST" in log)
+        results.append(("date Shows Local Time And The UTC It Is Derived From",
+                        date_ok, log if not date_ok else ""))
+
         # C2: two user programs resident at once.
         #
         # This was the headline limitation the README carried: a single image

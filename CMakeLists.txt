@@ -147,6 +147,13 @@ option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
 # something actually consumed those undefined macros.
 option(LUGALOS_ENABLE_PICO_CLOCK_GREEN "Build the Pico-Clock-Green SM16106/SM5166P LED matrix driver (RP2350 only)" OFF)
 
+# D2 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 longwave receiver wired
+# to GP27/GP28 on the Pico-Clock-Green persona. Default OFF for the same
+# reason ENABLE_PICO_CLOCK_GREEN is: its CONFIG_DCF77_* pin facts exist only
+# in cmake/board-rp2350-clock.cmake, so defaulting it ON would break every
+# other persona's build the moment something consumed those macros.
+option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driver (RP2350 only)" OFF)
+
 # --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
 #
 # Separately linked binaries, loaded from the filesystem and run in U-mode by
@@ -320,6 +327,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
+        -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
     # -- the same distinction lugalos_build_id.h above already depends on, and
@@ -350,6 +358,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
+            -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
@@ -375,6 +384,7 @@ set(SOURCES
     kernel/uaccess.c
     kernel/ticker.c
     kernel/time.c
+    kernel/timezone.c
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c
@@ -392,6 +402,16 @@ set(SOURCES
     arch/riscv/common/pmp_probe.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
+    # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
+    # target-independent -- it consumes timestamped samples, never a register
+    # -- so it is built and self-tested on every target, including the QEMU
+    # ones that will never have a radio attached. That is the point: the frame
+    # logic is the fiddly part and it should not be debugged by flashing.
+    drivers/dcf77_decode.c
+    # C3 (plan/phase17_clock_ui_and_dcf77.md): same reasoning, same shape --
+    # the menu state machine takes key events and returns screen descriptions,
+    # so it builds and self-tests on targets with neither buttons nor a panel.
+    drivers/pico_clock_ui.c
     drivers/flashdisk.c
     drivers/i2c_rtc.c
     drivers/at24c32.c
@@ -459,6 +479,18 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # (LUGALOS_ENABLE_PICO_CLOCK_GREEN defaults OFF -- see the option() above).
     if(LUGALOS_ENABLE_PICO_CLOCK_GREEN)
         list(APPEND SOURCES drivers/pico_clock_green_rp2350.c)
+        # C2 (plan/phase17_clock_ui_and_dcf77.md): the font is all .rodata and
+        # has no hardware in it, but it has no other consumer either, so it
+        # follows the display flag rather than becoming a target-wide source.
+        list(APPEND SOURCES drivers/pico_clock_font.c)
+        list(APPEND SOURCES drivers/pico_clock_app.c)
+    endif()
+    # D2 (plan/phase17_clock_ui_and_dcf77.md): independent of the display
+    # flag above -- the receiver is a separate module on separate pins, and
+    # the probe diagnostic is most useful with the display *not* running.
+    if(LUGALOS_ENABLE_DCF77)
+        list(APPEND SOURCES drivers/dcf77_rp2350.c)
+        list(APPEND SOURCES drivers/dcf77_service.c)
     endif()
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)

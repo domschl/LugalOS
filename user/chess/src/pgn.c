@@ -381,8 +381,10 @@ int pgn_save(const Position *pos, const char *path, const char *result) {
      * without an RTC reports a software clock that starts at its own epoch,
      * and stamping that on every game would be worse than saying nothing. */
     {
+        /* Local time: PGN's Date and Time tags are the local ones, per the
+         * standard, and a game record is read by people. */
         rtc_time_t tm;
-        time_get_rtc(&tm);
+        time_get_local(&tm);
         put(buf, TEXT_CAP, &used, "[Date \"");
         if (tm.year >= 2000) {
             put_uint(buf, TEXT_CAP, &used, tm.year, 4);

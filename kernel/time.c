@@ -1,15 +1,31 @@
 #include "kernel/time.h"
+#include "kernel/timezone.h"
 #include "kernel/printk.h"
+#include "lugalos_config.h"
 #include <string.h>
 
 static uint64_t g_boot_us_offset = 0;
-static rtc_time_t g_base_rtc = { .year = 2026, .month = 8, .day = 5, .hour = 12, .min = 0, .sec = 0, .ms = 0 };
-static uint64_t g_base_rtc_ms = 0;
+
+/* The wall clock is kept as UTC milliseconds since 1970, pinned to a reading
+ * of the monotonic counter. UTC, not local time (user, 2026-08-23): every
+ * other time source this system will grow -- GPS, NTP -- speaks UTC, DCF-77
+ * states its own offset in each frame, and local time is the one
+ * representation with no correct answer during the hour that repeats every
+ * October. Local time is computed on demand from kernel/timezone.c and is
+ * never stored. */
+static int64_t  g_base_epoch_ms = 1785931200000LL; /* 2026-08-05 12:00:00 UTC */
+static uint64_t g_base_mono_ms = 0;
 
 #if defined(CONFIG_BOARD_RP2350)
 #define TIMER0_BASE      0x400B0000UL
 #define TIMER0_TIMEHR    (*(volatile uint32_t *)(TIMER0_BASE + 0x08))
 #define TIMER0_TIMELR    (*(volatile uint32_t *)(TIMER0_BASE + 0x0C))
+/* TIMER0 counts one tick per pulse from the TICKS block, which the boot code
+ * programs to divide the 12 MHz clk_ref by 12. Every "microsecond" in this
+ * kernel is that divider being right, so print it: a 12/28 mistake here (see
+ * arch/riscv/rp2350/boot_header.S) made the whole system run at 43% speed and
+ * was invisible for months because nothing ever said what the divisor was. */
+#define TICKS_TIMER0_CYCLES (*(volatile uint32_t *)0x4010801CUL)
 #elif !defined(CONFIG_MODE_S)
 /* QEMU RV32 (M-mode): the same CLINT kernel/ticker.c already reads for its
  * preemption deadline, at the same documented 10 MHz virt-machine rate
@@ -52,8 +68,14 @@ static inline uint64_t read_hardware_counter_us(void) {
 
 void time_init(void) {
     g_boot_us_offset = read_hardware_counter_us();
-    g_base_rtc_ms = time_get_ms();
+    g_base_mono_ms = time_get_ms();
+    tz_set(CONFIG_TIMEZONE);
+#if defined(CONFIG_BOARD_RP2350)
+    printk("[Timer] System Hardware Clock Initialized (clk_ref/%u = 1 us tick).\n",
+           (unsigned)(TICKS_TIMER0_CYCLES & 0x1ffu));
+#else
     printk("[Timer] System Hardware Clock Initialized (Resolution: 1 us).\n");
+#endif
 }
 
 uint64_t time_get_us(void) {
@@ -74,65 +96,102 @@ void time_delay_us(uint64_t us) {
     }
 }
 
-static bool is_leap_year(uint16_t year) {
-    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+/* Days from 1970-01-01 to a civil (proleptic Gregorian) date, and back.
+ * Howard Hinnant's algorithms, the same pair drivers/dcf77_decode.c uses --
+ * branch-free, correct for every year this will ever see, and far easier to
+ * be sure of than the month-walking loop that used to live here. The date is
+ * treated as naive: these are pure calendar arithmetic and know nothing about
+ * timezones, which is exactly what both a UTC clock and kernel/timezone.c's
+ * local-time arithmetic need. */
+static int64_t days_from_civil(int y, unsigned m, unsigned d) {
+    y -= (m <= 2);
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - (int)(era * 400));
+    const unsigned doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return era * 146097LL + (int64_t)doe - 719468LL;
 }
 
-static const uint8_t days_in_months[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-
-static uint8_t get_days_in_month(uint16_t year, uint8_t month) {
-    if (month < 1 || month > 12) return 31;
-    if (month == 2 && is_leap_year(year)) return 29;
-    return days_in_months[month - 1];
+static void civil_from_days(int64_t z, int *y_out, unsigned *m_out, unsigned *d_out) {
+    z += 719468LL;
+    const int64_t era = (z >= 0 ? z : z - 146096LL) / 146097LL;
+    const unsigned doe = (unsigned)(z - era * 146097LL);
+    const unsigned yoe = (doe - doe / 1460u + doe / 36524u - doe / 146096u) / 365u;
+    const int64_t y = (int64_t)yoe + era * 400LL;
+    const unsigned doy = doe - (365u * yoe + yoe / 4u - yoe / 100u);
+    const unsigned mp = (5u * doy + 2u) / 153u;
+    const unsigned d = doy - (153u * mp + 2u) / 5u + 1u;
+    const unsigned m = mp + (mp < 10u ? 3u : -9u);
+    *y_out = (int)(y + (m <= 2u));
+    *m_out = m;
+    *d_out = d;
 }
 
-void time_get_rtc(rtc_time_t *tm) {
+int64_t time_to_epoch(const rtc_time_t *tm) {
+    if (!tm) return 0;
+    return days_from_civil((int)tm->year, tm->month, tm->day) * 86400LL
+         + (int64_t)tm->hour * 3600LL + (int64_t)tm->min * 60LL + (int64_t)tm->sec;
+}
+
+void time_from_epoch(int64_t sec, rtc_time_t *tm) {
     if (!tm) return;
-    uint64_t elapsed_ms = time_get_ms() - g_base_rtc_ms;
+    /* Floor division, not truncation: dates before 1970 are not expected, but
+     * a clock that has not been set yet can be handed one by a caller doing
+     * arithmetic, and truncation would put it a day out rather than an hour. */
+    int64_t days = sec / 86400LL;
+    int64_t rem  = sec % 86400LL;
+    if (rem < 0) { rem += 86400LL; days -= 1; }
 
-    uint64_t total_sec = (uint64_t)g_base_rtc.sec + (elapsed_ms / 1000);
-    uint32_t add_ms = (uint32_t)(elapsed_ms % 1000) + g_base_rtc.ms;
-
-    uint32_t sec = total_sec % 60;
-    uint64_t total_min = (g_base_rtc.min + (total_sec / 60));
-    uint32_t min = total_min % 60;
-    uint64_t total_hr = (g_base_rtc.hour + (total_min / 60));
-    uint32_t hr = total_hr % 24;
-    uint32_t days_to_add = (uint32_t)(total_hr / 24);
-
-    uint16_t y = g_base_rtc.year;
-    uint8_t m = g_base_rtc.month;
-    uint8_t d = g_base_rtc.day;
-
-    while (days_to_add > 0) {
-        uint8_t dim = get_days_in_month(y, m);
-        if (d + days_to_add <= dim) {
-            d += days_to_add;
-            days_to_add = 0;
-        } else {
-            days_to_add -= (dim - d + 1);
-            d = 1;
-            m++;
-            if (m > 12) {
-                m = 1;
-                y++;
-            }
-        }
-    }
-
-    tm->year = y;
-    tm->month = m;
-    tm->day = d;
-    tm->hour = (uint8_t)hr;
-    tm->min = (uint8_t)min;
-    tm->sec = (uint8_t)sec;
-    tm->ms = (uint16_t)(add_ms % 1000);
+    int y; unsigned m, d;
+    civil_from_days(days, &y, &m, &d);
+    tm->year  = (uint16_t)y;
+    tm->month = (uint8_t)m;
+    tm->day   = (uint8_t)d;
+    tm->hour  = (uint8_t)(rem / 3600);
+    tm->min   = (uint8_t)((rem % 3600) / 60);
+    tm->sec   = (uint8_t)(rem % 60);
+    tm->ms    = 0;
 }
 
-void time_set_rtc(const rtc_time_t *tm) {
+unsigned time_weekday(const rtc_time_t *tm) {
+    if (!tm) return 1;
+    /* 1970-01-01 was a Thursday, so (days + 4) mod 7 counts from Sunday = 0. */
+    int64_t days = days_from_civil((int)tm->year, tm->month, tm->day);
+    int64_t w = (days + 4) % 7;
+    if (w < 0) w += 7;
+    return (w == 0) ? 7u : (unsigned)w;
+}
+
+void time_get_utc(rtc_time_t *tm) {
     if (!tm) return;
-    g_base_rtc = *tm;
-    g_base_rtc_ms = time_get_ms();
+    int64_t now_ms = g_base_epoch_ms + (int64_t)(time_get_ms() - g_base_mono_ms);
+    int64_t sec = now_ms / 1000;
+    int64_t ms  = now_ms % 1000;
+    if (ms < 0) { ms += 1000; sec -= 1; }
+    time_from_epoch(sec, tm);
+    tm->ms = (uint16_t)ms;
+}
+
+void time_set_utc(const rtc_time_t *tm) {
+    if (!tm) return;
+    g_base_epoch_ms = time_to_epoch(tm) * 1000LL + (int64_t)tm->ms;
+    g_base_mono_ms = time_get_ms();
+}
+
+void time_get_local(rtc_time_t *tm) {
+    if (!tm) return;
+    rtc_time_t utc;
+    time_get_utc(&utc);
+    tz_utc_to_local(&utc, tm);
+    tm->ms = utc.ms;
+}
+
+void time_set_local(const rtc_time_t *tm) {
+    if (!tm) return;
+    rtc_time_t utc;
+    tz_local_to_utc(tm, &utc);
+    utc.ms = tm->ms;
+    time_set_utc(&utc);
 }
 
 void time_format_iso(const rtc_time_t *tm, char *buf, int max_len) {

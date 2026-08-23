@@ -1,0 +1,120 @@
+/* The glyph table. See drivers/pico_clock_font.h for the format and for why
+ * it is the one it is.
+ *
+ * All of it is `const`, so it lives in flash and costs zero .bss -- which on
+ * this board is the same 512 KB budget the heap comes out of
+ * (plan/phase15_memory_reclamation.md). A 40-glyph table is ~360 bytes of
+ * .rodata.
+ */
+
+#include "pico_clock_font.h"
+
+/* Digits are the phase 11 glyphs, whose 4-column cell the clock face's fixed
+ * layout is built around; letters match them (see FONT_ALPHA); punctuation is
+ * as narrow as it reads. Written out as one literal per glyph rather than a
+ * packed blob: the bits ARE the picture, and a table you can read is a table
+ * you can fix. */
+static const clock_glyph_t FONT_DIGIT[10] = {
+    { 4, {0x06, 0x09, 0x09, 0x09, 0x09, 0x09, 0x06} }, /* 0 */
+    { 4, {0x04, 0x06, 0x04, 0x04, 0x04, 0x04, 0x0E} }, /* 1 */
+    { 4, {0x06, 0x09, 0x08, 0x04, 0x02, 0x01, 0x0F} }, /* 2 */
+    { 4, {0x06, 0x09, 0x08, 0x06, 0x08, 0x09, 0x06} }, /* 3 */
+    { 4, {0x08, 0x0C, 0x0A, 0x09, 0x0F, 0x08, 0x08} }, /* 4 */
+    { 4, {0x0F, 0x01, 0x07, 0x08, 0x08, 0x09, 0x06} }, /* 5 */
+    { 4, {0x04, 0x02, 0x01, 0x07, 0x09, 0x09, 0x06} }, /* 6 */
+    { 4, {0x0F, 0x09, 0x04, 0x04, 0x04, 0x04, 0x04} }, /* 7 */
+    { 4, {0x06, 0x09, 0x09, 0x06, 0x09, 0x09, 0x06} }, /* 8 */
+    { 4, {0x06, 0x09, 0x09, 0x0E, 0x08, 0x04, 0x02} }, /* 9 */
+};
+
+/* Letters are 4 columns, like the digits, with M and W the two exceptions
+ * that genuinely cannot be drawn in four.
+ *
+ * They were 5 on the first cut, which is the more comfortable size for a 7-row
+ * uppercase face -- and which made every four-letter menu label 23 columns
+ * wide against 22 available. One column. A menu whose short labels all have to
+ * scroll is not a menu with short labels, so the font gives way rather than
+ * the layout: "TEMP" is 20 columns now, "SYNC" and "TSET" and "AUTO" 19.
+ * Matching the digits' width also makes mixed strings sit on a common pitch,
+ * which 5-and-4 did not. */
+static const clock_glyph_t FONT_ALPHA[26] = {
+    { 4, {0x06, 0x09, 0x09, 0x0F, 0x09, 0x09, 0x09} }, /* A */
+    { 4, {0x07, 0x09, 0x09, 0x07, 0x09, 0x09, 0x07} }, /* B */
+    { 4, {0x06, 0x09, 0x01, 0x01, 0x01, 0x09, 0x06} }, /* C */
+    { 4, {0x07, 0x09, 0x09, 0x09, 0x09, 0x09, 0x07} }, /* D */
+    { 4, {0x0F, 0x01, 0x01, 0x07, 0x01, 0x01, 0x0F} }, /* E */
+    { 4, {0x0F, 0x01, 0x01, 0x07, 0x01, 0x01, 0x01} }, /* F */
+    { 4, {0x06, 0x09, 0x01, 0x0D, 0x09, 0x09, 0x06} }, /* G */
+    { 4, {0x09, 0x09, 0x09, 0x0F, 0x09, 0x09, 0x09} }, /* H */
+    { 3, {0x07, 0x02, 0x02, 0x02, 0x02, 0x02, 0x07} }, /* I */
+    { 4, {0x0C, 0x08, 0x08, 0x08, 0x08, 0x09, 0x06} }, /* J */
+    { 4, {0x09, 0x05, 0x03, 0x03, 0x05, 0x09, 0x09} }, /* K */
+    { 4, {0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x0F} }, /* L */
+    { 5, {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11} }, /* M -- needs five */
+    { 4, {0x09, 0x0B, 0x0D, 0x09, 0x09, 0x09, 0x09} }, /* N */
+    { 4, {0x06, 0x09, 0x09, 0x09, 0x09, 0x09, 0x06} }, /* O */
+    { 4, {0x07, 0x09, 0x09, 0x07, 0x01, 0x01, 0x01} }, /* P */
+    { 4, {0x06, 0x09, 0x09, 0x09, 0x0D, 0x05, 0x0C} }, /* Q */
+    { 4, {0x07, 0x09, 0x09, 0x07, 0x05, 0x09, 0x09} }, /* R */
+    { 4, {0x0E, 0x01, 0x01, 0x06, 0x08, 0x08, 0x07} }, /* S */
+    { 4, {0x0F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04} }, /* T */
+    { 4, {0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x06} }, /* U */
+    { 4, {0x09, 0x09, 0x09, 0x09, 0x09, 0x06, 0x06} }, /* V */
+    { 5, {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11} }, /* W -- needs five */
+    { 4, {0x09, 0x09, 0x06, 0x06, 0x06, 0x09, 0x09} }, /* X */
+    { 4, {0x09, 0x09, 0x06, 0x06, 0x04, 0x04, 0x04} }, /* Y */
+    { 4, {0x0F, 0x08, 0x04, 0x04, 0x02, 0x01, 0x0F} }, /* Z */
+};
+
+static const clock_glyph_t FONT_SPACE  = { 2, {0, 0, 0, 0, 0, 0, 0} };
+static const clock_glyph_t FONT_COLON  = { 2, {0x00, 0x03, 0x03, 0x00, 0x03, 0x03, 0x00} };
+static const clock_glyph_t FONT_PERIOD = { 2, {0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03} };
+static const clock_glyph_t FONT_MINUS  = { 3, {0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00} };
+static const clock_glyph_t FONT_SLASH  = { 4, {0x08, 0x08, 0x04, 0x04, 0x02, 0x02, 0x01} };
+static const clock_glyph_t FONT_DEGREE = { 3, {0x07, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00} };
+
+const clock_glyph_t *clock_font_glyph(char c) {
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c >= '0' && c <= '9') return &FONT_DIGIT[c - '0'];
+    if (c >= 'A' && c <= 'Z') return &FONT_ALPHA[c - 'A'];
+    switch (c) {
+    case ':':  return &FONT_COLON;
+    case '.':  return &FONT_PERIOD;
+    case '-':  return &FONT_MINUS;
+    case '/':  return &FONT_SLASH;
+    case '~':  return &FONT_DEGREE;
+    default:   return &FONT_SPACE;   /* including ' ' itself */
+    }
+}
+
+unsigned clock_font_text_width(const char *s) {
+    unsigned w = 0;
+    if (!s) return 0;
+    for (; *s; s++) {
+        if (w) w += 1;                       /* inter-glyph gap */
+        w += clock_font_glyph(*s)->width;
+    }
+    return w;
+}
+
+unsigned clock_font_render(const char *s, uint8_t *cols, unsigned cap) {
+    unsigned n = 0;
+    if (!s || !cols) return 0;
+
+    for (; *s; s++) {
+        const clock_glyph_t *g = clock_font_glyph(*s);
+        if (n && n < cap) cols[n++] = 0;     /* the gap */
+
+        for (unsigned c = 0; c < g->width && n < cap; c++, n++) {
+            uint8_t col = 0;
+            /* Transpose: row r's bit c becomes column c's bit r. Seven bits
+             * per column, so a column fits a byte with one to spare. */
+            for (unsigned r = 0; r < CLOCK_GLYPH_ROWS; r++) {
+                if (g->rows[r] & (1u << c)) col |= (uint8_t)(1u << r);
+            }
+            cols[n] = col;
+        }
+        if (n >= cap) break;
+    }
+    return n;
+}

@@ -1,0 +1,198 @@
+/* The DCF-77 service. See drivers/include/drivers/dcf77_service.h for what it
+ * is for and why it is not the state machine the plan originally described. */
+
+#include "drivers/dcf77_service.h"
+#include "drivers/dcf77.h"
+#include "drivers/i2c_rtc.h"
+#include "kernel/printk.h"
+#include "kernel/time.h"
+#include "kernel/timezone.h"
+#include "lugalos_config.h"
+#include <string.h>
+
+#define DEFAULT_TIMEOUT_S 300u
+
+/* 03:17 local. Off the hour on purpose: the band is quieter there, and every
+ * other radio clock in the house is listening on the hour. It also covers the
+ * European DST changeover, which happens at 03:00 CEST / 02:00 CET -- though
+ * with the clock running on UTC that matters less than it used to. */
+#ifndef CONFIG_DCF77_AUTO_HOUR
+#define CONFIG_DCF77_AUTO_HOUR 3
+#endif
+#ifndef CONFIG_DCF77_AUTO_MIN
+#define CONFIG_DCF77_AUTO_MIN 17
+#endif
+#ifndef CONFIG_DCF77_AUTO_ENABLED
+#define CONFIG_DCF77_AUTO_ENABLED 1
+#endif
+
+/* How stale a decoded time may be and still be committed on the spot.
+ *
+ * The value itself is exact however old it is -- it is carried forward by the
+ * same monotonic counter the clock runs on, so age costs only that counter's
+ * drift, which over minutes is nothing. The limit is about *trust*, not
+ * arithmetic: a time decoded ten minutes ago was decoded from a signal that
+ * may since have gone, and a sync that quietly succeeds off a stale frame is
+ * indistinguishable from one that verified the radio is still there. Two
+ * minutes is long enough to cover the walk from noticing the clock is wrong
+ * to pressing the button. */
+#define FRESH_MS 120000u
+
+static dcf77_t     g_dec;
+static dcf_state_t g_state;
+static uint64_t    g_deadline_ms;
+
+static bool        g_have_radio;
+static rtc_time_t  g_radio_utc;
+static uint64_t    g_radio_at_ms;
+
+static bool        g_ever_synced;
+static rtc_time_t  g_last_sync_utc;
+static uint64_t    g_last_sync_ms;
+static uint32_t    g_attempts, g_successes;
+static bool        g_inited;
+
+static bool        g_auto = (CONFIG_DCF77_AUTO_ENABLED != 0);
+static int64_t     g_auto_last_day = -1;   /* civil day the nightly sync fired */
+static uint64_t    g_next_auto_check_ms;
+
+/* Carry a decoded instant forward to now and write it everywhere the clock
+ * lives. The decoded time was true at the second-mark that ended its frame;
+ * the monotonic counter says how long ago that was. */
+static void commit(uint64_t now_ms) {
+    uint64_t elapsed = (now_ms >= g_radio_at_ms) ? (now_ms - g_radio_at_ms) : 0;
+    rtc_time_t utc;
+    time_from_epoch(time_to_epoch(&g_radio_utc) + (int64_t)(elapsed / 1000u), &utc);
+    utc.ms = (uint16_t)(elapsed % 1000u);
+
+    time_set_utc(&utc);
+    i2c_rtc_write_time(&utc);
+
+    g_last_sync_utc = utc;
+    g_last_sync_ms  = now_ms;
+    g_ever_synced   = true;
+    g_successes++;
+
+    char iso[32];
+    time_format_iso(&utc, iso, sizeof(iso));
+    printk("[DCF77] clock set from the radio: %s UTC\n", iso);
+}
+
+void dcf77_service_init(void) {
+    dcf77_init();
+    dcf77_power(true);              /* a no-op where PON is not wired */
+    dcf77_reset(&g_dec, dcf77_out_pulse_is_high());
+    g_state = DCF_IDLE;
+    g_deadline_ms = 0;
+    g_have_radio = false;
+    g_inited = true;
+}
+
+void dcf77_service_set_auto(bool on) { g_auto = on; }
+bool dcf77_service_auto(void)        { return g_auto; }
+
+/* Checked once a second, not once per sample: this is the only part of the
+ * service that reads a clock, and doing it at 1 kHz would put a timezone
+ * conversion on the row-scan hot path for no benefit whatsoever. */
+static void auto_sync_check(uint64_t now_ms) {
+    if (now_ms < g_next_auto_check_ms) return;
+    g_next_auto_check_ms = now_ms + 1000u;
+
+    if (!g_auto || g_state == DCF_SYNCING) return;
+
+    rtc_time_t local;
+    time_get_local(&local);
+    int64_t day = time_to_epoch(&local) / 86400;
+
+    /* Once per calendar day, and keyed on the day rather than on a timer, so
+     * a clock that is itself being corrected cannot fire twice or skip. */
+    if (local.hour != (unsigned)CONFIG_DCF77_AUTO_HOUR) return;
+    if (local.min  != (unsigned)CONFIG_DCF77_AUTO_MIN)  return;
+    if (day == g_auto_last_day) return;
+
+    g_auto_last_day = day;
+    printk("[DCF77] nightly sync at %02u:%02u local\n",
+           (unsigned)local.hour, (unsigned)local.min);
+    dcf77_service_request_sync(0);
+}
+
+void dcf77_service_feed(uint64_t now_ms) {
+    if (!g_inited) dcf77_service_init();
+
+    dcf77_feed(&g_dec, dcf77_raw_level(), now_ms);
+    auto_sync_check(now_ms);
+
+    rtc_time_t got;
+    if (dcf77_take_time(&g_dec, &got)) {
+        /* Always recorded, whether or not anyone asked for a sync: this is
+         * what makes a later request instant, and what /proc/dcf77 reports as
+         * "the radio is being heard" independently of whether the clock has
+         * been changed. */
+        g_radio_utc   = got;
+        g_radio_at_ms = now_ms;
+        g_have_radio  = true;
+
+        if (g_state == DCF_SYNCING) {
+            commit(now_ms);
+            g_state = DCF_DONE;
+            g_deadline_ms = 0;
+        }
+    }
+
+    if (g_state == DCF_SYNCING && g_deadline_ms && now_ms >= g_deadline_ms) {
+        /* Nothing is written on failure. A DS3231 holding a slightly-wrong
+         * time is categorically better than one holding a garbage time. */
+        g_state = DCF_FAILED;
+        g_deadline_ms = 0;
+        printk("[DCF77] sync timed out; the clock was not changed\n");
+    }
+}
+
+bool dcf77_service_request_sync(unsigned timeout_s) {
+    if (!g_inited) dcf77_service_init();
+    uint64_t now = time_get_ms();
+    g_attempts++;
+
+    if (g_have_radio && (now - g_radio_at_ms) <= FRESH_MS) {
+        commit(now);
+        g_state = DCF_DONE;
+        g_deadline_ms = 0;
+        return true;
+    }
+
+    g_state = DCF_SYNCING;
+    g_deadline_ms = now + (uint64_t)(timeout_s ? timeout_s : DEFAULT_TIMEOUT_S) * 1000u;
+    return false;
+}
+
+void dcf77_service_cancel(void) {
+    if (g_state == DCF_SYNCING) g_state = DCF_IDLE;
+    g_deadline_ms = 0;
+}
+
+uint32_t dcf77_service_age_s(void) {
+    if (!g_ever_synced) return 0xFFFFFFFFu;
+    uint64_t now = time_get_ms();
+    return (uint32_t)((now >= g_last_sync_ms) ? (now - g_last_sync_ms) / 1000u : 0);
+}
+
+void dcf77_service_status(dcf_status_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!g_inited) { out->state = DCF_IDLE; return; }
+
+    uint64_t now = time_get_ms();
+    out->state = g_state;
+    out->timeout_left_s = (g_state == DCF_SYNCING && g_deadline_ms > now)
+                            ? (uint32_t)((g_deadline_ms - now) / 1000u) : 0;
+    out->have_radio_time = g_have_radio;
+    out->radio_utc = g_radio_utc;
+    out->radio_at_ms = g_radio_at_ms;
+    out->ever_synced = g_ever_synced;
+    out->last_sync_utc = g_last_sync_utc;
+    out->last_sync_ms = g_last_sync_ms;
+    out->attempts = g_attempts;
+    out->successes = g_successes;
+    out->pulse = (dcf77_raw_level() == dcf77_out_pulse_is_high());
+    dcf77_get_stats(&g_dec, &out->decoder);
+}

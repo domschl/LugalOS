@@ -21,9 +21,28 @@ uint64_t time_get_us(void);
 uint64_t time_get_ms(void);
 void time_delay_us(uint64_t us);
 
-/* Wall clock RTC time */
-void time_get_rtc(rtc_time_t *tm);
-void time_set_rtc(const rtc_time_t *tm);
+/* Wall clock. The clock the kernel keeps is UTC; local time is derived from
+ * it through kernel/timezone.c and stored nowhere (see the note there and in
+ * time.c). Every caller has to say which one it means, which is the point:
+ * `date` and the clock face want local, the DS3231 and every network or radio
+ * time source want UTC, and a single time_get_rtc() that silently meant one
+ * of them is how a clock ends up an hour out twice a year. */
+void time_get_utc(rtc_time_t *tm);
+void time_set_utc(const rtc_time_t *tm);
+void time_get_local(rtc_time_t *tm);
+void time_set_local(const rtc_time_t *tm);
+
+/* Naive civil-time <-> seconds-since-1970 conversion. Knows nothing about
+ * timezones: feed it UTC and you get a UTC epoch, feed it local time and you
+ * get local seconds, which is exactly what timezone arithmetic needs. */
+int64_t time_to_epoch(const rtc_time_t *tm);
+void    time_from_epoch(int64_t sec, rtc_time_t *tm);
+
+/* Day of week, 1 = Monday .. 7 = Sunday (ISO, and the numbering DCF-77 uses).
+ * Computed from the date, never read from a DS3231 weekday register: that
+ * register is a free-running counter the chip never checks against the date,
+ * and nothing in this tree writes it. */
+unsigned time_weekday(const rtc_time_t *tm);
 
 /* Formatted ISO string helpers (YYYY-MM-DD HH:MM:SS) */
 void time_format_iso(const rtc_time_t *tm, char *buf, int max_len);

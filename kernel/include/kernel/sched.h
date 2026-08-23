@@ -176,6 +176,11 @@ int  task_unblock(int pid);
 
 int         sched_current_pid(void);
 
+/* True once there is a task table and a scheduler running. Code that may run
+ * during boot must check this before blocking: before sched_init() there is
+ * nothing to block and nothing to wake it. */
+bool        sched_is_active(void);
+
 /* The running task's domain, or NULL if unrestricted. The syscall boundary
  * validates user pointers against it. */
 mem_domain_t *sched_current_domain(void);

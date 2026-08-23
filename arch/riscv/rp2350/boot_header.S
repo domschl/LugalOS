@@ -124,6 +124,32 @@ _reset_handler:
     la a1, __bss_end
     call bss_fill
 
+    /* The PMP-granted driver regions (linker/rp2350.ld's .ustacksN), which
+     * live OUTSIDE __bss_start..__bss_end and so were never cleared by
+     * anything.
+     *
+     * That was not a tidiness problem. drivers/usb_cdc.c keeps its entire
+     * state -- ring indices, ep2_configured, ep2_dtr -- in g_usb_region,
+     * which sits in .ustacks16384. On a cold boot those fields held whatever
+     * SRAM happened to contain, so usb_cdc_putc()'s guard let a caller
+     * through on garbage and then indexed its ring with an unmasked garbage
+     * head: an out-of-bounds write into a PMP boundary, a fault, and no
+     * handler installed that early to report it. The board simply stopped,
+     * silently, in the middle of a printk.
+     *
+     * It survived every reflash because a BOOTSEL session runs the bootrom's
+     * own mass-storage code through this SRAM first and leaves values that
+     * happen to fail the guard -- which is exactly why it looked like "works
+     * after a flash, dies on the next power cycle", and why it looked
+     * host-dependent when it never was (2026-08-23).
+     *
+     * Zeroing here rather than in each driver's init: the memory belongs to
+     * the region layout, not to whichever driver was asked to own it, and a
+     * driver that forgets is a driver that fails this way again. */
+    la a0, _ustacks_start
+    la a1, _ustacks_end
+    call bss_fill
+
     /* Paint the unused stack so its high-water mark can be recovered later
      * (kernel/meminfo.c, /proc/meminfo). After the clear, for the same reason
      * as the QEMU path: .bss and .stack are adjacent, so a clear that ran
@@ -308,23 +334,48 @@ start_sys_timers:
     and a2, a2, a0
     bne a2, a0, 1b
 
-    /* Set up timer0 ticker */
+    /* Set up the timer0 and timer1 tick generators: one 1 us tick per 12
+     * cycles of the 12 MHz clk_ref selected above.
+     *
+     * CYCLES must be *written*, not OR-ed into whatever is already there.
+     * This used to be `lw / ori 12 / sw`, and the bootrom does not hand the
+     * block over at zero: it left bit 4 set, so `16 | 12` programmed 28
+     * cycles per tick. TIMER0 then counted at 12/28 MHz = 428.6 kHz while
+     * kernel/time.c called each count a microsecond, making every clock in
+     * the system -- uptime, delays, the clock face, DCF-77 pulse widths --
+     * run at 12/28 = 42.9% of real time. Found 2026-08-23 from DCF-77 second
+     * pulses arriving every "429 ms" with "45/88 ms" widths instead of every
+     * 1000 ms with 100/200 ms widths; kernel/ticker.c had already measured
+     * the same 2.33x against this timer and written it off as the RISC-V
+     * tick generator being fast, when in fact that one (a clean write of 12)
+     * was the correct clock of the two.
+     *
+     * ENABLE is cleared first because CYCLES must not be changed while the
+     * generator is running. */
+    li a1, TICKS_TIMER0_CTRL
+    sw zero, (a1)
     li a1, TICKS_TIMER0_CYCLES
-    lw a0, (a1)
-    ori a0, a0, 12
+    li a0, 12
     sw a0, (a1)
-
-    li a1, TICKS_TIMER0_CTRL + ATOMIC_SET
+    li a1, TICKS_TIMER0_CTRL
     li a0, 1
     sw a0, (a1)
 
-    /* Set up timer1 ticker */
+    li a1, TICKS_TIMER1_CTRL
+    sw zero, (a1)
     li a1, TICKS_TIMER1_CYCLES
-    lw a0, (a1)
-    ori a0, a0, 12
+    li a0, 12
     sw a0, (a1)
-
-    li a1, TICKS_TIMER1_CTRL + ATOMIC_SET
+    li a1, TICKS_TIMER1_CTRL
     li a0, 1
     sw a0, (a1)
+
+    /* Wait for timer0's generator to actually run before returning: RUNNING
+     * is synchronised to the source clock, and the first thing the kernel
+     * does with this timer is measure things against it. */
+    li a1, TICKS_TIMER0_CTRL
+1:
+    lw a0, (a1)
+    andi a0, a0, 2
+    beqz a0, 1b
     ret

@@ -45,7 +45,8 @@
                 "LUGALOS_ENABLE_ST7735": "OFF",
                 "LUGALOS_ENABLE_TM1638": "OFF",
                 "LUGALOS_ENABLE_CHESS": "OFF",
-                "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON"
+                "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON",
+                "LUGALOS_ENABLE_DCF77": "ON"
             }
         }
     ],

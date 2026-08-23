@@ -59,6 +59,13 @@ bool sched_active(void) { return g_active; }
 
 int sched_current_pid(void) { return g_active ? g_tasks[g_current].pid : 0; }
 
+/* Whether there is a scheduler to block against yet. Boot runs a long way
+ * before sched_init(): drivers brought up in that window must not call
+ * task_block(), because nothing would ever wake them -- see
+ * drivers/uart_rp2350.c's uart_hw_putc(), which hung the whole machine
+ * exactly that way on the first printk long enough to fill a 32-byte FIFO. */
+bool sched_is_active(void) { return g_active; }
+
 mem_domain_t *sched_current_domain(void) {
     return g_active ? g_tasks[g_current].domain : NULL;
 }
