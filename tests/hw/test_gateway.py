@@ -210,6 +210,81 @@ def test_sd_write_readback(gw: Gateway) -> tuple[str, bool, str]:
             pass
 
 
+def test_sd_mkdir(gw: Gateway) -> tuple[str, bool, str]:
+    """mkdir, then a file inside it, then remove both.
+
+    Tcreate with DMDIR is a different server path from Tcreate for a file,
+    and on a FAT32 card it is a different on-disk operation too -- a
+    directory entry plus an allocated cluster with . and .. in it. Nothing
+    before N6 created a directory over any transport, let alone this one."""
+    name = "sd0: mkdir, populate, remove"
+    s = session(gw, timeout=40.0)
+    d = f"/sd0/N6D{uuid.uuid4().hex[:4].upper()}"
+    try:
+        if "sd0" not in [e.name for e in s.listdir("/")]:
+            return name, True, "SKIPPED (no /sd0 on this board)"
+        s.mkdir(d)
+        st = s.stat(d)
+        if not st.is_dir:
+            return name, False, f"{d} was created but does not stat as a directory"
+        if Path(d).name not in [e.name for e in s.listdir("/sd0")]:
+            return name, False, f"{d} not listed in /sd0 after mkdir"
+        inner = f"{d}/INNER.TXT"
+        body = b"inside a directory made over ethernet\n"
+        s.write(inner, body)
+        if s.read(inner) != body:
+            return name, False, f"{inner} did not round-trip"
+        if "INNER.TXT" not in [e.name for e in s.listdir(d)]:
+            return name, False, f"INNER.TXT not listed in {d}"
+        s.remove(inner)
+        s.remove(d)
+        if Path(d).name in [e.name for e in s.listdir("/sd0")]:
+            return name, False, f"{d} still listed after remove"
+        return name, True, f"{d} created, populated, listed and removed"
+    except p9lib.P9Error as e:
+        return name, False, f"{d}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def test_two_hop_write(gw: Gateway) -> tuple[str, bool, str]:
+    """A write to the *far* board's SD card, from the host, over Ethernet and
+    then down UART1.
+
+    The plan's own N6 verification asks for exactly this: the same operations
+    against the gateway's card and then through the gateway to the board's
+    namespace. It is the first thing in this tree where one Twrite crosses two
+    transports and an auth gate, and where the gateway is simultaneously a 9P
+    server (to the host) and a 9P client (to the board) inside one request."""
+    name = "two hops: write to /chess/sd0 and read it back"
+    s = session(gw, timeout=60.0)
+    fname = f"/chess/sd0/N6X{uuid.uuid4().hex[:4].upper()}.TXT"
+    body = f"two hops {uuid.uuid4()}\n".encode()
+    try:
+        if "chess" not in [e.name for e in s.listdir("/")]:
+            return name, True, 'SKIPPED (no /chess -- run (mount-remote "chess" "uart1"))'
+        if "sd0" not in [e.name for e in s.listdir("/chess")]:
+            return name, True, "SKIPPED (no /chess/sd0 -- the far board has no card)"
+        s.write(fname, body)
+        back = s.read(fname)
+        if back != body:
+            return name, False, f"read back {back!r}, wrote {body!r}"
+        if Path(fname).name not in [e.name for e in s.listdir("/chess/sd0")]:
+            return name, False, f"{fname} not listed on the far board"
+        s.remove(fname)
+        return name, True, f"{len(body)} B written and re-read across two transports"
+    except p9lib.P9Error as e:
+        return name, False, f"{fname}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def test_large_transfer(gw: Gateway) -> tuple[str, bool, str]:
     """A payload several times the negotiated msize, so both directions have
     to span multiple frames and multiple TCP segments.
@@ -611,12 +686,14 @@ def main() -> int:
         test_auth_ok,
         test_directory_reads,
         test_sd_write_readback,
+        test_sd_mkdir,
         test_large_transfer,
         test_reconnect,
         test_abrupt_disconnect,
         test_pipelined_fill,
         test_cable_pull,
         test_two_hop,
+        test_two_hop_write,
         test_fuse_mount,
         # Last: it reads the counters accumulated by everything above.
         test_driver_counters,

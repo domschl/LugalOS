@@ -887,7 +887,7 @@ place that turned out to be wrong.
 `tests/hw/test_gateway.py`, the gateway persona's sibling to
 `test_rp2350.py`: same conventions (each test returns `(name, ok, detail)`,
 everything *skips* rather than fails when nothing answers), but nothing in it
-can run on QEMU or over a localhost socket. **14 / 14 on hardware, twice back to back.**
+can run on QEMU or over a localhost socket. **16 / 16 on hardware** (15 plus one that needs hands).
 
 ```
   [PASS] icmp / the chip's own stack -- rtt 0.197/0.393/0.590 ms
@@ -896,12 +896,14 @@ can run on QEMU or over a localhost socket. **14 / 14 on hardware, twice back to
   [PASS] auth: correct key attaches
   [PASS] directory reads (multi-entry Rread) -- / has 6 entries, /proc 10
   [PASS] sd0: create, write, read back, remove
+  [PASS] sd0: mkdir, populate, remove
   [PASS] multi-frame transfer (> msize, both directions) -- 8192 B each way, 62.6 KB/s
   [PASS] reconnect x5 (socket returns to LISTEN)
   [PASS] abrupt disconnect, then reconnect
   [PASS] pipelined requests fill the chip's TX buffer -- 12 sent, 12 correct, none lost
   [SKIP] cable pulled mid-session, then restored -- needs hands (--interactive)
   [PASS] two hops: /chess through the gateway
+  [PASS] two hops: write to /chess/sd0 and read it back
   [PASS] lugal9pfuse over TCP (ls, cat, write) -- sd0 write round-trip OK
   [PASS] driver counters clean after the suite
 ```
@@ -921,9 +923,13 @@ Worth having as a test rather than a note: link loss is the one event where
 the chip's state and the driver's diverge silently, and the recovery path is
 new.
 
-Two more things worth naming. The **write** direction had never been exercised on
-this transport — everything before N6 read — and it works, on the gateway's
-own SD card and through FUSE. And the last test reads the driver's counters
+Two more things worth naming. The **write** direction had never been exercised
+on this transport — everything before N6 read — and it works: files and now
+directories on the gateway's own card, through FUSE, and **on the far board's
+card through both hops**. That last one is the first operation in this tree
+where a single Twrite crosses two transports and an auth gate, with the
+gateway acting as 9P server to the host and 9P client to the board inside one
+request. And the last test reads the driver's counters
 after everything above: resync discards, command timeouts, RX overruns, all
 zero. That is the test most likely to catch a regression, because every
 transport fault in this phase appeared there before it appeared as a failed
