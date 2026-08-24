@@ -16,7 +16,7 @@
     "drivers/uart_net.c": 10588,
     "drivers/uart_rp2350.c": 1449,
     "drivers/usb_cdc.c": 16744,
-    "drivers/w5500_rp2350.c": 2137,
+    "drivers/w5500_rp2350.c": 2139,
     "fs/9p.c": 4300,
     "fs/p9_chan.c": 6176,
     "fs/p9_link.c": 12440,
@@ -47,5 +47,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 131435
+  "total": 131437
 }

@@ -696,6 +696,119 @@ back a torn number that would advance `Sn_RX_RD` past the data.
 
 **Still open, and now intermittent rather than constant:** some runs come up
 and serve, some come up reporting link UP, socket LISTEN, clean counters and
-a bus that passes `bustest` -- and answer nothing. The remaining suspects are
-in `w5500_set_address()`'s reset-and-reconfigure path, which is the one thing
-that runs between a boot that works and a boot that does not.
+a bus that passes `bustest` -- and answer nothing. The suspect named here was
+`w5500_set_address()`'s reset-and-reconfigure path. It has since been ruled
+out; see below.
+
+
+### Ruling out the driver — 2026-08-24, later
+
+Three suspects were eliminated in one sitting, each by making the driver
+report something it had only ever assumed.
+
+**1. `net` was reading the driver's own variables, not the chip.** Every
+"reports healthy" diagnosis in this phase was made against numbers that came
+from C constants -- the port from `W5500_9P_PORT`, the address from `g_ip` --
+which say what the driver *meant* to configure and cannot show a register that
+silently did not take. `net` now reads `SIPR`, `Sn_MR`, `Sn_PORT` and both
+buffer sizes back from the part and flags any disagreement. In the dead state
+they all agree: SIPR 192.168.77.2, port 564, TCP, 8/8 KB. The configuration is
+real.
+
+**2. The reset was never verified.** `w5500_hw_reset()` pulsed RSTn and hoped.
+It now checks (SIPR must read 0.0.0.0 afterwards) and falls back to the
+datasheet's software reset, MR bit 7, which depends on no board wiring at all.
+`net` reports which one took. In the dead state it reports **`RSTn pin`**: the
+chip really is being fully reset on every `(net-config ...)`, and it comes up
+dead anyway. So the bad state is not state the chip is holding, and it is not
+anything this driver wrote.
+
+**3. Reordering made it worse, not better.** Configuring the MAC with the link
+down and bringing the PHY up last -- which reads like the more careful order --
+measured 0/8 alive. Reverted. What that run *did* establish is more useful than
+the ordering question: **the dead state persists across many consecutive
+verified chip resets and then clears on its own** (3/5 alive in a later run on
+unchanged firmware). Nothing inside the chip survives eight resets. Whatever is
+sticky is outside it.
+
+**Where that leaves it: the Ethernet side, not the SPI side.** `net watch 30`
+in the dead state: zero PHYCFGR changes, zero bad VERSIONR reads -- the chip is
+electrically steady, so this is not the digital core browning out. And the one
+piece of physical evidence has been sitting in the notes since bring-up: the
+**switch's port LEDs were dark** while the W5500 reported link UP.
+
+That is explainable, and it is the thing to chase next. Auto-negotiation has
+never linked on this module and switch; the driver falls back to forced 10BT
+half-duplex, and **with auto-negotiation disabled a PHY reports link from
+received energy alone.** PHYCFGR's link bit then reads UP whether or not the
+far end ever agreed a mode. A switch port still auto-negotiating may
+parallel-detect its way to 10BASE-T and carry traffic -- or may not, and the
+register reads identically either way. That is exactly the observed pattern:
+intermittent, indifferent to chip resets, invisible from inside. `net` now says
+so in the forced-mode line rather than presenting the link bit as fact.
+
+**The next experiment is physical, and it is one cable.** Connect the W5500
+straight to the laptop's Ethernet port with no switch in between (any modern
+NIC does auto-MDIX, so a patch cable is fine) and see whether
+auto-negotiation links. If it does, the switch port is the fault. If it does
+not, it is the cable or the module's magjack -- and only then is a soldered
+build worth the effort, with the module's 3V3 supply and a bulk capacitor at
+the module as the things worth doing differently. Note that "the bus is clean,
+so soldering will not help" -- said earlier in this phase -- was about SPI, and
+says nothing about the Ethernet side or the PHY's supply.
+
+
+## N5 as it stands, 2026-08-24 — the two-hop namespace works
+
+**Wiring** (crossed, plus a common ground):
+
+```
+gateway GP8  (UART1 TX) ---> chess GP1 (UART0 RX)
+gateway GP9  (UART1 RX) <--- chess GP0 (UART0 TX)
+gateway GND  ------------- chess GND
+```
+
+**On the chess board**, move the console off the wire the 9P server wants:
+
+```
+(console-bind "usb")     ; console to USB-CDC
+klog detach console      ; kernel log off the UART too
+p9serve                  ; UART0 becomes the 9P wire; does not return
+```
+
+**On the gateway**, one call:
+
+```
+lsh> (mount-remote "chess" "uart1")
+=> #t
+```
+
+and the board is in the namespace:
+
+```
+lsh> ls /
+chess       Remote 9P Namespace (uart1)   active
+
+lsh> ls /chess
+flash0  sd0  proc  dev  srv          <- the chess board's own mounts
+
+lsh> cat /chess/proc/version
+LugalOS v0.13.1 (Bare-Metal RISC-V Lisp Machine)
+```
+
+That is phase 5's design paying off: the gateway is a node whose namespace
+happens to contain another board's, and mounting it took one call and no new
+protocol. `p9_route_frame()`'s type-parity routing is what makes the 9P server
+and the 9P client coexist on one task without a proxy.
+
+**Over Ethernet, the host reaches the same namespace through the gateway** --
+`Tauth`/`Tattach` with the pre-shared key, then `/proc/version` read over TCP,
+all verified. What has *not* been demonstrated end to end is a file read on the
+far side of both hops from the host, because directory reads over TCP hit the
+N4 instability above before the walk completes. The hops are each proven; the
+composition waits on N4's physical-layer fault.
+
+**One wart, worth a line of code later:** `(mount-remote "chess" "uart1")` on a
+name that is already mounted returns `#f` from `mount_alloc()` failing, which
+reads as "the mount failed" when it means "it is already there". It cost this
+session twenty minutes of chasing a mount that had in fact succeeded.

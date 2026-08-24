@@ -244,6 +244,7 @@ static uint8_t  g_mac[6]  = { 0x02, 0x4C, 0x47, 0x00, 0x00, 0x01 };  /* 02:LG:..
 static uint8_t  g_ip[4], g_mask[4], g_gw[4];
 static uint32_t g_rx_bytes, g_tx_bytes, g_accepts;
 static bool     g_phy_forced_10bt;
+static bool     g_reset_by_pin, g_reset_by_sw;
 static bool     g_connected;
 static uint32_t g_frames_in, g_frames_out, g_resyncs, g_cmd_timeouts, g_rx_overruns;
 static uint32_t g_rsr_unstable;
@@ -302,6 +303,34 @@ static void spi0_init(void) {
     REG(SSPCR1) = (1u << 1);                          /* SSE */
 }
 
+/* Did the chip actually reset?
+ *
+ * SIPR is 0.0.0.0 out of reset and this driver writes a non-zero address into
+ * it as soon as it has one, so a stale address here means the reset did not
+ * happen. At boot the answer is trivially yes -- SIPR is zero either way --
+ * and the check is worth nothing; on a re-run of (net-config ...) against a
+ * configured board it is worth everything, and that is precisely the path
+ * where the chip has been seen to come back wrong. */
+static bool w5500_reset_took(void) {
+    uint8_t sip[4] = { 0, 0, 0, 0 };
+    w5500_xfer(W5500_SIPR, BSB_COMMON, sip, 4, false);
+    return (uint8_t)(sip[0] | sip[1] | sip[2] | sip[3]) == 0;
+}
+
+/* Reset the chip, and check that it reset.
+ *
+ * The RSTn pin was the only mechanism here, and a driver that asserts a reset
+ * without ever confirming it is asserting a hope. That matters because the
+ * chip has a bad state that *survives* this function: a board that reports
+ * link UP and LISTEN and answers nothing keeps doing so across repeated
+ * (net-config ...) calls, each of which believes it has just reset the part.
+ * Either the reset is not reaching the chip -- one wire, one pad, one module's
+ * reset circuit -- or it is reaching it and not clearing the state. Those need
+ * telling apart, and until now nothing here could.
+ *
+ * So: pulse RSTn, verify, and if it did not take, use the software reset the
+ * datasheet provides for exactly this (MR bit 7), which depends on no board
+ * wiring at all. Whichever worked is reported by `net`. */
 static void w5500_hw_reset(void) {
     /* The module manual says >=2 us low and 150 ms settle; the W5500
      * datasheet says >=500 us and ~1 ms for PLL lock. Take the generous
@@ -310,6 +339,16 @@ static void w5500_hw_reset(void) {
     time_delay_us(1000);
     REG(SIO_GPIO_OUT_SET) = RST_MASK;
     time_delay_us(150000);
+
+    g_reset_by_pin = w5500_reset_took();
+    g_reset_by_sw  = false;
+    if (g_reset_by_pin) return;
+
+    wr8(W5500_MR, BSB_COMMON, 0x80);
+    time_delay_us(150000);
+    g_reset_by_sw = w5500_reset_took();
+    printk("[W5500] RSTn pulse did not reset the chip; software reset (MR bit 7) %s\n",
+           g_reset_by_sw ? "did" : "did NOT either -- the part is not answering reset at all");
 }
 
 /* Configure the PHY for auto-negotiation, explicitly, rather than trusting
@@ -445,15 +484,22 @@ int w5500_init(void) {
         return -1;
     }
 
-    /* Order matters, and this order is the fix for the bug that dominated N4's
-     * bring-up: **the PHY comes up before the identity is written.**
+    /* Order matters: **the PHY comes up before the identity is written.**
      *
-     * w5500_phy_bring_up() asserts PHYCFGR's reset bit, and on this part that
-     * takes more with it than the PHY -- write SHAR and SIPR first and the
-     * chip afterwards answers neither ARP nor ping, while still reporting link
-     * UP, socket LISTEN and every pointer sane over a bus that `net bustest`
-     * proves is delivering every byte correctly. Nothing looks wrong from the
-     * inside; the board is simply invisible.
+     * This is measured, not reasoned. Putting the PHY bring-up last -- so that
+     * the MAC is fully configured before the link ever comes up, which reads
+     * like the more careful order -- makes the board dead 8 times out of 8.
+     * This order is the one that works.
+     *
+     * It is not yet reliable, and saying so is the point of this comment. The
+     * open failure is a chip that reports link UP, socket LISTEN and every
+     * pointer sane over a bus `net bustest` proves clean, and answers nothing
+     * at all -- not ARP, not ping. Nothing looks wrong from the inside; the
+     * board is simply invisible. It survives `net phy`, and only a power cycle
+     * or a lucky re-run of (net-config ...) clears it. See the plan's N4 notes
+     * for the measurements; what is known is that the trigger is somewhere in
+     * this bring-up and not in the SPI bus, the socket buffers, or the 9P
+     * layer above, all of which have been eliminated.
      *
      * Bounded: a gateway with no cable must still finish booting. Worst case
      * is 3 s of auto-negotiation plus 5 s of forced 10BT, and `net` is the
@@ -519,8 +565,8 @@ int w5500_set_address(const uint8_t ip[4], const uint8_t mask[4], const uint8_t 
      * Reset, re-configure, re-open. It costs about a second and it is the
      * only way this command can be safe to run twice, which -- since it comes
      * from a config file that a user will edit and re-run -- it must be. */
-    /* Same order as init, for the same reason: reset, bring the PHY up, and
-     * only then tell the chip who it is. See w5500_init(). */
+    /* Same order as init, for the same reason: reset, configure the MAC while
+     * the link is still down, and bring the PHY up last. See w5500_init(). */
     w5500_hw_reset();
     (void)w5500_phy_bring_up();
     w5500_socket_memory();
@@ -1013,6 +1059,10 @@ void w5500_report(void) {
                 phy, (phy & 0x02u) ? "100Mbps" : "10Mbps",
                 (phy & 0x04u) ? "full duplex" : "half duplex");
     }
+    cprintf("  last reset: %s\n",
+            g_reset_by_pin ? "RSTn pin"
+                           : (g_reset_by_sw ? "SOFTWARE (MR bit 7) -- the RSTn pin did nothing"
+                                            : "NEITHER pin nor software reset took effect"));
     cprintf("  mac       : %02x:%02x:%02x:%02x:%02x:%02x\n",
             g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
     if (!g_have_address) {
@@ -1025,10 +1075,44 @@ void w5500_report(void) {
             g_mask[0], g_mask[1], g_mask[2], g_mask[3],
             g_gw[0], g_gw[1], g_gw[2], g_gw[3]);
     if (g_phy_forced_10bt) {
+        /* Say what this costs, because it is what misled N4's bring-up for a
+         * whole session. With auto-negotiation disabled the PHY reports link
+         * from received energy alone, so PHYCFGR's link bit above says "UP"
+         * whether or not the far end ever agreed a mode. A switch port that is
+         * still auto-negotiating may parallel-detect its way to 10BASE-T and
+         * carry traffic -- or may not, and the register reads identically
+         * either way. Every "link UP, LISTEN, answers nothing" board in this
+         * phase was in exactly this state, on a switch showing no light. */
         cprintf("  phy mode  : forced 10BT half-duplex (auto-negotiation did not link here)\n");
+        cprintf("              NOTE: in forced mode the link bit above is not\n"
+                "              evidence the far end agreed. Check the switch's own\n"
+                "              port LED; if it is dark, nothing is passing.\n");
     }
-    cprintf("  9P socket : port %d, %s\n", W5500_9P_PORT,
-            sock_state_name(rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P))));
+    /* Read back from the chip, not from this driver's own variables.
+     *
+     * Every "reports healthy and answers nothing" session in N4's bring-up was
+     * diagnosed against numbers that came from C constants: the port from
+     * W5500_9P_PORT, the address from g_ip. Those say what the driver *meant*
+     * to configure, and a register that silently did not take is precisely the
+     * failure they cannot show. So each of these is what the W5500 itself
+     * holds right now; where it disagrees with the intent, the line says so. */
+    {
+        uint8_t  sip[4] = { 0, 0, 0, 0 };
+        uint8_t  smr    = rd8(Sn_MR, BSB_SOCK_REG(SOCK_9P));
+        uint16_t sport  = rd16(Sn_PORT, BSB_SOCK_REG(SOCK_9P));
+        uint8_t  rxsz   = rd8(Sn_RXBUF_SIZE, BSB_SOCK_REG(SOCK_9P));
+        uint8_t  txsz   = rd8(Sn_TXBUF_SIZE, BSB_SOCK_REG(SOCK_9P));
+        w5500_xfer(W5500_SIPR, BSB_COMMON, sip, 4, false);
+
+        cprintf("  9P socket : port %u, %s\n", (unsigned)sport,
+                sock_state_name(rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P))));
+        cprintf("  chip regs : SIPR %u.%u.%u.%u, Sn_MR 0x%02x, bufs %u/%u KB rx/tx%s\n",
+                sip[0], sip[1], sip[2], sip[3], smr, rxsz, txsz,
+                (sip[0] == g_ip[0] && sip[1] == g_ip[1] && sip[2] == g_ip[2] &&
+                 sip[3] == g_ip[3] && sport == W5500_9P_PORT &&
+                 (smr & 0x0Fu) == Sn_MR_TCP && rxsz == 8 && txsz == 8)
+                    ? "" : "  <-- DISAGREES WITH WHAT THIS DRIVER SET");
+    }
     cprintf("  traffic   : %u accepted, %u bytes in, %u bytes out\n",
             (unsigned)g_accepts, (unsigned)g_rx_bytes, (unsigned)g_tx_bytes);
     cprintf("  frames    : %u in, %u out, %u resync discards, %u command timeouts\n",
