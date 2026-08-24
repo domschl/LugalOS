@@ -1026,9 +1026,37 @@ static void w5500_service_socket(void) {
     }
 }
 
+/* How often the chip is touched while no peer is attached.
+ *
+ * Kept for its own sake, and **not** because it fixed anything -- it was
+ * written to test a hypothesis that turned out to be wrong, and saying so
+ * here is cheaper than someone re-deriving it.
+ *
+ * The hypothesis: the server task's loop is poll-and-yield, so on an idle
+ * board it did nothing but read this chip's registers back to back, tens of
+ * thousands of SPI transactions a second, every one contending with the
+ * W5500's own network engine for the same internal bus -- while under load
+ * the task spends most of its time in FAT32 and the VFS instead. Since the
+ * board went deaf a few minutes after traffic stopped, idle looked like the
+ * condition and this looked like the cause. It measured no better: the fault
+ * arrived on schedule anyway.
+ *
+ * What it does do is stop an idle gateway from burning its SPI bus and its
+ * cycles on registers that have not changed, which is worth keeping on its
+ * own. 20 ms costs nothing measurable: the W5500 completes the TCP handshake
+ * in hardware, so a connecting peer is already accepted before this notices,
+ * and once a peer *is* attached this backs off entirely and polls flat out. */
+#define W5500_IDLE_POLL_MS 20
+static uint64_t g_next_idle_poll_ms;
+
 static int w5500_link_poll(p9_link_t *link) {
     (void)link;
     if (!g_present || !g_have_address) return 0;
+    if (!g_connected) {
+        uint64_t now = time_get_ms();
+        if (now < g_next_idle_poll_ms) return 0;
+        g_next_idle_poll_ms = now + W5500_IDLE_POLL_MS;
+    }
     w5500_lock();
     w5500_service_socket();
     w5500_unlock();

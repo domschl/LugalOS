@@ -973,7 +973,77 @@ link and an unconfigured MAC. Now the link event drives it, which also covers
 a cable being plugged back in.
 
 
-### Still open after N6: a rare dead MAC while the link stays up
+### Still open after N6: the network stops exactly 180 seconds after a PHY reset
+
+This is the remaining fault, and it should not be buried under sixteen
+passing tests. It is now characterised precisely, which is worth more than
+the four wrong explanations it took to get there.
+
+**The measurement.** Revive the link, start a clock, and it stops answering --
+ARP, ICMP and TCP together -- at:
+
+| condition | dies at |
+|---|---|
+| no load at all | 180 s |
+| a TCP probe every 60 s | ~180 s |
+| a TCP probe every 5 s | 175 s |
+| **continuous load, 32 482 reads at ~190/s** | **180 s** |
+
+Traffic is irrelevant. Idle is irrelevant. It is a three-minute clock, and it
+restarts on a PHY reset -- `net phy auto` revives the board in two seconds,
+every time, and buys exactly another three minutes.
+
+**What it is not.** Four hypotheses were tested and eliminated, each of which
+had looked convincing:
+
+1. *100BASE-TX draws more than the 10BT it used to fall back to.* Forced to
+   10 Mb it died at three minutes just the same.
+2. *The p9srv stack overflow.* Real, and fixed -- 8496 bytes used against 8192
+   given -- but the fault outlived it.
+3. *The idle poll loop hammering the chip's internal bus.* The rate limit is
+   still there, on its own merits; the fault arrived on schedule anyway.
+4. *EEE / link power management on the laptop NIC.* `ethtool` reports EEE
+   inactive, and it supports EEE only at 100/1000 -- but the board died at
+   10 Mb too, where EEE cannot apply.
+
+**What is known.** In the dead state: both ends report a stable link (the
+laptop's `carrier_changes` does not move; PHYCFGR reads 0xff, 100 Mb full);
+every register read back out of the chip is correct (SIPR, SHAR, MR 0x00,
+Sn_MR TCP, 8/8 KB buffers, port 564, socket LISTEN); `net watch` sees zero
+PHYCFGR changes and zero bad VERSIONR reads over 40 s; the driver's counters
+show zero resync discards, zero command timeouts, zero RX overruns; the
+laptop transmits ARP and its `rx_packets` counter does not advance by one
+frame. And there is no 180-second timer anywhere in this tree -- no watchdog,
+nothing periodic on that scale.
+
+So the clock is in the chip or on the laptop, and the two cannot yet be told
+apart: resetting the W5500's PHY forces *both* ends to renegotiate, so its
+reliably curing the fault does not prove where the fault lives.
+
+**The next experiments, in order, and the first two need root:**
+
+1. While the board is dead, bounce only the laptop's link:
+   `sudo ip link set enp0s31f6 down && sudo ip link set enp0s31f6 up`.
+   If the board becomes reachable without touching it, the fault is on the
+   host side or is a link-state interop problem, not a wedged W5500.
+2. `sudo ethtool --set-eee enp0s31f6 eee off`, then re-run the clock. Cheap,
+   and it closes out hypothesis 4 properly rather than by inference.
+3. Put the board back on the switch. A different link partner is the only
+   way to test the host's involvement without the host's cooperation.
+4. If all three come back clean, teach the driver to *transmit* on demand --
+   a client-mode socket or a UDP send is a modest amount of code -- and watch
+   the laptop's `rx_packets` while the board is dead. That separates a dead
+   transmitter from a dead receiver, which is the one axis none of the
+   measurements above can resolve.
+
+**Recovery, meanwhile, is one command and two seconds:** `net phy auto`.
+
+
+### Superseded — what the fault was thought to be before it was timed
+
+Kept because the reasoning below was careful and still wrong, which is the
+useful part. Every claim in it about rarity, about load, and about idle was
+an artefact of never having started a clock.
 
 Not everything is fixed, and the remaining fault should not be buried under
 fourteen passing tests.
