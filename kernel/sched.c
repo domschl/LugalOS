@@ -317,6 +317,23 @@ uint32_t sched_stack_used(int pid) {
     return (uint32_t)((uintptr_t)top - (uintptr_t)p);
 }
 
+/* Has this task filled its stack completely?
+ *
+ * The high-water scan cannot tell "used every byte" from "used every byte and
+ * kept going" -- the poison below the base belongs to whatever is there. So
+ * the honest report is: the deepest word is no longer poison, therefore this
+ * stack is full and anything under it is suspect.
+ *
+ * Worth its own function because the alternative is a reader noticing that
+ * two numbers in a `ps` column happen to be equal. One did not, for hours,
+ * while a task with an overflowing stack presented as broken hardware. */
+bool sched_stack_full(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return false;
+    task_t *t = &g_tasks[pid];
+    if (t->state == TASK_UNUSED || !t->stack_base) return false;
+    return *(const uintptr_t *)t->stack_base != STACK_POISON_WORD;
+}
+
 uint32_t sched_stack_size(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return 0;
     task_t *t = &g_tasks[pid];

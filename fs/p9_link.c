@@ -246,7 +246,21 @@ static void p9_server_task_body(void *arg) {
 }
 
 int p9_server_task_start(void) {
-    int pid = task_create("p9srv", p9_server_task_body, NULL);
+    /* Three pages, not task_create()'s default two.
+     *
+     * This task is a 9P server that is also, since N5, a 9P *client*: a
+     * request that lands on a remote mount runs p9_link_cat()'s exchange --
+     * its own request buffer, reply buffer and deserialised message -- nested
+     * inside the server frame already holding the same three things for the
+     * inbound request. Two kilobytes of msize appears twice on one stack.
+     *
+     * Measured, not guessed: 8 KB read 4288/8192 used before a mount existed
+     * and **8192/8192 afterwards** -- filled to the last byte, which is not a
+     * high-water mark but an overflow that `ps` had no way to distinguish
+     * from a snug fit. It presented as the network dying a few minutes after
+     * a test run with every W5500 register still reading correct, and it cost
+     * a long detour through the hardware before the number was noticed. */
+    int pid = task_create_sized("p9srv", p9_server_task_body, NULL, 3);
     if (pid < 0) {
         printk("[9P Link] Could not start the server task; falling back to "
                "opportunistic polling only.\n");

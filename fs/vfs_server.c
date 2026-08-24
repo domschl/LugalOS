@@ -500,6 +500,12 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 uint32_t ss = sched_stack_size(pid);
                 if (ss == 0) {
                     used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
+                } else if (sched_stack_full(pid)) {
+                    /* Not a formatting nicety: an overflowing stack scribbles
+                     * on whatever is below it, and the symptom appears
+                     * anywhere but here. Say the word. */
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                                                "%u/%u B  ** STACK OVERFLOW **\n", su, ss);
                 } else {
                     used += (uint32_t)ksnprintf(buf + used, cap - used,
                                                 "%u/%u B\n", su, ss);

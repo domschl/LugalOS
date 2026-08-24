@@ -129,6 +129,12 @@ int task_create(const char *name, void (*entry)(void *), void *arg);
 uint32_t sched_stack_used(int pid);
 uint32_t sched_stack_size(int pid);
 
+/* True when the task's stack has been filled to its deepest word -- which is
+ * an overflow, not a tight fit: the scan cannot see how far past the end it
+ * went. `ps` marks it, because a silent one is indistinguishable from broken
+ * hardware for as long as it takes someone to notice two equal numbers. */
+bool sched_stack_full(int pid);
+
 void sched_yield(void);
 
 /* Marks the calling task DEAD, frees its stack, and yields permanently.
