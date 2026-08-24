@@ -11,6 +11,7 @@
 
 #include "drivers/spisd.h"
 #include "kernel/printk.h"
+#include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
 #include "kernel/mem_domain.h"
@@ -108,13 +109,13 @@ static uint8_t spi_transfer(uint8_t tx) {
     return (uint8_t)(REG(SSPDR) & 0xFF);
 }
 
-static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
+/* The command itself, with CS already asserted by the caller. Split out so an
+ * application command can follow its CMD55 without the bus being released in
+ * between -- see sd_send_acmd() below for why that matters. */
+static uint8_t sd_send_cmd_selected(uint8_t cmd, uint32_t arg, uint8_t crc) {
     uint8_t res;
     int retry = 0;
 
-    cs_deselect();
-    spi_transfer(0xFF);
-    cs_select();
     spi_transfer(0xFF);
 
     spi_transfer(0x40 | (cmd & 0x3F));
@@ -129,6 +130,45 @@ static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
     } while ((res & 0x80) && (++retry < 1000));
 
     return res;
+}
+
+static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
+    cs_deselect();
+    spi_transfer(0xFF);
+    cs_select();
+    return sd_send_cmd_selected(cmd, arg, crc);
+}
+
+/* An application command: CMD55 and then the ACMD, **with CS held low across
+ * both**, which is the whole point of this function existing.
+ *
+ * The old code sent both through sd_send_cmd(), which begins by deasserting
+ * CS -- so every ACMD was preceded by a release of the bus. The SD spec says
+ * APP_CMD survives that, but essentially every working driver (elm-chan's ff
+ * included) holds CS across the pair, and matching them costs nothing.
+ *
+ * **This was not the bug it was written for, and saying so is the point.** It
+ * was changed while chasing a card that answers CMD0 and CMD8 and then stays
+ * in idle through ACMD41; with the diagnostic below in place, that card
+ * reports CMD55 = 0x01 and ACMD41 = 0x01 -- APP_CMD accepted, and 0x01 from
+ * ACMD41 is the *in-progress* answer, not an error. So the card sees the pair
+ * correctly and simply never finishes initialising, which points at supply
+ * rather than protocol. Kept anyway, on its own merits; not credited with a
+ * fix it did not make.
+ *
+ * `out_r55` reports what CMD55 answered, which is what made that distinction
+ * visible at all -- the original diagnostic could not tell "the card refused
+ * APP_CMD" from "the card accepted it and is still working". */
+static uint8_t sd_send_acmd(uint8_t acmd, uint32_t arg, uint8_t crc, uint8_t *out_r55) {
+    cs_deselect();
+    spi_transfer(0xFF);
+    cs_select();
+
+    uint8_t r55 = sd_send_cmd_selected(55, 0, 0x65);
+    if (out_r55) *out_r55 = r55;
+
+    /* No cs_deselect() here: this is the half that had to change. */
+    return sd_send_cmd_selected(acmd, arg, crc);
 }
 
 static int spisd_init_hardware(void) {
@@ -164,9 +204,24 @@ static int spisd_init_hardware(void) {
     /* 3. Disable SPI1 before programming */
     REG(SSPCR1) = 0;
 
-    /* Set clock prescaler for slow init (~400 kHz): 150MHz / (150 * 2.5) */
-    REG(SSPCPSR) = 150; // CPSDVSR prescaler
-    REG(SSPCR0) = (0u << 8) | (0u << 7) | (0u << 6) | 0x7; // 8-bit, SCR=0
+    /* Identification-mode clock, and it was wrong: the comment said ~400 kHz
+     * and the arithmetic said 1 MHz.
+     *
+     * The PL022 divides clk_peri by CPSDVSR * (1 + SCR). With CPSDVSR = 150
+     * and SCR = 0 that is 150 MHz / 150 = 1 MHz -- the "* 2.5" in the old
+     * comment corresponds to no register field. The SD physical-layer spec
+     * requires 100-400 kHz until the card has finished initialising, and
+     * cards are permitted to ignore commands sent faster than that. One card
+     * tolerating 1 MHz (the chess persona's, for a year) proves only that
+     * that card is lenient -- a second card, on the gateway, answered CMD0
+     * and then refused ACMD41 forever (2026-08-24).
+     *
+     * 250 * (1 + 1) = 500 -> 300 kHz, comfortably inside the window with
+     * margin at both ends. CPSDVSR must be an even value in 2..254, which is
+     * why the divisor is split across both fields rather than being one
+     * larger prescaler. */
+    REG(SSPCPSR) = 250;                                    // CPSDVSR (even, 2..254)
+    REG(SSPCR0) = (1u << 8) | (0u << 7) | (0u << 6) | 0x7; // SCR=1, 8-bit, mode 0
 
     /* Enable SPI1 */
     REG(SSPCR1) = (1u << 1); // SSE = 1
@@ -207,18 +262,35 @@ static int spisd_init_hardware(void) {
         }
     }
 
-    /* ACMD41: Initialize SD Card */
-    int retries = 0;
+    /* ACMD41: leave idle and initialise. Bounded by the clock, not by a
+     * retry count.
+     *
+     * This used to spin 2000 times, which at this SPI rate was about 390 ms
+     * -- an iteration count standing in for a duration, and the substitution
+     * silently changes meaning whenever the clock or the prescaler moves. The
+     * SD spec gives a card **one second** to finish initialising, and cards
+     * legitimately use most of it (a big or slow card charging its internal
+     * pump takes far longer than a small fast one). Timing it directly means
+     * the budget is the spec's number rather than an artefact.
+     *
+     * 1500 ms: the spec's second, plus margin, and still a bounded boot. */
+    uint64_t acmd41_deadline = time_get_ms() + 1500u;
+    unsigned acmd41_tries = 0;
+    uint8_t r55 = 0xFF;
     do {
-        sd_send_cmd(55, 0, 0x65); // CMD55 prefix
-        r1 = sd_send_cmd(41, is_v2 ? 0x40000000 : 0, 0x77);
-    } while (r1 != 0x00 && ++retries < 2000);
+        r1 = sd_send_acmd(41, is_v2 ? 0x40000000 : 0, 0x77, &r55);
+        acmd41_tries++;
+    } while (r1 != 0x00 && time_get_ms() < acmd41_deadline);
 
     if (r1 != 0x00) {
         cs_deselect();
-        printk("[SPI SD Probe] ACMD41 initialization failed (r1 = 0x%02x)\n", r1);
+        printk("[SPI SD Probe] ACMD41 did not leave idle within 1500 ms "
+               "(r1 = 0x%02x, CMD55 = 0x%02x, %u tries, card is %s)\n",
+               r1, r55, acmd41_tries, is_v2 ? "SDv2/SDHC" : "SDv1");
         return -1;
     }
+    printk("[SPI SD Probe] ACMD41 accepted after %u tries (%s)\n",
+           acmd41_tries, is_v2 ? "SDv2/SDHC" : "SDv1");
 
     /* CMD58: Read OCR register to determine if Card Capacity Status (CCS, bit 30) is set */
     g_sd_is_sdhc = false;

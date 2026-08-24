@@ -48,12 +48,30 @@
                 "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON",
                 "LUGALOS_ENABLE_DCF77": "ON"
             }
+        },
+        {
+            "name": "rp2350-gateway",
+            "displayName": "RP2350 (Pico 2) \u2014 network gateway persona",
+            "description": "Bare Pico 2 with a W5500 Ethernet module on SPI0 and an SD card on SPI1 (plan/phase18_networking_and_auth.md). No display, keypad, matrix or radio: this board terminates 9P over TCP and re-exports a board reached over UART. NOTE: GP16 is the W5500's MISO, so the heartbeat LED moves to GP25.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/rp2350-gateway",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
+                "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-gateway.cmake",
+                "LUGALOS_ENABLE_SPISD": "ON",
+                "LUGALOS_ENABLE_ST7735": "OFF",
+                "LUGALOS_ENABLE_TM1638": "OFF",
+                "LUGALOS_ENABLE_CHESS": "OFF",
+                "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+                "LUGALOS_ENABLE_DCF77": "OFF"
+            }
         }
     ],
     "buildPresets": [
         { "name": "rv32-nommu", "configurePreset": "rv32-nommu" },
         { "name": "rv64-mmu", "configurePreset": "rv64-mmu" },
         { "name": "rp2350-chess", "configurePreset": "rp2350-chess" },
-        { "name": "rp2350-clock", "configurePreset": "rp2350-clock" }
+        { "name": "rp2350-clock", "configurePreset": "rp2350-clock" },
+        { "name": "rp2350-gateway", "configurePreset": "rp2350-gateway" }
     ]
 }

@@ -734,6 +734,28 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
             CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
 #endif
+        /* N3 (plan/phase18_networking_and_auth.md): the gateway persona's
+         * W5500 and its UART1 downlink. Keyed on the pins being defined
+         * rather than on a feature flag -- the pin map is a board fact and is
+         * worth reporting from the moment it exists, which on this persona is
+         * one milestone before the driver that uses it. Reported for exactly
+         * the reason this file exists: a board should be able to say what it
+         * thinks it is wired to, so that a wrong number is a line of output
+         * rather than an afternoon. */
+#ifdef CONFIG_W5500_SCK_GPIO
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "SPI0_BASE=0x%lx\n", (unsigned long)CONFIG_SPI0_BASE);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "W5500_SCK_GPIO=%d\nW5500_MOSI_GPIO=%d\nW5500_MISO_GPIO=%d\n"
+            "W5500_CS_GPIO=%d\nW5500_RST_GPIO=%d\nW5500_INT_GPIO=%d\n",
+            CONFIG_W5500_SCK_GPIO, CONFIG_W5500_MOSI_GPIO, CONFIG_W5500_MISO_GPIO,
+            CONFIG_W5500_CS_GPIO, CONFIG_W5500_RST_GPIO, CONFIG_W5500_INT_GPIO);
+#endif
+#ifdef CONFIG_UART1_BASE
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "UART1_BASE=0x%lx\nUART1_TX_GPIO=%d\nUART1_RX_GPIO=%d\n",
+            (unsigned long)CONFIG_UART1_BASE, CONFIG_UART1_TX_GPIO, CONFIG_UART1_RX_GPIO);
+#endif
 #if CONFIG_ENABLE_PICO_CLOCK_GREEN
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "CLOCK_OE_GPIO=%d\nCLOCK_SDI_GPIO=%d\nCLOCK_CLK_GPIO=%d\nCLOCK_LE_GPIO=%d\n",

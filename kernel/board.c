@@ -9,6 +9,9 @@
 #include "kernel/console.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/rp2350_bootrom.h"
+#if CONFIG_ENABLE_SPISD
+#include "drivers/spisd.h"
+#endif
 #endif
 
 #if !defined(CONFIG_BOARD_RP2350)
@@ -110,6 +113,17 @@ static void *get_uart_demux(void) { return uart_demux_get_link(); }
 /* usb_cdc_get_net_link() already returns NULL off-RP2350, but ACM1/EP4 only
  * has a data path on this board, so it is only registered here. */
 static void *get_usb_net(void) { return usb_cdc_get_net_link(); }
+#if CONFIG_ENABLE_SPISD
+/* The SD card as a registry entry, so `/proc/devices` and `ls /dev` agree
+ * with what actually mounted. QEMU's virtio block device has been listed
+ * since B0; the RP2350 card never was, which nobody noticed while the only
+ * personas with a card were also the ones with a display to look at. On the
+ * gateway persona -- a file server whose entire job is that card -- a disk
+ * missing from the device list is a question waiting to be asked. Already
+ * probed by the time this runs (kernel_main() initialises it before
+ * dev_probe_all()), so there is no probe hook: just the accessor. */
+static void *get_spisd(void) { return spisd_get_device(); }
+#endif
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -176,6 +190,11 @@ static const dev_driver_t dev_usbnetcon = {
     .get = get_usbnet_console,
 };
 
+#if CONFIG_ENABLE_SPISD
+static const dev_driver_t dev_spisd = {
+    .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_spisd,
+};
+#endif
 static const dev_driver_t dev_usbnet = {
     .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
@@ -201,6 +220,9 @@ void board_register_devices(void) {
 #if defined(CONFIG_BOARD_RP2350)
     dev_register(&dev_usbnet);
     dev_register(&dev_usbnetcon);
+#if CONFIG_ENABLE_SPISD
+    dev_register(&dev_spisd);
+#endif
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);
