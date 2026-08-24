@@ -372,38 +372,50 @@ static void w5500_phy_set(uint8_t opmdc) {
     time_delay_us(1000);
 }
 
-/* Auto-negotiation first, patiently, then forced 10BT half if it will not
- * take. The interesting part is the word "patiently".
+/* Auto-negotiation first, then forced 10BT half if it will not take.
  *
- * This used to give auto-negotiation three seconds. That is too short to see
- * it succeed: connected straight to a laptop NIC, the W5500 advertises 10/100
- * half and full and settles on 10BT **full duplex** -- confirmed from the far
- * end with ethtool, which is the only place a negotiation result can be
- * confirmed honestly -- and it took somewhere between 6 s and 25 s after a PHY
- * reset to get there. A gigabit NIC stepping all the way down to 10BT is in no
- * hurry. Three seconds turned a slow success into a reported failure.
+ * Read the history here before changing any of it, because almost every
+ * conclusion this driver reached about its own PHY was a symptom of something
+ * else, and the something else was **the module's power supply**.
  *
- * The forced fallback stays, because it has earned its place: on a switch,
- * auto never linked at all, and forced 10BT half carried real traffic --
- * ICMP, and authenticated 9P sessions over TCP. It is not a placebo.
+ * What was believed, in order: that this module cannot auto-negotiate (it
+ * never linked in three seconds, or in forty, on a switch showing no light);
+ * that its 100BT path is unusable (PHYCFGR read its speed bit back as 10 Mbps
+ * however 100BT was asked for); that negotiation against a gigabit NIC is
+ * simply slow (6 s to 25 s, when it worked at all); and that a chip reporting
+ * link UP, socket LISTEN, verified registers and a clean SPI bus while
+ * answering not one frame must have a fault somewhere downstream.
  *
- * But its link bit is not evidence, and that is the trap this phase fell
- * into. With negotiation disabled a PHY reports link from received energy
- * alone, so PHYCFGR reads UP whether or not the far end agreed anything. A
- * board in that state looks identical -- link UP, socket LISTEN, sane
- * pointers, a bus that passes `bustest` -- whether it is about to serve 9P or
- * about to answer nothing at all. Days went into looking for the fault
- * downstream of that bit, in the socket buffers and the 9P layer, neither of
- * which was ever broken. `net` now prints the caveat next to the mode.
+ * All of it was one cause. With **220 uF across the power rail and 100 nF
+ * directly at the W5500's Vcc-GND pins**, the PHY negotiates **100BASE-TX
+ * full duplex in 2.0 seconds**, ping is 4/4, and 9P over TCP runs with zero
+ * resync discards. The magjack's link and activity LEDs light for the first
+ * time in this phase. Nothing in software changed to achieve that.
  *
- * Boot is not blocked on any of this. `patient` is false at init, where
- * nothing needs a cable to configure a MAC and a gateway must come up whether
- * or not one is plugged in; it is true for an explicit (net-config ...),
- * where the user is asking for the link and can afford to wait for it.
+ * The tell, in hindsight, was the split: the digital core was always steady
+ * (`net watch`: zero PHYCFGR changes, zero bad VERSIONR reads over 40 s) while
+ * the analog side misbehaved. The core has decoupling on the module; the PHY
+ * is the largest and burstiest draw on that rail, and it was being fed through
+ * jumper wire with no bulk capacitance nearby. A supply that sags only during
+ * PHY activity looks exactly like a chip that is fine and a network that is
+ * not.
  *
- * 10 Mbit is not a constraint worth minding here. A 2 KB msize over SPI at
- * 12.5 MHz, through a kernel that copies every frame, is nowhere near 10
- * Mbit -- the wire stopped being the bottleneck long before this. */
+ * What stays, and why:
+ *
+ * `patient` -- 2.5 s at boot, 15 s for an explicit (net-config ...). Two
+ * seconds is the measured negotiation time on a healthy supply, so the boot
+ * window suffices; the long window is cheap insurance against a link partner
+ * slower than this one, and it costs nothing when the link comes up in two.
+ * Boot is never blocked on a cable: nothing here needs a link to configure a
+ * MAC, and a gateway must come up whether or not one is plugged in.
+ *
+ * The forced 10BT fallback -- it carried real traffic on the switch, ICMP and
+ * authenticated 9P over TCP, so it is not a placebo. But its link bit is not
+ * evidence: with negotiation disabled a PHY reports link from received energy
+ * alone, so PHYCFGR reads UP whether or not the far end agreed anything. That
+ * bit is what this phase spent days trusting. `net` prints the caveat beside
+ * the mode now, and the honest reading of a forced link is "the far end has
+ * not been asked". */
 static bool w5500_phy_bring_up(bool patient) {
     w5500_phy_set(7);                                  /* all capable, auto-neg */
 

@@ -147,10 +147,20 @@ knowing before anyone reaches for a level shifter.
 ### Building it properly: what a soldered gateway wants
 
 The bring-up rig is jumper wires, and `net bustest` has shown that is
-electrically fine at 12.5 MHz (see "The bus is not the problem" below) -- so
-this list is about turning a rig into an appliance, not about fixing a fault.
-Recorded here because it is much easier to do while the iron is already hot
-than to retrofit.
+electrically fine at 12.5 MHz (see "The bus is not the problem" below). The
+first item below, however, *is* about fixing a fault: it is the one that made
+this hardware work at all, and the rest is about turning a rig into an
+appliance. Recorded here because it is much easier to do while the iron is
+already hot than to retrofit.
+
+* **Decoupling at the module, and it is not a nicety.** **220 µF across the
+  power rail and 100 nF directly at the W5500's Vcc-GND pins.** An earlier
+  draft of this list said "100 nF plus a 10 µF bulk", which was right in kind
+  and an order of magnitude short in value -- and that gap cost this phase
+  days. Without it the PHY will not negotiate reliably, will not reach 100BT,
+  and will hold a link that carries no frames while every register in the chip
+  reads correct. With it: 100BASE-TX full duplex in 2.0 s. See "Resolved: it
+  was the module's power" below for the full before/after.
 
 * **Short leads on SCK, MOSI, MISO and CS** -- under ~5 cm if the layout
   allows -- with a **ground return running alongside them** rather than a
@@ -160,8 +170,6 @@ than to retrofit.
 * **Series resistors, 22-33 Ω, on SCK and MOSI at the Pico end.** The cheapest
   possible insurance against reflections on an unterminated stub, and the
   single change most likely to keep 12.5 MHz clean on a real board.
-* **Decoupling at the module**: 100 nF right at its 3V3 pin, plus a 10 µF
-  bulk. It draws ≥200 mA and switches hard.
 * **Use both `+3.3V` pins (2-2, 2-3) and at least two grounds (1-1, 1-2,
   2-1).** At that current, one thin conductor per rail is a measurable drop,
   and the module's own header offers the parallel paths for free.
@@ -173,7 +181,9 @@ than to retrofit.
   RP2350, and an SD card that bursts to ~100 mA while writing, against a 3V3
   rail good for ~500 mA. It fits, without a wide margin -- so if a finished
   board ever misbehaves under simultaneous network *and* card load, measure
-  the rail before suspecting software.
+  the rail before suspecting software. **This turned out to be the single most
+  useful sentence in this plan, and it was written before the fault appeared
+  and then ignored for days.**
 
 ## 3. The gateway persona
 
@@ -821,6 +831,83 @@ cable; a separate 3V3 supply for the module; a second W5500 module. The
 soldered build is now worth doing -- and the thing to get right in it is the
 module's power and ground return, not the SPI routing, which was measured
 clean at 12.5 MHz.
+
+
+### Resolved: it was the module's power — 2026-08-24
+
+**220 uF across the power rail, and 100 nF directly at the W5500's Vcc-GND
+pins.** That was the whole fault, and it invalidates most of what the two
+sections above concluded about this hardware. The two capacitors do different
+jobs and both are wanted: the bulk electrolytic holds the rail up through the
+PHY's current bursts, and the ceramic, close enough to the pins to matter,
+handles the fast edges the electrolytic is too slow for.
+
+**Before and after, same firmware, same cable:**
+
+| | before | after |
+|---|---|---|
+| negotiated link | 10BT, or nothing, or a forced link bit that lied | **100BASE-TX full duplex** |
+| time to negotiate | 6-25 s, often never | **2.0 s** |
+| magjack LEDs | red only; switch port dark | link and activity, lit and blinking |
+| ping | 0/4 | 4/4, 0.31-0.67 ms |
+| 9P over TCP | connection reset on any directory read | 25 frames in / 25 out, **0 resync discards, 0 timeouts** |
+
+Every earlier belief about this PHY was a symptom of the supply: "this module
+cannot auto-negotiate", "its 100BT path is unusable", "negotiation against a
+gigabit NIC is just slow", and the long hunt for a fault downstream of a chip
+that reported link UP, socket LISTEN, verified registers and a clean bus while
+answering nothing. One cause, and not one of the guesses.
+
+The tell, in hindsight, was the split that kept showing up in the
+measurements: the digital core was always steady -- `net watch`, 40 s, zero
+PHYCFGR changes and zero bad VERSIONR reads -- while the analog side
+misbehaved. The core has decoupling on the module. The PHY is the largest and
+burstiest draw on that rail and was fed through jumper wire with no bulk
+capacitance near it. A supply that sags only under PHY activity looks exactly
+like a chip that is fine and a network that is not, which is precisely how it
+presented and precisely why it survived every software fix.
+
+**For the soldered build:** these two capacitors are not optional, and they
+are the most important components in the layout -- 220 uF on the rail, 100 nF
+as close to the W5500's Vcc and GND as the board allows. The SPI routing
+was never the problem -- `bustest` measured it clean at every clock rate.
+
+**What was worth keeping from the wrong turns.** The instinct that produced
+the fix was not a better guess; it was making the driver report facts instead
+of intentions. `net` reading the driver's own `g_ip` rather than the chip's
+`SIPR` is what let "reports healthy" mean nothing for a whole phase. Once
+`net` read SIPR, SHAR, MR, Sn_MR, the buffer map and the port back out of the
+part -- and once the reset verified itself -- software was exonerated with
+evidence rather than argument, and the only place left to look was the one
+place that turned out to be wrong.
+
+
+### N5 end to end, over Ethernet — verified
+
+From the laptop, one authenticated TCP session to the gateway, reading both
+boards:
+
+```
+authenticated to the gateway over Ethernet (192.168.77.2:564)
+  ls /            -> ['flash0', 'sd0', 'proc', 'dev', 'srv', 'chess']
+  ls /chess       -> ['flash0', 'sd0', 'proc', 'dev', 'srv']
+  ls /chess/proc  -> ['ps', 'meminfo', 'version', 'df', ...]
+  /proc/version        (gateway) -> LugalOS v0.13.1
+  /chess/proc/version  (chess)   -> LugalOS v0.13.1
+  /chess/proc/ps       (chess)   -> the chess board's own task table
+```
+
+And the proof that `/chess` is genuinely the other board rather than a loop
+back through the gateway -- `/proc/config` from each, over the same
+connection:
+
+| | gateway | `/chess` |
+|---|---|---|
+| `ENABLE_CHESS` | 0 | **1** |
+| W5500 pin config | present | absent |
+
+Host -> Ethernet -> auth gate -> gateway -> UART1 -> chess board, one 9P
+namespace, one `mount-remote` call, no proxy.
 
 
 ## N5 as it stands, 2026-08-24 — the two-hop namespace works
