@@ -79,3 +79,50 @@ here. Flash manually -- hold BOOTSEL while connecting, then copy
 `build/rp2350/lugalos.uf2` to the mounted volume. If the board is running
 firmware older than the feature under test, `test_pmp_probe` says so
 explicitly rather than failing with a confusing parse error.
+
+
+## Gateway suite — over Ethernet (N6)
+
+`test_gateway.py` is the sibling suite for the **gateway persona**, and it
+talks to the board over a network rather than a cable:
+
+```sh
+uv run test_gateway.py --key 000102030405060708090a0b0c0d0e0f --console /dev/ttyACM0
+```
+
+It skips everything, rather than failing, when nothing answers at the address
+— so it is safe to run speculatively. The board needs, for this boot:
+
+```
+lsh> (net-config "192.168.77.2" "255.255.255.0")
+lsh> p9key 000102030405060708090a0b0c0d0e0f
+lsh> (mount-remote "chess" "uart1")      # only for the two-hop test
+```
+
+`--console` is optional and adds one test: it reads the W5500 driver's own
+counters afterwards and fails if any resync discard, command timeout or RX
+overrun accumulated during the run. That is the test most likely to catch a
+regression, because every transport fault in phase 18 showed up there before
+it showed up as a failed operation.
+
+### What it covers that QEMU and a localhost socket cannot
+
+| test | what it would catch |
+|---|---|
+| `icmp` | the chip is alive and configured, with no firmware involved |
+| `auth: unauthenticated / wrong key` | the N2 gate, on the only wire that is a network |
+| `directory reads` | replies too big for one segment — the first thing that broke |
+| `sd0 write/read/remove` | the write direction, which nothing before N6 exercised |
+| `multi-frame transfer` | 8 KB each way; a read pointer that runs away shows up here |
+| `reconnect x5`, `abrupt disconnect` | the socket returning to LISTEN without being asked politely |
+| `two hops` | `/chess` through the gateway, proven distinct by `/proc/config` |
+| `lugal9pfuse over TCP` | the CLI as a user meets it, including `--key-file` |
+| `driver counters` | anything the operations above hid |
+
+### If it all skips
+
+`[!] No 9P server answering` means the board has no address, no key, or no
+link. Check `net` on the console first: it reads every relevant register back
+out of the chip, so `link`, `chip regs` and `last reset` are facts rather than
+the driver's intentions. A `DISAGREES` on the `chip regs` line means a
+register did not take, which is a different problem from a dead link.

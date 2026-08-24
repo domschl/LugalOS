@@ -245,6 +245,8 @@ static uint8_t  g_ip[4], g_mask[4], g_gw[4];
 static uint32_t g_rx_bytes, g_tx_bytes, g_accepts;
 static bool     g_phy_forced_10bt;
 static bool     g_reset_by_pin, g_reset_by_sw;
+static bool     g_link_was_up;
+static uint32_t g_link_ups;
 static bool     g_connected;
 static uint32_t g_frames_in, g_frames_out, g_resyncs, g_cmd_timeouts, g_rx_overruns;
 static uint32_t g_rsr_unstable;
@@ -530,9 +532,18 @@ int w5500_init(void) {
      * and init carries on, because nothing here needs a cable to configure a
      * MAC. A link that takes 20 s to negotiate simply appears when it
      * appears, and `net` is the live answer either way. */
-    bool up = w5500_phy_bring_up(false);
-
+    /* Socket buffers FIRST, while the chip is still quiet from the reset and
+     * before the PHY brings a link up. w5500_socket_memory() carries its own
+     * note about why this must not happen under a running MAC -- it takes the
+     * whole networking block down, ICMP included -- and this call site was
+     * violating it: the PHY came up, the MAC started, and only then were its
+     * buffers reallocated underneath it. That is what left a freshly
+     * configured board reporting link UP and LISTEN while answering nothing,
+     * and it is why `net phy auto`, which never touches the buffer map,
+     * reliably repaired what (net-config ...) had just broken. */
     w5500_socket_memory();
+
+    bool up = w5500_phy_bring_up(false);
     w5500_apply_identity();
     if (g_have_address) w5500_listen();
 
@@ -594,8 +605,8 @@ int w5500_set_address(const uint8_t ip[4], const uint8_t mask[4], const uint8_t 
     /* Same order as init, for the same reason: reset, configure the MAC while
      * the link is still down, and bring the PHY up last. See w5500_init(). */
     w5500_hw_reset();
+    w5500_socket_memory();          /* while the MAC is quiet -- see w5500_init() */
     (void)w5500_phy_bring_up(true);
-    w5500_socket_memory();
     w5500_apply_identity();
     w5500_listen();
 
@@ -673,6 +684,23 @@ int w5500_phy_mode(const char *mode) {
      * forces a mode. It is what makes `net` print the warning that a forced
      * link bit is not evidence of a link. */
     g_phy_forced_10bt = (opmdc != 7);
+
+    /* Re-apply the identity and re-open the socket, because the PHY reset
+     * just invalidated both.
+     *
+     * `net phy` is a *diagnostic*, and until now running it left the board
+     * unreachable: link UP, socket reporting LISTEN, every register readable,
+     * and no ARP, no ICMP, no TCP -- recoverable only by a full
+     * (net-config ...). A command whose purpose is to investigate a dead link
+     * must not be able to create one, and this one could, which cost real
+     * time in this phase's bring-up before it was recognised as
+     * self-inflicted.
+     *
+     * The datasheet's order is configure-then-open, and a PHY reset puts the
+     * chip back before "configure". So: do it again, in that order. Cheap,
+     * and it makes `net phy` idempotent from the caller's point of view. */
+    w5500_apply_identity();
+    if (g_have_address) w5500_listen();
 
     /* Long enough to see a real negotiation. Six seconds was not: the link
      * against a gigabit NIC has taken over 20 s to settle after a PHY reset,
@@ -925,7 +953,43 @@ static bool cmd_wait(void) {
     return false;
 }
 
+/* The MAC has to be (re)configured every time the link comes up.
+ *
+ * A PHY reset puts the chip back before "configure" in the datasheet's
+ * configure-then-open order, and the link coming up is the visible end of
+ * that sequence -- so this is the moment the identity and the socket have to
+ * be re-established, whether the reset came from init, from (net-config ...),
+ * from `net phy`, or from a cable being plugged back in.
+ *
+ * Doing it here rather than in the bring-up is what makes the board
+ * independent of *when* negotiation finishes. That mattered: the bring-up
+ * waited a fixed time and then configured, so a link that settled after the
+ * window -- which happens, negotiation is not a bounded operation -- left a
+ * board with a live link and an unconfigured MAC. It reported link UP, socket
+ * LISTEN, correct registers, and answered nothing, and only another
+ * (net-config ...) could clear it. Now the link event does.
+ *
+ * The re-listen is forced rather than the idempotent one: a socket can read
+ * LISTEN and still be attached to a MAC that was reset underneath it, which
+ * is exactly the state being repaired. */
+static void w5500_on_link_up(void) {
+    w5500_apply_identity();
+    if (!g_have_address) return;
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+    cmd_wait();
+    g_connected = false;
+    g_rx_have = 0;
+    w5500_listen();
+}
+
 static void w5500_service_socket(void) {
+    bool up = link_up_locked();
+    if (up && !g_link_was_up) {
+        g_link_ups++;
+        w5500_on_link_up();
+    }
+    g_link_was_up = up;
+
     uint8_t sr = rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P));
 
     /* The socket's state machine, as it happens. Off by default and worth its
@@ -1159,6 +1223,8 @@ void w5500_report(void) {
                  (smr & 0x0Fu) == Sn_MR_TCP && rxsz == 8 && txsz == 8)
                     ? "" : "  <-- DISAGREES WITH WHAT THIS DRIVER SET");
     }
+    cprintf("  link ups  : %u (each one re-applies the identity and re-opens the socket)\n",
+            (unsigned)g_link_ups);
     cprintf("  traffic   : %u accepted, %u bytes in, %u bytes out\n",
             (unsigned)g_accepts, (unsigned)g_rx_bytes, (unsigned)g_tx_bytes);
     cprintf("  frames    : %u in, %u out, %u resync discards, %u command timeouts\n",

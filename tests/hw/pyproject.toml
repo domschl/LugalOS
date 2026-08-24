@@ -5,4 +5,8 @@ description = "Hardware-in-the-loop test tooling for LugalOS RP2350 targets (A3b
 requires-python = ">=3.11"
 dependencies = [
     "pyserial>=3.5",
+    # test_gateway.py's FUSE test runs lugal9pfuse as a subprocess, the way a
+    # user meets it. It skips cleanly without this, but a suite that silently
+    # skips its most integrated test is not much of a suite.
+    "fusepy>=3.0.1",
 ]

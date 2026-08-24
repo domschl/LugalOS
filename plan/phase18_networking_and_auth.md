@@ -882,6 +882,74 @@ evidence rather than argument, and the only place left to look was the one
 place that turned out to be wrong.
 
 
+## N6 as it stands — done, and it found the last real bug
+
+`tests/hw/test_gateway.py`, the gateway persona's sibling to
+`test_rp2350.py`: same conventions (each test returns `(name, ok, detail)`,
+everything *skips* rather than fails when nothing answers), but nothing in it
+can run on QEMU or over a localhost socket. **12 / 12 on hardware.**
+
+```
+  [PASS] icmp / the chip's own stack -- rtt 0.197/0.393/0.590 ms
+  [PASS] auth: unauthenticated attach refused
+  [PASS] auth: wrong key refused
+  [PASS] auth: correct key attaches
+  [PASS] directory reads (multi-entry Rread) -- / has 6 entries, /proc 10
+  [PASS] sd0: create, write, read back, remove
+  [PASS] multi-frame transfer (> msize, both directions) -- 8192 B each way, 62.6 KB/s
+  [PASS] reconnect x5 (socket returns to LISTEN)
+  [PASS] abrupt disconnect, then reconnect
+  [PASS] two hops: /chess through the gateway
+  [PASS] lugal9pfuse over TCP (ls, cat, write) -- sd0 write round-trip OK
+  [PASS] driver counters clean after the suite
+```
+
+Two things worth naming. The **write** direction had never been exercised on
+this transport — everything before N6 read — and it works, on the gateway's
+own SD card and through FUSE. And the last test reads the driver's counters
+after everything above: resync discards, command timeouts, RX overruns, all
+zero. That is the test most likely to catch a regression, because every
+transport fault in this phase appeared there before it appeared as a failed
+operation.
+
+### The bug it found: buffers reallocated under a running MAC
+
+Writing the suite meant running `net phy` as an ordinary diagnostic, and that
+exposed two faults that had been hiding behind the power problem.
+
+**`net phy` could kill the link it was investigating.** A PHY reset puts the
+chip back before "configure" in the datasheet's configure-then-open order, so
+running `net phy auto` left a board with link UP, socket reporting LISTEN,
+every register readable, and no ARP, no ICMP, no TCP — recoverable only by a
+full `(net-config ...)`. A command whose purpose is to investigate a dead link
+must not be able to create one. It re-applies the identity and re-opens the
+socket now.
+
+**And `(net-config ...)` was poisoning itself, in the way this driver had
+already written down.** `w5500_socket_memory()` carries a note from earlier in
+the phase: reallocating the socket buffer map underneath a running MAC takes
+the whole networking block down, ICMP included. The bring-up was doing exactly
+that — `hw_reset()`, then `phy_bring_up()` which waits for the link and starts
+the MAC, and only *then* `socket_memory()`. That is why `net phy auto`, which
+never touches the buffer map, reliably repaired what `(net-config ...)` had
+just broken; the asymmetry was the clue. Moved to immediately after the reset,
+while the chip is still quiet:
+
+| | before | after |
+|---|---|---|
+| alive after `(net-config ...)` | intermittent | **6 / 6** |
+
+A driver whose own comments record a hazard, at a call site that violates it,
+is worth more attention than a new theory. This one was written down weeks
+before it was tripped over.
+
+**Also added:** the MAC is now re-configured on every link-up transition, not
+only during bring-up (`net` reports the count). Negotiation is not a bounded
+operation, so a link that settles after any fixed window used to leave a live
+link and an unconfigured MAC. Now the link event drives it, which also covers
+a cable being plugged back in.
+
+
 ### N5 end to end, over Ethernet — verified
 
 From the laptop, one authenticated TCP session to the gateway, reading both
