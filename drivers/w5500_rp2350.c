@@ -372,32 +372,45 @@ static void w5500_phy_set(uint8_t opmdc) {
     time_delay_us(1000);
 }
 
-/* Auto-negotiation first, then 10BT half-duplex if it does not take.
+/* Auto-negotiation first, patiently, then forced 10BT half if it will not
+ * take. The interesting part is the word "patiently".
  *
- * Measured on this hardware, 2026-08-24: with OPMDC=111 (all capable,
- * auto-negotiation) the link never comes up -- not in three seconds, not in
- * forty -- and the switch shows no light on that port at all. Forced to
- * OPMDC=000 (10BT half-duplex, no negotiation) it links in about 2.5 s, and
- * PHYCFGR then reads its speed bit back as 10 Mbps even when 100BT is asked
- * for, which says the 100BT path on this module is not usable rather than
- * that the request was ignored.
+ * This used to give auto-negotiation three seconds. That is too short to see
+ * it succeed: connected straight to a laptop NIC, the W5500 advertises 10/100
+ * half and full and settles on 10BT **full duplex** -- confirmed from the far
+ * end with ethtool, which is the only place a negotiation result can be
+ * confirmed honestly -- and it took somewhere between 6 s and 25 s after a PHY
+ * reset to get there. A gigabit NIC stepping all the way down to 10BT is in no
+ * hurry. Three seconds turned a slow success into a reported failure.
  *
- * `net watch` ruled out the alternative explanation before this was written:
- * 8 seconds with zero PHYCFGR changes and zero bad VERSIONR reads, so the
- * chip is not browning out under the PHY's current and reverting its own
- * configuration. It is negotiation, on this module, with this switch.
+ * The forced fallback stays, because it has earned its place: on a switch,
+ * auto never linked at all, and forced 10BT half carried real traffic --
+ * ICMP, and authenticated 9P sessions over TCP. It is not a placebo.
+ *
+ * But its link bit is not evidence, and that is the trap this phase fell
+ * into. With negotiation disabled a PHY reports link from received energy
+ * alone, so PHYCFGR reads UP whether or not the far end agreed anything. A
+ * board in that state looks identical -- link UP, socket LISTEN, sane
+ * pointers, a bus that passes `bustest` -- whether it is about to serve 9P or
+ * about to answer nothing at all. Days went into looking for the fault
+ * downstream of that bit, in the socket buffers and the 9P layer, neither of
+ * which was ever broken. `net` now prints the caveat next to the mode.
+ *
+ * Boot is not blocked on any of this. `patient` is false at init, where
+ * nothing needs a cable to configure a MAC and a gateway must come up whether
+ * or not one is plugged in; it is true for an explicit (net-config ...),
+ * where the user is asking for the link and can afford to wait for it.
  *
  * 10 Mbit is not a constraint worth minding here. A 2 KB msize over SPI at
  * 12.5 MHz, through a kernel that copies every frame, is nowhere near 10
- * Mbit -- the wire stopped being the bottleneck long before this.
- *
- * Auto is still tried first, and for a reason: the next module, or the next
- * switch, may negotiate perfectly, and hard-coding around one board's
- * behaviour would hide that. What is reported is which mode actually took. */
-static bool w5500_phy_bring_up(void) {
+ * Mbit -- the wire stopped being the bottleneck long before this. */
+static bool w5500_phy_bring_up(bool patient) {
     w5500_phy_set(7);                                  /* all capable, auto-neg */
-    for (int i = 0; i < 30 && !link_up_locked(); i++) time_delay_us(100000);
+
+    unsigned tenths = patient ? 150u : 25u;            /* 15 s, or 2.5 s at boot */
+    for (unsigned i = 0; i < tenths && !link_up_locked(); i++) time_delay_us(100000);
     if (link_up_locked()) { g_phy_forced_10bt = false; return true; }
+    if (!patient) { g_phy_forced_10bt = false; return false; }
 
     w5500_phy_set(0);                                  /* 10BT half, no auto-neg */
     for (int i = 0; i < 50 && !link_up_locked(); i++) time_delay_us(100000);
@@ -501,10 +514,11 @@ int w5500_init(void) {
      * this bring-up and not in the SPI bus, the socket buffers, or the 9P
      * layer above, all of which have been eliminated.
      *
-     * Bounded: a gateway with no cable must still finish booting. Worst case
-     * is 3 s of auto-negotiation plus 5 s of forced 10BT, and `net` is the
-     * live answer afterwards either way. */
-    bool up = w5500_phy_bring_up();
+     * Boot is not blocked on the link: the PHY is put into auto-negotiation
+     * and init carries on, because nothing here needs a cable to configure a
+     * MAC. A link that takes 20 s to negotiate simply appears when it
+     * appears, and `net` is the live answer either way. */
+    bool up = w5500_phy_bring_up(false);
 
     w5500_socket_memory();
     w5500_apply_identity();
@@ -568,7 +582,7 @@ int w5500_set_address(const uint8_t ip[4], const uint8_t mask[4], const uint8_t 
     /* Same order as init, for the same reason: reset, configure the MAC while
      * the link is still down, and bring the PHY up last. See w5500_init(). */
     w5500_hw_reset();
-    (void)w5500_phy_bring_up();
+    (void)w5500_phy_bring_up(true);
     w5500_socket_memory();
     w5500_apply_identity();
     w5500_listen();
@@ -622,7 +636,7 @@ int w5500_phy_mode(const char *mode) {
     w5500_lock();
 
     if (mode && strcmp(mode, "retry") == 0) {
-        bool up = w5500_phy_bring_up();
+        bool up = w5500_phy_bring_up(true);   /* asked for by hand: wait properly */
         w5500_unlock();
         cprintf("net: %s%s\n", up ? "link UP" : "no link in either mode",
                 (up && g_phy_forced_10bt) ? " (forced 10BT half)" : "");
@@ -643,9 +657,16 @@ int w5500_phy_mode(const char *mode) {
     }
 
     w5500_phy_set(opmdc);
+    /* Only a manual override sets this now; the automatic bring-up never
+     * forces a mode. It is what makes `net` print the warning that a forced
+     * link bit is not evidence of a link. */
+    g_phy_forced_10bt = (opmdc != 7);
 
-    cprintf("net: PHY set to %s, watching for 6 s...\n", mode ? mode : "auto");
-    for (int i = 0; i < 12; i++) {
+    /* Long enough to see a real negotiation. Six seconds was not: the link
+     * against a gigabit NIC has taken over 20 s to settle after a PHY reset,
+     * and a watch that stops first reports a failure that did not happen. */
+    cprintf("net: PHY set to %s, watching for 30 s...\n", mode ? mode : "auto");
+    for (int i = 0; i < 60; i++) {
         time_delay_us(500000);
         uint8_t phy = rd8(W5500_PHYCFGR, BSB_COMMON);
         cprintf("  t=%d.%ds  PHYCFGR 0x%02x  link %s  %s  %s\n",
@@ -655,7 +676,7 @@ int w5500_phy_mode(const char *mode) {
                 (phy & 0x04u) ? "full" : "half");
         if (phy & 0x01u) { cprintf("net: link came up\n"); w5500_unlock(); return 0; }
     }
-    cprintf("net: no link in that mode\n");
+    cprintf("net: no link in that mode within 30 s\n");
     w5500_unlock();
     return -1;
 }
@@ -1084,9 +1105,10 @@ void w5500_report(void) {
          * either way. Every "link UP, LISTEN, answers nothing" board in this
          * phase was in exactly this state, on a switch showing no light. */
         cprintf("  phy mode  : forced 10BT half-duplex (auto-negotiation did not link here)\n");
-        cprintf("              NOTE: in forced mode the link bit above is not\n"
-                "              evidence the far end agreed. Check the switch's own\n"
-                "              port LED; if it is dark, nothing is passing.\n");
+        cprintf("              NOTE: forced by hand. In forced mode the link bit\n"
+                "              above is not evidence the far end agreed anything --\n"
+                "              check the other end (switch port LED, or ethtool).\n"
+                "              `net phy auto` is what actually negotiates.\n");
     }
     /* Read back from the chip, not from this driver's own variables.
      *
@@ -1098,17 +1120,29 @@ void w5500_report(void) {
      * holds right now; where it disagrees with the intent, the line says so. */
     {
         uint8_t  sip[4] = { 0, 0, 0, 0 };
+        uint8_t  shar[6] = { 0, 0, 0, 0, 0, 0 };
+        uint8_t  cmr    = rd8(W5500_MR, BSB_COMMON);
         uint8_t  smr    = rd8(Sn_MR, BSB_SOCK_REG(SOCK_9P));
         uint16_t sport  = rd16(Sn_PORT, BSB_SOCK_REG(SOCK_9P));
         uint8_t  rxsz   = rd8(Sn_RXBUF_SIZE, BSB_SOCK_REG(SOCK_9P));
         uint8_t  txsz   = rd8(Sn_TXBUF_SIZE, BSB_SOCK_REG(SOCK_9P));
         w5500_xfer(W5500_SIPR, BSB_COMMON, sip, 4, false);
+        /* SHAR too: a chip with a zero MAC does not transmit, and that would
+         * look from every other register exactly like the fault under
+         * investigation. Read back, not assumed -- the same rule as the rest
+         * of this line. */
+        w5500_xfer(W5500_SHAR, BSB_COMMON, shar, 6, false);
 
         cprintf("  9P socket : port %u, %s\n", (unsigned)sport,
                 sock_state_name(rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P))));
-        cprintf("  chip regs : SIPR %u.%u.%u.%u, Sn_MR 0x%02x, bufs %u/%u KB rx/tx%s\n",
-                sip[0], sip[1], sip[2], sip[3], smr, rxsz, txsz,
-                (sip[0] == g_ip[0] && sip[1] == g_ip[1] && sip[2] == g_ip[2] &&
+        bool mac_ok = true;
+        for (unsigned i = 0; i < 6; i++) if (shar[i] != g_mac[i]) mac_ok = false;
+        cprintf("  chip regs : SIPR %u.%u.%u.%u, SHAR %02x:%02x:%02x:%02x:%02x:%02x,\n"
+                "              MR 0x%02x%s, Sn_MR 0x%02x, bufs %u/%u KB rx/tx%s\n",
+                sip[0], sip[1], sip[2], sip[3],
+                shar[0], shar[1], shar[2], shar[3], shar[4], shar[5],
+                cmr, (cmr & 0x10u) ? " (PING BLOCKED)" : "", smr, rxsz, txsz,
+                (mac_ok && cmr == 0 && sip[0] == g_ip[0] && sip[1] == g_ip[1] && sip[2] == g_ip[2] &&
                  sip[3] == g_ip[3] && sport == W5500_9P_PORT &&
                  (smr & 0x0Fu) == Sn_MR_TCP && rxsz == 8 && txsz == 8)
                     ? "" : "  <-- DISAGREES WITH WHAT THIS DRIVER SET");

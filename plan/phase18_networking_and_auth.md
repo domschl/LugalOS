@@ -758,6 +758,71 @@ so soldering will not help" -- said earlier in this phase -- was about SPI, and
 says nothing about the Ethernet side or the PHY's supply.
 
 
+### The direct-connection experiment — 2026-08-24, and it exonerates the driver
+
+The W5500 was connected straight to the laptop's NIC, no switch. Two things
+came out of it, and the second one settles the phase.
+
+**Auto-negotiation works, and the old timeout could never have seen it.**
+`ethtool` on the laptop reports the link partner advertising 10baseT half and
+full and 100baseT half and full, auto-negotiation **Yes**, settling on
+**10 Mb/s full duplex**. That is the negotiation result read from the far end,
+which is the only place it can be read honestly -- and it is a *better* link
+than the forced 10BT half this driver had been falling back to. What it needs
+is time: measured between 6 s and 25 s after a PHY reset, against three
+seconds of patience. A gigabit NIC stepping all the way down to 10BT is in no
+hurry. `w5500_phy_bring_up()` now takes a `patient` flag: 2.5 s at boot, where
+nothing needs a cable to configure a MAC and a gateway must come up either
+way, and 15 s for an explicit `(net-config ...)` or `net phy retry`, where the
+user is asking for the link.
+
+A correction to the entry above, which claimed forced mode "never carried a
+single packet": it did. On the switch, forced 10BT half carried ICMP and
+authenticated 9P sessions over TCP. The fallback is not a placebo and it
+stays. What is true is narrower and still worth the warning `net` now prints:
+with negotiation disabled a PHY reports link from received energy alone, so
+PHYCFGR's link bit reads UP whether or not the far end agreed anything.
+
+**And with all of that fixed, the module still passes no frames.** Final
+state, every number verified rather than assumed:
+
+| | |
+|---|---|
+| chip | VERSIONR 0x04, `net watch 40`: 0 PHYCFGR changes, 0 bad reads |
+| reset | verified -- SIPR reads 0.0.0.0 after the RSTn pulse (`last reset: RSTn pin`) |
+| registers, read back from the chip | SIPR 192.168.77.2, SHAR 02:4c:47:00:00:01, MR 0x00, Sn_MR 0x01 TCP, bufs 8/8 KB, port 564, LISTEN |
+| link, both ends | UP, 10 Mb/s **full duplex**, auto-negotiated |
+| laptop -> W5500 | ARP requests transmitted |
+| W5500 -> laptop | **zero frames received. Not one.** |
+
+Every register the driver writes has been read back out of the part and
+matches. The reset is confirmed to happen. The link is genuinely negotiated in
+both directions -- which means the W5500's transmitter works at least well
+enough to send FLP bursts the laptop decodes. And no Ethernet frame ever
+arrives.
+
+There is nothing left in software to blame, and the sequence of wrong turns is
+worth recording because each was a plausible reading of real evidence: the SPI
+bus (`bustest`: clean at every clock rate), the socket buffer map, the read
+pointer, `w5500_set_address()`'s reset path, the PHY/MAC ordering (measured
+both ways), the remote mount, directory-sized replies. All eliminated, several
+by making the driver report something it had only been assuming -- which is the
+one durable lesson here. `net` reading the driver's own `g_ip` instead of the
+chip's `SIPR` is what let "reports healthy" mean nothing for a whole phase.
+
+**What is left is the module: its PHY, its magjack, or its supply.** The
+digital core is demonstrably steady, so this is not the whole part browning
+out -- but the PHY is the largest and burstiest current draw on that 3V3 rail,
+and it is fed through jumper wire with no bulk capacitance at the module. An
+analog side that misbehaves while the digital side stays happy is exactly the
+split observed. In order of cost: a bulk capacitor (100 uF electrolytic plus
+100 nF ceramic) right at the module's 3V3/GND pins; a different Ethernet
+cable; a separate 3V3 supply for the module; a second W5500 module. The
+soldered build is now worth doing -- and the thing to get right in it is the
+module's power and ground return, not the SPI routing, which was measured
+clean at 12.5 MHz.
+
+
 ## N5 as it stands, 2026-08-24 — the two-hop namespace works
 
 **Wiring** (crossed, plus a common ground):
