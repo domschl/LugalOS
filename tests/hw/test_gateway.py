@@ -55,6 +55,7 @@ class Gateway:
     port: int
     key: bytes | None
     console: str | None
+    interactive: bool = False
 
 
 def session(gw: Gateway, timeout: float = 20.0) -> Session:
@@ -288,6 +289,120 @@ def test_abrupt_disconnect(gw: Gateway) -> tuple[str, bool, str]:
         return name, False, f"server did not recover from an abrupt drop: {type(e).__name__}: {e}"
 
 
+def test_pipelined_fill(gw: Gateway) -> tuple[str, bool, str]:
+    """Send several requests without reading any reply, so the chip's 8 KB TX
+    buffer fills while the server is still writing into it.
+
+    This is the one failure mode a localhost socket genuinely cannot produce:
+    the kernel's loopback buffer is large and elastic, while the W5500's is
+    8 KB of on-chip RAM with a hardware write pointer. It drives
+    w5500_send_locked() into its free_space == 0 branch -- the path that
+    exists for "the peer has stopped reading" and that, if it got the pointer
+    arithmetic wrong, would corrupt the stream rather than stall it.
+
+    It also exercises the server as a pipelined peer, which the driver's own
+    comment calls legal even though this client normally is not: several
+    requests arrive in one TCP segment and have to be split by length prefix
+    rather than by arrival."""
+    name = "pipelined requests fill the chip's TX buffer"
+    from p9lib.client import _frame, TREAD, RREAD, TSTAT, OREAD  # noqa: PLC0415
+
+    s = session(gw, timeout=40.0)
+    try:
+        fid = 40
+        s.client.walk(s._ROOT_FID, fid, ["proc", "version"])  # noqa: SLF001
+        s.client.open(fid, mode=OREAD)
+        sock = s.client._sock  # noqa: SLF001
+
+        import struct  # noqa: PLC0415
+        n = 12
+        # Interleave Tread and Tstat so the replies differ in size and a
+        # mismatched one cannot be confused with its neighbour.
+        sent = []
+        for i in range(n):
+            tag = 900 + i
+            if i % 2 == 0:
+                body = struct.pack("<IQI", fid, 0, 2000)
+                sock.sendall(_frame(TREAD, tag, body))
+                sent.append((tag, TREAD))
+            else:
+                sock.sendall(_frame(TSTAT, tag, struct.pack("<I", fid)))
+                sent.append((tag, TSTAT))
+        # No reads at all until every request is out: that is what fills the
+        # buffer. A short pause makes sure the server has drained its input
+        # and is genuinely blocked on TX space rather than just behind.
+        time.sleep(1.5)
+
+        seen = {}
+        for _ in range(n):
+            rtype, rtag, rbody = s.client._recv_one_frame()  # noqa: SLF001
+            seen[rtag] = (rtype, rbody)
+
+        missing = [t for t, _ in sent if t not in seen]
+        if missing:
+            return name, False, f"{len(missing)} of {n} replies never arrived: tags {missing}"
+        for tag, ttype in sent:
+            rtype, rbody = seen[tag]
+            want = RREAD if ttype == TREAD else 125  # RSTAT
+            if rtype != want:
+                return name, False, f"tag {tag}: expected reply type {want}, got {rtype}"
+            if ttype == TREAD:
+                (count,) = struct.unpack_from("<I", rbody, 0)
+                if b"LugalOS" not in rbody[4:4 + count]:
+                    return name, False, f"tag {tag}: Rread payload is not /proc/version"
+        s.client.clunk(fid)
+        return name, True, f"{n} pipelined requests, {n} correct replies, none lost"
+    except Exception as e:
+        return name, False, f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def test_cable_pull(gw: Gateway) -> tuple[str, bool, str]:
+    """Pull the cable mid-session and plug it back in. Opt-in, because it
+    needs hands.
+
+    Worth having as a test rather than a note: link loss is the one event
+    where the chip's state and the driver's diverge silently, and the recovery
+    path -- re-configure the MAC on link-up -- was added late and is the kind
+    of thing that rots unnoticed. `--interactive` is the whole gate."""
+    name = "cable pulled mid-session, then restored"
+    if not gw.interactive:
+        return name, True, "SKIPPED (needs hands -- pass --interactive)"
+    s = session(gw)
+    try:
+        s.read("/proc/version")
+    except Exception as e:
+        return name, False, f"could not establish a session first: {e}"
+    print("\n    >>> Unplug the Ethernet cable from the W5500 now.", flush=True)
+    deadline = time.time() + 60
+    while time.time() < deadline and reachable(gw):
+        time.sleep(1.0)
+    if reachable(gw):
+        return name, False, "still reachable after 60 s -- was the cable pulled?"
+    print("    >>> Cable loss seen. Plug it back in.", flush=True)
+    deadline = time.time() + 90
+    while time.time() < deadline and not reachable(gw):
+        time.sleep(1.0)
+    if not reachable(gw):
+        return name, False, "did not recover within 90 s of the cable being restored"
+    try:
+        s2 = session(gw, timeout=30.0)
+        v = s2.read("/proc/version").decode(errors="replace").strip()
+        s2.close()
+        return name, True, f"recovered without intervention: {v[:40]}"
+    except Exception as e:
+        return name, False, f"link returned but 9P did not: {type(e).__name__}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def test_two_hop(gw: Gateway) -> tuple[str, bool, str]:
     """N5 through N4: the chess board's namespace, over Ethernet, through the
     gateway, down UART1.
@@ -463,6 +578,8 @@ def main() -> int:
     ap.add_argument("--key", help="pre-shared key, hex")
     ap.add_argument("--key-file", help="read the hex key from a file instead")
     ap.add_argument("--console", help="gateway console port, to check the driver's counters")
+    ap.add_argument("--interactive", action="store_true",
+                    help="include tests that need hands (pulling the Ethernet cable)")
     args = ap.parse_args()
 
     key = None
@@ -471,7 +588,8 @@ def main() -> int:
     elif args.key:
         key = bytes.fromhex(args.key.strip())
 
-    gw = Gateway(host=args.host, port=args.port, key=key, console=args.console)
+    gw = Gateway(host=args.host, port=args.port, key=key, console=args.console,
+                 interactive=args.interactive)
 
     print("======================================================================")
     print("        LugalOS Gateway Hardware-in-the-Loop Suite (N6, Ethernet)")
@@ -496,6 +614,8 @@ def main() -> int:
         test_large_transfer,
         test_reconnect,
         test_abrupt_disconnect,
+        test_pipelined_fill,
+        test_cable_pull,
         test_two_hop,
         test_fuse_mount,
         # Last: it reads the counters accumulated by everything above.

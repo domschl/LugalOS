@@ -887,7 +887,7 @@ place that turned out to be wrong.
 `tests/hw/test_gateway.py`, the gateway persona's sibling to
 `test_rp2350.py`: same conventions (each test returns `(name, ok, detail)`,
 everything *skips* rather than fails when nothing answers), but nothing in it
-can run on QEMU or over a localhost socket. **12 / 12 on hardware.**
+can run on QEMU or over a localhost socket. **14 / 14 on hardware, twice back to back.**
 
 ```
   [PASS] icmp / the chip's own stack -- rtt 0.197/0.393/0.590 ms
@@ -899,12 +899,29 @@ can run on QEMU or over a localhost socket. **12 / 12 on hardware.**
   [PASS] multi-frame transfer (> msize, both directions) -- 8192 B each way, 62.6 KB/s
   [PASS] reconnect x5 (socket returns to LISTEN)
   [PASS] abrupt disconnect, then reconnect
+  [PASS] pipelined requests fill the chip's TX buffer -- 12 sent, 12 correct, none lost
+  [SKIP] cable pulled mid-session, then restored -- needs hands (--interactive)
   [PASS] two hops: /chess through the gateway
   [PASS] lugal9pfuse over TCP (ls, cat, write) -- sd0 write round-trip OK
   [PASS] driver counters clean after the suite
 ```
 
-Two things worth naming. The **write** direction had never been exercised on
+The pipelined test is the one a localhost socket genuinely cannot stand in
+for. The kernel's loopback buffer is large and elastic; the W5500's is 8 KB of
+on-chip RAM with a hardware write pointer. Twelve requests sent with nothing
+read drives `w5500_send_locked()` into its `free_space == 0` branch -- the
+path that exists for "the peer has stopped reading" and that would corrupt the
+stream rather than stall it if the pointer arithmetic were wrong. It also
+makes the server field a pipelined peer, which its own comment calls legal
+even though this client normally is not: several requests arrive in one
+segment and have to be split by length prefix rather than by arrival.
+
+The cable-pull test is opt-in behind `--interactive` because it needs hands.
+Worth having as a test rather than a note: link loss is the one event where
+the chip's state and the driver's diverge silently, and the recovery path is
+new.
+
+Two more things worth naming. The **write** direction had never been exercised on
 this transport — everything before N6 read — and it works, on the gateway's
 own SD card and through FUSE. And the last test reads the driver's counters
 after everything above: resync discards, command timeouts, RX overruns, all
@@ -948,6 +965,41 @@ only during bring-up (`net` reports the count). Negotiation is not a bounded
 operation, so a link that settles after any fixed window used to leave a live
 link and an unconfigured MAC. Now the link event drives it, which also covers
 a cable being plugged back in.
+
+
+### Still open after N6: a rare dead MAC while the link stays up
+
+Not everything is fixed, and the remaining fault should not be buried under
+fourteen passing tests.
+
+Once during N6's development, after a clean full run -- 30 connections, 514
+frames, zero resync discards, zero timeouts, zero overruns -- the board went
+unreachable while idle. The laptop still saw a 100 Mb full-duplex link. The
+board still reported link UP, socket LISTEN, and every register correct. No
+link-up transition was counted, so from the chip's point of view nothing had
+happened. `net phy auto` restored it in two seconds.
+
+What is now known about it:
+
+* It is **much rarer since the capacitors**, and rarer still since the buffer
+  map moved out from under the running MAC. It has not recurred across two
+  back-to-back full suite runs.
+* **Load does not reproduce it.** The suite hammers the link -- pipelined
+  requests, 8 KB transfers, abrupt drops, five reconnects -- and the board is
+  reachable after every run.
+* The one occurrence followed roughly ten minutes of **idle**, which is the
+  next thing to characterise: leave the board untouched and poll, rather than
+  looking for it under traffic where it has never appeared.
+* It is now **cheap to recover from**: `net phy auto` re-applies the identity
+  and re-opens the socket, so the repair is one command and two seconds
+  rather than a full `(net-config ...)`.
+
+Deliberately **not** fixed with a watchdog. The obvious one -- "link up, socket
+LISTEN, nothing accepted for N minutes, therefore reset" -- describes a
+perfectly healthy idle gateway exactly as well as it describes this fault, and
+a driver that resets its own network because nobody called is worse than one
+that occasionally needs a command. A watchdog is worth building when there is
+a signal that distinguishes the two, and there is not one yet.
 
 
 ### N5 end to end, over Ethernet — verified
