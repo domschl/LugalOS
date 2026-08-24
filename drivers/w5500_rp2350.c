@@ -1109,6 +1109,103 @@ void w5500_rxtest(unsigned secs) {
     cprintf("net: 9P socket restored to LISTEN.\n");
 }
 
+/* Does the chip still *transmit*?
+ *
+ * The mirror of w5500_rxtest(), and needed for the same reason: when a board
+ * is unreachable, "receives fine, answers nothing" has two causes -- a
+ * transmitter that is dead, and an IP layer that is receiving frames it does
+ * not think are for it. Those look identical from the host.
+ *
+ * MACRAW again, because it settles it without involving SIPR, the socket
+ * engine, or any of the chip's TCP/IP: this builds an Ethernet frame by hand
+ * and hands it to the wire. A gratuitous ARP is the right frame to send --
+ * broadcast, so no switch has to have learned anything and no ARP cache has
+ * to be warm, and it announces this board's address, so a host that receives
+ * it also ends up with a correct neighbour entry. Check the far end's
+ * rx_packets, or just `ip neigh`.
+ *
+ * Destructive to the 9P socket for the duration, and restores it. */
+void w5500_txtest(unsigned count) {
+    if (!g_present) { cprintf("net: no W5500 present\n"); return; }
+    if (!g_have_address) { cprintf("net: no address configured -- nothing to announce\n"); return; }
+    if (count == 0 || count > 100) count = 10;
+    w5500_lock();
+
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+    cmd_wait();
+    wr8(Sn_MR, BSB_SOCK_REG(SOCK_9P), 0x04);            /* MACRAW */
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_OPEN);
+    cmd_wait();
+
+    uint8_t sr = rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P));
+    if (sr != 0x42) {
+        cprintf("net: could not enter MACRAW (Sn_SR 0x%02x) -- nothing learned\n", sr);
+        wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+        cmd_wait();
+        w5500_listen();
+        w5500_unlock();
+        return;
+    }
+
+    /* A gratuitous ARP request: 14 bytes of Ethernet, 28 of ARP. Sender and
+     * target protocol address are both ours, which is what makes it
+     * "gratuitous" -- an announcement rather than a question. */
+    uint8_t f[42];
+    for (unsigned i = 0; i < 6; i++) f[i] = 0xFF;        /* dst: broadcast */
+    for (unsigned i = 0; i < 6; i++) f[6 + i] = g_mac[i];
+    f[12] = 0x08; f[13] = 0x06;                          /* ethertype ARP */
+    f[14] = 0x00; f[15] = 0x01;                          /* htype ethernet */
+    f[16] = 0x08; f[17] = 0x00;                          /* ptype IPv4 */
+    f[18] = 6;    f[19] = 4;                             /* hlen, plen */
+    f[20] = 0x00; f[21] = 0x01;                          /* oper: request */
+    for (unsigned i = 0; i < 6; i++) f[22 + i] = g_mac[i];
+    for (unsigned i = 0; i < 4; i++) f[28 + i] = g_ip[i];
+    for (unsigned i = 0; i < 6; i++) f[32 + i] = 0x00;
+    for (unsigned i = 0; i < 4; i++) f[38 + i] = g_ip[i];
+
+    unsigned sent = 0, refused = 0;
+    for (unsigned i = 0; i < count; i++) {
+        uint16_t free_space = 0;
+        if (!rd16_stable(Sn_TX_FSR, BSB_SOCK_REG(SOCK_9P), &free_space) ||
+            free_space < sizeof(f)) { refused++; time_delay_us(50000); continue; }
+
+        uint16_t wr = rd16(Sn_TX_WR, BSB_SOCK_REG(SOCK_9P));
+        w5500_xfer(wr, BSB_SOCK_TX(SOCK_9P), f, sizeof(f), true);
+        wr16(Sn_TX_WR, BSB_SOCK_REG(SOCK_9P), (uint16_t)(wr + sizeof(f)));
+        wr8(Sn_IR, BSB_SOCK_REG(SOCK_9P), 0x10);         /* clear SEND_OK */
+        wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_SEND);
+        if (!cmd_wait()) { refused++; continue; }
+
+        /* SEND_OK is the chip saying the frame left, which is exactly the
+         * question. Bounded: a transmitter that never finishes is the answer
+         * too, and must not hang the shell. */
+        bool ok = false;
+        for (int t = 0; t < 200; t++) {
+            if (rd8(Sn_IR, BSB_SOCK_REG(SOCK_9P)) & 0x10u) { ok = true; break; }
+            time_delay_us(1000);
+        }
+        if (ok) sent++; else refused++;
+        time_delay_us(100000);
+    }
+
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+    cmd_wait();
+    g_connected = false;
+    g_rx_have = 0;
+    w5500_listen();
+    w5500_unlock();
+
+    cprintf("net: %u of %u gratuitous ARPs reported SEND_OK (%u refused) -- %s\n",
+            sent, count, refused,
+            sent == count
+              ? "the chip says every frame left. If the host saw none, the fault\n"
+                "     is past this chip: magjack, cable, or switch port."
+              : "the chip could NOT complete its sends -- the transmitter is the fault.");
+    cprintf("net: check the other end -- `ip neigh` should now list this board.\n");
+    cprintf("net: 9P socket restored to LISTEN.\n");
+}
+
+
 
 /* How often the chip is touched while no peer is attached.
  *

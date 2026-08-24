@@ -81,6 +81,12 @@ void w5500_debug(bool on);
  * restores the 9P socket afterwards; see the definition. */
 void w5500_rxtest(unsigned secs);
 
+/* Does the chip still transmit? Sends `count` gratuitous ARPs from MACRAW --
+ * broadcast, so nothing has to be learned or cached at the far end -- and
+ * reports what the chip's own SEND_OK says. The mirror of w5500_rxtest();
+ * between them a silent board is either transmitting or it is not. */
+void w5500_txtest(unsigned count);
+
 /* Is the SPI bus delivering what it is told? Reads a constant register and
  * round-trips a pattern through an unused one, at four clock rates, and
  * counts the mismatches. Decides whether a wedged chip is a wiring problem
