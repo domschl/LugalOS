@@ -13,6 +13,40 @@ a later phase on its own terms (phase 14's 14e).
 
 ---
 
+## STATUS: on hold, 2026-08-24 — waiting on W5500 hardware
+
+Phase 18 is complete except for N7, and paused deliberately rather than for
+lack of work.
+
+**Done and verified on hardware:** N1 (SHA-256/HMAC, entropy), N2 (the Tauth
+gate, exercised over real Ethernet), N3 (the gateway persona with SD), N4 (the
+W5500 driver, up to and including authenticated 9P over Ethernet), N5 (the
+UART1 downlink -- the gateway mounts the chess board's namespace and the host
+reads it through both hops), N6 (`tests/hw/test_gateway.py`, 16/16, plus
+`lugal9pfuse` over TCP).
+
+**Not done:** N7, documentation.
+
+**Why paused.** Both W5500 modules stop receiving after 90-180 seconds. This
+is a known fault in these parts, not anything in this tree -- see "Concluded"
+below for the seven eliminated hypotheses and the matching reports from other
+projects. A different brand with an onboard regulator (5 V bus, which also
+retires the supply-margin question that cost this phase its first half) has
+been ordered.
+
+**Why not work around it.** A driver-level watchdog was designed and rejected:
+the cure is two seconds, but a network that drops every two minutes generates
+higher-order problems -- every later measurement on this stack would have to
+be read through it, and every unrelated bug would be suspected of being it
+first. That is a bad foundation to build N7, or a phase 19, on top of. The
+design is recorded above if the new parts turn out to need it.
+
+**To resume:** fit the new module, run
+`tests/hw/test_gateway.py --key <hex> --console /dev/ttyACM0` (16/16 is the
+baseline), and leave it idle for fifteen minutes. If it survives, N7 is all
+that is left.
+
+
 ## 0. What phase 14 got right, and the one thing that is now wrong
 
 14c's sequencing argument stands and gets sharper: **auth before network, not
