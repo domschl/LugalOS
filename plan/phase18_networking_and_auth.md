@@ -1112,6 +1112,65 @@ The capacitors took this module from "cannot negotiate" to "100BASE-TX in
 needs, and no amount of driver work will add any.
 
 
+#### Concluded: it is the W5500 module, and it is a known fault
+
+The hardware was swapped, one variable at a time:
+
+| configuration | result |
+|---|---|
+| old module, old cable | works, receiver dies at 143-180 s |
+| old module, new cables, via switch | switch never links; RX works, TX never reaches the host |
+| new module, new cable, direct | RX dead from the first second |
+| **new module, old cable, direct** | works, receiver dies at **134 s** |
+
+**Two different W5500 modules fail identically on the same cable.** The module
+is not the variable, and neither is the cable -- though the new cables are
+genuinely bad on top of everything else (they did not latch, and they fail
+harder). The host's power management is not it either: with
+`disable-k1 on` and `s0ix-enabled off`, it died at **123 s**.
+
+And the numbers are not ours alone. A user on the Adafruit forums, different
+vendor's shield, different host, different software stack entirely:
+
+> I just got the same shield from another vendor, and the issue I have is that
+> the shield works (using the Webserver example) for about 90 to 180 seconds,
+> then fails.
+
+Ours: 123, 134, 143, 174, 175, 180 s. That thread found no fix other than
+buying a different W5500. The same failure appears across the ecosystem --
+[esp-idf #11295](https://github.com/espressif/esp-idf/issues/11295) ("fails
+after 20 minutes"),
+[arduino-libraries/Ethernet #92](https://github.com/arduino-libraries/Ethernet/issues/92)
+("loses sockets after a random time since boot"),
+[micropython #16732](https://github.com/micropython/micropython/issues/16732)
+("connection loss until hard reset") -- all describing a part that runs, stops,
+and needs a reset.
+
+**So: a known fault in these modules, most likely a clone or out-of-spec
+W5500, and nothing in LugalOS causes it or can prevent it.** Seven hypotheses
+were tested and eliminated on the way here (100BASE-TX power, the p9srv stack
+overflow, the idle poll rate, host EEE, the 100BASE-TX descrambler, the
+module itself, host K1/s0ix power management). What each cost was worth it
+only because each was eliminated by measurement rather than by argument.
+
+**What this changes about the right fix.** A hardware fault that is common,
+well-documented, and has a cheap reliable cure is not "papering over
+hardware" to handle in the driver -- it is what drivers do with errata. The
+cure here is two seconds: re-link the PHY, re-apply the identity, re-open the
+socket, which `net phy auto` already does. What is missing is a detector that
+does not depend on ambient traffic, since an isolated segment may be silent
+for minutes at a time and "no frames received" would then fire on a healthy
+board.
+
+The detector that fits: **a spare socket in UDP mode, probing a configured
+peer.** Sending to an address the chip has not cached forces it to ARP, and
+the reply must be *received* for the send to complete -- so `Sn_IR`'s TIMEOUT
+bit is a direct test of the receive path, using the chip's own stack, without
+disturbing socket 0. Socket 1 needs a buffer (there are 8 KB spare in each
+direction), and the probe target is the gateway address `(net-config ...)`
+already accepts.
+
+
 ### Superseded — what the fault was thought to be before it was timed
 
 Kept because the reasoning below was careful and still wrong, which is the
