@@ -795,7 +795,25 @@ board has an SD card and the RAM disk costs heap. It passed on QEMU and failed
 on the only hardware anyone runs it on. It now picks whichever volume is
 writable.
 
-## 14c-14e — not started
+## 14c-14e — superseded / not started
+
+**14c (security/authentication) and 14d (real networking) are superseded by
+`plan/phase18_networking_and_auth.md`** (2026-08-24), which takes them
+together as one phase — auth first, then the wire — on the grounds that the
+shape of the auth gate depends on what a connection is, and that phase 14's
+own sequencing argument ("before 14d, not after") is an argument for one phase
+rather than two.
+
+Phase 18 also revisits one judgement made here. 14d proposed prototyping
+9P-over-IP against QEMU's virtio-net before the W5500; phase 18 inverts that,
+because the W5500 terminates TCP in silicon and prototyping against virtio-net
+would mean writing a software IP stack purely to have something to test
+against -- a layer the real hardware never runs. See phase 18 §0.
+
+**14e (new hardware platforms: K210, ESP32-P4)** remains not started, and is
+deliberately excluded from phase 18's scope: it is a port rather than a
+feature, and orthogonal to everything above (as this phase's own background
+section already said).
 
 14b (chess PGN save-games) was explicitly deferred in favor of 14a-2
 above. See "Background: five topics, sequenced" above for what 14c-14e
