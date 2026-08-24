@@ -501,6 +501,11 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         list(APPEND SOURCES drivers/dcf77_rp2350.c)
         list(APPEND SOURCES drivers/dcf77_service.c)
     endif()
+    # N4 (plan/phase18_networking_and_auth.md): the W5500 Ethernet controller,
+    # on the gateway persona. Guarded by the board file defining its pins
+    # rather than by a feature flag of its own -- the driver is meaningless
+    # without a pin map, and the pin map is what says the part is fitted.
+    list(APPEND SOURCES drivers/w5500_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

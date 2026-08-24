@@ -531,3 +531,72 @@ a key and what happens when you get it wrong.
   first place this design's "a mount is just a link" simplicity gets tested.
 * **Entropy.** See §6. If the ROSC measurement comes back poor, the nonce
   needs another source and that is better known in N1 than in N4.
+
+
+---
+
+## N4 as it stands, 2026-08-24 — what works, and the one thing that does not
+
+**Working and verified on hardware** (a bare Pico 2 + USR-ES1 module on an
+isolated switch, gateway `192.168.77.2/24`, laptop `192.168.77.1/24`):
+
+* **The bus, first try.** `VERSIONR 0x04` on the first flash -- wiring, power
+  and ACCESSCTRL all correct, the last of those because phase 17b's lesson was
+  applied in advance rather than rediscovered (SPI0 and its GPIOs get their
+  Non-secure grants at init).
+* **The PHY, after a real finding.** Auto-negotiation never links on this
+  module and switch -- not in three seconds, not in forty, with the switch
+  showing no light on that port. Forced 10BT half-duplex links in ~2.5 s.
+  `net watch` ruled out the alternative first: 8 s with zero PHYCFGR changes
+  and zero bad VERSIONR reads, so the chip is not browning out and reverting
+  its own configuration. The driver now tries auto and falls back, and says
+  which mode took. 10 Mbit is not a constraint here -- a 2 KB msize over SPI
+  through a copying kernel is nowhere near it.
+* **ICMP.** The W5500 answers ping itself: 3/3, 0.36-0.88 ms.
+* **The socket.** LISTEN on 564, and `/proc/devices` lists `w5500net` as a
+  p9link with `p9auth` reporting it **REQUIRED** while every cable link is
+  not, and "Keys configured: NO" until one is -- the fail-closed state, on
+  real hardware.
+* **9P over Ethernet, including the gate.** `Tversion` negotiating msize 2048,
+  an unauthenticated attach refused with *"attach: this link requires
+  authentication (no afid)"*, and -- with a console key installed -- an
+  authenticated attach followed by reading `/proc/version` over the wire. The
+  N2 gate has now been exercised over a real network, which is what it was
+  built for.
+
+**Not working: the data path is not yet stable.** A session runs (one reached
+61 frames in, 59 out) and then the chip stops answering ARP and ICMP while
+continuing to report link UP, socket LISTEN and sane pointers over the same
+SPI bus that is reporting it. Three things are known about it:
+
+1. **SPI clock matters.** At 12.5 MHz -- the rate the SD card runs at on this
+   same board -- the chip wedges quickly and no 9P session completes. At
+   1.25 MHz a full session runs and ping still answers afterwards. That is
+   consistent with signal integrity through 20 cm of jumper wire to a module
+   with no series termination, and inconsistent with a pure logic bug.
+2. **The read pointer runs away.** 21 KB read for 61 frames, and 13229
+   single-byte resync discards: `Sn_RX_RSR` is at least sometimes read as
+   more than actually arrived, after which `Sn_RX_RD` advances past the data
+   and every subsequent read returns stale buffer. Now detected (RSR larger
+   than the socket buffer closes the connection rather than believing it),
+   which converts silent corruption into a dropped session -- but does not
+   address why RSR was wrong.
+3. **Access is serialised.** `p9srv` polls the link while the shell's `net`
+   touches the same registers, and the kernel preempts at 100 Hz; the driver
+   now holds a lock across whole operations, not single transfers, because
+   the pointer arithmetic around `Sn_TX_WR` is only correct if nothing moves
+   it in between. That fixed one class of failure (ping surviving the poller)
+   and did not fix this one.
+
+**The next experiment, and it is a bisection rather than another guess:** from
+a cold boot, with the link registered but nothing else touching it, drive one
+9P operation at a time and read the counters after each -- `net` now reports
+frames in/out, resync discards, command timeouts and RX overruns, plus live
+RSR/RD/TX_FSR, which is enough to see which operation first moves a pointer it
+should not. If the trigger is a specific message rather than elapsed traffic,
+that will show it in one run. If nothing is found there, the wiring itself is
+next: shorter leads, and a scope on MISO at 12.5 MHz.
+
+The driver is committed in this state deliberately. Everything above the data
+path is proven, and the remaining fault is characterised well enough that the
+next session starts from evidence rather than from the beginning.

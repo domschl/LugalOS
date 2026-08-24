@@ -32,6 +32,9 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
 #include "drivers/dcf77.h"
 #endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+#include "drivers/w5500.h"
+#endif
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -180,6 +183,15 @@ void kernel_main(void) {
      * nothing until something asks for a sync or a probe. */
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
     dcf77_init();
+#endif
+    /* W5500 Ethernet (N4, plan/phase18_networking_and_auth.md): the gateway
+     * persona's whole reason for existing. Eager, like every other soldered
+     * peripheral above -- and early, because "does the SPI bus reach a
+     * W5500" is the first question a bring-up asks and its answer belongs in
+     * the boot log rather than behind a command. Without an address it stops
+     * short of joining the network and says so; see the plan's §3. */
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+    w5500_init();
 #endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note

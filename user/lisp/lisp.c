@@ -17,6 +17,13 @@
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
+/* After lugalos_config.h, necessarily: CONFIG_W5500_SCK_GPIO is defined
+ * there, and a guard that runs before it silently compiles nothing -- the
+ * same ordering trap drivers/pico_clock_green_rp2350.c's own DCF-77 include
+ * already carries a note about. */
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+#include "drivers/w5500.h"
+#endif
 #if CONFIG_ENABLE_CC
 #include "user/chibicc/include/chibicc.h"
 #endif
@@ -2188,6 +2195,72 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * "mount-remote can currently only target the virtio-console link" as
  * deferred; the device registry is what makes resolving one by name
  * possible, so that limitation is closed here. */
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+/* Parses one dotted quad. Returns false on anything that is not four
+ * 0-255 numbers -- a typo in an address must not become a board silently on
+ * the wrong network. */
+static bool parse_ipv4(const char *s, uint8_t out[4]) {
+    if (!s) return false;
+    unsigned part = 0, val = 0, digits = 0;
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9') {
+            val = val * 10u + (unsigned)(*s - '0');
+            if (++digits > 3 || val > 255) return false;
+        } else if (*s == '.' || *s == '\0') {
+            if (digits == 0 || part > 3) return false;
+            out[part++] = (uint8_t)val;
+            val = 0; digits = 0;
+            if (*s == '\0') break;
+        } else {
+            return false;
+        }
+    }
+    return part == 4;
+}
+
+/* `(net-config "ip" "mask" ["gateway"])` -- N4,
+ * plan/phase18_networking_and_auth.md §3.
+ *
+ * The gateway's address, from the SD card, using the boot path that already
+ * exists: /sd0/system/etc/usr_init.lisp is loaded at boot when present, so
+ * the network configuration is one line in it and needs no new file format,
+ * no parser and no second convention. The gateway argument may be omitted on
+ * an isolated segment with no router.
+ *
+ * Applying an address re-runs the socket setup, so this is safe to call on a
+ * running board -- which is what makes it usable interactively while
+ * bringing a network up. */
+static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t ip[4], mask[4], gw[4] = { 0, 0, 0, 0 };
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    if (!parse_ipv4(get_str_val(args->u.pair.car), ip)) return &false_val;
+
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (!rest || rest->type != LISP_PAIR) return &false_val;
+    if (!parse_ipv4(get_str_val(rest->u.pair.car), mask)) return &false_val;
+
+    rest = rest->u.pair.cdr;
+    if (rest && rest->type == LISP_PAIR) {
+        if (!parse_ipv4(get_str_val(rest->u.pair.car), gw)) return &false_val;
+    }
+
+    if (w5500_set_address(ip, mask, gw) != 0) return &false_val;
+    cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u -- 9P listening on 564\n",
+            ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
+            gw[0], gw[1], gw[2], gw[3]);
+    return &true_val;
+}
+
+/* `(net-status)` -- the same report `net` prints, for a script that wants to
+ * see it after configuring. */
+static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    w5500_report();
+    return &true_val;
+}
+#endif
+
 static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2577,6 +2650,10 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+    env_set(&global_env, "net-config", make_prim(prim_net_config));
+    env_set(&global_env, "net-status", make_prim(prim_net_status));
+#endif
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));
     env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));

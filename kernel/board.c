@@ -12,6 +12,9 @@
 #if CONFIG_ENABLE_SPISD
 #include "drivers/spisd.h"
 #endif
+#if defined(CONFIG_W5500_SCK_GPIO)
+#include "drivers/w5500.h"
+#endif
 #endif
 
 #if !defined(CONFIG_BOARD_RP2350)
@@ -195,6 +198,22 @@ static const dev_driver_t dev_spisd = {
     .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_spisd,
 };
 #endif
+#if defined(CONFIG_W5500_SCK_GPIO)
+/* N4, plan/phase18_networking_and_auth.md: the Ethernet 9P link. Registered
+ * like usbnet and uartslip -- three lines, and everything downstream (the
+ * background server, `mount-remote`, /proc/devices, `p9auth`) then works
+ * unchanged. That reuse is the point: the W5500 hands the system a byte
+ * stream, and a byte stream is what p9_link_t already abstracts.
+ *
+ * No probe hook: w5500_init() runs in kernel_main() before dev_probe_all(),
+ * and get() answers NULL until the chip is present and addressed, which is
+ * how a gateway with no cable stays out of the registry's way. */
+static void *get_w5500_net(void) { return w5500_get_link(); }
+static const dev_driver_t dev_w5500net = {
+    .name = "w5500net", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P,
+    .get = get_w5500_net,
+};
+#endif
 static const dev_driver_t dev_usbnet = {
     .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
@@ -222,6 +241,9 @@ void board_register_devices(void) {
     dev_register(&dev_usbnetcon);
 #if CONFIG_ENABLE_SPISD
     dev_register(&dev_spisd);
+#endif
+#if defined(CONFIG_W5500_SCK_GPIO)
+    dev_register(&dev_w5500net);
 #endif
 #else
     dev_register(&dev_vconsole);
