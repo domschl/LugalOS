@@ -75,4 +75,10 @@ void w5500_watch(unsigned secs);
 /* Log every socket state transition as it happens (bring-up aid). */
 void w5500_debug(bool on);
 
+/* Is the SPI bus delivering what it is told? Reads a constant register and
+ * round-trips a pattern through an unused one, at four clock rates, and
+ * counts the mismatches. Decides whether a wedged chip is a wiring problem
+ * or a logic one -- see the definition. */
+void w5500_bustest(unsigned iterations);
+
 #endif /* DRIVERS_W5500_H */

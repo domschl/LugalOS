@@ -600,3 +600,59 @@ next: shorter leads, and a scope on MISO at 12.5 MHz.
 The driver is committed in this state deliberately. Everything above the data
 path is proven, and the remaining fault is characterised well enough that the
 next session starts from evidence rather than from the beginning.
+
+
+### The bus is not the problem — measured, 2026-08-24
+
+The wiring was the leading suspect: the chip worked and then stopped answering
+ARP, and dropping SPI from 12.5 MHz to 1.25 MHz appeared to help. Before any
+soldering iron came out, `net bustest` asked the bus directly -- no sockets,
+no pointers, no networking:
+
+```
+  speed       read err   GAR(4,common)   PORT(2,sock)   SHAR(6,common)
+  12.50 MHz          0               0              0              0
+   6.25 MHz          0               0              0              0
+   2.50 MHz          0               0              0              0
+   1.25 MHz          0               0              0              0
+```
+
+20000 iterations per row. **The bus is clean at every speed this driver could
+want.** Two conclusions, one of them uncomfortable:
+
+* Jumper wiring is not the fault, and a soldered build -- worth doing for its
+  own sake -- would not have fixed this.
+* The 1.25 MHz "improvement" was a red herring. A slower clock changes the
+  timing of a logic bug exactly as convincingly as it changes electrical
+  margin, and the workaround was on its way to becoming a permanent constant
+  with a plausible comment attached. It is reverted; the measurement is what
+  should have come first.
+
+Worth keeping: the first version of that test failed 100% at every speed,
+because it used a closed socket's `Sn_DHAR` as scratch and a closed socket
+does not keep it. A test that fails everywhere is testing itself.
+
+### What the measurement then bought
+
+With writes proven reliable, a chip that stops answering ARP is a chip that
+was *told* to -- and `PHYCFGR`'s reset was being asserted **after** SHAR and
+SIPR were written, in both `w5500_init()` and `w5500_set_address()`. On this
+part that reset takes more with it than the PHY. Reordered so the PHY comes up
+first, and the difference on one session is stark:
+
+| | before | after |
+|---|---|---|
+| bytes in | 21415 | 2666 |
+| frames | 61 in / 59 out | 28 in / 28 out |
+| resync discards | 13229 | 1 |
+| ping afterwards | dead | alive |
+
+`rd16_stable()` also no longer returns a value it could not confirm: eight
+disagreeing reads of `Sn_RX_RSR` now defer to the next poll rather than hand
+back a torn number that would advance `Sn_RX_RD` past the data.
+
+**Still open, and now intermittent rather than constant:** some runs come up
+and serve, some come up reporting link UP, socket LISTEN, clean counters and
+a bus that passes `bustest` -- and answer nothing. The remaining suspects are
+in `w5500_set_address()`'s reset-and-reconfigure path, which is the one thing
+that runs between a boot that works and a boot that does not.

@@ -219,14 +219,21 @@ static void wr16(uint16_t addr, uint8_t bsb, uint16_t val) {
 /* Sn_RX_RSR and Sn_TX_FSR are updated by hardware while being read, so a
  * single read can catch them mid-change. The datasheet's own remedy: read
  * until two consecutive reads agree. */
-static uint16_t rd16_stable(uint16_t addr, uint8_t bsb) {
+static bool rd16_stable(uint16_t addr, uint8_t bsb, uint16_t *out) {
     uint16_t a = rd16(addr, bsb);
     for (int i = 0; i < 8; i++) {
         uint16_t b = rd16(addr, bsb);
-        if (a == b) return a;
+        if (a == b) { *out = a; return true; }
         a = b;
     }
-    return a;
+    /* Eight reads and it never settled. The old version returned the last
+     * value anyway, which is the one thing that must not happen: a torn
+     * Sn_RX_RSR is not a small error, it is a number that then advances
+     * Sn_RX_RD past the data and turns every subsequent read into stale
+     * buffer. Saying "not now" costs one poll -- the next is microseconds
+     * away -- and says nothing false. */
+    *out = a;
+    return false;
 }
 
 /* --- state -------------------------------------------------------------- */
@@ -239,6 +246,7 @@ static uint32_t g_rx_bytes, g_tx_bytes, g_accepts;
 static bool     g_phy_forced_10bt;
 static bool     g_connected;
 static uint32_t g_frames_in, g_frames_out, g_resyncs, g_cmd_timeouts, g_rx_overruns;
+static uint32_t g_rsr_unstable;
 static bool     g_debug;
 static uint8_t  g_last_sr = 0xFF;
 
@@ -277,19 +285,19 @@ static void spi0_init(void) {
     REG(ACCESSCTRL_SPI0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI0)
                            | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
 
-    /* 150 MHz / (60 * (1+1)) = 1.25 MHz.
+    /* 150 MHz / (6 * (1+1)) = 12.5 MHz, the same figure the SD card uses on
+     * this board.
      *
-     * Deliberately slow, and this is an experiment in progress: at 12.5 MHz
-     * (the figure the SD card uses on this same board) the chip works and
-     * then stops answering ARP while continuing to report link UP, socket
-     * LISTEN and sane pointers over that same SPI bus. A bus that reads
-     * VERSIONR correctly but occasionally corrupts a write would look exactly
-     * like that, and 20 cm of jumper wire to a module with no series
-     * termination is a plausible place for it. If 1.25 MHz is stable, the
-     * speed becomes a board-file constant with this note attached; if it is
-     * not, the cause is elsewhere and this goes back up. */
+     * It was 1.25 MHz for a while, on the theory that jumper wires to a module
+     * with no series termination were corrupting writes -- the chip worked and
+     * then stopped answering ARP, and slowing the bus appeared to help. `net
+     * bustest` settled it: 20000 reads and three widths of write, at four
+     * clock rates up to 12.5 MHz, with **zero** errors in every column. The
+     * bus is clean; the slower clock had only been changing the timing of a
+     * logic bug. Restored, and the lesson recorded rather than the workaround
+     * kept. */
     REG(SSPCR1) = 0;
-    REG(SSPCPSR) = 60;
+    REG(SSPCPSR) = 6;
     REG(SSPCR0) = (1u << 8) | 0x7;                    /* SCR=1, 8-bit, mode 0 */
     REG(SSPCR1) = (1u << 1);                          /* SSE */
 }
@@ -437,14 +445,24 @@ int w5500_init(void) {
         return -1;
     }
 
+    /* Order matters, and this order is the fix for the bug that dominated N4's
+     * bring-up: **the PHY comes up before the identity is written.**
+     *
+     * w5500_phy_bring_up() asserts PHYCFGR's reset bit, and on this part that
+     * takes more with it than the PHY -- write SHAR and SIPR first and the
+     * chip afterwards answers neither ARP nor ping, while still reporting link
+     * UP, socket LISTEN and every pointer sane over a bus that `net bustest`
+     * proves is delivering every byte correctly. Nothing looks wrong from the
+     * inside; the board is simply invisible.
+     *
+     * Bounded: a gateway with no cable must still finish booting. Worst case
+     * is 3 s of auto-negotiation plus 5 s of forced 10BT, and `net` is the
+     * live answer afterwards either way. */
+    bool up = w5500_phy_bring_up();
+
     w5500_socket_memory();
     w5500_apply_identity();
     if (g_have_address) w5500_listen();
-
-    /* Bounded: a gateway with no cable in it must still finish booting. Worst
-     * case here is 3 s of auto-negotiation plus 5 s of forced 10BT before
-     * giving up, and `net` is the live answer afterwards either way. */
-    bool up = w5500_phy_bring_up();
 
     printk("[W5500] Ethernet controller present (VERSIONR 0x04), PHYCFGR 0x%02x, link %s%s\n",
            rd8(W5500_PHYCFGR, BSB_COMMON), up ? "UP" : "down",
@@ -501,10 +519,12 @@ int w5500_set_address(const uint8_t ip[4], const uint8_t mask[4], const uint8_t 
      * Reset, re-configure, re-open. It costs about a second and it is the
      * only way this command can be safe to run twice, which -- since it comes
      * from a config file that a user will edit and re-run -- it must be. */
+    /* Same order as init, for the same reason: reset, bring the PHY up, and
+     * only then tell the chip who it is. See w5500_init(). */
     w5500_hw_reset();
+    (void)w5500_phy_bring_up();
     w5500_socket_memory();
     w5500_apply_identity();
-    (void)w5500_phy_bring_up();
     w5500_listen();
 
     /* Register for background service HERE, not at boot.
@@ -601,6 +621,119 @@ int w5500_phy_mode(const char *mode) {
  * because a chip mid-reset does not answer 0x04 either. */
 void w5500_debug(bool on) { g_debug = on; g_last_sr = 0xFF; }
 
+/* --- bus integrity ------------------------------------------------------
+ *
+ * Is the SPI bus actually delivering what it is told to?
+ *
+ * This exists because "the chip works at 1.25 MHz and wedges at 12.5" is a
+ * suggestive observation and not evidence. A slower clock changes the timing
+ * of a logic bug just as surely as it changes the electrical margin, so
+ * before anyone reaches for a soldering iron, the bus itself should be asked
+ * directly -- with no sockets, no pointers and no networking involved.
+ *
+ * Two measurements, because they fail differently:
+ *
+ *   reads   VERSIONR is a constant 0x04. Anything else came from the wire,
+ *           not the chip.
+ *   writes  A pattern into an unused socket's DHAR and straight back out.
+ *           This is the one that matters here: a corrupted *write* would
+ *           scribble on the chip's state while every read still looked
+ *           perfect, which is exactly the symptom under investigation
+ *           (link UP, LISTEN, sane pointers, answers nothing).
+ *
+ * Socket 7 is the scratch: it has no buffer allocated (w5500_socket_memory()
+ * gave it none), is never opened, and its DHAR means nothing while closed.
+ * Restored to its reset value afterwards anyway.
+ *
+ * A multi-byte transfer on purpose. A single byte exercises three header
+ * bytes and one payload byte; six payload bytes hold CS low longer and are
+ * where marginal timing shows up first. */
+#define BUSTEST_SCRATCH_SOCK 7
+#define Sn_DHAR              0x0006
+
+static void spi_set_clock(uint32_t cpsdvsr, uint32_t scr) {
+    REG(SSPCR1) = 0;                                   /* SSE off to reprogram */
+    REG(SSPCPSR) = cpsdvsr;
+    REG(SSPCR0) = (scr << 8) | 0x7;                    /* 8-bit, mode 0 */
+    REG(SSPCR1) = (1u << 1);
+}
+
+void w5500_bustest(unsigned iterations) {
+    if (!g_present) { cprintf("net: no W5500 present\n"); return; }
+    if (iterations == 0 || iterations > 200000u) iterations = 20000u;
+
+    static const struct { uint32_t cps, scr; const char *label; } SPEEDS[] = {
+        {  6, 1, "12.50 MHz" },
+        { 12, 1, " 6.25 MHz" },
+        { 30, 1, " 2.50 MHz" },
+        { 60, 1, " 1.25 MHz" },
+    };
+
+    w5500_lock();
+    cprintf("SPI bus integrity, %u iterations per speed.\n", iterations);
+    cprintf("VERSIONR is a constant 0x04; the write test round-trips 6 bytes\n"
+            "through an unused socket's DHAR. Any non-zero column is the wire.\n\n");
+    cprintf("  speed       read err   GAR(4,common)   PORT(2,sock)   SHAR(6,common)\n");
+    cprintf("  ----------  --------   -------------   ------------   ------------\n");
+
+    uint32_t seed = 0x12345678u;
+    for (unsigned sp = 0; sp < sizeof(SPEEDS) / sizeof(SPEEDS[0]); sp++) {
+        spi_set_clock(SPEEDS[sp].cps, SPEEDS[sp].scr);
+
+        uint32_t read_err = 0, write_err = 0, err_common = 0, err_sockreg = 0;
+        for (unsigned i = 0; i < iterations; i++) {
+            if (rd8(W5500_VERSIONR, BSB_COMMON) != 0x04) read_err++;
+
+            uint8_t pat[6], back[6];
+            for (unsigned k = 0; k < 6; k++) {
+                seed = seed * 1103515245u + 12345u;    /* not random, just varied */
+                pat[k] = (uint8_t)(seed >> 16);
+            }
+
+            /* Three targets, because the first version of this test failed
+             * 100% at every speed -- which is not what a marginal wire looks
+             * like -- and the useful question became *which* writes fail:
+             * a common register, a socket register, or a multi-byte one. */
+            w5500_xfer(W5500_GAR, BSB_COMMON, pat, 4, true);
+            w5500_xfer(W5500_GAR, BSB_COMMON, back, 4, false);
+            for (unsigned k = 0; k < 4; k++) if (back[k] != pat[k]) { err_common++; break; }
+
+            w5500_xfer(Sn_PORT, BSB_SOCK_REG(BUSTEST_SCRATCH_SOCK), pat, 2, true);
+            w5500_xfer(Sn_PORT, BSB_SOCK_REG(BUSTEST_SCRATCH_SOCK), back, 2, false);
+            for (unsigned k = 0; k < 2; k++) if (back[k] != pat[k]) { err_sockreg++; break; }
+
+            /* Six bytes through SHAR rather than a closed socket's DHAR.
+             * DHAR failed 100% at every speed in the first version of this
+             * test, which is not a wire and is not a length: it is a register
+             * that a closed socket does not keep. SHAR is the MAC -- six
+             * bytes, common block, and demonstrably writable, since the board
+             * answers ARP with what is written there. Restored below. */
+            w5500_xfer(W5500_SHAR, BSB_COMMON, pat, 6, true);
+            w5500_xfer(W5500_SHAR, BSB_COMMON, back, 6, false);
+            for (unsigned k = 0; k < 6; k++) if (back[k] != pat[k]) { write_err++; break; }
+        }
+        cprintf("  %s   %8u   %13u   %12u   %12u\n", SPEEDS[sp].label,
+                (unsigned)read_err, (unsigned)err_common,
+                (unsigned)err_sockreg, (unsigned)write_err);
+    }
+
+    /* DHAR back to its reset value, and the bus back to the driver's own
+     * speed -- whatever this file currently sets in spi0_init(). */
+    {
+        uint8_t zero4[4] = { 0, 0, 0, 0 };
+        w5500_xfer(Sn_PORT, BSB_SOCK_REG(BUSTEST_SCRATCH_SOCK), zero4, 2, true);
+        w5500_xfer(W5500_GAR, BSB_COMMON, g_gw, 4, true);   /* the real gateway back */
+        w5500_xfer(W5500_SHAR, BSB_COMMON, g_mac, 6, true); /* and the real MAC */
+        (void)zero4;
+    }
+    spi_set_clock(6, 1);
+
+    cprintf("\nAll zeros: the bus is clean and a wedged chip is a logic bug.\n"
+            "Errors that grow with speed: signal integrity -- shorter leads,\n"
+            "series resistors on SCK/MOSI, decoupling at the module.\n");
+    w5500_unlock();
+}
+
 void w5500_watch(unsigned secs) {
     if (!g_present) { cprintf("net: no W5500 present\n"); return; }
     w5500_lock();
@@ -653,7 +786,11 @@ static uint32_t frame_len(const uint8_t *b) {
 static void w5500_drain_rx(void) {
     if (g_rx_have >= sizeof(g_rx_frame)) return;
 
-    uint16_t avail = rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P));
+    uint16_t avail;
+    if (!rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P), &avail)) {
+        g_rsr_unstable++;
+        return;   /* try again on the next poll rather than trust a torn read */
+    }
     if (avail == 0) return;
 
     /* RSR can never exceed the socket's own buffer. When it does, the chip's
@@ -717,9 +854,10 @@ static void w5500_service_socket(void) {
      * state sequence, which is the difference between "the chip is confused"
      * and "the code is". */
     if (g_debug && sr != g_last_sr) {
+        uint16_t rsr = 0;
+        (void)rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P), &rsr);
         printk("[W5500] Sn_SR 0x%02x -> 0x%02x (RSR %u, have %u)\n",
-               g_last_sr, sr, (unsigned)rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P)),
-               (unsigned)g_rx_have);
+               g_last_sr, sr, (unsigned)rsr, (unsigned)g_rx_have);
         g_last_sr = sr;
     } else if (sr != g_last_sr) {
         g_last_sr = sr;
@@ -804,7 +942,8 @@ static int w5500_send_locked(const uint8_t *buf, uint32_t len) {
          * loop is a formality on an idle link -- and is not one on a link
          * whose peer has stopped reading, which is precisely when a driver
          * that assumed "it always fits" would corrupt the stream. */
-        uint16_t free_space = rd16_stable(Sn_TX_FSR, BSB_SOCK_REG(SOCK_9P));
+        uint16_t free_space;
+        if (!rd16_stable(Sn_TX_FSR, BSB_SOCK_REG(SOCK_9P), &free_space)) continue;
         if (free_space == 0) {
             if (rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P)) != Sn_SR_ESTABLISHED) return -1;
             continue;
@@ -895,12 +1034,12 @@ void w5500_report(void) {
     cprintf("  frames    : %u in, %u out, %u resync discards, %u command timeouts\n",
             (unsigned)g_frames_in, (unsigned)g_frames_out, (unsigned)g_resyncs,
             (unsigned)g_cmd_timeouts);
-    cprintf("  rx overruns: %u (RSR larger than the socket buffer -- pointer lost)\n",
-            (unsigned)g_rx_overruns);
+    cprintf("  rx overruns: %u, unstable RSR reads deferred: %u\n",
+            (unsigned)g_rx_overruns, (unsigned)g_rsr_unstable);
     cprintf("  socket now: RSR %u, RD 0x%04x, TX_FSR %u, assembling %u byte(s)\n",
-            (unsigned)rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P)),
+            (unsigned)({ uint16_t v = 0; (void)rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P), &v); v; }),
             (unsigned)rd16(Sn_RX_RD, BSB_SOCK_REG(SOCK_9P)),
-            (unsigned)rd16_stable(Sn_TX_FSR, BSB_SOCK_REG(SOCK_9P)),
+            (unsigned)({ uint16_t v = 0; (void)rd16_stable(Sn_TX_FSR, BSB_SOCK_REG(SOCK_9P), &v); v; }),
             (unsigned)g_rx_have);
     w5500_unlock();
 }

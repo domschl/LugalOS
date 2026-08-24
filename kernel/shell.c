@@ -122,6 +122,7 @@ static void cmd_help(void) {
     cprintf("  net             - Ethernet status: chip, link, MAC, address, 9P socket\n");
     cprintf("  net phy <mode>  - Force the PHY: auto|100f|100h|10f|10h|down, then watch\n");
     cprintf("  net watch [s]   - Is the chip holding its config, or resetting under load?\n");
+    cprintf("  net bustest [n] - SPI integrity at four clock rates: wiring, or logic?\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -1574,6 +1575,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *m = &cmd_line[7];
         while (*m == ' ') m++;
         w5500_phy_mode(*m ? m : NULL);
+        return;
+    } else if (strncmp(cmd_line, "net bustest", 11) == 0) {
+        unsigned n = 0;
+        for (const char *d = &cmd_line[11]; ; d++) {
+            if (*d == ' ') continue;
+            if (*d < '0' || *d > '9') break;
+            n = n * 10u + (unsigned)(*d - '0');
+        }
+        w5500_bustest(n);
         return;
     } else if (strcmp(cmd_line, "net debug on") == 0) {
         w5500_debug(true);
