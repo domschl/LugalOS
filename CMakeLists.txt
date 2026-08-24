@@ -528,6 +528,8 @@ set_source_files_properties(
     drivers/st7735_rp2350.c
     drivers/spisd_rp2350.c
     drivers/usb_cdc.c
+    drivers/pico_clock_green_rp2350.c
+    drivers/pico_clock_font.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
 # Every object, not an enumerated subset: lugalos_config.h is reached

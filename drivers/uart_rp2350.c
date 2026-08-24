@@ -1004,6 +1004,15 @@ void uart_debug_putc(char c) {
  * real contention, but incorrect on its own terms; fixed here rather
  * than carried forward while this function was already being rewritten
  * for the U-mode split). */
+/* The console on this board is USB-CDC in practice (the physical UART has no
+ * terminal on the clock persona), and the USB ring is the one that can be
+ * scanned without consuming -- so that is where an interrupt is looked for.
+ * The UART's own FIFO cannot be inspected non-destructively and is not
+ * covered: reading it to look would be reading it. */
+bool uart_peek_interrupt(void) {
+    return usb_cdc_peek_interrupt();
+}
+
 bool uart_has_char(void) {
     uart_flush();
     /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c) now services

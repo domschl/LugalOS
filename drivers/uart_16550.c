@@ -398,6 +398,13 @@ void uart_putc(char c) {
 // falls back rather than failing). Flushed first: an outstanding write
 // (a prompt, most often) should be visible before anything checks for or
 // waits on the reply it usually precedes.
+/* QEMU's console is the 16550's own FIFO, which cannot be looked at without
+ * taking the byte -- so there is nothing to peek and the pump keeps its
+ * pre-existing behaviour on this target. */
+bool uart_peek_interrupt(void) {
+    return false;
+}
+
 bool uart_has_char(void) {
     uart_flush();
     if (uart_demux_is_enabled()) return uart_demux_console_has_char();

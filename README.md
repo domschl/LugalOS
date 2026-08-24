@@ -281,8 +281,12 @@ cmake --build build/rp2350 --target sizereport   # per-source-file static RAM, a
 cmake --build build/rp2350 --target sizecheck    # fails if static RAM grew vs the recorded baseline
 ```
 
-`sizecheck` compares against `tools/sizereport-rp2350.json` and exits non-zero on **any** growth. When
-growth is intended, re-baseline deliberately so the new numbers land in a reviewable diff:
+`sizecheck` compares against the baseline for **the persona being built** — `tools/sizereport-<board>.json`,
+picked from the active preset's board file, so `build/rp2350` is checked against
+`tools/sizereport-rp2350.json` and `build/rp2350-clock` against `tools/sizereport-rp2350-clock.json`. Each
+persona builds a different set of drivers and therefore has its own budget; one shared baseline would have
+to be the loosest of them, which is the same as not having one. Either exits non-zero on **any** growth.
+When growth is intended, re-baseline deliberately so the new numbers land in a reviewable diff:
 
 ```bash
 python3 tools/sizereport.py build/rp2350/lugalos.elf --update tools/sizereport-rp2350.json

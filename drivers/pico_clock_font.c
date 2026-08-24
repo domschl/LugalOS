@@ -14,7 +14,7 @@
  * as narrow as it reads. Written out as one literal per glyph rather than a
  * packed blob: the bits ARE the picture, and a table you can read is a table
  * you can fix. */
-static const clock_glyph_t FONT_DIGIT[10] = {
+CLOCK_UDATA static const clock_glyph_t FONT_DIGIT[10] = {
     { 4, {0x06, 0x09, 0x09, 0x09, 0x09, 0x09, 0x06} }, /* 0 */
     { 4, {0x04, 0x06, 0x04, 0x04, 0x04, 0x04, 0x0E} }, /* 1 */
     { 4, {0x06, 0x09, 0x08, 0x04, 0x02, 0x01, 0x0F} }, /* 2 */
@@ -37,7 +37,7 @@ static const clock_glyph_t FONT_DIGIT[10] = {
  * the layout: "TEMP" is 20 columns now, "SYNC" and "TSET" and "AUTO" 19.
  * Matching the digits' width also makes mixed strings sit on a common pitch,
  * which 5-and-4 did not. */
-static const clock_glyph_t FONT_ALPHA[26] = {
+CLOCK_UDATA static const clock_glyph_t FONT_ALPHA[26] = {
     { 4, {0x06, 0x09, 0x09, 0x0F, 0x09, 0x09, 0x09} }, /* A */
     { 4, {0x07, 0x09, 0x09, 0x07, 0x09, 0x09, 0x07} }, /* B */
     { 4, {0x06, 0x09, 0x01, 0x01, 0x01, 0x09, 0x06} }, /* C */
@@ -66,14 +66,14 @@ static const clock_glyph_t FONT_ALPHA[26] = {
     { 4, {0x0F, 0x08, 0x04, 0x04, 0x02, 0x01, 0x0F} }, /* Z */
 };
 
-static const clock_glyph_t FONT_SPACE  = { 2, {0, 0, 0, 0, 0, 0, 0} };
-static const clock_glyph_t FONT_COLON  = { 2, {0x00, 0x03, 0x03, 0x00, 0x03, 0x03, 0x00} };
-static const clock_glyph_t FONT_PERIOD = { 2, {0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03} };
-static const clock_glyph_t FONT_MINUS  = { 3, {0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00} };
-static const clock_glyph_t FONT_SLASH  = { 4, {0x08, 0x08, 0x04, 0x04, 0x02, 0x02, 0x01} };
-static const clock_glyph_t FONT_DEGREE = { 3, {0x07, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00} };
+CLOCK_UDATA static const clock_glyph_t FONT_SPACE  = { 2, {0, 0, 0, 0, 0, 0, 0} };
+CLOCK_UDATA static const clock_glyph_t FONT_COLON  = { 2, {0x00, 0x03, 0x03, 0x00, 0x03, 0x03, 0x00} };
+CLOCK_UDATA static const clock_glyph_t FONT_PERIOD = { 2, {0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03} };
+CLOCK_UDATA static const clock_glyph_t FONT_MINUS  = { 3, {0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00} };
+CLOCK_UDATA static const clock_glyph_t FONT_SLASH  = { 4, {0x08, 0x08, 0x04, 0x04, 0x02, 0x02, 0x01} };
+CLOCK_UDATA static const clock_glyph_t FONT_DEGREE = { 3, {0x07, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00} };
 
-const clock_glyph_t *clock_font_glyph(char c) {
+CLOCK_UATTR const clock_glyph_t *clock_font_glyph(char c) {
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     if (c >= '0' && c <= '9') return &FONT_DIGIT[c - '0'];
     if (c >= 'A' && c <= 'Z') return &FONT_ALPHA[c - 'A'];
@@ -87,7 +87,7 @@ const clock_glyph_t *clock_font_glyph(char c) {
     }
 }
 
-unsigned clock_font_text_width(const char *s) {
+CLOCK_UATTR unsigned clock_font_text_width(const char *s) {
     unsigned w = 0;
     if (!s) return 0;
     for (; *s; s++) {
@@ -97,7 +97,7 @@ unsigned clock_font_text_width(const char *s) {
     return w;
 }
 
-unsigned clock_font_render(const char *s, uint8_t *cols, unsigned cap) {
+CLOCK_UATTR unsigned clock_font_render(const char *s, uint8_t *cols, unsigned cap) {
     unsigned n = 0;
     if (!s || !cols) return 0;
 

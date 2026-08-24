@@ -70,6 +70,18 @@ SECTIONS
         . = _usbtext_start + 4096;
     } > FLASH
 
+    /* Phase 17b, plan/phase17b_clock_task_split.md: the clock server's own
+     * dedicated U-mode-executable page, same shape and same reasoning as
+     * .st7735text/.blktext/.usbtext above. It carries the row scan, the
+     * frame buffer writers, the button state machine, the glyphs and the
+     * whole proportional font (drivers/pico_clock_font.c) -- the last of
+     * those is why sharing .utext was never worth trying. */
+    .clocktext : ALIGN(4096) {
+        _clocktext_start = .;
+        *(.clocktext .clocktext.*)
+        . = _clocktext_start + 4096;
+    } > FLASH
+
     .rodata : {
         . = ALIGN(4);
         *(.rodata .rodata.*)

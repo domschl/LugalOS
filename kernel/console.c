@@ -149,6 +149,26 @@ static int pushback_get(void) {
  * Ctrl-C consumed by the line editor -- which has no handling for it -- would
  * simply vanish. */
 static void console_pump(void) {
+    /* The interrupt latch comes FIRST, and deliberately not inside the drain
+     * loop below.
+     *
+     * The loop stops when the ring is full, which is correct for *data* (see
+     * the second note below) and was catastrophic for *interrupts*: with the
+     * latch inside it, a full ring meant Ctrl-C could never be latched again
+     * for the rest of the boot. Found on hardware, 2026-08-24, on the clock
+     * appliance -- which is exactly where it hurts, because nothing drains
+     * the ring while a long-running program owns the console, so the ring
+     * stays full and the program becomes uninterruptible. The 127 bytes that
+     * filled it were 9P `Tversion` port-probe frames (tests/hw/rp2350.py
+     * writes one to each candidate port to classify it, and its comment
+     * calls them "harmless line noise" on the console -- they are harmless
+     * as data and were not harmless as occupancy).
+     *
+     * uart_peek_interrupt() answers without consuming, so this neither eats
+     * input nor depends on having room to store it. Where a device cannot be
+     * inspected that way it answers false, and the old behaviour stands. */
+    if (uart_peek_interrupt()) g_interrupt_pending = true;
+
     /* Moves device bytes into the ring, latching Ctrl-C on the way past.
      *
      * Two things, and it is worth being precise about why both:
@@ -202,6 +222,7 @@ char console_getc(void) {
 void console_ungetc(char c) {
     pushback_put(c);
 }
+
 
 bool console_interrupt_requested(void) {
     console_pump();

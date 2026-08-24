@@ -21,6 +21,14 @@ int uart_task_start(void);
 void uart_putc(char c);
 char uart_getc(void);
 bool uart_has_char(void);
+
+/* True if an interrupt (Ctrl-C) is sitting unread in the console device,
+ * WITHOUT consuming anything. kernel/console.c's pump uses this to latch an
+ * interrupt even when its own ring is full and it must stop draining -- see
+ * console_pump() for the failure this exists to prevent. Where a device
+ * cannot be inspected without consuming (a plain UART FIFO), this answers
+ * false and the pump behaves as it always did. */
+bool uart_peek_interrupt(void);
 void uart_puts(const char *s);
 
 // M4/M4.5 verify: how many batched-write chan_call()s the uart task has

@@ -113,9 +113,20 @@ def _probe_port(port: str) -> str | None:
     until the next USB bus reset -- discovered the hard way testing this
     very script, where an earlier version's bare `\\r\\n` probe left the
     net port permanently wedged. A complete frame either gets consumed and
-    answered (net) or sits there as harmless line noise (console, and this
-    exact frame is known not to contain \\r or \\n, so it can't accidentally
-    submit a garbled command either).
+    answered (net) or sits there as line noise (console, and this exact frame
+    is known not to contain \\r or \\n, so it can't accidentally submit a
+    garbled command either).
+
+    "Harmless line noise" undersold it once: the frame is harmless as *data*
+    but it occupies kernel/console.c's 128-byte pushback ring until something
+    reads it, and on an appliance persona nothing does -- the clock owns the
+    console for as long as it runs. Six probes' worth filled that ring, and a
+    full ring used to mean Ctrl-C could never be latched again, i.e. the
+    appliance became impossible to exit (found on hardware 2026-08-24; fixed
+    in console_pump(), which now latches an interrupt from a non-consuming
+    peek rather than from inside its drain loop). Still worth knowing that
+    this probe leaves bytes behind on whichever port turns out to be the
+    console.
 
     Step 2 (only reached if step 1 got no 9P-shaped reply) sends a bare
     newline and checks for a shell prompt -- safe here specifically because

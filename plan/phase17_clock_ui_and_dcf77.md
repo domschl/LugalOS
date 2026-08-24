@@ -1,9 +1,24 @@
 # Phase 17 — Pico-Clock-Green: on-device UI, indicator LEDs, and a DCF-77 time source
 
-**Status: complete, 2026-08-23.** C1-C3 and D1-D5 all landed and are
+**Status: CONCLUDED, 2026-08-24.** C1-C3 and D1-D5 all landed and are
 hardware-verified on the Pico-Clock-Green board; C6's menu tests run on both
 QEMU targets. Section 9 records a boot bug this phase's hardware exposed,
 fixed and verified on both RP2350 personas.
+
+C7's three housekeeping items are the last to close, and two of them needed a
+phase of their own to be closable at all:
+
+* README's clock-persona paragraph — done in 0.13.0.
+* `tools/sizereport-rp2350-clock.json` — done 2026-08-24. (The `sizecheck`
+  target was already wired to the active preset; only the baseline file was
+  missing. It earned its keep the same day, catching phase 17b's +2066 bytes.)
+* `clockisotest` — done in **`plan/phase17b_clock_task_split.md`**, which had
+  to split the appliance out of the clock task and move that task into U-mode
+  before an isolation test was a thing that could exist. See C7's own
+  correction below for why the item as written rested on a false premise.
+
+Section 10 records the brightness work that came out of living with the clock
+for a day (a floor low enough for a dark room, and hysteresis).
 
 Written 2026-08-22 from the user's feature sketch (buttons/menu, day-of-week,
 no more auto-alternating temperature, DCF-77 receiver as a new time-source
@@ -1502,6 +1517,27 @@ hardware, not about declining to test the half that is portable).
   its PMP domain confines it (`kernel/shell.c:123-139`); the clock task, added
   after that sweep, has none. Adding one is small and brings the clock persona
   up to the bar the chess persona already meets.
+
+  **Corrected, 2026-08-24 — the premise above is wrong, and the item was much
+  larger than "small".** The clock task was not skipped by that sweep for
+  being late. It was skipped because it was not the same kind of thing as the
+  tasks the sweep covered: `pico_clock_green_task_start()` called
+  `task_create_sized()` and stopped there, with no `mem_domain_add()`, no
+  `task_set_domain()` and no `arch_enter_user()` — so there was no domain to
+  put on trial and no isolation test that could have been written for it.
+
+  The reason is structural. M4.5 (`plan/phase12_microkernel_migration.md`
+  §1045-1090) served this driver's *entire appliance loop* as one long
+  `CLOCK_OP_RUN` call, so the task was not a hardware server at all: it ran
+  the menu, the I2C reads, the DCF-77 feed and the console polling inside
+  itself. Chess answered the same question the other way — `chess_ui.c` runs
+  in the shell/Lisp task and calls thin U-mode drivers underneath — which is
+  why nobody ever expected a `chessisotest`.
+
+  Done in **`plan/phase17b_clock_task_split.md`**, which splits the appliance
+  back out into the caller's task, reduces the clock task to a frame-buffer
+  and row-scan server, moves it into U-mode under five PMP grants, and only
+  then adds the `clockisotest` this bullet asked for.
 
 ---
 

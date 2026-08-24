@@ -18,6 +18,7 @@
 
 #include "drivers/pico_clock_internal.h"
 #include "drivers/pico_clock_ui.h"
+#include "pico_clock_font.h"
 #include "drivers/i2c_rtc.h"
 #if CONFIG_ENABLE_DCF77
 #include "drivers/dcf77_service.h"
@@ -33,7 +34,19 @@
 #define CONFIG_CLOCK_COLON_BLINK 0
 #endif
 
-#define ROW_PERIOD_US    1000u
+/* One turn of the loop is one frame of scan: eight rows, ~8 ms, taken in a
+ * single call into the clock task (phase 17b). Before the split this loop ran
+ * a row at a time inside that task; the cadence a person can see is the same,
+ * and the thing that changed is which side of the channel it runs on. */
+
+/* The scroll animation's step, and **abortable by a keypress**. Both are
+ * corrections from phase 17's first hardware run: "TEMPERATURE" is 55
+ * columns, which at the vendor's 60 ms/column is 4.6 seconds, and the first
+ * version did not sample the buttons at all while it ran -- so backing out of
+ * the TEMPERATURE item looked like SET-long doing nothing. The first event
+ * ends the scroll and is *kept*, so the press still does what it was going to
+ * do. Pressing a button to skip an animation is what everyone expects. */
+#define SCROLL_STEP_MS   45u
 
 /* How often to go to the RTC over I2C -- deliberately *not* every scan step.
  * Found on real hardware in phase 11, not predicted: a 100 kHz transaction
@@ -53,6 +66,51 @@
  * than a glitch, and the BEEP menu item turns it off entirely. */
 #define CLICK_MS   10u
 #define CONFIRM_MS 40u
+
+/* Key events, as they come back from each frame op.
+ *
+ * A queue rather than a straight hand-off because the frame op is the only
+ * thing that produces events and it is called from three places in this file
+ * (the main loop, the scroll, anything else that holds the display): whoever
+ * pumps a frame collects whatever came with it, and the main loop drains the
+ * queue when it gets there. Sized for two frames' worth of the driver's own
+ * eight-entry ring, which no human hand can outrun at 125 frames a second. */
+#define APP_EV_MAX (2u * CLOCK_EVENTS_MAX)
+static clock_event_t g_ev[APP_EV_MAX];
+static unsigned      g_ev_n;
+
+/* One frame of display, and whatever the buttons did during it. */
+static void pump_frame(void) {
+    clock_event_t ev[CLOCK_EVENTS_MAX];
+    unsigned n = clock_hw_scan_frame(ev, CLOCK_EVENTS_MAX);
+    for (unsigned i = 0; i < n && g_ev_n < APP_EV_MAX; i++) g_ev[g_ev_n++] = ev[i];
+}
+
+static bool pop_event(clock_event_t *out) {
+    if (g_ev_n == 0) return false;
+    *out = g_ev[0];
+    for (unsigned i = 1; i < g_ev_n; i++) g_ev[i - 1] = g_ev[i];
+    g_ev_n--;
+    return true;
+}
+
+/* Scroll `s` right-to-left once. False means Ctrl-C asked to stop; a keypress
+ * also ends it, but returns true with the event still queued (see
+ * SCROLL_STEP_MS above). */
+static bool scroll_once(const char *s) {
+    unsigned w = clock_font_text_width(s);
+    for (int dest = CLOCK_TEXT_COL_LAST + 1;
+         dest > CLOCK_TEXT_COL_FIRST - (int)w; dest--) {
+        clock_hw_draw_text_at(dest, s);
+        uint64_t until = time_get_ms() + SCROLL_STEP_MS;
+        while (time_get_ms() < until) {
+            pump_frame();
+            if (g_ev_n) return true;   /* skipped; the event is kept */
+            if (console_interrupt_requested()) { console_interrupt_clear(); return false; }
+        }
+    }
+    return true;
+}
 
 /* Blink an editable value by simply not drawing it on the dark half of the
  * cycle: the state machine says "this is being edited" and the rate lives
@@ -172,12 +230,10 @@ void clock_app_run(void) {
         dcf77_service_feed(now);
 #endif
 
-        clock_hw_buttons_poll(now);
         {
-            clock_key_t k;
-            clock_press_t p;
-            while (clock_hw_key_pop(&k, &p)) {
-                unsigned act = clock_ui_key(&st, &in, k, p, now);
+            clock_event_t e;
+            while (pop_event(&e)) {
+                unsigned act = clock_ui_key(&st, &in, e.key, e.press, now);
                 if (act & UI_ACT_COMMIT_TIME)  commit_time(&st);
 #if CONFIG_ENABLE_DCF77
                 if (act & UI_ACT_SET_AUTO) dcf77_service_set_auto(st.set.auto_sync);
@@ -255,8 +311,8 @@ void clock_app_run(void) {
             if (scr.kind == UI_SCR_SCROLL) {
                 /* Blocking, and correctly so: a label scrolls once and the
                  * loop has nothing else to do meanwhile. It still runs the
-                 * row scan and still honours Ctrl-C. */
-                if (!clock_hw_scroll_text(scr.text)) break;
+                 * scan and still honours Ctrl-C. */
+                if (!scroll_once(scr.text)) break;
                 clock_ui_scroll_done(&st, time_get_ms());
                 need_render = true;
                 continue;
@@ -312,10 +368,12 @@ void clock_app_run(void) {
         }
 #endif
 
-        clock_hw_scan_step();
+        /* The frame, and the only place this loop waits. Its ~8 ms is the
+         * loop's period: everything above runs once per frame, and the ops it
+         * issues are short next to the frame that follows them. */
+        pump_frame();
 
         if (console_interrupt_requested()) { console_interrupt_clear(); break; }
-        time_delay_us(ROW_PERIOD_US);
     }
 
     clock_hw_indicator(CLOCK_IND_C, false);

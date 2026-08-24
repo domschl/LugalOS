@@ -27,8 +27,30 @@
 #ifndef DRIVERS_PICO_CLOCK_FONT_H
 #define DRIVERS_PICO_CLOCK_FONT_H
 
+#include "lugalos_config.h"
+
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Phase 17b, plan/phase17b_clock_task_split.md: the clock server renders text
+ * from inside its U-mode domain, so this font -- code and tables both -- has
+ * to live in the one executable page that domain grants (.clocktext,
+ * board_clock_text_region()). Two macros rather than one because GCC refuses
+ * to put const data and executable code in the same section ("section type
+ * conflict"), even though the linker script's wildcard lands them in the same
+ * page; drivers/st7735_rp2350.c's ST7735_UATTR/ST7735_UDATA pair is here for
+ * the same reason.
+ *
+ * Kernel-mode callers (the appliance's own text-width arithmetic, the console
+ * diagnostics) go on calling all of this normally: kernel mode is not
+ * confined, and a flash page is a flash page. */
+#if defined(CONFIG_BOARD_RP2350)
+#define CLOCK_UATTR __attribute__((section(".clocktext"))) __attribute__((no_sanitize("undefined")))
+#define CLOCK_UDATA __attribute__((section(".clocktext.rodata")))
+#else
+#define CLOCK_UATTR
+#define CLOCK_UDATA
+#endif
 
 #define CLOCK_GLYPH_ROWS 7u
 
@@ -41,11 +63,11 @@ typedef struct {
  * space, so an unexpected character costs a gap rather than garbage. `~` is
  * the degree sign (there is no ASCII for it and the display has no code page
  * to negotiate). */
-const clock_glyph_t *clock_font_glyph(char c);
+CLOCK_UATTR const clock_glyph_t *clock_font_glyph(char c);
 
 /* Columns a string occupies, including the one-column gap between glyphs and
  * excluding a trailing one. */
-unsigned clock_font_text_width(const char *s);
+CLOCK_UATTR unsigned clock_font_text_width(const char *s);
 
 /* Render into a column-major bitmap: one byte per column, bit `r` = row r+1
  * of the display (row 0 is the indicator/weekday row and is never touched).
@@ -55,6 +77,6 @@ unsigned clock_font_text_width(const char *s);
  * scrolling is "blit a window of this at an offset", which in column-major is
  * a slice and in row-major would be a shift of every one of 32 bytes per
  * step. The conversion happens once, in the blit. */
-unsigned clock_font_render(const char *s, uint8_t *cols, unsigned cap);
+CLOCK_UATTR unsigned clock_font_render(const char *s, uint8_t *cols, unsigned cap);
 
 #endif /* DRIVERS_PICO_CLOCK_FONT_H */

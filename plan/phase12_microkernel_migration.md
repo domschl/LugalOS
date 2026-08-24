@@ -1056,6 +1056,16 @@ rule before writing any code: "clock" never serves a call from "i2c", so
 this is a valid strictly-top-down chain (shell/lisp task -> "clock" ->
 "i2c"), not a violation of the same rule this file's own endpoint relies on.
 
+*(Superseded for the clock, 2026-08-24: `plan/phase17b_clock_task_split.md`
+takes the appliance loop back OUT of the clock task -- the `CLOCK_OP_RUN`
+op described above is gone, `clockstats` now advances ~125 times a second
+instead of reading `calls=1` for a whole session, and the "clock -> i2c"
+chain runs in the caller's task. The reasoning above was right about not
+putting `chan_call()` on a ~1 kHz per-row path; what it missed is that an op
+carrying one whole FRAME costs ~125 calls a second and keeps the row timing
+inside the driver just the same. Moving the loop out is what made the task
+thin enough to run confined in U-mode.)*
+
 All three drivers share the established structural move: each original
 function split into an internal `_hw_`-suffixed primitive (bodies
 unchanged) and a public facade (original name preserved) routing through

@@ -67,6 +67,13 @@ void board_usb_text_region(uintptr_t *base, uintptr_t *size) {
     *base = (uintptr_t)_usbtext_start;
     *size = 4096;
 }
+
+extern char _clocktext_start[];
+
+void board_clock_text_region(uintptr_t *base, uintptr_t *size) {
+    *base = (uintptr_t)_clocktext_start;
+    *size = 4096;
+}
 #endif
 
 /* K2, plan/phase7_kernel_config.md: this used to be its own independent

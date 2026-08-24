@@ -40,10 +40,12 @@ typedef enum {
     CLOCK_PRESS_REPEAT       /* UP/DOWN held: 5/s after 600 ms */
 } clock_press_t;
 
-/* Pop the oldest pending event. False when there is none -- never blocks.
- * Events only accumulate while something is polling, i.e. while the display
- * loop or pico_clock_green_keys() is running. */
-bool pico_clock_green_pop_key(clock_key_t *key, clock_press_t *press);
+/* Key events are returned by the frame op (`clock_hw_scan_frame()`, the
+ * appliance's own seam in drivers/pico_clock_internal.h) rather than polled
+ * from out here: they exist only while something is scanning, and whatever is
+ * scanning is the thing that should be given them. Phase 17b removed the
+ * standalone `pico_clock_green_pop_key()`, which had no caller outside the
+ * driver and no way to be correct for one. */
 
 /* ------------------------------------------------- indicator LEDs ------ */
 /*
@@ -143,16 +145,17 @@ uint16_t pico_clock_green_read_light(void);
  * Allocates nothing on the heap, so there is nothing to free on return
  * ([[heap_stateless_user_programs]] is satisfied trivially, not by effort).
  *
- * M4.5, plan/phase12_microkernel_migration.md, Part B: as a task, this
- * whole loop runs as ONE chan_call() -- not one per row-scan step, which
- * would put chan_call() on a ~1kHz hot path nothing else in this codebase
- * comes close to. The caller (whatever evaluates `(clock)`) simply blocks
- * for the call's duration, same as any other chan_call(), just a much
- * longer one; the task-side loop still polls Ctrl-C every ~1ms internally,
- * so responsiveness is unchanged. show_time()/show_temperature_c()/clear()/
- * the per-row scan step used to be separate public entry points here; none
- * of them had a caller outside this driver, so they are file-internal now
- * rather than wire ops nothing would ever address individually. */
+ * Phase 17b, plan/phase17b_clock_task_split.md: this loop runs in the
+ * CALLER's task -- the shell/Lisp task, exactly where chess's UI loop runs --
+ * and reaches the panel through one chan_call() per ~8 ms frame. Under M4.5
+ * it was the other way round: the whole loop was served inside the clock
+ * task as a single long call, which is why `clockstats` used to read
+ * `calls=1` for an entire session and now advances ~125 times a second.
+ *
+ * What that bought is the reason for the phase: the clock task is now a thin
+ * hardware server like every other RP2350 driver task, small enough to run
+ * confined in U-mode, and `clockisotest` can put its domain on trial the way
+ * `st7735isotest` does. */
 void pico_clock_green_run(void);
 
 /* Light one row of the matrix as a pure DC load: shifted out once, latched,

@@ -141,6 +141,9 @@ static void cmd_help(void) {
     cprintf("  uartisotest     - Same, under the real uart driver task's own UART0-window domain\n");
     cprintf("  usbisotest      - Same, under the real usb_cdc driver task's own DPRAM+USBCTRL+state domain\n");
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    cprintf("  clockisotest    - Same, under the real clock driver task's own SIO+ADC+TIMER0(ro)+state domain\n");
+#endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
@@ -798,6 +801,38 @@ static void cmd_i2c_isolation_test(void) {
            canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
                               : "BREACHED (task wrote kernel memory)");
     printk("[I2CIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
+           exited_clean ? "yes" : "no");
+}
+#endif
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+/* Phase 17b, plan/phase17b_clock_task_split.md: same idea as
+ * heartbeatisotest/tm1638isotest/i2cisotest above, against the clock
+ * server's own domain shape (drivers/pico_clock_green_rp2350.c) -- the
+ * last RP2350 driver task to reach U-mode, and the one that had to be
+ * split in two before it could. Its domain is the only one in this list
+ * whose stack shares a region with driver state (the RP2350 five-region
+ * budget, with three MMIO windows already spoken for) and the only one
+ * granting an MMIO window read-only (TIMER0: the server needs to know the
+ * time, never to set it). */
+extern bool clock_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
+
+static void cmd_clock_isolation_test(void) {
+    if (!mem_domain_enforced()) {
+        printk("[ClockIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
+    }
+    uintptr_t canary = 0;
+    bool exited_clean = true;
+    bool entered = clock_isolation_test(&canary, &exited_clean);
+    if (!entered) {
+        printk("[ClockIso] INCONCLUSIVE -- the task never entered U-mode; "
+               "the canary was never at risk.\n");
+        return;
+    }
+    printk("[ClockIso] Canary after: 0x%lx -- %s\n", (unsigned long)canary,
+           canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
+                              : "BREACHED (task wrote kernel memory)");
+    printk("[ClockIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
            exited_clean ? "yes" : "no");
 }
 #endif
@@ -1462,6 +1497,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "usbisotest") == 0) {
         cmd_usb_isolation_test();
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+    } else if (strcmp(cmd_line, "clockisotest") == 0) {
+        cmd_clock_isolation_test();
         return;
 #endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {

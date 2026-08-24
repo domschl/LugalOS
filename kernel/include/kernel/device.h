@@ -166,6 +166,13 @@ void board_blk_text_region(uintptr_t *base, uintptr_t *size);
  * like the driver that uses it. */
 void board_usb_text_region(uintptr_t *base, uintptr_t *size);
 
+/* Phase 17b, plan/phase17b_clock_task_split.md: the clock server's own
+ * dedicated U-mode-executable page (linker: .clocktext), same reasoning as
+ * the three above -- it carries the row scan, the frame-buffer writers, the
+ * button state machine and the whole proportional font, which on its own is
+ * more than .utext had left. RP2350-only, like the driver that uses it. */
+void board_clock_text_region(uintptr_t *base, uintptr_t *size);
+
 /* Populates the registry with this board's devices. */
 void board_register_devices(void);
 

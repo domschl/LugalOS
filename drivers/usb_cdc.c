@@ -996,6 +996,25 @@ bool usb_cdc_has_char(void) {
     return g_usb.ep2_configured && g_usb.ep2_rx_head != g_usb.ep2_rx_tail;
 }
 
+/* Is a Ctrl-C sitting unread in the console ring? Looks, and takes nothing.
+ *
+ * The non-consuming part is the whole point. kernel/console.c's pump has to
+ * stop moving bytes out of here once its own 128-byte ring is full, or it
+ * destroys input nobody has read yet -- but an interrupt must get through
+ * even then, and it cannot be found by a reader that is not allowed to read.
+ * So this scans instead: the byte stays exactly where it is, and whoever
+ * eventually drains the ring still sees it (the same "latch it but still
+ * queue it" rule console_pump() already follows for the bytes it does move). */
+bool usb_cdc_peek_interrupt(void) {
+    if (!g_usb.ep2_configured) return false;
+    for (uint32_t i = g_usb.ep2_rx_tail; i != g_usb.ep2_rx_head;
+         i = (i + 1) % USB_EP2_RX_RING_SIZE) {
+        if (g_usb.ep2_rx_ring[i] == 0x03) return true;
+    }
+    return false;
+}
+
+
 char usb_cdc_getc(void) {
     if (g_usb.ep2_rx_head == g_usb.ep2_rx_tail) return 0;
     char c = (char)g_usb.ep2_rx_ring[g_usb.ep2_rx_tail];
@@ -1770,6 +1789,10 @@ char usb_cdc_getc(void) {
 }
 
 bool usb_cdc_has_char(void) {
+    return false;
+}
+
+bool usb_cdc_peek_interrupt(void) {
     return false;
 }
 
