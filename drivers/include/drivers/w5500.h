@@ -75,6 +75,12 @@ void w5500_watch(unsigned secs);
 /* Log every socket state transition as it happens (bring-up aid). */
 void w5500_debug(bool on);
 
+/* Does the chip still receive? Puts socket 0 into MACRAW for `secs` and counts
+ * every frame on the wire, ARP included -- the only measurement that separates
+ * a dead transmitter from a dead receiver. Drops any attached peer and
+ * restores the 9P socket afterwards; see the definition. */
+void w5500_rxtest(unsigned secs);
+
 /* Is the SPI bus delivering what it is told? Reads a constant register and
  * round-trips a pattern through an unused one, at four clock rates, and
  * counts the mismatches. Decides whether a wedged chip is a wiring problem

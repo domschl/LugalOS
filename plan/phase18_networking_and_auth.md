@@ -1039,6 +1039,49 @@ reliably curing the fault does not prove where the fault lives.
 **Recovery, meanwhile, is one command and two seconds:** `net phy auto`.
 
 
+#### It is the receiver, and `net rxtest` is how that was settled
+
+Experiments 1, 2 and 4 have now run.
+
+**A host-side link bounce revives the board** without anyone touching it
+(`ip link set enp0s31f6 down/up`). **EEE was not it**: with
+`ethtool --set-eee eee off` the board died at 143 s, so hypothesis 4 is closed
+by test rather than by inference. (The death times across all runs are
+143/175/180/180 s, so "roughly two and a half to three minutes" is the honest
+statement, not "exactly 180".)
+
+**And the receiver is what stops.** `net rxtest` puts socket 0 into MACRAW --
+every frame on the wire, addressed to this board or not, no IP stack, no
+dependence on SIPR or SHAR or anything the TCP path needs -- and counts bytes.
+Broadcast ARP alone makes it climb on any live segment:
+
+| | healthy board | deaf board, host pinging |
+|---|---|---|
+| MACRAW bytes in 10 s | **3300** | **0** |
+
+Nothing arrives. Not one frame, not even broadcast, while PHYCFGR reports a
+100 Mb full-duplex link and the host is demonstrably transmitting. The
+transmitter, the socket engine, the buffer map, the auth layer and every line
+of this driver are out of it: **the chip stops receiving from the wire and
+keeps claiming link.**
+
+That is a recognisable 100BASE-TX failure: a descrambler that has lost lock
+cannot resync without a link restart, which is exactly why the only two things
+that fix it are a PHY reset at either end -- both of which renegotiate. It
+also fits the history. The capacitors took this module from "cannot negotiate
+at all" to "100BASE-TX in 2.0 s", which is a large improvement in analog
+margin; what is left may simply be less margin than 100BASE-TX needs on this
+module, this cable and this magjack.
+
+The test that would confirm it is running now: **10BASE-T has no descrambler.**
+If the board survives indefinitely at 10 Mb and dies in three minutes at
+100 Mb, the mechanism is settled and forcing 10BT is a legitimate workaround
+for this module -- 10 Mbit was never a constraint here anyway, as the driver's
+own note says. If it dies at both, the fault is further upstream in the
+receive path and the next moves are physical: a different cable, then a
+different module.
+
+
 ### Superseded — what the fault was thought to be before it was timed
 
 Kept because the reasoning below was careful and still wrong, which is the

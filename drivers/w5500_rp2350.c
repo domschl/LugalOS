@@ -1026,6 +1026,90 @@ static void w5500_service_socket(void) {
     }
 }
 
+/* Is the chip still *receiving*?
+ *
+ * The one axis none of the other measurements can resolve. When this board
+ * goes deaf -- link up at both ends, every register correct, host ARPing and
+ * getting nothing -- "no frames arrive at the host" is equally consistent
+ * with a dead transmitter and a dead receiver, and those have entirely
+ * different causes.
+ *
+ * MACRAW answers it. Socket 0 in MAC-raw mode hands over every frame on the
+ * wire, addressed to this board or not, with no IP stack involved and no
+ * dependence on SIPR, SHAR or anything else the TCP path needs. Broadcast ARP
+ * alone should make Sn_RX_RSR climb on any live segment. If it climbs while
+ * the board is deaf, the receiver is fine and the fault is on the way out; if
+ * it stays at zero while the host is demonstrably transmitting, the receiver
+ * is gone.
+ *
+ * Destructive to the 9P socket for the duration, and restores it afterwards
+ * -- which also means running this on a healthy board drops any attached
+ * peer. It is a bring-up tool, and it says so in `net`'s usage. */
+void w5500_rxtest(unsigned secs) {
+    if (!g_present) { cprintf("net: no W5500 present\n"); return; }
+    if (secs == 0 || secs > 60) secs = 10;
+    w5500_lock();
+
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+    cmd_wait();
+    wr8(Sn_MR, BSB_SOCK_REG(SOCK_9P), 0x04);            /* MACRAW */
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_OPEN);
+    cmd_wait();
+
+    uint8_t sr = rd8(Sn_SR, BSB_SOCK_REG(SOCK_9P));
+    if (sr != 0x42) {                                    /* SOCK_MACRAW */
+        cprintf("net: could not enter MACRAW (Sn_SR 0x%02x) -- nothing learned\n", sr);
+        wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+        cmd_wait();
+        w5500_listen();
+        w5500_unlock();
+        return;
+    }
+
+    cprintf("net: MACRAW for %u s -- every frame on the wire, ARP included.\n"
+            "     Send it something (ping this board's address from the host).\n", secs);
+
+    uint32_t total = 0;
+    unsigned reported = 0;
+    for (unsigned i = 0; i < secs * 10u; i++) {
+        time_delay_us(100000);
+        uint16_t avail = 0;
+        if (!rd16_stable(Sn_RX_RSR, BSB_SOCK_REG(SOCK_9P), &avail)) continue;
+        if (avail == 0) continue;
+        if (avail > W5500_SOCK_BUF_BYTES) avail = W5500_SOCK_BUF_BYTES;
+
+        /* Drain it: the point is the count, not the contents, and a full
+         * buffer would stop the counter climbing and read as a dead wire. */
+        uint16_t rd = rd16(Sn_RX_RD, BSB_SOCK_REG(SOCK_9P));
+        wr16(Sn_RX_RD, BSB_SOCK_REG(SOCK_9P), (uint16_t)(rd + avail));
+        wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_RECV);
+        cmd_wait();
+
+        total += avail;
+        if (reported < 6) {
+            cprintf("  t=%u.%us  +%u bytes (total %u)\n",
+                    i / 10u, i % 10u, (unsigned)avail, (unsigned)total);
+            reported++;
+        }
+    }
+
+    wr8(Sn_CR, BSB_SOCK_REG(SOCK_9P), Sn_CR_CLOSE);
+    cmd_wait();
+    g_connected = false;
+    g_rx_have = 0;
+    w5500_listen();
+    w5500_unlock();
+
+    cprintf("net: %u byte(s) received in MACRAW over %u s -- %s\n", (unsigned)total, secs,
+            total > 0
+              ? "the RECEIVER works; a board that is deaf anyway is deaf on the way OUT"
+              : "NOTHING arrived. Either the wire is silent (check the host is sending)\n"
+                "     or the receiver is gone -- and those are told apart by running this\n"
+                "     on a healthy board, where it must count bytes.");
+    cprintf("net: 9P socket restored to LISTEN.\n");
+}
+
+
 /* How often the chip is touched while no peer is attached.
  *
  * Kept for its own sake, and **not** because it fixed anything -- it was

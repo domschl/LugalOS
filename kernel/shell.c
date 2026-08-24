@@ -125,6 +125,7 @@ static void cmd_help(void) {
     cprintf("  net phy <mode>  - Force the PHY: auto|100f|100h|10f|10h|down, then watch\n");
     cprintf("  net watch [s]   - Is the chip holding its config, or resetting under load?\n");
     cprintf("  net bustest [n] - SPI integrity at four clock rates: wiring, or logic?\n");
+    cprintf("  net rxtest [s]  - MACRAW: does the chip still RECEIVE? (drops any peer)\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -1601,6 +1602,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         w5500_bustest(n);
         return;
+    } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
+        const char *m = cmd_line + 10;
+        while (*m == ' ') m++;
+        unsigned n = 0;
+        while (*m >= '0' && *m <= '9') n = n * 10u + (unsigned)(*m++ - '0');
+        w5500_rxtest(n);
     } else if (strcmp(cmd_line, "net debug on") == 0) {
         w5500_debug(true);
         cprintf("net: socket state transitions will be logged\n");
