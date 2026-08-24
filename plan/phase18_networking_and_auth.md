@@ -1073,13 +1073,43 @@ at all" to "100BASE-TX in 2.0 s", which is a large improvement in analog
 margin; what is left may simply be less margin than 100BASE-TX needs on this
 module, this cable and this magjack.
 
-The test that would confirm it is running now: **10BASE-T has no descrambler.**
-If the board survives indefinitely at 10 Mb and dies in three minutes at
-100 Mb, the mechanism is settled and forcing 10BT is a legitimate workaround
-for this module -- 10 Mbit was never a constraint here anyway, as the driver's
-own note says. If it dies at both, the fault is further upstream in the
-receive path and the next moves are physical: a different cable, then a
-different module.
+**And that test refuted it.** 10BASE-T has no descrambler, and forced to
+10 Mb half duplex the board died at **174 s** -- the same clock. The failure
+is speed-independent, so it is not a descrambling or line-code problem. Fifth
+hypothesis, fifth elimination.
+
+#### Where this stops being a software problem
+
+What is established, and it is a complete picture up to the chip's pins:
+
+* The chip **stops receiving from the wire** after roughly 174-180 s, and
+  keeps reporting link. `net rxtest`: 3300 bytes healthy, 0 bytes deaf.
+* Independent of **link speed** (10 Mb half and 100 Mb full alike),
+  of **traffic** (32 482 reads at 190/s made no difference), and of
+  **idleness** (no load at all is the same).
+* Every register in the chip reads back correct throughout; zero resync
+  discards, command timeouts or RX overruns; `net watch` sees a steady
+  PHYCFGR and a steady VERSIONR for 40 s.
+* Cured only by a **link restart, from either end** -- the board's PHY reset
+  or the host's `ip link down/up`. Nothing else touches it.
+* Not EEE, not the poll rate, not the p9srv stack, not 100BASE-TX power, not
+  the descrambler. Each tested, each eliminated.
+
+A receive path that works perfectly and then stops on a timer, at any line
+rate, with the link still up and every register correct, is a fault in the
+module or the cable. The remaining moves are physical, in cost order:
+
+1. **A different Ethernet cable.** Cheapest, and a marginal receive pair fits
+   everything above.
+2. **A different W5500 module.** These are cheap and their quality varies;
+   this one already needed 220 µF before it would negotiate at all, which
+   says something about its analog margin.
+3. **Back on the switch**, which changes the link partner and the cable path
+   at once.
+
+The capacitors took this module from "cannot negotiate" to "100BASE-TX in
+2.0 s". It may simply have less margin left than a working Ethernet link
+needs, and no amount of driver work will add any.
 
 
 ### Superseded — what the fault was thought to be before it was timed
