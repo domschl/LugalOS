@@ -1,6 +1,7 @@
 #include "fs/p9_link.h"
 #include "fs/9p.h"
 #include "kernel/printk.h"
+#include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/irq.h"
 #include "kernel/scratch.h"
@@ -15,6 +16,10 @@
  * links in one p9_link_background_poll() sweep carries no new race that
  * servicing 1 didn't already have. */
 #define P9_LINK_MAX_BACKGROUND 2
+
+/* How long a client waits for a reply before calling it a failure. See the
+ * wait loop in p9_client_rpc() for why this is not "forever". */
+#define P9_CLIENT_TIMEOUT_MS 10000
 static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
 
 /* --- B2: inbound frame demultiplexing (the D5 gate) ---
@@ -308,6 +313,20 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
         return -1;
     }
 
+    /* Bounded, since N5 (plan/phase18_networking_and_auth.md §9's own risk
+     * entry, met on hardware the first time a downlink cable was tried).
+     *
+     * This used to wait forever, matching drivers/virtio_blk.c's
+     * busy-wait-until-done convention -- defensible when the peer is a device
+     * on the same board, and not when it is another board on the end of a
+     * cable. A gateway whose downlink is unplugged, or whose peer is not
+     * serving, would hang the task that asked: the shell, and with it any
+     * hope of finding out why. Ten seconds is far longer than any real
+     * round trip on any transport here (a 2 KB msize at 115200 baud is about
+     * 350 ms) and far shorter than "never".
+     *
+     * The failure is reported as a failure, and the caller decides. */
+    uint64_t deadline = time_get_ms() + P9_CLIENT_TIMEOUT_MS;
     for (;;) {
         if (w->have_reply) {
             uint32_t n = w->reply_len;
@@ -322,6 +341,15 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
          * the server task has not been scheduled yet. It takes the *pump* lock,
          * not this one, so the two never deadlock against each other. */
         if (p9_link_pump(link) < 0) { waiter_end(w); p9_unlock(&g_client_lock); return -1; }
+        if (time_get_ms() > deadline) {
+            printk("[9P Link] No reply on '%s' within %d ms (tag %d) -- peer not "
+                   "serving, or the wire is not connected\n",
+                   link->name ? link->name : "?", (int)P9_CLIENT_TIMEOUT_MS,
+                   (int)req->tag);
+            waiter_end(w);
+            p9_unlock(&g_client_lock);
+            return -1;
+        }
         sched_yield();
     }
 }

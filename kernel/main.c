@@ -35,6 +35,7 @@
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
 #include "drivers/w5500.h"
 #endif
+#include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -192,6 +193,12 @@ void kernel_main(void) {
      * short of joining the network and says so; see the plan's §3. */
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
     w5500_init();
+#endif
+    /* N5: the downlink to another board. Bringing the UART up costs nothing
+     * when no cable is attached -- it is two pins and a divisor -- so it is
+     * unconditional on a board whose pin map declares it. */
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
+    uart1_link_init();
 #endif
 
     /* Kernel subsystems -- not devices, so they stay explicit. Note

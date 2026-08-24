@@ -198,6 +198,17 @@ static const dev_driver_t dev_spisd = {
     .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_spisd,
 };
 #endif
+#if defined(CONFIG_UART1_BASE)
+/* N5: the downlink. Deliberately WITHOUT DEV_F_BACKGROUND_9P -- on this wire
+ * the gateway is the client and the board at the other end is the server, so
+ * nothing here needs to answer inbound requests. It also keeps a background
+ * slot free: P9_LINK_MAX_BACKGROUND is 2, and usbnet plus w5500net already
+ * fill it on this persona. */
+static void *get_uart1(void) { return uart1_get_link(); }
+static const dev_driver_t dev_uart1 = {
+    .name = "uart1", .kind = DEV_KIND_P9LINK, .get = get_uart1,
+};
+#endif
 #if defined(CONFIG_W5500_SCK_GPIO)
 /* N4, plan/phase18_networking_and_auth.md: the Ethernet 9P link. Registered
  * like usbnet and uartslip -- three lines, and everything downstream (the
@@ -244,6 +255,9 @@ void board_register_devices(void) {
 #endif
 #if defined(CONFIG_W5500_SCK_GPIO)
     dev_register(&dev_w5500net);
+#endif
+#if defined(CONFIG_UART1_BASE)
+    dev_register(&dev_uart1);
 #endif
 #else
     dev_register(&dev_vconsole);

@@ -16,8 +16,9 @@ void uart_net_init(void) {
  * existing, already-tested slip_decode() as a single call -- reusing it
  * exactly as-is rather than re-implementing incremental unescaping. */
 /* Defined below, next to the block codec it replaced in the receive paths. */
-static int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
-                     uint32_t *frame_len, bool *escaping);
+/* Shared with drivers/uart1_link_rp2350.c (N5): the gateway's downlink runs
+ * the same framing over a different UART, and a SLIP escape state machine
+ * written twice is one that differs twice. Declared in drivers/uart_net.h. */
 
 typedef struct {
     bool escaping;          /* mid-escape across byte boundaries */
@@ -118,8 +119,8 @@ p9_link_t *uart_slip_get_link(void) {
  * delimiter and is ignored, and an overflowing frame is dropped so the link
  * resynchronises on the next delimiter rather than emitting a truncated
  * message. */
-static int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
-                     uint32_t *frame_len, bool *escaping) {
+int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
+              uint32_t *frame_len, bool *escaping) {
     if (c == SLIP_END) {
         *escaping = false;
         if (*frame_len == 0) return 0;   /* leading/duplicate delimiter */

@@ -119,6 +119,7 @@ static void cmd_help(void) {
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+    cprintf("  uart1test [ms]  - Raw UART1 downlink test: registers, a burst, then listen\n");
     cprintf("  net             - Ethernet status: chip, link, MAC, address, 9P socket\n");
     cprintf("  net phy <mode>  - Force the PHY: auto|100f|100h|10f|10h|down, then watch\n");
     cprintf("  net watch [s]   - Is the chip holding its config, or resetting under load?\n");
@@ -1567,6 +1568,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "p9serve") == 0) {
         cmd_p9serve();
         return;
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
+    } else if (strncmp(cmd_line, "uart1test", 9) == 0) {
+        unsigned ms = 0;
+        for (const char *d = &cmd_line[9]; ; d++) {
+            if (*d == ' ') continue;
+            if (*d < '0' || *d > '9') break;
+            ms = ms * 10u + (unsigned)(*d - '0');
+        }
+        uart1_wire_test(ms);
+        return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
     } else if (strcmp(cmd_line, "net") == 0) {
         w5500_report();

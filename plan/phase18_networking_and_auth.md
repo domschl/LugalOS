@@ -144,6 +144,37 @@ Two more things worth carrying into the wiring:
 I/O is 5 V tolerant, which is irrelevant here — both ends are 3V3 — but worth
 knowing before anyone reaches for a level shifter.
 
+### Building it properly: what a soldered gateway wants
+
+The bring-up rig is jumper wires, and `net bustest` has shown that is
+electrically fine at 12.5 MHz (see "The bus is not the problem" below) -- so
+this list is about turning a rig into an appliance, not about fixing a fault.
+Recorded here because it is much easier to do while the iron is already hot
+than to retrofit.
+
+* **Short leads on SCK, MOSI, MISO and CS** -- under ~5 cm if the layout
+  allows -- with a **ground return running alongside them** rather than a
+  single ground taken from somewhere else on the board. A fast edge needs a
+  return path next to it; giving it a long one is what turns a clean bus into
+  a marginal one at higher speeds.
+* **Series resistors, 22-33 Ω, on SCK and MOSI at the Pico end.** The cheapest
+  possible insurance against reflections on an unterminated stub, and the
+  single change most likely to keep 12.5 MHz clean on a real board.
+* **Decoupling at the module**: 100 nF right at its 3V3 pin, plus a 10 µF
+  bulk. It draws ≥200 mA and switches hard.
+* **Use both `+3.3V` pins (2-2, 2-3) and at least two grounds (1-1, 1-2,
+  2-1).** At that current, one thin conductor per rail is a measurable drop,
+  and the module's own header offers the parallel paths for free.
+* **Bring out the UART1 downlink as a 3-pin header** -- GP8 (TX), GP9 (RX),
+  GND -- so §4's cable is a plug rather than a soldering job later.
+* **Keep SPI1/SD physically away from SPI0/W5500** where the layout allows;
+  they are independent buses and there is no reason to run them together.
+* **Power budget, from §2**: ~200 mA for the module, ~50-100 mA for the
+  RP2350, and an SD card that bursts to ~100 mA while writing, against a 3V3
+  rail good for ~500 mA. It fits, without a wide margin -- so if a finished
+  board ever misbehaves under simultaneous network *and* card load, measure
+  the rail before suspecting software.
+
 ## 3. The gateway persona
 
 `cmake/board-rp2350-gateway.cmake` + a `rp2350-gateway` preset, on a bare
@@ -196,7 +227,7 @@ assignments for those controllers on RP2350:
 | `W5500 RSTn` | 20 | → module `2-5 RSTn`; 1 ms low, 150 ms settle |
 | `W5500 INTn` | 21 | → module `1-6 INTn`; input, pull-up; polled first (N4) |
 | `SPI1 SCK/MOSI/MISO/CS` | 10 / 11 / 12 / 13 | the SD card, chess persona's wiring |
-| `UART1 TX/RX` | 4 / 5 | the downlink to a board — see §4 |
+| `UART1 TX/RX` | 8 / 9 | the downlink to a board — see §4 |
 | `3V3` / `GND` | — | module `2-2`/`2-3` and `1-1`/`1-2`/`2-1`; see the 200 mA note in §2 |
 
 The GPIO column is this project's choice; the module column is confirmed
@@ -271,10 +302,16 @@ gateway is a separate box rather than an expansion of the chess persona.
 
 ```
    gateway (Pico 2)                     board (chess or clock)
-   UART1 TX  GP4  ───────────────────►  UART0 RX  GP1
-   UART1 RX  GP5  ◄───────────────────  UART0 TX  GP0
+   UART1 TX  GP8  ───────────────────►  UART0 RX  GP1
+   UART1 RX  GP9  ◄───────────────────  UART0 TX  GP0
    GND            ─────────────────────  GND
 ```
+
+**GP8/GP9, not the GP4/GP5 this section first proposed.** Both are valid
+UART1 pins, but GP4/GP5 are I2C0's, and `drivers/i2c_rtc.c` is built for every
+RP2350 persona -- it configures those pads at boot whether or not a clock chip
+is fitted. Two drivers claiming the same pads is a conflict that shows up only
+as one of them mysteriously not working.
 
 Both are 3V3 parts, so this is a direct connection with no level shifting.
 Common ground is not optional: without it the two UARTs have no shared
@@ -295,18 +332,24 @@ plan is honest about it: at 115200 baud a 2 KB msize round trip is ~350 ms of
 wire time, which is fine for `ls`, `cat` of a config file, or dropping a Lisp
 program into a watched directory, and poor for pulling a PGN archive.
 
-**Two things the downlink needs that do not exist yet**, both small and both
-named here so they are not discovered later:
+**Two things the downlink needed that did not exist**, both now built as
+`drivers/uart1_link_rp2350.c` (N5):
 
-1. **A second UART instance.** `drivers/uart_rp2350.c` is UART0-only —
-   `CONFIG_UART0_BASE` and friends are singular, and the driver's task,
-   channel endpoint and demux all assume one instance. The gateway needs UART0
-   (its own console) *and* UART1 (the downlink) at once.
-2. **A configurable baud rate.** The divisors are hardcoded for 115200
-   (`uart_rp2350.c`, "Configure Baud Rate for 150MHz clk_peri"). The downlink
-   should run much faster — 1 Mbaud is comfortable for a 15 cm cable between
-   two boards on a desk — so the divisor becomes a per-board config value with
-   the 115200 console as its default.
+1. **A second UART instance.** `drivers/uart_rp2350.c` is UART0-only, and
+   generalising it was the wrong move: that file is *the console*, carrying a
+   channel endpoint, a U-mode task, the p9share demux, ACCESSCTRL grants and a
+   heartbeat LED, all of which exist because the console is shared and
+   contended. This wire is neither. It got its own small driver instead —
+   init, polled byte I/O, and a `p9_link_t`. The framing is genuinely shared:
+   `slip_feed()` is now exported from `drivers/uart_net.c`, because a SLIP
+   escape state machine written twice is one that differs twice.
+2. **A configurable baud rate.** `uart_rp2350.c` carries
+   `REG(UARTIBRD) = 81; REG(UARTFBRD) = 24;` with a comment naming 115200 —
+   correct, and silently wrong the day anyone wants a faster downlink. The new
+   driver computes the divisor from `CONFIG_UART1_BAUD`: the PL011 wants
+   `clk_peri / (16 * baud)` in 6.6 fixed point, which is exactly
+   `(4 * clk_peri) / baud` as an integer.
+
 
 **More than one board** is deliberately not solved here. RP2350 has two
 hardware UARTs and the gateway spends both. A second downlink means PIO

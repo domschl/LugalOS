@@ -31,6 +31,26 @@ int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_ma
 // below).
 p9_link_t *uart_slip_get_link(void);
 
+/* One received byte into a SLIP frame accumulator. Returns 1 when `frame`
+ * holds a complete frame of `*frame_len` bytes, 0 otherwise; `escaping`
+ * carries the escape state across calls. Shared between the console link
+ * above and the gateway's UART1 downlink (N5,
+ * plan/phase18_networking_and_auth.md). */
+int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
+              uint32_t *frame_len, bool *escaping);
+
+/* N5: UART1 as a dedicated 9P downlink to another board -- SLIP-framed, no
+ * console duties, its own pins. Init runs from kernel_main(); the link is
+ * NULL until it has. See drivers/uart1_link_rp2350.c for why this is its own
+ * small driver rather than a second instance of the console UART's. */
+void uart1_link_init(void);
+p9_link_t *uart1_get_link(void);
+
+/* Raw wire test: dump UART1's own registers, send a plain-text burst, then
+ * report whatever arrives for `listen_ms`. Run it on both boards to find out
+ * which direction is silent. */
+void uart1_wire_test(unsigned listen_ms);
+
 // --- A3b: shared-wire demux (plan/phase5_distributed_design.md) ---
 //
 // Lets the interactive console and SLIP-framed 9P traffic coexist on one
