@@ -1307,8 +1307,9 @@ static lisp_val_t *prim_clock(lisp_val_t *args, lisp_val_t *env) {
 
 /* `(clock-light)` -- diagnostic: raw 12-bit LDR reading (0-4095), the same
  * single-shot conversion the display loop's own auto-brightness samples.
- * Not needed for normal use; exists to check LDR_DARK_THRESHOLD's polarity
- * and value against real ambient light on real hardware. */
+ * Not needed for normal use; exists to check the LDR's polarity and the
+ * auto-brightness thresholds (`AUTO_DARKER_AT[]`) against real ambient light
+ * on real hardware. */
 /* `(clock-keys [secs])` -- C1 diagnostic: print every button event as it
  * happens, with the idle pin levels first, so a miswired button is one line
  * of output rather than a menu that mysteriously does nothing. */

@@ -100,9 +100,11 @@ silicon):
   target that fails on any static-RAM growth against a recorded per-file baseline, and `/proc/meminfo`
   and `/proc/ps` reporting the static breakdown and per-task stack high-water marks.
 - **A second RP2350 board persona**: `rp2350-clock` targets the Waveshare Pico-Clock-Green baseboard
-  — a led-matrix clock display with LDR-driven auto-brightness, wired through the same driver-task
-  architecture as the default `rp2350-chess` persona, demonstrating that "which hardware this board
-  has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a fork of the kernel.
+  — a led-matrix clock display with LDR-driven auto-brightness (seven geometric levels the ambient
+  reading walks up and down, with a deadband so a room sitting on a threshold does not flicker), wired
+  through the same driver-task architecture as the default `rp2350-chess` persona, demonstrating that
+  "which hardware this board has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a
+  fork of the kernel.
 - **A radio-set clock that runs unattended**: a DCF-77 longwave receiver decodes the time signal from
   Mainflingen, a three-button menu drives the whole UI on the panel itself, and the kernel clock keeps
   **UTC** with local time computed from a POSIX `TZ` rule. Both RP2350 personas boot from a bare USB

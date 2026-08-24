@@ -128,9 +128,10 @@ void pico_clock_green_boot_mark(unsigned stage);
 /* Raw 12-bit LDR reading (0-4095), the same single-shot conversion the
  * (task-internal) scan loop samples once per frame for auto-brightness. A
  * diagnostic primitive, not something the display loop needs -- exposed
- * so LDR polarity/threshold can be checked against real ambient light on
- * real hardware instead of assumed correct from the register-level port
- * (see plan/phase11_pico_clock_green.md L2's LDR_DARK_THRESHOLD note). */
+ * so LDR polarity and the auto-brightness ladder's thresholds
+ * (`AUTO_DARKER_AT[]`) can be checked against real ambient light on real
+ * hardware instead of assumed correct from the register-level port
+ * (plan/phase11_pico_clock_green.md L2, and phase 17 section 10). */
 uint16_t pico_clock_green_read_light(void);
 
 /* L4 (plan/phase11_pico_clock_green.md): the blocking appliance loop behind

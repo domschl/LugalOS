@@ -250,9 +250,10 @@ coupling into a ferrite rod:
    loop area, right next to the antenna. This is a magnetic near-field source
    and the ferrite rod is a magnetic pickup. It dominates.
 2. **The `OE` dimming pulse.** In dim conditions the driver already chops `OE`
-   with a 330 µs pulse inside each row period (`DIM_ON_TIME_US`) — this is
-   amplitude modulation of source (1) at the row rate, which spreads its
-   spectrum rather than concentrating it.
+   with a short pulse inside each row period (`LEVEL_ON_US[]`, 8-450 µs; a
+   fixed 330 µs before section 10) — this is amplitude modulation of source
+   (1) at the row rate, which spreads its spectrum rather than concentrating
+   it.
 3. **`CLK`/`SDI`/`LE` edges.** 32 bit-banged clock cycles per row, a burst a
    few microseconds long, repeated at the row rate. Broadband, but small loop
    area and small current.
@@ -1716,3 +1717,80 @@ Three properties did the work:
 The beacon is off by default with no call sites at rest; set
 `CONFIG_CLOCK_BOOT_BEACON` and scatter `CLOCK_BOOT_MARK(n)` over whatever is
 suspect.
+
+---
+
+## 10. Brightness in a real room: a floor that is low enough, and no flicker
+
+*2026-08-24. Three reports from the clock running on a shelf rather than on a
+bench, all of them about the same knob, and the fix is in
+`drivers/pico_clock_green_rp2350.c` only — no UI change, no new setting.*
+
+**What was reported.**
+
+1. Automatic brightness never dims below what looks like fixed level 2 — it
+   stops there and stays there in the dark.
+2. Level 2, and fixed level 1 too, are still too bright at night. Everything
+   above them scales fine.
+3. When the room sits right at a threshold, the panel flickers.
+
+**What phase 11 actually shipped, which explains all three.** Automatic
+brightness had exactly two states, ported from the vendor firmware: OE fully
+open, or a fixed 330 µs pulse per 1000 µs row once `adc_light > 2800`. So (1)
+is not "auto stops at level 2" so much as "auto has no levels at all" — its
+one dim state happens to sit near where the old fixed ramp put level 2 (its
+`level * 140 µs` gave 280 µs). And the ramp is why (2): a linear sweep of duty
+cycle is not a linear sweep of brightness. The eye is roughly logarithmic in
+luminance, so `level * 140` spends its whole range in the top half of what is
+visible and its bottom step, at 14 % duty, is nowhere near dim. (3) is a bare
+comparison against one threshold, re-evaluated every frame, on a noisy ADC:
+sitting on 2800 means each sample lands on a different side of the line and
+the panel alternates between full and dim at ~125 Hz.
+
+**The three fixes, one per report.**
+
+* **A geometric level table**, `LEVEL_ON_US[] = { 8, 18, 40, 90, 200, 450, 0 }`
+  (µs of OE on-time per 1000 µs row; 0 = never chop). Each step is ~2.2× the
+  one below, which is what makes seven settings feel evenly spaced, and level
+  1 lands at ~0.8 % duty instead of 14 %. 8 µs is a deliberate floor: the
+  pulse is a busy-wait between two GPIO writes, and much shorter than that
+  stops being reproducible row to row — the panel would shimmer instead of
+  simply being dim.
+* **A ladder for automatic**, `AUTO_DARKER_AT[] = { 1200, 1900, 2400, 2800,
+  3200, 3600 }` in raw ADC counts, ascending = darker, one boundary per level
+  step. The vendor's 2800 stays exactly where it was, as the point where
+  dimming begins; the rest of the ladder is ours. Automatic now reaches level
+  1, and does so only in a genuinely dark room — the user's own reading of (1)
+  ("maybe that is correct, there can be darker environments") is right, and
+  the ladder is what makes the distinction expressible at all.
+* **Hysteresis, in two parts.** An EMA over the readings (shift 4 on a sample
+  every 8 ms ≈ 130 ms time constant) removes sample noise and makes a hand
+  passing over the sensor a non-event; a ±150-count deadband per boundary
+  removes the oscillation, since a level already engaged holds until the light
+  has come back 150 counts *past* the boundary that engaged it. 150 is under
+  half the narrowest boundary spacing (400), which is what keeps the bands
+  ordered.
+
+**Two smaller things fell out of it.** The dim pulse now waits on
+`dim_pulse_wait()`, a raw timer spin, not `time_delay_us()` — that one pumps
+`usb_cdc_task()` on every iteration, and a single call into it is longer than
+the whole 8 µs bottom level, so the shortest pulses would have overrun and the
+rows carrying them would have been brighter than their neighbours. Same lesson
+as the boot beacon in section 9, in a different place. And leaving a fixed
+level for automatic now clears the EMA, so the next frame re-seeds it from the
+room as it is rather than fading from a reading that may be hours old.
+
+**On the suggested `minimum brightness: low/norm/high` setting: not taken.**
+It would be a second control for the thing the level scale already controls,
+and the reason the floor was wrong was the curve, not the absence of a knob.
+With the table above, fixed level 1 *is* "low" and automatic reaches it on its
+own. If real hardware says 8 µs is still too bright, the answer is a smaller
+first entry in one table, not a setting; if it says 8 µs is unstable, the
+answer is temporal dilution (light a level-1 frame only every Nth scan), and
+that is worth doing properly rather than hiding behind a menu item.
+
+**Not verified on hardware by me** — the numbers above are chosen from the
+physics of duty cycle and the vendor's one known-good threshold, and the
+ladder's six boundaries are an even spread over the ADC range rather than
+measured lux. `(clock-light)` in the Lisp shell prints the raw reading; the
+boundaries are one table to retune if a real room disagrees.

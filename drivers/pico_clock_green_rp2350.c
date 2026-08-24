@@ -109,16 +109,63 @@
 #define A1_MASK  (1u << A1_PIN)
 #define A2_MASK  (1u << A2_PIN)
 
-/* LDR threshold and dim duty, ported from the vendor firmware's own
- * already-tuned values (repeating_timer_callback_us(), Pico-Clock-Green.c)
- * rather than independently derived -- same physical LDR/divider hardware.
- * Vendor toggles OE open 1-in-3 calls (~33% duty) when adc_light > 2800 out
- * of a 12-bit 0-4095 range; here that's a single software-PWM pulse per row
- * instead of a separate microsecond timer (LugalOS has no generic
- * one-shot IRQ callback a driver can reuse for that -- see the plan doc's
- * L2 section for why this shape was chosen instead). */
-#define LDR_DARK_THRESHOLD 2800
-#define DIM_ON_TIME_US     330
+/* Brightness, all of it, in one place: seven levels of OE on-time out of the
+ * 1000 us row period, and the ambient-light readings that pick one of them
+ * when brightness is automatic.
+ *
+ * The levels are geometric, not linear. Phase 11 used level * 140 us and
+ * phase 17 shipped it that way; on real hardware in a dark room the bottom
+ * of that ramp is still glaring (user, 2026-08-24), because a 14% duty cycle
+ * is nowhere near 1/7th of the perceived brightness of a 100% one -- the eye
+ * is roughly logarithmic in luminance, so evenly spaced duty cycles bunch up
+ * at the top and leave nothing usable at the bottom. Each step here is about
+ * 2.2x the one below, which spreads the seven settings over the range that
+ * is actually visible and puts level 1 at ~0.8% duty: dim enough for a dark
+ * bedroom, which is what the bottom of the scale is for.
+ *
+ * 8 us is the floor on purpose. The pulse is a busy-wait between two GPIO
+ * writes, so anything much shorter stops being reliably reproducible from
+ * row to row and the panel starts to shimmer instead of just being dim.
+ *
+ * Level 7 is 0, meaning "do not chop at all" -- OE simply stays open, one
+ * less thing happening in the scan loop at full brightness. */
+#define LEVEL_MIN 1
+#define LEVEL_MAX 7
+static const uint16_t LEVEL_ON_US[LEVEL_MAX] = { 8, 18, 40, 90, 200, 450, 0 };
+
+/* Ambient light -> level, ascending, in raw 12-bit ADC counts. The LDR
+ * divider reads *higher* in the dark, so entry i is the reading at or above
+ * which the level drops to LEVEL_MAX-1-i.
+ *
+ * 2800 is the vendor firmware's own dimming threshold (repeating_timer_
+ * callback_us(), Pico-Clock-Green.c) on the same physical LDR and divider,
+ * and it stays put as the boundary where dimming begins; what phase 11
+ * ported was the single threshold and its single 330 us dim duty, so
+ * automatic brightness was a two-state affair -- full, or one fixed dim. The
+ * rest of the ladder is this driver's, so that "automatic" tracks the room
+ * instead of falling off a cliff, and so that a genuinely dark room reaches
+ * the bottom of the scale rather than stopping around level 4's worth of
+ * light output. */
+static const uint16_t AUTO_DARKER_AT[LEVEL_MAX - 1] = {
+    1200, 1900, 2400, 2800, 3200, 3600
+};
+
+/* The deadband around each of those boundaries, in ADC counts. Without it a
+ * room sitting exactly on a threshold flickers: the LDR is noisy, the reading
+ * is re-taken every frame, and each sample lands on a different side of the
+ * line (user, 2026-08-24). A level that is already engaged holds until the
+ * reading has come back 150 counts *past* the boundary, so crossing back and
+ * forth takes a real change in the light, not noise. Kept below half the
+ * narrowest threshold spacing (400) so the bands stay ordered. */
+#define AUTO_HYSTERESIS 150
+
+/* Second half of the same fix, and the one that handles slow drift rather
+ * than sample noise: the reading that feeds the ladder is an exponential
+ * moving average, not the raw conversion. Shift 4 over a sample every 8 ms
+ * (one per frame, row 0) is a time constant of about 130 ms -- fast enough
+ * that switching a lamp on is not perceived as a delay, slow enough that a
+ * hand passing over the sensor never reaches a threshold at all. */
+#define AUTO_EMA_SHIFT 4
 
 /* 4 column-groups (32 bits, matching the two cascaded 16-channel SM16106s)
  * x 8 rows. Row 0 of each group is deliberately left blank (0x00) -- the
@@ -146,6 +193,13 @@ static uint16_t g_dim_on_us; /* 0 = full brightness (no PWM pulse needed) */
 /* -1 = the LDR decides, as phase 11 shipped it; 1..7 = a fixed level chosen
  * from the menu, which suspends the LDR entirely (clock_hw_set_brightness). */
 static int g_brightness_level = -1;
+/* Automatic brightness only: the smoothed light reading and the level it
+ * currently holds. The level is state, not a pure function of the reading --
+ * that is what makes the hysteresis hysteresis. 0 = not sampled yet, so the
+ * first frame after switching to automatic seeds the average outright
+ * instead of fading up to it from nowhere. */
+static uint16_t g_light_ema;
+static int g_auto_level = LEVEL_MAX;
 #if CONFIG_CLOCK_BOOT_BEACON
 /* Set by pico_clock_green_init(): before it, the beacon has clicks only. */
 static bool g_matrix_pins_up;
@@ -396,6 +450,8 @@ void pico_clock_green_init(void) {
     pico_clock_green_clear();
     g_row = 0;
     g_dim_on_us = 0;
+    g_light_ema = 0;
+    g_auto_level = LEVEL_MAX;
 }
 
 /* ------------------------------------------------- indicator LEDs ------ */
@@ -645,6 +701,45 @@ static void buttons_poll(uint64_t now_ms) {
     }
 }
 
+/* One boundary of the ladder, with the deadband applied in whichever
+ * direction it needs to be: a level already engaged has to see the light come
+ * back past `t - AUTO_HYSTERESIS` to disengage, one not yet engaged has to
+ * see `t + AUTO_HYSTERESIS` to engage. Between the two nothing happens, which
+ * is the point. */
+static int auto_level_for(uint16_t light, int cur) {
+    int level = LEVEL_MAX;
+    for (unsigned i = 0; i < LEVEL_MAX - 1; i++) {
+        uint16_t t = AUTO_DARKER_AT[i];
+        bool engaged = (cur <= (int)(LEVEL_MAX - 1 - i));
+        uint16_t edge = engaged ? (uint16_t)(t - AUTO_HYSTERESIS)
+                                : (uint16_t)(t + AUTO_HYSTERESIS);
+        if (light >= edge) level--;
+    }
+    return level;
+}
+
+/* Sampled once per frame from row 0, so this runs at ~125 Hz. */
+static void auto_brightness_update(void) {
+    uint16_t raw = adc_read_light();
+
+    if (g_light_ema == 0) g_light_ema = raw;   /* first sample: seed, don't fade */
+    else g_light_ema = (uint16_t)(g_light_ema
+                                  + ((int32_t)raw - (int32_t)g_light_ema) / (1 << AUTO_EMA_SHIFT));
+
+    g_auto_level = auto_level_for(g_light_ema, g_auto_level);
+    g_dim_on_us = LEVEL_ON_US[g_auto_level - 1];
+}
+
+/* The dim pulse's own wait, and deliberately not time_delay_us(): that one
+ * services USB between polls of the clock, and a single usb_cdc_task() call
+ * is longer than the whole 8 us bottom level. A row whose pulse overran would
+ * simply be brighter than its neighbours, which is exactly the shimmer the
+ * short levels exist to avoid. Nothing else may happen inside this window. */
+static inline void dim_pulse_wait(uint16_t us) {
+    uint64_t start = time_get_us();
+    while (time_get_us() - start < us) { /* spin */ }
+}
+
 static void pico_clock_green_scan_step(void) {
     oe_close();
 
@@ -658,14 +753,14 @@ static void pico_clock_green_scan_step(void) {
      * deliberate choice and must not be overridden a millisecond later by a
      * passing shadow. */
     if (g_row == 0 && g_brightness_level < 0) {
-        g_dim_on_us = (adc_read_light() > LDR_DARK_THRESHOLD) ? DIM_ON_TIME_US : 0;
+        auto_brightness_update();
     }
 
     if (g_dim_on_us == 0) {
         oe_open(); /* left on until the next scan_step() call overwrites it */
     } else {
         oe_open();
-        time_delay_us(g_dim_on_us);
+        dim_pulse_wait(g_dim_on_us);
         oe_close();
     }
 
@@ -802,18 +897,18 @@ void clock_hw_blank(void) {
     oe_close();
 }
 
-/* Automatic brightness is the LDR deciding once a frame, exactly as phase 11
- * shipped it. A fixed level bypasses that with a software-PWM on-time: the
- * row period is 1000 us, so level 7 means "never chop" and each step below
- * takes off about a seventh. Not a perceptual curve -- LED brightness is not
- * linear in duty cycle and seven steps do not deserve a lookup table -- just
- * seven distinguishable settings. */
+/* Fixed and automatic brightness are the same seven levels of LEVEL_ON_US[];
+ * the only difference is who picks the index. A fixed level is picked once,
+ * here, and the LDR stops being read at all until brightness goes back to
+ * automatic -- at which point the next frame re-seeds the average from the
+ * room as it is now, rather than resuming from whatever it was before. */
 void clock_hw_set_brightness(int level) {
-    if (level >= 1 && level <= 7) {
+    if (level >= LEVEL_MIN && level <= LEVEL_MAX) {
         g_brightness_level = level;
-        g_dim_on_us = (level >= 7) ? 0 : (uint16_t)(level * 140);
+        g_dim_on_us = LEVEL_ON_US[level - 1];
     } else {
         g_brightness_level = -1;   /* back to the LDR */
+        g_light_ema = 0;
     }
 }
 
