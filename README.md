@@ -704,6 +704,35 @@ presses from the clock face, and **SYNC**, **LAST**, **AUTO**, **TSET**, **BRT**
 
 ## History
 
+- **2026-08-24: Release 0.13.1 — The clock driver becomes a driver, and two bugs it took hardware to find.**
+  A patch release with no new features: it is about the clock persona being *right* rather than
+  bigger. Three days of living with the clock produced three complaints — the dark-room brightness
+  floor was still glaring, the panel flickered at a threshold, and one scan line was momentarily
+  brighter once a second — and chasing them ended in a structural fix and two real bugs.
+
+  **Brightness**, rewritten around the fact that the eye is logarithmic in luminance: the seven
+  levels are geometric (`8, 18, 40, 90, 200, 450 µs` of OE per 1000 µs row) instead of linear, so
+  level 1 is ~0.8 % duty instead of 14 %. Automatic brightness gained a six-boundary ladder in place
+  of the vendor's single threshold, plus an EMA and a ±150-count deadband — a room sitting on a
+  boundary no longer flickers, and a genuinely dark room now reaches the bottom of the scale.
+
+  **The clock task became a real driver task** (`plan/phase17b_clock_task_split.md`). Phase 12 had
+  served the *entire appliance loop* as one long `chan_call`, which made the clock the only RP2350
+  driver task still running in kernel mode — and made phase 17's `clockisotest` item impossible as
+  written. The appliance now runs in the caller's task, exactly where chess's UI loop runs, and the
+  clock task is a frame-buffer-and-row-scan server confined in U-mode under five PMP grants. An op
+  that carries one whole *frame* (~125 calls/s) is what made that affordable; the per-row cadence
+  phase 12 rightly refused to put on a channel never had to leave the driver.
+
+  **Two bugs found only on hardware.** RP2350's **ACCESSCTRL** gates peripherals to Secure-privileged
+  by default, upstream of PMP and unreachable from a task's own domain: the newly-confined driver
+  faulted on its first `TIMER0` read, and because a dead driver task silently falls back to direct
+  hardware access, *the panel kept working while USB died* — the display is not evidence about the
+  driver. And `console_pump()` latched Ctrl-C **inside** the loop that stops when its 128-byte ring
+  is full, so once that ring filled (with our own tooling's 9P port-probe frames, as it turned out)
+  a long-running program could never be interrupted again. Both fixed; the interrupt latch now runs
+  off a non-consuming peek that cannot be starved by unread input.
+
 - **2026-08-23: Release 0.13.0 — A clock that sets itself, and appliance mode.** The Pico-Clock-Green
   persona becomes a finished appliance. A **DCF-77 receiver** decodes the longwave time signal and sets
   the clock; the whole UI moved onto the board itself with a three-button menu (`SIG` signal monitor,
