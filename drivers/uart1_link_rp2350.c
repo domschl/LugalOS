@@ -57,6 +57,13 @@
 #define U1_LCR_H  (U1 + 0x2C)
 #define U1_CR     (U1 + 0x30)
 
+#define SIO_BASE          0xD0000000UL
+#define SIO_GPIO_IN       (SIO_BASE + 0x004)
+#define SIO_GPIO_OUT_SET  (SIO_BASE + 0x018)
+#define SIO_GPIO_OUT_CLR  (SIO_BASE + 0x020)
+#define SIO_GPIO_OE_SET   (SIO_BASE + 0x038)
+#define SIO_GPIO_OE_CLR   (SIO_BASE + 0x040)
+
 #define FR_RXFE   (1u << 4)   /* receive FIFO empty */
 #define FR_TXFF   (1u << 5)   /* transmit FIFO full */
 
@@ -75,20 +82,73 @@ static void u1_putc(uint8_t c) {
     REG(U1_DR) = c;
 }
 
+/* Set a pin's function, and CHECK that it took.
+ *
+ * Written because it did not. At init the write of FUNCSEL=2 read straight
+ * back as 0x1f (NULL, the reset value) while the identical write from a shell
+ * command seconds later worked -- so the pin mux was silently refusing writes
+ * during early boot, and the driver then spent the rest of its life
+ * transmitting into a disconnected pad. Every symptom above that point looked
+ * like a cable fault: a UART whose registers are all correct, whose internal
+ * loopback passes, and whose bytes go nowhere.
+ *
+ * A write, a read-back and a retry is cheap; believing a write is not. If it
+ * never takes, this says so rather than leaving the caller to infer it from
+ * silence. */
+static bool set_funcsel(unsigned gpio, uint32_t fn) {
+    for (int attempt = 0; attempt < 10; attempt++) {
+        REG(IO_BANK0_CTRL(gpio)) = fn;
+        if ((REG(IO_BANK0_CTRL(gpio)) & 0x1Fu) == fn) {
+            if (attempt) printk("[UART1] GP%u mux took on attempt %d\n", gpio, attempt + 1);
+            return true;
+        }
+        time_delay_us(1000);
+    }
+    printk("[UART1] GP%u mux REFUSED FUNCSEL %u (reads 0x%08lx) -- the pin is not "
+           "connected to the UART\n", gpio, (unsigned)fn,
+           (unsigned long)REG(IO_BANK0_CTRL(gpio)));
+    return false;
+}
+
 void uart1_link_init(void) {
     REG(RESETS_RESET_CLR) = RESETS_UART1_BIT;
     int timeout = 10000;
     while (!(REG(RESETS_RESET_DONE) & RESETS_UART1_BIT) && --timeout > 0);
 
-    REG(IO_BANK0_CTRL(CONFIG_UART1_TX_GPIO)) = 2;      /* F2 = UART */
-    REG(PADS_BANK0_PAD(CONFIG_UART1_TX_GPIO)) = 0x56;
-    REG(IO_BANK0_CTRL(CONFIG_UART1_RX_GPIO)) = 2;
-    REG(PADS_BANK0_PAD(CONFIG_UART1_RX_GPIO)) = 0x56;
+    set_funcsel(CONFIG_UART1_TX_GPIO, 2);              /* F2 = UART1 TX */
+    REG(PADS_BANK0_PAD(CONFIG_UART1_TX_GPIO)) = 0x56;  /* schmitt, 4mA, IE */
 
-    /* Phase 17b's lesson, again and in advance: the peripheral and its pins
-     * are opened to Non-secure access here, from M-mode, so that a later
-     * U-mode conversion does not begin with a fault. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_UART1_TX_GPIO) | (1u << CONFIG_UART1_RX_GPIO);
+    /* RX gets a pull-UP (0x5A), not the pull-down drivers/uart_rp2350.c uses
+     * for its own console RX.
+     *
+     * A UART line idles high, so an unconnected RX with a pull-down sits at
+     * the start-bit level forever and the receiver reads a stream of framing
+     * errors -- garbage bytes out of a wire that is not there. With a
+     * pull-up, a disconnected RX produces *nothing*, which is both correct
+     * and far easier to diagnose: "0 bytes" then means "no cable" rather than
+     * "no cable, or a cable, who knows". Found while chasing a downlink that
+     * delivered exactly one unprintable byte per burst (2026-08-24). */
+    set_funcsel(CONFIG_UART1_RX_GPIO, 2);              /* F2 = UART1 RX */
+    REG(PADS_BANK0_PAD(CONFIG_UART1_RX_GPIO)) = 0x5A;  /* schmitt, PUE, 4mA, IE */
+
+    /* **No GPIO_NSMASK grant here, and that is the fix for the bug that made
+     * this downlink look like a cable fault for an afternoon.**
+     *
+     * Marking a pin non-secure in ACCESSCTRL hands it to the non-secure side
+     * -- and takes it away from the secure one. This driver runs entirely in
+     * M-mode: it has no U-mode task, unlike the console UART, the clock, the
+     * ST7735 or the W5500. Granting the pins away therefore bought nothing
+     * and cost everything: FUNCSEL was written and verified correct, then the
+     * NSMASK write immediately below it made GP8/GP9 read back as 0x1f (NULL)
+     * from M-mode and stop accepting writes. The UART then transmitted
+     * perfectly into a pad that was no longer connected to it -- registers
+     * right, internal loopback passing, not one byte on the wire.
+     *
+     * The peripheral grant is kept: ACCESSCTRL_UART1 is about UART1's own
+     * registers, is harmless from M-mode (the SP/SU bits are preserved by the
+     * read-modify-write), and is what a future U-mode conversion will need.
+     * Only the pin grant was wrong, and it should be added back at the same
+     * time as the U-mode task, not before. */
     REG(ACCESSCTRL_UART1) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_UART1)
                             | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
 
@@ -109,6 +169,11 @@ void uart1_link_init(void) {
     REG(U1_CR) = (1u << 0) | (1u << 8) | (1u << 9);    /* UARTEN | TXE | RXE */
 
     g_up = true;
+    /* Read back what was just written. A mux that does not stick at boot and
+     * does stick later is a very different bug from one that never sticks. */
+    printk("[UART1] init readback: GP%d CTRL 0x%08lx, GP%d CTRL 0x%08lx (2 = UART)\n",
+           CONFIG_UART1_TX_GPIO, (unsigned long)REG(IO_BANK0_CTRL(CONFIG_UART1_TX_GPIO)),
+           CONFIG_UART1_RX_GPIO, (unsigned long)REG(IO_BANK0_CTRL(CONFIG_UART1_RX_GPIO)));
     printk("[UART1] 9P downlink on GP%d/GP%d at %d baud (SLIP)\n",
            CONFIG_UART1_TX_GPIO, CONFIG_UART1_RX_GPIO, (int)CONFIG_UART1_BAUD);
 }
@@ -130,8 +195,47 @@ void uart1_wire_test(unsigned listen_ms) {
            (unsigned long)U1, (unsigned long)REG(U1_CR), (unsigned long)REG(U1_LCR_H),
            (unsigned long)REG(U1_IBRD), (unsigned long)REG(U1_FBRD),
            (unsigned long)REG(U1_FR));
+    printk("[UART1] mux: GP%d CTRL 0x%08lx PAD 0x%03lx | GP%d CTRL 0x%08lx PAD 0x%03lx\n",
+           CONFIG_UART1_TX_GPIO, (unsigned long)REG(IO_BANK0_CTRL(CONFIG_UART1_TX_GPIO)),
+           (unsigned long)REG(PADS_BANK0_PAD(CONFIG_UART1_TX_GPIO)),
+           CONFIG_UART1_RX_GPIO, (unsigned long)REG(IO_BANK0_CTRL(CONFIG_UART1_RX_GPIO)),
+           (unsigned long)REG(PADS_BANK0_PAD(CONFIG_UART1_RX_GPIO)));
     printk("[UART1] TX GP%d, RX GP%d, %d baud. Sending a burst, then listening %u ms.\n",
            CONFIG_UART1_TX_GPIO, CONFIG_UART1_RX_GPIO, (int)CONFIG_UART1_BAUD, listen_ms);
+
+    /* Internal loopback first, which touches no pins at all: the PL011's
+     * CR.LBE (bit 7) ties TXD to RXD inside the peripheral. It separates two
+     * questions that otherwise look identical from outside --
+     *
+     *   passes  the clock, divisor, enables, FIFOs and this driver's own
+     *           read/write code are all correct, and anything still broken is
+     *           the pin mux or the wire;
+     *   fails   the fault is in here, and no amount of re-jumpering will help.
+     *
+     * Worth its few lines: without it, "0 bytes received" on a loopback
+     * jumper is ambiguous between a driver bug and a jumper on the wrong two
+     * pins, and the two have very different owners. */
+    {
+        uint32_t saved = REG(U1_CR);
+        REG(U1_CR) = saved | (1u << 7);                /* LBE */
+        while (u1_has_char()) (void)u1_getc();         /* drain first */
+
+        static const char probe[] = "LOOP";
+        for (unsigned i = 0; i < 4; i++) u1_putc((uint8_t)probe[i]);
+
+        uint64_t t_end = time_get_ms() + 100;
+        char got[8];
+        unsigned g = 0;
+        while (time_get_ms() < t_end && g < 4) {
+            if (u1_has_char()) got[g++] = (char)u1_getc();
+        }
+        got[g] = 0;
+        printk("[UART1] internal loopback (no pins): sent \"LOOP\", got \"%s\" -- %s\n",
+               got, (g == 4) ? "PASS: the peripheral and this driver are fine"
+                             : "FAIL: the fault is in this driver's setup");
+        REG(U1_CR) = saved;
+        while (u1_has_char()) (void)u1_getc();
+    }
 
     static const char msg[] = "\r\nLUGALOS-UART1-WIRE-TEST\r\n";
     for (unsigned i = 0; i < sizeof(msg) - 1; i++) u1_putc((uint8_t)msg[i]);
@@ -153,6 +257,79 @@ void uart1_wire_test(unsigned listen_ms) {
     }
     if (n) { line[n] = 0; printk("[UART1] rx: %s\n", line); }
     printk("[UART1] %u byte(s) received in %u ms\n", got, listen_ms);
+}
+
+/* Continuity, with the UART taken out of the picture entirely.
+ *
+ * Drives TX as a plain SIO output and reads RX as a plain SIO input. With a
+ * jumper between the two pins, the reads follow the writes; without one, RX
+ * sits at whatever its pull says. That distinguishes the last two candidates
+ * a failing downlink leaves once internal loopback has passed:
+ *
+ *   follows      the pins and the wire are fine, so the fault is the UART
+ *                mux -- a different pin pair is worth trying;
+ *   stuck        the jumper is not on these two pins (GP8 is physical pin
+ *                11 and GP9 is pin 12 on a Pico 2, which is exactly the
+ *                kind of thing that gets miscounted), or a pin is damaged.
+ *
+ * Restores the UART mux afterwards, so the link keeps working. */
+void uart1_pin_test(void) {
+    if (!g_up) { printk("[UART1] not initialised\n"); return; }
+
+    const unsigned tx = CONFIG_UART1_TX_GPIO, rx = CONFIG_UART1_RX_GPIO;
+
+    REG(IO_BANK0_CTRL(tx)) = 5;                    /* SIO */
+    REG(PADS_BANK0_PAD(tx)) = 0x56;
+    REG(SIO_GPIO_OE_SET) = (1u << tx);
+    REG(IO_BANK0_CTRL(rx)) = 5;
+    REG(PADS_BANK0_PAD(rx)) = 0x5A;                /* input, pull-up */
+    REG(SIO_GPIO_OE_CLR) = (1u << rx);
+
+    unsigned followed = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        bool high = (i & 1) == 0;
+        if (high) REG(SIO_GPIO_OUT_SET) = (1u << tx);
+        else      REG(SIO_GPIO_OUT_CLR) = (1u << tx);
+        time_delay_us(2000);
+        bool got = (REG(SIO_GPIO_IN) & (1u << rx)) != 0;
+        printk("[UART1] GP%u driven %s -> GP%u reads %s%s\n",
+               tx, high ? "HIGH" : "LOW ", rx, got ? "HIGH" : "LOW ",
+               (got == high) ? "  (follows)" : "  <-- does not follow");
+        if (got == high) followed++;
+    }
+
+    /* Second half: put TX back under the UART, keep RX as a plain input, and
+     * watch for edges while the UART transmits. Internal loopback has already
+     * proved the peripheral works and the GPIO walk has proved the wire does,
+     * so the only question left is which side of the pin mux is not taking --
+     * and a transmitting UART that produces no edges on a wire known good
+     * answers it. */
+    REG(IO_BANK0_CTRL(tx)) = 2;                    /* TX back to UART1 */
+    REG(PADS_BANK0_PAD(tx)) = 0x56;
+    time_delay_us(1000);
+
+    unsigned edges = 0;
+    bool prev = (REG(SIO_GPIO_IN) & (1u << rx)) != 0;
+    for (unsigned i = 0; i < 8; i++) u1_putc((uint8_t)0x55);   /* 0x55 = max edges */
+    uint64_t t_end = time_get_ms() + 50;
+    while (time_get_ms() < t_end) {
+        bool now = (REG(SIO_GPIO_IN) & (1u << rx)) != 0;
+        if (now != prev) { edges++; prev = now; }
+    }
+    printk("[UART1] UART transmitting on GP%u, GP%u sampled as GPIO: %u edge(s) -- %s\n",
+           tx, rx, edges,
+           edges ? "the UART IS driving the pin, so the RX mux is the suspect"
+                 : "the UART is NOT driving the pin: the TX mux never took");
+
+    printk("[UART1] %u/8 followed -- %s\n", followed,
+           (followed == 8) ? "GP8 and GP9 ARE connected: the wire is good, suspect the UART mux"
+                           : "GP8 and GP9 are NOT connected (GP8 = pin 11, GP9 = pin 12)");
+
+    /* Back to UART duty. */
+    REG(IO_BANK0_CTRL(tx)) = 2;
+    REG(PADS_BANK0_PAD(tx)) = 0x56;
+    REG(IO_BANK0_CTRL(rx)) = 2;
+    REG(PADS_BANK0_PAD(rx)) = 0x5A;
 }
 
 /* --- the p9_link ------------------------------------------------------- */
@@ -227,6 +404,7 @@ p9_link_t *uart1_get_link(void) { return g_up ? &g_uart1_link : NULL; }
 
 void uart1_link_init(void) { }
 void uart1_wire_test(unsigned ms) { (void)ms; }
+void uart1_pin_test(void) { }
 p9_link_t *uart1_get_link(void) { return 0; }
 
 #endif

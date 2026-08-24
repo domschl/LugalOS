@@ -51,6 +51,11 @@ p9_link_t *uart1_get_link(void);
  * which direction is silent. */
 void uart1_wire_test(unsigned listen_ms);
 
+/* Continuity between the downlink's two pins, using plain GPIO rather than
+ * the UART -- the test that says whether the jumper is where it is believed
+ * to be. */
+void uart1_pin_test(void);
+
 // --- A3b: shared-wire demux (plan/phase5_distributed_design.md) ---
 //
 // Lets the interactive console and SLIP-framed 9P traffic coexist on one
