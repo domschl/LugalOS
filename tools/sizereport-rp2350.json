@@ -1,6 +1,6 @@
 {
-  "heap_bytes": 364544,
-  "heap_pages": 89,
+  "heap_bytes": 360448,
+  "heap_pages": 88,
   "per_file": {
     "arch/riscv/common/elf.c": 1456,
     "arch/riscv/common/trap.c": 2694,
@@ -9,6 +9,7 @@
     "drivers/flashdisk.c": 20,
     "drivers/i2c_rtc.c": 863,
     "drivers/loopback_net.c": 2048,
+    "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 28,
     "drivers/spisd_rp2350.c": 3189,
     "drivers/st7735_rp2350.c": 3746,
@@ -19,7 +20,7 @@
     "fs/9p.c": 3396,
     "fs/p9_chan.c": 6172,
     "fs/p9_link.c": 12440,
-    "fs/vfs_server.c": 9755,
+    "fs/vfs_server.c": 10779,
     "kernel/balloc.c": 2051,
     "kernel/board.c": 12,
     "kernel/chan.c": 933,
@@ -31,10 +32,12 @@
     "kernel/palloc.c": 32,
     "kernel/path.c": 68,
     "kernel/printk.c": 24,
+    "kernel/random.c": 8,
     "kernel/sched.c": 973,
     "kernel/shell.c": 254,
     "kernel/ticker.c": 29,
-    "kernel/time.c": 26,
+    "kernel/time.c": 24,
+    "kernel/timezone.c": 101,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
     "user/chess/src/chess_ui.c": 10784,
@@ -52,5 +55,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 150449
+  "total": 151716
 }

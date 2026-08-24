@@ -33,6 +33,7 @@
     "kernel/palloc.c": 32,
     "kernel/path.c": 68,
     "kernel/printk.c": 24,
+    "kernel/random.c": 8,
     "kernel/sched.c": 973,
     "kernel/shell.c": 254,
     "kernel/ticker.c": 29,
@@ -47,5 +48,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 126115
+  "total": 126123
 }

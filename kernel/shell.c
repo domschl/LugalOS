@@ -16,6 +16,8 @@
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
+#include "kernel/sha256.h"
+#include "kernel/random.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #if defined(CONFIG_BOARD_RP2350)
@@ -146,6 +148,8 @@ static void cmd_help(void) {
 #endif
     cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
+    cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
+    cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
     cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
     cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
@@ -1381,6 +1385,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *fn = &cmd_line[2];
         while (*fn == ' ') fn++;
         shell_run_editor(fn);
+        return;
+    } else if (strcmp(cmd_line, "hmacselftest") == 0) {
+        sha256_selftest();
+        return;
+    } else if (strcmp(cmd_line, "randtest") == 0) {
+        random_selftest(4096);
+        return;
+    } else if (strncmp(cmd_line, "randtest ", 9) == 0) {
+        unsigned bits = 0;
+        for (const char *d = &cmd_line[9]; *d >= '0' && *d <= '9'; d++)
+            bits = bits * 10u + (unsigned)(*d - '0');
+        random_selftest(bits);
         return;
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();

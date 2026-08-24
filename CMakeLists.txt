@@ -385,6 +385,15 @@ set(SOURCES
     kernel/ticker.c
     kernel/time.c
     kernel/timezone.c
+    # N1 (plan/phase18_networking_and_auth.md): SHA-256/HMAC-SHA-256 for the
+    # 9P Tauth gate. Target-independent and built everywhere, including the
+    # QEMU targets that will never have a network cable -- an auth exchange's
+    # fiddly part is its arithmetic, and arithmetic should not be debugged by
+    # flashing (same argument as drivers/dcf77_decode.c above).
+    kernel/sha256.c
+    # N1: the nonce source for that gate, plus the measurement that says
+    # whether the ring oscillator behind it is worth trusting.
+    kernel/random.c
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c

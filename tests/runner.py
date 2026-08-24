@@ -446,6 +446,28 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # a board and waiting minutes for a signal that may not arrive.
         # Everything downstream of it stays hardware-only, per
         # [[falsify_on_hardware_not_qemu]]; this is the half that is portable.
+        # N1 (plan/phase18_networking_and_auth.md): the first cryptography in
+        # this tree, against the published vectors. Target-independent for the
+        # same reason the DCF-77 decoder below is: an auth exchange's fiddly
+        # part is its arithmetic, and arithmetic must not be debugged by
+        # flashing a board. RFC 4231's cases 6 and 7 are the load-bearing ones
+        # -- they exercise the key-longer-than-the-block branch that every
+        # short-key test passes without.
+        ok, log = session.send_and_expect("hmacselftest\n",
+                                          r"HMAC_SELFTEST_(OK|FAIL)", timeout=30.0)
+        hmac_ok = ok and "HMAC_SELFTEST_OK" in log
+        results.append(("SHA-256/HMAC-SHA-256 Against FIPS and RFC 4231 Vectors (N1)",
+                        hmac_ok, log if not hmac_ok else ""))
+
+        # The nonce source behind that gate. On QEMU there is no hardware
+        # entropy and the command says so rather than inventing a verdict --
+        # SKIP is the pass here, and RANDTEST_OK/WEAK is a hardware result.
+        ok, log = session.send_and_expect("randtest\n",
+                                          r"RANDTEST_(OK|WEAK|SKIP)", timeout=30.0)
+        rand_ok = ok and "RANDTEST_SKIP" in log
+        results.append(("Entropy Source Reports Honestly With No Hardware (N1)",
+                        rand_ok, log if not rand_ok else ""))
+
         ok, log = session.send_and_expect("dcf77selftest\n",
                                           r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
         sel_ok = ok and "DCF77_SELFTEST_OK" in log
