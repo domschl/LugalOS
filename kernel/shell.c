@@ -36,6 +36,7 @@
 #endif
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
+#include "fs/9p.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -114,6 +115,9 @@ static void cmd_help(void) {
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
+    cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
+    cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
+    cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
     cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
@@ -209,6 +213,93 @@ static void cmd_p9serve(void) {
  * routes it to the right place. This is the single-cable story A3a's
  * headless mode doesn't cover (a real CP2102/RP2350 deployment with only
  * one wire back to the host). `p9share off` reverses both steps. */
+/* N2, plan/phase18_networking_and_auth.md: which links demand a key.
+ *
+ * Per link, because the policy is a property of the wire: the same server,
+ * the same namespace, and a different answer depending on whether the request
+ * arrived over a channel inside this address space, a cable on the desk, or
+ * an Ethernet jack. With no arguments it lists what each link is currently
+ * doing, which is the question anyone debugging a refused attach asks first.
+ */
+static void cmd_p9auth(const char *arg) {
+    if (!arg || !*arg) {
+        cprintf("9P authentication policy by link:\n");
+        const char *dname, *dkind;
+        bool dpresent;
+        for (uint32_t i = 0; dev_info(i, &dname, &dkind, &dpresent); i++) {
+            p9_link_t *l = (p9_link_t *)dev_get(dname, DEV_KIND_P9LINK);
+            if (!l) continue;   /* not a 9P link, or not present */
+            cprintf("  %-10s %s\n", dname, l->auth_required ? "REQUIRED" : "not required");
+        }
+        cprintf("Keys configured: %s\n", p9_auth_have_keys() ? "yes" : "NO -- a link set to "
+                "REQUIRED will refuse every attach");
+        return;
+    }
+
+    char name[16];
+    unsigned i = 0;
+    while (arg[i] && arg[i] != ' ' && i < sizeof(name) - 1) { name[i] = arg[i]; i++; }
+    name[i] = '\0';
+    while (arg[i] == ' ') i++;
+    const char *state = &arg[i];
+
+    p9_link_t *l = (p9_link_t *)dev_get(name, DEV_KIND_P9LINK);
+    if (!l) { cprintf("p9auth: no such 9P link '%s' (see /proc/devices)\n", name); return; }
+
+    if (strcmp(state, "on") == 0)       l->auth_required = true;
+    else if (strcmp(state, "off") == 0) l->auth_required = false;
+    else { cprintf("usage: p9auth <link> on|off\n"); return; }
+
+    cprintf("p9auth: link '%s' now %s\n", name,
+            l->auth_required ? "REQUIRES authentication" : "does not require authentication");
+    if (l->auth_required && !p9_auth_have_keys()) {
+        cprintf("p9auth: WARNING no keys configured (%s or %s) -- this link will now\n"
+                "        refuse every attach, which is the intended failure direction.\n",
+                P9_AUTH_KEYS_FILE, P9_AUTH_FALLBACK_KEY_FILE);
+    }
+}
+
+/* N2: install a key for this boot, from the console.
+ *
+ * Deliberately not persistent and deliberately console-only -- see
+ * p9_auth_set_console_key() in fs/9p.c for why a key that lives in RAM and
+ * dies at reboot is the right shape for both bootstrapping a gateway and
+ * testing the gate, and why the alternative (a test key in the flash image)
+ * would have been a key on every board that image ever reaches. */
+static void cmd_p9key(const char *arg) {
+    if (!arg || !*arg) {
+        cprintf("9P auth key: %s\n", p9_auth_have_keys() ? "configured" : "none");
+        cprintf("  console key : set with `p9key <hex>`; this boot only, overrides the files\n");
+        cprintf("  key list    : %s   (one \"uname hexkey\" line per identity)\n", P9_AUTH_KEYS_FILE);
+        cprintf("  single key  : %s\n", P9_AUTH_FALLBACK_KEY_FILE);
+        cprintf("Neither file is servable over 9P, on any transport.\n");
+        return;
+    }
+    if (strcmp(arg, "clear") == 0) {
+        p9_auth_set_console_key(NULL, 0);
+        cprintf("p9key: console key cleared\n");
+        return;
+    }
+
+    uint8_t key[64];
+    uint32_t len = 0;
+    for (const char *h = arg; h[0] && h[1] && len < sizeof(key); h += 2) {
+        int hi = -1, lo = -1;
+        for (int p = 0; p < 2; p++) {
+            char c = h[p];
+            int v = (c >= '0' && c <= '9') ? c - '0'
+                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (p == 0) hi = v; else lo = v;
+        }
+        if (hi < 0 || lo < 0) break;
+        key[len++] = (uint8_t)((hi << 4) | lo);
+    }
+    if (len == 0) { cprintf("p9key: expected an even-length hex string, or `clear`\n"); return; }
+    p9_auth_set_console_key(key, len);
+    cprintf("p9key: console key set (%u bytes), this boot only\n", (unsigned)len);
+}
+
 static void cmd_p9share(const char *arg) {
     bool enable = true;
     if (arg) {
@@ -1466,6 +1557,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "p9serve") == 0) {
         cmd_p9serve();
+        return;
+    } else if (strcmp(cmd_line, "p9key") == 0) {
+        cmd_p9key(NULL);
+        return;
+    } else if (strncmp(cmd_line, "p9key ", 6) == 0) {
+        cmd_p9key(&cmd_line[6]);
+        return;
+    } else if (strcmp(cmd_line, "p9authselftest") == 0) {
+        p9_auth_selftest();
+        return;
+    } else if (strcmp(cmd_line, "p9auth") == 0) {
+        cmd_p9auth(NULL);
+        return;
+    } else if (strncmp(cmd_line, "p9auth ", 7) == 0) {
+        cmd_p9auth(&cmd_line[7]);
         return;
     } else if (strcmp(cmd_line, "p9share") == 0) {
         cmd_p9share(NULL);

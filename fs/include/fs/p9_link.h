@@ -21,6 +21,20 @@ typedef struct p9_link {
     int (*send_frame)(struct p9_link *link, const uint8_t *buf, uint32_t len);
     int (*recv_frame)(struct p9_link *link, uint8_t *buf, uint32_t max_len);
     void *ctx;
+
+    /* N2, plan/phase18_networking_and_auth.md: must an attach arriving here
+     * authenticate first?
+     *
+     * A property of the wire, which is why it lives on the link rather than
+     * in the server: a local channel and a cable between two boards on one
+     * desk are trusted by the same argument that trusts the boards, and a
+     * network link is not. Default false, so an existing transport keeps
+     * behaving exactly as it did; the W5500 link sets it, and `p9auth` can
+     * set it on any link for testing or for a cable someone does not trust.
+     *
+     * A link that requires auth but has no keys configured refuses every
+     * attach -- see p9_auth_have_keys(). */
+    bool auth_required;
 } p9_link_t;
 
 /* Services exactly one pending request on `link`, if poll() reports one

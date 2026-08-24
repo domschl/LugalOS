@@ -47,6 +47,12 @@
  * P9_MAX_IOUNIT, less if the peer asked for a smaller msize. */
 uint32_t p9_negotiated_iounit(void);
 
+/* Whether an attach on a given transport must authenticate first. */
+typedef enum {
+    P9_AUTH_NOT_REQUIRED = 0,   /* a local channel, or an attached cable */
+    P9_AUTH_REQUIRED     = 1,   /* anything reachable over a network */
+} p9_auth_policy_t;
+
 /* Bounds for the in-kernel fid table and Twalk's name list -- both are
  * per-connection resource limits, not protocol limits (9P itself allows up
  * to 65535 walk elements per message). Small values keep the fid table's
@@ -90,6 +96,7 @@ typedef enum {
 
 // QID types (top bits of p9_qid_t.type)
 #define P9_QTDIR  0x80
+#define P9_QTAUTH 0x08   // the file behind an afid, not a file on any disk
 #define P9_QTFILE 0x00
 
 // 9P QID Structure (13 bytes on the wire)
@@ -105,6 +112,7 @@ typedef struct {
     uint16_t    tag;
     uint16_t    oldtag;  // Tflush's target tag
     uint32_t    fid;
+    uint32_t    afid;    // Tauth/Tattach: the auth fid, or P9_NOFID for none
     uint32_t    newfid;
     uint32_t    msize;
     uint64_t    offset;
@@ -138,6 +146,68 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg);
 // Microkernel 9P File Server Entrypoint -- stateful across calls via an
 // internal, bounded fid table (see P9_MAX_FIDS) wired to the real VFS
 // handle API (fs/include/fs/vfs.h, A1), not a single shared buffer.
-int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max);
+//
+// `policy` says whether an attach arriving on THIS transport has to prove it
+// knows a key (N2, plan/phase18_networking_and_auth.md). It is a parameter
+// rather than a global because it is a property of the wire the request came
+// off, and every caller knows which wire that is: a local channel and an
+// attached cable do not require it, an Ethernet link does. Passing it
+// explicitly at all four call sites is deliberate -- the failure mode of a
+// default would be a link that silently does not authenticate.
+int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
+                      uint8_t *resp_buf, uint32_t resp_max,
+                      p9_auth_policy_t policy);
+
+/* --- The auth gate (N2, plan/phase18_networking_and_auth.md §6) ---
+ *
+ * 9P-native, through Tauth and an afid, because that is the extension point
+ * the protocol already has for exactly this. The exchange:
+ *
+ *     C -> Tauth  afid, uname, aname
+ *     S -> Rauth  qid                    (afid is now an auth file)
+ *     C -> Tread  afid, 0, 32            <- 32-byte server nonce
+ *     C -> Twrite afid, 0, 32            -> HMAC-SHA256(key, nonce|uname|aname)
+ *     S            verifies, marks the afid authenticated
+ *     C -> Tattach fid, afid, uname, aname
+ *
+ * What it proves: the client holds the key for `uname`. What it does not
+ * prove, and must not be read as proving: anything about confidentiality (the
+ * frames are cleartext), and anything about authorization -- every
+ * authenticated identity gets the same namespace. See the plan's §1.
+ */
+
+/* Where the keys live, searched in this order. The first file is a list --
+ * one "uname hexkey" line per identity, so a key can be revoked by deleting a
+ * line -- and the second is a single key for a board with no card.
+ *
+ * The 9P server refuses to serve anything under P9_AUTH_KEY_DIR (see
+ * p9_path_is_secret() in fs/9p.c). That is not belt-and-braces: the gateway
+ * exports the very volume its keys live on, so without it any authenticated
+ * client could simply read everyone else's secret. */
+#define P9_AUTH_KEY_DIR   "/sd0/system/etc/auth"
+#define P9_AUTH_KEYS_FILE P9_AUTH_KEY_DIR "/keys"
+#define P9_AUTH_FALLBACK_KEY_FILE "/flash0/system/etc/p9key"
+
+/* True if any key is configured at all. A link whose policy is
+ * P9_AUTH_REQUIRED and for which this is false refuses every attach: the
+ * failure mode of a misconfigured gateway must be "nobody gets in", never
+ * "everybody does". */
+bool p9_auth_have_keys(void);
+
+/* Installs a key for this boot only, from the local console (`p9key`). It
+ * overrides the key files, is never reachable over 9P, and does not survive a
+ * reboot -- see the definition in fs/9p.c for why it exists at all rather
+ * than a test key being baked into a shipped image. Pass NULL/0 to clear. */
+void p9_auth_set_console_key(const uint8_t *key, uint32_t len);
+
+/* True for a path the server refuses to serve to anyone over any transport --
+ * the key store. Exposed for the self-test. */
+bool p9_auth_path_is_secret(const char *path);
+
+/* Known-answer tests for the parts of the gate that are pure logic: the
+ * secret-path guard, and the fact that the response MAC binds uname and aname
+ * (so a response captured for one identity cannot be replayed as another on
+ * the same nonce). No network, no keys, no peer. Returns failures. */
+int p9_auth_selftest(void);
 
 #endif // FS_9P_H

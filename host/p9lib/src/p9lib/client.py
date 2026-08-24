@@ -26,6 +26,7 @@ import struct
 from dataclasses import dataclass
 
 TVERSION, RVERSION = 100, 101
+TAUTH, RAUTH = 102, 103
 TATTACH, RATTACH = 104, 105
 RERROR = 107
 TWALK, RWALK = 110, 111
@@ -332,13 +333,59 @@ class P9Client:
         byte, so a chunk of exactly .msize could not be framed."""
         return max(self.msize - IOHDRSZ, 1)
 
-    def attach(self, fid: int, aname: str = "", uname: str = "lugal") -> Qid:
-        body = struct.pack("<II", fid, NOFID) + _pack_str(uname) + _pack_str(aname)
+    def attach(self, fid: int, aname: str = "", uname: str = "lugal",
+               afid: int = NOFID) -> Qid:
+        """Tattach. `afid` names an auth fid that has already answered a
+        challenge (see authenticate()); NOFID means an unauthenticated attach,
+        which a link whose policy requires auth will refuse."""
+        body = struct.pack("<II", fid, afid) + _pack_str(uname) + _pack_str(aname)
         rtype, body = self._roundtrip(TATTACH, body)
         if rtype != RATTACH:
             raise P9Error(f"expected Rattach, got type {rtype}")
         qid, _ = _parse_qid(body, 0)
         return qid
+
+    def auth(self, afid: int, aname: str = "", uname: str = "lugal") -> Qid:
+        """Tauth: asks the server to open an auth file on `afid`.
+
+        Rerror here is a legitimate and informative answer -- "no keys
+        configured on this server" is what a gateway with an empty key store
+        says, and it is better to see it at this step than after a pointless
+        handshake."""
+        body = struct.pack("<I", afid) + _pack_str(uname) + _pack_str(aname)
+        rtype, body = self._roundtrip(TAUTH, body)
+        if rtype != RAUTH:
+            raise P9Error(f"expected Rauth, got type {rtype}")
+        qid, _ = _parse_qid(body, 0)
+        return qid
+
+    def authenticate(self, afid: int, key: bytes, aname: str = "",
+                     uname: str = "lugal") -> None:
+        """The whole exchange, server-side mirror in fs/9p.c:
+
+            Tauth  afid, uname, aname
+            Tread  afid  -> 32-byte nonce
+            Twrite afid  <- HMAC-SHA256(key, nonce | uname | aname)
+
+        The key never crosses the wire; what crosses is a MAC over a nonce the
+        server chose, so a recording of one exchange proves nothing about the
+        next. uname and aname are inside the MAC, which is what stops a
+        response captured for one identity being replayed as another.
+
+        Raises P9Error if the server rejects the response -- and note the
+        server burns its nonce on rejection, so a retry needs a fresh Tauth
+        rather than another guess against the same challenge."""
+        import hmac as _hmac
+        import hashlib as _hashlib
+
+        self.auth(afid, aname=aname, uname=uname)
+        nonce = self.read(afid, 0, 32)
+        if len(nonce) != 32:
+            raise P9Error(f"auth: server offered a {len(nonce)}-byte challenge, expected 32")
+        mac = _hmac.new(key, nonce + uname.encode() + aname.encode(), _hashlib.sha256).digest()
+        n = self.write(afid, 0, mac)
+        if n != len(mac):
+            raise P9Error(f"auth: server accepted {n} of {len(mac)} response bytes")
 
     def walk(self, fid: int, newfid: int, names: list[str]) -> int:
         if len(names) > MAX_WALK_ELEM:
@@ -462,12 +509,26 @@ class P9Client:
         if rtype != RCLUNK:
             raise P9Error(f"expected Rclunk, got type {rtype}")
 
-    def cat(self, path: str, root_fid: int = 1, file_fid: int = 2) -> bytes:
+    def cat(self, path: str, root_fid: int = 1, file_fid: int = 2,
+            key: bytes | None = None, uname: str = "lugal",
+            auth_fid: int = 0) -> bytes:
         """Convenience: attach at '/', walk to `path` (split on '/'), open
         for read, read the whole file, clunk. Matches the sequence
-        drivers/loopback_net.c's loopback_9p_cat() drives in-kernel."""
+        drivers/loopback_net.c's loopback_9p_cat() drives in-kernel.
+
+        **This starts a fresh connection every call.** Tversion resets all
+        server-side fid state by design (fs/9p.c), so anything established
+        earlier -- including an authenticated afid from a Session -- is gone
+        the moment this runs. Do not reach for it through a Session's
+        `.client`; use the Session's own path methods, which keep one
+        connection alive. On a link whose policy requires authentication,
+        pass `key` so this one-shot can authenticate for itself."""
         self.version()
-        self.attach(root_fid, aname="/")
+        if key is not None:
+            self.authenticate(auth_fid, key, aname="/", uname=uname)
+            self.attach(root_fid, aname="/", uname=uname, afid=auth_fid)
+        else:
+            self.attach(root_fid, aname="/", uname=uname)
         names = [p for p in path.split("/") if p]
         nwqid = self.walk(root_fid, file_fid, names)
         if nwqid != len(names):
@@ -506,10 +567,21 @@ class Session:
 
     _ROOT_FID = 1
 
-    def __init__(self, client: P9Client, aname: str = "") -> None:
+    _AUTH_FID = 0   # never reused for a file: it is the auth file's own fid
+
+    def __init__(self, client: P9Client, aname: str = "", uname: str = "lugal",
+                 key: bytes | None = None) -> None:
+        """`key` present means authenticate before attaching (N2,
+        plan/phase18_networking_and_auth.md). Absent means attach with
+        NOFID, which works on any link whose policy does not require auth and
+        is refused, with a readable Rerror, on one that does."""
         self.client = client
         self.client.version()
-        self.client.attach(self._ROOT_FID, aname=aname)
+        afid = NOFID
+        if key is not None:
+            self.client.authenticate(self._AUTH_FID, key, aname=aname, uname=uname)
+            afid = self._AUTH_FID
+        self.client.attach(self._ROOT_FID, aname=aname, uname=uname, afid=afid)
         self._next_work_fid = self._ROOT_FID + 1
 
     def _alloc_work_fid(self) -> int:

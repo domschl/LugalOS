@@ -39,7 +39,10 @@ static chan_endpoint_t *g_ep;
 static int p9_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
                            uint8_t *resp, uint32_t resp_max) {
     (void)ctx;
-    return p9_server_process(req, req_len, resp, resp_max);
+    /* The local channel endpoint: same address space, same trust as the
+     * caller, and the one path that must never require a key -- it is how a
+     * program on this board reaches its own namespace. */
+    return p9_server_process(req, req_len, resp, resp_max, P9_AUTH_NOT_REQUIRED);
 }
 
 static int p9_chan_send(p9_link_t *link, const uint8_t *buf, uint32_t len) {

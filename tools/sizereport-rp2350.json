@@ -14,11 +14,11 @@
     "drivers/spisd_rp2350.c": 3189,
     "drivers/st7735_rp2350.c": 3746,
     "drivers/tm1638_rp2350.c": 391,
-    "drivers/uart_net.c": 10580,
+    "drivers/uart_net.c": 10588,
     "drivers/uart_rp2350.c": 1449,
-    "drivers/usb_cdc.c": 16740,
-    "fs/9p.c": 3396,
-    "fs/p9_chan.c": 6172,
+    "drivers/usb_cdc.c": 16744,
+    "fs/9p.c": 4300,
+    "fs/p9_chan.c": 6176,
     "fs/p9_link.c": 12440,
     "fs/vfs_server.c": 10779,
     "kernel/balloc.c": 2051,
@@ -55,5 +55,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 151716
+  "total": 152636
 }

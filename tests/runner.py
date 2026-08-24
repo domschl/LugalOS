@@ -468,6 +468,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Entropy Source Reports Honestly With No Hardware (N1)",
                         rand_ok, log if not rand_ok else ""))
 
+        # N2: the auth gate's pure logic -- the key-store path guard and the
+        # fact that the response MAC binds nonce, identity and key. No
+        # network, no peer, so it runs wherever the others do.
+        ok, log = session.send_and_expect("p9authselftest\n",
+                                          r"P9AUTH_SELFTEST_(OK|FAIL)", timeout=30.0)
+        auth_ok = ok and "P9AUTH_SELFTEST_OK" in log
+        results.append(("9P Auth Gate Path Guard And MAC Binding (N2)",
+                        auth_ok, log if not auth_ok else ""))
+
         ok, log = session.send_and_expect("dcf77selftest\n",
                                           r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
         sel_ok = ok and "DCF77_SELFTEST_OK" in log
@@ -2539,6 +2548,183 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             session.close()
 
 
+def test_9p_auth_gate(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """The Tauth/afid gate, end to end, over a **TCP** chardev (N2,
+    plan/phase18_networking_and_auth.md).
+
+    TCP on purpose. The W5500 terminates TCP in silicon and hands the guest a
+    byte stream, so LugalOS has no IP stack to test -- but the *host* half
+    (p9lib.connect_tcp(), the auth exchange, the framing) is real code that
+    would otherwise only ever run against hardware. QEMU's chardev takes a TCP
+    socket in place of the unix one used elsewhere in this file, the guest
+    sees an unchanged virtio-console byte stream, and everything above the
+    wire is exercised in CI. What this cannot cover is the W5500's own TCP
+    behaviour -- partial sends, RECV chunking, a peer resetting mid-frame --
+    which stays a hardware deliverable (plan §0).
+
+    Six cases, each of which has been a real bug in somebody's auth code:
+      1. attach with no Tauth at all, on a link that requires it   -> refused
+      2. the correct key                                           -> works
+      3. a wrong key                                               -> refused
+      4. a response replayed against a fresh nonce                 -> refused
+      5. a key set for one uname, attached as another              -> refused
+      6. the same link with the requirement turned off             -> works
+    """
+    import shutil
+    import tempfile
+    import socket as _socket
+    import hmac as _hmac
+    import hashlib as _hashlib
+    import p9lib
+    from p9lib.client import P9Client, P9Error, Session, NOFID
+
+    NAME = "9P Tauth/afid Gate Over TCP: Six Refusal And Acceptance Cases (N2)"
+    KEY = bytes(range(1, 17))            # 16 bytes, hex below
+    KEY_HEX = KEY.hex()
+
+    arch_img = img_path.with_name(f"test_{arch_name}_9pauth_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    # An ephemeral port, released before QEMU binds it. The race is real but
+    # tiny, and the alternative (a fixed port) collides with a previous run
+    # that has not finished dying yet -- which is the failure this file's
+    # own retry logic exists to avoid elsewhere.
+    _s = _socket.socket()
+    _s.bind(("127.0.0.1", 0))
+    port = _s.getsockname()[1]
+    _s.close()
+
+    def dial() -> P9Client:
+        last = ""
+        for _ in range(25):
+            try:
+                return p9lib.connect_tcp("127.0.0.1", port, timeout=3.0)
+            except (ConnectionRefusedError, OSError) as e:
+                last = str(e)
+                time.sleep(0.2)
+        raise P9Error(f"could not connect to 127.0.0.1:{port}: {last}")
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port},server=on,wait=off",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (NAME, False, log)
+
+        # Install a key for this boot and arm the link. Both from the console,
+        # which is the trusted side by the same argument that lets the local
+        # channel skip authentication entirely.
+        ok, log = session.send_and_expect(f"p9key {KEY_HEX}\n", r"console key set", timeout=5.0)
+        if not ok:
+            return (NAME, False, f"p9key did not take: {log}")
+        ok, log = session.send_and_expect("p9auth vconsole on\n", r"REQUIRES authentication", timeout=5.0)
+        if not ok:
+            return (NAME, False, f"p9auth did not take: {log}")
+
+        failures = []
+
+        # 1. No Tauth at all.
+        c = dial()
+        try:
+            c.version()
+            try:
+                c.attach(1, aname="", uname="lugal", afid=NOFID)
+                failures.append("unauthenticated attach SUCCEEDED on a link that requires auth")
+            except P9Error as e:
+                if "auth" not in str(e).lower():
+                    failures.append(f"refused, but not for authentication: {e}")
+        finally:
+            c.close()
+
+        # 2. The real thing, through the same Session a user would use.
+        c = dial()
+        try:
+            sess = Session(c, key=KEY)
+            # The Session's own read, not client.cat(): cat() opens a fresh
+            # connection (Tversion resets all server fid state), which would
+            # throw away the afid this Session just authenticated.
+            data = sess.read("/proc/version")
+            if b"LugalOS" not in data:
+                failures.append(f"authenticated read returned {data[:60]!r}")
+        except P9Error as e:
+            failures.append(f"correct key was refused: {e}")
+        finally:
+            c.close()
+
+        # 3. A wrong key.
+        c = dial()
+        try:
+            c.version()
+            try:
+                c.authenticate(0, b"not-the-key")
+                failures.append("a wrong key was accepted")
+            except P9Error:
+                pass
+        finally:
+            c.close()
+
+        # 4. Replay: capture a valid response, then present it against the
+        #    *next* nonce. This is the case a fixed challenge would pass.
+        c = dial()
+        try:
+            c.version()
+            c.auth(0, aname="", uname="lugal")
+            nonce1 = c.read(0, 0, 32)
+            mac1 = _hmac.new(KEY, nonce1 + b"lugal", _hashlib.sha256).digest()
+            c.write(0, 0, mac1)          # legitimate, and now spent
+            c.clunk(0)
+
+            c.auth(0, aname="", uname="lugal")
+            nonce2 = c.read(0, 0, 32)
+            if nonce2 == nonce1:
+                failures.append("the server reused a nonce across two Tauths")
+            try:
+                c.write(0, 0, mac1)      # the old response, new challenge
+                failures.append("a replayed response was accepted")
+            except P9Error:
+                pass
+        finally:
+            c.close()
+
+        # 5. Authenticated as one identity, attaching as another.
+        c = dial()
+        try:
+            c.version()
+            c.authenticate(0, KEY, uname="lugal")
+            try:
+                c.attach(1, aname="", uname="someone-else", afid=0)
+                failures.append("an afid authenticated for 'lugal' attached as 'someone-else'")
+            except P9Error:
+                pass
+        finally:
+            c.close()
+
+        # 6. Requirement off: the same link goes back to attaching freely,
+        #    which is what every other test in this file depends on.
+        ok, log = session.send_and_expect("p9auth vconsole off\n",
+                                          r"does not require authentication", timeout=5.0)
+        if not ok:
+            failures.append(f"could not turn the requirement back off: {log}")
+        else:
+            c = dial()
+            try:
+                Session(c)               # no key at all
+            except P9Error as e:
+                failures.append(f"unauthenticated attach refused after p9auth off: {e}")
+            finally:
+                c.close()
+
+        return (NAME, not failures, "\n".join(failures))
+    except Exception as e:
+        return (NAME, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_9p_iounit(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """An Ropen's iounit must fit inside the negotiated msize.
 
@@ -3198,6 +3384,7 @@ def main() -> int:
         _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -3219,6 +3406,7 @@ def main() -> int:
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

@@ -11,8 +11,37 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import Session, connect_serial, connect_unix
+from . import Session, connect_serial, connect_tcp, connect_unix
 from .client import P9Error
+
+
+
+def _auth_key(args) -> bytes | None:
+    """The key, from --key or --key-file, or None for an unauthenticated
+    attach.
+
+    --key-file exists because a secret on a command line is visible in shell
+    history and in every process listing on the machine for as long as the
+    command runs. Whitespace is stripped so an ordinary text file with a
+    trailing newline works."""
+    if getattr(args, "key_file", None):
+        text = Path(args.key_file).read_text().strip()
+    elif getattr(args, "key", None):
+        text = args.key.strip()
+    else:
+        return None
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        print(f"error: key is not valid hex: {text[:16]!r}...", file=sys.stderr)
+        sys.exit(2)
+
+
+def _split_hostport(spec: str, default_port: int = 564) -> tuple[str, int]:
+    if ":" in spec:
+        host, _, port = spec.rpartition(":")
+        return host, int(port)
+    return spec, default_port
 
 
 def _connect(args: argparse.Namespace) -> Session:
@@ -21,10 +50,13 @@ def _connect(args: argparse.Namespace) -> Session:
                                  timeout=args.timeout)
     elif args.unix:
         client = connect_unix(args.unix, framing=args.framing)
+    elif getattr(args, "tcp", None):
+        host, port = _split_hostport(args.tcp)
+        client = connect_tcp(host, port, timeout=args.timeout)
     else:
-        print("error: one of --serial or --unix is required", file=sys.stderr)
+        print("error: one of --serial, --unix or --tcp is required", file=sys.stderr)
         sys.exit(2)
-    return Session(client, aname=args.aname)
+    return Session(client, aname=args.aname, uname=args.uname, key=_auth_key(args))
 
 
 def _fmt_mode(st) -> str:
@@ -95,6 +127,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--framing", choices=("raw", "slip"), default="raw",
                     help="'raw' for virtio-console/USB-CDC (default), 'slip' for a UART link")
     p.add_argument("--aname", default="/", help="attach root (default '/')")
+    p.add_argument("--tcp", metavar="HOST[:PORT]",
+                   help="9P over TCP, e.g. 192.168.1.50 or 192.168.1.50:564 "
+                        "(the gateway persona's W5500 link)")
+    p.add_argument("--key", metavar="HEX",
+                   help="pre-shared key, hex, for a link that requires authentication")
+    p.add_argument("--key-file", metavar="PATH",
+                   help="read the hex key from a file instead of the command line, "
+                        "so it does not land in shell history or `ps` output")
+    p.add_argument("--uname", default="lugal",
+                   help="identity to authenticate as (default 'lugal')")
+
     p.add_argument("--timeout", type=float, default=30.0,
                     help="serial read timeout in seconds (default 30.0 -- /proc/df's real "
                          "FAT-table scan alone took 7-13s across two different SD cards in "

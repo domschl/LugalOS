@@ -158,7 +158,9 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
 
     /* T-message: a genuine request for this node's server. */
     static uint8_t resp_buf[P9_MAX_MSIZE];
-    int resp_len = p9_server_process(buf, len, resp_buf, sizeof(resp_buf));
+    int resp_len = p9_server_process(buf, len, resp_buf, sizeof(resp_buf),
+                                     link->auth_required ? P9_AUTH_REQUIRED
+                                                         : P9_AUTH_NOT_REQUIRED);
     if (resp_len < 7) return -1;
     if (link->send_frame(link, resp_buf, (uint32_t)resp_len) < 0) return -1;
     return 1;

@@ -389,7 +389,11 @@ int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
     if (slip_len < 0) return -1;
 
     // Direct microkernel 9P server processing over SLIP transport
-    int resp_len = p9_server_process(req_buf, req_len, resp_buf, resp_max);
+    /* The p9serve/p9share path over the physical UART. A cable, so no key by
+     * default -- see p9_link_t::auth_required for the argument, and `p9auth`
+     * for how to change one's mind about a particular cable. */
+    int resp_len = p9_server_process(req_buf, req_len, resp_buf, resp_max,
+                                     P9_AUTH_NOT_REQUIRED);
     if (resp_len < 7) return -1;
 
     int slip_resp_len = slip_encode(resp_buf, (uint32_t)resp_len, slip_rx, sizeof(slip_rx));

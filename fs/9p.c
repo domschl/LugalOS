@@ -1,6 +1,9 @@
 #include "fs/9p.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
+#include "kernel/sha256.h"
+#include "kernel/random.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -224,6 +227,16 @@ typedef struct {
     uint32_t dir_read_index;    // next vfs_readdir() index for a directory Tread
     bool remove_on_clunk;       // ORCLOSE
     p9_qid_t qid;
+
+    /* N2: an auth fid. Not a file, not on any disk, and deliberately in the
+     * same table -- 9P gives an afid a fid number from the same space, and a
+     * client clunks it the same way. `is_auth` is what keeps it out of every
+     * path that expects `path` to mean something. */
+    bool     is_auth;
+    bool     authed;            // the response HMAC has been verified
+    uint8_t  nonce[SHA256_DIGEST_LEN];
+    char     auth_uname[P9_MAX_NAME_LEN];
+    char     auth_aname[P9_MAX_NAME_LEN];
 } p9_fid_entry_t;
 
 static p9_fid_entry_t g_fid_table[P9_MAX_FIDS];
@@ -259,13 +272,343 @@ static void p9_fid_reset_all(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++) p9_fid_release(&g_fid_table[i]);
 }
 
+/* --- The auth gate (N2, plan/phase18_networking_and_auth.md §6) --------- */
+
+/* Longest pre-shared key this reads out of a key file. 64 bytes is HMAC's
+ * block length: beyond it RFC 2104 hashes the key first, so a longer one buys
+ * no strength, and a key file line longer than this is far more likely to be
+ * a mistake than an intention. */
+#define P9_AUTH_KEY_MAX 64u
+
+static int hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Reads a whole (small) file. Key files are lines of hex; anything that does
+ * not fit this buffer is not a key file. */
+static int p9_read_small_file(const char *path, char *buf, uint32_t cap) {
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0 || st.is_dir) return -1;
+    int fd = vfs_open(path, VFS_O_READ);
+    if (fd < 0) return -1;
+    int n = vfs_pread(fd, buf, cap - 1, 0);
+    vfs_close(fd);
+    if (n < 0) return -1;
+    buf[n] = '\0';
+    return n;
+}
+
+/* The key for `uname`, or -1 if there is none.
+ *
+ * Format of P9_AUTH_KEYS_FILE: one identity per line, `uname` and a hex key
+ * separated by spaces or a tab. Blank lines and lines beginning with '#' are
+ * ignored. A line can be deleted to revoke an identity, which is the whole
+ * reason this is a list rather than one secret.
+ *
+ * P9_AUTH_FALLBACK_KEY_FILE is a bare hex key with no uname, for a board with
+ * no card: it answers for any uname, and a gateway that wants per-identity
+ * keys should use the list. */
+/* A key set from the local console, for this boot only.
+ *
+ * Two jobs, and neither is "a place to keep secrets". It bootstraps a gateway
+ * whose card has no key file yet -- otherwise installing the first key means
+ * pulling the SD card -- and it is how the QEMU suite tests the gate at all,
+ * since a QEMU node has no writable /sd0 and its /flash0 is a read-only image.
+ *
+ * The alternative was baking a test key into the flash image, which would put
+ * a known key on every board that image is ever written to. Not doing that is
+ * the point of this variable existing.
+ *
+ * Safe by the same argument that lets the local channel skip authentication:
+ * whoever has the console already has the board. It is never reachable over
+ * 9P (it is not a file), and it does not survive a reboot. */
+static uint8_t  g_console_key[P9_AUTH_KEY_MAX];
+static uint32_t g_console_key_len;
+
+void p9_auth_set_console_key(const uint8_t *key, uint32_t len) {
+    if (!key || len == 0 || len > sizeof(g_console_key)) {
+        memset(g_console_key, 0, sizeof(g_console_key));
+        g_console_key_len = 0;
+        return;
+    }
+    memcpy(g_console_key, key, len);
+    g_console_key_len = len;
+}
+
+static int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
+    /* Console key first: it is the bootstrap and the override, and a gateway
+     * being repaired should not have to fight its own card. */
+    if (g_console_key_len > 0) {
+        memcpy(key_out, g_console_key, g_console_key_len);
+        *key_len = g_console_key_len;
+        return 0;
+    }
+
+    char buf[512];
+    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
+
+    if (n > 0) {
+        const char *p = buf;
+        while (*p) {
+            const char *line = p;
+            while (*p && *p != '\n') p++;
+            const char *line_end = p;
+            if (*p == '\n') p++;
+
+            while (line < line_end && (*line == ' ' || *line == '\t' || *line == '\r')) line++;
+            if (line >= line_end || *line == '#') continue;
+
+            /* name */
+            const char *name = line;
+            const char *ne = name;
+            while (ne < line_end && *ne != ' ' && *ne != '\t' && *ne != '\r') ne++;
+            uint32_t nlen = (uint32_t)(ne - name);
+            if (nlen == 0 || nlen != strlen(uname) || strncmp(name, uname, nlen) != 0) continue;
+
+            /* hex key */
+            const char *k = ne;
+            while (k < line_end && (*k == ' ' || *k == '\t')) k++;
+            uint32_t len = 0;
+            while (k + 1 < line_end && len < P9_AUTH_KEY_MAX) {
+                int hi = hexval(k[0]), lo = hexval(k[1]);
+                if (hi < 0 || lo < 0) break;
+                key_out[len++] = (uint8_t)((hi << 4) | lo);
+                k += 2;
+            }
+            if (len == 0) continue;
+            *key_len = len;
+            return 0;
+        }
+    }
+
+    n = p9_read_small_file(P9_AUTH_FALLBACK_KEY_FILE, buf, sizeof(buf));
+    if (n > 0) {
+        uint32_t len = 0;
+        const char *k = buf;
+        while (k[0] && k[1] && len < P9_AUTH_KEY_MAX) {
+            int hi = hexval(k[0]), lo = hexval(k[1]);
+            if (hi < 0 || lo < 0) break;
+            key_out[len++] = (uint8_t)((hi << 4) | lo);
+            k += 2;
+        }
+        if (len > 0) { *key_len = len; return 0; }
+    }
+    return -1;
+}
+
+bool p9_auth_have_keys(void) {
+    if (g_console_key_len > 0) return true;
+    vfs_stat_t st;
+    if (vfs_stat(P9_AUTH_KEYS_FILE, &st) == 0 && !st.is_dir) return true;
+    if (vfs_stat(P9_AUTH_FALLBACK_KEY_FILE, &st) == 0 && !st.is_dir) return true;
+    return false;
+}
+
+/* Paths this server will not serve to anybody, over any transport.
+ *
+ * The gateway persona exports /sd0, and its keys live on /sd0. Without this,
+ * the first thing an authenticated client could do is read the list of
+ * everyone else's secrets -- which would reduce a per-identity key scheme to
+ * one shared key, awkwardly spelled. Enforced on the SERVER because in this
+ * threat model the client is the adversary; a check in host/fuse-p9 would be
+ * a suggestion.
+ *
+ * Prefix match, so the directory itself and everything under it are refused
+ * together, and refused identically whether the client walks to it, opens it,
+ * stats it or tries to remove it. A local shell on the board can still read
+ * the file: someone holding the board already has the flash. */
+static bool p9_path_is_secret(const char *path) {
+    if (!path) return false;
+    /* The single-key fallback is a key too. Guarding only the directory would
+     * have left the simpler configuration -- the one a board with no SD card
+     * uses -- readable by anyone who attached. */
+    if (strcmp(path, P9_AUTH_FALLBACK_KEY_FILE) == 0) return true;
+    size_t n = strlen(P9_AUTH_KEY_DIR);
+    if (strncmp(path, P9_AUTH_KEY_DIR, n) != 0) return false;
+    return path[n] == '\0' || path[n] == '/';
+}
+
+/* Exposed for the self-test: the guard is the one piece of the auth gate that
+ * is pure string logic, so it can be checked without a network, a key or a
+ * peer -- and it is the piece whose failure is silent. */
+bool p9_auth_path_is_secret(const char *path) { return p9_path_is_secret(path); }
+
+/* The policy in force for the request being processed. Set once per call from
+ * p9_server_process()'s argument; a static rather than a parameter threaded
+ * through nine handlers, which is honest for a server that has one connection
+ * at a time (Tversion resets all fid state precisely because of that). */
+static p9_auth_policy_t g_auth_policy = P9_AUTH_NOT_REQUIRED;
+
+static void p9_handle_tauth(const p9_msg_t *req, p9_msg_t *resp) {
+    if (req->afid == P9_NOFID) {
+        resp->type = P9_RERROR; resp->ename = "auth: afid may not be NOFID"; return;
+    }
+    /* Refusing here rather than at Tattach means a gateway with no keys
+     * installed says so at the first step, instead of letting a client
+     * complete a pointless handshake. */
+    if (!p9_auth_have_keys()) {
+        resp->type = P9_RERROR;
+        resp->ename = "auth: no keys configured on this server";
+        return;
+    }
+
+    p9_fid_entry_t *e = p9_fid_alloc(req->afid);
+    if (!e) { resp->type = P9_RERROR; resp->ename = "auth: afid in use or table full"; return; }
+
+    e->is_auth = true;
+    e->authed = false;
+    random_bytes(e->nonce, sizeof(e->nonce));
+    strncpy(e->auth_uname, req->uname, sizeof(e->auth_uname) - 1);
+    strncpy(e->auth_aname, req->aname, sizeof(e->auth_aname) - 1);
+    e->qid.type = P9_QTAUTH;
+    e->qid.vers = 0;
+    e->qid.path = p9_path_hash("#auth");
+
+    resp->type = P9_RAUTH;
+    resp->qid = e->qid;
+}
+
+/* The client's response, written to the auth fid: HMAC-SHA256 over the nonce
+ * the server chose and the identity being claimed. Binding uname and aname
+ * into the MAC is what stops a response captured for one identity from being
+ * replayed as another on the same nonce. */
+static void p9_auth_expected(const p9_fid_entry_t *e, const uint8_t *key,
+                             uint32_t key_len, uint8_t out[SHA256_DIGEST_LEN]) {
+    uint8_t msg[SHA256_DIGEST_LEN + 2u * P9_MAX_NAME_LEN];
+    uint32_t n = 0;
+    for (unsigned i = 0; i < SHA256_DIGEST_LEN; i++) msg[n++] = e->nonce[i];
+    for (const char *p = e->auth_uname; *p; p++) msg[n++] = (uint8_t)*p;
+    for (const char *p = e->auth_aname; *p; p++) msg[n++] = (uint8_t)*p;
+    hmac_sha256(key, key_len, msg, n, out);
+}
+
+/* --- Self-test (N2) ---------------------------------------------------- */
+
+int p9_auth_selftest(void) {
+    int failures = 0;
+    cprintf("9P auth gate selftest:\n");
+
+    /* The guard. Every one of these is a path a client could ask for. */
+    {
+        static const struct { const char *path; bool secret; } CASES[] = {
+            { P9_AUTH_KEY_DIR,                    true  },  /* the directory itself */
+            { P9_AUTH_KEYS_FILE,                  true  },
+            { P9_AUTH_KEY_DIR "/anything",        true  },
+            { P9_AUTH_KEY_DIR "/deeper/still",    true  },
+            { P9_AUTH_FALLBACK_KEY_FILE,          true  },  /* the single-key form */
+            { "/sd0/system/etc",                  false },  /* the parent is fine */
+            { "/sd0/system/etc/authorized",       false },  /* prefix, not a component */
+            { "/sd0/system/etc/auth.txt",         false },
+            { "/proc/version",                    false },
+            { "/",                                false },
+        };
+        bool ok = true;
+        for (unsigned i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) {
+            if (p9_auth_path_is_secret(CASES[i].path) != CASES[i].secret) {
+                cprintf("        %s: expected %s\n", CASES[i].path,
+                        CASES[i].secret ? "refused" : "servable");
+                ok = false;
+            }
+        }
+        cprintf("  [%s] the key store is refused, and only the key store\n", ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
+    /* The MAC binds the identity. Same key, same nonce, different uname must
+     * give a different response -- otherwise a recording made for one
+     * identity would authenticate another. */
+    {
+        p9_fid_entry_t a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        for (unsigned i = 0; i < SHA256_DIGEST_LEN; i++) { a.nonce[i] = (uint8_t)i; b.nonce[i] = (uint8_t)i; }
+        strncpy(a.auth_uname, "alice", sizeof(a.auth_uname) - 1);
+        strncpy(b.auth_uname, "bob",   sizeof(b.auth_uname) - 1);
+
+        const uint8_t key[4] = { 1, 2, 3, 4 };
+        uint8_t ma[SHA256_DIGEST_LEN], mb[SHA256_DIGEST_LEN];
+        p9_auth_expected(&a, key, sizeof(key), ma);
+        p9_auth_expected(&b, key, sizeof(key), mb);
+        bool ok = !sha256_verify(ma, mb, sizeof(ma));
+
+        /* ...and the same identity on a different nonce must differ too,
+         * which is what makes a captured response worthless next time. */
+        p9_fid_entry_t c = a;
+        c.nonce[0] ^= 0xFF;
+        uint8_t mc[SHA256_DIGEST_LEN];
+        p9_auth_expected(&c, key, sizeof(key), mc);
+        ok = ok && !sha256_verify(ma, mc, sizeof(ma));
+
+        /* ...while the same inputs are of course stable. */
+        uint8_t ma2[SHA256_DIGEST_LEN];
+        p9_auth_expected(&a, key, sizeof(key), ma2);
+        ok = ok && sha256_verify(ma, ma2, sizeof(ma));
+
+        cprintf("  [%s] the response MAC binds both the nonce and the identity\n",
+                ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
+    /* A different key must not produce the same response. */
+    {
+        p9_fid_entry_t a;
+        memset(&a, 0, sizeof(a));
+        strncpy(a.auth_uname, "alice", sizeof(a.auth_uname) - 1);
+        const uint8_t k1[4] = { 1, 2, 3, 4 };
+        const uint8_t k2[4] = { 1, 2, 3, 5 };
+        uint8_t m1[SHA256_DIGEST_LEN], m2[SHA256_DIGEST_LEN];
+        p9_auth_expected(&a, k1, sizeof(k1), m1);
+        p9_auth_expected(&a, k2, sizeof(k2), m2);
+        bool ok = !sha256_verify(m1, m2, sizeof(m1));
+        cprintf("  [%s] a one-bit key difference changes the response\n", ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
+    if (failures == 0) cprintf("P9AUTH_SELFTEST_OK (3/3)\n");
+    else               cprintf("P9AUTH_SELFTEST_FAIL (%d failed)\n", failures);
+    return failures;
+}
+
 /* --- Message handlers --- */
 
 static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
+    /* The gate. On a transport that requires it, an attach is only as good as
+     * the afid it names: the afid must exist, be an auth fid, have had a
+     * verified response written to it, and have been established for the same
+     * identity now being claimed. */
+    if (g_auth_policy == P9_AUTH_REQUIRED) {
+        if (req->afid == P9_NOFID) {
+            resp->type = P9_RERROR;
+            resp->ename = "attach: this link requires authentication (no afid)";
+            return;
+        }
+        p9_fid_entry_t *a = p9_fid_lookup(req->afid);
+        if (!a || !a->is_auth) {
+            resp->type = P9_RERROR; resp->ename = "attach: afid is not an auth fid"; return;
+        }
+        if (!a->authed) {
+            resp->type = P9_RERROR; resp->ename = "attach: afid has not authenticated"; return;
+        }
+        if (strncmp(a->auth_uname, req->uname, sizeof(a->auth_uname)) != 0 ||
+            strncmp(a->auth_aname, req->aname, sizeof(a->auth_aname)) != 0) {
+            resp->type = P9_RERROR;
+            resp->ename = "attach: afid was authenticated for a different uname/aname";
+            return;
+        }
+    }
+
     p9_fid_entry_t *e = p9_fid_alloc(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "attach: fid table full or fid in use"; return; }
 
     char path[128];
+    /* aname names a path, so the key store has to be refused here as well --
+     * walking is not the only way to reach a directory. */
+    if (p9_path_is_secret(req->aname)) {
+        resp->type = P9_RERROR; resp->ename = "attach: no such tree"; return;
+    }
     if (req->aname[0] == '\0' || strcmp(req->aname, "/") == 0) {
         strncpy(path, "/", sizeof(path) - 1);
     } else if (req->aname[0] == '/') {
@@ -298,6 +641,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
 static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
     p9_fid_entry_t *src = p9_fid_lookup(req->fid);
     if (!src) { resp->type = P9_RERROR; resp->ename = "walk: unknown fid"; return; }
+    if (src->is_auth) { resp->type = P9_RERROR; resp->ename = "walk: fid is an auth fid"; return; }
 
     if (req->nwname == 0) {
         // Clone idiom: newfid refers to the same file as fid, no walk performed.
@@ -327,6 +671,14 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
     for (uint16_t i = 0; i < req->nwname; i++) {
         char next[128];
         p9_path_join(next, sizeof(next), cur, req->wname[i]);
+        /* The key store is not walkable, by anyone, over any transport --
+         * refused exactly like a path that is not there, so that a client
+         * cannot even learn whether keys are kept here. See
+         * p9_path_is_secret(). */
+        if (p9_path_is_secret(next)) {
+            if (i == 0) { resp->type = P9_RERROR; resp->ename = "walk: no such file or directory"; return; }
+            break;
+        }
         vfs_stat_t st;
         if (vfs_stat(next, &st) != 0) {
             if (i == 0) { resp->type = P9_RERROR; resp->ename = "walk: no such file or directory"; return; }
@@ -358,6 +710,12 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
 }
 
 static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
+    {
+        p9_fid_entry_t *a = p9_fid_lookup(req->fid);
+        if (a && a->is_auth) {
+            resp->type = P9_RERROR; resp->ename = "open: fid is an auth fid"; return;
+        }
+    }
     p9_fid_entry_t *e = p9_fid_lookup(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "open: unknown fid"; return; }
     if (e->is_open) { resp->type = P9_RERROR; resp->ename = "open: fid already open"; return; }
@@ -454,6 +812,22 @@ static int p9_read_dir_stream(p9_fid_entry_t *e, uint64_t offset, uint32_t cap, 
 
 static void p9_handle_tread(const p9_msg_t *req, p9_msg_t *resp, uint8_t *databuf, uint32_t databuf_max) {
     p9_fid_entry_t *e = p9_fid_lookup(req->fid);
+
+    /* An auth fid is read to collect the challenge, and is never "opened" --
+     * Tauth is what opened it. */
+    if (e && e->is_auth) {
+        uint32_t off = (req->offset > sizeof(e->nonce)) ? sizeof(e->nonce) : (uint32_t)req->offset;
+        uint32_t avail = (uint32_t)sizeof(e->nonce) - off;
+        uint32_t want = req->count;
+        if (want > avail) want = avail;
+        if (want > databuf_max) want = databuf_max;
+        for (uint32_t i = 0; i < want; i++) databuf[i] = e->nonce[off + i];
+        resp->type = P9_RREAD;
+        resp->count = want;
+        resp->data = databuf;
+        return;
+    }
+
     if (!e || !e->is_open) { resp->type = P9_RERROR; resp->ename = "read: fid not open"; return; }
 
     uint32_t want = req->count;
@@ -470,6 +844,40 @@ static void p9_handle_tread(const p9_msg_t *req, p9_msg_t *resp, uint8_t *databu
 
 static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
     p9_fid_entry_t *e = p9_fid_lookup(req->fid);
+
+    /* The response to the challenge. */
+    if (e && e->is_auth) {
+        uint8_t key[P9_AUTH_KEY_MAX];
+        uint32_t key_len = 0;
+        if (req->count != SHA256_DIGEST_LEN) {
+            resp->type = P9_RERROR; resp->ename = "auth: response must be 32 bytes"; return;
+        }
+        if (p9_auth_key_for(e->auth_uname, key, &key_len) != 0) {
+            resp->type = P9_RERROR; resp->ename = "auth: no key for that uname"; return;
+        }
+
+        uint8_t expect[SHA256_DIGEST_LEN];
+        p9_auth_expected(e, key, key_len, expect);
+        memset(key, 0, sizeof(key));
+
+        /* Constant-time, and not memcmp(): see kernel/sha256.h. */
+        bool ok = sha256_verify(expect, req->data, SHA256_DIGEST_LEN);
+        memset(expect, 0, sizeof(expect));
+
+        if (!ok) {
+            /* The nonce is burned either way. Without this, a client could
+             * sit on one challenge and grind guesses against it; with it,
+             * every attempt costs a fresh Tauth and a fresh nonce. */
+            random_bytes(e->nonce, sizeof(e->nonce));
+            resp->type = P9_RERROR; resp->ename = "auth: response rejected"; return;
+        }
+
+        e->authed = true;
+        resp->type = P9_RWRITE;
+        resp->count = req->count;
+        return;
+    }
+
     if (!e || !e->is_open || e->is_dir) { resp->type = P9_RERROR; resp->ename = "write: fid not open for writing"; return; }
 
     int n = vfs_pwrite(e->vfs_fd, req->data, req->count, req->offset);
@@ -482,6 +890,10 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
 static void p9_handle_tstat(const p9_msg_t *req, p9_msg_t *resp, uint8_t *databuf, uint32_t databuf_max) {
     p9_fid_entry_t *e = p9_fid_lookup(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "stat: unknown fid"; return; }
+    /* An auth fid has no path, so this would otherwise stat "" and report
+     * whatever that resolved to. It is not a file and does not get to look
+     * like one. */
+    if (e->is_auth) { resp->type = P9_RERROR; resp->ename = "stat: fid is an auth fid"; return; }
 
     vfs_stat_t st;
     uint64_t size = 0;
@@ -548,9 +960,17 @@ int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {
             break;
         case P9_TATTACH:
             wcur_u32(&c, msg->fid);
-            wcur_u32(&c, P9_NOFID); // afid: this server never uses auth
+            wcur_u32(&c, msg->afid);   // P9_NOFID when this attach is unauthenticated
             wcur_str(&c, msg->uname);
             wcur_str(&c, msg->aname);
+            break;
+        case P9_TAUTH:
+            wcur_u32(&c, msg->afid);
+            wcur_str(&c, msg->uname);
+            wcur_str(&c, msg->aname);
+            break;
+        case P9_RAUTH:
+            wcur_qid(&c, &msg->qid);
             break;
         case P9_RATTACH:
             wcur_qid(&c, &msg->qid);
@@ -668,12 +1088,22 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
         }
         case P9_TATTACH: {
             ok = rcur_u32(&c, &msg->fid);
-            uint32_t afid;
-            if (ok) ok = rcur_u32(&c, &afid);
+            /* Kept, not discarded: which afid the client is attaching under is
+             * the whole question when the link requires authentication. */
+            if (ok) ok = rcur_u32(&c, &msg->afid);
             if (ok) ok = rcur_str(&c, msg->uname, sizeof(msg->uname));
             if (ok) ok = rcur_str(&c, msg->aname, sizeof(msg->aname));
             break;
         }
+        case P9_TAUTH: {
+            ok = rcur_u32(&c, &msg->afid);
+            if (ok) ok = rcur_str(&c, msg->uname, sizeof(msg->uname));
+            if (ok) ok = rcur_str(&c, msg->aname, sizeof(msg->aname));
+            break;
+        }
+        case P9_RAUTH:
+            ok = rcur_qid(&c, &msg->qid);
+            break;
         case P9_RATTACH:
             ok = rcur_qid(&c, &msg->qid);
             break;
@@ -788,7 +1218,9 @@ uint32_t p9_negotiated_iounit(void) {
     return (g_negotiated_msize > P9_IOHDRSZ) ? (g_negotiated_msize - P9_IOHDRSZ) : 0;
 }
 
-int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf,
+                      uint32_t resp_max, p9_auth_policy_t policy) {
+    g_auth_policy = policy;
     p9_msg_t req;
     if (p9_deserialize(req_buf, req_len, &req) < 0) {
         p9_msg_t err = { .type = P9_RERROR, .tag = P9_NOTAG, .ename = "Invalid 9P frame" };
@@ -816,6 +1248,9 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_bu
              * and forgotten, which left p9_serialize() with nothing to
              * derive an honest iounit from -- so it hardcoded one. */
             g_negotiated_msize = resp.msize;
+            break;
+        case P9_TAUTH:
+            p9_handle_tauth(&req, &resp);
             break;
         case P9_TATTACH:
             p9_handle_tattach(&req, &resp);
