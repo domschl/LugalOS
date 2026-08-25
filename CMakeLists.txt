@@ -392,6 +392,10 @@ set(SOURCES
     # fiddly part is its arithmetic, and arithmetic should not be debugged by
     # flashing (same argument as drivers/dcf77_decode.c above).
     kernel/sha256.c
+    # R3/R4 (plan/phase19_ip_stack_and_ethernet.md): who this node is -- a
+    # name and a MAC of its own. Above every wire on purpose: phase 18 put
+    # the MAC inside a driver, and the design went with the part.
+    kernel/identity.c
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.
     kernel/random.c

@@ -34,6 +34,7 @@
 #endif
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "net/ip.h"
+#include "kernel/identity.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -154,6 +155,13 @@ void kernel_main(void) {
     /* Hardware: what exists is a per-board table (kernel/board.c), not a
      * sequence of #ifs here. */
     board_register_devices();
+    /* Who this node is, before anything asks. netif_register() hands out the
+     * MAC, so this must precede any driver probe that registers an
+     * interface. See kernel/identity.h for the resolution order. */
+    node_identity_init();
+    printk("[Node] %s (name: %s; mac: %s)\n", node_name(),
+           node_name_source(), node_mac_source());
+
     dev_probe_all();
     /* ST7735 canvas + TM1638 keypad/7-segment (H1/H2,
      * plan/phase9_chess_computer.md): dedicated, always-wired hardware for

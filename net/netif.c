@@ -1,5 +1,6 @@
 #include "net/netif.h"
 #include "kernel/printk.h"
+#include "kernel/identity.h"
 #include <string.h>
 
 static netif_t *g_netifs[NETIF_MAX];
@@ -7,6 +8,13 @@ static uint32_t g_num_netifs;
 
 int netif_register(netif_t *nif) {
     if (!nif || !nif->name || !nif->poll || !nif->send_frame || !nif->recv_frame) return -1;
+    /* A driver that could not get a MAC from its own hardware leaves the
+     * field zeroed and gets the node's. Drivers whose part supplies one --
+     * virtio's config space, an EEPROM on a NIC -- keep it: the platform
+     * saying "you are this address" outranks anything we can derive. */
+    bool have_mac = false;
+    for (uint32_t i = 0; i < NETIF_MAC_LEN; i++) if (nif->mac[i]) { have_mac = true; break; }
+    if (!have_mac) memcpy(nif->mac, node_mac(), NETIF_MAC_LEN);
     if (g_num_netifs >= NETIF_MAX) {
         printk("[Net] No free interface slot for '%s' (max %u).\n", nif->name, NETIF_MAX);
         return -1;

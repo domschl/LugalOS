@@ -332,10 +332,12 @@ int virtio_net_init(void) {
     if (drv_lo & (1u << VIRTIO_NET_F_MAC)) {
         volatile uint8_t *cfg = (volatile uint8_t *)(g_mmio_base) + REG_CONFIG;
         for (uint32_t i = 0; i < NETIF_MAC_LEN; i++) g_netif.mac[i] = cfg[i];
-    } else {
-        static const uint8_t fallback[NETIF_MAC_LEN] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
-        memcpy(g_netif.mac, fallback, NETIF_MAC_LEN);
     }
+    /* No else. A device that offers no MAC leaves g_netif.mac zeroed, and
+     * netif_register() fills it from the node's own identity -- which is
+     * where a fallback belongs, so that every driver gets the same one
+     * instead of each inventing a constant. This one used to invent
+     * 02:00:00:00:00:01, which is to say: the same address on every board. */
 
     g_mmio_base[REG_STATUS / 4] |= VIRTIO_STATUS_DRIVER_OK;
 
