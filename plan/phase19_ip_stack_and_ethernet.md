@@ -1,6 +1,7 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: planned 2026-08-25.** Succeeds `plan/phase18_networking_and_auth.md`,
+**Status: R0 done 2026-08-25; R1 in progress.** Succeeds
+`plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
 
@@ -335,6 +336,26 @@ report "no interface" until R2 wires them to the stack.
 `rp2350-clock`, `rp2350-gateway`); QEMU suite green at its full count; `tests/hw/` green minus the removed
 Ethernet tests, with the removals listed in the commit message rather than
 silently dropped.
+
+**Done, 2026-08-25** (`125ad96`). Five presets build, QEMU suite **269/269**
+including the N2 auth gate over TCP on both targets, gateway static RAM
+**-2152 bytes** and its heap 93 -> 94 pages with the baseline regenerated. Two
+deviations from the list above, both deliberate and both argued in the commit:
+`tests/hw/test_gateway.py` is **kept** (only `test_driver_counters` was
+actually about the W5500; the other fifteen tests are what R4 has to make green
+again, and rewriting them would be waste), and `(net-config)`/`(net-status)`
+are kept **unguarded** rather than RP2350-only, because R1 and R2 need them on
+the QEMU targets too.
+
+**And a standing rule adopted here** (`f422a80`), because it changes how every
+later milestone is finished: **a clean build produces no output.** Ten
+pre-existing compiler diagnostics and one linker diagnostic were fixed rather
+than inherited -- most were typing noise, one was real (a DCF-77 selftest
+printing an uninitialised date on failure), and one was a genuinely wrong image
+(an RWX `PT_LOAD` on the clock persona, from `.binary_info` being emitted
+writable and folded in with the driver text pages). A warning nobody acts on
+teaches the build to ignore its own diagnostics; every milestone below counts
+as finished only when its targets still build silently.
 
 **R1 -- `netif_t` and the virtio-net driver.** The seam plus the first
 implementation of it: virtio-mmio device, two virtqueues, borrowing the ring
