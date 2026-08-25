@@ -1,6 +1,6 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0 done 2026-08-25; R1 in progress.** Succeeds
+**Status: R0 and R1 done 2026-08-25; R2 next.** Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -364,6 +364,31 @@ prove. Plus the raw-frame Python peer from §4(a).
 *Verify:* on both QEMU targets, the guest emits a frame the Python peer receives
 byte-exact, and receives one the peer sends; counters in `/net/ipifc/0/status`
 agree with what the peer counted.
+
+**Done, 2026-08-25.** `net/include/net/netif.h` + `net/netif.c` (the seam and
+its registry), `drivers/virtio_net.c`, `DEV_KIND_NETIF` in the device registry,
+a `net` / `net txtest` / `net rxtest` trio in the shell, `tests/netpeer.py`, and
+one runner test on both targets. Suite **271/271**, zero warnings on all five
+presets, RP2350 static RAM **+12 bytes** (the registry's two pointers and a
+count -- 0.0 heap pages, re-baselined on all three personas).
+
+Counters are reported by `net` rather than by `/net/ipifc/0/status`: the `/net`
+status files are an R2 deliverable, and R1 predates the stack that would fill
+most of them. The four checks the milestone actually runs are the ones that
+matter -- MAC read from config space, three frames out compared **byte for
+byte** against a locally rebuilt expectation, one frame injected and parsed,
+and the interface counters agreeing with what the peer independently counted.
+
+**One thing worth carrying forward.** Neither `virtio_blk.c` nor
+`virtio_console.c` negotiates virtio features at all, and both work, because
+for their devices the guest-visible layout does not depend on it. For
+virtio-net it does: `struct virtio_net_hdr` is 12 bytes rather than 10 if and
+only if `VIRTIO_F_VERSION_1` or `MRG_RXBUF` was accepted. Guessing wrong does
+not fail loudly -- it shifts every frame by two bytes, so ARP looks like
+garbage and the bug presents as "the network does not work". This driver
+negotiates explicitly and prints which header size it settled on; QEMU's
+virtio-mmio here is legacy, so it is 10. The byte-exact comparison in the test
+exists to catch exactly that class of error.
 
 **R2 -- ARP, IPv4, ICMP, UDP, and the RAM number.** The stack task, its domain,
 its `/net` status files, `(net-config)` wired through.

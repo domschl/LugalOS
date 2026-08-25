@@ -37,6 +37,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "fs/9p.h"
+#include "net/netif.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -119,6 +120,9 @@ static void cmd_help(void) {
     cprintf("  uart1test [ms]  - Raw UART1 downlink test: registers, a burst, then listen\n");
     cprintf("  uart1pins       - Continuity between the downlink pins, using plain GPIO\n");
 #endif
+    cprintf("  net             - Network interfaces: MAC, link, frame counters\n");
+    cprintf("  net txtest [n]  - Emit n test frames (default 1) on the first interface\n");
+    cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
     cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
@@ -261,6 +265,110 @@ static void cmd_p9auth(const char *arg) {
                 "        refuse every attach, which is the intended failure direction.\n",
                 P9_AUTH_KEYS_FILE, P9_AUTH_FALLBACK_KEY_FILE);
     }
+}
+
+/* --- `net`: what interfaces this board has, and what they have seen ---
+ * R1, plan/phase19_ip_stack_and_ethernet.md.
+ *
+ * The command name is the one phase 18's W5500 driver used, and it is
+ * deliberately reused rather than renamed: `net` answering "no interfaces"
+ * on a board that has none is a better answer than an unknown command, and
+ * from R4 it answers about a real wire again.
+ *
+ * txtest/rxtest exist for the same reason their W5500 namesakes did -- a
+ * driver that can neither be made to transmit nor observed receiving is
+ * debugged by guesswork -- but they cost far less here, because the peer on
+ * the other side is a Python script that can say byte-for-byte what it saw
+ * (tests/netpeer.py, plan §4a). This is the pair R1 is verified with. */
+static void cmd_net_status(void) {
+    uint32_t n = netif_count();
+    if (n == 0) {
+        cprintf("net: no interfaces.\n");
+        cprintf("  This board has no network hardware fitted, or its driver found none.\n");
+        cprintf("  On QEMU, add: -netdev ... -device virtio-net-device,netdev=...\n");
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        netif_t *nif = netif_at(i);
+        char mac[18];
+        netif_mac_str(nif->mac, mac);
+        cprintf("%s: mac %s, link %s\n", nif->name, mac,
+                netif_link_up(nif) ? "up" : "down");
+        cprintf("  rx %lu frames, %lu bytes, %lu dropped\n",
+                (unsigned long)nif->rx_frames, (unsigned long)nif->rx_bytes,
+                (unsigned long)nif->rx_dropped);
+        cprintf("  tx %lu frames, %lu bytes, %lu errors\n",
+                (unsigned long)nif->tx_frames, (unsigned long)nif->tx_bytes,
+                (unsigned long)nif->tx_errors);
+    }
+}
+
+/* A frame with somewhere to go and nothing to say: broadcast destination, our
+ * own MAC as source, an EtherType of 0x88b5 (IEEE-reserved for local
+ * experimental use, so it can never be mistaken for a real protocol), and a
+ * payload naming itself and carrying a sequence number. A peer that receives
+ * it can assert on every byte. */
+static uint32_t build_test_frame(netif_t *nif, uint8_t *out, uint32_t seq) {
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < 6; i++) out[o++] = 0xff;              /* broadcast */
+    for (uint32_t i = 0; i < 6; i++) out[o++] = nif->mac[i];       /* source */
+    out[o++] = 0x88; out[o++] = 0xb5;                              /* EtherType */
+    const char *tag = "LUGALOS-NETIF-TEST";
+    for (const char *p = tag; *p; p++) out[o++] = (uint8_t)*p;
+    out[o++] = (uint8_t)(seq >> 24); out[o++] = (uint8_t)(seq >> 16);
+    out[o++] = (uint8_t)(seq >> 8);  out[o++] = (uint8_t)seq;
+    /* Padded to the 60-byte minimum a real Ethernet segment wants, so the
+     * same frame is legal on the ENC28J60 in R4 without a second shape. */
+    while (o < 60) out[o++] = 0;
+    return o;
+}
+
+static void cmd_net_txtest(unsigned count) {
+    netif_t *nif = netif_default();
+    if (!nif) { cprintf("net: no interfaces.\n"); return; }
+    if (count == 0) count = 1;
+
+    uint8_t frame[64];
+    unsigned sent = 0;
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t len = build_test_frame(nif, frame, i);
+        if (netif_send(nif, frame, len) > 0) sent++;
+    }
+    cprintf("net: %u/%u test frames sent on %s (%lu tx errors total)\n",
+            sent, count, nif->name, (unsigned long)nif->tx_errors);
+}
+
+static void cmd_net_rxtest(unsigned count) {
+    netif_t *nif = netif_default();
+    if (!nif) { cprintf("net: no interfaces.\n"); return; }
+    if (count == 0) count = 1;
+
+    /* Bounded by polls rather than by time: this shell has no sleep that does
+     * not also stop being responsive, and a test that hangs forever waiting
+     * for a peer that will never speak is worse than one that gives up. */
+    unsigned got = 0;
+    uint8_t frame[NETIF_FRAME_MAX];
+    for (unsigned long spin = 0; spin < 20000000ul && got < count; spin++) {
+        if (netif_poll(nif) != 1) continue;
+        int n = netif_recv(nif, frame, sizeof(frame));
+        if (n < 14) continue;
+        char src[18], dst[18];
+        netif_mac_str(frame, dst);
+        netif_mac_str(frame + 6, src);
+        cprintf("net: rx %d bytes, %s -> %s, type 0x%02x%02x\n",
+                n, src, dst, frame[12], frame[13]);
+        got++;
+    }
+    if (got < count) cprintf("net: gave up after %u/%u frames\n", got, count);
+    else cprintf("net: rxtest done, %u frames\n", got);
+}
+
+/* Parses a trailing unsigned decimal argument, or 0 if there is none. */
+static unsigned shell_trailing_uint(const char *s) {
+    while (*s == ' ') s++;
+    unsigned v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10u + (unsigned)(*s++ - '0');
+    return v;
 }
 
 /* N2: install a key for this boot, from the console.
@@ -1576,6 +1684,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         uart1_wire_test(ms);
         return;
 #endif
+    } else if (strcmp(cmd_line, "net") == 0) {
+        cmd_net_status();
+        return;
+    } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
+        cmd_net_txtest(shell_trailing_uint(&cmd_line[10]));
+        return;
+    } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
+        cmd_net_rxtest(shell_trailing_uint(&cmd_line[10]));
+        return;
     } else if (strcmp(cmd_line, "p9key") == 0) {
         cmd_p9key(NULL);
         return;

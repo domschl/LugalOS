@@ -78,6 +78,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
     ${CMAKE_CURRENT_SOURCE_DIR}/drivers/include
     ${CMAKE_CURRENT_SOURCE_DIR}/fs/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/net/include
     ${CMAKE_CURRENT_SOURCE_DIR}/libc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/lisp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/chibicc/include
@@ -432,6 +433,13 @@ set(SOURCES
     fs/vfs_server.c
     fs/9p.c
     fs/p9_link.c
+
+    # R1 (plan/phase19_ip_stack_and_ethernet.md): the frame-source seam below
+    # the IP stack. Built for every target, like fs/ above -- a board with no
+    # interface registers none, and the registry is then empty rather than
+    # absent, which is what lets `net` and /proc/devices answer "no network"
+    # instead of not existing.
+    net/netif.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c
@@ -513,6 +521,10 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
+    # R1: the first netif. QEMU-only by construction -- it is a virtio-mmio
+    # device, and the RP2350 has no virtio anything. This is the interface the
+    # IP stack is developed and tested against before R4 fits real silicon.
+    list(APPEND SOURCES drivers/virtio_net.c)
 endif()
 
 # Architecture-specific memory management source

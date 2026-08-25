@@ -34,6 +34,12 @@ typedef enum {
     DEV_KIND_CLOCK,     /* real-time clock */
     DEV_KIND_EEPROM,    /* small byte-addressable persistent store */
     DEV_KIND_BLOCK,     /* block device (get() returns block_dev_t *) */
+    DEV_KIND_NETIF,     /* frame source (get() returns netif_t *) -- R1,
+                         * plan/phase19_ip_stack_and_ethernet.md. Registered
+                         * here as well as in net/netif.c's own table so that
+                         * `cat /proc/devices` can say whether a board has a
+                         * network at all, which is the first question asked
+                         * of one that is supposed to. */
 } dev_kind_t;
 
 /* DEV_KIND_P9LINK only: serve inbound 9P on this link from boot. Set for

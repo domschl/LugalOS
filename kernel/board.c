@@ -17,6 +17,7 @@
 #if !defined(CONFIG_BOARD_RP2350)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
+#include "drivers/virtio_net.h"
 #endif
 
 /* Per-board device tables (B0, plan/phase5_distributed_design.md §5.4).
@@ -129,6 +130,8 @@ static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
 static int   probe_virtio_blk(void)     { return virtio_blk_init(); }
 static void *get_virtio_blk(void)       { return virtio_blk_get_device(); }
+static int   probe_virtio_net(void)     { return virtio_net_init(); }
+static void *get_virtio_net(void)       { return virtio_net_get_netif(); }
 #endif
 
 /* --- The tables ---
@@ -225,6 +228,16 @@ static const dev_driver_t dev_vblk = {
     .name = "vblk", .kind = DEV_KIND_BLOCK,
     .probe = probe_virtio_blk, .get = get_virtio_blk,
 };
+/* R1, plan/phase19_ip_stack_and_ethernet.md: the first netif. Its probe
+ * matches on virtio device id 1, so it cannot claim the block or console
+ * slot regardless of probe order -- the same argument the comment above
+ * makes for those two. Absent `-netdev`/`-device virtio-net-device` the
+ * probe finds nothing and says nothing, which is the ordinary case for
+ * every existing test in tests/runner.py. */
+static const dev_driver_t dev_vnet = {
+    .name = "vnet", .kind = DEV_KIND_NETIF,
+    .probe = probe_virtio_net, .get = get_virtio_net,
+};
 #endif
 
 void board_register_devices(void) {
@@ -246,6 +259,7 @@ void board_register_devices(void) {
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);
+    dev_register(&dev_vnet);
 #endif
 }
 

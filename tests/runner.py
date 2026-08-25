@@ -2548,6 +2548,98 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             session.close()
 
 
+def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
+    first implementation, verified against a packet-level peer.
+
+    The guest gets a virtio-net device whose far end is a plain UDP socket
+    (QEMU's `dgram` backend), so `tests/netpeer.py` sees every frame the guest
+    transmits as one datagram and can inject any frame it likes. That is the
+    whole point of choosing this backend over slirp: a peer that can only
+    speak correct protocols cannot test an implementation of one, and R2/R3
+    will need to send truncated headers, bad checksums and out-of-order
+    segments.
+
+    Four things are checked, in the order a bring-up asks them:
+      1. the device is found and its MAC comes from config space, not from a
+         fallback -- QEMU's default is 52:54:00:12:34:56
+      2. `net txtest 3` puts three frames on the wire, and each is compared
+         **byte for byte** against a locally rebuilt expectation rather than
+         pattern-matched; a two-byte virtio header misjudgement (see
+         drivers/virtio_net.c's feature-negotiation note) would shift every
+         one of them and is exactly what this catches
+      3. a frame injected by the peer is received and parsed correctly
+      4. the interface counters agree with what the peer independently
+         counted -- the assertion that makes the first three mean something
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "Netif Seam + VirtIO-Net Driver Against A Packet-Level Peer (R1)"
+    arch_img = img_path.with_name(f"test_{arch_name}_netif_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. the driver found the device and read its MAC from config space
+        ok, log = session.send_and_expect("net", r"virtio-net: mac ([0-9a-f:]{17}), link up", timeout=5.0)
+        if not ok:
+            return (name, False, f"`net` did not report the interface: {log[-600:]}")
+        m = re.search(r"virtio-net: mac ([0-9a-f:]{17})", log)
+        mac_text = m.group(1)
+        if mac_text != "52:54:00:12:34:56":
+            return (name, False, f"MAC {mac_text} is not QEMU's default -- config space not read?")
+        guest_mac = bytes(int(b, 16) for b in mac_text.split(":"))
+
+        # 2. three frames out, byte-exact
+        peer.clear()
+        ok, log = session.send_and_expect("net txtest 3", r"net: 3/3 test frames sent", timeout=5.0)
+        if not ok:
+            return (name, False, f"txtest did not report three frames sent: {log[-600:]}")
+
+        got = peer.wait_for(3, timeout=5.0)
+        if len(got) != 3:
+            return (name, False, f"peer received {len(got)} frames, expected 3")
+        for i, frame in enumerate(got):
+            want = netpeer.expected_test_frame(guest_mac, i)
+            if frame != want:
+                return (name, False,
+                        f"frame {i} differs.\n  got  {frame.hex()}\n  want {want.hex()}")
+
+        # 3. one frame in, parsed correctly
+        peer_mac = b"\x02\x00\x00\x00\x00\x42"
+        inbound = netpeer.eth_frame(netpeer.BROADCAST, peer_mac,
+                                    netpeer.ETHERTYPE_TEST, b"HELLO-FROM-PEER")
+        peer.send(inbound)
+        ok, log = session.send_and_expect(
+            "net rxtest 1",
+            r"net: rx 60 bytes, 02:00:00:00:00:42 -> ff:ff:ff:ff:ff:ff, type 0x88b5", timeout=8.0)
+        if not ok:
+            return (name, False, f"the injected frame was not received as sent: {log[-600:]}")
+
+        # 4. the counters agree with what the peer counted
+        ok, log = session.send_and_expect("net", r"rx 1 frames, 60 bytes, 0 dropped", timeout=5.0)
+        if not ok:
+            return (name, False, f"rx counters disagree with the peer: {log[-600:]}")
+        if not re.search(r"tx 3 frames, 180 bytes, 0 errors", log):
+            return (name, False, f"tx counters disagree with the peer: {log[-600:]}")
+
+        return (name, True, f"mac {mac_text}, 3 frames out byte-exact, 1 in, counters agree")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        peer.close()
+
+
 def test_9p_auth_gate(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """The Tauth/afid gate, end to end, over a **TCP** chardev (N2,
     plan/phase18_networking_and_auth.md).
@@ -3387,6 +3479,7 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -3409,6 +3502,7 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

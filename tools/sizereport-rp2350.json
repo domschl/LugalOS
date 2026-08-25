@@ -38,6 +38,7 @@
     "kernel/ticker.c": 29,
     "kernel/time.c": 24,
     "kernel/timezone.c": 101,
+    "net/netif.c": 12,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
     "user/chess/src/chess_ui.c": 10784,
@@ -55,5 +56,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 152636
+  "total": 152648
 }

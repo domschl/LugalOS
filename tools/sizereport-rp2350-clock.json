@@ -39,6 +39,7 @@
     "kernel/ticker.c": 29,
     "kernel/time.c": 24,
     "kernel/timezone.c": 101,
+    "net/netif.c": 12,
     "user/chibicc/codegen.c": 84,
     "user/chibicc/main.c": 8,
     "user/chibicc/parse.c": 276,
@@ -48,5 +49,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39816
   },
-  "total": 127043
+  "total": 127055
 }
