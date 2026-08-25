@@ -37,10 +37,12 @@ static int type_pool_idx = 0;
 static Member *member_pool;
 static int member_pool_idx = 0;
 
-Type ty_char_obj  = {TY_CHAR, 1, NULL, 0, NULL};
-Type ty_short_obj = {TY_SHORT, 2, NULL, 0, NULL};
-Type ty_int_obj   = {TY_INT, 4, NULL, 0, NULL};
-Type ty_long_obj  = {TY_LONG, 8, NULL, 0, NULL};
+/* The trailing "" is Type's `name[32]`; spelled out rather than left to the
+ * implicit zero so the initializer covers every field the struct has. */
+Type ty_char_obj  = {TY_CHAR, 1, NULL, 0, NULL, ""};
+Type ty_short_obj = {TY_SHORT, 2, NULL, 0, NULL, ""};
+Type ty_int_obj   = {TY_INT, 4, NULL, 0, NULL, ""};
+Type ty_long_obj  = {TY_LONG, 8, NULL, 0, NULL, ""};
 
 Type *ty_char  = &ty_char_obj;
 Type *ty_short = &ty_short_obj;

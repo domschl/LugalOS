@@ -134,7 +134,7 @@ static const char *g_wire_owner[DEV_WIRE_VIRTIO + 1];
 
 static const dev_driver_t *find_driver(const char *name) {
     if (!name) return NULL;
-    for (int i = 0; i < g_num_devs; i++) {
+    for (uint32_t i = 0; i < g_num_devs; i++) {
         if (strcmp(g_devs[i].drv->name, name) == 0) return g_devs[i].drv;
     }
     return NULL;
@@ -187,7 +187,7 @@ bool dev_binding_info(uint32_t index, const char **name_out, const char **kind_o
     /* Walks only the devices that drive a wire: the others are not bindable
      * and listing them would make the interesting rows harder to find. */
     uint32_t seen = 0;
-    for (int i = 0; i < g_num_devs; i++) {
+    for (uint32_t i = 0; i < g_num_devs; i++) {
         if (g_devs[i].drv->wire == DEV_WIRE_NONE) continue;
         if (seen++ != index) continue;
 

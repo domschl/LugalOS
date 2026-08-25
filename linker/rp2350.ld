@@ -90,7 +90,15 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
-    .binary_info : {
+    /* READONLY, and it matters beyond tidiness. kernel/main.c declares these
+     * as `const void * const`, but an explicit section attribute makes GCC
+     * emit the section writable anyway -- and because the driver text pages
+     * above end exactly where .rodata begins, ld folds .usbtext/.clocktext,
+     * .rodata and this into a single PT_LOAD whose flags are the union: RWX.
+     * ld then says so ("LOAD segment with RWX permissions"), correctly, about
+     * an image that has no business carrying one. Marking the section what it
+     * already is takes the W back out. */
+    .binary_info (READONLY) : {
         KEEP (*(.binary_info.keep.*))
         *(.binary_info.*)
         . = ALIGN(4);

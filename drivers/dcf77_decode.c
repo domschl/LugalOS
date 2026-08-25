@@ -620,7 +620,9 @@ static bool run_cet_case(void) {
         add_minutes(&cur, 1);
     }
 
-    rtc_time_t got;
+    /* Zeroed, not merely declared: dcf77_take_time() fills it only when it
+     * returns true, and the failure branch below prints it either way. */
+    rtc_time_t got = {0};
     bool ok = dcf77_take_time(&d, &got) && times_equal(&got, &expect);
     cprintf("  [%s] a CET frame decodes to UTC+1, not UTC+2", ok ? "ok" : "FAIL");
     if (!ok) cprintf(" (got %04u-%02u-%02u %02u:%02u)", got.year, got.month,

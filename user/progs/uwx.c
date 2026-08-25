@@ -25,8 +25,14 @@ int _start(void) {
 
     /* Its own entry point: unambiguously inside the executable segment, and
      * an address the program is entitled to *read*. Volatile so the store
-     * cannot be optimised away as dead. */
-    volatile unsigned int *own_text = (volatile unsigned int *)(void *)_start;
+     * cannot be optimised away as dead.
+     *
+     * Via `unsigned long` rather than `(void *)`: ISO C has no conversion
+     * from a function pointer to an object pointer, and -Wpedantic says so.
+     * An integer of pointer width is the spelling that means the same thing
+     * without the extension. */
+    volatile unsigned int *own_text =
+        (volatile unsigned int *)(unsigned long)_start;
     *own_text = 0;
 
     uprint("UWX_NOT_ENFORCED\n");

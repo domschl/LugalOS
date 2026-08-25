@@ -33,12 +33,6 @@
 
 #define PIN_MASK ((1u << 25) | (1u << 16))
 
-static void delay(volatile uint32_t count) {
-    while (count--) {
-        __asm__ volatile ("nop");
-    }
-}
-
 static void uart_init(uint32_t baudrate) {
     (void)baudrate;
 

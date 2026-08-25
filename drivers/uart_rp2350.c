@@ -92,15 +92,6 @@
 
 #include "drivers/usb_cdc.h"
 
-static void delay_cycles(volatile uint32_t n) {
-    while (n--) {
-        if ((n & 0xFFFF) == 0) {
-            usb_cdc_task();
-        }
-        __asm__ volatile("nop");
-    }
-}
-
 static inline uint32_t read_mcycle(void) {
     uint32_t c;
     __asm__ volatile("csrr %0, mcycle" : "=r"(c));
