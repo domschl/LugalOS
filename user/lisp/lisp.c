@@ -14,6 +14,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "kernel/device.h"
+#include "net/ip.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
@@ -2210,17 +2211,18 @@ static bool parse_ipv4(const char *s, uint8_t out[4]) {
     return part == 4;
 }
 
-/* `(net-config "ip" "mask" ["gateway"])` -- phase 18 N4 §3, kept alive
- * through phase 19's R0 with no interface under it.
+/* `(net-config "ip" "mask" ["gateway"])` -- phase 18 N4 §3, wired to the IP
+ * stack by phase 19's R2.
  *
- * **This is a stub until phase 19's R2 wires it to the IP stack.** It still
- * validates its arguments and still says what it was asked to do; it just
- * has nothing to apply them to. The name is kept rather than removed with
- * the W5500 for one concrete reason: a gateway's
- * /sd0/system/etc/usr_init.lisp already carries a (net-config ...) line, and
- * an unbound symbol there would abort the boot script over a peripheral that
- * is merely absent. Failing the call and continuing the boot is the right
- * shape for "this board has no network yet".
+ * The address comes from the SD card using the boot path that already exists:
+ * /sd0/system/etc/usr_init.lisp is loaded at boot when present, so the
+ * network configuration is one line in it and needs no new file format, no
+ * parser and no second convention. The gateway argument may be omitted on an
+ * isolated segment with no router.
+ *
+ * On a board with no interface this fails and says so rather than raising:
+ * an unbound symbol in a boot script would abort the whole script over a
+ * peripheral that is merely absent.
  *
  * The gateway's address, from the SD card, using the boot path that already
  * exists: /sd0/system/etc/usr_init.lisp is loaded at boot when present, so
@@ -2246,19 +2248,24 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
         if (!parse_ipv4(get_str_val(rest->u.pair.car), gw)) return &false_val;
     }
 
-    cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u -- parsed, but this "
-            "board has no network interface (phase 19 R2)\n",
+    if (net_set_address(ip, mask, gw) != 0) {
+        cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u parsed, but this board has no "
+                "network interface\n",
+                ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3]);
+        return &false_val;
+    }
+    cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u\n",
             ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
             gw[0], gw[1], gw[2], gw[3]);
-    return &false_val;
+    return &true_val;
 }
 
-/* `(net-status)` -- the interface report, for a script that wants to see it
- * after configuring. Stubbed alongside (net-config) above. */
+/* `(net-status)` -- the same report `net` prints, for a script that wants to
+ * see it after configuring. */
 static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    cprintf("[Net] no network interface on this board (phase 19 R2)\n");
-    return &false_val;
+    net_print_status();
+    return net_configured() ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {

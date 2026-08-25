@@ -2619,6 +2619,9 @@ def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tup
         inbound = netpeer.eth_frame(netpeer.BROADCAST, peer_mac,
                                     netpeer.ETHERTYPE_TEST, b"HELLO-FROM-PEER")
         peer.send(inbound)
+        # `net rxtest` reports what the *stack* did not claim (net/ip.h's raw
+        # sink), so the frame is injected first and drained second -- polling
+        # the interface directly would lose every race against `netsrv`.
         ok, log = session.send_and_expect(
             "net rxtest 1",
             r"net: rx 60 bytes, 02:00:00:00:00:42 -> ff:ff:ff:ff:ff:ff, type 0x88b5", timeout=8.0)
@@ -2633,6 +2636,162 @@ def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tup
             return (name, False, f"tx counters disagree with the peer: {log[-600:]}")
 
         return (name, True, f"mac {mac_text}, 3 frames out byte-exact, 1 in, counters agree")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        peer.close()
+
+
+def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R2, plan/phase19_ip_stack_and_ethernet.md: ARP, IPv4, ICMP and UDP,
+    against a peer that can build anything.
+
+    The four things that work are checked by their replies, byte for byte; the
+    four things that must *not* work are checked by their counters, which is
+    the whole reason /proc/net keeps them apart. "The network does not work"
+    is not a diagnosis and a single drop total cannot become one -- phase 18
+    spent days learning that, and this test is what the lesson buys.
+
+    What is deliberately not asserted: timing. A localhost UDP socket says
+    nothing useful about latency, and pretending otherwise would make this
+    test flaky on a loaded machine for no information.
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "IP Stack: ARP, ICMP, UDP And Four Kinds Of Malformed (R2)"
+    arch_img = img_path.with_name(f"test_{arch_name}_ipstack_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    GUEST_IP = bytes([192, 168, 77, 2])
+    PEER_IP = bytes([192, 168, 77, 1])
+    PEER_MAC = b"\x02\x00\x00\x00\x00\x42"
+    GUEST_MAC = bytes.fromhex("525400123456")
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "192.168.77.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.77\.2/255\.255\.255\.0", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        ok, log = session.send_and_expect("net udpecho 7", r"net: echoing UDP on port 7", timeout=5.0)
+        if not ok:
+            return (name, False, f"could not bind the echo port: {log[-500:]}")
+
+        def ipv4_to_guest(proto: int, payload: bytes, **kw: object) -> bytes:
+            return netpeer.eth_frame(
+                GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_IPV4,
+                netpeer.ipv4_packet(PEER_IP, GUEST_IP, proto, payload, **kw))  # type: ignore[arg-type]
+
+        # --- 1. ARP: a request for our address must be answered ---
+        peer.clear()
+        peer.send(netpeer.eth_frame(
+            netpeer.BROADCAST, PEER_MAC, netpeer.ETHERTYPE_ARP,
+            netpeer.arp_packet(1, PEER_MAC, PEER_IP, bytes(6), GUEST_IP)))
+        frames = peer.wait_for(1, timeout=5.0)
+        if not frames:
+            return (name, False, "no ARP reply")
+        _dst, _src, etype, payload = netpeer.parse_eth(frames[0])
+        if etype != netpeer.ETHERTYPE_ARP:
+            return (name, False, f"expected ARP, got ethertype 0x{etype:04x}")
+        arp = netpeer.parse_arp(payload)
+        if arp["op"] != 2 or arp["sender_ip"] != GUEST_IP or arp["target_ip"] != PEER_IP:
+            return (name, False, f"malformed ARP reply: {arp}")
+        if arp["sender_mac"] != GUEST_MAC:
+            return (name, False, f"ARP reply carries {netpeer.mac_str(arp['sender_mac'])}")
+
+        # --- 2. ICMP: an echo request comes back with everything echoed ---
+        peer.clear()
+        body = b"ping-payload-0123456789"
+        peer.send(ipv4_to_guest(netpeer.IP_PROTO_ICMP, netpeer.icmp_echo(0x1234, 1, body)))
+        frames = peer.wait_for(1, timeout=5.0)
+        if not frames:
+            return (name, False, "no ICMP echo reply")
+        _d, _s, _t, ip = netpeer.parse_eth(frames[0])
+        icmp = ip[20:]
+        if icmp[0] != 0 or icmp[1] != 0:
+            return (name, False, f"expected echo reply, got type {icmp[0]} code {icmp[1]}")
+        if netpeer.ip_checksum(icmp) != 0:
+            return (name, False, "echo reply checksum is wrong")
+        if icmp[4:8] != b"\x12\x34\x00\x01" or icmp[8:] != body:
+            return (name, False, f"identifier/sequence/payload not echoed: {icmp[4:].hex()}")
+
+        # --- 3. UDP: the echo service returns the same bytes ---
+        peer.clear()
+        msg = b"udp-hello"
+        peer.send(ipv4_to_guest(netpeer.IP_PROTO_UDP,
+                                netpeer.udp_datagram(PEER_IP, GUEST_IP, 4000, 7, msg)))
+        frames = peer.wait_for(1, timeout=5.0)
+        if not frames:
+            return (name, False, "no UDP echo")
+        _d, _s, _t, ip = netpeer.parse_eth(frames[0])
+        udp = ip[20:]
+        if int.from_bytes(udp[0:2], "big") != 7 or int.from_bytes(udp[2:4], "big") != 4000:
+            return (name, False, f"UDP ports wrong: {udp[0:4].hex()}")
+        if udp[8:8 + len(msg)] != msg:
+            return (name, False, f"UDP payload not echoed: {udp[8:].hex()}")
+        pseudo = GUEST_IP + PEER_IP + bytes([0, netpeer.IP_PROTO_UDP]) + udp[4:6]
+        if netpeer.ip_checksum(pseudo + udp) != 0:
+            return (name, False, "UDP checksum on the reply is wrong")
+
+        # --- 4. UDP to a port nobody bound: ICMP 3/3, quoting the original ---
+        peer.clear()
+        closed = netpeer.udp_datagram(PEER_IP, GUEST_IP, 4000, 9999, b"nobody-home")
+        peer.send(ipv4_to_guest(netpeer.IP_PROTO_UDP, closed))
+        frames = peer.wait_for(1, timeout=5.0)
+        if not frames:
+            return (name, False, "no ICMP port-unreachable")
+        _d, _s, _t, ip = netpeer.parse_eth(frames[0])
+        icmp = ip[20:]
+        if icmp[0] != 3 or icmp[1] != 3:
+            return (name, False, f"expected ICMP 3/3, got {icmp[0]}/{icmp[1]}")
+        # The quote must carry the original UDP ports, or the far end cannot
+        # attribute the refusal to a socket.
+        quoted_udp = icmp[8 + 20:8 + 20 + 8]
+        if int.from_bytes(quoted_udp[2:4], "big") != 9999:
+            return (name, False, f"the quoted datagram is not the one we sent: {icmp[8:].hex()}")
+
+        # --- 5. four malformed frames, each counted as its own kind ---
+        peer.clear()
+        good_icmp = netpeer.icmp_echo(0x1234, 2, b"x" * 16)
+        peer.send(ipv4_to_guest(netpeer.IP_PROTO_ICMP, good_icmp, bad_checksum=True))
+        peer.send(ipv4_to_guest(netpeer.IP_PROTO_ICMP, good_icmp, flags_frag=0x2000))
+        peer.send(netpeer.eth_frame(GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_IPV4,
+                                    b"\x45\x00\x00\x30"))
+        peer.send(ipv4_to_guest(6, b"\x00" * 20))     # TCP: not implemented until R3
+        time.sleep(1.0)
+
+        ok, log = session.send_and_expect("cat /proc/net", r"drop: .*no-port", timeout=8.0)
+        if not ok:
+            return (name, False, f"/proc/net did not answer: {log[-500:]}")
+        m = re.search(r"drop: (\d+) not-for-us, (\d+) short, (\d+) checksum, (\d+) fragment,\s*"
+                      r"(\d+) proto, (\d+) no-route, (\d+) no-port", log)
+        if not m:
+            return (name, False, f"could not read the drop counters:\n{log[-700:]}")
+        short, checksum, fragment, proto, no_port = (int(m.group(i)) for i in (2, 3, 4, 5, 7))
+        problems = []
+        if checksum != 1: problems.append(f"checksum={checksum} (want 1)")
+        if fragment != 1: problems.append(f"fragment={fragment} (want 1)")
+        if short != 1: problems.append(f"short={short} (want 1)")
+        if proto != 1: problems.append(f"proto={proto} (want 1)")
+        if no_port != 1: problems.append(f"no-port={no_port} (want 1)")
+        if problems:
+            return (name, False, "drop counters: " + ", ".join(problems))
+
+        if not re.search(r"192\.168\.77\.1 02:00:00:00:00:42", log):
+            return (name, False, "the peer is not in the ARP cache")
+
+        return (name, True, "arp/icmp/udp answered byte-exact; five drop kinds counted apart")
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
     finally:
@@ -3480,6 +3639,7 @@ def main() -> int:
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -3503,6 +3663,7 @@ def main() -> int:
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

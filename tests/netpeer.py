@@ -78,6 +78,94 @@ def expected_test_frame(src_mac: bytes, seq: int) -> bytes:
     return eth_frame(BROADCAST, src_mac, ETHERTYPE_TEST, payload)
 
 
+# --- protocol builders (R2) -------------------------------------------------
+#
+# Deliberately hand-rolled rather than taken from a library: the point of this
+# peer is to be able to build things a library would refuse to, so every field
+# is an argument with a default rather than something computed for us.
+
+ETHERTYPE_IPV4 = 0x0800
+ETHERTYPE_ARP = 0x0806
+IP_PROTO_ICMP = 1
+IP_PROTO_UDP = 17
+
+
+def ip_checksum(data: bytes) -> int:
+    total = 0
+    for i in range(0, len(data) - 1, 2):
+        total += (data[i] << 8) | data[i + 1]
+    if len(data) & 1:
+        total += data[-1] << 8
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return (~total) & 0xFFFF
+
+
+def arp_packet(op: int, sender_mac: bytes, sender_ip: bytes,
+               target_mac: bytes, target_ip: bytes) -> bytes:
+    return (b"\x00\x01" + b"\x08\x00" + b"\x06\x04"
+            + op.to_bytes(2, "big")
+            + sender_mac + sender_ip + target_mac + target_ip)
+
+
+def parse_arp(payload: bytes) -> dict[str, object]:
+    return {
+        "op": int.from_bytes(payload[6:8], "big"),
+        "sender_mac": payload[8:14],
+        "sender_ip": payload[14:18],
+        "target_mac": payload[18:24],
+        "target_ip": payload[24:28],
+    }
+
+
+def ipv4_packet(src: bytes, dst: bytes, proto: int, payload: bytes,
+                *, ttl: int = 64, ident: int = 0, flags_frag: int = 0x4000,
+                bad_checksum: bool = False, total_len: int | None = None) -> bytes:
+    """One IPv4 datagram. `flags_frag`, `total_len` and `bad_checksum` are
+    exposed so a test can build the malformed cases the stack has to count and
+    drop rather than mishandle."""
+    total = len(payload) + 20 if total_len is None else total_len
+    hdr = bytearray(20)
+    hdr[0] = 0x45
+    hdr[2:4] = total.to_bytes(2, "big")
+    hdr[4:6] = ident.to_bytes(2, "big")
+    hdr[6:8] = flags_frag.to_bytes(2, "big")
+    hdr[8] = ttl
+    hdr[9] = proto
+    hdr[12:16] = src
+    hdr[16:20] = dst
+    ck = ip_checksum(bytes(hdr))
+    if bad_checksum:
+        ck ^= 0xFFFF
+    hdr[10:12] = ck.to_bytes(2, "big")
+    return bytes(hdr) + payload
+
+
+def icmp_echo(ident: int, seq: int, payload: bytes, *, request: bool = True) -> bytes:
+    body = bytearray(8)
+    body[0] = 8 if request else 0
+    body[4:6] = ident.to_bytes(2, "big")
+    body[6:8] = seq.to_bytes(2, "big")
+    msg = bytes(body) + payload
+    ck = ip_checksum(msg)
+    return msg[:2] + ck.to_bytes(2, "big") + msg[4:]
+
+
+def udp_datagram(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
+                 payload: bytes, *, checksum: bool = True) -> bytes:
+    total = 8 + len(payload)
+    hdr = bytearray(8)
+    hdr[0:2] = src_port.to_bytes(2, "big")
+    hdr[2:4] = dst_port.to_bytes(2, "big")
+    hdr[4:6] = total.to_bytes(2, "big")
+    msg = bytes(hdr) + payload
+    if not checksum:
+        return msg
+    pseudo = src_ip + dst_ip + bytes([0, IP_PROTO_UDP]) + total.to_bytes(2, "big")
+    ck = ip_checksum(pseudo + msg) or 0xFFFF
+    return msg[:6] + ck.to_bytes(2, "big") + msg[8:]
+
+
 class NetPeer:
     """The far end of the guest's only network cable.
 

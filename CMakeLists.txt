@@ -440,6 +440,14 @@ set(SOURCES
     # absent, which is what lets `net` and /proc/devices answer "no network"
     # instead of not existing.
     net/netif.c
+    # R2: the stack itself -- ARP, IPv4, ICMP, UDP. Built for every target for
+    # the same reason kernel/sha256.c is: the fiddly part of a protocol is its
+    # arithmetic, and arithmetic should not be debugged by flashing.
+    net/stack.c
+    net/arp.c
+    net/ipv4.c
+    net/icmp.c
+    net/udp.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c

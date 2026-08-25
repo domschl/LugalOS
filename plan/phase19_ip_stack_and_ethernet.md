@@ -1,6 +1,6 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0 and R1 done 2026-08-25; R2 next.** Succeeds
+**Status: R0, R1 and R2 done 2026-08-25; R3 (TCP) next.** Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -399,6 +399,58 @@ counted and dropped rather than mishandled; a truncated header does not fault.
 per-frame IPC cost against §3's fallback -- both reported in the milestone, not
 deferred.
 
+**Done, 2026-08-25.** `net/stack.c`, `net/arp.c`, `net/ipv4.c`, `net/icmp.c`,
+`net/udp.c`; a `netsrv` pump task; `/proc/net`; `(net-config)` wired through;
+`net udpecho`; protocol builders in `tests/netpeer.py`; one runner test on both
+targets. Suite **273/273**, zero warnings on five presets.
+
+**The RAM number: 408 bytes of `.bss`, and no heap page lost on any persona.**
+The first cut was 3424 bytes, which cost the chess persona a whole heap page
+(88 -> 87) for a stack it has no interface to run. The two frame buffers are
+3028 of those bytes, so they moved to **one page taken from `palloc` at attach
+time** -- phase 15's rule applied exactly: memory taken only while it is used,
+and a board with no netif never attaches. What is left in `.bss` is state, the
+ARP cache (196 B) and the UDP binding table (48 B). Against §2's 12 KB budget
+that leaves ~8.5 KB for R3's TCP windows, which §2 sized at ~5.8 KB. The budget
+holds with margin.
+
+**The throughput number: ~9,700 ICMP echo round trips per second**, on both
+targets, 200/200 replies with every drop counter at zero. A QEMU-and-loopback
+figure that says nothing about real hardware -- its value is as a *before* to
+compare against when R4 puts an isolation boundary in the path.
+
+**Three deviations, all deliberate.**
+
+1. **`/proc/net`, not a `/net` mount.** §3 asked for `/net/ipifc/0/status`. A
+   whole new mount kind with its own readdir and a two-level tree is real
+   machinery for one status file -- and the eventual `/net` is a *writable
+   socket* filesystem, so it would be redesigned when sockets land anyway.
+   `/proc/ports`, `/proc/devices` and `/proc/config` are this project's
+   existing idiom for exactly this, and `cat /proc/net` debugs the stack
+   today. Promoting it stays a later phase's job, with a user to justify it.
+
+2. **The stack is a scheduled kernel task, not a U-mode task in its own
+   domain.** §3's argument for the domain is right and is not withdrawn --
+   it is *mis-sequenced*. The isolation machinery (PMP domains for driver
+   tasks, phase 12's M5) lives on the RP2350 personas, and those have no
+   network until R4. The only target with a netif today is QEMU, where no
+   driver is domained at all: `virtio_blk.c` and `virtio_console.c` are both
+   plain kernel code. Domaining the stack here would mean inventing the
+   QEMU-side driver-isolation pattern for a device that exists only in an
+   emulator, and then redoing it against real silicon. **R4 is where both
+   halves exist at once**, and it inherits this. The reasoning is recorded in
+   `net/stack.c` above `net_task_body()`, because that is where the next
+   reader will ask.
+
+3. **`net rxtest` reports what the stack did *not* claim.** Once `netsrv`
+   owns the receive queue, a diagnostic that polls the interface directly
+   loses every race -- which is what happened the moment R2 landed and broke
+   R1's test. The stack now latches the head of the most recent unclaimed
+   frame (64 bytes plus its true length, `NET_UNCLAIMED_HEAD`) and `rxtest`
+   drains that. A latch rather than a callback the diagnostic installs,
+   because a callback also has to be installed before the frame arrives, and
+   asking an operator to win that race is the same bug wearing a hat.
+
 **R3 -- TCP, passive open, and 9P over it.** The state machine, retransmission,
 FIN and RST.
 *Verify:* the peer drives handshake, in-order data, out-of-order data (dropped,
@@ -443,7 +495,19 @@ and the blob paragraph from R5.
   kept it at the bottom of the list since phase 14.
 * **Reverse-engineering the CYW43439** -- see §1.
 * **A writable `/net` socket filesystem** -- see §3. Status files only.
-* **IPv6, DHCP, TLS, routing, fragmentation, SACK/window scaling** -- see §2.
+* **IPv6, TLS, routing, fragmentation, SACK/window scaling** -- see §2.
+* **DHCP -- not here, but no longer a blanket no** *(2026-08-25)*. Phase 18 §8
+  argued it away, and that argument was specifically about **a server**: the
+  gateway wants a stable address, and every DHCP failure mode presents as "the
+  board is not on the network". A **sensor node** inverts every term of that.
+  It is a client, there would be several of them, hand-assigning addresses
+  across them is the actual cost, and a node that spends a minute retrying a
+  lease is fine in a way a file server is not. Once R2 lands, UDP and broadcast
+  are already there, so what is left is DISCOVER/OFFER/REQUEST/ACK, option
+  parsing and T1/T2 renewal -- perhaps 350 lines with no new layer under it.
+  **It gets its own milestone when the first sensor persona wants one**, not a
+  corner of R2: the thing that makes it worth building is a board that needs
+  it, and there is not one yet.
 * **Confidentiality on the wire.** Phase 18 §1's threat model is inherited
   unchanged: auth proves who attaches, and does not hide what they then read.
 

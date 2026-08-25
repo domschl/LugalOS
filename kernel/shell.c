@@ -38,6 +38,7 @@
 #include "fs/p9_link.h"
 #include "fs/9p.h"
 #include "net/netif.h"
+#include "net/ip.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -123,6 +124,7 @@ static void cmd_help(void) {
     cprintf("  net             - Network interfaces: MAC, link, frame counters\n");
     cprintf("  net txtest [n]  - Emit n test frames (default 1) on the first interface\n");
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
+    cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
     cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
@@ -280,28 +282,7 @@ static void cmd_p9auth(const char *arg) {
  * debugged by guesswork -- but they cost far less here, because the peer on
  * the other side is a Python script that can say byte-for-byte what it saw
  * (tests/netpeer.py, plan §4a). This is the pair R1 is verified with. */
-static void cmd_net_status(void) {
-    uint32_t n = netif_count();
-    if (n == 0) {
-        cprintf("net: no interfaces.\n");
-        cprintf("  This board has no network hardware fitted, or its driver found none.\n");
-        cprintf("  On QEMU, add: -netdev ... -device virtio-net-device,netdev=...\n");
-        return;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        netif_t *nif = netif_at(i);
-        char mac[18];
-        netif_mac_str(nif->mac, mac);
-        cprintf("%s: mac %s, link %s\n", nif->name, mac,
-                netif_link_up(nif) ? "up" : "down");
-        cprintf("  rx %lu frames, %lu bytes, %lu dropped\n",
-                (unsigned long)nif->rx_frames, (unsigned long)nif->rx_bytes,
-                (unsigned long)nif->rx_dropped);
-        cprintf("  tx %lu frames, %lu bytes, %lu errors\n",
-                (unsigned long)nif->tx_frames, (unsigned long)nif->tx_bytes,
-                (unsigned long)nif->tx_errors);
-    }
-}
+static void cmd_net_status(void) { net_print_status(); }
 
 /* A frame with somewhere to go and nothing to say: broadcast destination, our
  * own MAC as source, an EtherType of 0x88b5 (IEEE-reserved for local
@@ -343,24 +324,56 @@ static void cmd_net_rxtest(unsigned count) {
     if (!nif) { cprintf("net: no interfaces.\n"); return; }
     if (count == 0) count = 1;
 
-    /* Bounded by polls rather than by time: this shell has no sleep that does
-     * not also stop being responsive, and a test that hangs forever waiting
-     * for a peer that will never speak is worse than one that gives up. */
+    cprintf("net: waiting for %u frame%s the stack does not claim...\n",
+            count, count == 1 ? "" : "s");
+
+    /* Drains net/stack.c's latch. The yield is what lets `netsrv` run at all:
+     * without it this loop starves the task that fills the latch. Bounded by
+     * iterations rather than by time, because this shell has no sleep that
+     * does not also stop being responsive, and a diagnostic that waits
+     * forever for a peer that will never speak is worse than one that gives
+     * up and says so. */
     unsigned got = 0;
-    uint8_t frame[NETIF_FRAME_MAX];
-    for (unsigned long spin = 0; spin < 20000000ul && got < count; spin++) {
-        if (netif_poll(nif) != 1) continue;
-        int n = netif_recv(nif, frame, sizeof(frame));
-        if (n < 14) continue;
+    uint8_t head[NET_UNCLAIMED_HEAD];
+    for (unsigned long spin = 0; spin < 200000ul && got < count; spin++) {
+        uint32_t n = net_take_unclaimed(head);
+        if (n == 0) { sched_yield(); continue; }
         char src[18], dst[18];
-        netif_mac_str(frame, dst);
-        netif_mac_str(frame + 6, src);
-        cprintf("net: rx %d bytes, %s -> %s, type 0x%02x%02x\n",
-                n, src, dst, frame[12], frame[13]);
+        netif_mac_str(head, dst);
+        netif_mac_str(head + 6, src);
+        cprintf("net: rx %lu bytes, %s -> %s, type 0x%02x%02x\n",
+                (unsigned long)n, src, dst, head[12], head[13]);
         got++;
     }
     if (got < count) cprintf("net: gave up after %u/%u frames\n", got, count);
     else cprintf("net: rxtest done, %u frames\n", got);
+}
+
+/* `net udpecho [port]` -- binds a UDP port and echoes whatever arrives back
+ * to its sender.
+ *
+ * Seven lines that make the UDP path testable from outside without inventing
+ * a protocol: the peer sends a datagram, gets the same bytes back from the
+ * same address, and has therefore exercised bind, dispatch, the pseudo-header
+ * checksum in both directions, and the ARP resolution behind the reply. Port
+ * 7 by default because that is what the echo service has been since RFC 862.
+ * There is no unbind command: the binding is meant to outlive the command
+ * that made it, and a reboot is the way out. */
+static void udp_echo_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_port,
+                        const uint8_t *data, uint32_t len) {
+    uint16_t port = (uint16_t)(uintptr_t)ctx;
+    udp_send(src_ip, src_port, port, data, len);
+    cprintf("net: udpecho %lu bytes from %u.%u.%u.%u:%u\n",
+            (unsigned long)len, src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port);
+}
+
+static void cmd_net_udpecho(unsigned port) {
+    if (port == 0 || port > 65535u) port = 7;
+    if (udp_bind((uint16_t)port, udp_echo_cb, (void *)(uintptr_t)port) != 0) {
+        cprintf("net: could not bind UDP port %u (already bound, or no slots)\n", port);
+        return;
+    }
+    cprintf("net: echoing UDP on port %u\n", port);
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -1689,6 +1702,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
         cmd_net_txtest(shell_trailing_uint(&cmd_line[10]));
+        return;
+    } else if (strncmp(cmd_line, "net udpecho", 11) == 0) {
+        cmd_net_udpecho(shell_trailing_uint(&cmd_line[11]));
         return;
     } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
         cmd_net_rxtest(shell_trailing_uint(&cmd_line[10]));

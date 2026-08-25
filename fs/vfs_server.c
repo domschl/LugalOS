@@ -13,6 +13,7 @@
 #include "kernel/console.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
+#include "net/ip.h"
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
@@ -640,6 +641,71 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "net") == 0) {
+        /* R2, plan/phase19_ip_stack_and_ethernet.md: the interface, its
+         * address, its ARP cache and every counter the stack keeps.
+         *
+         * **A file under /proc rather than a `/net` mount**, which is where
+         * the plan's §3 put it. The reasoning changed once it was written: a
+         * whole new mount kind, with its own readdir and a two-level
+         * ipifc/0/ tree, is real machinery to build for one status file --
+         * and the eventual `/net` is a *writable socket* filesystem, so it
+         * would be redesigned when sockets land anyway. /proc/ports,
+         * /proc/devices and /proc/config are this project's existing idiom
+         * for exactly this, and `cat /proc/net` debugs the stack today.
+         * Promoting it is a later phase's job, with a user to justify it.
+         *
+         * Every drop is a separate line for the reason phase 18 learned
+         * expensively: "the network does not work" is not a diagnosis, and a
+         * single total cannot become one. */
+        const net_state_t *ns = net_state();
+        if (!ns->nif) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "interface: none\nThis board has no network interface.\n");
+        } else {
+            char mac[18];
+            netif_mac_str(ns->nif->mac, mac);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "interface: %s\nmac: %s\nlink: %s\n",
+                ns->nif->name, mac, netif_link_up(ns->nif) ? "up" : "down");
+            if (ns->configured) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "address: %u.%u.%u.%u\nnetmask: %u.%u.%u.%u\ngateway: %u.%u.%u.%u\n",
+                    ns->ip[0], ns->ip[1], ns->ip[2], ns->ip[3],
+                    ns->mask[0], ns->mask[1], ns->mask[2], ns->mask[3],
+                    ns->gw[0], ns->gw[1], ns->gw[2], ns->gw[3]);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "address: unconfigured\n");
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "rx: %lu frames, %lu bytes\ntx: %lu frames, %lu bytes\n",
+                (unsigned long)ns->nif->rx_frames, (unsigned long)ns->nif->rx_bytes,
+                (unsigned long)ns->nif->tx_frames, (unsigned long)ns->nif->tx_bytes);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "arp: %lu rx, %lu tx\nip: %lu rx, %lu tx\n"
+                "icmp: %lu rx, %lu tx\nudp: %lu rx, %lu tx\n",
+                (unsigned long)ns->rx_arp, (unsigned long)ns->tx_arp,
+                (unsigned long)ns->rx_ip, (unsigned long)ns->tx_ip,
+                (unsigned long)ns->rx_icmp, (unsigned long)ns->tx_icmp,
+                (unsigned long)ns->rx_udp, (unsigned long)ns->tx_udp);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "drop: %lu not-for-us, %lu short, %lu checksum, %lu fragment,\n"
+                "      %lu proto, %lu no-route, %lu no-port\n",
+                (unsigned long)ns->drop_not_for_us, (unsigned long)ns->drop_short,
+                (unsigned long)ns->drop_checksum, (unsigned long)ns->drop_fragment,
+                (unsigned long)ns->drop_proto, (unsigned long)ns->drop_no_route,
+                (unsigned long)ns->drop_no_port);
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "udp bindings: %lu\narp cache: %lu entries\n",
+                (unsigned long)udp_bindings(), (unsigned long)arp_entries());
+            for (uint32_t i = 0; i < 8; i++) {
+                char line[48];
+                arp_entry_str(i, line, sizeof(line));
+                if (line[0]) used += (uint32_t)ksnprintf(buf + used, cap - used, "  %s", line);
+            }
+        }
+        return (int)used;
     } else if (strcmp(rel, "ports") == 0) {
         /* Which channels this board has, what each can be, and who holds it
          * (C8). Several names can be one wire -- the UART is a console, a
@@ -868,7 +934,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
     "dcf77",
 #endif

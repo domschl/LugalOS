@@ -33,6 +33,7 @@
 #include "drivers/dcf77.h"
 #endif
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
+#include "net/ip.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -316,6 +317,16 @@ void kernel_main(void) {
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */
     p9_server_task_start();
+
+    /* R2, plan/phase19_ip_stack_and_ethernet.md: the IP stack, on whatever
+     * interface dev_probe_all() found. Both calls are no-ops on a board with
+     * no netif, which is every board in this tree until R4 -- so this is
+     * unconditional rather than guarded, and `net` reports "no interfaces"
+     * instead of the boot path having to know. */
+    if (netif_default()) {
+        net_stack_attach(netif_default());
+        net_task_start();
+    }
 
     shell_init();
     lisp_init();
