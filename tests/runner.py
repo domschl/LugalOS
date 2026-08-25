@@ -3582,6 +3582,165 @@ def test_9p_uart_demux_shared_wire(elf_path: Path, img_path: Path, arch_name: st
             session.close()
 
 
+def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
+                                   img64: Path, img32: Path) -> tuple[str, bool, str]:
+    """R3b, plan/phase19_ip_stack_and_ethernet.md: two LugalOS nodes on one
+    virtual Ethernet segment, one mounting the other's namespace over TCP that
+    both of them implement.
+
+    QEMU's `-netdev socket,listen=` / `connect=` pair makes a **layer-2** link
+    between the two guests -- a virtual segment, so ARP is real and both sides
+    need addresses on one subnet. That is the netdev-layer twin of the chardev
+    bridge test_9p_multinode_heterogeneous() already uses, so the orchestration
+    here is that test's, one layer down. The two MACs are set explicitly:
+    QEMU gives every virtio-net the same default, and two hosts sharing a MAC
+    on one segment is a debugging afternoon nobody needs.
+
+    **What this proves that the slirp test does not:** the client half of the
+    state machine. SYN_SENT is never entered without an active open, and
+    FIN_WAIT_1/FIN_WAIT_2/CLOSING/TIME_WAIT are only reachable from the side
+    that closes first -- four of ten states that no server-only test can
+    touch. It also exercises the in-kernel client's Tauth exchange, which
+    phase 18 never built because until R3b no node could dial another.
+
+    **And what it does not prove.** Our stack agreeing with our stack is a
+    weaker oracle than our stack agreeing with Linux: a symmetric
+    misunderstanding passes here and fails nowhere. That is why this does not
+    replace test_9p_over_own_tcp() (a foreign TCP on the other end) or
+    test_tcp_state_machine() (a peer that can send what no correct stack
+    would). It is an integration test, and it is labelled as one."""
+    import shutil
+    import socket as _socket
+
+    name = "Two Nodes, One Segment: 9P Over Our Own TCP Both Ways (R3b)"
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    key = "000102030405060708090a0b0c0d0e0f"
+    marker = "GREETINGS_FROM_NODE_B_OVER_IP"
+
+    img_b = img64.with_name("test_tcpnode_b_sd.img")
+    img_a = img32.with_name("test_tcpnode_a_sd.img")
+    shutil.copyfile(img64, img_b)
+    shutil.copyfile(img32, img_a)
+
+    session_b = QemuSession(rv64_elf, img_b, "rv64")
+    session_a = QemuSession(rv32_elf, img_a, "rv32")
+    try:
+        # Node B: the server. It holds the listening end of the virtual cable
+        # *and* the 9P listener, but those are independent -- one is QEMU's
+        # wiring, the other is ours.
+        session_b.start(extra_qemu_args=[
+            "-netdev", f"socket,id=n0,listen=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:12:34:56",
+        ])
+        ok, log = session_b.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node B (RV64) did not boot: {log[-400:]}")
+
+        ok, log = session_b.send_and_expect(
+            'lisp\n(net-config "192.168.99.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.99\.2", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B refused its address: {log[-400:]}")
+        ok, log = session_b.send_and_expect(f"p9key {key}", r"console key set", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B refused the key: {log[-400:]}")
+        ok, log = session_b.send_and_expect(
+            f'lisp\n(write-file "/ram0/hello.txt" "{marker}")\nexit', r"=> #t", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B could not write its marker: {log[-400:]}")
+
+        # Node A: the client, on the dialling end of both cables.
+        session_a.start(extra_qemu_args=[
+            "-netdev", f"socket,id=n0,connect=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:12:34:57",
+        ])
+        ok, log = session_a.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node A (RV32) did not boot: {log[-400:]}")
+        ok, log = session_a.send_and_expect(
+            'lisp\n(net-config "192.168.99.3" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.99\.3", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node A refused its address: {log[-400:]}")
+
+        # Without a key, the attach must be refused -- B's TCP link sets
+        # auth_required, and a node that cannot authenticate must not get in.
+        ok, log = session_a.send_and_expect(
+            'lisp\n(net-mount "peer" "192.168.99.2" 564)\nexit',
+            r"connected, but /peer could not be mounted", timeout=12.0)
+        if not ok:
+            return (name, False,
+                    "an unauthenticated node mounted an auth-requiring peer:\n"
+                    f"{log[-600:]}")
+
+        ok, log = session_a.send_and_expect(f"p9key {key}", r"console key set", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node A refused the key: {log[-400:]}")
+
+        ok, log = session_a.send_and_expect(
+            'lisp\n(net-mount "peer" "192.168.99.2" 564)\nexit',
+            r"\[Net\] /peer mounted from 192\.168\.99\.2:564", timeout=12.0)
+        if not ok:
+            return (name, False, f"the authenticated mount failed: {log[-600:]}")
+
+        ok, log = session_a.send_and_expect("cat /peer/ram0/hello.txt",
+                                            re.escape(marker), timeout=8.0)
+        if not ok:
+            return (name, False, f"could not read B's file through the mount: {log[-500:]}")
+
+        ok, log = session_a.send_and_expect("cat /peer/proc/version",
+                                            expected_version(), timeout=8.0)
+        if not ok:
+            return (name, False, f"B's /proc/version did not come through: {log[-500:]}")
+
+        # Both ends must agree about what happened, and neither may have
+        # dropped anything on a conversation that worked.
+        # **Two** accepted, and that is the interesting number: the refused
+        # attempt got a perfectly good TCP connection and was turned away by
+        # the auth gate above it, which is where a refusal belongs. The count
+        # of *open* connections is deliberately not asserted -- the refused
+        # one may or may not have left TIME_WAIT yet.
+        ok, log = session_b.send_and_expect("cat /proc/net",
+                                            r"tcp: listening on 564, \d+ open, 2 accepted", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node B does not report two accepted connections: {log[-500:]}")
+        if not re.search(r"192\.168\.99\.3:\d+ -> :564 ESTABLISHED", log):
+            return (name, False, f"Node B does not show A as established: {log[-500:]}")
+
+        ok, log = session_a.send_and_expect("cat /proc/net",
+                                            r"192\.168\.99\.2:564 -> :\d+ ESTABLISHED", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node A does not show its outbound connection: {log[-500:]}")
+
+        # Unmounting closes it, gracefully -- which is the only thing in this
+        # system that walks TCP's active-close path (FIN_WAIT_1 -> FIN_WAIT_2
+        # -> TIME_WAIT). Asserted by the slot being free again: with two in
+        # total, a connection that outlived its mount would make a node
+        # undialable until it rebooted.
+        ok, log = session_a.send_and_expect('lisp\n(unmount "peer")\nexit', r"=> #t", timeout=6.0)
+        if not ok:
+            return (name, False, f"unmount refused: {log[-400:]}")
+        for _ in range(10):
+            ok, log = session_a.send_and_expect("cat /proc/net", r"tcp: listening", timeout=8.0)
+            if ok and not re.search(r"192\.168\.99\.2:564 -> :\d+ (ESTABLISHED|FIN_WAIT|CLOSING)", log):
+                break
+            time.sleep(0.5)
+        else:
+            return (name, False, f"the connection outlived its mount: {log[-500:]}")
+
+        return (name, True, "rv32 mounted rv64's namespace over TCP, authenticated; "
+                            "anonymous attempt refused; unmount closed the connection")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session_a.close()
+        session_b.close()
+
+
 def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path,
                                     img64: Path, img32: Path) -> tuple[str, bool, str]:
     """A4/T2: the milestone that satisfies this phase's stated goal -- two
@@ -3900,6 +4059,7 @@ def main() -> int:
         print("\n[Target: Multi-Node RV32 <-> RV64 Heterogeneous Interconnect]")
         _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
+        _run_single(test_9p_between_nodes_over_tcp(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
 

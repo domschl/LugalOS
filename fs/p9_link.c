@@ -1,4 +1,5 @@
 #include "fs/p9_link.h"
+#include "kernel/sha256.h"
 #include "fs/9p.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -525,6 +526,93 @@ static int p9_remote_xchg(p9_remote_mount_t *m, const p9_msg_t *req, p9_msg_t *r
     return p9_link_roundtrip(m->link, req, resp, g_remote_tx, g_remote_rx, sizeof(g_remote_tx));
 }
 
+/* --- The client half of the auth exchange (R3b,
+ * plan/phase19_ip_stack_and_ethernet.md) ---
+ *
+ * Phase 18 built the gate and the host-side client for it; the *in-kernel*
+ * client never had one, because until R3b no node could dial another over a
+ * network. Now one can, and a node that cannot authenticate can only mount
+ * peers that ask nothing -- which is to say, not the gateway, and not
+ * anything else worth mounting.
+ *
+ * The exchange mirrors fs/9p.c's server side and host/p9lib's
+ * Session.authenticate():
+ *
+ *     Tauth  afid, uname, aname
+ *     Tread  afid  -> a 32-byte nonce the server chose
+ *     Twrite afid  <- HMAC-SHA256(key, nonce | uname | aname)
+ *
+ * The key never crosses the wire. uname and aname are inside the MAC, which
+ * is what stops a response captured for one identity being replayed as
+ * another.
+ *
+ * Attempted whenever this node has a key at all. A server that wants no
+ * authentication answers Tauth with an error, and that is not a failure --
+ * it is the answer, and the attach then goes ahead with no afid. Doing it
+ * this way means neither side has to be told what the other's policy is.
+ *
+ * Returns the afid to attach with, or P9_NOFID when no authentication
+ * happened (either we have no key, or the peer wants none). Returns -1 as an
+ * afid value never: a refusal that *should* have worked shows up as a failed
+ * attach, which is where the operator will look. */
+static uint32_t p9_remote_authenticate(p9_remote_mount_t *m, const char *uname) {
+    uint8_t key[P9_AUTH_KEY_MAX];
+    uint32_t key_len = 0;
+    if (p9_auth_key_for(uname, key, &key_len) != 0 || key_len == 0) return P9_NOFID;
+
+    p9_msg_t req, resp;
+    uint32_t afid = m->next_fid++;
+
+    memset(&req, 0, sizeof(req));
+    req.type = P9_TAUTH;
+    req.tag = p9_remote_next_tag(m);
+    req.afid = afid;
+    strncpy(req.uname, uname, sizeof(req.uname) - 1);
+    if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RAUTH) {
+        /* The peer does not want authentication. Give the fid number back so
+         * the attach's own fid does not skip a slot in a table of eight. */
+        m->next_fid--;
+        return P9_NOFID;
+    }
+
+    memset(&req, 0, sizeof(req));
+    req.type = P9_TREAD;
+    req.tag = p9_remote_next_tag(m);
+    req.fid = afid;
+    req.offset = 0;
+    req.count = P9_AUTH_NONCE_LEN;
+    if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RREAD ||
+        resp.count != P9_AUTH_NONCE_LEN || !resp.data) {
+        return P9_NOFID;
+    }
+
+    /* nonce | uname | aname, with aname empty: the same bytes fs/9p.c hashes,
+     * in the same order. A mismatch here is invisible until an attach is
+     * refused, so the two are worth reading side by side. */
+    uint8_t msg[P9_AUTH_NONCE_LEN + 2u * P9_MAX_NAME_LEN];
+    uint32_t n = 0;
+    memcpy(msg, resp.data, P9_AUTH_NONCE_LEN);
+    n = P9_AUTH_NONCE_LEN;
+    for (const char *u = uname; *u; u++) msg[n++] = (uint8_t)*u;
+    /* aname is empty -- the peer's namespace root -- so nothing more. */
+
+    uint8_t mac[SHA256_DIGEST_LEN];
+    hmac_sha256(key, key_len, msg, n, mac);
+
+    memset(&req, 0, sizeof(req));
+    req.type = P9_TWRITE;
+    req.tag = p9_remote_next_tag(m);
+    req.fid = afid;
+    req.offset = 0;
+    req.count = SHA256_DIGEST_LEN;
+    req.data = mac;
+    if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RWRITE ||
+        resp.count != SHA256_DIGEST_LEN) {
+        return P9_NOFID;
+    }
+    return afid;
+}
+
 p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
     if (!link) return NULL;
 
@@ -548,11 +636,18 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
 
     m->msize = (resp.msize > 0 && resp.msize <= P9_MAX_MSIZE) ? resp.msize : P9_MAX_MSIZE;
 
+    uint32_t afid = p9_remote_authenticate(m, "lugal");
+
     uint32_t root_fid = m->next_fid++;
     memset(&req, 0, sizeof(req));
     req.type = P9_TATTACH;
     req.tag = p9_remote_next_tag(m);
     req.fid = root_fid;
+    /* Explicitly P9_NOFID when there was no auth. It used to be left as the
+     * zero memset() put there, which is a *valid fid number*, and which an
+     * auth-requiring server duly looked up and rejected as "not an auth fid"
+     * -- a confusing way to fail for the right reason. */
+    req.afid = afid;
     strncpy(req.uname, "lugal", sizeof(req.uname) - 1);
     // aname left empty -> the peer's namespace root "/"
     if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RATTACH) return NULL;

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "net/ip.h"
+#include "fs/p9_link.h"
 
 /* Server-side TCP (R3, plan/phase19_ip_stack_and_ethernet.md).
  *
@@ -43,6 +44,20 @@ void tcp_unlisten(void);
 
 /* The one call the pump makes: timers, then 9P service, then transmit. */
 void tcp_service(void);
+
+/* --- R3b: the active open ---
+ *
+ * Half the state machine was unreachable without it: SYN_SENT was never
+ * entered, and FIN_WAIT_1/FIN_WAIT_2/CLOSING/TIME_WAIT only ever reachable
+ * from the side that closes first, which nothing was. It is also what lets
+ * one node mount another's namespace over IP instead of over a cable.
+ *
+ * tcp_connect() returns immediately with a link that is not yet usable --
+ * blocking here would block whichever task also runs the pump that completes
+ * the handshake. Poll tcp_link_ready() until it answers 1. */
+p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port);
+int tcp_link_ready(p9_link_t *link);
+void tcp_close(p9_link_t *link);
 
 void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
                const uint8_t *seg, uint32_t len);

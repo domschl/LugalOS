@@ -1,6 +1,6 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0-R3 done 2026-08-25; R4 (ENC28J60) next, waiting on parts.** Succeeds
+**Status: R0-R3 and R3b done 2026-08-25; R4 (ENC28J60) next, waiting on parts.** Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -512,8 +512,53 @@ stack and not a wire -- their value is as a *before* for R4.
    connection after boot and as a `no-route` count on a session that had done
    nothing wrong.
 
-**R3b (active open) has not slipped -- it has not been started**, as planned.
-Nothing in R4 or R5 depends on it.
+**R3b -- the active open -- done too, 2026-08-25.** `tcp_connect()`,
+`tcp_link_ready()`, `tcp_close()`, a `SYN_SENT` state, an `is_client` flag so
+the pump does not try to *serve* 9P on a link we dialled, a per-slot epoch so a
+mount holding a dead link fails cleanly instead of attaching itself to a
+stranger's session, `(net-mount "name" "ip" [port])`, and the client half of
+the auth exchange in `fs/p9_link.c`. **+4 bytes of `.bss`** beyond R3 (an
+ephemeral-port counter; the rest fit existing struct padding). Suite
+**278/278**.
+
+It was worth doing before the hardware, for three reasons that were not all
+obvious when it was scheduled as "may slip":
+
+* **Four of ten states were unreachable code.** `SYN_SENT` was never entered,
+  and `FIN_WAIT_1`/`FIN_WAIT_2`/`CLOSING`/`TIME_WAIT` only from the side that
+  closes first, which nothing was. `(unmount "peer")` now walks that path and
+  the test asserts the slot comes back.
+* **The in-kernel 9P client could not authenticate at all.** Phase 18 built
+  the gate and the *host* client for it; the kernel client never had one,
+  because until R3b no node could dial another over a network. Without it a
+  node can only mount peers that ask nothing -- which is to say, not the
+  gateway. It also fixes a real latent bug: `Tattach` was sending `afid = 0`
+  from a `memset`, and zero is a **valid fid number**, so an auth-requiring
+  server dutifully looked it up and refused it as "not an auth fid" -- the
+  right refusal for a confusing reason.
+* **It closes a slot leak that two connections cannot afford.** An idle
+  established connection has no timer to expire, so a mount torn down without
+  closing its connection would hold a slot until reboot. Two of those and the
+  node cannot dial anyone.
+
+**The two-node test, and what it is worth.** `-netdev socket,listen=` /
+`connect=` gives the two guests a **layer-2** link -- a virtual segment, so ARP
+is real and both need addresses on one subnet. That is the netdev-layer twin of
+the chardev bridge `test_9p_multinode_heterogeneous()` has always used, so the
+orchestration is that test's, one layer down. RV32 mounts RV64's namespace,
+reads a file and `/proc/version` through it, and both ends' `/proc/net` agree
+about the connection.
+
+*And what it is not worth:* our stack agreeing with our stack is a **weaker
+oracle** than our stack agreeing with Linux -- a symmetric misunderstanding
+passes here and fails nowhere. It does not replace the slirp test (a foreign
+TCP on the other end) or the hand-built `TCPDriver` (a peer that sends what no
+correct stack would). It is an integration test and is labelled as one in the
+docstring, so a future reader does not over-read a green result.
+
+One detail worth keeping: the two nodes get **explicit, different MACs**. QEMU
+gives every `virtio-net-device` the same default, and two hosts sharing a MAC on
+one segment is an afternoon nobody needs.
 
 **R4 -- ENC28J60 on the gateway persona.** Driver as a netif, the errata
 workarounds of §5 designed in, the decoupling fitted before power-on.

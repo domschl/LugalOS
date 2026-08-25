@@ -42,7 +42,7 @@
 #define TCP_MAX_CONNS 2
 
 typedef enum {
-    TCP_CLOSED = 0, TCP_LISTEN, TCP_SYN_RECEIVED, TCP_ESTABLISHED,
+    TCP_CLOSED = 0, TCP_LISTEN, TCP_SYN_SENT, TCP_SYN_RECEIVED, TCP_ESTABLISHED,
     TCP_FIN_WAIT_1, TCP_FIN_WAIT_2, TCP_CLOSE_WAIT, TCP_CLOSING,
     TCP_LAST_ACK, TCP_TIME_WAIT
 } tcp_state_t;
@@ -51,6 +51,7 @@ static const char *state_name(tcp_state_t s) {
     switch (s) {
         case TCP_CLOSED:       return "CLOSED";
         case TCP_LISTEN:       return "LISTEN";
+        case TCP_SYN_SENT:     return "SYN_SENT";
         case TCP_SYN_RECEIVED: return "SYN_RECEIVED";
         case TCP_ESTABLISHED:  return "ESTABLISHED";
         case TCP_FIN_WAIT_1:   return "FIN_WAIT_1";
@@ -96,6 +97,19 @@ typedef struct {
     bool fin_sent;
     bool need_ack;         /* something changed that the peer should hear about */
 
+    /* R3b: we opened this one, so we are the 9P *client* on it. tcp_service()
+     * must not offer it to the server -- on this wire the peer answers us,
+     * exactly the distinction kernel/board.c makes for the UART1 downlink by
+     * withholding DEV_F_BACKGROUND_9P. */
+    bool is_client;
+
+    /* Bumped every time the slot is reused. The link carries its own epoch in
+     * `ctx`, so a mount left holding a link whose connection has since died
+     * and been replaced fails cleanly instead of silently attaching itself to
+     * a stranger's session -- the one aliasing hazard a fixed slot table
+     * has. */
+    uint32_t epoch;
+
     p9_link_t link;
 } tcp_conn_t;
 
@@ -109,6 +123,9 @@ static uint32_t g_accepted_total, g_reset_total;
  * guessing sequence numbers; saying so is better than implying otherwise
  * with a hash nobody audited. */
 static uint32_t g_iss_counter = 0x1000;
+static uint32_t g_ephemeral;
+
+static int ensure_bufs(void);
 
 /* Wrap-safe sequence comparison -- the reason every one of these is a
  * subtraction cast to signed rather than a plain <. */
@@ -222,6 +239,7 @@ static void conn_release(tcp_conn_t *c) {
     if (c->state != TCP_CLOSED) p9_link_unregister_background(&c->link);
     c->in_use = false;
     c->state = TCP_CLOSED;
+    c->epoch++;            /* every link handed out for this slot is now stale */
     c->rx_len = 0;
     c->tx_len = 0;
     c->rto_at_ms = 0;
@@ -247,7 +265,11 @@ static void conn_abort(tcp_conn_t *c) {
 
 static tcp_conn_t *link_conn(p9_link_t *link) {
     for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
-        if (&g_conns[i].link == link) return &g_conns[i];
+        tcp_conn_t *c = &g_conns[i];
+        if (&c->link != link) continue;
+        /* The epoch check is what makes a stale link safe to hold. */
+        if ((uint32_t)(uintptr_t)link->ctx != c->epoch) return NULL;
+        return c;
     }
     return NULL;
 }
@@ -300,11 +322,11 @@ static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
 }
 
 static void conn_init_link(tcp_conn_t *c) {
-    c->link.name = "tcpnet";
+    c->link.name = c->is_client ? "tcpout" : "tcpnet";
     c->link.poll = link_poll;
     c->link.send_frame = link_send_frame;
     c->link.recv_frame = link_recv_frame;
-    c->link.ctx = NULL;
+    c->link.ctx = (void *)(uintptr_t)c->epoch;
     /* A network link, so the gate applies (phase 18 N2). This is the whole
      * reason `auth_required` lives on the link rather than in the server. */
     c->link.auth_required = true;
@@ -352,6 +374,8 @@ static void tcp_retransmit(tcp_conn_t *c) {
         tcp_emit(c, TCP_ACK | TCP_FIN, c->snd_una, NULL, 0, false);
     } else if (c->state == TCP_SYN_RECEIVED) {
         tcp_emit(c, TCP_SYN | TCP_ACK, c->snd_una, NULL, 0, true);
+    } else if (c->state == TCP_SYN_SENT) {
+        tcp_emit(c, TCP_SYN, c->snd_una, NULL, 0, true);
     }
     c->rto_ms = (c->rto_ms * 2u > TCP_RTO_MAX_MS) ? TCP_RTO_MAX_MS : c->rto_ms * 2u;
     c->rto_at_ms = time_get_ms() + c->rto_ms;
@@ -437,6 +461,77 @@ static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
     c->retries = 0;
 }
 
+/* R3b: the active open.
+ *
+ * Half the state machine was unreachable without it -- SYN_SENT never
+ * entered, and FIN_WAIT_1/FIN_WAIT_2/CLOSING/TIME_WAIT only reachable if we
+ * are the side that closes, which nothing was. It is also what lets one node
+ * mount another's namespace over IP rather than over a cable, which is phase
+ * 5's distributed story finally running on a network.
+ *
+ * Returns a link that is not yet usable: the caller polls tcp_link_ready()
+ * until the handshake completes. Non-blocking on purpose -- the task that
+ * would have to wait is often the one whose pump completes it. */
+p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
+    if (!net_configured() || !ip || port == 0) return NULL;
+    if (ensure_bufs() != 0) return NULL;
+
+    tcp_conn_t *c = free_conn();
+    if (!c) return NULL;
+
+    uint32_t epoch = c->epoch;
+    memset(c, 0, sizeof(*c));
+    c->epoch = epoch;
+    c->in_use = true;
+    c->is_client = true;
+    c->state = TCP_SYN_SENT;
+    memcpy(c->peer_ip, ip, IPV4_LEN);
+    c->peer_port = port;
+    /* An ephemeral source port from the IANA dynamic range, stepped per
+     * connection so a reconnect after a reset does not land on the four-tuple
+     * the peer may still be holding in TIME_WAIT. */
+    c->local_port = (uint16_t)(49152u + (g_ephemeral++ & 0x3fffu));
+    c->rx = g_bufs + (uint32_t)(c - g_conns) * (P9_MAX_MSIZE * 2u);
+    c->tx = c->rx + P9_MAX_MSIZE;
+    c->peer_mss = TCP_DEFAULT_MSS;
+    c->snd_una = g_iss_counter;
+    c->snd_nxt = g_iss_counter;
+    g_iss_counter += 0x10000u + (uint32_t)time_get_ms();
+    c->snd_wnd = TCP_OUR_MSS;      /* until the peer tells us otherwise */
+
+    conn_init_link(c);
+    tcp_emit(c, TCP_SYN, c->snd_nxt, NULL, 0, true);
+    c->snd_nxt++;
+    c->rto_ms = TCP_RTO_INITIAL_MS;
+    c->rto_at_ms = time_get_ms() + c->rto_ms;
+    c->retries = 0;
+    return &c->link;
+}
+
+/* 1 established, 0 still handshaking, -1 refused or gone. */
+int tcp_link_ready(p9_link_t *link) {
+    tcp_conn_t *c = link_conn(link);
+    if (!c || !c->in_use) return -1;
+    if (c->state == TCP_ESTABLISHED) return 1;
+    if (c->state == TCP_SYN_SENT || c->state == TCP_SYN_RECEIVED) return 0;
+    return -1;
+}
+
+/* Our own close: the graceful one, which is the path FIN_WAIT_1 exists for. */
+void tcp_close(p9_link_t *link) {
+    tcp_conn_t *c = link_conn(link);
+    if (!c || !c->in_use) return;
+    if (c->state == TCP_ESTABLISHED) {
+        send_fin(c);
+        c->state = TCP_FIN_WAIT_1;
+    } else if (c->state == TCP_CLOSE_WAIT) {
+        send_fin(c);
+        c->state = TCP_LAST_ACK;
+    } else {
+        conn_abort(c);
+    }
+}
+
 void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
                const uint8_t *seg, uint32_t len) {
     net_state_t *st = net_mutable_state();
@@ -478,6 +573,37 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
         return;
     }
 
+    if (c->state == TCP_SYN_SENT) {
+        /* The only segment that means anything here is the SYN-ACK for the
+         * SYN we sent. Anything else is either a stale duplicate or an
+         * attempt to hijack, and both deserve the same silence. */
+        if (!(flags & TCP_SYN)) return;
+        if (!(flags & TCP_ACK)) {
+            /* Simultaneous open: both sides dialled. Legal, and not
+             * implemented -- a client and a server cannot both be dialling
+             * in this system, since only tcp_connect() sends a bare SYN and
+             * only a listener answers one. Counted, not guessed at. */
+            st->drop_proto++;
+            return;
+        }
+        if (ack != c->snd_nxt) {
+            /* Acknowledging a SYN we did not send. */
+            conn_abort(c);
+            return;
+        }
+        c->snd_una = ack;
+        c->rcv_nxt = seq + 1;
+        c->snd_wnd = wnd;
+        uint32_t mss = parse_mss(seg, hdr_len);
+        c->peer_mss = mss ? mss : TCP_DEFAULT_MSS;
+        if (c->peer_mss > TCP_OUR_MSS) c->peer_mss = TCP_OUR_MSS;
+        c->state = TCP_ESTABLISHED;
+        c->rto_at_ms = 0;
+        c->retries = 0;
+        tcp_emit(c, TCP_ACK, c->snd_nxt, NULL, 0, false);
+        return;
+    }
+
     if (flags & TCP_ACK) {
         if (seq_gt(ack, c->snd_nxt)) {
             /* Acknowledging something we never sent. */
@@ -510,6 +636,9 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
             if (seq_lt(c->snd_una, c->snd_nxt)) return;   /* our SYN is still unacked */
             c->state = TCP_ESTABLISHED;
             g_accepted_total++;
+            /* Server side only: a link we dialled is answered *by* the peer,
+             * so registering it for inbound service would have the background
+             * pump racing our own client for its replies. */
             p9_link_register_background(&c->link);
             break;
         case TCP_FIN_WAIT_1:
@@ -601,12 +730,12 @@ void tcp_service(void) {
         /* Service 9P only when the send buffer is empty, which is what lets
          * link_send_frame() be non-blocking: the reply always has somewhere
          * to go. */
-        if (c->state == TCP_ESTABLISHED && c->tx_len == 0) {
+        if (c->state == TCP_ESTABLISHED && c->tx_len == 0 && !c->is_client) {
             p9_link_service(&c->link);
         }
 
         /* A peer that has closed and whose reply has drained gets our FIN. */
-        if (c->state == TCP_CLOSE_WAIT && c->tx_len == 0 && !c->fin_sent) {
+        if (c->state == TCP_CLOSE_WAIT && c->tx_len == 0 && !c->fin_sent && !c->is_client) {
             send_fin(c);
             c->state = TCP_LAST_ACK;
         }
@@ -617,17 +746,24 @@ void tcp_service(void) {
 
 /* --- Setup and reporting --- */
 
+/* One palloc run for every connection's pair of buffers, taken the first
+ * time anything wants a connection at all -- R2's rule, unchanged: a board
+ * that neither listens nor dials pays nothing. */
+static int ensure_bufs(void) {
+    if (g_bufs) return 0;
+    uint32_t bytes = TCP_MAX_CONNS * P9_MAX_MSIZE * 2u;
+    uint32_t pages = (bytes + 4095u) / 4096u;
+    g_bufs = (uint8_t *)palloc_pages(pages);
+    if (!g_bufs) {
+        printk("[TCP] No memory for connection buffers (%u pages).\n", pages);
+        return -1;
+    }
+    return 0;
+}
+
 int tcp_listen(uint16_t port) {
     if (port == 0) return -1;
-    if (!g_bufs) {
-        uint32_t bytes = TCP_MAX_CONNS * P9_MAX_MSIZE * 2u;
-        uint32_t pages = (bytes + 4095u) / 4096u;
-        g_bufs = (uint8_t *)palloc_pages(pages);
-        if (!g_bufs) {
-            printk("[TCP] No memory for connection buffers (%u pages).\n", pages);
-            return -1;
-        }
-    }
+    if (ensure_bufs() != 0) return -1;
     g_listen_port = port;
     g_listening = true;
     return 0;

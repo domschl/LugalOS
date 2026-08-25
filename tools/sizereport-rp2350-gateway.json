@@ -40,7 +40,7 @@
     "net/arp.c": 196,
     "net/netif.c": 12,
     "net/stack.c": 168,
-    "net/tcp.c": 243,
+    "net/tcp.c": 247,
     "net/udp.c": 48,
     "user/chibicc/codegen.c": 84,
     "user/chibicc/main.c": 8,
@@ -49,7 +49,7 @@
     "user/chibicc/preprocess.c": 20,
     "user/chibicc/tokenize.c": 17,
     "user/ed/ed.c": 92,
-    "user/lisp/lisp.c": 39816
+    "user/lisp/lisp.c": 39880
   },
-  "total": 129973
+  "total": 130041
 }

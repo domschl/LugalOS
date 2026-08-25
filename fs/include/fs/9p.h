@@ -194,6 +194,16 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * "everybody does". */
 bool p9_auth_have_keys(void);
 
+/* The key this node would use as a *client*, for `uname`. Exported for
+ * fs/p9_link.c's client-side auth exchange (R3b,
+ * plan/phase19_ip_stack_and_ethernet.md): the same key store answers both
+ * "who may attach to me" and "how do I prove who I am", and having one place
+ * that knows where keys live is the point. Returns 0 and fills `key_out`
+ * (at most P9_AUTH_KEY_MAX bytes) on success. */
+#define P9_AUTH_KEY_MAX 64u
+#define P9_AUTH_NONCE_LEN 32u
+int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len);
+
 /* Installs a key for this boot only, from the local console (`p9key`). It
  * overrides the key files, is never reachable over 9P, and does not survive a
  * reboot -- see the definition in fs/9p.c for why it exists at all rather

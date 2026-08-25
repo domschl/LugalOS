@@ -15,6 +15,7 @@
 #include "fs/p9_link.h"
 #include "kernel/device.h"
 #include "net/ip.h"
+#include "net/tcp.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
@@ -2268,6 +2269,105 @@ static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
     return net_configured() ? &true_val : &false_val;
 }
 
+/* `(net-mount "name" "1.2.3.4" [port])` -- dial a peer and mount its
+ * namespace at /name (R3b, plan/phase19_ip_stack_and_ethernet.md).
+ *
+ * The distributed story phase 5 designed, finally over a network rather than
+ * a cable: `mount-remote` has always worked over any p9_link_t, and since
+ * R3b an outbound TCP connection is one. Authentication is not a separate
+ * step -- p9_remote_mount_open() authenticates with this node's own key when
+ * it has one, and the peer's policy decides whether that was needed.
+ *
+ * The handshake is waited for here rather than inside tcp_connect(), because
+ * this call runs on the shell's task while `netsrv` completes it: yielding is
+ * what lets that happen, and blocking inside the stack would not. */
+/* Which mount name owns which outbound connection.
+ *
+ * Without this, `(unmount "peer")` frees the VFS entry and leaves the TCP
+ * connection ESTABLISHED forever: an idle connection with nothing
+ * outstanding has no retransmission timer to expire, so nothing would ever
+ * reclaim it -- and with two connection slots in total, two unmounts would
+ * leave a node unable to dial anyone until it rebooted. Two entries, matching
+ * net/tcp.c's own limit. */
+#define NET_MOUNT_MAX 2
+static struct {
+    bool in_use;
+    char name[24];
+    p9_link_t *link;
+} g_net_mounts[NET_MOUNT_MAX];
+
+static void net_mount_remember(const char *name, p9_link_t *link) {
+    for (uint32_t i = 0; i < NET_MOUNT_MAX; i++) {
+        if (!g_net_mounts[i].in_use) {
+            g_net_mounts[i].in_use = true;
+            strncpy(g_net_mounts[i].name, name, sizeof(g_net_mounts[i].name) - 1);
+            g_net_mounts[i].name[sizeof(g_net_mounts[i].name) - 1] = '\0';
+            g_net_mounts[i].link = link;
+            return;
+        }
+    }
+}
+
+/* Returns the link this name dialled, and forgets it. NULL for a mount that
+ * came from somewhere else -- a cable, a chardev -- which must be left alone. */
+static p9_link_t *net_mount_forget(const char *name) {
+    for (uint32_t i = 0; i < NET_MOUNT_MAX; i++) {
+        if (g_net_mounts[i].in_use && strcmp(g_net_mounts[i].name, name) == 0) {
+            g_net_mounts[i].in_use = false;
+            return g_net_mounts[i].link;
+        }
+    }
+    return NULL;
+}
+
+static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (!rest || rest->type != LISP_PAIR) return &false_val;
+    uint8_t ip[4];
+    if (!parse_ipv4(get_str_val(rest->u.pair.car), ip)) return &false_val;
+
+    uint16_t port = 564;
+    rest = rest->u.pair.cdr;
+    if (rest && rest->type == LISP_PAIR && rest->u.pair.car &&
+        rest->u.pair.car->type == LISP_INT) {
+        port = (uint16_t)rest->u.pair.car->u.i;
+    }
+
+    p9_link_t *link = tcp_connect(ip, port);
+    if (!link) {
+        cprintf("[Net] no free connection, or no address configured\n");
+        return &false_val;
+    }
+
+    /* Bounded, for the same reason phase 18's N5 client wait is: a peer that
+     * is switched off must cost a few seconds, not the session. */
+    int ready = 0;
+    for (uint32_t spin = 0; spin < 400000u; spin++) {
+        ready = tcp_link_ready(link);
+        if (ready != 0) break;
+        sched_yield();
+    }
+    if (ready != 1) {
+        cprintf("[Net] %u.%u.%u.%u:%u did not answer\n", ip[0], ip[1], ip[2], ip[3], port);
+        tcp_close(link);
+        return &false_val;
+    }
+
+    if (vfs_mount_remote(name, link) != 0) {
+        cprintf("[Net] connected, but /%s could not be mounted\n", name);
+        tcp_close(link);
+        return &false_val;
+    }
+    net_mount_remember(name, link);
+    cprintf("[Net] /%s mounted from %u.%u.%u.%u:%u\n", name,
+            ip[0], ip[1], ip[2], ip[3], port);
+    return &true_val;
+}
+
 static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2439,7 +2539,14 @@ static lisp_val_t *prim_unmount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *name = get_str_val(args->u.pair.car);
-    return (vfs_unmount(name) == 0) ? &true_val : &false_val;
+    int rc = vfs_unmount(name);
+    /* If this name was dialled by (net-mount), the connection under it is
+     * ours to close -- a graceful FIN, which is also the only thing in this
+     * system that reaches TCP's active-close path. Mounts that arrived over a
+     * cable are not ours and are left alone. */
+    p9_link_t *link = net_mount_forget(name);
+    if (link) tcp_close(link);
+    return (rc == 0) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_p9_uart_send(lisp_val_t *args, lisp_val_t *env) {
@@ -2658,6 +2765,7 @@ void lisp_init(void) {
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
     env_set(&global_env, "net-config", make_prim(prim_net_config));
+    env_set(&global_env, "net-mount", make_prim(prim_net_mount));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));

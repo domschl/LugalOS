@@ -278,7 +278,6 @@ static void p9_fid_reset_all(void) {
  * block length: beyond it RFC 2104 hashes the key first, so a longer one buys
  * no strength, and a key file line longer than this is far more likely to be
  * a mistake than an intention. */
-#define P9_AUTH_KEY_MAX 64u
 
 static int hexval(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -338,7 +337,7 @@ void p9_auth_set_console_key(const uint8_t *key, uint32_t len) {
     g_console_key_len = len;
 }
 
-static int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
+int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
     /* Console key first: it is the bootstrap and the override, and a gateway
      * being repaired should not have to fight its own card. */
     if (g_console_key_len > 0) {
