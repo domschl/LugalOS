@@ -512,6 +512,32 @@ stack and not a wire -- their value is as a *before* for R4.
    connection after boot and as a `no-route` count on a session that had done
    nothing wrong.
 
+**Recovery-path coverage added, 2026-08-25**, before R4 rather than after,
+because it turned out to be missing entirely. This stack's riskiest
+simplifications -- no reassembly, a send window kept by hand, a fixed RTO with
+backoff -- all live in code that only runs when something goes wrong, and
+**both** existing TCP oracles run over loopback where nothing does: the
+packet-level peer delivers everything in order, and libslirp does not lose
+frames. `test_tcp_under_impairment` closes that with five deterministic cases:
+an unacknowledged reply retransmitted byte-identical at the same sequence and
+stopping once acknowledged; a duplicated request acknowledged twice and
+delivered once; the receive window shrinking on a partial frame and reopening
+when the frame completes; a peer advertising a **one-byte window** answered one
+byte at a time, in order and complete; and a reset mid-stream freeing the slot
+for the next client.
+
+Deterministic rather than random on purpose: a fuzzer that drops 5% of frames
+finds these bugs eventually and reproduces them never, while a client that
+declines to acknowledge exactly the segment it means to fails the same way
+every time.
+
+*Writing it found one thing worth knowing:* six connections through a
+two-connection table means every case must reset before the next dials, because
+a graceful close leaves the slot in `TIME_WAIT` and the next dial is refused.
+That is not a bug -- it is a fair warning about how little headroom two slots
+leave, and it is the first thing to revisit if R4's hardware ever wants more
+than one client at a time.
+
 **R3b -- the active open -- done too, 2026-08-25.** `tcp_connect()`,
 `tcp_link_ready()`, `tcp_close()`, a `SYN_SENT` state, an `is_client` flag so
 the pump does not try to *serve* 9P on a link we dialled, a per-slot epoch so a
@@ -550,11 +576,23 @@ reads a file and `/proc/version` through it, and both ends' `/proc/net` agree
 about the connection.
 
 *And what it is not worth:* our stack agreeing with our stack is a **weaker
-oracle** than our stack agreeing with Linux -- a symmetric misunderstanding
-passes here and fails nowhere. It does not replace the slirp test (a foreign
-TCP on the other end) or the hand-built `TCPDriver` (a peer that sends what no
-correct stack would). It is an integration test and is labelled as one in the
+oracle** than our stack agreeing with an implementation we did not write -- a
+symmetric misunderstanding passes here and fails nowhere. It does not replace
+the slirp test or the hand-built `TCPDriver` (a peer that sends what no correct
+stack would). It is an integration test and is labelled as one in the
 docstring, so a future reader does not over-read a green result.
+
+**And a correction, 2026-08-25, because the earlier wording inflated what that
+test covers.** `-netdev user,hostfwd=` does not forward packets: **libslirp
+terminates the host's connection and originates a separate one to the guest.**
+So the host-to-QEMU leg is Linux's TCP and the leg our stack actually speaks is
+**libslirp's** -- a userspace stack descended from 4.4BSD-Lite. That is still a
+good oracle, and arguably a better one than the label suggested, since a
+BSD-derived lineage is genuinely independent of ours. But **nothing in this
+tree has yet spoken to Linux's TCP**, and saying otherwise is how a suite gets
+credited with coverage it does not have. Doing so needs a TAP device (a private
+netns via `unshare -rn` keeps it unprivileged) and is deliberately **not** done
+here -- see the note under R7.
 
 One detail worth keeping: the two nodes get **explicit, different MACs**. QEMU
 gives every `virtio-net-device` the same default, and two hosts sharing a MAC on

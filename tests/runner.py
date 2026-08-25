@@ -2929,6 +2929,206 @@ def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tu
         peer.close()
 
 
+def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R3, plan/phase19_ip_stack_and_ethernet.md: the recovery paths, which no
+    clean link ever runs.
+
+    This stack's riskiest simplifications -- no reassembly, a send window with
+    no congestion control, a fixed RTO with backoff, window accounting done by
+    hand -- all live in code that only executes when something goes wrong.
+    Both of the other TCP oracles run over loopback, where nothing does: the
+    packet-level peer delivers everything in order and libslirp does not lose
+    frames. So the retransmission and window paths had **zero coverage** until
+    this test, which is a poor position from which to meet a real wire.
+
+    Deterministic, not random. A fuzzer that drops 5% of frames finds these
+    bugs eventually and reproduces them never; a client that drops exactly the
+    ACK it means to drop fails the same way every time. tests/netpeer.py's
+    TCPDriver builds every segment by hand, so it can simply decline to
+    acknowledge.
+
+    Five cases:
+      1. an unacknowledged reply is retransmitted, byte-identical, at the same
+         sequence number -- and stops once acknowledged
+      2. a duplicated request is acknowledged twice but delivered once
+      3. the advertised receive window shrinks as a partial frame accumulates
+         and reopens when the frame completes
+      4. a peer advertising a one-byte window gets its reply one byte at a
+         time, in order, and complete
+      5. a reset mid-stream frees the connection slot for the next client
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "TCP Recovery Paths: Loss, Duplication, Window Squeeze, Reset (R3)"
+    arch_img = img_path.with_name(f"test_{arch_name}_impair_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    GUEST_IP = bytes([192, 168, 77, 2])
+    PEER_IP = bytes([192, 168, 77, 1])
+    PEER_MAC = b"\x02\x00\x00\x00\x00\x42"
+    GUEST_MAC = bytes.fromhex("525400123456")
+
+    def tversion(msize: int = 4096) -> bytes:
+        ver = b"9P2000"
+        body = msize.to_bytes(4, "little") + len(ver).to_bytes(2, "little") + ver
+        msg = bytes([100]) + b"\xff\xff" + body
+        return (len(msg) + 4).to_bytes(4, "little") + msg
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "192.168.77.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.77\.2", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        def dial(sport: int) -> "netpeer.TCPDriver":
+            d = netpeer.TCPDriver(peer, guest_mac=GUEST_MAC, peer_mac=PEER_MAC,
+                                  guest_ip=GUEST_IP, peer_ip=PEER_IP, sport=sport)
+            d.handshake()
+            return d
+
+        def drop(d: "netpeer.TCPDriver") -> None:
+            """Reset, because there are only two connection slots and this test
+            needs six. A reset frees one immediately; a graceful close would
+            leave it in TIME_WAIT and the next dial would be refused -- which
+            is exactly what happened the first time this test was run, and is
+            a fair warning about how little headroom two slots leave."""
+            d.send(netpeer.TCP_RST)
+            time.sleep(0.3)
+
+        # --- 1. a reply we never acknowledge must come back, unchanged ---
+        tcp = dial(40100)
+        tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
+        segs = [s for s in tcp.segments(timeout=5.0) if s["data"]]
+        if not segs:
+            return (name, False, "no reply to acknowledge in the first place")
+        first = segs[0]
+        # Deliberately no ACK. The RTO is 300 ms with exponential backoff, so
+        # two seconds is several attempts' worth without being a long wait.
+        time.sleep(2.0)
+        again = [s for s in tcp.segments(timeout=1.0) if s["data"]]
+        if not again:
+            return (name, False, "an unacknowledged reply was never retransmitted")
+        rx = again[0]
+        if rx["seq"] != first["seq"] or rx["data"] != first["data"]:
+            return (name, False,
+                    "the retransmission is not the same bytes at the same sequence:\n"
+                    f"  first  seq={first['seq']} {bytes(first['data']).hex()}\n"
+                    f"  resent seq={rx['seq']} {bytes(rx['data']).hex()}")
+        # Acknowledge it, and it must stop.
+        tcp.rcv = first["seq"] + len(first["data"])
+        tcp.send(netpeer.TCP_ACK)
+        time.sleep(1.5)
+        stale = [s for s in tcp.segments(timeout=1.0) if s["data"]]
+        if stale:
+            return (name, False, f"still retransmitting {len(stale)} segments after an ACK")
+
+        drop(tcp)
+        # --- 2. a duplicated request is delivered once ---
+        peer.clear()
+        tcp2 = dial(40101)
+        req = tversion()
+        at = tcp2.snd
+        tcp2.send_raw(at, tcp2.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH, req)
+        tcp2.send_raw(at, tcp2.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH, req)   # same seq, again
+        tcp2.snd = at + len(req)
+        segs = tcp2.segments(timeout=5.0)
+        replies = [s for s in segs if s["data"]]
+        if len(replies) != 1:
+            return (name, False,
+                    f"a duplicated request produced {len(replies)} replies, expected 1 "
+                    "(the stack processed the same bytes twice)")
+        acks = {s["ack"] for s in segs}
+        if any(a > at + len(req) for a in acks):
+            return (name, False, f"the stack acknowledged past the data it was sent: {acks}")
+
+        drop(tcp2)
+        # --- 3. the receive window shrinks on a partial frame and reopens ---
+        peer.clear()
+        tcp3 = dial(40102)
+        full = tversion()
+        tcp3.send(netpeer.TCP_ACK | netpeer.TCP_PSH, full[:-1])    # one byte short
+        segs = tcp3.segments(timeout=4.0)
+        if not segs:
+            return (name, False, "a partial frame was not acknowledged")
+        squeezed = segs[-1]["window"]
+        if squeezed >= 65535 or squeezed == 0:
+            return (name, False, f"window after a partial frame is {squeezed}, expected a shrink")
+        tcp3.send(netpeer.TCP_ACK | netpeer.TCP_PSH, full[-1:])    # complete it
+        segs = tcp3.segments(timeout=5.0)
+        replies = [s for s in segs if s["data"]]
+        if not replies:
+            return (name, False, "the completed frame was not answered")
+        reopened = max(s["window"] for s in segs)
+        if reopened <= squeezed:
+            return (name, False,
+                    f"the window did not reopen after the frame was taken "
+                    f"({squeezed} -> {reopened}); a peer that filled it would stall forever")
+
+        drop(tcp3)
+        # --- 4. a one-byte window must be honoured, byte by byte ---
+        peer.clear()
+        tcp4 = dial(40103)
+        tcp4.send_raw(tcp4.snd, tcp4.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH,
+                      tversion(), window=1)
+        tcp4.snd += len(tversion())
+        collected = b""
+        expect_seq = None
+        for _ in range(40):
+            segs = [s for s in tcp4.segments(timeout=1.0) if s["data"]]
+            for s in segs:
+                if len(s["data"]) != 1:
+                    return (name, False,
+                            f"a one-byte window got a {len(s['data'])}-byte segment")
+                if expect_seq is not None and s["seq"] != expect_seq:
+                    continue                      # a retransmission; ignore
+                collected += s["data"]
+                expect_seq = s["seq"] + 1
+                tcp4.rcv = expect_seq
+                tcp4.send_raw(tcp4.snd, tcp4.rcv, netpeer.TCP_ACK, b"", window=1)
+            if len(collected) >= 19:
+                break
+        if len(collected) < 7 or collected[4] != 101:
+            return (name, False,
+                    f"the byte-at-a-time reply did not reassemble: {collected.hex()}")
+        declared = int.from_bytes(collected[0:4], "little")
+        if declared != len(collected):
+            return (name, False,
+                    f"reassembled {len(collected)} bytes, the message declares {declared}")
+
+        drop(tcp4)
+        # --- 5. a reset mid-stream must free the slot ---
+        peer.clear()
+        tcp5 = dial(40104)
+        tcp5.send(netpeer.TCP_RST)
+        time.sleep(0.5)
+        ok, log = session.send_and_expect("cat /proc/net", r"tcp: listening", timeout=8.0)
+        if ok and re.search(r"192\.168\.77\.1:40104", log):
+            return (name, False, f"a reset connection is still in the table: {log[-400:]}")
+        tcp6 = dial(40105)            # the slot must be dialable again
+        tcp6.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
+        replies = [s for s in tcp6.segments(timeout=5.0) if s["data"]]
+        if not replies:
+            return (name, False, "the slot freed by a reset could not be reused")
+        drop(tcp6)
+
+        return (name, True, "retransmit identical, duplicate delivered once, window "
+                            "shrank and reopened, one-byte window honoured, reset freed the slot")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        peer.close()
+
+
 def test_9p_over_own_tcp(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R3's headline: a real 9P session over a TCP stack we wrote, through a
     real host socket, with authentication.
@@ -2939,6 +3139,13 @@ def test_9p_over_own_tcp(elf_path: Path, img_path: Path, arch_name: str) -> tupl
     p9lib's connect_tcp(), the Tauth exchange and the framing are phase 18's,
     unchanged. What changed is underneath -- the guest now terminates the TCP
     itself instead of being handed a byte stream by a chardev.
+
+    **Which TCP is on the other end, precisely.** `hostfwd` does not forward
+    packets: libslirp *terminates* the host's connection and originates a
+    separate one to the guest. So the host-to-QEMU leg is Linux's TCP, and the
+    leg this stack actually speaks is **libslirp's** -- a userspace stack
+    descended from 4.4BSD-Lite. A good, genuinely independent oracle, and not
+    the same claim as "tested against Linux", which nothing here does yet.
 
     Both halves of the auth gate are checked, because `auth_required` is set
     on this link by net/tcp.c and a network that accepts anonymous attaches
@@ -3604,11 +3811,11 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
     phase 18 never built because until R3b no node could dial another.
 
     **And what it does not prove.** Our stack agreeing with our stack is a
-    weaker oracle than our stack agreeing with Linux: a symmetric
-    misunderstanding passes here and fails nowhere. That is why this does not
-    replace test_9p_over_own_tcp() (a foreign TCP on the other end) or
-    test_tcp_state_machine() (a peer that can send what no correct stack
-    would). It is an integration test, and it is labelled as one."""
+    weaker oracle than our stack agreeing with something we did not write: a
+    symmetric misunderstanding passes here and fails nowhere. That is why this
+    does not replace test_9p_over_own_tcp() or test_tcp_state_machine() (a peer
+    that can send what no correct stack would). It is an integration test, and
+    it is labelled as one."""
     import shutil
     import socket as _socket
 
@@ -4022,6 +4229,7 @@ def main() -> int:
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
@@ -4048,6 +4256,7 @@ def main() -> int:
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
