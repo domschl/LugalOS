@@ -1,8 +1,10 @@
 # Phase 18 — Reachable over a network, and safe to be
 
-**Status: planned 2026-08-24.** Supersedes phase 14's 14c (security/
-authentication) and 14d (real networking), which were three sentences of
-background written before phases 15, 16 and 17 landed.
+**Status: CONCLUDED 2026-08-25** (planned 2026-08-24; on hold 2026-08-24;
+closed when the W5500 was cancelled -- see the STATUS section below).
+Supersedes phase 14's 14c (security/authentication) and 14d (real networking),
+which were three sentences of background written before phases 15, 16 and 17
+landed. Succeeded by `plan/phase19_ip_stack_and_ethernet.md`.
 
 **Scope, deliberately narrow.** One networking technology: the **W5500**
 Ethernet module (WIZnet W5500 + HanRun HR961160C magjack) on a **dedicated
@@ -13,39 +15,67 @@ a later phase on its own terms (phase 14's 14e).
 
 ---
 
-## STATUS: on hold, 2026-08-24 — waiting on W5500 hardware
+## STATUS: closed, 2026-08-25 -- the W5500 is out, everything above it is kept
 
-Phase 18 is complete except for N7, and paused deliberately rather than for
-lack of work.
+Phase 18 is **concluded**. Everything it built above the byte stream is in the
+tree and stays there. The one thing below the stream -- the W5500 -- is
+cancelled, and its code is removed by phase 19's R0
+(`plan/phase19_ip_stack_and_ethernet.md`).
 
-**Done and verified on hardware:** N1 (SHA-256/HMAC, entropy), N2 (the Tauth
-gate, exercised over real Ethernet), N3 (the gateway persona with SD), N4 (the
-W5500 driver, up to and including authenticated 9P over Ethernet), N5 (the
-UART1 downlink -- the gateway mounts the chess board's namespace and the host
-reads it through both hops), N6 (`tests/hw/test_gateway.py`, 16/16, plus
-`lugal9pfuse` over TCP).
+**Kept, and untouched by the cancellation:** N1 (SHA-256/HMAC and the entropy
+check), N2 (the `Tauth`/afid gate, and `p9_link_t.auth_required` -- the
+property that made auth belong to the *wire* rather than to the server), N3
+(the gateway persona: board file, preset, SD card on SPI1), N5 (the UART1
+downlink and the two-hop namespace), and the transport-independent half of N6
+(`connect_tcp()`, `Session(key=...)`, `fuse-p9` over TCP, and every gateway
+test that does not need Ethernet under it). All of it was verified on real
+hardware before the part was dropped, and none of it is about the W5500.
 
-**Not done:** N7, documentation.
+**Removed:** N4 -- `drivers/w5500_rp2350.c` and its header, the `net *` shell
+commands, the board file's W5500 pin block and its config variables, the
+`dev_w5500net` registration, and the Ethernet-dependent tests in
+`tests/hw/test_gateway.py`. The removal is phase 19's first milestone rather
+than a loose commit, because what is deleted and what is kept is a decision
+worth reviewing as a list.
 
-**Why paused.** Both W5500 modules stop receiving after 90-180 seconds. This
-is a known fault in these parts, not anything in this tree -- see "Concluded"
-below for the seven eliminated hypotheses and the matching reports from other
-projects. A different brand with an onboard regulator (5 V bus, which also
-retires the supply-margin question that cost this phase its first half) has
-been ordered.
+**Why the part is out, and it is two reasons rather than one.**
 
-**Why not work around it.** A driver-level watchdog was designed and rejected:
-the cure is two seconds, but a network that drops every two minutes generates
-higher-order problems -- every later measurement on this stack would have to
-be read through it, and every unrelated bug would be suspected of being it
-first. That is a bad foundation to build N7, or a phase 19, on top of. The
-design is recorded above if the new parts turn out to need it.
+1. **Quality.** Both modules stopped receiving after 90-180 seconds. Seven
+   hypotheses were eliminated (see "Concluded" below), the driver was
+   exonerated by direct measurement, and the fault matches reports from
+   unrelated projects using the same clones. A replacement of a different
+   brand was ordered and then cancelled: the failure lives in a *population*
+   of parts, and no amount of care on this side changes that.
+2. **It was never the bare-metal answer.** The W5500 terminates TCP in
+   silicon. Choosing it meant this project would never implement a network --
+   it would drive one. That was a defensible trade while it was also the fast
+   path. With the parts gone, there is nothing left on that side of the scale.
 
-**To resume:** fit the new module, run
-`tests/hw/test_gateway.py --key <hex> --console /dev/ttyACM0` (16/16 is the
-baseline), and leave it idle for fifteen minutes. If it survives, N7 is all
-that is left.
+**The rejected workaround stays rejected.** The driver-level watchdog designed
+in "Still open after N6" below was turned down because a network that drops
+every two minutes poisons every later measurement taken on top of it. Nothing
+about cancelling the part changes that judgement; the design stays recorded in
+case a future link ever earns one.
 
+**Phase 18's §0 argument is not repudiated -- it inverts on its own premise.**
+§0 argued against prototyping on QEMU's virtio-net *because the target
+terminates TCP in silicon*, which would have made a software stack a scaffold
+for a layer the real hardware never runs. Every candidate part that remains --
+ENC28J60, CYW43439, the ESP32-P4's EMAC -- hands over **Ethernet frames**
+instead. virtio-net is therefore now at exactly the abstraction level the real
+hardware sits at, not one below it. Same reasoning, changed premise, opposite
+conclusion. See phase 19 §0.
+
+**N7 (documentation) migrates to phase 19**, where there will be a network
+worth documenting. Phase 18 closes with N7 unbuilt and reassigned rather than
+outstanding.
+
+**The W5500 work is recoverable and it is worth knowing where.** `f5bc9ca` is
+the driver landing; `cca178d` is the last commit before removal. In between it
+reached authenticated 9P over real Ethernet, through two hops, with 16/16
+hardware tests green. The measurement notes further down this file -- the bus
+timing, the supply-margin discovery, the 180-second clock -- are kept
+deliberately: they cost days, and only the last of them is about the W5500.
 
 ## 0. What phase 14 got right, and the one thing that is now wrong
 
@@ -581,6 +611,8 @@ a key and what happens when you get it wrong.
 
 * **Wireless (RP2350W/CYW43), K210, ESP32-P4** — phase 14's 14e, later, on
   their own terms. The blob question alone deserves its own discussion.
+  *(2026-08-25: that discussion happened. CYW43 is phase 19's R5, ESP32-P4 is
+  phase 20, K210 remains unscheduled — see phase 19 §1.)*
 * **A software TCP/IP stack.** See §0.
 * **DHCP.** The W5500 has no hardware DHCP — it is a software protocol over a
   UDP socket, several hundred lines with lease renewal, and every one of its
