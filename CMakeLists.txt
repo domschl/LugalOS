@@ -501,14 +501,14 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         list(APPEND SOURCES drivers/dcf77_rp2350.c)
         list(APPEND SOURCES drivers/dcf77_service.c)
     endif()
-    # N4 (plan/phase18_networking_and_auth.md): the W5500 Ethernet controller,
-    # on the gateway persona. Guarded by the board file defining its pins
+    # N5 (plan/phase18_networking_and_auth.md): the gateway's UART1 downlink
+    # to a chess or clock board. Guarded by the board file defining its pins
     # rather than by a feature flag of its own -- the driver is meaningless
-    # without a pin map, and the pin map is what says the part is fitted.
-    list(APPEND SOURCES drivers/w5500_rp2350.c)
-    # N5: the gateway's UART1 downlink to a chess or clock board. Same guard
-    # reasoning as the W5500 above -- the board file's pin map is what says
-    # the wire exists.
+    # without a pin map, and the pin map is what says the wire exists.
+    #
+    # An Ethernet driver used to sit beside it here (the W5500, N4) and was
+    # removed with the part; phase 19's R4 puts an ENC28J60 back on the same
+    # SPI0 pins, under the same guard-by-pin-map rule.
     list(APPEND SOURCES drivers/uart1_link_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)

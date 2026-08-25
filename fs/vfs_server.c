@@ -72,6 +72,12 @@ typedef enum {
     MOUNT_DEV,
     MOUNT_SRV,
     MOUNT_REMOTE9P,
+    /* Not a mount kind: the kind a *handle* carries when it is the synthetic
+     * root directory, which belongs to no volume. It lives in this enum
+     * rather than being cast in from outside it (it used to be
+     * `(mount_kind_t)-1`) so that a switch over a handle's kind is a switch
+     * over a complete set of named values, and -Wswitch can say so. */
+    MOUNT_ROOT_HANDLE,
 } mount_kind_t;
 
 typedef struct {
@@ -97,7 +103,7 @@ static mount_entry_t g_mounts[MAX_MOUNTS];
  * appears here -- /srv/ stays on its own direct-dispatch path in
  * vfs_read()/vfs_write() (see fs/include/fs/vfs.h), it's message-oriented
  * IPC, not a byte-addressable file. */
-#define VFS_KIND_ROOT ((mount_kind_t)-1)
+#define VFS_KIND_ROOT MOUNT_ROOT_HANDLE
 
 typedef struct {
     bool in_use;
@@ -108,8 +114,8 @@ typedef struct {
     fat32_dir_entry_t entry;     /* valid for MOUNT_FAT32, non-dir */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
-    /* Generated /proc file content (PROC, non-dir), shared by every /proc/*
-     * file this VFS serves. 512 silently truncated /proc/config on RP2350
+    /* Generated /proc file content (PROC, non-dir), shared by every file
+     * under /proc that this VFS serves. 512 silently truncated /proc/config on RP2350
      * once every board feature's pin fields were in it -- caught by
      * tests/hw/test_rp2350.py's K3, not by anything that runs on QEMU,
      * since QEMU has no pin model to report. Measured, not assumed: the
@@ -310,7 +316,7 @@ bool vfs_volume_writable(const char *name) {
 
     for (int i = 0; i < MAX_MOUNTS; i++) {
         mount_entry_t *m = &g_mounts[i];
-        if (!m->in_use || !m->name) continue;
+        if (!m->in_use || !m->name[0]) continue;
 
         /* Compare up to the volume name's end, tolerating a trailing slash so
          * "/sd0/" and "sd0" both work -- a boot script should not have to
@@ -740,23 +746,15 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
             CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
 #endif
-        /* N3 (plan/phase18_networking_and_auth.md): the gateway persona's
-         * W5500 and its UART1 downlink. Keyed on the pins being defined
-         * rather than on a feature flag -- the pin map is a board fact and is
-         * worth reporting from the moment it exists, which on this persona is
-         * one milestone before the driver that uses it. Reported for exactly
-         * the reason this file exists: a board should be able to say what it
-         * thinks it is wired to, so that a wrong number is a line of output
-         * rather than an afternoon. */
-#ifdef CONFIG_W5500_SCK_GPIO
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "SPI0_BASE=0x%lx\n", (unsigned long)CONFIG_SPI0_BASE);
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "W5500_SCK_GPIO=%d\nW5500_MOSI_GPIO=%d\nW5500_MISO_GPIO=%d\n"
-            "W5500_CS_GPIO=%d\nW5500_RST_GPIO=%d\nW5500_INT_GPIO=%d\n",
-            CONFIG_W5500_SCK_GPIO, CONFIG_W5500_MOSI_GPIO, CONFIG_W5500_MISO_GPIO,
-            CONFIG_W5500_CS_GPIO, CONFIG_W5500_RST_GPIO, CONFIG_W5500_INT_GPIO);
-#endif
+        /* N5 (plan/phase18_networking_and_auth.md): the gateway persona's
+         * UART1 downlink. Keyed on the pins being defined rather than on a
+         * feature flag -- the pin map is a board fact and is worth reporting
+         * from the moment it exists, which on this persona was one milestone
+         * before the driver that uses it. Reported for exactly the reason
+         * this file exists: a board should be able to say what it thinks it
+         * is wired to, so that a wrong number is a line of output rather than
+         * an afternoon. (An Ethernet pin block sat here too until phase 19's
+         * R0; R4's ENC28J60 restores one.) */
 #ifdef CONFIG_UART1_BASE
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART1_BASE=0x%lx\nUART1_TX_GPIO=%d\nUART1_RX_GPIO=%d\n",
@@ -1497,6 +1495,12 @@ void vfs_ls(const char *path) {
                 cprintf("%s            %d\n", g_services[i].name, g_services[i].target_pid);
             }
             cprintf("\n");
+            break;
+        case MOUNT_ROOT_HANDLE:
+            /* Unreachable: a *mount* never carries the synthetic root
+             * handle's kind. Named rather than swept under a `default:` so
+             * that adding a real mount kind later is still a compile error
+             * here, which is the entire value of switching over an enum. */
             break;
         case MOUNT_REMOTE9P: {
             cprintf("\nDirectory Listing (/%s/%s):\n", m->name, rel);

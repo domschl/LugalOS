@@ -57,15 +57,16 @@ def connect_unix(path: str, timeout: float = 5.0, framing: str = "raw") -> P9Cli
 
 
 def connect_tcp(host: str, port: int = 564, timeout: float = 30.0) -> P9Client:
-    """A 9P server reachable over TCP -- the gateway persona's W5500 link
+    """A 9P server reachable over TCP -- the gateway persona's Ethernet link
     (plan/phase18_networking_and_auth.md), on 564, the port IANA assigns to
     the Plan 9 file service.
 
     Also how the TCP path is tested with no hardware at all: QEMU's chardev
     backend takes `socket,host=...,port=...,server=on` in place of the unix
     socket tests/runner.py normally uses, so the guest keeps seeing an
-    ordinary virtio-console byte stream -- exactly the shape the W5500 will
-    hand it -- while this end is a real TCP socket. See the plan's §0.
+    ordinary virtio-console byte stream while this end is a real TCP socket.
+    Phase 19's R3 replaces that arrangement with a guest that terminates the
+    TCP itself; nothing on this side changes when it does.
 
     9P frames are length-prefixed, so the stream needs no further framing:
     `raw`, the same as the unix-socket and USB-CDC paths."""

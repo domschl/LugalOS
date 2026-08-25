@@ -137,7 +137,7 @@ void uart1_link_init(void) {
      * Marking a pin non-secure in ACCESSCTRL hands it to the non-secure side
      * -- and takes it away from the secure one. This driver runs entirely in
      * M-mode: it has no U-mode task, unlike the console UART, the clock, the
-     * ST7735 or the W5500. Granting the pins away therefore bought nothing
+     * ST7735. Granting the pins away therefore bought nothing
      * and cost everything: FUNCSEL was written and verified correct, then the
      * NSMASK write immediately below it made GP8/GP9 read back as 0x1f (NULL)
      * from M-mode and stop accepting writes. The UART then transmitted

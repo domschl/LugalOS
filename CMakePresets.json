@@ -52,7 +52,7 @@
         {
             "name": "rp2350-gateway",
             "displayName": "RP2350 (Pico 2) \u2014 network gateway persona",
-            "description": "Bare Pico 2 with a W5500 Ethernet module on SPI0 and an SD card on SPI1 (plan/phase18_networking_and_auth.md). No display, keypad, matrix or radio: this board terminates 9P over TCP and re-exports a board reached over UART. NOTE: GP16 is the W5500's MISO, so the heartbeat LED moves to GP25.",
+            "description": "Bare Pico 2 with an SD card on SPI1 and SPI0 reserved for Ethernet (plan/phase19_ip_stack_and_ethernet.md). No display, keypad, matrix or radio. NO ETHERNET PART IS FITTED: the W5500 was cancelled and removed in phase 19 R0, and R4 fits an ENC28J60 on the reserved pins. Until then this persona is a headless file server over USB 9P plus a UART1 downlink. NOTE: GP16 is the Ethernet MISO pin, so the heartbeat LED stays on GP25.",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/rp2350-gateway",
             "cacheVariables": {

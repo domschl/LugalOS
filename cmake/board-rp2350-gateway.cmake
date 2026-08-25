@@ -1,6 +1,13 @@
 # Per-board facts for RP2350 (Pico 2), populated for the **network gateway**
-# persona (N3, plan/phase18_networking_and_auth.md): a bare Pico 2 carrying a
-# W5500 Ethernet module on SPI0 and an SD card on SPI1, and nothing else.
+# persona (N3, plan/phase18_networking_and_auth.md): a bare Pico 2 carrying an
+# Ethernet module on SPI0 and an SD card on SPI1, and nothing else.
+#
+# **No Ethernet part is fitted right now.** The W5500 this persona was built
+# around was cancelled (phase 18's STATUS section: bad parts, and TCP in
+# silicon was never the bare-metal answer) and its driver and pin block were
+# removed by phase 19's R0. What is left is a headless Pico 2 with an SD card,
+# a console, a USB 9P link and a UART1 downlink -- all of which still work.
+# Phase 19's R4 fits an ENC28J60 on the same SPI0 pins reserved below.
 #
 # Same RP2350 silicon, arch and linker script as cmake/board-rp2350.cmake --
 # a third board file, not a third LUGALOS_TARGET, selected via
@@ -27,10 +34,12 @@ set(CONFIG_UART0_RX_GPIO  1)
 # Heartbeat LED.
 #
 # **NOT GP16.** cmake/board-rp2350.cmake blinks the heartbeat on GP16 as
-# LED_EXT, and on this board GP16 is the W5500's MISO line -- an output driven
-# once a second into the module's data-out pin, which is both a bus fight and
-# an excellent way to spend an afternoon wondering why SPI reads garbage
-# (user, 2026-08-24, before a single byte had been flashed).
+# LED_EXT, and on this board GP16 is the Ethernet module's MISO line -- an
+# output driven once a second into the module's data-out pin, which is both a
+# bus fight and an excellent way to spend an afternoon wondering why SPI reads
+# garbage (user, 2026-08-24, before a single byte had been flashed). The part
+# that made this true is gone; the pin reservation below is not, so neither is
+# this warning.
 #
 # Pointed at GP25 instead, the Pico 2's own onboard LED: it is free on a bare
 # board, it is visible, and "is this headless box alive" is a real question on
@@ -50,24 +59,21 @@ set(CONFIG_SPI1_MOSI_GPIO 11)
 set(CONFIG_SPI1_MISO_GPIO 12)
 set(CONFIG_SPI1_CS_GPIO   13)
 
-# SPI0: the W5500 (a USR-ES1 module -- WIZnet W5500 behind a HanRun HR961160C
-# magjack). Pin numbers confirmed against the module's own silkscreen; see the
-# plan's §2 for the full header map and the 200 mA supply note.
+# SPI0: **reserved for Ethernet, currently unused.**
+#
+# Nothing sets these while no part is fitted -- an unused CONFIG_ that reaches
+# lugalos_config.h is a define nobody consumes, and this file's whole job is
+# to say what the board actually has. They are recorded rather than set:
+#
+#   SPI0_BASE  0x40080000
+#   SCK        GP18     MOSI  GP19     MISO  GP16     CSn   GP17
+#   RSTn       GP20     INTn  GP21
 #
 # GP16-19 is the standard SPI0 grouping on RP2350 (RX=16, CSn=17, SCK=18,
-# TX=19 are all valid function-1 assignments for that controller). RSTn and
-# INTn are plain SIO GPIOs.
-#
-# Declared here even though the driver arrives in N4: a pin map is a board
-# fact, and writing it down now is what stopped the GP16 heartbeat collision
-# above from reaching hardware.
-set(CONFIG_SPI0_BASE       0x40080000)
-set(CONFIG_W5500_SCK_GPIO  18)
-set(CONFIG_W5500_MOSI_GPIO 19)   # module 1-3 MOSI
-set(CONFIG_W5500_MISO_GPIO 16)   # module 2-6 MISO
-set(CONFIG_W5500_CS_GPIO   17)   # module 1-5 SCSn
-set(CONFIG_W5500_RST_GPIO  20)   # module 2-5 RSTn, active low
-set(CONFIG_W5500_INT_GPIO  21)   # module 1-6 INTn, active low, polled in N4
+# TX=19 are all valid function-1 assignments for that controller); RSTn and
+# INTn are plain SIO GPIOs. The map is disjoint from SPI1 (SD, GP10-13) and
+# UART1 (downlink, GP8/9), and phase 19's R4 puts an ENC28J60 on it as
+# CONFIG_ETH_* -- the part changes, the pins do not.
 
 # UART1: the downlink to a chess or clock board (N5, plan §4), SLIP-framed 9P
 # over three wires.

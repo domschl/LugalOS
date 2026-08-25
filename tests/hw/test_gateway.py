@@ -2,19 +2,26 @@
 """Hardware-in-the-loop test suite for the RP2350 **gateway** persona over
 real Ethernet (N6, plan/phase18_networking_and_auth.md).
 
+**No wire, currently.** The W5500 this was written against was cancelled and
+removed (phase 19 R0), so every test here skips until R4 fits an ENC28J60 and
+R2/R3 give the board an IP stack of its own. The file is kept rather than
+deleted because almost none of it is about the W5500: it tests the auth gate,
+the SD-backed namespace, the two-hop downlink and the FUSE mount, all over a
+socket that does not care what terminates it. R4's job is to make it answer
+again, not to write it again.
+
 This is the sibling of test_rp2350.py and follows its conventions: every test
 returns (name, ok, detail), and everything *skips* rather than fails when no
 gateway answers, so it is safe to run speculatively and safe to leave out of
 CI. What makes it worth having separately is that none of it can run on QEMU
-or over a localhost socket: the transport is a W5500 terminating TCP in
-silicon, and the failures it has actually produced -- a link that reports UP
-and carries nothing, a read pointer that runs away, a session that dies on the
-first reply larger than one segment -- are all invisible to a loopback test.
+or over a localhost socket: the failures it has actually produced -- a link
+that reports UP and carries nothing, a read pointer that runs away, a session
+that dies on the first reply larger than one segment -- are all invisible to a
+loopback test.
 
 Usage:
     uv run test_gateway.py                          # auto: 192.168.77.2, key from --key-file
     uv run test_gateway.py --host 192.168.77.2 --key 000102...0f
-    uv run test_gateway.py --console /dev/ttyACM0   # also check the driver's counters
 
 The board needs an address and a key for this boot:
 
@@ -78,13 +85,15 @@ def reachable(gw: Gateway) -> bool:
 
 
 def test_icmp(gw: Gateway) -> tuple[str, bool, str]:
-    """The W5500 answers ping in silicon, with no firmware involved at all.
+    """Does the board answer ping at all?
 
     First test for a reason: it separates "the board is off, unconfigured or
     unplugged" from "the 9P server is not answering", and those have entirely
-    different causes. It is also the measurement that found this phase's real
+    different causes. It is also the measurement that found phase 18's real
     fault -- a PHY browning out for want of a bulk capacitor answered no ICMP
-    while every register in the chip read correct."""
+    while every register in the chip read correct. From phase 19 R2 onward the
+    reply comes from our own ICMP handler rather than from silicon, which
+    makes this a test of our code and not just of the wiring."""
     name = "icmp / the chip's own stack"
     if shutil.which("ping") is None:
         return name, True, "SKIPPED (no ping binary)"
@@ -369,11 +378,13 @@ def test_pipelined_fill(gw: Gateway) -> tuple[str, bool, str]:
     buffer fills while the server is still writing into it.
 
     This is the one failure mode a localhost socket genuinely cannot produce:
-    the kernel's loopback buffer is large and elastic, while the W5500's is
-    8 KB of on-chip RAM with a hardware write pointer. It drives
-    w5500_send_locked() into its free_space == 0 branch -- the path that
-    exists for "the peer has stopped reading" and that, if it got the pointer
-    arithmetic wrong, would corrupt the stream rather than stall it.
+    the kernel's loopback buffer is large and elastic, while a small NIC's is
+    a few KB with a hardware write pointer. It drives the driver's send path
+    into its free_space == 0 branch -- the path that exists for "the peer has
+    stopped reading" and that, if it got the pointer arithmetic wrong, would
+    corrupt the stream rather than stall it. (Under the W5500 that was 8 KB of
+    on-chip buffer; the ENC28J60's is smaller, which makes this test easier to
+    provoke, not harder.)
 
     It also exercises the server as a pipelined peer, which the driver's own
     comment calls legal even though this client normally is not: several
@@ -452,7 +463,7 @@ def test_cable_pull(gw: Gateway) -> tuple[str, bool, str]:
         s.read("/proc/version")
     except Exception as e:
         return name, False, f"could not establish a session first: {e}"
-    print("\n    >>> Unplug the Ethernet cable from the W5500 now.", flush=True)
+    print("\n    >>> Unplug the Ethernet cable from the board now.", flush=True)
     deadline = time.time() + 60
     while time.time() < deadline and reachable(gw):
         time.sleep(1.0)
@@ -588,60 +599,6 @@ def test_fuse_mount(gw: Gateway) -> tuple[str, bool, str]:
             pass
 
 
-def test_driver_counters(gw: Gateway) -> tuple[str, bool, str]:
-    """After everything above, ask the driver what it saw.
-
-    The counters are the test: resync discards, command timeouts and RX
-    overruns should all be zero on a healthy link, and every one of them was
-    non-zero during this phase's fault while the session-level results still
-    looked plausible. Needs the console, so it skips without one."""
-    name = "driver counters clean after the suite"
-    if gw.console is None:
-        return name, True, "SKIPPED (no --console given)"
-    try:
-        import serial
-    except Exception:
-        return name, True, "SKIPPED (pyserial not available)"
-    try:
-        ser = serial.Serial(gw.console, 115200, timeout=0.3)
-    except Exception as e:
-        return name, True, f"SKIPPED ({gw.console}: {e})"
-    try:
-        time.sleep(0.8)
-        ser.reset_input_buffer()
-        ser.write(b"net\r\n")
-        ser.flush()
-        end, buf = time.time() + 6.0, b""
-        while time.time() < end:
-            buf += ser.read(4096)
-        out = buf.decode("utf-8", "replace")
-    finally:
-        ser.close()
-
-    if "W5500" not in out:
-        return name, True, "SKIPPED (console did not answer `net`)"
-    bad = []
-    for line in out.splitlines():
-        line = line.strip()
-        if "resync discards" in line or "command timeouts" in line:
-            for field, label in ((" resync discards", "resync discards"),
-                                 (" command timeouts", "command timeouts")):
-                if field in line:
-                    n = line.split(field)[0].split()[-1]
-                    if n != "0":
-                        bad.append(f"{label}={n}")
-        if "rx overruns:" in line:
-            n = line.split("rx overruns:")[1].split(",")[0].strip()
-            if n != "0":
-                bad.append(f"rx overruns={n}")
-        if "DISAGREES" in line:
-            bad.append("a chip register disagrees with what the driver set")
-    link = next((l.strip() for l in out.splitlines() if l.strip().startswith("link")), "")
-    if bad:
-        return name, False, f"{', '.join(bad)}  ({link})"
-    return name, True, link or "all counters zero"
-
-
 # --- runner -------------------------------------------------------------
 
 
@@ -652,7 +609,6 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"9P port (default {DEFAULT_PORT})")
     ap.add_argument("--key", help="pre-shared key, hex")
     ap.add_argument("--key-file", help="read the hex key from a file instead")
-    ap.add_argument("--console", help="gateway console port, to check the driver's counters")
     ap.add_argument("--interactive", action="store_true",
                     help="include tests that need hands (pulling the Ethernet cable)")
     args = ap.parse_args()
@@ -663,7 +619,7 @@ def main() -> int:
     elif args.key:
         key = bytes.fromhex(args.key.strip())
 
-    gw = Gateway(host=args.host, port=args.port, key=key, console=args.console,
+    gw = Gateway(host=args.host, port=args.port, key=key, console=None,
                  interactive=args.interactive)
 
     print("======================================================================")
@@ -673,11 +629,11 @@ def main() -> int:
     if not reachable(gw):
         print(f"\n[!] No 9P server answering at {gw.host}:{gw.port}.")
         print("    Nothing to test -- this is not a failure, just nothing to do.")
-        print('    On the board: (net-config "192.168.77.2" "255.255.255.0") and p9key <hex>.')
+        print("    Expected until phase 19 R4: this persona has no Ethernet part fitted.")
+        print('    Once it does: (net-config "192.168.77.2" "255.255.255.0") and p9key <hex>.')
         return 0
 
-    print(f"\nGateway at {gw.host}:{gw.port}, key {'given' if key else 'NOT given'}"
-          f"{', console ' + gw.console if gw.console else ''}")
+    print(f"\nGateway at {gw.host}:{gw.port}, key {'given' if key else 'NOT given'}")
 
     tests = [
         test_icmp,
@@ -695,8 +651,10 @@ def main() -> int:
         test_two_hop,
         test_two_hop_write,
         test_fuse_mount,
-        # Last: it reads the counters accumulated by everything above.
-        test_driver_counters,
+        # A driver-counter check used to run last, reading what everything
+        # above accumulated. It went with the W5500 driver in phase 19's R0;
+        # R4 owes the ENC28J60 an equivalent, because a link whose error
+        # counters nobody reads is a link that fails quietly.
     ]
 
     total = passed = 0

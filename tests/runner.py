@@ -2552,15 +2552,17 @@ def test_9p_auth_gate(elf_path: Path, img_path: Path, arch_name: str) -> tuple[s
     """The Tauth/afid gate, end to end, over a **TCP** chardev (N2,
     plan/phase18_networking_and_auth.md).
 
-    TCP on purpose. The W5500 terminates TCP in silicon and hands the guest a
-    byte stream, so LugalOS has no IP stack to test -- but the *host* half
-    (p9lib.connect_tcp(), the auth exchange, the framing) is real code that
-    would otherwise only ever run against hardware. QEMU's chardev takes a TCP
-    socket in place of the unix one used elsewhere in this file, the guest
-    sees an unchanged virtio-console byte stream, and everything above the
-    wire is exercised in CI. What this cannot cover is the W5500's own TCP
-    behaviour -- partial sends, RECV chunking, a peer resetting mid-frame --
-    which stays a hardware deliverable (plan §0).
+    TCP on purpose, and the guest does not speak it. The chardev terminates
+    the TCP and hands the guest an ordinary virtio-console byte stream, so
+    what this exercises is the *host* half (p9lib.connect_tcp(), the auth
+    exchange, the framing) -- real code that would otherwise only ever run
+    against hardware.
+
+    Phase 19's R3 gives the guest its own TCP, at which point this test keeps
+    working unchanged and a second one joins it that goes through the guest's
+    stack (plan/phase19_ip_stack_and_ethernet.md §4). Until then, everything
+    below the byte stream stays untested here, which is the honest boundary
+    and was the whole reason §4 specifies a packet-level peer.
 
     Six cases, each of which has been a real bug in somebody's auth code:
       1. attach with no Tauth at all, on a link that requires it   -> refused

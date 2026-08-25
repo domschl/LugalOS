@@ -12,9 +12,6 @@
 #if CONFIG_ENABLE_SPISD
 #include "drivers/spisd.h"
 #endif
-#if defined(CONFIG_W5500_SCK_GPIO)
-#include "drivers/w5500.h"
-#endif
 #endif
 
 #if !defined(CONFIG_BOARD_RP2350)
@@ -202,29 +199,19 @@ static const dev_driver_t dev_spisd = {
 /* N5: the downlink. Deliberately WITHOUT DEV_F_BACKGROUND_9P -- on this wire
  * the gateway is the client and the board at the other end is the server, so
  * nothing here needs to answer inbound requests. It also keeps a background
- * slot free: P9_LINK_MAX_BACKGROUND is 2, and usbnet plus w5500net already
- * fill it on this persona. */
+ * slot free: P9_LINK_MAX_BACKGROUND is 2, and usbnet plus whatever Ethernet
+ * link this persona carries are what fill it. */
 static void *get_uart1(void) { return uart1_get_link(); }
 static const dev_driver_t dev_uart1 = {
     .name = "uart1", .kind = DEV_KIND_P9LINK, .get = get_uart1,
 };
 #endif
-#if defined(CONFIG_W5500_SCK_GPIO)
-/* N4, plan/phase18_networking_and_auth.md: the Ethernet 9P link. Registered
- * like usbnet and uartslip -- three lines, and everything downstream (the
- * background server, `mount-remote`, /proc/devices, `p9auth`) then works
- * unchanged. That reuse is the point: the W5500 hands the system a byte
- * stream, and a byte stream is what p9_link_t already abstracts.
- *
- * No probe hook: w5500_init() runs in kernel_main() before dev_probe_all(),
- * and get() answers NULL until the chip is present and addressed, which is
- * how a gateway with no cable stays out of the registry's way. */
-static void *get_w5500_net(void) { return w5500_get_link(); }
-static const dev_driver_t dev_w5500net = {
-    .name = "w5500net", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P,
-    .get = get_w5500_net,
-};
-#endif
+/* An Ethernet 9P link was registered here (N4's `w5500net`) and went with the
+ * part in phase 19's R0. The three lines it took are the whole integration
+ * cost of a network link in this tree -- everything downstream (the
+ * background server, `mount-remote`, /proc/devices, `p9auth`) works off
+ * DEV_KIND_P9LINK alone. Phase 19's R3 registers `tcpnet` the same way, once
+ * an accepted TCP connection is a p9_link_t. */
 static const dev_driver_t dev_usbnet = {
     .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
@@ -252,9 +239,6 @@ void board_register_devices(void) {
     dev_register(&dev_usbnetcon);
 #if CONFIG_ENABLE_SPISD
     dev_register(&dev_spisd);
-#endif
-#if defined(CONFIG_W5500_SCK_GPIO)
-    dev_register(&dev_w5500net);
 #endif
 #if defined(CONFIG_UART1_BASE)
     dev_register(&dev_uart1);

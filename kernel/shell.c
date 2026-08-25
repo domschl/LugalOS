@@ -37,9 +37,6 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "fs/9p.h"
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
-#include "drivers/w5500.h"
-#endif
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -118,15 +115,9 @@ static void cmd_help(void) {
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
     cprintf("  uart1test [ms]  - Raw UART1 downlink test: registers, a burst, then listen\n");
     cprintf("  uart1pins       - Continuity between the downlink pins, using plain GPIO\n");
-    cprintf("  net             - Ethernet status: chip, link, MAC, address, 9P socket\n");
-    cprintf("  net phy <mode>  - Force the PHY: auto|100f|100h|10f|10h|down, then watch\n");
-    cprintf("  net watch [s]   - Is the chip holding its config, or resetting under load?\n");
-    cprintf("  net bustest [n] - SPI integrity at four clock rates: wiring, or logic?\n");
-    cprintf("  net rxtest [s]  - MACRAW: does the chip still RECEIVE? (drops any peer)\n");
-    cprintf("  net txtest [n]  - MACRAW: does it still TRANSMIT? sends gratuitous ARPs\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -1583,54 +1574,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             ms = ms * 10u + (unsigned)(*d - '0');
         }
         uart1_wire_test(ms);
-        return;
-#endif
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
-    } else if (strcmp(cmd_line, "net") == 0) {
-        w5500_report();
-        return;
-    } else if (strncmp(cmd_line, "net phy", 7) == 0) {
-        const char *m = &cmd_line[7];
-        while (*m == ' ') m++;
-        w5500_phy_mode(*m ? m : NULL);
-        return;
-    } else if (strncmp(cmd_line, "net bustest", 11) == 0) {
-        unsigned n = 0;
-        for (const char *d = &cmd_line[11]; ; d++) {
-            if (*d == ' ') continue;
-            if (*d < '0' || *d > '9') break;
-            n = n * 10u + (unsigned)(*d - '0');
-        }
-        w5500_bustest(n);
-        return;
-    } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
-        const char *m = cmd_line + 10;
-        while (*m == ' ') m++;
-        unsigned n = 0;
-        while (*m >= '0' && *m <= '9') n = n * 10u + (unsigned)(*m++ - '0');
-        w5500_txtest(n);
-    } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
-        const char *m = cmd_line + 10;
-        while (*m == ' ') m++;
-        unsigned n = 0;
-        while (*m >= '0' && *m <= '9') n = n * 10u + (unsigned)(*m++ - '0');
-        w5500_rxtest(n);
-    } else if (strcmp(cmd_line, "net debug on") == 0) {
-        w5500_debug(true);
-        cprintf("net: socket state transitions will be logged\n");
-        return;
-    } else if (strcmp(cmd_line, "net debug off") == 0) {
-        w5500_debug(false);
-        cprintf("net: transition logging off\n");
-        return;
-    } else if (strncmp(cmd_line, "net watch", 9) == 0) {
-        unsigned secs = 0;
-        for (const char *d = &cmd_line[9]; ; d++) {
-            if (*d == ' ') continue;
-            if (*d < '0' || *d > '9') break;
-            secs = secs * 10u + (unsigned)(*d - '0');
-        }
-        w5500_watch(secs);
         return;
 #endif
     } else if (strcmp(cmd_line, "p9key") == 0) {

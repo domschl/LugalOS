@@ -99,11 +99,12 @@ lsh> p9key 000102030405060708090a0b0c0d0e0f
 lsh> (mount-remote "chess" "uart1")      # only for the two-hop test
 ```
 
-`--console` is optional and adds one test: it reads the W5500 driver's own
-counters afterwards and fails if any resync discard, command timeout or RX
-overrun accumulated during the run. That is the test most likely to catch a
-regression, because every transport fault in phase 18 showed up there before
-it showed up as a failed operation.
+`--console` is optional. It used to add a test that read the W5500 driver's
+own counters afterwards -- the test most likely to catch a regression, because
+every transport fault in phase 18 showed up there before it showed up as a
+failed operation. It went with the driver in phase 19's R0, and R4 should give
+the ENC28J60 an equivalent: a link whose error counters nobody reads is a link
+that fails quietly.
 
 ### What it covers that QEMU and a localhost socket cannot
 

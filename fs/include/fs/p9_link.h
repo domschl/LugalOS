@@ -29,8 +29,9 @@ typedef struct p9_link {
      * in the server: a local channel and a cable between two boards on one
      * desk are trusted by the same argument that trusts the boards, and a
      * network link is not. Default false, so an existing transport keeps
-     * behaving exactly as it did; the W5500 link sets it, and `p9auth` can
-     * set it on any link for testing or for a cable someone does not trust.
+     * behaving exactly as it did; a network link sets it (phase 19's R3 is
+     * the next one to), and `p9auth` can set it on any link for testing or
+     * for a cable someone does not trust.
      *
      * A link that requires auth but has no keys configured refuses every
      * attach -- see p9_auth_have_keys(). */

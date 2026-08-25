@@ -17,13 +17,6 @@
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
-/* After lugalos_config.h, necessarily: CONFIG_W5500_SCK_GPIO is defined
- * there, and a guard that runs before it silently compiles nothing -- the
- * same ordering trap drivers/pico_clock_green_rp2350.c's own DCF-77 include
- * already carries a note about. */
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
-#include "drivers/w5500.h"
-#endif
 #if CONFIG_ENABLE_CC
 #include "user/chibicc/include/chibicc.h"
 #endif
@@ -2195,7 +2188,6 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * "mount-remote can currently only target the virtio-console link" as
  * deferred; the device registry is what makes resolving one by name
  * possible, so that limitation is closed here. */
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
 /* Parses one dotted quad. Returns false on anything that is not four
  * 0-255 numbers -- a typo in an address must not become a board silently on
  * the wrong network. */
@@ -2218,8 +2210,17 @@ static bool parse_ipv4(const char *s, uint8_t out[4]) {
     return part == 4;
 }
 
-/* `(net-config "ip" "mask" ["gateway"])` -- N4,
- * plan/phase18_networking_and_auth.md §3.
+/* `(net-config "ip" "mask" ["gateway"])` -- phase 18 N4 §3, kept alive
+ * through phase 19's R0 with no interface under it.
+ *
+ * **This is a stub until phase 19's R2 wires it to the IP stack.** It still
+ * validates its arguments and still says what it was asked to do; it just
+ * has nothing to apply them to. The name is kept rather than removed with
+ * the W5500 for one concrete reason: a gateway's
+ * /sd0/system/etc/usr_init.lisp already carries a (net-config ...) line, and
+ * an unbound symbol there would abort the boot script over a peripheral that
+ * is merely absent. Failing the call and continuing the boot is the right
+ * shape for "this board has no network yet".
  *
  * The gateway's address, from the SD card, using the boot path that already
  * exists: /sd0/system/etc/usr_init.lisp is loaded at boot when present, so
@@ -2245,21 +2246,20 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
         if (!parse_ipv4(get_str_val(rest->u.pair.car), gw)) return &false_val;
     }
 
-    if (w5500_set_address(ip, mask, gw) != 0) return &false_val;
-    cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u -- 9P listening on 564\n",
+    cprintf("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u -- parsed, but this "
+            "board has no network interface (phase 19 R2)\n",
             ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
             gw[0], gw[1], gw[2], gw[3]);
-    return &true_val;
+    return &false_val;
 }
 
-/* `(net-status)` -- the same report `net` prints, for a script that wants to
- * see it after configuring. */
+/* `(net-status)` -- the interface report, for a script that wants to see it
+ * after configuring. Stubbed alongside (net-config) above. */
 static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    w5500_report();
-    return &true_val;
+    cprintf("[Net] no network interface on this board (phase 19 R2)\n");
+    return &false_val;
 }
-#endif
 
 static lisp_val_t *prim_mount_remote(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -2650,10 +2650,8 @@ void lisp_init(void) {
      * use them over its `usbnet` (ACM1/EP4) link. */
     env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_W5500_SCK_GPIO)
     env_set(&global_env, "net-config", make_prim(prim_net_config));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
-#endif
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));
     env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));

@@ -67,11 +67,10 @@ set(_optional_keys
     CONFIG_CLOCK_BUZZER_GPIO
     CONFIG_CLOCK_TEMP_OFFSET_C CONFIG_CLOCK_COLON_BLINK CONFIG_CLOCK_BOOT_BEACON
     CONFIG_I2C_RTC_BASE CONFIG_I2C_RTC_SDA_GPIO CONFIG_I2C_RTC_SCL_GPIO
-    # N3/N4/N5, plan/phase18_networking_and_auth.md: the gateway persona's
-    # W5500 on SPI0 and its UART1 downlink. Optional like everything else
-    # here -- a board without an Ethernet module simply does not set them.
-    CONFIG_W5500_SCK_GPIO CONFIG_W5500_MOSI_GPIO CONFIG_W5500_MISO_GPIO
-    CONFIG_W5500_CS_GPIO CONFIG_W5500_RST_GPIO CONFIG_W5500_INT_GPIO
+    # N5, plan/phase18_networking_and_auth.md: the gateway persona's UART1
+    # downlink. Optional like everything else here -- a board with no second
+    # UART simply does not set them. (The W5500's own pins lived here too,
+    # until phase 19's R0 removed the part; R4's ENC28J60 adds CONFIG_ETH_*.)
     CONFIG_UART1_BASE CONFIG_UART1_TX_GPIO CONFIG_UART1_RX_GPIO
     CONFIG_DCF77_OUT_GPIO CONFIG_DCF77_PON_GPIO CONFIG_DCF77_PON_ACTIVE_LOW
     CONFIG_DCF77_OUT_ACTIVE_LOW

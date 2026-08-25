@@ -129,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--aname", default="/", help="attach root (default '/')")
     p.add_argument("--tcp", metavar="HOST[:PORT]",
                    help="9P over TCP, e.g. 192.168.1.50 or 192.168.1.50:564 "
-                        "(the gateway persona's W5500 link)")
+                        "(the gateway persona's Ethernet link)")
     p.add_argument("--key", metavar="HEX",
                    help="pre-shared key, hex, for a link that requires authentication")
     p.add_argument("--key-file", metavar="PATH",
