@@ -365,7 +365,19 @@ int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
             const char *ne = name;
             while (ne < line_end && *ne != ' ' && *ne != '\t' && *ne != '\r') ne++;
             uint32_t nlen = (uint32_t)(ne - name);
-            if (nlen == 0 || nlen != strlen(uname) || strncmp(name, uname, nlen) != 0) continue;
+            if (nlen == 0) continue;
+            /* `*` matches any uname. Explicit, never implied: since R3's
+             * identity work every node attaches under its own name
+             * ("rp2350-gateway-3f2a"), which is what makes phase 18 §6's
+             * "multiple keys identify who" real -- and which also means a
+             * keys file written when every node was "lugal" stops matching.
+             * A segment that genuinely shares one key writes one line and
+             * says so; nothing falls back silently, because a silent
+             * fallback would quietly undo the identification this exists
+             * for. */
+            bool wildcard = (nlen == 1 && name[0] == '*');
+            if (!wildcard &&
+                (nlen != strlen(uname) || strncmp(name, uname, nlen) != 0)) continue;
 
             /* hex key */
             const char *k = ne;

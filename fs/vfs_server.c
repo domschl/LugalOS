@@ -15,6 +15,7 @@
 #include "kernel/device.h"
 #include "net/ip.h"
 #include "net/tcp.h"
+#include "kernel/identity.h"
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
@@ -642,6 +643,25 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
         return (int)used;
+    } else if (strcmp(rel, "node") == 0) {
+        /* Who this node is, and where each half of that came from.
+         *
+         * Its own file rather than a corner of /proc/net, because identity is
+         * not a networking fact -- the name is a hostname, a 9P uname and a
+         * log prefix before it is anything on a wire. Both `source` lines are
+         * the point: "why do two boards answer to the same thing" is a
+         * question with three possible answers, and this says which. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "name: %s\nname source: %s\n", node_name(), node_name_source());
+        char mac[18];
+        netif_mac_str(node_mac(), mac);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "mac: %s\nmac source: %s\n", mac, node_mac_source());
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "9P uname: %s\n", node_name());
+        return (int)used;
     } else if (strcmp(rel, "net") == 0) {
         /* R2, plan/phase19_ip_stack_and_ethernet.md: the interface, its
          * address, its ARP cache and every counter the stack keeps.
@@ -951,7 +971,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
     "dcf77",
 #endif

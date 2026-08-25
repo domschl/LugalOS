@@ -4,6 +4,7 @@
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "fs/9p.h"
+#include "kernel/identity.h"
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
 #include <string.h>
@@ -239,7 +240,7 @@ void net_print_status(void) {
     }
     char mac[18];
     netif_mac_str(g_net.nif->mac, mac);
-    cprintf("%s: mac %s, link %s\n", g_net.nif->name, mac,
+    cprintf("%s: %s, mac %s, link %s\n", node_name(), g_net.nif->name, mac,
             netif_link_up(g_net.nif) ? "up" : "down");
     if (g_net.configured) {
         cprintf("  addr %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u\n",

@@ -1,4 +1,5 @@
 #include "drivers/loopback_net.h"
+#include "kernel/identity.h"
 #include "fs/9p.h"
 #include "fs/p9_chan.h"
 #include "fs/p9_link.h"
@@ -45,7 +46,8 @@ int loopback_9p_rpc(const char *write_payload, char *read_out_buf, uint32_t read
     // 2. Tattach fid=1 at /ram0 (always mounted -- see vfs_mount_ramdisk()).
     // fid=1 is kept unopened for the whole call, reused below as the
     // directory anchor for both the write and read walks.
-    p9_msg_t ta = { .type = P9_TATTACH, .tag = 2, .fid = 1, .uname = "lugal", .aname = "ram0" };
+    p9_msg_t ta = { .type = P9_TATTACH, .tag = 2, .fid = 1, .aname = "ram0" };
+    strncpy(ta.uname, node_name(), sizeof(ta.uname) - 1);
     tx_len = p9_serialize(&ta, tx_buf, sizeof(tx_buf));
     rx_len = loopback_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
     if (rx_len < 7) return -1;

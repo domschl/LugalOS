@@ -16,6 +16,7 @@
 #include "kernel/device.h"
 #include "net/ip.h"
 #include "net/tcp.h"
+#include "kernel/identity.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
@@ -2320,6 +2321,29 @@ static p9_link_t *net_mount_forget(const char *name) {
     return NULL;
 }
 
+/* `(net-identity)` reports; `(net-identity "clock-01")` sets.
+ *
+ * The runtime end of kernel/identity.h's resolution order, and the one an
+ * operator actually reaches: a line in /sd0/system/etc/usr_init.lisp beside
+ * (net-config), so a board's name is configured the same way its address is.
+ * The MAC deliberately does not follow a rename -- see identity.h. */
+static lisp_val_t *prim_net_identity(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (args && args->type == LISP_PAIR) {
+        const char *want = get_str_val(args->u.pair.car);
+        if (node_set_name(want) != 0) {
+            cprintf("[Node] '%s' is not a usable name (letters, digits, '-', '.', "
+                    "under %u characters)\n", want ? want : "", NODE_NAME_MAX);
+            return &false_val;
+        }
+    }
+    char mac[18];
+    netif_mac_str(node_mac(), mac);
+    cprintf("[Node] %s (%s), mac %s (%s)\n", node_name(), node_name_source(),
+            mac, node_mac_source());
+    return &true_val;
+}
+
 static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2766,6 +2790,7 @@ void lisp_init(void) {
     env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
     env_set(&global_env, "net-config", make_prim(prim_net_config));
     env_set(&global_env, "net-mount", make_prim(prim_net_mount));
+    env_set(&global_env, "net-identity", make_prim(prim_net_identity));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));

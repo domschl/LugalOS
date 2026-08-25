@@ -512,6 +512,63 @@ stack and not a wire -- their value is as a *before* for R4.
    connection after boot and as a `no-route` count on a session that had done
    nothing wrong.
 
+**Addendum to R3: node identity, 2026-08-25.** Built before R4 rather than
+inside it, because it is what makes two boards on one segment possible at all
+and because phase 18 already got it wrong once in a way worth not repeating:
+its plan described deriving a MAC from the RP2350's unique id, and what
+shipped was the constant `02:4C:47:00:00:01` **inside the W5500 driver** -- so
+any two boards would have collided, and the design vanished with the driver
+when the part was cancelled. Identity is not a driver's business. It lives in
+`kernel/identity.c`, above every wire.
+
+**Derived, not randomised.** A build-time random buys uniqueness and pays for
+it with reproducibility: two builds of identical sources would differ,
+`lugalos_build_id` would stop meaning anything, and a board's identity would
+change on every reflash -- invalidating every ARP cache, host config and later
+DHCP reservation keyed to it. `cmake/gen_config.cmake` hashes the board-file
+path (which carries both persona and source tree) with the build host's name;
+eight hex digits of that is `CONFIG_NODE_SEED`. Stable across rebuilds,
+distinct between machines, distinct between personas on one machine.
+
+**And not an invented manufacturer code.** Inventing an OUI means squatting on
+bytes the IEEE has assigned or will. Bit 1 of the first octet is the *locally
+administered* bit, reserved for exactly this, and `0x02` is its canonical
+unicast spelling; `4C 47` is ASCII "LG", so the address reads as ours in a
+packet dump without pretending to be registered to anyone. The result on one
+machine: `rv32-nommu-fdb2`, `02:4c:47:fd:b2:d7`.
+
+Resolution order, most specific first -- name: `(net-identity "clock-01")` at
+runtime, `CONFIG_NODE_NAME` from a board file, then `<persona>-<4 hex>`. MAC:
+`CONFIG_NODE_MAC` from a board file, then whatever the *device* supplies
+(virtio config space, an EEPROM -- the platform saying "you are this address"
+outranks anything we can derive, and `netif_register()` only fills a MAC the
+driver left zeroed), then derived. A rename deliberately does **not** move the
+MAC: invalidating a segment's ARP caches for a cosmetic change is a bad trade.
+
+**The name is now the 9P `uname`**, which is the part that matters for
+hardware. The far end's key store is indexed by uname and the auth MAC covers
+it, so this is the difference between "some LugalOS board attached" and "the
+clock attached" -- phase 18 §6's "multiple keys identify who", finally real.
+The migration that implies is handled explicitly rather than silently: the keys
+file gained a `*` wildcard line for a segment that genuinely shares one key.
+Nothing falls back on its own, because a silent fallback would quietly undo the
+identification this exists for. The console key (`p9key <hex>`) was always
+uname-independent and still is, so the bootstrap path is unchanged.
+
+`board_unique_id()` is the hook where silicon takes over from the build seed,
+and it answers false everywhere today. Reading the RP2350's flash id lands with
+**R4**, where it can be checked against two real boards rather than asserted --
+which is precisely the mistake phase 18 made with this feature the first time.
+Until then, two boards flashed from one build still share an identity, and
+`/proc/node`'s `mac source:` line says so out loud.
+
+Cost: **+46 bytes of `.bss`**, no heap page. `/proc/node` reports name, MAC and
+where each came from; `test_node_identity` asserts the properties the phase 18
+failure would have violated (locally administered, the `02:4c:47` signature,
+derived rather than fixed, uname matching, and a rename that leaves the MAC
+alone) without asserting the derived values themselves, which hash the build
+host and would pass on one machine and fail on every other.
+
 **Recovery-path coverage added, 2026-08-25**, before R4 rather than after,
 because it turned out to be missing entirely. This stack's riskiest
 simplifications -- no reassembly, a send window kept by hand, a fixed RTO with

@@ -2548,6 +2548,84 @@ def test_9p_virtio_link(elf_path: Path, img_path: Path, arch_name: str) -> tuple
             session.close()
 
 
+def test_node_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """The node's own name and MAC (kernel/identity.c), as preparation for two
+    boards on one segment.
+
+    Phase 18 shipped a *constant* MAC inside the W5500 driver, so any two
+    boards would have collided -- and nothing noticed, because nothing ever
+    had two. This asserts the properties that failure would have violated:
+    the address is locally administered (bit 1 of the first octet), carries
+    the 02:4c:47 signature rather than a squatted OUI, is derived rather than
+    fixed, and the name is the 9P uname the far end's key store is indexed by.
+
+    The derived values themselves are deliberately **not** asserted: they hash
+    the build host's name, so a literal here would pass on one machine and
+    fail on every other."""
+    import shutil
+    name = "Node Identity: Derived Name, Locally-Administered MAC, 9P uname (R3)"
+    arch_img = img_path.with_name(f"test_{arch_name}_node_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect("cat /proc/node", r"mac source:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+
+        # No trailing `$`: this is raw terminal output, so every line ends "\r\n"
+        # and an anchored end-of-line never matches.
+        m = re.search(r"^name: ([\w.-]+)", log, re.MULTILINE)
+        if not m:
+            return (name, False, f"no derived name in /proc/node:\n{log[-400:]}")
+        node = m.group(1)
+        if not node.startswith(arch_name.replace("rv", "rv")) and "-" not in node:
+            return (name, False, f"the name carries no persona or suffix: {node!r}")
+        if not re.search(r"^name source: derived", log, re.MULTILINE):
+            return (name, False, "the name is not derived on a board that pins none")
+
+        mm = re.search(r"^mac: ([0-9a-f:]{17})", log, re.MULTILINE)
+        if not mm:
+            return (name, False, f"no MAC in /proc/node:\n{log[-400:]}")
+        mac = [int(b, 16) for b in mm.group(1).split(":")]
+        if mac[0] & 0x01:
+            return (name, False, f"{mm.group(1)} is a group address, not a unicast one")
+        if not mac[0] & 0x02:
+            return (name, False, f"{mm.group(1)} is not marked locally administered")
+        if mac[0:3] != [0x02, 0x4C, 0x47]:
+            return (name, False, f"{mm.group(1)} does not carry the 02:4c:47 signature")
+        if mac[3:6] == [0, 0, 0]:
+            return (name, False, "the derived suffix is all zeroes")
+
+        if not re.search(rf"^9P uname: {re.escape(node)}", log, re.MULTILINE):
+            return (name, False, "the 9P uname is not the node name")
+
+        # A rename must take, and must NOT move the MAC: an ARP cache full of
+        # a name change is a bad trade.
+        ok, log = session.send_and_expect(
+            'lisp\n(net-identity "renamed-01")\nexit',
+            r"\[Node\] renamed-01 \(set at runtime\), mac " + re.escape(mm.group(1)),
+            timeout=6.0)
+        if not ok:
+            return (name, False, f"rename did not take, or moved the MAC: {log[-500:]}")
+
+        ok, log = session.send_and_expect(
+            'lisp\n(net-identity "not a name!")\nexit', r"is not a usable name", timeout=6.0)
+        if not ok:
+            return (name, False, f"an unusable name was accepted: {log[-400:]}")
+
+        return (name, True, f"{node}, mac {mm.group(1)}, uname matches, rename kept the MAC")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -2590,10 +2668,13 @@ def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tup
             return (name, False, f"guest did not reach the shell: {log[-400:]}")
 
         # 1. the driver found the device and read its MAC from config space
-        ok, log = session.send_and_expect("net", r"virtio-net: mac ([0-9a-f:]{17}), link up", timeout=5.0)
+        # The line names the node first, then the interface: identity is what
+        # an operator looking at two boards actually needs.
+        ok, log = session.send_and_expect(
+            "net", r"[\w.-]+: virtio-net, mac ([0-9a-f:]{17}), link up", timeout=5.0)
         if not ok:
             return (name, False, f"`net` did not report the interface: {log[-600:]}")
-        m = re.search(r"virtio-net: mac ([0-9a-f:]{17})", log)
+        m = re.search(r"virtio-net, mac ([0-9a-f:]{17})", log)
         mac_text = m.group(1)
         if mac_text != "52:54:00:12:34:56":
             return (name, False, f"MAC {mac_text} is not QEMU's default -- config space not read?")
@@ -4226,6 +4307,7 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
@@ -4253,6 +4335,7 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))

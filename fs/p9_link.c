@@ -1,5 +1,6 @@
 #include "fs/p9_link.h"
 #include "kernel/sha256.h"
+#include "kernel/identity.h"
 #include "fs/9p.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -413,7 +414,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     req.type = P9_TATTACH;
     req.tag = 2;
     req.fid = 1;
-    strncpy(req.uname, "lugal", sizeof(req.uname) - 1);
+    strncpy(req.uname, node_name(), sizeof(req.uname) - 1);
     // aname left empty -> namespace root "/"
     if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RATTACH) { scratch_release(&sc); return -1; }
 
@@ -636,7 +637,12 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
 
     m->msize = (resp.msize > 0 && resp.msize <= P9_MAX_MSIZE) ? resp.msize : P9_MAX_MSIZE;
 
-    uint32_t afid = p9_remote_authenticate(m, "lugal");
+    /* This node's own name, not a constant. The uname is what the far end's
+     * key store is indexed by (fs/9p.c's p9_auth_key_for()) and what the auth
+     * MAC covers, so it is the difference between "some LugalOS board
+     * attached" and "the clock attached" -- which is the whole point of phase
+     * 18 §6's "multiple keys identify who". */
+    uint32_t afid = p9_remote_authenticate(m, node_name());
 
     uint32_t root_fid = m->next_fid++;
     memset(&req, 0, sizeof(req));
@@ -648,7 +654,7 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
      * auth-requiring server duly looked up and rejected as "not an auth fid"
      * -- a confusing way to fail for the right reason. */
     req.afid = afid;
-    strncpy(req.uname, "lugal", sizeof(req.uname) - 1);
+    strncpy(req.uname, node_name(), sizeof(req.uname) - 1);
     // aname left empty -> the peer's namespace root "/"
     if (p9_remote_xchg(m, &req, &resp) < 0 || resp.type != P9_RATTACH) return NULL;
 

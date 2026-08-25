@@ -1,4 +1,5 @@
 #include "drivers/uart_net.h"
+#include "kernel/identity.h"
 #include "fs/9p.h"
 #include "drivers/uart.h"
 #include "kernel/printk.h"
@@ -421,7 +422,8 @@ int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_ma
     if (rx_len < 7) return -1;
 
     // 2. Tattach fid=1 at /ram0 (always mounted -- see vfs_mount_ramdisk()).
-    p9_msg_t ta = { .type = P9_TATTACH, .tag = 2, .fid = 1, .uname = "lugal", .aname = "ram0" };
+    p9_msg_t ta = { .type = P9_TATTACH, .tag = 2, .fid = 1, .aname = "ram0" };
+    strncpy(ta.uname, node_name(), sizeof(ta.uname) - 1);
     tx_len = p9_serialize(&ta, tx_buf, sizeof(tx_buf));
     rx_len = uart_net_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
     if (rx_len < 7) return -1;
