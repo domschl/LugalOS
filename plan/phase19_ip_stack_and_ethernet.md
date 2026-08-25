@@ -1,6 +1,6 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0, R1 and R2 done 2026-08-25; R3 (TCP) next.** Succeeds
+**Status: R0-R3 done 2026-08-25; R4 (ENC28J60) next, waiting on parts.** Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -458,6 +458,62 @@ retransmitted, accepted), a peer RST mid-stream, a window fill, and a half-close
 Then the end-to-end path over slirp: `lugal9p` and `fuse-p9 --tcp` complete a
 full authenticated 9P session against the guest, on both targets, in CI.
 *(R3b, may slip: active open, so a node can mount a peer over TCP.)*
+
+**Done, 2026-08-25.** `net/tcp.c` (661 lines), `tcp_service()` called from the
+pump, `net listen`, TCP lines in `net` and `/proc/net`, a `TCPDriver` in
+`tests/netpeer.py`, `memmove()` in libc, and two runner tests on both targets.
+Suite **277/277**, zero warnings on five presets.
+
+**It works end to end.** `p9lib.Session(key=...)` over `connect_tcp()` through
+a slirp forwarded port reads `/proc/version`, lists `/`, and pulls a
+6252-byte `init.lisp` back byte-exact -- over a TCP stack we wrote, with the
+phase 18 auth gate refusing the anonymous attach first. Nothing on the host
+side changed; what changed is underneath.
+
+**The RAM number: +255 bytes of `.bss`, and the running total lands exactly on
+budget.** Two connection structs are 243 bytes, the wider background-link
+table 8, the pump 4. The 8 KB of connection buffers come from `palloc` at
+`tcp_listen()` time, like R2's frames. On the RP2350, a board actually
+networking holds **three pages -- 12,288 bytes** (one of frames, two of
+connection buffers) against §2's "≤ 12 KB", plus 663 bytes of `.bss` across
+R1-R3. A board that never listens holds none of it.
+
+**The throughput number: 1377 KiB/s on rv32, 631 KiB/s on rv64**, reading a
+6 KB file twenty times over 9P-over-TCP. QEMU figures, so they measure the
+stack and not a wire -- their value is as a *before* for R4.
+
+**Four things worth carrying forward.**
+
+1. **Everything runs in one task.** `netsrv` pumps the stack, runs the
+   retransmission timers, services 9P on established connections and drains
+   their send buffers, in that order, on one call stack. Nothing in
+   `net/tcp.c` takes a lock because nothing is ever entered twice, and
+   `link_send_frame()` never blocks -- it is only offered a connection whose
+   send buffer is already empty, so the reply always has somewhere to go. The
+   alternative (9P in `p9srv`, the stack in `netsrv`) would have put two
+   preemptible tasks on one connection struct and needed locking this kernel
+   does not have. `netsrv` gained a third stack page for the same reason
+   `p9srv` has three.
+2. **An out-of-order segment gets a duplicate ACK, not silence.** §2 said
+   "dropped and not acknowledged". Dropping is right; staying silent is not,
+   because the peer then waits out its own RTO instead of retransmitting
+   immediately. The duplicate ACK costs one segment and is what makes the
+   no-reassembly trade cheap rather than merely small.
+3. **The advertised window is the receive buffer's real free space**, not a
+   fixed MSS. Same buffer, same code, and a one-MSS window on a buffer that
+   holds a whole msize would cost a round trip per segment for nothing. A
+   full buffer advertises zero, which is correct and handled: the window
+   update goes out as soon as the 9P server takes the frame.
+4. **We learn a peer's MAC from its IP frames**, not only from ARP. Every
+   inbound frame carries its sender's MAC, so a server about to reply already
+   knows where to send it. Without it the first reply to each new peer missed
+   the ARP cache, was dropped (§2's "no queue for the datagram that missed"),
+   and waited 300 ms for a retransmission -- visible as a stall on the first
+   connection after boot and as a `no-route` count on a session that had done
+   nothing wrong.
+
+**R3b (active open) has not slipped -- it has not been started**, as planned.
+Nothing in R4 or R5 depends on it.
 
 **R4 -- ENC28J60 on the gateway persona.** Driver as a netif, the errata
 workarounds of §5 designed in, the decoupling fitted before power-on.

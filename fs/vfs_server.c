@@ -14,6 +14,7 @@
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
+#include "net/tcp.h"
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
@@ -684,11 +685,12 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 (unsigned long)ns->nif->tx_frames, (unsigned long)ns->nif->tx_bytes);
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "arp: %lu rx, %lu tx\nip: %lu rx, %lu tx\n"
-                "icmp: %lu rx, %lu tx\nudp: %lu rx, %lu tx\n",
+                "icmp: %lu rx, %lu tx\nudp: %lu rx, %lu tx\ntcp: %lu rx\n",
                 (unsigned long)ns->rx_arp, (unsigned long)ns->tx_arp,
                 (unsigned long)ns->rx_ip, (unsigned long)ns->tx_ip,
                 (unsigned long)ns->rx_icmp, (unsigned long)ns->tx_icmp,
-                (unsigned long)ns->rx_udp, (unsigned long)ns->tx_udp);
+                (unsigned long)ns->rx_udp, (unsigned long)ns->tx_udp,
+                (unsigned long)ns->rx_tcp);
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "drop: %lu not-for-us, %lu short, %lu checksum, %lu fragment,\n"
                 "      %lu proto, %lu no-route, %lu no-port\n",
@@ -696,6 +698,21 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 (unsigned long)ns->drop_checksum, (unsigned long)ns->drop_fragment,
                 (unsigned long)ns->drop_proto, (unsigned long)ns->drop_no_route,
                 (unsigned long)ns->drop_no_port);
+            uint16_t lport = 0;
+            if (tcp_listening(&lport)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "tcp: listening on %u, %lu open, %lu accepted, %lu reset\n",
+                    lport, (unsigned long)tcp_conn_count(),
+                    (unsigned long)tcp_accepted_total(),
+                    (unsigned long)tcp_reset_total());
+                for (uint32_t i = 0; i < 2; i++) {
+                    char line[80];
+                    tcp_conn_str(i, line, sizeof(line));
+                    if (line[0]) used += (uint32_t)ksnprintf(buf + used, cap - used, "  %s", line);
+                }
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "tcp: not listening\n");
+            }
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "udp bindings: %lu\narp cache: %lu entries\n",
                 (unsigned long)udp_bindings(), (unsigned long)arp_entries());

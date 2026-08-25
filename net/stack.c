@@ -1,7 +1,9 @@
 #include "net/ip.h"
 #include "net/net_internal.h"
+#include "net/tcp.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "fs/9p.h"
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
 #include <string.h>
@@ -85,6 +87,15 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
      * it is what stops the first exchange after a reconfiguration from
      * waiting on somebody else's stale cache. */
     arp_announce();
+
+    /* And start listening for 9P, on the port IANA assigns to the Plan 9 file
+     * service. Automatic rather than a second call, because a board that has
+     * an address and does not answer 9P is not a configuration anyone in this
+     * project wants -- it is the whole reason the gateway persona exists.
+     * `net listen <port>` moves it; tcp_unlisten() stops it. */
+    if (tcp_listen(564) != 0) {
+        cprintf("[Net] address set, but the 9P listener could not start\n");
+    }
     return 0;
 }
 
@@ -196,13 +207,21 @@ static void net_task_body(void *arg) {
     (void)arg;
     for (;;) {
         net_poll(4);
+        /* Timers, then 9P on established connections, then transmit -- all on
+         * this call stack, which is what lets net/tcp.c hold no locks. */
+        tcp_service();
         sched_yield();
     }
 }
 
 int net_task_start(void) {
     if (!g_net.nif) return -1;
-    int pid = task_create_sized("netsrv", net_task_body, NULL, 2);
+    /* Three pages, matching `p9srv`, and for the same reason: this task now
+     * runs the 9P server for every TCP connection (tcp_service()), so its
+     * worst-case depth is the server's, not a poll loop's. Phase 18 spent a
+     * long detour through hardware on a p9srv stack that was one page short
+     * -- see fs/p9_link.c's p9_server_task_start(). */
+    int pid = task_create_sized("netsrv", net_task_body, NULL, 3);
     if (pid < 0) printk("[Net] Could not start the stack task.\n");
     return pid;
 }
@@ -241,6 +260,20 @@ void net_print_status(void) {
             (unsigned long)g_net.rx_ip, (unsigned long)g_net.tx_ip,
             (unsigned long)g_net.rx_icmp, (unsigned long)g_net.tx_icmp,
             (unsigned long)g_net.rx_udp, (unsigned long)g_net.tx_udp);
+    uint16_t lport = 0;
+    if (tcp_listening(&lport)) {
+        cprintf("  9P listening on tcp/%u -- %lu connection%s, %lu accepted, %lu reset\n",
+                lport, (unsigned long)tcp_conn_count(),
+                tcp_conn_count() == 1 ? "" : "s",
+                (unsigned long)tcp_accepted_total(), (unsigned long)tcp_reset_total());
+        for (uint32_t i = 0; i < 2; i++) {
+            char line[80];
+            tcp_conn_str(i, line, sizeof(line));
+            if (line[0]) cprintf("    %s", line);
+        }
+    } else {
+        cprintf("  not listening\n");
+    }
     cprintf("  arp cache %lu entries; see /proc/net for every drop counter\n",
             (unsigned long)arp_entries());
 }

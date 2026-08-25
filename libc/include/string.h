@@ -5,6 +5,12 @@
 #include <stdint.h>
 
 void *memcpy(void *dst, const void *src, size_t n);
+/* Overlap-safe. Added for net/tcp.c, which drains a consumed 9P frame by
+ * sliding the rest of the receive buffer down over it -- the one operation in
+ * this tree where source and destination genuinely overlap. GCC may also
+ * synthesise calls to it for large struct assignments, so having it is worth
+ * more than the one caller suggests. */
+void *memmove(void *dst, const void *src, size_t n);
 void *memset(void *s, int c, size_t n);
 int memcmp(const void *s1, const void *s2, size_t n);
 size_t strlen(const char *s);

@@ -166,6 +166,75 @@ def udp_datagram(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
     return msg[:6] + ck.to_bytes(2, "big") + msg[8:]
 
 
+IP_PROTO_TCP = 6
+
+TCP_FIN, TCP_SYN, TCP_RST, TCP_PSH, TCP_ACK = 0x01, 0x02, 0x04, 0x08, 0x10
+
+
+def parse_ipv4(payload: bytes) -> dict[str, object]:
+    """Fields plus the payload **trimmed to the IP header's total length**.
+
+    The trim is not a nicety. Every frame shorter than 60 bytes is padded on
+    the wire, so a reply carrying a 20-byte TCP header arrives with six bytes
+    of zeros after it -- which read as six bytes of TCP payload if you slice
+    the frame instead of the datagram, and turn a pure ACK into "an ACK with
+    data" in whatever assertion comes next."""
+    ihl = (payload[0] & 0x0F) * 4
+    total = int.from_bytes(payload[2:4], "big")
+    return {
+        "ihl": ihl,
+        "total": total,
+        "proto": payload[9],
+        "src": payload[12:16],
+        "dst": payload[16:20],
+        "payload": payload[ihl:total],
+    }
+
+
+def tcp_segment(src_ip: bytes, dst_ip: bytes, sport: int, dport: int,
+                seq: int, ack: int, flags: int, payload: bytes = b"",
+                *, window: int = 8192, mss: int | None = None,
+                bad_checksum: bool = False) -> bytes:
+    opts = b"" if mss is None else bytes([2, 4]) + mss.to_bytes(2, "big")
+    if len(opts) % 4:
+        opts += bytes(4 - len(opts) % 4)
+    hdr = bytearray(20 + len(opts))
+    hdr[0:2] = sport.to_bytes(2, "big")
+    hdr[2:4] = dport.to_bytes(2, "big")
+    hdr[4:8] = seq.to_bytes(4, "big")
+    hdr[8:12] = ack.to_bytes(4, "big")
+    hdr[12] = ((20 + len(opts)) // 4) << 4
+    hdr[13] = flags
+    hdr[14:16] = window.to_bytes(2, "big")
+    hdr[20:] = opts
+    msg = bytes(hdr) + payload
+    pseudo = src_ip + dst_ip + bytes([0, IP_PROTO_TCP]) + len(msg).to_bytes(2, "big")
+    ck = ip_checksum(pseudo + msg)
+    if bad_checksum:
+        ck ^= 0xFFFF
+    return msg[:16] + ck.to_bytes(2, "big") + msg[18:]
+
+
+def parse_tcp(datagram: bytes) -> dict[str, object]:
+    """`datagram` is parse_ipv4()'s trimmed payload, not a raw frame."""
+    hl = (datagram[12] >> 4) * 4
+    return {
+        "sport": int.from_bytes(datagram[0:2], "big"),
+        "dport": int.from_bytes(datagram[2:4], "big"),
+        "seq": int.from_bytes(datagram[4:8], "big"),
+        "ack": int.from_bytes(datagram[8:12], "big"),
+        "flags": datagram[13],
+        "window": int.from_bytes(datagram[14:16], "big"),
+        "data": datagram[hl:],
+    }
+
+
+def flags_str(flags: int) -> str:
+    names = [(TCP_FIN, "FIN"), (TCP_SYN, "SYN"), (TCP_RST, "RST"),
+             (TCP_PSH, "PSH"), (TCP_ACK, "ACK")]
+    return "|".join(n for bit, n in names if flags & bit) or "none"
+
+
 class NetPeer:
     """The far end of the guest's only network cable.
 
@@ -258,3 +327,89 @@ class NetPeer:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+class TCPDriver:
+    """A TCP client with no stack under it: it builds every segment by hand
+    through a NetPeer, so a test can send exactly what it wants -- including
+    what a real stack would refuse to.
+
+    Deliberately not a socket wrapper. The point is to drive the *guest's*
+    state machine into the corners: a segment that arrives out of order, a
+    reset mid-stream, a window filled and left full, a half-close. A
+    correct-by-construction client cannot do any of that.
+    """
+
+    def __init__(self, peer: "NetPeer", *, guest_mac: bytes, peer_mac: bytes,
+                 guest_ip: bytes, peer_ip: bytes, sport: int = 40000,
+                 dport: int = 564) -> None:
+        self.peer = peer
+        self.guest_mac, self.peer_mac = guest_mac, peer_mac
+        self.guest_ip, self.peer_ip = guest_ip, peer_ip
+        self.sport, self.dport = sport, dport
+        self.snd = 1000
+        self.rcv = 0
+        self.window = 8192
+        # Everything already in the peer's log belongs to whatever came
+        # before this driver. Starting at zero makes the first segments()
+        # call return the *previous* conversation, which reads as "the guest
+        # answered" when it has not yet been asked.
+        self._seen = len(peer.received())
+
+    def send_raw(self, seq: int, ack: int, flags: int, payload: bytes = b"",
+                 **kw: object) -> None:
+        seg = tcp_segment(self.peer_ip, self.guest_ip, self.sport, self.dport,
+                          seq, ack, flags, payload, **kw)  # type: ignore[arg-type]
+        self.peer.send(eth_frame(self.guest_mac, self.peer_mac,
+                                 ETHERTYPE_IPV4,
+                                 ipv4_packet(self.peer_ip, self.guest_ip,
+                                             IP_PROTO_TCP, seg)))
+
+    def send(self, flags: int, payload: bytes = b"", **kw: object) -> None:
+        self.send_raw(self.snd, self.rcv, flags, payload, **kw)
+        self.snd += len(payload)
+        if flags & (TCP_SYN | TCP_FIN):
+            self.snd += 1
+
+    def segments(self, timeout: float = 3.0, count: int = 1) -> list[dict[str, object]]:
+        """Every TCP segment the guest has sent us since the last call."""
+        import time
+        out: list[dict[str, object]] = []
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            frames = self.peer.received()
+            out = []
+            for frame in frames[self._seen:]:
+                _dst, _src, etype, payload = parse_eth(frame)
+                if etype != ETHERTYPE_IPV4:
+                    continue
+                ip = parse_ipv4(payload)
+                if ip["proto"] != IP_PROTO_TCP:
+                    continue
+                out.append(parse_tcp(ip["payload"]))  # type: ignore[arg-type]
+            if len(out) >= count:
+                break
+            time.sleep(0.02)
+        self._seen = len(self.peer.received())
+        return out
+
+    def handshake(self, timeout: float = 5.0, mss: int = 1460) -> dict[str, object]:
+        self.send(TCP_SYN, mss=mss)
+        segs = self.segments(timeout=timeout)
+        if not segs:
+            raise RuntimeError("no SYN-ACK")
+        sa = segs[0]
+        if sa["flags"] & (TCP_SYN | TCP_ACK) != (TCP_SYN | TCP_ACK):
+            raise RuntimeError(f"expected SYN|ACK, got {flags_str(sa['flags'])}")
+        self.rcv = sa["seq"] + 1  # type: ignore[operator]
+        self.send(TCP_ACK)
+        return sa
+
+    def absorb(self, segs: list[dict[str, object]]) -> bytes:
+        """Advances our ack over the data in `segs` and returns it."""
+        data = b""
+        for s in segs:
+            if s["data"]:
+                data += s["data"]  # type: ignore[operator]
+                self.rcv = s["seq"] + len(s["data"])  # type: ignore[operator,arg-type]
+        return data

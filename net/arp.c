@@ -81,6 +81,19 @@ static int arp_emit(uint16_t op, const uint8_t target_ip[IPV4_LEN],
     return rc;
 }
 
+void arp_learn(const uint8_t ip[IPV4_LEN], const uint8_t mac[NETIF_MAC_LEN]) {
+    /* Only for a host on our own subnet: off-subnet traffic arrives wearing
+     * the *router's* MAC, and filing that under the remote sender's address
+     * would send every later reply to the wrong place. */
+    const net_state_t *st = net_state();
+    if (!st->configured) return;
+    for (uint32_t i = 0; i < IPV4_LEN; i++) {
+        if ((ip[i] & st->mask[i]) != (st->ip[i] & st->mask[i])) return;
+    }
+    if (mac[0] & 0x01) return;                 /* never cache a group address */
+    cache_put(ip, mac);
+}
+
 int arp_resolve(const uint8_t ip[IPV4_LEN], uint8_t mac_out[NETIF_MAC_LEN]) {
     uint64_t now = time_get_ms();
     for (uint32_t i = 0; i < ARP_CACHE_SIZE; i++) {

@@ -1,5 +1,6 @@
 #include "net/ip.h"
 #include "net/net_internal.h"
+#include "net/tcp.h"
 #include <string.h>
 
 /* IPv4 (R2, plan/phase19_ip_stack_and_ethernet.md).
@@ -121,6 +122,8 @@ void ip_input(const uint8_t *frame, uint32_t len) {
     if (!mine && !bcast) { st->drop_not_for_us++; return; }
 
     const uint8_t *src = h + 12;
+    /* The sender's MAC is right there in the frame we are already holding. */
+    if (mine) arp_learn(src, frame + NETIF_MAC_LEN);
     const uint8_t *payload = h + ihl;
     uint32_t payload_len = total - ihl;
 
@@ -133,9 +136,11 @@ void ip_input(const uint8_t *frame, uint32_t len) {
             st->rx_udp++;
             udp_input(src, h, payload, payload_len);
             break;
+        case IP_PROTO_TCP:
+            st->rx_tcp++;
+            tcp_input(src, h, payload, payload_len);
+            break;
         default:
-            /* TCP lands here until R3, which is the honest state of affairs
-             * and worth a counter rather than silence. */
             st->drop_proto++;
             break;
     }

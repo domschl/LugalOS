@@ -2768,7 +2768,9 @@ def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, 
         peer.send(ipv4_to_guest(netpeer.IP_PROTO_ICMP, good_icmp, flags_frag=0x2000))
         peer.send(netpeer.eth_frame(GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_IPV4,
                                     b"\x45\x00\x00\x30"))
-        peer.send(ipv4_to_guest(6, b"\x00" * 20))     # TCP: not implemented until R3
+        # 47 is GRE: something this stack genuinely does not implement, and
+        # will not. It used to be TCP, until R3 implemented it.
+        peer.send(ipv4_to_guest(47, b"\x00" * 20))
         time.sleep(1.0)
 
         ok, log = session.send_and_expect("cat /proc/net", r"drop: .*no-port", timeout=8.0)
@@ -2797,6 +2799,226 @@ def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, 
     finally:
         session.close()
         peer.close()
+
+
+def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R3, plan/phase19_ip_stack_and_ethernet.md: the TCP state machine, driven
+    by a client with no stack under it.
+
+    tests/netpeer.py's TCPDriver builds every segment by hand, which is the
+    only way to reach the states that matter: a segment out of order, a reset
+    mid-stream, a half-close. A correct-by-construction socket cannot produce
+    any of them, which is why the end-to-end test below is not a substitute
+    for this one.
+
+    Six cases:
+      1. handshake -- SYN gets SYN|ACK with our sequence acknowledged and a
+         window that matches the receive buffer
+      2. a 9P Tversion in one segment is answered with a well-formed Rversion
+      3. an out-of-order segment is dropped and answered with a duplicate ACK
+         (not silence -- §2 wants the peer retransmitting now, not after its
+         own RTO)
+      4. the retransmission of that same segment, now in order, is accepted
+      5. a half-close (our FIN) is acknowledged and answered with theirs
+      6. a SYN to a port nobody is listening on gets a RST
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "TCP State Machine Against A Hand-Built Client (R3)"
+    arch_img = img_path.with_name(f"test_{arch_name}_tcp_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    GUEST_IP = bytes([192, 168, 77, 2])
+    PEER_IP = bytes([192, 168, 77, 1])
+    PEER_MAC = b"\x02\x00\x00\x00\x00\x42"
+    GUEST_MAC = bytes.fromhex("525400123456")
+
+    def tversion(msize: int = 4096) -> bytes:
+        ver = b"9P2000"
+        body = msize.to_bytes(4, "little") + len(ver).to_bytes(2, "little") + ver
+        msg = bytes([100]) + b"\xff\xff" + body       # Tversion, NOTAG
+        return (len(msg) + 4).to_bytes(4, "little") + msg
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "192.168.77.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.77\.2", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        tcp = netpeer.TCPDriver(peer, guest_mac=GUEST_MAC, peer_mac=PEER_MAC,
+                                guest_ip=GUEST_IP, peer_ip=PEER_IP)
+
+        # 1. handshake
+        sa = tcp.handshake()
+        if sa["ack"] != 1001:
+            return (name, False, f"SYN|ACK acknowledges {sa['ack']}, expected 1001")
+        if sa["window"] == 0:
+            return (name, False, "SYN|ACK advertises a zero window")
+
+        # 2. a real 9P exchange over it
+        tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
+        segs = tcp.segments(timeout=5.0)
+        data = tcp.absorb(segs)
+        if len(data) < 7:
+            return (name, False, f"no Rversion came back (got {len(data)} bytes)")
+        if data[4] != 101:
+            return (name, False, f"expected Rversion (101), got message type {data[4]}")
+        declared = int.from_bytes(data[0:4], "little")
+        if declared != len(data):
+            return (name, False, f"Rversion declares {declared} bytes, {len(data)} arrived")
+        tcp.send(netpeer.TCP_ACK)
+
+        # 3. out of order: sent 100 bytes ahead of what is expected
+        before = tcp.snd
+        tcp.send_raw(tcp.snd + 100, tcp.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
+        segs = tcp.segments(timeout=3.0)
+        if not segs:
+            return (name, False, "an out-of-order segment got silence, not a duplicate ACK")
+        dup = segs[-1]
+        if dup["ack"] != before:
+            return (name, False,
+                    f"duplicate ACK acknowledges {dup['ack']}, expected {before} "
+                    "(the stack accepted data it should have dropped)")
+        if dup["data"]:
+            return (name, False, "the duplicate ACK carried data")
+
+        # 4. the same segment, now in order, is accepted
+        tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
+        segs = tcp.segments(timeout=5.0)
+        data = tcp.absorb(segs)
+        if len(data) < 7 or data[4] != 101:
+            return (name, False, "the in-order retransmission was not accepted")
+        tcp.send(netpeer.TCP_ACK)
+
+        # 5. half-close: our FIN must be acknowledged, and answered
+        tcp.send(netpeer.TCP_FIN | netpeer.TCP_ACK)
+        segs = tcp.segments(timeout=5.0, count=1)
+        if not segs:
+            return (name, False, "the FIN was not answered")
+        saw_ack = any(s["ack"] == tcp.snd for s in segs)
+        saw_fin = any(s["flags"] & netpeer.TCP_FIN for s in segs)
+        if not saw_ack:
+            return (name, False, f"our FIN was not acknowledged: "
+                                 f"{[netpeer.flags_str(s['flags']) for s in segs]}")
+        if not saw_fin:
+            return (name, False, "the peer never sent its own FIN (CLOSE_WAIT is stuck)")
+
+        # 6. a SYN to a closed port is reset, not ignored
+        stray = netpeer.TCPDriver(peer, guest_mac=GUEST_MAC, peer_mac=PEER_MAC,
+                                  guest_ip=GUEST_IP, peer_ip=PEER_IP,
+                                  sport=41000, dport=9999)
+        stray.send(netpeer.TCP_SYN, mss=1460)
+        segs = stray.segments(timeout=3.0)
+        if not any(s["flags"] & netpeer.TCP_RST for s in segs):
+            return (name, False, "a SYN to a closed port was not reset")
+
+        return (name, True, "handshake, 9P, duplicate ACK, retransmit, half-close, stray RST")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        peer.close()
+
+
+def test_9p_over_own_tcp(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R3's headline: a real 9P session over a TCP stack we wrote, through a
+    real host socket, with authentication.
+
+    QEMU's slirp backend gives the guest a virtual LAN (the fixed 10.0.2.15/24
+    with a 10.0.2.2 gateway -- static, which suits §7's no-DHCP rule) and
+    gives the host a forwarded port into it. Nothing on the host side is new:
+    p9lib's connect_tcp(), the Tauth exchange and the framing are phase 18's,
+    unchanged. What changed is underneath -- the guest now terminates the TCP
+    itself instead of being handed a byte stream by a chardev.
+
+    Both halves of the auth gate are checked, because `auth_required` is set
+    on this link by net/tcp.c and a network that accepts anonymous attaches
+    would be a regression phase 18 exists to prevent."""
+    import shutil
+    import socket as _socket
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+
+    name = "9P Over Our Own TCP, Authenticated, Through A Host Socket (R3)"
+    arch_img = img_path.with_name(f"test_{arch_name}_9ptcp_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    key = bytes(range(16))
+
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:564",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        ok, log = session.send_and_expect(f"p9key {key.hex()}",
+                                          r"console key set \(16 bytes\)", timeout=5.0)
+        if not ok:
+            return (name, False, f"the key was not accepted: {log[-500:]}")
+
+        # An attach with no key must be refused -- the link sets auth_required.
+        try:
+            anon = p9lib.connect_tcp("127.0.0.1", port, timeout=15.0)
+            try:
+                anon.version()
+                anon.attach(1)
+                return (name, False, "an unauthenticated attach succeeded over the network")
+            except Exception:
+                pass
+            finally:
+                anon.close()
+        except OSError as e:
+            return (name, False, f"could not reach the guest at all: {e}")
+
+        client = p9lib.connect_tcp("127.0.0.1", port, timeout=15.0)
+        with p9lib.Session(client, key=key) as sess:
+            version = sess.read("/proc/version")
+            if b"LugalOS" not in version:
+                return (name, False, f"/proc/version reads {version[:60]!r}")
+            names = {st.name for st in sess.listdir("/")}
+            if not {"proc", "sd0"} <= names:
+                return (name, False, f"ls / is missing mounts: {sorted(names)}")
+            # Bigger than one segment and bigger than one msize: this is the
+            # part a single-frame transport never exercised.
+            init = sess.read("/sd0/system/etc/init.lisp")
+            want = expected_init_lisp()
+            if len(init) != len(want):
+                return (name, False, f"init.lisp came back {len(init)} bytes, expected {len(want)}")
+
+        ok, log = session.send_and_expect("cat /proc/net", r"tcp: listening on 564", timeout=8.0)
+        if not ok:
+            return (name, False, f"/proc/net did not answer: {log[-400:]}")
+        m = re.search(r"drop: (\d+) not-for-us, (\d+) short, (\d+) checksum, (\d+) fragment,\s*"
+                      r"(\d+) proto, (\d+) no-route, (\d+) no-port", log)
+        if m and any(int(g) for g in m.groups()):
+            return (name, False, f"a clean session should drop nothing: {m.group(0)}")
+
+        return (name, True, f"{len(init)} bytes read over our own TCP; anonymous attach refused")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
 
 
 def test_9p_auth_gate(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
@@ -3640,6 +3862,8 @@ def main() -> int:
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_demux_shared_wire(rv64_elf, img_for("rv64"), "rv64"))
     else:
@@ -3664,6 +3888,8 @@ def main() -> int:
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_demux_shared_wire(rv32_elf, img_for("rv32"), "rv32"))
     else:

@@ -15,7 +15,12 @@
  * p9_link_cat()'s own comment below on why that's safe), so servicing N
  * links in one p9_link_background_poll() sweep carries no new race that
  * servicing 1 didn't already have. */
-#define P9_LINK_MAX_BACKGROUND 2
+/* Four since R3 (plan/phase19_ip_stack_and_ethernet.md): a board can now
+ * carry its own dedicated link plus up to two accepted TCP connections, each
+ * of which registers here on establishment and unregisters on close. The
+ * table is four pointers; the old limit of two was sized when links were only
+ * ever soldered. */
+#define P9_LINK_MAX_BACKGROUND 4
 
 /* How long a client waits for a reply before calling it a failure. See the
  * wait loop in p9_client_rpc() for why this is not "forever". */

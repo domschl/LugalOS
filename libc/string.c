@@ -10,6 +10,21 @@ void *memcpy(void *dst, const void *src, size_t n) {
     return dst;
 }
 
+/* The direction is the whole function: copying forwards when the destination
+ * overlaps the tail of the source overwrites bytes that have not been read
+ * yet, so that case walks backwards instead. */
+void *memmove(void *dst, const void *src, size_t n) {
+    if (!dst || !src || dst == src) return dst;
+    char *d = (char *)dst;
+    const char *s = (const char *)src;
+    if (d < s) {
+        for (size_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+    }
+    return dst;
+}
+
 void *memset(void *s, int c, size_t n) {
     if (!s) return s;
     unsigned char *p = (unsigned char *)s;

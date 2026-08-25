@@ -39,6 +39,7 @@
 #include "fs/9p.h"
 #include "net/netif.h"
 #include "net/ip.h"
+#include "net/tcp.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -125,6 +126,7 @@ static void cmd_help(void) {
     cprintf("  net txtest [n]  - Emit n test frames (default 1) on the first interface\n");
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
+    cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
     cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
@@ -1702,6 +1704,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
         cmd_net_txtest(shell_trailing_uint(&cmd_line[10]));
+        return;
+    } else if (strncmp(cmd_line, "net listen", 10) == 0) {
+        unsigned port = shell_trailing_uint(&cmd_line[10]);
+        const char *rest = &cmd_line[10];
+        while (*rest == ' ') rest++;
+        if (*rest == '0') {
+            tcp_unlisten();
+            cprintf("net: no longer listening\n");
+        } else if (tcp_listen((uint16_t)(port ? port : 564u)) == 0) {
+            cprintf("net: listening for 9P on tcp/%u\n", port ? port : 564u);
+        } else {
+            cprintf("net: could not listen\n");
+        }
         return;
     } else if (strncmp(cmd_line, "net udpecho", 11) == 0) {
         cmd_net_udpecho(shell_trailing_uint(&cmd_line[11]));

@@ -41,7 +41,7 @@ typedef struct {
      * they are separate for the reason phase 18 learned the hard way: "the
      * network does not work" is not a diagnosis, and a single `dropped` total
      * cannot become one. */
-    uint32_t rx_arp, rx_ip, rx_icmp, rx_udp;
+    uint32_t rx_arp, rx_ip, rx_icmp, rx_udp, rx_tcp;
     uint32_t tx_arp, tx_ip, tx_icmp, tx_udp;
     uint32_t drop_not_for_us;      /* right wire, wrong address */
     uint32_t drop_short;           /* truncated below its own header */
@@ -113,6 +113,13 @@ int net_tx_send(const uint8_t dst_mac[NETIF_MAC_LEN], uint16_t ethertype, uint32
  * are answering is the peer we just heard from. §2 records that trade. */
 int arp_resolve(const uint8_t ip[IPV4_LEN], uint8_t mac_out[NETIF_MAC_LEN]);
 void arp_input(const uint8_t *frame, uint32_t len);
+/* Records what an inbound frame already told us. Called from ip_input():
+ * every IPv4 frame carries its sender's MAC in the Ethernet header, so a
+ * server that is about to reply already knows where to send it. Without this
+ * the first reply to every new peer misses the cache, gets dropped, and waits
+ * for a retransmission timer -- measurable as a 300 ms stall on the first
+ * connection after boot, and entirely avoidable. */
+void arp_learn(const uint8_t ip[IPV4_LEN], const uint8_t mac[NETIF_MAC_LEN]);
 void arp_announce(void);
 uint32_t arp_entries(void);
 /* Fills `out` with one cache line's text, "" if the slot is empty. */

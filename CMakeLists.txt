@@ -448,6 +448,9 @@ set(SOURCES
     net/ipv4.c
     net/icmp.c
     net/udp.c
+    # R3: server-side TCP. An accepted connection is a p9_link_t, so
+    # everything phase 18 built above a byte stream works over it unchanged.
+    net/tcp.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c
