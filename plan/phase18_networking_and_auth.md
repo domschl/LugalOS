@@ -620,7 +620,10 @@ a key and what happens when you get it wrong.
   takes a static address (§3). A server wants a stable address anyway.
 * **Encryption.** See §1.
 * **Authorization.** Multiple keys identify *who*; they do not gate *what*.
-  See §6.
+  See §6. *(2026-08-26: this is exactly where
+  `plan/phase21_identity_and_authentication.md` picks it up -- its §5.2 gives
+  the key list a scope and a mode, which `p9_handle_tattach()` can enforce
+  because it already compares `aname`.)*
 * **More than one downlink.** See §4.
 * **Auth on the chess/clock personas' own links.** The mechanism is shared
   code and they inherit it the moment a link asks for it; nothing in this

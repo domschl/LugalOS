@@ -555,6 +555,12 @@ Nothing falls back on its own, because a silent fallback would quietly undo the
 identification this exists for. The console key (`p9key <hex>`) was always
 uname-independent and still is, so the bootstrap path is unchanged.
 
+**Superseded as a design, 2026-08-26**, though not as code: identity outgrew
+this phase and became `plan/phase21_identity_and_authentication.md`, which
+takes it together with the auth gate phase 18 built. What is here stays and
+becomes that phase's *floor* -- what an unprovisioned board answers to. In
+particular, phase 21's I7 is where the RP2350 backend below actually lands.
+
 `board_unique_id()` is the hook where silicon takes over from the build seed,
 and it answers false everywhere today. Reading the RP2350's flash id lands with
 **R4**, where it can be checked against two real boards rather than asserted --
