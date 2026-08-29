@@ -230,6 +230,14 @@ typedef struct {
     bool remove_on_clunk;       // ORCLOSE
     p9_qid_t qid;
 
+    /* I5, §5.2: set at Tattach time from the grant that matched this fid's
+     * uname (false -- unrestricted -- when no grant matched, e.g. the
+     * console key or the flash fallback, both of which predate grants).
+     * Twalk propagates it to every fid descended from this one; every
+     * mutating handler (Topen for write, Tcreate, Twrite, Tremove) refuses
+     * when it is set. */
+    bool read_only;
+
     /* N2: an auth fid. Not a file, not on any disk, and deliberately in the
      * same table -- 9P gives an afid a fid number from the same space, and a
      * client clunks it the same way. `is_auth` is what keeps it out of every
@@ -302,16 +310,248 @@ static int p9_read_small_file(const char *path, char *buf, uint32_t cap) {
     return n;
 }
 
-/* The key for `uname`, or -1 if there is none.
+/* --- I5: the grants list (§5.2) ---------------------------------------
  *
- * Format of P9_AUTH_KEYS_FILE: one identity per line, `uname` and a hex key
- * separated by spaces or a tab. Blank lines and lines beginning with '#' are
- * ignored. A line can be deleted to revoke an identity, which is the whole
- * reason this is a list rather than one secret.
+ * Format of P9_AUTH_KEYS_FILE, 4 columns: `name`, hex key, `aname` (the
+ * subtree this peer may attach at), `mode` ("ro" or "rw"). Whitespace-
+ * separated, one entry per line; blank lines and lines beginning with '#'
+ * are ignored. The last two columns are optional -- a line with only a
+ * name and a key (phase 18's original 2-column format) reads as
+ * aname="/", read_only=false: unrestricted, exactly what a bare "uname
+ * hexkey" line has always meant. A line can be deleted to revoke an
+ * identity, which is the whole reason this is a list rather than one
+ * secret -- and post-I5, deleting it takes effect on the very next
+ * lookup, since nothing here is ever cached.
  *
- * P9_AUTH_FALLBACK_KEY_FILE is a bare hex key with no uname, for a board with
- * no card: it answers for any uname, and a gateway that wants per-identity
- * keys should use the list. */
+ * P9_AUTH_FALLBACK_KEY_FILE is unrelated to grants: a bare hex key with no
+ * uname, for a board with no card. It answers for any uname with no
+ * restriction, predating I5 and untouched by it. */
+
+static bool parse_grant_line(const char *line, const char *line_end, p9_grant_t *g) {
+    while (line < line_end && (*line == ' ' || *line == '\t' || *line == '\r')) line++;
+    if (line >= line_end || *line == '#') return false;
+
+    memset(g, 0, sizeof(*g));
+
+    /* name */
+    const char *ne = line;
+    while (ne < line_end && *ne != ' ' && *ne != '\t' && *ne != '\r') ne++;
+    uint32_t nlen = (uint32_t)(ne - line);
+    if (nlen == 0) return false;
+    if (nlen >= sizeof(g->name)) nlen = sizeof(g->name) - 1;
+    memcpy(g->name, line, nlen);
+    g->name[nlen] = '\0';
+
+    /* hex key */
+    const char *k = ne;
+    while (k < line_end && (*k == ' ' || *k == '\t')) k++;
+    uint32_t klen = 0;
+    while (k + 1 < line_end && klen < P9_AUTH_KEY_MAX) {
+        int hi = hexval(k[0]), lo = hexval(k[1]);
+        if (hi < 0 || lo < 0) break;
+        g->key[klen++] = (uint8_t)((hi << 4) | lo);
+        k += 2;
+    }
+    if (klen == 0) return false;
+    g->key_len = klen;
+
+    /* aname, defaulting to "/" -- unrestricted. */
+    while (k < line_end && (*k == ' ' || *k == '\t')) k++;
+    const char *ae = k;
+    while (ae < line_end && *ae != ' ' && *ae != '\t' && *ae != '\r') ae++;
+    uint32_t alen = (uint32_t)(ae - k);
+    if (alen == 0) {
+        g->aname[0] = '/';
+    } else {
+        if (alen >= sizeof(g->aname)) alen = sizeof(g->aname) - 1;
+        memcpy(g->aname, k, alen);
+        g->aname[alen] = '\0';
+    }
+
+    /* mode: only an exact "ro" sets read-only. Absent, "rw", or anything
+     * else that isn't "ro" reads as rw -- the same fail-open-to-what-a-
+     * missing-column-already-meant shape every other optional piece of
+     * this line gets. This file is written by the toolset
+     * (kernel/shell.c's `peers add`, which always spells the word exactly)
+     * -- a hand-edited typo is an admin's own mistake, on a medium the
+     * threat model (§7) already assumes physical access to. */
+    const char *m = ae;
+    while (m < line_end && (*m == ' ' || *m == '\t')) m++;
+    g->read_only = (line_end - m >= 2 && m[0] == 'r' && m[1] == 'o');
+
+    return true;
+}
+
+/* Grants list read buffer: sized for P9_GRANTS_MAX lines at their longest
+ * -- name(31) + ' ' + hex key(128) + ' ' + aname(31) + ' ' + mode(2) +
+ * '\n', times 8, comfortably inside 2048. The pre-I5 512-byte buffer this
+ * replaces could not actually hold 8 max-length entries either; it was
+ * never exercised past ~3 before I5 needed the headroom for real. */
+#define P9_GRANTS_BUF_MAX 2048
+
+/* The grant that answers for `uname`: an exact name match, or (absent one)
+ * the wildcard "*" row -- the same resolution key lookup has always used.
+ * Returns false if the file is missing/empty or nothing matches. */
+static bool p9_grants_find(const char *uname, p9_grant_t *out) {
+    char buf[P9_GRANTS_BUF_MAX];
+    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
+    if (n <= 0) return false;
+
+    bool have_wildcard = false;
+    p9_grant_t wildcard;
+    const char *p = buf;
+    const char *end = buf + n;
+    while (p < end) {
+        const char *line = p;
+        while (p < end && *p != '\n') p++;
+        const char *line_end = p;
+        if (p < end) p++;
+
+        p9_grant_t g;
+        if (!parse_grant_line(line, line_end, &g)) continue;
+
+        /* `*` matches any uname. Explicit, never implied: since R3's
+         * identity work every node attaches under its own name
+         * ("rp2350-gateway-3f2a"), which is what makes phase 18 §6's
+         * "multiple keys identify who" real -- and which also means a
+         * keys file written when every node was "lugal" stops matching.
+         * A segment that genuinely shares one key writes one line and
+         * says so; nothing falls back silently, because a silent
+         * fallback would quietly undo the identification this exists
+         * for. */
+        if (strcmp(g.name, "*") == 0) { wildcard = g; have_wildcard = true; continue; }
+        if (strcmp(g.name, uname) == 0) { *out = g; return true; }
+    }
+    if (have_wildcard) { *out = wildcard; return true; }
+    return false;
+}
+
+uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
+    char buf[P9_GRANTS_BUF_MAX];
+    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
+    if (n <= 0) return 0;
+
+    uint32_t count = 0;
+    const char *p = buf;
+    const char *end = buf + n;
+    while (p < end && count < P9_GRANTS_MAX && count < cap) {
+        const char *line = p;
+        while (p < end && *p != '\n') p++;
+        const char *line_end = p;
+        if (p < end) p++;
+
+        p9_grant_t g;
+        if (!parse_grant_line(line, line_end, &g)) continue;
+        out[count++] = g;
+    }
+    return count;
+}
+
+/* mkdir on each ancestor of P9_AUTH_KEY_DIR, ignoring failures -- an
+ * "already exists" and a genuine failure look the same from here, and the
+ * write that follows reports the genuine kind honestly either way. This is
+ * the first code that ever creates this directory rather than assuming an
+ * operator already put it on the card by hand. */
+static void p9_auth_ensure_key_dir(void) {
+    vfs_mkdir("/sd0/system");
+    vfs_mkdir("/sd0/system/etc");
+    vfs_mkdir(P9_AUTH_KEY_DIR);
+}
+
+static uint32_t p9_grant_serialize(const p9_grant_t *entries, uint32_t count, char *out, uint32_t cap) {
+    static const char hex[] = "0123456789abcdef";
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t need = (uint32_t)strlen(entries[i].name) + 1 + entries[i].key_len * 2 + 1 +
+                        (uint32_t)strlen(entries[i].aname) + 1 + 2 + 1;
+        if (used + need > cap) break; /* would not fit; truncate rather than overrun */
+
+        for (const char *s = entries[i].name; *s; s++) out[used++] = *s;
+        out[used++] = ' ';
+        for (uint32_t b = 0; b < entries[i].key_len; b++) {
+            out[used++] = hex[entries[i].key[b] >> 4];
+            out[used++] = hex[entries[i].key[b] & 0x0f];
+        }
+        out[used++] = ' ';
+        for (const char *s = entries[i].aname; *s; s++) out[used++] = *s;
+        out[used++] = ' ';
+        out[used++] = 'r';
+        out[used++] = entries[i].read_only ? 'o' : 'w';
+        out[used++] = '\n';
+    }
+    return used;
+}
+
+p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t key_len,
+                                const char *aname, bool read_only) {
+    if (!name || !name[0] || strlen(name) >= P9_MAX_NAME_LEN) return P9_GRANT_ERR_BAD_INPUT;
+    if (!key || key_len == 0 || key_len > P9_AUTH_KEY_MAX) return P9_GRANT_ERR_BAD_INPUT;
+    if (aname && aname[0] && (strlen(aname) >= P9_MAX_NAME_LEN || aname[0] != '/')) return P9_GRANT_ERR_BAD_INPUT;
+
+    p9_grant_t entries[P9_GRANTS_MAX];
+    uint32_t count = p9_grants_list(entries, P9_GRANTS_MAX);
+
+    int replace_idx = -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, name) == 0) { replace_idx = (int)i; break; }
+    }
+    if (replace_idx < 0 && count >= P9_GRANTS_MAX) return P9_GRANT_ERR_FULL;
+
+    p9_grant_t g;
+    memset(&g, 0, sizeof(g));
+    strncpy(g.name, name, sizeof(g.name) - 1);
+    memcpy(g.key, key, key_len);
+    g.key_len = key_len;
+    if (aname && aname[0]) strncpy(g.aname, aname, sizeof(g.aname) - 1);
+    else g.aname[0] = '/';
+    g.read_only = read_only;
+
+    if (replace_idx >= 0) entries[replace_idx] = g;
+    else entries[count++] = g;
+
+    char out[P9_GRANTS_BUF_MAX];
+    uint32_t used = p9_grant_serialize(entries, count, out, sizeof(out));
+
+    p9_auth_ensure_key_dir();
+    if (vfs_write(P9_AUTH_KEYS_FILE, out, used) != 0) return P9_GRANT_ERR_WRITE_FAILED;
+    return P9_GRANT_OK;
+}
+
+p9_grant_result_t p9_grants_remove(const char *name) {
+    if (!name || !name[0]) return P9_GRANT_ERR_BAD_INPUT;
+
+    p9_grant_t entries[P9_GRANTS_MAX];
+    uint32_t count = p9_grants_list(entries, P9_GRANTS_MAX);
+
+    int found = -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, name) == 0) { found = (int)i; break; }
+    }
+    if (found < 0) return P9_GRANT_ERR_NOT_FOUND;
+    for (uint32_t i = (uint32_t)found; i + 1 < count; i++) entries[i] = entries[i + 1];
+    count--;
+
+    char out[P9_GRANTS_BUF_MAX];
+    uint32_t used = p9_grant_serialize(entries, count, out, sizeof(out));
+
+    /* No p9_auth_ensure_key_dir() here: a remove that runs before anything
+     * was ever added has nothing to remove, and P9_GRANT_ERR_NOT_FOUND
+     * above already answered that case. */
+    if (vfs_write(P9_AUTH_KEYS_FILE, out, used) != 0) return P9_GRANT_ERR_WRITE_FAILED;
+    return P9_GRANT_OK;
+}
+
+const char *p9_grant_result_str(p9_grant_result_t rc) {
+    switch (rc) {
+        case P9_GRANT_OK:               return "ok";
+        case P9_GRANT_ERR_FULL:         return "the grants list is full (8 entries) -- remove one first";
+        case P9_GRANT_ERR_BAD_INPUT:    return "bad input (name, key, or aname)";
+        case P9_GRANT_ERR_NOT_FOUND:    return "no such peer";
+        case P9_GRANT_ERR_WRITE_FAILED: return "the write failed (no /sd0, or it is read-only)";
+    }
+    return "?";
+}
+
 /* A key set from the local console, for this boot only.
  *
  * Two jobs, and neither is "a place to keep secrets". It bootstraps a gateway
@@ -339,23 +579,17 @@ void p9_auth_set_console_key(const uint8_t *key, uint32_t len) {
     g_console_key_len = len;
 }
 
-int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
-    /* Console key first: it is the bootstrap and the override, and a gateway
-     * being repaired should not have to fight its own card. */
+int p9_auth_own_key(uint8_t *key_out, uint32_t *key_len) {
+    /* Console key first, same bootstrap-override argument as always. */
     if (g_console_key_len > 0) {
         memcpy(key_out, g_console_key, g_console_key_len);
         *key_len = g_console_key_len;
         return 0;
     }
-
-    /* I4, plan/phase21_identity_and_authentication.md: the device key moves
-     * into the identity record -- off the SD card, out of the image. Checked
-     * ahead of both file-based sources below because it is now the primary,
-     * persistent place this node's own key lives; pulling the card removes
-     * neither this nor the console override above it. Answers for any
-     * uname, the same as the flash fallback below it always has -- §1.2's
-     * "one key store serves both directions" still holds at I4; the split
-     * into per-peer grants is I5's, not this one's. */
+    /* I4: the identity record. This is the only other place this node's
+     * own key lives -- deliberately never the grants list or the flash
+     * fallback below, which as of I5 answer a different question ("who
+     * may attach to me"), not this one. */
     uint8_t rec_key[NODE_DEVKEY_MAX];
     uint32_t rec_key_len = 0;
     if (node_devkey(rec_key, sizeof(rec_key), &rec_key_len) && rec_key_len > 0) {
@@ -365,57 +599,32 @@ int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
         return 0;
     }
     memset(rec_key, 0, sizeof(rec_key));
+    return -1;
+}
 
-    char buf[512];
-    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
-
-    if (n > 0) {
-        const char *p = buf;
-        while (*p) {
-            const char *line = p;
-            while (*p && *p != '\n') p++;
-            const char *line_end = p;
-            if (*p == '\n') p++;
-
-            while (line < line_end && (*line == ' ' || *line == '\t' || *line == '\r')) line++;
-            if (line >= line_end || *line == '#') continue;
-
-            /* name */
-            const char *name = line;
-            const char *ne = name;
-            while (ne < line_end && *ne != ' ' && *ne != '\t' && *ne != '\r') ne++;
-            uint32_t nlen = (uint32_t)(ne - name);
-            if (nlen == 0) continue;
-            /* `*` matches any uname. Explicit, never implied: since R3's
-             * identity work every node attaches under its own name
-             * ("rp2350-gateway-3f2a"), which is what makes phase 18 §6's
-             * "multiple keys identify who" real -- and which also means a
-             * keys file written when every node was "lugal" stops matching.
-             * A segment that genuinely shares one key writes one line and
-             * says so; nothing falls back silently, because a silent
-             * fallback would quietly undo the identification this exists
-             * for. */
-            bool wildcard = (nlen == 1 && name[0] == '*');
-            if (!wildcard &&
-                (nlen != strlen(uname) || strncmp(name, uname, nlen) != 0)) continue;
-
-            /* hex key */
-            const char *k = ne;
-            while (k < line_end && (*k == ' ' || *k == '\t')) k++;
-            uint32_t len = 0;
-            while (k + 1 < line_end && len < P9_AUTH_KEY_MAX) {
-                int hi = hexval(k[0]), lo = hexval(k[1]);
-                if (hi < 0 || lo < 0) break;
-                key_out[len++] = (uint8_t)((hi << 4) | lo);
-                k += 2;
-            }
-            if (len == 0) continue;
-            *key_len = len;
-            return 0;
-        }
+int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
+    /* Console key first: it is the bootstrap and the override, and a gateway
+     * being repaired should not have to fight its own card. */
+    if (g_console_key_len > 0) {
+        memcpy(key_out, g_console_key, g_console_key_len);
+        *key_len = g_console_key_len;
+        return 0;
     }
 
-    n = p9_read_small_file(P9_AUTH_FALLBACK_KEY_FILE, buf, sizeof(buf));
+    /* I5: the grants list -- what `uname` must present to attach to ME.
+     * Deliberately does NOT consult this node's own identity-record key:
+     * that answers p9_auth_own_key()'s question, not this one, and
+     * conflating them is exactly what §1.2 says breaks once this list
+     * carries scope (aname/mode) rather than just identity. */
+    p9_grant_t g;
+    if (p9_grants_find(uname, &g)) {
+        memcpy(key_out, g.key, g.key_len);
+        *key_len = g.key_len;
+        return 0;
+    }
+
+    char buf[512];
+    int n = p9_read_small_file(P9_AUTH_FALLBACK_KEY_FILE, buf, sizeof(buf));
     if (n > 0) {
         uint32_t len = 0;
         const char *k = buf;
@@ -431,16 +640,15 @@ int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
 }
 
 bool p9_auth_have_keys(void) {
+    /* Whatever p9_auth_key_for() (the *server-side*, verify-an-incoming-
+     * peer ladder) would actually consult -- console key, the grants list,
+     * the flash fallback. Deliberately not node_devkey(): since I5, this
+     * node's own record key answers p9_auth_own_key()'s question, not
+     * this one, and checking it here would report "yes" on a node no
+     * incoming peer could ever actually attach to. That was I4's mistake,
+     * corrected the moment I5 gave p9_auth_key_for() somewhere else to
+     * look instead. */
     if (g_console_key_len > 0) return true;
-    /* I4: a record-only key must not trip a false "no keys configured"
-     * warning (kernel/shell.c's cmd_p9auth()) just because neither file
-     * below exists -- the record is a real source now, not a future one. */
-    uint8_t rec_key[NODE_DEVKEY_MAX];
-    uint32_t rec_key_len = 0;
-    if (node_devkey(rec_key, sizeof(rec_key), &rec_key_len) && rec_key_len > 0) {
-        memset(rec_key, 0, sizeof(rec_key));
-        return true;
-    }
     vfs_stat_t st;
     if (vfs_stat(P9_AUTH_KEYS_FILE, &st) == 0 && !st.is_dir) return true;
     if (vfs_stat(P9_AUTH_FALLBACK_KEY_FILE, &st) == 0 && !st.is_dir) return true;
@@ -625,7 +833,22 @@ int p9_auth_selftest(void) {
 
 /* --- Message handlers --- */
 
+/* True if `path` is exactly `prefix`, or `prefix` plus a "/"-rooted
+ * continuation -- the same component-boundary matching p9_path_is_secret()
+ * uses, so "/sd0/pgn" matches "/sd0/pgn" and "/sd0/pgn/x" but not "/sd0" or
+ * "/". A grant's aname of "/" matches everything: every absolute path this
+ * server ever computes already starts with "/". */
+static bool p9_path_within(const char *prefix, const char *path) {
+    size_t n = strlen(prefix);
+    if (n > 0 && prefix[n - 1] == '/') n--; /* tolerate a trailing slash in the grant */
+    if (strncmp(path, prefix, n) != 0) return false;
+    return path[n] == '\0' || path[n] == '/';
+}
+
 static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
+    bool grant_matched = false;
+    bool grant_read_only = false;
+
     /* The gate. On a transport that requires it, an attach is only as good as
      * the afid it names: the afid must exist, be an auth fid, have had a
      * verified response written to it, and have been established for the same
@@ -649,17 +872,62 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
             resp->ename = "attach: afid was authenticated for a different uname/aname";
             return;
         }
+
+        /* I5, §5.2: does this uname's grant (if any) allow attaching here?
+         * A key checked via the console or the flash fallback -- neither
+         * of which predates grants -- has no entry here and is
+         * unrestricted, matching phase 18's original behaviour exactly. A
+         * verified identity with no matching grant line, on a link that
+         * DOES have grants configured for other names, still gets no
+         * restriction: §5.2 describes an allow-list of *scopes*, not a
+         * second authentication step -- the Tauth/afid gate above already
+         * decided whether this uname may attach at all. */
+        p9_grant_t g;
+        if (p9_grants_find(req->uname, &g)) {
+            grant_matched = true;
+            grant_read_only = g.read_only;
+            char granted[128];
+            if (g.aname[0] == '\0' || strcmp(g.aname, "/") == 0) {
+                strncpy(granted, "/", sizeof(granted) - 1);
+            } else if (g.aname[0] == '/') {
+                strncpy(granted, g.aname, sizeof(granted) - 1);
+            } else {
+                granted[0] = '/';
+                strncpy(granted + 1, g.aname, sizeof(granted) - 2);
+            }
+            granted[sizeof(granted) - 1] = '\0';
+
+            char requested[128];
+            if (req->aname[0] == '\0' || strcmp(req->aname, "/") == 0) {
+                strncpy(requested, "/", sizeof(requested) - 1);
+            } else if (req->aname[0] == '/') {
+                strncpy(requested, req->aname, sizeof(requested) - 1);
+            } else {
+                requested[0] = '/';
+                strncpy(requested + 1, req->aname, sizeof(requested) - 2);
+            }
+            requested[sizeof(requested) - 1] = '\0';
+
+            if (!p9_path_within(granted, requested)) {
+                resp->type = P9_RERROR;
+                resp->ename = "attach: not granted at this aname";
+                return;
+            }
+        }
+    }
+
+    /* aname names a path, so the key store has to be refused here as well --
+     * walking is not the only way to reach a directory. Checked before
+     * allocating a fid, like the grant check above: a refused attach must
+     * not cost a slot in an 8-entry table. */
+    if (p9_path_is_secret(req->aname)) {
+        resp->type = P9_RERROR; resp->ename = "attach: no such tree"; return;
     }
 
     p9_fid_entry_t *e = p9_fid_alloc(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "attach: fid table full or fid in use"; return; }
 
     char path[128];
-    /* aname names a path, so the key store has to be refused here as well --
-     * walking is not the only way to reach a directory. */
-    if (p9_path_is_secret(req->aname)) {
-        resp->type = P9_RERROR; resp->ename = "attach: no such tree"; return;
-    }
     if (req->aname[0] == '\0' || strcmp(req->aname, "/") == 0) {
         strncpy(path, "/", sizeof(path) - 1);
     } else if (req->aname[0] == '/') {
@@ -674,6 +942,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     bool exists = (vfs_stat(path, &st) == 0);
     strncpy(e->path, path, sizeof(e->path) - 1);
     e->path[sizeof(e->path) - 1] = '\0';
+    e->read_only = grant_matched && grant_read_only;
     /* An aname that doesn't resolve to a real VFS path (e.g. a bare export
      * name a client made up) is still treated as an attachable directory
      * root rather than rejected outright -- matches this server's historic
@@ -705,6 +974,7 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
             strncpy(dst->path, src->path, sizeof(dst->path));
             dst->is_dir = src->is_dir;
             dst->qid = src->qid;
+            dst->read_only = src->read_only;  /* I5: a grant's mode follows every fid descended from it */
         }
         resp->type = P9_RWALK;
         resp->nwqid = 0;
@@ -754,6 +1024,7 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
     dst->path[sizeof(dst->path) - 1] = '\0';
     dst->is_dir = final_is_dir;
     dst->qid = (nwalked > 0) ? qids[nwalked - 1] : src->qid;
+    dst->read_only = src->read_only;  /* I5: a grant's mode follows every fid descended from it */
 
     resp->type = P9_RWALK;
     resp->nwqid = nwalked;
@@ -771,6 +1042,13 @@ static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
     if (!e) { resp->type = P9_RERROR; resp->ename = "open: unknown fid"; return; }
     if (e->is_open) { resp->type = P9_RERROR; resp->ename = "open: fid already open"; return; }
 
+    /* I5: ORCLOSE is a delete-on-clunk request regardless of whether this
+     * is a file or a directory, so it is checked once, ahead of the
+     * is_dir split below rather than duplicated into both branches. */
+    if (e->read_only && (req->mode & P9_ORCLOSE)) {
+        resp->type = P9_RERROR; resp->ename = "open: this peer is granted read-only access"; return;
+    }
+
     if (!e->is_dir) {
         int flags;
         uint8_t access = req->mode & 0x03;
@@ -778,6 +1056,14 @@ static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
         else if (access == P9_ORDWR || access == P9_OEXEC) flags = VFS_O_READ | VFS_O_WRITE;
         else flags = VFS_O_READ;
         if (req->mode & P9_OTRUNC) flags |= VFS_O_TRUNC;
+
+        /* I5, §5.2: "a read-only mode is a flag consulted by the write
+         * paths." Checked here as well as at Twrite so a `ro` grant fails
+         * at open time -- the same point vfs_open()'s own mount-level
+         * read_only check already fails at, for the same reason. */
+        if (e->read_only && (flags & (VFS_O_WRITE | VFS_O_TRUNC))) {
+            resp->type = P9_RERROR; resp->ename = "open: this peer is granted read-only access"; return;
+        }
 
         int fd = vfs_open(e->path, flags);
         if (fd < 0) { resp->type = P9_RERROR; resp->ename = "open: cannot open file"; return; }
@@ -797,6 +1083,9 @@ static void p9_handle_tcreate(const p9_msg_t *req, p9_msg_t *resp) {
     if (!e) { resp->type = P9_RERROR; resp->ename = "create: unknown fid"; return; }
     if (!e->is_dir) { resp->type = P9_RERROR; resp->ename = "create: fid is not a directory"; return; }
     if (e->is_open) { resp->type = P9_RERROR; resp->ename = "create: fid already open"; return; }
+    if (e->read_only) {
+        resp->type = P9_RERROR; resp->ename = "create: this peer is granted read-only access"; return;
+    }
 
     char newpath[128];
     p9_path_join(newpath, sizeof(newpath), e->path, req->name);
@@ -930,6 +1219,14 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
     }
 
     if (!e || !e->is_open || e->is_dir) { resp->type = P9_RERROR; resp->ename = "write: fid not open for writing"; return; }
+    /* I5, §5.2: the concrete case its own verify list names -- "a peer
+     * granted `ro` is refused a Twrite and told why." Topen already
+     * refuses to open a file for writing under a `ro` grant, so this is
+     * reached only if a client walks straight to Twrite without going
+     * through Topen's own gate -- still refused, same reason either way. */
+    if (e->read_only) {
+        resp->type = P9_RERROR; resp->ename = "write: this peer is granted read-only access"; return;
+    }
 
     int n = vfs_pwrite(e->vfs_fd, req->data, req->count, req->offset);
     if (n < 0) { resp->type = P9_RERROR; resp->ename = "write: I/O error"; return; }
@@ -978,6 +1275,14 @@ static void p9_handle_tclunk(const p9_msg_t *req, p9_msg_t *resp) {
 static void p9_handle_tremove(const p9_msg_t *req, p9_msg_t *resp) {
     p9_fid_entry_t *e = p9_fid_lookup(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "remove: unknown fid"; return; }
+
+    /* I5: a `ro` grant refuses the remove itself, but the fid is still
+     * clunked below -- per spec, and per this function's own existing
+     * comment on that, unaffected by why the remove failed. */
+    if (e->read_only) {
+        p9_fid_release(e);
+        resp->type = P9_RERROR; resp->ename = "remove: this peer is granted read-only access"; return;
+    }
 
     int rc = e->is_dir ? vfs_rmdir(e->path) : vfs_remove(e->path);
     p9_fid_release(e); // per spec, the fid is clunked whether or not the remove succeeds

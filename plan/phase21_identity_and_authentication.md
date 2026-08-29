@@ -1,6 +1,6 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I4 complete 2026-08-29.** Independent of the
+**Status: planned 2026-08-26; I1-I5 complete 2026-08-29.** Independent of the
 phase it grew out of.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
@@ -119,6 +119,13 @@ I5's per-peer-grants job). The console key is untouched, exactly as planned:
 still the bootstrap override, still checked first, still never reachable
 over 9P.
 
+*(Superseded below, same day: I5 found that "answering for any uname" is
+exactly the conflation §1.2 warns about, and removed `node_devkey()` from
+`p9_auth_key_for()`'s ladder entirely. Left as written above because it is
+what I4 actually shipped and what its own test verified at the time --
+`test_identity_record_auth` needed updating when I5 landed, and that update
+is the honest record of why.)*
+
 New QEMU test `test_identity_record_auth`: two nodes, each with a blank
 identity disk, each running `identity key <hex>` and nothing else --
 no `p9key`, no SD-card key file on either side -- authenticate over TCP and
@@ -134,11 +141,73 @@ for it, falling straight through to the console key exactly as before.
 289/289 QEMU tests pass. RP2350 `sizecheck`: **+0 bytes** across all three
 personas -- the new tier is a stack-local lookup, nothing persistent added.
 
-Next: I5 (peer grants with scope -- the list gains an `aname`/mode column,
-and inbound keys finally split from this node's own, per §1.2's note that
-the single-key-store simplification stops holding here) and I6 (WLAN
-credentials). Both add a field type and the `peers`/`wlan` commands I3
-deliberately left out.
+**I5 done (2026-08-29).** §5.2, and the real split I4 only gestured at.
+`P9_AUTH_KEYS_FILE` grew two columns -- `aname`, `mode` (`ro`/`rw`) --
+backward-compatible on read (a bare 2-column line still means unrestricted,
+exactly what it always meant); `fs/9p.c` gained `p9_grant_t`,
+`p9_grants_list()`/`p9_grants_add()`/`p9_grants_remove()`, and the
+`peers`/`peers add`/`peers remove` toolset (`kernel/shell.c`,
+`user/lisp/lisp.c`) I3 deliberately left unbuilt. `peers` never prints a
+key, only its fingerprint, same discipline as `identity`.
+
+**Enforcement, not just storage.** `p9_handle_tattach()` looks up the
+attaching `uname`'s grant and refuses (`"attach: not granted at this
+aname"`) unless the requested aname equals the granted one or is a
+subtree of it (`p9_path_within()`, the same component-boundary matching
+`p9_path_is_secret()` already used) -- checked *before* `p9_fid_alloc()`,
+so a refused attach costs no slot in the 8-entry fid table, closing a
+latent leak the existing secret-path check already had. A grant's `ro`
+sets `p9_fid_entry_t.read_only`, which `p9_handle_twalk()` propagates to
+every descendant fid and `Topen` (write/trunc/ORCLOSE)/`Tcreate`/
+`Twrite`/`Tremove` all refuse against, each with its own "granted
+read-only access" message.
+
+**The split §1.2 called for, made real.** I4's `p9_auth_key_for()` let
+`node_devkey()` answer for *any* `uname`, on the same footing as the flash
+fallback -- coherent in isolation, but once grants carry scope it means
+anyone holding a node's own key walks straight past every grant, which is
+exactly the conflation this section exists to end. I5 splits the one
+function into two: `p9_auth_own_key()` (console key, then the record --
+"how do I prove myself", used only by `fs/p9_link.c`'s client-side
+exchange) and `p9_auth_key_for()` (console key, then the grants list, then
+the flash fallback -- "who may attach to me", server-side only, and no
+longer consults the record at all). `p9_auth_have_keys()` was updated to
+match -- it had inherited I4's same mistake, reporting readiness a peer
+could never actually act on. `test_identity_record_auth` (I4) needed a
+real fix, not just a comment: node A still proves itself from its record
+alone, but node B now grants A's key explicitly with `peers add`, the same
+command an operator would use, rather than relying on both sides
+coincidentally sharing one value.
+
+Two new QEMU tests. `test_identity_grants_scope`, over the same
+TCP-bridged virtio-console setup `test_9p_auth_gate` uses (a real p9lib
+client asking for whatever aname it likes, not our own client which only
+ever asks for `""`): a peer granted `/ram0` is refused at `/` and accepted
+at `/ram0`; a `ro` peer's write is refused with "read-only" in the reply;
+a removed peer's very next `Tauth` is refused, nothing to invalidate since
+nothing was ever cached. `test_identity_grants_cap`: eight `peers add`
+calls fill the table, a ninth distinct name is refused with a "full"
+message, and updating one of the eight already there still works at 8/8
+since that replaces a slot rather than claiming one.
+
+293/293 QEMU tests pass. RP2350 `sizecheck`: **+0 bytes** across all
+three personas -- every new structure here lives on the stack, in the
+grants file, or in a 9P fid table entry that already existed.
+
+*(A note on how this milestone nearly reported a false regression: manually
+smoke-testing `peers add` against `build/rv32/lugalos_sd.img` directly --
+not a copy -- and running `(format "/sd0")` to get a writable auth
+directory wiped the same image's pre-staged content, which ~10 unrelated
+tests depend on. The next full run failed those tests identically on a
+second clean attempt, which looked exactly like a real regression until
+the actual cause -- a corrupted shared fixture, not new code -- was found.
+Fixed by regenerating from the already-staged `build/rv32/sd_root/`. See
+`[[feedback_never_format_shared_base_image]]` in memory.)*
+
+Next: I6 (WLAN credentials -- the `wlan` command I3 also left unbuilt, and
+the PSK-not-passphrase derivation §5.3 specifies). I7 (RP2350 flash
+backend) and I8 (docs) remain after that.
+
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards
 were about to share a segment -- and the pieces are good but they were never

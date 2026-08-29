@@ -185,8 +185,16 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * it nor the console override above it. These two files remain: the first
  * is a list -- one "uname hexkey" line per identity, so a key can be
  * revoked by deleting a line -- and the second is a single key for a
- * board with no card. Per-identity grants with scope (§5.2) are I5's, not
- * this list's.
+ * board with no card.
+ *
+ * I5 turns the list into a list of *grants* (§5.2): two more columns,
+ * `aname` and `mode`, so a peer's key answers not just "who" but "may
+ * attach where, read-only or not". This is also the point §1.2 warns
+ * about: once the list describes *other* nodes' keys with scope attached,
+ * it is unambiguously not the answer to "what key do I prove myself
+ * with" -- that split happened at I4, and I5 is what makes the list
+ * purely inbound, for real, by giving it something a self-key would not
+ * have (a policy about somebody else's peer).
  *
  * The 9P server refuses to serve anything under P9_AUTH_KEY_DIR (see
  * p9_path_is_secret() in fs/9p.c), and the identity record joined that
@@ -198,20 +206,78 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
 #define P9_AUTH_KEYS_FILE P9_AUTH_KEY_DIR "/keys"
 #define P9_AUTH_FALLBACK_KEY_FILE "/flash0/system/etc/p9key"
 
+/* --- I5: grants -- a list entry with scope, not just a key ------------- */
+
+#define P9_AUTH_KEY_MAX 64u
+#define P9_AUTH_NONCE_LEN 32u
+
+/* Bounded like every other table in this kernel (§5.2: "Bounded like every
+ * other table"). Revocation is removing a line -- no revocation list, no
+ * expiry; §7 says so explicitly and p9_grants_add()/p9_grants_remove()
+ * enforce the bound rather than merely documenting it. */
+#define P9_GRANTS_MAX 8
+
+typedef struct {
+    char     name[P9_MAX_NAME_LEN];
+    uint8_t  key[P9_AUTH_KEY_MAX];
+    uint32_t key_len;
+    char     aname[P9_MAX_NAME_LEN];   /* the subtree this peer may attach at; "/" is unrestricted */
+    bool     read_only;
+} p9_grant_t;
+
+typedef enum {
+    P9_GRANT_OK = 0,
+    P9_GRANT_ERR_FULL,          /* P9_GRANTS_MAX distinct names already present */
+    P9_GRANT_ERR_BAD_INPUT,     /* empty/oversized name, key, or aname */
+    P9_GRANT_ERR_NOT_FOUND,     /* p9_grants_remove(): no such name */
+    P9_GRANT_ERR_WRITE_FAILED,  /* the file write itself failed (no /sd0, read-only, ...) */
+} p9_grant_result_t;
+
+/* Reads P9_AUTH_KEYS_FILE into `out` (up to `cap`, capped at
+ * P9_GRANTS_MAX regardless). Returns the count. A 2-column legacy line
+ * (no aname/mode) reads as aname="/", read_only=false -- unrestricted,
+ * exactly what it already meant before I5 added the other two columns. */
+uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap);
+
+/* Appends a new grant, or replaces the entry for `name` if one already
+ * exists (an update, not a second entry -- so fixing a typo does not cost
+ * a slot). `aname` NULL or "" means "/", unrestricted. */
+p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t key_len,
+                                const char *aname, bool read_only);
+
+/* Removes the entry for `name`. Nothing else needs to be told: the next
+ * p9_auth_key_for()/p9_handle_tattach() call reads the file fresh, so
+ * removal is immediate by construction, not by any invalidation this
+ * function performs. */
+p9_grant_result_t p9_grants_remove(const char *name);
+
+/* One error-to-string mapping shared by kernel/shell.c's `peers` command
+ * and user/lisp/lisp.c's Lisp equivalents -- matches kernel/identity.h's
+ * node_id_result_str() in shape and reason. */
+const char *p9_grant_result_str(p9_grant_result_t rc);
+
 /* True if any key is configured at all. A link whose policy is
  * P9_AUTH_REQUIRED and for which this is false refuses every attach: the
  * failure mode of a misconfigured gateway must be "nobody gets in", never
  * "everybody does". */
 bool p9_auth_have_keys(void);
 
-/* The key this node would use as a *client*, for `uname`. Exported for
- * fs/p9_link.c's client-side auth exchange (R3b,
- * plan/phase19_ip_stack_and_ethernet.md): the same key store answers both
- * "who may attach to me" and "how do I prove who I am", and having one place
- * that knows where keys live is the point. Returns 0 and fills `key_out`
- * (at most P9_AUTH_KEY_MAX bytes) on success. */
-#define P9_AUTH_KEY_MAX 64u
-#define P9_AUTH_NONCE_LEN 32u
+/* The key THIS node proves itself with, as a client -- console key, then
+ * the identity record (I4). Exported for fs/p9_link.c's client-side auth
+ * exchange (R3b, plan/phase19_ip_stack_and_ethernet.md). Deliberately
+ * separate from p9_auth_key_for() below since I5: "who may attach to me"
+ * and "how do I prove who I am" stopped being the same question the
+ * moment the grants list started carrying scope (§1.2) -- this function
+ * is the whole answer to the second one, and never reads the grants list
+ * or the flash fallback, both of which are about the first. Returns 0 and
+ * fills `key_out` (at most P9_AUTH_KEY_MAX bytes) on success. */
+int p9_auth_own_key(uint8_t *key_out, uint32_t *key_len);
+
+/* The key `uname` must present to attach to ME -- server-side
+ * verification. Console key (bootstrap override, both directions) > the
+ * grants list (§5.2, p9_grants_list() below) > the flash fallback (a
+ * single shared key for a board with no card, unrestricted, predating
+ * grants). Returns 0 and fills `key_out` on success. */
 int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len);
 
 /* Installs a key for this boot only, from the local console (`p9key`). It

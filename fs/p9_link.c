@@ -559,7 +559,11 @@ static int p9_remote_xchg(p9_remote_mount_t *m, const p9_msg_t *req, p9_msg_t *r
 static uint32_t p9_remote_authenticate(p9_remote_mount_t *m, const char *uname) {
     uint8_t key[P9_AUTH_KEY_MAX];
     uint32_t key_len = 0;
-    if (p9_auth_key_for(uname, key, &key_len) != 0 || key_len == 0) return P9_NOFID;
+    /* p9_auth_own_key(), not p9_auth_key_for(): this is always called with
+     * `uname` == node_name() (this node's own name) -- see the one call
+     * site below -- so it is "how do I prove myself", not "who may attach
+     * to me". I5 split the two on purpose (fs/9p.h's own comment). */
+    if (p9_auth_own_key(key, &key_len) != 0 || key_len == 0) return P9_NOFID;
 
     p9_msg_t req, resp;
     uint32_t afid = m->next_fid++;

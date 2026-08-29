@@ -13,6 +13,7 @@
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
+#include "fs/9p.h"
 #include "kernel/device.h"
 #include "net/ip.h"
 #include "net/tcp.h"
@@ -2458,6 +2459,84 @@ static lisp_val_t *prim_identity_key(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* --- `peers`, `peers-add`, `peers-remove` -- I5, §5.2/§6 --------------- */
+
+static void peers_print_report_lisp(void) {
+    p9_grant_t entries[P9_GRANTS_MAX];
+    uint32_t count = p9_grants_list(entries, P9_GRANTS_MAX);
+    if (count == 0) { cprintf("peers: no grants configured\n"); return; }
+    cprintf("%-16s %-16s %-20s mode\n", "name", "fingerprint", "aname");
+    for (uint32_t i = 0; i < count; i++) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(entries[i].key, entries[i].key_len, fp);
+        cprintf("%-16s %-16s %-20s %s\n", entries[i].name, fp, entries[i].aname,
+                entries[i].read_only ? "ro" : "rw");
+    }
+}
+
+/* `(peers)` -- report. */
+static lisp_val_t *prim_peers(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    peers_print_report_lisp();
+    return &true_val;
+}
+
+/* `(peers-add "name" "hex" ["aname"] ["ro"|"rw"])`. */
+static lisp_val_t *prim_peers_add(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *name = get_str_val(lisp_list_ref(args, 0));
+    const char *hex  = get_str_val(lisp_list_ref(args, 1));
+    const char *tok3 = get_str_val(lisp_list_ref(args, 2));
+    const char *tok4 = get_str_val(lisp_list_ref(args, 3));
+    if (!name || !name[0] || !hex || !hex[0]) {
+        cprintf("usage: (peers-add \"name\" \"hex\" [\"aname\"] [\"ro\"|\"rw\"])\n");
+        return &false_val;
+    }
+
+    char aname[P9_MAX_NAME_LEN];
+    strncpy(aname, "/", sizeof(aname) - 1);
+    aname[sizeof(aname) - 1] = '\0';
+    bool read_only = false;
+    if (tok3 && strcmp(tok3, "ro") == 0)      read_only = true;
+    else if (tok3 && strcmp(tok3, "rw") == 0) read_only = false;
+    else if (tok3 && tok3[0])                 strncpy(aname, tok3, sizeof(aname) - 1);
+    if (tok4 && strcmp(tok4, "ro") == 0)      read_only = true;
+    else if (tok4 && strcmp(tok4, "rw") == 0) read_only = false;
+
+    uint8_t key[P9_AUTH_KEY_MAX];
+    uint32_t klen = 0;
+    for (const char *h = hex; h[0] && h[1] && klen < sizeof(key); h += 2) {
+        int hi = -1, lo = -1;
+        for (int p = 0; p < 2; p++) {
+            char c = h[p];
+            int v = (c >= '0' && c <= '9') ? c - '0'
+                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (p == 0) hi = v; else lo = v;
+        }
+        if (hi < 0 || lo < 0) break;
+        key[klen++] = (uint8_t)((hi << 4) | lo);
+    }
+    if (klen == 0) { cprintf("peers-add: expected an even-length hex string for the key\n"); return &false_val; }
+
+    p9_grant_result_t rc = p9_grants_add(name, key, klen, aname, read_only);
+    memset(key, 0, sizeof(key));
+    if (rc != P9_GRANT_OK) { cprintf("peers-add: %s\n", p9_grant_result_str(rc)); return &false_val; }
+    cprintf("peers: granted '%s' at %s (%s)\n", name, aname, read_only ? "ro" : "rw");
+    return &true_val;
+}
+
+/* `(peers-remove "name")`. */
+static lisp_val_t *prim_peers_remove(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *name = get_str_val(lisp_list_ref(args, 0));
+    if (!name || !name[0]) { cprintf("usage: (peers-remove \"name\")\n"); return &false_val; }
+    p9_grant_result_t rc = p9_grants_remove(name);
+    if (rc != P9_GRANT_OK) { cprintf("peers-remove: %s\n", p9_grant_result_str(rc)); return &false_val; }
+    cprintf("peers: removed '%s'\n", name);
+    return &true_val;
+}
+
 static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2909,6 +2988,9 @@ void lisp_init(void) {
     env_set(&global_env, "identity-name", make_prim(prim_identity_name));
     env_set(&global_env, "identity-provision", make_prim(prim_identity_provision));
     env_set(&global_env, "identity-key", make_prim(prim_identity_key));
+    env_set(&global_env, "peers", make_prim(prim_peers));
+    env_set(&global_env, "peers-add", make_prim(prim_peers_add));
+    env_set(&global_env, "peers-remove", make_prim(prim_peers_remove));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));

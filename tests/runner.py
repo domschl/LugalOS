@@ -3700,6 +3700,197 @@ def test_9p_auth_gate(elf_path: Path, img_path: Path, arch_name: str) -> tuple[s
         session.close()
 
 
+def test_identity_grants_scope(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I5, plan/phase21_identity_and_authentication.md: §5.2's grants,
+    exercised end to end over the same TCP-bridged virtio-console setup
+    test_9p_auth_gate() uses just above -- real code driving the raw
+    protocol, not our own client asking for what it always asks for
+    (fs/p9_link.c's in-kernel client only ever requests aname=""). Three of
+    §8's four verify points for I5:
+
+      - a peer granted /ram0 cannot attach at "/"
+      - a peer granted `ro` is refused a Twrite and told why
+      - a removed peer is refused immediately (the very next Tauth)
+
+    The fourth (eight entries fill, the ninth is rejected) is
+    test_identity_grants_cap() below -- a `peers add` property with no
+    attach involved, so it needs neither p9lib nor this setup."""
+    import shutil
+    import socket as _socket
+    import p9lib
+    from p9lib.client import P9Client, P9Error, Session
+
+    NAME = "Grants: Scope Restricts Aname, Ro Refuses Twrite, Removal Is Immediate (I5)"
+    KEY_RW = bytes(range(1, 17)).hex()
+    KEY_RO = bytes(range(17, 33)).hex()
+
+    arch_img = img_path.with_name(f"test_{arch_name}_grants_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    _s = _socket.socket()
+    _s.bind(("127.0.0.1", 0))
+    port = _s.getsockname()[1]
+    _s.close()
+
+    def dial() -> P9Client:
+        last = ""
+        for _ in range(25):
+            try:
+                return p9lib.connect_tcp("127.0.0.1", port, timeout=3.0)
+            except (ConnectionRefusedError, OSError) as e:
+                last = str(e)
+                time.sleep(0.2)
+        raise P9Error(f"could not connect to 127.0.0.1:{port}: {last}")
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-device", "virtio-serial-device",
+            "-device", "virtconsole,chardev=p9c",
+            "-chardev", f"socket,id=p9c,host=127.0.0.1,port={port},server=on,wait=off",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (NAME, False, log)
+
+        ok, log = session.send_and_expect('lisp\n(format "/sd0")\nexit', r"=> #t", timeout=6.0)
+        if not ok:
+            return (NAME, False, f"could not format /sd0: {log}")
+
+        ok, log = session.send_and_expect(f"peers add rw-peer {KEY_RW} /ram0 rw", r"granted", timeout=5.0)
+        if not ok:
+            return (NAME, False, f"grant for rw-peer did not take: {log}")
+        ok, log = session.send_and_expect(f"peers add ro-peer {KEY_RO} /ram0 ro", r"granted", timeout=5.0)
+        if not ok:
+            return (NAME, False, f"grant for ro-peer did not take: {log}")
+
+        ok, log = session.send_and_expect("p9auth vconsole on\n", r"REQUIRES authentication", timeout=5.0)
+        if not ok:
+            return (NAME, False, f"p9auth did not take: {log}")
+
+        failures = []
+
+        # 1a. rw-peer, granted /ram0, cannot attach at "/".
+        c = dial()
+        try:
+            c.version()
+            try:
+                c.authenticate(0, bytes.fromhex(KEY_RW), aname="/", uname="rw-peer")
+                c.attach(1, aname="/", uname="rw-peer", afid=0)
+                failures.append("rw-peer, granted /ram0, attached at / anyway")
+            except P9Error as e:
+                if "not granted" not in str(e).lower():
+                    failures.append(f"refused at /, but not for scope: {e}")
+        finally:
+            c.close()
+
+        # 1b. ...and can attach, and write, at exactly what it was granted.
+        c = dial()
+        try:
+            sess = Session(c, aname="/ram0", uname="rw-peer", key=bytes.fromhex(KEY_RW))
+            # A path relative to the session's own attached root (aname
+            # "/ram0"), not "/ram0/..." again -- the attach already rooted
+            # this session there.
+            n = sess.write("/grants_test.txt", b"hello from rw-peer")
+            if n <= 0:
+                failures.append(f"rw-peer could not write inside its granted subtree: wrote {n} bytes")
+        except P9Error as e:
+            failures.append(f"rw-peer was refused inside its own granted subtree: {e}")
+        finally:
+            c.close()
+
+        # 2. ro-peer, granted /ram0 ro: attaches fine, refused a write and
+        #    told why (Session.write() reaches Tcreate for a file that
+        #    doesn't exist yet, which is where the read-only check lives).
+        c = dial()
+        try:
+            sess = Session(c, aname="/ram0", uname="ro-peer", key=bytes.fromhex(KEY_RO))
+            try:
+                sess.write("/ro_should_fail.txt", b"should not land")
+                failures.append("ro-peer's write was accepted")
+            except P9Error as e:
+                if "read-only" not in str(e).lower():
+                    failures.append(f"ro-peer's write was refused, but not for read-only: {e}")
+        except P9Error as e:
+            failures.append(f"ro-peer could not even attach at its granted subtree: {e}")
+        finally:
+            c.close()
+
+        # 3. Remove ro-peer; the very next Tauth for it is refused --
+        #    nothing to invalidate, since nothing here was ever cached.
+        ok, log = session.send_and_expect("peers remove ro-peer", r"removed", timeout=5.0)
+        if not ok:
+            failures.append(f"peers remove did not report success: {log}")
+        c = dial()
+        try:
+            c.version()
+            try:
+                c.authenticate(0, bytes.fromhex(KEY_RO), aname="/ram0", uname="ro-peer")
+                failures.append("a removed peer's key was still accepted")
+            except P9Error:
+                pass
+        finally:
+            c.close()
+
+        return (NAME, not failures, "\n".join(failures))
+    except Exception as e:
+        return (NAME, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
+def test_identity_grants_cap(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I5's fourth verify point, standalone: it needs neither p9lib nor a
+    live attach, just `peers add` run nine times. Eight distinct names
+    fill the table; the ninth is refused with a message (not silently
+    dropped, not silently overwriting the oldest); updating one of the
+    eight already there still works at 8/8, since that is a replacement,
+    not a new slot (fs/9p.c's p9_grants_add() docstring)."""
+    import shutil
+    name = "Grants List Bounded To Eight Entries, Ninth Refused With A Message (I5)"
+    arch_img = img_path.with_name(f"test_{arch_name}_grantscap_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect('lisp\n(format "/sd0")\nexit', r"=> #t", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not format /sd0: {log[-400:]}")
+
+        for i in range(8):
+            key = f"{i:02x}" * 16
+            ok, log = session.send_and_expect(f"peers add peer{i} {key}", r"granted", timeout=6.0)
+            if not ok:
+                return (name, False, f"entry {i} (of 8) was refused: {log[-500:]}")
+
+        ok, log = session.send_and_expect("peers\n", r"peer7", timeout=6.0)
+        if not ok:
+            return (name, False, f"peers list does not show the 8th entry: {log[-500:]}")
+
+        key9 = "ff" * 16
+        ok, log = session.send_and_expect(f"peers add peer8 {key9}", r"full", timeout=6.0)
+        if not ok:
+            return (name, False, f"a 9th distinct entry was not refused with a 'full' message: {log[-500:]}")
+
+        # Updating an EXISTING entry must still work at 8/8: it replaces a
+        # slot rather than claiming a new one.
+        ok, log = session.send_and_expect(f"peers add peer0 {key9}", r"granted", timeout=6.0)
+        if not ok:
+            return (name, False, f"updating an existing entry at 8/8 was refused: {log[-500:]}")
+
+        return (name, True, "8 entries filled; a 9th distinct name refused with a message; "
+                            "updating an existing entry at 8/8 still works")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_9p_iounit(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """An Ropen's iounit must fit inside the negotiated msize.
 
@@ -4244,22 +4435,23 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
 def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
                               img64: Path, img32: Path) -> tuple[str, bool, str]:
     """I4, plan/phase21_identity_and_authentication.md: "a node with a key
-    only in its identity record authenticates to a peer and accepts an
-    attach" -- the same shape as test_9p_between_nodes_over_tcp() (R3b)
-    above, deliberately, except neither node ever calls `p9key` (the
-    console override) and neither has any SD-card-based key file. The only
-    place either node's key exists is what `identity key <hex>` (I3) wrote
-    into its identity record -- fs/9p.c's p9_auth_key_for() must find it
-    there, ahead of the (in this test, nonexistent) SD-card list and flash
-    fallback.
+    only in its identity record authenticates to a peer" -- the same shape
+    as test_9p_between_nodes_over_tcp() (R3b) above, deliberately, except
+    neither node ever calls `p9key` (the console override) and neither has
+    an SD-card key *file*. Node A's only key is what `identity key <hex>`
+    (I3) wrote into its identity record -- fs/9p.c's p9_auth_own_key()
+    (I5) must find it there when A proves itself as a client.
 
-    "Removing the card does not remove the ability to do either": both
-    nodes' keys live on the identity disk, a device distinct from the one
-    /sd0 mounts, so this test's very shape -- no SD-card key file is ever
-    written on either side -- already demonstrates that /sd0 was never
-    load-bearing for this. `p9auth` (no args) is checked too, as the
-    concrete proof that p9_auth_have_keys() sees the record and does not
-    print its "no keys configured" warning."""
+    Updated for I5: the earlier version of this test also gave Node B the
+    *same* key in its own record and relied on p9_auth_key_for() (the
+    server-side verifier) falling back to that record for any uname -- a
+    real mechanism at I4, and exactly the conflation §1.2 says I5 must
+    retire (a node's own key answering "who may attach to me" defeats
+    §5.2's whole point: anyone who knows the segment's shared key would
+    walk straight past every grant). Server-side verification is now the
+    grants list's job, unconditionally -- so B grants A's key explicitly,
+    with `peers add`, the same command an operator would use. `p9auth`
+    (no args) confirms p9_auth_have_keys() sees that grant."""
     import shutil
     import socket as _socket
 
@@ -4306,9 +4498,21 @@ def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"Node B's identity key install failed: {log[-400:]}")
 
+        # I5: B's own record key proves B to others (untouched by this
+        # test); B must separately GRANT A's key to accept A's attach.
+        # Wildcard, since A's derived name varies by build/architecture and
+        # this test is about the grant mechanism, not name matching.
+        ok, log = session_b.send_and_expect(
+            'lisp\n(format "/sd0")\nexit', r"=> #t", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B could not format /sd0: {log[-400:]}")
+        ok, log = session_b.send_and_expect(f"peers add * {key}", r"granted", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B's grant for A did not take: {log[-400:]}")
+
         ok, log = session_b.send_and_expect("p9auth", r"Keys configured: yes", timeout=5.0)
         if not ok:
-            return (name, False, f"p9auth does not see the record-only key: {log[-500:]}")
+            return (name, False, f"p9auth does not see the grant: {log[-500:]}")
 
         ok, log = session_b.send_and_expect(
             f'lisp\n(write-file "/ram0/hello.txt" "{marker}")\nexit', r"=> #t", timeout=5.0)
@@ -4351,8 +4555,8 @@ def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"could not read B's file through the mount: {log[-500:]}")
 
-        return (name, True, "both nodes authenticated using only their identity "
-                            "record's key -- no p9key, no SD-card key file")
+        return (name, True, "A proved itself via its identity record alone (no p9key); "
+                            "B accepted it via an explicit grant (I5)")
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
     finally:
@@ -4638,6 +4842,8 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_grants_scope(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_grants_cap(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
@@ -4668,6 +4874,8 @@ def main() -> int:
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_identity_grants_scope(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_identity_grants_cap(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))

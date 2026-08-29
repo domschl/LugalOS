@@ -171,6 +171,8 @@ static void cmd_help(void) {
     cprintf("  idstoreselftest - Identity record: states, corruption, unknown fields, round trip\n");
     cprintf("  identity [name <name>|provision [--force]|key <hex>|--generate]\n");
     cprintf("                  - report uid/name/mac/key fingerprint, or set/provision/key (no args: report)\n");
+    cprintf("  peers [add <name> <hex> [<aname>] [ro|rw]|remove <name>]\n");
+    cprintf("                  - list grants (name/fingerprint/aname/mode), or add/remove one\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
     cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
     cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
@@ -549,6 +551,95 @@ static void cmd_identity(const char *arg) {
     }
 
     cprintf("usage: identity [name <name> | provision [--force] | key <hex>|--generate]\n");
+}
+
+/* --- `peers`: I5, plan/phase21_identity_and_authentication.md §5.2/§6 ---
+ *
+ * The grants list -- deliberately not built in I3 alongside `identity`,
+ * since before I5 there was nothing here for it to enforce (see that
+ * milestone's own "scope cut" note). Same fingerprint-only discipline as
+ * `identity`: the key never prints, only its fingerprint. Lisp equivalents
+ * (peers, peers-add, peers-remove) mirror these three exactly. */
+
+static void peers_print_report(void) {
+    p9_grant_t entries[P9_GRANTS_MAX];
+    uint32_t count = p9_grants_list(entries, P9_GRANTS_MAX);
+    if (count == 0) { cprintf("peers: no grants configured\n"); return; }
+    cprintf("%-16s %-16s %-20s mode\n", "name", "fingerprint", "aname");
+    for (uint32_t i = 0; i < count; i++) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(entries[i].key, entries[i].key_len, fp);
+        cprintf("%-16s %-16s %-20s %s\n", entries[i].name, fp, entries[i].aname,
+                entries[i].read_only ? "ro" : "rw");
+    }
+}
+
+/* Consumes one whitespace-delimited token from `s`, returning the cursor
+ * past it (and past any trailing whitespace) so callers can chain calls
+ * for a fixed-shape command line -- `peers add`'s four positional
+ * pieces -- without hand-tracking an index through each one. */
+static const char *next_token(const char *s, char *out, uint32_t cap) {
+    uint32_t i = 0;
+    while (*s == ' ') s++;
+    while (*s && *s != ' ' && i < cap - 1) { out[i++] = *s; s++; }
+    out[i] = '\0';
+    while (*s == ' ') s++;
+    return s;
+}
+
+static void cmd_peers(const char *arg) {
+    if (!arg || !*arg) { peers_print_report(); return; }
+
+    char sub[16];
+    unsigned i = 0;
+    while (arg[i] && arg[i] != ' ' && i < sizeof(sub) - 1) { sub[i] = arg[i]; i++; }
+    sub[i] = '\0';
+    while (arg[i] == ' ') i++;
+    const char *rest = &arg[i];
+
+    if (strcmp(sub, "add") == 0) {
+        char name[P9_MAX_NAME_LEN], hexstr[160], tok3[P9_MAX_NAME_LEN], tok4[4];
+        const char *p = rest;
+        p = next_token(p, name, sizeof(name));
+        p = next_token(p, hexstr, sizeof(hexstr));
+        p = next_token(p, tok3, sizeof(tok3));
+        next_token(p, tok4, sizeof(tok4));
+
+        if (name[0] == '\0' || hexstr[0] == '\0') {
+            cprintf("usage: peers add <name> <hex> [<aname>] [ro|rw]\n");
+            return;
+        }
+
+        char aname[P9_MAX_NAME_LEN];
+        strncpy(aname, "/", sizeof(aname) - 1);
+        aname[sizeof(aname) - 1] = '\0';
+        bool read_only = false;
+        if (strcmp(tok3, "ro") == 0)      read_only = true;
+        else if (strcmp(tok3, "rw") == 0) read_only = false;
+        else if (tok3[0])                 strncpy(aname, tok3, sizeof(aname) - 1);
+        if (strcmp(tok4, "ro") == 0)      read_only = true;
+        else if (strcmp(tok4, "rw") == 0) read_only = false;
+
+        uint8_t key[P9_AUTH_KEY_MAX];
+        uint32_t klen = parse_hex_bytes(hexstr, key, sizeof(key));
+        if (klen == 0) { cprintf("peers add: expected an even-length hex string for the key\n"); return; }
+
+        p9_grant_result_t rc = p9_grants_add(name, key, klen, aname, read_only);
+        memset(key, 0, sizeof(key));
+        if (rc != P9_GRANT_OK) { cprintf("peers add: %s\n", p9_grant_result_str(rc)); return; }
+        cprintf("peers: granted '%s' at %s (%s)\n", name, aname, read_only ? "ro" : "rw");
+        return;
+    }
+
+    if (strcmp(sub, "remove") == 0) {
+        if (!*rest) { cprintf("usage: peers remove <name>\n"); return; }
+        p9_grant_result_t rc = p9_grants_remove(rest);
+        if (rc == P9_GRANT_OK) cprintf("peers: removed '%s'\n", rest);
+        else                   cprintf("peers remove: %s\n", p9_grant_result_str(rc));
+        return;
+    }
+
+    cprintf("usage: peers [add <name> <hex> [<aname>] [ro|rw] | remove <name>]\n");
 }
 
 static void cmd_p9share(const char *arg) {
@@ -1748,6 +1839,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "identity ", 9) == 0) {
         cmd_identity(&cmd_line[9]);
+        return;
+    } else if (strcmp(cmd_line, "peers") == 0) {
+        cmd_peers(NULL);
+        return;
+    } else if (strncmp(cmd_line, "peers ", 6) == 0) {
+        cmd_peers(&cmd_line[6]);
         return;
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();
