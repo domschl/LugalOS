@@ -53,6 +53,11 @@
 
 - True allocator (malloc(), free()), not primarily for programs that use extensive dynamic allocation (with all the defragmentation issues arising from that), but to allow specific, overhead-free, allocation of state. 
 - Multi-core support
+  **Planned 2026-08-29** — see `plan/phase22_smp_locking_foundation.md` (a
+  real cross-hart lock, replacing every `irq_save()`-as-mutex site) and
+  `plan/phase23_multicore_scheduling.md` (waking RP2350's second Hazard3
+  core). Planning documents only; sequenced after phase 19's R4/R5 and
+  phase 21's I7, all three blocked on hardware access today.
 - database server (sqlite, possible?)
 
 ### New hardware
