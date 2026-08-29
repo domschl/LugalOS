@@ -1,0 +1,106 @@
+#ifndef LUGALOS_KERNEL_IDSTORE_H
+#define LUGALOS_KERNEL_IDSTORE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "drivers/block.h"
+
+/* The identity record, and the block_dev_t seam it lives on -- I1,
+ * plan/phase21_identity_and_authentication.md §4.
+ *
+ * A fixed-size (§3.2's "last 4 KB sector") record: magic, version, length,
+ * CRC32, then typed (TLV) fields. Typed fields rather than a fixed struct so
+ * that a later milestone (I4's device key, I5's peer list, I6's WLAN
+ * credential) can add a field type without invalidating a record an earlier
+ * build wrote -- a reader that does not recognise a type skips it by length
+ * and counts it, rather than refusing the whole record.
+ *
+ * Target-independent on purpose, the same argument kernel/sha256.c and
+ * kernel/random.c already make: this is a parser and a CRC, and neither
+ * should be debugged by flashing a board. I2 supplies the QEMU virtio-blk
+ * device this reads from; I7 supplies the RP2350 flash sector. Until then,
+ * anything implementing block_dev_t -- including a QEMU target's own
+ * ramdisk, or the fake device idstore_selftest() builds in memory -- is a
+ * valid backing store to develop and test this against.
+ *
+ * Three states, because a bare magic cannot tell the last two apart:
+ *   - UNPROVISIONED: the magic is not there at all. Covers erased flash
+ *     (all 0xFF) and an untouched QEMU disk image (all 0x00) alike -- both
+ *     mean "no record has ever been written here".
+ *   - CORRUPT: the magic is there but the version, length or CRC is not
+ *     what it should be. Refused outright, never half-interpreted.
+ *   - VALID: parses cleanly.
+ */
+
+#define IDSTORE_BLOCK_SIZE 512u
+#define IDSTORE_BLOCKS     8u
+#define IDSTORE_SIZE_BYTES (IDSTORE_BLOCK_SIZE * IDSTORE_BLOCKS)  /* 4096 */
+
+/* magic(4) + version(1) + reserved(1) + length(2) + crc32(4) */
+#define IDSTORE_HEADER_LEN 12u
+
+typedef enum {
+    IDSTORE_UNPROVISIONED = 0,
+    IDSTORE_CORRUPT,
+    IDSTORE_VALID,
+} idstore_state_t;
+
+/* Field type tags for the TLV stream. A reader that sees a tag not listed
+ * here does not fail -- it skips `len` bytes and counts the field as
+ * unknown (idstore_t.unknown_fields_skipped). Add new tags as later
+ * milestones need them; never reuse a retired one. */
+typedef enum {
+    IDSTORE_FIELD_UID  = 1,  /* device scope, §2: 8 bytes, write-once in practice */
+    IDSTORE_FIELD_NAME = 2,  /* instance scope: up to NODE_NAME_MAX-1 bytes, freely rewritable */
+} idstore_field_type_t;
+
+typedef struct {
+    uint8_t  buf[IDSTORE_SIZE_BYTES];   /* the whole record, as read from the device */
+    uint32_t fields_len;                /* bytes of TLV data following the header */
+    uint32_t unknown_fields_skipped;    /* fields whose type this build does not recognise */
+} idstore_t;
+
+/* Reads and validates blocks 0..IDSTORE_BLOCKS-1 of `dev`. `out` is filled
+ * (and walkable with idstore_get_field()) only when the return value is
+ * IDSTORE_VALID; a read failure at the device level is reported as
+ * IDSTORE_CORRUPT, since a store that cannot be read cannot be trusted
+ * either. */
+idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out);
+
+/* Looks up `type` in a record idstore_read() returned IDSTORE_VALID for.
+ * Copies min(field length, cap) bytes into `val` and returns the field's
+ * actual length. Returns -1 if the type is absent. `val`/`cap` may be
+ * 0/NULL to just test presence and get the length. */
+int idstore_get_field(const idstore_t *rec, uint8_t type, void *val, uint32_t cap);
+
+/* Builds a new record in memory. idstore_writer_init(), zero or more
+ * idstore_writer_add_field(), then idstore_writer_commit() to finalise the
+ * header (including the CRC) and write it out. */
+typedef struct {
+    uint8_t  buf[IDSTORE_SIZE_BYTES];
+    uint32_t fields_len;
+} idstore_writer_t;
+
+void idstore_writer_init(idstore_writer_t *w);
+
+/* Appends one field. Returns 0, or -1 if it does not fit in what remains of
+ * the record. */
+int idstore_writer_add_field(idstore_writer_t *w, uint8_t type, const void *val, uint16_t len);
+
+/* Finalises magic/version/length/CRC32 and writes all IDSTORE_BLOCKS blocks
+ * to `dev`. Returns 0, or -1 if the device write failed. */
+int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev);
+
+/* CRC-32 (the IEEE 802.3 polynomial, init/final 0xFFFFFFFF -- the same
+ * construction as zip and Ethernet, so any host tool can check a record
+ * without a bespoke implementation). Exposed for tools/provision.py (I2) and
+ * for I7's "corrupt a byte and confirm the CRC catches it" verification. */
+uint32_t crc32_compute(const void *data, uint32_t len);
+
+/* Self-test: the three states, unknown-field skipping, and a byte-identical
+ * round trip -- all against an in-memory fake block_dev_t, so it needs
+ * neither hardware nor a mounted filesystem (I1's verify list,
+ * plan/phase21_identity_and_authentication.md). */
+int idstore_selftest(void);
+
+#endif /* LUGALOS_KERNEL_IDSTORE_H */

@@ -66,7 +66,7 @@ class QemuSession:
         self._log_path: Path | None = None
         self._log_file: "BinaryIO | None" = None  # read-mode file object, opened in start()
 
-    def start(self, extra_qemu_args: list[str] | None = None) -> None:
+    def start(self, extra_qemu_args: list[str] | None = None, identity_img_path: "Path | None" = None) -> None:
 
         qemu_bin = "qemu-system-riscv64" if "64" in self.arch else "qemu-system-riscv32"
         cmd: list[str] = [
@@ -75,6 +75,26 @@ class QemuSession:
             "-nographic",
             "-bios", "none",
             "-d", "guest_errors,unimp",
+        ]
+        if identity_img_path is not None:
+            # I2, plan/phase21_identity_and_authentication.md: the identity
+            # store's second virtio-blk device MUST be declared before hd0's
+            # below, not after (e.g. via extra_qemu_args, which lands at the
+            # end of the command line). QEMU's riscv "virt" machine binds
+            # virtio-mmio transport slots to `-device virtio-blk-device`
+            # entries in REVERSE command-line order -- the LAST such device
+            # on the line gets the LOWEST MMIO address, which is the first
+            # one both drivers' address-ascending probes see. Declaring hd1
+            # here, ahead of hd0, is what keeps hd0 the first blk device
+            # found (unchanged, existing behaviour) and hd1 the second
+            # (drivers/virtio_blk_id.c), rather than silently swapping which
+            # driver mounts which disk -- found empirically while bringing
+            # this test up, not asserted from documentation.
+            cmd += [
+                "-drive", f"file={identity_img_path},if=none,format=raw,id=hd1",
+                "-device", "virtio-blk-device,drive=hd1",
+            ]
+        cmd += [
             "-drive", f"file={self.img_path},if=none,format=raw,id=hd0",
             "-device", "virtio-blk-device,drive=hd0",
             "-kernel", str(self.elf_path),
@@ -476,6 +496,18 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         auth_ok = ok and "P9AUTH_SELFTEST_OK" in log
         results.append(("9P Auth Gate Path Guard And MAC Binding (N2)",
                         auth_ok, log if not auth_ok else ""))
+
+        # I1 (plan/phase21_identity_and_authentication.md): the identity
+        # record's three states, unknown-field skipping, and a
+        # byte-identical round trip -- against an in-memory fake
+        # block_dev_t, so like the two selftests above this needs neither
+        # hardware nor a mounted filesystem. I2 wires this to a real device;
+        # this is the parser and the CRC underneath it, falsified first.
+        ok, log = session.send_and_expect("idstoreselftest\n",
+                                          r"IDSTORE_SELFTEST_(OK|FAIL)", timeout=30.0)
+        idstore_ok = ok and "IDSTORE_SELFTEST_OK" in log
+        results.append(("Identity Record: States, Corruption, Unknown Fields, Round Trip (I1)",
+                        idstore_ok, log if not idstore_ok else ""))
 
         ok, log = session.send_and_expect("dcf77selftest\n",
                                           r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
@@ -2626,6 +2658,90 @@ def test_node_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[
         session.close()
 
 
+def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I2, plan/phase21_identity_and_authentication.md: the identity store's
+    resolution ladder (§4), against QEMU's second virtio-blk device
+    (drivers/virtio_blk_id.c) as the honest analogue of a board with no
+    silicon to bind to (§3.1).
+
+    Two guests, same kernel: one boots with a disk tools/provision.py wrote
+    a record onto, one boots with none. The first must report the
+    provisioned name and uid with `record` as the source of both; the
+    second must fall back to the derived name exactly as it always has,
+    with no uid at all -- proving I2 does not change a node that was never
+    given a second drive, which is every node the existing suite already
+    boots."""
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "Identity Store: Provisioned Record Resolves Over Derived Identity (I2)"
+    arch_img = img_path.with_name(f"test_{arch_name}_idstore_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    prov_name = "prov-test-node"
+    prov_uid = bytes.fromhex("aabbccdd11223344")
+    id_img = img_path.with_name(f"test_{arch_name}_idstore_id.img")
+    record = provision.build_record([
+        (provision.FIELD_UID, prov_uid),
+        (provision.FIELD_NAME, prov_name.encode("ascii")),
+    ])
+    id_img.write_bytes(record)
+
+    # 1. Provisioned: the record wins over the derived identity, and says so.
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"provisioned guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect("cat /proc/node", r"uid source:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+
+        # No trailing `$`: this is raw terminal output, so every line ends
+        # "\r\n" and an anchored end-of-line never matches (test_node_identity
+        # above hits the same thing).
+        if not re.search(rf"^name: {re.escape(prov_name)}\b", log, re.MULTILINE):
+            return (name, False, f"provisioned name not reported:\n{log[-500:]}")
+        if not re.search(r"^name source: record\b", log, re.MULTILINE):
+            return (name, False, f"name source is not 'record':\n{log[-500:]}")
+        if not re.search(rf"^uid: {prov_uid.hex()}\b", log, re.MULTILINE):
+            return (name, False, f"provisioned uid not reported:\n{log[-500:]}")
+        if not re.search(r"^uid source: record\b", log, re.MULTILINE):
+            return (name, False, f"uid source is not 'record':\n{log[-500:]}")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+    # 2. Unprovisioned: no second drive at all -- the same fallback every
+    # other test in this suite already relies on, unaffected by I2 existing.
+    session2 = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session2.start()
+        ok, log = session2.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"unprovisioned guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session2.send_and_expect("cat /proc/node", r"uid source:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+
+        if not re.search(r"^name source: derived\b", log, re.MULTILINE):
+            return (name, False, f"name source is not 'derived' with no second drive:\n{log[-500:]}")
+        if not re.search(r"^uid: none\b", log, re.MULTILINE):
+            return (name, False, f"a uid was reported with no identity disk attached:\n{log[-500:]}")
+
+        return (name, True, f"provisioned: name={prov_name!r} uid={prov_uid.hex()} (source: record); "
+                             f"unprovisioned: derived name, no uid")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session2.close()
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -4308,6 +4424,7 @@ def main() -> int:
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
@@ -4336,6 +4453,7 @@ def main() -> int:
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))

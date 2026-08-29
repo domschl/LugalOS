@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "drivers/block.h"
 
 /* Who this node is (plan/phase19_ip_stack_and_ethernet.md).
  *
@@ -39,6 +40,7 @@
 
 #define NODE_NAME_MAX 32
 #define NODE_MAC_LEN  6
+#define NODE_UID_LEN  8
 
 /* Resolves both. Call once, early in kernel_main() -- before any netif
  * registers, since that is where the MAC is handed out. */
@@ -65,5 +67,19 @@ int node_set_name(const char *name);
  * The default implementation answers false; RP2350's flash id lands with R4,
  * where it can be checked against two real boards rather than asserted. */
 bool board_unique_id(uint8_t out[8]);
+
+/* The device-scope UID (I2/§2, plan/phase21_identity_and_authentication.md):
+ * silicon (board_unique_id()) when this board has one, else the identity
+ * store's provisioned UID field, else absent. Returns false and leaves `out`
+ * untouched when neither source has one -- an unprovisioned QEMU node has no
+ * stable device identity, and this says so rather than inventing one. */
+bool node_uid(uint8_t out[NODE_UID_LEN]);
+const char *node_uid_source(void);
+
+/* Target hook: the block device the identity store (kernel/idstore.h) lives
+ * on, or NULL where none exists yet. Weak default answers NULL; QEMU's
+ * virtio-blk backend and the RP2350's flash-sector backend (I7) each define
+ * this symbol for their own target. */
+block_dev_t *identity_store_device(void);
 
 #endif /* LUGALOS_KERNEL_IDENTITY_H */

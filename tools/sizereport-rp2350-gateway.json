@@ -26,7 +26,8 @@
     "kernel/console.c": 409,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
-    "kernel/identity.c": 46,
+    "kernel/identity.c": 59,
+    "kernel/idstore.c": 24,
     "kernel/klog.c": 4153,
     "kernel/line_editor.c": 4629,
     "kernel/palloc.c": 32,
@@ -52,5 +53,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39880
   },
-  "total": 130087
+  "total": 130124
 }

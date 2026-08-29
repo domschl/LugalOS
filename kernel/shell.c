@@ -18,6 +18,7 @@
 #include "kernel/timezone.h"
 #include "kernel/sha256.h"
 #include "kernel/random.h"
+#include "kernel/idstore.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #if defined(CONFIG_BOARD_RP2350)
@@ -166,6 +167,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
+    cprintf("  idstoreselftest - Identity record: states, corruption, unknown fields, round trip\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
     cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
     cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
@@ -1615,6 +1617,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         for (const char *d = &cmd_line[9]; *d >= '0' && *d <= '9'; d++)
             bits = bits * 10u + (unsigned)(*d - '0');
         random_selftest(bits);
+        return;
+    } else if (strcmp(cmd_line, "idstoreselftest") == 0) {
+        idstore_selftest();
         return;
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();

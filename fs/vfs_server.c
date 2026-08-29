@@ -657,6 +657,29 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         netif_mac_str(node_mac(), mac);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "mac: %s\nmac source: %s\n", mac, node_mac_source());
+        /* I2 (plan/phase21_identity_and_authentication.md): the device-scope
+         * UID, absent unless silicon or a provisioned record supplied one --
+         * "unset" would claim more than is known, so this says "none". */
+        uint8_t uid[NODE_UID_LEN];
+        if (node_uid(uid)) {
+            /* Hand-rolled, not "%02x": this custom printf's %x reads a
+             * va_arg(unsigned long), and a uint8_t argument only gets
+             * promoted to int -- correct on rv32 where int and long are
+             * both 32 bits, wrong on rv64 where long is 64. netif_mac_str()
+             * above hits the same trap and hand-rolls for the same reason. */
+            static const char hex[] = "0123456789abcdef";
+            char uidhex[NODE_UID_LEN * 2 + 1];
+            for (unsigned i = 0; i < NODE_UID_LEN; i++) {
+                uidhex[i * 2]     = hex[uid[i] >> 4];
+                uidhex[i * 2 + 1] = hex[uid[i] & 0x0f];
+            }
+            uidhex[NODE_UID_LEN * 2] = '\0';
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "uid: %s\nuid source: %s\n", uidhex, node_uid_source());
+        } else {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "uid: none\nuid source: %s\n", node_uid_source());
+        }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);
         used += (uint32_t)ksnprintf(buf + used, cap - used,

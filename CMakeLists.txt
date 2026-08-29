@@ -399,6 +399,11 @@ set(SOURCES
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.
     kernel/random.c
+    # I1 (plan/phase21_identity_and_authentication.md): the identity record
+    # -- magic, version, CRC32, typed fields -- and its block_dev_t seam.
+    # Target-independent like sha256.c/random.c above: a parser and a CRC
+    # should not be debugged by flashing a board.
+    kernel/idstore.c
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c
@@ -536,6 +541,10 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
+    # I2 (plan/phase21_identity_and_authentication.md): the second virtio-blk
+    # device, dedicated to the identity store -- QEMU's analogue of I7's
+    # RP2350 flash sector (§3.1: "QEMU has no silicon to bind to").
+    list(APPEND SOURCES drivers/virtio_blk_id.c)
     # R1: the first netif. QEMU-only by construction -- it is a virtio-mmio
     # device, and the RP2350 has no virtio anything. This is the interface the
     # IP stack is developed and tested against before R4 fits real silicon.

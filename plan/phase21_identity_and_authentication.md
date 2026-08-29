@@ -1,6 +1,69 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26.** Independent of the phase it grew out of.
+**Status: planned 2026-08-26; I1-I2 complete 2026-08-29.** Independent of the
+phase it grew out of.
+
+**I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
+header, typed (TLV) fields, the three states (unprovisioned/corrupt/valid),
+and a `block_dev_t`-shaped read/write API, entirely target-independent.
+`idstoreselftest` (wired into `tests/runner.py`) checks all five points from
+§8's verify list against an in-memory fake block device -- no hardware, no
+mounted filesystem, no dependency on I2's not-yet-built QEMU disk. 284/284
+QEMU tests pass on both rv32 and rv64. Only `IDSTORE_FIELD_UID` and
+`IDSTORE_FIELD_NAME` are defined so far; I4-I6 add device-key, peer-list and
+WLAN-credential field types on top of the same format without touching this
+code.
+
+**I2 done (2026-08-29).** `drivers/virtio_blk_id.c`: a second, independent
+virtio-blk MMIO instance dedicated to the identity store -- direct polled
+MMIO, deliberately without the primary disk's "blk" driver-task machinery,
+since identity access is boot-time and occasional (§2's write policy already
+says so). `kernel/identity.c` gained the record tier at the top of §4's
+resolution ladder for both the name and a new device-scope UID
+(`node_uid()`/`node_uid_source()`, `NODE_UID_LEN` in `kernel/identity.h`),
+reached through a weak `identity_store_device()` hook so the file stays
+target-agnostic -- QEMU's driver defines it; I7's RP2350 flash backend will
+override the same symbol. `/proc/node` (`fs/vfs_server.c`) reports `uid` and
+`uid source` alongside the existing name/mac fields. `tools/provision.py`
+builds a record on the host (its own from-scratch CRC32 + TLV writer, not an
+import of the kernel's, so the format is exercised two independent ways).
+
+A real bring-up finding, not a documentation footnote: QEMU's riscv `virt`
+machine binds virtio-mmio transport slots to `-device virtio-blk-device`
+entries in **reverse command-line order** -- the last such device declared
+gets the *lowest* MMIO address, which is the first address both drivers'
+ascending probes see. `tests/runner.py`'s `QemuSession.start()` therefore
+takes an explicit `identity_img_path` that inserts hd1 *before* hd0 on the
+command line, rather than appending it via the generic `extra_qemu_args` used
+for unrelated devices (net, console) -- appending it there silently swapped
+which driver mounted which disk. Found empirically bringing up
+`test_identity_store_provisioning`; the working theory is unconfirmed against
+QEMU's own source and should be treated as "true for the version tested,"
+not as documented behaviour.
+
+RP2350's `sizecheck` caught a real design mistake before it shipped: the
+first version kept a permanent 4 KB `idstore_t` static in `kernel/identity.c`
+(a lifetime the code never needed -- node_identity_init() only ever reads it
+once, at boot) and a permanent 4 KB fake-disk static in `idstore_selftest()`
+(needed only for the seconds the test runs). Both are gone now -- the record
+is a local consumed within `node_identity_init()` and freed off the stack
+when it returns (16 KB boot stack, `linker/rp2350.ld`, comfortably enough
+this early), and the self-test's fake disk is `palloc_pages(1)`'d and freed
+at the end, the same C5 argument `drivers/ramdisk.c` already makes. Net
+static-RAM growth across all three RP2350 personas: **37 bytes**, all of it
+the UID's own genuinely-persistent state. Baselines re-recorded
+(`tools/sizereport-rp2350*.json`).
+
+286/286 QEMU tests pass (284 + 1 new test × 2 architectures): a guest booted
+with a `tools/provision.py`-written disk reports the provisioned name and uid
+with `record` as the source of both; the same guest with no second drive at
+all -- every test that existed before I2, unmodified -- falls back to the
+derived identity exactly as it always did, with `uid: none`.
+
+Next: I3 (the on-device toolset -- `identity`/`peers`/`wlan` commands and
+their Lisp equivalents, fingerprints, `/proc/node` showing both name
+sources). I4-I6 (device key into the record, peer grants, WLAN credentials)
+each add a field type to the same format without touching I1/I2.
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards
 were about to share a segment -- and the pieces are good but they were never
