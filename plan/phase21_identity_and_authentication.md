@@ -1,6 +1,6 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I2 complete 2026-08-29.** Independent of the
+**Status: planned 2026-08-26; I1-I3 complete 2026-08-29.** Independent of the
 phase it grew out of.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
@@ -60,10 +60,55 @@ with `record` as the source of both; the same guest with no second drive at
 all -- every test that existed before I2, unmodified -- falls back to the
 derived identity exactly as it always did, with `uid: none`.
 
-Next: I3 (the on-device toolset -- `identity`/`peers`/`wlan` commands and
-their Lisp equivalents, fingerprints, `/proc/node` showing both name
-sources). I4-I6 (device key into the record, peer grants, WLAN credentials)
-each add a field type to the same format without touching I1/I2.
+**I3 done (2026-08-29).** The `identity` command (`kernel/shell.c`) and its
+four Lisp equivalents (`identity`, `identity-name`, `identity-provision`,
+`identity-key` in `user/lisp/lisp.c`), all thin wrappers over new typed
+functions in `kernel/identity.c`
+(`node_identity_provision()`/`node_identity_rename_persistent()`/
+`node_identity_set_key()`/`node_identity_generate_key()`/`node_devkey()`),
+sharing one read-modify-write helper onto the record so setting one field
+never silently drops another. `/proc/node` gained a `key fingerprint` line
+(`kernel/sha256.c`'s new `key_fingerprint_hex()` -- first 8 bytes of
+SHA-256, hex, §5.1). `kernel/idstore.h` gained `IDSTORE_FIELD_DEVKEY`, stored
+and fingerprinted from here on but **not yet consulted by the 9P auth path**
+-- that is I4's job, deliberately deferred so this milestone is toolset and
+storage only. `identity key --generate` refuses outright when
+`random_is_hardware()` is false (every QEMU target today), matching §5.1;
+`identity key <hex>` refuses a key that is empty, oversized, all one byte
+value, or a straight ±1 run across every byte -- not full "trivially
+patterned" detection, the two concrete shapes the plan names.
+
+**Scope cut, stated plainly:** `peers`/`peers add`/`peers remove`/`wlan`
+from §6 are **not** in I3. Building those commands now, before I5/I6 give
+them anything to actually enforce (`p9_handle_tattach()` still grants the
+whole namespace to every authenticated key), would ship a command that
+*looks* like it restricts access without doing so -- worse than not having
+it. They land with I5 and I6, against the field types those milestones
+define.
+
+`fs/9p.c`'s `p9_path_is_secret()` now also calls
+`kernel/idstore.c`'s new `idstore_path_is_secret()` (§4: "the identity store
+must join it"), guarding `/dev/identity`/`/dev/identity0` even though
+nothing serves either today -- the store is still never mounted into the
+VFS/9P namespace at all, reached only through `block_dev_t` directly from
+`kernel/identity.c`. Defensive, on the same reasoning the key-directory
+guard is enforced on the server rather than trusted to every caller: a guard
+installed only once something reaches for the wrong path is installed too
+late.
+
+288/288 QEMU tests pass (286 + 1 new test × 2 architectures,
+`test_identity_toolset`): a fresh store provisions and refuses a second
+`provision` without `--force`; a persisted rename updates `/proc/node`'s
+name and source without moving the MAC; an installed key's raw hex appears
+exactly once in the whole exchange -- the shell's own echo of what was
+typed -- and never again in any response, only its fingerprint. RP2350
+`sizecheck`: **+0 bytes** static RAM across all three personas -- everything
+new lives on the stack or in the record itself.
+
+Next: I4 (the device key moves out of the SD card and into the record --
+wiring `p9_auth_key_for()` to read what I3 can already write). I5 (peer
+grants with scope) and I6 (WLAN credentials) each add a field type and the
+`peers`/`wlan` commands I3 deliberately left out.
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards
 were about to share a segment -- and the pieces are good but they were never

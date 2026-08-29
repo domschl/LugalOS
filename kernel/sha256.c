@@ -176,6 +176,18 @@ void hmac_sha256(const void *key, uint32_t key_len,
     memset(inner, 0, sizeof(inner));
 }
 
+void key_fingerprint_hex(const void *key, uint32_t key_len, char out[KEY_FINGERPRINT_HEX_LEN + 1]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t digest[SHA256_DIGEST_LEN];
+    sha256(key, key_len, digest);
+    for (unsigned i = 0; i < KEY_FINGERPRINT_HEX_LEN / 2; i++) {
+        out[i * 2]     = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[KEY_FINGERPRINT_HEX_LEN] = '\0';
+    memset(digest, 0, sizeof(digest));
+}
+
 bool sha256_verify(const void *a, const void *b, uint32_t len) {
     const volatile uint8_t *x = (const volatile uint8_t *)a;
     const volatile uint8_t *y = (const volatile uint8_t *)b;

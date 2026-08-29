@@ -16,6 +16,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "kernel/identity.h"
+#include "kernel/sha256.h"
 #include "kernel/chan.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
@@ -679,6 +680,22 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "uid: none\nuid source: %s\n", node_uid_source());
+        }
+        /* I3: the device key, never itself -- only its fingerprint, the one
+         * thing §6's toolset is allowed to print. Not yet consulted by the
+         * 9P auth path (I4), so this can be provisioned and inspected on a
+         * node that still authenticates the phase-18 way. */
+        {
+            uint8_t key[NODE_DEVKEY_MAX];
+            uint32_t key_len = 0;
+            if (node_devkey(key, sizeof(key), &key_len)) {
+                char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+                key_fingerprint_hex(key, key_len, fp);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "key fingerprint: %s\n", fp);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "key fingerprint: none\n");
+            }
+            memset(key, 0, sizeof(key));
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);

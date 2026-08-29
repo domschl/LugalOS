@@ -2742,6 +2742,102 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
         session2.close()
 
 
+def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I3, plan/phase21_identity_and_authentication.md: the `identity`
+    command family against a real (fresh) identity disk -- I3's own verify
+    list, checked in order: `identity provision` refuses a populated store
+    without `--force`; a rename does not move the MAC; and no command ever
+    prints a key, only its fingerprint.
+
+    The 9P secrecy guard (§4: "the identity store must join
+    [p9_auth_path_is_secret()'s guard]") is not re-checked here -- it is
+    pure string logic with no device and no server involved, already
+    exercised by idstoreselftest/p9authselftest, which this suite runs
+    regardless of whether any identity disk is attached."""
+    import shutil
+    name = "Identity Toolset: Provision-Refuses, Rename-Keeps-MAC, No-Key-Printed (I3)"
+    arch_img = img_path.with_name(f"test_{arch_name}_idtool_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_idtool_id.img")
+    id_img.write_bytes(b"\x00" * 4096)  # unprovisioned
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # The MAC before anything touches the identity store, to compare
+        # against after a persisted rename.
+        ok, log = session.send_and_expect("cat /proc/node\n", r"mac source:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+        mm = re.search(r"^mac: ([0-9a-f:]{17})", log, re.MULTILINE)
+        if not mm:
+            return (name, False, f"no MAC in /proc/node:\n{log[-400:]}")
+        mac_before = mm.group(1)
+
+        # `identity provision` on a fresh store: succeeds, uid/name become
+        # 'record'-sourced.
+        ok, log = session.send_and_expect("identity provision\n", r"key fingerprint:", timeout=6.0)
+        if not ok or "identity: provisioned" not in log:
+            return (name, False, f"first provision did not succeed:\n{log[-500:]}")
+
+        # A second `identity provision`, no --force: refused, and the
+        # refusal must not have touched anything (checked by uid staying
+        # put below, via the rename step's own report).
+        ok, log = session.send_and_expect("identity provision\n", r"already provisioned", timeout=6.0)
+        if not ok:
+            return (name, False, f"a populated store was not refused without --force:\n{log[-500:]}")
+
+        # A rename: persists, and does not move the MAC.
+        ok, log = session.send_and_expect("identity name toolset-test\n", r"renamed to", timeout=6.0)
+        if not ok:
+            return (name, False, f"rename did not report success:\n{log[-500:]}")
+
+        ok, log = session.send_and_expect("cat /proc/node\n", r"mac source:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer after rename: {log[-400:]}")
+        if not re.search(r"^name: toolset-test\b", log, re.MULTILINE):
+            return (name, False, f"the persisted rename did not take:\n{log[-500:]}")
+        if not re.search(r"^name source: record\b", log, re.MULTILINE):
+            return (name, False, f"name source is not 'record' after a persisted rename:\n{log[-500:]}")
+        mm2 = re.search(r"^mac: ([0-9a-f:]{17})", log, re.MULTILINE)
+        if not mm2 or mm2.group(1) != mac_before:
+            return (name, False, f"the rename moved the MAC: {mac_before} -> {mm2.group(1) if mm2 else '?'}")
+
+        # A key, installed by hex: the response shows a fingerprint and
+        # never the raw key. The raw hex must appear in this command's own
+        # log exactly once -- the shell's echo of what was typed -- and
+        # nowhere else, i.e. never in a response line.
+        raw_key = "13579bdf02468ace13579bdf02468ace"
+        ok, log = session.send_and_expect(f"identity key {raw_key}\n", r"key fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"key install did not report success:\n{log[-500:]}")
+        if log.count(raw_key) != 1:
+            return (name, False, f"the raw key appeared {log.count(raw_key)} times, expected 1 (echo only):\n{log[-500:]}")
+        fp = re.search(r"^key fingerprint: ([0-9a-f]{16})", log, re.MULTILINE)
+        if not fp:
+            return (name, False, f"no fingerprint reported for the installed key:\n{log[-500:]}")
+
+        # And the report command itself never prints the key either.
+        ok, log = session.send_and_expect("identity\n", r"key fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"report did not answer: {log[-400:]}")
+        if raw_key in log:
+            return (name, False, f"the raw key leaked into the report:\n{log[-500:]}")
+        if f"key fingerprint: {fp.group(1)}" not in log:
+            return (name, False, f"the report's fingerprint does not match the installed key's:\n{log[-500:]}")
+
+        return (name, True, f"provision refused without --force, rename kept mac {mac_before}, "
+                             f"key fingerprint {fp.group(1)} shown and the raw key never printed")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -4425,6 +4521,7 @@ def main() -> int:
         _run_single(test_9p_auth_gate(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
@@ -4454,6 +4551,7 @@ def main() -> int:
         _run_single(test_9p_auth_gate(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))

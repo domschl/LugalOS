@@ -51,7 +51,22 @@ static uint32_t record_crc(const uint8_t *buf, uint32_t fields_len) {
 }
 
 static bool field_type_known(uint8_t type) {
-    return type == IDSTORE_FIELD_UID || type == IDSTORE_FIELD_NAME;
+    return type == IDSTORE_FIELD_UID || type == IDSTORE_FIELD_NAME || type == IDSTORE_FIELD_DEVKEY;
+}
+
+/* I3, kernel/include/kernel/idstore.h's own comment on this declaration
+ * explains why this matches nothing today and is enforced anyway. */
+bool idstore_path_is_secret(const char *path) {
+    /* Named after /dev's "vblk" -- the existing entry this would collide
+     * with in shape if the raw store were ever registered the same way. */
+    static const char *const RESERVED[] = {
+        "/dev/identity", "/dev/identity0",
+    };
+    if (!path) return false;
+    for (unsigned i = 0; i < sizeof(RESERVED) / sizeof(RESERVED[0]); i++) {
+        if (strcmp(path, RESERVED[i]) == 0) return true;
+    }
+    return false;
 }
 
 idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out) {
@@ -278,10 +293,59 @@ int idstore_selftest(void) {
         if (!ok) failures++;
     }
 
+    /* I3: a devkey field round-trips like any other -- it is a secret only
+     * in the sense that nothing ever prints it (kernel/shell.c's toolset),
+     * never in the sense that idstore itself treats it specially. */
+    {
+        idstore_writer_t w;
+        idstore_writer_init(&w);
+        const uint8_t key[32] = {
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+        };
+        bool ok = idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, key, sizeof(key)) == 0;
+        ok = ok && idstore_writer_commit(&w, &g_fake_dev) == 0;
+
+        idstore_t rec;
+        idstore_state_t st = idstore_read(&g_fake_dev, &rec);
+        ok = ok && st == IDSTORE_VALID;
+        ok = ok && rec.unknown_fields_skipped == 0;
+
+        uint8_t got_key[32];
+        ok = ok && idstore_get_field(&rec, IDSTORE_FIELD_DEVKEY, got_key, sizeof(got_key)) == (int)sizeof(key);
+        ok = ok && memcmp(got_key, key, sizeof(key)) == 0;
+
+        cprintf("  [%s] a device key field round-trips\n", ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
+    /* I3, §4: the store's own reserved paths are refused, matching
+     * fs/9p.c's p9_auth_path_is_secret() for the key directory. Pure string
+     * logic -- no device, no 9P server -- which is the whole point of
+     * putting the test here rather than with the server. */
+    {
+        static const struct { const char *path; bool secret; } CASES[] = {
+            { "/dev/identity",       true  },
+            { "/dev/identity0",      true  },
+            { "/proc/node",          false },  /* the safe, fingerprint-only report (I3 extends this) */
+            { "/sd0/system/etc",     false },
+        };
+        bool ok = true;
+        for (unsigned i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) {
+            if (idstore_path_is_secret(CASES[i].path) != CASES[i].secret) {
+                cprintf("        %s: expected %s\n", CASES[i].path,
+                        CASES[i].secret ? "refused" : "servable");
+                ok = false;
+            }
+        }
+        cprintf("  [%s] the store's reserved paths are refused, and only those\n", ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
     palloc_free(g_fake_disk, 1);
     g_fake_disk = NULL;
 
-    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (5/5)\n");
+    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (7/7)\n");
     else               cprintf("IDSTORE_SELFTEST_FAIL (%d failed)\n", failures);
     return failures;
 }

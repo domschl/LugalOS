@@ -4,6 +4,7 @@
 #include "kernel/console.h"
 #include "kernel/sha256.h"
 #include "kernel/random.h"
+#include "kernel/idstore.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -433,6 +434,11 @@ bool p9_auth_have_keys(void) {
  * the file: someone holding the board already has the flash. */
 static bool p9_path_is_secret(const char *path) {
     if (!path) return false;
+    /* I3, plan/phase21_identity_and_authentication.md §4: "the identity
+     * store must join it" -- the same guard, not a second one, so a path
+     * refused here is refused for exactly one reason regardless of which
+     * secret it would have served. */
+    if (idstore_path_is_secret(path)) return true;
     /* The single-key fallback is a key too. Guarding only the directory would
      * have left the simpler configuration -- the one a board with no SD card
      * uses -- readable by anyone who attached. */
@@ -515,6 +521,12 @@ int p9_auth_selftest(void) {
             { "/sd0/system/etc/auth.txt",         false },
             { "/proc/version",                    false },
             { "/",                                false },
+            /* I3, §4: the identity store joined this same guard --
+             * idstore_selftest() already checks idstore_path_is_secret()
+             * directly (pure string logic, no server needed); this line is
+             * what "refused by the SAME guard" means in practice, exercised
+             * through the one function every transport calls. */
+            { "/dev/identity0",                   true  },
         };
         bool ok = true;
         for (unsigned i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) {
@@ -524,7 +536,7 @@ int p9_auth_selftest(void) {
                 ok = false;
             }
         }
-        cprintf("  [%s] the key store is refused, and only the key store\n", ok ? "ok" : "FAIL");
+        cprintf("  [%s] the key store and the identity store are both refused, and only those\n", ok ? "ok" : "FAIL");
         if (!ok) failures++;
     }
 

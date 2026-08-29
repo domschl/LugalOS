@@ -50,8 +50,12 @@ typedef enum {
  * unknown (idstore_t.unknown_fields_skipped). Add new tags as later
  * milestones need them; never reuse a retired one. */
 typedef enum {
-    IDSTORE_FIELD_UID  = 1,  /* device scope, §2: 8 bytes, write-once in practice */
-    IDSTORE_FIELD_NAME = 2,  /* instance scope: up to NODE_NAME_MAX-1 bytes, freely rewritable */
+    IDSTORE_FIELD_UID    = 1,  /* device scope, §2: 8 bytes, write-once in practice */
+    IDSTORE_FIELD_NAME   = 2,  /* instance scope: up to NODE_NAME_MAX-1 bytes, freely rewritable */
+    IDSTORE_FIELD_DEVKEY = 3,  /* device scope, secret (§2, I3): the node's own auth key.
+                                 * Stored and fingerprinted from I3 on; not yet consulted by
+                                 * the 9P auth path -- I4 is what makes p9_auth_key_for()
+                                 * read this instead of (or before) the SD-card key file. */
 } idstore_field_type_t;
 
 typedef struct {
@@ -96,6 +100,18 @@ int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev);
  * without a bespoke implementation). Exposed for tools/provision.py (I2) and
  * for I7's "corrupt a byte and confirm the CRC catches it" verification. */
 uint32_t crc32_compute(const void *data, uint32_t len);
+
+/* I3, §4: "the identity store must join [p9_auth_path_is_secret()'s guard],
+ * and the test for that belongs with the store rather than with the server."
+ * The store is never mounted into the VFS/9P namespace today -- I2/I3's
+ * kernel/identity.c reads and writes it directly through block_dev_t,
+ * bypassing the filesystem layer entirely -- so nothing currently matches
+ * this. It exists anyway, on the same reasoning fs/9p.c already enforces its
+ * own guard on the server rather than trusting every caller to remember it:
+ * a guard installed only once something reaches for the wrong path is a
+ * guard installed too late. fs/9p.c's p9_path_is_secret() calls this in
+ * addition to its own check, so both live behind one guard. */
+bool idstore_path_is_secret(const char *path);
 
 /* Self-test: the three states, unknown-field skipping, and a byte-identical
  * round trip -- all against an in-memory fake block_dev_t, so it needs

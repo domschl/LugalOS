@@ -1,6 +1,7 @@
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/idstore.h"
+#include "kernel/random.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -212,20 +213,194 @@ bool node_uid(uint8_t out[NODE_UID_LEN]) {
 }
 const char *node_uid_source(void) { return g_uid_source; }
 
-int node_set_name(const char *name) {
-    if (!name || !name[0]) return -1;
+/* Shared by node_set_name() and node_identity_rename_persistent() (I3):
+ * the same string must be safe as a 9P uname, a hostname and a log line at
+ * once -- letters, digits, dash and dot. */
+static bool name_is_valid(const char *name, uint32_t *len_out) {
+    if (!name || !name[0]) return false;
     uint32_t n = 0;
     while (name[n]) {
-        /* Kept to what is safe in a 9P uname, a hostname and a log line at
-         * once: letters, digits, dash and dot. */
         char c = name[n];
         bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                   (c >= '0' && c <= '9') || c == '-' || c == '.';
-        if (!ok) return -1;
-        if (++n >= NODE_NAME_MAX) return -1;
+        if (!ok) return false;
+        if (++n >= NODE_NAME_MAX) return false;
     }
+    *len_out = n;
+    return true;
+}
+
+int node_set_name(const char *name) {
+    uint32_t n;
+    if (!name_is_valid(name, &n)) return -1;
     memcpy(g_name, name, n);
     g_name[n] = '\0';
     g_name_source = "set at runtime";
     return 0;
+}
+
+/* --- I3, plan/phase21_identity_and_authentication.md: the toolset's data
+ * layer -- read-modify-write onto the identity store, plus §5.1's key
+ * validation. See kernel/include/kernel/identity.h for what each of these
+ * is for; the reasoning lives there, next to the declarations. */
+
+bool node_devkey(uint8_t *out, uint32_t cap, uint32_t *len_out) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+
+    uint8_t buf[NODE_DEVKEY_MAX];
+    int n = idstore_get_field(&rec, IDSTORE_FIELD_DEVKEY, buf, sizeof(buf));
+    if (n <= 0) return false;
+
+    uint32_t take = (uint32_t)n < cap ? (uint32_t)n : cap;
+    if (out && take) memcpy(out, buf, take);
+    if (len_out) *len_out = (uint32_t)n;
+    memset(buf, 0, sizeof(buf));
+    return true;
+}
+
+/* Reads whatever is currently on `dev` (if anything valid), then writes a
+ * fresh record with `uid`/`name`/`key` overriding their respective fields
+ * when supplied and carrying the old value forward otherwise -- so setting
+ * just the name does not silently drop an already-provisioned uid or key,
+ * and vice versa. Returns 0, or -1 if the device write failed. Callers
+ * check identity_store_device() themselves first, so a NULL device here
+ * would mean this file's own two callers stopped agreeing with each other,
+ * not a condition worth its own error path. */
+static int identity_store_write(const uint8_t *uid,
+                                 const char *name, uint32_t name_len,
+                                 const uint8_t *key, uint32_t key_len) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return -1;
+
+    idstore_t old;
+    bool old_valid = idstore_read(dev, &old) == IDSTORE_VALID;
+
+    uint8_t final_uid[NODE_UID_LEN];
+    bool    have_uid = false;
+    if (uid) {
+        memcpy(final_uid, uid, sizeof(final_uid));
+        have_uid = true;
+    } else if (old_valid) {
+        have_uid = idstore_get_field(&old, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid)) == (int)sizeof(final_uid);
+    }
+
+    char     final_name[NODE_NAME_MAX];
+    uint32_t final_name_len = 0;
+    if (name) {
+        final_name_len = name_len;
+        memcpy(final_name, name, final_name_len);
+    } else if (old_valid) {
+        int n = idstore_get_field(&old, IDSTORE_FIELD_NAME, final_name, sizeof(final_name));
+        if (n > 0) final_name_len = (uint32_t)n;
+    }
+
+    uint8_t  final_key[NODE_DEVKEY_MAX];
+    uint32_t final_key_len = 0;
+    if (key) {
+        final_key_len = key_len;
+        memcpy(final_key, key, final_key_len);
+    } else if (old_valid) {
+        int n = idstore_get_field(&old, IDSTORE_FIELD_DEVKEY, final_key, sizeof(final_key));
+        if (n > 0) final_key_len = (uint32_t)n;
+    }
+
+    idstore_writer_t w;
+    idstore_writer_init(&w);
+    int rc = 0;
+    if (have_uid)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid));
+    if (final_name_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_NAME, final_name, (uint16_t)final_name_len);
+    if (final_key_len > 0)   rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
+    memset(final_key, 0, sizeof(final_key));
+    if (rc != 0) return -1;
+
+    return idstore_writer_commit(&w, dev);
+}
+
+node_id_result_t node_identity_provision(bool force) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return NODE_ID_ERR_NO_BACKEND;
+
+    idstore_t rec;
+    if (idstore_read(dev, &rec) == IDSTORE_VALID && !force) return NODE_ID_ERR_POPULATED;
+
+    uint8_t uid[NODE_UID_LEN];
+    random_bytes(uid, sizeof(uid));  /* a public identifier: §5.1's entropy gate is about keys, not this */
+
+    const char *name = node_name();
+    uint32_t name_len = (uint32_t)strlen(name);
+    if (name_len >= NODE_NAME_MAX) name_len = NODE_NAME_MAX - 1;
+
+    if (identity_store_write(uid, name, name_len, NULL, 0) != 0) return NODE_ID_ERR_WRITE_FAILED;
+
+    /* Reflect immediately: a freshly provisioned node should not need a
+     * reboot to report its own new uid/name as coming from the record. */
+    node_identity_init();
+    return NODE_ID_OK;
+}
+
+node_id_result_t node_identity_rename_persistent(const char *name) {
+    uint32_t n;
+    if (!name_is_valid(name, &n)) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    if (identity_store_write(NULL, name, n, NULL, 0) != 0) return NODE_ID_ERR_WRITE_FAILED;
+
+    /* g_mac is untouched above and below -- a persisted rename keeps the
+     * same non-obviousness guarantee node_set_name() already gives. */
+    memcpy(g_name, name, n);
+    g_name[n] = '\0';
+    g_name_source = "record";
+    return NODE_ID_OK;
+}
+
+/* §5.1's "trivially patterned": not full pattern detection, just the two
+ * shapes a key typed by hand while distracted actually produces -- one
+ * repeated byte value (all-zero included), or a straight +1/-1 run across
+ * every byte. */
+static bool key_looks_trivial(const uint8_t *key, uint32_t len) {
+    if (len < 2) return true;
+
+    bool all_same = true;
+    for (uint32_t i = 1; i < len; i++) {
+        if (key[i] != key[0]) { all_same = false; break; }
+    }
+    if (all_same) return true;
+
+    bool ascending = true, descending = true;
+    for (uint32_t i = 1; i < len; i++) {
+        if ((uint8_t)(key[i - 1] + 1) != key[i]) ascending = false;
+        if ((uint8_t)(key[i - 1] - 1) != key[i]) descending = false;
+    }
+    return ascending || descending;
+}
+
+node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len) {
+    if (!key || key_len == 0 || key_len > NODE_DEVKEY_MAX) return NODE_ID_ERR_BAD_INPUT;
+    if (key_looks_trivial(key, key_len)) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    if (identity_store_write(NULL, NULL, 0, key, key_len) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
+}
+
+const char *node_id_result_str(node_id_result_t rc) {
+    switch (rc) {
+        case NODE_ID_OK:               return "ok";
+        case NODE_ID_ERR_NO_BACKEND:   return "no identity store on this target (plan/phase21_identity_and_authentication.md, I7 brings one to RP2350)";
+        case NODE_ID_ERR_POPULATED:    return "already provisioned; use --force to overwrite";
+        case NODE_ID_ERR_BAD_INPUT:    return "rejected (bad name, or a key that's empty, oversized, or trivially patterned)";
+        case NODE_ID_ERR_NO_ENTROPY:   return "no hardware entropy source on this target; install a key by hand instead";
+        case NODE_ID_ERR_WRITE_FAILED: return "the device write failed";
+    }
+    return "?";
+}
+
+node_id_result_t node_identity_generate_key(void) {
+    if (!random_is_hardware()) return NODE_ID_ERR_NO_ENTROPY;
+    uint8_t key[32];
+    random_bytes(key, sizeof(key));
+    node_id_result_t rc = node_identity_set_key(key, sizeof(key));
+    memset(key, 0, sizeof(key));
+    return rc;
 }

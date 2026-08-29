@@ -82,4 +82,72 @@ const char *node_uid_source(void);
  * this symbol for their own target. */
 block_dev_t *identity_store_device(void);
 
+/* --- I3, plan/phase21_identity_and_authentication.md: the on-device
+ * toolset's data layer. kernel/shell.c's `identity` command and
+ * user/lisp/lisp.c's Lisp equivalents are thin wrappers over these -- the
+ * argument parsing lives in each presentation layer, not here. */
+
+/* Matches fs/9p.h's P9_AUTH_KEY_MAX: the two need not be the same constant,
+ * but a device key is exactly the same kind of pre-shared secret phase 18's
+ * key store already bounds, so there is no reason for a second number. */
+#define NODE_DEVKEY_MAX 64
+
+typedef enum {
+    NODE_ID_OK = 0,
+    NODE_ID_ERR_NO_BACKEND,    /* identity_store_device() returned NULL on this target */
+    NODE_ID_ERR_POPULATED,     /* provision refused: already provisioned, no --force */
+    NODE_ID_ERR_BAD_INPUT,     /* empty/oversized name, or a key that fails §5.1's checks */
+    NODE_ID_ERR_NO_ENTROPY,    /* --generate refused: random_is_hardware() is false (§5.1) */
+    NODE_ID_ERR_WRITE_FAILED,  /* the device write itself failed */
+} node_id_result_t;
+
+/* One error-to-string mapping shared by kernel/shell.c's `identity` command
+ * and user/lisp/lisp.c's Lisp equivalents, so the two surfaces never drift
+ * into describing the same failure two different ways. */
+const char *node_id_result_str(node_id_result_t rc);
+
+/* The record's device key, if one is provisioned -- absent on any node I4
+ * has not yet reached, and always for report/fingerprint purposes only;
+ * §6's toolset never hands this to a caller that prints it. `cap` bounds
+ * how much of a longer-than-expected field gets copied; the real length is
+ * returned via `len_out` regardless. Returns false (and leaves `out`/
+ * `len_out` untouched) when there is no backend or no key field. */
+bool node_devkey(uint8_t *out, uint32_t cap, uint32_t *len_out);
+
+/* `identity provision [--force]` (§6). Mints a UID (random_bytes(), a
+ * public identifier -- no entropy gate) and sets the name field to whatever
+ * node_name() currently resolves to. Refuses when the store already parses
+ * as IDSTORE_VALID unless `force` is true; an UNPROVISIONED or CORRUPT store
+ * proceeds either way, since there is nothing valid to protect. `force`
+ * overwrites even an existing UID -- §2 calls the UID "write-once ... it IS
+ * the device," but also says a key that can never be rotated turns a mistake
+ * into a hardware replacement; `--force` is the same deliberate-gesture
+ * argument applied to the whole record, not an oversight of the write-once
+ * table. A device key already on record, if any, is always carried forward
+ * unchanged -- provisioning identity is not `identity key`'s job. */
+node_id_result_t node_identity_provision(bool force);
+
+/* `identity name <name>` (§6): persists a rename into the record (unlike
+ * node_set_name(), which is runtime-only) and updates the live name/source
+ * immediately, so a reboot is not required to see it take -- but does NOT
+ * touch node_mac(): a persisted rename must keep the same non-obviousness
+ * guarantee node_set_name() already gives (identity.h's own comment on
+ * why). Same character/length validation as node_set_name(). */
+node_id_result_t node_identity_rename_persistent(const char *name);
+
+/* `identity key <hex>|--generate` (§6). §5.1's "validated at rest": refuses
+ * an empty key, one longer than NODE_DEVKEY_MAX, or one that is all one
+ * byte value or a straight +1/-1 run (the two shapes a key typed by hand
+ * while distracted actually produces) -- not full pattern detection, just
+ * the cheap, concrete cases the plan names. Any existing UID/name in the
+ * record is carried forward unchanged. */
+node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len);
+
+/* `identity key --generate`'s own half: 32 random bytes, refused outright
+ * when random_is_hardware() is false (§5.1 -- "a provisioner must refuse to
+ * mint a key when random_is_hardware() is false"), which is every QEMU
+ * target today. Installs the key the same way node_identity_set_key() does
+ * on success. */
+node_id_result_t node_identity_generate_key(void);
+
 #endif /* LUGALOS_KERNEL_IDENTITY_H */

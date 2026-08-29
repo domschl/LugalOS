@@ -59,6 +59,15 @@ void hmac_sha256(const void *key, uint32_t key_len,
  */
 bool sha256_verify(const void *a, const void *b, uint32_t len);
 
+/* The first 8 bytes of SHA-256 over `key`, rendered as 16 lowercase hex
+ * characters plus a terminating NUL (I3/§5.1,
+ * plan/phase21_identity_and_authentication.md). A secret you cannot display
+ * is a secret you cannot confirm you installed correctly; a fingerprint is
+ * the part safe to display -- an operator compares it against their notes,
+ * and neither end ever prints the key itself. */
+#define KEY_FINGERPRINT_HEX_LEN 16u
+void key_fingerprint_hex(const void *key, uint32_t key_len, char out[KEY_FINGERPRINT_HEX_LEN + 1]);
+
 /* Known-answer tests: FIPS 180-4's SHA-256 examples and RFC 4231's
  * HMAC-SHA-256 test cases 1-4, 6 and 7 (the two that exercise a key longer
  * than the block). Prints one line per case and a machine-readable verdict.

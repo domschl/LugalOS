@@ -17,6 +17,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "kernel/identity.h"
+#include "kernel/sha256.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
 #include "lugalos_config.h"
@@ -2344,6 +2345,119 @@ static lisp_val_t *prim_net_identity(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* --- `identity`, `identity-name`, `identity-provision`, `identity-key` --
+ * I3, plan/phase21_identity_and_authentication.md §6: the same four
+ * subcommands as kernel/shell.c's `identity` command, over the same typed
+ * functions in kernel/identity.c, so /sd0/system/etc/usr_init.lisp can drive
+ * provisioning the same way it already drives (net-identity ...). */
+
+static void identity_print_report_lisp(void) {
+    cprintf("name: %s (%s)\n", node_name(), node_name_source());
+    char mac[18];
+    netif_mac_str(node_mac(), mac);
+    cprintf("mac: %s (%s)\n", mac, node_mac_source());
+
+    static const char hex[] = "0123456789abcdef";
+    uint8_t uid[NODE_UID_LEN];
+    if (node_uid(uid)) {
+        char uidhex[NODE_UID_LEN * 2 + 1];
+        for (unsigned i = 0; i < NODE_UID_LEN; i++) {
+            uidhex[i * 2]     = hex[uid[i] >> 4];
+            uidhex[i * 2 + 1] = hex[uid[i] & 0x0f];
+        }
+        uidhex[NODE_UID_LEN * 2] = '\0';
+        cprintf("uid: %s (%s)\n", uidhex, node_uid_source());
+    } else {
+        cprintf("uid: none (%s)\n", node_uid_source());
+    }
+
+    uint8_t key[NODE_DEVKEY_MAX];
+    uint32_t key_len = 0;
+    if (node_devkey(key, sizeof(key), &key_len)) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(key, key_len, fp);
+        cprintf("key fingerprint: %s\n", fp);
+    } else {
+        cprintf("key fingerprint: none\n");
+    }
+    memset(key, 0, sizeof(key));
+}
+
+/* `(identity)` -- report. */
+static lisp_val_t *prim_identity(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    identity_print_report_lisp();
+    return &true_val;
+}
+
+/* `(identity-name "clock-01")` -- persists, unlike (net-identity "..."). */
+static lisp_val_t *prim_identity_name(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    const char *name = get_str_val(args->u.pair.car);
+    node_id_result_t rc = node_identity_rename_persistent(name);
+    if (rc != NODE_ID_OK) { cprintf("identity-name: %s\n", node_id_result_str(rc)); return &false_val; }
+    cprintf("identity: renamed to '%s' (persisted)\n", node_name());
+    return &true_val;
+}
+
+/* `(identity-provision)` or `(identity-provision "--force")`. */
+static lisp_val_t *prim_identity_provision(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    bool force = false;
+    if (args && args->type == LISP_PAIR) {
+        const char *arg = get_str_val(args->u.pair.car);
+        force = arg && strcmp(arg, "--force") == 0;
+    }
+    node_id_result_t rc = node_identity_provision(force);
+    if (rc != NODE_ID_OK) { cprintf("identity-provision: %s\n", node_id_result_str(rc)); return &false_val; }
+    cprintf("identity: provisioned\n");
+    identity_print_report_lisp();
+    return &true_val;
+}
+
+/* `(identity-key "aabbcc...")` or `(identity-key "--generate")`. */
+static lisp_val_t *prim_identity_key(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) { cprintf("usage: (identity-key \"<hex>\"|\"--generate\")\n"); return &false_val; }
+    const char *arg = get_str_val(args->u.pair.car);
+
+    node_id_result_t rc;
+    if (arg && strcmp(arg, "--generate") == 0) {
+        rc = node_identity_generate_key();
+    } else {
+        uint8_t key[NODE_DEVKEY_MAX];
+        uint32_t len = 0;
+        for (const char *h = arg; h && h[0] && h[1] && len < sizeof(key); h += 2) {
+            int hi = -1, lo = -1;
+            for (int p = 0; p < 2; p++) {
+                char c = h[p];
+                int v = (c >= '0' && c <= '9') ? c - '0'
+                      : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                      : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+                if (p == 0) hi = v; else lo = v;
+            }
+            if (hi < 0 || lo < 0) break;
+            key[len++] = (uint8_t)((hi << 4) | lo);
+        }
+        if (len == 0) { cprintf("identity-key: expected an even-length hex string, or \"--generate\"\n"); return &false_val; }
+        rc = node_identity_set_key(key, len);
+        memset(key, 0, sizeof(key));
+    }
+
+    if (rc != NODE_ID_OK) { cprintf("identity-key: %s\n", node_id_result_str(rc)); return &false_val; }
+    cprintf("identity: key installed\n");
+    uint8_t k[NODE_DEVKEY_MAX];
+    uint32_t klen = 0;
+    if (node_devkey(k, sizeof(k), &klen)) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(k, klen, fp);
+        cprintf("key fingerprint: %s\n", fp);
+    }
+    memset(k, 0, sizeof(k));
+    return &true_val;
+}
+
 static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2791,6 +2905,10 @@ void lisp_init(void) {
     env_set(&global_env, "net-config", make_prim(prim_net_config));
     env_set(&global_env, "net-mount", make_prim(prim_net_mount));
     env_set(&global_env, "net-identity", make_prim(prim_net_identity));
+    env_set(&global_env, "identity", make_prim(prim_identity));
+    env_set(&global_env, "identity-name", make_prim(prim_identity_name));
+    env_set(&global_env, "identity-provision", make_prim(prim_identity_provision));
+    env_set(&global_env, "identity-key", make_prim(prim_identity_key));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));
