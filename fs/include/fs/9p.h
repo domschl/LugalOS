@@ -176,14 +176,24 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * authenticated identity gets the same namespace. See the plan's §1.
  */
 
-/* Where the keys live, searched in this order. The first file is a list --
- * one "uname hexkey" line per identity, so a key can be revoked by deleting a
- * line -- and the second is a single key for a board with no card.
+/* Where the keys live. I4, plan/phase21_identity_and_authentication.md
+ * moved this node's own key off the SD card and into its identity record
+ * (kernel/idstore.h's IDSTORE_FIELD_DEVKEY, via kernel/identity.c's
+ * node_devkey()) -- checked ahead of both files below in
+ * p9_auth_key_for()'s search order, since it is now the primary,
+ * persistent place a key lives, and removing the SD card removes neither
+ * it nor the console override above it. These two files remain: the first
+ * is a list -- one "uname hexkey" line per identity, so a key can be
+ * revoked by deleting a line -- and the second is a single key for a
+ * board with no card. Per-identity grants with scope (§5.2) are I5's, not
+ * this list's.
  *
  * The 9P server refuses to serve anything under P9_AUTH_KEY_DIR (see
- * p9_path_is_secret() in fs/9p.c). That is not belt-and-braces: the gateway
- * exports the very volume its keys live on, so without it any authenticated
- * client could simply read everyone else's secret. */
+ * p9_path_is_secret() in fs/9p.c), and the identity record joined that
+ * same guard at I3 (kernel/idstore.c's idstore_path_is_secret()). That is
+ * not belt-and-braces: the gateway exports the very volume its keys live
+ * on, so without it any authenticated client could simply read everyone
+ * else's secret. */
 #define P9_AUTH_KEY_DIR   "/sd0/system/etc/auth"
 #define P9_AUTH_KEYS_FILE P9_AUTH_KEY_DIR "/keys"
 #define P9_AUTH_FALLBACK_KEY_FILE "/flash0/system/etc/p9key"

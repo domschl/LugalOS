@@ -1,6 +1,6 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I3 complete 2026-08-29.** Independent of the
+**Status: planned 2026-08-26; I1-I4 complete 2026-08-29.** Independent of the
 phase it grew out of.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
@@ -105,10 +105,40 @@ typed -- and never again in any response, only its fingerprint. RP2350
 `sizecheck`: **+0 bytes** static RAM across all three personas -- everything
 new lives on the stack or in the record itself.
 
-Next: I4 (the device key moves out of the SD card and into the record --
-wiring `p9_auth_key_for()` to read what I3 can already write). I5 (peer
-grants with scope) and I6 (WLAN credentials) each add a field type and the
-`peers`/`wlan` commands I3 deliberately left out.
+**I4 done (2026-08-29).** `fs/9p.c`'s `p9_auth_key_for()` gained a new tier,
+checked right after the console key and ahead of both file-based sources:
+`node_devkey()` (I3), answering for any `uname` the same way the flash
+fallback always has -- §1.2's "one key store serves both directions" still
+holds; the split into per-peer grants is I5's, not this one's.
+`p9_auth_have_keys()` gained the matching check, so a record-only key does
+not trip `p9auth`'s "no keys configured" warning. Nothing else moved:
+`P9_AUTH_KEYS_FILE` and `P9_AUTH_FALLBACK_KEY_FILE` are still read, still in
+that order, still after the record -- I4 only says where *this node's own*
+key is checked first, not that the SD-card list stops mattering (that is
+I5's per-peer-grants job). The console key is untouched, exactly as planned:
+still the bootstrap override, still checked first, still never reachable
+over 9P.
+
+New QEMU test `test_identity_record_auth`: two nodes, each with a blank
+identity disk, each running `identity key <hex>` and nothing else --
+no `p9key`, no SD-card key file on either side -- authenticate over TCP and
+mount each other's namespace. `p9auth` on the server confirms `Keys
+configured: yes` sourced from the record alone. The raw key appears exactly
+once in the whole exchange (the shell's own echo), matching I3's own
+no-key-printed property extended to the path that actually authenticates a
+peer. `test_9p_between_nodes_over_tcp` (phase 19's own two-node test, R3b) --
+named explicitly in I4's verify list -- passes unmodified, since it never
+attaches an identity disk at all and `node_devkey()` simply returns false
+for it, falling straight through to the console key exactly as before.
+
+289/289 QEMU tests pass. RP2350 `sizecheck`: **+0 bytes** across all three
+personas -- the new tier is a stack-local lookup, nothing persistent added.
+
+Next: I5 (peer grants with scope -- the list gains an `aname`/mode column,
+and inbound keys finally split from this node's own, per §1.2's note that
+the single-key-store simplification stops holding here) and I6 (WLAN
+credentials). Both add a field type and the `peers`/`wlan` commands I3
+deliberately left out.
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards
 were about to share a segment -- and the pieces are good but they were never

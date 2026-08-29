@@ -4241,6 +4241,125 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
         session_b.close()
 
 
+def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
+                              img64: Path, img32: Path) -> tuple[str, bool, str]:
+    """I4, plan/phase21_identity_and_authentication.md: "a node with a key
+    only in its identity record authenticates to a peer and accepts an
+    attach" -- the same shape as test_9p_between_nodes_over_tcp() (R3b)
+    above, deliberately, except neither node ever calls `p9key` (the
+    console override) and neither has any SD-card-based key file. The only
+    place either node's key exists is what `identity key <hex>` (I3) wrote
+    into its identity record -- fs/9p.c's p9_auth_key_for() must find it
+    there, ahead of the (in this test, nonexistent) SD-card list and flash
+    fallback.
+
+    "Removing the card does not remove the ability to do either": both
+    nodes' keys live on the identity disk, a device distinct from the one
+    /sd0 mounts, so this test's very shape -- no SD-card key file is ever
+    written on either side -- already demonstrates that /sd0 was never
+    load-bearing for this. `p9auth` (no args) is checked too, as the
+    concrete proof that p9_auth_have_keys() sees the record and does not
+    print its "no keys configured" warning."""
+    import shutil
+    import socket as _socket
+
+    name = "Identity Record As The Only Auth Key, Peer To Peer (I4)"
+    key = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+    # The same probe-a-free-port approach test_9p_between_nodes_over_tcp()
+    # uses, on its own port so the two tests cannot collide if ever run
+    # concurrently.
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    img_b = img64.with_name("test_idauth_b_sd.img")
+    img_a = img32.with_name("test_idauth_a_sd.img")
+    shutil.copyfile(img64, img_b)
+    shutil.copyfile(img32, img_a)
+    id_b = img64.with_name("test_idauth_b_id.img")
+    id_a = img32.with_name("test_idauth_a_id.img")
+    id_b.write_bytes(b"\x00" * 4096)
+    id_a.write_bytes(b"\x00" * 4096)
+
+    marker = "GREETINGS_FROM_NODE_B_VIA_RECORD_KEY"
+
+    session_b = QemuSession(rv64_elf, img_b, "rv64")
+    session_a = QemuSession(rv32_elf, img_a, "rv32")
+    try:
+        session_b.start(identity_img_path=id_b, extra_qemu_args=[
+            "-netdev", f"socket,id=n0,listen=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:aa:bb:01",
+        ])
+        ok, log = session_b.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node B (RV64) did not boot: {log[-400:]}")
+
+        ok, log = session_b.send_and_expect(
+            'lisp\n(net-config "192.168.98.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.98\.2", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B refused its address: {log[-400:]}")
+
+        ok, log = session_b.send_and_expect(f"identity key {key}", r"key fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B's identity key install failed: {log[-400:]}")
+
+        ok, log = session_b.send_and_expect("p9auth", r"Keys configured: yes", timeout=5.0)
+        if not ok:
+            return (name, False, f"p9auth does not see the record-only key: {log[-500:]}")
+
+        ok, log = session_b.send_and_expect(
+            f'lisp\n(write-file "/ram0/hello.txt" "{marker}")\nexit', r"=> #t", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B could not write its marker: {log[-400:]}")
+
+        session_a.start(identity_img_path=id_a, extra_qemu_args=[
+            "-netdev", f"socket,id=n0,connect=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:aa:bb:02",
+        ])
+        ok, log = session_a.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node A (RV32) did not boot: {log[-400:]}")
+        ok, log = session_a.send_and_expect(
+            'lisp\n(net-config "192.168.98.3" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.98\.3", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node A refused its address: {log[-400:]}")
+
+        ok, log = session_a.send_and_expect(f"identity key {key}", r"key fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node A's identity key install failed: {log[-400:]}")
+
+        # Neither node's raw key ever appears anywhere but this one line of
+        # input echo -- the same "no command prints a key" property I3's own
+        # test checks, exercised here against the path that actually
+        # authenticates a peer rather than just a self-test.
+        if log.count(key) != 1:
+            return (name, False, f"the raw key appeared {log.count(key)} times installing it on A")
+
+        ok, log = session_a.send_and_expect(
+            'lisp\n(net-mount "peer" "192.168.98.2" 564)\nexit',
+            r"\[Net\] /peer mounted from 192\.168\.98\.2:564", timeout=12.0)
+        if not ok:
+            return (name, False,
+                    f"the record-key-only mount failed: {log[-600:]}")
+
+        ok, log = session_a.send_and_expect("cat /peer/ram0/hello.txt",
+                                            re.escape(marker), timeout=8.0)
+        if not ok:
+            return (name, False, f"could not read B's file through the mount: {log[-500:]}")
+
+        return (name, True, "both nodes authenticated using only their identity "
+                            "record's key -- no p9key, no SD-card key file")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session_a.close()
+        session_b.close()
+
+
 def test_9p_multinode_heterogeneous(rv64_elf: Path, rv32_elf: Path,
                                     img64: Path, img32: Path) -> tuple[str, bool, str]:
     """A4/T2: the milestone that satisfies this phase's stated goal -- two
@@ -4568,6 +4687,7 @@ def main() -> int:
         _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_between_nodes_over_tcp(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
+        _run_single(test_identity_record_auth(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
 

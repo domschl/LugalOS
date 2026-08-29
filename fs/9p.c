@@ -5,6 +5,7 @@
 #include "kernel/sha256.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
+#include "kernel/identity.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -347,6 +348,24 @@ int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
         return 0;
     }
 
+    /* I4, plan/phase21_identity_and_authentication.md: the device key moves
+     * into the identity record -- off the SD card, out of the image. Checked
+     * ahead of both file-based sources below because it is now the primary,
+     * persistent place this node's own key lives; pulling the card removes
+     * neither this nor the console override above it. Answers for any
+     * uname, the same as the flash fallback below it always has -- §1.2's
+     * "one key store serves both directions" still holds at I4; the split
+     * into per-peer grants is I5's, not this one's. */
+    uint8_t rec_key[NODE_DEVKEY_MAX];
+    uint32_t rec_key_len = 0;
+    if (node_devkey(rec_key, sizeof(rec_key), &rec_key_len) && rec_key_len > 0) {
+        memcpy(key_out, rec_key, rec_key_len);
+        *key_len = rec_key_len;
+        memset(rec_key, 0, sizeof(rec_key));
+        return 0;
+    }
+    memset(rec_key, 0, sizeof(rec_key));
+
     char buf[512];
     int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
 
@@ -413,6 +432,15 @@ int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
 
 bool p9_auth_have_keys(void) {
     if (g_console_key_len > 0) return true;
+    /* I4: a record-only key must not trip a false "no keys configured"
+     * warning (kernel/shell.c's cmd_p9auth()) just because neither file
+     * below exists -- the record is a real source now, not a future one. */
+    uint8_t rec_key[NODE_DEVKEY_MAX];
+    uint32_t rec_key_len = 0;
+    if (node_devkey(rec_key, sizeof(rec_key), &rec_key_len) && rec_key_len > 0) {
+        memset(rec_key, 0, sizeof(rec_key));
+        return true;
+    }
     vfs_stat_t st;
     if (vfs_stat(P9_AUTH_KEYS_FILE, &st) == 0 && !st.is_dir) return true;
     if (vfs_stat(P9_AUTH_FALLBACK_KEY_FILE, &st) == 0 && !st.is_dir) return true;
