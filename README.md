@@ -702,6 +702,242 @@ presses from the clock face, and **SYNC**, **LAST**, **AUTO**, **TSET**, **BRT**
 
 ---
 
+## Identity and Authentication
+
+Every LugalOS node has three things worth keeping apart, and `plan/phase21_identity_and_authentication.md`
+is the design that keeps them apart: an **identity** (who a node claims to be — a UID that belongs to
+the silicon and a name that belongs to its current role), an **authentication** mechanism (a pre-shared-key
+challenge over 9P's own `Tauth` extension point — `plan/phase18_networking_and_auth.md` — that proves a
+peer holds a specific key without ever putting the key on the wire), and, since phase 21, an
+**authorization** step (a short list of *grants* saying which peer may attach where, and whether it may
+write). None of this defends against a network observer reading traffic — see
+[What it does not defend, and will not](#what-it-does-not-defend-and-will-not) below — it defends the
+exported namespace against a peer that never proves anything at all, and bounds what a peer that *did*
+prove something is allowed to reach.
+
+**Current status.** Everything below is implemented and covered by `tests/runner.py`, but only against
+the QEMU identity disk (`drivers/virtio_blk_id.c`, milestone I2) — the RP2350 flash-sector backend
+(milestone I7: OTP chip ID for the UID, the reserved flash sector for everything else) has not been
+built. **On real RP2350 hardware today, `identity`/`peers`/`wlan` all report "no identity store on this
+target"** — the toolset exists and is tested, but nothing on a physical board currently backs it. I7
+needs bench access to real silicon to verify its two hardware-specific claims (a provisioned identity
+survives a UF2 reflash; an interrupted flash write leaves the store readable as corrupt rather than as
+plausible garbage) and is deferred until that access exists again. `plan/phase21_identity_and_authentication.md`
+tracks this as the one open milestone before I8; the QEMU path below is fully real and is how the
+identity/auth/grants system is developed and tested today, on both supported architectures.
+
+### The record, and why one field can't answer two questions
+
+The identity **record** is a small (4 KB), typed, versioned block on its own storage — the second
+virtio-blk device in QEMU, the RP2350's reserved flash sector once I7 lands — never on the removable SD
+card, and never served over 9P under any path (the same server-side guard that refuses to serve the
+9P auth key directory refuses this too). It holds, per field: a device UID (minted once, meant to survive
+a reflash), an instance name (freely rewritable — a board's *role* can change even when its silicon
+doesn't), this node's own device key (used only to *prove* this node's identity to a peer), and,
+optionally, one WLAN SSID and its derived PSK.
+
+The one rule that shapes all of it: **a value used to prove who a node is must never also be the value
+used to decide who else may attach.** Milestone I4 first let a node's own key answer "who may attach to
+me" the same way a shared fallback key always had — coherent in isolation, and wrong the moment grants
+(below) carry scope, because it would let anyone holding *a* node's key walk past every grant on
+*another* node. I5 split the lookup in two (`p9_auth_own_key()` for proving yourself, `p9_auth_key_for()`
+for verifying someone else) specifically to close that gap; see the milestone's own commit for the
+full reasoning.
+
+### Grants: authorization, not just authentication
+
+Before phase 21, any peer that authenticated at all — proved it held *some* configured key — received
+the entire exported namespace, including a directory that runs Lisp programs by design. The **grants
+list** (`peers`, backed by the same file phase 18's key list always was, now with two more columns)
+turns that into a real access-control decision: each entry names a peer, its key, the one subtree it
+may attach at (`/` for unrestricted), and whether it is read-only. A peer granted `/sd0/pgn` cannot
+attach at `/`; a peer granted `ro` gets a `Twrite`/`Tcreate`/`Tremove` refusal with a reason, not a
+silent failure. The list holds at most eight entries — bounded like every other table in this kernel —
+and revocation is deleting a line: there is no expiry and no revocation list, because nothing here is
+ever cached, so a removed grant stops working on the very next attach attempt.
+
+### Security implications, stated plainly
+
+Written down because an unstated limit gets credited as a feature.
+
+#### What it defends
+
+The exported namespace, against anything on the same network that does not hold a
+configured key. With grants, it additionally bounds *what* a holder of a particular key may reach.
+
+#### What it does not defend, and will not
+
+- **Physical access.** Every secret here — the device key, a WLAN PSK — sits in flash in the clear.
+  Anyone holding the board has them. This is inherited unchanged from phase 18 and is exactly why key
+  rotation is a deliberate gesture (`--force`) rather than a prohibition: a key that can never be
+  rotated turns a single compromise into a hardware replacement.
+- **Confidentiality on the wire.** 9P frames are cleartext. Authentication proves *who* attached; it
+  hides nothing they read afterward. Anything on the same network segment sees every byte.
+- **Traffic analysis**, and **denial of service** — the connection-slot table is a fixed size, and
+  that is a fixed size regardless of who is asking.
+- **A compromised peer.** A grant names a key, and a key is a bearer token. Nothing here distinguishes
+  the legitimate holder of a key from whoever else obtained a copy of it.
+
+#### What it depends on
+
+- **Entropy.** The whole scheme rests on `random_bytes()`. A provisioner refuses to mint a key at all
+  when `random_is_hardware()` is false — every QEMU target, today — rather than mint a guessable one;
+  `identity key --generate` on QEMU reports exactly this and asks for a key supplied by hand instead.
+- **The server-chosen nonce.** Replay across sessions is defeated by a fresh nonce per `Tauth`; replay
+  of one identity's response as another's is defeated by binding `uname` and `aname` into the response
+  MAC. Both are phase 18's and both are unchanged here.
+
+#### Where it could go
+
+In rough order of value per effort — none of this is planned work, only a
+recorded sense of what would matter most if it were ever taken up:
+
+1. **Encryption over the same seam.** A handshake producing a session key, wrapped around the transport
+   rather than inside the 9P server itself, so it stays a driver-shaped addition rather than a protocol
+   rewrite. This is the largest real gap — everything above proves *who*, nothing hides *what*.
+2. **RP2350 secure boot and OTP-backed secrets.** The silicon supports signed images and OTP key
+   storage, which would make "anyone holding the board has the key" false for the first time.
+3. **Signing the identity record** with a key the record itself does not contain, so a swapped storage
+   medium becomes detectable instead of silently authoritative.
+4. **An expiry/rotation protocol**, so rotating a compromised key stops requiring a physical visit.
+
+### Provisioning walkthrough
+
+This is the QEMU path — attaching a second virtio-blk device as the identity disk — since that is what
+exists and is tested today; I7 will add an equivalent flashing step for real RP2350 boards without
+changing anything below the storage layer.
+
+**1. Mint an identity from the host**, without ever booting the board:
+
+```bash
+$ python3 tools/provision.py clock.img --name clock-3f2a
+wrote clock.img: name='clock-3f2a' uid=7a1c9e4f02b6d831
+```
+
+That file is a raw 4 KB image in the exact format `kernel/idstore.c` reads — attach it as QEMU's second
+`virtio-blk-device` (or flash it to the reserved sector, once I7 exists) and the board's `identity`
+report already shows `clock-3f2a` with `name source: record` before a single shell command runs.
+
+**2. Or provision interactively, from the console**, which is what a bootstrap with no host tooling
+looks like:
+
+```bash
+lsh> identity
+name: rv64-mmu-a219 (derived)
+mac: 02:4c:47:...:.. (derived (build seed))
+uid: none (none (unprovisioned, no silicon id))
+key fingerprint: none
+
+lsh> identity provision
+identity: provisioned
+name: rv64-mmu-a219 (record)
+mac: 02:4c:47:...:.. (derived (build seed))
+uid: 7a1c9e4f02b6d831 (record)
+key fingerprint: none
+
+lsh> identity provision
+identity provision: already provisioned; use --force to overwrite
+```
+
+`identity provision` mints what is missing and refuses to overwrite an already-provisioned record
+without `--force` — the second call above shows the refusal, which is deliberate: re-running
+provisioning by accident must not silently mint a new UID out from under a board already in service.
+
+**3. Install this node's own device key**, so it can prove itself to a peer:
+
+```bash
+lsh> identity key --generate
+identity key: no hardware entropy source on this target; install a key by hand instead
+lsh> identity key 3fa1c88de4b0269917cc5a4408f1e2b6a9d047c3e51b8fa2601dd3c8e6f7091a
+identity: key installed
+key fingerprint: 77749c0e26076cbf
+```
+
+`--generate` refuses outright on QEMU (no hardware entropy source), which is the point: a provisioner
+that minted a key anyway would be minting a guessable one. On real RP2350 silicon `--generate` works;
+either way the command **never prints the key itself**, only its fingerprint — the one thing safe to
+read aloud, paste into a bug report, or compare against a paper note.
+
+**4. Grant a peer access, scoped to what it actually needs:**
+
+```bash
+lsh> peers add clock-3f2a 3fa1c88de4b0269917cc5a4408f1e2b6a9d047c3e51b8fa2601dd3c8e6f7091a /sd0/pgn rw
+peers: granted 'clock-3f2a' at /sd0/pgn (rw)
+lsh> peers
+name             fingerprint      aname                mode
+clock-3f2a       77749c0e26076cbf /sd0/pgn             rw
+```
+
+That peer can now attach *only* at `/sd0/pgn` — an attach at `/` is refused with `"attach: not granted
+at this aname"` — and the fingerprint shown is the same one `identity` reported on the peer's own
+console, which is exactly how an operator confirms the two boards agree on the same key without either
+one ever displaying it.
+
+**5. Install a WLAN credential — the derived PSK, never the passphrase:**
+
+```bash
+$ python3 tools/provision.py --selftest
+  [ok] SSID='IEEE' passphrase='password' -> f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e
+  [ok] different ssid/passphrase differ; same inputs are deterministic
+WPA2_PSK_SELFTEST_OK
+
+$ python3 tools/provision.py station.img --name kitchen-sensor \
+    --wlan-ssid homenet --wlan-passphrase "a real passphrase here"
+wrote station.img: name='kitchen-sensor' uid=0ba739d697bf1710 wlan_ssid='homenet' \
+  wlan_psk=6e91faf94be6a5a4d58ae22f45b42f5f0fd5e97f1e46513ac0b9a039b4af480d
+```
+(`uid` is freshly random each run — `secrets.token_bytes(8)` — so a second run mints a different one;
+the `wlan_psk` above is exactly what this SSID/passphrase pair derives to, reproducibly, every time.)
+
+The passphrase exists only in that host-side command line and is never written to the image or sent to
+a board — `derive_wpa2_psk()` runs PBKDF2-HMAC-SHA1 (WPA2's own construction, 4096 iterations) once, on
+the host, and only the 256-bit result is stored. Attach `station.img` as the identity disk and the
+board's own report already shows what was provisioned, no shell command needed to install anything:
+
+```bash
+lsh> wlan
+ssid: homenet
+psk fingerprint: 98d1f828c7a4ebe2
+```
+
+`wlan` (no arguments) reports the SSID in full — it is not a secret, every access point broadcasts it —
+and the PSK's fingerprint, never the PSK. The same round trip works from the shell directly
+(`wlan <ssid> <psk-hex>`, taking hex only — there is no code path here that accepts a passphrase).
+
+### What a wrong fingerprint looks like
+
+A fingerprint is the first 8 bytes of SHA-256 over a secret, shown as 16 hex characters. Two operators
+comparing notes on two different boards should see the **same** fingerprint for the same key:
+
+```
+board A> identity
+key fingerprint: 6685009530c3e0f4
+
+board B> identity
+key fingerprint: 6685009530c3e0f4          ← matches: both boards hold the same key
+```
+
+If a key was mistyped, copied from the wrong line of a provisioning log, or a board was swapped for a
+similar-looking one on the bench, the fingerprints simply do not match:
+
+```
+board A> identity
+key fingerprint: 6685009530c3e0f4
+
+board C> identity
+key fingerprint: eb8a50f5e24c1baf          ← does not match — this is not the key you think it is
+```
+
+There is no partial match, no "close enough": SHA-256 has no structure that makes similar keys produce
+similar fingerprints, so a one-character typo and a completely different key look identical — a mismatch
+of any kind. **The correct response to a mismatched fingerprint is to stop, not to keep trying keys
+against it**: re-derive or re-read the intended key from its actual source (the provisioning host's own
+output, not a note transcribed by hand) rather than pasting variations until something works, since a
+fingerprint that *happens* to match after several attempts is exactly as informative as one that
+matched on the first attempt for the wrong reason.
+
+---
+
 ## History
 
 - **2026-08-24: Release 0.13.1 — The clock driver becomes a driver, and two bugs it took hardware to find.**

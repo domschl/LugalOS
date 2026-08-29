@@ -1,7 +1,7 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I6 complete 2026-08-29.** Independent of the
-phase it grew out of.
+**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 BLOCKED
+on RP2350 bench access.** Independent of the phase it grew out of.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
 header, typed (TLV) fields, the three states (unprovisioned/corrupt/valid),
@@ -248,8 +248,25 @@ on this field the same way I2 already proved for uid/name), a runtime
 the whole exchange -- the shell's own echo, never a response. RP2350
 `sizecheck`: **+0 bytes** across all three personas.
 
-Next: I7 (the RP2350 flash-sector backend -- the last milestone every
-other one has been building storage-agnostic for) and I8 (docs).
+**I8 done (2026-08-29), taken out of order: I7 is blocked on hardware
+access (below), and I8's own three deliverables don't need it.** A new
+`## Identity and Authentication` section in `README.md` -- §7 restated in
+full as "Security implications, stated plainly" (what it defends, what it
+does not and will not, what it depends on, where it could go, all four as
+their own subsections rather than one wall of text); a five-step
+provisioning walkthrough (host-side `tools/provision.py`, interactive
+`identity provision`/`identity key`, a scoped `peers add`, and a WLAN
+credential installed via the derived PSK) with every command output
+**verified against a live QEMU boot rather than hand-typed** -- fingerprints,
+UIDs, and the exact column widths of `peers`' table all come from a real
+session, not an approximation of one; and a "What a wrong fingerprint
+looks like" section showing a matching pair and a mismatched pair side by
+side, with the operational answer (stop and re-derive from the source,
+don't try variations) stated as plainly as §7 itself is.
+
+Next: I7 (the RP2350 flash-sector backend), blocked until bench access to
+real RP2350 hardware exists again -- see its own entry above for exactly
+what's ready to go the day that's true.
 
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards
@@ -606,18 +623,40 @@ derivation, and the store. Lands with phase 19's R5 and is useless before it.
 *Verify:* on the host, a known passphrase and SSID derive the PSK the standard
 gives; on the device, the credential round-trips and is never printed.
 
-**I7 -- the RP2350 backend.** OTP chip id for the UID; the reserved flash
-sector for everything else; the write path from `.scratch_x`.
+**I7 -- the RP2350 backend. BLOCKED 2026-08-29: no bench access to RP2350
+hardware.** OTP chip id for the UID; the reserved flash sector for
+everything else; the write path from `.scratch_x`.
 *Verify:* on hardware -- two boards report different uids; a provisioned
 identity **survives a reflash** (§10's assumption, finally measured); an
 interrupted write leaves the store readable as corrupt rather than as
 plausible garbage.
 
+All three of I7's verify points are hardware-only by construction --
+"two boards", "survives a reflash", "an interrupted write" -- so nothing
+about this milestone can be brought forward into QEMU the way I1-I6 were
+(§10 already names the UF2-preservation assumption as the risk this
+verify list exists to catch, precisely *because* it can't be checked any
+other way). I1-I6 were deliberately sequenced to need no hardware at all
+so that this is the *only* thing blocked, not a reason the rest of the
+phase waited. When bench access returns: `identity_store_device()`
+(`kernel/identity.h`) is the one hook I7 fills in -- everything above it
+(the record format, the toolset, the auth wiring, grants, WLAN storage)
+is already written, tested, and does not change for this milestone to
+land. The two concrete unknowns going in are the reserved sector's
+address (must be `ASSERT`ed against the image's end in the linker script,
+per §10, not hand-copied into two places) and whether a UF2 reflash
+really does preserve blocks it doesn't contain, which is the entire
+premise the QEMU-side design has been building on since I2 and has never
+been measured on real silicon.
+
 **I8 -- documentation.** A README section that states §7 in full, the
 provisioning walkthrough, and what a wrong fingerprint looks like.
 
 **Sequencing.** I1-I6 need no hardware at all and can run alongside phase 19.
-I7 wants the same bench visit as phase 19's R4.
+I7 wants the same bench visit as phase 19's R4. I8 was done ahead of I7 --
+its own three deliverables (§7 in full, a provisioning walkthrough, what a
+wrong fingerprint looks like) are all QEMU-verifiable, so nothing about it
+needed to wait for the one milestone that does.
 
 ## 9. Explicitly not in this phase
 
