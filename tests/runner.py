@@ -2838,6 +2838,117 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
         session.close()
 
 
+def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I6, plan/phase21_identity_and_authentication.md §5.3: "on the device,
+    the credential round-trips and is never printed." (The host-side half of
+    I6's verify -- "a known passphrase and SSID derive the PSK the standard
+    gives" -- is test_host_wpa2_psk_derivation() below, no QEMU involved.)
+
+    Two halves. First: a disk `tools/provision.py` wrote a WLAN credential
+    onto is attached at boot, and the device's own report shows the same
+    SSID and a PSK fingerprint that matches a fingerprint computed
+    independently here on the host from the same PSK bytes -- proving the
+    two implementations of the record format (kernel/idstore.c and
+    provision.py's own from-scratch writer) agree on this field the same
+    way I2's test already proved they agree on uid/name. Second: the
+    on-device `wlan <ssid> <psk-hex>` command installs a *different*
+    credential at runtime, and the raw PSK hex appears exactly once in
+    that exchange -- the shell's own echo -- never in any response,
+    matching I3's identity-key test and I5's peers-add test."""
+    import hashlib
+    import shutil
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "WLAN Credential: Host<->Device Format Agreement, Round Trip, Never Printed (I6)"
+    arch_img = img_path.with_name(f"test_{arch_name}_wlan_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    prov_ssid = "provisioned-net"
+    prov_psk = provision.derive_wpa2_psk(prov_ssid, "a provisioned passphrase")
+    prov_fp = hashlib.sha256(prov_psk).digest()[:8].hex()
+    id_img = img_path.with_name(f"test_{arch_name}_wlan_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_WLAN_SSID, prov_ssid.encode("utf-8")),
+        (provision.FIELD_WLAN_PSK, prov_psk),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. The provisioned credential, read back exactly as provision.py wrote it.
+        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"wlan report did not answer: {log[-400:]}")
+        if not re.search(rf"^ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
+            return (name, False, f"the provisioned ssid was not reported:\n{log[-500:]}")
+        if not re.search(rf"^psk fingerprint: {prov_fp}\b", log, re.MULTILINE):
+            return (name, False, f"the provisioned psk's fingerprint does not match "
+                                 f"the host-computed one ({prov_fp}):\n{log[-500:]}")
+
+        ok, log = session.send_and_expect("cat /proc/node\n", r"wlan psk fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+        if not re.search(rf"^wlan ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
+            return (name, False, f"/proc/node does not show the provisioned ssid:\n{log[-500:]}")
+        if not re.search(rf"^wlan psk fingerprint: {prov_fp}\b", log, re.MULTILINE):
+            return (name, False, f"/proc/node's fingerprint does not match:\n{log[-500:]}")
+
+        # 2. A fresh credential installed at runtime: round-trips, and the
+        # raw hex appears exactly once (the shell's own echo of the command).
+        new_ssid = "runtime-net"
+        # Built, not hand-typed: a 32-byte pattern is easy to get one hex
+        # digit short by hand, and a wrong-length string would fail this
+        # test for the wrong reason (its own typo, not the code under test).
+        new_psk_hex = bytes(range(0x50, 0x70)).hex()
+        ok, log = session.send_and_expect(f"wlan {new_ssid} {new_psk_hex}", r"credential installed", timeout=6.0)
+        if not ok:
+            return (name, False, f"installing a new credential failed: {log[-500:]}")
+        if log.count(new_psk_hex) != 1:
+            return (name, False, f"the raw psk appeared {log.count(new_psk_hex)} times, expected 1 (echo only):\n{log[-500:]}")
+        new_fp = hashlib.sha256(bytes.fromhex(new_psk_hex)).digest()[:8].hex()
+        if not re.search(rf"^psk fingerprint: {new_fp}\b", log, re.MULTILINE):
+            return (name, False, f"the new credential's fingerprint does not match:\n{log[-500:]}")
+
+        # And the old ssid/psk are gone -- this is a replacement (§5.3: "one
+        # network"), not an addition.
+        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint:", timeout=6.0)
+        if not ok:
+            return (name, False, f"wlan report did not answer after install: {log[-400:]}")
+        if new_psk_hex in log:
+            return (name, False, f"the raw psk leaked into the report:\n{log[-500:]}")
+        if not re.search(rf"^ssid: {re.escape(new_ssid)}\b", log, re.MULTILINE):
+            return (name, False, f"the report does not show the new ssid:\n{log[-500:]}")
+        if re.search(rf"^ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
+            return (name, False, f"the old provisioned ssid is still reported:\n{log[-500:]}")
+
+        return (name, True, f"provisioned credential ({prov_ssid}, fp {prov_fp}) read back correctly; "
+                            f"runtime install ({new_ssid}, fp {new_fp}) round-tripped, raw psk never printed")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
+def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
+    """I6's host-side verify point: "a known passphrase and SSID derive
+    the PSK the standard gives." No QEMU -- tools/provision.py's
+    derive_wpa2_psk() runs entirely on the host, so this is exactly
+    test_host_fat32_image() above's shape (a plain host-side check), not
+    a QEMU integration test."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    failures = provision._wpa2_selftest()
+    return (failures == 0, "" if failures == 0 else f"{failures} check(s) failed -- see the printed detail above")
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -4825,6 +4936,18 @@ def main() -> int:
     else:
         print(f"  [FAIL] {info}")
 
+    # I6, plan/phase21_identity_and_authentication.md: the host half of the
+    # WLAN PBKDF2-HMAC-SHA1 derivation, no QEMU involved -- same shape as
+    # the FAT32 inspection just above.
+    ok, info = test_host_wpa2_psk_derivation()
+    total_tests += 1
+    name = "WPA2 PSK Derivation Against The IEEE 802.11i Worked Example (I6)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
     # 2. RV64 Target
     if rv64_elf.exists():
         print("\n[Target: RV64 Sv39 MMU Virtual Memory]")
@@ -4847,6 +4970,7 @@ def main() -> int:
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
@@ -4879,6 +5003,7 @@ def main() -> int:
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))

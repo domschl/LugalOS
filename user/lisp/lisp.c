@@ -2537,6 +2537,75 @@ static lisp_val_t *prim_peers_remove(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* --- `wlan`, `wlan-set` -- I6, §5.3/§6 ---------------------------------- */
+
+static void wlan_print_report_lisp(void) {
+    char ssid[NODE_WLAN_SSID_MAX + 1];
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    bool have_ssid = node_wlan_ssid(ssid, sizeof(ssid));
+    bool have_psk = node_wlan_psk(psk);
+    cprintf("ssid: %s\n", have_ssid ? ssid : "none");
+    if (have_psk) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(psk, sizeof(psk), fp);
+        cprintf("psk fingerprint: %s\n", fp);
+    } else {
+        cprintf("psk fingerprint: none\n");
+    }
+    memset(psk, 0, sizeof(psk));
+}
+
+/* `(wlan)` -- report. */
+static lisp_val_t *prim_wlan(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    wlan_print_report_lisp();
+    return &true_val;
+}
+
+/* `(wlan-set "ssid" "psk-hex")` -- the hex must be the *derived* PSK
+ * (tools/provision.py's derive_wpa2_psk()), never a passphrase. */
+static lisp_val_t *prim_wlan_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *ssid = get_str_val(lisp_list_ref(args, 0));
+    const char *hex   = get_str_val(lisp_list_ref(args, 1));
+    if (!ssid || !ssid[0] || !hex || !hex[0]) {
+        cprintf("usage: (wlan-set \"ssid\" \"psk-hex\")\n");
+        return &false_val;
+    }
+    if (strlen(hex) != NODE_WLAN_PSK_LEN * 2) {
+        cprintf("wlan-set: expected exactly %u hex characters (a derived WPA2 PSK is always 256 "
+                "bits) -- derive one with tools/provision.py, not by hand\n", (unsigned)(NODE_WLAN_PSK_LEN * 2));
+        return &false_val;
+    }
+
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    uint32_t len = 0;
+    for (const char *h = hex; h[0] && h[1] && len < sizeof(psk); h += 2) {
+        int hi = -1, lo = -1;
+        for (int p = 0; p < 2; p++) {
+            char c = h[p];
+            int v = (c >= '0' && c <= '9') ? c - '0'
+                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (p == 0) hi = v; else lo = v;
+        }
+        if (hi < 0 || lo < 0) break;
+        psk[len++] = (uint8_t)((hi << 4) | lo);
+    }
+    if (len != NODE_WLAN_PSK_LEN) {
+        cprintf("wlan-set: expected an even-length hex string\n");
+        memset(psk, 0, sizeof(psk));
+        return &false_val;
+    }
+
+    node_id_result_t rc = node_identity_set_wlan(ssid, (uint32_t)strlen(ssid), psk, len);
+    memset(psk, 0, sizeof(psk));
+    if (rc != NODE_ID_OK) { cprintf("wlan-set: %s\n", node_id_result_str(rc)); return &false_val; }
+    cprintf("wlan: credential installed\n");
+    wlan_print_report_lisp();
+    return &true_val;
+}
+
 static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
@@ -2991,6 +3060,8 @@ void lisp_init(void) {
     env_set(&global_env, "peers", make_prim(prim_peers));
     env_set(&global_env, "peers-add", make_prim(prim_peers_add));
     env_set(&global_env, "peers-remove", make_prim(prim_peers_remove));
+    env_set(&global_env, "wlan", make_prim(prim_wlan));
+    env_set(&global_env, "wlan-set", make_prim(prim_wlan_set));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));

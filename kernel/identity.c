@@ -261,17 +261,29 @@ bool node_devkey(uint8_t *out, uint32_t cap, uint32_t *len_out) {
     return true;
 }
 
+/* One field per thing the identity record can hold; a NULL/zero-length
+ * pointer means "carry forward whatever is already there". A struct
+ * rather than a growing positional parameter list -- I6 is the third
+ * caller to need "change one field, leave the rest alone", and a fourth
+ * (WLAN) needing two fields at once (ssid+psk) is where a positional
+ * signature stops being readable at the call site. */
+typedef struct {
+    const uint8_t *uid;                          /* NODE_UID_LEN bytes, or NULL */
+    const char    *name;    uint32_t name_len;
+    const uint8_t *key;     uint32_t key_len;
+    const char    *ssid;    uint32_t ssid_len;
+    const uint8_t *psk;     uint32_t psk_len;     /* NODE_WLAN_PSK_LEN bytes, or NULL */
+} identity_patch_t;
+
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
- * fresh record with `uid`/`name`/`key` overriding their respective fields
- * when supplied and carrying the old value forward otherwise -- so setting
- * just the name does not silently drop an already-provisioned uid or key,
- * and vice versa. Returns 0, or -1 if the device write failed. Callers
- * check identity_store_device() themselves first, so a NULL device here
- * would mean this file's own two callers stopped agreeing with each other,
- * not a condition worth its own error path. */
-static int identity_store_write(const uint8_t *uid,
-                                 const char *name, uint32_t name_len,
-                                 const uint8_t *key, uint32_t key_len) {
+ * fresh record with every field in `patch` that is non-NULL overriding the
+ * matching field and every other field carried forward unchanged -- so
+ * setting the name does not silently drop an already-provisioned uid, key
+ * or WLAN credential, and vice versa. Returns 0, or -1 if the device write
+ * failed. Callers check identity_store_device() themselves first, so a
+ * NULL device here would mean this file's own callers stopped agreeing
+ * with each other, not a condition worth its own error path. */
+static int identity_store_write(const identity_patch_t *patch) {
     block_dev_t *dev = identity_store_device();
     if (!dev) return -1;
 
@@ -280,8 +292,8 @@ static int identity_store_write(const uint8_t *uid,
 
     uint8_t final_uid[NODE_UID_LEN];
     bool    have_uid = false;
-    if (uid) {
-        memcpy(final_uid, uid, sizeof(final_uid));
+    if (patch->uid) {
+        memcpy(final_uid, patch->uid, sizeof(final_uid));
         have_uid = true;
     } else if (old_valid) {
         have_uid = idstore_get_field(&old, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid)) == (int)sizeof(final_uid);
@@ -289,9 +301,9 @@ static int identity_store_write(const uint8_t *uid,
 
     char     final_name[NODE_NAME_MAX];
     uint32_t final_name_len = 0;
-    if (name) {
-        final_name_len = name_len;
-        memcpy(final_name, name, final_name_len);
+    if (patch->name) {
+        final_name_len = patch->name_len;
+        memcpy(final_name, patch->name, final_name_len);
     } else if (old_valid) {
         int n = idstore_get_field(&old, IDSTORE_FIELD_NAME, final_name, sizeof(final_name));
         if (n > 0) final_name_len = (uint32_t)n;
@@ -299,12 +311,31 @@ static int identity_store_write(const uint8_t *uid,
 
     uint8_t  final_key[NODE_DEVKEY_MAX];
     uint32_t final_key_len = 0;
-    if (key) {
-        final_key_len = key_len;
-        memcpy(final_key, key, final_key_len);
+    if (patch->key) {
+        final_key_len = patch->key_len;
+        memcpy(final_key, patch->key, final_key_len);
     } else if (old_valid) {
         int n = idstore_get_field(&old, IDSTORE_FIELD_DEVKEY, final_key, sizeof(final_key));
         if (n > 0) final_key_len = (uint32_t)n;
+    }
+
+    char     final_ssid[NODE_WLAN_SSID_MAX];
+    uint32_t final_ssid_len = 0;
+    if (patch->ssid) {
+        final_ssid_len = patch->ssid_len;
+        memcpy(final_ssid, patch->ssid, final_ssid_len);
+    } else if (old_valid) {
+        int n = idstore_get_field(&old, IDSTORE_FIELD_WLAN_SSID, final_ssid, sizeof(final_ssid));
+        if (n > 0) final_ssid_len = (uint32_t)n;
+    }
+
+    uint8_t  final_psk[NODE_WLAN_PSK_LEN];
+    bool     have_psk = false;
+    if (patch->psk) {
+        memcpy(final_psk, patch->psk, sizeof(final_psk));
+        have_psk = true;
+    } else if (old_valid) {
+        have_psk = idstore_get_field(&old, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
     }
 
     idstore_writer_t w;
@@ -313,7 +344,10 @@ static int identity_store_write(const uint8_t *uid,
     if (have_uid)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid));
     if (final_name_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_NAME, final_name, (uint16_t)final_name_len);
     if (final_key_len > 0)   rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
+    if (final_ssid_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_SSID, final_ssid, (uint16_t)final_ssid_len);
+    if (have_psk)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk));
     memset(final_key, 0, sizeof(final_key));
+    memset(final_psk, 0, sizeof(final_psk));
     if (rc != 0) return -1;
 
     return idstore_writer_commit(&w, dev);
@@ -333,7 +367,8 @@ node_id_result_t node_identity_provision(bool force) {
     uint32_t name_len = (uint32_t)strlen(name);
     if (name_len >= NODE_NAME_MAX) name_len = NODE_NAME_MAX - 1;
 
-    if (identity_store_write(uid, name, name_len, NULL, 0) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    identity_patch_t patch = { .uid = uid, .name = name, .name_len = name_len };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
 
     /* Reflect immediately: a freshly provisioned node should not need a
      * reboot to report its own new uid/name as coming from the record. */
@@ -345,7 +380,8 @@ node_id_result_t node_identity_rename_persistent(const char *name) {
     uint32_t n;
     if (!name_is_valid(name, &n)) return NODE_ID_ERR_BAD_INPUT;
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
-    if (identity_store_write(NULL, name, n, NULL, 0) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    identity_patch_t patch = { .name = name, .name_len = n };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
 
     /* g_mac is untouched above and below -- a persisted rename keeps the
      * same non-obviousness guarantee node_set_name() already gives. */
@@ -380,7 +416,8 @@ node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len) {
     if (!key || key_len == 0 || key_len > NODE_DEVKEY_MAX) return NODE_ID_ERR_BAD_INPUT;
     if (key_looks_trivial(key, key_len)) return NODE_ID_ERR_BAD_INPUT;
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
-    if (identity_store_write(NULL, NULL, 0, key, key_len) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    identity_patch_t patch = { .key = key, .key_len = key_len };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
     return NODE_ID_OK;
 }
 
@@ -389,7 +426,7 @@ const char *node_id_result_str(node_id_result_t rc) {
         case NODE_ID_OK:               return "ok";
         case NODE_ID_ERR_NO_BACKEND:   return "no identity store on this target (plan/phase21_identity_and_authentication.md, I7 brings one to RP2350)";
         case NODE_ID_ERR_POPULATED:    return "already provisioned; use --force to overwrite";
-        case NODE_ID_ERR_BAD_INPUT:    return "rejected (bad name, or a key that's empty, oversized, or trivially patterned)";
+        case NODE_ID_ERR_BAD_INPUT:    return "rejected (bad name/ssid, or a key that's empty, oversized, or trivially patterned)";
         case NODE_ID_ERR_NO_ENTROPY:   return "no hardware entropy source on this target; install a key by hand instead";
         case NODE_ID_ERR_WRITE_FAILED: return "the device write failed";
     }
@@ -403,4 +440,45 @@ node_id_result_t node_identity_generate_key(void) {
     node_id_result_t rc = node_identity_set_key(key, sizeof(key));
     memset(key, 0, sizeof(key));
     return rc;
+}
+
+/* --- I6, plan/phase21_identity_and_authentication.md §5.3: WLAN
+ * credentials. Lands with phase 19's R5 (the CYW43 driver) and is unused
+ * before it, same as the device key was between I3 and I4 -- this is
+ * storage and the toolset, not a radio. */
+
+bool node_wlan_ssid(char *out, uint32_t cap) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+
+    char buf[NODE_WLAN_SSID_MAX];
+    int n = idstore_get_field(&rec, IDSTORE_FIELD_WLAN_SSID, buf, sizeof(buf));
+    if (n <= 0) return false;
+
+    if (out && cap > 0) {
+        uint32_t take = (uint32_t)n < cap - 1 ? (uint32_t)n : cap - 1;
+        memcpy(out, buf, take);
+        out[take] = '\0';
+    }
+    return true;
+}
+
+bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+    return idstore_get_field(&rec, IDSTORE_FIELD_WLAN_PSK, out, NODE_WLAN_PSK_LEN) == (int)NODE_WLAN_PSK_LEN;
+}
+
+node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
+                                        const uint8_t *psk, uint32_t psk_len) {
+    if (!ssid || ssid_len == 0 || ssid_len > NODE_WLAN_SSID_MAX) return NODE_ID_ERR_BAD_INPUT;
+    if (!psk || psk_len != NODE_WLAN_PSK_LEN) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .ssid = ssid, .ssid_len = ssid_len, .psk = psk, .psk_len = psk_len };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
 }

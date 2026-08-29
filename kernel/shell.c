@@ -173,6 +173,8 @@ static void cmd_help(void) {
     cprintf("                  - report uid/name/mac/key fingerprint, or set/provision/key (no args: report)\n");
     cprintf("  peers [add <name> <hex> [<aname>] [ro|rw]|remove <name>]\n");
     cprintf("                  - list grants (name/fingerprint/aname/mode), or add/remove one\n");
+    cprintf("  wlan [<ssid> <psk-hex>]\n");
+    cprintf("                  - report ssid/psk fingerprint, or install a credential (derived PSK, not a passphrase)\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
     cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
     cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
@@ -640,6 +642,70 @@ static void cmd_peers(const char *arg) {
     }
 
     cprintf("usage: peers [add <name> <hex> [<aname>] [ro|rw] | remove <name>]\n");
+}
+
+/* --- `wlan`: I6, plan/phase21_identity_and_authentication.md §5.3/§6 ---
+ *
+ * Installs a network credential -- the *derived* PSK
+ * (tools/provision.py's derive_wpa2_psk() on the host), never a
+ * passphrase; this command has no way to accept one, on purpose. Lands
+ * with phase 19's R5 (the CYW43 driver) and is unused before it, same
+ * shape as `identity key` was between I3 and I4. Fingerprint-only, same
+ * discipline as `identity`/`peers`: the SSID prints in full (it is not a
+ * secret -- every AP broadcasts it in its own beacon frames), the PSK
+ * never does. */
+static void wlan_print_report(void) {
+    char ssid[NODE_WLAN_SSID_MAX + 1];
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    bool have_ssid = node_wlan_ssid(ssid, sizeof(ssid));
+    bool have_psk = node_wlan_psk(psk);
+    cprintf("ssid: %s\n", have_ssid ? ssid : "none");
+    if (have_psk) {
+        char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+        key_fingerprint_hex(psk, sizeof(psk), fp);
+        cprintf("psk fingerprint: %s\n", fp);
+    } else {
+        cprintf("psk fingerprint: none\n");
+    }
+    memset(psk, 0, sizeof(psk));
+}
+
+static void cmd_wlan(const char *arg) {
+    if (!arg || !*arg) { wlan_print_report(); return; }
+
+    char ssid[NODE_WLAN_SSID_MAX + 1], hexstr[80];
+    const char *p = arg;
+    p = next_token(p, ssid, sizeof(ssid));
+    next_token(p, hexstr, sizeof(hexstr));
+
+    if (ssid[0] == '\0' || hexstr[0] == '\0') {
+        cprintf("usage: wlan <ssid> <psk-hex>\n");
+        return;
+    }
+
+    /* strlen() checked directly, not just parse_hex_bytes()'s return count:
+     * that function stops filling at `cap` bytes and would otherwise
+     * silently accept (and truncate) a too-long hex string -- e.g. a
+     * device key pasted into the wrong command -- as if it were a
+     * correctly-sized PSK. */
+    if (strlen(hexstr) != NODE_WLAN_PSK_LEN * 2) {
+        cprintf("wlan: expected exactly %u hex characters (a derived WPA2 PSK is always 256 bits) -- "
+                "derive one with tools/provision.py, not by hand\n", (unsigned)(NODE_WLAN_PSK_LEN * 2));
+        return;
+    }
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    uint32_t psklen = parse_hex_bytes(hexstr, psk, sizeof(psk));
+    if (psklen != NODE_WLAN_PSK_LEN) {
+        cprintf("wlan: expected an even-length hex string\n");
+        memset(psk, 0, sizeof(psk));
+        return;
+    }
+
+    node_id_result_t rc = node_identity_set_wlan(ssid, (uint32_t)strlen(ssid), psk, psklen);
+    memset(psk, 0, sizeof(psk));
+    if (rc != NODE_ID_OK) { cprintf("wlan: %s\n", node_id_result_str(rc)); return; }
+    cprintf("wlan: credential installed\n");
+    wlan_print_report();
 }
 
 static void cmd_p9share(const char *arg) {
@@ -1845,6 +1911,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "peers ", 6) == 0) {
         cmd_peers(&cmd_line[6]);
+        return;
+    } else if (strcmp(cmd_line, "wlan") == 0) {
+        cmd_wlan(NULL);
+        return;
+    } else if (strncmp(cmd_line, "wlan ", 5) == 0) {
+        cmd_wlan(&cmd_line[5]);
         return;
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();

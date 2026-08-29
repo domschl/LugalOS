@@ -1,6 +1,6 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I5 complete 2026-08-29.** Independent of the
+**Status: planned 2026-08-26; I1-I6 complete 2026-08-29.** Independent of the
 phase it grew out of.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
@@ -204,9 +204,52 @@ the actual cause -- a corrupted shared fixture, not new code -- was found.
 Fixed by regenerating from the already-staged `build/rv32/sd_root/`. See
 `[[feedback_never_format_shared_base_image]]` in memory.)*
 
-Next: I6 (WLAN credentials -- the `wlan` command I3 also left unbuilt, and
-the PSK-not-passphrase derivation §5.3 specifies). I7 (RP2350 flash
-backend) and I8 (docs) remain after that.
+**I6 done (2026-08-29).** §5.3, and the `wlan` command I3 left unbuilt.
+`kernel/idstore.h` gained two field types, `IDSTORE_FIELD_WLAN_SSID` and
+`IDSTORE_FIELD_WLAN_PSK` -- the *derived* 256-bit PSK, never the
+passphrase, exactly as §5.3 requires. Lands with phase 19's R5 (the CYW43
+driver, not yet started) and is unused before it, same shape as the
+device key was between I3 and I4: this milestone is storage and the
+toolset, not a radio.
+
+**The derivation lives on the host, and only there.** `tools/provision.py`
+gained `derive_wpa2_psk()` -- `hashlib.pbkdf2_hmac("sha1", passphrase,
+ssid, 4096, dklen=32)`, the exact construction WPA2 itself defines
+(IEEE 802.11i), using Python's stdlib rather than a hand-rolled
+PBKDF2/HMAC-SHA1: unlike `crc32_compute()`, there is no on-device
+equivalent this needs to stay in step with, since §5.3 is explicit that
+4096 iterations of HMAC never run on the board. `--wlan-ssid`/
+`--wlan-passphrase` derive and write the PSK; `--selftest` checks the
+derivation alone, no image required.
+
+**`kernel/identity.c` gained the same shape as the device key**:
+`node_wlan_ssid()`/`node_wlan_psk()`/`node_identity_set_wlan()`, sharing
+the record read-modify-write helper -- which grew from a positional
+parameter list into an `identity_patch_t` struct along the way, since a
+fifth field's worth of positional `NULL`s was the point that stopped
+being readable at the call site. `kernel/shell.c`'s `wlan` (report) /
+`wlan <ssid> <psk-hex>` and `user/lisp/lisp.c`'s `wlan`/`wlan-set` mirror
+`identity`'s fingerprint-only discipline exactly: the SSID prints in
+full (it is not a secret -- every AP broadcasts it in its own beacon
+frames), the PSK never does, only its fingerprint. The on-device command
+takes a hex PSK only, never a passphrase -- there is no code path here
+that could accept one.
+
+296/296 tests pass (294 QEMU + 2 host-only, no QEMU involved for the
+derivation check). `test_host_wpa2_psk_derivation()`: SSID="IEEE",
+passphrase="password" -> the IEEE 802.11i worked example's own PSK,
+reproduced independently via Python's stdlib rather than invented
+alongside the code being tested, plus determinism/sensitivity property
+checks. `test_wlan_credential_roundtrip()`: a disk `tools/provision.py`
+wrote a WLAN credential onto is read back correctly at boot (proving
+`kernel/idstore.c` and `provision.py`'s independent record writers agree
+on this field the same way I2 already proved for uid/name), a runtime
+`wlan` install round-trips, and the raw PSK hex appears exactly once in
+the whole exchange -- the shell's own echo, never a response. RP2350
+`sizecheck`: **+0 bytes** across all three personas.
+
+Next: I7 (the RP2350 flash-sector backend -- the last milestone every
+other one has been building storage-agnostic for) and I8 (docs).
 
 Phases 18 and 19 each built a piece of this under pressure from something else
 -- an auth gate because a network was coming, a node name because two boards

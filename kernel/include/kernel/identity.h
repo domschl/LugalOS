@@ -150,4 +150,33 @@ node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len);
  * on success. */
 node_id_result_t node_identity_generate_key(void);
 
+/* --- I6, §5.3: WLAN credentials. Lands with phase 19's R5 (the CYW43
+ * driver) and is unused before it -- this is storage and the toolset, not
+ * a radio, same shape as the device key was between I3 and I4. */
+
+#define NODE_WLAN_SSID_MAX 32  /* 802.11's own limit */
+#define NODE_WLAN_PSK_LEN  32  /* WPA2's PSK is always 256 bits -- never a variable length */
+
+/* The provisioned SSID, null-terminated into `out` (at most `cap` bytes
+ * including the terminator). Returns false (and leaves `out` untouched)
+ * when there is no backend or no SSID field. */
+bool node_wlan_ssid(char *out, uint32_t cap);
+
+/* The provisioned WPA2 PSK -- the *derived* 256-bit key
+ * (tools/provision.py's derive_wpa2_psk()), never the passphrase, which
+ * this node never sees. Returns false (and leaves `out` untouched) when
+ * there is no backend or no PSK field. */
+bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]);
+
+/* `wlan <ssid> <psk-hex>` (§6). Refuses an empty/oversized SSID or a PSK
+ * that is not exactly NODE_WLAN_PSK_LEN bytes -- WPA2's PSK has no other
+ * valid length, so this is a shape check, not a policy one; there is no
+ * "trivially patterned" rule here because §5.1's version of that concern
+ * is why the PSK is derived on the host in the first place (a passphrase
+ * weak enough to guess produces a PSK indistinguishable from a strong
+ * one's). Any existing UID/name/device key on record is carried forward
+ * unchanged. */
+node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
+                                        const uint8_t *psk, uint32_t psk_len);
+
 #endif /* LUGALOS_KERNEL_IDENTITY_H */

@@ -697,6 +697,28 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             }
             memset(key, 0, sizeof(key));
         }
+        /* I6: same discipline -- the derived PSK never appears, only its
+         * fingerprint. The SSID is not a secret (it is broadcast in every
+         * beacon frame the AP sends), so it prints in full. */
+        {
+            char ssid[NODE_WLAN_SSID_MAX + 1];
+            uint8_t psk[NODE_WLAN_PSK_LEN];
+            bool have_ssid = node_wlan_ssid(ssid, sizeof(ssid));
+            bool have_psk = node_wlan_psk(psk);
+            if (have_ssid) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "wlan ssid: %s\n", ssid);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "wlan ssid: none\n");
+            }
+            if (have_psk) {
+                char fp[KEY_FINGERPRINT_HEX_LEN + 1];
+                key_fingerprint_hex(psk, sizeof(psk), fp);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "wlan psk fingerprint: %s\n", fp);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "wlan psk fingerprint: none\n");
+            }
+            memset(psk, 0, sizeof(psk));
+        }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);
         used += (uint32_t)ksnprintf(buf + used, cap - used,

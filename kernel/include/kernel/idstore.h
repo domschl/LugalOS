@@ -56,6 +56,12 @@ typedef enum {
                                  * Stored and fingerprinted from I3 on; not yet consulted by
                                  * the 9P auth path -- I4 is what makes p9_auth_key_for()
                                  * read this instead of (or before) the SD-card key file. */
+    IDSTORE_FIELD_WLAN_SSID = 4,  /* instance scope (§5.3, I6): ASCII, 1-32 bytes (802.11's own limit) */
+    IDSTORE_FIELD_WLAN_PSK  = 5,  /* instance scope, secret (§5.3, I6): the *derived* 256-bit
+                                    * WPA2 PSK, never the passphrase it came from -- see
+                                    * tools/provision.py's derive_wpa2_psk(). Lands with phase
+                                    * 19's R5 (the CYW43 driver) and is unused before it, same
+                                    * as IDSTORE_FIELD_DEVKEY was between I3 and I4. */
 } idstore_field_type_t;
 
 typedef struct {

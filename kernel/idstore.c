@@ -51,7 +51,8 @@ static uint32_t record_crc(const uint8_t *buf, uint32_t fields_len) {
 }
 
 static bool field_type_known(uint8_t type) {
-    return type == IDSTORE_FIELD_UID || type == IDSTORE_FIELD_NAME || type == IDSTORE_FIELD_DEVKEY;
+    return type == IDSTORE_FIELD_UID || type == IDSTORE_FIELD_NAME || type == IDSTORE_FIELD_DEVKEY ||
+           type == IDSTORE_FIELD_WLAN_SSID || type == IDSTORE_FIELD_WLAN_PSK;
 }
 
 /* I3, kernel/include/kernel/idstore.h's own comment on this declaration
@@ -319,6 +320,39 @@ int idstore_selftest(void) {
         if (!ok) failures++;
     }
 
+    /* I6, §5.3: an SSID and a derived PSK round-trip as two fields, same
+     * as any other -- idstore has no notion of "this one is a WPA2
+     * credential"; that meaning lives entirely in kernel/identity.c and
+     * the toolset above it. */
+    {
+        idstore_writer_t w;
+        idstore_writer_init(&w);
+        const char ssid[] = "test-network";
+        const uint8_t psk[32] = {
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        };
+        bool ok = idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_SSID, ssid, (uint16_t)strlen(ssid)) == 0;
+        ok = ok && idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_PSK, psk, sizeof(psk)) == 0;
+        ok = ok && idstore_writer_commit(&w, &g_fake_dev) == 0;
+
+        idstore_t rec;
+        idstore_state_t st = idstore_read(&g_fake_dev, &rec);
+        ok = ok && st == IDSTORE_VALID;
+        ok = ok && rec.unknown_fields_skipped == 0;
+
+        char got_ssid[32] = {0};
+        int slen = idstore_get_field(&rec, IDSTORE_FIELD_WLAN_SSID, got_ssid, sizeof(got_ssid) - 1);
+        ok = ok && slen == (int)strlen(ssid) && strcmp(got_ssid, ssid) == 0;
+
+        uint8_t got_psk[32];
+        ok = ok && idstore_get_field(&rec, IDSTORE_FIELD_WLAN_PSK, got_psk, sizeof(got_psk)) == (int)sizeof(psk);
+        ok = ok && memcmp(got_psk, psk, sizeof(psk)) == 0;
+
+        cprintf("  [%s] a WLAN ssid+psk pair round-trips\n", ok ? "ok" : "FAIL");
+        if (!ok) failures++;
+    }
+
     /* I3, §4: the store's own reserved paths are refused, matching
      * fs/9p.c's p9_auth_path_is_secret() for the key directory. Pure string
      * logic -- no device, no 9P server -- which is the whole point of
@@ -345,7 +379,7 @@ int idstore_selftest(void) {
     palloc_free(g_fake_disk, 1);
     g_fake_disk = NULL;
 
-    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (7/7)\n");
+    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (8/8)\n");
     else               cprintf("IDSTORE_SELFTEST_FAIL (%d failed)\n", failures);
     return failures;
 }
