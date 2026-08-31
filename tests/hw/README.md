@@ -83,6 +83,72 @@ explicitly rather than failing with a confusing parse error.
 
 ## Gateway suite — over Ethernet (N6)
 
+### Wiring the ENC28J60 (R4)
+
+The gateway persona currently has hardware to wire against: a **HanRun V823
+HR911105A** module (the common ten-pin ENC28J60 breakout with integrated
+RJ45 magnetics). Its header is two rows of five, printed on the board as:
+
+```
+  row A:  CLOUT   WOL   SI    CS    VCC
+  row B:  INT     SO    SCK   RESET GND
+```
+
+Connect to the `rp2350-gateway` board file's reserved SPI0 pins
+(`cmake/board-rp2350-gateway.cmake`):
+
+| module pin | signal | RP2350 pin |
+|---|---|---|
+| SI | SPI MOSI (into the chip) | GP19 |
+| SO | SPI MISO (out of the chip) | GP16 |
+| SCK | SPI clock | GP18 |
+| CS | SPI chip select | GP17 |
+| RESET | active-low reset | GP20 |
+| INT | active-low interrupt, open-drain | GP21 |
+| VCC | 3.3V | 3V3 -- **not 5V, no onboard regulator on this module** |
+| GND | ground | GND |
+| WOL | wake-on-LAN output | not connected -- no WOL support planned |
+| CLOUT | buffered clock output | not connected -- nothing downstream needs it |
+
+Fit the power and decoupling before the first power-on, not after --
+Phase 18's W5500 lesson (plan §5) was writing this down and then not doing
+it for days.
+
+**Power: a dedicated AMS1117-3.3 regulator for the module, not the
+RP2350's own 3V3 rail.** Bring-up on the shared rail produced reproducible
+register corruption (see plan §R4's account) that responded, though not
+completely, to more decoupling -- consistent with the ENC28J60's own
+documented peak draw (up to ~180-200 mA in TX/link-up bursts) sagging a
+rail sized for the RP2350 alone.
+
+* **Input**: the RP2350 board's `VBUS` pin (5V from USB) -- an AMS1117-3.3
+  needs roughly 4.5-4.8V minimum given its dropout, so VBUS is the right
+  source, not the RP2350's own already-regulated 3V3 pin.
+* **Ground**: common with the RP2350's GND -- not a separate return. A
+  floating ground reference reproduces the same symptoms a genuinely bad
+  connection does (see the wiring debugging note in plan §R4).
+* **Decoupling**: bulk capacitance across the AMS1117's output, close to
+  the module's own VCC/GND pins, plus 100 nF ceramic alongside it. Landed
+  at **470 µF** after trying 220 µF and 100 µF; none of the three
+  eliminated the remaining quirk below, so treat 470 µF as "known to work
+  with the current workaround in place," not as a value verified
+  sufficient on its own.
+
+**A known, live quirk, not fully root-caused: `ECON1.RXEN` and/or
+`MACON1.MARXEN` spontaneously clear during normal operation** -- on this
+specific clone chip within seconds of boot, but the same failure mode is
+documented on genuine ENC28J60 silicon too
+(`ntruchsess/arduino_uip#167`, hours to weeks in the field). Neither the
+dedicated regulator nor any capacitance value tried eliminated it, only
+masked how often it needs correcting. The driver (`drivers/enc28j60_rp2350.c`)
+watches for it on every poll and does a full MAC/PHY re-init when caught --
+the same shape other ENC28J60 libraries converged on independently.
+`net regs` reports how many times it has fired since boot
+(`full MAC/PHY reinit triggered N time(s)`); a number that keeps climbing
+under real traffic is expected, not a regression. Full account, including
+everything ruled out before finding the actual CS-hold-time bug this
+quirk survived, is in `plan/phase19_ip_stack_and_ethernet.md` under R4.
+
 `test_gateway.py` is the sibling suite for the **gateway persona**, and it
 talks to the board over a network rather than a cable:
 
@@ -123,7 +189,11 @@ that fails quietly.
 ### If it all skips
 
 `[!] No 9P server answering` means the board has no address, no key, or no
-link. Check `net` on the console first: it reads every relevant register back
-out of the chip, so `link`, `chip regs` and `last reset` are facts rather than
-the driver's intentions. A `DISAGREES` on the `chip regs` line means a
-register did not take, which is a different problem from a dead link.
+link. Check `net` on the console first -- it reports the interface, link
+state, address and per-protocol counters, all read fresh rather than
+recalling what the driver last assumed. On the ENC28J60 (R4), `net regs`
+goes a layer deeper: the chip's own raw `EIE`/`EIR`/`ESTAT`/`ECON1`/`ECON2`,
+`EPKTCNT`, `ERXFCON`, `MACON1`, the RX ring pointers, `PHSTAT2`, and how
+many times the driver's own MAC/PHY recovery has fired since boot -- see
+the wiring section above for what a nonzero, climbing reinit count means
+and why it is expected rather than a fault.

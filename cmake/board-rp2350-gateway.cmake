@@ -59,21 +59,53 @@ set(CONFIG_SPI1_MOSI_GPIO 11)
 set(CONFIG_SPI1_MISO_GPIO 12)
 set(CONFIG_SPI1_CS_GPIO   13)
 
-# SPI0: **reserved for Ethernet, currently unused.**
-#
-# Nothing sets these while no part is fitted -- an unused CONFIG_ that reaches
-# lugalos_config.h is a define nobody consumes, and this file's whole job is
-# to say what the board actually has. They are recorded rather than set:
-#
-#   SPI0_BASE  0x40080000
-#   SCK        GP18     MOSI  GP19     MISO  GP16     CSn   GP17
-#   RSTn       GP20     INTn  GP21
+# SPI0: **the ENC28J60 (R4, plan/phase19_ip_stack_and_ethernet.md).**
 #
 # GP16-19 is the standard SPI0 grouping on RP2350 (RX=16, CSn=17, SCK=18,
 # TX=19 are all valid function-1 assignments for that controller); RSTn and
 # INTn are plain SIO GPIOs. The map is disjoint from SPI1 (SD, GP10-13) and
-# UART1 (downlink, GP8/9), and phase 19's R4 puts an ENC28J60 on it as
-# CONFIG_ETH_* -- the part changes, the pins do not.
+# UART1 (downlink, GP8/9).
+set(CONFIG_SPI0_BASE      0x40080000)
+set(CONFIG_ETH_SCK_GPIO   18)
+set(CONFIG_ETH_MOSI_GPIO  19)
+set(CONFIG_ETH_MISO_GPIO  16)
+set(CONFIG_ETH_CS_GPIO    17)
+set(CONFIG_ETH_RST_GPIO   20)
+set(CONFIG_ETH_INT_GPIO   21)
+#
+# **The part in hand (2026-08-31): a HanRun V823 HR911105A ENC28J60 module**
+# -- the common ten-pin SPI breakout, magnetics-integrated RJ45. Its header is
+# two rows of five, pin order as printed on the board:
+#
+#   row A:  CLOUT   WOL   SI    CS    VCC
+#   row B:  INT     SO    SCK   RESET GND
+#
+# Mapped onto the pins above:
+#
+#   module SI    (MOSI, into the chip)  -> GP19 (SPI0 TX/MOSI)
+#   module SO    (MISO, out of the chip)-> GP16 (SPI0 RX/MISO)
+#   module SCK                          -> GP18 (SPI0 SCK)
+#   module CS                           -> GP17 (SPI0 CSn)
+#   module RESET (active low)           -> GP20 (RSTn)
+#   module INT   (active low, open-drain, needs the RP2350's internal
+#                 pull-up enabled -- the module has none on board)
+#                                        -> GP21 (INTn)
+#   module VCC                          -> 3V3 -- **not 5V**. This module has
+#                 no onboard regulator; the ENC28J60 die is 3.3V-only and 5V
+#                 on VCC kills it. Confirm with a meter before first power-on,
+#                 not after.
+#   module GND                          -> GND, common with the RP2350
+#   module WOL   (wake-on-LAN output)   -> not connected. No WOL support is
+#                 planned; leaving it floating is correct.
+#   module CLOUT (CLKOUT, a buffered
+#                 divider of the 25 MHz crystal)
+#                                        -> not connected. Nothing downstream
+#                 needs a clock source from this chip.
+#
+# Decoupling before power-on (phase 19 §5's lesson, paid for once already):
+# 220 uF bulk plus 100 nF ceramic across the module's own VCC/GND pins, short
+# SPI leads, and a ground return run alongside them rather than a shared
+# return elsewhere on the board.
 
 # UART1: the downlink to a chess or clock board (N5, plan §4), SLIP-framed 9P
 # over three wires.

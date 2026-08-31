@@ -537,7 +537,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # An Ethernet driver used to sit beside it here (the W5500, N4) and was
     # removed with the part; phase 19's R4 puts an ENC28J60 back on the same
     # SPI0 pins, under the same guard-by-pin-map rule.
-    list(APPEND SOURCES drivers/uart1_link_rp2350.c)
+    list(APPEND SOURCES drivers/uart1_link_rp2350.c drivers/enc28j60_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

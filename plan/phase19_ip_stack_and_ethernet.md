@@ -667,6 +667,110 @@ workarounds of §5 designed in, the decoupling fitted before power-on.
 green over real Ethernet, including the cable-pull and buffer-fill cases R0
 removed; then **fifteen minutes idle** and still working.
 
+**Bench access back, 2026-08-31.** Two HanRun V823 HR911105A ENC28J60
+modules in hand. Pinout finalized against the actual module (§5's reserved
+GP16-19/GP20/GP21 map, documented in `cmake/board-rp2350-gateway.cmake` and
+`tests/hw/README.md`) before any wiring, so the board gets built once rather
+than rewired after a driver reveals a wrong assumption. Driver work starts
+once the hardware is wired accordingly.
+
+**R4 driver written and working end to end on hardware, 2026-08-31**
+(`drivers/enc28j60_rp2350.c`, `drivers/include/drivers/enc28j60.h`). ICMP
+ping from a LAN host succeeds with 0% loss (~1.7 ms round trip); `net`
+reports rx/tx frame and byte counts agreeing with what was sent. Registered
+as `enc0`, `DEV_KIND_NETIF`, guarded the same way the plan's own convention
+holds -- by the board file defining `CONFIG_ETH_*`, not a feature flag.
+
+**The chips are not genuine Microchip silicon.** `EREVID` never reads a
+documented revision (0x00 or 0x06 depending on the exact moment, neither a
+real B5/B7 value), and the package markings (`1225R7C`, `1228RW6`) are lot
+codes, not a Microchip part marking. Confirmed by swapping to the second
+board: byte-identical failure signatures across two physically different
+chips rules out a single bad unit and points at a design/protocol
+difference in this specific clone family.
+
+**The real bug, after an extended bring-up hunt: CS hold time.** Every
+MAC/MII-class register (`MACON1`, `MACON3`, `MACON4`, `MABBIPG`,
+`MAMXFLL/H`, all six `MAADR*` bytes) read back the reset value after being
+written, reproducibly, while every ETH-class register (`ECON1`, `ERXFCON`,
+`EREVID`, the buffer pointers) worked from the first line of code. Ruled
+out, in order, before finding it: bank-selection arithmetic (an isolated
+`ECON1` self-test round-tripped 0x00-0x03 perfectly), a settling delay
+after bank switches, a settling delay after the write itself (even 1 ms),
+writing twice, disabling the RCR dummy byte, and SPI clock speed in both
+directions (2.5 MHz down to 600 kHz chasing a timing-margin theory, then
+9.375 MHz up on a community report that some clones need an 8 MHz floor --
+neither changed the symptom). The actual cause: the datasheet requires CS
+to stay asserted **>=210 ns after the last clock edge** before release for
+a MAC/MII register access to latch, called out explicitly in
+espressif/esp-eth-drivers' own ENC28J60 README -- a gap *before*
+`cs_deselect()`, which is a different thing from every settling delay tried
+before it (all of which were gaps *after* release). Adding it to `rcr()`
+and `wcr()`, gated on `R_IS_MAC()`, fixed every one of the above registers
+at once, first try.
+
+**One further quirk survives the CS-hold-time fix, with a workaround
+rather than a root cause: `MACON1` (specifically `MARXEN`, the receive
+enable bit) and/or `ECON1.RXEN` have been observed to spontaneously clear
+during otherwise-idle operation** -- no TX, no user command, nothing but
+the `netsrv` poll loop's `EPKTCNT` reads running. What that workaround
+became and what was tried against the underlying cause is its own section
+below. `link_up()` had the same "reads the wrong value sometimes" symptom
+on `PHSTAT2` and got a lighter version of the same defense (three tries,
+one UP reading wins) -- imperfect (`net`'s status line still shows link
+down occasionally even with real traffic flowing) but non-blocking, since
+nothing downstream trusts that string for anything but a human reading it.
+
+**`net regs`** (shell + `enc28j60_dump_regs()`) is new, permanent bring-up
+tooling from this session: raw `EIE`/`EIR`/`ESTAT`/`ECON1`/`ECON2`,
+`EPKTCNT`, `ERXFCON`, `MACON1`, the RX pointers, `PHSTAT2`, and how many
+times the driver's own recovery (below) has fired, independent of what
+netif_t's own counters believe.
+
+**The `MACON1`/`ECON1.RXEN` quirk, resolved as "live with it," not fixed,
+2026-08-31.** A single-bit patch (re-assert `MACON1` whenever it read
+wrong) was the first attempt and proved insufficient once `ECON1.RXEN`
+itself started clearing too, and once a run showed each register wrong
+independently of the other -- checking only one silently missed the other.
+Escalated to what `ntruchsess/arduino_uip#167` independently converged on
+for the same symptom **on genuine ENC28J60 silicon**, not just this clone:
+notice either bit cleared and do a full MAC/PHY re-init
+(`enc_mac_phy_init()` + re-applying the MAC address) rather than patch one
+bit. `enc_poll_locked()` checks both on every poll, so there is no window
+where a real frame could arrive, or a transmit could stall, while either
+is silently wrong.
+
+**Power was investigated as a cause and only partly implicated.** A
+dedicated AMS1117-3.3 regulator (fed from the RP2350 board's `VBUS`, common
+ground, decoupling at the module's own VCC/GND pins -- `tests/hw/README.md`
+has the full wiring) was tried specifically because the ENC28J60's
+documented peak draw (~180-200 mA in TX/link-up bursts) is a plausible
+brownout source on a rail shared with the RP2350. Three capacitor values
+were measured (220 µF, then 100 µF -- which measurably made drift *and* a
+transmit stall worse, evidence the direction mattered even if the
+magnitude didn't fully resolve it -- then 470 µF on the dedicated
+regulator): none eliminated the quirk, though the recovery mechanism
+above has held up cleanly under sustained traffic at 470 µF -- 60/60 pings
+at 0% loss over ~50 s continuous, with the reinit counter climbing
+throughout (41 in that window) and every single frame still delivered.
+
+**Decision: document and move on, revisit only if it causes a real
+problem.** The quirk is caught and corrected every time it has been
+observed, on both physical chips, under real sustained traffic; it costs a
+few hundred bytes of SPI per occurrence and no scheduler wait. Continuing
+to chase a root cause that has not responded clearly to any single change
+tried so far (SPI clock in both directions, three capacitor values, a
+dedicated regulator) has diminishing returns against a driver that already
+works. A soldered rebuild (replacing the jumper-wire prototype) remains a
+plausible next experiment if this ever becomes a real operational problem,
+but is not blocking R4.
+
+**Remaining before R4 is fully closed:** the fifteen-minute idle soak,
+`tests/hw/test_gateway.py` restored to green over the real wire (needs a
+key installed and the host suite pointed at 192.168.77.2), the cable-pull
+and buffer-fill cases, and a driver-counters test exercising `net regs`
+the way `test_driver_counters` once exercised the W5500's own report.
+
 **R5 -- CYW43439 on an RP2350W.** gSPI, firmware upload, join (WPA2), netif.
 *Verify:* joins a real AP, answers a ping, completes an authenticated 9P session
 over TCP, survives the same fifteen-minute idle soak. Plus the blob accounting

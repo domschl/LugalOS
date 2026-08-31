@@ -12,6 +12,7 @@
 #if CONFIG_ENABLE_SPISD
 #include "drivers/spisd.h"
 #endif
+#include "drivers/enc28j60.h"
 #endif
 
 #if !defined(CONFIG_BOARD_RP2350)
@@ -125,6 +126,16 @@ static void *get_usb_net(void) { return usb_cdc_get_net_link(); }
  * dev_probe_all()), so there is no probe hook: just the accessor. */
 static void *get_spisd(void) { return spisd_get_device(); }
 #endif
+#if defined(CONFIG_ETH_CS_GPIO)
+/* R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on the gateway
+ * persona's SPI0 -- the wire an Ethernet 9P link used to sit on directly
+ * (N4's `w5500net`, removed with the part in R0). This is a netif now, not
+ * a p9_link_t: everything above it (TCP, the 9P server) is net/stack.c's
+ * job, reached through DEV_KIND_NETIF the same way dev_vnet feeds it on
+ * QEMU. */
+static int   probe_enc28j60(void) { return enc28j60_init(); }
+static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
+#endif
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -209,16 +220,23 @@ static const dev_driver_t dev_uart1 = {
     .name = "uart1", .kind = DEV_KIND_P9LINK, .get = get_uart1,
 };
 #endif
-/* An Ethernet 9P link was registered here (N4's `w5500net`) and went with the
- * part in phase 19's R0. The three lines it took are the whole integration
- * cost of a network link in this tree -- everything downstream (the
- * background server, `mount-remote`, /proc/devices, `p9auth`) works off
- * DEV_KIND_P9LINK alone. Phase 19's R3 registers `tcpnet` the same way, once
- * an accepted TCP connection is a p9_link_t. */
+/* An Ethernet 9P link was registered here directly (N4's `w5500net`) and
+ * went with the part in phase 19's R0 -- the W5500 terminated TCP itself,
+ * so its device WAS a p9_link_t. The ENC28J60 (dev_enc28j60, below) hands
+ * over Ethernet frames instead, registers as DEV_KIND_NETIF, and TCP is
+ * net/stack.c's job from there; an accepted connection becomes a
+ * `p9_link_t` (`tcpnet`) once the stack itself registers one, same as it
+ * already does on the QEMU targets. */
 static const dev_driver_t dev_usbnet = {
     .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
 };
+#if defined(CONFIG_ETH_CS_GPIO)
+static const dev_driver_t dev_enc28j60 = {
+    .name = "enc0", .kind = DEV_KIND_NETIF,
+    .probe = probe_enc28j60, .get = get_enc28j60,
+};
+#endif
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -255,6 +273,9 @@ void board_register_devices(void) {
 #endif
 #if defined(CONFIG_UART1_BASE)
     dev_register(&dev_uart1);
+#endif
+#if defined(CONFIG_ETH_CS_GPIO)
+    dev_register(&dev_enc28j60);
 #endif
 #else
     dev_register(&dev_vconsole);

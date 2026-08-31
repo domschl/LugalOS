@@ -70,8 +70,11 @@ set(_optional_keys
     # N5, plan/phase18_networking_and_auth.md: the gateway persona's UART1
     # downlink. Optional like everything else here -- a board with no second
     # UART simply does not set them. (The W5500's own pins lived here too,
-    # until phase 19's R0 removed the part; R4's ENC28J60 adds CONFIG_ETH_*.)
+    # until phase 19's R0 removed the part.)
     CONFIG_UART1_BASE CONFIG_UART1_TX_GPIO CONFIG_UART1_RX_GPIO
+    # R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on SPI0.
+    CONFIG_ETH_SCK_GPIO CONFIG_ETH_MOSI_GPIO CONFIG_ETH_MISO_GPIO
+    CONFIG_ETH_CS_GPIO CONFIG_ETH_RST_GPIO CONFIG_ETH_INT_GPIO
     CONFIG_DCF77_OUT_GPIO CONFIG_DCF77_PON_GPIO CONFIG_DCF77_PON_ACTIVE_LOW
     CONFIG_DCF77_OUT_ACTIVE_LOW
     CONFIG_DCF77_WARMUP_MS

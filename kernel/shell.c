@@ -22,6 +22,7 @@
 #include "kernel/identity.h"
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
+#include "drivers/enc28j60.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/spisd.h"
 #else
@@ -129,6 +130,9 @@ static void cmd_help(void) {
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
+    cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
+#endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
     cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
@@ -2026,6 +2030,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
         cmd_net_rxtest(shell_trailing_uint(&cmd_line[10]));
         return;
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
+    } else if (strcmp(cmd_line, "net regs") == 0) {
+        enc28j60_dump_regs();
+        return;
+#endif
     } else if (strcmp(cmd_line, "p9key") == 0) {
         cmd_p9key(NULL);
         return;
