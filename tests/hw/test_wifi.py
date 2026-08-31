@@ -137,18 +137,34 @@ def test_directory_read(b: Board) -> tuple[str, bool, str]:
 
 
 def test_repeated_sessions(b: Board) -> tuple[str, bool, str]:
-    """Ten sessions back to back. A transport that leaks a buffer or loses
-    a reply usually survives one and not ten."""
+    """Ten sessions in a row. A transport that leaks a buffer or loses a
+    reply usually survives one and not ten.
+
+    Paced deliberately. net/tcp.c keeps TCP_MAX_CONNS = 2 slots and holds a
+    closed connection in TIME_WAIT for TCP_TIME_WAIT_MS = 2000 ms, so
+    hammering connect() in a loop exhausts both slots and the board
+    correctly refuses -- which is the stack behaving as designed, not the
+    radio failing. An earlier version of this test did exactly that and
+    reported a ConnectionRefusedError as a transport fault."""
     name = "9p: 10 consecutive sessions"
+    gap = 2.2   # just over TIME_WAIT, so a slot is always free
     for i in range(10):
-        s = session(b)
+        try:
+            s = session(b)
+        except ConnectionRefusedError:
+            # Both slots still in TIME_WAIT; give them a moment rather
+            # than calling it a failure.
+            time.sleep(gap)
+            s = session(b)
         try:
             s.read("/proc/version")
         except Exception as e:  # noqa: BLE001
             return name, False, f"session {i + 1} failed: {e}"
         finally:
             s.close()
-    return name, True, "10/10"
+        if i < 9:
+            time.sleep(gap)
+    return name, True, "10/10, paced past TIME_WAIT"
 
 
 def test_soak(b: Board, minutes: float) -> tuple[str, bool, str]:

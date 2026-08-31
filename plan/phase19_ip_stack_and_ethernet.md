@@ -892,10 +892,24 @@ queue in the chip's own 8 KB buffer -- this bus only reveals a packet's
 channel *after* reading it, so a data frame arriving with nowhere to go is
 already consumed and lost. Hence a four-slot receive ring here and
 deliberately none in the ENC28J60, where it would be cargo-culting.
-`wifi stats` reports the ring's high-water mark and any drops. With the
-ring in place the concurrent case is clean: 40/40 echoes at 0% loss while
-twelve 9P sessions ran directory reads, where the same mix previously
-dropped 3-10%.
+`wifi stats` reports the ring's high-water mark and any drops.
+
+**Correction, from measuring it properly afterwards.** The ring was added
+on the theory that the single frame in flight was causing the ICMP loss
+seen when a 9P session ran concurrently. It was not. Under two concurrent
+ping streams plus sustained 9P reads -- 1900 frames, 240 KB -- the ring's
+high-water mark stayed at **1** and it dropped nothing, and the same ICMP
+loss (1-2.5%) appears with the same ping load and **no 9P traffic at
+all**. So the loss is the radio link under back-to-back 1400-byte frames,
+not buffering in this driver, and the one earlier run that looked like a
+fix (40/40 at 0%) was a lighter load read as evidence.
+
+What the ring still legitimately covers is narrower: frames arriving while
+an ioctl waits for its reply, where the reader runs repeatedly and
+`net_poll()` does not drain behind it. Real, but rare once the radio is
+up. Kept -- 1514 bytes a slot against 512 KB is not worth optimising on a
+guess in either direction -- and instrumented, so the question stays
+answerable with data.
 
 Every `wifi` subcommand except `probe` now refuses early, and says what to
 do, when the firmware is not loaded -- the radio does nothing until ~230 KB

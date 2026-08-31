@@ -48,6 +48,8 @@
 #include "net/netif.h"
 #include "net/ip.h"
 #include "kernel/time.h"
+#include "kernel/irq.h"
+#include "kernel/sched.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
 
@@ -378,6 +380,32 @@ static void wl_gpio_setup(void) {
  * where the previous run happened to leave things. */
 #define BP_WINDOW_INVALID 0xFFFFFFFFu
 static uint32_t g_bp_window = BP_WINDOW_INVALID;
+
+/* --- serialising access -------------------------------------------------
+ *
+ * Same shape and the same reason as drivers/enc28j60_rp2350.c's g_busy,
+ * and it should have been here from the moment `netsrv` started running:
+ * this driver is reached from that task (net/stack.c's net_poll(),
+ * continuously) and from the shell (`wifi probe`, `wifi join`, `wifi led`).
+ * This kernel preempts -- see `preempttest` -- so the two interleave
+ * mid-operation without it, and the unit that has to be atomic is a whole
+ * operation, not one SPI transfer: an ioctl is a request *and* the wait
+ * for its reply, a firmware upload is thousands of bursts through one
+ * sliding window, and both share a single PIO state machine and one
+ * transfer buffer. Interleaved, they corrupt each other -- observed as a
+ * join failing on an iovar and then `wifi probe` no longer finding the
+ * test pattern at all, on a bus that had been working. */
+static volatile bool g_bus_busy;
+
+static void cyw43_lock(void) {
+    for (;;) {
+        uintptr_t f = irq_save();
+        if (!g_bus_busy) { g_bus_busy = true; irq_restore(f); return; }
+        irq_restore(f);
+        sched_yield();   /* a no-op before sched_init(), which is when init runs */
+    }
+}
+static void cyw43_unlock(void) { g_bus_busy = false; }
 
 /* Carrier state, set when association completes. */
 static bool g_link_up;
@@ -1073,12 +1101,21 @@ static uint32_t get_u32(const uint8_t *p) {
  * data frame arriving with nowhere to go has already been consumed and is
  * lost for real. Hence a ring here and not there.
  *
- * Four slots rather than two. Two covers the common case of a frame
- * landing while the previous one is still being taken; four also covers a
- * burst arriving while nothing is draining, which is exactly what happens
- * during a long ioctl (CLM chunks, the join sequence) where this reader
- * runs but net_poll() does not. At 1514 bytes a slot, the two extra cost
- * ~3 KB of the 512 KB this chip has. */
+ * Four slots, and the honest note is that measurement has not yet needed
+ * more than one: under two concurrent ping streams plus sustained 9P
+ * reads (1900 frames, 240 KB) the high-water mark stayed at 1 and nothing
+ * was dropped. The ICMP loss that originally prompted this ring turned
+ * out not to be its fault at all -- the same loss appears with the same
+ * ping load and no 9P traffic whatsoever, so it is the radio link under
+ * back-to-back 1400-byte frames, not buffering here.
+ *
+ * What the ring still covers is narrower than first claimed: frames that
+ * arrive while an ioctl is waiting for its reply, where this reader runs
+ * repeatedly and net_poll() does not drain behind it. That is real but
+ * rare once the radio is up. Kept because 1514 bytes a slot against
+ * 512 KB is not worth optimising on a guess in either direction -- and
+ * `wifi stats` reports the high-water mark, so the question stays
+ * answerable with data rather than argument. */
 #define CYW43_RX_RING 4
 static uint8_t  g_rx_ring[CYW43_RX_RING][NETIF_FRAME_MAX];
 static uint32_t g_rx_ring_len[CYW43_RX_RING];
@@ -1333,7 +1370,7 @@ static bool cyw43_gpio_set(unsigned gpio_n, bool on) {
     return cyw43_set_iovar_u32x2("gpioout", 1u << gpio_n, on ? (1u << gpio_n) : 0u);
 }
 
-bool cyw43_led_set(bool on) {
+static bool cyw43_led_set_locked(bool on) {
     if (!g_fw_ready) {
         printk("cyw43: radio is not up -- the LED is on the chip's own GPIO, "
                "which needs the firmware running\n");
@@ -1361,7 +1398,7 @@ static bool cyw43_ioctl_set_u32(uint32_t cmd, uint32_t iface, uint32_t val) {
     return cyw43_ioctl(IOCTL_SET, cmd, iface, v, 4, NULL);
 }
 
-bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
+static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
     if (!g_fw_ready) {
         printk("cyw43: radio is not up -- the firmware has to be loaded before a join\n");
         return false;
@@ -1445,7 +1482,7 @@ bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
 static netif_t g_netif;
 static bool g_netif_registered;
 
-static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
+static int cyw43_netif_send_locked(netif_t *nif, const uint8_t *buf, uint32_t len) {
     (void)nif;
     if (len > NETIF_FRAME_MAX) return -1;
 
@@ -1475,7 +1512,7 @@ static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
 /* Drives the same shared reader every ioctl uses, so a frame arriving
  * mid-ioctl is kept rather than dropped -- and an ioctl reply arriving
  * while the stack polls is kept too. */
-static int cyw43_netif_poll(netif_t *nif) {
+static int cyw43_netif_poll_locked(netif_t *nif) {
     (void)nif;
     if (g_rx_count) return 1;
     int r = cyw43_pump();
@@ -1483,7 +1520,7 @@ static int cyw43_netif_poll(netif_t *nif) {
     return g_rx_count ? 1 : 0;
 }
 
-static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len) {
+static int cyw43_netif_recv_locked(netif_t *nif, uint8_t *buf, uint32_t max_len) {
     (void)nif;
     if (!g_rx_count) return -1;
     uint32_t n = g_rx_ring_len[g_rx_tail];
@@ -1507,6 +1544,12 @@ netif_t *cyw43_get_netif(void) {
     return g_netif_registered ? &g_netif : NULL;
 }
 
+/* Defined with the other public entry points at the end of the file, where
+ * the bus-locking discipline lives. */
+static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len);
+static int cyw43_netif_poll(netif_t *nif);
+static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len);
+
 /* Read the MAC the firmware reports and register with net/netif.c. */
 static bool cyw43_register_netif(void) {
     uint8_t mac[8];
@@ -1523,6 +1566,19 @@ static bool cyw43_register_netif(void) {
         return false;
     }
     memcpy(mac, req, 6);
+
+    /* A second `wifi probe` re-uploads the firmware, but the interface is
+     * already registered and `netsrv` is already running. Registering
+     * again would add a duplicate interface and start a second task
+     * polling the same hardware -- two consumers on one bus, which is the
+     * shape of bug this driver has already paid for once. The MAC is read
+     * first regardless, since it comes from the firmware that was just
+     * reloaded and is the honest thing to report. */
+    if (g_netif_registered) {
+        printk("cyw43: wlan0 already up, mac %02x:%02x:%02x:%02x:%02x:%02x\n",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return true;
+    }
 
     g_netif.name = "wlan0";
     memcpy(g_netif.mac, mac, NETIF_MAC_LEN);
@@ -1551,7 +1607,7 @@ static bool cyw43_register_netif(void) {
     return true;
 }
 
-bool cyw43_gspi_probe(void) {
+static bool cyw43_probe_locked(void) {
     wl_gpio_setup();
     pio_gspi_init();
     wl_reset();
@@ -1657,6 +1713,59 @@ bool cyw43_gspi_probe(void) {
 
     printk("cyw43: ready\n");
     return true;
+}
+
+/* --- public entry points -------------------------------------------------
+ *
+ * Every one of these takes the bus lock for the whole operation and
+ * nothing below them takes it again -- the lock is not reentrant, so the
+ * discipline is "lock at the edge, never inside". Kept together so that
+ * discipline is one thing to check rather than scattered. */
+
+bool cyw43_gspi_probe(void) {
+    cyw43_lock();
+    bool r = cyw43_probe_locked();
+    cyw43_unlock();
+    return r;
+}
+
+bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
+    cyw43_lock();
+    bool r = cyw43_join_wpa2_locked(ssid, psk);
+    cyw43_unlock();
+    return r;
+}
+
+bool cyw43_led_set(bool on) {
+    cyw43_lock();
+    bool r = cyw43_led_set_locked(on);
+    cyw43_unlock();
+    return r;
+}
+
+static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
+    cyw43_lock();
+    int r = cyw43_netif_send_locked(nif, buf, len);
+    cyw43_unlock();
+    return r;
+}
+
+static int cyw43_netif_poll(netif_t *nif) {
+    /* Nothing to service while the firmware is down or being reloaded --
+     * and checking before taking the lock keeps `netsrv` from queueing
+     * behind a multi-second firmware upload just to be told "not yet". */
+    if (!g_fw_ready) return 0;
+    cyw43_lock();
+    int r = cyw43_netif_poll_locked(nif);
+    cyw43_unlock();
+    return r;
+}
+
+static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len) {
+    cyw43_lock();
+    int r = cyw43_netif_recv_locked(nif, buf, max_len);
+    cyw43_unlock();
+    return r;
 }
 
 #else

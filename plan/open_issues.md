@@ -63,6 +63,32 @@ exists -- the record format, the toolset, `node_wlan_ssid()` and
 
 ---
 
+## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
+
+**Trigger:** open and close 9P/TCP sessions in a tight loop. The third
+connect is refused, and `net` shows accepts alongside a rising reset
+count.
+
+**Why it is parked:** it is the stack behaving as designed, not a fault.
+`net/tcp.c` keeps `TCP_MAX_CONNS = 2` and holds a closed connection in
+TIME_WAIT for `TCP_TIME_WAIT_MS = 2000`, both deliberate and both
+commented where they are defined -- two slots is one more than any board
+here needs concurrently, and a shortened TIME_WAIT is already a
+LAN-pragmatic choice over the RFC's 2*MSL. A client that reconnects
+faster than that is asking for more than the board offers.
+
+It is listed only because it *presents* as a transport failure:
+`ConnectionRefusedError` from a client loop looks like the radio or the
+driver dropping connections, and cost a round of investigation on exactly
+that misreading during R5. `tests/hw/test_wifi.py` now paces past
+TIME_WAIT and says why.
+
+**Fix, when it is worth it:** raising `TCP_MAX_CONNS` costs a connection
+table entry each and is trivial; the question is whether any real
+workload wants it, and so far none does.
+
+---
+
 ## ENC28J60 clears MACON1.MARXEN / ECON1.RXEN during idle
 
 **Trigger:** leave the gateway persona idle with the ENC28J60 attached;
