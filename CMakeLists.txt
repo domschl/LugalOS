@@ -538,6 +538,10 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # removed with the part; phase 19's R4 puts an ENC28J60 back on the same
     # SPI0 pins, under the same guard-by-pin-map rule.
     list(APPEND SOURCES drivers/uart1_link_rp2350.c drivers/enc28j60_rp2350.c)
+    # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
+    # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
+    # wired, which only the wifi/clock persona board files declare.
+    list(APPEND SOURCES drivers/cyw43_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

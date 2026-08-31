@@ -65,6 +65,23 @@
                 "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
                 "LUGALOS_ENABLE_DCF77": "OFF"
             }
+        },
+        {
+            "name": "rp2350-wifi",
+            "displayName": "RP2350W (Pico 2 W) — wireless netif persona",
+            "description": "Bare Pico 2 W with an SD card on SPI1, CYW43439 pins (GP23/24/25/29) reserved (plan/phase19_ip_stack_and_ethernet.md R5). No display, keypad or matrix. Carries drivers/cyw43_rp2350.c (R5); the gSPI bus layer is in progress and not yet answering, so this persona is still a headless USB 9P node in practice. A different physical Pico 2 W than the one under the Pico-Clock-Green baseboard (rp2350-clock).",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/rp2350-wifi",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
+                "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-wifi.cmake",
+                "LUGALOS_ENABLE_SPISD": "ON",
+                "LUGALOS_ENABLE_ST7735": "OFF",
+                "LUGALOS_ENABLE_TM1638": "OFF",
+                "LUGALOS_ENABLE_CHESS": "OFF",
+                "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+                "LUGALOS_ENABLE_DCF77": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -72,6 +89,7 @@
         { "name": "rv64-mmu", "configurePreset": "rv64-mmu" },
         { "name": "rp2350-chess", "configurePreset": "rp2350-chess" },
         { "name": "rp2350-clock", "configurePreset": "rp2350-clock" },
-        { "name": "rp2350-gateway", "configurePreset": "rp2350-gateway" }
+        { "name": "rp2350-gateway", "configurePreset": "rp2350-gateway" },
+        { "name": "rp2350-wifi", "configurePreset": "rp2350-wifi" }
     ]
 }

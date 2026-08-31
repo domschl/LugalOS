@@ -843,6 +843,74 @@ everything not gated on this.
 over TCP, survives the same fifteen-minute idle soak. Plus the blob accounting
 paragraph in the README.
 
+**Milestone 1 (gSPI bus bring-up) PASSING, 2026-08-31.** `wifi probe` reads
+`0xFEEDBEAD` back from the chip's test register, switches the bus to
+32-bit/big-endian/high-speed mode and reads the setting back
+(`0x000200b3` for the `0x000204b3` written -- the response-delay field is
+consumed by the chip). Repeatable across power cycles. Firmware download,
+the ioctl layer, join and the netif_t seam are still ahead.
+
+`drivers/cyw43_rp2350.c` + the `rp2350-wifi` persona. Two subsystems with no
+precedent anywhere in this tree, both written from scratch against raw
+registers: PIO0 (the gSPI program is hand-assembled -- there is no assembler
+in this build) and a polled substitute for the reference's DMA.
+
+**The root cause, and why it hid for so long: reset-time pin strapping.**
+Broadcom parts latch their bus mode (gSPI vs SDIO) from pin levels as WL_ON
+rises. WL_D was left floating/high across the reset pulse, so the chip came
+up on the wrong bus -- powered, healthy, answering nothing. Both reference
+drivers drive that pin **low** before the reset, but in code that reads like
+incidental GPIO housekeeping rather than a protocol requirement (the SDK's
+`cyw43_spi_gpio_setup()` does a bare `gpio_put(DATA_OUT,false)`; embassy's
+`sm.set_pins(Level::Low, ...)`), which is why it survived a long line-by-line
+comparison against the SDK.
+
+Bugs found and fixed on the way, in order:
+
+1. **A hand-assembly error.** `in pins,1` was encoded `0x2001`; IN's opcode
+   base is `0x4000`, not `0x2000` (that is WAIT). Caught by building the
+   SDK's own `pioasm` from `~/gith/pico` and diffing against the
+   hand-derived words -- every other instruction was right. **Build pioasm
+   first next time.** This bug hung the board hard enough to kill the
+   console, which is why every polling loop here is now bounded.
+2. **Wrong RX word accounting.** The pump waited for `rx_len/4` words; the
+   state machine only produces `(rx_len - tx_len)/4`. The leading `tx_len`
+   bytes are the electrical gap, zeroed rather than captured.
+3. **Two different swaps with confusingly similar names.** DMA's `bswap` is
+   a full 4-byte reversal; the reference's own `SWAP32()` swaps bytes only
+   *within* each 16-bit half (`rev8` then `rori 16`). They are not inverses
+   and this file used a full reversal for both.
+4. **ACCESSCTRL ordering.** Writing `ACCESSCTRL_PIO0` resets the IO mux of
+   every pad routed to PIO0 back to `FUNCSEL_NULL`. Opening the gates
+   *after* muxing silently reverted WL_D and WL_CLK to `0x1f` -- so the
+   clock drove nothing -- while the two SIO-muxed pins survived, which made
+   it look pin-specific. **Open ACCESSCTRL before assigning funcsels.**
+   Applies to any future PIO driver here.
+5. **Pad configuration.** WL_D wants no pull, 12 mA, fast slew -- not the
+   pull-down/4 mA implied by the SDK's `gpio_set_pulls(DATA,false,true)`. A
+   pull-down fighting a weak slow driver at 37.5 MHz produced a
+   slowly-rising edge that read as eight bit-times of zero.
+6. **Read length.** gSPI appends a 32-bit status word, so a 32-bit register
+   read clocks 64 bits back, not 32.
+
+**Method note worth keeping.** The Pico SDK, MicroPython and Arduino-Pico all
+vendor the *same* `georgerobotics/cyw43-driver`, so comparing against them
+only echoes one reading back. **embassy-rs's independent Rust `cyw43`** broke
+the tie and supplied findings 5 and 6 outright, plus independent confirmation
+that the command byte order was correct all along (its `swap16` = rotate-16,
+composed with its PIO path, yields the identical wire bytes) -- retiring a
+theory that would otherwise have kept getting re-tested. It also documents
+what the SDK does not: the PIO program must be chosen by *clock speed*, and
+RP2350-at-150MHz/clkdiv-2 (75 MHz PIO) sits in a different band than the
+RP2040 the SDK's default was tuned for.
+
+**The hardware was proven good mid-debug** by flashing MicroPython v1.29 to
+this same board and reading its real MAC (`2c:cf:67:de:12:5e`), which
+exercises the identical bus, blob upload and ioctl path. Recover afterwards
+with `import machine; machine.bootloader()` from the REPL, then reflash.
+Worth doing early next time a driver looks unexplainable -- it converts
+"is it me or the board?" into a fact in about two minutes.
+
 **R6 -- optional: an NTP client.** UDP is already there from R2; NTP is ~150
 lines and it is the first thing that makes the network useful to a *persona*
 rather than to a host -- the phase 17 clock could set its own time. Marked

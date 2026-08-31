@@ -23,6 +23,7 @@
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #include "drivers/enc28j60.h"
+#include "drivers/cyw43.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/spisd.h"
 #else
@@ -132,6 +133,9 @@ static void cmd_help(void) {
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
+#endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
+    cprintf("  wifi probe      - CYW43439: reset + gSPI bus bring-up, read back test pattern\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -2033,6 +2037,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     } else if (strcmp(cmd_line, "net regs") == 0) {
         enc28j60_dump_regs();
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
+    } else if (strcmp(cmd_line, "wifi probe") == 0) {
+        cprintf(cyw43_gspi_probe() ? "wifi: gSPI bus alive\n" : "wifi: no answer\n");
         return;
 #endif
     } else if (strcmp(cmd_line, "p9key") == 0) {

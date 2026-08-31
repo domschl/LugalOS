@@ -80,6 +80,10 @@ set(_optional_keys
     CONFIG_DCF77_WARMUP_MS
     CONFIG_DCF77_PON_PRESENT
     CONFIG_DCF77_AUTO_HOUR CONFIG_DCF77_AUTO_MIN CONFIG_DCF77_AUTO_ENABLED
+    # R5, plan/phase19_ip_stack_and_ethernet.md: the CYW43439 wireless
+    # module's gSPI bus, bit-banged over PIO0. GP23/24/25/29 on every
+    # Pico 2 W, whichever persona carries one.
+    CONFIG_WL_ON_GPIO CONFIG_WL_DATA_GPIO CONFIG_WL_CS_GPIO CONFIG_WL_CLK_GPIO
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only
