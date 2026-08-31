@@ -2,12 +2,20 @@
 
 Mounts a LugalOS board's entire 9P namespace (`/sd0`, `/proc`, `/ram0`,
 `/flash0`, ... -- whatever `ls /` shows on the board itself) as a real
-directory on a Linux host, via FUSE. Built directly on
+directory on the host, via FUSE. Built directly on
 [`host/p9lib`](../p9lib/README.md) -- no separate protocol implementation,
 just a `fusepy` `Operations` class wrapping a single `p9lib.Session`.
 
-Linux only for now (needs `libfuse`; `fuse2`/`fuse3` both work). macOS
-support (via macFUSE) is a possible later addition, not done here.
+Linux is where this is verified end to end. macOS support (via macFUSE)
+is written -- `fusepy` is the same package on both, the code has no
+Linux-specific assumptions left in it -- but is **untested past the mount
+call itself**: on Apple Silicon under macOS's default "Full Security" boot
+policy, activating any third-party system extension (macFUSE included)
+needs a trip through Recovery Mode to lower that policy first, which is a
+real, deliberate security tradeoff on the user's own machine and not
+something to talk anyone into. Treat macOS as "should work, not verified
+working" until someone confirms it on a machine where that trade has
+already been made for other reasons.
 
 ## Install
 
@@ -15,6 +23,39 @@ support (via macFUSE) is a possible later addition, not done here.
 cd host/fuse-p9
 uv sync   # pulls in fusepy and p9lib[serial] from the sibling ../p9lib package
 ```
+
+**Linux** additionally needs `libfuse` (`fuse2` or `fuse3`, either works),
+from the system package manager -- `apt install libfuse2` / `libfuse3-3`
+or equivalent. Nothing else to configure; a fresh install works immediately.
+
+**macOS** additionally needs [macFUSE](https://macfuse.github.io/)
+(`brew install macfuse`, or the `.pkg` from that site), and getting it
+actually active is more involved than the install:
+
+1. **Installing macFUSE is not enough -- it needs a one-time system
+   extension approval**, separate from the install and *not* granted by a
+   reboot on its own. Trigger the prompt by attempting a mount once
+   (`uv run lugal9pfuse ...` below), or go to **System Settings ->
+   General -> Login Items & Extensions -> Driver Extensions** directly.
+   Confirm it actually took with:
+   ```bash
+   systemextensionsctl list | grep -i fuse
+   ```
+   A mount attempt before approval fails with exactly `RuntimeError: 1` /
+   `mount_macfuse: the file system is not available`, indistinguishable
+   from a genuine fault without this context.
+2. **On Apple Silicon under the default security policy, step 1's prompt
+   never succeeds at all** -- `systemextensionsctl` shows no entry no
+   matter how many times "Allow" is clicked, and a reboot changes
+   nothing. The actual fix is **Recovery Mode -> Startup Security
+   Utility -> Security Policy -> Reduced Security -> allow user
+   management of kernel extensions from identified developers**, then
+   reboot again and redo step 1. This is the real reason macOS is listed
+   as untested above: it is a legitimate cost, not a checkbox, and
+   whether to pay it is the user's call.
+3. **Unmounting uses plain `umount`, not `fusermount`** -- macOS has no
+   `fusermount` binary at all (that's Linux-specific, from
+   `libfuse`/`fuse-utils`); `umount /tmp/lugalos` is the macOS equivalent.
 
 ## Use
 
@@ -30,7 +71,8 @@ mkdir /tmp/lugalos/sd0/a_directory
 cp somefile /tmp/lugalos/sd0/a_directory/
 
 # unmount from anywhere:
-fusermount -u /tmp/lugalos   # or Ctrl-C the lugal9pfuse process
+fusermount -u /tmp/lugalos   # Linux; macOS: umount /tmp/lugalos
+# or Ctrl-C the lugal9pfuse process
 ```
 
 Against QEMU instead of real hardware, use `--unix <chardev socket path>` in

@@ -821,10 +821,20 @@ this suite is ever run less interactively, but it says nothing about R4.
 gate is Linux-only (macFUSE has no such path; the only reliable signal is
 the mount attempt itself, which already reports a real failure), and its
 cleanup used `fusermount -u` unconditionally (Linux-only; macOS unmounts
-through plain `umount`). Both fixed to be platform-agnostic. Still
-skip/fail on this machine pending a one-time macFUSE system-extension
-approval in System Settings (a macOS step, not a code issue) -- the 14/15
-figure above is everything not gated on that.
+through plain `umount`). Both fixed to be platform-agnostic.
+
+**`fuse_mount` stays untested on macOS, and that is where it stops, not a
+bug to keep chasing.** Getting macFUSE's system extension active on this
+Apple Silicon Mac, under its default "Full Security" boot policy, turned
+out to need more than the System Settings approval the code's own error
+message implies -- a trip through Recovery Mode to lower the security
+policy first, a real and deliberate tradeoff on the user's own machine.
+Declined, correctly: the code itself (`host/fuse-p9/`,
+`tests/hw/test_gateway.py`'s platform fixes) has no Linux-specific
+assumptions left and is believed correct on macOS, but "should work" and
+"verified working" are different claims and `host/fuse-p9/README.md` now
+says so plainly rather than overclaiming. The 14/15 figure above is
+everything not gated on this.
 
 **R4 done, 2026-08-31.**
 
