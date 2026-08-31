@@ -48,6 +48,12 @@ bool cyw43_led_set(bool on);
  * times out. */
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]);
 
+/* True once the firmware is uploaded and answering ioctls -- i.e. once
+ * cyw43_gspi_probe() has succeeded. Everything else here (join, the LED,
+ * the netif) is meaningless before that, so callers can check rather than
+ * discover it as a timeout. */
+bool cyw43_is_ready(void);
+
 /* NULL until cyw43_gspi_probe() has succeeded. */
 netif_t *cyw43_get_netif(void);
 

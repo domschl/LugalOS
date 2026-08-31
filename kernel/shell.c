@@ -2046,6 +2046,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "wifi probe") == 0) {
         cprintf(cyw43_gspi_probe() ? "wifi: ready\n" : "wifi: no answer\n");
         return;
+    } else if (strncmp(cmd_line, "wifi ", 5) == 0 && !cyw43_is_ready() &&
+               strcmp(cmd_line, "wifi probe") != 0) {
+        /* Everything except `wifi probe` needs the firmware running --
+         * the radio does nothing until ~230 KB has been uploaded to it.
+         * Say so once, here, rather than letting each subcommand fail
+         * with a bus-level timeout the reader then has to interpret. */
+        cprintf("wifi: the radio is not up yet -- run `wifi probe` first "
+                "(it resets the chip and uploads its firmware)\n");
+        return;
     } else if (strncmp(cmd_line, "wifi join ", 10) == 0) {
         /* Explicit form: `wifi join <ssid> <64-hex-psk>`. Takes the
          * *derived* PSK, never a passphrase -- same rule as the stored

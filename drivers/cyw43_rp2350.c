@@ -379,12 +379,25 @@ static void wl_gpio_setup(void) {
 #define BP_WINDOW_INVALID 0xFFFFFFFFu
 static uint32_t g_bp_window = BP_WINDOW_INVALID;
 
+/* Carrier state, set when association completes. */
+static bool g_link_up;
+
+/* Whether the chip has firmware running and is answering ioctls. Anything
+ * that talks to the firmware -- joining, the LED, the netif -- is
+ * meaningless before this, and failing it early gives a caller something
+ * it can act on instead of a bus-level timeout to decode. */
+static bool g_fw_ready;
+
+
 /* Datasheet-mandated power-up sequence (cyw43-driver's cyw43_spi_reset()):
  * hold WL_ON low, release, then give the chip time to bring its own
  * clocks up before the bus is touched. */
 static void wl_reset(void) {
-    /* The chip is about to lose its backplane window registers. */
+    /* The chip is about to lose its backplane window registers, and
+     * whatever firmware was running in it. */
     g_bp_window = BP_WINDOW_INVALID;
+    g_fw_ready = false;
+    g_link_up = false;
     REG(SIO_GPIO_OUT_CLR) = WL_ON_MASK;
     time_delay_us(20000);
     REG(SIO_GPIO_OUT_SET) = WL_ON_MASK;
@@ -1321,14 +1334,18 @@ static bool cyw43_gpio_set(unsigned gpio_n, bool on) {
 }
 
 bool cyw43_led_set(bool on) {
+    if (!g_fw_ready) {
+        printk("cyw43: radio is not up -- the LED is on the chip's own GPIO, "
+               "which needs the firmware running\n");
+        return false;
+    }
     return cyw43_gpio_set(0, on);
 }
 
 uint32_t cyw43_rx_overruns(void) { return g_rx_overrun; }
 uint32_t cyw43_rx_high_water(void) { return g_rx_high_water; }
 
-/* Carrier state, set when association completes. */
-static bool g_link_up;
+bool cyw43_is_ready(void) { return g_fw_ready; }
 
 /* --- association ---------------------------------------------------------
  *
@@ -1345,6 +1362,10 @@ static bool cyw43_ioctl_set_u32(uint32_t cmd, uint32_t iface, uint32_t val) {
 }
 
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
+    if (!g_fw_ready) {
+        printk("cyw43: radio is not up -- the firmware has to be loaded before a join\n");
+        return false;
+    }
     uint32_t ssid_len = 0;
     while (ssid[ssid_len]) ssid_len++;
     if (ssid_len == 0 || ssid_len > 32) {
@@ -1630,7 +1651,9 @@ bool cyw43_gspi_probe(void) {
     if (!cyw43_set_iovar_u32("ampdu_mpdu", 4)) return false;
     time_delay_us(100000);
 
-    if (!cyw43_register_netif()) return false;
+    g_fw_ready = true;
+
+    if (!cyw43_register_netif()) { g_fw_ready = false; return false; }
 
     printk("cyw43: ready\n");
     return true;

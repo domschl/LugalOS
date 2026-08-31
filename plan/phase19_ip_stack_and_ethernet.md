@@ -892,7 +892,17 @@ queue in the chip's own 8 KB buffer -- this bus only reveals a packet's
 channel *after* reading it, so a data frame arriving with nowhere to go is
 already consumed and lost. Hence a four-slot receive ring here and
 deliberately none in the ENC28J60, where it would be cargo-culting.
-`wifi stats` reports the ring's high-water mark and any drops.
+`wifi stats` reports the ring's high-water mark and any drops. With the
+ring in place the concurrent case is clean: 40/40 echoes at 0% loss while
+twelve 9P sessions ran directory reads, where the same mix previously
+dropped 3-10%.
+
+Every `wifi` subcommand except `probe` now refuses early, and says what to
+do, when the firmware is not loaded -- the radio does nothing until ~230 KB
+has been uploaded to it, and without the guard a join before a probe failed
+as a bus-level timeout the reader had to interpret. Guarded in the driver
+as well as the shell, so a caller that is not the shell (a boot script, a
+Lisp binding) gets the same answer.
 
 **Milestone 3 (CLM + ioctl layer + LED) PASSING, 2026-08-31.** The user LED
 on the Pico 2 W lights on command -- and that is the end-to-end proof the
