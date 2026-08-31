@@ -783,6 +783,9 @@ static void advance_rdpt(uint16_t next_pkt) {
 }
 
 static uint32_t g_mac_reinits;
+static uint32_t g_mac_hard_resets;
+static uint64_t g_last_reinit_ms;
+static uint32_t g_reinit_streak;
 
 static int enc_poll_locked(void) {
     if (g_rx_len > 0) return 1;              /* already have one waiting */
@@ -799,16 +802,45 @@ static int enc_poll_locked(void) {
      * single-bit patch stopped being enough once it started showing up in
      * more than one register. A full reinit is cheap here (a few hundred
      * bytes over SPI, no scheduler wait) and catches whatever else might
-     * have drifted, not just the two registers observed so far. */
-    /* Checked independently, not just ECON1.RXEN: observed a run where
+     * have drifted, not just the two registers observed so far.
+     *
+     * Checked independently, not just ECON1.RXEN: observed a run where
      * ECON1.RXEN read correctly set while MACON1 itself had reverted --
      * a combination the arduino_uip issue's single symptom doesn't cover,
      * and checking only ECON1 silently missed it (0 reinits logged while
-     * MACON1 sat wrong). Either one wrong triggers the same full recovery. */
+     * MACON1 sat wrong). Either one wrong triggers the same full recovery.
+     *
+     * Rate-limited and escalating, after this was caught running away to
+     * 363,914 reinits in 1509 s (~240/s) on real hardware: with no cooldown
+     * at all, a reinit that does not hold retriggers on the very next poll,
+     * forever, starving this function of ever reaching the EPKTCNT check
+     * below and hammering the SPI bus continuously -- which is itself a
+     * plausible way to keep a marginal chip from ever settling. A 50 ms
+     * cooldown caps the worst case at ~20/s, matching the rate seen in
+     * every *healthy* recovery observed so far (single digits to a few
+     * dozen per minute). If five reinits in a row do not hold even across
+     * that cooldown, the register-only reinit is escalated to a full
+     * enc_hw_reset() (the SRC opcode, not just rewriting registers on top
+     * of whatever internal state the chip is actually in) before trying
+     * enc_mac_phy_init() again -- the same asymmetry `reboot` has over this
+     * driver's own recovery, and `reboot` is what reliably cleared the
+     * runaway state when it was found. */
     if ((rcr(ECON1) & ECON1_RXEN) == 0 || rcr(MACON1) != MACON1_MARXEN) {
-        enc_mac_phy_init();
-        enc_apply_mac(g_netif.mac);
-        g_mac_reinits++;
+        uint64_t now = time_get_ms();
+        if (now - g_last_reinit_ms >= 50) {
+            if (g_reinit_streak >= 5) {
+                enc_hw_reset();
+                g_mac_hard_resets++;
+                g_reinit_streak = 0;
+            }
+            enc_mac_phy_init();
+            enc_apply_mac(g_netif.mac);
+            g_mac_reinits++;
+            g_reinit_streak++;
+            g_last_reinit_ms = now;
+        }
+    } else {
+        g_reinit_streak = 0;
     }
 
     if (rcr(EPKTCNT) == 0) return 0;
@@ -891,8 +923,10 @@ void enc28j60_dump_regs(void) {
            eie, eir, estat, econ1, econ2);
     printk("[ENC28J60] EPKTCNT %u ERXFCON 0x%02x MACON1 0x%02x ERXRDPT 0x%04x ERXWRPT 0x%04x PHSTAT2 0x%04x\n",
            pktcnt, erxfcon, macon1, erxrdpt, erxwrpt, phstat2);
-    printk("[ENC28J60] full MAC/PHY reinit triggered %lu time(s) since boot\n",
-           (unsigned long)g_mac_reinits);
+    printk("[ENC28J60] MAC/PHY reinit %lu time(s), escalated to a full hw reset %lu time(s), "
+           "current streak %lu\n",
+           (unsigned long)g_mac_reinits, (unsigned long)g_mac_hard_resets,
+           (unsigned long)g_reinit_streak);
 }
 
 #else  /* no ENC28J60 pin map on this board */

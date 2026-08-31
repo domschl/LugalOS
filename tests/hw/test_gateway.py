@@ -531,9 +531,13 @@ def test_fuse_mount(gw: Gateway) -> tuple[str, bool, str]:
     try:
         import fuse  # noqa: F401
     except Exception:
-        return name, True, "SKIPPED (fusepy not installed)"
-    if not Path("/dev/fuse").exists():
-        return name, True, "SKIPPED (no /dev/fuse)"
+        return name, True, "SKIPPED (fusepy not installed, or libfuse/macFUSE missing)"
+    # No further platform gate here deliberately: /dev/fuse is Linux-only
+    # (macFUSE registers as a filesystem bundle instead -- there is no
+    # single cross-platform path to check for it), so the only reliable
+    # signal is the actual mount attempt below, which already reports a
+    # real failure ("mount exited" / "did not become usable") if libfuse
+    # is unavailable at runtime despite the Python import succeeding.
 
     import tempfile
     mnt = Path(tempfile.mkdtemp(prefix="lugal9p-n6-"))
@@ -587,7 +591,15 @@ def test_fuse_mount(gw: Gateway) -> tuple[str, bool, str]:
         return name, False, f"{type(e).__name__}: {e}"
     finally:
         if proc is not None and proc.poll() is None:
-            subprocess.run(["fusermount", "-u", str(mnt)], capture_output=True)
+            # fusermount is Linux-only; macOS (macFUSE) unmounts through
+            # plain umount instead. Try both rather than branch on
+            # platform, since a wrong guess here would leave the mount
+            # behind -- whichever one exists handles it, the other just
+            # fails harmlessly.
+            if shutil.which("fusermount"):
+                subprocess.run(["fusermount", "-u", str(mnt)], capture_output=True)
+            else:
+                subprocess.run(["umount", str(mnt)], capture_output=True)
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:

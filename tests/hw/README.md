@@ -153,7 +153,7 @@ quirk survived, is in `plan/phase19_ip_stack_and_ethernet.md` under R4.
 talks to the board over a network rather than a cable:
 
 ```sh
-uv run test_gateway.py --key 000102030405060708090a0b0c0d0e0f --console /dev/ttyACM0
+uv run test_gateway.py --key 000102030405060708090a0b0c0d0e0f --interactive
 ```
 
 It skips everything, rather than failing, when nothing answers at the address
@@ -165,12 +165,13 @@ lsh> p9key 000102030405060708090a0b0c0d0e0f
 lsh> (mount-remote "chess" "uart1")      # only for the two-hop test
 ```
 
-`--console` is optional. It used to add a test that read the W5500 driver's
-own counters afterwards -- the test most likely to catch a regression, because
-every transport fault in phase 18 showed up there before it showed up as a
-failed operation. It went with the driver in phase 19's R0, and R4 should give
-the ENC28J60 an equivalent: a link whose error counters nobody reads is a link
-that fails quietly.
+`--interactive` opts into `test_cable_pull`, which needs hands (it prints an
+instruction and waits for the cable to actually be unplugged, then plugged
+back in); every other test runs without it. There is no `--console` flag on
+this script — that was true of an earlier version whose driver-counters test
+went with the W5500 in phase 19's R0. R4's equivalent is `net regs`
+(§"If it all skips" below), read over the console separately rather than
+threaded through this suite.
 
 ### What it covers that QEMU and a localhost socket cannot
 

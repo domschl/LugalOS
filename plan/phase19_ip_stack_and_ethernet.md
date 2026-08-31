@@ -765,11 +765,68 @@ works. A soldered rebuild (replacing the jumper-wire prototype) remains a
 plausible next experiment if this ever becomes a real operational problem,
 but is not blocking R4.
 
-**Remaining before R4 is fully closed:** the fifteen-minute idle soak,
-`tests/hw/test_gateway.py` restored to green over the real wire (needs a
-key installed and the host suite pointed at 192.168.77.2), the cable-pull
-and buffer-fill cases, and a driver-counters test exercising `net regs`
-the way `test_driver_counters` once exercised the W5500's own report.
+**The fifteen-minute idle soak, done 2026-08-31.** Left genuinely idle (no
+commands, no traffic beyond ordinary background LAN broadcast) for the
+full window: still 0 dropped frames afterward, ping still 0% loss, and
+only 5 MAC/PHY reinits fired in that time -- confirming the reinit rate
+tracks *active transmit load*, not elapsed time, which is reassuring for
+the decision above to live with it.
+
+**`tests/hw/test_gateway.py` restored to green, 2026-08-31: 14/15,
+including the cable-pull and buffer-fill cases the plan named explicitly.**
+The second HanRun board was pressed into service as the downlink peer for
+the two-hop tests (flashed with the chess persona, `p9share` started on
+its own console, `(mount-remote "chess" "uart1")` from the gateway).
+
+**The buffer-fill case (`pipelined_fill`) found a real bug, not a driver
+limitation -- a double-dispatch race in `net/tcp.c`, unrelated to R4's own
+driver work but only surfaced once real hardware timing existed to trigger
+it.** A server-accepted TCP connection's link was registered with
+`p9_link_register_background()` *in addition to* `tcp_service()` already
+servicing it directly every cycle -- so `p9srv`'s background sweep and
+`netsrv`'s own dispatch both served the same connection independently.
+`p9_link_pump()`'s lock serialises the two pumps against each other, but
+not `netsrv`'s external `tx_len == 0` gate check against `p9srv` having
+already set it moments before: `netsrv` could check the gate, block on the
+lock while `p9srv` ran a full request-reply cycle, then acquire the lock,
+dequeue the *next* already-buffered request, and lose the `send_frame()`
+race -- and `p9_route_frame()` never retries a reply it failed to queue,
+so the request's answer was gone for good. Reproduced with a script
+sending twelve pipelined 9P requests with zero gap between them (Nagle
+coalesces them into one incoming segment); the exact boundary was
+striking -- 0 ms gap failed 100% of the time, 5 ms gap succeeded 100% of
+the time, across many runs. Root-caused by adding sequence-numbered
+tracing to `net/tcp.c` and `fs/p9_link.c` (temporary, since removed) and
+watching `send_frame->-1` land on exactly the tags the client never
+received. Fix: the registration was never needed -- `tcp_service()`
+already exclusively services every `ESTABLISHED`, non-client connection --
+so the comment above it (which reasoned correctly about *client* links
+racing the background pump, but not server ones) is corrected in place and
+the registration removed. QEMU suite still 296/296 after the fix
+(R3's own recovery-path and two-node tests exercise the code path this
+touches). Confirmed on hardware: 5/5 clean repeats of the exact
+zero-gap reproduction, then the same 12/12 result inside the full suite.
+
+**The cable-pull case is not a driver bug -- it is the test's 60-second
+window colliding with human reaction time when the instruction has to be
+relayed through conversation.** Two isolated runs (no delay between the
+printed instruction and the physical action) both passed cleanly,
+"recovered without intervention"; every failure seen inside the full
+suite traced to the real-world gap between the prompt appearing and the
+cable actually being pulled exceeding 60 s. Worth widening that window if
+this suite is ever run less interactively, but it says nothing about R4.
+
+**`tests/hw/test_gateway.py` itself gained two portability fixes,
+2026-08-31, unrelated to the driver:** `test_fuse_mount`'s `/dev/fuse`
+gate is Linux-only (macFUSE has no such path; the only reliable signal is
+the mount attempt itself, which already reports a real failure), and its
+cleanup used `fusermount -u` unconditionally (Linux-only; macOS unmounts
+through plain `umount`). Both fixed to be platform-agnostic. Still
+skip/fail on this machine pending a one-time macFUSE system-extension
+approval in System Settings (a macOS step, not a code issue) -- the 14/15
+figure above is everything not gated on that.
+
+**R4 done, 2026-08-31.**
 
 **R5 -- CYW43439 on an RP2350W.** gSPI, firmware upload, join (WPA2), netif.
 *Verify:* joins a real AP, answers a ping, completes an authenticated 9P session

@@ -312,7 +312,20 @@ static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     /* Never blocks. tcp_service() only offers a connection to the 9P server
      * when its send buffer is already empty, so this cannot be reached with
      * one outstanding -- and if it somehow is, refusing is right: blocking
-     * here would be blocking the only task that can drain it. */
+     * here would be blocking the only task that can drain it.
+     *
+     * That guarantee genuinely did not hold for one release, 2026-08-31: a
+     * server-accepted connection's link was *also* registered with
+     * p9_link_register_background() (below, at TCP_SYN_RECEIVED -- since
+     * removed), so p9srv's background sweep served the same link as
+     * tcp_service()'s own direct call. p9_link_pump()'s own lock serialises
+     * the two pumps against each other, but not netsrv's external
+     * tx_len==0 check against p9srv's already having set it moments before
+     * -- so this branch *could* be reached with one outstanding, refuse
+     * correctly, and the request already dequeued by the pump that lost the
+     * race was gone for good (p9_route_frame() never retries). Reproduced
+     * on hardware with a burst of pipelined requests; see
+     * plan/phase19_ip_stack_and_ethernet.md's R4 notes for the full account. */
     if (c->tx_len) return -1;
 
     memcpy(c->tx, buf, len);
@@ -636,10 +649,27 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
             if (seq_lt(c->snd_una, c->snd_nxt)) return;   /* our SYN is still unacked */
             c->state = TCP_ESTABLISHED;
             g_accepted_total++;
-            /* Server side only: a link we dialled is answered *by* the peer,
-             * so registering it for inbound service would have the background
-             * pump racing our own client for its replies. */
-            p9_link_register_background(&c->link);
+            /* Deliberately NOT p9_link_register_background()'d, and this is a
+             * correction, not the original design: tcp_service() below already
+             * services every ESTABLISHED, non-client connection directly and
+             * exclusively (the `c->tx_len == 0` gate two switch-cases down).
+             * Also registering here put p9srv's p9_link_background_poll()
+             * sweep onto the *same* link -- two tasks independently deciding
+             * "the send buffer is empty, my turn" with nothing atomic across
+             * the gap between that check and the pump that acts on it.
+             * p9_link_pump()'s own g_pump_lock serialises the pump itself,
+             * but not netsrv's external tx_len==0 check against it: netsrv
+             * could check tx_len, block on the lock while p9srv's pump runs
+             * a full request-reply cycle (setting tx_len again), then acquire
+             * the lock, dequeue the *next* already-buffered request, and lose
+             * the send_frame() race -- a reply silently and permanently lost,
+             * since p9_route_frame() never retries. Reproduced on hardware
+             * with a burst of pipelined requests (net/tcp.c's own docs still
+             * describe the two-task arrangement as intentional for *client*
+             * links -- the comment removed here made the same claim for
+             * server ones, which turned out not to hold once both paths were
+             * traced under real timing rather than assumed non-overlapping).
+             * See plan/phase19_ip_stack_and_ethernet.md's R4 notes. */
             break;
         case TCP_FIN_WAIT_1:
             if (c->fin_sent && c->snd_una == c->snd_nxt) c->state = TCP_FIN_WAIT_2;
