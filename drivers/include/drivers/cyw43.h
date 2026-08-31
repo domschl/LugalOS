@@ -30,4 +30,11 @@
  * firmware, NVRAM, or anything past the raw bus. */
 bool cyw43_gspi_probe(void);
 
+/* The Pico 2 W's user LED is on the *wireless chip's* GPIO 0, not an
+ * RP2350 pin, so this only works once cyw43_gspi_probe() has brought the
+ * firmware up -- which is what makes it a genuine end-to-end check of the
+ * whole stack rather than a GPIO poke. Returns false if the ioctl did not
+ * complete. */
+bool cyw43_led_set(bool on);
+
 #endif /* DRIVERS_CYW43_H */

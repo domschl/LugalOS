@@ -135,7 +135,8 @@ static void cmd_help(void) {
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
-    cprintf("  wifi probe      - CYW43439: reset + gSPI bus bring-up, read back test pattern\n");
+    cprintf("  wifi probe      - CYW43439: bus, firmware upload and CLM -- brings the chip up\n");
+    cprintf("  wifi led [on|off] - Blink the user LED (on the wireless chip's own GPIO 0)\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -2041,7 +2042,29 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
     } else if (strcmp(cmd_line, "wifi probe") == 0) {
-        cprintf(cyw43_gspi_probe() ? "wifi: gSPI bus alive\n" : "wifi: no answer\n");
+        cprintf(cyw43_gspi_probe() ? "wifi: ready\n" : "wifi: no answer\n");
+        return;
+    } else if (strncmp(cmd_line, "wifi led", 8) == 0) {
+        /* The LED is on the wireless chip's own GPIO 0, so this only does
+         * anything once `wifi probe` has the firmware running -- which is
+         * the point: it is the one check that exercises the whole stack,
+         * bus through firmware through ioctl, and reports by lighting up. */
+        const char *arg = &cmd_line[8];
+        while (*arg == ' ') arg++;
+        if (strcmp(arg, "on") == 0) {
+            cprintf(cyw43_led_set(true) ? "wifi: led on\n" : "wifi: led failed\n");
+        } else if (strcmp(arg, "off") == 0) {
+            cprintf(cyw43_led_set(false) ? "wifi: led off\n" : "wifi: led failed\n");
+        } else {
+            for (int i = 0; i < 6; i++) {
+                if (!cyw43_led_set((i & 1) == 0)) {
+                    cprintf("wifi: led failed\n");
+                    return;
+                }
+                time_delay_us(300000);
+            }
+            cprintf("wifi: blinked\n");
+        }
         return;
 #endif
     } else if (strcmp(cmd_line, "p9key") == 0) {

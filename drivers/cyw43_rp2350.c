@@ -220,6 +220,36 @@ static const uint16_t g_gspi_prog[6] = {
 #define CHIP_RAM_SIZE               (512u * 1024u)
 #define ATCM_RAM_BASE_ADDRESS       0u
 
+/* --- SDPCM / CDC: the control channel on top of the WLAN function ------
+ *
+ * Once the firmware is running, everything else (ioctls, iovars, and
+ * eventually frames) rides on function 2 as SDPCM packets: an SDPCM bus
+ * header, then a CDC header for control traffic, then the payload. An
+ * iovar is a CDC SetVar/GetVar whose payload is a NUL-terminated name
+ * followed by its value. */
+#define WLAN_FUNCTION 2u
+
+#define STATUS_F2_PKT_AVAILABLE     0x00000100u
+#define STATUS_F2_PKT_LEN_MASK      0x000FFE00u
+#define STATUS_F2_PKT_LEN_SHIFT     9u
+
+#define CHANNEL_TYPE_CONTROL        0u
+
+#define IOCTL_GET                   0u
+#define IOCTL_SET                   2u
+#define IOCTL_CMD_GETVAR            262u
+#define IOCTL_CMD_SETVAR            263u
+
+#define SDPCM_HEADER_SIZE           12u
+#define CDC_HEADER_SIZE             16u
+
+/* CLM download, chunked, with a small header per chunk. */
+#define DOWNLOAD_FLAG_BEGIN         0x0002u
+#define DOWNLOAD_FLAG_END           0x0004u
+#define DOWNLOAD_FLAG_HANDLER_VER   0x1000u
+#define DOWNLOAD_TYPE_CLM           2u
+#define CLM_CHUNK_SIZE              1024u
+
 /* The embedded blobs (tools/embed_cyw43_fw.py; provenance and licence in
  * firmware/cyw43/README.md). */
 extern const uint8_t cyw43_fw[];
@@ -928,6 +958,221 @@ static bool cyw43_download_firmware(void) {
     return true;
 }
 
+/* --- control channel: SDPCM + CDC over the WLAN function --------------- */
+
+static uint8_t g_sdpcm_seq;
+static uint16_t g_ioctl_id;
+
+/* One buffer for both directions. 2 KB is the firmware's own control
+ * packet ceiling, plus room for the command word a WLAN write prepends. */
+static uint32_t g_wlan_buf[(4 + 2048) / 4];
+
+/* Write a prepared SDPCM packet to function 2. The command word goes in
+ * the first four bytes, the way the reference's wlan_write() does it. */
+static bool wlan_write(uint32_t len) {
+    uint32_t padded = (len + 3u) & ~3u;
+    g_wlan_buf[0] = make_cmd(1, 1, WLAN_FUNCTION, 0, padded);
+    return pio_gspi_transfer((const uint8_t *)g_wlan_buf, 4 + padded, NULL, 0);
+}
+
+/* Is there a control packet waiting, and how long is it? */
+static bool wlan_packet_pending(uint32_t *len_out) {
+    uint32_t st = 0;
+    if (!cyw43_read_reg(BUS_FUNCTION, SPI_STATUS_REGISTER, 4, &st)) return false;
+    if (!(st & STATUS_F2_PKT_AVAILABLE)) { *len_out = 0; return true; }
+    *len_out = (st & STATUS_F2_PKT_LEN_MASK) >> STATUS_F2_PKT_LEN_SHIFT;
+    return true;
+}
+
+static bool wlan_read(uint8_t *dst, uint32_t len) {
+    uint32_t padded = (len + 3u) & ~3u;
+    if (padded + 4 > sizeof(g_wlan_buf)) {
+        printk("cyw43: packet too large (%u)\n", len);
+        return false;
+    }
+    uint32_t cmd = make_cmd(0, 1, WLAN_FUNCTION, 0, padded);
+    uint8_t txbuf[4];
+    memcpy(txbuf, &cmd, 4);
+    if (!pio_gspi_transfer(txbuf, 4, (uint8_t *)g_wlan_buf, 4 + padded)) return false;
+    memcpy(dst, (const uint8_t *)g_wlan_buf + 4, len);
+    return true;
+}
+
+static void put_u16(uint8_t *p, uint16_t v) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; }
+static void put_u32(uint8_t *p, uint32_t v) {
+    p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff;
+}
+static uint32_t get_u32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Send one CDC control request, then wait for the reply carrying our id.
+ * `data`/`len` is the request payload; the reply payload, if any, is
+ * copied back into `data` and its length returned via `out_len`. */
+static bool cyw43_ioctl(uint32_t kind, uint32_t cmd, uint32_t iface,
+                        uint8_t *data, uint32_t len, uint32_t *out_len) {
+    uint32_t total = SDPCM_HEADER_SIZE + CDC_HEADER_SIZE + len;
+    if (4 + total > sizeof(g_wlan_buf)) {
+        printk("cyw43: ioctl payload too large (%u)\n", len);
+        return false;
+    }
+
+    uint8_t *p = (uint8_t *)g_wlan_buf + 4;
+    g_ioctl_id++;
+
+    put_u16(p + 0, (uint16_t)total);
+    put_u16(p + 2, (uint16_t)~total);
+    p[4] = g_sdpcm_seq++;
+    p[5] = CHANNEL_TYPE_CONTROL;
+    p[6] = 0;                       /* next_length, Tx-reserved */
+    p[7] = SDPCM_HEADER_SIZE;       /* header_length */
+    p[8] = 0;                       /* flow control, Tx-reserved */
+    p[9] = 0;                       /* bus credit, Tx-reserved */
+    p[10] = 0; p[11] = 0;
+
+    uint8_t *cdc = p + SDPCM_HEADER_SIZE;
+    put_u32(cdc + 0, cmd);
+    put_u32(cdc + 4, len);
+    put_u16(cdc + 8, (uint16_t)(kind | (iface << 12)));
+    put_u16(cdc + 10, g_ioctl_id);
+    put_u32(cdc + 12, 0);
+    if (len) memcpy(cdc + CDC_HEADER_SIZE, data, len);
+
+    if (!wlan_write(total)) return false;
+
+    /* Wait for the answer. The firmware replies to every control request,
+     * and skipping the reply leaves it queued to confuse the next one. */
+    static uint8_t rx[2048];
+    for (int attempt = 0; attempt < 500; attempt++) {
+        uint32_t plen = 0;
+        if (!wlan_packet_pending(&plen)) return false;
+        if (plen == 0) { time_delay_us(1000); continue; }
+        if (plen > sizeof(rx)) { printk("cyw43: reply too long (%u)\n", plen); return false; }
+        if (!wlan_read(rx, plen)) return false;
+
+        if (plen < SDPCM_HEADER_SIZE) continue;
+        uint32_t hdr_len = rx[7];
+        uint8_t channel = rx[5] & 0x0f;
+        if (channel != CHANNEL_TYPE_CONTROL) continue;   /* event or data */
+        if (hdr_len + CDC_HEADER_SIZE > plen) continue;
+
+        const uint8_t *r = rx + hdr_len;
+        uint16_t id = (uint16_t)(r[10] | (r[11] << 8));
+        if (id != g_ioctl_id) continue;                  /* stale reply */
+
+        uint32_t status = get_u32(r + 12);
+        if (status != 0) {
+            printk("cyw43: ioctl cmd %u failed, status 0x%08x\n", cmd, status);
+            return false;
+        }
+        uint32_t rlen = get_u32(r + 4);
+        uint32_t avail = plen - hdr_len - CDC_HEADER_SIZE;
+        if (rlen > avail) rlen = avail;
+        if (rlen > len) rlen = len;
+        if (rlen && data) memcpy(data, r + CDC_HEADER_SIZE, rlen);
+        if (out_len) *out_len = rlen;
+        return true;
+    }
+    printk("cyw43: ioctl cmd %u timed out\n", cmd);
+    return false;
+}
+
+/* An iovar is a SetVar/GetVar whose payload is "name\0" then the value. */
+static bool cyw43_set_iovar(const char *name, const uint8_t *val, uint32_t val_len) {
+    uint8_t buf[128];
+    uint32_t n = 0;
+    while (name[n]) { buf[n] = (uint8_t)name[n]; n++; }
+    buf[n++] = 0;
+    if (n + val_len > sizeof(buf)) return false;
+    if (val_len) memcpy(buf + n, val, val_len);
+    return cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SETVAR, 0, buf, n + val_len, NULL);
+}
+
+static bool cyw43_set_iovar_u32(const char *name, uint32_t val) {
+    uint8_t v[4];
+    put_u32(v, val);
+    return cyw43_set_iovar(name, v, 4);
+}
+
+static bool cyw43_set_iovar_u32x2(const char *name, uint32_t a, uint32_t b) {
+    uint8_t v[8];
+    put_u32(v, a);
+    put_u32(v + 4, b);
+    return cyw43_set_iovar(name, v, 8);
+}
+
+static bool cyw43_get_iovar_u32(const char *name, uint32_t *out) {
+    uint8_t buf[64];
+    uint32_t n = 0;
+    while (name[n]) { buf[n] = (uint8_t)name[n]; n++; }
+    buf[n++] = 0;
+    memset(buf + n, 0, 4);
+    uint32_t got = 0;
+    if (!cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GETVAR, 0, buf, n + 4, &got)) return false;
+    if (got < 4) return false;
+    *out = get_u32(buf);
+    return true;
+}
+
+/* --- CLM regulatory data ------------------------------------------------
+ *
+ * The transmit-power limits per region. Uploaded after the firmware is
+ * running, as a series of "clmload" iovars carrying a small header and up
+ * to 1 KB of payload each, flagged so the firmware knows which chunk is
+ * first and which is last. */
+static bool cyw43_load_clm(void) {
+    printk("cyw43: loading CLM (%u bytes)...\n", cyw43_clm_len);
+
+    uint32_t offs = 0;
+    while (offs < cyw43_clm_len) {
+        uint32_t chunk = cyw43_clm_len - offs;
+        if (chunk > CLM_CHUNK_SIZE) chunk = CLM_CHUNK_SIZE;
+
+        uint16_t flag = DOWNLOAD_FLAG_HANDLER_VER;
+        if (offs == 0) flag |= DOWNLOAD_FLAG_BEGIN;
+        if (offs + chunk == cyw43_clm_len) flag |= DOWNLOAD_FLAG_END;
+
+        /* "clmload\0" + a 12-byte download header + the chunk. Built
+         * directly in the WLAN buffer's payload area rather than a stack
+         * copy -- a 1 KB chunk plus headers is more than this kernel's
+         * stacks want to carry. */
+        static uint8_t buf[8 + 12 + CLM_CHUNK_SIZE];
+        memcpy(buf, "clmload", 8);              /* includes the NUL */
+        put_u16(buf + 8, flag);
+        put_u16(buf + 10, DOWNLOAD_TYPE_CLM);
+        put_u32(buf + 12, chunk);
+        put_u32(buf + 16, 0);                   /* crc, unused */
+        memcpy(buf + 20, cyw43_clm + offs, chunk);
+
+        if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SETVAR, 0, buf, 20 + chunk, NULL)) {
+            printk("cyw43: clmload chunk at %u failed\n", offs);
+            return false;
+        }
+        offs += chunk;
+    }
+
+    uint32_t status = 0xffffffff;
+    if (!cyw43_get_iovar_u32("clmload_status", &status)) return false;
+    if (status != 0) {
+        printk("cyw43: clmload_status = %u (want 0)\n", status);
+        return false;
+    }
+    printk("cyw43: CLM loaded\n");
+    return true;
+}
+
+/* The user LED on a Pico 2 W hangs off the *wireless chip's* GPIO 0, not
+ * an RP2350 pin -- so it cannot light until the firmware is running and
+ * answering ioctls. That makes it the first end-to-end proof that this
+ * whole stack works, which is exactly why it is worth wiring up early. */
+static bool cyw43_gpio_set(unsigned gpio_n, bool on) {
+    return cyw43_set_iovar_u32x2("gpioout", 1u << gpio_n, on ? (1u << gpio_n) : 0u);
+}
+
+bool cyw43_led_set(bool on) {
+    return cyw43_gpio_set(0, on);
+}
+
 bool cyw43_gspi_probe(void) {
     wl_gpio_setup();
     pio_gspi_init();
@@ -972,6 +1217,19 @@ bool cyw43_gspi_probe(void) {
         return false;
     }
     printk("cyw43: firmware running\n");
+
+    if (!cyw43_load_clm()) {
+        printk("cyw43: CLM load failed\n");
+        return false;
+    }
+
+    /* The two settings the reference makes right after the CLM, before
+     * anything else talks to the firmware: no transmit glomming (we send
+     * one packet per request), and AP+STA support enabled. */
+    if (!cyw43_set_iovar_u32("bus:txglom", 0)) return false;
+    if (!cyw43_set_iovar_u32("apsta", 1)) return false;
+
+    printk("cyw43: ready\n");
     return true;
 }
 

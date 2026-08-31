@@ -843,6 +843,28 @@ everything not gated on this.
 over TCP, survives the same fifteen-minute idle soak. Plus the blob accounting
 paragraph in the README.
 
+**Milestone 3 (CLM + ioctl layer + LED) PASSING, 2026-08-31.** The user LED
+on the Pico 2 W lights on command -- and that is the end-to-end proof the
+milestone was chosen for, because that LED hangs off the *wireless chip's*
+GPIO 0, not an RP2350 pin. Lighting it exercises every layer at once: PIO
+gSPI, the uploaded firmware, the CLM, and an ioctl round trip. `wifi led
+[on|off]` in the shell; `wifi probe` now runs bus -> firmware -> CLM ->
+config and reports `ready`.
+
+What that required, and what everything after this rides on: the SDPCM/CDC
+control channel on WLAN function 2. SDPCM bus framing with sequence
+numbers, CDC control headers with request ids, request/reply matching so a
+stale or out-of-order reply is skipped rather than mistaken for the answer
+(and event/data channels skipped entirely), and iovar encoding
+("name\0" + value) with set/get helpers. The reply is always read, even
+for sets whose value is discarded: the firmware answers every control
+request, and an unread reply stays queued to corrupt the *next* one --
+which would surface as some unrelated ioctl failing later.
+
+CLM itself is then small: 984 bytes as flagged `clmload` chunks, followed
+by reading `clmload_status` back as 0, which is the firmware's own
+confirmation it accepted the regulatory data.
+
 **Milestone 2 (firmware upload) PASSING, 2026-08-31.** The chip's own CPU
 runs our uploaded image: 231077 bytes of firmware written over the
 backplane and verified byte-for-byte, NVRAM placed at the top of chip RAM
