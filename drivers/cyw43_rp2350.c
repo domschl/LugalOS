@@ -123,45 +123,38 @@
 
 /* --- the gSPI PIO program, hand-assembled ------------------------------
  *
- * Source (Pico SDK, cyw43_bus_pio_spi.pio, program `spi_gap01_sample0`,
- * "for high cpu speed" per its own comment -- matches this board's 150 MHz
- * sys_clk same as drivers/enc28j60_rp2350.c's SPI0 choice):
+ * This is embassy-rs's *low speed* program, not the Pico SDK's default.
+ * The choice is set by PIO clock, not by chip: the SDK ships four
+ * variants differing only in turnaround and sample phase and picks
+ * `spi_gap01_sample0` unconditionally, tuned for an RP2040 at 66.5 MHz.
+ * embassy documents the bands (>100 MHz, [75,100], <75) and, for RP235x
+ * specifically, drives the divider to 3 rather than 2 -- "SPI
+ * communication won't work if the speed is too high"
+ * (embassy-rs/embassy#3960). 150 MHz / 3 = 50 MHz PIO, one bit per two
+ * cycles, so 25 MHz on the wire, comfortably under the 50 MHz the part
+ * is rated for and inside the low-speed band:
  *
  *   .side_set 1
  *   lp:      out pins, 1   side 0
  *            jmp x-- lp    side 1
  *   lp1_end: set pindirs,0 side 0
- *            nop           side 1
- *   lp2:     in pins, 1    side 0
- *            jmp y-- lp2   side 1
- *   end:
+ *            nop           side 0
+ *   lp2:     in pins, 1    side 1
+ *            jmp y-- lp2   side 0
  *
  * Loaded starting at instruction memory address 0 (this driver owns PIO0
  * outright -- nothing else shares its instruction memory, so there is no
  * offset to add, unlike a multi-program PIO the Pico SDK has to share).
- * PIO instruction encoding (RP2040/2350 datasheet, "PIO instruction
- * encoding"): bits[15:13] opcode, bits[12:8] delay/side-set (top 1 bit is
- * side-set here, since `.side_set 1` with no `opt`; low 4 bits delay,
- * always 0 -- this program uses none), then an 8-bit operand field whose
- * shape depends on the opcode. `nop` assembles to the standard PIO idiom
- * `mov y, y` (a destination write that changes nothing).
+ * Assembled with the SDK's own pioasm (built from ~/gith/pico) rather
+ * than by hand -- hand-assembly put one opcode field a bit low here once
+ * already, and cost a day.
  *
- *   addr 0  out pins,1   side 0   -> 0110 0000 0000 0001  0x6001
- *   addr 1  jmp x-- 0    side 1   -> 0001 0000 0100 0000  0x1040
- *   addr 2  set pindirs,0 side 0  -> 1110 0000 1000 0000  0xE080  (lp1_end)
- *   addr 3  mov y,y      side 1   -> 1011 0000 0100 0010  0xB042  (nop)
- *   addr 4  in pins,1    side 0   -> 0100 0000 0000 0001  0x4001  (lp2)
- *   addr 5  jmp y-- 4    side 1   -> 0001 0000 1000 0100  0x1084  (end-1)
- *
- * Cross-checked against ~/gith/pico/pico-sdk/tools/pioasm (built locally,
- * run against this exact program lifted verbatim from
- * cyw43_bus_pio_spi.pio) after the very first hardware run of this driver
- * stalled: pioasm's own hex output is 6001 1040 e080 b042 4001 1084 --
- * catching a real bug in the hand-assembly above, addr 4's opcode field
- * one bit low (0x2000 is WAIT's base, not IN's -- 0x4000). Left the wrong
- * derivation crossed out mentally by writing the right one in its place;
- * the point of running pioasm at all was to stop trusting hand arithmetic
- * for this specific field, not just this once.
+ *   addr 0  out pins,1    side 0  -> 0x6001
+ *   addr 1  jmp x-- 0     side 1  -> 0x1040
+ *   addr 2  set pindirs,0 side 0  -> 0xE080  (lp1_end)
+ *   addr 3  nop           side 0  -> 0xA042
+ *   addr 4  in pins,1     side 1  -> 0x5001  (lp2)
+ *   addr 5  jmp y-- 4     side 0  -> 0x0084
  *
  * SPI_OFFSET_LP1_END = 2 (wrap target for a write-only transfer: loop
  * just addr 0-1). SPI_OFFSET_END = 6 (wrap target for a full transfer:
@@ -170,7 +163,7 @@
  * below).
  */
 static const uint16_t g_gspi_prog[6] = {
-    0x6001, 0x1040, 0xE080, 0xB042, 0x4001, 0x1084,
+    0x6001, 0x1040, 0xE080, 0xA042, 0x5001, 0x0084,
 };
 #define GSPI_OFFSET_LP1_END 2
 
@@ -179,6 +172,62 @@ static const uint16_t g_gspi_prog[6] = {
 /* Bring-up-only gSPI protocol constants (georgerobotics/cyw43-driver,
  * src/cyw43_spi.h / cyw43_internal.h). */
 #define BUS_FUNCTION 0u
+#define BACKPLANE_FUNCTION 1u
+
+/* --- backplane, cores and firmware layout ------------------------------
+ *
+ * The chip's own 32-bit address space is reached through a sliding 32 KB
+ * window: the window base goes into three address registers on
+ * BACKPLANE_FUNCTION, and the command's address field then carries the
+ * offset within it. Addresses, core bases and RAM size below are the
+ * CYW43439's, cross-checked between the SDK's cyw43_ll.c and embassy-rs's
+ * chip.rs/lib.rs (they agree). */
+#define SPI_STATUS_REGISTER         0x0008u
+#define STATUS_F2_RX_READY          0x00000020u
+
+#define REG_BP_ADDRESS_LOW          0x1000Au
+#define REG_BP_ADDRESS_MID          0x1000Bu
+#define REG_BP_ADDRESS_HIGH         0x1000Cu
+#define REG_BP_CHIP_CLOCK_CSR       0x1000Eu
+#define REG_BP_FUNCTION2_WATERMARK  0x10008u
+
+#define BP_ALP_AVAIL_REQ            0x08u
+#define BP_ALP_AVAIL                0x40u
+#define BP_HT_AVAIL_REQ             0x10u
+#define BP_HT_AVAIL                 0x80u
+#define SPI_F2_WATERMARK            0x20u
+
+#define BP_WINDOW_SIZE              0x8000u
+#define BP_ADDRESS_MASK             0x7FFFu
+#define BP_ADDRESS_32BIT_FLAG       0x08000u
+/* 64 bytes per burst: the chip's own limit for a backplane transfer. */
+#define BP_MAX_TRANSFER             64u
+
+/* AI (the chip's internal interconnect) per-core control registers. */
+#define AI_IOCTRL_OFFSET            0x408u
+#define AI_RESETCTRL_OFFSET         0x800u
+#define AI_RESETSTATUS_OFFSET       0x804u
+#define AI_IOCTRL_BIT_CLOCK_EN      0x01u
+#define AI_IOCTRL_BIT_FGC           0x02u
+#define AI_IOCTRL_BIT_CPUHALT       0x20u
+#define AI_RESETCTRL_BIT_RESET      0x01u
+
+#define WRAPPER_REGISTER_OFFSET     0x100000u
+#define CHIPCOMMON_BASE_ADDRESS     0x18000000u
+#define ARM_CORE_BASE_ADDRESS       (0x18003000u + WRAPPER_REGISTER_OFFSET)
+#define SOCSRAM_BASE_ADDRESS        0x18004000u
+#define SOCSRAM_WRAPPER_BASE        (0x18004000u + WRAPPER_REGISTER_OFFSET)
+#define CHIP_RAM_SIZE               (512u * 1024u)
+#define ATCM_RAM_BASE_ADDRESS       0u
+
+/* The embedded blobs (tools/embed_cyw43_fw.py; provenance and licence in
+ * firmware/cyw43/README.md). */
+extern const uint8_t cyw43_fw[];
+extern const unsigned cyw43_fw_len;
+extern const uint8_t cyw43_clm[];
+extern const unsigned cyw43_clm_len;
+extern const uint8_t cyw43_nvram[];
+extern const unsigned cyw43_nvram_len;
 #define TEST_PATTERN 0xFEEDBEADu
 #define SPI_READ_TEST_REGISTER 0x0014u
 #define SPI_BUS_CONTROL        0x0000u
@@ -258,10 +307,23 @@ static void wl_gpio_setup(void) {
     REG(PIO_INPUT_SYNC_BYPASS) |= (1u << WL_DATA_PIN);
 }
 
+/* Cached copy of the chip's backplane window registers, so walking through
+ * one window doesn't rewrite all three address bytes per burst. It caches
+ * *chip* state, so it must be invalidated whenever the chip is reset --
+ * see wl_reset(). Leaving it stale across a second `wifi probe` made
+ * bp_set_window() skip the writes as already-correct while the chip had
+ * reset its window to zero, so the upload then read and wrote through the
+ * wrong window: intermittent verify failures at offset 0, depending on
+ * where the previous run happened to leave things. */
+#define BP_WINDOW_INVALID 0xFFFFFFFFu
+static uint32_t g_bp_window = BP_WINDOW_INVALID;
+
 /* Datasheet-mandated power-up sequence (cyw43-driver's cyw43_spi_reset()):
  * hold WL_ON low, release, then give the chip time to bring its own
  * clocks up before the bus is touched. */
 static void wl_reset(void) {
+    /* The chip is about to lose its backplane window registers. */
+    g_bp_window = BP_WINDOW_INVALID;
     REG(SIO_GPIO_OUT_CLR) = WL_ON_MASK;
     time_delay_us(20000);
     REG(SIO_GPIO_OUT_SET) = WL_ON_MASK;
@@ -300,7 +362,7 @@ static void pio_gspi_init(void) {
      * (CYW43_PIO_CLOCK_DIV_INT=2, FRAC8=0) rather than inventing a new
      * number -- this program shifts one bit per two SM clocks, so the
      * wire ends up at sys_clk/4. */
-    REG(PIO_SM_CLKDIV(PIO_SM)) = (2u << 16);
+    REG(PIO_SM_CLKDIV(PIO_SM)) = (3u << 16);
 
     /* PINCTRL: OUT/SET/IN all target WL_D (1 pin each), side-set targets
      * WL_CLK (1 pin, no "opt" -- SIDE_EN stays 0, the side-set field is
@@ -596,6 +658,276 @@ static bool cyw43_read_reg_u32(uint32_t fn, uint32_t reg, uint32_t *out) {
     return true;
 }
 
+/* --- generic register access, any function, any width ------------------- */
+
+/* A read of `len` bytes. Backplane reads carry a response delay: the chip
+ * needs a word's worth of clocks before its answer, so two words come
+ * back and the second one is the data. Bus-function reads have no such
+ * delay and answer in the first. */
+static bool cyw43_read_reg(uint32_t fn, uint32_t reg, uint32_t len, uint32_t *out) {
+    uint32_t cmd = make_cmd(0, 1, fn, reg, len);
+    uint8_t txbuf[4], rxbuf[16];
+    unsigned words = (fn == BACKPLANE_FUNCTION) ? 2u : 1u;
+    memcpy(txbuf, &cmd, 4);
+    memset(rxbuf, 0, sizeof(rxbuf));
+    if (!pio_gspi_transfer(txbuf, 4, rxbuf, 4 + words * 4)) return false;
+    memcpy(out, rxbuf + 4 + (words - 1) * 4, 4);
+    return true;
+}
+
+static bool cyw43_write_reg(uint32_t fn, uint32_t reg, uint32_t len, uint32_t val) {
+    uint32_t buf[2];
+    buf[0] = make_cmd(1, 1, fn, reg, len);
+    buf[1] = val;
+    return pio_gspi_transfer((const uint8_t *)buf, 8, NULL, 0);
+}
+
+/* --- the backplane window ----------------------------------------------- */
+
+
+/* Point the 32 KB window at whatever 32 KB block `addr` lives in. Only the
+ * bytes that actually changed are rewritten -- a firmware upload walks
+ * forward through one window for pages at a time, so the high and middle
+ * bytes usually stay put. */
+static bool bp_set_window(uint32_t addr) {
+    uint32_t win = addr & ~(uint32_t)BP_ADDRESS_MASK;
+    if (((win >> 24) & 0xff) != ((g_bp_window >> 24) & 0xff))
+        if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_ADDRESS_HIGH, 1, (win >> 24) & 0xff))
+            return false;
+    if (((win >> 16) & 0xff) != ((g_bp_window >> 16) & 0xff))
+        if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_ADDRESS_MID, 1, (win >> 16) & 0xff))
+            return false;
+    if (((win >> 8) & 0xff) != ((g_bp_window >> 8) & 0xff))
+        if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_ADDRESS_LOW, 1, (win >> 8) & 0xff))
+            return false;
+    g_bp_window = win;
+    return true;
+}
+
+static bool bp_readn(uint32_t addr, uint32_t len, uint32_t *out) {
+    if (!bp_set_window(addr)) return false;
+    uint32_t bus_addr = addr & BP_ADDRESS_MASK;
+    if (len == 4) bus_addr |= BP_ADDRESS_32BIT_FLAG;
+    return cyw43_read_reg(BACKPLANE_FUNCTION, bus_addr, len, out);
+}
+
+static bool bp_writen(uint32_t addr, uint32_t len, uint32_t val) {
+    if (!bp_set_window(addr)) return false;
+    uint32_t bus_addr = addr & BP_ADDRESS_MASK;
+    if (len == 4) bus_addr |= BP_ADDRESS_32BIT_FLAG;
+    return cyw43_write_reg(BACKPLANE_FUNCTION, bus_addr, len, val);
+}
+
+static bool bp_read8(uint32_t addr, uint8_t *out) {
+    uint32_t v = 0;
+    if (!bp_readn(addr, 1, &v)) return false;
+    *out = (uint8_t)(v & 0xff);
+    return true;
+}
+static bool bp_read16(uint32_t addr, uint16_t *out) {
+    uint32_t v = 0;
+    if (!bp_readn(addr, 2, &v)) return false;
+    *out = (uint16_t)(v & 0xffff);
+    return true;
+}
+static bool bp_read32(uint32_t addr, uint32_t *out)  { return bp_readn(addr, 4, out); }
+static bool bp_write8(uint32_t addr, uint8_t val)    { return bp_writen(addr, 1, val); }
+static bool bp_write32(uint32_t addr, uint32_t val)  { return bp_writen(addr, 4, val); }
+
+/* Bulk write into chip RAM, in bursts that never cross a window boundary
+ * and never exceed the chip's own 64-byte backplane limit. */
+static bool bp_write_bulk(uint32_t addr, const uint8_t *data, uint32_t len) {
+    /* 4 bytes of command followed by up to BP_MAX_TRANSFER of payload,
+     * word-aligned because the transfer layer packs it 32 bits at a
+     * time. */
+    static uint32_t buf[1 + BP_MAX_TRANSFER / 4];
+    while (len) {
+        uint32_t window_offs = addr & BP_ADDRESS_MASK;
+        uint32_t window_remaining = BP_WINDOW_SIZE - window_offs;
+        uint32_t n = len;
+        if (n > BP_MAX_TRANSFER) n = BP_MAX_TRANSFER;
+        if (n > window_remaining) n = window_remaining;
+
+        if (!bp_set_window(addr)) return false;
+
+        buf[0] = make_cmd(1, 1, BACKPLANE_FUNCTION, window_offs, n);
+        uint8_t *payload = (uint8_t *)&buf[1];
+        memcpy(payload, data, n);
+        uint32_t padded = (n + 3u) & ~3u;
+        if (padded > n) memset(payload + n, 0, padded - n);
+
+        if (!pio_gspi_transfer((const uint8_t *)buf, 4 + padded, NULL, 0)) return false;
+
+        addr += n;
+        data += n;
+        len -= n;
+    }
+    return true;
+}
+
+/* --- core control (the chip's internal AI interconnect) ------------------ */
+
+static bool ai_disable_core(uint32_t base, bool halt) {
+    uint8_t v = 0;
+    if (!bp_read8(base + AI_RESETCTRL_OFFSET, &v)) return false;
+    if (!bp_read8(base + AI_RESETCTRL_OFFSET, &v)) return false;
+    if (v & AI_RESETCTRL_BIT_RESET) return true;   /* already in reset */
+
+    if (!bp_write8(base + AI_IOCTRL_OFFSET, halt ? AI_IOCTRL_BIT_CPUHALT : 0)) return false;
+    (void)bp_read8(base + AI_IOCTRL_OFFSET, &v);
+    time_delay_us(1000);
+
+    if (!bp_write8(base + AI_RESETCTRL_OFFSET, AI_RESETCTRL_BIT_RESET)) return false;
+    time_delay_us(1000);
+    return true;
+}
+
+static bool ai_reset_core(uint32_t base, bool halt) {
+    if (!ai_disable_core(base, halt)) return false;
+
+    uint8_t on = (uint8_t)(AI_IOCTRL_BIT_FGC | AI_IOCTRL_BIT_CLOCK_EN |
+                           (halt ? AI_IOCTRL_BIT_CPUHALT : 0));
+    if (!bp_write8(base + AI_IOCTRL_OFFSET, on)) return false;
+    uint8_t v = 0;
+    (void)bp_read8(base + AI_IOCTRL_OFFSET, &v);
+
+    if (!bp_write8(base + AI_RESETCTRL_OFFSET, 0)) return false;
+    time_delay_us(1000);
+
+    uint8_t run = (uint8_t)(AI_IOCTRL_BIT_CLOCK_EN | (halt ? AI_IOCTRL_BIT_CPUHALT : 0));
+    if (!bp_write8(base + AI_IOCTRL_OFFSET, run)) return false;
+    (void)bp_read8(base + AI_IOCTRL_OFFSET, &v);
+    time_delay_us(1000);
+    return true;
+}
+
+static bool ai_core_is_up(uint32_t base) {
+    uint8_t io = 0, rst = 0;
+    if (!bp_read8(base + AI_IOCTRL_OFFSET, &io)) return false;
+    if ((io & (AI_IOCTRL_BIT_FGC | AI_IOCTRL_BIT_CLOCK_EN)) != AI_IOCTRL_BIT_CLOCK_EN) {
+        printk("cyw43: core not up, ioctrl=0x%02x\n", io);
+        return false;
+    }
+    if (!bp_read8(base + AI_RESETCTRL_OFFSET, &rst)) return false;
+    if (rst & AI_RESETCTRL_BIT_RESET) {
+        printk("cyw43: core not up, resetctrl=0x%02x\n", rst);
+        return false;
+    }
+    return true;
+}
+
+/* --- firmware upload ----------------------------------------------------- */
+
+/* Read a block back and compare. The upload is ~227 KB over a bit-banged
+ * bus; silently loading a corrupt image would surface much later as the
+ * chip simply never coming up, so it is worth the second pass. */
+static bool cyw43_verify(const char *what, uint32_t addr,
+                         const uint8_t *data, uint32_t len) {
+    for (uint32_t off = 0; off < len; off += 4) {
+        uint32_t got = 0;
+        if (!bp_read32(addr + off, &got)) return false;
+        uint32_t want = 0;
+        uint32_t n = (len - off) < 4 ? (len - off) : 4;
+        memcpy(&want, data + off, n);
+        /* A blob whose length is not a multiple of four ends in a partial
+         * word. The chip only stored the bytes we sent, so the read comes
+         * back with whatever its RAM already held in the rest -- compare
+         * just the bytes that are ours. */
+        if (n < 4) {
+            uint32_t mask = 0xFFFFFFFFu >> ((4 - n) * 8);
+            got &= mask;
+            want &= mask;
+        }
+        if (got != want) {
+            printk("cyw43: %s verify failed at +0x%x: got 0x%08x want 0x%08x\n",
+                   what, off, got, want);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool cyw43_download_firmware(void) {
+    /* ALP (the chip's low-power clock) first -- nothing on the backplane
+     * answers reliably until it is running. */
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, BP_ALP_AVAIL_REQ))
+        return false;
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_FUNCTION2_WATERMARK, 1, 0x10))
+        return false;
+
+    bool alp = false;
+    for (int i = 0; i < 100; i++) {
+        uint32_t csr = 0;
+        if (!cyw43_read_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, &csr)) return false;
+        if (csr & BP_ALP_AVAIL) { alp = true; break; }
+        time_delay_us(1000);
+    }
+    if (!alp) { printk("cyw43: ALP clock never became available\n"); return false; }
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, 0)) return false;
+
+    uint16_t chip_id = 0;
+    if (!bp_read16(CHIPCOMMON_BASE_ADDRESS, &chip_id)) return false;
+    printk("cyw43: chip id 0x%04x (want 0xa9a6 for CYW43439)\n", chip_id);
+
+    /* Park both cores, then bring SOCSRAM back up so RAM is writable. */
+    if (!ai_disable_core(ARM_CORE_BASE_ADDRESS, false)) return false;
+    if (!ai_disable_core(SOCSRAM_WRAPPER_BASE, false)) return false;
+    if (!ai_reset_core(SOCSRAM_WRAPPER_BASE, false)) return false;
+
+    /* 4343x-specific: disable the SRAM_3 remap, or the top of RAM is not
+     * where the firmware expects it. */
+    if (!bp_write32(SOCSRAM_BASE_ADDRESS + 0x10, 3)) return false;
+    if (!bp_write32(SOCSRAM_BASE_ADDRESS + 0x44, 0)) return false;
+
+    printk("cyw43: uploading firmware (%u bytes)...\n", cyw43_fw_len);
+    if (!bp_write_bulk(ATCM_RAM_BASE_ADDRESS, cyw43_fw, cyw43_fw_len)) return false;
+    if (!cyw43_verify("firmware", ATCM_RAM_BASE_ADDRESS, cyw43_fw, cyw43_fw_len)) return false;
+
+    /* NVRAM goes at the very top of RAM, followed by a word encoding its
+     * length and that length's complement -- how the firmware finds it. */
+    uint32_t nvram_len = (cyw43_nvram_len + 3u) & ~3u;
+    uint32_t nvram_addr = ATCM_RAM_BASE_ADDRESS + CHIP_RAM_SIZE - 4 - nvram_len;
+    printk("cyw43: uploading nvram (%u bytes) at 0x%08x...\n", nvram_len, nvram_addr);
+    if (!bp_write_bulk(nvram_addr, cyw43_nvram, cyw43_nvram_len)) return false;
+    if (!cyw43_verify("nvram", nvram_addr, cyw43_nvram, cyw43_nvram_len)) return false;
+
+    uint32_t words = nvram_len / 4;
+    uint32_t token = (~words << 16) | words;
+    if (!bp_write32(ATCM_RAM_BASE_ADDRESS + CHIP_RAM_SIZE - 4, token)) return false;
+
+    /* Let the wireless CPU run. */
+    if (!ai_reset_core(ARM_CORE_BASE_ADDRESS, false)) return false;
+    if (!ai_core_is_up(ARM_CORE_BASE_ADDRESS)) {
+        printk("cyw43: WLAN core did not come up\n");
+        return false;
+    }
+
+    /* The firmware raises HT once it is actually running -- this is the
+     * first sign of life from the uploaded image rather than from the
+     * bus. */
+    bool ht = false;
+    for (int i = 0; i < 500; i++) {
+        uint32_t csr = 0;
+        if (!cyw43_read_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, &csr)) return false;
+        if (csr & BP_HT_AVAIL) { ht = true; printk("cyw43: HT clock up after %d ms\n", i); break; }
+        time_delay_us(1000);
+    }
+    if (!ht) { printk("cyw43: HT clock never became available\n"); return false; }
+
+    /* And F2 -- the WLAN data channel -- becomes ready once the firmware
+     * has finished its own init. */
+    bool f2 = false;
+    for (int i = 0; i < 500; i++) {
+        uint32_t st = 0;
+        if (!cyw43_read_reg(BUS_FUNCTION, SPI_STATUS_REGISTER, 4, &st)) return false;
+        if (st & STATUS_F2_RX_READY) { f2 = true; printk("cyw43: F2 ready after %d ms\n", i); break; }
+        time_delay_us(1000);
+    }
+    if (!f2) { printk("cyw43: F2 never became ready\n"); return false; }
+
+    return true;
+}
+
 bool cyw43_gspi_probe(void) {
     wl_gpio_setup();
     pio_gspi_init();
@@ -634,6 +966,12 @@ bool cyw43_gspi_probe(void) {
     uint32_t bc = 0;
     if (!cyw43_read_reg_u32(BUS_FUNCTION, SPI_BUS_CONTROL, &bc)) return false;
     printk("cyw43: switched to 32-bit mode, bus control reads 0x%08x\n", bc);
+
+    if (!cyw43_download_firmware()) {
+        printk("cyw43: firmware upload failed\n");
+        return false;
+    }
+    printk("cyw43: firmware running\n");
     return true;
 }
 

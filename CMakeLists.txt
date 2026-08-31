@@ -542,6 +542,33 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.
     list(APPEND SOURCES drivers/cyw43_rp2350.c)
+
+    # The wireless firmware itself. The chip has no flash, so all three
+    # blobs ride in our image and are uploaded over gSPI at every boot.
+    # Only the personas that actually wire the chip pay the ~227 KB:
+    # generated unconditionally would put it in the chess and gateway
+    # images too, for a part they do not have.
+    # The board file is normally only read by gen_config.cmake in its own
+    # `cmake -P` process, so its CONFIG_* values are not variables here.
+    # Read it into this scope purely to answer one question: does this
+    # persona wire a wireless chip at all?
+    if(DEFINED LUGALOS_BOARD_FILE)
+        include(${LUGALOS_BOARD_FILE})
+    endif()
+    if(DEFINED CONFIG_WL_CS_GPIO)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c
+            COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_cyw43_fw.py
+                    ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c
+                    ${CMAKE_CURRENT_SOURCE_DIR}/firmware/cyw43
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_cyw43_fw.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/firmware/cyw43/43439A0.bin
+                    ${CMAKE_CURRENT_SOURCE_DIR}/firmware/cyw43/43439A0_clm.bin
+                    ${CMAKE_CURRENT_SOURCE_DIR}/firmware/cyw43/nvram_rp2040.bin
+            COMMENT "Embedding CYW43439 wireless firmware"
+        )
+        list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c)
+    endif()
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

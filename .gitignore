@@ -18,6 +18,12 @@ build.ninja
 *.o
 *.obj
 
+# ...except the CYW43439 wireless firmware. These .bin files are not build
+# output: they are licensed redistributables that ship in the image because
+# the chip has no flash of its own (Infineon Permissive Binary License;
+# provenance and SHA-256s in firmware/cyw43/README.md).
+!firmware/cyw43/*.bin
+
 # Editor & OS temporary files
 .vscode/
 .idea/

@@ -843,6 +843,34 @@ everything not gated on this.
 over TCP, survives the same fifteen-minute idle soak. Plus the blob accounting
 paragraph in the README.
 
+**Milestone 2 (firmware upload) PASSING, 2026-08-31.** The chip's own CPU
+runs our uploaded image: 231077 bytes of firmware written over the
+backplane and verified byte-for-byte, NVRAM placed at the top of chip RAM
+with its length token, WLAN core released, then the two signals that come
+from the *uploaded image* rather than from the bus -- **HT clock up at
+14 ms, F2 data channel ready at 65 ms**. Five consecutive runs, identical
+timings. Still ahead: CLM load, the ioctl layer, join, and the netif_t
+seam.
+
+The blobs live in `firmware/cyw43/` (227 KB, Infineon Permissive Binary
+License, provenance and SHA-256s in that directory's README -- the blob
+accounting §5 asks for). `tools/embed_cyw43_fw.py` turns them into one
+generated C file at build time, the same way `create_flash_fs.py` handles
+the flash filesystem, and only for personas that actually wire the chip:
+the gateway and chess images do not carry firmware for a part they lack.
+
+One bug worth recording, because it was intermittent rather than
+reproducible: the cached backplane-window value is *chip* state, and the
+chip loses it on reset. Left stale across a second `wifi probe`, the
+window registers got skipped as already-correct while the chip had reset
+them to zero, and the upload then read and wrote through the wrong
+window -- verify failures at offset 0, on some runs and not others,
+depending on where the previous run left the window. It is invalidated in
+`wl_reset()` now. (The first verify failure seen was a different thing and
+a real bug in the check, not the upload: a blob whose length is not a
+multiple of four ends in a partial word, and the chip returns its own RAM
+in the bytes we did not write.)
+
 **Milestone 1 (gSPI bus bring-up) PASSING, 2026-08-31.** `wifi probe` reads
 `0xFEEDBEAD` back from the chip's test register, switches the bus to
 32-bit/big-endian/high-speed mode and reads the setting back
