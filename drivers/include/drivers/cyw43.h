@@ -2,6 +2,9 @@
 #define DRIVERS_CYW43_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include "net/netif.h"
 
 /*
  * Infineon/Cypress CYW43439 wireless chip on the Pico 2 W's internal gSPI
@@ -36,5 +39,27 @@ bool cyw43_gspi_probe(void);
  * whole stack rather than a GPIO poke. Returns false if the ioctl did not
  * complete. */
 bool cyw43_led_set(bool on);
+
+/* Associate with a WPA2-PSK network, using the *derived* 32-byte PSK
+ * rather than a passphrase -- which is what this node stores (I6,
+ * plan/phase21_identity_and_authentication.md). The firmware would accept
+ * a passphrase and hash it itself; handing it the PMK is the same join
+ * with one less secret at rest. Blocks until associated or the attempt
+ * times out. */
+bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]);
+
+/* NULL until cyw43_gspi_probe() has succeeded. */
+netif_t *cyw43_get_netif(void);
+
+/* Frames the driver had to drop because the previous one had not yet been
+ * taken by the stack -- this driver keeps a single frame in flight. Its
+ * own number, deliberately not netif_t's rx_dropped, which net/netif.c
+ * owns and defines more narrowly. */
+uint32_t cyw43_rx_overruns(void);
+
+/* Deepest the receive ring has ever been. A high-water mark well below
+ * its size says the ring is doing its job with room to spare; one that
+ * sits at the size says it is the next thing to grow. */
+uint32_t cyw43_rx_high_water(void);
 
 #endif /* DRIVERS_CYW43_H */

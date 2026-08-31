@@ -137,6 +137,8 @@ static void cmd_help(void) {
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
     cprintf("  wifi probe      - CYW43439: bus, firmware upload and CLM -- brings the chip up\n");
     cprintf("  wifi led [on|off] - Blink the user LED (on the wireless chip's own GPIO 0)\n");
+    cprintf("  wifi join [<ssid> <psk-hex>] - Join a WPA2 network; no args uses the stored record\n");
+    cprintf("  wifi stats      - CYW43439: RX ring high-water mark and drops\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -2043,6 +2045,54 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
     } else if (strcmp(cmd_line, "wifi probe") == 0) {
         cprintf(cyw43_gspi_probe() ? "wifi: ready\n" : "wifi: no answer\n");
+        return;
+    } else if (strncmp(cmd_line, "wifi join ", 10) == 0) {
+        /* Explicit form: `wifi join <ssid> <64-hex-psk>`. Takes the
+         * *derived* PSK, never a passphrase -- same rule as the stored
+         * record (I6), so nothing here has to hash and nothing a
+         * passphrase could leak is ever typed. Exists because the
+         * identity store has no RP2350 backend yet (I7), so the stored
+         * form below cannot work on this board.  */
+        const char *a = &cmd_line[10];
+        while (*a == ' ') a++;
+        char ssid[NODE_WLAN_SSID_MAX + 1];
+        uint32_t sl = 0;
+        while (*a && *a != ' ' && sl < NODE_WLAN_SSID_MAX) ssid[sl++] = *a++;
+        ssid[sl] = '\0';
+        while (*a == ' ') a++;
+
+        uint8_t psk[NODE_WLAN_PSK_LEN];
+        uint32_t got = parse_hex_bytes(a, psk, sizeof(psk));
+        if (sl == 0 || got != NODE_WLAN_PSK_LEN) {
+            cprintf("usage: wifi join <ssid> <64-hex-char psk>\n");
+            return;
+        }
+        bool ok = cyw43_join_wpa2(ssid, psk);
+        memset(psk, 0, sizeof(psk));
+        cprintf(ok ? "wifi: joined\n" : "wifi: join failed\n");
+        return;
+    } else if (strcmp(cmd_line, "wifi join") == 0) {
+        /* Credentials come from the identity record (I6): the SSID and a
+         * *derived* PSK. The passphrase was never stored, so there is
+         * nothing here to leak and nothing to prompt for. */
+        char ssid[NODE_WLAN_SSID_MAX + 1];
+        uint8_t psk[NODE_WLAN_PSK_LEN];
+        if (!node_wlan_ssid(ssid, sizeof(ssid))) {
+            cprintf("wifi: no SSID stored (this board has no identity store yet -- "
+                    "phase 21's I7). Use: wifi join <ssid> <64-hex psk>\n");
+            return;
+        }
+        if (!node_wlan_psk(psk)) {
+            cprintf("wifi: no PSK stored for \"%s\"\n", ssid);
+            return;
+        }
+        bool ok = cyw43_join_wpa2(ssid, psk);
+        memset(psk, 0, sizeof(psk));
+        cprintf(ok ? "wifi: joined\n" : "wifi: join failed\n");
+        return;
+    } else if (strcmp(cmd_line, "wifi stats") == 0) {
+        cprintf("wifi: rx ring high-water %u, %u frames dropped (ring full)\n",
+                cyw43_rx_high_water(), cyw43_rx_overruns());
         return;
     } else if (strncmp(cmd_line, "wifi led", 8) == 0) {
         /* The LED is on the wireless chip's own GPIO 0, so this only does

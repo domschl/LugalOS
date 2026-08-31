@@ -843,6 +843,57 @@ everything not gated on this.
 over TCP, survives the same fifteen-minute idle soak. Plus the blob accounting
 paragraph in the README.
 
+**Milestone 4 (WPA2 join + netif_t) PASSING, 2026-08-31.** The board is on
+a real network over the air: associated to a WPA2 AP, answering ICMP at
+`192.168.178.21`, and serving **authenticated 9P over TCP** -- version,
+attach, `/proc/version`, multi-entry directory reads, ten consecutive
+sessions, and an unauthenticated attach correctly refused. `tests/hw/
+test_wifi.py` drives all of it over the air with no console interaction,
+so a pass means the network path worked rather than that a serial cable
+did.
+
+Join uses the **derived PSK, never a passphrase** -- which is what the
+identity record stores (I6, plan/phase21_identity_and_authentication.md
+§5.3, written for exactly this moment). The firmware would accept a
+passphrase and hash it itself; handing it the PMK is the same join with
+one less secret at rest. `wifi join <ssid> <psk-hex>` exists alongside the
+stored form because **the identity store has no RP2350 backend yet (I7)**,
+so on this board there is nothing to read.
+
+Three bugs, each of which taught something:
+
+1. **Two consumers, one packet stream.** Starting `netsrv` made ioctls
+   fail with "saw 0 packets" on a bus that was working perfectly: the
+   stack's poll and the ioctl wait were both reading function 2, and
+   whichever ran first discarded what it did not want. There is now one
+   reader (`cyw43_pump()`) that demultiplexes by channel and puts each
+   kind where its consumer will find it. Both reference drivers are
+   built this way; it looked like optional structure until it wasn't.
+2. **`country` was rejected (BCME_BADARG).** Broadcom's `wl_country_t` is
+   `abbrev[4]; int32 rev; ccode[4]` -- the revision sits *between* the two
+   strings, not after them as embassy has it. Same twelve bytes, different
+   meaning. Embassy never checks that set_iovar's result, so the rejection
+   is invisible there. Without a country the CLM has no region to apply,
+   a radio with no permitted channels cannot scan, and the join never
+   associates while every ioctl still succeeds -- which is precisely the
+   symptom that cost the most time here.
+3. **The event mask.** Unset, the firmware may report everything,
+   including per-probe-request traffic, on the same pipe ioctl replies
+   arrive on -- so a flood queues *ahead of* the answer. `WLC_SET_AUTH`
+   timed out for this reason. Set to "none" for now, since association
+   state is polled rather than decoded.
+
+**Known limit, measured rather than assumed:** ICMP alone is lossless
+(40/40, and 20/20 repeatedly), but a single echo occasionally dropped when
+a 9P session ran concurrently. The cause was this driver's own single
+frame in flight: unlike the ENC28J60 -- whose `poll()` checks `EPKTCNT`
+and lifts a frame off the chip only when it will keep it, leaving the
+queue in the chip's own 8 KB buffer -- this bus only reveals a packet's
+channel *after* reading it, so a data frame arriving with nowhere to go is
+already consumed and lost. Hence a four-slot receive ring here and
+deliberately none in the ENC28J60, where it would be cargo-culting.
+`wifi stats` reports the ring's high-water mark and any drops.
+
 **Milestone 3 (CLM + ioctl layer + LED) PASSING, 2026-08-31.** The user LED
 on the Pico 2 W lights on command -- and that is the end-to-end proof the
 milestone was chosen for, because that LED hangs off the *wireless chip's*

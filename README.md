@@ -503,6 +503,131 @@ The build system automatically invokes [`tools/elf2uf2_rp2350.py`](tools/elf2uf2
 ---
 
 
+## Wireless: joining a WiFi network (RP2350W / Pico 2 W)
+
+The `rp2350-wifi` persona drives the Pico 2 W's on-board CYW43439 over a bit-banged gSPI bus
+(PIO0), uploads the chip's firmware at every boot, and presents the result as an ordinary
+`netif_t` — so the IP stack, TCP and the 9P server above it are the same code the wired
+ENC28J60 gateway uses. See `plan/phase19_ip_stack_and_ethernet.md` R5 for how it was built.
+
+```bash
+$ cmake --preset rp2350-wifi && cmake --build build/rp2350-wifi
+$ cd tests/hw && uv run flash.py --uf2 ../../build/rp2350-wifi/lugalos.uf2
+```
+
+**Blob accounting.** This persona is the one place a LugalOS image contains something that is
+not source: the CYW43439's firmware, its CLM regulatory table and its NVRAM — 227 KB in total,
+uploaded to the chip at every boot because it has no flash of its own. They are redistributed
+here under the Infineon Permissive Binary License, which permits binary redistribution with the
+notice attached. Provenance, sizes and SHA-256s are in
+[`firmware/cyw43/README.md`](firmware/cyw43/README.md). A project that makes a point of being
+bare metal owes its readers that paragraph in the same place it makes the claim: **everything
+else in this repository is source that is compiled here; those three files are not.**
+
+### 1. Derive the PSK on the host
+
+WPA2's PSK is PBKDF2-HMAC-SHA1 over the passphrase, salted with the SSID, 4096 iterations. The
+board never sees a passphrase — only the 256-bit result — so the derivation happens here:
+
+```bash
+$ python3 -c 'import hashlib, getpass; s = input("SSID: "); \
+print(hashlib.pbkdf2_hmac("sha1", getpass.getpass("passphrase: ").encode(), s.encode(), 4096, 32).hex())'
+SSID: homenet
+passphrase:
+6e91faf94be6a5a4d58ae22f45b42f5f0fd5e97f1e46513ac0b9a039b4af480d
+```
+
+`getpass` keeps the passphrase off your terminal and out of your shell history. The same
+derivation lives in `tools/provision.py` (`derive_wpa2_psk()`) if you would rather mint a whole
+identity image — see [Provisioning walkthrough](#provisioning-walkthrough), step 5 — and
+`python3 tools/provision.py --selftest` checks it against the published IEEE test vector.
+
+### 2. Bring the radio up and join
+
+```bash
+lsh> wifi probe
+cyw43: CYW43439 (chip id 0xa9af)
+cyw43: uploading firmware (231077 bytes)...
+cyw43: HT clock up after 14 ms
+cyw43: F2 ready after 65 ms
+cyw43: loading CLM (984 bytes)...
+cyw43: wlan0 registered, mac 2c:cf:67:de:12:5e
+wifi: ready
+
+lsh> wifi join homenet 6e91faf94be6a5a4d58ae22f45b42f5f0fd5e97f1e46513ac0b9a039b4af480d
+cyw43: joining "homenet"...
+cyw43: joined, bssid 48:5d:35:9f:a9:46
+wifi: joined
+```
+
+`wifi join` takes the **derived PSK as hex, never a passphrase** — there is no code path here
+that accepts one. With no arguments it reads the SSID and PSK from the identity record instead,
+which is the intended form; that needs I7 (an RP2350 backend for the identity store), so on real
+hardware today the credentials are typed. See `plan/open_issues.md`.
+
+Other commands: `wifi led [on|off]` blinks the user LED — which hangs off the *wireless chip's*
+GPIO 0, not an RP2350 pin, so it only lights once the firmware is genuinely running and
+answering ioctls. `wifi stats` reports the receive ring's high-water mark and any drops.
+
+### 3. Give it an address
+
+There is no DHCP client yet, so the address is static. From the Lisp REPL:
+
+```bash
+lsh> lisp
+lisp> (net-config "192.168.178.21" "255.255.255.0" "192.168.178.1")
+[Net] 192.168.178.21/255.255.255.0 gw 192.168.178.1
+lisp> exit
+
+lsh> net
+rp2350-wifi-2662: wlan0, mac 2c:cf:67:de:12:5e, link up
+  addr 192.168.178.21/255.255.255.0 gw 192.168.178.1
+  rx 1679 frames, 134046 bytes, 0 dropped
+  tx 646 frames, 50838 bytes, 0 errors
+```
+
+`net-config` also sends a gratuitous ARP, so the segment learns the board immediately rather
+than after somebody's stale cache expires.
+
+### 4. Serve 9P over the air
+
+The 9P server requires authentication on a network link — an unauthenticated `attach` is
+refused, which is the whole point of doing this over a radio. Install a key for this boot and
+start listening:
+
+```bash
+lsh> p9key 000102030405060708090a0b0c0d0e0f
+p9key: console key set (16 bytes), this boot only
+lsh> net listen 564
+net: listening for 9P on tcp/564
+```
+
+`p9key` takes hex only and holds the key **for this boot only** — it is deliberately not
+persisted, so a board that reboots forgets it, and it overrides the key files while it is set.
+`p9key` with no arguments reports whether a key is configured and where the persistent ones are
+read from; `p9key clear` removes it. A key that should survive a reboot belongs in the identity
+record instead (see [Identity and Authentication](#identity-and-authentication)) — `p9key` is
+the bootstrap path for a board that has no record yet, which on RP2350 is every board until I7.
+The key's *fingerprint* is shown by `identity`, which never prints the key itself.
+
+From the host, mount or read it like any other node:
+
+```bash
+$ cd tests/hw && uv run test_wifi.py 192.168.178.21
+  [PASS] icmp: 20 echoes -- round-trip min/avg/max = 4.960/7.117/18.148 ms
+  [PASS] auth: unauthenticated attach refused
+  [PASS] 9p: authenticated session, /proc/version -- LugalOS v0.13.1
+  [PASS] 9p: directory read (multi-entry Rread) -- / has 5 entries, /proc 12
+  [PASS] 9p: 10 consecutive sessions -- 10/10
+```
+
+`tests/hw/test_wifi.py` talks to the board only over the network — no serial interaction — so a
+pass means the radio path worked, not that a console cable did. Add `--soak-minutes 15` for the
+sustained run.
+
+---
+
+
 ## Interactive Workflow Examples
 
 ### 1. FAT32 Subdirectories and File Operations

@@ -37,3 +37,8 @@ __pycache__/
 .venv/
 blink_test/
 tools/picotool
+
+# Emacs lock files -- broken symlinks named .#<file> that point at the
+# editing session holding the file. Editor state, not repo content, and
+# easy to sweep up accidentally with `git add -A`.
+.#*

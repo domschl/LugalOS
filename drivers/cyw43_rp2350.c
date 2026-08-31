@@ -45,6 +45,8 @@
  */
 
 #include "drivers/cyw43.h"
+#include "net/netif.h"
+#include "net/ip.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
@@ -218,6 +220,7 @@ static const uint16_t g_gspi_prog[6] = {
 #define SOCSRAM_BASE_ADDRESS        0x18004000u
 #define SOCSRAM_WRAPPER_BASE        (0x18004000u + WRAPPER_REGISTER_OFFSET)
 #define CHIP_RAM_SIZE               (512u * 1024u)
+#define CHIP_ID_CYW43439            0xa9afu
 #define ATCM_RAM_BASE_ADDRESS       0u
 
 /* --- SDPCM / CDC: the control channel on top of the WLAN function ------
@@ -242,6 +245,34 @@ static const uint16_t g_gspi_prog[6] = {
 
 #define SDPCM_HEADER_SIZE           12u
 #define CDC_HEADER_SIZE             16u
+
+/* Data path: frames ride SDPCM channel 2 with a BDC header. */
+#define CHANNEL_TYPE_DATA           2u
+#define CHANNEL_TYPE_EVENT          1u
+#define BDC_HEADER_SIZE             4u
+#define BDC_VERSION                 2u
+#define BDC_VERSION_SHIFT           4u
+/* Two bytes of padding sit between the SDPCM and BDC headers on transmit,
+ * and are counted in header_length. Undocumented, but both WHD and the
+ * reference drivers do it; without them the firmware appends two zero
+ * bytes to every transmitted frame, which makes a full-MTU frame
+ * oversized and silently dropped. */
+#define SDPCM_TX_PADDING            2u
+
+/* ioctl command numbers (the WLC_* set). */
+#define IOCTL_CMD_SET_INFRA         20u
+#define IOCTL_CMD_SET_AUTH          22u
+#define IOCTL_CMD_GET_BSSID         23u
+#define IOCTL_CMD_SET_SSID          26u
+#define IOCTL_CMD_SET_ANTDIV        64u
+#define IOCTL_CMD_SET_WSEC          134u
+#define IOCTL_CMD_SET_WPA_AUTH      165u
+#define IOCTL_CMD_SET_WSEC_PMK      268u
+
+#define WSEC_AES                    0x04u
+#define AUTH_OPEN                   0x00u
+#define MFP_CAPABLE                 1u
+#define WPA_AUTH_WPA2_PSK           0x0080u
 
 /* CLM download, chunked, with a small header per chunk. */
 #define DOWNLOAD_FLAG_BEGIN         0x0002u
@@ -895,9 +926,21 @@ static bool cyw43_download_firmware(void) {
     if (!alp) { printk("cyw43: ALP clock never became available\n"); return false; }
     if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, 0)) return false;
 
+    /* 0xa9af is the CYW43439 -- the part on the Pico W, the Pico 2 W and
+     * the Murata 1YN module. Worth stating plainly because embassy-rs's
+     * table maps its C43439 to 0xa9a6, which is actually the older
+     * CYW43430/43438 (Pi 3B, Zero W); its own code only warns on the
+     * mismatch and carries on, so every Pico W running it presumably
+     * trips that warning. This driver checked against the same wrong
+     * constant at first and reported a mismatch on a perfectly correct
+     * chip. */
     uint16_t chip_id = 0;
     if (!bp_read16(CHIPCOMMON_BASE_ADDRESS, &chip_id)) return false;
-    printk("cyw43: chip id 0x%04x (want 0xa9a6 for CYW43439)\n", chip_id);
+    if (chip_id != CHIP_ID_CYW43439)
+        printk("cyw43: unexpected chip id 0x%04x (expected 0x%04x, CYW43439)\n",
+               chip_id, CHIP_ID_CYW43439);
+    else
+        printk("cyw43: CYW43439 (chip id 0x%04x)\n", chip_id);
 
     /* Park both cores, then bring SOCSRAM back up so RAM is writable. */
     if (!ai_disable_core(ARM_CORE_BASE_ADDRESS, false)) return false;
@@ -962,6 +1005,8 @@ static bool cyw43_download_firmware(void) {
 
 static uint8_t g_sdpcm_seq;
 static uint16_t g_ioctl_id;
+/* Set around calls whose failure is an expected, polled-for outcome. */
+static bool g_ioctl_quiet;
 
 /* One buffer for both directions. 2 KB is the firmware's own control
  * packet ceiling, plus room for the command word a WLAN write prepends. */
@@ -1006,6 +1051,108 @@ static uint32_t get_u32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* A small receive ring between the reader and the stack.
+ *
+ * A single latch is enough for the ENC28J60, whose poll() checks EPKTCNT
+ * and only lifts a frame off the chip when it intends to keep it -- the
+ * queue there lives in the chip's own 8 KB buffer. This bus gives no such
+ * option: a packet's channel is only knowable once it has been read, so a
+ * data frame arriving with nowhere to go has already been consumed and is
+ * lost for real. Hence a ring here and not there.
+ *
+ * Four slots rather than two. Two covers the common case of a frame
+ * landing while the previous one is still being taken; four also covers a
+ * burst arriving while nothing is draining, which is exactly what happens
+ * during a long ioctl (CLM chunks, the join sequence) where this reader
+ * runs but net_poll() does not. At 1514 bytes a slot, the two extra cost
+ * ~3 KB of the 512 KB this chip has. */
+#define CYW43_RX_RING 4
+static uint8_t  g_rx_ring[CYW43_RX_RING][NETIF_FRAME_MAX];
+static uint32_t g_rx_ring_len[CYW43_RX_RING];
+static uint32_t g_rx_head, g_rx_tail, g_rx_count;
+static uint32_t g_rx_overrun;      /* arrived with the ring full */
+static uint32_t g_rx_high_water;   /* deepest the ring ever got */
+
+/* Exactly one place reads packets off function 2, because there is exactly
+ * one stream and more than one consumer: an ioctl waiting for its reply,
+ * and `netsrv` polling for frames. Before this existed, whichever ran
+ * first swallowed whatever it did not want -- netsrv discarded ioctl
+ * replies and ioctls timed out having "seen 0 packets", on a bus that was
+ * working perfectly. So the reader demultiplexes by channel and puts each
+ * kind where its consumer will find it, rather than dropping it. */
+static struct {
+    bool     valid;
+    uint16_t id;
+    uint32_t status;
+    uint32_t len;
+    uint8_t  data[512];
+} g_ioctl_reply;
+
+/* 1 = handled a packet, 0 = nothing waiting, -1 = bus error. */
+static int cyw43_pump(void) {
+    uint32_t plen = 0;
+    if (!wlan_packet_pending(&plen)) return -1;
+    if (plen == 0) return 0;
+
+    static uint8_t rx[2048];
+    if (plen > sizeof(rx)) return -1;
+    if (!wlan_read(rx, plen)) return -1;
+    if (plen < SDPCM_HEADER_SIZE) return 1;
+
+    uint32_t hdr_len = rx[7];
+    uint8_t channel = rx[5] & 0x0f;
+    if (hdr_len > plen) return 1;
+
+    if (channel == CHANNEL_TYPE_CONTROL) {
+        if (hdr_len + CDC_HEADER_SIZE > plen) return 1;
+        const uint8_t *r = rx + hdr_len;
+        uint32_t rlen = get_u32(r + 4);
+        uint32_t avail = plen - hdr_len - CDC_HEADER_SIZE;
+        if (rlen > avail) rlen = avail;
+        if (rlen > sizeof(g_ioctl_reply.data)) rlen = sizeof(g_ioctl_reply.data);
+        g_ioctl_reply.id = (uint16_t)(r[10] | (r[11] << 8));
+        g_ioctl_reply.status = get_u32(r + 12);
+        memcpy(g_ioctl_reply.data, r + CDC_HEADER_SIZE, rlen);
+        g_ioctl_reply.len = rlen;
+        g_ioctl_reply.valid = true;
+        return 1;
+    }
+
+    if (channel == CHANNEL_TYPE_DATA) {
+        if (hdr_len + BDC_HEADER_SIZE > plen) return 1;
+        const uint8_t *bdc = rx + hdr_len;
+        uint32_t off = hdr_len + BDC_HEADER_SIZE + (uint32_t)bdc[3] * 4u;
+        if (off > plen) return 1;
+        uint32_t n = plen - off;
+        /* One frame in flight, like the ENC28J60's own RX path: if the
+         * stack has not taken the last one, this one is dropped rather
+         * than overwriting a frame somebody is about to read.
+         *
+         * Counted here rather than through netif_t's own rx_dropped,
+         * which net/netif.c owns and means something narrower ("a frame
+         * arrived and the stack had nowhere to put it"). This is the
+         * driver's own shortfall and belongs in the driver's own number
+         * -- measurable as occasional single-echo loss when ICMP and a
+         * 9P session are in flight together, and zero when either runs
+         * alone. Fixing it means a small ring here, not a deeper change. */
+        if (n && n <= NETIF_FRAME_MAX) {
+            if (g_rx_count < CYW43_RX_RING) {
+                memcpy(g_rx_ring[g_rx_head], rx + off, n);
+                g_rx_ring_len[g_rx_head] = n;
+                g_rx_head = (g_rx_head + 1) % CYW43_RX_RING;
+                g_rx_count++;
+                if (g_rx_count > g_rx_high_water) g_rx_high_water = g_rx_count;
+            } else {
+                g_rx_overrun++;
+            }
+        }
+        return 1;
+    }
+
+    /* Events: not decoded yet -- association state is polled instead. */
+    return 1;
+}
+
 /* Send one CDC control request, then wait for the reply carrying our id.
  * `data`/`len` is the request payload; the reply payload, if any, is
  * copied back into `data` and its length returned via `out_len`. */
@@ -1019,6 +1166,7 @@ static bool cyw43_ioctl(uint32_t kind, uint32_t cmd, uint32_t iface,
 
     uint8_t *p = (uint8_t *)g_wlan_buf + 4;
     g_ioctl_id++;
+    g_ioctl_reply.valid = false;
 
     put_u16(p + 0, (uint16_t)total);
     put_u16(p + 2, (uint16_t)~total);
@@ -1040,36 +1188,33 @@ static bool cyw43_ioctl(uint32_t kind, uint32_t cmd, uint32_t iface,
 
     if (!wlan_write(total)) return false;
 
-    /* Wait for the answer. The firmware replies to every control request,
-     * and skipping the reply leaves it queued to confuse the next one. */
-    static uint8_t rx[2048];
-    for (int attempt = 0; attempt < 500; attempt++) {
-        uint32_t plen = 0;
-        if (!wlan_packet_pending(&plen)) return false;
-        if (plen == 0) { time_delay_us(1000); continue; }
-        if (plen > sizeof(rx)) { printk("cyw43: reply too long (%u)\n", plen); return false; }
-        if (!wlan_read(rx, plen)) return false;
+    /* Bounded by wall clock, not iterations: packets we are not waiting
+     * for cost no delay, so a burst of them would spend a fixed iteration
+     * budget in microseconds and time out a request that had not actually
+     * been given any time. */
+    uint64_t deadline = time_get_ms() + 2000;
+    while (time_get_ms() < deadline) {
+        int r = cyw43_pump();
+        if (r < 0) return false;
+        if (r == 0) { time_delay_us(1000); continue; }
 
-        if (plen < SDPCM_HEADER_SIZE) continue;
-        uint32_t hdr_len = rx[7];
-        uint8_t channel = rx[5] & 0x0f;
-        if (channel != CHANNEL_TYPE_CONTROL) continue;   /* event or data */
-        if (hdr_len + CDC_HEADER_SIZE > plen) continue;
+        if (!g_ioctl_reply.valid) continue;
+        if (g_ioctl_reply.id != g_ioctl_id) { g_ioctl_reply.valid = false; continue; }
 
-        const uint8_t *r = rx + hdr_len;
-        uint16_t id = (uint16_t)(r[10] | (r[11] << 8));
-        if (id != g_ioctl_id) continue;                  /* stale reply */
-
-        uint32_t status = get_u32(r + 12);
-        if (status != 0) {
-            printk("cyw43: ioctl cmd %u failed, status 0x%08x\n", cmd, status);
+        g_ioctl_reply.valid = false;
+        if (g_ioctl_reply.status != 0) {
+            /* Some callers poll an ioctl whose failure *is* the answer --
+             * GET_BSSID returns -17 (BCME_NOTASSOCIATED) every 100 ms
+             * until association completes, and logging that would bury
+             * the real events in noise. */
+            if (!g_ioctl_quiet)
+                printk("cyw43: ioctl cmd %u failed, status 0x%08x\n",
+                       cmd, g_ioctl_reply.status);
             return false;
         }
-        uint32_t rlen = get_u32(r + 4);
-        uint32_t avail = plen - hdr_len - CDC_HEADER_SIZE;
-        if (rlen > avail) rlen = avail;
+        uint32_t rlen = g_ioctl_reply.len;
         if (rlen > len) rlen = len;
-        if (rlen && data) memcpy(data, r + CDC_HEADER_SIZE, rlen);
+        if (rlen && data) memcpy(data, g_ioctl_reply.data, rlen);
         if (out_len) *out_len = rlen;
         return true;
     }
@@ -1085,7 +1230,13 @@ static bool cyw43_set_iovar(const char *name, const uint8_t *val, uint32_t val_l
     buf[n++] = 0;
     if (n + val_len > sizeof(buf)) return false;
     if (val_len) memcpy(buf + n, val, val_len);
-    return cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SETVAR, 0, buf, n + val_len, NULL);
+    /* Name the iovar on failure: "SETVAR failed" alone says nothing about
+     * which of a dozen settings the firmware objected to. */
+    if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SETVAR, 0, buf, n + val_len, NULL)) {
+        printk("cyw43: iovar \"%s\" (%u bytes) rejected\n", name, val_len);
+        return false;
+    }
+    return true;
 }
 
 static bool cyw43_set_iovar_u32(const char *name, uint32_t val) {
@@ -1173,6 +1324,212 @@ bool cyw43_led_set(bool on) {
     return cyw43_gpio_set(0, on);
 }
 
+uint32_t cyw43_rx_overruns(void) { return g_rx_overrun; }
+uint32_t cyw43_rx_high_water(void) { return g_rx_high_water; }
+
+/* Carrier state, set when association completes. */
+static bool g_link_up;
+
+/* --- association ---------------------------------------------------------
+ *
+ * WPA2-PSK only, and with a *pre-hashed* key: this node stores the derived
+ * 32-byte PSK, never the passphrase (I6, plan/phase21_identity_and_
+ * authentication.md §5.3, written with exactly this moment in mind). The
+ * firmware takes either -- a passphrase gets flag 1 and is hashed on the
+ * chip -- so handing it the PMK with flag 0 is the same join with one less
+ * secret at rest. */
+static bool cyw43_ioctl_set_u32(uint32_t cmd, uint32_t iface, uint32_t val) {
+    uint8_t v[4];
+    put_u32(v, val);
+    return cyw43_ioctl(IOCTL_SET, cmd, iface, v, 4, NULL);
+}
+
+bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
+    uint32_t ssid_len = 0;
+    while (ssid[ssid_len]) ssid_len++;
+    if (ssid_len == 0 || ssid_len > 32) {
+        printk("cyw43: ssid length %u out of range\n", ssid_len);
+        return false;
+    }
+
+    if (!cyw43_set_iovar_u32("ampdu_ba_wsize", 8)) return false;
+
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_WSEC, 0, WSEC_AES)) return false;
+    if (!cyw43_set_iovar_u32x2("bsscfg:sup_wpa", 0, 1)) return false;
+    if (!cyw43_set_iovar_u32x2("bsscfg:sup_wpa2_eapver", 0, 0xFFFFFFFFu)) return false;
+    if (!cyw43_set_iovar_u32x2("bsscfg:sup_wpa_tmo", 0, 2500)) return false;
+    time_delay_us(100000);
+
+    /* WLC_SET_WSEC_PMK: len, flags, then a 64-byte key field. flags 0
+     * means "already hashed"; 1 would mean "this is a passphrase". */
+    uint8_t pmk[68];
+    memset(pmk, 0, sizeof(pmk));
+    put_u16(pmk + 0, 32);
+    put_u16(pmk + 2, 0);
+    memcpy(pmk + 4, psk, 32);
+    time_delay_us(3000);
+    if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SET_WSEC_PMK, 0, pmk, sizeof(pmk), NULL)) {
+        memset(pmk, 0, sizeof(pmk));
+        return false;
+    }
+    memset(pmk, 0, sizeof(pmk));
+
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_INFRA, 0, 1)) return false;
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_AUTH, 0, AUTH_OPEN)) return false;
+    if (!cyw43_set_iovar_u32("mfp", MFP_CAPABLE)) return false;
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_WPA_AUTH, 0, WPA_AUTH_WPA2_PSK)) return false;
+
+    /* WLC_SET_SSID is what actually starts the join. */
+    uint8_t si[36];
+    memset(si, 0, sizeof(si));
+    put_u32(si, ssid_len);
+    memcpy(si + 4, ssid, ssid_len);
+    if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SET_SSID, 0, si, sizeof(si), NULL)) return false;
+
+    /* Associated is when the firmware will tell us a BSSID. Polling that
+     * avoids having to decode the asynchronous event channel just to
+     * answer one yes/no question; a real link-state watcher wants the
+     * events, but that belongs with the netif, not here. */
+    printk("cyw43: joining \"%s\"...\n", ssid);
+    g_ioctl_quiet = true;
+    for (int i = 0; i < 100; i++) {
+        time_delay_us(100000);
+        uint8_t bssid[6];
+        memset(bssid, 0, sizeof(bssid));
+        uint32_t got = 0;
+        if (cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_BSSID, 0, bssid, sizeof(bssid), &got) &&
+            got >= 6) {
+            bool any = false;
+            for (int b = 0; b < 6; b++) if (bssid[b]) any = true;
+            if (any) {
+                g_ioctl_quiet = false;
+                /* Carrier, as far as this netif is concerned: associated
+                 * to an AP. A finer definition would track the firmware's
+                 * own link events, which is why the event mask is worth
+                 * revisiting -- but "we have a BSSID" is not a guess. */
+                g_link_up = true;
+                printk("cyw43: joined, bssid %02x:%02x:%02x:%02x:%02x:%02x\n",
+                       bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+                return true;
+            }
+        }
+    }
+    g_ioctl_quiet = false;
+    printk("cyw43: join timed out (never associated)\n");
+    return false;
+}
+
+/* --- netif_t: whole Ethernet frames ------------------------------------- */
+
+static netif_t g_netif;
+static bool g_netif_registered;
+
+static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
+    (void)nif;
+    if (len > NETIF_FRAME_MAX) return -1;
+
+    uint32_t total = SDPCM_HEADER_SIZE + SDPCM_TX_PADDING + BDC_HEADER_SIZE + len;
+    if (4 + total > sizeof(g_wlan_buf)) return -1;
+
+    uint8_t *p = (uint8_t *)g_wlan_buf + 4;
+    put_u16(p + 0, (uint16_t)total);
+    put_u16(p + 2, (uint16_t)~total);
+    p[4] = g_sdpcm_seq++;
+    p[5] = CHANNEL_TYPE_DATA;
+    p[6] = 0;
+    p[7] = SDPCM_HEADER_SIZE + SDPCM_TX_PADDING;
+    p[8] = 0; p[9] = 0; p[10] = 0; p[11] = 0;
+
+    uint8_t *bdc = p + SDPCM_HEADER_SIZE + SDPCM_TX_PADDING;
+    bdc[0] = (uint8_t)(BDC_VERSION << BDC_VERSION_SHIFT);
+    bdc[1] = 0;   /* priority */
+    bdc[2] = 0;   /* flags2 */
+    bdc[3] = 0;   /* data_offset, in 4-byte words past this header */
+    memcpy(bdc + BDC_HEADER_SIZE, buf, len);
+
+    if (!wlan_write(total)) return -1;
+    return (int)len;
+}
+
+/* Drives the same shared reader every ioctl uses, so a frame arriving
+ * mid-ioctl is kept rather than dropped -- and an ioctl reply arriving
+ * while the stack polls is kept too. */
+static int cyw43_netif_poll(netif_t *nif) {
+    (void)nif;
+    if (g_rx_count) return 1;
+    int r = cyw43_pump();
+    if (r < 0) return -1;
+    return g_rx_count ? 1 : 0;
+}
+
+static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len) {
+    (void)nif;
+    if (!g_rx_count) return -1;
+    uint32_t n = g_rx_ring_len[g_rx_tail];
+    if (n > max_len) {   /* drop it rather than truncate */
+        g_rx_tail = (g_rx_tail + 1) % CYW43_RX_RING;
+        g_rx_count--;
+        return -1;
+    }
+    memcpy(buf, g_rx_ring[g_rx_tail], n);
+    g_rx_tail = (g_rx_tail + 1) % CYW43_RX_RING;
+    g_rx_count--;
+    return (int)n;
+}
+
+static bool cyw43_netif_link_up(netif_t *nif) {
+    (void)nif;
+    return g_link_up;
+}
+
+netif_t *cyw43_get_netif(void) {
+    return g_netif_registered ? &g_netif : NULL;
+}
+
+/* Read the MAC the firmware reports and register with net/netif.c. */
+static bool cyw43_register_netif(void) {
+    uint8_t mac[8];
+    memset(mac, 0, sizeof(mac));
+    uint32_t got = 0;
+    uint8_t req[24];
+    uint32_t n = 0;
+    const char *name = "cur_etheraddr";
+    while (name[n]) { req[n] = (uint8_t)name[n]; n++; }
+    req[n++] = 0;
+    memset(req + n, 0, 6);
+    if (!cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GETVAR, 0, req, n + 6, &got) || got < 6) {
+        printk("cyw43: could not read MAC\n");
+        return false;
+    }
+    memcpy(mac, req, 6);
+
+    g_netif.name = "wlan0";
+    memcpy(g_netif.mac, mac, NETIF_MAC_LEN);
+    g_netif.poll = cyw43_netif_poll;
+    g_netif.send_frame = cyw43_netif_send;
+    g_netif.recv_frame = cyw43_netif_recv;
+    g_netif.link_up = cyw43_netif_link_up;
+    g_netif.ctx = NULL;
+
+    if (netif_register(&g_netif) != 0) {
+        printk("cyw43: netif_register failed\n");
+        return false;
+    }
+    g_netif_registered = true;
+    printk("cyw43: wlan0 registered, mac %02x:%02x:%02x:%02x:%02x:%02x\n",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    /* kernel/main.c attaches the stack and starts `netsrv` at boot, but
+     * only for an interface that already exists by then -- which this one
+     * does not, since it appears when `wifi probe` runs from the shell.
+     * Do the same two steps here, once, or the interface is registered
+     * and never pumped. */
+    net_stack_attach(&g_netif);
+    if (net_task_start() < 0)
+        printk("cyw43: netsrv did not start; frames will not be serviced\n");
+    return true;
+}
+
 bool cyw43_gspi_probe(void) {
     wl_gpio_setup();
     pio_gspi_init();
@@ -1228,6 +1585,52 @@ bool cyw43_gspi_probe(void) {
      * one packet per request), and AP+STA support enabled. */
     if (!cyw43_set_iovar_u32("bus:txglom", 0)) return false;
     if (!cyw43_set_iovar_u32("apsta", 1)) return false;
+
+    /* Tell the firmware which asynchronous events to send. Left unset it
+     * is free to report everything, including per-probe-request traffic,
+     * and that stream shares the same function-2 pipe every ioctl reply
+     * comes back on -- so a flood does not just waste time, it queues
+     * ahead of the answer we are waiting for. This driver polls for the
+     * state it needs rather than decoding events, so the honest mask is
+     * "none"; a narrow set comes back when link_up() starts tracking
+     * carrier from real events rather than from association state.
+     * Layout is iface (u32) then a 24-byte bitmap, one bit per event. */
+    uint8_t evt_mask[4 + 24];
+    memset(evt_mask, 0, sizeof(evt_mask));
+    if (!cyw43_set_iovar("bsscfg:event_msgs", evt_mask, sizeof(evt_mask))) return false;
+
+    /* Regulatory domain. The CLM carries per-region transmit limits, but
+     * until a country is selected the firmware has no region to apply
+     * them to -- and a radio with no permitted channels cannot scan, so
+     * a join simply never associates while every ioctl still succeeds.
+     * "XX" is the worldwide-safe locale the reference uses by default.
+     * Layout: abbrev[4], code[4], rev (i32; -1 means "pick the default
+     * revision for this locale"). */
+    /* Broadcom's wl_country_t puts the revision *between* the two
+     * strings: char country_abbrev[4]; int32 rev; char ccode[4]. Not the
+     * abbrev/code/rev order embassy uses -- same twelve bytes, different
+     * meaning, and this firmware rejects that one with BCME_BADARG (-2).
+     * Embassy never checks the result of its own country set, so the
+     * rejection would go unnoticed there. rev -1 means "the default
+     * revision for this locale". */
+    uint8_t country[12];
+    memset(country, 0, sizeof(country));
+    country[0] = 'X'; country[1] = 'X';   /* country_abbrev */
+    put_u32(country + 4, 0xFFFFFFFFu);    /* rev = -1 */
+    country[8] = 'X'; country[9] = 'X';   /* ccode */
+    if (!cyw43_set_iovar("country", country, sizeof(country))) return false;
+    time_delay_us(100000);   /* set-country settles before the next ioctl */
+
+    /* Chip antenna, and the aggregation parameters the reference sets
+     * before any join. */
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_ANTDIV, 0, 0)) return false;
+    time_delay_us(100000);
+    if (!cyw43_set_iovar_u32("ampdu_ba_wsize", 8)) return false;
+    time_delay_us(100000);
+    if (!cyw43_set_iovar_u32("ampdu_mpdu", 4)) return false;
+    time_delay_us(100000);
+
+    if (!cyw43_register_netif()) return false;
 
     printk("cyw43: ready\n");
     return true;
