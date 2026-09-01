@@ -49,6 +49,7 @@
 #include "drivers/virtio_blk.h"
 #else
 #include "drivers/spisd.h"
+#include "drivers/dcf77_p0log.h"
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -345,6 +346,15 @@ void kernel_main(void) {
         net_stack_attach(netif_default());
         net_task_start();
     }
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77 && CONFIG_DCF77_P0_LOG
+    /* P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Started here
+     * rather than from a boot script because the board it measures has to be
+     * carried to where the reception is, which means a power cycle -- an
+     * instrument that needs someone to type a command after every move is not
+     * one. It waits for the network itself. */
+    dcf77_p0log_start();
+#endif
 
     shell_init();
     lisp_init();

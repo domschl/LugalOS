@@ -78,6 +78,9 @@ set(_optional_keys
     CONFIG_DCF77_OUT_GPIO CONFIG_DCF77_PON_GPIO CONFIG_DCF77_PON_ACTIVE_LOW
     CONFIG_DCF77_OUT_ACTIVE_LOW
     CONFIG_DCF77_WARMUP_MS
+    CONFIG_DCF77_P0_LOG
+    CONFIG_DCF77_P0_PERIOD_S
+    CONFIG_DCF77_P0_PORT
     CONFIG_DCF77_PON_PRESENT
     CONFIG_DCF77_AUTO_HOUR CONFIG_DCF77_AUTO_MIN CONFIG_DCF77_AUTO_ENABLED
     # R5, plan/phase19_ip_stack_and_ethernet.md: the CYW43439 wireless
@@ -91,6 +94,22 @@ set(_optional_keys
 # board file because a timezone is not a board fact -- the same hardware works
 # anywhere -- but every build needs one, and the kernel clock runs on UTC
 # (kernel/timezone.h) so this only ever affects what a human is shown.
+# P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Off everywhere unless a
+# board file turns it on: it is an instrument, not a feature, and it costs an
+# NTP query a minute for as long as it runs.
+if(NOT DEFINED CONFIG_DCF77_P0_LOG)
+    set(CONFIG_DCF77_P0_LOG 0)
+endif()
+if(NOT DEFINED CONFIG_DCF77_P0_NTP)
+    set(CONFIG_DCF77_P0_NTP "0.0.0.0")
+endif()
+if(NOT DEFINED CONFIG_DCF77_P0_PERIOD_S)
+    set(CONFIG_DCF77_P0_PERIOD_S 60)
+endif()
+if(NOT DEFINED CONFIG_DCF77_P0_PORT)
+    set(CONFIG_DCF77_P0_PORT 5959)
+endif()
+
 if(NOT DEFINED CONFIG_TIMEZONE)
     set(CONFIG_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3")   # Europe/Berlin
 endif()
@@ -128,7 +147,7 @@ if(NOT DEFINED CONFIG_NODE_PERSONA)
     set(CONFIG_NODE_PERSONA "${_persona}")
 endif()
 
-set(_string_keys CONFIG_TIMEZONE CONFIG_NODE_SEED CONFIG_NODE_PERSONA)
+set(_string_keys CONFIG_TIMEZONE CONFIG_NODE_SEED CONFIG_NODE_PERSONA CONFIG_DCF77_P0_NTP)
 # Optional, and only emitted when a board file pins them: a node whose name or
 # MAC is a board fact (a soldered appliance, a MAC from a label) says so here
 # and the derivation stays out of the way.

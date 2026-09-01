@@ -32,6 +32,7 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
 /* Last, deliberately: the CONFIG_* guard arrives with the headers above. */
 #include "drivers/dcf77_service.h"
+#include "drivers/dcf77_p0log.h"
 #endif
 
 static fat32_fs_t g_fat32_sd;
@@ -972,6 +973,16 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         return (int)used;
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
+#if CONFIG_DCF77_P0_LOG
+    else if (strcmp(rel, "dcf77log") == 0) {
+        /* P0's raw output (plan/phase24_dcf77_precision_and_ntp_server.md).
+         * The two accumulated results first, so they are correct however
+         * little of the series a collector actually saw, then the recent
+         * samples -- which is the split that makes an appliance at the far
+         * end of a radio measurable at all. */
+        return (int)dcf77_p0log_render(buf, cap);
+    }
+#endif
     else if (strcmp(rel, "dcf77") == 0) {
         /* The radio's health, without a serial console (D4,
          * plan/phase17_clock_ui_and_dcf77.md). The clock persona's only other
@@ -1052,6 +1063,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
     "dcf77",
+#if CONFIG_DCF77_P0_LOG
+    "dcf77log",
+#endif
 #endif
 };
 static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };

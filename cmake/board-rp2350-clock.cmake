@@ -174,6 +174,26 @@ set(CONFIG_DCF77_PON_ACTIVE_LOW   1)
 # only for whatever part of this has not already elapsed since boot.
 set(CONFIG_DCF77_WARMUP_MS     5000)
 
+# --- P0: the measurement instrument (phase 24) -------------------------------
+#
+# TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1
+# the persona is an instrument rather than an appliance: it never sets its own
+# clock from the radio (auto-sync is turned off at boot), and it asks a
+# reference server what time it is once a minute, forever.
+#
+# The reference is site-specific and lives here rather than in the identity
+# record because the board has to be carried to where the reception is, which
+# power-cycles it -- so the address has to survive a reboot with nothing typed,
+# and a record format change is not worth one measurement. 192.168.178.23 is
+# this bench's GPS-disciplined stratum-1; 192.168.178.1 is the gateway and is
+# NOT a reference clock.
+#
+# Results are read from /proc/dcf77log over 9P -- the board is on WiFi and
+# already answers on tcp/564, so nothing new is broadcast or stored.
+set(CONFIG_DCF77_P0_LOG        1)
+set(CONFIG_DCF77_P0_NTP        "192.168.178.23")
+set(CONFIG_DCF77_P0_PERIOD_S  60)
+
 # --- CYW43439 wireless -----------------------------------------------------
 #
 # The board under the Pico-Clock-Green baseboard is a Pico 2 W, so the radio

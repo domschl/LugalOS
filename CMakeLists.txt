@@ -570,6 +570,10 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     if(LUGALOS_ENABLE_DCF77)
         list(APPEND SOURCES drivers/dcf77_rp2350.c)
         list(APPEND SOURCES drivers/dcf77_service.c)
+        # P0 (plan/phase24_dcf77_precision_and_ntp_server.md): the measurement
+        # instrument. Built with the receiver, started only where the board
+        # file sets CONFIG_DCF77_P0_LOG.
+        list(APPEND SOURCES drivers/dcf77_p0log.c)
     endif()
     # N5 (plan/phase18_networking_and_auth.md): the gateway's UART1 downlink
     # to a chess or clock board. Guarded by the board file defining its pins
