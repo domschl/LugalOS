@@ -688,6 +688,29 @@ The address is applied **once carrier appears**, not at probe time. That is
 also when the gratuitous ARP is worth sending, so the segment learns the board
 immediately rather than after somebody's stale cache expires.
 
+### 4c. …and on every power-up, by itself
+
+Once the credentials are stored, the board brings its own radio up at boot —
+no `wifi probe`, no `wifi join`, nothing typed at all:
+
+```bash
+$ ping 192.168.178.22        # ~30 s after power-on, unattended
+64 bytes from 192.168.178.22: icmp_seq=1 ttl=64 time=4.45 ms
+```
+
+**Stored credentials are the intent to join**, the same rule the address
+uses; there is no separate enable flag, and a board with no stored SSID does
+nothing. It runs as a background task rather than a step in the boot
+sequence, because uploading 231 KB of firmware takes tens of seconds and the
+console must stay usable meanwhile — `ps` shows it as `wifiup`, exiting `0`
+once associated.
+
+The join **retries with a backoff and does not give up**, which is the
+power-cut case: a board and its router come back at the same moment and the
+router takes longer, so the one attempt made at boot is exactly the attempt
+that fails. Retries settle at 30 s apart and stop logging after the first
+few, so `/proc/kmsg` does not fill up for a network that simply is not there.
+
 There is still no DHCP client (deliberately — see
 `plan/phase19_ip_stack_and_ethernet.md` §7), so a reservation in the router
 keyed on the radio's own MAC (`net` reports it) is the companion to this.

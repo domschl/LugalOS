@@ -68,4 +68,15 @@ uint32_t cyw43_rx_overruns(void);
  * sits at the size says it is the next thing to grow. */
 uint32_t cyw43_rx_high_water(void);
 
+/* Brings the radio up and joins, in the background, if -- and only if -- the
+ * identity record carries WLAN credentials. Started once from kernel/main.c
+ * on a board whose pin map declares the module; a no-op task that exits
+ * immediately on a board with nothing stored.
+ *
+ * Runs as a task because the firmware upload takes tens of seconds and must
+ * not hold the console; retries the join with a backoff and does not give
+ * up, because the case that matters is a power cut where the router comes
+ * back later than this board does. Returns the pid, or -1. */
+int cyw43_autostart_task_start(void);
+
 #endif /* DRIVERS_CYW43_H */

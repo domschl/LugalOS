@@ -51,6 +51,7 @@
 #include "kernel/irq.h"
 #include "kernel/sched.h"
 #include "kernel/printk.h"
+#include "kernel/identity.h"
 #include "lugalos_config.h"
 
 #include <stdint.h>
@@ -1773,3 +1774,102 @@ static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len) {
 bool cyw43_gspi_probe(void) { return false; }
 
 #endif
+
+/* --- bringing the radio up by itself, at boot ---------------------------
+ *
+ * `wifi probe` then `wifi join` is the right thing to type once; it is the
+ * wrong thing to require after every power cut on a board that is meant to
+ * be an appliance. This does both automatically, and the policy is the same
+ * one the address uses (I9): **credentials in the identity record are the
+ * intent to join**. No separate enable flag -- a board with no stored SSID
+ * does nothing here, and `wlan` is what turns the behaviour on and off.
+ *
+ * It is a task, not a step in kernel/main.c's init sequence, for one blunt
+ * reason: uploading 231 KB of firmware takes the better part of a minute at
+ * this bus speed, and doing it inline would leave the console dead for that
+ * long on every boot. As a task the shell is usable immediately and the
+ * radio arrives when it arrives.
+ *
+ * The join retries, with a backoff, and does not give up. That is deliberate
+ * and it is the power-cut case: a clock and its router come back at the same
+ * moment and the router takes longer, so a single attempt at boot is exactly
+ * the attempt that fails. Once associated the task exits and gives its slot
+ * and stack back.
+ */
+#if defined(CONFIG_WL_CS_GPIO)
+
+static void wifi_sleep_ms(uint32_t ms) {
+    uint64_t end = time_get_ms() + ms;
+    while (time_get_ms() < end) sched_yield();
+}
+
+static void cyw43_autostart_body(void *arg) {
+    (void)arg;
+
+    char    ssid[NODE_WLAN_SSID_MAX + 1];
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    if (!node_wlan_ssid(ssid, sizeof(ssid)) || !node_wlan_psk(psk)) {
+        /* Nothing stored: this board is not meant to join anything on its
+         * own. Silent -- a board with no credentials is the normal case for
+         * a fresh one, not a fault to report on every boot. */
+        memset(psk, 0, sizeof(psk));
+        task_set_exit_status(0);
+        return;
+    }
+
+    /* Three attempts at the chip itself. A gSPI bus that does not answer is
+     * usually a wiring or silicon fact rather than a transient, but a retry
+     * costs a second and covers a slow power rail. */
+    bool up = cyw43_is_ready();
+    for (int i = 0; !up && i < 3; i++) {
+        if (i) wifi_sleep_ms(1000);
+        up = cyw43_gspi_probe();
+    }
+    if (!up) {
+        printk("cyw43: autostart gave up -- the radio did not come up\n");
+        memset(psk, 0, sizeof(psk));
+        task_set_exit_status(1);
+        return;
+    }
+
+    /* Backoff, capped, then forever at the cap. The cap matters more than
+     * the schedule: retrying every 30 s for hours is what gets a clock back
+     * on the network after an outage nobody was present for. Logged on the
+     * first few attempts only, so /proc/kmsg does not fill with one line per
+     * retry for a network that is simply not there. */
+    static const uint32_t backoff_ms[] = { 2000, 5000, 15000, 30000 };
+    for (unsigned attempt = 0; ; attempt++) {
+        if (cyw43_join_wpa2(ssid, psk)) {
+            printk("cyw43: autostart joined \"%s\"\n", ssid);
+            break;
+        }
+        unsigned idx = attempt < 4 ? attempt : 3;
+        if (attempt < 4) {
+            printk("cyw43: autostart could not join \"%s\"; retrying in %u s\n",
+                   ssid, (unsigned)(backoff_ms[idx] / 1000));
+        }
+        wifi_sleep_ms(backoff_ms[idx]);
+    }
+
+    memset(psk, 0, sizeof(psk));
+
+    /* Report the outcome rather than just stopping. A kernel task that simply
+     * returns is reaped by the trampoline's own task_exit(), which leaves
+     * exit_clean false -- so `ps` renders it "killed", which for a task that
+     * did its job and finished is precisely backwards (fs/vfs_server.c makes
+     * that same argument about the opposite case). Nothing in this tree
+     * exercised it before, because until now no kernel task ever ended.
+     * 0 = joined, 1 = the radio never came up. */
+    task_set_exit_status(0);
+}
+
+int cyw43_autostart_task_start(void) {
+    /* Three pages. idstore_read() alone puts a 4 KB record buffer on this
+     * stack before anything else happens, and the firmware upload runs on top
+     * of that -- the same reasoning that gives `netsrv` three. */
+    int pid = task_create_sized("wifiup", cyw43_autostart_body, NULL, 3);
+    if (pid < 0) printk("cyw43: could not start the autostart task\n");
+    return pid;
+}
+
+#endif /* CONFIG_WL_CS_GPIO */

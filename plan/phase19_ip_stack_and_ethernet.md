@@ -1110,6 +1110,35 @@ fifteen-minute idle soak, and the blob accounting paragraph is in the
 README. The host-side tooling that consumes it -- `lugal9p` and
 `fuse-p9 --tcp` -- is verified against this board too.
 
+**The radio comes up by itself now, 2026-09-01.** With phase 21's I9 storing
+credentials and address in the identity record, the last thing standing
+between a power cut and a working node was somebody typing `wifi probe` and
+`wifi join`. A `wifiup` task does both at boot when -- and only when -- the
+record carries credentials; stored credentials are the intent, with no
+separate flag, exactly as a stored address is.
+
+A task rather than a boot step, because the 231 KB firmware upload takes tens
+of seconds and doing it inline would leave the console dead for that long on
+every boot. It retries the join with a backoff and does not give up, which is
+the case that actually matters: a board and its router come back from the
+same outage and the router takes longer, so a single attempt at boot is
+precisely the one that fails. Measured on both boards: **on the network ~30 s
+after power-on, unattended**, at 192.168.178.21 and .22.
+
+**The Pico-Clock-Green persona got its radio in the same pass**, since the
+board under that baseboard was always a Pico 2 W. GP23/24/25/29 are internal
+to the module and never reach the header, so they cost that baseboard
+nothing. Heap 91 pages (108 KB over the floor), flash 516 KB. That is what
+makes R6 buildable: a clock that can ask the network for the time, or -- with
+DCF-77 -- answer that question for the segment.
+
+**Still open, and it is the same gap R5 named:** carrier is inferred from a
+BSSID rather than decoded from the firmware's link events, so `wifi join`
+reports success with a wrong PSK (plan/open_issues.md) and nothing notices if
+an established link drops. The autostart task therefore brings a board up but
+does not keep it up -- re-joining after a link loss needs the event channel,
+which is the same work item.
+
 **R6 -- optional: an NTP client.** UDP is already there from R2; NTP is ~150
 lines and it is the first thing that makes the network useful to a *persona*
 rather than to a host -- the phase 17 clock could set its own time. Marked
