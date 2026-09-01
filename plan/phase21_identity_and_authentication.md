@@ -1,8 +1,8 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
 **Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7a and I7b
-complete 2026-09-01 (§3.3); the phase is done bar two hardware verify
-items named in I7b.** Independent of the phase it
+complete 2026-09-01 (§3.3); the phase is done bar one hardware verify
+item named in I7b (a genuinely interrupted write).** Independent of the phase it
 grew out of.
 
 **Amended 2026-09-01, before starting I7, in response to a design review that
@@ -932,13 +932,29 @@ boot set up, until a reset -- so continuing would have meant a dead console
 *and* a degraded system. Verified: the board now writes, reboots itself, and
 comes back with the record intact, no hands.
 
-**Two verify items are NOT closed, and neither is hand-waved:**
+**Two boards report different uids -- measured 2026-09-01**, once the
+Pico-Clock-Green board was connected as a second node. Flashed with its own
+`rp2350-clock` persona so nothing about that setup changed except the
+firmware version:
 
-* **Two boards reporting different uids.** Only one Pico 2 W is on the bench
-  with this persona; the other is under the Pico-Clock-Green baseboard and
-  reflashing it would disturb a working setup for one number. The read is
-  from a factory-programmed per-die field, so the risk is low -- but "low
-  risk" and "measured" are different claims and this is the latter's absence.
+| board | uid (OTP) | derived name | derived MAC |
+|---|---|---|---|
+| rp2350-wifi | `413ed1010581b362` | `rp2350-wifi-90f9` | `02:4c:47:90:f9:e4` |
+| rp2350-clock | `fa4b340c369d9094` | `rp2350-clock-4e0b` | `02:4c:47:4e:0b:83` |
+
+Which also retires phase 19's standing note that `board_unique_id()` "still
+returns false everywhere -- two boards flashed from one build share an
+identity until R4 wires the RP2350 flash id, where it can be checked against
+two real boards instead of asserted." It is now checked against two real
+boards, and the source is OTP rather than the flash chip.
+
+**I7a got a second, independent outing at the same time:** the clock board
+had never had a `flashfs.uf2`, and `/flash0` came up correctly after being
+given both images -- a different persona, a different board, the documented
+two-image procedure followed cold.
+
+**One verify item is NOT closed, and it is not hand-waved:**
+
 * **An interrupted write leaving the store readable as corrupt.** Genuinely
   cutting power mid-erase needs timing a physical unplug inside a ~100 ms
   window. Not attempted. Note that the failure this would probe is now
