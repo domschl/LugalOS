@@ -50,16 +50,19 @@ reports that nothing is stored, because `identity_store_device()` is only
 provided by the QEMU virtio backend -- on hardware it is still the weak
 `NULL`.
 
-**Why it is parked:** this is phase 21's **I7** (an RP2350 flash backend
-for the identity store), a milestone in its own right with its own
-flash-layout decisions. Folding it into phase 19's R5 would blur two
-pieces of work. `wifi join <ssid> <psk-hex>` covers the gap meanwhile, and
-takes the derived PSK rather than a passphrase, so the credential rule
-(I6) still holds.
+**Why it is parked:** this is phase 21's **I7**, a milestone in its own
+right with its own flash-layout decisions. Folding it into phase 19's R5
+would blur two pieces of work. `wifi join <ssid> <psk-hex>` covers the gap
+meanwhile, and takes the derived PSK rather than a passphrase, so the
+credential rule (I6) still holds.
 
-**Fix, when it is worth it:** implement I7. Everything above it already
-exists -- the record format, the toolset, `node_wlan_ssid()` and
-`node_wlan_psk()` all work today against a virtio device.
+**Fix, when it is worth it:** implement I7b (the identity backend), which
+now follows I7a (the three-segment flash layout) -- see
+plan/phase21_identity_and_authentication.md §3.3, amended 2026-09-01.
+Everything above it already exists -- the record format, the toolset,
+`node_wlan_ssid()` and `node_wlan_psk()` all work today against a virtio
+device. `wifi join` with no arguments reading its credentials from the
+record is named in I7b's own verify list, so this entry closes with it.
 
 ---
 

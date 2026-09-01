@@ -1,7 +1,41 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 BLOCKED
-on RP2350 bench access.** Independent of the phase it grew out of.
+**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 unblocked
+and re-scoped 2026-09-01 as I7a + I7b (§3.3).** Independent of the phase it
+grew out of.
+
+**Amended 2026-09-01, before starting I7, in response to a design review that
+asked the right question:** are a dedicated identity store and its own record
+format re-inventing the wheel, when a filesystem already exists that could
+hold the same bytes in a subdirectory? The answer, worked through in §3.3, is
+half yes. The valuable half of the idea is **getting `/flash0` out of the
+binary and into its own independently flashable region** -- it is over half of
+every reflash, it holds ~40 KB of files in a 512 KB image, and it cannot be
+written at all today. That was adopted, and it retires this phase's single
+riskiest assumption by construction rather than by measurement.
+
+The other half -- storing the record *as files in that filesystem* -- was
+declined, on four grounds, none of them "we already built the other thing":
+NOR flash erases in 4 KB sectors while FAT32 writes 512-byte blocks, so every
+small write becomes read-modify-erase-write with the FAT as a permanent hot
+spot; an interrupted FAT32 write corrupts *the filesystem*, where §8's own
+verify list asks for "readable as corrupt, not as plausible garbage" and a
+CRC'd 4 KB record delivers exactly that in one erase-and-program; the
+RAM-resident write path for one sector is small and reviewable where the whole
+FAT32 write path is not (§3.2, and note the failure mode there is a hang, not
+an error); and `node_identity_init()` runs at `kernel/main.c:161`, before
+`palloc_init()` at 206 and `vfs_server_init()` at 217, so sourcing identity
+from a filesystem means reordering boot or making identity lazy. The record
+format itself is 385 lines plus a 128-line header, with a pluggable
+`block_dev_t` backend -- small enough that replacing it would not be a
+simplification.
+
+One objection from the same review changed the shape of the answer and is
+worth recording, because the first draft got it wrong: putting the filesystem
+and the identity sector in *one* region would merely move the coupling, since
+updating the filesystem would then require rewriting the identity, and the
+flashing host is precisely the party that must not hold it. Hence **three**
+segments, not two.
 
 **I1 done (2026-08-29).** `kernel/idstore.h`/`.c`: magic/version/length/CRC32
 header, typed (TLV) fields, the three states (unprovisioned/corrupt/valid),
@@ -375,15 +409,24 @@ prohibition.
 
 Measured, not assumed:
 
-* **`/flash0` is a read-only ROMdisk.** `flashdisk_write_blocks()` refuses and
-  says so. It is not a candidate, and the current fallback key path
+* **`/flash0` is a read-only ROMdisk, and it is inside the binary.**
+  `flashdisk_write_blocks()` refuses and says so, but the deeper reason is
+  the layout: `tools/create_flash_fs.py` compiles the FAT32 image into a C
+  array (`g_flash_fs_start[524288]`) that lands in `.rodata`. It is not a
+  candidate, and the current fallback key path
   (`/flash0/system/etc/p9key`) is therefore read-only by construction -- fine
   for a key baked into an image, useless for provisioning.
-* **RP2350 flash is 4 MB and the image uses about 740 KB.** Roughly 3.2 MB is
-  unused. The last 4 KB sector is a natural home, and a **UF2 writes only the
-  blocks it contains**, so reflashing the OS should leave it untouched. That
-  property is the whole design and it is an *assumption until measured on
-  hardware* -- see §10.
+* **More than half of every reflash is that ROMdisk** (re-measured
+  2026-09-01, on `rp2350-wifi`): `g_flash_fs_start` sits at `0x1003c4a4`,
+  `__flash_binary_end` at `0x100f596c`, so the image is ~982 KB of which
+  **512 KB is a filesystem holding about 40 KB of files**. Without it the OS
+  is ~470 KB. RP2350 flash is 4 MB, so ~3 MB is unused either way.
+* **The last 4 KB sector is a natural home for the record**, and nothing
+  grows into it -- its address stays fixed however the OS and the filesystem
+  change size. What the original version of this section then leaned on was
+  that a **UF2 writes only the blocks it contains**, so reflashing the OS
+  *should* leave that sector alone. §3.3 replaces that hope with a layout
+  where it is true by construction.
 * **RP2350 OTP carries a factory-programmed unique chip ID.** The UID needs no
   provisioning at all on that target: it is read, not written. This is a
   better `board_unique_id()` than the flash chip's id that phase 19 sketched.
@@ -400,14 +443,78 @@ Measured, not assumed:
 ### 3.2 The seam: a block device on both
 
 Model the store as a **`block_dev_t`**, which this tree already has. On
-RP2350 it is a tiny block device backed by the reserved sector (read straight
-from XIP; written via the bootrom from `.scratch_x`, which exists for exactly
-this). On QEMU it is the second virtio-blk. Everything above -- parsing,
+RP2350 it is a tiny block device backed by the reserved sector: read straight
+from XIP, written by a routine that must not itself be executing from the
+flash it is erasing. **The `.scratch_x` answer this section used to give is
+stale** -- phase 15 §1.2 handed both scratch banks to the page allocator, and
+`linker/rp2350.ld` now carries a hard `ASSERT(SIZEOF(.scratch_x) == 0 &&
+SIZEOF(.scratch_y) == 0)` precisely so nothing quietly places there again. I7
+therefore has to say where its RAM-resident erase/program routine lives and
+pay for it deliberately: either take a page back out of the heap here (and
+adjust `_heap_end` in the same commit, as that `ASSERT`'s own comment
+instructs) or mark the routine for copy-to-RAM some other way. Naming it is
+the point; discovering it at link time is not a plan. On QEMU it is the second
+virtio-blk. Everything above -- parsing,
 validating, provisioning, the toolset -- is then target-independent and fully
 testable on QEMU before any hardware exists.
 
 That is the same shape `netif_t` gave phase 19, and for the same reason: the
 milestone that needs hardware should be a *driver*, not a project.
+
+### 3.3 The flash layout: three independently flashable segments
+
+Decided 2026-09-01, replacing "one reserved sector at the end of a
+monolithic image". Two separate observations forced it.
+
+**First:** the ROMdisk is half the image (§3.1), it cannot be written, and it
+is rebuilt and reflashed on every OS change even though its contents change
+almost never. Lifting it out of `.rodata` into its own flash region makes it
+independently flashable, halves what an OS reflash rewrites, and gives every
+application a place to keep bytes -- not just this phase.
+
+**Second, and this is what settles the *number* of segments:** merging the
+filesystem and the identity sector into one region would simply move the
+coupling rather than remove it. Updating the filesystem would then mean
+rewriting the identity too, so the flashing host would have to *supply* a
+device's identity in order to update its files -- and the flash host is
+exactly the party that must not hold it. Identity therefore gets a region of
+its own, and the build never emits a UF2 that covers it.
+
+```
+0x10000000  OS image            1.5 MB reserved   (~470 KB used today)
+0x10180000  flash-fs             512 KB
+0x10200000  (unallocated)         ~2 MB           -- a writable app FS later
+0x103FF000  identity sector         4 KB          -- last sector
+```
+
+The three artifacts this produces differ in update cadence *and* in
+distribution properties, which is the real argument for the split:
+
+| artifact | per device? | changes |
+|---|---|---|
+| `lugalos.uf2` | identical everywhere | every build |
+| `flashfs.uf2` | identical everywhere | rarely |
+| the identity sector | **unique per device** | once, and normally never flashed by a host at all |
+
+On RP2350 the record is minted *by the device* -- OTP chip id for the UID, and
+`random_bytes()` over the ring oscillator's `RANDOMBIT` for the key, behind
+phase 18's N1 entropy gate -- so a flash host never sees it, which is what §7
+wants regardless.
+Where fleet provisioning genuinely needs a pre-minted record, it becomes a
+deliberate one-off `provision-<serial>.uf2` writing only those 4 KB, which
+this layout supports and the merged one did not.
+
+`tools/elf2uf2_rp2350.py` already takes `--base BASE_ADDR`, so emitting a
+second UF2 at a different address is nearly free.
+
+**Two things this layout has to get right, both new risks in §10.**
+Boundaries must be sector-aligned, because the bootrom erases whole 4 KB
+sectors to write 256-byte chunks and a segment ending mid-sector can erase
+into its neighbour -- 64 KB alignment makes that structurally impossible.
+And with the filesystem no longer inside the ELF, the linker can no longer
+`ASSERT` against it directly, so the bases must come from **one** build-system
+variable feeding both `linker/rp2350.ld` and UF2 generation, with `ASSERT`s
+that each segment ends below the next base.
 
 ## 4. The record
 
@@ -623,40 +730,67 @@ derivation, and the store. Lands with phase 19's R5 and is useless before it.
 *Verify:* on the host, a known passphrase and SSID derive the PSK the standard
 gives; on the device, the credential round-trips and is never printed.
 
-**I7 -- the RP2350 backend. BLOCKED 2026-08-29: no bench access to RP2350
-hardware.** OTP chip id for the UID; the reserved flash sector for
-everything else; the write path from `.scratch_x`.
-*Verify:* on hardware -- two boards report different uids; a provisioned
-identity **survives a reflash** (§10's assumption, finally measured); an
-interrupted write leaves the store readable as corrupt rather than as
-plausible garbage.
+**I7 -- the RP2350 backend.** Unblocked 2026-09-01: bench access to a Pico 2 W
+returned during phase 19 R5, and §3.3 replaced this milestone's riskiest
+assumption with a layout. Split in two, because the halves are different kinds
+of work with different blast radii -- one is build-system, one is a driver --
+and only the second needs the record format to exist.
 
-All three of I7's verify points are hardware-only by construction --
-"two boards", "survives a reflash", "an interrupted write" -- so nothing
-about this milestone can be brought forward into QEMU the way I1-I6 were
-(§10 already names the UF2-preservation assumption as the risk this
-verify list exists to catch, precisely *because* it can't be checked any
-other way). I1-I6 were deliberately sequenced to need no hardware at all
-so that this is the *only* thing blocked, not a reason the rest of the
-phase waited. When bench access returns: `identity_store_device()`
-(`kernel/identity.h`) is the one hook I7 fills in -- everything above it
-(the record format, the toolset, the auth wiring, grants, WLAN storage)
-is already written, tested, and does not change for this milestone to
-land. The two concrete unknowns going in are the reserved sector's
-address (must be `ASSERT`ed against the image's end in the linker script,
-per §10, not hand-copied into two places) and whether a UF2 reflash
-really does preserve blocks it doesn't contain, which is the entire
-premise the QEMU-side design has been building on since I2 and has never
-been measured on real silicon.
+**I7a -- the three-segment flash layout (§3.3).** Lift the FAT32 image out of
+`.rodata` into its own flash region, reserve the identity sector at the top of
+flash, and emit `lugalos.uf2` and `flashfs.uf2` separately. Bases come from one
+build-system variable feeding both `linker/rp2350.ld` and UF2 generation, never
+hand-copied. Nothing about identity is required for this milestone to land, and
+every persona benefits from it.
+*Verify:* on hardware -- the OS image drops to ~470 KB and boots; `flashfs.uf2`
+alone updates `/flash0` without touching the OS; **flashing `lugalos.uf2`
+leaves the other two regions byte-identical**, checked by writing a known
+pattern into the identity sector first and reading it back after (this is the
+sector-boundary erase question, and it is the first thing to measure, because
+everything else here rests on it); a linker `ASSERT` fires, naming the cause,
+when a segment is made to overflow its region.
+
+**I7b -- the identity backend.** OTP chip id for the UID; the reserved sector
+for everything else; a RAM-resident erase/program routine whose home is stated
+and paid for (§3.2 -- `.scratch_x` is no longer available, and taking a heap
+page back means adjusting `_heap_end` in the same commit).
+`identity_store_device()` (`kernel/identity.h`) is the one hook this fills in;
+everything above it -- the record format, the toolset, the auth wiring, grants,
+WLAN storage -- is already written and tested and does not change for this to
+land.
+*Verify:* on hardware -- two boards report different uids; a provisioned
+identity survives a reflash (now by construction, still measured, since a
+layout is only as good as its boundaries); an interrupted write leaves the
+store readable as *corrupt* rather than as plausible garbage; `wifi join` with
+no arguments reads its credentials from the record (plan/open_issues.md's
+standing entry, which is what closes when this lands).
+
+Both remain hardware-only by construction -- "two boards", "survives a
+reflash", "an interrupted write" cannot be brought forward into QEMU the way
+I1-I6 were, which is exactly why I1-I6 were sequenced to need no hardware at
+all: this was to be the *only* thing blocked, not a reason the rest of the
+phase waited. That sequencing paid off. The one claim retired here is the old
+version's second "concrete unknown" -- whether a UF2 reflash preserves blocks
+it does not contain. That is no longer the premise the design rests on; I7a's
+own verify list measures the narrower, answerable question of whether a
+segment's flash erases past its boundary.
 
 **I8 -- documentation.** A README section that states §7 in full, the
 provisioning walkthrough, and what a wrong fingerprint looks like.
 
-**Sequencing.** I1-I6 need no hardware at all and can run alongside phase 19.
-I7 wants the same bench visit as phase 19's R4. I8 was done ahead of I7 --
-its own three deliverables (§7 in full, a provisioning walkthrough, what a
-wrong fingerprint looks like) are all QEMU-verifiable, so nothing about it
-needed to wait for the one milestone that does.
+**Sequencing.** I1-I6 need no hardware at all and ran alongside phase 19. I8
+was done ahead of I7 -- its own three deliverables (§7 in full, a provisioning
+walkthrough, what a wrong fingerprint looks like) are all QEMU-verifiable, so
+nothing about it needed to wait for the one milestone that does.
+
+I7 wanted the same bench visit as phase 19's R4 and now has it. **I7a before
+I7b**, and the order is not arbitrary: I7a's boundary measurement is what
+tells us whether the layout the rest of this phase now assumes is real, and it
+needs no identity code at all to run -- write a pattern into the reserved
+sector, flash the OS, read it back. If that fails, I7b's design changes before
+a line of it is written, and §10's AT24C32 fallback is where it goes. I7a is
+also useful on its own to every persona, so it is not wasted even in that
+case.
 
 ## 9. Explicitly not in this phase
 
@@ -676,18 +810,34 @@ needed to wait for the one milestone that does.
 
 ## 10. Risks, and what each looks like
 
-* **The UF2-preservation assumption is wrong.** Looks like: a reflash silently
-  erases the identity sector, and a board comes back as a different node. This
-  is the load-bearing assumption of I7 and it is *measured there*, not before
-  -- and if it fails, the AT24C32 backend (§3.1) becomes the primary store on
-  boards that have one, and provisioning becomes part of flashing on those
-  that do not.
+* **A segment's flash erases past its own boundary.** Looks like: a reflash
+  silently erases the identity sector, and a board comes back as a different
+  node. This is §3.3's narrowed version of what used to be stated as "the
+  UF2-preservation assumption", and narrowing it is the point -- the old form
+  ("does a UF2 leave blocks it doesn't contain alone?") was a property of the
+  whole toolchain and could only be believed or disbelieved, while this one is
+  a property of two addresses and is measured directly by I7a's first verify
+  item. The mechanism to watch is that the bootrom erases whole 4 KB sectors
+  to write 256-byte chunks, so a segment ending mid-sector reaches into its
+  neighbour; 64 KB-aligned boundaries make that structurally impossible. If it
+  fails anyway, the AT24C32 backend (§3.1) becomes the primary store on boards
+  that have one, and provisioning becomes part of flashing on those that do
+  not.
+* **The segment bases drift apart.** Looks like: an image that boots on one
+  build and bricks on the next, or a `flashfs.uf2` that lands on top of the
+  OS. With the filesystem no longer inside the ELF, the linker cannot
+  `ASSERT` against it directly, so nothing structural stops the linker script
+  and the UF2 step from disagreeing. One build-system variable feeds both, and
+  each segment `ASSERT`s that it ends below the next base. This replaces the
+  old "a wrong sector address bricks the image" entry, which assumed a single
+  image with a single end to assert against.
 * **Writing flash while executing from it.** Looks like: the board hangs, not
-  fails. `.scratch_x` exists for this and interrupts must be off; getting it
+  fails. Interrupts must be off and the routine must not be running from the
+  flash it is erasing -- and note that `.scratch_x`, which earlier drafts of
+  this document named for the job, is no longer available: phase 15 §1.2 gave
+  both scratch banks to the page allocator and `linker/rp2350.ld` asserts they
+  stay empty. I7b has to name and pay for its RAM-resident home. Getting this
   wrong is not a clean failure.
-* **A wrong sector address bricks the image.** The address must be `ASSERT`ed
-  in the linker script against the image's end, not written down in two places
-  and trusted.
 * **Splitting the key store breaks a working auth path.** I5 changes what
   `p9_auth_key_for()` means. Phase 19's two-node test is the regression that
   catches it, and it is named in I4's verification for that reason.
