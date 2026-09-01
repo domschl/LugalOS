@@ -44,6 +44,7 @@
 #include "net/netif.h"
 #include "net/ip.h"
 #include "net/tcp.h"
+#include "net/ntp.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
@@ -132,6 +133,7 @@ static void cmd_help(void) {
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
+    cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -389,6 +391,53 @@ static void udp_echo_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_
     udp_send(src_ip, src_port, port, data, len);
     cprintf("net: udpecho %lu bytes from %u.%u.%u.%u:%u\n",
             (unsigned long)len, src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port);
+}
+
+/* `ntp [server]` -- R6: ask one server what time it is, and believe it.
+ *
+ * With no argument it asks the configured **gateway**. Not a guess dressed up
+ * as a default: a home segment's router is the one address this board already
+ * knows, and it is running an NTP server far more often than not. When it is
+ * not, the answer is a three-second timeout naming the address it tried,
+ * which is a better failure than refusing to act without an argument. A
+ * server address is deliberately *not* stored in the identity record -- that
+ * is a per-site fact, not a per-board one, and I9 put the address in the
+ * record precisely because the address is per-board. */
+static void cmd_ntp(const char *arg) {
+    uint8_t server[IPV4_LEN];
+
+    while (arg && *arg == ' ') arg++;
+    if (arg && *arg) {
+        if (!ipv4_parse(arg, server)) {
+            cprintf("ntp: '%s' is not a dotted quad\n", arg);
+            cprintf("usage: ntp [server-ip]   (no argument asks the gateway)\n");
+            return;
+        }
+    } else {
+        const net_state_t *st = net_state();
+        if (!st || !st->configured) {
+            cprintf("ntp: no address configured -- set one with `netcfg`, or give a server\n");
+            return;
+        }
+        memcpy(server, st->gw, IPV4_LEN);
+        if (!server[0] && !server[1] && !server[2] && !server[3]) {
+            cprintf("ntp: no gateway configured, so there is nothing to ask by default\n");
+            cprintf("usage: ntp <server-ip>\n");
+            return;
+        }
+        cprintf("ntp: asking the gateway, %u.%u.%u.%u\n",
+                server[0], server[1], server[2], server[3]);
+    }
+
+    console_interrupt_clear();
+    ntp_result_t r;
+    int rc = ntp_sync(server, 3000u, &r);
+    if (rc != 0) {
+        cprintf("ntp: %s\n", ntp_err_str(rc));
+        if (rc == NTP_ERR_KISS) cprintf("  the server's reason: \"%s\"\n", r.refid);
+        return;
+    }
+    ntp_print_result(&r, true);
 }
 
 static void cmd_net_udpecho(unsigned port) {
@@ -2077,6 +2126,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
+        return;
+    } else if (strcmp(cmd_line, "ntp") == 0) {
+        cmd_ntp(NULL);
+        return;
+    } else if (strncmp(cmd_line, "ntp ", 4) == 0) {
+        cmd_ntp(&cmd_line[4]);
         return;
     } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
         cmd_net_txtest(shell_trailing_uint(&cmd_line[10]));

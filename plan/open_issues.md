@@ -43,29 +43,6 @@ every polling wait should consult the same shared check applies here).
 
 ---
 
-## `wifi join` reports success when the PSK is wrong -- FIXED 2026-09-01
-
-**Was:** the driver decided it had associated when the firmware returned a
-non-zero BSSID. A BSSID appears at 802.11 association, which precedes and is
-independent of the WPA2 four-way handshake, so a wrong PSK produced a BSSID,
-a confident "joined", and a link that carried nothing. Nothing noticed a link
-going away again either.
-
-**Fixed by decoding the firmware's own events** (`drivers/cyw43_rp2350.c`).
-A join is complete only at AUTH + LINK + KEYED, where KEYED is a `PSK_SUP`
-event with status `WLC_SUP_KEYED` -- the handshake completing, which is
-exactly what a wrong PSK never reaches. Verified on hardware:
-
-    wifi join DOSC <wrong psk>
-    cyw43: join failed: refused -- the PSK is wrong
-
-and, unattended immediately afterwards, `cyw43: link lost -- rejoining
-"DOSC"` followed by a successful re-join. Carrier is now set and cleared by
-LINK/DISASSOC/DEAUTH events rather than inferred, so `netif_link_up()` means
-what it says.
-
----
-
 ## Clock display flickers while the radio comes up (deferred to phase 22/23)
 
 **Trigger:** power on an `rp2350-clock` board with stored WLAN credentials.
@@ -111,8 +88,8 @@ firmware is associated -- `mfp` is the one that surfaces it -- and
 **Fixed for `mfp` specifically:** it advertises Management Frame Protection
 *capability* -- a preference, not a requirement -- so its refusal is now
 logged and stepped over rather than aborting the join. A re-join over a live
-connection works, which is what made the wrong-PSK verdict above testable at
-all.
+connection works, which is what made the wrong-PSK verdict testable at all
+(the join now decides on the firmware's own AUTH/LINK/KEYED events).
 
 **Still open:** there is no clean way to *leave* a BSS first. Issuing
 `CYW43_IOCTL_SET_DISASSOC` (0x69) exactly as the reference does
@@ -134,27 +111,6 @@ the link is down.
 (`mfp` is a capability hint, not a requirement), or find the correct way to
 leave a BSS first. The second is better, since a clean leave is the honest
 thing to do before joining somewhere else.
-
----
-
-## No identity store on RP2350, so `wifi join` needs its credentials typed
-
-**Trigger:** `wifi join` with no arguments on a real RP2350 board. It
-reports that nothing is stored, because `identity_store_device()` is only
-provided by the QEMU virtio backend -- on hardware it is still the weak
-`NULL`.
-
-**Why it is parked:** this is phase 21's **I7**, a milestone in its own
-right with its own flash-layout decisions. Folding it into phase 19's R5
-would blur two pieces of work. `wifi join <ssid> <psk-hex>` covers the gap
-meanwhile, and takes the derived PSK rather than a passphrase, so the
-credential rule (I6) still holds.
-
-**CLOSED 2026-09-01 by I7b.** `identity_store_device()` is implemented on
-RP2350 (OTP CHIPID for the uid, the reserved flash sector for the record),
-and `wifi join` with no arguments reads its SSID and PSK from the record --
-`cyw43: joining "DOSC"...` with nothing typed. See
-plan/phase21_identity_and_authentication.md's I7b entry.
 
 ---
 

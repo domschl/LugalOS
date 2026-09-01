@@ -498,6 +498,10 @@ set(SOURCES
     # R3: server-side TCP. An accepted connection is a p9_link_t, so
     # everything phase 18 built above a byte stream works over it unchanged.
     net/tcp.c
+    # R6: the SNTP client. Built everywhere for the same reason the layers
+    # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
+    # and arithmetic should not be debugged by flashing.
+    net/ntp.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c

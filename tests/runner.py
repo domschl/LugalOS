@@ -3311,6 +3311,198 @@ def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, 
         peer.close()
 
 
+def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """R6, plan/phase19_ip_stack_and_ethernet.md: the SNTP client, against a
+    server this test *is*.
+
+    The point is the arithmetic, which is why this runs on QEMU rather than
+    against a real server: NTP's epoch is 1900 and everything else's is 1970,
+    its timestamps are 32.32 fixed point, and the offset is a signed
+    difference of four of them. Every one of those is a place to be wrong by a
+    constant -- and a constant error is exactly what a test against a
+    *correct* server cannot see, because a clock that is already right stays
+    right however the arithmetic is wrong. So the server here answers with an
+    instant this test chose, years away from anything the board could be
+    holding, and the board has to name it back.
+
+    Three things are asserted, in the order they can fail:
+      1. the request is a well-formed v4 client packet, from an ephemeral
+         port, carrying a transmit timestamp a reply can be matched against,
+      2. a correct reply moves the clock to the instant the server named,
+      3. a reply whose origin timestamp does *not* echo the request is
+         refused -- the one check standing between this client and an
+         off-path forgery.
+
+    The peer runs on its own thread rather than between console reads. The
+    board sends its request and waits three seconds for an answer, so a
+    single-threaded test would have to interleave log-tailing with frame
+    handling, and QemuSession's reader seeks past whatever arrived while it
+    was not looking -- which is a race, not a test.
+    """
+    import shutil
+    import struct
+    import threading
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "NTP Client: Epoch, Fixed Point, And A Reply That Lies (R6)"
+    arch_img = img_path.with_name(f"test_{arch_name}_ntp_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    GUEST_IP = bytes([192, 168, 77, 2])
+    PEER_IP = bytes([192, 168, 77, 1])
+    PEER_MAC = b"\x02\x00\x00\x00\x00\x42"
+    GUEST_MAC = bytes.fromhex("525400123456")
+    NTP_EPOCH_OFFSET = 2208988800
+
+    # 2031-06-15 12:34:56.500 UTC, deliberately years from the base epoch
+    # kernel/time.c compiles in, so "the clock did not move" and "the clock
+    # moved to the right instant" cannot be confused for one another.
+    SERVER_UNIX_MS = 1939293296500
+
+    def to_ntp(unix_ms: int) -> bytes:
+        sec, ms = divmod(unix_ms, 1000)
+        return struct.pack(">II", sec + NTP_EPOCH_OFFSET, (ms << 32) // 1000)
+
+    def ntp_reply(origin: bytes) -> bytes:
+        """A stratum-1 server's answer. `origin` is what goes in the origin
+        field -- the request's own transmit timestamp for the honest case, and
+        deliberately something else for the forgery."""
+        pkt = bytearray(48)
+        pkt[0] = (0 << 6) | (4 << 3) | 4      # LI 0, version 4, mode 4 (server)
+        pkt[1] = 1                            # stratum 1: a reference clock, like the one this is pretending to be
+        pkt[2] = 6
+        pkt[3] = (-20) & 0xFF
+        pkt[12:16] = b"GPS\x00"
+        pkt[16:24] = to_ntp(SERVER_UNIX_MS)   # reference
+        pkt[24:32] = origin
+        pkt[32:40] = to_ntp(SERVER_UNIX_MS)   # receive
+        pkt[40:48] = to_ntp(SERVER_UNIX_MS)   # transmit
+        return bytes(pkt)
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+
+    seen: dict[str, object] = {}
+    forge = threading.Event()
+    stop = threading.Event()
+
+    def responder() -> None:
+        """Gateway and time server both. ARP is answered because the board has
+        to resolve the gateway before it can ask it anything, and letting that
+        fail would put this test's timeout on the wrong protocol."""
+        # NetPeer.received() returns everything it has ever captured and never
+        # forgets, so this walks forward through it by index. Re-reading the
+        # whole list each pass -- the obvious first version -- makes the
+        # responder answer every *previous* request again on every poll, and
+        # each answer to a closed port draws an ICMP unreachable that is itself
+        # captured: the list grows quadratically and a pass eventually takes
+        # longer than the board's three-second timeout. That failed once in
+        # ten runs, which is the worst possible frequency for a test.
+        handled = 0
+        while not stop.is_set():
+            frames = peer.received()
+            fresh, handled = frames[handled:], len(frames)
+            if not fresh:
+                time.sleep(0.02)
+                continue
+            for f in fresh:
+                try:
+                    _d, _s, etype, payload = netpeer.parse_eth(f)
+                    if etype == netpeer.ETHERTYPE_ARP:
+                        arp = netpeer.parse_arp(payload)
+                        if arp["op"] == 1 and arp["target_ip"] == PEER_IP:
+                            peer.send(netpeer.eth_frame(
+                                GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_ARP,
+                                netpeer.arp_packet(2, PEER_MAC, PEER_IP, GUEST_MAC, GUEST_IP)))
+                        continue
+                    if etype != netpeer.ETHERTYPE_IPV4:
+                        continue
+                    ip = netpeer.parse_ipv4(payload)
+                    if ip["proto"] != netpeer.IP_PROTO_UDP:
+                        continue
+                    udp = ip["payload"]
+                    if int.from_bytes(udp[2:4], "big") != 123:
+                        continue
+                    sport = int.from_bytes(udp[0:2], "big")
+                    req = udp[8:]
+                    seen["req"] = req
+                    seen["sport"] = sport
+                    seen["count"] = int(seen.get("count", 0)) + 1  # type: ignore[arg-type]
+                    origin = to_ntp(SERVER_UNIX_MS - 4000) if forge.is_set() else req[40:48]
+                    peer.send(netpeer.eth_frame(
+                        GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_IPV4,
+                        netpeer.ipv4_packet(
+                            PEER_IP, GUEST_IP, netpeer.IP_PROTO_UDP,
+                            netpeer.udp_datagram(PEER_IP, GUEST_IP, 123, sport, ntp_reply(origin)))))
+                except Exception:  # noqa: BLE001,S110 -- a malformed frame is not this test's subject
+                    continue
+
+    thread = threading.Thread(target=responder, daemon=True)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "192.168.77.2" "255.255.255.0" "192.168.77.1")\nexit',
+            r"\[Net\] 192\.168\.77\.2/255\.255\.255\.0", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        thread.start()
+
+        # --- 1 & 2. An honest server: the clock lands on the instant it named ---
+        ok, log = session.send_and_expect("ntp", r"clock set  : 2031-06-15 12:34:5", timeout=15.0)
+        if not ok:
+            return (name, False, f"the clock was not set from the reply: {log[-700:]}")
+        if "stratum 1 (GPS)" not in log:
+            return (name, False, f"stratum/refid not reported: {log[-400:]}")
+
+        req = seen.get("req")
+        sport = seen.get("sport")
+        if not isinstance(req, (bytes, bytearray)) or len(req) < 48:
+            return (name, False, f"never saw a 48-byte request (got {req!r})")
+        if (req[0] & 7) != 3:
+            return (name, False, f"request mode is {req[0] & 7}, not 3 (client)")
+        if ((req[0] >> 3) & 7) != 4:
+            return (name, False, f"request version is {(req[0] >> 3) & 7}, not 4")
+        if req[40:48] == bytes(8):
+            return (name, False, "request carries no transmit timestamp, so no reply could be matched to it")
+        if not isinstance(sport, int) or not (49152 <= sport <= 65535):
+            return (name, False, f"source port {sport} is outside the ephemeral range")
+
+        # The clock is a *state*, so it would read 2031 after a sync that got
+        # the sign of the offset backwards and then corrected itself. Ask the
+        # shell separately, through the path a person would use.
+        ok, log2 = session.send_and_expect("date", r"2031-06-15 .*UTC", timeout=6.0)
+        if not ok:
+            return (name, False, f"`date` does not agree with the sync: {log2[-400:]}")
+
+        # --- 3. A reply that does not echo our request is refused ---
+        forge.set()
+        ok, log = session.send_and_expect(
+            "ntp", r"ntp: the reply was not an answer to our question", timeout=15.0)
+        if not ok:
+            return (name, False,
+                    f"forged origin not refused (requests seen: {seen.get('count')}, "
+                    f"forge={forge.is_set()}): {log[-700:]}")
+
+        return (name, True,
+                "request well-formed from an ephemeral port; clock set to the server's "
+                "instant; forged origin refused")
+    except Exception as exc:  # noqa: BLE001
+        return (name, False, f"exception: {exc}")
+    finally:
+        stop.set()
+        if thread.is_alive():
+            thread.join(timeout=2.0)
+        session.close()
+        peer.close()
+        arch_img.unlink(missing_ok=True)
+
+
 def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R3, plan/phase19_ip_stack_and_ethernet.md: the TCP state machine, driven
     by a client with no stack under it.
@@ -5098,6 +5290,7 @@ def main() -> int:
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_ntp_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
@@ -5132,6 +5325,7 @@ def main() -> int:
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_ntp_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))

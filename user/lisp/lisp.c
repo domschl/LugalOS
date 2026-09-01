@@ -17,6 +17,7 @@
 #include "kernel/device.h"
 #include "net/ip.h"
 #include "net/tcp.h"
+#include "net/ntp.h"
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/klog.h"
@@ -2246,6 +2247,55 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* `(ntp-sync ["server"])` -- R6: set this board's clock from the segment.
+ *
+ * The point of the primitive rather than only the shell command: this is what
+ * a persona runs at boot. `/sd0/system/etc/usr_init.lisp` is already the
+ * place a board's network line lives, and a clock that sets itself belongs on
+ * the line after it.
+ *
+ * With no argument it asks the gateway, like `ntp` does. Returns the offset
+ * in milliseconds as a number -- not #t -- so a script can tell "the clock
+ * was already right" from "the clock was two minutes out", which is the
+ * difference between a healthy board and one whose oscillator or last sync
+ * needs looking at. #f on any failure, never an error: a boot script must not
+ * abort because a time server was switched off.
+ *
+ * There is no retry and no schedule here. Phase 24 owns a clock that keeps
+ * itself disciplined; this sets it once, when asked. */
+static lisp_val_t *prim_ntp_sync(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t server[4];
+
+    if (args && args->type == LISP_PAIR) {
+        if (!ipv4_parse(get_str_val(args->u.pair.car), server)) {
+            cprintf("[NTP] not a dotted quad\n");
+            return &false_val;
+        }
+    } else {
+        const net_state_t *st = net_state();
+        if (!st || !st->configured) {
+            cprintf("[NTP] no address configured\n");
+            return &false_val;
+        }
+        memcpy(server, st->gw, 4);
+        if (!server[0] && !server[1] && !server[2] && !server[3]) {
+            cprintf("[NTP] no gateway to ask, and no server given\n");
+            return &false_val;
+        }
+    }
+
+    ntp_result_t r;
+    int rc = ntp_sync(server, 3000u, &r);
+    if (rc != 0) {
+        cprintf("[NTP] %u.%u.%u.%u: %s\n", server[0], server[1], server[2], server[3],
+                ntp_err_str(rc));
+        return &false_val;
+    }
+    ntp_print_result(&r, true);
+    return make_int((long)r.offset_ms);
+}
+
 /* `(net-status)` -- the same report `net` prints, for a script that wants to
  * see it after configuring. */
 static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
@@ -3045,6 +3095,7 @@ void lisp_init(void) {
     env_set(&global_env, "wlan", make_prim(prim_wlan));
     env_set(&global_env, "wlan-set", make_prim(prim_wlan_set));
     env_set(&global_env, "net-status", make_prim(prim_net_status));
+    env_set(&global_env, "ntp-sync", make_prim(prim_ntp_sync));
     env_set(&global_env, "console-bind", make_prim(prim_console_bind));
     env_set(&global_env, "console-device", make_prim(prim_console_device));
     env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));

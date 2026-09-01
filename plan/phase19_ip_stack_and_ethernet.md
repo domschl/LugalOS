@@ -1,6 +1,8 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0-R3 and R3b done 2026-08-25; R4 (ENC28J60) next, waiting on parts.** Succeeds
+**Status: R0-R3 and R3b done 2026-08-25; R4 (ENC28J60) done 2026-08-31; R5
+(CYW43439) done 2026-09-01. R6 (NTP, optional) and R7 (documentation)
+remain.** Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -1229,6 +1231,77 @@ matters.
 lines and it is the first thing that makes the network useful to a *persona*
 rather than to a host -- the phase 17 clock could set its own time. Marked
 optional so it cannot delay R7.
+
+**Done, 2026-09-01.** `net/ntp.c` + `net/include/net/ntp.h` (an SNTP client,
+RFC 4330), the `ntp [server]` shell command, and the `(ntp-sync ["server"])`
+Lisp primitive so a boot script can use it -- which is the whole point of the
+primitive, since `/sd0/system/etc/usr_init.lisp` is already where a board's
+network line lives and a clock that sets itself belongs on the line after it.
+Six presets build clean, QEMU suite **300/300** (was 298; the new test runs on
+both QEMU targets). Static RAM: **64 bytes**, one struct holding the reply the
+callback stashes for the waiting query.
+
+Four decisions worth recording, three of them about scope:
+
+* **Client only, unicast only, one query.** No poll loop, no clock filter, no
+  frequency discipline, no server selection, no broadcast mode, no
+  authentication. The header says so in the same words, because §7's rule
+  applies to this milestone as much as to the phase: an unstated limit gets
+  credited as a feature. A *server* is phase 24, and the protocol is the small
+  half of that -- what it needs is a continuously disciplined clock.
+
+* **No argument means "ask the gateway".** The one address this board already
+  knows, and on a home segment it is running an NTP server more often than
+  not. A server address is deliberately *not* stored in the identity record:
+  I9 put the address there because an address is a per-board fact, and an
+  NTP server is a per-*site* one. Storing it would have made a per-board
+  `flashfs.uf2` argument apply to something that is not per-board.
+
+* **The first send fails, and that is the normal case.** `net/ip.h` states
+  that a datagram which misses the ARP cache is dropped rather than queued,
+  and that a caller who cares retries. Asking a server for the first time
+  since boot always misses, so the client retries up to four times, 150 ms
+  apart. T1 is taken *inside* that loop: it means "when this request left",
+  and folding an ARP round trip into it would bias the offset by exactly what
+  the retry cost. The QEMU test caught this on its first run, which is what
+  the test was for.
+
+* **The precision field says -10, not -20.** That field describes this
+  board's clock, and `kernel/time.c` keeps milliseconds (`g_base_epoch_ms`).
+  Sending the microsecond figure every other client sends would be a lie in
+  the one field whose entire job is to be honest about the sender. The
+  arithmetic in `net/ntp.c` is written in signed 64-bit milliseconds so that
+  phase 24 widening the clock is a change of unit, not of shape.
+
+*The test is the interesting part.* "NTP Client: Epoch, Fixed Point, And A
+Reply That Lies" makes the host peer into a stratum-1 server that answers with
+an instant years away from the base epoch `kernel/time.c` compiles in. That
+matters: NTP's epoch is 1900 and everything else's is 1970, its timestamps are
+32.32 fixed point, and the offset is a signed difference of four of them --
+every one a place to be wrong by a constant, and a constant error is precisely
+what a test against a *correct* server cannot see, because a clock that is
+already right stays right however wrong the arithmetic is. It also sends one
+reply whose origin timestamp does not echo the request, and requires that to
+be refused: that check plus the random ephemeral source port are the only two
+things standing between this client and an off-path forgery.
+
+Two things found while writing that test, both worth keeping:
+
+* `NetPeer.received()` never forgets a frame, so a responder that re-reads the
+  whole list each pass answers every *previous* request again, and each answer
+  to a now-closed port draws an ICMP unreachable that is itself captured. The
+  list grows quadratically and a pass eventually outlasts the board's own
+  three-second timeout -- a failure that appeared once in ten runs, which is
+  the worst frequency a test can have. The responder walks forward by index.
+
+* **The RP2350 size baselines were already stale before this milestone.**
+  `sizecheck` failed on `rp2350-clock` (+11909 B, all of it
+  `drivers/cyw43_rp2350.c`) and `rp2350-gateway` (+1612 B, all of it
+  `drivers/enc28j60_rp2350.c`) -- R5's and R4's own hardware work, landed
+  without re-baselining, so the check that exists to force a conversation
+  about heap had been failing silently for anyone who ran it. Re-baselined
+  here with those deltas named rather than folded into an NTP commit as if
+  they were its doing. Heap after: 88 pages (chess), 91 (clock), 93 (gateway).
 
 **R7 -- Documentation** (inherits phase 18's N7). README's implementation-status
 section and a networking section that says what the stack does and does not do
