@@ -54,11 +54,41 @@ def parse(line: str) -> dict | None:
         return None
 
 
+def split_by_delay(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Separate the samples whose round trip makes their offset untrustworthy.
+
+    NTP cancels symmetric delay and cannot see asymmetry, so a reply that took
+    `rtt` milliseconds carries up to +/-rtt/2 of unseen error. On a quiet
+    segment that is a millisecond or two; on a WiFi link that has just
+    retransmitted it can exceed the whole quantity being measured. One such
+    sample in the first ten of a real run -- rtt 228 ms against a median of
+    19 -- moved the mean by 17 ms and quadrupled the standard deviation.
+
+    The threshold is three times the median rather than an absolute number, so
+    it adapts to whatever the link actually is instead of encoding this
+    bench's. Both populations are reported: an outlier that is silently
+    dropped is indistinguishable from one that never happened."""
+    if not rows:
+        return [], []
+    rtts = sorted(r["rtt_ms"] for r in rows)
+    median = rtts[len(rtts) // 2]
+    limit = max(3 * median, 10)
+    good = [r for r in rows if r["rtt_ms"] <= limit]
+    bad = [r for r in rows if r["rtt_ms"] > limit]
+    return good, bad
+
+
 def analyse(rows: list[dict]) -> str:
     if len(rows) < 3:
         return f"{len(rows)} samples -- not enough for either result yet."
 
+    rows, slow = split_by_delay(rows)
     out = [f"{len(rows)} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
+    if slow:
+        rtts = sorted(r["rtt_ms"] for r in rows)
+        out.append(f"  ({len(slow)} set aside: round trip over "
+                   f"{max(3 * rtts[len(rtts) // 2], 10)} ms, so the offset is "
+                   f"worth less than the thing being measured)")
 
     # --- the crystal, from the drift of the local clock against the reference.
     # A least-squares slope of offset (ms) against elapsed local seconds; times
@@ -132,9 +162,16 @@ def main() -> int:
                 log.write(line + "\n")
                 rows.append(r)
                 dcf = f"{r['dcf_ms']:+d} ms" if r["dcf_ms"] is not None else "-"
+                gap = ""
+                if len(rows) > 1 and r["seq"] != rows[-2]["seq"] + 1:
+                    # Broadcast is fire-and-forget by design, so a gap is
+                    # expected rather than alarming -- but it should be
+                    # visible, because the board's own accumulators counted
+                    # the sample this listener did not hear.
+                    gap = f"  (seq {rows[-2]['seq'] + 1}..{r['seq'] - 1} not heard)"
                 print(f"[{time.strftime('%H:%M:%S')}] {addr[0]:>15}  seq={r['seq']:<5} "
                       f"t={r['t_s']:<6} off={r['off_ms']:+5d} rtt={r['rtt_ms']:<4} "
-                      f"dcf={dcf:<10} clean={r['clean']}")
+                      f"dcf={dcf:<10} q={r['q'] / 10:.1f} clean={r['clean']}{gap}")
                 if len(rows) % args.every == 0:
                     print("\n" + analyse(rows) + "\n")
     except KeyboardInterrupt:

@@ -39,7 +39,22 @@ typedef struct {
     bool     have_dcf;
     int32_t  dcf_err_ms;     /* the radio's claim minus the reference's truth */
     uint8_t  quality;        /* the decoder's mean score, tenths */
-    uint8_t  clean_run;      /* longest run of aligned seconds, capped at 255 */
+    /* The decoder's longest unbroken run of aligned seconds, capped at 255.
+     *
+     * It answers exactly one question -- "is reception good enough for a
+     * frame to form at all", where the bar is 59 consecutive seconds -- and
+     * it answers it well: on the first good run it climbed 45, 104, 163, 222,
+     * one whole frame's worth per minute with not a bad second between. Then
+     * it pins at 255 and says nothing further, because the underlying counter
+     * is a running maximum that never resets.
+     *
+     * Left as it is on purpose. The field has done its job by the time it
+     * saturates -- from then on the dcf error column is the signal -- and
+     * changing the wire format means fetching a board back from wherever its
+     * reception is, which is a poor trade for a bring-up indicator. **When
+     * P1 reflashes this board anyway, make it frames_accepted instead**: a
+     * count that stays meaningful for the whole run. */
+    uint8_t  clean_run;
 } p0_sample_t;
 
 static struct {
