@@ -259,7 +259,15 @@ class P9FS(Operations):
                 entries = self.sess.listdir(path)
             except p9lib.P9Error as e:
                 raise FuseOSError(errno.ENOENT) from e
-            return [".", ".."] + [e.name for e in entries]
+            # "." and ".." are ours to supply, and exactly once. A board
+            # running fs/9p.c from before the fix that stopped FAT32's own
+            # on-disk "." / ".." entries leaking into a 9P directory read
+            # still sends them, and returning a name twice from readdir()
+            # is a FUSE contract violation, not a cosmetic one -- it showed
+            # up as duplicate rows in `ls -la` of any subdirectory. Filter
+            # them out of whatever the server said rather than trusting it.
+            return [".", ".."] + [e.name for e in entries
+                                  if e.name not in (".", "..")]
 
     def statfs(self, path):
         # No real block/inode accounting to report (FAT32 free-space isn't

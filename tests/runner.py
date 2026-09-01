@@ -4182,6 +4182,24 @@ def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tu
                 if nested != b"nested\n":
                     return (name, False, f"nested write/read mismatch: {nested!r}")
 
+                # FAT32 keeps "." and ".." as real on-disk entries in every
+                # subdirectory (never in a volume root, which is why /sd0
+                # above shows no sign of this), and fs/9p.c used to stream
+                # them straight onto the wire. A 9P2000 directory read
+                # carries contents only -- the parent is reached by walking
+                # the name "..", not by finding it in a listing -- so this
+                # made every client's tree walk self-referential: fuse-p9
+                # showed "." and ".." twice in `ls -la` of any subdirectory
+                # (once from here, once from the pair FUSE adds itself), and
+                # a recursive p9lib walk would never terminate. Found by
+                # mounting a real board over TCP, 2026-09-01.
+                sub = [e.name for e in sess.listdir("/sd0/host_test_dir")]
+                if "." in sub or ".." in sub:
+                    return (name, False,
+                             f"subdirectory listing leaks FAT32's own dot entries: {sub}")
+                if "NESTED.TXT" not in sub:
+                    return (name, False, f"subdirectory listing lost its real entry: {sub}")
+
                 sess.remove("/sd0/host_test_dir/nested.txt")
                 sess.remove("/sd0/host_test_dir")
                 sess.remove("/sd0/host_test.txt")

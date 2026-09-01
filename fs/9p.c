@@ -1133,6 +1133,25 @@ static int p9_read_dir_stream(p9_fid_entry_t *e, uint64_t offset, uint32_t cap, 
         vfs_stat_t st;
         if (vfs_readdir(dfd, e->dir_read_index, name, sizeof(name), &st) != 0) break;
 
+        /* FAT32 stores "." and ".." as real on-disk entries in every
+         * subdirectory (not in a volume root), and vfs_readdir() reports
+         * them faithfully -- which is right for the shell's own `ls`, but
+         * wrong on the wire: a 9P2000 directory read carries a directory's
+         * *contents*, and a client reaches the parent by walking the name
+         * "..", never by finding it in a listing. Leaking them made every
+         * 9P client's tree walk self-referential (fuse-p9's `ls -la` showed
+         * "." and ".." twice, once from the server and once from the pair
+         * FUSE prepends itself; a recursive p9lib walk would never
+         * terminate). Skipped here rather than in vfs_readdir() so the
+         * console `ls` keeps showing what is actually on the card, and
+         * skipped rather than stopped -- the cursor still has to advance
+         * past them to reach the entries behind. Both names stay walkable;
+         * only the listing drops them. */
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            e->dir_read_index++;
+            continue;
+        }
+
         char childpath[128];
         p9_path_join(childpath, sizeof(childpath), e->path, name);
         p9_qid_t q = { .type = st.is_dir ? P9_QTDIR : P9_QTFILE, .vers = 0, .path = p9_path_hash(childpath) };
