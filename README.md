@@ -186,7 +186,7 @@ silicon):
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
 * **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 253 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 24 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 * **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
-* **FUSE Filesystem (`host/fuse-p9`)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos`. Verified on Linux; macOS (via macFUSE) is written and reaches the same code path, but is untested end-to-end — see [`host/fuse-p9/README.md`](host/fuse-p9/README.md) for why (Apple Silicon's default security policy blocks third-party system extensions short of a Recovery Mode trip, which is the user's call, not ours to push).
+* **FUSE Filesystem (`host/fuse-p9`)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. Over USB with `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos`, or over the network with `--tcp <addr>` against either a WiFi or a wired-Ethernet board (see [Mount the whole namespace on the host](#5-mount-the-whole-namespace-on-the-host-fuse-p9-over-tcp)). Verified on Linux, over TCP against a Pico 2 W on WiFi; macOS (via macFUSE) is written and reaches the same code path, but is untested end-to-end — see [`host/fuse-p9/README.md`](host/fuse-p9/README.md) for why (Apple Silicon's default security policy blocks third-party system extensions short of a Recovery Mode trip, which is the user's call, not ours to push).
 
 ---
 
@@ -624,6 +624,50 @@ $ cd tests/hw && uv run test_wifi.py 192.168.178.21
 `tests/hw/test_wifi.py` talks to the board only over the network — no serial interaction — so a
 pass means the radio path worked, not that a console cable did. Add `--soak-minutes 15` for the
 sustained run.
+
+### 5. Mount the whole namespace on the host (`fuse-p9` over TCP)
+
+Once the board is listening, `host/fuse-p9` turns its entire 9P namespace into an ordinary
+directory on a Linux host — the same tool that mounts a board over USB, pointed at an address
+instead of a serial port. **The transport below it makes no difference:** WiFi (`rp2350-wifi`)
+and wired Ethernet (`rp2350-gateway`'s ENC28J60) present the same `netif_t` to the same IP
+stack, TCP and 9P server, so the command is identical apart from the address.
+
+```bash
+$ cd host/fuse-p9 && uv sync          # once; Linux also needs libfuse (fuse2 or fuse3)
+$ mkdir -p /tmp/lugalos
+$ printf '000102030405060708090a0b0c0d0e0f' > ~/.lugal9p.key && chmod 600 ~/.lugal9p.key
+
+# over WiFi (the address from step 3):
+$ uv run lugal9pfuse --key-file ~/.lugal9p.key --tcp 192.168.178.21 /tmp/lugalos
+
+# over Ethernet, the gateway persona — same command, different address:
+$ uv run lugal9pfuse --key-file ~/.lugal9p.key --tcp 192.168.77.2 /tmp/lugalos
+```
+
+`--tcp` takes `HOST` or `HOST:PORT` (564 by default). Use `--key-file` rather than `--key`: a
+FUSE mount lives for as long as it is mounted, and a secret on the command line is visible in
+`ps` and in shell history for that whole time. Drop both flags for a link that has no key
+installed. `lugal9pfuse` runs in the foreground; unmount with `fusermount -u /tmp/lugalos` from
+another shell, or Ctrl-C it.
+
+```bash
+$ ls /tmp/lugalos                       # dev  flash0  proc  sd0  srv
+$ cat /tmp/lugalos/proc/net             # the board's own view of the link it is answering on
+$ cp ~/notes.txt /tmp/lugalos/sd0/      # ordinary tools, unmodified
+$ find /tmp/lugalos -type f | wc -l
+```
+
+Reads, writes, `mkdir`/`rm`/`rmdir`, arbitrary offsets and the write-temp-then-rename save that
+editors use all work; a *directory* rename is refused (`ENOSYS`), and permissions and timestamps
+are accepted but not stored, because the server has no model for either. Files are buffered
+whole in host RAM between open and close, which is fine for what these cards hold and is not a
+design for anything larger. `host/fuse-p9/README.md` has the complete list, including what was
+measured over the radio (~20 KB/s for a 32 KB file, four concurrent readers, 0 TCP resets) and
+the 9P server bug this tool found the first time it was run over TCP.
+
+macOS is a different story, and not because of anything in this code — see
+[`host/fuse-p9/README.md`](host/fuse-p9/README.md).
 
 ---
 

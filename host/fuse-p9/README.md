@@ -6,7 +6,8 @@ directory on the host, via FUSE. Built directly on
 [`host/p9lib`](../p9lib/README.md) -- no separate protocol implementation,
 just a `fusepy` `Operations` class wrapping a single `p9lib.Session`.
 
-Linux is where this is verified end to end. macOS support (via macFUSE)
+Linux is where this is verified end to end -- over TCP, against a Pico 2 W
+on WiFi, on 2026-09-01 (see "Verified" below). macOS support (via macFUSE)
 is written -- `fusepy` is the same package on both, the code has no
 Linux-specific assumptions left in it -- but is **untested past the mount
 call itself**: on Apple Silicon under macOS's default "Full Security" boot
@@ -75,10 +76,37 @@ fusermount -u /tmp/lugalos   # Linux; macOS: umount /tmp/lugalos
 # or Ctrl-C the lugal9pfuse process
 ```
 
+### Over the network, instead of a cable
+
+A board that is on an IP network -- WiFi (`rp2350-wifi`) or wired Ethernet
+(`rp2350-gateway`'s ENC28J60) -- is mounted with `--tcp` instead of
+`--serial`. The two are the same command apart from the address: both
+personas present the same `netif_t` to the same IP stack, TCP and 9P
+server, so nothing above the driver knows which one it is talking to.
+
+```bash
+# a network link requires 9P authentication -- see the root README's
+# "Serve 9P over the air"; the board needs `p9key <hex>` and `net listen 564`
+printf '000102030405060708090a0b0c0d0e0f' > ~/.lugal9p.key && chmod 600 ~/.lugal9p.key
+
+uv run lugal9pfuse --key-file ~/.lugal9p.key --tcp 192.168.178.21 /tmp/lugalos  # WiFi
+uv run lugal9pfuse --key-file ~/.lugal9p.key --tcp 192.168.77.2  /tmp/lugalos   # Ethernet
+```
+
+`--tcp` takes `HOST` or `HOST:PORT`, port 564 by default. Prefer
+`--key-file` over `--key`: a mount lives until it is unmounted, and a
+secret passed on the command line is visible in `ps` and in shell history
+for that entire time. Omit both on a link with no key installed.
+
 Against QEMU instead of real hardware, use `--unix <chardev socket path>` in
 place of `--serial` (see `tests/runner.py`'s `-chardev socket,...`
 invocations), and `--framing slip` for a UART link instead of
-virtio-console/USB-CDC's own framing (the default, `raw`).
+virtio-console/USB-CDC's own framing (the default, `raw`). `--tcp` works
+against QEMU too, through slirp's `hostfwd` -- wire it the way
+`tests/runner.py`'s `test_9p_over_tcp` does
+(`-netdev user,id=n0,hostfwd=tcp:127.0.0.1:<port>-10.0.2.15:564`), then
+mount `127.0.0.1:<port>`. Checked on rv32, so a full mount can be
+exercised with no hardware at all.
 
 `lugal9pfuse` runs in the foreground and blocks until unmounted.
 
@@ -90,10 +118,15 @@ writes/truncation within a single open/write/close cycle. Ordinary tools
 (`cat`, `cp`, `ls`, editors, `find`) work unmodified against the mount.
 
 **Doesn't, deliberately:**
-- **Rename** (`mv`) -- fs/9p.c has no `Twstat` handler to call. Emulating a
-  rename as copy+delete would silently turn a real directory move into
-  something that behaves very differently (and can partially fail), so
-  this is refused outright (`ENOSYS`) rather than faked.
+- **Directory rename** (`mv` of a directory) -- fs/9p.c has no `Twstat`
+  handler, so there is no server-side rename to call. Faking one by
+  recursively copying a whole tree over 9P and then removing the original
+  is slow, easy to get subtly wrong, and a directory move is a rare,
+  deliberate act, so it is refused (`ENOSYS`) rather than emulated.
+  **File** rename *is* emulated (read, write to the new name, remove the
+  old) -- not optional, because write-temp-then-rename is the automatic
+  save strategy of nearly every real editor, and refusing it silently
+  broke every one of them. See `operations.py`'s `rename()`.
 - **Permissions and timestamps** -- the server has no permission model and
   no wall clock (`Stat.mtime`/`atime` are always 0 on the wire).
   `chmod`/`chown`/`utimens` are accepted as silent no-ops (so `cp -p` and
@@ -106,16 +139,70 @@ walkable if nothing is currently bound there -- that shows up as a `?????`
 row in `ls -la` for that one name, exactly reflecting what the 9P server
 itself says.
 
-## Design: one shared Session, single-threaded
+## Verified
 
-`P9FS` (`src/fuse_p9/operations.py`) wraps exactly one `p9lib.Session`,
-and `cli.py` runs `FUSE(..., nothreads=True)` -- libfuse dispatches one
-operation at a time, so the Session (which itself only ever uses two fids,
-matching the server's small `P9_MAX_FIDS = 8`) never needs its own
-locking. This is a deliberate simplicity choice for a first version, not
-an oversight: giving each mount a richer fid pool for real concurrent
-access is future work if it's ever needed, not something to build in from
-the start.
+Over TCP, on Linux, against a Pico 2 W on WiFi (`rp2350-wifi`) with an SD
+card, 2026-09-01 -- the first end-to-end run of this tool, since the
+machine it was written on could not activate macFUSE (see above). The
+board was at `192.168.178.21:564` with an authenticated link; every check
+below went over the air, not down a cable:
+
+- mount and unmount, clean both ways -- `fusermount -u`, empty log, process
+  exits on its own
+- `ls` of the whole namespace; `/proc` (12 synthetic files), `/flash0`
+  (read-only), `/sd0`, `/dev`; `/srv` shows the documented `?????` row
+- `find` across the entire mount, no errors -- 32 files that are always
+  there (`/dev` 4, `/flash0` 16, `/proc` 12) plus whatever the card holds
+- a 32 KB file copied onto `/sd0` and read back SHA-256-identical
+  (~20 KB/s over the radio -- 1.5-1.6 s for the 32 KB, across two runs)
+- `mkdir`, cross-volume `cp` (`/flash0` -> `/sd0`) byte-identical, `rm`,
+  `rmdir`
+- arbitrary-offset write inside one open/write/close cycle
+- the editor save pattern (write temp, rename over the target) -- works;
+  a *directory* rename is refused with `ENOSYS`, as intended
+- a write to read-only `/flash0` fails, as it should
+- four concurrent reader threads, twenty round trips, no errors -- the
+  lock described below doing its job
+- board-side counters afterwards: 960 KB tx, 236 KB rx, 0 resets
+
+**It found one bug, server-side:** FAT32 keeps `.` and `..` as real on-disk
+entries in every subdirectory, and `fs/9p.c`'s `p9_read_dir_stream()`
+streamed them onto the wire. A 9P2000 directory read carries contents only
+-- a client reaches the parent by *walking* the name `..`, never by finding
+it in a listing -- so this made every 9P client's tree walk
+self-referential: `ls -la` of any subdirectory showed `.` and `..` twice
+(once from the server, once from the pair FUSE prepends itself), and a
+recursive `p9lib` walk would not have terminated. Fixed in `fs/9p.c`, with
+a regression check in `tests/runner.py`'s `test_9p_crud_via_p9lib`;
+`readdir()` here also filters the pair defensively, so a board running
+older firmware still lists correctly.
+
+The fixed firmware was then flashed to the same board and the whole run
+repeated. The server was checked *directly*, through `p9lib` with no FUSE
+in the path, so the defensive filter above could not mask a regression:
+every subdirectory on both volumes now lists its contents only (an empty
+one returns `[]`, where it used to return `['.', '..']`), while `.` and
+`..` stay fully walkable -- `stat` on both, and a read through
+`DEEPER/../inner.txt`. The mount was then run once more with the
+defensive filter temporarily backed out, confirming the server fix alone
+is sufficient: one `.` and one `..` per directory, across five nested
+directories on both volumes.
+
+## Design: one shared Session, one lock
+
+`P9FS` (`src/fuse_p9/operations.py`) wraps exactly one `p9lib.Session` --
+which itself only ever uses two fids, matching the server's small
+`P9_MAX_FIDS = 8` -- and guards every use of it with a single lock.
+
+`cli.py` deliberately does *not* pass `nothreads=True`. An earlier version
+did, on the reasoning that single-threaded dispatch makes the lock
+unnecessary; that turned out to be a stability bug rather than a saved
+lock, because libfuse then serialises the whole mount behind whichever
+operation is in flight, and one slow but perfectly legitimate real-hardware
+request (`/proc/df`'s FAT-table scan took 7-13 s on real cards) froze
+everything else using the mount for its full duration. So: threads from
+libfuse, one lock here, one Session on the wire. Four concurrent readers
+were exercised against real hardware, see "Verified" above.
 
 Reads and writes are whole-file, buffered in memory between `open()`/
 `create()` and `release()`: correct for arbitrary offsets, but means a

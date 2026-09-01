@@ -1036,6 +1036,80 @@ with `import machine; machine.bootloader()` from the REPL, then reflash.
 Worth doing early next time a driver looks unexplainable -- it converts
 "is it me or the board?" into a fact in about two minutes.
 
+**`fuse-p9` over TCP verified, 2026-09-01 -- the piece R4 had to leave
+unproven.** R4 closed with `fuse_mount` untested because macFUSE could not
+be activated on that machine (see R4's note above); on Linux there is no
+such gate, and it has now been run end to end against this R5 board over
+WiFi -- mount and clean unmount, `find` across the whole namespace (the 32
+files that are always there -- `/dev` 4, `/flash0` 16, `/proc` 12 -- plus
+the card's own), a 32 KB file copied to `/sd0` and read back SHA-256-identical at
+~20 KB/s, cross-volume `cp`, `mkdir`/`rm`/`rmdir`, an arbitrary-offset
+write, the write-temp-then-rename editor save, a refused write to
+read-only `/flash0`, a refused *directory* rename, and four concurrent
+reader threads with no errors. 960 KB tx / 236 KB rx over the air,
+0 TCP resets. Full list in `host/fuse-p9/README.md`'s new "Verified"
+section.
+
+It found a real bug, and not in the transport: **FAT32 keeps `.` and `..`
+as genuine on-disk entries in every subdirectory, and
+`p9_read_dir_stream()` streamed them onto the wire.** A 9P2000 directory
+read carries a directory's *contents* -- a client reaches the parent by
+walking the name `..`, never by finding it in a listing -- so every 9P
+client's tree walk was self-referential: `ls -la` of any subdirectory
+showed `.` and `..` twice (once from the server, once from the pair FUSE
+prepends itself), and a recursive `p9lib` walk would never have
+terminated. It went unnoticed for so long because volume *roots* have no
+such entries on FAT32, and every 9P test until now listed only roots.
+Filtered in `fs/9p.c` rather than in `vfs_readdir()`, so the console `ls`
+still shows what is actually on the card, and both names stay walkable --
+only the listing drops them. Regression check in `tests/runner.py`'s
+`test_9p_crud_via_p9lib`, which already had a subdirectory to hand;
+`fuse-p9`'s own `readdir()` filters the pair defensively too, so an older
+board still lists correctly.
+
+**Confirmed on hardware after reflashing** (build `337.f17e9300+` -- that
+is `f17e930` plus what was then still a working-tree change, committed
+afterwards as `f6c478a`), not only in QEMU. Checked against the server *directly* through `p9lib`, with no FUSE
+in the path, so the client's defensive filter could not mask a regression:
+every subdirectory on both volumes lists its contents only (an empty one
+now returns `[]` where it returned `['.', '..']`), and both names remain
+walkable -- `stat` on each, plus a read through `DEEPER/../inner.txt` and a
+listing through `..`. Then the mount was run once more with the defensive
+filter temporarily backed out, which is what actually proves the server
+fix stands on its own: one `.` and one `..` per directory across five
+nested directories. The rest of the battery was repeated on the new
+firmware too -- ping 10/10, 32 KB SHA-256-identical, offsets, the editor
+save, both refusals, four concurrent readers -- all clean.
+
+Three stale claims in `host/fuse-p9/README.md` were corrected in the same
+pass, each contradicted by the code it described: rename is *not* refused
+outright (files are emulated, only directories refuse), the mount is no
+longer `nothreads=True` (that was a stability bug -- one slow `/proc/df`
+froze the whole mount -- so it is threads-plus-a-lock now), and Linux
+"verified end to end" is finally true rather than aspirational.
+
+**The fifteen-minute idle soak, done 2026-09-01 -- R5's last open verify
+item.** By R4's method, so the two are comparable: left genuinely idle for
+the full window (no console commands, no traffic from this host, nothing
+but ordinary background LAN broadcast reaching the radio). Ping was 20/20
+at 0% loss both before and after; the link was still up, still listening,
+**0 TCP resets**, and a 9P session opened straight afterwards without
+coaxing. In that window the board absorbed ~1,750 unsolicited frames
+(1,093 ARP among them) and classified every one correctly -- the growth is
+all in `not-for-us` (54 -> 157) and `no-port` (1 -> 4, background UDP to
+unbound ports), with `checksum`, `fragment` and `no-route` still at zero
+and `short` unchanged at 4. `wifi stats` afterwards: **rx ring high-water
+1, 0 drops** -- independent corroboration of the correction recorded above,
+that the ring is insurance against the ioctl-wait case rather than
+something the ordinary path leans on.
+
+**R5 done, 2026-09-01.** Every verify item in R5's statement is now
+answered by a measurement: joins a real AP (WPA2, derived PSK), answers a
+ping, completes an authenticated 9P session over TCP, survives the
+fifteen-minute idle soak, and the blob accounting paragraph is in the
+README. The host-side tooling that consumes it -- `lugal9p` and
+`fuse-p9 --tcp` -- is verified against this board too.
+
 **R6 -- optional: an NTP client.** UDP is already there from R2; NTP is ~150
 lines and it is the first thing that makes the network useful to a *persona*
 rather than to a host -- the phase 17 clock could set its own time. Marked
