@@ -52,7 +52,7 @@ typedef int (*rom_reboot_fn)(uint32_t flags, uint32_t delay_ms,
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 
-static void *rom_func_lookup(uint32_t code) {
+void *rp2350_rom_func_lookup(uint32_t code) {
     rom_table_lookup_fn lookup =
         (rom_table_lookup_fn)(uintptr_t)*(volatile uint16_t *)BOOTROM_TABLE_LOOKUP_ENTRY_OFFSET;
     if (!lookup) return 0;
@@ -60,7 +60,7 @@ static void *rom_func_lookup(uint32_t code) {
 }
 
 bool rp2350_reboot_to_bootsel(void) {
-    rom_reboot_fn reboot = (rom_reboot_fn)rom_func_lookup(ROM_FUNC_REBOOT);
+    rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
     if (!reboot) return false;
 
     /* Arguments mirror the SDK's own rom_reset_usb_boot() fallback:
@@ -76,7 +76,7 @@ bool rp2350_reboot_to_bootsel(void) {
 }
 
 bool rp2350_reboot(void) {
-    rom_reboot_fn reboot = (rom_reboot_fn)rom_func_lookup(ROM_FUNC_REBOOT);
+    rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
     if (!reboot) return false;
 
     /* The same bootrom entry point as the BOOTSEL path above, with the normal
@@ -103,6 +103,11 @@ bool rp2350_reboot_to_bootsel(void) {
 
 bool rp2350_reboot(void) {
     return false; /* likewise: nothing to ask for a reset here */
+}
+
+void *rp2350_rom_func_lookup(uint32_t code) {
+    (void)code;
+    return 0; /* no bootrom on the QEMU targets */
 }
 
 #endif

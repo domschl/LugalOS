@@ -43,6 +43,44 @@ every polling wait should consult the same shared check applies here).
 
 ---
 
+## `wifi join` reports success when the PSK is wrong
+
+**Trigger:** `wifi join` (either form) with a PSK that is not the network's.
+The driver prints `cyw43: joined, bssid ...` and `wifi: joined`, and
+`net` shows `link up` -- while nothing works: `rx 0 frames`, no ARP, and the
+host cannot ping the board. Found 2026-09-01 while verifying I7b's stored
+credentials with a deliberately fake all-zero PSK, which "joined".
+
+**Root cause, and it is a design gap rather than a slip.**
+`cyw43_join_wpa2()` decides it has associated when the firmware returns a
+non-zero BSSID from `IOCTL_CMD_GET_BSSID`. Its comment says "we have a BSSID
+is not a guess" -- but a BSSID appears at **802.11 association**, which
+happens *before* and independently of the WPA2 four-way EAPOL handshake. With
+a wrong PSK the association succeeds, the handshake fails, and the BSSID is
+briefly real. So the check is answering an earlier question than the one it
+is being asked.
+
+R5 anticipated the shape of this without noticing the consequence: it set the
+firmware's event mask to "none" because "association state is polled rather
+than decoded" (plan/phase19_ip_stack_and_ethernet.md, R5). Polling is what
+makes this reachable.
+
+**Why it is parked:** the honest fix is to decode the firmware's own link
+events (`WLC_E_PSK_SUP` / `WLC_E_LINK`) rather than infer carrier from a
+BSSID, which means turning the event channel back on and demultiplexing it --
+exactly the work R5 deferred, and a milestone rather than a patch. A cheap
+improvement worth considering first: after a BSSID appears, keep polling for
+a second or so and require it to *persist*, since a failed handshake is
+followed by a deauth. That is a heuristic, and should be labelled one.
+
+**Impact:** `wifi join` cannot be trusted to report failure, so a wrong or
+stale stored credential looks like a working network until the first packet
+does not arrive. `net`'s frame counters are the reliable signal today --
+a genuine association starts absorbing background LAN broadcast within
+seconds.
+
+---
+
 ## No identity store on RP2350, so `wifi join` needs its credentials typed
 
 **Trigger:** `wifi join` with no arguments on a real RP2350 board. It
@@ -56,13 +94,11 @@ would blur two pieces of work. `wifi join <ssid> <psk-hex>` covers the gap
 meanwhile, and takes the derived PSK rather than a passphrase, so the
 credential rule (I6) still holds.
 
-**Fix, when it is worth it:** implement I7b (the identity backend), which
-now follows I7a (the three-segment flash layout) -- see
-plan/phase21_identity_and_authentication.md §3.3, amended 2026-09-01.
-Everything above it already exists -- the record format, the toolset,
-`node_wlan_ssid()` and `node_wlan_psk()` all work today against a virtio
-device. `wifi join` with no arguments reading its credentials from the
-record is named in I7b's own verify list, so this entry closes with it.
+**CLOSED 2026-09-01 by I7b.** `identity_store_device()` is implemented on
+RP2350 (OTP CHIPID for the uid, the reserved flash sector for the record),
+and `wifi join` with no arguments reads its SSID and PSK from the record --
+`cyw43: joining "DOSC"...` with nothing typed. See
+plan/phase21_identity_and_authentication.md's I7b entry.
 
 ---
 

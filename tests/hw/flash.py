@@ -156,6 +156,28 @@ def main() -> int:
     print(f"[*] Image: {uf2} ({uf2.stat().st_size} bytes)")
 
     vol = bootsel_volumes()
+    if not vol:
+        # A board already sitting in BOOTSEL that nothing has mounted. The
+        # same recovery already existed further down, but only *after* a
+        # 1200-baud touch -- so this case fell through to the console path
+        # and was reported as "no BOOTSEL volume mounted", which is the one
+        # thing it demonstrably was not (/dev/disk/by-label/RP2350 is right
+        # there).
+        #
+        # It matters most in exactly the situation the manual button exists
+        # for: recovering a board whose firmware is wedged, where the touch
+        # cannot work and a human has already held BOOTSEL. Telling them to
+        # go and do the thing they just did is the least useful answer
+        # available. Hit while recovering from I7b's first flash write,
+        # 2026-09-01.
+        dev = bootsel_block_device()
+        if dev:
+            print(f"[*] Board is in BOOTSEL ({dev}) but nothing mounted it")
+            mounted = try_mount(dev)
+            if mounted:
+                print(f"[*] Mounted at {mounted}")
+                time.sleep(0.7)  # let the mount settle before writing
+                vol = [mounted]
     if vol:
         print(f"[*] Board is already in BOOTSEL ({vol[0]}) -- skipping the touch")
         vol = vol[0]

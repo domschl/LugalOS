@@ -22,4 +22,20 @@ bool rp2350_reboot_to_bootsel(void);
  * bootrom function could not be found, or on a non-RP2350 build. */
 bool rp2350_reboot(void);
 
+/* Looks up a bootrom function by its two-character ROM table code (e.g.
+ * ROM_TABLE_CODE('R','E') for flash_range_erase). Returns NULL if this build
+ * has no bootrom or the code is not present on this silicon.
+ *
+ * Exported so drivers/flash_rp2350.c can reuse the RISC-V lookup rather than
+ * copy it: the sequence is subtle in a way that is easy to get almost right
+ * (the table entry *is* executable code on RISC-V, so the entry offset and
+ * the RT_FLAG_FUNC_RISCV flag both differ from the Arm path), and it has
+ * already been debugged once on real silicon. See bootrom.c for the details.
+ *
+ * Callers that will disable XIP must resolve every function they need
+ * *before* doing so -- the lookup itself is safe (the ROM is not flash), but
+ * resolving inside the critical section means more code that has to be
+ * RAM-resident for no benefit. */
+void *rp2350_rom_func_lookup(uint32_t code);
+
 #endif /* LUGALOS_ARCH_RP2350_BOOTROM_H */

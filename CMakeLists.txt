@@ -607,6 +607,13 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         )
         list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c)
     endif()
+    # I7b (plan/phase21_identity_and_authentication.md): the identity store's
+    # RP2350 backend -- OTP CHIPID for the UID, the reserved flash sector for
+    # the record, and the bootrom write path underneath it. The QEMU analogue
+    # is drivers/virtio_blk_id.c in the branch below; exactly one of the two
+    # is ever built, which is what lets both define identity_store_device()
+    # strongly over kernel/identity.c's weak default.
+    list(APPEND SOURCES drivers/flash_rp2350.c drivers/idstore_rp2350.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -739,6 +746,24 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         -Wl,--defsym=__identity_base=${LUGALOS_IDENTITY_BASE}
         -Wl,--defsym=__identity_size=${LUGALOS_IDENTITY_SIZE})
     target_link_options(lugalos.elf PRIVATE ${LUGALOS_FLASH_MAP_DEFSYMS})
+    # I7b: .ramfunc puts executable code inside .data (see linker/rp2350.ld for
+    # why it lives there), so that PT_LOAD is genuinely RWX and ld says so.
+    #
+    # This is NOT the same situation as the one linker/rp2350.ld annotates
+    # `.binary_info (READONLY)` to fix. There, the W was an accident of how GCC
+    # emits an explicitly-sectioned const, and taking it back out made the
+    # image honest. Here both flags are intended and neither can be dropped:
+    # the code is loaded into RAM at boot (so the segment must be writable) and
+    # then executed from RAM while flash is unreadable (so it must be
+    # executable). On a NOMMU M-mode target whose MEMORY block already declares
+    # RAM as `rwx`, an RWX segment is an accurate description rather than a
+    # defect. The Pico SDK passes this same flag for the same reason
+    # (pico_standard_link/CMakeLists.txt's RWX_WARNING).
+    #
+    # The cost, stated so it is a decision and not a habit: a *future*
+    # accidental RWX segment on this target will no longer be reported. Scoped
+    # to this one link for that reason.
+    target_link_options(lugalos.elf PRIVATE -Wl,--no-warn-rwx-segments)
     # The filesystem image is no longer a source file, so only an explicit
     # dependency builds it -- and it has to exist before the POST_BUILD step
     # below turns it into flashfs.uf2.

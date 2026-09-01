@@ -178,6 +178,34 @@ SECTIONS
         _data_start = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
+        /* Code that must not be executing from flash while flash is being
+         * written (I7b, plan/phase21_identity_and_authentication.md §3.2).
+         *
+         * Inside .data rather than in a section of its own, for two reasons
+         * that both turned out to matter. It is already copied to RAM by
+         * _reset_handler's walk of boot_header.S's address_mapping_table, so
+         * there is no second copy-table entry to forget -- a separate section
+         * would have placed the symbols correctly and left the bytes
+         * uncopied, which executes whatever SRAM happened to hold. And a
+         * separate *executable* output section next to this writable one made
+         * ld union them into a single RWX PT_LOAD and say so, the same
+         * complaint .binary_info above is annotated READONLY to avoid.
+         *
+         * NOT `.scratch_x`, which earlier drafts of the plan assumed: phase 15
+         * §1.2 gave both scratch banks to the page allocator and the ASSERT
+         * below still forbids placing there. It would also have cost 8 KB of
+         * heap rather than this code's actual size, since the heap is one
+         * contiguous range and excluding SCRATCH_X strands SCRATCH_Y above it.
+         * Here the code sits inside the kernel's own RAM footprint, below
+         * _kernel_end, so the heap simply starts after it. Main SRAM is what
+         * the Pico SDK uses for the same job (`__no_inline_not_in_flash_func`
+         * lands in ordinary RAM, not scratch), so nothing bank-specific is
+         * being relied on. */
+        . = ALIGN(4);
+        __ramfunc_start = .;
+        *(.ramfunc .ramfunc.*)
+        . = ALIGN(4);
+        __ramfunc_end = .;
         . = ALIGN(4);
         __data_end = .;
         _data_end = .;

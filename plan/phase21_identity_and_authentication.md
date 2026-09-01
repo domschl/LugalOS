@@ -1,7 +1,8 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 re-scoped
-and I7a complete 2026-09-01 (§3.3); I7b is all that remains.** Independent of the phase it
+**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7a and I7b
+complete 2026-09-01 (§3.3); the phase is done bar two hardware verify
+items named in I7b.** Independent of the phase it
 grew out of.
 
 **Amended 2026-09-01, before starting I7, in response to a design review that
@@ -810,11 +811,12 @@ when a segment is made to overflow its region.
 has the 4 KB test pattern (`0x5A5A0000 | i`) sitting at
 `LUGALOS_IDENTITY_BASE`, deliberately left there as standing evidence that
 an OS reflash does not touch it. That sector is therefore *not* erased flash
-on this board, and `idstore_read()` will find a header whose magic does not
-match -- which should come back as `IDSTORE_CORRUPT`, not `UNPROVISIONED`.
-That is arguably the more useful of the two states to meet first, since it
-exercises the refusal path, but it is only correct if the magic check
-precedes the CRC. Erase the sector to test the unprovisioned path.
+on this board. **Measured in I7b, and not what this paragraph first
+predicted:** `idstore_read()` reports `IDSTORE_UNPROVISIONED`, not
+`IDSTORE_CORRUPT`. §4 reserves CORRUPT for *magic present, CRC wrong*, and a
+sector whose magic does not match is simply "nothing here" regardless of what
+it contains. That is the right split -- CORRUPT should mean "this was a
+record and something happened to it", which a foreign pattern never was.
 
 `cmake/flash_layout.cmake` is the single definition of the map, reaching the
 compiler as definitions and the linker as `--defsym`. Both RP2350 images link
@@ -862,6 +864,78 @@ version's second "concrete unknown" -- whether a UF2 reflash preserves blocks
 it does not contain. That is no longer the premise the design rests on; I7a's
 own verify list measures the narrower, answerable question of whether a
 segment's flash erases past its boundary.
+
+**I7b done, 2026-09-01.** `identity_store_device()` is filled in and the
+board keeps its identity across reflashes.
+
+* **OTP works, and `board_unique_id()` returns true on hardware for the first
+  time**: `uid: 413ed1010581b362 (silicon)`, where every board previously fell
+  back to the build seed. The guarded OTP window is indexed as
+  `uint16_t[row]`, taken from the SDK's own use of it
+  (`hardware_powman/powman.c` reads LPOSC_CALIB that way) rather than inferred
+  from the datasheet's register tables, because a wrong stride there yields
+  plausible garbage rather than a fault. All-zero or all-ones across the four
+  CHIPID rows is treated as a failed read, so a batch of parts can never all
+  claim the same "unique" id -- it falls back to the derived floor instead.
+  **This changes the node name**: `rp2350-wifi-4941` (build seed) became
+  `rp2350-wifi-90f9` (silicon), and the name is the 9P uname.
+* **A provisioned identity survives a reflash** -- verified across two full
+  OS reflashes, `name source: record` each time. I7a made that structural;
+  this is the measurement on top of it.
+* **The write path works**: `identity provision`, `identity key --generate`
+  and `wlan <ssid> <psk>` all land in flash and read back after a reboot
+  (`key fingerprint: f778e265c553c8f3`).
+* **`wifi join` with no arguments reads its credentials from the record** --
+  `cyw43: joining "DOSC"...` with nothing typed. That is what
+  plan/open_issues.md's standing entry was waiting for.
+
+**Where the RAM-resident code lives, and what it cost.** Not `.scratch_x`
+(phase 15 owns those banks) and not a section of its own either: `*(.ramfunc)`
+is collected *inside* `.data`. A separate section would have needed its own
+entry in boot_header.S's `address_mapping_table` -- placing the symbols
+correctly while leaving the bytes uncopied, which executes whatever SRAM held
+-- and, being executable next to a writable section, made `ld` union them into
+a single RWX `PT_LOAD` and say so. Inside `.data` it is copied by the existing
+walk and costs its own size and nothing else. The RWX warning that remains is
+suppressed at this one link with the reasoning recorded in CMakeLists.txt:
+unlike the `.binary_info` case the linker script fixes properly, here both
+flags are intended and neither can be dropped.
+
+**The first write on hardware wrote its record perfectly and hung the
+board.** Worth recording in full, because the symptom pointed at the wrong
+component. `identity provision` went silent and needed a physical BOOTSEL --
+but the next boot reported `name source: record`, so the flash write, the
+verify and the sector had all been fine. The casualty was the USB console:
+erase-plus-program takes ~100 ms with interrupts off, and this board's CDC is
+serviced by a task and its interrupts. Starved that long the device controller
+stops answering and does not come back -- which `tests/hw/README.md` already
+recorded for this driver ("a real USB bus reset, not a close-and-reopen").
+`lsusb` confirmed it: the same device number throughout, no re-enumeration,
+the host still holding a device that had stopped responding.
+
+The fix is not a workaround but the honest completion of the operation: warn
+*before* the write (with a delay, since the next thing the code does is stop
+scheduling for a tenth of a second), then reboot. `flash_rp2350_write_sector()`
+returns with XIP in the bootrom's generic 03h mode anyway -- slower than what
+boot set up, until a reset -- so continuing would have meant a dead console
+*and* a degraded system. Verified: the board now writes, reboots itself, and
+comes back with the record intact, no hands.
+
+**Two verify items are NOT closed, and neither is hand-waved:**
+
+* **Two boards reporting different uids.** Only one Pico 2 W is on the bench
+  with this persona; the other is under the Pico-Clock-Green baseboard and
+  reflashing it would disturb a working setup for one number. The read is
+  from a factory-programmed per-die field, so the risk is low -- but "low
+  risk" and "measured" are different claims and this is the latter's absence.
+* **An interrupted write leaving the store readable as corrupt.** Genuinely
+  cutting power mid-erase needs timing a physical unplug inside a ~100 ms
+  window. Not attempted. Note that the failure this would probe is now
+  *narrower* than when it was written: a torn write leaves an erased or
+  half-programmed sector whose magic does not match, which reads as
+  UNPROVISIONED (see the correction above) rather than as a plausible record
+  -- so the dangerous outcome, silently accepting damaged data, needs the
+  magic to survive while the fields do not.
 
 **I8 -- documentation.** A README section that states §7 in full, the
 provisioning walkthrough, and what a wrong fingerprint looks like.
