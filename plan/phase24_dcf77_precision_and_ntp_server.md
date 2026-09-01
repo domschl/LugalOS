@@ -510,6 +510,27 @@ narrower and more useful than that:
   keeping its structure, would relicense whatever it touched. Distinctive
   comments and hand-tuned constant tables are expression too.
 
+**Asked and settled, 2026-09-01: should the chrony checkout simply be deleted,
+to remove the question?** No, and the reasoning is worth keeping so it is not
+re-asked. Reading GPL code creates no obligation -- copyright covers
+expression, not ideas, and having a checkout makes one a *user* of chrony,
+which its licence expressly permits. The clean-room isolation this instinct
+comes from belongs to adversarial commercial reverse engineering, where the
+point is to *prove* independent creation in litigation; it does not map onto
+reading a well-known daemon to understand a control loop. Deleting also does
+not remove the real risk, which is behavioural and identical whether the
+source sits on disk or on a web page. And it has a cost: `regress.c` is the
+best available answer to the one genuinely hard part of P5.
+
+The stronger discipline, if one is wanted, is free: **write P5 from §11.3
+first, and read chrony afterwards as a review.** Independent creation by
+construction, and nothing is given up.
+
+**The one obligation that is real:** if any of Appendix A's code reaches this
+tree, its Simplified BSD notice must be carried in that file, and the README's
+Third-Party section gains an entry -- beside the Microsoft UF2 tools, which is
+the precedent for exactly this.
+
 ### 8.3 The practical rule
 
 **Implement from RFC 5905 / RFC 4330 (`~/gith/NTP`), taking Appendix A's code
