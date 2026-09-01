@@ -134,11 +134,31 @@ the original proposal reached for first.
 | 2 | sample quantisation | ±4-8 ms, *varying with load* | ~±2 µs | yes (P3) |
 | 3 | propagation, Mainflingen → here | ~1 ms | calibrated out | yes, as a constant (P4) |
 | 4 | receiver group delay + AGC-dependent edge jitter | 10-100 ms, unknown | mean calibrated out; jitter remains | **only the mean** (P4) |
-| 5 | **holdover between syncs** | **up to ~2.6 s/day** | ms/hour | yes, and this is the phase (P5) |
+| 5 | **holdover between syncs** | datasheet ~2.6 s/day; **measured < ~90 ms/day** | ms/hour | yes (P5) -- and see the note below |
 
-**Term 5 is the one nobody lists and it dominates everything else.** The
-RP2350's TIMER0 counts from a 12 MHz crystal whose tolerance is of order
-±30 ppm -- 30 µs per second, 2.6 s per day. `drivers/dcf77_service.c` syncs
+**Term 5 is the one nobody lists, and the first hour of P0 has already
+shrunk it.** The RP2350's TIMER0 counts from a 12 MHz crystal whose
+*datasheet tolerance* is of order ±30 ppm -- 30 µs per second, 2.6 s per day,
+which is where this table's original figure came from.
+
+**Measured, 2026-09-01, preliminary:** 63 samples over 3733 s against
+192.168.178.23, with the clock frozen after one initial step, gave a
+least-squares slope of **0.3 ppm** and offsets that stayed inside +2 to +6 ms
+for the whole hour. The slope itself is not yet resolved -- 0.3 ppm over
+3733 s is 1.1 ms of drift, which is smaller than the sample scatter, so an
+hour cannot separate it from zero. What the hour *does* establish is an upper
+bound, and a strong one: a 30 ppm crystal would have drifted 112 ms across
+that run, and nothing of the sort happened. **This board's crystal is better
+than about 1 ppm**, so free-running drift is on the order of tens of
+milliseconds per day rather than seconds.
+
+That is a different design problem from the one this phase was proposed
+against. Holdover still has to be handled honestly -- P6's dispersion must
+still grow -- but it is no longer obviously the dominant term, and P5's
+frequency correction may turn out to buy much less than the ratio in §4
+suggests. **A multi-day run is what settles it**, and P0 is now producing one.
+The table below keeps the datasheet figure alongside the measurement, because
+the point of P0 is that the two are different things. `drivers/dcf77_service.c` syncs
 once nightly at 03:17 (`CONFIG_DCF77_AUTO_HOUR`) and does nothing in between.
 A server built on that would be seconds wrong by evening, and how precisely
 each individual sync landed would be irrelevant beside it. Note that ±30 ppm
