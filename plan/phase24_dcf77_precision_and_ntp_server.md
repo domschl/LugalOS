@@ -412,14 +412,27 @@ quiet is cheaper than doing it under P6.
 
 ---
 
-## 8. Reference implementation to read -- and the line not to cross
+## 8. What to implement from, what to read, and the line between them
 
-**chrony's sources are on this machine at `~/gith/chrony`** (user, 2026-09-01),
-and its structure maps onto this phase's milestones almost one for one. It is
-worth reading before designing P5, because chrony has already made most of
-these decisions carefully and its reasons are visible in its code.
+**The specifications are on this machine at `~/gith/NTP`** -- `rfc5905.txt`
+(NTPv4: protocol, algorithms, and Appendix A's code skeleton) and
+`rfc4330.txt` (SNTPv4) -- and **chrony's sources at `~/gith/chrony`** (user,
+2026-09-01). The RFCs are the source to implement from, for the licence reason
+below and for a better one; chrony's structure maps onto this phase's
+milestones almost one for one, and it has already made most of these
+decisions carefully with its reasons visible in the code -- so it is worth
+reading alongside them, particularly before designing P5.
 
-| chrony | what it answers here |
+| RFC section (`~/gith/NTP`) | what it settles |
+|---|---|
+| 5905 §7, §8 | data structures and the on-wire protocol -- the shared floor under client and server |
+| 5905 §11.3 | the clock discipline algorithm, and the PLL/FLL trade §8.1 below reads against this phase's error budget |
+| 5905 §12 | the clock-adjust process: slew versus step, and the threshold between them (P5) |
+| 5905 Appendix A | the code skeleton, **Simplified BSD**, usable directly where it fits |
+| 4330 §5, §6 | client operations (R6, done) and **server operations (P6)** -- what a server must copy, fill and echo |
+| 4330 §8 | the kiss-o'-death packet, which R6 already parses and P6 chooses not to send (§4) |
+
+| chrony (`~/gith/chrony`) | what it answers here |
 |---|---|
 | `refclock.h`'s `RefclockParameters` (`offset`, `delay`, `precision`, `max_dispersion`) | P4's calibration constant is not a special case -- it is what every refclock driver has. The field names are worth borrowing even where the code is not. |
 | `refclock.c`, `refclock_pps.c` | how a hardware time source is folded into a discipline loop, and what a PPS-shaped edge is allowed to assert. Closest analogue to P3. |
@@ -428,7 +441,39 @@ these decisions carefully and its reasons are visible in its code.
 | `local.c` | slew versus step, and the threshold between them. |
 | `ntp_core.c` | server-mode packet handling for P6. |
 
-### The licence boundary, and where it actually falls
+### 8.1 What in RFC 5905 actually applies to a single refclock
+
+Worth settling before P5, so it is not designed as "implement §11":
+
+Most of the system process exists to reconcile **several network peers** --
+§10's clock filter over a shift register of eight samples, and §11.2's
+selection, cluster and combine algorithms. A DCF-77 receiver is *one* source
+delivering *one* sample a minute, so selection, cluster and combine have
+nothing to do and should not be built.
+
+What does apply is **§11.3, the clock discipline algorithm**, and it is worth
+reading for one design fact it states directly: NTPv4's discipline is a hybrid
+of a phase-locked and a frequency-locked loop, because *"a PLL usually works
+better when network jitter dominates, while an FLL works better when
+oscillator wander dominates"*. Map that onto §2's error budget and it says
+something concrete about this board: term 4 (receiver edge jitter, tens of
+milliseconds, sample-to-sample) is the analogue of network jitter and is
+**large**, while term 5 (crystal wander) is slow and systematic. That argues
+for weighting the phase loop conservatively and letting the frequency estimate
+accumulate over hours -- which is the same conclusion §5's P5 reaches from the
+other direction, and it is reassuring that the two agree.
+
+§12 (clock-adjust) is where slew-versus-step lives, and §13 (poll process)
+mostly does not apply either -- the poll interval here is set by the
+transmitter, at one frame a minute, not chosen by us.
+
+For P6, the server side is much simpler: **RFC 4330 §6 (SNTP Server
+Operations)** states exactly what a server must copy, fill and echo, §5 is the
+client half R6 already implements, §8 is the kiss-o'-death packet, and RFC
+5905 §7 and §8 give the data structures and the on-wire protocol underneath
+both.
+
+### 8.2 The licence boundary, and where it actually falls
 
 chrony is **GPLv2**; LugalOS is **MIT**. The line is not "avoid chrony", it is
 narrower and more useful than that:
@@ -442,12 +487,17 @@ narrower and more useful than that:
   implementing it touches chrony's licence, and `net/ntp.c` (R6) was written
   from the RFC before this tree knew chrony was on the machine.
 
-* **RFC 5905 is also a better source than chrony for the discipline loop**, not
-  merely a safer one. §11 specifies the clock filter, selection and discipline
-  algorithms, and Appendix A carries a complete reference implementation
-  written expressly to be implemented from. Working from the specification
-  gives clean, demonstrable provenance *and* a document that explains its own
-  reasoning, which reading someone's optimised C does not.
+* **RFC 5905's own code may be *used*, not merely read** -- which is the fact
+  that settles this whole question. Its Code Components (Appendix A's skeleton
+  included) are released by the IETF Trust under the **Simplified BSD
+  License**, stated in the document's own boilerplate: *"Code Components
+  extracted from this document must include Simplified BSD License text as
+  described in Section 4.e of the Trust Legal Provisions."* Simplified BSD is
+  MIT-compatible, so where Appendix A is the right answer this tree may take
+  it directly, carrying that notice. That is a categorically stronger position
+  than "read chrony carefully", and it is why the RFC is the *better* source
+  here and not merely the safer one -- clean, demonstrable provenance, plus a
+  document that explains its own reasoning where optimised C does not.
 
 * **Ideas and algorithms are not the boundary; expression is.** Reading
   chrony to understand how a real discipline loop is shaped -- what state it
@@ -460,12 +510,17 @@ narrower and more useful than that:
   keeping its structure, would relicense whatever it touched. Distinctive
   comments and hand-tuned constant tables are expression too.
 
-The practical rule for this phase: **implement from RFC 5905 and from
-chrony's *documentation*; use chrony's source to check understanding, not to
-produce text.** Where an idea comes from chrony rather than the RFC, cite it in
-the comment as the place the idea came from -- which is what this tree already
-does for `ntruchsess/arduino_uip#167` in the ENC28J60 driver, an independent
-project whose *finding* is credited without a line of its code being present.
+### 8.3 The practical rule
+
+**Implement from RFC 5905 / RFC 4330 (`~/gith/NTP`), taking Appendix A's code
+directly where it fits and carrying its Simplified BSD notice; use chrony's
+source to check understanding, not to produce text.**
+
+Where an idea comes from chrony rather than from the RFC, cite it in the
+comment as the place the idea came from -- which is exactly what this tree
+already does for `ntruchsess/arduino_uip#167` in the ENC28J60 driver, an
+independent project whose *finding* is credited without a line of its code
+being present.
 
 This is worth the paragraphs. The project accounts for 227 KB of radio firmware
 by SHA-256 and argues its blob story in the README; a GPL discipline loop
