@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import select
 import socket
@@ -2682,9 +2683,18 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
     prov_name = "prov-test-node"
     prov_uid = bytes.fromhex("aabbccdd11223344")
     id_img = img_path.with_name(f"test_{arch_name}_idstore_id.img")
+    # A device key too, because the host is the only place a key for a board
+    # with no console can come from -- and a provisioner whose FIELD_DEVKEY
+    # the kernel does not read the same way produces a board nothing can
+    # authenticate to, which presents as a network fault rather than as a
+    # format disagreement. `identity` prints the fingerprint and never the
+    # key, so the fingerprint is what this compares.
+    prov_key = bytes(range(32))
+    prov_fp = hashlib.sha256(prov_key).hexdigest()[:16]
     record = provision.build_record([
         (provision.FIELD_UID, prov_uid),
         (provision.FIELD_NAME, prov_name.encode("ascii")),
+        (provision.FIELD_DEVKEY, prov_key),
     ])
     id_img.write_bytes(record)
 
@@ -2711,6 +2721,15 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
             return (name, False, f"provisioned uid not reported:\n{log[-500:]}")
         if not re.search(r"^uid source: record\b", log, re.MULTILINE):
             return (name, False, f"uid source is not 'record':\n{log[-500:]}")
+
+        # The key the host wrote is the key the board holds, compared by
+        # fingerprint -- and the key itself must not appear anywhere in the
+        # output, which is the other half of the promise.
+        if not re.search(rf"key fingerprint: {prov_fp}\b", log):
+            return (name, False,
+                    f"device key from the host record not reported (want {prov_fp}):\n{log[-500:]}")
+        if prov_key.hex() in log.lower():
+            return (name, False, "the device key itself was printed")
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
     finally:

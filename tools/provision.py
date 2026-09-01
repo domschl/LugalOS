@@ -31,7 +31,12 @@ must stay refused, not merely discouraged.
 
 import argparse
 import hashlib
+import os
+import re
+import subprocess
+import tempfile
 import secrets
+from pathlib import Path
 import struct
 import sys
 
@@ -42,6 +47,7 @@ VERSION = 1
 
 FIELD_UID = 1
 FIELD_NAME = 2
+FIELD_DEVKEY = 3    # the node's own auth key (kernel/idstore.h's IDSTORE_FIELD_DEVKEY)
 FIELD_WLAN_SSID = 4
 FIELD_WLAN_PSK = 5
 FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
@@ -130,6 +136,45 @@ def build_record(fields: list[tuple[int, bytes]]) -> bytes:
     return record.ljust(IDSTORE_SIZE_BYTES, b"\x00")
 
 
+# --- The identity segment as a flashable image (§3.3's third segment) --------
+
+def identity_flash_base(repo_root: Path) -> int:
+    """The address of the identity sector, read from cmake/flash_layout.cmake.
+
+    Parsed rather than repeated. That file is the single place the three
+    segment addresses are written down -- the whole point of I7a's layout is
+    that nothing else knows them -- and a Python copy of 0x103FF000 would be
+    a second place to forget when the map changes."""
+    layout = repo_root / "cmake" / "flash_layout.cmake"
+    m = re.search(r"set\(\s*LUGALOS_IDENTITY_BASE\s+(0x[0-9A-Fa-f]+)",
+                  layout.read_text())
+    if not m:
+        sys.exit(f"could not find LUGALOS_IDENTITY_BASE in {layout}")
+    return int(m.group(1), 16)
+
+
+def write_uf2(record: bytes, out_path: str, repo_root: Path) -> str:
+    """Wraps the record as a UF2 for the identity sector, using the same
+    converter and family the build already uses for flashfs.uf2 -- a data
+    blob at a fixed flash address is a problem this tree has solved once
+    already, and solving it a second way would be a second thing to be wrong."""
+    base = identity_flash_base(repo_root)
+    conv = repo_root / "tools" / "uf2conv.py"
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
+        tf.write(record)
+        tmp = tf.name
+    try:
+        r = subprocess.run(
+            [sys.executable, str(conv), "--family", "rp2350_riscv",
+             "--base", hex(base), tmp, "-o", out_path],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"uf2conv failed: {r.stderr.strip() or r.stdout.strip()}")
+    finally:
+        os.unlink(tmp)
+    return f"{out_path} (identity sector at {hex(base)})"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("output", nargs="?", help="path to write the identity image to")
@@ -142,6 +187,19 @@ def main() -> int:
                     help="the address this board comes up on, e.g. 192.168.1.50/255.255.255.0/192.168.1.1. "
                          "Stored in the record rather than in a boot script, so the filesystem image stays "
                          "identical on every board; applied when the network stack starts")
+    ap.add_argument("--key", metavar="HEX",
+                    help="this node's device key, as hex (I4, §2). 16-64 bytes. "
+                         "Never printed back -- only its fingerprint is.")
+    ap.add_argument("--key-generate", action="store_true",
+                    help="mint a fresh 32-byte device key from the host's CSPRNG")
+    ap.add_argument("--key-out", metavar="FILE",
+                    help="also write the key, as hex, where a 9P client can read it "
+                         "(chmod 600). Without this a generated key exists only on the "
+                         "board and nothing can ever authenticate to it.")
+    ap.add_argument("--uf2", metavar="FILE",
+                    help="also write the record as a UF2 for the RP2350's identity "
+                         "sector, so a board with no console can be provisioned by "
+                         "flashing a third image")
     ap.add_argument("--selftest", action="store_true",
                     help="check derive_wpa2_psk() against the IEEE 802.11i worked example and exit")
     args = ap.parse_args()
@@ -167,6 +225,26 @@ def main() -> int:
         sys.exit("--name must be 1-31 ASCII characters (kernel/identity.h's NODE_NAME_MAX)")
 
     fields = [(FIELD_UID, uid), (FIELD_NAME, name_bytes)]
+
+    # I4, §2: the device key. Its own field rather than a file on the SD card,
+    # because a key that does not survive a reflash is a key somebody has to
+    # reinstall by hand on a board that may have no console to type it on --
+    # which is exactly the case this option exists for.
+    devkey = None
+    if args.key and args.key_generate:
+        sys.exit("--key and --key-generate are alternatives, not a pair")
+    if args.key_generate:
+        devkey = secrets.token_bytes(32)
+    elif args.key:
+        try:
+            devkey = bytes.fromhex(args.key)
+        except ValueError:
+            sys.exit("--key must be hex")
+        if not (16 <= len(devkey) <= 64):
+            sys.exit("--key must be 16 to 64 bytes (32 to 128 hex characters)")
+    if devkey is not None:
+        fields.append((FIELD_DEVKEY, devkey))
+
     psk_hex = None
     if args.wlan_ssid or args.wlan_passphrase:
         if not (args.wlan_ssid and args.wlan_passphrase):
@@ -214,6 +292,28 @@ def main() -> int:
     if psk_hex:
         msg += f" wlan_ssid={args.wlan_ssid!r} wlan_psk={psk_hex}"
     print(msg)
+
+    if devkey is not None:
+        # The fingerprint, never the key -- matching what the board's own
+        # `identity` command will print back, so the two can be compared
+        # without either of them ever showing the secret.
+        fp = hashlib.sha256(devkey).hexdigest()[:16]
+        print(f"  device key : {len(devkey)} bytes, fingerprint {fp}")
+        if args.key_out:
+            with open(args.key_out, "w") as f:
+                f.write(devkey.hex() + "\n")
+            os.chmod(args.key_out, 0o600)
+            print(f"  key written: {args.key_out} (mode 600) -- this is the secret itself")
+        elif args.key_generate:
+            print("  NOTE: no --key-out given, so this key now exists only in the image "
+                  "above.\n        Nothing will be able to authenticate to the board "
+                  "that gets it.")
+
+    if args.uf2:
+        repo_root = Path(__file__).resolve().parent.parent
+        print(f"  wrote {write_uf2(record, args.uf2, repo_root)}")
+        print("  flash it like any other segment:  "
+              "uv run tests/hw/flash.py --uf2 " + args.uf2)
     return 0
 
 
