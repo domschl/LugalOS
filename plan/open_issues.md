@@ -66,6 +66,35 @@ what it says.
 
 ---
 
+## Clock display flickers while the radio comes up (deferred to phase 22/23)
+
+**Trigger:** power on an `rp2350-clock` board with stored WLAN credentials.
+For roughly the first 15 s the display flickers moderately, once a second.
+The connected steady state is fine.
+
+**Cause:** the CYW43439's 231 KB firmware upload is a bit-banged gSPI
+transfer that takes tens of seconds of CPU, and the Pico-Clock-Green
+multiplexes its display in software -- so anything that disturbs the frame
+cadence is visible. `bp_write_bulk()` already yields between chunks, which is
+what turned this from "strong" into "moderate" and cost the bring-up about
+10 s.
+
+**Three worse causes were found and fixed first**, and they are worth
+distinguishing from this one: an unpaced join-wait spin, unthrottled idle
+polling of the radio, and the supervising task spinning at normal priority.
+See plan/phase19_ip_stack_and_ethernet.md's note. What remains is the upload
+itself.
+
+**Why it is parked:** the appliance's steady state is good, and the honest
+fix is a second core -- phase 22 (SMP locking foundation) and phase 23
+(multicore scheduling) are already planned. Pinning the display to one core
+and the radio to the other removes the class rather than shaving this
+instance. Doing it before then would mean either slowing the upload further
+or special-casing the display in the driver, neither of which is a good
+trade for 15 s once per boot.
+
+---
+
 ## No clean way to leave a BSS before re-joining
 
 **Trigger:** `wifi join <ssid> <psk>` (or `wifi join`) on a board that is

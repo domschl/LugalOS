@@ -928,6 +928,19 @@ static bool bp_write_bulk(uint32_t addr, const uint8_t *data, uint32_t len) {
         addr += n;
         data += n;
         len -= n;
+
+        /* One yield per chunk. The firmware upload is 231 KB through a
+         * bit-banged bus and takes tens of seconds; run flat out it starves
+         * every other task for that whole time, which on the Pico-Clock-Green
+         * is visible -- the display multiplexes in software, so a disturbed
+         * frame cadence is flicker somebody watches happen. Yielding between
+         * chunks costs the upload very little (the bus, not the CPU, is the
+         * limit here) and hands the frame pump its turns back.
+         *
+         * Safe despite the bus lock being held: the lock is not reentrant,
+         * but nothing the scheduler can pick while we wait touches this bus
+         * except netsrv, which spins on the lock and yields again. */
+        sched_yield();
     }
     return true;
 }
@@ -1702,7 +1715,25 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
             return true;
         }
 
-        time_delay_us(2000);
+        /* Paced, not spun. Two different costs are being avoided here and it
+         * took a display to notice the second one.
+         *
+         * Yielding (rather than time_delay_us()) keeps this from starving
+         * other tasks while it holds the bus lock for up to 15 s. But
+         * yielding *without* pacing the pump means a full bit-banged gSPI
+         * transaction every time round -- the old code polled once per 100 ms
+         * and this replaced it with as fast as the CPU allows, which is a
+         * regression that only showed up as heavy flicker on the
+         * Pico-Clock-Green's software-multiplexed display.
+         *
+         * 5 ms is far below anything a join's timing needs (association plus
+         * a handshake is hundreds of milliseconds) and cuts the bus traffic
+         * by three orders of magnitude. */
+        uint64_t next_pump = time_get_us() + 5000u;
+        while (time_get_us() < next_pump && g_join_fail == JOIN_FAIL_NONE &&
+               (g_join_state & JOIN_ALL) != JOIN_ALL) {
+            sched_yield();
+        }
     }
 
     g_ioctl_quiet = false;
@@ -1995,14 +2026,43 @@ static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
     return r;
 }
 
+/* How long to leave the bus alone after a poll that found nothing. Only the
+ * idle case is throttled: a poll that returns a frame is followed immediately
+ * by another, so a burst still drains at full speed and this costs bulk
+ * transfers nothing. */
+#define CYW43_IDLE_POLL_GAP_US 1000u
+
+static uint64_t g_next_poll_us;
+
 static int cyw43_netif_poll(netif_t *nif) {
     /* Nothing to service while the firmware is down or being reloaded --
      * and checking before taking the lock keeps `netsrv` from queueing
      * behind a multi-second firmware upload just to be told "not yet". */
     if (!g_fw_ready) return 0;
+
+    /* Idle polling is not free here, and that is the whole reason for this.
+     * `netsrv` calls this every pass of a loop that never blocks, and unlike
+     * the ENC28J60 -- where poll() reads a cheap EPKTCNT register -- asking
+     * this radio whether a packet exists means a full bit-banged gSPI
+     * transaction over PIO, tens of thousands of times a second, holding the
+     * bus lock each time.
+     *
+     * On a headless board nobody noticed. On the Pico-Clock-Green, whose
+     * display is multiplexed in software, it is visible: the frame cadence is
+     * disturbed and the once-a-second digit redraw flickers. Skipping the bus
+     * for a millisecond after an empty poll removes almost all of that load
+     * for at most 1 ms of extra receive latency, which nothing here can
+     * measure. */
+    uint64_t now_us = time_get_us();
+    if (now_us < g_next_poll_us) return 0;
+
     cyw43_lock();
     int r = cyw43_netif_poll_locked(nif);
     cyw43_unlock();
+
+    /* Productive polls are not throttled -- come straight back for the next
+     * frame. Only an empty one earns the gap. */
+    g_next_poll_us = (r > 0) ? 0 : now_us + CYW43_IDLE_POLL_GAP_US;
     return r;
 }
 
@@ -2097,7 +2157,20 @@ static void cyw43_autostart_body(void *arg) {
     bool was_up = false;
     for (;;) {
         if (g_link_up) {
-            if (!was_up) { printk("cyw43: link up (\"%s\")\n", ssid); was_up = true; }
+            if (!was_up) {
+                printk("cyw43: link up (\"%s\")\n", ssid);
+                was_up = true;
+                /* Bring-up is over; from here this task only watches. Drop
+                 * below everything else, because "watching" in a scheduler
+                 * with no timed sleep means spinning, and spinning at
+                 * TASK_PRIO_NORMAL shares the CPU round-robin with the
+                 * clock's frame pump -- which was visible as a flicker every
+                 * second for as long as the board stayed connected. At
+                 * BACKGROUND the spin consumes only what nothing else wants,
+                 * and it still notices a dropped link within its 2 s cadence
+                 * because wifi_sleep_ms() measures wall time, not turns. */
+                task_set_priority(sched_current_pid(), TASK_PRIO_BACKGROUND);
+            }
             attempt = 0;
             wifi_sleep_ms(2000);
             continue;
@@ -2106,6 +2179,9 @@ static void cyw43_autostart_body(void *arg) {
         if (was_up) {
             printk("cyw43: link lost -- rejoining \"%s\"\n", ssid);
             was_up = false;
+            /* A rejoin is bring-up again, and wants the CPU for the same
+             * reason the first one did. It goes back down on success. */
+            task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
         }
 
         if (cyw43_join_wpa2(ssid, psk)) continue;   /* the loop above reports it */
@@ -2132,7 +2208,28 @@ int cyw43_autostart_task_start(void) {
      * stack before anything else happens, and the firmware upload runs on top
      * of that -- the same reasoning that gives `netsrv` three. */
     int pid = task_create_sized("wifiup", cyw43_autostart_body, NULL, 3);
-    if (pid < 0) printk("cyw43: could not start the autostart task\n");
+    if (pid < 0) {
+        printk("cyw43: could not start the autostart task\n");
+        return pid;
+    }
+
+    /* Below everything else on the board, and this is not a nicety.
+     *
+     * This task spends its life either uploading 231 KB of firmware or
+     * busy-yielding between link checks -- this scheduler has no timed sleep,
+     * so waiting *is* spinning. At TASK_PRIO_NORMAL that shares the CPU
+     * round-robin with the clock's frame pump, and the Pico-Clock-Green
+     * multiplexes its display in software: anything that disturbs the frame
+     * cadence is visible as flicker, which is exactly what it did -- during
+     * bring-up, and then permanently once this task stopped exiting after its
+     * first join and began supervising instead.
+     *
+     * It starts at TASK_PRIO_NORMAL and drops itself to BACKGROUND once it
+     * has joined -- see the supervision loop. Starting it at BACKGROUND was
+     * tried and is wrong: the clock app is a continuous loop, so a strictly
+     * lower task gets only the slices it leaves, and a 231 KB upload that
+     * takes 20 s at NORMAL never finished at all. Bring-up wants the CPU;
+     * watching an established link does not. */
     return pid;
 }
 

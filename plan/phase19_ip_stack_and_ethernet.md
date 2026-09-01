@@ -1172,13 +1172,52 @@ without the relocation put every field two bytes early, and traced events said
 so unambiguously -- each one arrived as the true value shifted left 16 bits
 (a "status" of 0x2E0000 where 46 is the PSK_SUP event *type*). `wifi trace
 [on|off]` prints decoded events and is kept for the next time this needs
-checking.
+checking. All of it re-verified against `~/gith/pico/pico-sdk/lib/
+cyw43-driver/src/` once that submodule was checked out: the relocation
+loop, the seven event constants and `SET_DISASSOC`'s 0x69 all match.
 
 An AUTH event with **status 2 is a timeout, not a refusal**. The reference
 lumps it into BADAUTH and retries internally; doing the same here made the
 first join after every boot report "wrong PSK" and then succeed two seconds
 later. It is reported as transient now, which is both true and what the
 retry policy wants.
+
+**What decoding events cost the clock, and what that taught.** Putting a
+radio on a board with a software-multiplexed display made the CPU and bus
+budget visible in a way no headless persona could. Three separate causes, all
+found by the display flickering and none of them the LED code:
+
+1. **The join wait spun.** Rewriting the join to wait on events replaced the
+   old `time_delay_us(100000)` -- one poll per 100 ms -- with a flat-out
+   `sched_yield()` loop that ran a full bit-banged gSPI transaction every
+   iteration, holding the bus lock, for up to 15 s per attempt. Paced at
+   5 ms now, which is three orders of magnitude less bus traffic and still
+   far below anything a join's timing needs.
+2. **Idle polling is not free on this radio.** `netsrv` calls `poll()` every
+   pass of a loop that never blocks, and unlike the ENC28J60 -- where poll()
+   reads a cheap `EPKTCNT` register -- asking the CYW43439 whether a packet
+   exists means a whole gSPI transaction. Tens of thousands a second. An
+   empty poll now backs off 1 ms; a *productive* one is not throttled, so
+   bursts still drain at full speed. Ping after the change: 10/10, avg
+   6.8 ms.
+3. **The supervising task spun at the wrong priority.** This scheduler has no
+   timed sleep, so waiting is spinning. `wifiup` now runs at
+   TASK_PRIO_NORMAL while bringing the radio up and drops itself to
+   TASK_PRIO_BACKGROUND once joined (back to NORMAL for a rejoin). Starting
+   it at BACKGROUND was tried and is wrong: the clock app is a continuous
+   loop, so a strictly lower task gets only the slices it leaves and the
+   231 KB upload never finished at all.
+
+**Deferred, deliberately: the startup window still flickers** -- roughly
+15 s of moderate disturbance during the firmware upload, which yields per
+chunk but is 231 KB through a bit-banged bus either way. The connected steady
+state is what matters for an appliance and that is now good. Smoothing the
+rest belongs after phase 22/23 (SMP): pinning the display to one core and the
+radio to the other is the shape that removes this class of problem. Worth
+noting for that work, though, that a second core would *not* have fixed items
+1-3 above -- the contention there was for one gSPI bus and its non-reentrant
+lock, not only for CPU, and fixing it first is what keeps the SMP work about
+scheduling rather than about a driver spinning a shared bus flat out.
 
 **Still open** (plan/open_issues.md): there is no working way to *leave* a BSS
 before re-joining -- the reference's `CYW43_IOCTL_SET_DISASSOC` is answered

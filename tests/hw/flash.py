@@ -284,13 +284,35 @@ def main() -> int:
                 ser.write(b"cat /proc/buildid\n")
                 ser.flush()
                 out = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
-            m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", out.replace("cat /proc/buildid", ""))
-            got = m.group(2) if m else None
-            if got == want:
+
+                m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", out.replace("cat /proc/buildid", ""))
+                got = m.group(2) if m else None
+                if got != want:
+                    print(f"[!] Build id mismatch: board={got} local={want}")
+                    return 1
                 print(f"[*] Verified: board reports build {got}")
-            else:
-                print(f"[!] Build id mismatch: board={got} local={want}")
-                return 1
+
+                # Put the board back the way flashing left it. The Ctrl-C
+                # above is what gets a prompt on a persona that boots straight
+                # into an application -- and on those personas it *exits that
+                # application*, which for the clock means the display goes
+                # dark and stays dark. Verifying the firmware must not be the
+                # thing that stops an appliance being an appliance, so reboot:
+                # the board comes back through init.lisp exactly as a power
+                # cycle would.
+                #
+                # Inside the `with`, and deliberately not wrapped in its own
+                # try/except. Both matter: the first version wrote to `ser`
+                # after the block had closed it, and the except that was meant
+                # to be defensive swallowed the resulting error so the reboot
+                # silently never happened -- the board sat at a prompt with a
+                # dark display and the tool said it had rebooted it. The sleep
+                # is real too: closing a USB CDC port immediately after flush
+                # can discard what the host has buffered.
+                print("[*] Rebooting so the board comes back in its normal state")
+                ser.write(b"reboot\r")
+                ser.flush()
+                time.sleep(1.5)
         except Exception as e:
             print(f"[!] Verification failed: {e}")
             return 1
