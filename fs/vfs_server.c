@@ -718,6 +718,22 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 used += (uint32_t)ksnprintf(buf + used, cap - used, "wlan psk fingerprint: none\n");
             }
             memset(psk, 0, sizeof(psk));
+
+            /* The address this board comes up on, if one is stored. Reported
+             * here rather than only by `netcfg` because /proc/node is what a
+             * host reads over 9P -- and "which address will this board have
+             * after the next reboot" is exactly the question someone asks
+             * remotely, before rebooting it. */
+            uint8_t nip[NODE_IPV4_LEN], nmask[NODE_IPV4_LEN], ngw[NODE_IPV4_LEN];
+            if (node_ipv4(nip, nmask, ngw)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "ipv4: %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u\n",
+                    nip[0], nip[1], nip[2], nip[3],
+                    nmask[0], nmask[1], nmask[2], nmask[3],
+                    ngw[0], ngw[1], ngw[2], ngw[3]);
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "ipv4: none\n");
+            }
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);

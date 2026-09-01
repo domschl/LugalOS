@@ -2838,6 +2838,112 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
         session.close()
 
 
+def test_network_autoconfig(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Network autoconfig from the identity record: a board with a stored
+    address comes up on the network with no boot script involved.
+
+    That last clause is the whole point, so the test asserts it rather than
+    just checking a getter. Since I7a the filesystem image is byte-identical
+    on every board, and an address in init.lisp would have made it per-board
+    again; the address lives in the record instead, and net_task_start()
+    applies it before the stack task exists. Here nothing is typed before the
+    check -- no (net-config ...), no netcfg -- so a configured interface can
+    only have come from the record.
+
+    Three parts: the host-written field is read back (proving
+    tools/provision.py and kernel/idstore.c agree on this field, the same way
+    I2 and I6 do for theirs), the stack actually applied it at boot, and the
+    on-device `netcfg` can both replace and remove it."""
+    import shutil
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "Network Autoconfig From The Identity Record, Applied Before Any Script"
+    arch_img = img_path.with_name(f"test_{arch_name}_netcfg_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    ip, mask, gw = "10.0.9.42", "255.255.255.0", "10.0.9.1"
+    quads = bytes(int(o) for part in (ip, mask, gw) for o in part.split("."))
+    id_img = img_path.with_name(f"test_{arch_name}_netcfg_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes(range(8))),
+        (provision.FIELD_NAME, b"netcfg-node"),
+        (provision.FIELD_IPV4, quads),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        # A netif has to exist for the stack to start at all; this one never
+        # carries a packet, which is deliberate -- what is under test is the
+        # configuration path, not the wire.
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. The stack applied it at boot. Nothing has been typed yet.
+        ok, log = session.send_and_expect("net\n", r"rx \d+ frames", timeout=6.0)
+        if not ok:
+            return (name, False, f"`net` did not answer: {log[-400:]}")
+        if "addr unconfigured" in log:
+            return (name, False,
+                     f"the stored address was not applied at boot -- the interface came up "
+                     f"unconfigured:\n{log[-600:]}")
+        if not re.search(rf"addr {re.escape(ip)}/{re.escape(mask)} gw {re.escape(gw)}", log):
+            return (name, False, f"the interface is configured, but not from the record:\n{log[-600:]}")
+
+        # 2. The record round-trips through the device's own reports.
+        ok, log = session.send_and_expect("netcfg\n", r"^address:", timeout=6.0)
+        if not ok:
+            return (name, False, f"`netcfg` did not answer: {log[-400:]}")
+        if not re.search(rf"^address: {re.escape(ip)}\b", log, re.MULTILINE):
+            return (name, False, f"netcfg does not report the stored address:\n{log[-500:]}")
+
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^ipv4:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+        if not re.search(rf"^ipv4: {re.escape(ip)}/{re.escape(mask)} gw {re.escape(gw)}",
+                          log, re.MULTILINE):
+            return (name, False, f"/proc/node does not show the stored address:\n{log[-500:]}")
+
+        # 3. Replacing it, and the refusals that keep an unusable one out.
+        ok, log = session.send_and_expect("netcfg 10.0.9.77 255.255.0.0\n", r"^address:", timeout=6.0)
+        if not ok or not re.search(r"^address: 10\.0\.9\.77\b", log, re.MULTILINE):
+            return (name, False, f"netcfg did not store a replacement:\n{log[-500:]}")
+        if not re.search(r"^gateway: none", log, re.MULTILINE):
+            return (name, False, f"an omitted gateway should read as none:\n{log[-500:]}")
+
+        ok, log = session.send_and_expect("netcfg 0.0.0.0 255.255.255.0\n", r"netcfg:", timeout=6.0)
+        if not ok or "0.0.0.0" not in log or re.search(r"^address: 0\.0\.0\.0", log, re.MULTILINE):
+            return (name, False, f"netcfg accepted 0.0.0.0 as an address:\n{log[-500:]}")
+        ok, log = session.send_and_expect("netcfg 10.0.9.5 not.an.ip.addr\n", r"netcfg:", timeout=6.0)
+        if not ok or "dotted quad" not in log:
+            return (name, False, f"netcfg accepted a malformed mask:\n{log[-500:]}")
+
+        # 4. Clearing really removes the field rather than zeroing it.
+        ok, log = session.send_and_expect("netcfg clear\n", r"netcfg: cleared", timeout=6.0)
+        if not ok:
+            return (name, False, f"netcfg clear did not answer: {log[-400:]}")
+        ok, log = session.send_and_expect("netcfg\n", r"address:", timeout=6.0)
+        if not ok or "none stored" not in log:
+            return (name, False, f"the address survived a clear:\n{log[-500:]}")
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^ipv4:", timeout=6.0)
+        if not ok or not re.search(r"^ipv4: none", log, re.MULTILINE):
+            return (name, False, f"/proc/node still shows an address after clear:\n{log[-500:]}")
+
+        return (name, True, "")
+    except Exception as e:
+        return (name, False, str(e))
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+        id_img.unlink(missing_ok=True)
+
+
 def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """I6, plan/phase21_identity_and_authentication.md §5.3: "on the device,
     the credential round-trips and is never printed." (The host-side half of
@@ -4989,6 +5095,7 @@ def main() -> int:
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
@@ -5022,6 +5129,7 @@ def main() -> int:
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))

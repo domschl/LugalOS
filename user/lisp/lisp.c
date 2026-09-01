@@ -2193,27 +2193,9 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * "mount-remote can currently only target the virtio-console link" as
  * deferred; the device registry is what makes resolving one by name
  * possible, so that limitation is closed here. */
-/* Parses one dotted quad. Returns false on anything that is not four
- * 0-255 numbers -- a typo in an address must not become a board silently on
- * the wrong network. */
-static bool parse_ipv4(const char *s, uint8_t out[4]) {
-    if (!s) return false;
-    unsigned part = 0, val = 0, digits = 0;
-    for (;; s++) {
-        if (*s >= '0' && *s <= '9') {
-            val = val * 10u + (unsigned)(*s - '0');
-            if (++digits > 3 || val > 255) return false;
-        } else if (*s == '.' || *s == '\0') {
-            if (digits == 0 || part > 3) return false;
-            out[part++] = (uint8_t)val;
-            val = 0; digits = 0;
-            if (*s == '\0') break;
-        } else {
-            return false;
-        }
-    }
-    return part == 4;
-}
+/* Dotted-quad parsing lives in net/ipv4.c now -- `netcfg` in the shell
+ * needs the identical check, and two copies would agree only until one is
+ * fixed. */
 
 /* `(net-config "ip" "mask" ["gateway"])` -- phase 18 N4 §3, wired to the IP
  * stack by phase 19's R2.
@@ -2241,15 +2223,15 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     uint8_t ip[4], mask[4], gw[4] = { 0, 0, 0, 0 };
     if (!args || args->type != LISP_PAIR) return &false_val;
-    if (!parse_ipv4(get_str_val(args->u.pair.car), ip)) return &false_val;
+    if (!ipv4_parse(get_str_val(args->u.pair.car), ip)) return &false_val;
 
     lisp_val_t *rest = args->u.pair.cdr;
     if (!rest || rest->type != LISP_PAIR) return &false_val;
-    if (!parse_ipv4(get_str_val(rest->u.pair.car), mask)) return &false_val;
+    if (!ipv4_parse(get_str_val(rest->u.pair.car), mask)) return &false_val;
 
     rest = rest->u.pair.cdr;
     if (rest && rest->type == LISP_PAIR) {
-        if (!parse_ipv4(get_str_val(rest->u.pair.car), gw)) return &false_val;
+        if (!ipv4_parse(get_str_val(rest->u.pair.car), gw)) return &false_val;
     }
 
     if (net_set_address(ip, mask, gw) != 0) {
@@ -2614,7 +2596,7 @@ static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
     lisp_val_t *rest = args->u.pair.cdr;
     if (!rest || rest->type != LISP_PAIR) return &false_val;
     uint8_t ip[4];
-    if (!parse_ipv4(get_str_val(rest->u.pair.car), ip)) return &false_val;
+    if (!ipv4_parse(get_str_val(rest->u.pair.car), ip)) return &false_val;
 
     uint16_t port = 564;
     rest = rest->u.pair.cdr;

@@ -130,12 +130,26 @@ def wait_for_bootsel(timeout: float = 15.0) -> str | None:
     return None
 
 
-def wait_for_console(timeout: float = 25.0) -> str | None:
+def wait_for_console(timeout: float = 25.0, console: str | None = None) -> str | None:
+    """The console port to talk to once the board has left BOOTSEL.
+
+    `console` is honoured rather than re-discovered, and that matters as soon
+    as a second board is attached: auto-detection picks whichever RP2350 it
+    finds first, so flashing board A and then verifying board B is a perfectly
+    reachable outcome. It happened -- the flash was correct and the build-id
+    check failed against a completely different board, which reads as "the
+    flash did not take" and is not. When the caller has already said which
+    port it means, believe it.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        ports = rp2350.discover_ports()
-        if ports is not None:
-            return ports.console
+        if console:
+            if Path(console).exists():
+                return console
+        else:
+            ports = rp2350.discover_ports()
+            if ports is not None:
+                return ports.console
         time.sleep(0.5)
     return None
 
@@ -240,7 +254,7 @@ def main() -> int:
     while time.time() < bootsel_gone_deadline and bootsel_volumes():
         time.sleep(0.2)
 
-    console = wait_for_console()
+    console = wait_for_console(console=args.console)
     if not console:
         print("[!] Board did not re-enumerate within the timeout (it may still be fine).")
         return 1

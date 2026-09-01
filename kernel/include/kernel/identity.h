@@ -179,4 +179,33 @@ bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]);
 node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
                                         const uint8_t *psk, uint32_t psk_len);
 
+/* --- Network autoconfig: the address, stored beside the credentials that
+ * reach it. Read at net_task_start(), so a board that has one comes up on
+ * the network with no boot script involved. --- */
+
+#define NODE_IPV4_LEN 4
+
+/* The stored IPv4 configuration, or false if there is none (no store, no
+ * valid record, or no such field). Any of the three outputs may be NULL.
+ * A gateway of 0.0.0.0 is a real answer -- "no route off this segment" --
+ * not an absent one, which is why the three arrive together or not at all. */
+bool node_ipv4(uint8_t ip[NODE_IPV4_LEN], uint8_t mask[NODE_IPV4_LEN],
+               uint8_t gw[NODE_IPV4_LEN]);
+
+/* `netcfg <ip> <mask> [gw]`. Refuses an all-zero address or mask -- both are
+ * configurations that cannot work, and storing one would produce a board
+ * that comes up looking configured while answering nothing. Pass gw as
+ * 0.0.0.0 for a segment with no router. Any existing UID/name/key/WLAN
+ * fields are carried forward unchanged. */
+node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
+                                        const uint8_t mask[NODE_IPV4_LEN],
+                                        const uint8_t gw[NODE_IPV4_LEN]);
+
+/* `netcfg clear`. Removes the field, so the board goes back to coming up
+ * unconfigured. Exists because a *stale* address is the failure this feature
+ * can cause: a board that silently comes up on the wrong subnet looks alive
+ * and answers nothing. Overwriting is not always what is wanted either --
+ * moving a board to DHCP later means removing this, not replacing it. */
+node_id_result_t node_identity_clear_ipv4(void);
+
 #endif /* LUGALOS_KERNEL_IDENTITY_H */

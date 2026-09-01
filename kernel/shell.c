@@ -131,6 +131,7 @@ static void cmd_help(void) {
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
+    cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -679,6 +680,61 @@ static void wlan_print_report(void) {
         cprintf("psk fingerprint: none\n");
     }
     memset(psk, 0, sizeof(psk));
+}
+
+static void netcfg_print_report(void) {
+    uint8_t ip[NODE_IPV4_LEN], mask[NODE_IPV4_LEN], gw[NODE_IPV4_LEN];
+    if (!node_ipv4(ip, mask, gw)) {
+        cprintf("address: none stored -- this board comes up unconfigured\n");
+        cprintf("  netcfg <ip> <mask> [gw]  stores one; it is applied at every boot\n");
+        return;
+    }
+    cprintf("address: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+    cprintf("netmask: %u.%u.%u.%u\n", mask[0], mask[1], mask[2], mask[3]);
+    if ((gw[0] | gw[1] | gw[2] | gw[3]) == 0) {
+        cprintf("gateway: none (no route off this segment)\n");
+    } else {
+        cprintf("gateway: %u.%u.%u.%u\n", gw[0], gw[1], gw[2], gw[3]);
+    }
+}
+
+/* `netcfg` -- the address this board comes up on, stored in the identity
+ * record rather than in a boot script. See kernel/include/kernel/idstore.h's
+ * IDSTORE_FIELD_IPV4 for why that distinction matters: the filesystem image
+ * is identical on every board, and it should stay that way. */
+static void cmd_netcfg(const char *arg) {
+    if (!arg || !*arg) { netcfg_print_report(); return; }
+
+    if (strcmp(arg, "clear") == 0) {
+        node_id_result_t rc = node_identity_clear_ipv4();
+        if (rc == NODE_ID_OK) cprintf("netcfg: cleared -- this board will come up unconfigured\n");
+        else                  cprintf("netcfg: %s\n", node_id_result_str(rc));
+        return;
+    }
+
+    char ipstr[24], maskstr[24], gwstr[24];
+    const char *p = arg;
+    p = next_token(p, ipstr, sizeof(ipstr));
+    p = next_token(p, maskstr, sizeof(maskstr));
+    next_token(p, gwstr, sizeof(gwstr));
+
+    if (ipstr[0] == '\0' || maskstr[0] == '\0') {
+        cprintf("usage: netcfg <ip> <mask> [gw] | netcfg clear | netcfg\n");
+        return;
+    }
+
+    uint8_t ip[NODE_IPV4_LEN], mask[NODE_IPV4_LEN], gw[NODE_IPV4_LEN] = { 0, 0, 0, 0 };
+    if (!ipv4_parse(ipstr, ip))     { cprintf("netcfg: '%s' is not a dotted quad\n", ipstr); return; }
+    if (!ipv4_parse(maskstr, mask)) { cprintf("netcfg: '%s' is not a dotted quad\n", maskstr); return; }
+    if (gwstr[0] != '\0' && !ipv4_parse(gwstr, gw)) {
+        cprintf("netcfg: '%s' is not a dotted quad\n", gwstr);
+        return;
+    }
+
+    node_id_result_t rc = node_identity_set_ipv4(ip, mask, gw);
+    if (rc != NODE_ID_OK) { cprintf("netcfg: %s\n", node_id_result_str(rc)); return; }
+    cprintf("netcfg: stored -- applied at every boot, before the stack task starts\n");
+    netcfg_print_report();
 }
 
 static void cmd_wlan(const char *arg) {
@@ -1928,6 +1984,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "wlan ", 5) == 0) {
         cmd_wlan(&cmd_line[5]);
+        return;
+    } else if (strcmp(cmd_line, "netcfg") == 0) {
+        cmd_netcfg(NULL);
+        return;
+    } else if (strncmp(cmd_line, "netcfg ", 7) == 0) {
+        cmd_netcfg(&cmd_line[7]);
         return;
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();

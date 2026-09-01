@@ -44,6 +44,7 @@ FIELD_UID = 1
 FIELD_NAME = 2
 FIELD_WLAN_SSID = 4
 FIELD_WLAN_PSK = 5
+FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
 
 WLAN_PSK_LEN = 32  # WPA2's PSK is always 256 bits -- kernel/identity.h's NODE_WLAN_PSK_LEN
 
@@ -137,6 +138,10 @@ def main() -> int:
     ap.add_argument("--wlan-ssid", help="the network's SSID (I6, §5.3)")
     ap.add_argument("--wlan-passphrase", help="the network's WPA2 passphrase -- derived into a PSK here, "
                                               "never written to the image or sent to the board")
+    ap.add_argument("--ipv4", metavar="IP/MASK[/GW]",
+                    help="the address this board comes up on, e.g. 192.168.1.50/255.255.255.0/192.168.1.1. "
+                         "Stored in the record rather than in a boot script, so the filesystem image stays "
+                         "identical on every board; applied when the network stack starts")
     ap.add_argument("--selftest", action="store_true",
                     help="check derive_wpa2_psk() against the IEEE 802.11i worked example and exit")
     args = ap.parse_args()
@@ -173,6 +178,33 @@ def main() -> int:
         psk_hex = psk.hex()
         fields.append((FIELD_WLAN_SSID, args.wlan_ssid.encode("utf-8")))
         fields.append((FIELD_WLAN_PSK, psk))
+
+    if args.ipv4:
+        parts = args.ipv4.split("/")
+        if len(parts) not in (2, 3):
+            sys.exit("--ipv4 wants IP/MASK or IP/MASK/GW")
+        if len(parts) == 2:
+            parts.append("0.0.0.0")   # no router on this segment; a real configuration
+        quads = b""
+        for part in parts:
+            octets = part.split(".")
+            if len(octets) != 4:
+                sys.exit(f"--ipv4: '{part}' is not a dotted quad")
+            try:
+                vals = [int(o) for o in octets]
+            except ValueError:
+                sys.exit(f"--ipv4: '{part}' is not a dotted quad")
+            if any(v < 0 or v > 255 for v in vals):
+                sys.exit(f"--ipv4: '{part}' has an octet outside 0-255")
+            quads += bytes(vals)
+        # Same refusals as kernel/identity.c's node_identity_set_ipv4(): an
+        # all-zero address or mask describes a board that comes up looking
+        # configured and answering nothing.
+        if quads[0:4] == b"\0\0\0\0":
+            sys.exit("--ipv4: 0.0.0.0 is not an address")
+        if quads[4:8] == b"\0\0\0\0":
+            sys.exit("--ipv4: a zero netmask puts every destination off-link")
+        fields.append((FIELD_IPV4, quads))
 
     record = build_record(fields)
     with open(args.output, "wb") as f:

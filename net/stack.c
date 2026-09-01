@@ -204,9 +204,64 @@ uint32_t net_poll(uint32_t budget) {
  * U-mode driver task in the M5 style, with the stack above it in its own
  * domain. Recorded here rather than in a plan file alone, because the next
  * person to read this function will ask. */
+/* Network autoconfig: if this board's identity record carries an address,
+ * apply it once, here, on the stack task's first pass.
+ *
+ * Storing the address in the record rather than in init.lisp is the point --
+ * since I7a the filesystem image is byte-identical on every board, and a
+ * per-board address in a boot script would have cost that. The boot script
+ * stays the same everywhere; the per-board part lives beside the SSID and
+ * PSK it is reached with.
+ *
+ * **Why here and not in net_task_start(), where this first went.** On a
+ * wireless board net_task_start() is called from cyw43_probe_locked(), i.e.
+ * from *inside* the driver's bus lock -- and net_set_address() ends with a
+ * gratuitous ARP, which transmits, which takes that same lock at the driver's
+ * public entry point. The lock is deliberately not reentrant (see
+ * drivers/cyw43_rp2350.c's g_busy, and the commit that added it), so the
+ * board deadlocked on `wifi probe` with the console gone. It cost a physical
+ * BOOTSEL to recover, and the mistake was assuming a transmit during bring-up
+ * was free because the link was down: the frame goes nowhere, but the lock is
+ * taken all the same. On this task's own stack there is no driver frame
+ * below us and transmitting is ordinary.
+ *
+ * **And only once the link is up**, which is both the safer and the more
+ * useful moment. Safer: on a wireless board the interface appears during
+ * `wifi probe`, while the driver is holding its bus for a 231 KB firmware
+ * upload -- transmitting into that means spinning on the bus lock at the
+ * busiest moment this driver ever has, and the observed cost was the USB
+ * console dying (the board stayed up and answered 9P on its other port
+ * throughout, which is how this was diagnosed rather than guessed). More
+ * useful: net_set_address()'s gratuitous ARP is the point of transmitting at
+ * all, and with no carrier it goes nowhere. Waiting for carrier means the
+ * segment actually learns the board, exactly as it does after an explicit
+ * (net-config ...).
+ *
+ * Runs once. An explicit (net-config ...) afterwards still wins -- and if one
+ * ran before carrier arrived, g_net.configured is already set and this leaves
+ * it alone. */
+static void net_autoconfig_once(void) {
+    static bool done;
+    if (done) return;
+    if (!g_net.nif || !netif_link_up(g_net.nif)) return;   /* not yet -- try again next pass */
+    done = true;
+
+    if (g_net.configured) return;
+    uint8_t ip[NODE_IPV4_LEN], mask[NODE_IPV4_LEN], gw[NODE_IPV4_LEN];
+    if (!node_ipv4(ip, mask, gw)) return;
+    if (net_set_address(ip, mask, gw) != 0) return;
+    printk("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u (from the identity record)\n",
+           ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
+           gw[0], gw[1], gw[2], gw[3]);
+}
+
 static void net_task_body(void *arg) {
     (void)arg;
     for (;;) {
+        /* Cheap once it has run: a single bool test. Inside the loop rather
+         * than before it because it waits for carrier, which on a wireless
+         * board arrives long after this task starts. */
+        net_autoconfig_once();
         net_poll(4);
         /* Timers, then 9P on established connections, then transmit -- all on
          * this call stack, which is what lets net/tcp.c hold no locks. */
@@ -217,11 +272,7 @@ static void net_task_body(void *arg) {
 
 int net_task_start(void) {
     if (!g_net.nif) return -1;
-    /* Three pages, matching `p9srv`, and for the same reason: this task now
-     * runs the 9P server for every TCP connection (tcp_service()), so its
-     * worst-case depth is the server's, not a poll loop's. Phase 18 spent a
-     * long detour through hardware on a p9srv stack that was one page short
-     * -- see fs/p9_link.c's p9_server_task_start(). */
+
     int pid = task_create_sized("netsrv", net_task_body, NULL, 3);
     if (pid < 0) printk("[Net] Could not start the stack task.\n");
     return pid;

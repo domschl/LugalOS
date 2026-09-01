@@ -63,6 +63,10 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
                     const uint8_t gw[IPV4_LEN]);
 
 bool net_configured(void);
+
+/* Parses one dotted quad into four bytes. False on anything else -- see the
+ * implementation for why a strict parser matters here. */
+bool ipv4_parse(const char *s, uint8_t out[IPV4_LEN]);
 /* The human-readable report behind both `net` and `(net-status)`. */
 void net_print_status(void);
 const net_state_t *net_state(void);

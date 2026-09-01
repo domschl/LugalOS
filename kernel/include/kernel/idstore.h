@@ -62,6 +62,20 @@ typedef enum {
                                     * tools/provision.py's derive_wpa2_psk(). Lands with phase
                                     * 19's R5 (the CYW43 driver) and is unused before it, same
                                     * as IDSTORE_FIELD_DEVKEY was between I3 and I4. */
+    IDSTORE_FIELD_IPV4      = 6,  /* instance scope: exactly 12 bytes -- ip[4], mask[4], gw[4],
+                                    * in dotted-quad order, the same layout net_set_address()
+                                    * takes. **One field rather than three**, because the three
+                                    * numbers are not independently meaningful: an address
+                                    * without its mask is not a configuration, and three fields
+                                    * would make a half-written one representable. A gateway of
+                                    * 0.0.0.0 is valid and means "no route off this segment".
+                                    *
+                                    * This is what keeps per-board addressing out of init.lisp.
+                                    * Since I7a the filesystem image is byte-identical on every
+                                    * board; putting an address in a boot script would make it
+                                    * per-board again and cost that property. So the address
+                                    * lives here, beside the SSID and PSK it is reached with,
+                                    * and the boot script stays the same everywhere. */
 } idstore_field_type_t;
 
 typedef struct {

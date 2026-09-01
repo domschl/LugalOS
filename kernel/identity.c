@@ -273,6 +273,13 @@ typedef struct {
     const uint8_t *key;     uint32_t key_len;
     const char    *ssid;    uint32_t ssid_len;
     const uint8_t *psk;     uint32_t psk_len;     /* NODE_WLAN_PSK_LEN bytes, or NULL */
+    /* The IPv4 config, as one 12-byte blob. `clear_ipv4` is not the same as
+     * leaving `ipv4` NULL: NULL means "carry whatever is on record forward",
+     * which is the right default for every other setter, while clearing has
+     * to be expressible or a stale address could only ever be overwritten,
+     * never removed. */
+    const uint8_t *ipv4;
+    bool           clear_ipv4;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -338,6 +345,16 @@ static int identity_store_write(const identity_patch_t *patch) {
         have_psk = idstore_get_field(&old, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
     }
 
+    uint8_t  final_ipv4[3 * NODE_IPV4_LEN];
+    bool     have_ipv4 = false;
+    if (patch->ipv4) {
+        memcpy(final_ipv4, patch->ipv4, sizeof(final_ipv4));
+        have_ipv4 = true;
+    } else if (old_valid && !patch->clear_ipv4) {
+        have_ipv4 = idstore_get_field(&old, IDSTORE_FIELD_IPV4, final_ipv4,
+                                      sizeof(final_ipv4)) == (int)sizeof(final_ipv4);
+    }
+
     idstore_writer_t w;
     idstore_writer_init(&w);
     int rc = 0;
@@ -346,6 +363,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (final_key_len > 0)   rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
     if (final_ssid_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_SSID, final_ssid, (uint16_t)final_ssid_len);
     if (have_psk)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk));
+    if (have_ipv4)           rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
     if (rc != 0) return -1;
@@ -479,6 +497,59 @@ node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
     if (!psk || psk_len != NODE_WLAN_PSK_LEN) return NODE_ID_ERR_BAD_INPUT;
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     identity_patch_t patch = { .ssid = ssid, .ssid_len = ssid_len, .psk = psk, .psk_len = psk_len };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
+}
+
+/* --- Network autoconfig ------------------------------------------------- */
+
+static bool ipv4_all_zero(const uint8_t q[NODE_IPV4_LEN]) {
+    return (q[0] | q[1] | q[2] | q[3]) == 0;
+}
+
+bool node_ipv4(uint8_t ip[NODE_IPV4_LEN], uint8_t mask[NODE_IPV4_LEN],
+               uint8_t gw[NODE_IPV4_LEN]) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+
+    uint8_t buf[3 * NODE_IPV4_LEN];
+    if (idstore_get_field(&rec, IDSTORE_FIELD_IPV4, buf, sizeof(buf)) != (int)sizeof(buf)) {
+        return false;
+    }
+    if (ip)   memcpy(ip,   buf,                     NODE_IPV4_LEN);
+    if (mask) memcpy(mask, buf + NODE_IPV4_LEN,     NODE_IPV4_LEN);
+    if (gw)   memcpy(gw,   buf + 2 * NODE_IPV4_LEN, NODE_IPV4_LEN);
+    return true;
+}
+
+node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
+                                        const uint8_t mask[NODE_IPV4_LEN],
+                                        const uint8_t gw[NODE_IPV4_LEN]) {
+    if (!ip || !mask || !gw) return NODE_ID_ERR_BAD_INPUT;
+
+    /* Both of these describe a board that would come up looking configured
+     * and answering nothing, which is a worse outcome than refusing: 0.0.0.0
+     * is not an address, and a zero mask puts every destination off-link with
+     * no way to reach even a neighbour. A zero *gateway* is deliberately
+     * allowed -- that is a segment with no router, which is a real setup. */
+    if (ipv4_all_zero(ip) || ipv4_all_zero(mask)) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+
+    uint8_t blob[3 * NODE_IPV4_LEN];
+    memcpy(blob,                     ip,   NODE_IPV4_LEN);
+    memcpy(blob + NODE_IPV4_LEN,     mask, NODE_IPV4_LEN);
+    memcpy(blob + 2 * NODE_IPV4_LEN, gw,   NODE_IPV4_LEN);
+
+    identity_patch_t patch = { .ipv4 = blob };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
+}
+
+node_id_result_t node_identity_clear_ipv4(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .clear_ipv4 = true };
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
     return NODE_ID_OK;
 }

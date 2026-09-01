@@ -659,6 +659,39 @@ $ cd tests/hw && uv run test_wifi.py 192.168.178.21
 pass means the radio path worked, not that a console cable did. Add `--soak-minutes 15` for the
 sustained run.
 
+### 4b. Let the board bring itself up next time (`netcfg`)
+
+Everything above is typed once. Store the address in the **identity record**
+and the board applies it by itself from then on:
+
+```bash
+lsh> wlan DOSC <psk-hex>                                   # once, ever
+lsh> netcfg 192.168.178.21 255.255.255.0 192.168.178.1     # once, ever
+netcfg: stored -- applied at every boot, before the stack task starts
+```
+
+After that, `wifi probe` and `wifi join` — with **no arguments** — are the
+whole bring-up: the SSID, the PSK and the address all come out of flash.
+`netcfg` on its own shows what is stored, `netcfg clear` removes it, and
+`cat /proc/node` reports it over 9P so you can ask a board what address it
+will have *before* rebooting it.
+
+**Why the record and not `init.lisp`.** Since I7a the `/flash0` image is
+byte-identical on every board, and that is worth keeping: an address in a boot
+script would make the filesystem per-board again and force a per-device
+`flashfs.uf2`. The record is already per-board, already survives reflashing,
+and already holds the credentials the address is reached with — so the boot
+script stays the same everywhere and only the record differs. `tools/provision.py
+--ipv4 IP/MASK[/GW]` writes the same field from the host.
+
+The address is applied **once carrier appears**, not at probe time. That is
+also when the gratuitous ARP is worth sending, so the segment learns the board
+immediately rather than after somebody's stale cache expires.
+
+There is still no DHCP client (deliberately — see
+`plan/phase19_ip_stack_and_ethernet.md` §7), so a reservation in the router
+keyed on the radio's own MAC (`net` reports it) is the companion to this.
+
 ### 5. Mount the whole namespace on the host (`fuse-p9` over TCP)
 
 Once the board is listening, `host/fuse-p9` turns its entire 9P namespace into an ordinary

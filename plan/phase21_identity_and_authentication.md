@@ -1,8 +1,9 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
 **Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7a and I7b
-complete 2026-09-01 (§3.3); the phase is done bar one hardware verify
-item named in I7b (a genuinely interrupted write).** Independent of the phase it
+complete 2026-09-01 (§3.3); I9 (network autoconfig) done the same
+day; the phase is done bar one hardware verify item named in I7b (a
+genuinely interrupted write).** Independent of the phase it
 grew out of.
 
 **Amended 2026-09-01, before starting I7, in response to a design review that
@@ -963,6 +964,63 @@ two-image procedure followed cold.
   UNPROVISIONED (see the correction above) rather than as a plausible record
   -- so the dangerous outcome, silently accepting damaged data, needs the
   magic to survive while the fields do not.
+
+**I9 -- network autoconfig from the record. Done 2026-09-01.** Proposed and
+built after I7b, in answer to a direct question: should `init.lisp` carry the
+network setup? No -- and the reason is I7a. The `/flash0` image is now
+byte-identical on every board, and an address in a boot script would make it
+per-board again and force a per-device `flashfs.uf2`. The record is already
+per-board, already survives reflashing, and already holds the credentials the
+address is reached with, so the address belongs beside them and the boot
+script stays the same everywhere.
+
+`IDSTORE_FIELD_IPV4`, **one field of 12 bytes rather than three of four**:
+ip, mask and gw are not independently meaningful (an address without its mask
+is not a configuration) and three fields would make a half-written one
+representable. A zero gateway is valid and means "no route off this segment";
+a zero address or mask is refused on both sides, because either describes a
+board that comes up looking configured and answering nothing.
+
+`netcfg [<ip> <mask> [gw]] | clear`, reported by `netcfg`, `/proc/node` and
+`tools/provision.py --ipv4 IP/MASK[/GW]` -- the last so the host and device
+implementations of the record agree on this field, as I2 and I6 established
+for theirs. `clear` exists because a *stale* address is the failure this
+feature can cause, and moving a board to DHCP later means removing the field
+rather than overwriting it. `parse_ipv4()` moved out of `user/lisp/lisp.c`
+into `net/ipv4.c` as `ipv4_parse()` rather than being copied: two parsers
+agree only until one of them is fixed, and this one had already been tightened
+once.
+
+*Verified:* `tests/runner.py`'s new case asserts the property that matters --
+**nothing is typed before the check**, so a configured interface can only have
+come from the record (298/298, both arches). On hardware the whole bring-up is
+now `wifi probe` and `wifi join` with no arguments: link up, address
+192.168.178.21 from the record, gratuitous ARP sent, host ping 5/5 at 0% loss.
+
+**Where it runs, which took three attempts and is worth recording.**
+
+1. In `net_task_start()`. Wrong: on a wireless board that is called from
+   `cyw43_probe_locked()`, i.e. inside the driver's bus lock, and
+   `net_set_address()` ends with a gratuitous ARP, which transmits, which
+   takes the same non-reentrant lock at the driver's public entry point
+   (`f17e930` added that lock and said so). The reasoning error was assuming a
+   transmit during bring-up was free because the link was down -- the frame
+   goes nowhere, but the lock is taken all the same.
+2. In the stack task's body, before the loop. Better, but still transmitting
+   while `wifi probe` held the bus for its 231 KB firmware upload; the task
+   spun on the lock and starved the USB console for the duration.
+3. **In the loop, gated on carrier.** Safer and more useful at once: no
+   contention with the upload, and the gratuitous ARP -- the only reason to
+   transmit here -- actually reaches the network instead of going nowhere.
+
+**A diagnostic worth reusing.** Attempts 1 and 2 both presented as "the board
+is dead", and in attempt 2 it was not: reading `/proc/net` over 9P on the
+*other* USB port showed the board alive, `wlan0` registered, and the address
+already applied from the record. The console was starved, not the board. The
+first attempt was declared wedged and recovered with a physical BOOTSEL --
+possibly too early, since the second recovered on its own once the upload
+finished. **Check the out-of-band 9P port before concluding a board is
+hung**; see the note in this project's own memory on that channel.
 
 **I8 -- documentation.** A README section that states §7 in full, the
 provisioning walkthrough, and what a wrong fingerprint looks like.

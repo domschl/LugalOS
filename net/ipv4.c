@@ -145,3 +145,31 @@ void ip_input(const uint8_t *frame, uint32_t len) {
             break;
     }
 }
+
+/* Parses one dotted quad. Returns false on anything that is not four 0-255
+ * numbers -- a typo in an address must not become a board silently on the
+ * wrong network.
+ *
+ * Lived as a static in user/lisp/lisp.c until `netcfg` needed the identical
+ * check in the shell. Copying it would have meant two parsers that agree
+ * until one of them is fixed, and this one has already been tightened once
+ * (the digit-count and range guards). It belongs beside the addresses it
+ * validates. */
+bool ipv4_parse(const char *s, uint8_t out[IPV4_LEN]) {
+    if (!s || !out) return false;
+    unsigned part = 0, val = 0, digits = 0;
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9') {
+            val = val * 10u + (unsigned)(*s - '0');
+            if (++digits > 3 || val > 255) return false;
+        } else if (*s == '.' || *s == '\0') {
+            if (digits == 0 || part > 3) return false;
+            out[part++] = (uint8_t)val;
+            val = 0; digits = 0;
+            if (*s == '\0') break;
+        } else {
+            return false;
+        }
+    }
+    return part == 4;
+}
