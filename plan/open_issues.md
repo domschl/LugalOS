@@ -114,6 +114,37 @@ thing to do before joining somewhere else.
 
 ---
 
+## The console runs away if it is written to while the clock app owns it
+
+**Trigger:** on the `rp2350-clock` persona, send Ctrl-C to hand the console
+back from the clock application, then immediately write a command. Observed
+once, 2026-09-01. The shell banner appears correctly, then the session
+degrades into evaluating fragments of its own output -- `Unbound symbol:
+lsh:`, `=> (lsh: "command" "li")` -- repeating for as long as it is watched,
+with `[Lisp Error] Node pool exhausted!` alongside. The board itself keeps
+running: its network task, its radio and its 9P server were all still
+answering afterwards.
+
+**Why it is parked:** it needs a very specific gesture -- writing into the
+console in the moment it is being handed back, before the line editor has
+settled -- and the recovery is a reboot, which a clock being carried to a new
+location gets anyway. Nothing that runs unattended does this.
+
+**What is not established:** whether the trigger is the write racing the
+hand-back, or a flood of buffered clock-app output being re-read as input.
+Both are consistent with what was seen, and telling them apart needs the
+gesture repeated deliberately with the console's own echo path instrumented,
+which was not worth doing mid-measurement. Recorded rather than diagnosed, on
+purpose -- the next person to meet it should know it is known and that the
+board is not damaged.
+
+**Fix, when it is worth it:** likely in `kernel/line_editor.c`'s handling of
+input arriving while a foreground application is releasing the console, and
+the "command line too long, ignored" that precedes the runaway is probably the
+first symptom rather than an unrelated message.
+
+---
+
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
 
 **Trigger:** open and close 9P/TCP sessions in a tight loop. The third
