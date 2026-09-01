@@ -540,7 +540,7 @@ The `rp2350-wifi` persona drives the Pico 2 W's on-board CYW43439 over a bit-ban
 ENC28J60 gateway uses. See `plan/phase19_ip_stack_and_ethernet.md` R5 for how it was built.
 
 ```bash
-$ cmake --preset rp2350-wifi && cmake --build build/rp2350-wifi
+$ cmake --preset rp2350-wifi && cmake --build build/rp2350-wifi   # or rp2350-clock, which also carries the radio
 $ cd tests/hw
 $ uv run flash.py --uf2 ../../build/rp2350-wifi/flashfs.uf2   # once, or when tools/sd_root changes
 $ uv run flash.py --uf2 ../../build/rp2350-wifi/lugalos.uf2

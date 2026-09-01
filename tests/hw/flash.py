@@ -269,6 +269,17 @@ def main() -> int:
             with serial.Serial(console, 115200, timeout=2) as ser:
                 ser.dtr = True
                 time.sleep(0.4)
+                # Ctrl-C first: a persona that boots straight into an
+                # application owns the console, and there is no shell prompt
+                # to answer until it is interrupted. rp2350-clock does exactly
+                # that, and --verify reported "board=None" against a board
+                # that had just been flashed perfectly -- the same class of
+                # false accusation as the wrong-preset and wrong-board bugs
+                # above. Harmless where no app is running: Ctrl-C at a shell
+                # prompt does nothing.
+                ser.write(b"\x03")
+                ser.flush()
+                time.sleep(0.5)
                 ser.reset_input_buffer()
                 ser.write(b"cat /proc/buildid\n")
                 ser.flush()

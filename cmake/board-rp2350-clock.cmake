@@ -173,3 +173,26 @@ set(CONFIG_DCF77_PON_ACTIVE_LOW   1)
 # receiver has been running since the board was powered, so the driver waits
 # only for whatever part of this has not already elapsed since boot.
 set(CONFIG_DCF77_WARMUP_MS     5000)
+
+# --- CYW43439 wireless -----------------------------------------------------
+#
+# The board under the Pico-Clock-Green baseboard is a Pico 2 W, so the radio
+# has been sitting there unused. Enabling it is what lets this persona stop
+# being a clock that has to be told the time: an NTP client (phase 19's R6),
+# or the inverse -- a DCF77-disciplined clock *serving* time to the segment.
+#
+# Same four pins as cmake/board-rp2350-wifi.cmake, and they cost this
+# baseboard nothing: GP23/24/25/29 are internal to the Pico 2 W module and
+# never reach the 40-pin header, so no baseboard can be using them. Checked
+# against this file's own assignments before enabling -- the clock takes
+# GP0,1,2,6,7,9,10,11,12,13,14,15,16,17,18,22,26,27,28, and none of those is
+# one of these four.
+#
+#   GP23  WL_ON    wireless module power enable (WL_REG_ON), active high
+#   GP24  WL_D     gSPI data, bidirectional, one wire
+#   GP25  WL_CS    gSPI chip select (NOT the onboard LED on a W)
+#   GP29  WL_CLK   gSPI clock
+set(CONFIG_WL_ON_GPIO   23)
+set(CONFIG_WL_DATA_GPIO 24)
+set(CONFIG_WL_CS_GPIO   25)
+set(CONFIG_WL_CLK_GPIO  29)
