@@ -3460,6 +3460,20 @@ def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str
         if "stratum 1 (GPS)" not in log:
             return (name, False, f"stratum/refid not reported: {log[-400:]}")
 
+        # The offset is 1775 days -- 153,362,096,500 ms, which does not fit in
+        # a 32-bit `long`, and `long` is 32 bits on RV32 and on RP2350. This
+        # assertion exists because the first version of this test checked only
+        # that the clock was set, and that passed on RV64 while the same build
+        # on real RP2350 hardware printed a truncated, confidently-signed
+        # -231194430 ms beside a clock it had just set correctly. Asserting the
+        # *reported* figure is what makes a 64-bit value printed through a
+        # 32-bit path a test failure rather than a hardware surprise.
+        if "offset     : +1775 d " not in log:
+            return (name, False,
+                    "offset misreported -- expected '+1775 d ...' (153362096500 ms). "
+                    "A 32-bit truncation prints -1256726156 instead. "
+                    f"Got: {log[-500:]}")
+
         req = seen.get("req")
         sport = seen.get("sport")
         if not isinstance(req, (bytes, bytearray)) or len(req) < 48:

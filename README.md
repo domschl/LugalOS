@@ -19,7 +19,8 @@ a feature isn't listed here as working, treat it as roadmap, not present-tense f
 
 **Working today**, verified by the automated test suite (`tests/runner.py`, 300 tests on QEMU RV32
 NOMMU and RV64 MMU) and by hardware-in-the-loop suites (`tests/hw/`, against real RP2350 silicon:
-24 core tests, 15 more for the wired gateway, 6 over the radio):
+24 core tests, 15 more for the wired gateway, 6 over the radio, 3 against a
+GPS-disciplined reference clock):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
@@ -197,7 +198,7 @@ NOMMU and RV64 MMU) and by hardware-in-the-loop suites (`tests/hw/`, against rea
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 300 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus hardware-in-the-loop suites (`tests/hw/`: 24 core tests, 15 for the wired gateway, 6 over the radio) that drive real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 300 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus hardware-in-the-loop suites (`tests/hw/`: 24 core tests, 15 for the wired gateway, 6 over the radio, 3 against a GPS-disciplined reference clock) that drive real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 * **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
 * **FUSE Filesystem (`host/fuse-p9`)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. Over USB with `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos`, or over the network with `--tcp <addr>` against either a WiFi or a wired-Ethernet board (see [Mount the whole namespace on the host](#5-mount-the-whole-namespace-on-the-host-fuse-p9-over-tcp)). Verified on Linux, over TCP against a Pico 2 W on WiFi; macOS (via macFUSE) is written and reaches the same code path, but is untested end-to-end — see [`host/fuse-p9/README.md`](host/fuse-p9/README.md) for why (Apple Silicon's default security policy blocks third-party system extensions short of a Recovery Mode trip, which is the user's call, not ours to push).
 
@@ -714,21 +715,24 @@ the `no-port 1` and the ICMP the board sent back in reply.)
 lsh> ntp
 ntp: asking the gateway, 192.168.77.1
 ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
-  offset     : +2334007138 ms   (what was added to our clock)
-  round trip : 5 ms
-  clock set  : 2026-09-01 12:20:07.392 UTC
+  offset     : +27 d 01:02:09.293   (what was added to our clock)
+  round trip : 6 ms
+  clock set  : 2026-09-01 13:02:09.554 UTC
 
 lsh> ntp
 ntp: asking the gateway, 192.168.77.1
 ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
-  offset     : +7 ms   (what was added to our clock)
-  round trip : 19 ms
-  clock set  : 2026-09-01 12:20:07.438 UTC
+  offset     : +8 ms   (what was added to our clock)
+  round trip : 20 ms
+  clock set  : 2026-09-01 13:02:09.599 UTC
 ```
 
 The first offset is 27 days because a board that has never been told the time starts at the
 instant compiled into `kernel/time.c`, and the client steps rather than slews — there is nothing
-to protect. The second is what a sync against an already-set clock looks like. `stratum 2 (via …)`
+to protect. The scale follows the magnitude: milliseconds is the right unit for a sync against a
+running clock and a useless one for a quarter of a century, which is also why the offset is not
+printed as a plain `%ld` — `long` is 32 bits on RV32 and RP2350, and a first sync overflows it.
+The second line is what a sync against an already-set clock looks like. `stratum 2 (via …)`
 names the server's *own* upstream, so a chain is visible from here; a stratum-1 server shows its
 reference clock's four-character id instead, `(GPS)` or `(DCF)`.
 
@@ -738,11 +742,15 @@ thing from Lisp, returning the offset in milliseconds so a boot script can tell 
 from "two minutes out"; it belongs on the line after the network line in
 `/sd0/system/etc/usr_init.lisp`.
 
+Measured on hardware against a GPS-disciplined stratum-1 on the same LAN, over WiFi, consecutive
+syncs report **+1, +0, +0 ms with a 6–9 ms round trip** — at the resolution limit of a clock that
+counts milliseconds, so the real figure is below what the board can express.
+
 This is a client, and only a client: one query, applied as a step, no poll loop and no frequency
-discipline. Two things follow that are worth knowing before relying on it. The board's oscillator
-is a ±30 ppm crystal, so between syncs it drifts up to ~2.6 s/day — a single sync at boot is not
-the same as a disciplined clock. And the reply's accuracy is bounded by path asymmetry, which over
-WiFi is tens of milliseconds and which no NTP client can see or correct.
+discipline. The thing worth knowing before relying on it is not the query's accuracy but what
+happens between queries — the board's oscillator is a ±30 ppm crystal, so it drifts up to ~2.6 s/day.
+A single sync at boot is not the same as a disciplined clock, and closing that gap is
+`plan/phase24_dcf77_precision_and_ntp_server.md`. `tests/hw/test_ntp.py` is the repeatable check.
 
 ## Wireless: joining a WiFi network (RP2350W / Pico 2 W)
 

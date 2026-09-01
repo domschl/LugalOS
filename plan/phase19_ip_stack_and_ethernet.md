@@ -1286,6 +1286,61 @@ reply whose origin timestamp does not echo the request, and requires that to
 be refused: that check plus the random ephemeral source port are the only two
 things standing between this client and an off-path forgery.
 
+**Hardware-verified 2026-09-01, against a GPS-disciplined stratum-1** at
+192.168.178.23, over WiFi, on an `rp2350-wifi` board that had brought its own
+radio and address up from the identity record with nothing typed:
+
+    ntp: 192.168.178.23 stratum 1 (PPS0)
+      offset     : +1 ms   (what was added to our clock)
+      round trip : 6 ms
+
+Consecutive syncs reported **+1, +0, +0 ms** with a 6-9 ms round trip. Two
+things worth carrying into phase 24 from that:
+
+* **The radio costs far less than assumed.** The working estimate was that
+  WiFi would bound a served time at 20-50 ms. Measured, the whole network
+  path contributes about a millisecond -- the offsets above are at the
+  resolution limit of a clock that only counts milliseconds, so the true
+  figure is somewhere below what this can express. Phase 24's §2 conclusion
+  (spend the effort on the receiver, not the network) is now measured rather
+  than argued.
+* **`PPS0` exercised the stratum-1 refid path**, which no stratum-2 server
+  would have: a reference clock's id is four ASCII characters, an upstream
+  server's is an IPv4 address, and the two are printed differently.
+
+**And it found a bug that QEMU could not.** The first sync printed a
+truncated, confidently-signed `-231197967 ms` beside a clock it had just set
+*correctly* to within 200 ms of the host. `long` is 32 bits on RV32 and
+RP2350; the true offset was 841,582,395,586 ms -- a board that has never been
+told the time starts in 2000 -- and `ntp_print_result()` cast an `int64_t`
+through `%ld`. The clock was right because every path that computes uses
+`int64_t`; only the rendering was wrong, which is the most dangerous shape a
+numeric bug has.
+
+Three things came out of that, and the second is the one worth remembering:
+
+1. `fmt_interval()` splits the value into fields that each fit in 32 bits,
+   and picks its unit by magnitude -- ms for a sync against a running clock,
+   `d hh:mm:ss.mmm` for a quarter of a century. Better output as well as
+   correct output; `kernel/printk.c` supports one `l` and no `%lld`, and
+   teaching it 64-bit varargs to serve one caller was the wrong trade.
+2. **The QEMU test now asserts the reported offset, not merely that the clock
+   was set.** It had passed on RV64 -- where `long` is 64 bits -- while the
+   same source was wrong on RV32 and on hardware. The test's own first sync is
+   1775 days, 153,362,096,500 ms, which a 32-bit path renders as
+   -1256726156: asserting the figure makes that a software failure rather
+   than a hardware surprise. A test that checks an effect and not the number
+   that explains it will keep missing this class.
+3. `(ntp-sync)` saturates rather than truncates on the way into a Lisp
+   integer, which is also a `long`. A script asking "was the clock far out?"
+   was being told "no".
+
+`tests/hw/test_ntp.py` is the repeatable form: sync, assert stratum 1 with a
+four-character refid, then assert a *second* consecutive sync reports a small
+offset -- which is the only check that proves the first one was applied and
+that the sign is right -- plus an unreachable server failing in ~1.3 s rather
+than hanging. 3/3 on the bench.
+
 Two things found while writing that test, both worth keeping:
 
 * `NetPeer.received()` never forgets a frame, so a responder that re-reads the

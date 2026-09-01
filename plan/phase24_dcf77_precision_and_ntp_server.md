@@ -90,6 +90,18 @@ measure against already exists, and R6 already speaks to it.
 * **A 1 µs monotonic counter**: TIMER0, read in two instructions by
   `kernel/time.c`.
 
+* **A working NTP client, hardware-verified against the reference this phase
+  will measure against** (R6, and `tests/hw/test_ntp.py`). P0 needs no new
+  transport, only a log.
+
+* **A warning about `long`.** It is 32 bits on RV32 and RP2350. R6 shipped a
+  correct clock with a truncated *printed* offset because an `int64_t` went
+  through `%ld`, and `kernel/printk.c` supports one `l` and no `%lld`. Every
+  quantity this phase adds -- microsecond timestamps, ppm estimates,
+  dispersion in µs -- is wider than 32 bits or derived from something that is.
+  Assume nothing prints itself correctly; `net/ntp.c`'s `fmt_interval()` is
+  the pattern.
+
 * **The GPIO register block** for the DCF pin already exists in
   `drivers/dcf77_rp2350.c` (IO_BANK0 / PADS_BANK0 / SIO). The interrupt
   registers it does not yet touch are at IO_BANK0 + 0x230 (`INTR0`), + 0x248
@@ -150,18 +162,35 @@ fed at ~1 kHz when the display is dark and ~125 Hz when it is scanning
 in detail how much the radio disturbs the same loop. A fixed bias can be
 calibrated out; one that changes with what the board is doing cannot.
 
-### What the network then costs, and why it costs less than feared
+### What the network then costs -- measured, 2026-09-01
 
 NTP's offset calculation subtracts the server's own processing time and
 cancels any delay that is *symmetric*. What it cannot see is asymmetry. Over
-WiFi that is retransmissions, power-save wake-ups and queueing, and on a quiet
-home segment it is typically a few milliseconds rather than the 20-50 ms one
-might assume. The board's own contribution is asymmetry too -- but only if it
-timestamps dishonestly, and P6 timestamps at receipt and at send.
+WiFi that is retransmissions, power-save wake-ups and queueing.
 
-So the served accuracy is bounded by term 4, not by the radio: **the DCF path
-dominates the WiFi path**, and the design conclusion is to spend the effort on
-the receiver side and not to over-engineer the network side.
+This was going to be an estimate. It is not, because R6's client made it
+measurable the day it landed. An `rp2350-wifi` board against the
+GPS-disciplined stratum-1 at 192.168.178.23, over the radio:
+
+| consecutive syncs | offset | round trip |
+|---|---|---|
+| 1 (after a reboot, DS3231 holdover) | +967 ms | 9 ms |
+| 2 | +1 ms | 6 ms |
+| 3 | +0 ms | 7 ms |
+| 4 | +0 ms | 7 ms |
+
+**The whole network path costs about a millisecond**, not the 20-50 ms that
+was assumed when this phase was proposed. The offsets are at the resolution
+limit of a clock that only counts milliseconds, so the true figure is somewhere
+below what the board can currently express -- which is itself an argument for
+P2.
+
+So the served accuracy is bounded by term 4 by a wide margin: **the DCF path
+dominates the WiFi path by one to two orders of magnitude.** The design
+conclusion -- spend the effort on the receiver side and do not over-engineer
+the network side -- is now measured rather than argued, and P6 can treat the
+transport as effectively free provided it timestamps honestly at receipt and
+at send.
 
 ---
 

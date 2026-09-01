@@ -1,4 +1,5 @@
 #include "net/ntp.h"
+#include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -273,6 +274,42 @@ int ntp_sync(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *
     return 0;
 }
 
+/* An interval in milliseconds, as text.
+ *
+ * This exists because `long` is 32 bits on RV32 and RP2350, and the first
+ * sync of a board that has never been told the time is an offset of *decades*
+ * -- 841,582,395,586 ms on the bench, which a `%ld` truncates to
+ * -231,194,430 and prints with a confident minus sign. That was found on
+ * hardware, printing a wrong number beside a clock it had just set correctly;
+ * `kernel/printk.c` supports one `l` and no `%lld`, and teaching it 64-bit
+ * varargs to serve one caller is the wrong trade.
+ *
+ * Splitting the value into fields that each fit in 32 bits fixes the
+ * truncation and produces better output anyway: milliseconds is the right
+ * unit for a sync against a running clock and a useless one for a quarter of
+ * a century, so the scale follows the magnitude the way a person would write
+ * it. */
+static void fmt_interval(int64_t ms, char *buf, uint32_t cap) {
+    if (cap < 2) { if (cap) buf[0] = '\0'; return; }
+    const char *sign = ms < 0 ? "-" : "+";
+    uint64_t m = (uint64_t)(ms < 0 ? -ms : ms);
+
+    uint32_t frac = (uint32_t)(m % 1000u);
+    uint64_t secs = m / 1000u;
+
+    if (m < 10000u) {
+        ksnprintf(buf, cap, "%s%lu ms", sign, (unsigned long)m);
+    } else if (secs < 86400u) {
+        ksnprintf(buf, cap, "%s%lu.%03u s", sign, (unsigned long)secs, frac);
+    } else {
+        uint64_t days = secs / 86400u;
+        uint32_t rem  = (uint32_t)(secs % 86400u);
+        ksnprintf(buf, cap, "%s%lu d %02u:%02u:%02u.%03u", sign,
+                 (unsigned long)days, rem / 3600u, (rem % 3600u) / 60u,
+                 rem % 60u, frac);
+    }
+}
+
 void ntp_print_result(const ntp_result_t *r, bool applied) {
     if (!r) return;
     char refbuf[24];
@@ -290,10 +327,11 @@ void ntp_print_result(const ntp_result_t *r, bool applied) {
                 (unsigned)r->stratum, n ? refbuf : "no refid");
     }
 
-    long off = (long)r->offset_ms;
-    cprintf("  offset     : %s%ld ms   (what was added to our clock)\n",
-            off < 0 ? "-" : "+", off < 0 ? -off : off);
-    cprintf("  round trip : %ld ms\n", (long)r->delay_ms);
+    char ivbuf[48];
+    fmt_interval(r->offset_ms, ivbuf, sizeof(ivbuf));
+    cprintf("  offset     : %s   (what was added to our clock)\n", ivbuf);
+    fmt_interval(r->delay_ms, ivbuf, sizeof(ivbuf));
+    cprintf("  round trip : %s\n", ivbuf + 1);   /* a round trip is never negative */
     if (r->leap == 1u || r->leap == 2u)
         cprintf("  leap       : a leap second is announced for the end of this month\n");
 

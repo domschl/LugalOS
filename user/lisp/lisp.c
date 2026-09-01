@@ -18,6 +18,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/ntp.h"
+#include <limits.h>
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/klog.h"
@@ -2293,7 +2294,16 @@ static lisp_val_t *prim_ntp_sync(lisp_val_t *args, lisp_val_t *env) {
         return &false_val;
     }
     ntp_print_result(&r, true);
-    return make_int((long)r.offset_ms);
+    /* Saturated, not truncated. A Lisp integer is a `long`, which is 32 bits
+     * on RV32 and RP2350, and the first sync of a board that has never been
+     * told the time is an offset of decades -- which wraps to a small,
+     * plausible, wrong number. A script asking "was the clock far out?" is
+     * then told "no". Clamping keeps the answer true at the only resolution
+     * this type can carry. */
+    int64_t off = r.offset_ms;
+    if (off >  (int64_t)LONG_MAX) off = LONG_MAX;
+    if (off <  (int64_t)LONG_MIN) off = LONG_MIN;
+    return make_int((long)off);
 }
 
 /* `(net-status)` -- the same report `net` prints, for a script that wants to
