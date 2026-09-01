@@ -412,7 +412,69 @@ quiet is cheaper than doing it under P6.
 
 ---
 
-## 8. Risks, and what each would look like
+## 8. Reference implementation to read -- and the line not to cross
+
+**chrony's sources are on this machine at `~/gith/chrony`** (user, 2026-09-01),
+and its structure maps onto this phase's milestones almost one for one. It is
+worth reading before designing P5, because chrony has already made most of
+these decisions carefully and its reasons are visible in its code.
+
+| chrony | what it answers here |
+|---|---|
+| `refclock.h`'s `RefclockParameters` (`offset`, `delay`, `precision`, `max_dispersion`) | P4's calibration constant is not a special case -- it is what every refclock driver has. The field names are worth borrowing even where the code is not. |
+| `refclock.c`, `refclock_pps.c` | how a hardware time source is folded into a discipline loop, and what a PPS-shaped edge is allowed to assert. Closest analogue to P3. |
+| `regress.c` | **the one to read first for P5.** Robust regression over a sample history is exactly the phase-plus-frequency estimator this phase needs, and it is where chrony's answer to "occasional confidently wrong samples" lives. |
+| `sources.c` | dispersion accounting over time -- §4's "root dispersion grows with holdover" done properly. |
+| `local.c` | slew versus step, and the threshold between them. |
+| `ntp_core.c` | server-mode packet handling for P6. |
+
+### The licence boundary, and where it actually falls
+
+chrony is **GPLv2**; LugalOS is **MIT**. The line is not "avoid chrony", it is
+narrower and more useful than that:
+
+* **The protocol is not chrony's, and never was.** NTP is
+  [RFC 5905](https://www.rfc-editor.org/rfc/rfc5905), SNTP is
+  [RFC 4330](https://www.rfc-editor.org/rfc/rfc4330). Packet layout, field
+  semantics, the epoch, the 32.32 fixed-point timestamps, the offset and delay
+  formulae, stratum and leap-indicator rules, kiss-o'-death codes -- all of it
+  is an open standard that anyone may implement. Nothing about reading or
+  implementing it touches chrony's licence, and `net/ntp.c` (R6) was written
+  from the RFC before this tree knew chrony was on the machine.
+
+* **RFC 5905 is also a better source than chrony for the discipline loop**, not
+  merely a safer one. §11 specifies the clock filter, selection and discipline
+  algorithms, and Appendix A carries a complete reference implementation
+  written expressly to be implemented from. Working from the specification
+  gives clean, demonstrable provenance *and* a document that explains its own
+  reasoning, which reading someone's optimised C does not.
+
+* **Ideas and algorithms are not the boundary; expression is.** Reading
+  chrony to understand how a real discipline loop is shaped -- what state it
+  keeps, how it rejects outliers, how dispersion is accounted over time -- is
+  ordinary engineering practice and entirely fine. So is arriving at the same
+  algorithm afterwards.
+
+* **What is not fine: copying, or transliterating.** Lifting lines, or
+  translating chrony's code function-by-function into this tree's style while
+  keeping its structure, would relicense whatever it touched. Distinctive
+  comments and hand-tuned constant tables are expression too.
+
+The practical rule for this phase: **implement from RFC 5905 and from
+chrony's *documentation*; use chrony's source to check understanding, not to
+produce text.** Where an idea comes from chrony rather than the RFC, cite it in
+the comment as the place the idea came from -- which is what this tree already
+does for `ntruchsess/arduino_uip#167` in the ENC28J60 driver, an independent
+project whose *finding* is credited without a line of its code being present.
+
+This is worth the paragraphs. The project accounts for 227 KB of radio firmware
+by SHA-256 and argues its blob story in the README; a GPL discipline loop
+quietly inside an MIT kernel would be a considerably worse lapse than the one
+it takes that much care over.
+
+---
+
+## 9. Risks, and what each would look like
 
 **The measured group delay turns out to be large *and* unstable.** Looks like:
 P0's standard deviation is tens of milliseconds and does not shrink after P1
