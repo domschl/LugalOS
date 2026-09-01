@@ -191,15 +191,27 @@ def discover_ports(console: str | None = None, net: str | None = None,
     return Rp2350Ports(console=console, net=net, uart=uart)
 
 
-def local_build_id() -> str | None:
-    """The build id the local tree would produce, read from whichever build
-    directory cmake last generated it into. Returns None if no build exists.
+def local_build_id(build_dir: "Path | None" = None) -> str | None:
+    """The build id the local tree would produce. Returns None if no build
+    exists.
 
     Exists because "the board is running older firmware" previously had no
     direct answer: it was only detectable by noticing that some feature under
     test was missing, which costs a whole flash-and-measure cycle to work out.
+
+    `build_dir` should be the directory the image being flashed came from.
+    Without it this falls back to build/rp2350, which is only right when that
+    is the preset in play -- and there are five RP2350 presets now
+    (rp2350, -wifi, -gateway, -clock, -chess). Flashing build/rp2350-wifi's
+    UF2 while this read build/rp2350's stale header reported a build-id
+    mismatch on a board that had just been flashed correctly, which is worse
+    than not checking: it accuses the thing that worked. Seen 2026-09-01.
     """
-    for candidate in (REPO_ROOT / "build" / "rp2350" / "lugalos_build_id.h",):
+    candidates = []
+    if build_dir is not None:
+        candidates.append(Path(build_dir) / "lugalos_build_id.h")
+    candidates.append(REPO_ROOT / "build" / "rp2350" / "lugalos_build_id.h")
+    for candidate in candidates:
         if candidate.exists():
             m = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"', candidate.read_text())
             if m:

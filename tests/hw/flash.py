@@ -247,7 +247,9 @@ def main() -> int:
     print(f"[*] Console back at {console}")
 
     if args.verify:
-        want = rp2350.local_build_id()
+        # From the build directory the image actually came from, not a
+        # hardcoded one -- see local_build_id()'s own note.
+        want = rp2350.local_build_id(Path(args.uf2).resolve().parent)
         time.sleep(1.0)
         try:
             with serial.Serial(console, 115200, timeout=2) as ser:
