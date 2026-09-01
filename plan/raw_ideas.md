@@ -59,6 +59,12 @@
   core). Planning documents only; sequenced after phase 19's R4/R5 and
   phase 21's I7, all three blocked on hardware access today.
 - database server (sqlite, possible?)
+- NTP server: a DCF-77-disciplined clock serving time to the segment
+  **Planned 2026-09-01** -- see `plan/phase24_dcf77_precision_and_ntp_server.md`.
+  The NTP *client* landed as phase 19's R6. The server needs a continuously
+  disciplined clock rather than a protocol, which is what that phase is about;
+  it also evaluates and closes the phase-modulation (PZF) question, and holds
+  PIO capture in reserve behind a measured trigger.
 
 ### New hardware
 
