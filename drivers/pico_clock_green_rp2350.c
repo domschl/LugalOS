@@ -680,7 +680,7 @@ CLOCK_UDATA static const uint8_t WEEKDAY_G2[8] = { 0, 0,    0,    0,    0,    0x
  * "MoveOn", which means nothing here; it is our DCF status LED. */
 CLOCK_UDATA static const struct { uint8_t row, mask; } IND_BIT[CLOCK_IND_COUNT] = {
     [CLOCK_IND_DCF]       = { 0, 0x03 },
-    [CLOCK_IND_ALARM]     = { 1, 0x03 },
+    [CLOCK_IND_WIFI]      = { 1, 0x03 },
     [CLOCK_IND_COUNTDOWN] = { 2, 0x03 },
     [CLOCK_IND_F]         = { 3, 0x01 },
     [CLOCK_IND_C]         = { 3, 0x02 },

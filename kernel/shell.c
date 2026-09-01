@@ -140,6 +140,7 @@ static void cmd_help(void) {
     cprintf("  wifi led [on|off] - Blink the user LED (on the wireless chip's own GPIO 0)\n");
     cprintf("  wifi join [<ssid> <psk-hex>] - Join a WPA2 network; no args uses the stored record\n");
     cprintf("  wifi stats      - CYW43439: RX ring high-water mark and drops\n");
+    cprintf("  wifi trace [on|off] - Print every decoded firmware event (link, auth, handshake)\n");
 #endif
     cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
     cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
@@ -2105,6 +2106,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
+    } else if (strcmp(cmd_line, "wifi trace on") == 0 || strcmp(cmd_line, "wifi trace off") == 0) {
+        extern bool g_event_trace;
+        g_event_trace = (cmd_line[11] == 'o' && cmd_line[12] == 'n');
+        cprintf("wifi: event trace %s\n", g_event_trace ? "on" : "off");
+        return;
     } else if (strcmp(cmd_line, "wifi probe") == 0) {
         cprintf(cyw43_gspi_probe() ? "wifi: ready\n" : "wifi: no answer\n");
         return;

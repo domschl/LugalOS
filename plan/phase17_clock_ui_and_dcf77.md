@@ -1830,3 +1830,33 @@ physics of duty cycle and the vendor's one known-good threshold, and the
 ladder's six boundaries are an even spread over the ADC range rather than
 measured lux. `(clock-light)` in the Lisp shell prints the raw reading; the
 boundaries are one table to retune if a real room disagrees.
+
+
+## The network indicator, 2026-09-01
+
+The vendor's "Alarm On" lamp carries the network status now, on the same
+argument that gave "MoveOn" the DCF-77 status: there is no alarm feature to
+claim it, and a headless appliance badly wants a way to say whether it is
+reachable. `CLOCK_IND_ALARM` became `CLOCK_IND_WIFI`.
+
+It deliberately speaks the same language as the DCF lamp below it -- blink
+while trying, solid when the thing is actually usable -- so the two read as
+one status column rather than two conventions:
+
+* **solid**: associated *and* addressed. Carrier alone would be a half-truth;
+  an associated board with no address answers nothing.
+* **blink**: credentials are stored, so it is trying. This is also what a
+  re-join after an AP reboot looks like from the outside.
+* **off**: nothing stored, so nothing is expected of it.
+
+Read through `net/netif.h` rather than from the CYW43 driver, because the
+question is "am I on a network", not "is the radio associated" -- a wired
+persona should light the same lamp for the same reason. It only became
+truthful once the driver started decoding link events (phase 19): before
+that, carrier never went false, so the lamp could not have gone out.
+
+Whether credentials exist is read **once**, outside the frame loop:
+`node_wlan_ssid()` goes through `idstore_read()`, which puts a 4 KB record
+buffer on the stack and re-reads the sector -- fine occasionally, absurd
+twenty times a second. It cannot change underneath the loop either, since
+writing the identity record reboots the board.

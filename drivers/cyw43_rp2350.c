@@ -408,7 +408,71 @@ static void cyw43_lock(void) {
 }
 static void cyw43_unlock(void) { g_bus_busy = false; }
 
-/* Carrier state, set when association completes. */
+/* --- association, as the firmware actually reports it ------------------
+ *
+ * R5 inferred carrier from "the firmware will tell us a BSSID", with the
+ * event mask set to none. That answers an earlier question than the one
+ * being asked: a BSSID exists after 802.11 *association*, which precedes and
+ * is independent of the WPA2 four-way handshake -- so a wrong PSK produced a
+ * BSSID, a confident "joined", and a link that carried nothing. It also meant
+ * nothing ever noticed a link going away again.
+ *
+ * The firmware knows all of this and will say so. Event numbers, the packet
+ * layout and the join-completion rule below are taken from the vendored
+ * cyw43-driver (cyw43_ll.h's CYW43_EV_*, cyw43_ll.c's async-event parsing and
+ * cyw43_ctrl.c's cyw43_cb_process_async_event), not derived from the
+ * datasheet or guessed.
+ *
+ * A join is complete only at ACTIVE|AUTH|LINK|KEYED. KEYED is the one that
+ * matters here: it comes from a PSK_SUP event with status WLC_SUP_KEYED, the
+ * four-way handshake completing, which is exactly what a wrong PSK never
+ * reaches. */
+#define CYW43_EV_SET_SSID     0u
+#define CYW43_EV_AUTH         3u
+#define CYW43_EV_DEAUTH_IND   6u
+#define CYW43_EV_DISASSOC    11u
+#define CYW43_EV_DISASSOC_IND 12u
+#define CYW43_EV_LINK        16u
+#define CYW43_EV_PSK_SUP     46u
+
+#define WLC_SUP_KEYED         6u   /* PSK_SUP status: the handshake finished */
+#define CYW43_ITF_STA         0u
+
+#define JOIN_ACTIVE  0x01u   /* a join has been asked for */
+#define JOIN_AUTH    0x02u
+#define JOIN_LINK    0x04u
+#define JOIN_KEYED   0x08u
+#define JOIN_ALL     (JOIN_ACTIVE | JOIN_AUTH | JOIN_LINK | JOIN_KEYED)
+
+/* Why a join stopped, when it did. Reported rather than swallowed, because
+ * "wrong password" and "no such network" want different actions from whoever
+ * typed the command. */
+typedef enum {
+    JOIN_FAIL_NONE = 0,
+    JOIN_FAIL_NONET,     /* SET_SSID found nothing matching -- out of range, or off */
+    JOIN_FAIL_BADAUTH,   /* the four-way handshake was refused: the PSK is wrong */
+    JOIN_FAIL_TIMEOUT,   /* the AP did not answer in time -- transient, worth retrying */
+    JOIN_FAIL_OTHER,
+} join_fail_t;
+
+/* Broadcom event status codes, the handful this file distinguishes.
+ * 2 (TIMEOUT) is the one that matters: it is transient, and calling it a
+ * credential failure is how the first join attempt after every boot came to
+ * report "wrong PSK" and then succeed on the retry two seconds later. */
+#define WLC_E_STATUS_SUCCESS      0u
+#define WLC_E_STATUS_TIMEOUT      2u
+#define WLC_E_STATUS_NO_NETWORKS  3u
+#define WLC_E_STATUS_UNSOLICITED  6u
+
+/* `wifi trace [on|off]`: print every decoded event. Off by default -- this
+ * is the firmware talking, and it talks a lot. */
+bool g_event_trace;
+
+static volatile uint32_t   g_join_state;
+static volatile join_fail_t g_join_fail;
+
+/* Carrier state. Set when a join reaches JOIN_ALL and cleared by a link-down,
+ * disassociation or deauthentication event -- never inferred. */
 static bool g_link_up;
 
 /* Whether the chip has firmware running and is answering ioctls. Anything
@@ -1140,6 +1204,92 @@ static struct {
 } g_ioctl_reply;
 
 /* 1 = handled a packet, 0 = nothing waiting, -1 = bus error. */
+/* One asynchronous event from the firmware, turned into join/carrier state.
+ *
+ * The rules are cyw43_ctrl.c's, kept in the same order so the two can be read
+ * against each other. Deliberately narrower than the reference in one way:
+ * nothing here retries or re-joins by itself. This function only ever reports
+ * what happened -- deciding what to do about it belongs to the caller that
+ * asked for the join (drivers' own autostart task), where there is a stack to
+ * wait on and a policy to apply. */
+static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
+                               uint16_t flags, uint8_t itf) {
+    if (g_event_trace) {
+        printk("cyw43: ev type=%u status=%u reason=%u flags=0x%x itf=%u\n",
+               (unsigned)type, (unsigned)status, (unsigned)reason,
+               (unsigned)flags, (unsigned)itf);
+    }
+    switch (type) {
+    case CYW43_EV_SET_SSID:
+        if (status != 0) {
+            /* status 3 with reason 0 is specifically "no matching network",
+             * which is worth telling apart from a refusal: it is what an AP
+             * that is off or out of range looks like. */
+            g_join_fail = (status == 3 && reason == 0) ? JOIN_FAIL_NONET : JOIN_FAIL_OTHER;
+        }
+        break;
+
+    case CYW43_EV_AUTH:
+        if (status == WLC_E_STATUS_SUCCESS)          g_join_state |= JOIN_AUTH;
+        else if (status == WLC_E_STATUS_UNSOLICITED) { /* stray auth packet, not ours */ }
+        else if (status == WLC_E_STATUS_TIMEOUT)     g_join_fail = JOIN_FAIL_TIMEOUT;
+        else                                         g_join_fail = JOIN_FAIL_BADAUTH;
+        break;
+
+    case CYW43_EV_PSK_SUP:
+        /* The four-way handshake. This is the event R5's BSSID check was
+         * missing, and the reason a wrong PSK used to report success. */
+        if (status == WLC_SUP_KEYED) {
+            g_join_state |= JOIN_KEYED;
+        } else if ((status == 4u || status == 8u || status == 10u) && reason == 15u) {
+            /* The reference's own carve-out: a timeout waiting for M1/M3/G1,
+             * which means a marginal signal rather than a wrong key. */
+            g_join_fail = JOIN_FAIL_TIMEOUT;
+        } else {
+            g_join_fail = JOIN_FAIL_BADAUTH;
+        }
+        break;
+
+    case CYW43_EV_LINK:
+        if (status == 0) {
+            if (flags & 1u) {
+                if (itf == CYW43_ITF_STA) g_join_state |= JOIN_LINK;
+            } else {
+                g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
+                g_link_up = false;
+            }
+        }
+        break;
+
+    case CYW43_EV_DEAUTH_IND:
+        /* Drops carrier, but is deliberately *not* a verdict on the
+         * credentials. An earlier version marked BADAUTH here on reason 2,
+         * which reads plausibly -- the reference's comment even says "probably
+         * because password was wrong" -- and was wrong in practice: a deauth
+         * left over from a previous association arrives just after a new join
+         * is armed, and the first attempt at every boot failed with "wrong
+         * PSK" before succeeding on the retry. The reference does not treat it
+         * as a failure either; it disassociates and carries on. The
+         * authoritative wrong-password signal is a PSK_SUP failure, which is
+         * where that verdict now comes from exclusively. */
+        g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
+        g_link_up = false;
+        break;
+
+    case CYW43_EV_DISASSOC:
+    case CYW43_EV_DISASSOC_IND:
+        g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
+        g_link_up = false;
+        break;
+
+    default:
+        break;
+    }
+
+    /* Carrier is this, and only this. */
+    if ((g_join_state & JOIN_ALL) == JOIN_ALL) g_link_up = true;
+}
+
 static int cyw43_pump(void) {
     uint32_t plen = 0;
     if (!wlan_packet_pending(&plen)) return -1;
@@ -1200,7 +1350,52 @@ static int cyw43_pump(void) {
         return 1;
     }
 
-    /* Events: not decoded yet -- association state is polled instead. */
+    if (channel == CHANNEL_TYPE_EVENT) {
+        if (hdr_len + BDC_HEADER_SIZE > plen) return 1;
+        const uint8_t *bdc = rx + hdr_len;
+        uint32_t off = hdr_len + BDC_HEADER_SIZE + (uint32_t)bdc[3] * 4u;
+        if (off > plen) return 1;
+        const uint8_t *pl = rx + off;
+        uint32_t n = plen - off;
+
+        /* The payload is shaped like an Ethernet frame carrying Broadcom's
+         * own ethertype, with the event record 24 bytes in. Both checks come
+         * straight from cyw43_ll.c, and both matter: other things do arrive
+         * on this channel during startup, and treating one of them as an
+         * event would read a link state out of unrelated bytes. */
+        if (n < 24) return 1;
+        if (!(pl[12] == 0x88 && pl[13] == 0x6c)) return 1;                  /* ethertype */
+        if (!(pl[19] == 0x00 && pl[20] == 0x10 && pl[21] == 0x18)) return 1; /* Broadcom OUI */
+
+        /* Fields are big-endian on the wire. The event record itself starts
+         * at payload+24, so flags land at +26, event_type at +28, status at
+         * +32, reason at +36 and the interface index at +70.
+         *
+         * The reference makes that easy to get wrong by two, and this file
+         * did. cyw43_ll_parse_async_event() casts `cyw43_async_event_t` at
+         * `&buf[-2]`, which reads like "the record starts two bytes before
+         * the payload" -- but the lines just above it are a *relocation*:
+         * it copies the record from buf[0] down to buf[-2] to fix an
+         * alignment fault first, so struct offset 0 corresponds to wire
+         * offset +24, not +22. Traced events settled it before that was
+         * spotted -- every field came back shifted left by 16 bits (a
+         * PSK_SUP "status" of 0x2E0000 where 46 was the event *type*, and
+         * 0x60000 where 6 was the status) -- and the relocation loop is why.
+         * `wifi trace on` prints them if this ever needs checking again. */
+        if (n < 40) return 1;
+        uint16_t flags  = (uint16_t)((pl[26] << 8) | pl[27]);
+        uint32_t type   = ((uint32_t)pl[28] << 24) | ((uint32_t)pl[29] << 16) |
+                          ((uint32_t)pl[30] << 8)  | pl[31];
+        uint32_t status = ((uint32_t)pl[32] << 24) | ((uint32_t)pl[33] << 16) |
+                          ((uint32_t)pl[34] << 8)  | pl[35];
+        uint32_t reason = ((uint32_t)pl[36] << 24) | ((uint32_t)pl[37] << 16) |
+                          ((uint32_t)pl[38] << 8)  | pl[39];
+        uint8_t  itf    = (n > 70) ? pl[70] : CYW43_ITF_STA;
+
+        cyw43_handle_event(type, status, reason, flags, itf);
+        return 1;
+    }
+
     return 1;
 }
 
@@ -1435,7 +1630,17 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
 
     if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_INFRA, 0, 1)) return false;
     if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_AUTH, 0, AUTH_OPEN)) return false;
-    if (!cyw43_set_iovar_u32("mfp", MFP_CAPABLE)) return false;
+    /* Best-effort, deliberately. "mfp" advertises Management Frame
+     * Protection *capability*; it is a preference, not something a WPA2 join
+     * requires, and the firmware refuses to change it while associated
+     * (ioctl 263, status 0xfffffffb). Treating that refusal as fatal meant a
+     * join attempted over a live connection died during setup, before the
+     * credentials were ever tested -- which also made a wrong PSK fail for
+     * the wrong reason and hid the verdict this driver now decodes. If it is
+     * refused, whatever the previous join set is still in force. */
+    if (!cyw43_set_iovar_u32("mfp", MFP_CAPABLE)) {
+        printk("cyw43: mfp not set (already associated?) -- continuing\n");
+    }
     if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_WPA_AUTH, 0, WPA_AUTH_WPA2_PSK)) return false;
 
     /* WLC_SET_SSID is what actually starts the join. */
@@ -1443,38 +1648,68 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
     memset(si, 0, sizeof(si));
     put_u32(si, ssid_len);
     memcpy(si + 4, ssid, ssid_len);
+    /* Arm the state machine before asking, not after: the firmware can have
+     * events on the wire before this ioctl's own reply comes back, and
+     * clearing afterwards would throw away the verdict we are about to wait
+     * for. Carrier goes down here too -- a re-join starts from no link, and
+     * saying so keeps netif_link_up() honest for the moments in between. */
+    g_join_state = JOIN_ACTIVE;
+    g_join_fail  = JOIN_FAIL_NONE;
+    g_link_up    = false;
+
     if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SET_SSID, 0, si, sizeof(si), NULL)) return false;
 
-    /* Associated is when the firmware will tell us a BSSID. Polling that
-     * avoids having to decode the asynchronous event channel just to
-     * answer one yes/no question; a real link-state watcher wants the
-     * events, but that belongs with the netif, not here. */
     printk("cyw43: joining \"%s\"...\n", ssid);
+
+    /* Wait for the firmware to say what happened, rather than asking it
+     * whether a BSSID exists yet. See the join-state block near the top of
+     * this file for why the old check said "joined" to a wrong PSK.
+     *
+     * 15 s: association plus a four-way handshake is normally well under a
+     * second, and the cases that take longer (a busy AP, a marginal signal)
+     * are worth waiting out rather than reporting as failure. A refusal
+     * arrives as an event and breaks out immediately, so a wrong password
+     * costs a fraction of this rather than the whole window. */
     g_ioctl_quiet = true;
-    for (int i = 0; i < 100; i++) {
-        time_delay_us(100000);
-        uint8_t bssid[6];
-        memset(bssid, 0, sizeof(bssid));
-        uint32_t got = 0;
-        if (cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_BSSID, 0, bssid, sizeof(bssid), &got) &&
-            got >= 6) {
-            bool any = false;
-            for (int b = 0; b < 6; b++) if (bssid[b]) any = true;
-            if (any) {
-                g_ioctl_quiet = false;
-                /* Carrier, as far as this netif is concerned: associated
-                 * to an AP. A finer definition would track the firmware's
-                 * own link events, which is why the event mask is worth
-                 * revisiting -- but "we have a BSSID" is not a guess. */
-                g_link_up = true;
+    uint64_t deadline = time_get_ms() + 15000u;
+    while (time_get_ms() < deadline) {
+        cyw43_pump();
+
+        if (g_join_fail != JOIN_FAIL_NONE) {
+            g_ioctl_quiet = false;
+            const char *why = g_join_fail == JOIN_FAIL_NONET   ? "no such network in range"
+                            : g_join_fail == JOIN_FAIL_BADAUTH ? "refused -- the PSK is wrong"
+                            : g_join_fail == JOIN_FAIL_TIMEOUT ? "the AP did not answer in time (transient)"
+                                                               : "the firmware refused the request";
+            printk("cyw43: join failed: %s\n", why);
+            return false;
+        }
+
+        if ((g_join_state & JOIN_ALL) == JOIN_ALL) {
+            g_ioctl_quiet = false;
+            /* Report the BSSID because it is genuinely useful to see which AP
+             * was picked -- but as a detail of a join that is already known
+             * to have completed, never as the evidence that it did. */
+            uint8_t bssid[6];
+            memset(bssid, 0, sizeof(bssid));
+            uint32_t got = 0;
+            if (cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_BSSID, 0, bssid, sizeof(bssid), &got) && got >= 6) {
                 printk("cyw43: joined, bssid %02x:%02x:%02x:%02x:%02x:%02x\n",
                        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-                return true;
+            } else {
+                printk("cyw43: joined\n");
             }
+            return true;
         }
+
+        time_delay_us(2000);
     }
+
     g_ioctl_quiet = false;
-    printk("cyw43: join timed out (never associated)\n");
+    /* Distinguishable from a refusal on purpose: nothing came back at all,
+     * which points at the radio or the AP rather than at the credentials. */
+    printk("cyw43: join timed out after 15 s (state 0x%02x, no verdict from the firmware)\n",
+           (unsigned)g_join_state);
     return false;
 }
 
@@ -1668,13 +1903,22 @@ static bool cyw43_probe_locked(void) {
      * is free to report everything, including per-probe-request traffic,
      * and that stream shares the same function-2 pipe every ioctl reply
      * comes back on -- so a flood does not just waste time, it queues
-     * ahead of the answer we are waiting for. This driver polls for the
-     * state it needs rather than decoding events, so the honest mask is
-     * "none"; a narrow set comes back when link_up() starts tracking
-     * carrier from real events rather than from association state.
+     * ahead of the answer we are waiting for. So this is the *narrow* set
+     * R5's own note promised: exactly the seven events the join state
+     * machine reads, and nothing else -- in particular not the scan and
+     * probe-request chatter that made an unfiltered mask unusable.
      * Layout is iface (u32) then a 24-byte bitmap, one bit per event. */
+    static const uint8_t wanted_events[] = {
+        CYW43_EV_SET_SSID, CYW43_EV_AUTH, CYW43_EV_DEAUTH_IND,
+        CYW43_EV_DISASSOC, CYW43_EV_DISASSOC_IND,
+        CYW43_EV_LINK, CYW43_EV_PSK_SUP,
+    };
     uint8_t evt_mask[4 + 24];
     memset(evt_mask, 0, sizeof(evt_mask));
+    for (unsigned i = 0; i < sizeof(wanted_events); i++) {
+        unsigned ev = wanted_events[i];
+        evt_mask[4 + (ev / 8u)] |= (uint8_t)(1u << (ev % 8u));
+    }
     if (!cyw43_set_iovar("bsscfg:event_msgs", evt_mask, sizeof(evt_mask))) return false;
 
     /* Regulatory domain. The CLM carries per-region transmit limits, but
@@ -1838,29 +2082,49 @@ static void cyw43_autostart_body(void *arg) {
      * first few attempts only, so /proc/kmsg does not fill with one line per
      * retry for a network that is simply not there. */
     static const uint32_t backoff_ms[] = { 2000, 5000, 15000, 30000 };
-    for (unsigned attempt = 0; ; attempt++) {
-        if (cyw43_join_wpa2(ssid, psk)) {
-            printk("cyw43: autostart joined \"%s\"\n", ssid);
-            break;
+
+    /* Joins, then *stays* -- which is only possible now that carrier comes
+     * from the firmware's link events instead of from "a BSSID exists".
+     * Before that this task could not tell a dropped link from a healthy
+     * one, so it did the only honest thing available and exited after the
+     * first success. An AP rebooting overnight then left the board off the
+     * network until someone noticed.
+     *
+     * The cost is a task slot and its stack for the life of the board, which
+     * is the right trade for an appliance: the alternative is a clock that
+     * quietly stops answering after an outage nobody was awake for. */
+    unsigned attempt = 0;
+    bool was_up = false;
+    for (;;) {
+        if (g_link_up) {
+            if (!was_up) { printk("cyw43: link up (\"%s\")\n", ssid); was_up = true; }
+            attempt = 0;
+            wifi_sleep_ms(2000);
+            continue;
         }
+
+        if (was_up) {
+            printk("cyw43: link lost -- rejoining \"%s\"\n", ssid);
+            was_up = false;
+        }
+
+        if (cyw43_join_wpa2(ssid, psk)) continue;   /* the loop above reports it */
+
         unsigned idx = attempt < 4 ? attempt : 3;
+        /* Logged for the first few tries only, then silently, so /proc/kmsg
+         * does not fill with one line per retry for a network that is simply
+         * not there. The retries themselves never stop. */
         if (attempt < 4) {
-            printk("cyw43: autostart could not join \"%s\"; retrying in %u s\n",
+            printk("cyw43: could not join \"%s\"; retrying in %u s\n",
                    ssid, (unsigned)(backoff_ms[idx] / 1000));
         }
         wifi_sleep_ms(backoff_ms[idx]);
+        if (attempt < 4) attempt++;
     }
 
-    memset(psk, 0, sizeof(psk));
-
-    /* Report the outcome rather than just stopping. A kernel task that simply
-     * returns is reaped by the trampoline's own task_exit(), which leaves
-     * exit_clean false -- so `ps` renders it "killed", which for a task that
-     * did its job and finished is precisely backwards (fs/vfs_server.c makes
-     * that same argument about the opposite case). Nothing in this tree
-     * exercised it before, because until now no kernel task ever ended.
-     * 0 = joined, 1 = the radio never came up. */
-    task_set_exit_status(0);
+    /* Not reached: this task supervises for the life of the board. The PSK
+     * stays in its stack because there is no later point at which it is done
+     * with -- a rejoin needs it again. */
 }
 
 int cyw43_autostart_task_start(void) {

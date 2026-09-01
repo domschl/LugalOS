@@ -51,12 +51,15 @@ typedef enum {
 /*
  * The ten status LEDs down the left edge and the seven weekday LEDs along the
  * top, which are part of the same frame buffer as the digits but survive a
- * redraw of them. Vendor labels kept except the top one: "MoveOn" means
- * nothing here, and it is where this phase puts the DCF-77 status.
+ * redraw of them. Vendor labels are kept except where this project has a
+ * better use for the lamp than the label describes: "MoveOn" means nothing
+ * here and carries the DCF-77 status, and "Alarm On" carries the network
+ * status, since there is no alarm feature to claim it and a headless
+ * appliance badly wants a way to say whether it is on the network.
  */
 typedef enum {
-    CLOCK_IND_DCF = 0,       /* vendor "MoveOn" -- our DCF-77 status LED */
-    CLOCK_IND_ALARM,
+    CLOCK_IND_DCF = 0,       /* vendor "MoveOn"   -- our DCF-77 status LED */
+    CLOCK_IND_WIFI,          /* vendor "Alarm On" -- our network status LED */
     CLOCK_IND_COUNTDOWN,
     CLOCK_IND_F,
     CLOCK_IND_C,

@@ -23,6 +23,9 @@
 #if CONFIG_ENABLE_DCF77
 #include "drivers/dcf77_service.h"
 #endif
+#include "net/netif.h"
+#include "net/ip.h"
+#include "kernel/identity.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
 #include "kernel/timezone.h"
@@ -208,6 +211,19 @@ void clock_app_run(void) {
     ui_mode_t last_mode = (ui_mode_t)0xFF;
     bool need_render = true;
 
+    /* Outside the DCF guard on purpose: the network lamp is not a DCF
+     * feature, and a persona with a radio but no receiver still wants it.
+     *
+     * Whether credentials exist is read once, here, and not in the loop:
+     * node_wlan_ssid() goes through idstore_read(), which puts a 4 KB record
+     * buffer on the stack and re-reads the sector -- fine occasionally,
+     * absurd twenty times a second. It cannot change underneath us either,
+     * since writing the identity record reboots this board. */
+    char net_ssid[NODE_WLAN_SSID_MAX + 1];
+    bool net_have_creds = node_wlan_ssid(net_ssid, sizeof(net_ssid));
+    uint64_t next_net_led_ms = 0;
+    bool net_led_on = false;
+
 #if CONFIG_ENABLE_DCF77
     /* The receiver is listened to continuously, not only during a sync: the
      * signal screen then has live data the moment it is opened, and a sync
@@ -335,6 +351,46 @@ void clock_app_run(void) {
                                 : READ_INTERVAL_MENU_MS;
             if (editing) period = 100u;
             next_read = now + period;
+        }
+
+        /* The network indicator, deliberately speaking the same language as
+         * the DCF lamp below it -- blink while trying, solid when it is
+         * actually usable -- so the two read as one status column rather than
+         * two conventions.
+         *
+         *   solid : associated *and* addressed, i.e. someone can reach this
+         *           board. Carrier alone would be a half-truth; an associated
+         *           board with no address answers nothing.
+         *   blink : credentials are stored, so it is trying and has not got
+         *           there yet -- which is also what a rejoin after an AP
+         *           reboot looks like from the outside.
+         *   off   : nothing stored, so nothing is expected of it.
+         *
+         * Read through net/netif.h rather than from the CYW43 driver: this is
+         * "am I on a network", not "is the radio associated", and a wired
+         * persona should light the same lamp for the same reason. Carrier is
+         * now genuinely carrier -- the driver decodes the firmware's link
+         * events -- so this lamp goes out when a link drops instead of
+         * staying on because a BSSID was once seen.
+         */
+        if (now >= next_net_led_ms) {
+            netif_t *nif = netif_default();
+            bool up = nif && netif_link_up(nif) && net_configured();
+            bool want_net;
+            if (up) {
+                want_net = true;
+                next_net_led_ms = now + 1000u;
+            } else if (net_have_creds) {
+                want_net = ((now / 500u) & 1u) == 0;
+                next_net_led_ms = now + 50u;
+            } else {
+                want_net = false;
+                next_net_led_ms = now + 1000u;
+            }
+            if (want_net != net_led_on) {
+                net_led_on = want_net;
+                clock_hw_indicator(CLOCK_IND_WIFI, want_net);
+            }
         }
 
 #if CONFIG_ENABLE_DCF77

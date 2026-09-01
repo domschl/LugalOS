@@ -43,47 +43,68 @@ every polling wait should consult the same shared check applies here).
 
 ---
 
-## `wifi join` reports success when the PSK is wrong
+## `wifi join` reports success when the PSK is wrong -- FIXED 2026-09-01
 
-**Trigger:** `wifi join` (either form) with a PSK that is not the network's.
-The driver prints `cyw43: joined, bssid ...` and `wifi: joined`, and
-`net` shows `link up` -- while nothing works: `rx 0 frames`, no ARP, and the
-host cannot ping the board. Found 2026-09-01 while verifying I7b's stored
-credentials with a deliberately fake all-zero PSK, which "joined".
+**Was:** the driver decided it had associated when the firmware returned a
+non-zero BSSID. A BSSID appears at 802.11 association, which precedes and is
+independent of the WPA2 four-way handshake, so a wrong PSK produced a BSSID,
+a confident "joined", and a link that carried nothing. Nothing noticed a link
+going away again either.
 
-**Root cause, and it is a design gap rather than a slip.**
-`cyw43_join_wpa2()` decides it has associated when the firmware returns a
-non-zero BSSID from `IOCTL_CMD_GET_BSSID`. Its comment says "we have a BSSID
-is not a guess" -- but a BSSID appears at **802.11 association**, which
-happens *before* and independently of the WPA2 four-way EAPOL handshake. With
-a wrong PSK the association succeeds, the handshake fails, and the BSSID is
-briefly real. So the check is answering an earlier question than the one it
-is being asked.
+**Fixed by decoding the firmware's own events** (`drivers/cyw43_rp2350.c`).
+A join is complete only at AUTH + LINK + KEYED, where KEYED is a `PSK_SUP`
+event with status `WLC_SUP_KEYED` -- the handshake completing, which is
+exactly what a wrong PSK never reaches. Verified on hardware:
 
-R5 anticipated the shape of this without noticing the consequence: it set the
-firmware's event mask to "none" because "association state is polled rather
-than decoded" (plan/phase19_ip_stack_and_ethernet.md, R5). Polling is what
-makes this reachable.
+    wifi join DOSC <wrong psk>
+    cyw43: join failed: refused -- the PSK is wrong
 
-**Why it is parked:** the honest fix is to decode the firmware's own link
-events (`WLC_E_PSK_SUP` / `WLC_E_LINK`) rather than infer carrier from a
-BSSID, which means turning the event channel back on and demultiplexing it --
-exactly the work R5 deferred, and a milestone rather than a patch. A cheap
-improvement worth considering first: after a BSSID appears, keep polling for
-a second or so and require it to *persist*, since a failed handshake is
-followed by a deauth. That is a heuristic, and should be labelled one.
+and, unattended immediately afterwards, `cyw43: link lost -- rejoining
+"DOSC"` followed by a successful re-join. Carrier is now set and cleared by
+LINK/DISASSOC/DEAUTH events rather than inferred, so `netif_link_up()` means
+what it says.
 
-**Impact:** `wifi join` cannot be trusted to report failure, so a wrong or
-stale stored credential looks like a working network until the first packet
-does not arrive.
+---
 
-**`net`'s frame counters are the reliable signal today, and that is measured
-rather than assumed** -- the same board, same code path, same "joined"
-message, twice: with the fake PSK, `link up` and `rx 0 frames` with the host
-unable to ping it; with the operator's real PSK, `rx 19 frames` within
-seconds and 8/8 pings at 0% loss. A genuine association starts absorbing
-background LAN broadcast immediately, so `rx` still reading 0 a few seconds
-after a "successful" join means it did not work.
+## No clean way to leave a BSS before re-joining
+
+**Trigger:** `wifi join <ssid> <psk>` (or `wifi join`) on a board that is
+already associated. Setup fails before the credentials are ever tested:
+
+    cyw43: ioctl cmd 263 failed, status 0xfffffffb
+    cyw43: iovar "mfp" (4 bytes) rejected
+    wifi: join failed
+
+**Cause:** several of the join's setup iovars cannot be changed while the
+firmware is associated -- `mfp` is the one that surfaces it -- and
+`cyw43_join_wpa2_locked()` treats every one of them as fatal.
+
+**Fixed for `mfp` specifically:** it advertises Management Frame Protection
+*capability* -- a preference, not a requirement -- so its refusal is now
+logged and stepped over rather than aborting the join. A re-join over a live
+connection works, which is what made the wrong-PSK verdict above testable at
+all.
+
+**Still open:** there is no clean way to *leave* a BSS first. Issuing
+`CYW43_IOCTL_SET_DISASSOC` (0x69) exactly as the reference does
+(`cyw43_ctrl.c`'s `cyw43_wifi_leave()`: length 0, NULL buffer,
+`CYW43_ITF_STA`) is answered with `0xfffffffe` (BADARG) and the firmware
+stays associated. That attempt was reverted rather than left in place adding
+a failing ioctl to every join. Any other setup iovar that turns out to be
+refused while associated will need the same judgement `mfp` got -- or the
+disassociate finally working.
+
+**Why it is not urgent:** neither path that matters hits it. A join at boot
+starts unassociated, and the supervising task's re-join happens *after* a
+link loss, when the board is also unassociated -- measured recovering in ~5 s
+after a deliberately broken link. It is a manual `wifi join` over a live
+connection that fails, and the workaround is that the same command works once
+the link is down.
+
+**Worth fixing as:** either make the non-essential setup iovars non-fatal
+(`mfp` is a capability hint, not a requirement), or find the correct way to
+leave a BSS first. The second is better, since a clean leave is the honest
+thing to do before joining somewhere else.
 
 ---
 

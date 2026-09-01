@@ -1139,6 +1139,53 @@ an established link drops. The autostart task therefore brings a board up but
 does not keep it up -- re-joining after a link loss needs the event channel,
 which is the same work item.
 
+**Link events decoded, 2026-09-01 -- R5's last shortcut removed.** R5 set the
+firmware's event mask to "none" and inferred carrier from "the firmware will
+tell us a BSSID". That answers an earlier question than the one being asked: a
+BSSID exists after 802.11 *association*, which precedes and is independent of
+the WPA2 four-way handshake. A wrong PSK therefore produced a BSSID, a
+confident "joined", and a link that carried nothing -- and nothing ever
+noticed a link going away again.
+
+The mask is now the narrow set this driver actually reads (SET_SSID, AUTH,
+DEAUTH_IND, DISASSOC, DISASSOC_IND, LINK, PSK_SUP -- and nothing else, which
+is what keeps R5's flood problem away), and `cyw43_pump()` decodes them. A
+join is complete only at **AUTH + LINK + KEYED**, KEYED being a PSK_SUP event
+with status `WLC_SUP_KEYED`: the handshake completing, exactly what a wrong
+PSK never reaches. Carrier is set and cleared by events, never inferred.
+
+Verified on hardware, in one sequence: `wifi join DOSC <wrong psk>` answered
+*"join failed: refused -- the PSK is wrong"*, and immediately afterwards,
+with nobody typing anything, `link lost -- rejoining "DOSC"` followed by a
+successful re-join. That second half is the other half of the payoff: the
+`wifiup` task now supervises for the life of the board instead of exiting
+after its first success, which was only ever honest while it could not tell a
+dropped link from a healthy one.
+
+**Two things this cost, both worth recording.**
+
+The event record's offsets are **+24 from the payload**, not +22, and the
+reference makes that easy to get wrong: `cyw43_ll_parse_async_event()` casts
+its struct at `&buf[-2]`, but the lines above it *relocate* the record from
+`buf[0]` down to `buf[-2]` to fix an alignment fault first. Reading the cast
+without the relocation put every field two bytes early, and traced events said
+so unambiguously -- each one arrived as the true value shifted left 16 bits
+(a "status" of 0x2E0000 where 46 is the PSK_SUP event *type*). `wifi trace
+[on|off]` prints decoded events and is kept for the next time this needs
+checking.
+
+An AUTH event with **status 2 is a timeout, not a refusal**. The reference
+lumps it into BADAUTH and retries internally; doing the same here made the
+first join after every boot report "wrong PSK" and then succeed two seconds
+later. It is reported as transient now, which is both true and what the
+retry policy wants.
+
+**Still open** (plan/open_issues.md): there is no working way to *leave* a BSS
+before re-joining -- the reference's `CYW43_IOCTL_SET_DISASSOC` is answered
+with BADARG. The setup iovar that exposed it, `mfp`, is a capability hint and
+is now best-effort rather than fatal, which is enough for every path that
+matters.
+
 **R6 -- optional: an NTP client.** UDP is already there from R2; NTP is ~150
 lines and it is the first thing that makes the network useful to a *persona*
 rather than to a host -- the phase 17 clock could set its own time. Marked
