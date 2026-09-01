@@ -75,9 +75,15 @@ followed by a deauth. That is a heuristic, and should be labelled one.
 
 **Impact:** `wifi join` cannot be trusted to report failure, so a wrong or
 stale stored credential looks like a working network until the first packet
-does not arrive. `net`'s frame counters are the reliable signal today --
-a genuine association starts absorbing background LAN broadcast within
-seconds.
+does not arrive.
+
+**`net`'s frame counters are the reliable signal today, and that is measured
+rather than assumed** -- the same board, same code path, same "joined"
+message, twice: with the fake PSK, `link up` and `rx 0 frames` with the host
+unable to ping it; with the operator's real PSK, `rx 19 frames` within
+seconds and 8/8 pings at 0% loss. A genuine association starts absorbing
+background LAN broadcast immediately, so `rx` still reading 0 a few seconds
+after a "successful" join means it did not work.
 
 ---
 

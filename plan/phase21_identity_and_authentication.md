@@ -885,9 +885,20 @@ board keeps its identity across reflashes.
 * **The write path works**: `identity provision`, `identity key --generate`
   and `wlan <ssid> <psk>` all land in flash and read back after a reboot
   (`key fingerprint: f778e265c553c8f3`).
-* **`wifi join` with no arguments reads its credentials from the record** --
-  `cyw43: joining "DOSC"...` with nothing typed. That is what
+* **`wifi join` with no arguments reads its credentials from the record**, and
+  the resulting association is real: with the operator's own PSK stored,
+  `cyw43: joining "DOSC"...` with nothing typed, then frames actually arriving
+  (`rx 19 frames` within seconds) and the host pinging the board 8/8 at 0%
+  loss once `net-config` gave it an address. That is what
   plan/open_issues.md's standing entry was waiting for.
+
+  Worth separating the two runs, because only the pair proves anything. The
+  first used a deliberately fake all-zero PSK and proved the *plumbing* --
+  the SSID came from the record rather than from the command line. It also
+  reported `joined`, which is how the join bug below was found. The second,
+  with the real credential, is the positive control: same code path, and this
+  time the frame counters move. A single run either way would have been
+  consistent with a broken check.
 
 **Where the RAM-resident code lives, and what it cost.** Not `.scratch_x`
 (phase 15 owns those banks) and not a section of its own either: `*(.ramfunc)`
