@@ -1,8 +1,9 @@
 # Phase 19 — An IP stack of our own, and two wires to carry it
 
-**Status: R0-R3 and R3b done 2026-08-25; R4 (ENC28J60) done 2026-08-31; R5
-(CYW43439) done 2026-09-01. R6 (NTP, optional) and R7 (documentation)
-remain.** Succeeds
+**Status: CONCLUDED, 2026-09-01.** R0-R3 and R3b done 2026-08-25; R4
+(ENC28J60) 2026-08-31; R5 (CYW43439), R6 (SNTP client) and R7 (documentation)
+2026-09-01. The DCF-77-disciplined NTP *server*, and the precision work it
+needs, are phase 24. Succeeds
 `plan/phase18_networking_and_auth.md`,
 which is concluded: everything it built *above* a byte stream is kept, and the
 one thing below the stream -- the W5500 -- is cancelled and removed here (R0).
@@ -1308,6 +1309,50 @@ section and a networking section that says what the stack does and does not do
 (§2's "out" list, verbatim -- an unstated limit gets credited as a feature); the
 gateway wiring; the auth setup, key generation and what a wrong key looks like;
 and the blob paragraph from R5.
+
+**Done, 2026-09-01. Phase 19 is concluded.** A new README section, *Networking:
+an IP stack of our own*, carrying §1's blob table and §2's two lists; the
+ENC28J60 wiring beside the SD and I2C diagrams it belongs with; two new
+implementation-status bullets (the stack, and the identity that belongs to the
+silicon); and the auth material, which turned out to be mostly already written
+-- phase 18's N2 walkthrough, the `p9key` bootstrap and phase 21's grants
+section between them already covered key generation and what a refusal looks
+like, so R7's job there was to *correct* rather than add.
+
+Four things worth recording:
+
+* **Every console capture in the new section is real, and one of them was not
+  at first.** The `net` / `/proc/net` block was written from the field list in
+  `net/ip.h` and looked entirely plausible; it matched nothing
+  `net_print_status()` actually prints. It was replaced by booting rv64 under
+  the QEMU peer, sending three pings and one datagram to a port nobody bound,
+  and pasting what came back -- which is why the capture shows `no-port 1` and
+  an ICMP the board sent in reply. The same was done for `ntp`. A README that
+  invents output is a README whose examples cannot be trusted anywhere else
+  either, and this tree's own standard elsewhere is measured-not-assumed.
+
+* **The `ntp` capture shows two syncs, deliberately.** The first steps 27 days
+  because a board that has never been told the time starts at the instant
+  compiled into `kernel/time.c`; the second is +7 ms. One example would have
+  taught the wrong lesson whichever one was picked.
+
+* **Three stale claims were found and corrected**, all of them the honest kind
+  that accumulates when hardware milestones land faster than prose: the
+  identity section still said the RP2350 backend "has not been built" and that
+  `identity`/`peers`/`wlan` report "no identity store on this target" (I7b
+  landed the same week), two more places still said "once I7 lands", and the
+  test counts were 253/24 against an actual 300 QEMU tests and three hardware
+  suites. The I7b correction now also carries the one verify item that is
+  genuinely still open, rather than quietly dropping it.
+
+* **What the section refuses to do is longer than what it does**, and that is
+  the point R7 was written for. IPv6, DHCP, TCP options beyond MSS,
+  out-of-order reassembly, fragmentation, forwarding, TLS, a writable `/net`,
+  more than two connections -- each with the reason, and out-of-order flagged
+  as the important one so a future throughput complaint is recognised as this
+  decision rather than as a mystery. The two-connection limit and the 2 s
+  TIME_WAIT are named in the README for the first time, because they present
+  as a transport failure and cost a round of investigation once already.
 
 ## 7. Explicitly not in this phase
 

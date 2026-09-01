@@ -17,9 +17,9 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 253 tests on QEMU RV32
-NOMMU and RV64 MMU) and by a hardware-in-the-loop suite (`tests/hw/`, 24 tests against real RP2350
-silicon):
+**Working today**, verified by the automated test suite (`tests/runner.py`, 300 tests on QEMU RV32
+NOMMU and RV64 MMU) and by hardware-in-the-loop suites (`tests/hw/`, against real RP2350 silicon:
+24 core tests, 15 more for the wired gateway, 6 over the radio):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
@@ -105,6 +105,19 @@ silicon):
   through the same driver-task architecture as the default `rp2350-chess` persona, demonstrating that
   "which hardware this board has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a
   fork of the kernel.
+- **An IP stack of our own, over two different wires**: ARP, IPv4, ICMP, UDP and a server-side TCP,
+  written here rather than bought in silicon — about 2,100 lines under `net/`, sized for an RP2350
+  and developed against a packet-level QEMU peer before either piece of hardware existed. Two frame
+  sources feed it through one `netif_t` seam: a wired **ENC28J60** (SPI, MAC-only, no closed
+  firmware anywhere) and the **CYW43439** radio on a Pico 2 W. Above it, the 9P server answers over
+  TCP with the same authentication a serial link uses, `host/fuse-p9` mounts a board's whole
+  namespace onto a Linux host over either wire, and an **SNTP client** lets a board set its own
+  clock from the segment. What the stack deliberately does *not* do is listed in
+  [Networking](#networking-an-ip-stack-of-our-own) — an unstated limit gets credited as a feature.
+- **An identity that belongs to the silicon**: on RP2350 the device UID comes from OTP `CHIPID` and
+  the rest of the record lives in its own flash sector, so a node's identity, its device key, its
+  peer grants, its address and its WLAN credential all survive a firmware reflash. `/flash0` is now
+  its own independently flashable image for the same reason.
 - **A radio-set clock that runs unattended**: a DCF-77 longwave receiver decodes the time signal from
   Mainflingen, a three-button menu drives the whole UI on the panel itself, and the kernel clock keeps
   **UTC** with local time computed from a POSIX `TZ` rule. Both RP2350 personas boot from a bare USB
@@ -184,7 +197,7 @@ silicon):
 * **Native RISC-V ELF Compiler (`lisp-to-elf`)**: Compiles Lisp AST S-expressions directly to native RISC-V machine code (`add`, `sub`, `mul`, `ret`) and packages them into **ELF32 / ELF64** binaries on disk!
 * **Extended Unix Teletype Line Editor (`ed`)**: Classic Thompson Unix `ed` editor with current line pointer `dot`, line range addressing (`.`, `$`, `,`, `%`, `N,M`), insert (`i`), append (`a`), change (`c`), delete (`d`), print (`p`), numbered print (`n`), substitution (`s/old/new/`), search (`/pattern/`), and file I/O (`e`, `w`, `f`).
 * **Native RP2350 USB CDC ACM Driver**: Bare-metal USB 1.1 device stack (`drivers/usb_cdc.c`) driving the RP2350's onboard USB controller directly — no TinyUSB/Pico SDK runtime dependency. Enumerates as a composite dual-ACM device, presenting `/dev/ttyACM0` as a fully interactive `lsh` console over the same USB cable used for flashing (mirrored alongside the physical UART debug console), with DTR-gated output so a freshly-opened terminal never receives a stale backlog of boot-time log lines. `/dev/ttyACM1` is `link_usb_cdc` (plan/phase5_distributed_design.md's A3b): a real bulk 9P transport, verified against physical hardware by [`tests/hw/`](tests/hw/), including talking to a live QEMU node over it.
-* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 253 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus a hardware-in-the-loop suite (`tests/hw/`, 24 tests) that drives real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
+* **Automated Integration Test Harness**: Non-interactive QEMU PTY integration runner (`tests/runner.py`) executing 300 automated test cases across RV32 (NOMMU) and RV64 (Sv39 MMU) builds (see `tests/runner.py` for the current count, as this grows over time), plus hardware-in-the-loop suites (`tests/hw/`: 24 core tests, 15 for the wired gateway, 6 over the radio) that drive real RP2350 silicon over USB — including flashing the board itself via the "1200-baud touch" and re-verifying against `/proc/buildid`.
 * **Host-Side 9P File Utility (`host/p9lib`)**: a real, general-purpose Python 9P2000 client and CLI (`lugal9p`) for a host machine (macOS/Linux) to read, write, `mkdir`, and remove files on any LugalOS board's filesystems — over the same USB-CDC/UART links `link_usb_cdc` and `tests/hw/` already use, or a QEMU virtio-console socket for hardware-free use. `uv run lugal9p --serial /dev/ttyACM1 ls /sd0` (see [`host/p9lib/README.md`](host/p9lib/README.md)).
 * **FUSE Filesystem (`host/fuse-p9`)**: mounts a board's entire 9P namespace as a real host directory, built on `host/p9lib` — `cat`, `cp`, editors, and other ordinary tools work against it unmodified. Over USB with `uv run lugal9pfuse --serial /dev/ttyACM1 /mnt/lugalos`, or over the network with `--tcp <addr>` against either a WiFi or a wired-Ethernet board (see [Mount the whole namespace on the host](#5-mount-the-whole-namespace-on-the-host-fuse-p9-over-tcp)). Verified on Linux, over TCP against a Pico 2 W on WiFi; macOS (via macFUSE) is written and reaches the same code path, but is untested end-to-end — see [`host/fuse-p9/README.md`](host/fuse-p9/README.md) for why (Apple Silicon's default security policy blocks third-party system extensions short of a Recovery Mode trip, which is the user's call, not ours to push).
 
@@ -387,6 +400,44 @@ DS1307/DS3231 RTC Module   Raspberry Pi Pico 2 (RP2350)
 > required. The same bus reaches the RTC at `0x68` (`i2c_rtc.c`) and, if present, an AT24C32
 > EEPROM at `0x57` (`at24c32.c`) — `(i2c-scan)` lists whatever actually responds.
 
+### ENC28J60 Ethernet Wiring (`rp2350-gateway` persona, Pico 2 SPI0)
+
+The wired half of the network. The part in hand is a HanRun V823 HR911105A module — the common
+ten-pin SPI breakout with magnetics-integrated RJ45, whose header is two rows of five in the
+order printed on the board (`CLOUT WOL SI CS VCC` / `INT SO SCK RESET GND`).
+
+```
+ENC28J60 Module         Raspberry Pi Pico 2 (RP2350)
+──────────────          ─────────────────────────────
+      VCC ──────────►  Pin 36  3V3(OUT)      ** 3.3 V, NOT 5 V **
+      GND ──────────►  Pin 38  GND
+       SI ──────────►  Pin 25  GPIO19 (SPI0 MOSI, into the chip)
+       SO ◄──────────  Pin 21  GPIO16 (SPI0 MISO, out of the chip)
+      SCK ──────────►  Pin 24  GPIO18 (SPI0 SCK)
+       CS ──────────►  Pin 22  GPIO17 (SPI0 CSn)
+    RESET ──────────►  Pin 26  GPIO20 (active low)
+      INT ◄──────────  Pin 27  GPIO21 (active low, open-drain)
+     WOL     (n/c)
+    CLOUT    (n/c)
+```
+
+> **3.3 V, and confirm it with a meter before first power-on.** This module has no onboard
+> regulator and the ENC28J60 die is 3.3 V only; 5 V on VCC kills it. `WOL` and `CLOUT` are
+> deliberately unconnected — nothing here wants wake-on-LAN or a clock from this chip, and
+> leaving them floating is correct.
+>
+> `INT` needs the RP2350's internal pull-up, which the driver enables: the module has none.
+> Decoupling is not optional at these edge rates — **220 µF bulk plus 100 nF ceramic across the
+> module's own VCC/GND pins**, short SPI leads, and a ground return run alongside them. That
+> figure was arrived at by measurement, not by habit; 100 µF was measurably worse.
+>
+> **One known, worked-around fault.** Left idle, these modules clear `MACON1.MARXEN` and/or
+> `ECON1.RXEN` on their own within seconds. `enc_poll_locked()` notices and redoes the MAC/PHY
+> init, rate-limited, escalating to a full reset — 0% loss under sustained traffic. A dedicated
+> regulator, three capacitor values and SPI clock in both directions were all ruled out as
+> causes; the same workaround was reached independently by `ntruchsess/arduino_uip#167` on
+> genuine Microchip silicon. See `plan/open_issues.md`.
+
 ### Build for RP2350
 
 ```bash
@@ -532,6 +583,167 @@ The build system automatically invokes [`tools/elf2uf2_rp2350.py`](tools/elf2uf2
 ---
 
 
+## Networking: an IP stack of our own
+
+Everything above the wire is written here. ARP, IPv4, ICMP, UDP and a server-side TCP live in
+`net/`, and two very different parts feed them Ethernet frames through one seam (`net/netif.h`):
+a wired **ENC28J60** and the **CYW43439** radio on a Pico 2 W. The stack was built and tested
+against a packet-level peer under QEMU (`tests/netpeer.py`) before either part was in hand, which
+is why the same code came up on both wires without a per-part IP path.
+`plan/phase19_ip_stack_and_ethernet.md` is the design and the full account.
+
+### Why write one at all, when a chip will sell you TCP
+
+The phase this came from started by cancelling a W5500 — a part that puts a closed TCP/IP
+implementation on its own die and hands the host a byte stream. The argument for keeping it was
+that the CYW43439 is *also* a blob, so the difference is only blob size. That is half right, and
+the half that is wrong decides the roadmap:
+
+| | W5500 (cancelled) | CYW43439 (Pico 2 W) | ENC28J60 |
+|---|---|---|---|
+| Where the closed code runs | its own die | its own die | nowhere |
+| Who ships the firmware | WIZnet, once, in the package | **we do** — 227 KB in our flash, uploaded at every boot | — |
+| What it hands us | a **TCP byte stream** | **Ethernet frames** | **Ethernet frames** |
+| What is left for us to implement | nothing | the entire IP stack | the entire IP stack |
+
+**The distinction that matters is not blob size, it is what is left to implement.** A part whose
+closed firmware ends at the MAC layer leaves the network to us; a part whose closed firmware ends
+at TCP does not. "Bare metal" here has always meant *we wrote the thing*, not *no silicon anywhere
+contains microcode* — every chip in this tree has a mask ROM, the RP2350 included.
+
+A corollary worth stating because it surprises people: **the CYW43439 is strictly more work than
+the W5500 was, not less.** It is a *fullmac* part — the blob does 802.11 association and hands
+back Ethernet frames — so choosing it means a blob **and** a software IP stack. Anyone reaching
+for a Pico 2 W expecting the W5500's "TCP arrives over SPI" bargain will not get it.
+
+So the sentence this project can honestly say is: **LugalOS implements its own network stack, and
+speaks it over a wire whose driver it also wrote.** On the ENC28J60 that is true down to the
+magnetics. On the Pico 2 W it is true down to the 802.11 MAC, with the radio behind a blob that is
+named, sized and licensed under **Blob accounting** in the Wireless section below.
+
+### What the stack does
+
+- **Ethernet II framing**, one MAC per interface, broadcast and own-address filtering — in the MAC
+  where the part can do it, in software where it cannot.
+- **ARP** — request, reply, an 8-entry cache with timeouts, gratuitous ARP on address change. No
+  proxy ARP.
+- **IPv4** — unicast send and receive, header checksum, TTL.
+- **ICMP** — echo request/reply, and destination-unreachable *emitted* for a closed port, which is
+  what turns a silent timeout at the far end into an immediate "connection refused".
+- **UDP** — send and receive on a bound port, four bindings.
+- **TCP, both directions of open** — one listener, up to **two** simultaneous connections, a fixed
+  receive window of one MSS, retransmission with exponential backoff, correct FIN and RST handling.
+  An outbound `connect()` exists too, which is what makes `(net-mount)` a distributed namespace
+  over a network rather than over a cable.
+- **9P over TCP**, authenticated, on port 564 — the same server, the same auth gate and the same
+  grants a serial link uses.
+- **An SNTP client** (`ntp [server]`, `(ntp-sync)`) — one query, applied as a step.
+
+### What it deliberately does not do
+
+Each of these is a decision, not an omission. An unstated limit gets credited as a feature, so:
+
+- **IPv6.** No.
+- **DHCP.** A server wants a stable address, and every DHCP failure mode presents as "the board is
+  not on the network". Addresses are configured (`netcfg`) and kept in the identity record. This is
+  no longer a blanket no — a *sensor* persona inverts every term of that argument — but it gets its
+  own milestone when a board that needs it exists, not a corner of one that doesn't.
+- **TCP options beyond MSS**: no window scaling, no SACK, no Nagle, no delayed ACK.
+- **Out-of-order segment reassembly.** A segment that arrives out of order is dropped and not
+  acknowledged; the peer retransmits. This costs throughput on a lossy link and saves a reassembly
+  queue, which is both the largest RAM line item and the largest bug surface in a small TCP. **This
+  is the important one** — it is written down here so a future throughput complaint is recognised
+  as this decision rather than as a mystery.
+- **IP fragmentation and reassembly.** An incoming fragment is counted and dropped; we never emit
+  one (MSS is clamped so we do not have to).
+- **Routing or forwarding between interfaces.** A board with two wires is a board with two wires.
+- **TLS, or any confidentiality on the wire.** Authentication proves *who* attached; it hides
+  nothing they then read. See [What it does not defend](#what-it-does-not-defend-and-will-not).
+- **A writable `/net` socket filesystem.** Plan 9's shape, and only half of it lands here:
+  `/proc/net` is a status file, not a control interface.
+- **More than two concurrent TCP connections**, and a TIME_WAIT of 2 s rather than the RFC's
+  2×MSL. Both are deliberate, both are commented where they are defined, and a client that
+  reconnects faster than that will be refused. See `plan/open_issues.md`.
+
+### Seeing what it did
+
+`net` gives the summary and `cat /proc/net` gives every counter, and the counters are kept
+**per decision** rather than as one drop total — right wire wrong address, truncated below its own
+header, bad checksum, a fragment, a protocol we do not implement, no route, no listener on that
+port. That separation is not tidiness: "the network does not work" is not a diagnosis, and a single
+`dropped` total cannot become one. Phase 18 spent days learning that.
+
+```
+lsh> net
+rv64-mmu-d89b: virtio-net, mac 52:54:00:12:34:56, link up
+  addr 192.168.77.2/255.255.255.0 gw 192.168.77.1
+  rx 5 frames, 300 bytes, 0 dropped
+  tx 6 frames, 370 bytes, 0 errors
+  arp 1/2, ip 4/4, icmp 3/4, udp 1/0 (rx/tx)
+  9P listening on tcp/564 -- 0 connections, 0 accepted, 0 reset
+  arp cache 1 entries; see /proc/net for every drop counter
+
+lsh> cat /proc/net
+interface: virtio-net
+mac: 52:54:00:12:34:56
+link: up
+address: 192.168.77.2
+netmask: 255.255.255.0
+gateway: 192.168.77.1
+rx: 5 frames, 300 bytes
+tx: 6 frames, 370 bytes
+arp: 1 rx, 2 tx
+ip: 4 rx, 4 tx
+icmp: 3 rx, 4 tx
+udp: 1 rx, 0 tx
+tcp: 0 rx
+drop: 0 not-for-us, 0 short, 0 checksum, 0 fragment,
+      0 proto, 0 no-route, 1 no-port
+tcp: listening on 564, 0 open, 0 accepted, 0 reset
+udp bindings: 0
+arp cache: 1 entries
+  192.168.77.1 02:00:00:00:00:42
+```
+
+(That capture is a real session: three pings and one datagram to a port nobody bound, which is
+the `no-port 1` and the ICMP the board sent back in reply.)
+
+### Setting the clock from the network
+
+```
+lsh> ntp
+ntp: asking the gateway, 192.168.77.1
+ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
+  offset     : +2334007138 ms   (what was added to our clock)
+  round trip : 5 ms
+  clock set  : 2026-09-01 12:20:07.392 UTC
+
+lsh> ntp
+ntp: asking the gateway, 192.168.77.1
+ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
+  offset     : +7 ms   (what was added to our clock)
+  round trip : 19 ms
+  clock set  : 2026-09-01 12:20:07.438 UTC
+```
+
+The first offset is 27 days because a board that has never been told the time starts at the
+instant compiled into `kernel/time.c`, and the client steps rather than slews — there is nothing
+to protect. The second is what a sync against an already-set clock looks like. `stratum 2 (via …)`
+names the server's *own* upstream, so a chain is visible from here; a stratum-1 server shows its
+reference clock's four-character id instead, `(GPS)` or `(DCF)`.
+
+With no argument it asks the gateway — the one address the board already knows, and a home router
+runs an NTP server more often than not. `ntp <ip>` asks a specific one. `(ntp-sync)` is the same
+thing from Lisp, returning the offset in milliseconds so a boot script can tell "already right"
+from "two minutes out"; it belongs on the line after the network line in
+`/sd0/system/etc/usr_init.lisp`.
+
+This is a client, and only a client: one query, applied as a step, no poll loop and no frequency
+discipline. Two things follow that are worth knowing before relying on it. The board's oscillator
+is a ±30 ppm crystal, so between syncs it drifts up to ~2.6 s/day — a single sync at boot is not
+the same as a disciplined clock. And the reply's accuracy is bounded by path asymmetry, which over
+WiFi is tens of milliseconds and which no NTP client can see or correct.
+
 ## Wireless: joining a WiFi network (RP2350W / Pico 2 W)
 
 The `rp2350-wifi` persona drives the Pico 2 W's on-board CYW43439 over a bit-banged gSPI bus
@@ -641,7 +853,7 @@ persisted, so a board that reboots forgets it, and it overrides the key files wh
 `p9key` with no arguments reports whether a key is configured and where the persistent ones are
 read from; `p9key clear` removes it. A key that should survive a reboot belongs in the identity
 record instead (see [Identity and Authentication](#identity-and-authentication)) — `p9key` is
-the bootstrap path for a board that has no record yet, which on RP2350 is every board until I7.
+the bootstrap path for a board that has no record yet.
 The key's *fingerprint* is shown by `identity`, which never prints the key itself.
 
 From the host, mount or read it like any other node:
@@ -974,21 +1186,25 @@ write). None of this defends against a network observer reading traffic — see
 exported namespace against a peer that never proves anything at all, and bounds what a peer that *did*
 prove something is allowed to reach.
 
-**Current status.** Everything below is implemented and covered by `tests/runner.py`, but only against
-the QEMU identity disk (`drivers/virtio_blk_id.c`, milestone I2) — the RP2350 flash-sector backend
-(milestone I7: OTP chip ID for the UID, the reserved flash sector for everything else) has not been
-built. **On real RP2350 hardware today, `identity`/`peers`/`wlan` all report "no identity store on this
-target"** — the toolset exists and is tested, but nothing on a physical board currently backs it. I7
-needs bench access to real silicon to verify its two hardware-specific claims (a provisioned identity
-survives a UF2 reflash; an interrupted flash write leaves the store readable as corrupt rather than as
-plausible garbage) and is deferred until that access exists again. `plan/phase21_identity_and_authentication.md`
-tracks this as the one open milestone before I8; the QEMU path below is fully real and is how the
-identity/auth/grants system is developed and tested today, on both supported architectures.
+**Current status.** Everything below is implemented, covered by `tests/runner.py` against the QEMU
+identity disk (`drivers/virtio_blk_id.c`, milestone I2), and — since 2026-09-01 — **backed by real
+storage on RP2350** (milestone I7b): the device UID is read from OTP `CHIPID`, and the record itself
+lives in a reserved flash sector that a firmware reflash does not touch. Two boards were checked to
+report two different UIDs, and a provisioned identity was verified to survive a UF2 reflash, which is
+the claim the whole design rests on. `wifi join` with no arguments now reads its SSID and PSK from
+that record, and `netcfg` stores the address there too, so a board brings its own network up after a
+power cut with nothing typed.
+
+One verify item is deliberately still open and is not hand-waved: an *interrupted* flash write
+leaving the store readable as corrupt. Cutting power inside a ~100 ms erase window has not been
+attempted. Note that I7b narrowed what that would probe — a torn write leaves a sector whose magic
+does not match, which reads as UNPROVISIONED rather than as a plausible record, so the dangerous
+outcome needs the magic to survive while the fields do not.
 
 ### The record, and why one field can't answer two questions
 
 The identity **record** is a small (4 KB), typed, versioned block on its own storage — the second
-virtio-blk device in QEMU, the RP2350's reserved flash sector once I7 lands — never on the removable SD
+virtio-blk device in QEMU, the RP2350's reserved flash sector on hardware — never on the removable SD
 card, and never served over 9P under any path (the same server-side guard that refuses to serve the
 9P auth key directory refuses this too). It holds, per field: a device UID (minted once, meant to survive
 a reflash), an instance name (freely rewritable — a board's *role* can change even when its silicon
@@ -1074,7 +1290,7 @@ wrote clock.img: name='clock-3f2a' uid=7a1c9e4f02b6d831
 ```
 
 That file is a raw 4 KB image in the exact format `kernel/idstore.c` reads — attach it as QEMU's second
-`virtio-blk-device` (or flash it to the reserved sector, once I7 exists) and the board's `identity`
+`virtio-blk-device`, or write it to the RP2350's reserved sector, and the board's `identity`
 report already shows `clock-3f2a` with `name source: record` before a single shell command runs.
 
 **2. Or provision interactively, from the console**, which is what a bootstrap with no host tooling
