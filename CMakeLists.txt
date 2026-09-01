@@ -51,6 +51,16 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
     set(ARCH_MABI "ilp32")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/rp2350.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_RP2350=1)
+    # I7a, plan/phase21_identity_and_authentication.md §3.3. One definition of
+    # the flash map, reaching the compiler here and the linker below as
+    # --defsym, so drivers/flashdisk.c and linker/rp2350.ld cannot disagree
+    # about where the filesystem segment starts.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake)
+    add_compile_definitions(
+        LUGALOS_FLASHFS_BASE=${LUGALOS_FLASHFS_BASE}
+        LUGALOS_FLASHFS_SIZE=${LUGALOS_FLASHFS_SIZE}
+        LUGALOS_IDENTITY_BASE=${LUGALOS_IDENTITY_BASE}
+        LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -227,15 +237,41 @@ endforeach()
 file(GLOB_RECURSE SD_ROOT_FILES CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/*)
 
+# I7a, plan/phase21_identity_and_authentication.md §3.3: two forms of the same
+# image, and which one is built is the whole point of the milestone.
+#
+#   RP2350  -- a raw flashfs.bin, flashed to its own region as flashfs.uf2.
+#              Nothing of it is linked into lugalos.elf, which is what takes
+#              the OS image from ~982 KB to ~470 KB and lets the filesystem be
+#              updated without touching the OS (and vice versa).
+#   QEMU    -- the embedded C array, as before. There is no flash map to place
+#              a segment in on those targets, and for a ROMdisk inside a
+#              hosted image, embedding is right rather than a compromise.
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
+    set(FLASH_FS_SOURCE "")
+    set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
+else()
+    set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c)
+    set(FLASH_FS_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c)
+    set(FLASH_FS_COMMENT "Generating embedded Flash FAT32 image flash_fs.c")
+endif()
+
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
+    OUTPUT ${FLASH_FS_OUTPUT}
     ${SD_STAGE_COMMANDS}
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c ${SD_STAGE}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${FLASH_FS_OUTPUT} ${SD_STAGE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
             ${SD_ROOT_FILES}
             uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
-    COMMENT "Generating embedded Flash FAT32 image flash_fs.c"
+    COMMENT "${FLASH_FS_COMMENT}"
 )
+
+# On RP2350 the image is not a source file, so nothing would build it without
+# a target that depends on it. lugalos.elf is made to depend on this below.
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    add_custom_target(flashfs_image DEPENDS ${FLASH_FS_OUTPUT})
+endif()
 
 # Build-id header, regenerated (write-if-changed) before every build so it
 # tracks commits without a re-configure. See cmake/gen_build_id.cmake.
@@ -437,7 +473,9 @@ set(SOURCES
     drivers/loopback_net.c
     drivers/uart_net.c
     drivers/usb_cdc.c
-    ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c
+    # Empty on RP2350 -- see the flash-fs block above; the image is its own
+    # flash segment there, not a translation unit.
+    ${FLASH_FS_SOURCE}
     fs/fat32.c
     fs/vfs_server.c
     fs/9p.c
@@ -685,8 +723,58 @@ set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS ${LINKER_SCRIPT})
 target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT})
 target_link_libraries(lugalos.elf PRIVATE gcc)
 
+# I7a §3.3: the same four numbers the compiler got, handed to the linker so
+# its ASSERTs check the real boundaries rather than a second copy of them.
+# --defsym rather than a generated .ld fragment: the values are plain
+# integers, and one mechanism is easier to keep honest than two.
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    # One list, because linker/rp2350.ld's ASSERTs reference these symbols
+    # unconditionally and *every* image built from that script therefore needs
+    # them -- including minimal_rp2350.elf, the standalone hardware test, which
+    # is how this was found (an undefined-symbol link error, not a wrong
+    # address).
+    set(LUGALOS_FLASH_MAP_DEFSYMS
+        -Wl,--defsym=__flashfs_base=${LUGALOS_FLASHFS_BASE}
+        -Wl,--defsym=__flashfs_size=${LUGALOS_FLASHFS_SIZE}
+        -Wl,--defsym=__identity_base=${LUGALOS_IDENTITY_BASE}
+        -Wl,--defsym=__identity_size=${LUGALOS_IDENTITY_SIZE})
+    target_link_options(lugalos.elf PRIVATE ${LUGALOS_FLASH_MAP_DEFSYMS})
+    # The filesystem image is no longer a source file, so only an explicit
+    # dependency builds it -- and it has to exist before the POST_BUILD step
+    # below turns it into flashfs.uf2.
+    add_dependencies(lugalos.elf flashfs_image)
+endif()
+
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
 set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)
+
+# The POST_BUILD block below is not RP2350-only -- the QEMU targets run it too
+# and emit a lugalos.uf2 nobody flashes -- so the flash map, which only exists
+# on RP2350, needs a default here and the second UF2 needs to be conditional.
+# Same command-list shape as SD_STAGE_COMMANDS above, for the same reason: a
+# POST_BUILD cannot carry an if() inside itself.
+if(NOT DEFINED LUGALOS_FLASH_BASE)
+    set(LUGALOS_FLASH_BASE 0x10000000)
+endif()
+# flashfs.uf2 gets its own producer rule rather than riding lugalos.elf's
+# POST_BUILD, and the difference is not cosmetic: a POST_BUILD only runs when
+# its target relinks, so changing a file under tools/sd_root regenerated
+# flashfs.bin and left flashfs.uf2 stale -- the build would happily hand you
+# an old filesystem to flash. Caught by I7a's own independence check on
+# hardware (a marker file that never appeared in /flash0), which is exactly
+# the sort of thing that verify item exists to catch. A real OUTPUT/DEPENDS
+# edge makes ninja rebuild the UF2 whenever the image changes, and ALL makes
+# it part of an ordinary build rather than something only lugalos.elf drags in.
+if(LUGALOS_TARGET STREQUAL "RP2350")
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.uf2
+        COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASHFS_BASE} flashfs.bin -o flashfs.uf2
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Generating flashfs.uf2 (the filesystem segment, flashed on its own)"
+    )
+    add_custom_target(flashfs_uf2 ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/flashfs.uf2)
+endif()
 
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
 add_custom_command(TARGET lugalos.elf POST_BUILD
@@ -701,13 +789,17 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     # simple program survives being the wrong ISA; uargs, which dereferences
     # pointers, does not, and faults on a 32-bit address sign-extended to 64.
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_CURRENT_BINARY_DIR}/lugalos_sd.img ${SD_STAGE} --if-stale
-    COMMAND ${UF2CONV_PY} --family rp2350_riscv --base 0x10000000 lugalos.bin -o lugalos.uf2
+    COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2
+    # flashfs.uf2 is deliberately NOT built here -- see its own rule above.
+    # And note what no build emits at all: any UF2 covering
+    # LUGALOS_IDENTITY_BASE. A device's identity is minted by the device, and
+    # the flash host must never need to hold it (§3.3).
     COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and this target's lugalos_sd.img"
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S)
-    target_link_options(minimal_rp2350.elf PRIVATE -T${LINKER_SCRIPT})
+    target_link_options(minimal_rp2350.elf PRIVATE -T${LINKER_SCRIPT} ${LUGALOS_FLASH_MAP_DEFSYMS})
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD
         COMMAND ${CMAKE_OBJCOPY} -O binary minimal_rp2350.elf minimal_rp2350.bin

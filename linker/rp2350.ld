@@ -327,6 +327,32 @@ SECTIONS
      * than just the part __flash_binary_end reaches: on this board most of the
      * image is the embedded FAT32 payload, and the two are worth telling
      * apart. */
+    /* --- The three-segment flash map (I7a, §3.3 of
+     * plan/phase21_identity_and_authentication.md) ---
+     *
+     * __flashfs_base / __identity_base and their sizes arrive as --defsym
+     * from cmake/flash_layout.cmake, which is the single definition of this
+     * map. They are NOT written down again here: with the FAT32 image no
+     * longer inside the ELF, this script has nothing of its own to check
+     * against, so a second copy of the numbers would be exactly the drift
+     * §10 warns about.
+     *
+     * What these two ASSERTs buy is that a boundary mistake is a link error
+     * naming the cause, rather than an OS image that overwrites the
+     * filesystem -- or, far worse, a device's identity -- the next time it is
+     * flashed. Measured 2026-09-01: an OS reflash leaves the identity sector
+     * byte-identical, which is the property these keep true as the image
+     * grows.
+     */
+    ASSERT(__flash_binary_end <= __flashfs_base,
+           "the OS image has grown past its segment and would overwrite the flash-fs -- raise LUGALOS_FLASHFS_BASE in cmake/flash_layout.cmake, or shrink the image")
+
+    ASSERT(__flashfs_base + __flashfs_size <= __identity_base,
+           "the flash-fs segment overlaps the identity sector -- see cmake/flash_layout.cmake")
+
+    ASSERT(__identity_base + __identity_size <= ORIGIN(FLASH) + LENGTH(FLASH),
+           "the identity sector runs past the end of flash -- see cmake/flash_layout.cmake")
+
     _ram_start   = ORIGIN(RAM);
     _ram_end     = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     _flash_start = ORIGIN(FLASH);

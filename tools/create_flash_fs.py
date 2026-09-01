@@ -37,8 +37,38 @@ def generate_flash_fs_c(output_c_path: str, src_dir: str) -> None:
         f.write("};\n")
         f.write(f"const uint32_t g_flash_fs_size = {len(data)};\n")
 
+def generate_flash_fs_bin(output_bin_path: str, src_dir: str) -> None:
+    """The same FAT32 image, as a raw binary rather than a C array.
+
+    I7a, plan/phase21_identity_and_authentication.md §3.3: on RP2350 the
+    filesystem is no longer compiled into the image. It is flashed to its own
+    region as a separate UF2, so the OS image stops carrying 512 KB it cannot
+    write and does not need to rewrite on every build. The QEMU targets keep
+    the C-array form -- they have no flash map to place a segment in, and
+    embedding is exactly right for a ROMdisk in a hosted image.
+    """
+    build_fat32_image(output_bin_path, src_dir)
+    size = os.path.getsize(output_bin_path)
+    print(f"[FlashFS] Wrote {size} bytes of FAT32 image to '{output_bin_path}'")
+
+
 if __name__ == "__main__":
-    out_c = sys.argv[1] if len(sys.argv) > 1 else "build/flash_fs.c"
-    src_d = sys.argv[2] if len(sys.argv) > 2 else str(tools_dir / "sd_root")
-    os.makedirs(os.path.dirname(out_c), exist_ok=True)
-    generate_flash_fs_c(out_c, src_d)
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("output", nargs="?", default="build/flash_fs.c",
+                    help="output path (.c for the embedded array, .bin for a raw image)")
+    ap.add_argument("src", nargs="?", default=str(tools_dir / "sd_root"),
+                    help="directory tree to place into the image")
+    ap.add_argument("--format", choices=("c", "bin"), default=None,
+                    help="output format; inferred from the output extension when omitted")
+    args = ap.parse_args()
+
+    fmt = args.format or ("bin" if args.output.endswith(".bin") else "c")
+    outdir = os.path.dirname(args.output)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    if fmt == "bin":
+        generate_flash_fs_bin(args.output, args.src)
+    else:
+        generate_flash_fs_c(args.output, args.src)

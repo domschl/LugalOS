@@ -1,7 +1,7 @@
 # Phase 21 — Identity and authentication, as a thing in itself
 
-**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 unblocked
-and re-scoped 2026-09-01 as I7a + I7b (§3.3).** Independent of the phase it
+**Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7 re-scoped
+and I7a complete 2026-09-01 (§3.3); I7b is all that remains.** Independent of the phase it
 grew out of.
 
 **Amended 2026-09-01, before starting I7, in response to a design review that
@@ -736,6 +736,43 @@ assumption with a layout. Split in two, because the halves are different kinds
 of work with different blast radii -- one is build-system, one is a driver --
 and only the second needs the record format to exist.
 
+**I7a's boundary measurement: PASS, 2026-09-01 -- and this is the number
+this phase has been building on since I2 without ever having it.** Run
+before writing any of I7a's code, because if it had failed the rest of the
+design would have changed. Method, with no firmware modification at all: a
+4 KB pattern (word *i* = `0x5A5A0000 | i`, top bit clear so the Lisp `peek`
+primitive prints it as a positive integer) was converted to a UF2 based at
+`0x103FF000` with `tools/uf2conv.py -b ... -f 0xE48BFF57`, every block's
+target address checked to lie inside the top sector *before* it went near
+the board, and flashed. The board still booted -- the OS at `0x10000000` was
+untouched -- and `(peek ...)` read the pattern back. Then `lugalos.uf2`
+(982 KB, ending at `0x100f596c`) was reflashed over the top, and the pattern
+was read again: **byte-identical, at word 0 and word 1023 and fifteen points
+between.**
+
+So an OS reflash does not reach the top sector, and §10's narrowed risk is
+answered with data rather than with hope. Note what makes seventeen samples
+sufficient rather than a shortcut: NOR erase is per-4-KB-sector and
+all-or-nothing, so a sector that had been caught by an erase would read
+`0xFFFFFFFF` *everywhere*, and word 0 and word 1023 alone would have caught
+it. The baseline read before any of this is worth keeping too -- the sector
+was erased (`0xFFFFFFFF`) except its very last word, which held
+`0xEFEFEFEF`, presumably left by the MicroPython image used to prove the
+hardware good during R5. Something already writes near the top of this
+flash, which is exactly why the region wants reserving rather than assuming.
+
+**Method note, for whoever runs the next hardware check here.** The
+verification was sampled rather than exhaustive because a 64-iteration named
+`let` exhausts the Lisp node pool on this persona *on a fresh boot* --
+`NODE_POOL_SIZE` is 1024 on RP2350 against 4096 elsewhere (`user/lisp/lisp.c`),
+which is the deliberate memory budget, not a regression. The interpreter
+degrades exactly as P6 §6.4's test says it should, but the message
+("Further evaluation will produce wrong results until the shell restarts")
+means a loop-based check can report a *pass* that means nothing. Individual
+`(peek ...)` calls allocate little enough to be trustworthy; loops here are
+not. Worth an in-firmware comparison routine once I7b gives this region a
+`block_dev_t`.
+
 **I7a -- the three-segment flash layout (§3.3).** Lift the FAT32 image out of
 `.rodata` into its own flash region, reserve the identity sector at the top of
 flash, and emit `lugalos.uf2` and `flashfs.uf2` separately. Bases come from one
@@ -749,6 +786,57 @@ pattern into the identity sector first and reading it back after (this is the
 sector-boundary erase question, and it is the first thing to measure, because
 everything else here rests on it); a linker `ASSERT` fires, naming the cause,
 when a segment is made to overflow its region.
+
+**I7a done, 2026-09-01.** All four verify items measured on a Pico 2 W:
+
+* **The OS image is 481,792 bytes**, down from 1,006,080 -- the 512 KB
+  filesystem is no longer linked in (`g_flash_fs_start` is gone from the ELF
+  entirely), and `__flash_binary_end` now sits at `0x10075964`, comfortably
+  under `__flashfs_base`.
+* **`flashfs.uf2` alone updates `/flash0`** and leaves the OS untouched:
+  a marker file added to `tools/sd_root`, the filesystem image reflashed on
+  its own, the marker read back from `/flash0` -- with `/proc/buildid`
+  unchanged. Ninja does not relink `lugalos.elf` for it either, which is the
+  same property seen from the build side.
+* **`lugalos.uf2` alone leaves both other regions byte-identical** --
+  `/flash0` still reads, and the identity sector still holds the pattern from
+  the boundary measurement above.
+* **The linker `ASSERT` fires and names the cause.** Forced by moving
+  `LUGALOS_FLASHFS_BASE` down to `0x10010000`: *"the OS image has grown past
+  its segment and would overwrite the flash-fs -- raise LUGALOS_FLASHFS_BASE
+  in cmake/flash_layout.cmake, or shrink the image"*.
+
+**One thing I7b must not be surprised by:** the board used for this work now
+has the 4 KB test pattern (`0x5A5A0000 | i`) sitting at
+`LUGALOS_IDENTITY_BASE`, deliberately left there as standing evidence that
+an OS reflash does not touch it. That sector is therefore *not* erased flash
+on this board, and `idstore_read()` will find a header whose magic does not
+match -- which should come back as `IDSTORE_CORRUPT`, not `UNPROVISIONED`.
+That is arguably the more useful of the two states to meet first, since it
+exercises the refusal path, but it is only correct if the magic check
+precedes the CRC. Erase the sector to test the unprovisioned path.
+
+`cmake/flash_layout.cmake` is the single definition of the map, reaching the
+compiler as definitions and the linker as `--defsym`. Both RP2350 images link
+against `linker/rp2350.ld` and therefore both need those symbols -- found by
+`minimal_rp2350.elf` failing to link, which is the right way to find it.
+
+**The independence check earned its place immediately.** `flashfs.uf2` was
+first produced inside `lugalos.elf`'s `POST_BUILD`, which only runs when that
+target relinks -- so changing a file under `tools/sd_root` regenerated
+`flashfs.bin` and left `flashfs.uf2` stale, and the build would hand you an
+old filesystem to flash. Nothing about the code was wrong; the *build graph*
+was, and only flashing a real board and looking for a marker that never
+arrived showed it. It has its own `OUTPUT`/`DEPENDS` rule now. Worth
+remembering the next time a verify item looks like a formality.
+
+Two things fell out that were not on the list. The split introduces a new
+failure mode -- a board flashed with `lugalos.uf2` alone has erased flash
+where the filesystem should be -- so `flashdisk_get_device()` now recognises
+all-`0xFF` and says exactly that, rather than letting FAT32 report a bad boot
+sector. And the QEMU targets are deliberately unchanged: they keep the
+embedded C array, since they have no flash map to place a segment in, so
+`tests/runner.py` still exercises the same `/flash0` it always did (296/296).
 
 **I7b -- the identity backend.** OTP chip id for the UID; the reserved sector
 for everything else; a RAM-resident erase/program routine whose home is stated

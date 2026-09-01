@@ -392,7 +392,8 @@ DS1307/DS3231 RTC Module   Raspberry Pi Pico 2 (RP2350)
 ```bash
 cmake --preset rp2350-chess
 cmake --build --preset rp2350-chess
-# Generates: build/rp2350/lugalos.uf2
+# Generates: build/rp2350/lugalos.uf2 (the OS) and build/rp2350/flashfs.uf2
+#            (the /flash0 filesystem -- its own flash region since I7a)
 ```
 
 This is the default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in
@@ -411,13 +412,41 @@ directly with the same steps below.
 1. Hold **BOOTSEL** button on Pico 2 while plugging in USB (or while powering on via CP2101 5V).  
    The board mounts as a USB mass storage device called `RP2350`.
 
-2. Copy the UF2 firmware:
+2. Copy the UF2 firmware. **On RP2350 there are two images, and a fresh board needs
+   both** — see [Two images, flashed independently](#two-images-flashed-independently)
+   just below for why:
    ```bash
    # Linux
-   cp build/rp2350/lugalos.uf2 /media/$USER/RP2350/
+   cp build/rp2350/flashfs.uf2  /media/$USER/RP2350/   # once; the /flash0 filesystem
+   cp build/rp2350/lugalos.uf2  /media/$USER/RP2350/   # the OS itself
    # macOS
-   cp build/rp2350/lugalos.uf2 /Volumes/RP2350/
+   cp build/rp2350/flashfs.uf2  /Volumes/RP2350/
+   cp build/rp2350/lugalos.uf2  /Volumes/RP2350/
    ```
+   Each copy reboots the board out of BOOTSEL, so hold the button again between the two
+   (or use `flash.py` below, which handles that for you).
+
+#### Two images, flashed independently
+
+`/flash0` used to be a 512 KB FAT32 image compiled into the binary — over half of a
+~982 KB firmware, read-only, and rewritten on every OS flash despite changing almost
+never. It now lives in its own flash region and is flashed as its own UF2
+(I7a, [`plan/phase21_identity_and_authentication.md`](plan/phase21_identity_and_authentication.md) §3.3):
+
+| region | image | size | changes |
+|---|---|---|---|
+| `0x10000000` | `lugalos.uf2` | ~470 KB | every build |
+| `0x10180000` | `flashfs.uf2` | 512 KB | only when `tools/sd_root` does |
+| `0x103FF000` | *(nothing this build emits)* | 4 KB | reserved for the identity record |
+
+So the OS image is half the size it was, updating the filesystem does not touch the OS,
+and updating the OS does not touch the filesystem — measured on hardware, both ways.
+The third region is deliberately never covered by any UF2 this build produces: a device
+mints its own identity, and the machine doing the flashing must not need to hold it.
+
+If you flash only `lugalos.uf2` onto a board that has never had `flashfs.uf2`, `/flash0`
+is erased flash and the board says so at boot rather than reporting a corrupt filesystem.
+`/sd0` and everything else still work.
 
 **After the first flash, this is automatic.** The firmware implements the Arduino-style
 "1200-baud touch": opening the console CDC port at 1200 baud and dropping DTR makes the device
@@ -512,8 +541,13 @@ ENC28J60 gateway uses. See `plan/phase19_ip_stack_and_ethernet.md` R5 for how it
 
 ```bash
 $ cmake --preset rp2350-wifi && cmake --build build/rp2350-wifi
-$ cd tests/hw && uv run flash.py --uf2 ../../build/rp2350-wifi/lugalos.uf2
+$ cd tests/hw
+$ uv run flash.py --uf2 ../../build/rp2350-wifi/flashfs.uf2   # once, or when tools/sd_root changes
+$ uv run flash.py --uf2 ../../build/rp2350-wifi/lugalos.uf2
 ```
+
+Two images because `/flash0` has its own flash region now — see
+[Two images, flashed independently](#two-images-flashed-independently).
 
 **Blob accounting.** This persona is the one place a LugalOS image contains something that is
 not source: the CYW43439's firmware, its CLM regulatory table and its NVRAM — 227 KB in total,
