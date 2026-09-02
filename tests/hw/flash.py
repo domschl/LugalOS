@@ -10,6 +10,12 @@ volume, the UF2 is copied onto it, and it reboots into the new firmware.
     uv run flash.py --uf2 path/to.uf2
     uv run flash.py --verify             # also check /proc/buildid afterwards
 
+A console that answers nothing is not necessarily a wedged board: on the
+clock persona the shell sits behind an application that owns the terminal
+until Ctrl-C hands it back. This sends one before touching, and says which of
+the two situations it found -- an operator who cannot tell "busy" from "dead"
+reaches for the BOOTSEL button when they did not have to.
+
 Bootstrap note: this only works if the firmware *already on the board*
 implements the touch. Flashing onto a board that predates it -- or one whose
 touch is broken -- needs one manual BOOTSEL press, after which this takes
@@ -22,6 +28,7 @@ import argparse
 import glob
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -103,6 +110,68 @@ def try_mount(dev: str) -> str | None:
     if m:
         return m.group(1).rstrip(".")
     return None
+
+
+def console_responds(port: str, timeout: float = 2.0) -> bool:
+    """Does a shell answer on this port?
+
+    Opened raw with os.open rather than through pyserial, because pyserial
+    asserts DTR on open and that ioctl is itself a USB control transfer -- on a
+    board whose USB has wedged it blocks for ~30 s and raises ETIMEDOUT, which
+    turns a cheap probe into the slowest part of the run."""
+    try:
+        fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except Exception:
+        return False
+    try:
+        os.write(fd, b"\n")
+        end = time.time() + timeout
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try:
+                    if os.read(fd, 4096):
+                        return True
+                except BlockingIOError:
+                    pass
+        return False
+    except Exception:
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+
+
+def unblock_console(port: str) -> bool:
+    """Send Ctrl-C to hand the console back from a foreground application.
+
+    The clock persona boots straight into its clock application, which owns
+    the console for as long as it runs -- so a board that is perfectly healthy
+    answers nothing, and the operator sees the same silence a wedged board
+    gives. Ctrl-C is what the application watches for
+    ([[standardized_interrupt_polling]]), and it costs one byte to try.
+
+    Returns whether a shell answered afterwards. A false here is not a
+    diagnosis: the touch below is a USB control transfer and does not need the
+    console to be listening, so a board that stays silent is still worth
+    touching."""
+    try:
+        fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except Exception:
+        return False
+    try:
+        os.write(fd, b"\x03")
+    except Exception:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+    time.sleep(0.6)
+    return console_responds(port, timeout=2.0)
 
 
 def touch_1200(port: str) -> None:
@@ -201,6 +270,19 @@ def main() -> int:
             print("[!] No RP2350 console port found, and no BOOTSEL volume mounted.")
             print("    Connect the board, or hold BOOTSEL while plugging it in.")
             return 1
+        # A silent console is not necessarily a broken one. On the clock
+        # persona the shell is behind an application that owns the terminal,
+        # and Ctrl-C is what hands it back -- so try that before concluding
+        # anything, and say which of the two situations this was.
+        if not console_responds(ports.console):
+            print(f"[*] {ports.console} is not answering; sending Ctrl-C in case an")
+            print("    application owns the console...")
+            if unblock_console(ports.console):
+                print("[*] Console handed back by Ctrl-C (a foreground app had it).")
+            else:
+                print("[*] Still silent. Touching anyway -- the touch is a USB control")
+                print("    transfer and does not need a listening console.")
+
         print(f"[*] Touching {ports.console} at 1200 baud to request BOOTSEL...")
         touch_1200(ports.console)
         vol = wait_for_bootsel()
