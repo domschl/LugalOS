@@ -286,9 +286,19 @@ def main() -> int:
     else:
         ports = rp2350.discover_ports(console=args.console)
         if ports is None:
-            print("[!] No RP2350 console port found, and no BOOTSEL volume mounted.")
-            print("    Connect the board, or hold BOOTSEL while plugging it in.")
-            return 1
+            # Last resort before giving up: the touch is a USB control
+            # transfer and needs no listening console, so a port that answers
+            # nothing is still worth touching. Only the console port matters
+            # here -- the 9P interface is not involved in flashing.
+            by_id = rp2350.ports_by_usb_descriptor()
+            if by_id:
+                print(f"[*] Console did not answer; using {by_id.console} from the")
+                print("    USB descriptor (interface 0 is the console on this firmware).")
+                ports = by_id
+            else:
+                print("[!] No RP2350 console port found, and no BOOTSEL volume mounted.")
+                print("    Connect the board, or hold BOOTSEL while plugging it in.")
+                return 1
         # A silent console is not necessarily a broken one. On the clock
         # persona the shell is behind an application that owns the terminal,
         # and Ctrl-C is what hands it back -- so try that before concluding

@@ -13,6 +13,7 @@ in pyserial from the committed lockfile). Every test here is written to be
 from __future__ import annotations
 
 import glob
+import os
 import re
 import sys
 import time
@@ -99,6 +100,39 @@ def _candidate_ports() -> tuple[list[str], list[str]]:
 # why it has to be a *whole* frame, not a bare newline.
 _PROBE_TVERSION_FRAME = bytes.fromhex("13000000640100001000000600395032303030")
 assert 0x0D not in _PROBE_TVERSION_FRAME and 0x0A not in _PROBE_TVERSION_FRAME
+
+
+def ports_by_usb_descriptor() -> Rp2350Ports | None:
+    """Identify the two CDC interfaces from the USB descriptor rather than by
+    asking them anything.
+
+    Behavioural probing is the better answer when it works, because it proves
+    the port does what its name claims. It stops working exactly when it is
+    most needed: an appliance persona whose application owns the console
+    answers nothing, and a console whose 128-byte pushback ring has filled
+    (which the probe itself contributes to -- see _probe_port()) answers
+    nothing even after Ctrl-C. In both cases every tool built on discovery
+    concluded there was no board attached, and flashing needed the port named
+    by hand.
+
+    The kernel already knows. udev's /dev/serial/by-id/ links carry the USB
+    interface number, and this firmware's descriptor is fixed:
+    interface 0 is the console, interface 2 is the 9P/net link
+    (drivers/usb_cdc.c's dual-ACM layout). That is a property of the image, not
+    of whether the board feels like replying.
+
+    Linux only -- macOS has no by-id tree -- and None when the links are
+    absent, so callers keep whatever fallback they had."""
+    console = net = None
+    for link in sorted(glob.glob("/dev/serial/by-id/*LugalOS*")):
+        target = os.path.realpath(link)
+        if link.endswith("-if00"):
+            console = target
+        elif link.endswith("-if02"):
+            net = target
+    if not console:
+        return None
+    return Rp2350Ports(console=console, net=net, uart=None)
 
 
 def _probe_port(port: str) -> str | None:
@@ -217,6 +251,17 @@ def discover_ports(console: str | None = None, net: str | None = None,
                 console = p
             elif role == "net" and not net:
                 net = p
+
+    if not console or not net:
+        # Behavioural probing found nothing, which does not mean nothing is
+        # there: a board whose console is owned by an application, or whose
+        # pushback ring has filled, answers no probe at all. Ask the USB
+        # descriptor, which does not depend on the board feeling like
+        # replying. See ports_by_usb_descriptor().
+        by_id = ports_by_usb_descriptor()
+        if by_id:
+            console = console or by_id.console
+            net = net or by_id.net
 
     if not console or not net:
         return None
