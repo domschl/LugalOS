@@ -235,6 +235,14 @@ day while the board's own clock was correct to the millisecond.
 
 **Fix:** fit a working CR2032.
 
+**The software side is verified on hardware, 2026-09-02**, which is what makes
+this a parked hardware condition rather than an open bug. Observed on the
+panel through a full boot: `Init` while nothing has set the clock, the Chime
+lamp lit while the RTC is not vouching, then the time appearing and the lamp
+going out as NTP sets the clock and the write clears OSF. With a working cell
+none of that is reached -- the RTC seeds the kernel clock at boot and the time
+is simply there.
+
 ---
 
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
