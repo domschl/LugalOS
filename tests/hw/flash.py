@@ -228,6 +228,22 @@ def wait_for_console(timeout: float = 25.0, console: str | None = None) -> str |
     check failed against a completely different board, which reads as "the
     flash did not take" and is not. When the caller has already said which
     port it means, believe it.
+
+    **Discovery here must not touch the port**, which is why this asks the USB
+    descriptor first instead of calling discover_ports(). That function probes
+    behaviourally, and step 3 of the probe sends Ctrl-C -- the gesture that
+    hands the console back from a foreground application. Harmless when
+    diagnosing a wedged board, destructive here: the board has just booted
+    into its persona, and on the clock that Ctrl-C exits clock_app_run(), the
+    only caller of gps_poll() and dcf77_service_feed(). Every flash therefore
+    ended with the appliance dead about four seconds in, its display dark and
+    its counters frozen in a way that reads exactly like broken hardware
+    (2026-09-02, diagnosed from rx_fr showing a full, undrained RX FIFO).
+
+    At this point in the flash there is nothing to diagnose -- we are waiting
+    for re-enumeration, and the descriptor answers that without asking the
+    board anything. discover_ports() stays as the fallback for a firmware
+    whose by-id links are missing.
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -235,10 +251,17 @@ def wait_for_console(timeout: float = 25.0, console: str | None = None) -> str |
             if Path(console).exists():
                 return console
         else:
-            ports = rp2350.discover_ports()
-            if ports is not None:
-                return ports.console
+            by_id = rp2350.ports_by_usb_descriptor()
+            if by_id is not None:
+                return by_id.console
         time.sleep(0.5)
+
+    # Only now, having failed the quiet route for the whole timeout, is it
+    # worth poking: at this point the board is not answering anyway.
+    if not console:
+        ports = rp2350.discover_ports()
+        if ports is not None:
+            return ports.console
     return None
 
 
