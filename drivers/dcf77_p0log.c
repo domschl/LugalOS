@@ -30,6 +30,11 @@
  * never rolled off. */
 #define P0_RING 12
 
+/* How long the network is allowed to simply not exist yet before its absence
+ * is reported as a fault. The radio takes about 45 s from cold on this board
+ * -- firmware upload, then association -- so this is roughly twice that. */
+#define NO_STARTUP_GRACE_MS (90u * 1000u)
+
 typedef struct {
     uint32_t seq;
     uint64_t mono_ms;        /* the free-running clock, which is the x axis */
@@ -243,11 +248,28 @@ static void p0_body(void *arg) {
                 g.t0_ms = time_get_ms();
                 printk("[P0] initial step applied; the clock is frozen from here\n");
             } else {
-                /* The first few only: a board waiting out a radio join must
-                 * not fill /proc/kmsg with one line per retry, but a board
-                 * that will never succeed has to say so somewhere a human
-                 * reads. */
-                if (g.init_tries <= 3u || (g.init_tries % 60u) == 0u) {
+                /* Waiting for the radio is not a failure, and saying so was
+                 * worse than saying nothing.
+                 *
+                 * This task starts at t=0.6 s and retries every 5 s. The
+                 * CYW43439 uploads 231 KB of firmware before it can even
+                 * associate, so the network does not exist until about t=45 s
+                 * -- by which point the old rule (log the first three
+                 * attempts) had already printed three lines reading "no
+                 * network address configured", every one of them the expected
+                 * startup transient and none of them informative. Meanwhile
+                 * the case worth reading about, a board that will never
+                 * succeed, was rate-limited into invisibility. The log was
+                 * loud about the normal case and quiet about the abnormal one.
+                 *
+                 * So: silence while the network has genuinely not come up yet,
+                 * and only within a window long enough to cover a join.
+                 * NO_STARTUP_GRACE_MS is comfortably past the ~45 s this board
+                 * takes, so a network that is *still* missing after it is a
+                 * real fault and gets said out loud. */
+                bool starting_up = (irc == NTP_ERR_NO_NET) && !g.saw_net &&
+                                   time_get_ms() < NO_STARTUP_GRACE_MS;
+                if (!starting_up && (g.init_tries <= 3u || (g.init_tries % 60u) == 0u)) {
                     printk("[P0] initial sync %lu failed: %s (net %s)\n",
                            (unsigned long)g.init_tries, ntp_err_str(irc),
                            net_configured() ? "configured" : "unconfigured");
