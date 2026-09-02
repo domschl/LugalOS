@@ -981,6 +981,36 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         gps_status_t gs;
         gps_status(&gs);
         uint32_t used = 0;
+
+        /* A one-line verdict, first, because the counters below need a page of
+         * context to interpret and this file is read on a windowsill. Each
+         * state names the *next thing to do*, which is the only question a
+         * person standing there actually has.
+         *
+         * "tracking" is the one worth spelling out: correct UTC alongside a
+         * void RMC looks like a contradiction and is not. A module cannot
+         * invent the time -- to emit it at all it must have decoded the
+         * navigation message off a satellite it is tracking, so time arriving
+         * before a fix is proof the antenna works. GGA's satellite count is
+         * satellites *used in the fix*, so it reads 0 throughout. What is
+         * missing is ephemeris, and that is only ever cured by waiting.
+         *
+         * "fix-no-pulse" is the one that matters most: gps_pps.h calls a fix
+         * without a pulse a wiring fault, and without this line it would show
+         * up as nothing more than a counter that stayed at zero. */
+        const char *state, *hint;
+        if (!gs.enabled)               { state = "disabled";     hint = "not built or not initialised"; }
+        else if (!gs.rx_muxed)         { state = "mux-refused";  hint = "the RX pin never took its UART function"; }
+        else if (gs.bytes == 0)        { state = "silent";       hint = "no bytes at all -- power or TX->RX wiring"; }
+        else if (gs.sentences == 0)    { state = "garbage";      hint = "bytes but no valid sentence -- check baud"; }
+        else if (!gs.have_utc)         { state = "searching";    hint = "sentences parse, no satellite decoded yet"; }
+        else if (!gs.rmc_valid || gs.fix_quality == 0)
+                                       { state = "tracking";     hint = "time decoded, no fix yet -- antenna works, wait for ephemeris"; }
+        else if (gs.pps_count == 0)    { state = "fix-no-pulse"; hint = "fix but no PPS edge -- check the PPS wire and CONFIG_GPS_PPS_ACTIVE_LOW"; }
+        else if (!gps_pps_trustworthy()) { state = "unsteady";   hint = "fix and pulses, but the interval is not ~1 s"; }
+        else                           { state = "locked";       hint = "fix and a 1 s pulse -- calibration can run"; }
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "state=%s\nstate_hint=%s\n", state, hint);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "enabled=%s\nrx_muxed=%s\nrx_ctrl=0x%08lx\n"
             "rx_bytes=%lu\nsentences=%lu\nbad_checksum=%lu\n",
@@ -1002,7 +1032,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         if (gs.have_utc) {
             char iso[32];
             time_format_iso(&gs.utc, iso, sizeof(iso));
-            used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=%s\n", iso);
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=%s%s\n", iso,
+                gs.rmc_valid ? "" : " (unvalidated: RMC says void)");
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=none\n");
         }
