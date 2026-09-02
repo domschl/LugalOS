@@ -163,13 +163,28 @@ whatever the board said as it went is gone at the next power cycle. Nothing
 was attached to its console at the time -- the board is wherever the DCF
 reception is, which is the whole reason it broadcasts.
 
-**Candidates, none tested:** a hang in a task (the board has no watchdog); a
-radio failure that `wifiup`'s supervisor could not recover from, which would
-be visible as a rejoin loop if anything were listening; or power. The P0
-instrument itself is a suspect by proximity rather than by evidence -- it is
-the newest code on the board and the only thing running a minute-cadence loop
--- but `ntp_query()` unbinds its port on every exit path, and nothing else it
-does accumulates.
+**A strong candidate, found 2026-09-02 by reading the driver rather than by
+reproducing anything:** the link may not have been lost at all in any sense
+the board could see. `g_link_up` was set and cleared *exclusively* by the
+firmware's DEAUTH and DISASSOC events, which is correct when an AP says
+goodbye and says nothing about an AP that simply stops -- a power cut, a
+crash, or the board carried out of range. Carrier would stay asserted,
+`wifiup`'s supervisor would see a healthy link forever, and the board would be
+off the network with nothing anywhere to notice. That is precisely the
+observed shape: broadcasts and ICMP stopping together, permanently, with no
+recovery.
+
+**Mitigated** by making the supervisor watch liveness rather than carrier: a
+receive counter that has not moved in five minutes now forces a rejoin. That
+does not *prove* this was the cause -- nothing recorded at the time can -- but
+it removes the mechanism, and a recurrence after it would be evidence of
+something else entirely, which is worth more than the current single data
+point.
+
+**Other candidates, still untested:** a hang in a task (the board has no
+watchdog), or power. The P0 instrument is a suspect by proximity rather than
+by evidence -- newest code, only minute-cadence loop -- but `ntp_query()`
+unbinds its port on every exit path and nothing it does accumulates.
 
 **What to capture next time**, in this order, because the first two are lost
 by a power cycle: read `/proc/kmsg` and `/proc/ps` over the out-of-band 9P
@@ -181,41 +196,6 @@ application is no longer mistaken for one that has died.
 **Why it is parked:** one occurrence, no reproduction, and no evidence to work
 from. Logged so that a second occurrence is recognised as a pattern rather
 than as a first.
-
----
-
-## The DS3231's oscillator-stop flag is never read, so a dead battery reads as a valid time
-
-**Trigger:** power-cycle a board whose DS3231 has no working backup cell. The
-chip comes back with its registers reset -- 2000-01-01 00:00:00 -- and sets
-OSF (status register 0x0F, bit 7) to say exactly that.
-
-`drivers/i2c_rtc.c` never reads 0x0F. Its only validation is a range check
-(month 1-12, day 1-31, hour <= 23 ...), and **2000-01-01 00:00:00 passes every
-one of them**. So the chip's "my time is meaningless" signal is discarded and
-its meaningless time is accepted.
-
-**How it presented:** the `rp2350-clock` panel showing a fixed `00:00` while
-the board's own kernel clock was correct to a millisecond and being broadcast
-once a minute. The face reads the DS3231 directly
-(`drivers/pico_clock_app.c`), so a good clock sat behind a bad one.
-
-**Two fixes, and they are independent:**
-
-1. **Read OSF and honour it.** A read whose OSF is set is a failed read, not a
-   time. Clear the flag after a successful write, which is what the datasheet
-   prescribes and what makes the next boot's answer meaningful. Report it --
-   `i2c` and `/proc` should be able to say "the RTC lost its oscillator"
-   rather than silently handing back the year 2000.
-2. **Let the display fall back to the kernel clock.** `pico_clock_app.c` keeps
-   whatever `in.local` last held when the read fails, which at boot is a
-   seeded `2026-01-01 00:00:00`. A board that knows the time from NTP or from
-   the radio should show it, rather than deferring to a chip that does not.
-
-**Not yet confirmed on the board**, and one command settles which failure this
-is: `i2c scan` distinguishes a chip that does not answer at all from one that
-answers with a stopped oscillator. Worth doing before the fix, because the two
-have different remedies and only one of them is a coin cell.
 
 ---
 
