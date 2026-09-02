@@ -1051,7 +1051,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         {
             char types[80];
             used += (uint32_t)ksnprintf(buf + used, cap - used,
-                "ubx_tp5_sent=%lu\n", (unsigned long)gs.ubx_tp5_sent);
+                "ubx_tp5_sent=%lu\nubx_saves=%lu\n",
+                (unsigned long)gs.ubx_tp5_sent, (unsigned long)gs.ubx_saves);
             gps_nmea_types(types, sizeof(types));
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "nmea_types=%s\nnmea_last=%s\n", types, gps_nmea_last());

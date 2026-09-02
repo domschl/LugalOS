@@ -66,6 +66,8 @@ static uint8_t  g_ntypes;
 static char     g_last[88];
 
 static uint32_t g_tp5_sent;      /* UBX-CFG-TP5 frames written */
+static uint32_t g_ubx_saves;     /* UBX-CFG-CFG saves issued */
+static bool     g_tp5_save_due;
 static uint64_t g_tp5_last_ms;
 static uint64_t g_last_rx_ms;    /* when the last byte arrived, so a stream
                                   * that stops is a measured silence rather
@@ -127,11 +129,19 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t l
  * millisecond boundary, the second's start is one of them, and NMEA cannot say
  * which of the thousand it is.
  *
- * Deliberately *not* followed by a UBX-CFG-CFG save. The setting lives in
- * battery-backed RAM and reverts when the module loses power, so this leaves
- * the user's hardware as it found it and simply re-sends on the next boot.
- * Writing someone's module permanently to work around our own requirement is
- * not ours to do.
+ * Followed by a UBX-CFG-CFG save when CONFIG_GPS_UBX_PERSIST is set, which
+ * the owner of this board explicitly authorised ("feel free to rewrite the
+ * config", 2026-09-02). It is off by default everywhere else, because writing
+ * somebody's module permanently to suit our requirement is not a decision a
+ * driver gets to make on its own.
+ *
+ * The save has to name **flash**, not just battery-backed RAM, and the reason
+ * is a diagnosis worth keeping. A BBR that loses power does not come back
+ * holding rubbish; it comes back holding the ROM factory defaults, and the
+ * M8N's factory timepulse is already 1 Hz with a 100 ms pulse. So a long
+ * disconnection would have cured this rather than caused it, and the 1 kHz
+ * must live somewhere that survives power loss. Saving to BBR alone would
+ * work until the next power cut and then quietly revert.
  *
  * Field layout from the u-blox M8 protocol spec; the flags are active,
  * lockGnssFreq, lockedOtherSet, isLength, alignToTow and polarity=rising. */
@@ -154,6 +164,29 @@ static void ubx_set_timepulse_1hz(void) {
     };
     ubx_send(0x06u, 0x31u, tp5, sizeof(tp5));
 }
+
+#if CONFIG_GPS_UBX_PERSIST
+/* UBX-CFG-CFG: commit the running configuration to non-volatile storage.
+ *
+ * saveMask covers every defined section rather than only the timepulse's,
+ * because "save" means "save what the module is running now" -- and what it is
+ * running now is its own configuration with one field corrected. Narrowing the
+ * mask would not protect anything and risks omitting whichever section TP5
+ * actually lives in.
+ *
+ * deviceMask names BBR, flash and EEPROM together. A breakout without one of
+ * them simply refuses that device; asking for all three is how this works on
+ * boards that differ, rather than guessing which the module has. */
+static void ubx_save_config(void) {
+    static const uint8_t cfg[13] = {
+        0x00, 0x00, 0x00, 0x00,  /* clearMask: clear nothing            */
+        0xFF, 0xFF, 0x00, 0x00,  /* saveMask:  every defined section    */
+        0x00, 0x00, 0x00, 0x00,  /* loadMask:  load nothing             */
+        0x07,                    /* deviceMask: BBR | flash | EEPROM    */
+    };
+    ubx_send(0x06u, 0x09u, cfg, sizeof(cfg));
+}
+#endif
 #endif
 
 /* Reads the byte *and* its error bits, counts them, and clears the latched
@@ -420,8 +453,20 @@ void gps_poll(void) {
             ubx_set_timepulse_1hz();
             g_tp5_last_ms = now_ms;
             g_tp5_sent++;
+            g_tp5_save_due = true;
         }
     }
+#if CONFIG_GPS_UBX_PERSIST
+    /* The save goes in a later poll rather than straight after the frame
+     * above: the module applies its input in order, and there is no value in
+     * asking it to persist a setting in the same breath as receiving it. Half
+     * a second is many frame periods here and costs nothing. */
+    if (g_tp5_save_due && time_get_ms() - g_tp5_last_ms > 500ull) {
+        ubx_save_config();
+        g_tp5_save_due = false;
+        g_ubx_saves++;
+    }
+#endif
 #endif
     g.pps_dropped = edgecap_dropped(&g_pps);
     g.pps_stormed = edgecap_stormed(&g_pps);
@@ -482,6 +527,7 @@ void gps_status(gps_status_t *out) {
         g.rx_fr = REG(U_FR);
         g.rx_cr = REG(U_CR);
         g.ubx_tp5_sent = g_tp5_sent;
+        g.ubx_saves = g_ubx_saves;
     }
 #endif
     *out = g;

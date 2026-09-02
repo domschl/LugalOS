@@ -208,8 +208,13 @@ set(CONFIG_GPS_BAUD      9600)           # the near-universal NMEA default
 set(CONFIG_GPS_PPS_ACTIVE_LOW 0)
 # Send UBX-CFG-TP5 to put a u-blox timepulse back to 1 Hz. This board's
 # NEO-M8N came configured for ~1 kHz, which is unusable as a second marker.
-# Written to battery-backed RAM only, never saved to the module's flash.
 set(CONFIG_GPS_UBX_TIMEPULSE 1)
+# ...and make it stick. Off by default on every other board: rewriting a
+# module's non-volatile configuration is the owner's call, and this board's
+# owner made it explicitly. The save names flash as well as battery-backed
+# RAM, because a BBR wipe would restore the 1 Hz factory default rather than
+# the 1 kHz we actually found -- so the bad setting is in flash.
+set(CONFIG_GPS_UBX_PERSIST 1)
 
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #

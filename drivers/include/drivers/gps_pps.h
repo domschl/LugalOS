@@ -81,6 +81,9 @@ typedef struct {
                                 * timepulse that is not 1 Hz. Zero is the
                                 * healthy steady state; a number that keeps
                                 * climbing means the module is not listening. */
+    uint32_t ubx_saves;        /* UBX-CFG-CFG saves issued. Non-zero means
+                                * this board has written the module's
+                                * non-volatile configuration. */
     uint32_t pps_storms;       /* how many times, ever */
     uint32_t pps_storm_rate;   /* edges/sec at the last trip. ~2 kHz is an
                                 * unlocked module; tens of kHz is a floating
