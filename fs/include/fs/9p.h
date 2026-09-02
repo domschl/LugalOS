@@ -217,6 +217,11 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * enforce the bound rather than merely documenting it. */
 #define P9_GRANTS_MAX 8
 
+/* Loads the identity record's grants into RAM. Boot task only -- it reads a
+ * block device, which the 9P server task cannot. p9_init() calls it; nothing
+ * else needs to. */
+void p9_grants_cache_load(void);
+
 typedef struct {
     char     name[P9_MAX_NAME_LEN];
     uint8_t  key[P9_AUTH_KEY_MAX];

@@ -2761,6 +2761,96 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
         session2.close()
 
 
+def test_grants_in_record(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """I5 + the record backend: a grant the host provisioned, honoured by the
+    board, with no SD card involved.
+
+    This is the case that made the record backend necessary. Grants lived only
+    at /sd0/system/etc/auth/keys, so a board with no card -- the clock persona
+    is one -- had nowhere to keep one, refused every authenticated attach
+    forever, and could not be authorised by any means. `p9key` is
+    this-boot-only and /flash0 is read-only and byte-identical across boards.
+
+    And it is the case that catches the bug the backend first shipped with.
+    Redirecting the *storage* left p9_grants_find() -- the reader that
+    actually authorises an attach -- still reading the empty file, while
+    `peers` listed the grant and `p9auth` reported keys configured. Every
+    surface a person would check said yes and every attach was refused. So
+    this asserts the board's own view (peers, p9auth) *and* that a grant
+    written by the host tool arrives intact, rather than trusting either
+    alone.
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "Grants In The Identity Record, Provisioned By The Host (I5)"
+    arch_img = img_path.with_name(f"test_{arch_name}_grantrec_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    key = bytes(range(16))
+    fp = hashlib.sha256(key).hexdigest()[:16]
+    blob = f"alice {key.hex()} /sd0 ro\n".encode("ascii")
+    id_img = img_path.with_name(f"test_{arch_name}_grantrec_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("5566778899aabbcc")),
+        (provision.FIELD_NAME, b"grantrec"),
+        (provision.FIELD_GRANTS, blob),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. The board reads back what the host wrote -- name, scope and mode,
+        #    with the key shown only as a fingerprint.
+        ok, log = session.send_and_expect("peers", r"fingerprint", timeout=6.0)
+        if not ok:
+            return (name, False, f"`peers` did not answer: {log[-400:]}")
+        if not re.search(rf"^alice\s+{fp}\s+/sd0\s+ro", log, re.MULTILINE):
+            return (name, False,
+                    f"the provisioned grant is not reported (want alice/{fp}//sd0/ro):\n{log[-500:]}")
+        if key.hex() in log.lower():
+            return (name, False, "the granted key itself was printed")
+
+        # 2. And the auth gate agrees. This is the assertion that separates a
+        #    grant that merely *lists* from one that would actually admit a
+        #    peer: p9auth reports what p9_auth_have_keys() decides, which is
+        #    the gate every Tauth passes through.
+        ok, log = session.send_and_expect("p9auth", r"Keys configured", timeout=6.0)
+        if not ok:
+            return (name, False, f"`p9auth` did not answer: {log[-400:]}")
+        if "Keys configured: yes" not in log:
+            return (name, False,
+                    f"a record-backed grant does not satisfy the auth gate:\n{log[-400:]}")
+
+        # 3. Adding one on the device lands in the same place and is visible
+        #    beside it -- the write path and the read path agreeing, which is
+        #    what the first version of this backend got wrong.
+        ok, log = session.send_and_expect(
+            "peers add bob 0f0e0d0c0b0a09080706050403020100 / rw", r"granted", timeout=6.0)
+        if not ok:
+            return (name, False, f"`peers add` failed: {log[-400:]}")
+        ok, log = session.send_and_expect("peers", r"fingerprint", timeout=6.0)
+        if not ok:
+            return (name, False, f"`peers` did not answer after add: {log[-400:]}")
+        if not re.search(r"^alice\s", log, re.MULTILINE):
+            return (name, False, f"adding a grant lost the provisioned one:\n{log[-500:]}")
+        if not re.search(r"^bob\s", log, re.MULTILINE):
+            return (name, False, f"the added grant is not listed:\n{log[-500:]}")
+
+        return (name, True, "host-written grant honoured; device add joins it, neither lost")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+        id_img.unlink(missing_ok=True)
+
+
 def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """I3, plan/phase21_identity_and_authentication.md: the `identity`
     command family against a real (fresh) identity disk -- I3's own verify
@@ -5319,6 +5409,7 @@ def main() -> int:
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
@@ -5354,6 +5445,7 @@ def main() -> int:
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_grants_in_record(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))

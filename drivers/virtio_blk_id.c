@@ -93,6 +93,7 @@ static uint32_t g_id_mmio_version = 0;
 static uint32_t g_id_num_sectors = 8;
 static block_dev_t g_id_dev;
 static int g_id_initialized = 0;
+static int g_id_probe_logged = 0;
 static uint16_t g_id_last_used_idx = 0;
 
 static int virtio_blk_id_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t count) {
@@ -148,8 +149,22 @@ static int virtio_blk_id_write(block_dev_t *dev, const void *buf, uint32_t lba, 
 }
 
 int virtio_blk_id_init(void) {
-    if (g_id_initialized) return (g_id_mmio_base != NULL) ? 0 : -1;
-    g_id_initialized = 1;
+    /* Success latches; failure does not.
+     *
+     * This used to set g_id_initialized before scanning, so the *first* call
+     * decided the answer for the rest of the boot -- and that call is easy to
+     * make too early by accident, because it is reached indirectly through
+     * identity_store_device() from anything that touches the record. One such
+     * call from vfs_init() (before any bus had been scanned) left this
+     * returning -1 forever: no device key, so a node could not prove itself
+     * to a peer, and grants silently fell back to the SD card. The far end of
+     * a two-node auth test saw a connection carrying zero bytes, which is a
+     * long way from the cause.
+     *
+     * Re-scanning while the device is genuinely absent costs a handful of
+     * register reads on a cold path. Latching a failure costs identity,
+     * everywhere, undetectably. */
+    if (g_id_initialized && g_id_mmio_base != NULL) return 0;
 
     /* The primary driver (drivers/virtio_blk.c) takes the FIRST virtio-blk
      * device it finds scanning this same range in this same order; this
@@ -168,9 +183,16 @@ int virtio_blk_id_init(void) {
     }
 
     if (!g_id_mmio_base) {
-        printk("[VirtIO-Blk-Id] No second VirtIO MMIO block device detected; running unprovisioned.\n");
+        /* Logged once, not on every retry: a board without an identity disk
+         * is a normal configuration, and this is now reached again on each
+         * lookup rather than exactly once. */
+        if (!g_id_probe_logged) {
+            g_id_probe_logged = 1;
+            printk("[VirtIO-Blk-Id] No second VirtIO MMIO block device detected; running unprovisioned.\n");
+        }
         return -1;
     }
+    g_id_initialized = 1;
 
     g_id_mmio_version = g_id_mmio_base[REG_VERSION / 4];
 
@@ -234,7 +256,23 @@ int virtio_blk_id_init(void) {
 }
 
 block_dev_t *virtio_blk_id_get_device(void) {
-    if (!g_id_initialized) {
+    /* Retried until it works, rather than latched on the first attempt.
+     *
+     * g_id_initialized used to be set by virtio_blk_id_init() whether or not
+     * it found anything, so a single call made *before* the bus was scanned
+     * -- which is easy to do by accident, since this is reached indirectly
+     * through identity_store_device() from anything that reads the record --
+     * left this returning NULL for the rest of the boot. Every identity
+     * operation then failed silently: no device key, so a node could not
+     * prove itself to a peer, and grants quietly fell back to the SD card.
+     *
+     * Cost of retrying: one extra probe per call while the device is genuinely
+     * absent, which is a handful of register reads on a path that is not hot.
+     * Cost of latching: a boot-order mistake anywhere disables identity
+     * everywhere, undetectably. Found on 2026-09-02, when caching the grants
+     * at p9_init() -- which runs from vfs_init(), before dev_probe_all() --
+     * made a two-node auth test fail with the far end receiving zero bytes. */
+    if (!g_id_initialized || g_id_mmio_base == NULL) {
         virtio_blk_id_init();
     }
     if (g_id_mmio_base != NULL) {

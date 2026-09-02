@@ -92,6 +92,12 @@ block_dev_t *identity_store_device(void);
  * key store already bounds, so there is no reason for a second number. */
 #define NODE_DEVKEY_MAX 64
 
+/* The grants text's ceiling in the record. P9_GRANTS_MAX is 8 entries and a
+ * worst-case line -- a long name, a 64-byte key in hex, a long aname, a mode
+ * -- is under 190 characters, so this holds a full list with room to spare
+ * while leaving most of the 4 KB record for everything else. */
+#define NODE_GRANTS_MAX 1536
+
 typedef enum {
     NODE_ID_OK = 0,
     NODE_ID_ERR_NO_BACKEND,    /* identity_store_device() returned NULL on this target */
@@ -197,6 +203,28 @@ bool node_ipv4(uint8_t ip[NODE_IPV4_LEN], uint8_t mask[NODE_IPV4_LEN],
  * that comes up looking configured while answering nothing. Pass gw as
  * 0.0.0.0 for a segment with no router. Any existing UID/name/key/WLAN
  * fields are carried forward unchanged. */
+/* --- Peer grants, in the record (IDSTORE_FIELD_GRANTS) ------------------
+ *
+ * The list of who may attach to this node, stored as the same text
+ * fs/9p.c already parses. These two are the storage backend behind
+ * p9_grants_list()/p9_grants_add(); nothing else should call them.
+ *
+ * They exist because a board with no SD card had nowhere to keep a grant,
+ * and therefore could never accept an authenticated 9P attach over a
+ * network at all -- not "inconveniently", but never. See
+ * IDSTORE_FIELD_GRANTS in kernel/idstore.h. */
+
+/* Copies the stored grants text into `out`. Returns true and sets
+ * `*len_out` when a record holds one; false when there is no store, no
+ * record, or no grants field -- which the caller reads as "fall back to the
+ * file", not as an error. */
+bool node_grants(char *out, uint32_t cap, uint32_t *len_out);
+
+/* Replaces the stored grants text. `len` of 0 removes the field, which is
+ * how the last grant is withdrawn -- a list that could only ever be added
+ * to would be a worse failure than not having one. */
+node_id_result_t node_identity_set_grants(const char *text, uint32_t len);
+
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
                                         const uint8_t mask[NODE_IPV4_LEN],
                                         const uint8_t gw[NODE_IPV4_LEN]);

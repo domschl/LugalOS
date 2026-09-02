@@ -132,6 +132,10 @@ def _probe_port(port: str) -> str | None:
     newline and checks for a shell prompt -- safe here specifically because
     step 1 already ruled out this port being the net port.
 
+    Step 3 (only if step 2 was answered by silence) sends Ctrl-C and retries,
+    because an appliance persona's application owns the console and a healthy
+    board is then indistinguishable from an absent one.
+
     Returns None if the port couldn't be classified (or couldn't even be
     opened -- in use, permissions, ...)."""
     try:
@@ -151,6 +155,38 @@ def _probe_port(port: str) -> str | None:
             s.write(b"\r\n")
             s.flush()
             time.sleep(0.5)
+            data = s.read(s.in_waiting or 1)
+            if b"lsh>" in data or b"\x1b[?25l" in data:
+                return "console"
+
+            # Step 3: silence is not the same as absence. On an appliance
+            # persona the shell sits behind an application that owns the
+            # console for as long as it runs -- the clock is one -- so a
+            # perfectly healthy board answers a newline with nothing at all,
+            # and every tool built on this function concluded there was no
+            # board attached. That is what made flash.py unusable on the clock
+            # persona without a manual BOOTSEL press.
+            #
+            # Ctrl-C is what such an application watches for
+            # ([[standardized_interrupt_polling]]). It is safe to send here
+            # precisely because step 1 already ruled out this being the net
+            # port, and because console_pump() latches an interrupt from a
+            # non-consuming peek since 2026-08-24 -- before that the probe
+            # frame above could fill the 128-byte pushback ring and make
+            # Ctrl-C impossible to latch, which is the bug this comment's
+            # step 1 describes.
+            #
+            # The application releases the console silently, so the shell says
+            # nothing until it is given something to echo: the newline after
+            # the Ctrl-C is what produces the prompt, and dropping it makes
+            # this look like it failed (found on hardware 2026-09-02).
+            s.write(b"\x03")
+            s.flush()
+            time.sleep(0.8)
+            s.reset_input_buffer()
+            s.write(b"\r\n")
+            s.flush()
+            time.sleep(0.6)
             data = s.read(s.in_waiting or 1)
             if b"lsh>" in data or b"\x1b[?25l" in data:
                 return "console"

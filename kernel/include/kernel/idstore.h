@@ -76,6 +76,30 @@ typedef enum {
                                     * per-board again and cost that property. So the address
                                     * lives here, beside the SSID and PSK it is reached with,
                                     * and the boot script stays the same everywhere. */
+    IDSTORE_FIELD_GRANTS    = 7,  /* instance scope, secret-adjacent: the peer grants list --
+                                    * who may attach here, at what aname, read-only or not --
+                                    * as the exact text `p9_grants_list()` already parses, one
+                                    * "name key aname mode" line per grant.
+                                    *
+                                    * **The same bytes as the file, in a different home**, and
+                                    * that is deliberate: the parser and serialiser in fs/9p.c
+                                    * are unchanged, so this is a storage decision rather than
+                                    * a format one, and a board with an SD card can still keep
+                                    * its list there.
+                                    *
+                                    * Why it had to move: grants lived only at
+                                    * /sd0/system/etc/auth/keys, and a board with no card --
+                                    * the clock persona is one -- had nowhere persistent to put
+                                    * one at all. `p9key` is this-boot-only and /flash0 is
+                                    * read-only and byte-identical across boards, so *networked
+                                    * 9P could never work on such a board*: it would refuse
+                                    * every attach, forever, with no way to authorise anyone.
+                                    * Phase 21 §5.2 already argued grants belong to identity;
+                                    * this is where that becomes true rather than aspirational.
+                                    *
+                                    * Secret-adjacent rather than secret: the keys in it are
+                                    * bearer tokens for *other* nodes, so it is covered by the
+                                    * same never-served guard as the rest of the record. */
 } idstore_field_type_t;
 
 typedef struct {
@@ -96,6 +120,17 @@ idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out);
  * actual length. Returns -1 if the type is absent. `val`/`cap` may be
  * 0/NULL to just test presence and get the length. */
 int idstore_get_field(const idstore_t *rec, uint8_t type, void *val, uint32_t cap);
+
+/* The same lookup without the copy: a pointer into `rec`'s own buffer, valid
+ * for as long as `rec` is. NULL when the field is absent.
+ *
+ * For fields large enough that a caller carrying them forward would otherwise
+ * need a second buffer of their size. The grants list is the case that
+ * prompted it -- up to ~1.5 KB of text that identity_store_write() copies
+ * from the old record to the new one on *every* unrelated write, and a
+ * 1.5 KB stack frame or a permanent .bss buffer are both worse than not
+ * copying at all on a board where .bss and the heap are the same budget. */
+const uint8_t *idstore_field_ptr(const idstore_t *rec, uint8_t type, uint32_t *len_out);
 
 /* Builds a new record in memory. idstore_writer_init(), zero or more
  * idstore_writer_add_field(), then idstore_writer_commit() to finalise the

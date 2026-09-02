@@ -162,16 +162,35 @@ def unblock_console(port: str) -> bool:
     except Exception:
         return False
     try:
+        # One open for the whole gesture. Closing between the Ctrl-C and the
+        # newline drops DTR and re-opens the port, and the reply is lost in
+        # the re-initialisation -- which made a working unblock report failure
+        # (found on hardware 2026-09-02).
         os.write(fd, b"\x03")
+        time.sleep(0.8)
+        # The application releases the console silently, so nothing is echoed
+        # until the shell is given something to echo. The newline is what
+        # produces the prompt, not the Ctrl-C.
+        os.write(fd, b"\r\n")
+        end = time.time() + 2.0
+        seen = b""
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try:
+                    seen += os.read(fd, 4096)
+                except BlockingIOError:
+                    pass
+                if b"lsh>" in seen:
+                    return True
+        return b"lsh>" in seen
     except Exception:
-        pass
+        return False
     finally:
         try:
             os.close(fd)
         except Exception:
             pass
-    time.sleep(0.6)
-    return console_responds(port, timeout=2.0)
 
 
 def touch_1200(port: str) -> None:

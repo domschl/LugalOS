@@ -280,6 +280,11 @@ typedef struct {
      * never removed. */
     const uint8_t *ipv4;
     bool           clear_ipv4;
+    /* Same NULL-means-carry-forward / explicit-clear pair as ipv4 above, and
+     * for the same reason: withdrawing the last grant has to be expressible
+     * or a list could only ever grow. */
+    const char    *grants;  uint32_t grants_len;
+    bool           clear_grants;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -363,7 +368,27 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (final_key_len > 0)   rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
     if (final_ssid_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_SSID, final_ssid, (uint16_t)final_ssid_len);
     if (have_psk)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk));
+    /* Carried forward by pointer, not by copy. This is the one field big
+     * enough that copying it on every unrelated write -- renaming the node,
+     * storing a PSK -- would cost either a ~1.5 KB stack frame or a permanent
+     * .bss buffer of that size, and on RP2350 .bss and the heap are the same
+     * budget. `old` outlives the writer below, so the pointer is valid for
+     * exactly as long as it is used. */
+    const char *final_grants = NULL;
+    uint32_t    final_grants_len = 0;
+    if (patch->clear_grants) {
+        final_grants_len = 0;
+    } else if (patch->grants && patch->grants_len) {
+        final_grants = patch->grants;
+        final_grants_len = patch->grants_len;
+    } else if (old_valid) {
+        final_grants = (const char *)idstore_field_ptr(&old, IDSTORE_FIELD_GRANTS,
+                                                       &final_grants_len);
+        if (!final_grants) final_grants_len = 0;
+    }
+
     if (have_ipv4)           rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (final_grants_len)    rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
     if (rc != 0) return -1;
@@ -522,6 +547,32 @@ bool node_ipv4(uint8_t ip[NODE_IPV4_LEN], uint8_t mask[NODE_IPV4_LEN],
     if (mask) memcpy(mask, buf + NODE_IPV4_LEN,     NODE_IPV4_LEN);
     if (gw)   memcpy(gw,   buf + 2 * NODE_IPV4_LEN, NODE_IPV4_LEN);
     return true;
+}
+
+bool node_grants(char *out, uint32_t cap, uint32_t *len_out) {
+    if (!out || cap == 0) return false;
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+
+    int n = idstore_get_field(&rec, IDSTORE_FIELD_GRANTS, out, cap);
+    if (n <= 0) return false;
+    if (len_out) *len_out = (uint32_t)(n < (int)cap ? n : (int)cap);
+    return true;
+}
+
+node_id_result_t node_identity_set_grants(const char *text, uint32_t len) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    if (len > NODE_GRANTS_MAX) return NODE_ID_ERR_BAD_INPUT;
+
+    identity_patch_t patch = { 0 };
+    if (len == 0) patch.clear_grants = true;
+    else          { patch.grants = text; patch.grants_len = len; }
+
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
 }
 
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],

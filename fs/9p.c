@@ -393,22 +393,24 @@ static bool parse_grant_line(const char *line, const char *line_end, p9_grant_t 
  * the wildcard "*" row -- the same resolution key lookup has always used.
  * Returns false if the file is missing/empty or nothing matches. */
 static bool p9_grants_find(const char *uname, p9_grant_t *out) {
-    char buf[P9_GRANTS_BUF_MAX];
-    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
-    if (n <= 0) return false;
+    /* Through p9_grants_list(), so there is exactly one piece of code that
+     * knows where this board keeps its grants.
+     *
+     * This used to read P9_AUTH_KEYS_FILE itself, with its own copy of the
+     * parse loop below. That was harmless while the file was the only
+     * storage and actively dangerous the moment it stopped being: adding the
+     * identity-record backend redirected p9_grants_list() and
+     * p9_grants_add(), and left *this* -- the reader that actually authorises
+     * an attach -- still looking at an empty file. `peers` listed the grant,
+     * `p9auth` said keys were configured, and every attach was refused, which
+     * is about as misleading as a failure gets. */
+    p9_grant_t entries[P9_GRANTS_MAX];
+    uint32_t count = p9_grants_list(entries, P9_GRANTS_MAX);
 
     bool have_wildcard = false;
     p9_grant_t wildcard;
-    const char *p = buf;
-    const char *end = buf + n;
-    while (p < end) {
-        const char *line = p;
-        while (p < end && *p != '\n') p++;
-        const char *line_end = p;
-        if (p < end) p++;
-
-        p9_grant_t g;
-        if (!parse_grant_line(line, line_end, &g)) continue;
+    for (uint32_t i = 0; i < count; i++) {
+        p9_grant_t g = entries[i];
 
         /* `*` matches any uname. Explicit, never implied: since R3's
          * identity work every node attaches under its own name
@@ -426,9 +428,69 @@ static bool p9_grants_find(const char *uname, p9_grant_t *out) {
     return false;
 }
 
+static p9_grant_result_t p9_grants_store(const char *text, uint32_t len);
+
+/* The record-backed grants, cached in RAM.
+ *
+ * Not an optimisation. `idstore_read()` goes to a block device, and the 9P
+ * server task cannot do that -- an attach arriving on it found
+ * p9_auth_have_keys() reading the record, getting nothing, and refusing a
+ * peer whose grant was sitting there correctly (found by the I4 test, which
+ * is the only one that gives a node both an identity disk and a grant).
+ *
+ * Caching is the right answer rather than a workaround, because an *attach*
+ * doing disk I/O is wrong on its own terms: it is on the latency path and it
+ * would re-read the same sector for every peer that ever connects. So the
+ * record is read once, from the boot task where that is safe, and written
+ * through on every change.
+ *
+ * The file path is deliberately left uncached: it already worked from any
+ * task, /sd0 is where an administrator may edit grants by hand behind the
+ * system's back, and a cache would start ignoring them. */
+static char     g_grants_cache[NODE_GRANTS_MAX];
+static uint32_t g_grants_cache_len;
+static bool     g_grants_cached;
+
+/* Reads the record's grants into the cache. Call from the boot task only.
+ * Absence of a record, or of the field, is not an error -- it means this
+ * board keeps its grants in a file, and p9_grants_list() falls through. */
+void p9_grants_cache_load(void) {
+    uint32_t n = 0;
+    if (node_grants(g_grants_cache, sizeof(g_grants_cache), &n) && n > 0) {
+        g_grants_cache_len = n;
+        g_grants_cached = true;
+    } else {
+        g_grants_cache_len = 0;
+        g_grants_cached = false;
+    }
+}
+
 uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
     char buf[P9_GRANTS_BUF_MAX];
-    int n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
+
+    /* The identity record first, then the file.
+     *
+     * Not a preference between two equal homes: a board with no SD card had
+     * nowhere to keep a grant at all, so it refused every authenticated
+     * attach forever with no way to authorise anyone -- networked 9P simply
+     * could not work on it. The record is per-board, survives a reflash, and
+     * is already the place phase 21 §5.2 argued grants belong.
+     *
+     * The file stays, and stays first-class, because a gateway with a card
+     * can be administered by editing a text file, which is worth keeping. The
+     * record wins where both exist: it is the more specific statement about
+     * *this* board, and a card moved between boards should not silently carry
+     * someone else's grants with it.
+     *
+     * Same bytes either way -- this is a storage decision, not a format one,
+     * and the parser below does not know which it got. */
+    int n;
+    if (g_grants_cached && g_grants_cache_len > 0) {
+        n = (int)(g_grants_cache_len < sizeof(buf) ? g_grants_cache_len : sizeof(buf));
+        memcpy(buf, g_grants_cache, (size_t)n);
+    } else {
+        n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
+    }
     if (n <= 0) return 0;
 
     uint32_t count = 0;
@@ -511,9 +573,32 @@ p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t k
 
     char out[P9_GRANTS_BUF_MAX];
     uint32_t used = p9_grant_serialize(entries, count, out, sizeof(out));
+    return p9_grants_store(out, used);
+}
 
+/* Writes the serialised list wherever this board keeps it: the identity
+ * record when it has one, the file otherwise. Split out so add and remove
+ * cannot disagree about where grants live -- which is exactly the bug that a
+ * second copy of this decision would eventually become. */
+static p9_grant_result_t p9_grants_store(const char *text, uint32_t len) {
+    if (identity_store_device()) {
+        node_id_result_t rc = node_identity_set_grants(text, len);
+        if (rc == NODE_ID_OK) {
+            /* Written through rather than invalidated: the next reader may be
+             * the 9P server task, which cannot reload it itself. */
+            g_grants_cache_len = len < sizeof(g_grants_cache) ? len : sizeof(g_grants_cache);
+            memcpy(g_grants_cache, text, g_grants_cache_len);
+            g_grants_cached = g_grants_cache_len > 0;
+            return P9_GRANT_OK;
+        }
+        /* A board that HAS a store and could not be written is a failure, not
+         * a reason to quietly write somewhere else: the next read would prefer
+         * the record and find the stale list, so falling back here would make
+         * a failed write look like a successful one. */
+        return P9_GRANT_ERR_WRITE_FAILED;
+    }
     p9_auth_ensure_key_dir();
-    if (vfs_write(P9_AUTH_KEYS_FILE, out, used) != 0) return P9_GRANT_ERR_WRITE_FAILED;
+    if (vfs_write(P9_AUTH_KEYS_FILE, text, len) != 0) return P9_GRANT_ERR_WRITE_FAILED;
     return P9_GRANT_OK;
 }
 
@@ -534,11 +619,13 @@ p9_grant_result_t p9_grants_remove(const char *name) {
     char out[P9_GRANTS_BUF_MAX];
     uint32_t used = p9_grant_serialize(entries, count, out, sizeof(out));
 
-    /* No p9_auth_ensure_key_dir() here: a remove that runs before anything
-     * was ever added has nothing to remove, and P9_GRANT_ERR_NOT_FOUND
-     * above already answered that case. */
-    if (vfs_write(P9_AUTH_KEYS_FILE, out, used) != 0) return P9_GRANT_ERR_WRITE_FAILED;
-    return P9_GRANT_OK;
+    /* Same store the add path uses, and p9_grants_store() is what makes that
+     * true by construction rather than by two functions agreeing. (Its file
+     * branch does not call p9_auth_ensure_key_dir(): a remove that runs
+     * before anything was ever added has nothing to remove, and
+     * P9_GRANT_ERR_NOT_FOUND above already answered that case -- the add path
+     * is where the directory gets created.) */
+    return p9_grants_store(out, used);
 }
 
 const char *p9_grant_result_str(p9_grant_result_t rc) {
@@ -649,6 +736,18 @@ bool p9_auth_have_keys(void) {
      * corrected the moment I5 gave p9_auth_key_for() somewhere else to
      * look instead. */
     if (g_console_key_len > 0) return true;
+    /* The record before the files, matching p9_grants_list()'s own order.
+     *
+     * Missing this is not a cosmetic reporting bug: the caller at Tauth
+     * refuses *every* attach when this returns false, so a board whose only
+     * grants live in its identity record would answer "authentication
+     * required" and then reject the correct key -- the exact failure
+     * IDSTORE_FIELD_GRANTS exists to remove, reintroduced one function
+     * further along. Caught by the I4 test on the first run after the field
+     * landed. */
+    /* The cache directly, not p9_grants_list(): that parses into a 2 KB
+     * stack buffer, and this runs on the 9P server task inside a Tauth. */
+    if (g_grants_cached && g_grants_cache_len > 0) return true;
     vfs_stat_t st;
     if (vfs_stat(P9_AUTH_KEYS_FILE, &st) == 0 && !st.is_dir) return true;
     if (vfs_stat(P9_AUTH_FALLBACK_KEY_FILE, &st) == 0 && !st.is_dir) return true;

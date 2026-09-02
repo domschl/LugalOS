@@ -135,6 +135,28 @@ int idstore_get_field(const idstore_t *rec, uint8_t type, void *val, uint32_t ca
     return -1;
 }
 
+/* See kernel/idstore.h. Shares idstore_get_field()'s walk deliberately
+ * rather than duplicating it: two copies of a TLV walk is two places to get
+ * the bounds wrong, and this one exists only so a large field can be carried
+ * forward without a second buffer to hold it. */
+const uint8_t *idstore_field_ptr(const idstore_t *rec, uint8_t type, uint32_t *len_out) {
+    if (!rec) return NULL;
+    uint32_t off = IDSTORE_HEADER_LEN;
+    uint32_t end = IDSTORE_HEADER_LEN + rec->fields_len;
+    while (off + 3u <= end) {
+        uint8_t  t    = rec->buf[off];
+        uint16_t flen = (uint16_t)rd_u16le(&rec->buf[off + 1]);
+        uint32_t voff = off + 3u;
+        if (voff + flen > end) break;
+        if (t == type) {
+            if (len_out) *len_out = flen;
+            return &rec->buf[voff];
+        }
+        off = voff + flen;
+    }
+    return NULL;
+}
+
 void idstore_writer_init(idstore_writer_t *w) {
     memset(w->buf, 0, sizeof(w->buf));
     w->fields_len = 0;

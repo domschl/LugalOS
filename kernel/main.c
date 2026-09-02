@@ -42,6 +42,7 @@
 #include "drivers/uart.h"
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
+#include "fs/9p.h"
 #include "lisp.h"
 
 #if !defined(CONFIG_BOARD_RP2350)
@@ -342,6 +343,12 @@ void kernel_main(void) {
      * no netif, which is every board in this tree until R4 -- so this is
      * unconditional rather than guarded, and `net` reports "no interfaces"
      * instead of the boot path having to know. */
+    /* After dev_probe_all(), because it reads the identity store and the
+     * store's device is discovered there. p9_init() would be the tidier home
+     * and is the wrong one: it runs from vfs_init(), long before any bus has
+     * been scanned. */
+    p9_grants_cache_load();
+
     if (netif_default()) {
         net_stack_attach(netif_default());
         net_task_start();

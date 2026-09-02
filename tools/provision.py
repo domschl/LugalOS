@@ -51,6 +51,7 @@ FIELD_DEVKEY = 3    # the node's own auth key (kernel/idstore.h's IDSTORE_FIELD_
 FIELD_WLAN_SSID = 4
 FIELD_WLAN_PSK = 5
 FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
+FIELD_GRANTS = 7    # the peer grants list, as the text fs/9p.c parses
 
 WLAN_PSK_LEN = 32  # WPA2's PSK is always 256 bits -- kernel/identity.h's NODE_WLAN_PSK_LEN
 
@@ -196,6 +197,12 @@ def main() -> int:
                     help="also write the key, as hex, where a 9P client can read it "
                          "(chmod 600). Without this a generated key exists only on the "
                          "board and nothing can ever authenticate to it.")
+    ap.add_argument("--grant", action="append", metavar="NAME:KEYHEX[:ANAME[:ro]]",
+                    help="authorise a peer to attach here, repeatable. NAME may be "
+                         "'*' for any peer. ANAME defaults to '/' and the mode to "
+                         "rw. This is the INBOUND direction -- who may attach to "
+                         "this board -- and is not the same as --key, which is what "
+                         "this board presents when it dials out.")
     ap.add_argument("--uf2", metavar="FILE",
                     help="also write the record as a UF2 for the RP2350's identity "
                          "sector, so a board with no console can be provisioned by "
@@ -242,6 +249,10 @@ def main() -> int:
             sys.exit("--key must be hex")
         if not (16 <= len(devkey) <= 64):
             sys.exit("--key must be 16 to 64 bytes (32 to 128 hex characters)")
+    if args.grant:
+        print(f"  grants     : {len(args.grant)} " +
+              ", ".join(g.split(":")[0] for g in args.grant))
+
     if devkey is not None:
         fields.append((FIELD_DEVKEY, devkey))
 
@@ -256,6 +267,37 @@ def main() -> int:
         psk_hex = psk.hex()
         fields.append((FIELD_WLAN_SSID, args.wlan_ssid.encode("utf-8")))
         fields.append((FIELD_WLAN_PSK, psk))
+
+    # I5's grants, in the record rather than on an SD card. Serialised here in
+    # the exact one-line-per-grant form fs/9p.c's parse_grant_line() reads --
+    # deliberately the same bytes the board would have written itself, so the
+    # host and the device agree by construction rather than by a second format.
+    if args.grant:
+        lines = []
+        for spec in args.grant:
+            parts = spec.split(":")
+            if len(parts) < 2:
+                sys.exit(f"--grant '{spec}': want NAME:KEYHEX[:ANAME[:ro]]")
+            gname, ghex = parts[0], parts[1]
+            ganame = parts[2] if len(parts) > 2 and parts[2] else "/"
+            gmode = parts[3] if len(parts) > 3 and parts[3] else "rw"
+            if not gname:
+                sys.exit(f"--grant '{spec}': the name may not be empty")
+            if gmode not in ("ro", "rw"):
+                sys.exit(f"--grant '{spec}': mode must be 'ro' or 'rw'")
+            if not ganame.startswith("/"):
+                sys.exit(f"--grant '{spec}': aname must start with '/'")
+            try:
+                gkey = bytes.fromhex(ghex)
+            except ValueError:
+                sys.exit(f"--grant '{spec}': the key must be hex")
+            if not (16 <= len(gkey) <= 64):
+                sys.exit(f"--grant '{spec}': key must be 16 to 64 bytes")
+            lines.append(f"{gname} {gkey.hex()} {ganame} {gmode}\n")
+        blob = "".join(lines).encode("ascii")
+        if len(blob) > 1536:   # NODE_GRANTS_MAX (kernel/identity.h)
+            sys.exit("--grant: the grants list exceeds what the record holds")
+        fields.append((FIELD_GRANTS, blob))
 
     if args.ipv4:
         parts = args.ipv4.split("/")
