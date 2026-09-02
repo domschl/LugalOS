@@ -145,6 +145,80 @@ first symptom rather than an unrelated message.
 
 ---
 
+## The clock board stopped answering after ~2 h of P1 logging
+
+**Trigger:** unknown. On 2026-09-02 the `rp2350-clock` board ran the P0/P1
+measurement for 1.81 h, delivering a complete and self-consistent result, and
+then stopped: no more broadcasts on udp/5959 and no ICMP reply, for an hour.
+It had been up roughly 2.5 h in total.
+
+**What is known.** The last samples show nothing wrong -- reception at 6.9/7,
+a frame accepted every minute, round trips of 10-14 ms, the reference at
+stratum 1. Both the broadcast and the ping stopped together, which points at
+the board or its radio rather than at the collector: a lost broadcast is
+routine (they are unacknowledged) but a lost *ping* is not.
+
+**What is not known, and cannot be recovered.** `/proc/kmsg` lives in RAM, so
+whatever the board said as it went is gone at the next power cycle. Nothing
+was attached to its console at the time -- the board is wherever the DCF
+reception is, which is the whole reason it broadcasts.
+
+**Candidates, none tested:** a hang in a task (the board has no watchdog); a
+radio failure that `wifiup`'s supervisor could not recover from, which would
+be visible as a rejoin loop if anything were listening; or power. The P0
+instrument itself is a suspect by proximity rather than by evidence -- it is
+the newest code on the board and the only thing running a minute-cadence loop
+-- but `ntp_query()` unbinds its port on every exit path, and nothing else it
+does accumulates.
+
+**What to capture next time**, in this order, because the first two are lost
+by a power cycle: read `/proc/kmsg` and `/proc/ps` over the out-of-band 9P
+channel on the second CDC port *before* rebooting it, then `net` for the
+interface counters. `tests/hw/flash.py` will now hand the console back with
+Ctrl-C first (2026-09-02), so a board whose shell is merely behind the clock
+application is no longer mistaken for one that has died.
+
+**Why it is parked:** one occurrence, no reproduction, and no evidence to work
+from. Logged so that a second occurrence is recognised as a pattern rather
+than as a first.
+
+---
+
+## The DS3231's oscillator-stop flag is never read, so a dead battery reads as a valid time
+
+**Trigger:** power-cycle a board whose DS3231 has no working backup cell. The
+chip comes back with its registers reset -- 2000-01-01 00:00:00 -- and sets
+OSF (status register 0x0F, bit 7) to say exactly that.
+
+`drivers/i2c_rtc.c` never reads 0x0F. Its only validation is a range check
+(month 1-12, day 1-31, hour <= 23 ...), and **2000-01-01 00:00:00 passes every
+one of them**. So the chip's "my time is meaningless" signal is discarded and
+its meaningless time is accepted.
+
+**How it presented:** the `rp2350-clock` panel showing a fixed `00:00` while
+the board's own kernel clock was correct to a millisecond and being broadcast
+once a minute. The face reads the DS3231 directly
+(`drivers/pico_clock_app.c`), so a good clock sat behind a bad one.
+
+**Two fixes, and they are independent:**
+
+1. **Read OSF and honour it.** A read whose OSF is set is a failed read, not a
+   time. Clear the flag after a successful write, which is what the datasheet
+   prescribes and what makes the next boot's answer meaningful. Report it --
+   `i2c` and `/proc` should be able to say "the RTC lost its oscillator"
+   rather than silently handing back the year 2000.
+2. **Let the display fall back to the kernel clock.** `pico_clock_app.c` keeps
+   whatever `in.local` last held when the read fails, which at boot is a
+   seeded `2026-01-01 00:00:00`. A board that knows the time from NTP or from
+   the radio should show it, rather than deferring to a chip that does not.
+
+**Not yet confirmed on the board**, and one command settles which failure this
+is: `i2c scan` distinguishes a chip that does not answer at all from one that
+answers with a stopped oscillator. Worth doing before the fix, because the two
+have different remedies and only one of them is a coin cell.
+
+---
+
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
 
 **Trigger:** open and close 9P/TCP sessions in a tight loop. The third

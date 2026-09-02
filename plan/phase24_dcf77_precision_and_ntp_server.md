@@ -899,3 +899,52 @@ the PPS second against the NMEA second rather than only checking the interval.
 and worth naming: a stratum-1 server on a home segment is only useful if
 something is pointed at it. P7's documentation is what makes it usable, and
 `chronyc` against it in P6 is the first client either way.
+
+---
+
+## 10. The next bench session, in order
+
+The board has to come back for P2/P3/P3b anyway (§6: those want one stretch
+while the GPS is attached). Three things are queued behind that trip, and the
+order matters because the first two are lost the moment it is power-cycled.
+
+**1. Before rebooting it, read what the crash left.** `/proc/kmsg` and
+`/proc/ps` over the out-of-band 9P channel on the second CDC port, then `net`.
+The klog is RAM and does not survive. See `plan/open_issues.md` -- the board
+stopped answering after 1.81 h of P1 logging on 2026-09-02, with no evidence
+recoverable afterwards, and a second occurrence should not cost the same
+nothing.
+
+**2. Settle the `00:00` display with one command: `i2c scan`.** It separates
+the two candidates, which have different remedies:
+
+* **0x68 does not answer** -- the chip is absent, unwired or dead, and the
+  panel is showing its seeded default because every read fails.
+* **0x68 answers** -- then the chip is alive and has lost its oscillator, and
+  the coin cell is the thing to replace. `drivers/i2c_rtc.c` never reads
+  status register 0x0F, so OSF -- the flag that exists to say precisely this
+  -- is discarded, and the resulting 2000-01-01 00:00:00 passes the driver's
+  range check as a valid time.
+
+Both fixes in `plan/open_issues.md` are worth making regardless of which it
+turns out to be: honour OSF, and let the clock face fall back to the kernel
+clock when the RTC read fails. A board that knew the time to a millisecond and
+displayed `00:00` for a day is the argument for the second one.
+
+**3. Install a device key, and do it from the console rather than by
+reflashing.** `identity key --generate` persists in the identity record,
+touches nothing else, and needs no passphrase. The alternative --
+`tools/provision.py --key-generate --uf2` -- writes a *whole* record, so it
+would take the board's WLAN credentials with it unless the passphrase is
+supplied again, and only the derived PSK's fingerprint is known here. Use the
+UF2 path for a board being provisioned from scratch; use the console for one
+that is already working.
+
+This became practical on 2026-09-02: `tests/hw/flash.py` now sends Ctrl-C
+before deciding a console is dead, so the clock persona's shell -- which sits
+behind an application that owns the terminal -- is reachable without guessing.
+
+What the key buys: `/proc/dcf77log` over 9P/TCP, so the board's own
+accumulators can be read remotely instead of only inferred from broadcasts
+that WiFi drops. During P1 that loss ran around a third of samples. The
+accumulators counted them all; nothing could reach them.
