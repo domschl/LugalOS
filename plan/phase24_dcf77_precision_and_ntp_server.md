@@ -382,6 +382,29 @@ Four findings, in the order they change the phase.
   rather than refinements on top of a receiver that was going to dominate
   anyway.
 
+**The reference itself degraded partway through that run, and the result
+survived it.** 192.168.178.23 lost its GPS at t=9435 s and spent most of the
+night climbing its fallback chain -- stratum 3, then 5, 7, 9, 11 -- while
+answering every query and looking healthy. Only 137 of 757 samples were taken
+against a true stratum 1. Checked separately once the analyser learned to
+grade by stratum:
+
+    stratum 1: n=133  dcf mean -65.9 ms  sd 4.9
+    stratum 3: n=367  dcf mean -65.5 ms  sd 5.2
+
+**0.4 ms apart**, so the fallback chain held UTC well enough not to move the
+answer, and the headline above stands on the clean subset by itself. The
+crystal figure is the one to treat with more care: -0.46 ± 0.01 ppm comes from
+the full 13.4 h, while the stratum-1 subset spans only 2.6 h and gives
+-0.26 ± 0.10 ppm on its own. The long fit is far better determined and a
+network-disciplined reference does not *drift*, so -0.46 stands -- but it is a
+figure that leans on the degraded stretch in a way the DCF number does not.
+
+The lesson is the cheap one: **a reference that fails does not stop
+answering.** Nothing in the run looked wrong at the time. `collect_p0.py`
+grades by stratum now, and does it before the round-trip filter, because a
+degraded server can be fast and wrong.
+
 The DCF error was also, after filtering, **negative in every one of 685
 samples** (-83 to -48 ms). That is the physically necessary sign -- the path
 can only ever deliver time late -- and the unfiltered set contained values up
