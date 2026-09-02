@@ -29,6 +29,11 @@ void time_delay_us(uint64_t us);
  * of them is how a clock ends up an hour out twice a year. */
 void time_get_utc(rtc_time_t *tm);
 void time_set_utc(const rtc_time_t *tm);
+
+/* False while the clock still holds the instant compiled into kernel/time.c
+ * -- i.e. nothing (RTC, NTP, DCF-77 or a person) has ever set it. The value
+ * is plausible either way, so this is the only way to know. */
+bool time_is_set(void);
 void time_get_local(rtc_time_t *tm);
 void time_set_local(const rtc_time_t *tm);
 

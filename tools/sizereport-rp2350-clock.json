@@ -39,7 +39,7 @@
     "kernel/sched.c": 973,
     "kernel/shell.c": 246,
     "kernel/ticker.c": 29,
-    "kernel/time.c": 16,
+    "kernel/time.c": 17,
     "kernel/timezone.c": 4,
     "net/arp.c": 196,
     "net/netif.c": 12,
@@ -56,5 +56,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 141274
+  "total": 141275
 }

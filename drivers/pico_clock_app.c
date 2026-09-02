@@ -28,6 +28,7 @@
 #include "kernel/identity.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
+#include <string.h>
 #include "kernel/timezone.h"
 
 #ifndef CONFIG_CLOCK_TEMP_OFFSET_C
@@ -213,7 +214,7 @@ void clock_app_run(void) {
      * a board that boots with no RTC lights it immediately rather than on
      * whatever later event happens to flip the flag. */
     bool rtc_ok = i2c_rtc_is_detected() && !i2c_rtc_lost_power();
-    bool rtc_led_ok = !rtc_ok;
+    bool rtc_led_on = false;
 
     uint64_t next_read = 0;
     ui_mode_t last_mode = (ui_mode_t)0xFF;
@@ -365,6 +366,29 @@ void clock_app_run(void) {
                 continue;
             }
 
+            /* Before rendering, and only for the idle clock face: a board
+             * whose clock has never been set would otherwise show the instant
+             * compiled into kernel/time.c -- 2026-08-05 12:00 UTC, which in
+             * CEST displays as a completely plausible 14:00. A clock showing a
+             * fabricated time indistinguishable from a real one is worse than
+             * a clock admitting it does not know yet.
+             *
+             * "Init" rather than dashes or a blank because the panel is
+             * flickering through the radio's firmware upload at this point
+             * anyway (plan/open_issues.md), so a word that says "starting" is
+             * what a person is actually looking at.
+             *
+             * Overridden here rather than in clock_ui_screen(): the state
+             * machine is pure and has 78 tested cases, and "has anything set
+             * the clock" is a fact about the system, not about the UI. It
+             * stops the moment something sets the time -- the RTC at boot,
+             * NTP, the radio, or a person in the menu. */
+            if (scr.kind == UI_SCR_TIME && st.mode == UI_MODE_IDLE && !time_is_set()) {
+                scr.kind = UI_SCR_TEXT;
+                strncpy(scr.text, "Init", sizeof(scr.text) - 1);
+                scr.text[sizeof(scr.text) - 1] = '\0';
+            }
+
             bool editing = (st.mode == UI_MODE_ITEM && st.item == UI_ITEM_TIMESET);
             render(&scr, editing);
 
@@ -424,18 +448,20 @@ void clock_app_run(void) {
             }
         }
 
-        /* The vendor's "PM" lamp, lit when the DS3231 is not vouching for the
+        /* The vendor's "Chime" lamp, lit when the DS3231 is not vouching for the
          * time on the panel -- either it could not be read at all, or its OSF
          * says its oscillator stopped at some point and nothing has set the
          * clock since. Either way the face is running off the kernel's own
          * clock instead.
          *
-         * PM is free because this clock keeps 24-hour time and always has
-         * (§8, plan/phase17_clock_ui_and_dcf77.md), the same argument that
-         * gave "MoveOn" to DCF-77 and "Alarm On" to the network. If a
-         * 12-hour mode is ever added this lamp has to move -- COUNTDOWN,
-         * COUNTUP and CHIME are all equally free and correspond to features
-         * this project has explicitly not built.
+         * "Chime" because there is no chime and never will be, the same
+         * argument that gave "MoveOn" to DCF-77 and "Alarm On" to the network.
+         *
+         * **Not PM**, which this used first and which never lit once: 12-hour
+         * time is a real user setting (UI_ITEM_HOUR12), so AM/PM are in use,
+         * and the render path drives them from the screen descriptor on every
+         * frame -- overwriting anything set here a few microseconds later. A
+         * lamp with a second owner is not a free lamp.
          *
          * Solid rather than blinking, and deliberately *not* the same
          * language as the DCF and network lamps below: those describe a
@@ -449,9 +475,15 @@ void clock_app_run(void) {
          *
          * Driven from the same read that sets the time, so it cannot
          * disagree with what is on the display. */
-        if (rtc_ok != rtc_led_ok) {
-            rtc_led_ok = rtc_ok;
-            clock_hw_indicator(CLOCK_IND_PM, !rtc_ok);
+        /* Solid, and only about the RTC: the time shown is real -- NTP or the
+         * radio set it -- but the chip that should carry it across a power cut
+         * is not vouching for it. Whether the time is known at all is a
+         * different fact and the panel itself says that one ("Init", above).
+         * One lamp per fact; a lamp that blinks for a second meaning is a
+         * lamp nobody reads correctly. */
+        if (!rtc_ok != rtc_led_on) {
+            rtc_led_on = !rtc_ok;
+            clock_hw_indicator(CLOCK_IND_CHIME, rtc_led_on);
         }
 
 #if CONFIG_ENABLE_DCF77

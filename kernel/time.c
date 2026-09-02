@@ -16,6 +16,14 @@ static uint64_t g_boot_us_offset = 0;
 static int64_t  g_base_epoch_ms = 1785931200000LL; /* 2026-08-05 12:00:00 UTC */
 static uint64_t g_base_mono_ms = 0;
 
+/* Whether anything has ever set this clock, as opposed to it still holding
+ * the instant compiled in above. The difference is invisible in the value --
+ * 2026-08-05 12:00 UTC is a perfectly plausible time, and on a board in CEST
+ * it displays as 14:00 -- so a caller that wants to know cannot work it out
+ * by looking. A clock face showing a fabricated time with no way to tell is
+ * exactly what this exists to prevent. */
+static bool g_clock_set = false;
+
 #if defined(CONFIG_BOARD_RP2350)
 #define TIMER0_BASE      0x400B0000UL
 #define TIMER0_TIMEHR    (*(volatile uint32_t *)(TIMER0_BASE + 0x08))
@@ -172,8 +180,11 @@ void time_get_utc(rtc_time_t *tm) {
     tm->ms = (uint16_t)ms;
 }
 
+bool time_is_set(void) { return g_clock_set; }
+
 void time_set_utc(const rtc_time_t *tm) {
     if (!tm) return;
+    g_clock_set = true;
     g_base_epoch_ms = time_to_epoch(tm) * 1000LL + (int64_t)tm->ms;
     g_base_mono_ms = time_get_ms();
 }
