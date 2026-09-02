@@ -688,6 +688,16 @@ static void cmd_peers(const char *arg) {
         uint32_t klen = parse_hex_bytes(hexstr, key, sizeof(key));
         if (klen == 0) { cprintf("peers add: expected an even-length hex string for the key\n"); return; }
 
+        /* Said before, because on a board whose identity store is flash the
+         * write reboots (drivers/idstore_rp2350.c explains why the USB
+         * console cannot survive it). Grants used to be a file, so this
+         * command used to be free; it is not any more, and a person typing it
+         * deserves to know that before the board disappears rather than
+         * afterwards. */
+        if (identity_store_device()) {
+            cprintf("peers add: this rewrites the identity record; on flash-backed\n"
+                    "           boards the write reboots the board when it completes.\n");
+        }
         p9_grant_result_t rc = p9_grants_add(name, key, klen, aname, read_only);
         memset(key, 0, sizeof(key));
         if (rc != P9_GRANT_OK) { cprintf("peers add: %s\n", p9_grant_result_str(rc)); return; }
@@ -697,6 +707,10 @@ static void cmd_peers(const char *arg) {
 
     if (strcmp(sub, "remove") == 0) {
         if (!*rest) { cprintf("usage: peers remove <name>\n"); return; }
+        if (identity_store_device()) {
+            cprintf("peers remove: this rewrites the identity record; on flash-backed\n"
+                    "              boards the write reboots the board when it completes.\n");
+        }
         p9_grant_result_t rc = p9_grants_remove(rest);
         if (rc == P9_GRANT_OK) cprintf("peers: removed '%s'\n", rest);
         else                   cprintf("peers remove: %s\n", p9_grant_result_str(rc));

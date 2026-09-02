@@ -1,6 +1,7 @@
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/idstore.h"
+#include "kernel/scratch.h"
 #include "kernel/random.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
@@ -299,8 +300,29 @@ static int identity_store_write(const identity_patch_t *patch) {
     block_dev_t *dev = identity_store_device();
     if (!dev) return -1;
 
-    idstore_t old;
-    bool old_valid = idstore_read(dev, &old) == IDSTORE_VALID;
+    /* Both records come off the heap, not the stack.
+     *
+     * idstore_t and idstore_writer_t are a 4 KB buffer each, so holding the
+     * old record and the new one at once is 8 KB in a single frame -- and
+     * this is reached from `peers add`, which has already spent about 5 KB on
+     * p9_grants_add()'s parse and serialise buffers. Thirteen kilobytes on a
+     * shell stack that does not have it: the console simply stopped, with no
+     * message, which is what a stack that runs off its end looks like from
+     * outside. Found on hardware 2026-09-02, the first time a grant was added
+     * on a board whose identity store is real flash.
+     *
+     * kernel/scratch.h is this tree's own answer to exactly this shape -- a
+     * large working buffer that is not live at boot and not on a hot path.
+     * Identity writes happen a handful of times in a board's life. */
+    scratch_t sc;
+    if (!scratch_acquire(&sc, sizeof(idstore_t) + sizeof(idstore_writer_t))) {
+        printk("[Identity] not enough free heap to rewrite the record\n");
+        return -1;
+    }
+    idstore_t        *oldp = (idstore_t *)sc.base;
+    idstore_writer_t *wp   = (idstore_writer_t *)((uint8_t *)sc.base + sizeof(idstore_t));
+
+    bool old_valid = idstore_read(dev, oldp) == IDSTORE_VALID;
 
     uint8_t final_uid[NODE_UID_LEN];
     bool    have_uid = false;
@@ -308,7 +330,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         memcpy(final_uid, patch->uid, sizeof(final_uid));
         have_uid = true;
     } else if (old_valid) {
-        have_uid = idstore_get_field(&old, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid)) == (int)sizeof(final_uid);
+        have_uid = idstore_get_field(oldp, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid)) == (int)sizeof(final_uid);
     }
 
     char     final_name[NODE_NAME_MAX];
@@ -317,7 +339,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         final_name_len = patch->name_len;
         memcpy(final_name, patch->name, final_name_len);
     } else if (old_valid) {
-        int n = idstore_get_field(&old, IDSTORE_FIELD_NAME, final_name, sizeof(final_name));
+        int n = idstore_get_field(oldp, IDSTORE_FIELD_NAME, final_name, sizeof(final_name));
         if (n > 0) final_name_len = (uint32_t)n;
     }
 
@@ -327,7 +349,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         final_key_len = patch->key_len;
         memcpy(final_key, patch->key, final_key_len);
     } else if (old_valid) {
-        int n = idstore_get_field(&old, IDSTORE_FIELD_DEVKEY, final_key, sizeof(final_key));
+        int n = idstore_get_field(oldp, IDSTORE_FIELD_DEVKEY, final_key, sizeof(final_key));
         if (n > 0) final_key_len = (uint32_t)n;
     }
 
@@ -337,7 +359,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         final_ssid_len = patch->ssid_len;
         memcpy(final_ssid, patch->ssid, final_ssid_len);
     } else if (old_valid) {
-        int n = idstore_get_field(&old, IDSTORE_FIELD_WLAN_SSID, final_ssid, sizeof(final_ssid));
+        int n = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_SSID, final_ssid, sizeof(final_ssid));
         if (n > 0) final_ssid_len = (uint32_t)n;
     }
 
@@ -347,7 +369,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         memcpy(final_psk, patch->psk, sizeof(final_psk));
         have_psk = true;
     } else if (old_valid) {
-        have_psk = idstore_get_field(&old, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
+        have_psk = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
     }
 
     uint8_t  final_ipv4[3 * NODE_IPV4_LEN];
@@ -356,18 +378,17 @@ static int identity_store_write(const identity_patch_t *patch) {
         memcpy(final_ipv4, patch->ipv4, sizeof(final_ipv4));
         have_ipv4 = true;
     } else if (old_valid && !patch->clear_ipv4) {
-        have_ipv4 = idstore_get_field(&old, IDSTORE_FIELD_IPV4, final_ipv4,
+        have_ipv4 = idstore_get_field(oldp, IDSTORE_FIELD_IPV4, final_ipv4,
                                       sizeof(final_ipv4)) == (int)sizeof(final_ipv4);
     }
 
-    idstore_writer_t w;
-    idstore_writer_init(&w);
+    idstore_writer_init(wp);
     int rc = 0;
-    if (have_uid)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid));
-    if (final_name_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_NAME, final_name, (uint16_t)final_name_len);
-    if (final_key_len > 0)   rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
-    if (final_ssid_len > 0)  rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_SSID, final_ssid, (uint16_t)final_ssid_len);
-    if (have_psk)            rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk));
+    if (have_uid)            rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_UID, final_uid, sizeof(final_uid));
+    if (final_name_len > 0)  rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_NAME, final_name, (uint16_t)final_name_len);
+    if (final_key_len > 0)   rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_DEVKEY, final_key, (uint16_t)final_key_len);
+    if (final_ssid_len > 0)  rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_WLAN_SSID, final_ssid, (uint16_t)final_ssid_len);
+    if (have_psk)            rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk));
     /* Carried forward by pointer, not by copy. This is the one field big
      * enough that copying it on every unrelated write -- renaming the node,
      * storing a PSK -- would cost either a ~1.5 KB stack frame or a permanent
@@ -382,18 +403,19 @@ static int identity_store_write(const identity_patch_t *patch) {
         final_grants = patch->grants;
         final_grants_len = patch->grants_len;
     } else if (old_valid) {
-        final_grants = (const char *)idstore_field_ptr(&old, IDSTORE_FIELD_GRANTS,
+        final_grants = (const char *)idstore_field_ptr(oldp, IDSTORE_FIELD_GRANTS,
                                                        &final_grants_len);
         if (!final_grants) final_grants_len = 0;
     }
 
-    if (have_ipv4)           rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
-    if (final_grants_len)    rc |= idstore_writer_add_field(&w, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
+    if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (final_grants_len)    rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
-    if (rc != 0) return -1;
 
-    return idstore_writer_commit(&w, dev);
+    int result = (rc != 0) ? -1 : idstore_writer_commit(wp, dev);
+    scratch_release(&sc);
+    return result;
 }
 
 node_id_result_t node_identity_provision(bool force) {

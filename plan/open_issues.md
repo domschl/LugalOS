@@ -245,6 +245,34 @@ is simply there.
 
 ---
 
+## The WLAN credential test flakes about one run in six
+
+**Trigger:** run the full QEMU suite repeatedly. "WLAN Credential:
+Host<->Device Format Agreement, Round Trip, Never Printed (I6)" occasionally
+fails with `the new credential's fingerprint does not match`, immediately
+after the board reported `wlan: credential installed`. It passes in isolation
+every time.
+
+**Why it is parked:** it is a harness timing fault, not a device fault, and the
+evidence is that the *device* said it stored the credential. `send_and_expect`
+accumulates output and matches a regex against everything read so far
+(QemuSession's own docstring records an earlier family of races in exactly this
+area), so a fingerprint line left over from the check *before* the write can
+satisfy -- or fail -- the pattern meant for the one after it.
+
+**Measured, 2026-09-02:** seven full runs across two trees, one failure. It was
+first seen before the change that was initially suspected of causing it, and
+three runs of that tree with the change reverted were clean by luck rather
+than by fix -- which is how a one-in-six flake looks when you sample it three
+times, and worth remembering before blaming the next change that coincides
+with it.
+
+**Fix, when it is worth it:** have that test drain to a unique marker before
+reading back, rather than matching against an accumulated buffer -- the same
+shape the runner already uses elsewhere.
+
+---
+
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
 
 **Trigger:** open and close 9P/TCP sessions in a tight loop. The third
