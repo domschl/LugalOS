@@ -7,10 +7,19 @@ queries for the segment, as a local time source that survives an internet
 outage.
 
 **Scope.** Make the DCF-77 path as accurate as the signal allows, measure how
-accurate that actually is against a GPS-disciplined stratum-1 server on the
-same LAN, keep the clock disciplined between syncs rather than set once a
-night, and then serve it. The protocol is the small half; §2 is about the
-other one.
+accurate that actually is -- first against a GPS-disciplined stratum-1 on the
+LAN (P0, done), then against a GPS module's own PPS wired to the board (§3.4),
+which is three orders of magnitude better and removes the network from the
+measurement entirely -- keep the clock disciplined between syncs rather than
+set once a night, and then serve it. The protocol is the small half; §2 is
+about the other one.
+
+**The GPS is a transfer standard, not a source.** It is attached for the
+calibration and removed afterwards; nothing in the shipped appliance depends
+on it. That distinction is what keeps this phase about an independent
+longwave clock rather than about a satellite one, and §7 draws the line
+explicitly because the drift from one to the other would be gradual and
+nobody's decision.
 
 **Out of scope, explicitly:** the phase-modulation (PZF) time code, PIO-based
 capture, leap-second smearing, NTS or any authenticated NTP, IPv6, serving to
@@ -214,7 +223,7 @@ at send.
 
 ---
 
-## 3. The three ideas from the proposal, evaluated
+## 3. The four ideas, evaluated
 
 ### 3.1 "Delay is basically a constant, measurable against the stratum-1" — yes, and it is the keystone
 
@@ -297,6 +306,60 @@ what to do with it.
 
 ---
 
+### 3.4 A GPS receiver's PPS, wired to the board — adopted, and it supersedes §3.1
+
+*Proposed 2026-09-02, after P0 had run and shown that the instrument was
+becoming the limit.*
+
+§3.1 called measuring against a network stratum-1 the keystone, and for P0 it
+was. It is not the best instrument available, and the better one is a pulse
+per second from a GPS module on a free pin of the board itself.
+
+**The two signals are complementary in exactly the right way.** DCF-77's frame
+says *which* second it is. PPS says *exactly when* that second began, to tens
+of nanoseconds. So the calibration stops being a statistical fit and becomes a
+subtraction: timestamp the DCF mark, timestamp the nearest PPS edge, and the
+difference **is** the path delay -- receiver group delay plus propagation plus
+whatever software still adds.
+
+**And both timestamps come off the same TIMER0 through the same GPIO
+edge-capture path**, so nothing about the comparison touches a network. No NTP,
+no WiFi asymmetry, no round trip to halve, and no reference server that can
+quietly drop to stratum 3 overnight while answering every query (§5's P0 note).
+The measurement noise falls from the **3.7 ms** P0 measured to
+**microseconds** -- about three orders of magnitude, and it is the difference
+between inferring the radio's jitter by quadrature and reading it directly.
+
+**It is a transfer standard, not a time source, and the distinction is the
+whole phase.** This work exists because DCF-77 is independent of the internet;
+a permanently attached GPS is simply a better clock and would make all of it
+ornamental. So: attach, calibrate, remove -- which is how a metrology lab uses
+one. The plan states this so that nobody later "improves" the appliance by
+leaving the GPS in and quietly deletes the reason for the phase.
+
+**The driver survives the removal, and that is deliberate** (user, 2026-09-02).
+A GPS time source is a legitimate capability for this tree to own -- a future
+node with sky view and no longwave reception wants exactly this code, and a
+server disciplined by *both* would be strictly better than one disciplined by
+either. What this phase declines is *depending* on it, not *having* it.
+
+**NMEA is read, not skipped.** The arithmetic needs only the edge, but a
+module without lock may emit a free-running or degraded pulse and the edge
+alone cannot say which. A front-panel LED is not a software gate. A small NMEA
+parser -- the fix-quality and satellite-count fields are enough -- makes the
+calibration self-validating, and it is the half of the driver a future
+GPS-disciplined node would need anyway.
+
+**Pins, checked against the clock persona's own map:** GP3, GP4, GP5, GP8,
+GP19, GP20 and GP21 are unclaimed. GP20/GP21 are a UART1 pair, so NMEA lands
+on a real UART rather than a bit-banged one, and PPS takes GP19. Nothing has
+to move.
+
+**Confirmed before adoption:** the module gets lock at the receiver's own
+location (user, tested). That was the one practical risk worth checking first
+-- DCF-77 wants an orientation away from interference and GPS wants sky view,
+and those two optima had no obligation to coincide.
+
 ## 4. What the server has to say about itself
 
 The design principle for the whole milestone, and the reason the protocol half
@@ -348,7 +411,7 @@ round trip made them worthless:**
 | crystal | **-0.460 ± 0.010 ppm** (40 ms/day) | ±30 ppm (2.6 s/day) |
 | DCF path bias | **-65.5 ms**, stable to ±1.4 ms across the night | 10-100 ms, unknown |
 | DCF path scatter | **5.0 ms sd** | "the floor", pessimistically tens of ms |
-| our own measurement noise | 3.7 ms sd | not considered |
+| our own measurement noise | 3.7 ms sd | not considered -- and now the limit, which is why §3.4 adopts PPS |
 
 Four findings, in the order they change the phase.
 
@@ -453,7 +516,10 @@ hand-operated path never did. Now fixed the same way.
 *Verify:* P0's harness re-run against the same reference, and the two
 predictions above checked as predictions rather than as observations.
 
-**P2 — a microsecond wall clock.** `kernel/time.c`'s `g_base_epoch_ms` /
+**P2 — a microsecond wall clock. Now a prerequisite, not a convenience.**
+§3.4's PPS comparison is expressed in microseconds and cannot be recorded in a
+millisecond clock; P0 also found its own noise floor sitting where the
+clock's resolution is (a 3.7 ms residual against 5.0 ms of total scatter). `kernel/time.c`'s `g_base_epoch_ms` /
 `g_base_mono_ms` become microseconds, with `time_get_utc_us()` /
 `time_set_utc_us()` beside the existing calls, which keep working.
 `rtc_time_t.ms` stays as it is -- the display, the DS3231 and `date` have no
@@ -462,7 +528,12 @@ use for microseconds.
 change); a new selftest asserting round-trip through the µs setters preserves
 sub-millisecond values.
 
-**P3 — edge capture on the DCF pin.** `IO_IRQ_BANK0` (21), both edges,
+**P3 — edge capture on the DCF pin. Now the enabling milestone.** §3.2 held
+this at arm's length because a GPIO interrupt already timestamps a thousand
+times finer than the receiver's jitter, so the precision had nowhere to go.
+§3.4 gives it somewhere to go: the same mechanism, on a second pin, is what
+captures PPS, so P3 is no longer a refinement on the DCF side but the shared
+foundation both references stand on. `IO_IRQ_BANK0` (21), both edges,
 `devirq_attach()`; the handler reads TIMER0 and pushes `(level, t_us)` into a
 small bounded ring with a drop counter. The service snaps the decoder's
 `mark_ms` to the nearest captured edge.
@@ -477,14 +548,55 @@ spread of mark-to-mark intervals narrows measurably against P0's baseline; and
 `dcf-monitor` before and after shows the display's frame cadence unchanged --
 if it does not, §3.2's PIO fallback is what that failure means.
 
-**P4 — calibrate the constant.** With P1-P3 in, re-run P0's comparison for a
-day. The residual mean is (propagation + receiver group delay + whatever
-capture bias is left); store it as a board configuration value
-(`CONFIG_DCF77_DELAY_US` in `cmake/board-rp2350-clock.cmake`), not a literal
-in the driver -- it belongs to one module and one antenna.
-*Verify:* the calibrated DCF time and the stratum-1's agree to within the
-standard deviation P0 measured, over a run long enough for that to mean
-something.
+**P3b — the GPS/PPS reference (§3.4).** A `drivers/gps_pps_rp2350.c` with two
+halves that are useful separately:
+
+* **PPS capture**, through P3's own edge ring on a second pin (GP19). One more
+  `devirq` source, the same TIMER0 read, the same bounded ring with a drop
+  counter. If P3 is built, this is a few dozen lines.
+* **An NMEA reader** on UART1 (GP20/21) -- enough of `$GPGGA`/`$GPRMC` to know
+  fix quality, satellite count and UTC second. The time is a cross-check
+  rather than the product; the *lock* is what gates the calibration, because a
+  module without it may still emit a pulse (§3.4).
+
+*Verify:* with the receiver and the GPS both attached, PPS edges arrive at
+1.000 s intervals measured on TIMER0 with a spread of microseconds, not
+milliseconds -- which is simultaneously a test of the capture path and of the
+lock; and NMEA reports a fix whose UTC second matches the second the PPS edge
+falls in. A PPS train that is *regular* but disagrees with NMEA by a whole
+second is the interesting failure and this check catches it.
+
+**Explicitly not in P3b:** disciplining anything from GPS. The board reads it,
+timestamps it, and reports; nothing sets a clock from it. §3.4's transfer-
+standard argument is a design constraint, not a preference, and the easiest
+way to honour it is for the code that *could* do it not to exist yet.
+
+**P4 — calibrate the constant, against PPS rather than against statistics.**
+With P1, P2, P3 and P3b in, the constant stops being the mean of a noisy
+distribution and becomes a directly measured interval: for each accepted
+frame, the DCF mark's timestamp minus the timestamp of the PPS edge that began
+the same second. Store it as a board configuration value
+(`CONFIG_DCF77_DELAY_US` in `cmake/board-rp2350-clock.cmake`), not a literal in
+the driver -- it belongs to one module and one antenna, and a second board with
+a second receiver will have a different one.
+
+The microsecond resolution buys questions P0 could not ask, and they are worth
+asking while the GPS is attached because afterwards they cannot be:
+
+* Is the delay **constant, or does it move with signal strength?** The
+  decoder's own per-second quality score is already recorded; correlating the
+  two costs nothing and would show an AGC dependence if there is one.
+* Is it **stable across a temperature cycle**, over the same night that
+  characterises the crystal?
+* What is the **distribution** rather than the mean -- symmetric, or a tail on
+  the late side as a slow envelope edge would give?
+
+*Verify:* the constant is reported with an uncertainty in microseconds rather
+than milliseconds, and a run with it applied has the calibrated DCF time
+agreeing with PPS to within the jitter P4 itself measured. **P0's NTP
+comparison is re-run alongside as an independent cross-check** -- two methods
+that disagree by more than their stated uncertainties mean one of them is
+wrong, and finding that out here is much cheaper than finding it out in P6.
 
 **P5 — discipline, not a nightly step.** The phase's real work. Every accepted
 frame is a phase measurement; a run of them is a frequency measurement.
@@ -535,9 +647,20 @@ to address.
 
 P5 is the phase. P6 without P5 is a server that lies after lunch.
 
-P2 is a prerequisite for P6 and nothing else, so it can be deferred until
-then -- but it touches a load-bearing file, so doing it while the tree is
-quiet is cheaper than doing it under P6.
+P2 was a prerequisite for P6 and nothing else when this was written. §3.4
+changed that: it is now on the path to P4, because a microsecond comparison
+cannot be recorded in a millisecond clock. Do it early rather than late -- it
+touches a load-bearing file and is cheaper while the tree is quiet.
+
+**P3 and P3b are one piece of work**, and doing them together is what makes
+P3b cheap: the edge ring, the `devirq` attach and the TIMER0 read are written
+once and used on two pins. Building P3 alone and P3b later means writing the
+same mechanism twice with a month in between.
+
+**The GPS is borrowed, and the calibration is the only thing that needs it.**
+Everything from P5 onward runs on the constant P4 stores, so the module can go
+back on the shelf as soon as P4 is verified. Plan the bench time accordingly:
+P2, P3, P3b and P4 want to happen in one stretch while it is attached.
 
 ---
 
@@ -560,9 +683,24 @@ quiet is cheaper than doing it under P6.
 * **Serving anything beyond the local segment**, and by extension any pool
   membership. This is a local, independent time source for when the internet
   is not there, which is the whole point of it.
-* **A second reference (GPS) on the board.** That would make it a better clock
-  and a less interesting one; the premise here is that DCF-77 is the fallback
-  when the network reference is gone.
+* **~~A second reference (GPS) on the board.~~ Revised 2026-09-02 -- see
+  §3.4.** The original entry said a GPS would make this "a better clock and a
+  less interesting one", and that stands for a GPS the board *depends on*. It
+  does not stand for one the board is *measured against*: a transfer standard
+  attached for the length of a calibration and then removed leaves the
+  appliance exactly as independent as before, and leaves P4's constant a
+  measurement instead of a statistic.
+
+  So the line is drawn at dependence, not at presence. **Out of this phase:
+  disciplining the clock from GPS, serving time sourced from GPS, or shipping
+  a persona that needs one to be correct.** In it: reading one, timestamping
+  its PPS, and using it to calibrate the receiver.
+
+  The driver is kept afterwards rather than deleted (user, 2026-09-02). A node
+  with sky view and no usable longwave reception is a real future case, and a
+  server disciplined by both sources would be strictly better than one
+  disciplined by either -- neither of which this phase needs to build to make
+  the code worth having.
 
 ---
 
@@ -740,6 +878,22 @@ sensitive than a date. Looks like: the disciplined clock occasionally jumps.
 Mitigated by slewing rather than stepping and by a median over a window rather
 than a mean; if it persists, the frame's own quality score (already computed,
 already per-second) becomes a weight.
+
+**The GPS becomes load-bearing without anyone deciding it should.** The likely
+shape is not a decision but a drift: the module is attached for P4, everything
+works better with it, and it never comes off -- at which point the phase has
+quietly built a GPS clock with a longwave hobby attached. Looks like: P5 or P6
+referring to PPS at all. §3.4 and §7 are the guard, P3b deliberately contains
+no code that could discipline anything, and P4's verify keeps the NTP
+comparison alive as a second method precisely so the GPS is never the only
+thing that can validate the board.
+
+**PPS is present but not trustworthy.** A module without lock may still emit a
+pulse, and a regular pulse train is not evidence of a correct one. Looks like:
+a calibration constant that is stable, plausible, and wrong by a whole second
+or by whatever the module's free-running oscillator does. Mitigated by P3b
+reading NMEA rather than trusting the edge, and by its verify step checking
+the PPS second against the NMEA second rather than only checking the interval.
 
 **The phase produces a good clock nobody queries.** The least technical risk
 and worth naming: a stratum-1 server on a home segment is only useful if
