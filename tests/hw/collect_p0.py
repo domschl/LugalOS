@@ -70,6 +70,16 @@ def split_by_delay(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     dropped is indistinguishable from one that never happened."""
     if not rows:
         return [], []
+    # Stratum first, and it is not a nicety. A reference that drops off its
+    # own GPS keeps answering, keeps looking healthy, and carries a systematic
+    # offset of its own -- which lands in every DCF figure computed through it
+    # and is indistinguishable from the thing being measured. That happened
+    # here between the P0 and P1 runs: 192.168.178.23 spent a stretch at
+    # stratum 3, chained off the network, while still replying to everything.
+    # Comparing across it would have conflated a fix with a reference change.
+    graded = [r for r in rows if r["stratum"] == 1]
+    if graded:
+        rows = graded
     rtts = sorted(r["rtt_ms"] for r in rows)
     median = rtts[len(rtts) // 2]
     limit = max(3 * median, 10)
@@ -82,8 +92,13 @@ def analyse(rows: list[dict]) -> str:
     if len(rows) < 3:
         return f"{len(rows)} samples -- not enough for either result yet."
 
+    raw_n = len(rows)
+    off_stratum = sum(1 for r in rows if r["stratum"] != 1)
     rows, slow = split_by_delay(rows)
-    out = [f"{len(rows)} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
+    out = [f"{len(rows)} of {raw_n} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
+    if off_stratum:
+        out.append(f"  ({off_stratum} taken while the reference was not stratum 1 -- "
+                   f"excluded; a degraded reference biases every figure below)")
     if slow:
         rtts = sorted(r["rtt_ms"] for r in rows)
         out.append(f"  ({len(slow)} set aside: round trip over "
