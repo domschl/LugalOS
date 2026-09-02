@@ -615,7 +615,7 @@ spread of mark-to-mark intervals narrows measurably against P0's baseline; and
 `dcf-monitor` before and after shows the display's frame cadence unchanged --
 if it does not, §3.2's PIO fallback is what that failure means.
 
-**P3b — the GPS/PPS reference (§3.4). BUILT 2026-09-02 (bench verify outstanding).** A `drivers/gps_pps_rp2350.c` with two
+**P3b — the GPS/PPS reference (§3.4). DONE, bench-verified 2026-09-02.** A `drivers/gps_pps_rp2350.c` with two
 halves that are useful separately:
 
 * **PPS capture**, through P3's own edge ring on a second pin (GP19). One more
@@ -694,6 +694,49 @@ touching it stops the loop under measurement; read `/proc/gps` over 9P
 instead. A healthy receiver reads `rx_fr = 0x197`, with RXFE set. Note that
 `rx_idle_ms` alone does not settle it -- it is computed in `gps_status()` at
 read time and keeps advancing whether or not the poll loop runs.
+
+**P3b VERIFIED ON THE BENCH, 2026-09-02.** `state=locked`, nine satellites,
+`pps_interval_us` reading 999998-1000001 across repeated samples -- a spread of
+about a microsecond against a criterion that asked only for microseconds
+rather than milliseconds -- with `pps_dropped=0` and `pps_storms=0`.
+
+**Getting there cost an evening to one wrong constant, and the way it misled
+is worth more than the fix.** `edgecap`'s handler acknowledged `0x88888888`,
+which is EDGE_HIGH alone, while every other line in the file correctly used
+`EDGE_BOTH` (0xC; confirmed afterwards against the RP2350 datasheet, where
+EDGE_LOW is bit 2 and EDGE_HIGH bit 3). INTR is write-1-to-clear, so an
+unacknowledged falling edge leaves the bank interrupt permanently asserted and
+the handler re-entering forever. The first falling edge a pin ever saw wedged
+it for good.
+
+What made this expensive is that it *presented as a plausible property of the
+hardware*. A 1 Hz pulse looked like a sustained 1 kHz oscillation, and the
+reported edge rate corroborated it: `storm_rate` averaged from a window start
+that predated the burst by up to a second, so it always landed just above the
+2000/sec threshold. Two independent-looking numbers agreed, and both came from
+the same bug. On that basis the module was diagnosed as misconfigured, and
+UBX-CFG-TP5 was written, acknowledged, saved to flash, and extended to a
+second timepulse index -- none of which could have worked, because nothing was
+wrong at that end.
+
+Three things broke the loop, in order of how much they were worth:
+
+* **Parsing the module's replies.** `ubx_tp5_sent` counts frames *queued*; it
+  had been read as proof of delivery, which it never was. UBX-ACK-ACK is the
+  only thing that separates "refused", "never arrived" and "accepted and
+  behaved unchanged anyway". Getting `ubx_acks=4, ubx_naks=0` while the pin
+  kept oscillating is what proved the fault was local.
+* **Asking the owner what was actually wired.** "GP19 is on the module's PPS
+  pin; the module has only PPS, RX, TX, GND, VCC" eliminated the last
+  hypothesis that let the module be at fault.
+* **The user's own observation** that it "goes for 1 second in non-storm mode,
+  then back to storm" -- which is the falling edge of a 1 Hz pulse, stated
+  plainly, before it was understood.
+
+The rate is now measured over the most recent 64 edges rather than since the
+window began, so the number describes the edges that caused the trip. A
+measurement that cannot be wrong in a way that looks right is worth more than
+a fix.
 
 **Two pin lessons, both learned the hard way and both now structural.** The
 first flash of P3b lit the display for a second and then went dark, twice:

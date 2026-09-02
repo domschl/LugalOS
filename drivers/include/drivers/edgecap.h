@@ -58,6 +58,8 @@ typedef struct {
     volatile uint32_t storm_rate;    /* edges/sec measured at the last trip --
                                       * the number that says *what* it was */
     uint32_t rearm_ms;               /* current backoff before trying again */
+    volatile uint64_t chunk_start_us; /* start of the current 64-edge chunk */
+    volatile uint32_t last_rate;      /* edges/sec over the last 64 edges */
 } edgecap_t;
 
 /* Registers `gpio` and starts capturing both edges into `storage`.

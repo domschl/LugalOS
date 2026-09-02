@@ -114,6 +114,7 @@ static void edgecap_rearm_check(edgecap_t *e) {
     /* Counters first, then `active`, then the interrupt -- so the handler
      * cannot observe a half-armed pin and trip on a stale window. */
     e->win_start_us = now;
+    e->chunk_start_us = now;
     e->win_count = 0;
     e->stormed = false;
     e->active = true;
@@ -176,7 +177,24 @@ static void edgecap_isr(void *ctx) {
         }
         status &= mine;
         if (!status) continue;
-        IO_BANK0_INTR(r) = status & 0x88888888u;   /* edge bits only */
+        /* **Both** edge bits. This read 0x88888888 -- EDGE_HIGH alone -- from
+         * the day the file was written, while every other line correctly uses
+         * EDGE_BOTH. The consequence is not a lost falling edge but a wedged
+         * one: INTR is write-1-to-clear, so an unacknowledged EDGE_LOW leaves
+         * the bank interrupt permanently asserted and the handler re-entering
+         * forever, from the first falling edge the pin ever sees.
+         *
+         * It cost a long evening on the bench (2026-09-02). A 1 Hz GPS pulse
+         * looked like a 1 kHz oscillation, survived a correctly-applied and
+         * acknowledged UBX-CFG-TP5, and produced the signature the user
+         * described exactly: quiet for up to a second after each re-arm, then
+         * an instant storm -- because the storm begins at the *falling* edge
+         * of a pulse whose rising edge was handled cleanly. Every theory built
+         * on the reported rate was a theory about this bug.
+         *
+         * It would have broken DCF-77 capture the same way, and P3's whole
+         * reason for existing is timing DCF marks off these edges. */
+        IO_BANK0_INTR(r) = status & 0xCCCCCCCCu;
 
         for (uint32_t slot = 0; slot < 8u; slot++) {
             if (!(status & (EDGE_BOTH << (slot * 4u)))) continue;
@@ -199,10 +217,18 @@ static void edgecap_isr(void *ctx) {
                     e->win_count++;
                     bool too_fast = false;
                     if ((e->win_count & 63u) == 0u) {
-                        uint64_t span = now - e->win_start_us;
-                        too_fast = span == 0 ||
-                            (uint64_t)e->win_count * 1000000ull >
-                            (uint64_t)EDGECAP_STORM_PER_SEC * span;
+                        /* Over the last 64 edges, not since the window began.
+                         * Averaging from win_start conflated "a burst just
+                         * started" with "this has been going on a while", and
+                         * pinned every reported rate just above the threshold
+                         * -- which is how a 1 Hz pulse came to be read as
+                         * 1 kHz for most of an evening. A rate is only useful
+                         * if it describes the edges that caused the trip. */
+                        uint64_t span = now - e->chunk_start_us;
+                        e->chunk_start_us = now;
+                        e->last_rate = span ? (uint32_t)(64ull * 1000000ull / span)
+                                            : 0xFFFFFFFFu;
+                        too_fast = e->last_rate > EDGECAP_STORM_PER_SEC;
                     }
                     if (too_fast || e->win_count > EDGECAP_STORM_PER_SEC) {
                         /* Record the rate before shutting the pin off: it is
@@ -210,10 +236,9 @@ static void edgecap_isr(void *ctx) {
                          * (~2 kHz) from a floating input (tens of kHz), and
                          * once the interrupt is off there is no second
                          * chance to measure it. */
-                        uint64_t span = now - e->win_start_us;
-                        e->storm_rate = span ? (uint32_t)((uint64_t)e->win_count
-                                                          * 1000000ull / span)
-                                             : 0xFFFFFFFFu;
+                        e->storm_rate = e->last_rate ? e->last_rate
+                            : (uint32_t)((uint64_t)e->win_count * 1000000ull /
+                                         (now - e->win_start_us + 1ull));
                         e->storm_at_us = now;
                         e->storms++;
                         edgecap_disable_pin(e->gpio);
@@ -248,6 +273,7 @@ int edgecap_attach(edgecap_t *e, uint8_t gpio, edge_t *storage, uint16_t cap) {
     e->gpio = gpio; e->active = true;
     e->stormed = false; e->win_start_us = 0; e->win_count = 0;
     e->storm_at_us = 0; e->storms = 0; e->storm_rate = 0;
+    e->chunk_start_us = 0; e->last_rate = 0;
     e->rearm_ms = EDGECAP_REARM_MS_MIN;
     g_reg[g_count++] = e;
 
