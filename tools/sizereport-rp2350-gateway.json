@@ -6,6 +6,7 @@
     "arch/riscv/common/trap.c": 2694,
     "arch/riscv/rv32_nommu/vmm.c": 4,
     "drivers/at24c32.c": 1,
+    "drivers/edgecap.c": 21,
     "drivers/enc28j60_rp2350.c": 1612,
     "drivers/i2c_rtc.c": 856,
     "drivers/loopback_net.c": 2048,
@@ -53,5 +54,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 132667
+  "total": 132688
 }

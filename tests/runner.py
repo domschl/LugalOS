@@ -515,6 +515,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # assertions would have passed on the millisecond clock it replaced,
         # which is the point -- those two are what P3b's PPS comparison needs
         # and what the old representation silently rounded to zero.
+        # P3: the edge-capture ring, which the DCF pin and a GPS module's PPS
+        # both feed. Portable half only -- the interrupt that fills it needs
+        # RP2350, the off-by-one that would break it does not.
+        ok, log = session.send_and_expect("edgecapselftest\n",
+                                          r"EDGECAP_SELFTEST_(OK|FAIL)", timeout=20.0)
+        ec_ok = ok and "EDGECAP_SELFTEST_OK" in log
+        results.append(("Edge Capture Ring: Order, Wrap, And Which Edge Gets Dropped (P3)",
+                        ec_ok, log if not ec_ok else ""))
+
         ok, log = session.send_and_expect("timeselftest\n",
                                           r"TIME_SELFTEST_(OK|FAIL)", timeout=20.0)
         t_ok = ok and "TIME_SELFTEST_OK" in log

@@ -502,6 +502,11 @@ set(SOURCES
     # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
     # and arithmetic should not be debugged by flashing.
     net/ntp.c
+    # P3 (plan/phase24_dcf77_precision_and_ntp_server.md): timestamped GPIO
+    # edge capture. Built for every target because the ring is portable and is
+    # where the off-by-one lives; the interrupt half compiles away on anything
+    # that is not RP2350.
+    drivers/edgecap.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c
