@@ -123,13 +123,30 @@ void dcf77_service_feed(uint64_t now_ms) {
     auto_sync_check(now_ms);
 
     rtc_time_t got;
-    if (dcf77_take_time(&g_dec, &got)) {
+    uint64_t   mark_ms = now_ms;
+    if (dcf77_take_time(&g_dec, &got, &mark_ms)) {
         /* Always recorded, whether or not anyone asked for a sync: this is
          * what makes a later request instant, and what /proc/dcf77 reports as
          * "the radio is being heard" independently of whether the clock has
          * been changed. */
         g_radio_utc   = got;
-        g_radio_at_ms = now_ms;
+        /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
+         * own mark, not this call's `now`.
+         *
+         * They are not the same instant and the difference is not small. A
+         * transition is only confirmed once DEBOUNCE_MS (25 ms) has passed at
+         * the new level, and this function learns of it on whichever sample
+         * happens to notice -- once per display frame when the panel is
+         * scanning. So `now_ms` ran 25-35 ms behind the second it was
+         * labelling, and every clock this service ever set was that much
+         * slow. The decoder had the correct timestamp throughout; nothing
+         * asked it for it.
+         *
+         * Measured against a GPS-disciplined stratum-1 the night before this
+         * changed: -65.5 ms with 5.0 ms of scatter. This is about half of it.
+         * The rest is the receiver's own group delay, which is P4's to
+         * calibrate and not software's to fix. */
+        g_radio_at_ms = mark_ms;
         g_have_radio  = true;
 
         if (g_state == DCF_SYNCING) {

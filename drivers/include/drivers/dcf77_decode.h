@@ -141,6 +141,14 @@ typedef struct {
     /* Result, latched until taken. */
     bool     time_ready;
     rtc_time_t out_time;
+    /* The instant out_time was true: the start of the pulse that ended the
+     * minute mark, on the same clock dcf77_feed() is given. Latched with the
+     * time because a caller that learns *what* the time was without learning
+     * *when* has to substitute its own "now", and its now is later than this
+     * by the debounce plus however long since it last sampled -- which is
+     * tens of milliseconds it will then never get back. See
+     * dcf77_take_time(). */
+    uint64_t out_mark_ms;
 
     dcf77_stats_t stats;
 } dcf77_t;
@@ -165,8 +173,21 @@ void dcf77_feed(dcf77_t *d, bool raw_level, uint64_t now_ms);
  * It is **UTC**, not the German wall-clock time on the air. The frame states
  * its own offset in Z1/Z2, so the conversion is exact rather than inferred,
  * and the kernel clock this feeds runs on UTC (kernel/timezone.h). The offset
- * that was applied is in the stats, for anyone who wants to show CET/CEST. */
-bool dcf77_take_time(dcf77_t *d, rtc_time_t *out);
+ * that was applied is in the stats, for anyone who wants to show CET/CEST.
+ *
+ * `mark_ms_out`, if given, receives **the instant that time was true** -- the
+ * mark this decoder already computed, on the caller's own clock. Take it.
+ * The alternative is to read a clock at the moment `true` comes back, and
+ * that moment is not the mark: a transition is only confirmed once
+ * DEBOUNCE_MS has passed at the new level, and the caller only learns of it
+ * on its next sample, so "now" runs about 25-35 ms behind the second it
+ * describes. Between phase 17 and P1 of phase 24 every radio-set clock in
+ * this tree was that much slow, silently, because this function had nothing
+ * to hand back but a date -- and the decoder had the right number the whole
+ * time. Measured before the fix: -65.5 ms against a GPS reference, of which
+ * this was about half. NULL is allowed, for a caller that genuinely only
+ * wants the date. */
+bool dcf77_take_time(dcf77_t *d, rtc_time_t *out, uint64_t *mark_ms_out);
 
 void dcf77_get_stats(const dcf77_t *d, dcf77_stats_t *out);
 

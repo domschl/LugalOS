@@ -389,13 +389,46 @@ to **+259 ms**, which is impossible. The delay filter removed exactly the
 physically impossible readings without being told any physics, which is the
 best evidence available that it selects on the right quantity.
 
-**P1 — hand out the mark timestamp.** Widen `dcf77_take_time()` to return the
-decoder's `mark_ms` alongside the civil time; `commit()` uses it instead of
-`now_ms`. Removes the ~25-35 ms systematic bias of §1.
-*Verify:* P0's harness re-run; the mean offset moves by approximately
-`DEBOUNCE_MS` plus half a sample interval, in the predicted direction.
-Predicting the size *before* re-measuring is the point -- a fix that changes
-the number by an unexplained amount has not been understood.
+**P1 — hand out the mark timestamp. Built 2026-09-02, awaiting its
+re-measurement.** `dcf77_take_time()` returns the decoder's `mark_ms`
+alongside the civil time, and `dcf77_service_feed()` records *that* as the
+instant the radio time was true, instead of the `now` of whichever sample
+happened to notice.
+
+**The prediction, written down before the board is reflashed**, because a fix
+that moves the number by an unexplained amount has not been understood:
+
+* The error being removed is `now_ms - mark_ms` at the moment the frame was
+  taken. A transition is confirmed only once `DEBOUNCE_MS` (25 ms) has passed
+  at the new level, and the service learns of it on its next sample -- about
+  every 8 ms on this persona, since the panel is scanning. So the correction
+  is **25 ms + uniform(0, 8 ms)**, mean ≈ 29 ms.
+* **The bias should move from -65.5 ms to about -36 ms**, and land between
+  -33 and -40. Anything outside that is a second effect nobody has accounted
+  for, and is more interesting than the fix.
+* **The scatter should shrink a little too**, which is the secondary
+  prediction and the easier one to get wrong. The removed sampling jitter is
+  uniform over 8 ms, sd ≈ 2.3 ms. Taking it out of the radio's measured
+  3.4 ms leaves ≈ 2.5 ms, so the *reported* sd -- which also carries our own
+  3.7 ms of NTP noise -- should fall from **5.0 ms to about 4.5 ms**. A small
+  move, and worth stating precisely so that a large one is recognised as a
+  surprise.
+
+What P1 explicitly does **not** touch: the receiver's own group delay, which
+is the ~36 ms this leaves behind and P4's to calibrate.
+
+**A second instance of the same bug, found while making the change.**
+`dcf77_sync()` in `drivers/dcf77_rp2350.c` -- the `(dcf-sync N 1)` diagnostic,
+which is the command a person actually uses to set a clock by hand -- called
+`time_set_utc(&got)` with the frame's minute start and *no carry-forward at
+all*, asserting that no time had passed since the second it names. By that
+point a good deal had: the debounce, the loop iteration that noticed, and then
+six lines of console output, which at 115200 baud is tens of milliseconds on
+its own. The service path had always carried this forward correctly; the
+hand-operated path never did. Now fixed the same way.
+
+*Verify:* P0's harness re-run against the same reference, and the two
+predictions above checked as predictions rather than as observations.
 
 **P2 — a microsecond wall clock.** `kernel/time.c`'s `g_base_epoch_ms` /
 `g_base_mono_ms` become microseconds, with `time_get_utc_us()` /

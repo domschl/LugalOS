@@ -181,6 +181,7 @@ static void frame_complete(dcf77_t *d, uint64_t mark_ms) {
             minutes == d->prev_frame_minutes + elapsed_min) {
             d->stats.frames_accepted++;
             d->out_time = t;
+            d->out_mark_ms = mark_ms;   /* P1: the instant it was true */
             d->time_ready = true;
         }
     }
@@ -403,9 +404,10 @@ void dcf77_feed(dcf77_t *d, bool raw_level, uint64_t now_ms) {
     d->stats.bit_index = d->bit_index;
 }
 
-bool dcf77_take_time(dcf77_t *d, rtc_time_t *out) {
+bool dcf77_take_time(dcf77_t *d, rtc_time_t *out, uint64_t *mark_ms_out) {
     if (!d->time_ready) return false;
     *out = d->out_time;
+    if (mark_ms_out) *mark_ms_out = d->out_mark_ms;
     d->time_ready = false;
     return true;
 }
@@ -563,12 +565,29 @@ static bool run_case(const char *name, rtc_time_t start, int frames,
         add_minutes(&t, (i == skip_at) ? 5 : 1);
     }
 
-    rtc_time_t got;
-    bool have = dcf77_take_time(&d, &got);
+    /* Zeroed, not merely declared: dcf77_take_time() fills it only when it
+     * returns true, and the "expected nothing, got ..." branch below prints it
+     * either way -- the same reason the timezone case further down zeroes its
+     * own. Latent until P1 added a branch that made the flow visible to the
+     * compiler. */
+    rtc_time_t got = {0};
+    uint64_t   mark_ms = 0;
+    bool have = dcf77_take_time(&d, &got, &mark_ms);
 
     bool ok;
     if (expect_time) ok = have && times_equal(&got, expect_time);
     else             ok = !have;
+    /* P1: a time without the instant it was true is half an answer, and the
+     * instant has to be the mark rather than anything the caller could read
+     * for itself. `now` here is where the synthetic stream has got to, which
+     * is at least a debounce past the mark -- so a mark that equals it, or
+     * exceeds it, means the decoder handed back its caller's clock instead of
+     * its own measurement. */
+    if (ok && expect_time && (mark_ms == 0 || mark_ms >= now)) {
+        ok = false;
+        cprintf("  (mark %lu is not before now %lu) ",
+                (unsigned long)mark_ms, (unsigned long)now);
+    }
 
     cprintf("  %s %s", ok ? "PASS" : "FAIL", name);
     if (!ok) {
@@ -623,7 +642,7 @@ static bool run_cet_case(void) {
     /* Zeroed, not merely declared: dcf77_take_time() fills it only when it
      * returns true, and the failure branch below prints it either way. */
     rtc_time_t got = {0};
-    bool ok = dcf77_take_time(&d, &got) && times_equal(&got, &expect);
+    bool ok = dcf77_take_time(&d, &got, NULL) && times_equal(&got, &expect);
     cprintf("  [%s] a CET frame decodes to UTC+1, not UTC+2", ok ? "ok" : "FAIL");
     if (!ok) cprintf(" (got %04u-%02u-%02u %02u:%02u)", got.year, got.month,
                      got.day, got.hour, got.min);

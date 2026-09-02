@@ -1831,13 +1831,14 @@ void dcf77_sync(unsigned secs, bool set_rtc) {
     dcf77_get_stats(&d, &prev_st);
 
     rtc_time_t got;
+    uint64_t   mark_ms = 0;
     bool have_time = false;
 
     while (time_get_ms() < end) {
         uint64_t now = time_get_ms();
         dcf77_feed(&d, dcf77_raw_level(), now);
 
-        if (dcf77_take_time(&d, &got)) { have_time = true; break; }
+        if (dcf77_take_time(&d, &got, &mark_ms)) { have_time = true; break; }
 
         dcf77_get_stats(&d, &st);
 
@@ -1906,8 +1907,22 @@ void dcf77_sync(unsigned secs, bool set_rtc) {
                 "  by what the transmitter stated, not by any rule of ours.\n",
                 st.is_dst ? "CEST" : "CET", st.utc_offset_min / 60);
         if (set_rtc) {
-            time_set_utc(&got);
-            bool ds = i2c_rtc_write_time(&got);
+            /* Carried forward from the decoder's mark to *now* (P1,
+             * plan/phase24_dcf77_precision_and_ntp_server.md). Setting `got`
+             * directly, as this did, asserts that no time has passed since
+             * the second it names -- and by this point a good deal has: the
+             * debounce that confirmed the mark, the loop iteration that
+             * noticed, and then six lines of console output above, which at
+             * 115200 baud is tens of milliseconds on its own. The service
+             * path has always carried this forward correctly; this
+             * diagnostic, which is the one people use to set a clock by hand,
+             * never did. */
+            uint64_t elapsed = time_get_ms() - mark_ms;
+            rtc_time_t set;
+            time_from_epoch(time_to_epoch(&got) + (int64_t)(elapsed / 1000u), &set);
+            set.ms = (uint16_t)(elapsed % 1000u);
+            time_set_utc(&set);
+            bool ds = i2c_rtc_write_time(&set);
             cprintf("  Kernel clock set%s.\n",
                     ds ? " and UTC written to the DS3231" :
                          "; no DS3231 answered, so this is lost at the next reset");

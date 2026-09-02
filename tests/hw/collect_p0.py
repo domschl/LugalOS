@@ -15,7 +15,7 @@ inbound channel at all, so the only way to hear from it is to listen.
 
 Each line is:
 
-    p0 <persona> <seq> <t_s> <ntp_off_ms> <rtt_ms> <stratum> <dcf_err_ms|-> <q> <clean>
+    p0 <persona> <seq> <t_s> <ntp_off_ms> <rtt_ms> <stratum> <dcf_err_ms|-> <q> <frames>
 
 where `t_s` is seconds since the board's run began on its own free-running
 clock, `ntp_off_ms` is what the reference says that clock is out by, and
@@ -48,7 +48,7 @@ def parse(line: str) -> dict | None:
             "persona": f[1], "seq": int(f[2]), "t_s": int(f[3]),
             "off_ms": int(f[4]), "rtt_ms": int(f[5]), "stratum": int(f[6]),
             "dcf_ms": None if f[7] == "-" else int(f[7]),
-            "q": int(f[8]), "clean": int(f[9]),
+            "q": int(f[8]), "frames": int(f[9]),
         }
     except ValueError:
         return None
@@ -114,8 +114,7 @@ def analyse(rows: list[dict]) -> str:
     d = [r["dcf_ms"] for r in rows if r["dcf_ms"] is not None]
     if not d:
         out.append("  dcf          : no frames accepted yet")
-        best = max((r["clean"] for r in rows), default=0)
-        out.append(f"                 longest clean run seen: {best} s of the 59 a frame needs")
+        out.append("                 (frames column stays 0 until reception is good enough --\n                  a frame needs 59 consecutive clean seconds)")
     else:
         mean = sum(d) / len(d)
         sd = (sum((x - mean) ** 2 for x in d) / len(d)) ** 0.5
@@ -171,7 +170,7 @@ def main() -> int:
                     gap = f"  (seq {rows[-2]['seq'] + 1}..{r['seq'] - 1} not heard)"
                 print(f"[{time.strftime('%H:%M:%S')}] {addr[0]:>15}  seq={r['seq']:<5} "
                       f"t={r['t_s']:<6} off={r['off_ms']:+5d} rtt={r['rtt_ms']:<4} "
-                      f"dcf={dcf:<10} q={r['q'] / 10:.1f} clean={r['clean']}{gap}")
+                      f"dcf={dcf:<10} q={r['q'] / 10:.1f} frames={r['frames']}{gap}")
                 if len(rows) % args.every == 0:
                     print("\n" + analyse(rows) + "\n")
     except KeyboardInterrupt:

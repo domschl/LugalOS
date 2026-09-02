@@ -39,22 +39,21 @@ typedef struct {
     bool     have_dcf;
     int32_t  dcf_err_ms;     /* the radio's claim minus the reference's truth */
     uint8_t  quality;        /* the decoder's mean score, tenths */
-    /* The decoder's longest unbroken run of aligned seconds, capped at 255.
+    /* Frames accepted since the previous sample -- 0 or 1 in normal running,
+     * occasionally 2 when a sample lands either side of a minute boundary.
      *
-     * It answers exactly one question -- "is reception good enough for a
-     * frame to form at all", where the bar is 59 consecutive seconds -- and
-     * it answers it well: on the first good run it climbed 45, 104, 163, 222,
-     * one whole frame's worth per minute with not a bad second between. Then
-     * it pins at 255 and says nothing further, because the underlying counter
-     * is a running maximum that never resets.
+     * This field used to carry the decoder's longest unbroken run of aligned
+     * seconds, which answers "is reception good enough for a frame to form"
+     * (the bar is 59 consecutive seconds) and answered it well on the first
+     * good run: 45, 104, 163, 222, one frame's worth a minute with not a bad
+     * second between. Then it pinned at 255 for the next thirteen hours,
+     * because the counter behind it is a running maximum that never resets.
      *
-     * Left as it is on purpose. The field has done its job by the time it
-     * saturates -- from then on the dcf error column is the signal -- and
-     * changing the wire format means fetching a board back from wherever its
-     * reception is, which is a poor trade for a bring-up indicator. **When
-     * P1 reflashes this board anyway, make it frames_accepted instead**: a
-     * count that stays meaningful for the whole run. */
-    uint8_t  clean_run;
+     * A *rate* cannot saturate, and it stays informative for the whole run:
+     * a column of 1s is a receiver delivering every minute, a 0 is a minute
+     * that produced nothing. A cumulative count would have inherited the same
+     * flaw in a different byte. */
+    uint8_t  frames;
 } p0_sample_t;
 
 static struct {
@@ -140,14 +139,14 @@ static void broadcast_sample(const p0_sample_t *s) {
                       (unsigned long)s->seq,
                       (unsigned long)((s->mono_ms - g.t0_ms) / 1000u),
                       (long)s->ntp_off_ms, s->ntp_rtt_ms, s->ntp_stratum,
-                      (long)s->dcf_err_ms, s->quality, s->clean_run);
+                      (long)s->dcf_err_ms, s->quality, s->frames);
     } else {
         n = ksnprintf(line, sizeof(line), "p0 %s %lu %lu %ld %u %u - %u %u\n",
                       CONFIG_NODE_PERSONA,
                       (unsigned long)s->seq,
                       (unsigned long)((s->mono_ms - g.t0_ms) / 1000u),
                       (long)s->ntp_off_ms, s->ntp_rtt_ms, s->ntp_stratum,
-                      s->quality, s->clean_run);
+                      s->quality, s->frames);
     }
     if (n > 0) {
         udp_send(all, CONFIG_DCF77_P0_PORT, CONFIG_DCF77_P0_PORT,
@@ -224,6 +223,7 @@ static void p0_body(void *arg) {
 
     uint64_t last_mark_ms = 0;
     bool     have_last_mark = false;
+    uint32_t last_frames = 0;
 
     for (;;) {
         ntp_result_t r;
@@ -285,8 +285,10 @@ static void p0_body(void *arg) {
         dcf77_service_status(&d);
         s.quality = (uint8_t)(d.decoder.quality_total
             ? (d.decoder.quality_sum * 10u / d.decoder.quality_total) : 0u);
-        s.clean_run = (uint8_t)(d.decoder.clean_run_max > 255u ? 255u
-                                                              : d.decoder.clean_run_max);
+        uint32_t acc = d.decoder.frames_accepted;
+        uint32_t delta = (acc >= last_frames) ? (acc - last_frames) : 0u;
+        last_frames = acc;
+        s.frames = (uint8_t)(delta > 255u ? 255u : delta);
 
         /* A frame counts once. dcf77_service.c keeps the most recent accepted
          * one indefinitely, so without this every poll would re-log the same
@@ -406,13 +408,13 @@ uint32_t dcf77_p0log_render(char *buf, uint32_t cap) {
                 "%lu %lu %ld %u %u %ld %u %u\n",
                 (unsigned long)s->seq, (unsigned long)((s->mono_ms - g.t0_ms) / 1000u),
                 (long)s->ntp_off_ms, s->ntp_rtt_ms, s->ntp_stratum,
-                (long)s->dcf_err_ms, s->quality, s->clean_run);
+                (long)s->dcf_err_ms, s->quality, s->frames);
         } else {
             u += (uint32_t)ksnprintf(buf + u, cap - u,
                 "%lu %lu %ld %u %u - %u %u\n",
                 (unsigned long)s->seq, (unsigned long)((s->mono_ms - g.t0_ms) / 1000u),
                 (long)s->ntp_off_ms, s->ntp_rtt_ms, s->ntp_stratum,
-                s->quality, s->clean_run);
+                s->quality, s->frames);
         }
     }
     return u;
