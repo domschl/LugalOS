@@ -33,6 +33,7 @@
 /* Last, deliberately: the CONFIG_* guard arrives with the headers above. */
 #include "drivers/dcf77_service.h"
 #include "drivers/dcf77_p0log.h"
+#include "drivers/gps_pps.h"
 #endif
 
 static fat32_fs_t g_fat32_sd;
@@ -972,6 +973,37 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 #endif
         return (int)used;
     }
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    else if (strcmp(rel, "gps") == 0) {
+        /* P3b's window on the transfer standard, and the reason it is a file
+         * rather than a shell command: the board doing this measurement lives
+         * wherever its reception is, and its console does not. */
+        gps_status_t gs;
+        gps_status(&gs);
+        uint32_t used = 0;
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "enabled=%s\nrx_bytes=%lu\nsentences=%lu\nbad_checksum=%lu\n",
+            gs.enabled ? "yes" : "no", (unsigned long)gs.bytes,
+            (unsigned long)gs.sentences, (unsigned long)gs.bad_checksum);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "fix_quality=%u\nsatellites=%u\nrmc=%s\n",
+            (unsigned)gs.fix_quality, (unsigned)gs.satellites,
+            gs.rmc_valid ? "valid" : "void");
+        if (gs.have_utc) {
+            char iso[32];
+            time_format_iso(&gs.utc, iso, sizeof(iso));
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=%s\n", iso);
+        } else {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=none\n");
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "pps_count=%lu\npps_interval_us=%lu\npps_dropped=%lu\ntrustworthy=%s\n",
+            (unsigned long)gs.pps_count, (unsigned long)gs.pps_interval_us,
+            (unsigned long)gs.pps_dropped,
+            gps_pps_trustworthy() ? "yes" : "no");
+        return (int)used;
+    }
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
 #if CONFIG_DCF77_P0_LOG
     else if (strcmp(rel, "dcf77log") == 0) {
@@ -1061,6 +1093,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
 static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node",
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    "gps",
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
     "dcf77",
 #if CONFIG_DCF77_P0_LOG

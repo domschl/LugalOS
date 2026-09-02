@@ -27,6 +27,7 @@
 #include "net/ip.h"
 #include "kernel/identity.h"
 #include "kernel/console.h"
+#include "drivers/gps_pps.h"
 #include "kernel/time.h"
 #include <string.h>
 #include "kernel/timezone.h"
@@ -253,6 +254,14 @@ void clock_app_run(void) {
          * spaced sample far more than it wants a recent one, and this is the
          * only part of the loop that runs unconditionally. */
         dcf77_service_feed(now);
+#endif
+#if CONFIG_ENABLE_GPS
+        /* Here rather than in a task of its own, for the same reason the DCF
+         * feed is: this loop already runs often enough. A PL011 FIFO is 32
+         * bytes and a GGA sentence is about seventy, so a poller slower than
+         * ~20 ms loses sentences to overrun. Draining is cheap when there is
+         * nothing to drain. */
+        gps_poll();
 #endif
 
         {

@@ -46,7 +46,8 @@
                 "LUGALOS_ENABLE_TM1638": "OFF",
                 "LUGALOS_ENABLE_CHESS": "OFF",
                 "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON",
-                "LUGALOS_ENABLE_DCF77": "ON"
+                "LUGALOS_ENABLE_DCF77": "ON",
+                "LUGALOS_ENABLE_GPS": "ON"
             }
         },
         {
@@ -63,7 +64,8 @@
                 "LUGALOS_ENABLE_TM1638": "OFF",
                 "LUGALOS_ENABLE_CHESS": "OFF",
                 "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-                "LUGALOS_ENABLE_DCF77": "OFF"
+                "LUGALOS_ENABLE_DCF77": "OFF",
+                "LUGALOS_ENABLE_GPS": "OFF"
             }
         },
         {
@@ -80,7 +82,8 @@
                 "LUGALOS_ENABLE_TM1638": "OFF",
                 "LUGALOS_ENABLE_CHESS": "OFF",
                 "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-                "LUGALOS_ENABLE_DCF77": "OFF"
+                "LUGALOS_ENABLE_DCF77": "OFF",
+                "LUGALOS_ENABLE_GPS": "OFF"
             }
         }
     ],

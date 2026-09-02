@@ -164,6 +164,11 @@ option(LUGALOS_ENABLE_PICO_CLOCK_GREEN "Build the Pico-Clock-Green SM16106/SM516
 # in cmake/board-rp2350-clock.cmake, so defaulting it ON would break every
 # other persona's build the moment something consumed those macros.
 option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driver (RP2350 only)" OFF)
+# P3b (plan/phase24_dcf77_precision_and_ntp_server.md): a GPS module read for
+# its pulse per second, as a transfer standard for calibrating the DCF-77
+# path. Its own flag rather than DCF77's -- a board could want one without the
+# other, and only the calibration wants both.
+option(LUGALOS_ENABLE_GPS "Build the GPS/PPS reference driver (RP2350 only)" OFF)
 
 # --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
 #
@@ -365,6 +370,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
         -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
+        -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
     # -- the same distinction lugalos_build_id.h above already depends on, and
@@ -396,6 +402,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
             -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
+            -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
@@ -579,6 +586,12 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         # instrument. Built with the receiver, started only where the board
         # file sets CONFIG_DCF77_P0_LOG.
         list(APPEND SOURCES drivers/dcf77_p0log.c)
+    endif()
+    # P3b: the GPS/PPS transfer standard. Its own flag rather than DCF77's --
+    # a board could want one without the other, and the calibration is the
+    # only thing that wants both.
+    if(LUGALOS_ENABLE_GPS)
+        list(APPEND SOURCES drivers/gps_pps_rp2350.c)
     endif()
     # N5 (plan/phase18_networking_and_auth.md): the gateway's UART1 downlink
     # to a chess or clock board. Guarded by the board file defining its pins

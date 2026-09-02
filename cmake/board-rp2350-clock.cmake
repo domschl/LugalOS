@@ -174,6 +174,32 @@ set(CONFIG_DCF77_PON_ACTIVE_LOW   1)
 # only for whatever part of this has not already elapsed since boot.
 set(CONFIG_DCF77_WARMUP_MS     5000)
 
+# --- GPS/PPS: phase 24's transfer standard (P3b) -----------------------------
+#
+# A GPS module read for its pulse per second, to calibrate the DCF-77 path
+# against something better than a network reference (§3.4). TEMPORARY in the
+# same sense CONFIG_DCF77_P0_LOG is: the module is attached for the
+# calibration and comes off afterwards, and nothing in the shipped appliance
+# may depend on it -- a board that needs GPS is a satellite clock with a
+# longwave hobby.
+#
+# Pins are the ones this persona has left. GP20/GP21 are UART1 TX/RX at
+# function 2 (confirmed against the SDK's io_bank0.h, not from memory), and
+# GP19 is a plain SIO input for PPS through the same edge capture the DCF pin
+# uses. None of the three is claimed by the clock, the radio or the receiver.
+#
+# The GPS's TX goes to GP21 -- the board's RX. That is the one that gets wired
+# backwards. TX is reserved but unused: reading NMEA needs no transmit path.
+#
+# LUGALOS_ENABLE_GPS lives in CMakePresets.json beside LUGALOS_ENABLE_DCF77,
+# because the *_ENABLE_* flags gate which sources are compiled and are checked
+# before this file is read.
+set(CONFIG_GPS_UART_BASE    0x40078000)  # UART1
+set(CONFIG_GPS_RX_GPIO     21)
+set(CONFIG_GPS_TX_GPIO     20)
+set(CONFIG_GPS_PPS_GPIO    19)
+set(CONFIG_GPS_BAUD      9600)           # the near-universal NMEA default
+
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #
 # TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1

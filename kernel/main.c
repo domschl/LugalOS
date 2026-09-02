@@ -51,6 +51,7 @@
 #else
 #include "drivers/spisd.h"
 #include "drivers/dcf77_p0log.h"
+#include "drivers/gps_pps.h"
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -353,6 +354,13 @@ void kernel_main(void) {
         net_stack_attach(netif_default());
         net_task_start();
     }
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    /* P3b: the transfer standard. Brought up here, polled from the clock
+     * application's loop. Nothing it produces sets a clock -- see
+     * drivers/include/drivers/gps_pps.h. */
+    gps_init();
+#endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77 && CONFIG_DCF77_P0_LOG
     /* P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Started here
