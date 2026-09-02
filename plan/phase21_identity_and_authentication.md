@@ -2,8 +2,9 @@
 
 **Status: planned 2026-08-26; I1-I6 and I8 complete 2026-08-29; I7a and I7b
 complete 2026-09-01 (§3.3); I9 (network autoconfig) done the same
-day; the phase is done bar one hardware verify item named in I7b (a
-genuinely interrupted write).** Independent of the phase it
+day. The phase is done bar one hardware verify item named in I7b (a
+genuinely interrupted write) and one deferred milestone, I10 (the write
+granularity), opened 2026-09-02 and deliberately not scheduled.** Independent of the phase it
 grew out of.
 
 **Amended 2026-09-01, before starting I7, in response to a design review that
@@ -1038,6 +1039,80 @@ sector, flash the OS, read it back. If that fails, I7b's design changes before
 a line of it is written, and §10's AT24C32 fallback is where it goes. I7a is
 also useful on its own to every persona, so it is not wasted even in that
 case.
+
+**I10 -- the write granularity, and the two things it is not. OPEN, deferred
+2026-09-02.** Raised by the user after `peers add` on a flash-backed board
+turned out to rewrite the whole record: *"segment-rewrite is appropriate for
+OTA-type operations, not for updating key/value information"*. That diagnosis
+is correct and §3.3's own first ground is the proof of it -- but the remedy
+proposed alongside it, storing the record as files in a FAT32 volume sharing
+`/flash0`'s mechanism, was analysed and declined. The analysis is recorded here
+because the idea is a reasonable one that will otherwise be proposed again.
+
+**The premise does not hold yet.** There is no `/flash0` write path to share:
+`drivers/flashdisk.c`'s `flashdisk_write_blocks()` is a stub that prints
+"read-only" and returns -1. This would be building a flash write path and then
+sharing it, not reusing one.
+
+**And three of §3.3's four grounds get *worse* under a filesystem**, not
+better:
+
+| ground | under FAT32 |
+|---|---|
+| NOR erases 4 KB, FAT32 writes 512 B; the FAT is a permanent hot spot | **worse.** One sector erased today; a file change touches the data cluster, the FAT (often two copies) and the directory entry -- two to four erase-program cycles, wear concentrated on the FAT |
+| a torn write must be readable *as corrupt*, not as plausible garbage (§8) | **worse.** A torn FAT32 write can leave a perfectly mountable volume holding a half-written file, which is plausible garbage exactly |
+| the one-sector RAM-resident write path is small and reviewable; the FAT32 path is not, and its failure mode is a hang | **worse.** A hang is what this cost on 2026-09-02 before it was diagnosed |
+| `node_identity_init()` runs at `kernel/main.c:161`, before `palloc_init()` and `vfs_server_init()` | **deeper.** Identity would gain a dependency on the VFS, and this tree has already produced one boot-order bug of that shape -- `p9_init()` before `dev_probe_all()`, which silently disabled the identity store for an entire boot |
+
+**What actually fits the diagnosis: an append-structured record in the same
+sector.** `drivers/flash_rp2350.c` fuses the ROM's `flash_range_erase` and
+`flash_range_program` into a single erase-and-program operation (lines 99-101);
+they are separate ROM entry points and can stay separate. Appending a new
+field record after the last one, and erasing only when the sector fills:
+
+| | today | appended |
+|---|---|---|
+| a grant change | 4 KB erase + 4 KB program | one ~256 B page program, no erase |
+| interrupts off | ~100 ms | ~1 ms |
+| a torn write leaves | a half-written whole record | **the previous record intact** |
+| erase | every change | when the sector fills, roughly every 20-40 updates |
+
+Two consequences worth having beyond speed. **It closes §8's one open verify
+item** -- an interrupted append cannot damage what is already stored, which is
+a stronger guarantee than "readable as corrupt" and does not need a power cut
+timed inside a 100 ms window to demonstrate. And **the reboot mostly
+disappears**: a 1 ms stall is one missed USB frame where 100 ms is a hundred,
+which is why the console does not survive today (drivers/idstore_rp2350.c).
+Only compaction would still need the heavy path, and only rarely.
+
+The costs are real and belong in the estimate: reads become a scan for the
+newest instance of each field rather than a single parse, compaction has to be
+written and is the part that can still go wrong, and the erase path -- with its
+reboot -- cannot be deleted, only made rare.
+
+**Remote admin is a separate goal and this does not unlock it.** The other
+argument made for a filesystem was that it would simplify administering a
+board remotely. It would not, because the record is deliberately **never
+served over 9P** (`idstore_path_is_secret()`, §3.3's own guard: a gateway
+exports the very volume its keys live on, and grants hold other nodes' keys,
+which are bearer tokens). Exposing identity as files would serve the
+credentials over the link they authorise. What remote administration actually
+needs is a **write-only control surface** -- `/srv/`-shaped, validating and
+applying changes without exposing what is stored -- and that is independent of
+how the bytes are laid out. It would work as well against today's record as
+against an appended one.
+
+**One constraint to record now, because it is the half of the proposal that
+was right:** if `/flash0` ever becomes writable -- a real want, since it would
+let a board update its own boot scripts -- the erase-and-program-from-RAM core
+must be *one* reviewed implementation, with the identity store as its first
+user. Two independent flash writers on one part is how a tree ends up with two
+different answers to "what happens if power fails here".
+
+**Deferred rather than scheduled.** Nothing is blocked on it: `peers add`
+works, warns about the reboot, and no longer overflows a stack. The reasons to
+come back to it are wear, the still-open torn-write verify item, and the
+reboot -- in that order.
 
 ## 9. Explicitly not in this phase
 
