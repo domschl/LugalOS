@@ -133,8 +133,8 @@ the original proposal reached for first.
 | 1 | commit-path bias (`now_ms`, not `mark_ms`) | ~25-35 ms, systematic | 0 | **yes, trivially** (P1) |
 | 2 | sample quantisation | ±4-8 ms, *varying with load* | ~±2 µs | yes (P3) |
 | 3 | propagation, Mainflingen → here | ~1 ms | calibrated out | yes, as a constant (P4) |
-| 4 | receiver group delay + AGC-dependent edge jitter | 10-100 ms, unknown | mean calibrated out; jitter remains | **only the mean** (P4) |
-| 5 | **holdover between syncs** | datasheet ~2.6 s/day; **measured < ~90 ms/day** | ms/hour | yes (P5) -- and see the note below |
+| 4 | receiver group delay + AGC-dependent edge jitter | **measured: -65.5 ms bias, ~3.4 ms jitter** | bias calibrated out (P4); jitter remains | **only the mean** (P4) |
+| 5 | holdover between syncs | datasheet ~2.6 s/day; **measured 40 ms/day** | ~1 ms/day | yes (P5), but it buys far less than assumed |
 
 **Term 5 is the one nobody lists, and the first hour of P0 has already
 shrunk it.** The RP2350's TIMER0 counts from a 12 MHz crystal whose
@@ -328,7 +328,7 @@ believe stratum numbers.
 
 ## 5. Milestones
 
-**P0 — measure, before changing anything.** With R6's client and the
+**P0 — measure, before changing anything. DONE 2026-09-02.** With R6's client and the
 stratum-1 at 192.168.178.23: log, for at least 24 hours, (a) the offset the
 client reports against the reference, and (b) the instant of every accepted
 DCF frame against the local clock. From those two, derive **this board's
@@ -339,6 +339,55 @@ machinery.
 *Verify:* two numbers written into this document, with their sample count and
 duration. Everything after this is judged against them; a phase that skips
 this one is guessing about term 4 and term 5 both.
+
+**P0's result, 13.4 hours, 753 samples, 689 after rejecting the ones whose
+round trip made them worthless:**
+
+| | measured | this phase assumed |
+|---|---|---|
+| crystal | **-0.460 ± 0.010 ppm** (40 ms/day) | ±30 ppm (2.6 s/day) |
+| DCF path bias | **-65.5 ms**, stable to ±1.4 ms across the night | 10-100 ms, unknown |
+| DCF path scatter | **5.0 ms sd** | "the floor", pessimistically tens of ms |
+| our own measurement noise | 3.7 ms sd | not considered |
+
+Four findings, in the order they change the phase.
+
+* **The crystal is 65x better than its datasheet tolerance, and resolved.**
+  -0.46 ppm ± 0.01 is nine sigma from zero, so this is a real number and not
+  an upper bound like the first hour's. **§4's argument for P5 does not
+  survive it.** That argument was a ratio: ~108 ms/hour uncorrected against
+  ~4-7 ms/hour corrected. The true uncorrected figure is **1.7 ms/hour**, so
+  the correction buys roughly one part in forty of what the plan claimed.
+
+* **The drift is a straight line.** Hourly residual means stay inside ±1.7 ms
+  across the whole run with no systematic wander and no temperature
+  signature. So P5's frequency half is not a tracking loop: **measure the
+  constant once and apply it.** A tracking loop remains the honest thing for a
+  board whose ambient changes -- one night at stable indoor temperature says
+  nothing about summer, or sunlight, or a different corner -- so P5 keeps the
+  ability to re-measure. It just stops being the phase's centre of gravity.
+
+* **The receiver's group delay is a genuine constant.** Hourly means span
+  -64.3 to -67.1 ms, a 2.8 ms spread over thirteen hours. §3.1 hoped this
+  would be true; it is. **P4's calibration constant is +65.5 ms**, and after
+  P1 removes its own ~25-35 ms the residual should be the propagation plus the
+  receiver alone, around 30-40 ms.
+
+* **The measurement is now limited by the instrument, not by the radio.** The
+  5.0 ms DCF scatter contains our own 3.7 ms, because every DCF figure is
+  computed *through* an NTP offset. In quadrature the radio's own jitter is
+  about **3.4 ms** -- an order of magnitude better than §2's pessimistic
+  reading of term 4, and close enough to a millisecond clock's own resolution
+  that **P2 and P3 are now what stand between this and a better number**,
+  rather than refinements on top of a receiver that was going to dominate
+  anyway.
+
+The DCF error was also, after filtering, **negative in every one of 685
+samples** (-83 to -48 ms). That is the physically necessary sign -- the path
+can only ever deliver time late -- and the unfiltered set contained values up
+to **+259 ms**, which is impossible. The delay filter removed exactly the
+physically impossible readings without being told any physics, which is the
+best evidence available that it selects on the right quantity.
 
 **P1 — hand out the mark timestamp.** Widen `dcf77_take_time()` to return the
 decoder's `mark_ms` alongside the civil time; `commit()` uses it instead of
@@ -601,19 +650,27 @@ it takes that much care over.
 
 ## 9. Risks, and what each would look like
 
-**The measured group delay turns out to be large *and* unstable.** Looks like:
-P0's standard deviation is tens of milliseconds and does not shrink after P1
-and P3. Then term 4 is the whole budget, the calibration in P4 buys little,
-and the honest outcome is a server that advertises a correspondingly large
-dispersion -- still useful, still independent, just not precise. This is a
-result, not a failure, and P0 exists to find it early rather than after P5.
+**~~The measured group delay turns out to be large *and* unstable.~~ Did not
+happen.** P0 measured a bias of -65.5 ms holding to ±1.4 ms across thirteen
+hours and a jitter of about 3.4 ms. This was the risk the phase was most
+exposed to and it is retired by measurement.
 
-**The crystal turns out to be much worse than ±30 ppm.** Looks like: P0's ppm
-figure is 50+. Then discipline has to happen more often than once a minute can
-supply during poor reception, and the holdover dispersion grows fast enough
-that the unsynchronised threshold in §4 is reached within an hour or two.
-Survivable, and it makes the frequency-correction half of P5 more valuable
-rather than less.
+**~~The crystal turns out to be much worse than ±30 ppm.~~ The opposite
+happened**, and it is worth keeping as a lesson rather than deleting: the risk
+register anticipated the datasheet figure being optimistic and never
+considered it being pessimistic by a factor of sixty-five. A tolerance is a
+bound the manufacturer will honour, not an estimate of what a part does, and
+this phase spent its first three sections reasoning from one as though it were
+the latter. **The measurement is the only thing that settled it, which is
+exactly the argument for P0 running first.**
+
+**The new dominant risk: this is one board, one night, one temperature.** An
+AT-cut crystal's frequency is parabolic in temperature, and thirteen hours of
+stable indoor ambient characterises none of that. Looks like: a summer run, or
+the board in sunlight, gives a materially different ppm and the fixed
+correction P5 is now scoped around stops holding. Mitigated by P5 keeping the
+ability to re-measure rather than baking the constant in, and by re-running P0
+in a different season before anything depends on the figure.
 
 **The edge interrupt disturbs the display.** Looks like: `dcf-monitor` shows
 flicker after P3 that was not there before, or the ring's drop counter is
