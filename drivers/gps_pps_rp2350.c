@@ -68,6 +68,12 @@ static char     g_last[88];
 static uint32_t g_tp5_sent;      /* UBX-CFG-TP5 frames written */
 static uint32_t g_ubx_saves;     /* UBX-CFG-CFG saves issued */
 static bool     g_tp5_save_due;
+static bool     g_tp5_needed = true;   /* the module's stored config is
+                                        * unknown at boot, so assume it wants
+                                        * correcting exactly once */
+static bool     g_tp5_save_needed;     /* ...but do not spend its flash until
+                                        * something proves that it does */
+static uint32_t g_storms_seen;
 static uint64_t g_tp5_last_ms;
 static uint64_t g_last_rx_ms;    /* when the last byte arrived, so a stream
                                   * that stops is a measured silence rather
@@ -99,12 +105,25 @@ static bool set_funcsel(unsigned gpio, uint32_t fn) {
 static bool u_has_char(void) { return (REG(U_FR) & FR_RXFE) == 0; }
 
 #if CONFIG_GPS_UBX_TIMEPULSE
+/* Outbound UBX is queued, never spun on.
+ *
+ * The first version busy-waited on TXFF. At 9600 baud a 40-byte frame is 42 ms
+ * of line time and only 32 bytes fit the FIFO, so it stalled the clock's frame
+ * loop for ~8 ms with interrupts still on and no yield -- during early boot,
+ * which is exactly when the radio is joining. Whether or not that was what
+ * broke the join, a driver that blocks a shared loop to talk to its own
+ * peripheral is wrong, and the queue costs sixty bytes. */
+static uint8_t g_txbuf[64];
+static uint8_t g_txlen, g_txpos;
+
+static void ubx_tx_pump(void) {
+    while (g_txpos < g_txlen && !(REG(U_FR) & FR_TXFF))
+        REG(U_DR) = g_txbuf[g_txpos++];
+    if (g_txpos >= g_txlen) g_txlen = g_txpos = 0;
+}
+
 static void u_putc(uint8_t c) {
-    /* Bounded: a wedged UART must not hang the frame loop this runs from. At
-     * 9600 baud a full 32-byte FIFO drains in ~33 ms, so this spin is over in
-     * microseconds in every case that is not already broken. */
-    for (int spin = 0; spin < 100000 && (REG(U_FR) & FR_TXFF); spin++) { }
-    REG(U_DR) = c;
+    if (g_txlen < sizeof(g_txbuf)) g_txbuf[g_txlen++] = c;
 }
 
 /* A UBX frame: sync, class, id, little-endian length, payload, and the
@@ -447,13 +466,35 @@ void gps_poll(void) {
      * may still be starting up when we first have a fix, and capped because a
      * module that will not listen (a TX wire on the wrong pin, say) must not
      * be talked at forever. */
-    if (g_tp5_sent < 10u && g.rmc_valid && !gps_pps_trustworthy()) {
+    ubx_tx_pump();
+    /* Gated on the module *talking*, not on it having a fix.
+     *
+     * This asked for rmc_valid at first, which meant the correction could only
+     * be sent after the module locked -- and locking is precisely when it
+     * starts emitting the 1 kHz that has to be corrected. So every boot with a
+     * usable sky view produced a storm first and fixed it afterwards, which is
+     * backwards: the whole point is that the wrong pulse never appears. A
+     * module that is emitting sentences is present, powered and listening, and
+     * that is the only precondition the write actually has.
+     *
+     * It still stays silent where there is no module at all, which was the
+     * only thing rmc_valid was really buying. */
+    /* A storm is direct evidence the module's *stored* configuration is still
+     * wrong -- the boot-time correction below is volatile, so a pulse that is
+     * fast enough to trip the guard means it arrived too late. */
+    if (g.pps_storms != g_storms_seen) {
+        g_storms_seen = g.pps_storms;
+        g_tp5_needed = true;
+        g_tp5_save_needed = true;
+    }
+    if (g_tp5_sent < 10u && g.sentences > 0u && g_tp5_needed) {
         uint64_t now_ms = time_get_ms();
         if (g_tp5_sent == 0u || now_ms - g_tp5_last_ms > 30000ull) {
             ubx_set_timepulse_1hz();
             g_tp5_last_ms = now_ms;
             g_tp5_sent++;
-            g_tp5_save_due = true;
+            g_tp5_needed = false;
+            g_tp5_save_due = g_tp5_save_needed;
         }
     }
 #if CONFIG_GPS_UBX_PERSIST
@@ -461,9 +502,24 @@ void gps_poll(void) {
      * above: the module applies its input in order, and there is no value in
      * asking it to persist a setting in the same breath as receiving it. Half
      * a second is many frame periods here and costs nothing. */
+    /* Flash gets written only on evidence that it needs writing.
+     *
+     * The first version saved after every correction, and indoors -- where
+     * trustworthy() can never become true -- that meant ten configuration
+     * frames and ten flash commits per boot, on somebody else's module. u-blox
+     * flash is not infinite and nothing here justifies spending it.
+     *
+     * The volatile UBX-CFG-TP5 above is sufficient on its own: it is sent as
+     * soon as the module speaks, which is well before it can lock and start
+     * pulsing, so a module whose stored config is wrong still behaves
+     * correctly for the whole session. The save exists only to stop the
+     * correction being needed at all, so it is issued when a storm has proved
+     * the stored config wrong -- and once that save takes, no storm follows,
+     * and nothing writes flash again. */
     if (g_tp5_save_due && time_get_ms() - g_tp5_last_ms > 500ull) {
         ubx_save_config();
         g_tp5_save_due = false;
+        g_tp5_save_needed = false;
         g_ubx_saves++;
     }
 #endif

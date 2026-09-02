@@ -160,7 +160,22 @@ static void edgecap_isr(void *ctx) {
         if (!status) continue;
         /* Cleared before dispatching, not after: an edge arriving while this
          * handler runs must set the bit again rather than be swallowed by a
-         * clear that happens later and covers it. */
+         * clear that happens later and covers it.
+         *
+         * Only the pins this driver owns, though. Writing `status` wholesale
+         * would acknowledge -- and so destroy -- an edge belonging to any
+         * other bank-0 interrupt user, which is a bug that would appear only
+         * once a second driver started using GPIO interrupts and would then be
+         * very hard to attribute. edgecap is that driver's only such user
+         * today; this makes sure it stays polite when it is not. */
+        uint32_t mine = 0;
+        for (uint32_t i = 0; i < g_count; i++) {
+            edgecap_t *e = g_reg[i];
+            if (e && e->active && (e->gpio / 8u) == r)
+                mine |= EDGE_BOTH << ((e->gpio % 8u) * 4u);
+        }
+        status &= mine;
+        if (!status) continue;
         IO_BANK0_INTR(r) = status & 0x88888888u;   /* edge bits only */
 
         for (uint32_t slot = 0; slot < 8u; slot++) {
@@ -175,7 +190,21 @@ static void edgecap_isr(void *ctx) {
                         e->win_start_us = now;
                         e->win_count = 0;
                     }
-                    if (++e->win_count > EDGECAP_STORM_PER_SEC) {
+                    /* Checked every 64 edges rather than only at the end of
+                     * the second, so a 1 kHz signal is cut in ~32 ms instead
+                     * of a full second and a genuinely floating pin in
+                     * microseconds. The old version let 2000 interrupts
+                     * through before acting, which is a long time to be
+                     * competing with whatever else is starting up. */
+                    e->win_count++;
+                    bool too_fast = false;
+                    if ((e->win_count & 63u) == 0u) {
+                        uint64_t span = now - e->win_start_us;
+                        too_fast = span == 0 ||
+                            (uint64_t)e->win_count * 1000000ull >
+                            (uint64_t)EDGECAP_STORM_PER_SEC * span;
+                    }
+                    if (too_fast || e->win_count > EDGECAP_STORM_PER_SEC) {
                         /* Record the rate before shutting the pin off: it is
                          * the number that distinguishes an unlocked GPS
                          * (~2 kHz) from a floating input (tens of kHz), and

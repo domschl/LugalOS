@@ -1,6 +1,6 @@
 {
-  "heap_bytes": 372736,
-  "heap_pages": 91,
+  "heap_bytes": 368640,
+  "heap_pages": 90,
   "per_file": {
     "arch/riscv/common/elf.c": 1456,
     "arch/riscv/common/trap.c": 2694,
@@ -11,7 +11,7 @@
     "drivers/dcf77_rp2350.c": 298,
     "drivers/dcf77_service.c": 761,
     "drivers/edgecap.c": 21,
-    "drivers/gps_pps_rp2350.c": 729,
+    "drivers/gps_pps_rp2350.c": 800,
     "drivers/i2c_rtc.c": 856,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_app.c": 196,
@@ -58,5 +58,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 142423
+  "total": 142494
 }
