@@ -199,6 +199,44 @@ than as a first.
 
 ---
 
+## The clock board's DS3231 does not survive a power cut
+
+**Trigger:** power-cycle the `rp2350-clock` board. Its DS3231 comes back with
+OSF set -- the oscillator stopped while Vcc was away, so the backup supply is
+not holding it up.
+
+**Established by experiment on 2026-09-02**, not by reading the flag. OSF is
+sticky and this tree never cleared it until that day, so a set flag proved
+nothing: it could have been reporting an event from any time in the past, and
+the board's time was demonstrably fine across a USB reconnect. What settled it
+was clearing the flag (which writing the time now does), confirming it clear
+-- the panel's PM lamp was out and the face was reading the DS3231 -- then
+removing power and finding it set again.
+
+The flag only became a usable diagnostic once something started clearing it.
+That is worth remembering the next time a sticky status bit is read as a
+verdict.
+
+**What it is not:** proof that the cell is dead. "The backup supply did not
+hold the oscillator up" covers a cell that is flat, a cell that was never
+fitted (these baseboards often ship without one), a holder not making contact,
+and a board-level fault on VBAT. Only a meter separates those.
+
+**Why it is parked:** it is a hardware condition, and the software handles it
+properly now. The kernel clock is not seeded from a chip whose OSF is set --
+a reset DS3231 reads 2000-01-01 00:00:00 and passes every range check, so
+seeding would replace a known-unset clock with a confidently wrong one. The
+face falls back to the kernel clock, which NTP or the radio sets within a
+minute of boot, and lights the PM lamp meanwhile. The first write after that
+clears OSF, so the RTC carries the time for as long as power is on.
+
+The visible symptom before those fixes was a panel showing a fixed 00:00 for a
+day while the board's own clock was correct to the millisecond.
+
+**Fix:** fit a working CR2032.
+
+---
+
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
 
 **Trigger:** open and close 9P/TCP sessions in a tight loop. The third
