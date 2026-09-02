@@ -413,14 +413,6 @@ bool i2c_rtc_is_detected(void) {
 }
 
 
-bool i2c_rtc_lost_power(void) {
-    /* DS3231 only. On a DS1307 the address is user NVRAM and the answer would
-     * be whatever the owner put there. */
-    if (!g_is_ds3231) return false;
-    uint8_t st;
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return false;
-    return (st & DS3231_STATUS_OSF) != 0;
-}
 
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
     if (!tm) return false;
@@ -572,6 +564,10 @@ void i2c_scan_bus(void) {
 #define I2C_OP_RTC_READ_TIME  ((uint8_t)'T')
 #define I2C_OP_RTC_WRITE_TIME ((uint8_t)'S')
 #define I2C_OP_RTC_READ_TEMP  ((uint8_t)'C')
+/* The DS3231's status register, for OSF. Its own op rather than a field
+ * bolted onto the time read: the face reads the time once a second and only
+ * consults the flag when deciding whether to trust it. */
+#define I2C_OP_RTC_STATUS     ((uint8_t)'O')
 #define I2C_OP_EE_READ        ((uint8_t)'R')
 #define I2C_OP_EE_WRITE       ((uint8_t)'X')
 
@@ -904,9 +900,40 @@ I2C_UATTR static void i2c_umode_body(void) {
                 reg_buf[6] = i2c_usys_dec2bcd(req[3]); /* month */
                 reg_buf[7] = i2c_usys_dec2bcd((uint8_t)(year >= 2000 ? (year - 2000) : year));
                 ok = i2c_usys_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8);
+
+                /* Clear OSF, exactly as i2c_rtc_hw_write_time() does on the
+                 * kernel-mode path. This handler writes the time registers
+                 * itself rather than calling that function, so the clear had
+                 * to be duplicated -- and was not, which meant that on every
+                 * persona whose I2C driver runs U-mode (all the RP2350 ones)
+                 * the flag was never cleared by anything. The panel's warning
+                 * lamp therefore stayed lit for the life of the board, and no
+                 * amount of setting the clock put it out.
+                 *
+                 * Only when the caller says this is a DS3231: on a DS1307
+                 * 0x0F is user NVRAM. The facade knows which part is present
+                 * and says so in the request, because this task cannot read
+                 * the driver's globals from inside its own domain. */
+                if (ok && req_len >= (long)(1 + RTC_WIRE_LEN + 1) && req[1 + RTC_WIRE_LEN]) {
+                    uint8_t st = 0, sreg = DS3231_REG_STATUS;
+                    if (i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &sreg, 1, &st, 1) &&
+                        (st & DS3231_STATUS_OSF)) {
+                        uint8_t clr[2] = { DS3231_REG_STATUS,
+                                           (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
+                        i2c_usys_write_bytes(DS1307_DS3231_I2C_ADDR, clr, 2);
+                    }
+                }
             }
             resp[0] = ok ? 1 : 0;
             resp_len = 1;
+            break;
+        }
+        case I2C_OP_RTC_STATUS: {
+            uint8_t st = 0, sreg = DS3231_REG_STATUS;
+            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &sreg, 1, &st, 1);
+            resp[0] = ok ? 1 : 0;
+            resp[1] = st;
+            resp_len = 2;
             break;
         }
         case I2C_OP_RTC_READ_TEMP: {
@@ -1034,6 +1061,14 @@ static void i2c_task_body(void *arg) {
             }
             g_i2c_resp[0] = ok ? 1 : 0;
             chan_serve_reply(g_i2c_ep, 1);
+            break;
+        }
+        case I2C_OP_RTC_STATUS: {
+            uint8_t st = 0;
+            bool ok = i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1);
+            g_i2c_resp[0] = ok ? 1 : 0;
+            g_i2c_resp[1] = st;
+            chan_serve_reply(g_i2c_ep, 2);
             break;
         }
         case I2C_OP_RTC_READ_TEMP: {
@@ -1207,12 +1242,41 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
     return i2c_rtc_hw_read_time(tm);
 }
 
+bool i2c_rtc_lost_power(void) {
+    /* DS3231 only. On a DS1307 the address is user NVRAM and the answer would
+     * be whatever the owner put there. */
+    if (!g_is_ds3231) return false;
+
+    /* Through the driver task once it exists, like every other public
+     * accessor in this file.
+     *
+     * This used to touch the bus directly, breaking the rule stated above
+     * i2c_rtc_hw_read_time(): only i2c_rtc_init() (before the task exists)
+     * and the task itself may do that. Called from the clock application's
+     * own task it raced the driver for the bus. A rule only some callers
+     * follow is not a rule. */
+    if (i2c_task_alive()) {
+        uint8_t req[1] = { I2C_OP_RTC_STATUS };
+        uint8_t resp[2];
+        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
+        if (n >= 2) return resp[0] && (resp[1] & DS3231_STATUS_OSF);
+        /* IPC failed -- fall through, as every other accessor here does. */
+    }
+    uint8_t st;
+    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return false;
+    return (st & DS3231_STATUS_OSF) != 0;
+}
+
 bool i2c_rtc_write_time(const rtc_time_t *tm) {
     if (!tm) return false;
     if (i2c_task_alive()) {
-        uint8_t req[1 + RTC_WIRE_LEN];
+        uint8_t req[1 + RTC_WIRE_LEN + 1];
         req[0] = I2C_OP_RTC_WRITE_TIME;
         rtc_to_wire(tm, &req[1]);
+        /* Whether the task may touch 0x0F to clear OSF. Decided here because
+         * the driver's globals are readable on this side and not inside the
+         * task's domain. */
+        req[1 + RTC_WIRE_LEN] = g_is_ds3231 ? 1u : 0u;
         uint8_t resp[1];
         int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
         if (n >= 1) return resp[0] != 0;
