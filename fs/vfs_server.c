@@ -988,6 +988,14 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             (unsigned long)gs.rx_pad, (unsigned long)gs.bytes,
             (unsigned long)gs.sentences, (unsigned long)gs.bad_checksum);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "rx_idle_ms=%lu\nrx_fr=0x%08lx\nrx_cr=0x%08lx\n"
+            "rx_err_overrun=%lu\nrx_err_break=%lu\n"
+            "rx_err_parity=%lu\nrx_err_frame=%lu\n",
+            (unsigned long)gs.rx_idle_ms, (unsigned long)gs.rx_fr,
+            (unsigned long)gs.rx_cr, (unsigned long)gs.rx_err_overrun,
+            (unsigned long)gs.rx_err_break, (unsigned long)gs.rx_err_parity,
+            (unsigned long)gs.rx_err_frame);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
             "fix_quality=%u\nsatellites=%u\nrmc=%s\n",
             (unsigned)gs.fix_quality, (unsigned)gs.satellites,
             gs.rmc_valid ? "valid" : "void");

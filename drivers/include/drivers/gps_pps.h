@@ -46,6 +46,22 @@ typedef struct {
                                 * them apart. */
     uint32_t rx_pad;           /* IO_BANK0 CTRL as it reads back, for the case
                                 * where even that is not enough */
+    /* Why the stream stopped, when it stops. A byte counter that freezes is
+     * ambiguous on its own -- a module that lost power and a receiver that
+     * wedged look exactly alike -- and the board doing this measurement is
+     * usually on a windowsill rather than next to a console. rx_idle_ms turns
+     * "stopped" into a duration; the error counters say whether we noticed
+     * anything going wrong first. A rising rx_err_frame with sentences that
+     * never parse is the wrong-baud signature; rx_err_break is the RX line
+     * held low, which is what an unpowered module looks like. */
+    uint32_t rx_idle_ms;       /* since the last byte; 0 if none ever */
+    uint32_t rx_err_overrun;   /* we did not drain fast enough */
+    uint32_t rx_err_break;
+    uint32_t rx_err_parity;
+    uint32_t rx_err_frame;
+    uint32_t rx_fr;            /* UARTFR as it reads right now */
+    uint32_t rx_cr;            /* UARTCR -- proves the receiver is still on */
+
     uint8_t  fix_quality;      /* GGA field 6: 0 = no fix, 1 = GPS, 2 = DGPS */
     uint8_t  satellites;
     bool     rmc_valid;        /* RMC status 'A' rather than 'V' */

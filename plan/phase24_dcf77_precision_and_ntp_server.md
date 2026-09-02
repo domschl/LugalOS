@@ -672,6 +672,29 @@ the lamp is `gps_pps_trustworthy()`, the same one a calibration consults, so
 the panel reports the software's verdict rather than inviting a person to
 form their own.
 
+**A third instrument, added because the first bench session needed it.** When
+the byte counter stops moving, "the module lost power" and "our receiver is
+wedged" look identical, and the board is on a windowsill rather than next to a
+console. So `/proc/gps` also carries `rx_idle_ms` (silence as a duration
+rather than a counter someone has to sit and watch), the four PL011 error
+counters, and `rx_fr`/`rx_cr` read live. `u_getc()` now reads the *whole*
+UARTDR rather than its low byte, counts the error bits that ride along with
+each character, and clears the latched copy in UARTRSR -- without that clear
+one overrun during boot makes every later reading say "overrun" and the
+register stops being evidence of anything.
+
+It paid for itself immediately, on a failure that was entirely ours: counters
+frozen, `rx_fr = 0x1c7` -- RXFF set, so the FIFO was *full* rather than empty
+and nothing was draining it, while `rx_err_frame = 0` across 401 bytes proved
+the baud was right and `rx_err_break = 0` proved the module's TX still idled
+high. Not a dead module: the probe script had sent Ctrl-C to get a clean
+prompt, and Ctrl-C exits `clock_app_run()`, which is the only caller of
+`gps_poll()`. **The console cannot be used to measure this board**, because
+touching it stops the loop under measurement; read `/proc/gps` over 9P
+instead. A healthy receiver reads `rx_fr = 0x197`, with RXFE set. Note that
+`rx_idle_ms` alone does not settle it -- it is computed in `gps_status()` at
+read time and keeps advancing whether or not the poll loop runs.
+
 **Two pin lessons, both learned the hard way and both now structural.** The
 first flash of P3b lit the display for a second and then went dark, twice:
 GP19 was registered with the edge capture while still in its power-on state,

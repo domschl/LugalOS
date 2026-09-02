@@ -29,7 +29,21 @@
 #define U_FBRD  (U + 0x28)
 #define U_LCR_H (U + 0x2C)
 #define U_CR    (U + 0x30)
+#define U_RSR   (U + 0x04)   /* read: latched RX errors; write: clears them */
 #define FR_RXFE (1u << 4)
+
+/* The error bits the PL011 puts in the *upper* half of UARTDR, alongside the
+ * byte they belong to. Reading only the low byte -- which this driver used to
+ * do -- throws them away and leaves the latched copy in UARTRSR set forever.
+ * They are the difference between "the module went quiet" and "our receiver
+ * is wedged", which otherwise look identical from here: both are a byte
+ * counter that stops moving. */
+#define DR_OE   (1u << 11)   /* overrun: FIFO was full, a byte was lost */
+#define DR_BE   (1u << 10)   /* break: RX held low longer than a frame */
+#define DR_PE   (1u <<  9)   /* parity */
+#define DR_FE   (1u <<  8)   /* framing: no stop bit where one was due --
+                              * the classic wrong-baud signature */
+#define DR_ERRS (DR_OE | DR_BE | DR_PE | DR_FE)
 
 #define SIO_GPIO_OE_CLR   0xD0000040UL
 
@@ -38,6 +52,9 @@ static char     g_line[96];
 static uint32_t g_line_len;
 static bool     g_overflow;      /* the current line is too long; discard it */
 static bool     g_rx_muxed;      /* the RX pin actually took its UART function */
+static uint64_t g_last_rx_ms;    /* when the last byte arrived, so a stream
+                                  * that stops is a measured silence rather
+                                  * than a counter someone has to watch */
 
 static edge_t     g_pps_ring[16];
 static edgecap_t  g_pps;
@@ -63,7 +80,22 @@ static bool set_funcsel(unsigned gpio, uint32_t fn) {
 }
 
 static bool u_has_char(void) { return (REG(U_FR) & FR_RXFE) == 0; }
-static uint8_t u_getc(void)  { return (uint8_t)(REG(U_DR) & 0xFF); }
+
+/* Reads the byte *and* its error bits, counts them, and clears the latched
+ * copy. The clear is the point: UARTRSR latches until written, so without it
+ * one overrun during boot makes every later diagnosis read "overrun" and the
+ * register stops being evidence of anything. */
+static uint8_t u_getc(void) {
+    uint32_t dr = REG(U_DR);
+    if (dr & DR_ERRS) {
+        if (dr & DR_OE) g.rx_err_overrun++;
+        if (dr & DR_BE) g.rx_err_break++;
+        if (dr & DR_PE) g.rx_err_parity++;
+        if (dr & DR_FE) g.rx_err_frame++;
+        REG(U_RSR) = 0xFu;          /* any write clears all four */
+    }
+    return (uint8_t)(dr & 0xFFu);
+}
 
 void gps_init(void) {
     REG(RESETS_RESET_CLR) = RESETS_UART1_BIT;
@@ -240,6 +272,7 @@ void gps_poll(void) {
     for (uint32_t budget = 0; budget < 256u && u_has_char(); budget++) {
         char c = (char)u_getc();
         g.bytes++;
+        g_last_rx_ms = time_get_ms();
         if (c == '\r') continue;
         if (c == '\n') {
             if (!g_overflow && g_line_len > 0) {
@@ -298,4 +331,14 @@ bool gps_pps_trustworthy(void) { return false; }
 
 #endif
 
-void gps_status(gps_status_t *out) { if (out) *out = g; }
+void gps_status(gps_status_t *out) {
+    if (!out) return;
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    if (g.enabled) {
+        g.rx_idle_ms = g.bytes ? (uint32_t)(time_get_ms() - g_last_rx_ms) : 0;
+        g.rx_fr = REG(U_FR);
+        g.rx_cr = REG(U_CR);
+    }
+#endif
+    *out = g;
+}
