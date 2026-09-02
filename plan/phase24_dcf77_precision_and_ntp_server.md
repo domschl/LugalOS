@@ -475,8 +475,7 @@ to **+259 ms**, which is impossible. The delay filter removed exactly the
 physically impossible readings without being told any physics, which is the
 best evidence available that it selects on the right quantity.
 
-**P1 — hand out the mark timestamp. Built 2026-09-02, awaiting its
-re-measurement.** `dcf77_take_time()` returns the decoder's `mark_ms`
+**P1 — hand out the mark timestamp. DONE 2026-09-02, measured.** `dcf77_take_time()` returns the decoder's `mark_ms`
 alongside the civil time, and `dcf77_service_feed()` records *that* as the
 instant the radio time was true, instead of the `now` of whichever sample
 happened to notice.
@@ -515,6 +514,41 @@ hand-operated path never did. Now fixed the same way.
 
 *Verify:* P0's harness re-run against the same reference, and the two
 predictions above checked as predictions rather than as observations.
+
+**Result, 1.81 h, 74 accepted frames, against the stratum-1 baseline of
+-65.9 ms / 4.9 ms sd:**
+
+| | predicted | measured |
+|---|---|---|
+| bias | -33 to -40 ms | **-41.7 ms** |
+| shift | +29 ms | **+24.2 ± 0.7** |
+| scatter | 4.5 ms | **4.5 ms** |
+
+**The scatter prediction landed exactly. The bias shift did not**, and the
+5 ms gap is significant at this sample size, so it is worth saying what is and
+is not known about it.
+
+What is certain: the correction is real, large, and in the predicted
+direction, and it is essentially `DEBOUNCE_MS` on its own. +24.2 ± 0.7 against
+a hard floor of 25 ms is about one sigma below that floor -- consistent with
+it, not a violation -- which says the sampling term contributed almost
+nothing.
+
+What does not reconcile: if sampling jitter were negligible the scatter should
+not have improved at all, and it improved by exactly the predicted amount.
+Recovering 4.9 -> 4.5 ms needs a uniform jitter about 6.7 ms wide, which would
+have added ~3.4 ms to the mean and given +28. The two measurements cannot both
+be explained by one sampling interval.
+
+The most likely reconciliation is that they are not measuring the same thing:
+the runs are on different days, 74 frames against 133, and **the receiver's
+own delay may differ between them**. Whether that delay moves with signal
+strength is a question P4 was already written to ask, and it now has a second
+reason to. Two things follow for the milestones after this one: the ~8 ms
+sampling figure taken from `dcf-monitor`'s ~125 Hz does not describe the
+*app's* feed rate and should be measured rather than assumed, and a 5 ms
+discrepancy is exactly the size that a millisecond clock and a network
+reference cannot settle -- which is what P2, P3b and P4 exist to fix.
 
 **P2 — a microsecond wall clock. Now a prerequisite, not a convenience.**
 §3.4's PPS comparison is expressed in microseconds and cannot be recorded in a
