@@ -206,6 +206,10 @@ set(CONFIG_GPS_BAUD      9600)           # the near-universal NMEA default
 # module's pulse width into the measurement rather than producing anything
 # that looks like an error.
 set(CONFIG_GPS_PPS_ACTIVE_LOW 0)
+# Send UBX-CFG-TP5 to put a u-blox timepulse back to 1 Hz. This board's
+# NEO-M8N came configured for ~1 kHz, which is unusable as a second marker.
+# Written to battery-backed RAM only, never saved to the module's flash.
+set(CONFIG_GPS_UBX_TIMEPULSE 1)
 
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #

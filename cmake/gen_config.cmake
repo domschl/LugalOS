@@ -84,6 +84,7 @@ set(_optional_keys
     CONFIG_GPS_PPS_GPIO
     CONFIG_GPS_BAUD
     CONFIG_GPS_PPS_ACTIVE_LOW
+    CONFIG_GPS_UBX_TIMEPULSE
     CONFIG_DCF77_P0_LOG
     CONFIG_DCF77_P0_PERIOD_S
     CONFIG_DCF77_P0_PORT
@@ -103,6 +104,9 @@ set(_optional_keys
 # P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Off everywhere unless a
 # board file turns it on: it is an instrument, not a feature, and it costs an
 # NTP query a minute for as long as it runs.
+if(NOT DEFINED CONFIG_GPS_UBX_TIMEPULSE)
+    set(CONFIG_GPS_UBX_TIMEPULSE 0)
+endif()
 if(NOT DEFINED CONFIG_GPS_PPS_ACTIVE_LOW)
     set(CONFIG_GPS_PPS_ACTIVE_LOW 0)
 endif()

@@ -31,6 +31,7 @@
 #define U_CR    (U + 0x30)
 #define U_RSR   (U + 0x04)   /* read: latched RX errors; write: clears them */
 #define FR_RXFE (1u << 4)
+#define FR_TXFF (1u << 5)
 
 /* The error bits the PL011 puts in the *upper* half of UARTDR, alongside the
  * byte they belong to. Reading only the low byte -- which this driver used to
@@ -52,6 +53,20 @@ static char     g_line[96];
 static uint32_t g_line_len;
 static bool     g_overflow;      /* the current line is too long; discard it */
 static bool     g_rx_muxed;      /* the RX pin actually took its UART function */
+/* What the module actually says, which is how it gets identified.
+ *
+ * The talker ids and the sentence set narrow a module to a family, and the
+ * last sentence catches anything unusual -- a $GPTXT boot banner, or a reply
+ * to a version poll. Needed because the timepulse rate turned out to be a
+ * property of the *module* rather than of its lock state, and fixing that
+ * means sending it a configuration command in its own dialect. Guessing the
+ * dialect by shotgunning both is how a working receiver gets misconfigured. */
+static char     g_types[12][6];  /* "GPGGA" &c, without the '$' */
+static uint8_t  g_ntypes;
+static char     g_last[88];
+
+static uint32_t g_tp5_sent;      /* UBX-CFG-TP5 frames written */
+static uint64_t g_tp5_last_ms;
 static uint64_t g_last_rx_ms;    /* when the last byte arrived, so a stream
                                   * that stops is a measured silence rather
                                   * than a counter someone has to watch */
@@ -80,6 +95,66 @@ static bool set_funcsel(unsigned gpio, uint32_t fn) {
 }
 
 static bool u_has_char(void) { return (REG(U_FR) & FR_RXFE) == 0; }
+
+#if CONFIG_GPS_UBX_TIMEPULSE
+static void u_putc(uint8_t c) {
+    /* Bounded: a wedged UART must not hang the frame loop this runs from. At
+     * 9600 baud a full 32-byte FIFO drains in ~33 ms, so this spin is over in
+     * microseconds in every case that is not already broken. */
+    for (int spin = 0; spin < 100000 && (REG(U_FR) & FR_TXFF); spin++) { }
+    REG(U_DR) = c;
+}
+
+/* A UBX frame: sync, class, id, little-endian length, payload, and the
+ * 8-bit Fletcher checksum over everything from `class` onward. */
+static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len) {
+    const uint8_t hdr[4] = { cls, id, (uint8_t)(len & 0xFFu), (uint8_t)(len >> 8) };
+    uint8_t a = 0, b = 0;
+    u_putc(0xB5u); u_putc(0x62u);
+    for (uint32_t i = 0; i < 4u; i++) { a = (uint8_t)(a + hdr[i]); b = (uint8_t)(b + a); u_putc(hdr[i]); }
+    for (uint16_t i = 0; i < len; i++) { a = (uint8_t)(a + payload[i]); b = (uint8_t)(b + a); u_putc(payload[i]); }
+    u_putc(a); u_putc(b);
+}
+
+/* UBX-CFG-TP5: one pulse per second, aligned to the top of the UTC second.
+ *
+ * Needed because the timepulse rate is a property of the *module*, not of its
+ * lock state. This board's NEO-M8N arrived emitting ~1 kHz once locked --
+ * `pps_storm_rate` measured 2004-2006 edges/sec against a valid eight-
+ * satellite fix -- which is not the u-blox factory default, so some earlier
+ * owner's configuration was still sitting in its battery-backed RAM. A 1 kHz
+ * train is useless here whatever its accuracy: every pulse lands on a
+ * millisecond boundary, the second's start is one of them, and NMEA cannot say
+ * which of the thousand it is.
+ *
+ * Deliberately *not* followed by a UBX-CFG-CFG save. The setting lives in
+ * battery-backed RAM and reverts when the module loses power, so this leaves
+ * the user's hardware as it found it and simply re-sends on the next boot.
+ * Writing someone's module permanently to work around our own requirement is
+ * not ours to do.
+ *
+ * Field layout from the u-blox M8 protocol spec; the flags are active,
+ * lockGnssFreq, lockedOtherSet, isLength, alignToTow and polarity=rising. */
+static void ubx_set_timepulse_1hz(void) {
+    static const uint8_t tp5[32] = {
+        0x00,                    /* tpIdx = TIMEPULSE                */
+        0x01,                    /* version                          */
+        0x00, 0x00,              /* reserved                         */
+        0x00, 0x00,              /* antCableDelay ns                 */
+        0x00, 0x00,              /* rfGroupDelay ns                  */
+        0x40, 0x42, 0x0F, 0x00,  /* freqPeriod      = 1000000 us     */
+        0x40, 0x42, 0x0F, 0x00,  /* freqPeriodLock  = 1000000 us     */
+        0x00, 0x00, 0x00, 0x00,  /* pulseLenRatio   = 0 (no pulse
+                                  * while unlocked, which is what
+                                  * makes an unlocked module quiet
+                                  * rather than a storm source)      */
+        0xA0, 0x86, 0x01, 0x00,  /* pulseLenRatioLock = 100000 us    */
+        0x00, 0x00, 0x00, 0x00,  /* userConfigDelay                  */
+        0x77, 0x00, 0x00, 0x00,  /* flags                            */
+    };
+    ubx_send(0x06u, 0x31u, tp5, sizeof(tp5));
+}
+#endif
 
 /* Reads the byte *and* its error bits, counts them, and clears the latched
  * copy. The clear is the point: UARTRSR latches until written, so without it
@@ -123,9 +198,9 @@ void gps_init(void) {
     g_rx_muxed = set_funcsel(CONFIG_GPS_RX_GPIO, 2u);   /* F2 = UART1 RX */
     REG(PADS_BANK0_PAD(CONFIG_GPS_RX_GPIO)) = 0x5A;     /* schmitt, PUE, 4mA, IE */
 #ifdef CONFIG_GPS_TX_GPIO
-    /* Configured but unused: reading NMEA needs no transmit path. It is set up
-     * so that a module needing its sentence set or rate changed can be talked
-     * to without rewiring, which is the only reason the pin is reserved. */
+    /* The transmit path exists so a module whose timepulse is set wrong can be
+     * corrected without rewiring -- see ubx_set_timepulse_1hz() below, which
+     * is why the pin was reserved and is now the reason it is used. */
     set_funcsel(CONFIG_GPS_TX_GPIO, 2u);                /* F2 = UART1 TX */
     REG(PADS_BANK0_PAD(CONFIG_GPS_TX_GPIO)) = 0x56;     /* schmitt, 4mA, IE */
 #endif
@@ -232,6 +307,26 @@ static void nmea_apply(const char *s, uint32_t len) {
     if (len < 6) return;
     const char *type = s + 3;
 
+    /* Census first, so it covers sentences this parser has no other use for
+     * -- which are exactly the ones that identify a module. */
+    {
+        uint32_t n = len < sizeof(g_last) - 1u ? len : sizeof(g_last) - 1u;
+        for (uint32_t i = 0; i < n; i++) g_last[i] = s[i];
+        g_last[n] = '\0';
+
+        bool seen = false;
+        for (uint8_t i = 0; i < g_ntypes && !seen; i++) {
+            seen = g_types[i][0] == s[1] && g_types[i][1] == s[2] &&
+                   g_types[i][2] == s[3] && g_types[i][3] == s[4] &&
+                   g_types[i][4] == s[5];
+        }
+        if (!seen && g_ntypes < (uint8_t)(sizeof(g_types) / sizeof(g_types[0]))) {
+            for (uint32_t i = 0; i < 5u; i++) g_types[g_ntypes][i] = s[1 + i];
+            g_types[g_ntypes][5] = '\0';
+            g_ntypes++;
+        }
+    }
+
     char f[16];
     if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A') {
         nmea_field(s, len, 6, f, sizeof(f));
@@ -309,6 +404,25 @@ void gps_poll(void) {
         g.pps_last_us = e.t_us;
         g.pps_count++;
     }
+#if CONFIG_GPS_UBX_TIMEPULSE
+    /* Correct the module's timepulse, but only while there is something to
+     * correct and a module in a state to hear it.
+     *
+     * Gated on rmc_valid so a board with no antenna -- or no module -- never
+     * transmits at all, and stopped by trustworthy() the moment the pulse is
+     * right, so the normal case is a single frame. Retried because the module
+     * may still be starting up when we first have a fix, and capped because a
+     * module that will not listen (a TX wire on the wrong pin, say) must not
+     * be talked at forever. */
+    if (g_tp5_sent < 10u && g.rmc_valid && !gps_pps_trustworthy()) {
+        uint64_t now_ms = time_get_ms();
+        if (g_tp5_sent == 0u || now_ms - g_tp5_last_ms > 30000ull) {
+            ubx_set_timepulse_1hz();
+            g_tp5_last_ms = now_ms;
+            g_tp5_sent++;
+        }
+    }
+#endif
     g.pps_dropped = edgecap_dropped(&g_pps);
     g.pps_stormed = edgecap_stormed(&g_pps);
     g.pps_storms = edgecap_storms(&g_pps);
@@ -333,6 +447,33 @@ bool gps_pps_trustworthy(void) { return false; }
 
 #endif
 
+/* Static buffers rather than fields in gps_status_t: the status struct is
+ * copied onto a caller's stack on every read, including the clock app's frame
+ * loop, and none of those callers wants a couple of hundred bytes of text they
+ * will not look at. */
+const char *gps_nmea_last(void) {
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    return g_last;
+#else
+    return "";
+#endif
+}
+
+void gps_nmea_types(char *buf, uint32_t cap) {
+    if (!buf || !cap) return;
+    buf[0] = '\0';
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    uint32_t used = 0;
+    for (uint8_t i = 0; i < g_ntypes; i++) {
+        for (const char *p = g_types[i]; *p && used + 2u < cap; p++) buf[used++] = *p;
+        if (i + 1u < g_ntypes && used + 2u < cap) buf[used++] = ' ';
+    }
+    buf[used] = '\0';
+#else
+    (void)cap;
+#endif
+}
+
 void gps_status(gps_status_t *out) {
     if (!out) return;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
@@ -340,6 +481,7 @@ void gps_status(gps_status_t *out) {
         g.rx_idle_ms = g.bytes ? (uint32_t)(time_get_ms() - g_last_rx_ms) : 0;
         g.rx_fr = REG(U_FR);
         g.rx_cr = REG(U_CR);
+        g.ubx_tp5_sent = g_tp5_sent;
     }
 #endif
     *out = g;

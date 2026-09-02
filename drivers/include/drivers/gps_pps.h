@@ -77,6 +77,10 @@ typedef struct {
                                 * Recoverable: it is retried on a doubling
                                 * backoff (see edgecap.h), because a module
                                 * emits ~1 kHz on TIMEPULSE until it locks. */
+    uint32_t ubx_tp5_sent;     /* UBX-CFG-TP5 frames sent to correct a
+                                * timepulse that is not 1 Hz. Zero is the
+                                * healthy steady state; a number that keeps
+                                * climbing means the module is not listening. */
     uint32_t pps_storms;       /* how many times, ever */
     uint32_t pps_storm_rate;   /* edges/sec at the last trip. ~2 kHz is an
                                 * unlocked module; tens of kHz is a floating
@@ -93,6 +97,14 @@ void gps_init(void);
 void gps_poll(void);
 
 void gps_status(gps_status_t *out);
+
+/* What the module is saying, for identifying it. `gps_nmea_types` fills `buf`
+ * with the distinct sentence ids seen ("GPGGA GPRMC GPGSV ..."), which pin a
+ * module to a family; `gps_nmea_last` is the most recent sentence verbatim,
+ * which catches a $GPTXT banner or a reply to a version poll. Both are empty
+ * where there is no receiver. */
+void        gps_nmea_types(char *buf, uint32_t cap);
+const char *gps_nmea_last(void);
 
 /* True when the module is reporting a fix *and* its pulse is arriving at
  * roughly one second. Both, because either alone has been wrong: a fix with
