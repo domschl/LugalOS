@@ -33,6 +33,22 @@
 #define IO_IRQ_BANK0 21u
 #endif
 
+/* Above this many edges in one second a pin is not signalling, it is
+ * oscillating, and the handler stops listening to it.
+ *
+ * Not a nicety. A floating input with both-edge interrupts enabled produces a
+ * continuous storm, and on this hardware that starves everything else: the
+ * clock persona's display lit for a second after boot and then went dark,
+ * twice, because a pin was registered before its pad was configured
+ * (2026-09-02). A board that cannot be reached to be fixed is a bricked
+ * board, and an unconnected pin is exactly the state things are in while
+ * someone is still wiring.
+ *
+ * Two thousand a second is far above anything real -- DCF-77 gives two to
+ * four, PPS gives two, and even a badly noisy receiver is in the hundreds --
+ * and far below what costs a display its frame. */
+#define EDGECAP_STORM_PER_SEC 2000u
+
 #define EDGECAP_MAX 4
 static edgecap_t *g_reg[EDGECAP_MAX];
 static uint32_t   g_count;
@@ -64,6 +80,7 @@ bool edgecap_pop(edgecap_t *e, edge_t *out) {
 }
 
 uint32_t edgecap_dropped(const edgecap_t *e) { return e ? e->dropped : 0u; }
+bool     edgecap_stormed(const edgecap_t *e) { return e ? e->stormed : false; }
 uint32_t edgecap_total(const edgecap_t *e)   { return e ? e->total   : 0u; }
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -71,6 +88,11 @@ uint32_t edgecap_total(const edgecap_t *e)   { return e ? e->total   : 0u; }
  * bank. It reads the clock once and gives every pin that fired the same
  * timestamp: they are within microseconds of each other by construction, and a
  * second read would be a second answer to the same question. */
+static void edgecap_disable_pin(uint8_t gpio) {
+    uint32_t r = gpio / 8u, shift = (gpio % 8u) * 4u;
+    IO_BANK0_INTE(r) &= ~(EDGE_BOTH << shift);
+}
+
 static void edgecap_isr(void *ctx) {
     (void)ctx;
     uint64_t now = time_get_us();
@@ -90,6 +112,18 @@ static void edgecap_isr(void *ctx) {
             for (uint32_t i = 0; i < g_count; i++) {
                 edgecap_t *e = g_reg[i];
                 if (e && e->active && e->gpio == gpio) {
+                    /* Rate check before the push, so a storming pin costs a
+                     * comparison rather than a ring write per edge. */
+                    if (now - e->win_start_us >= 1000000ull) {
+                        e->win_start_us = now;
+                        e->win_count = 0;
+                    }
+                    if (++e->win_count > EDGECAP_STORM_PER_SEC) {
+                        edgecap_disable_pin(e->gpio);
+                        e->stormed = true;
+                        e->active = false;
+                        break;
+                    }
                     edgecap_push(e, now, (levels >> gpio) & 1u);
                     break;
                 }
@@ -115,6 +149,7 @@ int edgecap_attach(edgecap_t *e, uint8_t gpio, edge_t *storage, uint16_t cap) {
     e->buf = storage; e->cap = cap;
     e->head = e->tail = 0; e->dropped = e->total = 0;
     e->gpio = gpio; e->active = true;
+    e->stormed = false; e->win_start_us = 0; e->win_count = 0;
     g_reg[g_count++] = e;
 
 #if defined(CONFIG_BOARD_RP2350)

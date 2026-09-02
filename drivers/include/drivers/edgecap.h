@@ -47,6 +47,12 @@ typedef struct {
     volatile uint32_t total;
     uint8_t  gpio;
     bool     active;
+    /* A pin producing more edges than any real signal has its interrupt
+     * turned off and says so here. A floating input is the usual cause, and
+     * without this it takes the whole board down with it. */
+    volatile bool     stormed;
+    volatile uint64_t win_start_us;
+    volatile uint32_t win_count;
 } edgecap_t;
 
 /* Registers `gpio` and starts capturing both edges into `storage`.
@@ -68,6 +74,11 @@ bool edgecap_pop(edgecap_t *e, edge_t *out);
  * not hidden behind a return value nobody checks. */
 uint32_t edgecap_dropped(const edgecap_t *e);
 uint32_t edgecap_total(const edgecap_t *e);
+
+/* True once this pin was shut off for producing more edges than a signal
+ * plausibly can. It stays off: the condition is a wiring fault, and silently
+ * re-enabling would hide it and re-wedge the board in turn. */
+bool edgecap_stormed(const edgecap_t *e);
 
 /* Appends an edge. The interrupt handler's own path, exposed so a selftest can
  * drive the ring without a pin -- the ring is where the off-by-one lives, and

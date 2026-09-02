@@ -31,15 +31,36 @@
 #define U_CR    (U + 0x30)
 #define FR_RXFE (1u << 4)
 
+#define SIO_GPIO_OE_CLR   0xD0000040UL
+
 static gps_status_t g;
 static char     g_line[96];
 static uint32_t g_line_len;
 static bool     g_overflow;      /* the current line is too long; discard it */
+static bool     g_rx_muxed;      /* the RX pin actually took its UART function */
 
 static edge_t     g_pps_ring[16];
 static edgecap_t  g_pps;
 static bool       g_prev_pps_valid;
 static uint64_t   g_prev_pps_us;
+
+/* Written, read back, retried -- the third lesson from
+ * drivers/uart1_link_rp2350.c, and the one that makes the other two
+ * diagnosable: "a write, a read-back and a retry is cheap; believing a write
+ * is not". A refused mux and an unplugged module both produce zero bytes, and
+ * without this there is no way to tell them apart from the far end of a
+ * network mount. */
+static bool set_funcsel(unsigned gpio, uint32_t fn) {
+    for (int attempt = 0; attempt < 10; attempt++) {
+        REG(IO_BANK0_CTRL(gpio)) = fn;
+        if ((REG(IO_BANK0_CTRL(gpio)) & 0x1Fu) == fn) return true;
+        time_delay_us(1000);
+    }
+    printk("[GPS] GP%u mux REFUSED FUNCSEL %u (reads 0x%08lx) -- the pin is not "
+           "connected to the UART\n", gpio, (unsigned)fn,
+           (unsigned long)REG(IO_BANK0_CTRL(gpio)));
+    return false;
+}
 
 static bool u_has_char(void) { return (REG(U_FR) & FR_RXFE) == 0; }
 static uint8_t u_getc(void)  { return (uint8_t)(REG(U_DR) & 0xFF); }
@@ -67,13 +88,13 @@ void gps_init(void) {
      *
      * If a third UART1 user ever appears, this setup should be extracted
      * rather than written a third time. */
-    REG(IO_BANK0_CTRL(CONFIG_GPS_RX_GPIO)) = 2u;        /* F2 = UART1 RX */
+    g_rx_muxed = set_funcsel(CONFIG_GPS_RX_GPIO, 2u);   /* F2 = UART1 RX */
     REG(PADS_BANK0_PAD(CONFIG_GPS_RX_GPIO)) = 0x5A;     /* schmitt, PUE, 4mA, IE */
 #ifdef CONFIG_GPS_TX_GPIO
     /* Configured but unused: reading NMEA needs no transmit path. It is set up
      * so that a module needing its sentence set or rate changed can be talked
      * to without rewiring, which is the only reason the pin is reserved. */
-    REG(IO_BANK0_CTRL(CONFIG_GPS_TX_GPIO)) = 2u;        /* F2 = UART1 TX */
+    set_funcsel(CONFIG_GPS_TX_GPIO, 2u);                /* F2 = UART1 TX */
     REG(PADS_BANK0_PAD(CONFIG_GPS_TX_GPIO)) = 0x56;     /* schmitt, 4mA, IE */
 #endif
 
@@ -89,12 +110,45 @@ void gps_init(void) {
     REG(U_LCR_H) = (3u << 5) | (1u << 4);               /* 8N1, FIFOs on */
     REG(U_CR) = (1u << 0) | (1u << 8) | (1u << 9);      /* UARTEN | TXE | RXE */
 
+    /* The PPS pad, configured BEFORE the capture is armed.
+     *
+     * edgecap's contract is that the caller owns the pad, and the first
+     * version of this driver did not honour it: GP19 was registered while
+     * still in its power-on state, and a floating input with both-edge
+     * interrupts is a storm that starved the display into darkness within a
+     * second of boot, twice.
+     *
+     * **The pull follows the polarity, and the polarity is a board fact**
+     * (CONFIG_GPS_PPS_ACTIVE_LOW), configured rather than inferred -- the
+     * same decision phase 17 made for the DCF-77 pin after inference was
+     * shown to need a good signal exactly when there is not one. It matters
+     * more than it looks: a module driving PPS push-pull idles low and pulses
+     * high, while an open-collector one idles high (through this pull-up) and
+     * pulses low, so "the pulse" is a rising edge on one and a falling edge on
+     * the other. Getting it wrong does not produce noise, it produces a
+     * timestamp of the wrong instant -- the end of the pulse instead of its
+     * start, which is the module's pulse width folded into a measurement that
+     * has no business containing it.
+     *
+     * Either way the line has *a* pull, and that is what stops an unconnected
+     * pin oscillating. The direction is chosen so a disconnected module reads
+     * as "no pulse" rather than as a permanent one. */
+    set_funcsel(CONFIG_GPS_PPS_GPIO, 5u);               /* F5 = SIO */
+    REG(SIO_GPIO_OE_CLR) = 1u << CONFIG_GPS_PPS_GPIO;   /* input, never driven */
+#if CONFIG_GPS_PPS_ACTIVE_LOW
+    REG(PADS_BANK0_PAD(CONFIG_GPS_PPS_GPIO)) = 0x5A;    /* schmitt, PUE, 4mA, IE */
+#else
+    REG(PADS_BANK0_PAD(CONFIG_GPS_PPS_GPIO)) = 0x56;    /* schmitt, PDE, 4mA, IE */
+#endif
+
     if (edgecap_attach(&g_pps, CONFIG_GPS_PPS_GPIO, g_pps_ring,
                        (uint16_t)(sizeof(g_pps_ring) / sizeof(g_pps_ring[0]))) != 0) {
         printk("[GPS] could not capture PPS on GP%d\n", CONFIG_GPS_PPS_GPIO);
     }
 
     g.enabled = true;
+    g.rx_muxed = g_rx_muxed;
+    g.rx_pad = REG(IO_BANK0_CTRL(CONFIG_GPS_RX_GPIO));
     printk("[GPS] NMEA on GP%d at %d baud, PPS on GP%d (a transfer standard: "
            "nothing here sets a clock)\n",
            CONFIG_GPS_RX_GPIO, CONFIG_GPS_BAUD, CONFIG_GPS_PPS_GPIO);
@@ -206,10 +260,13 @@ void gps_poll(void) {
 
     edge_t e;
     while (edgecap_pop(&g_pps, &e)) {
-        /* Rising edges only. A PPS output is a pulse, so its falling edge is
-         * the pulse *width* -- a property of the module, not of the second --
-         * and timing off it would import that width into the measurement. */
-        if (!e.level) continue;
+        /* The edge that *starts* the pulse, whichever that is on this module.
+         * The other one carries the pulse width -- a property of the module,
+         * not of the second -- and timing off it would import that width into
+         * the measurement. */
+        bool is_pulse_start = CONFIG_GPS_PPS_ACTIVE_LOW ? (e.level == 0)
+                                                        : (e.level != 0);
+        if (!is_pulse_start) continue;
         if (g_prev_pps_valid) {
             uint64_t d = e.t_us - g_prev_pps_us;
             g.pps_interval_us = (uint32_t)(d > 0xFFFFFFFFu ? 0xFFFFFFFFu : d);
@@ -220,6 +277,7 @@ void gps_poll(void) {
         g.pps_count++;
     }
     g.pps_dropped = edgecap_dropped(&g_pps);
+    g.pps_stormed = edgecap_stormed(&g_pps);
 }
 
 bool gps_pps_trustworthy(void) {

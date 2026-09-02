@@ -199,6 +199,13 @@ set(CONFIG_GPS_RX_GPIO     21)
 set(CONFIG_GPS_TX_GPIO     20)
 set(CONFIG_GPS_PPS_GPIO    19)
 set(CONFIG_GPS_BAUD      9600)           # the near-universal NMEA default
+# 0 = the pulse is a rising edge (push-pull TIMEPULSE, which u-blox and most
+# breakouts use); 1 = falling (open-collector, idle high through a pull-up).
+# Configured rather than inferred, as CONFIG_DCF77_OUT_ACTIVE_LOW is: getting
+# it wrong times the end of the pulse instead of its start, which folds the
+# module's pulse width into the measurement rather than producing anything
+# that looks like an error.
+set(CONFIG_GPS_PPS_ACTIVE_LOW 0)
 
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #

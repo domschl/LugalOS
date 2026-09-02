@@ -658,6 +658,44 @@ where its reception is: `/proc/gps` reports fix, satellites, the UTC second,
 the PPS interval and a trustworthiness verdict; `/proc/dcf77` gains
 `mark_from_edge`, `edges` and `edges_dropped`.
 
+**And visible without a *terminal*, which is a different requirement.** The
+GPS is a transfer standard that gets carried to a windowsill and moved around
+until it locks, and during that hunt nobody is at a console. So the clock
+persona lights `CLOCK_IND_COUNTDOWN` for it -- immediately below the DCF and
+network lamps, so the three ways this clock can learn the time read as a
+group. It borrows the DCF lamp's language rather than the RTC lamp's, because
+a sky view is precisely the kind of service that comes and goes: off when
+nothing is talking, slow blink while NMEA arrives but the pulse is not yet
+trustworthy, solid on fix-plus-pulse, and a fast blink for the one fault a
+person can actually act on -- a pin shut off for oscillating. The gate behind
+the lamp is `gps_pps_trustworthy()`, the same one a calibration consults, so
+the panel reports the software's verdict rather than inviting a person to
+form their own.
+
+**Two pin lessons, both learned the hard way and both now structural.** The
+first flash of P3b lit the display for a second and then went dark, twice:
+GP19 was registered with the edge capture while still in its power-on state,
+and a floating input with both-edge interrupts enabled is an interrupt storm
+that starves everything else -- the clock display being this board's canary
+for exactly that. Two fixes, at different levels. `edgecap.c` now has a storm
+guard: a pin exceeding `EDGECAP_STORM_PER_SEC` gets its `INTE` cleared and is
+flagged, because a board that cannot be reached to be fixed is a bricked
+board, and no driver's wiring mistake should be able to take the system down.
+And `gps_pps_rp2350.c` configures the pad *before* arming capture, which is
+the actual bug.
+
+The second: **PPS polarity is a board fact** (`CONFIG_GPS_PPS_ACTIVE_LOW`),
+configured rather than inferred -- the same call phase 17 made for the DCF
+pin. A push-pull `TIMEPULSE` idles low and pulses high; an open-collector one
+idles high through a pull-up and pulses low. So "the pulse" is a rising edge
+on one module and a falling edge on the other, and guessing wrong does not
+produce noise, it produces a timestamp of the *wrong instant* -- the end of
+the pulse rather than its start, folding the module's pulse width into a
+measurement that has no business containing it. The pad's pull follows the
+polarity, so that a disconnected module reads as "no pulse" rather than as a
+permanent one, and either way the line has *a* pull, which is what stops an
+unconnected pin oscillating in the first place.
+
 **Explicitly not in P3b:** disciplining anything from GPS. The board reads it,
 timestamps it, and reports; nothing sets a clock from it. §3.4's transfer-
 standard argument is a design constraint, not a preference, and the easiest

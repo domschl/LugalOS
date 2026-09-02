@@ -40,6 +40,12 @@ typedef struct {
     uint32_t bad_checksum;     /* seen and rejected -- a wiring/baud symptom */
     uint32_t bytes;            /* raw, so "nothing at all" is distinguishable
                                 * from "noise that never forms a sentence" */
+    bool     rx_muxed;         /* the RX pin took its UART function. Without
+                                * this, a refused mux and an unplugged module
+                                * both read as zero bytes and nothing tells
+                                * them apart. */
+    uint32_t rx_pad;           /* IO_BANK0 CTRL as it reads back, for the case
+                                * where even that is not enough */
     uint8_t  fix_quality;      /* GGA field 6: 0 = no fix, 1 = GPS, 2 = DGPS */
     uint8_t  satellites;
     bool     rmc_valid;        /* RMC status 'A' rather than 'V' */
@@ -51,6 +57,8 @@ typedef struct {
     uint64_t pps_last_us;      /* TIMER0 at the most recent one */
     uint32_t pps_interval_us;  /* between the last two; ~1000000 when locked */
     uint32_t pps_dropped;      /* edges the ring could not hold */
+    bool     pps_stormed;      /* the pin was shut off for oscillating -- a
+                                * floating input, almost always */
 } gps_status_t;
 
 /* Brings up the UART and registers the PPS pin with the edge capture. Safe on

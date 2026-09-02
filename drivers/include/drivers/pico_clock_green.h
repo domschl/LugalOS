@@ -60,13 +60,13 @@ typedef enum {
 typedef enum {
     CLOCK_IND_DCF = 0,       /* vendor "MoveOn"   -- our DCF-77 status LED */
     CLOCK_IND_WIFI,          /* vendor "Alarm On" -- our network status LED */
-    CLOCK_IND_COUNTDOWN,
+    CLOCK_IND_COUNTDOWN,     /* vendor "Count Down" -- our GPS PPS-lock LED */
     CLOCK_IND_F,
     CLOCK_IND_C,
     CLOCK_IND_AM,
     CLOCK_IND_PM,
     CLOCK_IND_COUNTUP,
-    CLOCK_IND_CHIME,
+    CLOCK_IND_CHIME,         /* vendor "Chime"    -- our RTC-not-vouching LED */
     CLOCK_IND_AUTOLIGHT,
     CLOCK_IND_COUNT
 } clock_indicator_t;

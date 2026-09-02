@@ -982,8 +982,10 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         gps_status(&gs);
         uint32_t used = 0;
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "enabled=%s\nrx_bytes=%lu\nsentences=%lu\nbad_checksum=%lu\n",
-            gs.enabled ? "yes" : "no", (unsigned long)gs.bytes,
+            "enabled=%s\nrx_muxed=%s\nrx_ctrl=0x%08lx\n"
+            "rx_bytes=%lu\nsentences=%lu\nbad_checksum=%lu\n",
+            gs.enabled ? "yes" : "no", gs.rx_muxed ? "yes" : "no",
+            (unsigned long)gs.rx_pad, (unsigned long)gs.bytes,
             (unsigned long)gs.sentences, (unsigned long)gs.bad_checksum);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "fix_quality=%u\nsatellites=%u\nrmc=%s\n",
@@ -997,9 +999,10 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=none\n");
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "pps_count=%lu\npps_interval_us=%lu\npps_dropped=%lu\ntrustworthy=%s\n",
+            "pps_count=%lu\npps_interval_us=%lu\npps_dropped=%lu\npps_stormed=%s\n"
+            "trustworthy=%s\n",
             (unsigned long)gs.pps_count, (unsigned long)gs.pps_interval_us,
-            (unsigned long)gs.pps_dropped,
+            (unsigned long)gs.pps_dropped, gs.pps_stormed ? "yes" : "no",
             gps_pps_trustworthy() ? "yes" : "no");
         return (int)used;
     }

@@ -245,6 +245,10 @@ void clock_app_run(void) {
     bool led_on = false;
     bool was_in_sync_item = false;
 #endif
+#if CONFIG_ENABLE_GPS
+    uint64_t next_pps_led_ms = 0;
+    bool     pps_led_on = false;
+#endif
 
     for (;;) {
         now = time_get_ms();
@@ -526,6 +530,61 @@ void clock_app_run(void) {
         }
 #endif
 
+#if CONFIG_ENABLE_GPS
+        /* The PPS indicator (P3b). On COUNTDOWN, which puts it directly below
+         * DCF and WIFI: those three lamps in a row are the three ways this
+         * clock can learn what time it is, and reading them as a group is the
+         * point.
+         *
+         * It earns a lamp because of *where* the work happens. The GPS module
+         * is a transfer standard -- carried to a windowsill, pointed at the
+         * sky, moved again until it locks -- and during that hunt the console
+         * is not where the person is. A lamp is the only instrument that
+         * reaches them there. Once the calibration is done the module comes
+         * off and the lamp goes dark, which is the correct resting state.
+         *
+         * Borrowing the DCF lamp's language rather than the RTC lamp's,
+         * because a sky view is exactly the kind of service that comes and
+         * goes -- blink-while-trying is meaningful here in a way it is not for
+         * a missing chip:
+         *
+         *   off        : nothing is talking. No module, or wrong wiring/baud.
+         *   fast blink : the pin was shut off for oscillating -- a fault
+         *                wanting hands rather than patience, and worth
+         *                telling apart from "still searching" at a glance
+         *   slow blink : NMEA is arriving, the pulse is not trustworthy yet.
+         *                Keep moving toward the window.
+         *   solid      : fix *and* a pulse at ~1 s. Calibration can run.
+         *
+         * The gate is gps_pps_trustworthy(), the same one a calibration must
+         * consult -- so the lamp reports the software's decision instead of
+         * inviting a person to make their own. gps_pps.h is blunt that a
+         * front-panel LED is not a software gate; this lamp sits downstream of
+         * the gate, and is never a substitute for it. */
+        if (now >= next_pps_led_ms) {
+            gps_status_t g;
+            gps_status(&g);
+            bool want;
+            if (!g.enabled || g.bytes == 0) {
+                want = false;
+                next_pps_led_ms = now + 1000u;
+            } else if (g.pps_stormed) {
+                want = ((now / 100u) & 1u) == 0;
+                next_pps_led_ms = now + 25u;
+            } else if (!gps_pps_trustworthy()) {
+                want = ((now / 500u) & 1u) == 0;
+                next_pps_led_ms = now + 50u;
+            } else {
+                want = true;
+                next_pps_led_ms = now + 1000u;
+            }
+            if (want != pps_led_on) {
+                pps_led_on = want;
+                clock_hw_indicator(CLOCK_IND_COUNTDOWN, want);
+            }
+        }
+#endif
+
         /* The frame, and the only place this loop waits. Its ~8 ms is the
          * loop's period: everything above runs once per frame, and the ops it
          * issues are short next to the frame that follows them. */
@@ -536,6 +595,9 @@ void clock_app_run(void) {
 
     clock_hw_indicator(CLOCK_IND_C, false);
     clock_hw_indicator(CLOCK_IND_DCF, false);
+#if CONFIG_ENABLE_GPS
+    clock_hw_indicator(CLOCK_IND_COUNTDOWN, false);
+#endif
     clock_hw_indicator(CLOCK_IND_AM, false);
     clock_hw_indicator(CLOCK_IND_PM, false);
     clock_hw_set_weekday(0);
