@@ -715,24 +715,24 @@ the `no-port 1` and the ICMP the board sent back in reply.)
 lsh> ntp
 ntp: asking the gateway, 192.168.77.1
 ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
-  offset     : +27 d 01:02:09.293   (what was added to our clock)
-  round trip : 6 ms
-  clock set  : 2026-09-01 13:02:09.554 UTC
+  offset     : +28 d 01:03:40.187   (what was added to our clock)
+  round trip : 6.389 ms
+  clock set  : 2026-09-02 13:03:40.449 UTC
 
 lsh> ntp
 ntp: asking the gateway, 192.168.77.1
 ntp: 192.168.77.1 stratum 2 (via 178.63.9.110)
-  offset     : +8 ms   (what was added to our clock)
-  round trip : 20 ms
-  clock set  : 2026-09-01 13:02:09.599 UTC
+  offset     : +6.796 ms   (what was added to our clock)
+  round trip : 19.229 ms
+  clock set  : 2026-09-02 13:03:40.493 UTC
 ```
 
-The first offset is 27 days because a board that has never been told the time starts at the
+The first offset is 28 days because a board that has never been told the time starts at the
 instant compiled into `kernel/time.c`, and the client steps rather than slews — there is nothing
-to protect. The scale follows the magnitude: milliseconds is the right unit for a sync against a
-running clock and a useless one for a quarter of a century, which is also why the offset is not
-printed as a plain `%ld` — `long` is 32 bits on RV32 and RP2350, and a first sync overflows it.
-The second line is what a sync against an already-set clock looks like. `stratum 2 (via …)`
+to protect. The scale follows the magnitude: microseconds are worth reading against a running
+clock and useless against a quarter of a century, which is also why the offset is not printed as a
+plain `%ld` — `long` is 32 bits on RV32 and RP2350, and a first sync overflows it. The second line
+is what a sync against an already-set clock looks like. `stratum 2 (via …)`
 names the server's *own* upstream, so a chain is visible from here; a stratum-1 server shows its
 reference clock's four-character id instead, `(GPS)` or `(DCF)`.
 
@@ -743,8 +743,9 @@ from "two minutes out"; it belongs on the line after the network line in
 `/sd0/system/etc/usr_init.lisp`.
 
 Measured on hardware against a GPS-disciplined stratum-1 on the same LAN, over WiFi, consecutive
-syncs report **+1, +0, +0 ms with a 6–9 ms round trip** — at the resolution limit of a clock that
-counts milliseconds, so the real figure is below what the board can express.
+syncs report offsets of **a millisecond or less with a 6–9 ms round trip**. The kernel clock keeps
+microseconds (`plan/phase24_dcf77_precision_and_ntp_server.md`, P2), so that is a measurement
+rather than a resolution limit.
 
 This is a client, and only a client: one query, applied as a step, no poll loop and no frequency
 discipline. The thing worth knowing before relying on it is not the query's accuracy but what

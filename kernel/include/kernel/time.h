@@ -30,10 +30,24 @@ void time_delay_us(uint64_t us);
 void time_get_utc(rtc_time_t *tm);
 void time_set_utc(const rtc_time_t *tm);
 
+/* The wall clock as microseconds since 1970, and the way to set it.
+ *
+ * The primitive the rtc_time_t accessors are built on (P2,
+ * plan/phase24_dcf77_precision_and_ntp_server.md). rtc_time_t carries only
+ * milliseconds and deliberately still does; anything comparing two instants
+ * finely -- an NTP offset, a DCF-77 mark against a GPS pulse -- wants these
+ * instead. Signed, because every quantity derived from them is a difference
+ * and half of those are negative. */
+int64_t time_epoch_us(void);
+void    time_set_epoch_us(int64_t us);
+
 /* False while the clock still holds the instant compiled into kernel/time.c
  * -- i.e. nothing (RTC, NTP, DCF-77 or a person) has ever set it. The value
  * is plausible either way, so this is the only way to know. */
 bool time_is_set(void);
+
+/* `timeselftest`: the microsecond clock's own checks, on every target. */
+void time_selftest(void);
 void time_get_local(rtc_time_t *tm);
 void time_set_local(const rtc_time_t *tm);
 

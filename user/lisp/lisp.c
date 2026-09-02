@@ -2300,7 +2300,11 @@ static lisp_val_t *prim_ntp_sync(lisp_val_t *args, lisp_val_t *env) {
      * plausible, wrong number. A script asking "was the clock far out?" is
      * then told "no". Clamping keeps the answer true at the only resolution
      * this type can carry. */
-    int64_t off = r.offset_ms;
+    /* Milliseconds, still: a Lisp integer is a `long` and this is a boot
+     * script's sanity check, not a measurement. The microseconds are in the
+     * report ntp_print_result() just printed, and in ntp_result_t for a
+     * caller that wants them. */
+    int64_t off = r.offset_us / 1000;
     if (off >  (int64_t)LONG_MAX) off = LONG_MAX;
     if (off <  (int64_t)LONG_MIN) off = LONG_MIN;
     return make_int((long)off);

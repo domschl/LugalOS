@@ -296,11 +296,16 @@ static void p0_body(void *arg) {
          * near the truth and nothing has moved it since; clamped rather than
          * wrapped anyway, because a silently plausible wrong number is the
          * failure mode this phase has already met once. */
-        int64_t off = r.offset_ms;
+        /* The wire format stays in milliseconds. Widening it would mean
+         * fetching the board back from wherever its reception is, and the
+         * offsets it carries are dominated by WiFi asymmetry rather than by
+         * this quantisation -- P4's comparison is against PPS, not this. */
+        int64_t off = r.offset_us / 1000;
         if (off >  2147483647LL) off =  2147483647LL;
         if (off < -2147483648LL) off = -2147483648LL;
         s.ntp_off_ms  = (int32_t)off;
-        s.ntp_rtt_ms  = (uint16_t)(r.delay_ms > 65535 ? 65535 : r.delay_ms);
+        int64_t rtt_ms = r.delay_us / 1000;
+        s.ntp_rtt_ms  = (uint16_t)(rtt_ms > 65535 ? 65535 : rtt_ms);
         s.ntp_stratum = r.stratum;
 
         dcf_status_t d;

@@ -183,6 +183,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
+    cprintf("  timeselftest    - Microsecond wall clock: round trip, sub-ms detail, rtc_time_t view\n");
     cprintf("  idstoreselftest - Identity record: states, corruption, unknown fields, round trip\n");
     cprintf("  identity [name <name>|provision [--force]|key <hex>|--generate]\n");
     cprintf("                  - report uid/name/mac/key fingerprint, or set/provision/key (no args: report)\n");
@@ -2027,6 +2028,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         for (const char *d = &cmd_line[9]; *d >= '0' && *d <= '9'; d++)
             bits = bits * 10u + (unsigned)(*d - '0');
         random_selftest(bits);
+        return;
+    } else if (strcmp(cmd_line, "timeselftest") == 0) {
+        time_selftest();
         return;
     } else if (strcmp(cmd_line, "idstoreselftest") == 0) {
         idstore_selftest();

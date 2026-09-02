@@ -25,12 +25,12 @@
  * point -- an unstated limit gets credited as a feature (§7 of the phase 19
  * plan).
  *
- * **Resolution is milliseconds, not microseconds**, because kernel/time.c's
- * wall clock is (`g_base_epoch_ms`). Over WiFi the round trip is tens of
- * milliseconds anyway, so the clock's representation is not the limit today
- * -- but it *is* the first thing phase 24 has to change, and the arithmetic
- * below is written in signed 64-bit milliseconds so that widening it is a
- * change of unit rather than a change of shape.
+ * **Resolution is microseconds since P2** (phase 24). It was milliseconds,
+ * on the reasoning that the round trip is tens of milliseconds anyway so the
+ * representation was not the limit -- which stopped being true the moment a
+ * measurement had to settle a 5 ms question with a 6-9 ms round trip. The
+ * arithmetic was written in signed 64-bit milliseconds precisely so that
+ * widening it would be a change of unit rather than of shape, and it was.
  */
 
 typedef struct {
@@ -40,8 +40,8 @@ typedef struct {
     char     refid[5];     /* stratum 1: four ASCII chars ("GPS", "DCF", "PPS") */
     bool     refid_is_ip;  /* stratum >= 2: refid is the upstream's address */
     uint8_t  refip[IPV4_LEN];
-    int64_t  offset_ms;    /* add this to our clock to agree with the server */
-    int64_t  delay_ms;     /* round trip, excluding the server's own think time */
+    int64_t  offset_us;    /* add this to our clock to agree with the server */
+    int64_t  delay_us;     /* round trip, excluding the server's own think time */
 } ntp_result_t;
 
 /* Ask one server, do not touch any clock. Returns 0 on a usable answer, or a

@@ -510,6 +510,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Identity Record: States, Corruption, Unknown Fields, Round Trip (I1)",
                         idstore_ok, log if not idstore_ok else ""))
 
+        # P2 (plan/phase24_dcf77_precision_and_ntp_server.md): the wall clock
+        # keeps microseconds now. Everything here except the sub-millisecond
+        # assertions would have passed on the millisecond clock it replaced,
+        # which is the point -- those two are what P3b's PPS comparison needs
+        # and what the old representation silently rounded to zero.
+        ok, log = session.send_and_expect("timeselftest\n",
+                                          r"TIME_SELFTEST_(OK|FAIL)", timeout=20.0)
+        t_ok = ok and "TIME_SELFTEST_OK" in log
+        results.append(("Microsecond Wall Clock: Round Trip And Sub-Millisecond Detail (P2)",
+                        t_ok, log if not t_ok else ""))
+
         ok, log = session.send_and_expect("dcf77selftest\n",
                                           r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
         sel_ok = ok and "DCF77_SELFTEST_OK" in log

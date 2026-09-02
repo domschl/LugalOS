@@ -1,6 +1,7 @@
 #include "kernel/time.h"
 #include "kernel/timezone.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "lugalos_config.h"
 #include <string.h>
 
@@ -13,8 +14,21 @@ static uint64_t g_boot_us_offset = 0;
  * representation with no correct answer during the hour that repeats every
  * October. Local time is computed on demand from kernel/timezone.c and is
  * never stored. */
-static int64_t  g_base_epoch_ms = 1785931200000LL; /* 2026-08-05 12:00:00 UTC */
-static uint64_t g_base_mono_ms = 0;
+/* Microseconds, since P2 (plan/phase24_dcf77_precision_and_ntp_server.md).
+ *
+ * The pair was milliseconds until a measurement ran into the floor: P0's own
+ * noise came out at 3.7 ms against 5.0 ms of total scatter, so the instrument
+ * and the thing it was measuring were the same size, and the residual that
+ * mattered afterwards was ~5 ms -- a quantity a millisecond clock cannot
+ * settle either way. §3.4's PPS comparison is expressed in microseconds and
+ * simply cannot be recorded here otherwise.
+ *
+ * The monotonic side matters as much as the epoch side: reading it in
+ * milliseconds threw away three digits of a counter that has them
+ * (time_get_us() is a 1 us TIMER0 read), so a set-then-read round trip lost
+ * sub-millisecond detail even when both ends had it. */
+static int64_t  g_base_epoch_us = 1785931200000000LL; /* 2026-08-05 12:00:00 UTC */
+static uint64_t g_base_mono_us = 0;
 
 /* Whether anything has ever set this clock, as opposed to it still holding
  * the instant compiled in above. The difference is invisible in the value --
@@ -76,7 +90,7 @@ static inline uint64_t read_hardware_counter_us(void) {
 
 void time_init(void) {
     g_boot_us_offset = read_hardware_counter_us();
-    g_base_mono_ms = time_get_ms();
+    g_base_mono_us = time_get_us();
     tz_set(CONFIG_TIMEZONE);
 #if defined(CONFIG_BOARD_RP2350)
     printk("[Timer] System Hardware Clock Initialized (clk_ref/%u = 1 us tick).\n",
@@ -170,23 +184,98 @@ unsigned time_weekday(const rtc_time_t *tm) {
     return (w == 0) ? 7u : (unsigned)w;
 }
 
+int64_t time_epoch_us(void) {
+    return g_base_epoch_us + (int64_t)(time_get_us() - g_base_mono_us);
+}
+
+void time_set_epoch_us(int64_t us) {
+    g_clock_set = true;
+    g_base_epoch_us = us;
+    g_base_mono_us = time_get_us();
+}
+
 void time_get_utc(rtc_time_t *tm) {
     if (!tm) return;
-    int64_t now_ms = g_base_epoch_ms + (int64_t)(time_get_ms() - g_base_mono_ms);
-    int64_t sec = now_ms / 1000;
-    int64_t ms  = now_ms % 1000;
-    if (ms < 0) { ms += 1000; sec -= 1; }
+    int64_t now_us = time_epoch_us();
+    int64_t sec = now_us / 1000000;
+    int64_t rem = now_us % 1000000;
+    if (rem < 0) { rem += 1000000; sec -= 1; }
     time_from_epoch(sec, tm);
-    tm->ms = (uint16_t)ms;
+    /* rtc_time_t keeps milliseconds and stays that way: the display, the
+     * DS3231 and `date` have no use for microseconds, and widening the struct
+     * would touch every caller for the benefit of two. Callers that want the
+     * finer number take time_epoch_us(). */
+    tm->ms = (uint16_t)(rem / 1000);
 }
 
 bool time_is_set(void) { return g_clock_set; }
 
 void time_set_utc(const rtc_time_t *tm) {
     if (!tm) return;
-    g_clock_set = true;
-    g_base_epoch_ms = time_to_epoch(tm) * 1000LL + (int64_t)tm->ms;
-    g_base_mono_ms = time_get_ms();
+    time_set_epoch_us(time_to_epoch(tm) * 1000000LL + (int64_t)tm->ms * 1000LL);
+}
+
+/* P2's own check (plan/phase24_dcf77_precision_and_ntp_server.md).
+ *
+ * Every assertion here would have passed on the millisecond clock this
+ * replaced except the two that matter -- sub-millisecond values surviving a
+ * set-then-read, and a difference of a few hundred microseconds being
+ * representable at all. Those are exactly what P3b's PPS comparison needs and
+ * what a millisecond clock silently rounded to zero. */
+void time_selftest(void) {
+    int pass = 0, fail = 0;
+    #define CHECK(cond, what) do { \
+        if (cond) { pass++; cprintf("  [ok] %s\n", what); } \
+        else      { fail++; cprintf("  [FAIL] %s\n", what); } \
+    } while (0)
+
+    cprintf("\nMicrosecond wall clock (P2)\n");
+
+    int64_t saved = time_epoch_us();
+
+    /* 2031-06-15 12:34:56.500123 UTC -- a sub-millisecond remainder chosen so
+     * that truncation to milliseconds is visible rather than plausible. */
+    const int64_t probe = 1939293296500123LL;
+    time_set_epoch_us(probe);
+    int64_t back = time_epoch_us();
+    CHECK(back >= probe && back - probe < 50000,
+          "set/get round trip returns the instant that was set");
+    CHECK((back % 1000) != 0 || (probe % 1000) == 0,
+          "the sub-millisecond remainder survives (a ms clock zeroes it)");
+
+    /* Two instants 250 us apart must be distinguishable. On a millisecond
+     * clock this difference is 0. */
+    time_set_epoch_us(probe);
+    int64_t a = time_epoch_us();
+    time_set_epoch_us(probe + 250);
+    int64_t b = time_epoch_us();
+    CHECK(b - a >= 200 && b - a <= 300,
+          "250 us of separation is representable and measured");
+
+    /* The rtc_time_t view still agrees, to its own resolution. It carries
+     * milliseconds and is meant to: this checks the widening did not shift
+     * what every existing caller sees. */
+    time_set_epoch_us(probe);
+    rtc_time_t tm;
+    time_get_utc(&tm);
+    CHECK(tm.year == 2031 && tm.month == 6 && tm.day == 15,
+          "rtc_time_t date is unchanged by the widening");
+    CHECK(tm.hour == 12 && tm.min == 34 && tm.sec == 56 && tm.ms == 500,
+          "rtc_time_t time truncates to whole milliseconds, as it always did");
+
+    /* And setting through the old interface still lands where it did. */
+    rtc_time_t set = { 2031, 6, 15, 12, 34, 56, 500 };
+    time_set_utc(&set);
+    int64_t via_rtc = time_epoch_us();
+    CHECK(via_rtc / 1000 >= probe / 1000 && via_rtc / 1000 - probe / 1000 < 50,
+          "time_set_utc() still sets the same instant, to its ms resolution");
+
+    CHECK(time_is_set(), "the clock reports itself as set");
+
+    time_set_epoch_us(saved);
+    cprintf("%s (%d passed, %d failed)\n",
+            fail ? "TIME_SELFTEST_FAIL" : "TIME_SELFTEST_OK", pass, fail);
+    #undef CHECK
 }
 
 void time_get_local(rtc_time_t *tm) {

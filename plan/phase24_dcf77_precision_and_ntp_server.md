@@ -550,7 +550,7 @@ sampling figure taken from `dcf-monitor`'s ~125 Hz does not describe the
 discrepancy is exactly the size that a millisecond clock and a network
 reference cannot settle -- which is what P2, P3b and P4 exist to fix.
 
-**P2 — a microsecond wall clock. Now a prerequisite, not a convenience.**
+**P2 — a microsecond wall clock. DONE 2026-09-02.**
 §3.4's PPS comparison is expressed in microseconds and cannot be recorded in a
 millisecond clock; P0 also found its own noise floor sitting where the
 clock's resolution is (a 3.7 ms residual against 5.0 ms of total scatter). `kernel/time.c`'s `g_base_epoch_ms` /
@@ -561,6 +561,39 @@ use for microseconds.
 *Verify:* existing suite unchanged (this is a widening, not a behaviour
 change); a new selftest asserting round-trip through the µs setters preserves
 sub-millisecond values.
+
+**As built.** `kernel/time.c`'s pair became `g_base_epoch_us` /
+`g_base_mono_us`, with `time_epoch_us()` / `time_set_epoch_us()` as the
+primitive and the existing `rtc_time_t` accessors built on top. `rtc_time_t`
+still carries milliseconds and deliberately still does -- widening it would
+touch every caller for the benefit of two, and the display, the DS3231 and
+`date` have no use for microseconds.
+
+The monotonic half mattered as much as the epoch half: the old code read
+`time_get_ms()`, throwing away three digits of a counter that has them
+(TIMER0 is a 1 µs read), so a set-then-read round trip lost sub-millisecond
+detail even when both ends had it.
+
+`net/ntp.c` moved with it, which is where the resolution first buys something:
+the four timestamps NTP subtracts were each quantised to a millisecond before
+any arithmetic ran, against a measured 6-9 ms round trip. Its `fmt_interval()`
+now renders microseconds and picks its scale by magnitude -- three decimal
+places of a millisecond for a sync against a running clock, days and a clock
+time for a board that has never been told what year it is. The 32-bit `long`
+hazard that made that function necessary is unchanged and is why it still
+splits the value into fields rather than printing it.
+
+*Verified:* `timeselftest` on both QEMU targets, in the suite (304/304). Every
+assertion in it would have passed on the millisecond clock except the two that
+matter -- a sub-millisecond remainder surviving a set-then-read, and 250 µs of
+separation being representable at all. Those are exactly what P3b's PPS
+comparison needs and what the old representation silently rounded to zero.
+
+**What P2 does *not* change:** P0's broadcast wire format, which still reports
+milliseconds. Widening it means fetching the board back from wherever its
+reception is, and the offsets it carries are dominated by WiFi asymmetry
+rather than by that quantisation -- P4's comparison is against PPS, not
+against this.
 
 **P3 — edge capture on the DCF pin. Now the enabling milestone.** §3.2 held
 this at arm's length because a GPIO interrupt already timestamps a thousand

@@ -31,7 +31,7 @@ static struct {
     volatile bool  got;
     uint8_t        pkt[NTP_PKT_LEN];
     uint8_t        from[IPV4_LEN];
-    int64_t        t4_ms;      /* our clock when the reply arrived */
+    int64_t        t4_us;      /* our clock when the reply arrived */
 } g_rx;
 
 static uint32_t be32(const uint8_t *p) {
@@ -39,30 +39,34 @@ static uint32_t be32(const uint8_t *p) {
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
 }
 
-/* Our wall clock as milliseconds since 1970. Signed, because every quantity
- * derived from it is a difference and half of those are negative. */
-static int64_t clock_ms(void) {
-    rtc_time_t tm;
-    time_get_utc(&tm);
-    return time_to_epoch(&tm) * 1000LL + (int64_t)tm.ms;
+/* Our wall clock as microseconds since 1970 (P2,
+ * plan/phase24_dcf77_precision_and_ntp_server.md).
+ *
+ * This used to go through rtc_time_t, which carries milliseconds, so the four
+ * timestamps NTP's arithmetic subtracts were each quantised to 1 ms before
+ * anything was computed -- against a measured round trip of 6-9 ms on this
+ * bench, that is a quantisation comparable to the quantity. The clock keeps
+ * microseconds now and this reads them directly. */
+static int64_t clock_us(void) {
+    return time_epoch_us();
 }
 
 /* An NTP 64-bit timestamp (32.32 fixed point) to Unix milliseconds. Zero in
  * both halves is NTP's "this field was never set", which the caller has to
  * distinguish from a real instant -- so it is returned as 0 rather than as
  * the year 1900, and every caller checks. */
-static int64_t ntp_to_ms(const uint8_t *p) {
+static int64_t ntp_to_us(const uint8_t *p) {
     uint32_t sec = be32(p), frac = be32(p + 4);
     if (sec == 0 && frac == 0) return 0;
-    return ((int64_t)sec - NTP_EPOCH_OFFSET) * 1000LL
-         + (int64_t)(((uint64_t)frac * 1000ULL) >> 32);
+    return ((int64_t)sec - NTP_EPOCH_OFFSET) * 1000000LL
+         + (int64_t)(((uint64_t)frac * 1000000ULL) >> 32);
 }
 
-static void ms_to_ntp(int64_t ms, uint8_t *p) {
-    int64_t sec = ms / 1000LL, rem = ms % 1000LL;
-    if (rem < 0) { rem += 1000LL; sec -= 1; }
+static void us_to_ntp(int64_t us, uint8_t *p) {
+    int64_t sec = us / 1000000LL, rem = us % 1000000LL;
+    if (rem < 0) { rem += 1000000LL; sec -= 1; }
     uint32_t nsec = (uint32_t)(sec + NTP_EPOCH_OFFSET);
-    uint32_t frac = (uint32_t)(((uint64_t)rem << 32) / 1000ULL);
+    uint32_t frac = (uint32_t)(((uint64_t)rem << 32) / 1000000ULL);
     p[0] = (uint8_t)(nsec >> 24); p[1] = (uint8_t)(nsec >> 16);
     p[2] = (uint8_t)(nsec >> 8);  p[3] = (uint8_t)nsec;
     p[4] = (uint8_t)(frac >> 24); p[5] = (uint8_t)(frac >> 16);
@@ -76,7 +80,7 @@ static void ntp_recv_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_
      * arrived", and a packet that turns out to be malformed still arrived
      * when it arrived. Doing the checks first would fold their cost into the
      * measurement. */
-    int64_t t4 = clock_ms();
+    int64_t t4 = clock_us();
 
     if (g_rx.got) return;                      /* already have one; ignore the rest */
     if (src_port != NTP_PORT) return;          /* not from a server's own port */
@@ -84,7 +88,7 @@ static void ntp_recv_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_
 
     memcpy(g_rx.pkt, data, NTP_PKT_LEN);
     memcpy(g_rx.from, src_ip, IPV4_LEN);
-    g_rx.t4_ms = t4;
+    g_rx.t4_us = t4;
     g_rx.got = true;
 }
 
@@ -166,8 +170,8 @@ int ntp_query(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t 
                 sched_yield();
             }
         }
-        t1 = clock_ms();
-        ms_to_ntp(t1, &req[40]);
+        t1 = clock_us();
+        us_to_ntp(t1, &req[40]);
         memcpy(t1_wire, &req[40], 8);
         sent = udp_send(server, NTP_PORT, sport, req, sizeof(req)) > 0;
     }
@@ -230,10 +234,10 @@ int ntp_query(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t 
         memcpy(out->refip, &p[12], IPV4_LEN);
     }
 
-    int64_t t2 = ntp_to_ms(&p[32]);   /* server received our request */
-    int64_t t3 = ntp_to_ms(&p[40]);   /* server sent this reply */
+    int64_t t2 = ntp_to_us(&p[32]);   /* server received our request */
+    int64_t t3 = ntp_to_us(&p[40]);   /* server sent this reply */
     if (t3 == 0) return NTP_ERR_MALFORMED;   /* transmit timestamp is mandatory */
-    int64_t t4 = g_rx.t4_ms;
+    int64_t t4 = g_rx.t4_us;
 
     /* RFC 4330 §5, and the reason a slow server is not an inaccurate one:
      * the server's own think time (t3 - t2) is subtracted out of the delay
@@ -241,9 +245,9 @@ int ntp_query(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t 
      * asymmetry -- a path whose two directions take different times biases
      * the offset by half the difference, and nothing in the protocol can see
      * that. Over WiFi that is the dominant term. */
-    out->offset_ms = ((t2 - t1) + (t3 - t4)) / 2;
-    out->delay_ms  = (t4 - t1) - (t3 - t2);
-    if (out->delay_ms < 0) out->delay_ms = 0;   /* only reachable if our own clock stepped mid-query */
+    out->offset_us = ((t2 - t1) + (t3 - t4)) / 2;
+    out->delay_us  = (t4 - t1) - (t3 - t2);
+    if (out->delay_us < 0) out->delay_us = 0;   /* only reachable if our own clock stepped mid-query */
     return 0;
 }
 
@@ -258,14 +262,10 @@ int ntp_sync(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *
      * stays valid however long the arithmetic above took -- reading the clock
      * again here and adding to *that* is what makes this true, rather than
      * carrying t4 forward. */
-    int64_t corrected = clock_ms() + out->offset_ms;
-    int64_t sec = corrected / 1000LL, ms = corrected % 1000LL;
-    if (ms < 0) { ms += 1000LL; sec -= 1; }
+    time_set_epoch_us(clock_us() + out->offset_us);
 
     rtc_time_t tm;
-    time_from_epoch(sec, &tm);
-    tm.ms = (uint16_t)ms;
-    time_set_utc(&tm);
+    time_get_utc(&tm);
     /* The DS3231 too, exactly as drivers/dcf77_service.c's commit() does: the
      * battery-backed chip is what carries the time across a power cut, and a
      * clock set from the network that reverts on the next boot has only
@@ -274,39 +274,41 @@ int ntp_sync(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *
     return 0;
 }
 
-/* An interval in milliseconds, as text.
+/* An interval in microseconds, as text, at a scale that suits its size.
  *
- * This exists because `long` is 32 bits on RV32 and RP2350, and the first
- * sync of a board that has never been told the time is an offset of *decades*
- * -- 841,582,395,586 ms on the bench, which a `%ld` truncates to
- * -231,194,430 and prints with a confident minus sign. That was found on
- * hardware, printing a wrong number beside a clock it had just set correctly;
- * `kernel/printk.c` supports one `l` and no `%lld`, and teaching it 64-bit
- * varargs to serve one caller is the wrong trade.
+ * `long` is 32 bits on RV32 and RP2350, and the first sync of a board that has
+ * never been told the time is an offset of *decades* -- 841,582,395,586 ms on
+ * the bench, which a `%ld` truncates to -231,194,430 and prints with a
+ * confident minus sign. That was found on hardware, printing a wrong number
+ * beside a clock it had just set correctly; `kernel/printk.c` supports one `l`
+ * and no `%lld`, and teaching it 64-bit varargs to serve one caller is the
+ * wrong trade. So the value is split into fields that each fit in 32 bits.
  *
- * Splitting the value into fields that each fit in 32 bits fixes the
- * truncation and produces better output anyway: milliseconds is the right
- * unit for a sync against a running clock and a useless one for a quarter of
- * a century, so the scale follows the magnitude the way a person would write
- * it. */
-static void fmt_interval(int64_t ms, char *buf, uint32_t cap) {
+ * The scale follows the magnitude, which is the other half of the job: since
+ * P2 the argument carries microseconds, and a sync against a running clock is
+ * now worth reading to three decimal places of a millisecond, while a quarter
+ * of a century is not worth reading in milliseconds at all. */
+static void fmt_interval(int64_t us, char *buf, uint32_t cap) {
     if (cap < 2) { if (cap) buf[0] = '\0'; return; }
-    const char *sign = ms < 0 ? "-" : "+";
-    uint64_t m = (uint64_t)(ms < 0 ? -ms : ms);
+    const char *sign = us < 0 ? "-" : "+";
+    uint64_t u = (uint64_t)(us < 0 ? -us : us);
 
-    uint32_t frac = (uint32_t)(m % 1000u);
-    uint64_t secs = m / 1000u;
+    if (u < 10000000ULL) {                       /* under 10 s: milliseconds */
+        ksnprintf(buf, cap, "%s%lu.%03u ms",
+                  sign, (unsigned long)(u / 1000ULL), (unsigned)(u % 1000ULL));
+        return;
+    }
 
-    if (m < 10000u) {
-        ksnprintf(buf, cap, "%s%lu ms", sign, (unsigned long)m);
-    } else if (secs < 86400u) {
+    uint64_t secs = u / 1000000ULL;
+    uint32_t frac = (uint32_t)((u % 1000000ULL) / 1000ULL);   /* whole ms */
+    if (secs < 86400ULL) {
         ksnprintf(buf, cap, "%s%lu.%03u s", sign, (unsigned long)secs, frac);
     } else {
-        uint64_t days = secs / 86400u;
-        uint32_t rem  = (uint32_t)(secs % 86400u);
+        uint64_t days = secs / 86400ULL;
+        uint32_t rem  = (uint32_t)(secs % 86400ULL);
         ksnprintf(buf, cap, "%s%lu d %02u:%02u:%02u.%03u", sign,
-                 (unsigned long)days, rem / 3600u, (rem % 3600u) / 60u,
-                 rem % 60u, frac);
+                  (unsigned long)days, rem / 3600u, (rem % 3600u) / 60u,
+                  rem % 60u, frac);
     }
 }
 
@@ -328,9 +330,9 @@ void ntp_print_result(const ntp_result_t *r, bool applied) {
     }
 
     char ivbuf[48];
-    fmt_interval(r->offset_ms, ivbuf, sizeof(ivbuf));
+    fmt_interval(r->offset_us, ivbuf, sizeof(ivbuf));
     cprintf("  offset     : %s   (what was added to our clock)\n", ivbuf);
-    fmt_interval(r->delay_ms, ivbuf, sizeof(ivbuf));
+    fmt_interval(r->delay_us, ivbuf, sizeof(ivbuf));
     cprintf("  round trip : %s\n", ivbuf + 1);   /* a round trip is never negative */
     if (r->leap == 1u || r->leap == 2u)
         cprintf("  leap       : a leap second is announced for the end of this month\n");
