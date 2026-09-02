@@ -95,7 +95,14 @@ uintptr_t board_uart_base(void) {
  * expose their object under a differently-shaped accessor. These thin shims
  * adapt them rather than churning every driver's public signature. */
 
-static int probe_i2c_rtc(void)  { i2c_rtc_init();  return 0; }
+/* Reports whether a chip actually answered, not merely that the probe ran.
+ *
+ * This returned 0 unconditionally, so /proc/devices listed the RTC as
+ * "present" on a board where nothing was on the bus -- which is exactly the
+ * board where someone reads that line to find out. It cost a real
+ * investigation: the registry said present, the kernel log said nothing had
+ * been detected, and both were telling the truth about different things. */
+static int probe_i2c_rtc(void)  { i2c_rtc_init();  return i2c_rtc_is_detected() ? 0 : -1; }
 static int probe_at24c32(void)  { at24c32_init();  return 0; }
 static int probe_usb_cdc(void)  { usb_cdc_init();  return 0; }
 

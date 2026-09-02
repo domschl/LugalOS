@@ -208,6 +208,13 @@ void clock_app_run(void) {
         else                          time_get_local(&in.local);
     }
 
+    /* Seeded to the RTC's actual state, and the lamp seeded to the opposite,
+     * so the first pass through the loop always drives the indicator once --
+     * a board that boots with no RTC lights it immediately rather than on
+     * whatever later event happens to flip the flag. */
+    bool rtc_ok = i2c_rtc_is_detected();
+    bool rtc_led_ok = !rtc_ok;
+
     uint64_t next_read = 0;
     ui_mode_t last_mode = (ui_mode_t)0xFF;
     bool need_render = true;
@@ -326,8 +333,13 @@ void clock_app_run(void) {
                  * `date` said so on the console. A clock that knows the time
                  * and will not show it is the worst of the available
                  * behaviours; this is the whole fix. */
-                if (i2c_rtc_read_time(&utc)) tz_utc_to_local(&utc, &in.local);
-                else                          time_get_local(&in.local);
+                if (i2c_rtc_read_time(&utc)) {
+                    tz_utc_to_local(&utc, &in.local);
+                    rtc_ok = true;
+                } else {
+                    time_get_local(&in.local);
+                    rtc_ok = false;
+                }
             }
             if (scr.kind == UI_SCR_TEMP || st.mode == UI_MODE_SHORTCUT_TEMP ||
                 (st.mode == UI_MODE_ITEM && st.item == UI_ITEM_TEMP)) {
@@ -405,6 +417,31 @@ void clock_app_run(void) {
                 net_led_on = want_net;
                 clock_hw_indicator(CLOCK_IND_WIFI, want_net);
             }
+        }
+
+        /* The vendor's "PM" lamp, lit when the DS3231 could not be read and
+         * the face is running off the kernel's own clock instead.
+         *
+         * PM is free because this clock keeps 24-hour time and always has
+         * (§8, plan/phase17_clock_ui_and_dcf77.md), the same argument that
+         * gave "MoveOn" to DCF-77 and "Alarm On" to the network. If a
+         * 12-hour mode is ever added this lamp has to move -- COUNTDOWN,
+         * COUNTUP and CHIME are all equally free and correspond to features
+         * this project has explicitly not built.
+         *
+         * Solid rather than blinking, and deliberately *not* the same
+         * language as the DCF and network lamps below: those describe a
+         * service that comes and goes, where blink-while-trying is
+         * meaningful. A missing RTC does not come back on its own. Steady
+         * light means "the time on this panel is real, but it will not
+         * survive a power cut" -- which is exactly what a person needs to
+         * know before trusting the clock after an outage.
+         *
+         * Driven from the same read that sets the time, so it cannot
+         * disagree with what is on the display. */
+        if (rtc_ok != rtc_led_ok) {
+            rtc_led_ok = rtc_ok;
+            clock_hw_indicator(CLOCK_IND_PM, !rtc_ok);
         }
 
 #if CONFIG_ENABLE_DCF77
