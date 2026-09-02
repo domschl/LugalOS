@@ -148,8 +148,8 @@ def analyse(rows: list[dict]) -> str:
     if not pv:
         out.append("  dcf vs pps   : no GPS-referenced samples")
     else:
-        pm = statistics.fmean(pv)
-        psd = statistics.stdev(pv) if len(pv) > 1 else 0.0
+        pm = sum(pv) / len(pv)
+        psd = (sum((x - pm) ** 2 for x in pv) / len(pv)) ** 0.5
         sem = psd / (len(pv) ** 0.5) if len(pv) > 1 else 0.0
         out.append(f"  dcf vs pps   : mean {pm / 1000:+.3f} ms, sd {psd / 1000:.3f} ms, "
                    f"n={len(pv)}")
@@ -159,7 +159,7 @@ def analyse(rows: list[dict]) -> str:
             # The NTP route measures the radio's error against true time; the
             # PPS route measures the same lateness directly. They should agree
             # in magnitude and oppose in sign.
-            diff = pm / 1000 + statistics.fmean(d)
+            diff = pm / 1000 + (sum(d) / len(d))
             out.append(f"  -> agreement : {diff:+.3f} ms between the two methods")
         out.append(f"                 min {ordered[0]:+d} / median {ordered[len(ordered) // 2]:+d} "
                    f"/ max {ordered[-1]:+d} ms")
@@ -202,6 +202,12 @@ def main() -> int:
                 log.write(line + "\n")
                 rows.append(r)
                 dcf = f"{r['dcf_ms']:+d} ms" if r["dcf_ms"] is not None else "-"
+                # P4 beside it on every line, in milliseconds so the two are
+                # directly comparable at a glance. They measure the same
+                # lateness by independent routes and should agree in magnitude
+                # while opposing in sign -- seeing that hold sample by sample is
+                # worth more than discovering it in the summary at the end.
+                pps = f"{r['pps_us'] / 1000:+.1f} ms" if r.get("pps_us") is not None else "-"
                 gap = ""
                 if len(rows) > 1 and r["seq"] != rows[-2]["seq"] + 1:
                     # Broadcast is fire-and-forget by design, so a gap is
@@ -217,7 +223,8 @@ def main() -> int:
                 st = f"st={r['stratum']}" if r["stratum"] == 1 else f"st={r['stratum']} <-- NOT stratum 1"
                 print(f"[{time.strftime('%H:%M:%S')}] {addr[0]:>15}  seq={r['seq']:<5} "
                       f"t={r['t_s']:<6} off={r['off_ms']:+5d} rtt={r['rtt_ms']:<4} {st:<6} "
-                      f"dcf={dcf:<10} q={r['q'] / 10:.1f} frames={r['frames']}{gap}")
+                      f"dcf={dcf:<10} pps={pps:<10} q={r['q'] / 10:.1f} "
+                      f"frames={r['frames']}{gap}")
                 if len(rows) % args.every == 0:
                     print("\n" + analyse(rows) + "\n")
     except KeyboardInterrupt:
