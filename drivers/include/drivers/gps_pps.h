@@ -73,8 +73,14 @@ typedef struct {
     uint64_t pps_last_us;      /* TIMER0 at the most recent one */
     uint32_t pps_interval_us;  /* between the last two; ~1000000 when locked */
     uint32_t pps_dropped;      /* edges the ring could not hold */
-    bool     pps_stormed;      /* the pin was shut off for oscillating -- a
-                                * floating input, almost always */
+    bool     pps_stormed;      /* the pin is shut off right now for oscillating.
+                                * Recoverable: it is retried on a doubling
+                                * backoff (see edgecap.h), because a module
+                                * emits ~1 kHz on TIMEPULSE until it locks. */
+    uint32_t pps_storms;       /* how many times, ever */
+    uint32_t pps_storm_rate;   /* edges/sec at the last trip. ~2 kHz is an
+                                * unlocked module; tens of kHz is a floating
+                                * pin. That distinction is the diagnosis. */
 } gps_status_t;
 
 /* Brings up the UART and registers the PPS pin with the edge capture. Safe on

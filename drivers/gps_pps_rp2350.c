@@ -311,6 +311,8 @@ void gps_poll(void) {
     }
     g.pps_dropped = edgecap_dropped(&g_pps);
     g.pps_stormed = edgecap_stormed(&g_pps);
+    g.pps_storms = edgecap_storms(&g_pps);
+    g.pps_storm_rate = edgecap_storm_rate(&g_pps);
 }
 
 bool gps_pps_trustworthy(void) {

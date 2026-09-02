@@ -49,6 +49,24 @@
  * and far below what costs a display its frame. */
 #define EDGECAP_STORM_PER_SEC 2000u
 
+/* How long a stormed pin stays off before it is tried again, doubling from
+ * the first to the second on each consecutive trip.
+ *
+ * A retry exists because the first bench run proved the latching version
+ * wrong: a GPS module emits ~1 kHz on TIMEPULSE while unlocked and 1 Hz once
+ * it has a fix, so "off until reboot" threw away the pulse the whole phase is
+ * built on, for a condition that cured itself. The doubling is what keeps
+ * that from re-admitting a real fault: a floating pin re-storms within one
+ * window of each retry, so it spends a second oscillating per minute -- 1.6%
+ * of the time rather than all of it -- which the display can absorb and a
+ * person can still see in `storms`. */
+#define EDGECAP_REARM_MS_MIN  2000u
+#define EDGECAP_REARM_MS_MAX 60000u
+
+/* Quiet for this long and the backoff is forgiven, so a module that misbehaved
+ * only while it was warming up does not carry a minute of penalty all day. */
+#define EDGECAP_CALM_US (300ull * 1000000ull)
+
 #define EDGECAP_MAX 4
 static edgecap_t *g_reg[EDGECAP_MAX];
 static uint32_t   g_count;
@@ -71,8 +89,45 @@ void edgecap_push(edgecap_t *e, uint64_t t_us, bool level) {
     e->head = next;
 }
 
+/* Brings a stormed pin back once its backoff has run out.
+ *
+ * Called from edgecap_pop() rather than exposed as a service() every consumer
+ * has to remember: any live consumer pops, a consumer that does not pop has
+ * nothing to recover for, and a recovery path that can be forgotten is one
+ * that will be. It runs before the ring-empty test on purpose -- a stormed
+ * pin's ring is empty by definition, so a check after that test would never
+ * execute. */
+static void edgecap_rearm_check(edgecap_t *e) {
+#if defined(CONFIG_BOARD_RP2350)
+    uint64_t now = time_get_us();
+    if (!e->stormed) {
+        if (e->rearm_ms > EDGECAP_REARM_MS_MIN && e->storms &&
+            now - e->storm_at_us > EDGECAP_CALM_US)
+            e->rearm_ms = EDGECAP_REARM_MS_MIN;
+        return;
+    }
+    if (now - e->storm_at_us < (uint64_t)e->rearm_ms * 1000ull) return;
+
+    uint32_t next = e->rearm_ms * 2u;
+    e->rearm_ms = next > EDGECAP_REARM_MS_MAX ? EDGECAP_REARM_MS_MAX : next;
+
+    /* Counters first, then `active`, then the interrupt -- so the handler
+     * cannot observe a half-armed pin and trip on a stale window. */
+    e->win_start_us = now;
+    e->win_count = 0;
+    e->stormed = false;
+    e->active = true;
+    uint32_t r = e->gpio / 8u, shift = (e->gpio % 8u) * 4u;
+    IO_BANK0_INTR(r) = EDGE_BOTH << shift;   /* discard what latched while off */
+    IO_BANK0_INTE(r) |= EDGE_BOTH << shift;
+#else
+    (void)e;
+#endif
+}
+
 bool edgecap_pop(edgecap_t *e, edge_t *out) {
     if (!e || !out || !e->buf) return false;
+    edgecap_rearm_check(e);
     if (e->tail == e->head) return false;
     *out = e->buf[e->tail];
     e->tail = (uint16_t)((e->tail + 1u) % e->cap);
@@ -82,6 +137,8 @@ bool edgecap_pop(edgecap_t *e, edge_t *out) {
 uint32_t edgecap_dropped(const edgecap_t *e) { return e ? e->dropped : 0u; }
 bool     edgecap_stormed(const edgecap_t *e) { return e ? e->stormed : false; }
 uint32_t edgecap_total(const edgecap_t *e)   { return e ? e->total   : 0u; }
+uint32_t edgecap_storms(const edgecap_t *e)  { return e ? e->storms  : 0u; }
+uint32_t edgecap_storm_rate(const edgecap_t *e) { return e ? e->storm_rate : 0u; }
 
 #if defined(CONFIG_BOARD_RP2350)
 /* One handler for the whole bank, because there is one interrupt for the whole
@@ -119,6 +176,17 @@ static void edgecap_isr(void *ctx) {
                         e->win_count = 0;
                     }
                     if (++e->win_count > EDGECAP_STORM_PER_SEC) {
+                        /* Record the rate before shutting the pin off: it is
+                         * the number that distinguishes an unlocked GPS
+                         * (~2 kHz) from a floating input (tens of kHz), and
+                         * once the interrupt is off there is no second
+                         * chance to measure it. */
+                        uint64_t span = now - e->win_start_us;
+                        e->storm_rate = span ? (uint32_t)((uint64_t)e->win_count
+                                                          * 1000000ull / span)
+                                             : 0xFFFFFFFFu;
+                        e->storm_at_us = now;
+                        e->storms++;
                         edgecap_disable_pin(e->gpio);
                         e->stormed = true;
                         e->active = false;
@@ -150,6 +218,8 @@ int edgecap_attach(edgecap_t *e, uint8_t gpio, edge_t *storage, uint16_t cap) {
     e->head = e->tail = 0; e->dropped = e->total = 0;
     e->gpio = gpio; e->active = true;
     e->stormed = false; e->win_start_us = 0; e->win_count = 0;
+    e->storm_at_us = 0; e->storms = 0; e->storm_rate = 0;
+    e->rearm_ms = EDGECAP_REARM_MS_MIN;
     g_reg[g_count++] = e;
 
 #if defined(CONFIG_BOARD_RP2350)

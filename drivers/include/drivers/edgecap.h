@@ -53,6 +53,11 @@ typedef struct {
     volatile bool     stormed;
     volatile uint64_t win_start_us;
     volatile uint32_t win_count;
+    volatile uint64_t storm_at_us;   /* when it last tripped */
+    volatile uint32_t storms;        /* how many times, ever */
+    volatile uint32_t storm_rate;    /* edges/sec measured at the last trip --
+                                      * the number that says *what* it was */
+    uint32_t rearm_ms;               /* current backoff before trying again */
 } edgecap_t;
 
 /* Registers `gpio` and starts capturing both edges into `storage`.
@@ -75,10 +80,32 @@ bool edgecap_pop(edgecap_t *e, edge_t *out);
 uint32_t edgecap_dropped(const edgecap_t *e);
 uint32_t edgecap_total(const edgecap_t *e);
 
-/* True once this pin was shut off for producing more edges than a signal
- * plausibly can. It stays off: the condition is a wiring fault, and silently
- * re-enabling would hide it and re-wedge the board in turn. */
+/* True while this pin is shut off for producing more edges than a signal
+ * plausibly can.
+ *
+ * **It comes back, on a doubling backoff, and that is a correction.** This
+ * used to latch forever, on the reasoning that a storm is a wiring fault and
+ * re-enabling would hide it. That was right about a floating pin and wrong in
+ * general, which the bench showed within a day (2026-09-02): a GPS module
+ * emits ~1 kHz on TIMEPULSE while it is unlocked and drops to 1 Hz once it
+ * has a fix, so a latching guard means any board powered up before its module
+ * locks loses PPS capture for that entire boot -- and the fault it was
+ * "preserving" was not a fault at all.
+ *
+ * Nothing is hidden by the retry, because the *record* is what makes a fault
+ * diagnosable, not the continued outage: `storms` and `storm_rate` persist
+ * for the life of the boot and say how often and how fast. A genuinely
+ * floating pin still ends up disabled essentially all of the time -- it
+ * re-storms within one window of each retry, and the backoff runs to a minute
+ * -- so the protection that motivated the guard is intact. */
 bool edgecap_stormed(const edgecap_t *e);
+
+/* How many times this pin has been shut off, and the edge rate measured at
+ * the most recent trip. The rate is the diagnostic: ~2 kHz is an unlocked GPS
+ * TIMEPULSE, tens of kHz is a floating pin, and telling those apart from a
+ * windowsill is the whole point. */
+uint32_t edgecap_storms(const edgecap_t *e);
+uint32_t edgecap_storm_rate(const edgecap_t *e);
 
 /* Appends an edge. The interrupt handler's own path, exposed so a selftest can
  * drive the ring without a pin -- the ring is where the off-by-one lives, and

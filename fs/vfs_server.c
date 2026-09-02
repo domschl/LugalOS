@@ -1006,6 +1006,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         else if (!gs.have_utc)         { state = "searching";    hint = "sentences parse, no satellite decoded yet"; }
         else if (!gs.rmc_valid || gs.fix_quality == 0)
                                        { state = "tracking";     hint = "time decoded, no fix yet -- antenna works, wait for ephemeris"; }
+        else if (gs.pps_stormed)       { state = "pps-noisy";    hint = "PPS shut off for oscillating; retrying -- ~2 kHz means the module is not locked yet, tens of kHz means a floating pin"; }
         else if (gs.pps_count == 0)    { state = "fix-no-pulse"; hint = "fix but no PPS edge -- check the PPS wire and CONFIG_GPS_PPS_ACTIVE_LOW"; }
         else if (!gps_pps_trustworthy()) { state = "unsteady";   hint = "fix and pulses, but the interval is not ~1 s"; }
         else                           { state = "locked";       hint = "fix and a 1 s pulse -- calibration can run"; }
@@ -1038,10 +1039,11 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "utc=none\n");
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "pps_count=%lu\npps_interval_us=%lu\npps_dropped=%lu\npps_stormed=%s\n"
+            "pps_count=%lu\npps_interval_us=%lu\npps_dropped=%lu\npps_stormed=%s\npps_storms=%lu\npps_storm_rate=%lu\n"
             "trustworthy=%s\n",
             (unsigned long)gs.pps_count, (unsigned long)gs.pps_interval_us,
             (unsigned long)gs.pps_dropped, gs.pps_stormed ? "yes" : "no",
+            (unsigned long)gs.pps_storms, (unsigned long)gs.pps_storm_rate,
             gps_pps_trustworthy() ? "yes" : "no");
         return (int)used;
     }
