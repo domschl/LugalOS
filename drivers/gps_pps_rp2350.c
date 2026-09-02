@@ -74,6 +74,70 @@ static bool     g_tp5_needed = true;   /* the module's stored config is
 static bool     g_tp5_save_needed;     /* ...but do not spend its flash until
                                         * something proves that it does */
 static uint32_t g_storms_seen;
+
+/* Inbound UBX, which exists to answer one question: does the module hear us?
+ *
+ * ubx_tp5_sent counts frames this driver *queued*. It says nothing about
+ * whether they arrived -- a TX wire on the wrong pin produces exactly the same
+ * count -- and reading it as proof of delivery was a mistake worth not
+ * repeating. u-blox acknowledges every configuration write with UBX-ACK-ACK or
+ * refuses it with UBX-ACK-NAK, so parsing those is the difference between "the
+ * module rejected our frame" and "our frame never got there", which need
+ * completely different fixes.
+ *
+ * It also stops the replies being counted as corrupt NMEA: a binary frame fed
+ * to a sentence parser is so many bad checksums, which is part of why that
+ * counter has looked worse than the link actually is. */
+static uint8_t  g_ux_state, g_ux_cls, g_ux_id, g_ux_a, g_ux_b;
+static uint16_t g_ux_len, g_ux_got;
+static uint8_t  g_ux_pay[32];
+
+static void ubx_feed(uint8_t c) {
+    switch (g_ux_state) {
+    case 1: g_ux_state = (c == 0x62u) ? 2u : 0u; return;
+    case 2: g_ux_cls = c; g_ux_a = c; g_ux_b = c; g_ux_state = 3; return;
+    case 3: g_ux_id = c; goto acc;
+    case 4: g_ux_len = c; goto acc;
+    case 5: g_ux_len |= (uint16_t)c << 8; g_ux_got = 0;
+            g_ux_a = (uint8_t)(g_ux_a + c); g_ux_b = (uint8_t)(g_ux_b + g_ux_a);
+            /* A length this driver cannot be looking at is skipped rather than
+             * buffered: the only replies it cares about are two bytes long. */
+            g_ux_state = g_ux_len ? 6u : 7u;
+            return;
+    case 6:
+        if (g_ux_got < sizeof(g_ux_pay)) g_ux_pay[g_ux_got] = c;
+        g_ux_got++;
+        g_ux_a = (uint8_t)(g_ux_a + c); g_ux_b = (uint8_t)(g_ux_b + g_ux_a);
+        if (g_ux_got >= g_ux_len) g_ux_state = 7;
+        return;
+    case 7: g_ux_state = (c == g_ux_a) ? 8u : 0u; return;
+    case 8:
+        g_ux_state = 0;
+        if (c != g_ux_b) return;                       /* corrupt; ignore */
+        if (g_ux_cls == 0x05u && g_ux_len >= 2u) {     /* UBX-ACK-*        */
+            g.ubx_ack_cls = g_ux_pay[0];
+            g.ubx_ack_id  = g_ux_pay[1];
+            if (g_ux_id == 0x01u) g.ubx_acks++;        /* ACK-ACK          */
+            else if (g_ux_id == 0x00u) g.ubx_naks++;   /* ACK-NAK          */
+        } else if (g_ux_cls == 0x06u && g_ux_id == 0x31u && g_ux_len >= 32u) {
+            /* CFG-TP5 readback: what this output is really set to. */
+            g.tp5_idx = g_ux_pay[0];
+            g.tp5_freq = (uint32_t)g_ux_pay[8] | ((uint32_t)g_ux_pay[9] << 8) |
+                         ((uint32_t)g_ux_pay[10] << 16) | ((uint32_t)g_ux_pay[11] << 24);
+            g.tp5_freq_lock = (uint32_t)g_ux_pay[12] | ((uint32_t)g_ux_pay[13] << 8) |
+                              ((uint32_t)g_ux_pay[14] << 16) | ((uint32_t)g_ux_pay[15] << 24);
+            g.tp5_flags = (uint32_t)g_ux_pay[28] | ((uint32_t)g_ux_pay[29] << 8) |
+                          ((uint32_t)g_ux_pay[30] << 16) | ((uint32_t)g_ux_pay[31] << 24);
+            g.tp5_reads++;
+        }
+        g.ubx_frames++;
+        return;
+    default: g_ux_state = 0; return;
+    }
+acc:
+    g_ux_a = (uint8_t)(g_ux_a + c); g_ux_b = (uint8_t)(g_ux_b + g_ux_a);
+    g_ux_state++;
+}
 static uint64_t g_tp5_last_ms;
 static uint64_t g_last_rx_ms;    /* when the last byte arrived, so a stream
                                   * that stops is a measured silence rather
@@ -164,9 +228,9 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t l
  *
  * Field layout from the u-blox M8 protocol spec; the flags are active,
  * lockGnssFreq, lockedOtherSet, isLength, alignToTow and polarity=rising. */
-static void ubx_set_timepulse_1hz(void) {
-    static const uint8_t tp5[32] = {
-        0x00,                    /* tpIdx = TIMEPULSE                */
+static void ubx_set_timepulse_1hz(uint8_t tp_idx) {
+    uint8_t tp5[32] = {
+        0x00,                    /* tpIdx, overwritten below         */
         0x01,                    /* version                          */
         0x00, 0x00,              /* reserved                         */
         0x00, 0x00,              /* antCableDelay ns                 */
@@ -181,7 +245,16 @@ static void ubx_set_timepulse_1hz(void) {
         0x00, 0x00, 0x00, 0x00,  /* userConfigDelay                  */
         0x77, 0x00, 0x00, 0x00,  /* flags                            */
     };
+    tp5[0] = tp_idx;
     ubx_send(0x06u, 0x31u, tp5, sizeof(tp5));
+}
+
+/* Ask the module what it actually has. The write is acknowledged either way,
+ * so an ACK proves only that the frame was understood -- not that it landed on
+ * the output that is wired to GP19. The readback is the only thing that can
+ * tell those apart. */
+static void ubx_poll_timepulse(uint8_t tp_idx) {
+    ubx_send(0x06u, 0x31u, &tp_idx, 1u);
 }
 
 #if CONFIG_GPS_UBX_PERSIST
@@ -420,6 +493,13 @@ void gps_poll(void) {
         char c = (char)u_getc();
         g.bytes++;
         g_last_rx_ms = time_get_ms();
+
+        /* UBX before NMEA: a binary reply must not reach the sentence
+         * assembler, both because it is not a sentence and because counting it
+         * as one hides the answer we actually need. */
+        if (g_ux_state) { ubx_feed((uint8_t)c); continue; }
+        if ((uint8_t)c == 0xB5u) { g_ux_state = 1; continue; }
+
         if (c == '\r') continue;
         if (c == '\n') {
             if (!g_overflow && g_line_len > 0) {
@@ -490,7 +570,14 @@ void gps_poll(void) {
     if (g_tp5_sent < 10u && g.sentences > 0u && g_tp5_needed) {
         uint64_t now_ms = time_get_ms();
         if (g_tp5_sent == 0u || now_ms - g_tp5_last_ms > 30000ull) {
-            ubx_set_timepulse_1hz();
+            /* Both outputs. The M8 has TIMEPULSE and TIMEPULSE2, a breakout
+             * may route either to its "PPS" pin, and configuring only tpIdx 0
+             * produced an ACK and no change in behaviour -- which is exactly
+             * what writing the wrong output looks like. Setting both costs one
+             * extra frame and removes the ambiguity. */
+            ubx_set_timepulse_1hz(0u);
+            ubx_set_timepulse_1hz(1u);
+            ubx_poll_timepulse(0u);
             g_tp5_last_ms = now_ms;
             g_tp5_sent++;
             g_tp5_needed = false;

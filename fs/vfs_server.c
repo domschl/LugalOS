@@ -1051,8 +1051,18 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         {
             char types[80];
             used += (uint32_t)ksnprintf(buf + used, cap - used,
-                "ubx_tp5_sent=%lu\nubx_saves=%lu\n",
-                (unsigned long)gs.ubx_tp5_sent, (unsigned long)gs.ubx_saves);
+                "ubx_tp5_sent=%lu\nubx_saves=%lu\n"
+                "ubx_frames=%lu\nubx_acks=%lu\nubx_naks=%lu\n"
+                "ubx_ack_for=%02x:%02x\n"
+                "tp5_reads=%lu\ntp5_idx=%u\ntp5_freq=%lu\n"
+                "tp5_freq_lock=%lu\ntp5_flags=0x%08lx\n",
+                (unsigned long)gs.ubx_tp5_sent, (unsigned long)gs.ubx_saves,
+                (unsigned long)gs.ubx_frames, (unsigned long)gs.ubx_acks,
+                (unsigned long)gs.ubx_naks,
+                (unsigned)gs.ubx_ack_cls, (unsigned)gs.ubx_ack_id,
+                (unsigned long)gs.tp5_reads, (unsigned)gs.tp5_idx,
+                (unsigned long)gs.tp5_freq, (unsigned long)gs.tp5_freq_lock,
+                (unsigned long)gs.tp5_flags);
             gps_nmea_types(types, sizeof(types));
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "nmea_types=%s\nnmea_last=%s\n", types, gps_nmea_last());

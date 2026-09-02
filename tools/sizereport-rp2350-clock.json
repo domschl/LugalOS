@@ -11,7 +11,7 @@
     "drivers/dcf77_rp2350.c": 298,
     "drivers/dcf77_service.c": 761,
     "drivers/edgecap.c": 21,
-    "drivers/gps_pps_rp2350.c": 800,
+    "drivers/gps_pps_rp2350.c": 873,
     "drivers/i2c_rtc.c": 856,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_app.c": 196,
@@ -58,5 +58,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 142494
+  "total": 142567
 }

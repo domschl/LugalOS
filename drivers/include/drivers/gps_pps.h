@@ -84,6 +84,26 @@ typedef struct {
     uint32_t ubx_saves;        /* UBX-CFG-CFG saves issued. Non-zero means
                                 * this board has written the module's
                                 * non-volatile configuration. */
+    /* The module's own answers. ubx_acks rising means it hears us and is
+     * applying what we send; ubx_naks means it hears us and refuses, which is
+     * a payload bug at this end; both staying zero while ubx_tp5_sent climbs
+     * means the frames are not arriving at all -- a TX wiring question, and
+     * not something any amount of protocol work will fix. */
+    uint32_t ubx_frames;       /* well-formed UBX frames received */
+    uint32_t ubx_acks;
+    uint32_t ubx_naks;
+    uint8_t  ubx_ack_cls;      /* what the last ACK/NAK referred to */
+    uint8_t  ubx_ack_id;
+
+    /* UBX-CFG-TP5 as the module reports it, which is the only account of the
+     * hardware's actual state. freq/freq_lock are microseconds per pulse when
+     * the isFreq flag (bit 3) is clear, and hertz when it is set. */
+    uint32_t tp5_reads;
+    uint8_t  tp5_idx;
+    uint32_t tp5_freq;
+    uint32_t tp5_freq_lock;
+    uint32_t tp5_flags;
+
     uint32_t pps_storms;       /* how many times, ever */
     uint32_t pps_storm_rate;   /* edges/sec at the last trip. ~2 kHz is an
                                 * unlocked module; tens of kHz is a floating
