@@ -1139,7 +1139,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
              * non-zero drop count on a quiet line means the ring is too small;
              * on a noisy one it is the noise itself, and the quality figures
              * above say which. */
-            "mark_from_edge=%s\nedges=%lu\nedges_dropped=%lu\n",
+            "mark_from_edge=%s\nedges=%lu\nedges_dropped=%lu\n"
+            "pps_n=%lu\npps_last_us=%ld\npps_mean_us=%ld\n"
+            "pps_sd_us=%lu\npps_min_us=%ld\npps_max_us=%ld\n",
             (unsigned)st.decoder.pulses_seen, (unsigned)st.decoder.pulses_bad,
             (unsigned)st.decoder.glitches, (unsigned)st.decoder.sync_losses,
             (unsigned)st.decoder.frames_seen, (unsigned)st.decoder.frames_accepted,
@@ -1152,7 +1154,10 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             (unsigned)st.decoder.quality_total,
             (unsigned)st.decoder.clean_run_max,
             st.radio_at_us_ok ? "yes" : "no",
-            (unsigned long)st.edges_total, (unsigned long)st.edges_dropped);
+            (unsigned long)st.edges_total, (unsigned long)st.edges_dropped,
+            (unsigned long)st.pps_n, (long)st.pps_last_us,
+            (long)st.pps_mean_us, (unsigned long)st.pps_sd_us,
+            (long)st.pps_min_us, (long)st.pps_max_us);
 
         used += (uint32_t)ksnprintf(buf + used, cap - used, "quality=");
         for (unsigned i = 0; i < st.decoder.quality_count && used + 2 < cap; i++) {

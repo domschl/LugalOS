@@ -148,6 +148,14 @@ static edgecap_t  g_pps;
 static bool       g_prev_pps_valid;
 static uint64_t   g_prev_pps_us;
 
+/* A short history of pulse starts, so a measurement taken slightly after the
+ * fact can still be referred to the right second. P4 needs this: a DCF-77
+ * frame is only recognised as complete once its minute mark has passed, and
+ * by then the PPS edge that began that second is already history. */
+#define PPS_HISTORY 8
+static uint64_t   g_pps_hist[PPS_HISTORY];
+static uint32_t   g_pps_hist_n;
+
 /* Written, read back, retried -- the third lesson from
  * drivers/uart1_link_rp2350.c, and the one that makes the other two
  * diagnosable: "a write, a read-back and a retry is cheap; believing a write
@@ -534,6 +542,8 @@ void gps_poll(void) {
         g_prev_pps_us = e.t_us;
         g_prev_pps_valid = true;
         g.pps_last_us = e.t_us;
+        g_pps_hist[g_pps_hist_n % PPS_HISTORY] = e.t_us;
+        g_pps_hist_n++;
         g.pps_count++;
     }
 #if CONFIG_GPS_UBX_TIMEPULSE
@@ -659,6 +669,31 @@ void gps_nmea_types(char *buf, uint32_t cap) {
     buf[used] = '\0';
 #else
     (void)cap;
+#endif
+}
+
+bool gps_pps_offset_us(uint64_t t_us, int64_t *offset_us) {
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    if (!offset_us || !gps_pps_trustworthy()) return false;
+
+    /* The nearest pulse start, and it has to be *near*: more than half a
+     * second away and there is no way to say which second it belonged to, so
+     * the honest answer is no answer rather than a number that is wrong by
+     * exactly one second. */
+    uint32_t have = g_pps_hist_n < PPS_HISTORY ? g_pps_hist_n : PPS_HISTORY;
+    bool found = false;
+    int64_t best = 0;
+    for (uint32_t i = 0; i < have; i++) {
+        int64_t d = (int64_t)t_us - (int64_t)g_pps_hist[i];
+        int64_t ad = d < 0 ? -d : d;
+        if (ad > 500000) continue;
+        if (!found || ad < (best < 0 ? -best : best)) { best = d; found = true; }
+    }
+    if (found) *offset_us = best;
+    return found;
+#else
+    (void)t_us; (void)offset_us;
+    return false;
 #endif
 }
 

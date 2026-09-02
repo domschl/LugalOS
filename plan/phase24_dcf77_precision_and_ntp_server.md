@@ -767,6 +767,36 @@ timestamps it, and reports; nothing sets a clock from it. §3.4's transfer-
 standard argument is a design constraint, not a preference, and the easiest
 way to honour it is for the code that *could* do it not to exist yet.
 
+**P4 — calibrate the constant, against PPS rather than against statistics.
+INSTRUMENTED 2026-09-02; the measurement run is what remains.**
+
+As built: `gps_pps_offset_us()` returns the offset of any instant from the PPS
+edge that began its second, refusing to answer when the nearest pulse is more
+than half a second away -- at that distance there is no telling which second it
+belonged to, and a number wrong by exactly one second is far worse than no
+number. `dcf77_service` calls it for each accepted frame whose mark landed on a
+real edge, and only then: the millisecond fallback is quantised at 25-35 ms by
+the debounce, which is larger than the entire quantity being measured and would
+poison the mean rather than merely widen it.
+
+`/proc/dcf77` carries the aggregate (`pps_n`, `pps_mean_us`, `pps_sd_us`,
+`pps_min_us`, `pps_max_us`) as sum and sum-of-squares rather than a stored
+series, since a spread is wanted and not a history. The per-sample value goes
+out through the P0 log as a *trailing* field, appended rather than inserted so
+a log spanning the firmware change parses correctly on both sides of it, and
+`collect_p0.py` reports the delay with a standard error and the
+`CONFIG_DCF77_DELAY_US` it implies. Both routes to the same delay are printed
+together on purpose -- the NTP comparison against a network reference and the
+PPS comparison against a satellite pulse are independent, and a disagreement
+larger than their two uncertainties means one of them is wrong. §P4 wanted that
+found here rather than in P6.
+
+Sample rate is one per minute: the receiver is powered from init and the
+decoder runs continuously, independent of the sync state machine, so an
+overnight run gives ~700 samples. At the ~4 ms of radio jitter P1 measured
+that is a standard error near 150 us -- microseconds rather than milliseconds,
+which is what this step's verification asks for.
+
 **P4 — calibrate the constant, against PPS rather than against statistics.**
 With P1, P2, P3 and P3b in, the constant stops being the mean of a noisy
 distribution and becomes a directly measured interval: for each accepted

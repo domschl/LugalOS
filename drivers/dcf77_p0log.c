@@ -43,6 +43,10 @@ typedef struct {
     uint8_t  ntp_stratum;
     bool     have_dcf;
     int32_t  dcf_err_ms;     /* the radio's claim minus the reference's truth */
+    bool     have_pps;       /* P4: a GPS pulse was attached for this sample */
+    int32_t  pps_us;         /* the mark's offset from that pulse, in us --
+                              * the receiver delay measured directly, rather
+                              * than inferred from a distribution */
     uint8_t  quality;        /* the decoder's mean score, tenths */
     /* Frames accepted since the previous sample -- 0 or 1 in normal running,
      * occasionally 2 when a sample lands either side of a minute boundary.
@@ -139,12 +143,17 @@ static void broadcast_sample(const p0_sample_t *s) {
     char line[128];
     int n;
     if (s->have_dcf) {
-        n = ksnprintf(line, sizeof(line), "p0 %s %lu %lu %ld %u %u %ld %u %u\n",
+        /* The trailing field is P4's: the DCF mark's offset from the GPS
+         * pulse that began the same second, in microseconds, or "-" when no
+         * trustworthy pulse was attached. Appended rather than inserted so
+         * every existing parser keeps working on the fields it already knows. */
+        n = ksnprintf(line, sizeof(line), "p0 %s %lu %lu %ld %u %u %ld %u %u %s%ld\n",
                       CONFIG_NODE_PERSONA,
                       (unsigned long)s->seq,
                       (unsigned long)((s->mono_ms - g.t0_ms) / 1000u),
                       (long)s->ntp_off_ms, s->ntp_rtt_ms, s->ntp_stratum,
-                      (long)s->dcf_err_ms, s->quality, s->frames);
+                      (long)s->dcf_err_ms, s->quality, s->frames,
+                      s->have_pps ? "" : "-", s->have_pps ? (long)s->pps_us : 0L);
     } else {
         n = ksnprintf(line, sizeof(line), "p0 %s %lu %lu %ld %u %u - %u %u\n",
                       CONFIG_NODE_PERSONA,
@@ -336,6 +345,18 @@ static void p0_body(void *arg) {
             if (err < -2147483648LL) err = -2147483648LL;
             s.have_dcf = true;
             s.dcf_err_ms = (int32_t)err;
+
+            /* P4's own number for the same frame, and deliberately alongside
+             * rather than instead of the NTP comparison above. They measure
+             * the same delay by completely independent routes -- one against a
+             * network reference, one against a satellite pulse -- so a
+             * disagreement larger than their stated uncertainties means one of
+             * them is wrong, and the plan wants that found here rather than in
+             * P6. */
+            if (d.pps_have) {
+                s.have_pps = true;
+                s.pps_us = (int32_t)d.pps_last_us;
+            }
         }
 
         accumulate(&s);

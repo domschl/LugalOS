@@ -4,6 +4,7 @@
 #include "drivers/dcf77_service.h"
 #include "drivers/dcf77.h"
 #include "drivers/edgecap.h"
+#include "drivers/gps_pps.h"
 #include "drivers/i2c_rtc.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -72,6 +73,27 @@ static bool       g_edges_ok;
 #define MARK_HISTORY 8
 static uint64_t   g_mark_hist_us[MARK_HISTORY];
 static uint32_t   g_mark_hist_n;
+
+/* P4: the receiver's delay, measured rather than fitted.
+ *
+ * For each accepted frame whose mark landed on a real edge, the interval from
+ * the PPS edge that began the same second to that mark. That interval is the
+ * whole of what the radio path costs -- propagation from Mainflingen, the
+ * receiver's filters, its AGC and its demodulator -- and it is what
+ * CONFIG_DCF77_DELAY_US should eventually hold.
+ *
+ * Sum and sum-of-squares rather than a stored series: a spread is wanted, not
+ * a history, and 64 bits hold it comfortably (a half-second offset squared is
+ * 2.5e11, so a thousand samples stay four orders of magnitude clear of
+ * overflow). Aggregates are what /proc reports; the per-sample values go out
+ * through the P0 log, which is where a distribution or a temperature
+ * correlation can actually be built. */
+static uint32_t   g_pps_n;
+static int64_t    g_pps_sum_us;
+static uint64_t   g_pps_sumsq;
+static int64_t    g_pps_min_us, g_pps_max_us;
+static int64_t    g_pps_last_us;
+static bool       g_pps_have;
 
 static bool        g_ever_synced;
 static rtc_time_t  g_last_sync_utc;
@@ -198,6 +220,28 @@ void dcf77_service_feed(uint64_t now_ms) {
             }
             if (best) { g_radio_at_us = best; g_radio_at_us_ok = true; }
         }
+
+        /* P4. Only from an edge-snapped mark: the millisecond fallback is
+         * quantised at 25-35 ms by the debounce, which is larger than the
+         * whole quantity being measured and would poison the mean rather than
+         * merely widen it. No PPS, or no edge, simply means no sample -- the
+         * calibration is a thing that happens while the GPS is attached, and
+         * the service works exactly as before without it. */
+        if (g_radio_at_us_ok) {
+            int64_t off;
+            if (gps_pps_offset_us(g_radio_at_us, &off)) {
+                if (g_pps_n == 0) { g_pps_min_us = g_pps_max_us = off; }
+                else {
+                    if (off < g_pps_min_us) g_pps_min_us = off;
+                    if (off > g_pps_max_us) g_pps_max_us = off;
+                }
+                g_pps_sum_us += off;
+                g_pps_sumsq  += (uint64_t)(off * off);
+                g_pps_n++;
+                g_pps_last_us = off;
+                g_pps_have = true;
+            }
+        }
         /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
          * own mark, not this call's `now`.
          *
@@ -275,6 +319,26 @@ void dcf77_service_status(dcf_status_t *out) {
     out->radio_at_ms = g_radio_at_ms;
     out->radio_at_us = g_radio_at_us;
     out->radio_at_us_ok = g_radio_at_us_ok;
+    out->pps_n       = g_pps_n;
+    out->pps_have    = g_pps_have;
+    out->pps_last_us = g_pps_last_us;
+    out->pps_min_us  = g_pps_min_us;
+    out->pps_max_us  = g_pps_max_us;
+    if (g_pps_n) {
+        int64_t mean = g_pps_sum_us / (int64_t)g_pps_n;
+        out->pps_mean_us = mean;
+        /* Population variance, integer throughout: E[x^2] - (E[x])^2. The
+         * sample count is small and the quantities are microseconds, so
+         * nothing here needs floating point. */
+        int64_t var = (int64_t)(g_pps_sumsq / g_pps_n) - mean * mean;
+        if (var < 0) var = 0;
+        uint64_t r = 0, v = (uint64_t)var;
+        while ((r + 1ull) * (r + 1ull) <= v) r++;   /* integer sqrt */
+        out->pps_sd_us = (uint32_t)r;
+    } else {
+        out->pps_mean_us = 0;
+        out->pps_sd_us = 0;
+    }
     out->edges_dropped = edgecap_dropped(&g_edges);
     out->edges_total = edgecap_total(&g_edges);
     out->ever_synced = g_ever_synced;

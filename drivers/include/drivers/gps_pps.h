@@ -136,4 +136,16 @@ const char *gps_nmea_last(void);
  * calibration should consult before believing anything. */
 bool gps_pps_trustworthy(void);
 
+/* The offset of `t_us` from the PPS edge that began its second, as
+ * `t_us - pps_us` -- positive when the event is late, which is what a radio
+ * propagation and demodulation delay looks like.
+ *
+ * This is P4's measuring instrument: it turns the DCF-77 receiver's constant
+ * from the mean of a noisy distribution into a directly measured interval.
+ * False when there is no trustworthy pulse, or when the nearest one is more
+ * than half a second away -- at that distance there is no way to say which
+ * second it belonged to, and a number wrong by exactly one second is far worse
+ * than no number. */
+bool gps_pps_offset_us(uint64_t t_us, int64_t *offset_us);
+
 #endif /* DRIVERS_GPS_PPS_H */

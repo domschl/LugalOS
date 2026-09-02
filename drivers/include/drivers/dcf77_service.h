@@ -49,6 +49,19 @@ typedef struct {
      * means the capture had no candidate and radio_at_ms is all there is --
      * which is what every board had before P3, so a caller may simply prefer
      * this when it is available. */
+    /* P4: the measured receiver delay, in microseconds, as the interval from
+     * the GPS PPS edge that began a second to the DCF-77 mark for that same
+     * second. Positive means the radio mark is late, which is what a
+     * propagation and demodulation delay looks like. Only populated while a
+     * trustworthy PPS is attached; pps_n is zero otherwise and the service
+     * behaves exactly as it did before. */
+    uint32_t    pps_n;
+    bool        pps_have;
+    int64_t     pps_last_us;
+    int64_t     pps_mean_us;
+    int64_t     pps_min_us, pps_max_us;
+    uint32_t    pps_sd_us;
+
     uint64_t    radio_at_us;
     bool        radio_at_us_ok;
     uint32_t    edges_dropped;   /* a ring too small, or a line too noisy */

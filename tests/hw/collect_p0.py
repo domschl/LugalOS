@@ -41,7 +41,10 @@ PORT = 5959
 
 def parse(line: str) -> dict | None:
     f = line.split()
-    if len(f) != 10 or f[0] != "p0":
+    # 10 fields is the pre-P4 line and still parses: the PPS offset was
+    # appended rather than inserted, so a log spanning a firmware change reads
+    # correctly throughout instead of being silently dropped at the boundary.
+    if len(f) not in (10, 11) or f[0] != "p0":
         return None
     try:
         return {
@@ -49,6 +52,7 @@ def parse(line: str) -> dict | None:
             "off_ms": int(f[4]), "rtt_ms": int(f[5]), "stratum": int(f[6]),
             "dcf_ms": None if f[7] == "-" else int(f[7]),
             "q": int(f[8]), "frames": int(f[9]),
+            "pps_us": None if len(f) < 11 or f[10] == "-" else int(f[10]),
         }
     except ValueError:
         return None
@@ -135,6 +139,28 @@ def analyse(rows: list[dict]) -> str:
         sd = (sum((x - mean) ** 2 for x in d) / len(d)) ** 0.5
         ordered = sorted(d)
         out.append(f"  dcf offset   : mean {mean:+.1f} ms, sd {sd:.1f} ms, n={len(d)}")
+
+    # P4: the same delay measured against the GPS pulse instead of the network.
+    # Reported beside the NTP figure on purpose -- two independent routes to
+    # one quantity, where a disagreement bigger than the two uncertainties
+    # means one of them is wrong.
+    pv = [r["pps_us"] for r in rows if r.get("pps_us") is not None]
+    if not pv:
+        out.append("  dcf vs pps   : no GPS-referenced samples")
+    else:
+        pm = statistics.fmean(pv)
+        psd = statistics.stdev(pv) if len(pv) > 1 else 0.0
+        sem = psd / (len(pv) ** 0.5) if len(pv) > 1 else 0.0
+        out.append(f"  dcf vs pps   : mean {pm / 1000:+.3f} ms, sd {psd / 1000:.3f} ms, "
+                   f"n={len(pv)}")
+        out.append(f"  -> delay     : {pm:+.0f} +/- {sem:.0f} us "
+                   f"(CONFIG_DCF77_DELAY_US = {round(pm)})")
+        if d:
+            # The NTP route measures the radio's error against true time; the
+            # PPS route measures the same lateness directly. They should agree
+            # in magnitude and oppose in sign.
+            diff = pm / 1000 + statistics.fmean(d)
+            out.append(f"  -> agreement : {diff:+.3f} ms between the two methods")
         out.append(f"                 min {ordered[0]:+d} / median {ordered[len(ordered) // 2]:+d} "
                    f"/ max {ordered[-1]:+d} ms")
         out.append("")
