@@ -3,6 +3,7 @@
 
 #include "drivers/dcf77_service.h"
 #include "drivers/dcf77.h"
+#include "drivers/edgecap.h"
 #include "drivers/i2c_rtc.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -45,6 +46,32 @@ static uint64_t    g_deadline_ms;
 static bool        g_have_radio;
 static rtc_time_t  g_radio_utc;
 static uint64_t    g_radio_at_ms;
+static uint64_t    g_radio_at_us;   /* the same instant, snapped to a real edge */
+static bool        g_radio_at_us_ok;
+
+/* P3: the pin's own edges, timestamped in an interrupt rather than by whoever
+ * happened to sample it.
+ *
+ * The decoder is deliberately *not* moved onto these. It stays sample-driven
+ * because its quality score's glitch term is sample-based and is the one
+ * measurement that varies continuously with antenna orientation (phase 17,
+ * D5) -- converting it would invalidate every D5 number as a baseline. What
+ * changes is only the *instant* a completed frame is stamped with: the
+ * decoder still decides which edge is the minute mark, and this supplies when
+ * that edge actually happened.
+ *
+ * Sixteen entries is about four seconds of a clean signal, far more than the
+ * sub-second window a snap searches. A noisy line will overrun it and say so
+ * through the drop counter; that costs precision on the mark, not
+ * correctness, because the fallback is the millisecond timestamp the decoder
+ * already had. */
+static edge_t     g_edge_ring[16];
+static edgecap_t  g_edges;
+static bool       g_edges_ok;
+
+#define MARK_HISTORY 8
+static uint64_t   g_mark_hist_us[MARK_HISTORY];
+static uint32_t   g_mark_hist_n;
 
 static bool        g_ever_synced;
 static rtc_time_t  g_last_sync_utc;
@@ -80,6 +107,12 @@ static void commit(uint64_t now_ms) {
 
 void dcf77_service_init(void) {
     dcf77_init();
+#if defined(CONFIG_BOARD_RP2350)
+    if (!g_edges_ok) {
+        g_edges_ok = edgecap_attach(&g_edges, CONFIG_DCF77_OUT_GPIO, g_edge_ring,
+                                    (uint16_t)(sizeof(g_edge_ring) / sizeof(g_edge_ring[0]))) == 0;
+    }
+#endif
     dcf77_power(true);              /* a no-op where PON is not wired */
     dcf77_reset(&g_dec, dcf77_out_pulse_is_high());
     g_state = DCF_IDLE;
@@ -122,6 +155,19 @@ void dcf77_service_feed(uint64_t now_ms) {
     dcf77_feed(&g_dec, dcf77_raw_level(), now_ms);
     auto_sync_check(now_ms);
 
+    /* Drain the capture, keeping only the pulse *starts* -- the level that
+     * means "carrier attenuated" on this module, which is the transition the
+     * decoder's marks refer to. The other edge carries the pulse width, a
+     * property of the receiver rather than of the second. */
+    {
+        edge_t e;
+        while (edgecap_pop(&g_edges, &e)) {
+            if ((e.level != 0) != dcf77_out_pulse_is_high()) continue;
+            g_mark_hist_us[g_mark_hist_n % MARK_HISTORY] = e.t_us;
+            g_mark_hist_n++;
+        }
+    }
+
     rtc_time_t got;
     uint64_t   mark_ms = now_ms;
     if (dcf77_take_time(&g_dec, &got, &mark_ms)) {
@@ -130,6 +176,28 @@ void dcf77_service_feed(uint64_t now_ms) {
          * "the radio is being heard" independently of whether the clock has
          * been changed. */
         g_radio_utc   = got;
+        /* Snap the decoder's millisecond mark to the interrupt-timestamped
+         * edge nearest it. The decoder decided *which* edge; this says when it
+         * happened, to a microsecond rather than to whenever the frame loop
+         * next looked. A search rather than "the newest edge", because the
+         * ring may hold later edges on a noisy line.
+         *
+         * No candidate within half a second means the capture missed it -- a
+         * full ring, or no interrupt at all where the attach failed. The
+         * millisecond mark is then used unchanged, which is exactly the
+         * behaviour before P3 and is why this cannot make anything worse. */
+        g_radio_at_us_ok = false;
+        {
+            uint64_t target_us = mark_ms * 1000ull;
+            uint64_t best = 0, best_err = 500000ull;
+            uint32_t have = g_mark_hist_n < MARK_HISTORY ? g_mark_hist_n : MARK_HISTORY;
+            for (uint32_t i = 0; i < have; i++) {
+                uint64_t t = g_mark_hist_us[i];
+                uint64_t err = (t > target_us) ? (t - target_us) : (target_us - t);
+                if (err < best_err) { best_err = err; best = t; }
+            }
+            if (best) { g_radio_at_us = best; g_radio_at_us_ok = true; }
+        }
         /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
          * own mark, not this call's `now`.
          *
@@ -205,6 +273,10 @@ void dcf77_service_status(dcf_status_t *out) {
     out->have_radio_time = g_have_radio;
     out->radio_utc = g_radio_utc;
     out->radio_at_ms = g_radio_at_ms;
+    out->radio_at_us = g_radio_at_us;
+    out->radio_at_us_ok = g_radio_at_us_ok;
+    out->edges_dropped = edgecap_dropped(&g_edges);
+    out->edges_total = edgecap_total(&g_edges);
     out->ever_synced = g_ever_synced;
     out->last_sync_utc = g_last_sync_utc;
     out->last_sync_ms = g_last_sync_ms;

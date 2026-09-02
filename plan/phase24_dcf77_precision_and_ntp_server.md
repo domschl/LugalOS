@@ -595,7 +595,7 @@ reception is, and the offsets it carries are dominated by WiFi asymmetry
 rather than by that quantisation -- P4's comparison is against PPS, not
 against this.
 
-**P3 — edge capture on the DCF pin. Now the enabling milestone.** §3.2 held
+**P3 — edge capture on the DCF pin. DONE 2026-09-02 (bench verify outstanding).** §3.2 held
 this at arm's length because a GPIO interrupt already timestamps a thousand
 times finer than the receiver's jitter, so the precision had nowhere to go.
 §3.4 gives it somewhere to go: the same mechanism, on a second pin, is what
@@ -615,7 +615,7 @@ spread of mark-to-mark intervals narrows measurably against P0's baseline; and
 `dcf-monitor` before and after shows the display's frame cadence unchanged --
 if it does not, §3.2's PIO fallback is what that failure means.
 
-**P3b — the GPS/PPS reference (§3.4).** A `drivers/gps_pps_rp2350.c` with two
+**P3b — the GPS/PPS reference (§3.4). BUILT 2026-09-02 (bench verify outstanding).** A `drivers/gps_pps_rp2350.c` with two
 halves that are useful separately:
 
 * **PPS capture**, through P3's own edge ring on a second pin (GP19). One more
@@ -632,6 +632,31 @@ milliseconds -- which is simultaneously a test of the capture path and of the
 lock; and NMEA reports a fix whose UTC second matches the second the PPS edge
 falls in. A PPS train that is *regular* but disagrees with NMEA by a whole
 second is the interesting failure and this check catches it.
+
+**As built, 2026-09-02.** `drivers/edgecap.c` is the shared half, and shared
+is the whole architecture: RP2350 has *one* interrupt for all of GPIO bank 0,
+so two drivers cannot each attach a handler and the dispatch has to live in
+one place. That is why §6 called P3 and P3b one piece of work, and it would
+have been discovered the expensive way by building them a month apart.
+
+`drivers/gps_pps_rp2350.c` is the second user. The DCF service is the first:
+it registers `CONFIG_DCF77_OUT_GPIO`, keeps a short history of pulse starts,
+and snaps a completed frame's mark to the captured edge nearest the
+millisecond one the decoder produced. **The decoder itself is untouched and
+stays sample-driven** -- its quality score's glitch term is sample-based and
+is phase 17 D5's baseline. What changed is only the instant a frame is
+stamped with.
+
+Two things were deliberately kept safe. No candidate within half a second
+means the capture missed it, and the millisecond mark is used unchanged --
+which is the pre-P3 behaviour, so this cannot make anything worse. And only
+pulse *starts* are timed on both pins: the other edge carries the pulse width,
+a property of the receiver or the GPS module rather than of the second.
+
+Visible without a console, because the board that does this measurement lives
+where its reception is: `/proc/gps` reports fix, satellites, the UTC second,
+the PPS interval and a trustworthiness verdict; `/proc/dcf77` gains
+`mark_from_edge`, `edges` and `edges_dropped`.
 
 **Explicitly not in P3b:** disciplining anything from GPS. The board reads it,
 timestamps it, and reports; nothing sets a clock from it. §3.4's transfer-

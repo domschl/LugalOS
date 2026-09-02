@@ -45,6 +45,14 @@ typedef struct {
     bool        have_radio_time;  /* a validated time has been decoded, ever */
     rtc_time_t  radio_utc;        /* ...this one, at radio_at_ms */
     uint64_t    radio_at_ms;
+    /* P3: the same instant, snapped to an interrupt-timestamped edge. False
+     * means the capture had no candidate and radio_at_ms is all there is --
+     * which is what every board had before P3, so a caller may simply prefer
+     * this when it is available. */
+    uint64_t    radio_at_us;
+    bool        radio_at_us_ok;
+    uint32_t    edges_dropped;   /* a ring too small, or a line too noisy */
+    uint32_t    edges_total;
 
     bool        ever_synced;
     rtc_time_t  last_sync_utc;

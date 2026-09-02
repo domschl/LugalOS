@@ -1066,7 +1066,14 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             "frames_seen=%u\nframes_accepted=%u\n"
             "parity_errors=%u\nframing_errors=%u\nrange_errors=%u\nweekday_errors=%u\n"
             "spacing_err_max_ms=%u\nbit_index=%d\nduty_permille=%u\n"
-            "quality_mean_tenths=%u\nquality_samples=%u\nlongest_clean_run_s=%u\n",
+            "quality_mean_tenths=%u\nquality_samples=%u\nlongest_clean_run_s=%u\n"
+            /* P3: whether the completed frame's instant came from an
+             * interrupt-timestamped edge or from the millisecond sample that
+             * noticed it, and how many edges the ring could not hold. A
+             * non-zero drop count on a quiet line means the ring is too small;
+             * on a noisy one it is the noise itself, and the quality figures
+             * above say which. */
+            "mark_from_edge=%s\nedges=%lu\nedges_dropped=%lu\n",
             (unsigned)st.decoder.pulses_seen, (unsigned)st.decoder.pulses_bad,
             (unsigned)st.decoder.glitches, (unsigned)st.decoder.sync_losses,
             (unsigned)st.decoder.frames_seen, (unsigned)st.decoder.frames_accepted,
@@ -1077,7 +1084,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             (unsigned)(st.decoder.quality_total
                 ? (st.decoder.quality_sum * 10u) / st.decoder.quality_total : 0),
             (unsigned)st.decoder.quality_total,
-            (unsigned)st.decoder.clean_run_max);
+            (unsigned)st.decoder.clean_run_max,
+            st.radio_at_us_ok ? "yes" : "no",
+            (unsigned long)st.edges_total, (unsigned long)st.edges_dropped);
 
         used += (uint32_t)ksnprintf(buf + used, cap - used, "quality=");
         for (unsigned i = 0; i < st.decoder.quality_count && used + 2 < cap; i++) {

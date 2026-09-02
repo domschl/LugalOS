@@ -9,7 +9,7 @@
     "drivers/cyw43_rp2350.c": 11909,
     "drivers/dcf77_p0log.c": 500,
     "drivers/dcf77_rp2350.c": 298,
-    "drivers/dcf77_service.c": 363,
+    "drivers/dcf77_service.c": 721,
     "drivers/edgecap.c": 21,
     "drivers/gps_pps_rp2350.c": 446,
     "drivers/i2c_rtc.c": 856,
@@ -58,5 +58,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 141742
+  "total": 142100
 }
