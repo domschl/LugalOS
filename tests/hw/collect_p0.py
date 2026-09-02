@@ -183,8 +183,14 @@ def main() -> int:
                     # visible, because the board's own accumulators counted
                     # the sample this listener did not hear.
                     gap = f"  (seq {rows[-2]['seq'] + 1}..{r['seq'] - 1} not heard)"
+                # Stratum on every line, not only in the summary. The
+                # reference losing its GPS is a failure that keeps answering
+                # and looks healthy -- it went 1 -> 3 -> 5 -> 7 -> 9 -> 11
+                # through one overnight run here and nothing said so until the
+                # log was graded afterwards. A watcher should see it happen.
+                st = f"st={r['stratum']}" if r["stratum"] == 1 else f"st={r['stratum']} <-- NOT stratum 1"
                 print(f"[{time.strftime('%H:%M:%S')}] {addr[0]:>15}  seq={r['seq']:<5} "
-                      f"t={r['t_s']:<6} off={r['off_ms']:+5d} rtt={r['rtt_ms']:<4} "
+                      f"t={r['t_s']:<6} off={r['off_ms']:+5d} rtt={r['rtt_ms']:<4} {st:<6} "
                       f"dcf={dcf:<10} q={r['q'] / 10:.1f} frames={r['frames']}{gap}")
                 if len(rows) % args.every == 0:
                     print("\n" + analyse(rows) + "\n")
