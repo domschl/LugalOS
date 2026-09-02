@@ -212,7 +212,7 @@ void clock_app_run(void) {
      * so the first pass through the loop always drives the indicator once --
      * a board that boots with no RTC lights it immediately rather than on
      * whatever later event happens to flip the flag. */
-    bool rtc_ok = i2c_rtc_is_detected();
+    bool rtc_ok = i2c_rtc_is_detected() && !i2c_rtc_lost_power();
     bool rtc_led_ok = !rtc_ok;
 
     uint64_t next_read = 0;
@@ -333,7 +333,12 @@ void clock_app_run(void) {
                  * `date` said so on the console. A clock that knows the time
                  * and will not show it is the worst of the available
                  * behaviours; this is the whole fix. */
-                if (i2c_rtc_read_time(&utc)) {
+                /* Trustworthy means answered *and* not flagged. A chip whose
+                 * OSF is set still reads, and its time may well be right --
+                 * but nothing can tell from here, so the face prefers the
+                 * kernel clock (which NTP or the radio may have set) and
+                 * lights the lamp to say the RTC is not vouching for it. */
+                if (i2c_rtc_read_time(&utc) && !i2c_rtc_lost_power()) {
                     tz_utc_to_local(&utc, &in.local);
                     rtc_ok = true;
                 } else {
@@ -419,8 +424,11 @@ void clock_app_run(void) {
             }
         }
 
-        /* The vendor's "PM" lamp, lit when the DS3231 could not be read and
-         * the face is running off the kernel's own clock instead.
+        /* The vendor's "PM" lamp, lit when the DS3231 is not vouching for the
+         * time on the panel -- either it could not be read at all, or its OSF
+         * says its oscillator stopped at some point and nothing has set the
+         * clock since. Either way the face is running off the kernel's own
+         * clock instead.
          *
          * PM is free because this clock keeps 24-hour time and always has
          * (§8, plan/phase17_clock_ui_and_dcf77.md), the same argument that
@@ -433,9 +441,11 @@ void clock_app_run(void) {
          * language as the DCF and network lamps below: those describe a
          * service that comes and goes, where blink-while-trying is
          * meaningful. A missing RTC does not come back on its own. Steady
-         * light means "the time on this panel is real, but it will not
-         * survive a power cut" -- which is exactly what a person needs to
-         * know before trusting the clock after an outage.
+         * light means "the time on this panel is real, but the chip that is
+         * supposed to remember it across a power cut is not vouching for
+         * it" -- which is what a person needs to know before trusting the
+         * clock after an outage. Setting the clock clears OSF and puts the
+         * lamp out, so it also doubles as "this needs doing once".
          *
          * Driven from the same read that sets the time, so it cannot
          * disagree with what is on the display. */

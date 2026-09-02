@@ -306,10 +306,22 @@ void i2c_rtc_init(void) {
      * a plausible one. Detecting it here is what lets the clock be written
      * (which clears OSF) instead of the board deciding there is no RTC. */
     if (i2c_rtc_lost_power()) {
+        /* The chip answered, so it is detected -- but its time is unverified
+         * and does not become this system's clock. A DS3231 that lost its
+         * oscillator reads 2000-01-01 00:00:00, which passes every range
+         * check, so seeding from it would replace a known-unset clock with a
+         * confidently wrong one. Nothing is worse to boot with.
+         *
+         * Not a diagnosis of the backup cell. OSF is sticky and this tree has
+         * never cleared it, so on any board that has run before today it may
+         * be reporting something old. Setting the clock -- by hand, from NTP,
+         * or from the radio -- clears it, and from then on it means what it
+         * says. */
         g_rtc_detected = true;
-        printk("[I2C RTC] DS3231 present but its oscillator stopped (OSF set): "
-               "the stored time is not usable. Backup cell? Set the clock to "
-               "clear it.\n");
+        printk("[I2C RTC] DS3231 at 0x68 answered, but OSF is set: its time is "
+               "unverified and was not used. Set the clock to clear it "
+               "(the flag is sticky and may be reporting an old event).\n");
+        return;
     } else if (i2c_rtc_hw_read_time(&tm)) {
         if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             g_rtc_detected = true;
@@ -372,12 +384,23 @@ static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
         return false;
     }
 
-    /* A stopped oscillator means the seven bytes above describe nothing. Fail
-     * the read rather than hand back a plausible wrong time -- a caller that
-     * gets `false` falls back to whatever else it knows, and a caller that
-     * gets 2000-01-01 believes it. */
-    if (buf[0] & 0x80) return false;              /* DS1307 CH: clock halted */
-    if (i2c_rtc_lost_power()) return false;       /* DS3231 OSF */
+    /* CH is current state -- the DS1307's oscillator is halted *now* -- so a
+     * read is genuinely meaningless and fails.
+     *
+     * OSF deliberately does NOT fail the read, and the distinction cost a
+     * wrong conclusion before it was understood: **OSF is sticky**. The
+     * DS3231 sets it when the oscillator stops and leaves it set until
+     * software clears it, which nothing in this tree ever did -- so every
+     * board here has it set, reporting an event that may be months old on a
+     * chip that has kept perfect time ever since. Failing reads on it would
+     * declare every working RTC in the fleet unusable.
+     *
+     * What it does mean is "this time has not been verified since the last
+     * time the oscillator stopped", which is a caller's judgement to make:
+     * i2c_rtc_init() declines to seed the *kernel* clock from it, and the
+     * clock face lights a lamp. Writing the time clears the flag, so from
+     * then on it means what it says. */
+    if (buf[0] & 0x80) return false;              /* DS1307 CH: halted right now */
 
     tm->sec  = bcd2dec(buf[0] & 0x7F);
     tm->min  = bcd2dec(buf[1] & 0x7F);
