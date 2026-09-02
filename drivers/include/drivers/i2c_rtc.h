@@ -7,6 +7,13 @@
 
 void i2c_rtc_init(void);
 bool i2c_rtc_read_time(rtc_time_t *tm);
+/* True when the RTC reports that its oscillator stopped -- a DS3231 setting
+ * OSF, which is what a power loss with no working backup cell looks like from
+ * software. The stored time is meaningless while this holds, and meaningless
+ * in a way that *passes every range check*: a reset DS3231 reads
+ * 2000-01-01 00:00:00. Writing the time clears it. */
+bool i2c_rtc_lost_power(void);
+
 bool i2c_rtc_write_time(const rtc_time_t *tm);
 bool i2c_rtc_is_detected(void);
 void i2c_scan_bus(void);

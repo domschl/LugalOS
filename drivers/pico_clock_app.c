@@ -205,6 +205,7 @@ void clock_app_run(void) {
     {
         rtc_time_t utc;
         if (i2c_rtc_read_time(&utc)) tz_utc_to_local(&utc, &in.local);
+        else                          time_get_local(&in.local);
     }
 
     uint64_t next_read = 0;
@@ -313,7 +314,20 @@ void clock_app_run(void) {
             clock_ui_screen(&st, &in, now, &scr);
             if (scr.kind == UI_SCR_TIME || scr.kind == UI_SCR_TEXT) {
                 rtc_time_t utc;
+                /* The DS3231 first -- it is the clock that survives a power
+                 * cut -- and the kernel's own clock when that read fails.
+                 *
+                 * Without the fallback a failed read left `in.local` holding
+                 * whatever it had last, which at boot is the seeded
+                 * 2026-01-01 00:00:00. A board with no RTC fitted, or one
+                 * whose backup cell has died, therefore displayed a fixed
+                 * 00:00 for as long as it ran -- while its kernel clock was
+                 * correct to the millisecond from NTP or from the radio, and
+                 * `date` said so on the console. A clock that knows the time
+                 * and will not show it is the worst of the available
+                 * behaviours; this is the whole fix. */
                 if (i2c_rtc_read_time(&utc)) tz_utc_to_local(&utc, &in.local);
+                else                          time_get_local(&in.local);
             }
             if (scr.kind == UI_SCR_TEMP || st.mode == UI_MODE_SHORTCUT_TEMP ||
                 (st.mode == UI_MODE_ITEM && st.item == UI_ITEM_TEMP)) {

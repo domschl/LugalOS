@@ -300,7 +300,17 @@ void i2c_rtc_init(void) {
     rtc_time_t tm;
     g_rtc_detected = false;
 
-    if (i2c_rtc_hw_read_time(&tm)) {
+    /* A chip that answers but has lost its oscillator is a *detected* chip
+     * with an unusable time -- a distinction the old code could not draw,
+     * because it only ever asked for the time and a stopped DS3231 hands back
+     * a plausible one. Detecting it here is what lets the clock be written
+     * (which clears OSF) instead of the board deciding there is no RTC. */
+    if (i2c_rtc_lost_power()) {
+        g_rtc_detected = true;
+        printk("[I2C RTC] DS3231 present but its oscillator stopped (OSF set): "
+               "the stored time is not usable. Backup cell? Set the clock to "
+               "clear it.\n");
+    } else if (i2c_rtc_hw_read_time(&tm)) {
         if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             g_rtc_detected = true;
             /* The DS3231 holds UTC, not local time (user, 2026-08-23). It is
@@ -329,12 +339,45 @@ bool i2c_rtc_is_detected(void) {
     return g_rtc_detected;
 }
 
+/* DS3231 status register, and the one bit in it that matters here.
+ *
+ * OSF is set by the chip whenever its oscillator has stopped -- which is what
+ * happens when it loses power with no working backup cell -- and stays set
+ * until something clears it. It is the chip saying, in the only way it can,
+ * "the time in my registers is meaningless".
+ *
+ * It has to be read, because the meaningless value is *plausible*: a
+ * DS3231 that has lost power reads 2000-01-01 00:00:00, and every range check
+ * anyone would write -- month 1-12, day 1-31, hour under 24 -- passes it. A
+ * clock face then shows midnight on New Year's Day 2000 with no indication
+ * that anything is wrong, which is exactly what a Pico-Clock-Green did for a
+ * day while the board's own kernel clock was correct to the millisecond.
+ *
+ * The DS1307 uses bit 7 of register 0 (CH, "clock halt") for the same job.
+ * Both are checked; on a part that has neither, the register reads as
+ * something without those bits set and nothing is lost. */
+#define DS3231_REG_STATUS 0x0F
+#define DS3231_STATUS_OSF 0x80
+
+bool i2c_rtc_lost_power(void) {
+    uint8_t st;
+    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return false;
+    return (st & DS3231_STATUS_OSF) != 0;
+}
+
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
     if (!tm) return false;
     uint8_t buf[7];
     if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x00, buf, 7)) {
         return false;
     }
+
+    /* A stopped oscillator means the seven bytes above describe nothing. Fail
+     * the read rather than hand back a plausible wrong time -- a caller that
+     * gets `false` falls back to whatever else it knows, and a caller that
+     * gets 2000-01-01 believes it. */
+    if (buf[0] & 0x80) return false;              /* DS1307 CH: clock halted */
+    if (i2c_rtc_lost_power()) return false;       /* DS3231 OSF */
 
     tm->sec  = bcd2dec(buf[0] & 0x7F);
     tm->min  = bcd2dec(buf[1] & 0x7F);
@@ -359,10 +402,26 @@ static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
     reg_buf[6] = dec2bcd(tm->month);
     reg_buf[7] = dec2bcd((uint8_t)(tm->year >= 2000 ? (tm->year - 2000) : tm->year));
 
-    if (g_rtc_detected) {
-        return i2c_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8);
+    if (!g_rtc_detected) return false;
+    if (!i2c_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8)) return false;
+
+    /* Clear OSF now that the registers hold a real time again.
+     *
+     * The chip sets it and never clears it itself, so leaving it set would
+     * make every subsequent read fail on a clock that is now correct -- the
+     * flag would outlive the condition it reports. The datasheet prescribes
+     * exactly this: write the time, then clear the flag.
+     *
+     * Best-effort: a part with no status register (a DS1307) NAKs the write
+     * and the time is still set, which is the outcome that matters. */
+    uint8_t st;
+    if (i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1) &&
+        (st & DS3231_STATUS_OSF)) {
+        uint8_t clear_buf[2] = { DS3231_REG_STATUS,
+                                 (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
+        i2c_write_bytes(DS1307_DS3231_I2C_ADDR, clear_buf, 2);
     }
-    return false;
+    return true;
 }
 
 static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {

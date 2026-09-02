@@ -2107,6 +2107,12 @@ static void wifi_sleep_ms(uint32_t ms) {
     while (time_get_ms() < end) sched_yield();
 }
 
+/* How long a link may claim to be up while receiving nothing at all. Five
+ * minutes is far longer than any quiet period a real segment has -- ARP alone
+ * is more frequent -- and short enough that an unattended board recovers
+ * within one measurement cycle rather than one working day. */
+#define RX_SILENCE_MS (5u * 60u * 1000u)
+
 static void cyw43_autostart_body(void *arg) {
     (void)arg;
 
@@ -2155,6 +2161,8 @@ static void cyw43_autostart_body(void *arg) {
      * quietly stops answering after an outage nobody was awake for. */
     unsigned attempt = 0;
     bool was_up = false;
+    uint32_t last_rx = 0;
+    uint64_t last_rx_change_ms = 0;
     for (;;) {
         if (g_link_up) {
             if (!was_up) {
@@ -2172,6 +2180,39 @@ static void cyw43_autostart_body(void *arg) {
                 task_set_priority(sched_current_pid(), TASK_PRIO_BACKGROUND);
             }
             attempt = 0;
+
+            /* Carrier is not the same as reachability, and only one of them
+             * has an event.
+             *
+             * g_link_up is set and cleared exclusively by the firmware's own
+             * DEAUTH/DISASSOC events, which is exactly right when the AP says
+             * goodbye. An AP that simply stops -- power cut, crash, the board
+             * carried out of range -- says nothing, so carrier stays asserted,
+             * this supervisor sees a healthy link forever, and the board is
+             * quietly off the network with nothing to notice. A clock board
+             * running an hourly measurement went silent that way on
+             * 2026-09-02 and was indistinguishable from a crash.
+             *
+             * So: liveness, not just carrier. On any real segment something
+             * arrives -- ARP, broadcasts, our own replies -- so a receive
+             * counter that has not moved in RX_SILENCE_MS means the link is
+             * up in name only. Forcing a rejoin costs about five seconds and
+             * is safe to do to a link that turns out to be fine; not doing it
+             * costs the board until someone notices. */
+            netif_t *nif = netif_default();
+            uint32_t rx = nif ? nif->rx_frames : 0;
+            uint64_t now = time_get_ms();
+            if (rx != last_rx) { last_rx = rx; last_rx_change_ms = now; }
+            else if (last_rx_change_ms && now - last_rx_change_ms > RX_SILENCE_MS) {
+                printk("cyw43: link claims up but nothing received for %u s -- rejoining\n",
+                       (unsigned)(RX_SILENCE_MS / 1000u));
+                last_rx_change_ms = now;   /* do not retry this every 2 s */
+                g_link_up = false;         /* fall through to the rejoin below */
+                was_up = false;
+                task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
+                continue;
+            }
+
             wifi_sleep_ms(2000);
             continue;
         }
