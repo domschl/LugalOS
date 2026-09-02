@@ -294,8 +294,67 @@ static bool i2c_rtc_hw_read_time(rtc_time_t *tm);
 static bool i2c_rtc_hw_write_time(const rtc_time_t *tm);
 static bool i2c_rtc_hw_read_temperature_c(int *temp_c);
 
+/* DS3231 status register, and the one bit in it that matters here.
+ *
+ * OSF is set by the chip whenever its oscillator has stopped -- which is what
+ * happens when it loses power with no working backup cell -- and stays set
+ * until something clears it. It is the chip saying, in the only way it can,
+ * "the time in my registers is meaningless".
+ *
+ * It has to be read, because the meaningless value is *plausible*: a
+ * DS3231 that has lost power reads 2000-01-01 00:00:00, and every range check
+ * anyone would write -- month 1-12, day 1-31, hour under 24 -- passes it. A
+ * clock face then shows midnight on New Year's Day 2000 with no indication
+ * that anything is wrong, which is exactly what a Pico-Clock-Green did for a
+ * day while the board's own kernel clock was correct to the millisecond.
+ *
+ * The DS1307 uses bit 7 of register 0 (CH, "clock halt") for the same job.
+ * Both are checked; on a part that has neither, the register reads as
+ * something without those bits set and nothing is lost. */
+#define DS3231_REG_STATUS 0x0F
+#define DS3231_STATUS_OSF 0x80
+#define DS3231_REG_TEMP   0x11
+
+/* Which of the two parts is on the bus, decided once at init.
+ *
+ * They share an address and a time-register layout, which is why one driver
+ * has always served both -- but **the registers this file reaches beyond the
+ * clock are not the same registers on the two parts**, and treating them as
+ * equal is actively harmful rather than merely inaccurate:
+ *
+ *   0x0F : DS3231 status (OSF). On a DS1307 this is **user NVRAM** -- the
+ *          part has 56 battery-backed bytes at 0x08-0x3F. Reading it returns
+ *          whatever the owner stored, so a byte with bit 7 set would be
+ *          reported as a stopped oscillator forever; and *clearing* OSF after
+ *          a write would silently corrupt one of those bytes. That second one
+ *          is data loss in someone else's data.
+ *   0x11 : DS3231 temperature. NVRAM again on a DS1307, so the temperature
+ *          this driver has always reported on such a board was two arbitrary
+ *          bytes formatted as degrees. Pre-existing, and gated here too.
+ *   0x00 bit 7 : DS1307 CH (clock halt). Unused and always 0 on a DS3231, so
+ *          checking it is harmless on both and meaningful on one.
+ *
+ * Identified from invariants rather than from a part number, because neither
+ * part has one to read. Two independent DS3231-only facts have to hold: the
+ * status register's bits 6:4 are always zero, and the temperature fraction
+ * byte's bits 5:0 are always zero. NVRAM satisfying both by chance is one
+ * count in 2^12 per byte pair, and a DS1307 whose NVRAM happens to is left
+ * doing exactly what it did before this check existed. */
+static bool g_is_ds3231;
+
+static void i2c_rtc_identify_part(void) {
+    g_is_ds3231 = false;
+    uint8_t st, temp[2];
+    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return;
+    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_TEMP, temp, 2)) return;
+    if (st & 0x70) return;          /* reserved in the DS3231's status */
+    if (temp[1] & 0x3F) return;     /* only bits 7:6 of the fraction exist */
+    g_is_ds3231 = true;
+}
+
 void i2c_rtc_init(void) {
     i2c_hw_init();
+    i2c_rtc_identify_part();
 
     rtc_time_t tm;
     g_rtc_detected = false;
@@ -335,10 +394,12 @@ void i2c_rtc_init(void) {
             char isostr[32];
             time_format_iso(&tm, isostr, sizeof(isostr));
 #if defined(CONFIG_BOARD_RP2350)
-            printk("[I2C RTC] DS1307/DS3231 detected at 0x68 (GP%d/GP%d)! Synced UTC: %s\n",
+            printk("[I2C RTC] %s detected at 0x68 (GP%d/GP%d)! Synced UTC: %s\n",
+                   g_is_ds3231 ? "DS3231" : "DS1307-compatible",
                    CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
 #else
-            printk("[I2C RTC] DS1307/DS3231 detected at 0x68! Synced UTC: %s\n", isostr);
+            printk("[I2C RTC] %s detected at 0x68! Synced UTC: %s\n",
+                   g_is_ds3231 ? "DS3231" : "DS1307-compatible", isostr);
 #endif
             return;
         }
@@ -351,27 +412,11 @@ bool i2c_rtc_is_detected(void) {
     return g_rtc_detected;
 }
 
-/* DS3231 status register, and the one bit in it that matters here.
- *
- * OSF is set by the chip whenever its oscillator has stopped -- which is what
- * happens when it loses power with no working backup cell -- and stays set
- * until something clears it. It is the chip saying, in the only way it can,
- * "the time in my registers is meaningless".
- *
- * It has to be read, because the meaningless value is *plausible*: a
- * DS3231 that has lost power reads 2000-01-01 00:00:00, and every range check
- * anyone would write -- month 1-12, day 1-31, hour under 24 -- passes it. A
- * clock face then shows midnight on New Year's Day 2000 with no indication
- * that anything is wrong, which is exactly what a Pico-Clock-Green did for a
- * day while the board's own kernel clock was correct to the millisecond.
- *
- * The DS1307 uses bit 7 of register 0 (CH, "clock halt") for the same job.
- * Both are checked; on a part that has neither, the register reads as
- * something without those bits set and nothing is lost. */
-#define DS3231_REG_STATUS 0x0F
-#define DS3231_STATUS_OSF 0x80
 
 bool i2c_rtc_lost_power(void) {
+    /* DS3231 only. On a DS1307 the address is user NVRAM and the answer would
+     * be whatever the owner put there. */
+    if (!g_is_ds3231) return false;
     uint8_t st;
     if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return false;
     return (st & DS3231_STATUS_OSF) != 0;
@@ -438,7 +483,8 @@ static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
      * Best-effort: a part with no status register (a DS1307) NAKs the write
      * and the time is still set, which is the outcome that matters. */
     uint8_t st;
-    if (i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1) &&
+    if (g_is_ds3231 &&
+        i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1) &&
         (st & DS3231_STATUS_OSF)) {
         uint8_t clear_buf[2] = { DS3231_REG_STATUS,
                                  (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
@@ -449,6 +495,9 @@ static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
 
 static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {
     if (!temp_c || !g_rtc_detected) return false;
+    /* A DS1307 has no thermometer; 0x11 is two bytes of its NVRAM. This used
+     * to format them as degrees. */
+    if (!g_is_ds3231) return false;
 
     uint8_t buf[2];
     if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x11, buf, 2)) {
