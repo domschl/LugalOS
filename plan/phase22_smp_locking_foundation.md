@@ -217,6 +217,37 @@ local type.
 exact regression check that caught the original race in production, and
 it stays the regression check here.
 
+**DONE 2026-09-03.** `p9_lock_t`, `p9_lock()` and `p9_unlock()` deleted;
+`g_pump_lock` and `g_client_lock` are `ylock_t`, 12 call sites converted,
+and `kernel/irq.h` dropped from the file's includes because the lock was
+its only user. Every documented property is unchanged — re-entrant for the
+owning task, yields rather than spins, separate locks for pump and client
+so a client waiting for a reply cannot block the pump that delivers it.
+What changed is that the test-and-set is now a real atomic instead of a
+plain read-then-write that was indivisible only because interrupt masking
+kept a *second access from the same hart* out.
+
+*Verified:* QEMU **320/320**, run five times — the intermittency the
+original race showed (roughly one run in three) means a single green run
+is not evidence. All four multi-node 9P tests pass, plus the recursive
+`/self/self/` mount case that is why re-entrancy is required at all. On
+RP2350 (chess persona): **24/24**, including the three tests that drive
+`p9_link.c` over real hardware — `link_usb_cdc`'s 9P read, its
+garbage-resync path, and T3's QEMU-guest-to-board bridge.
+
+Static RAM: **+0**. That figure took a correction worth recording. Written
+first as `static ylock_t g_pump_lock = YLOCK_INIT;`, `sizecheck` reported
+a 24-byte *saving* for a like-for-like swap of two 12-byte objects —
+because on RP2350 an initialised static lands in `.data`, which
+`linker/rp2350.ld` puts inside an executable PT_LOAD, so `nm` types it `t`
+and `tools/sizereport.py` (which counts `b` and `d`) never sees it. The
+memory had not gone anywhere; it had become invisible. `ylock_t` now
+defines all-zero as its free state — `depth` is the sole authority and
+`ylock_owner()` reports -1 below 1 — so the statics stay in `.bss` and
+stay counted. The tool's blind spot is its own entry in
+`plan/open_issues.md`: on RP2350 `.bss` and the heap are the same memory,
+which is the entire reason that guard exists.
+
 **S3 — convert `kernel/chan.c`'s endpoint busy flag** to `spinlock_t`.
 *Verify:* `chanechotest` and the rest of the IPC-heavy suite, unchanged.
 

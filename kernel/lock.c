@@ -82,7 +82,12 @@ void ylock_release(ylock_t *l) {
     irq_restore(f);
 }
 
-int ylock_owner(const ylock_t *l) { return l ? l->owner : -1; }
+int ylock_owner(const ylock_t *l) {
+    /* depth, not owner, decides "free" -- see the header: that is what makes
+     * an all-zero static a valid unlocked lock rather than one owned by
+     * pid 0. */
+    return (l && l->depth > 0) ? l->owner : -1;
+}
 int ylock_depth(const ylock_t *l) { return l ? l->depth : 0; }
 
 /* --- selftest --------------------------------------------------------- */

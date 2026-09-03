@@ -87,12 +87,26 @@ bool spin_is_locked(const spinlock_t *l);
 
 typedef struct {
     volatile uint32_t word;   /* 0 free, 1 held -- the cross-hart gate */
-    volatile int      owner;  /* pid of the holding task, -1 when free */
+    volatile int      owner;  /* holding task's pid; only meaningful at depth>0 */
     volatile int      depth;  /* re-entry count; 0 when free */
 } ylock_t;
 
-#define YLOCK_INIT { 0, -1, 0 }
-
+/* All-zero is a valid, free ylock_t, so a static one needs no initializer.
+ *
+ * `depth` is the sole authority on whether the lock is held; `owner` is only
+ * read when depth > 0, and ylock_owner() reports -1 below that regardless of
+ * what the field holds. So the zero state and an explicitly-initialised one
+ * are indistinguishable through the API.
+ *
+ * That is worth spelling out because the tempting alternative -- a
+ * `{ 0, -1, 0 }` initialiser, which reads better -- has a non-obvious cost on
+ * the target where memory is tightest. An initialised static lands in .data,
+ * and on RP2350 .data sits inside an executable PT_LOAD (linker/rp2350.ld's
+ * .ramfunc), so `nm` types it `t` and tools/sizereport.py -- which counts
+ * only `b` and `d` -- does not see it at all. Writing S2's two locks that way
+ * made the RP2350 budget report a 24-byte *saving* for memory that had merely
+ * become invisible. Left zero, they stay in .bss and stay counted. See
+ * plan/open_issues.md. */
 void ylock_init(ylock_t *l);
 
 /* Takes `l`, yielding the CPU while another task holds it.
@@ -109,8 +123,10 @@ void ylock_init(ylock_t *l);
 void ylock_acquire(ylock_t *l);
 void ylock_release(ylock_t *l);
 
-/* The pid holding `l`, or -1. Diagnostics and selftests; see spin_is_locked()
- * on why a caller must not gate an acquisition on it. */
+/* The pid holding `l`, or -1 when it is free -- which is decided by depth,
+ * not by the owner field, so an all-zero lock reports -1 rather than pid 0.
+ * Diagnostics and selftests; see spin_is_locked() on why a caller must not
+ * gate an acquisition on it. */
 int  ylock_owner(const ylock_t *l);
 int  ylock_depth(const ylock_t *l);
 
