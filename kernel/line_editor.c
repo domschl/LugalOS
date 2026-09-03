@@ -294,9 +294,21 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
                 exit_editor_cleanup(len, out_buf);
                 return 0;
             } else if (c2 == 0x13 || c2 == 's' || c2 == 'S') { // Ctrl-S: Save
-                vfs_write(active_filename, out_buf, len);
-                modified = false;
-                strcpy(status_msg, "Wrote file");
+                /* The return value is the point. This used to be discarded,
+                 * and the two lines under it ran unconditionally -- so a
+                 * write to an unmounted /sd0, a read-only /flash0 or a full
+                 * volume reported "Wrote file", cleared `modified`, and thus
+                 * disarmed the "Buffer modified. Discard changes?" guard on
+                 * the way out. The editor told you it had saved and then let
+                 * you leave without another word. Losing the buffer was the
+                 * *quiet* outcome; vfs_write() had been returning -1 the
+                 * whole time and nothing looked. */
+                if (vfs_write(active_filename, out_buf, len) == 0) {
+                    modified = false;
+                    strcpy(status_msg, "Wrote file");
+                } else {
+                    strcpy(status_msg, "WRITE FAILED -- not saved (unmounted? read-only?)");
+                }
                 redraw_box(active_filename, out_buf, len, pos, status_msg);
                 status_msg[0] = '\0';
                 continue;
@@ -357,9 +369,14 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
                 char fn_in[128];
                 if (read_status_prompt(num_lines, g_prev_target_line, "Write file: ", fn_in, sizeof(fn_in))) {
                     safe_strncpy(active_filename, fn_in, sizeof(active_filename));
-                    vfs_write(active_filename, out_buf, len);
-                    modified = false;
-                    strcpy(status_msg, "Wrote file as");
+                    /* Same as Ctrl-S above: report what actually happened,
+                     * and keep `modified` set when it didn't. */
+                    if (vfs_write(active_filename, out_buf, len) == 0) {
+                        modified = false;
+                        strcpy(status_msg, "Wrote file as");
+                    } else {
+                        strcpy(status_msg, "WRITE FAILED -- not saved (unmounted? read-only?)");
+                    }
                 }
                 redraw_box(active_filename, out_buf, len, pos, status_msg);
                 status_msg[0] = '\0';

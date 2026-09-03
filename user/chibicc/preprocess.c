@@ -267,7 +267,7 @@ static void preprocess_internal(const char *src, int depth) {
                     vfs_path[vlen] = '\0';
                 }
 
-                int r = vfs_read(vfs_path, hdr_buf, sizeof(hdr_buf) - 1);
+                int r = vfs_read(vfs_path, hdr_buf, HDR_BUF_SIZE - 1);
                 if (r <= 0 && hdr_path[0] != '/') {
                     int vlen = 0;
                     const char *prefix = "/ram0/include/";
@@ -275,7 +275,7 @@ static void preprocess_internal(const char *src, int depth) {
                     const char *hp = hdr_path;
                     while (*hp && vlen < 63) vfs_path[vlen++] = *hp++;
                     vfs_path[vlen] = '\0';
-                    r = vfs_read(vfs_path, hdr_buf, sizeof(hdr_buf) - 1);
+                    r = vfs_read(vfs_path, hdr_buf, HDR_BUF_SIZE - 1);
                 }
 
                 if (r > 0) {

@@ -91,7 +91,19 @@ struct Type {
 };
 
 struct Obj {
+    /* The `locals` chain, built by new_var() as it prepends each new
+     * variable. */
     Obj *next;
+    /* The parameter chain of the function being parsed, kept separate from
+     * `next` on purpose.
+     *
+     * Both lists used to share `next`, which works for exactly as long as a
+     * function has at most one parameter. With two, new_var() prepends `b`
+     * to locals (b->next = a) and the parameter walk then links a->next = b,
+     * so the two point at each other: a cycle, which the stack-offset loop
+     * in parse.c walks until its `int` overflows and UBSan halts the board.
+     * `int main(int a, int b)` was enough to do it. */
+    Obj *param_next;
     char name[32];
     Type *ty;
     int offset;

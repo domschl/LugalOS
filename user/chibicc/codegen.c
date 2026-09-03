@@ -147,6 +147,12 @@ static void gen_addr(Node *node, uint8_t *code_buf) {
 }
 
 static Function *global_prog = NULL;
+
+/* True only while the final (emitting) pass runs. The dry passes exist to
+ * converge function offsets, so a diagnostic raised in one of them is
+ * reporting on offsets that are not settled yet. */
+static bool g_final_pass = false;
+
 static int break_jals[16];
 static int break_cnt = 0;
 static int loop_depth = 0;
@@ -263,19 +269,43 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 return;
             }
 
-            int target_offset = 0;
+            /* Resolve by identity, and emit a jal either way.
+             *
+             * Two things used to go wrong here, and the second one is why a
+             * program with several functions produced no output at all.
+             *
+             * First, "not found" was inferred from `code_offset == 0`. But
+             * codegen() puts main at order[0], so offset 0 is a perfectly
+             * ordinary address for it -- and during the first dry pass every
+             * function that has not been emitted yet still holds the 0 its
+             * memset left. A real call to a real function therefore read as
+             * unresolved purely because of where it sat in the pass.
+             *
+             * Second, and worse: that branch `return`ed without emitting
+             * anything. The offset-convergence loop in codegen() depends on
+             * every pass emitting the *same number of bytes* so that the
+             * offsets it measures in one pass are still true in the next.
+             * Skipping an instruction in the dry passes and emitting it in
+             * the final one moves every subsequent function, so nothing ever
+             * converged: with four functions the entry point no longer landed
+             * on main and the program ran off into nothing, silently.
+             *
+             * So: look the name up as a pointer, emit a jal unconditionally
+             * (a placeholder to nowhere if it is genuinely unknown, which
+             * keeps the size identical in every pass), and only warn on the
+             * final pass, where the answer is real. */
+            Function *target = NULL;
             for (Function *fn = global_prog; fn; fn = fn->next) {
                 if (strcmp(fn->name, node->funcname) == 0) {
-                    target_offset = fn->code_offset;
+                    target = fn;
                     break;
                 }
             }
-            if (target_offset == 0 && strcmp(node->funcname, "main") != 0) {
+            if (!target && g_final_pass) {
                 printk("[chibicc Warning] Unresolved function call '%s'\n", node->funcname);
-                return;
             }
             int jal_pc = code_idx;
-            int diff = target_offset - jal_pc;
+            int diff = target ? (target->code_offset - jal_pc) : 0;
             code_idx = emit_word(code_buf, code_idx, encode_jal(1, diff));
             return;
         }
@@ -445,6 +475,7 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
 
     // 1. Pass 1: Run dry runs to converge function offsets and calculate .rodata section
     int rodata_offset = 0;
+    g_final_pass = false;
     for (int pass = 0; pass < 3; pass++) {
         code_idx = 0;
         break_cnt = 0;
@@ -463,7 +494,7 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
             code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
 
             int param_idx = 0;
-            for (Obj *param = fn->params; param; param = param->next) {
+            for (Obj *param = fn->params; param; param = param->param_next) {
                 int sz = param->ty ? param->ty->size : 4;
                 code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, (int16_t)param->offset, sz));
                 param_idx++;
@@ -489,6 +520,7 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
     }
 
     // 2. Pass 2: Final Machine Code Generation with resolved function and string offsets
+    g_final_pass = true;
     code_idx = 0;
     break_cnt = 0;
     loop_depth = 0;
@@ -506,7 +538,7 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
 
         int param_idx = 0;
-        for (Obj *param = fn->params; param; param = param->next) {
+        for (Obj *param = fn->params; param; param = param->param_next) {
             int sz = param->ty ? param->ty->size : 4;
             code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, (int16_t)param->offset, sz));
             param_idx++;

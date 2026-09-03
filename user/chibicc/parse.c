@@ -688,8 +688,27 @@ static Node *compound_stmt(Token **rest, Token *tok) {
 }
 
 static Function *function(Token **rest, Token *tok) {
-    node_pool_idx = 0;
-    obj_pool_idx = 0;
+    /* Only `locals` resets per function. The node and object pools do NOT.
+     *
+     * They used to, and it is the same mistake type_pool_exhausted() above
+     * already explains it is avoiding: "index 0 and everything after it up to
+     * the current index is still referenced by already-built AST/type nodes,
+     * so wrapping there would silently corrupt them." Resetting these two
+     * indices at the top of every function did precisely that -- the second
+     * function's body was built on top of the first function's, so only the
+     * last function in a file ever came out with an intact AST.
+     *
+     * It compiled clean and produced a wrong program: `int seven(){ return
+     * 7; } int main(){ putnum(seven()); return 0; }` printed 0. No
+     * diagnostic, no fault, just the wrong answer -- which is why this was
+     * invisible for as long as every test compiled a single function.
+     *
+     * The cost of not recycling is that the pools now have to hold a whole
+     * translation unit rather than its largest function, and on RP2350 they
+     * are deliberately small (MAX_NODES 256, MAX_OBJS 128). A program that
+     * outgrows them now trips chibicc_pool_exhausted, which refuses to emit
+     * a binary and says so. An honest "pool exhausted" is worth a great deal
+     * more than a silently wrong one. */
     locals = NULL;
 
     Type *ret_ty = typespec(&tok, tok);
@@ -701,14 +720,41 @@ static Function *function(Token **rest, Token *tok) {
 
     Obj head = {0};
     Obj *cur_param = &head;
+    bool first_param = true;
 
     while (!equal(tok, ")") && tok->kind != TK_EOF) {
-        if (cur_param != &head) tok = skip(tok, ",");
+        if (!first_param) tok = skip(tok, ",");
+        first_param = false;
         Type *ty = typespec(&tok, tok);
         while (equal(tok, "*")) {
             ty = pointer_to(ty);
             tok = tok->next;
         }
+
+        /* A parameter with no declarator name: `(void)`, and equally an
+         * unnamed parameter like `int f(int)`. Both are ordinary C and
+         * neither has a name token to take.
+         *
+         * The loop used to take whatever came next as the name
+         * unconditionally. For `(void)` that name was the closing paren
+         * itself, so `tok` stepped *past* the end of the parameter list and
+         * the loop -- whose only exit is finding `)` -- kept going through
+         * the rest of the file, manufacturing parameters out of `{`,
+         * `return`, `int`, `main` and so on. Each one was pushed onto
+         * `locals`, and re-pushing a slot the list already held closed it
+         * into a cycle; the stack-offset walk below then added 8 to `offset`
+         * forever until the signed overflow tripped UBSan, which is fatal
+         * here -- so `int main(void){ return 0; }`, on its own, halted the
+         * whole board. `int main()` was fine, which is why this survived:
+         * every test and sample in the tree happened to use the empty form.
+         *
+         * `first_param` replaces the old `cur_param != &head` test for
+         * comma-skipping, because that test asked "did we bind a variable",
+         * and an unnamed parameter is a parameter that binds nothing --
+         * `int f(int, int)` would otherwise never consume its comma and
+         * spin here instead. */
+        if (equal(tok, ")") || equal(tok, ",")) continue;
+
         Token *param_tok = tok;
         tok = tok->next;
 
@@ -718,7 +764,7 @@ static Function *function(Token **rest, Token *tok) {
         p_name[len] = '\0';
 
         Obj *p_var = new_var(p_name, ty);
-        cur_param = cur_param->next = p_var;
+        cur_param = cur_param->param_next = p_var;
     }
     tok = skip(tok, ")");
     if (equal(tok, ";")) {
@@ -739,7 +785,7 @@ static Function *function(Token **rest, Token *tok) {
     strncpy(fn->name, fn_tok->loc, len);
     fn->name[len] = '\0';
 
-    fn->params = head.next;
+    fn->params = head.param_next;
     fn->body = compound_stmt(rest, tok);
     fn->locals = locals;
 
@@ -756,6 +802,8 @@ static Function *function(Token **rest, Token *tok) {
 
 Function *parse(Token *tok) {
     fn_pool_idx = 0;
+    node_pool_idx = 0;
+    obj_pool_idx = 0;
     type_pool_idx = 0;
     member_pool_idx = 0;
     globals = NULL;

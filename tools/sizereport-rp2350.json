@@ -51,7 +51,7 @@
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/search.c": 5657,
     "user/chess/src/tt.c": 13,
-    "user/chibicc/codegen.c": 80,
+    "user/chibicc/codegen.c": 81,
     "user/chibicc/main.c": 8,
     "user/chibicc/parse.c": 52,
     "user/chibicc/pools.c": 17,
@@ -60,5 +60,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 154530
+  "total": 154531
 }

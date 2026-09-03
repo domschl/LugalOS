@@ -94,7 +94,14 @@ static void ed_load_file(const char *filename) {
     }
 
 
-    int bytes = vfs_read(filename, raw_buf, sizeof(raw_buf) - 1);
+    /* ED_RAW_BUF_SIZE, not sizeof(raw_buf): raw_buf is a pointer into the
+     * arena (see ed_buffers_acquire()), so sizeof() is the pointer's own
+     * width -- 4 bytes on RV32, 8 on RV64. This read was asking for 3 bytes
+     * and getting 2, which is why `ed` on any real file showed its first two
+     * characters and silently discarded the rest. The buffers stopped being
+     * function-scope arrays when C6/C7 moved them onto the heap; this call
+     * kept the spelling that was correct while they were. */
+    int bytes = vfs_read(filename, raw_buf, ED_RAW_BUF_SIZE - 1);
     if (bytes < 0) {
         cprintf("'%s': [New File]\n", filename);
         line_count = 0;
@@ -139,7 +146,13 @@ static void ed_save_file(const char *filename) {
 
     for (int i = 0; i < line_count; i++) {
         int len = strlen(ed_buf[i]);
-        if (total_len + len + 1 < (int)sizeof(out_buf) - 1) {
+        /* ED_OUT_BUF_SIZE, not sizeof(out_buf), for the same reason as the
+         * read above -- and this half was the more destructive of the two.
+         * The guard read `total_len + len + 1 < 3`, so only a line of length
+         * zero or one was ever copied: `w` wrote a near-empty file over
+         * whatever was there. The read bug made `ed` look broken; this one
+         * quietly destroyed the file being edited. */
+        if (total_len + len + 1 < ED_OUT_BUF_SIZE - 1) {
             memcpy(&out_buf[total_len], ed_buf[i], len);
             total_len += len;
             out_buf[total_len++] = '\n';

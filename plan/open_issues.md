@@ -339,3 +339,54 @@ portable and demonstrably reaches the real macFUSE mount call.
 the suite on Linux, or accepts the Recovery Mode change, the test should
 pass as-is. Install notes and the full account are in
 `host/fuse-p9/README.md`.
+
+---
+
+## `cc` searches only /ram0 for a relative `#include`
+
+**Trigger:** compile a source on `/sd0` (or `/flash0`) whose header sits
+beside it: `#include "myhdr.h"` from `/sd0/prog.c` does not find
+`/sd0/myhdr.h`.
+
+**Why it is parked:** `user/chibicc/preprocess.c` builds exactly two
+candidate paths for a relative header -- `/ram0/<name>` and
+`/ram0/include/<name>` -- and an absolute `#include "/sd0/myhdr.h"` works
+because it takes a different branch. So there is a way to express every
+case; it is the *conventional* one (look next to the including file) that
+is missing. Found 2026-09-03 while fixing the read length in that same
+function, which had been bounded by `sizeof(char *)` and so had never
+delivered more than 3 bytes of any header -- with that broken, nothing had
+ever exercised the search path hard enough to notice its shape.
+
+**Fix, when it is worth it:** derive the directory of the file currently
+being preprocessed and try that first, then the existing `/ram0`
+fallbacks. The awkward part is that `preprocess_internal()` is handed a
+buffer rather than a path, so the including file's directory has to be
+threaded down to it (or kept in a small include-stack alongside `depth`,
+which already exists for the recursion guard).
+
+---
+
+## `tests/hw/test_rp2350.py` targets the chess persona
+
+**Trigger:** run it against a board flashed with `rp2350-clock`. It reports
+18/24, and five of the six non-passes name things that look like stale
+firmware ("board firmware predates the `st7735stats` command", "reflash it
+with the current build/rp2350/lugalos.uf2").
+
+**Why it is parked:** none of them are regressions. The clock persona
+builds with `LUGALOS_ENABLE_SPISD/ST7735/TM1638/CHESS = OFF`, so the block,
+TFT, keypad and engine tests have nothing to talk to; `K3` checks
+per-persona pins; and `C6/C7` compiles `/sd0/prime.c`, which cannot work
+because `/sd0` never mounts on this board -- GP10-13 are the clock
+display's shift registers, not an SD bus (see
+`cmake/board-rp2350-clock.cmake`). Confirmed 2026-09-03 by building and
+flashing the previous commit and diffing the pass/fail *sets*, which were
+identical.
+
+**Fix, when it is worth it:** have each test skip rather than fail when
+`/proc/config` says its feature is compiled out -- the file already
+reports every `ENABLE_*` flag, so the information is on the board and only
+the check is missing. Until then, the pass/fail set (not the count) is the
+comparison to make, and a `git worktree` build of the previous commit is
+the way to get a baseline.

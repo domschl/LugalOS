@@ -643,8 +643,25 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 "Flash: %u KB of %u KB\n", flash_used / 1024, flash_total / 1024);
         }
 
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "  Storage: /flash0/ (Flash ROM), /sd0/ (VirtIO SD), /ram0/ (RAMDisk)\n");
+        /* Read off the mount table rather than spelled out as a constant.
+         * The fixed string this replaces named "/sd0/ (VirtIO SD)" on every
+         * target -- including RP2350, which has no VirtIO at all, and
+         * including personas where /sd0 cannot mount because those pins
+         * drive something else entirely (the clock baseboard's GP10-13 are
+         * the LED matrix's shift registers, see cmake/board-rp2350-clock.cmake).
+         * So this line claimed storage that was not there, in terms that were
+         * wrong for the board reading it, while `ls /` two functions away
+         * had the truth the whole time. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "  Storage:");
+        bool first_mount = true;
+        for (int i = 0; i < MAX_MOUNTS; i++) {
+            if (!g_mounts[i].in_use || g_mounts[i].kind != MOUNT_FAT32) continue;
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s /%s/ (%s)",
+                first_mount ? "" : ",", g_mounts[i].name,
+                mount_is_active(&g_mounts[i]) ? g_mounts[i].label : "not mounted");
+            first_mount = false;
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
         return (int)used;
     } else if (strcmp(rel, "node") == 0) {
         /* Who this node is, and where each half of that came from.

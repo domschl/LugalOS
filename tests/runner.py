@@ -1014,6 +1014,71 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             cmd_cc, r"Hello from LugalOS.*returned 0", timeout=5.0)
         results.append(("chibicc C11 Compiler & Exec", ok, log if not ok else ""))
 
+        # 5a. The C that the fixture above never contains.
+        #
+        # /sd0/hello.c is one function called `main()` with an empty parameter
+        # list and an <lugal.h> include that resolves to a built-in string
+        # without ever reading a file. All four defects this exercises lived
+        # behind exactly that shape, and this suite was green throughout:
+        #
+        #   - `(void)` parameters halted the board: the parser took the
+        #     closing paren as the parameter name, walked out of the parameter
+        #     list, and spun on a cycle in `locals` until UBSan fired
+        #   - two named parameters halted it the same way for a different
+        #     reason (Obj::next carried the locals and params chains at once)
+        #   - a second function compiled clean and returned the wrong answer:
+        #     the node/object pools were reset at the top of every function,
+        #     so only the last function kept an intact AST
+        #   - a quoted #include read sizeof(char *) - 1 bytes of its header
+        #
+        # multi.h is staged into /ram0 because that is where a relative quoted
+        # include is searched (user/chibicc/preprocess.c), which keeps this on
+        # the normal resolution path rather than an absolute-path special
+        # case. The expected string is three computed values, so a miscompile
+        # shows up as different numbers rather than as silence -- silence and
+        # a bare 0 were both symptoms here, and neither can be told apart from
+        # "the program never ran".
+        cmd_multi = ("cp /sd0/multi.h /ram0/multi.h\n"
+                     "cc /sd0/multi.c /ram0/multi.elf\n"
+                     "exec /ram0/multi.elf")
+        ok, log = session.send_and_expect(cmd_multi, r"42-123-42", timeout=20.0)
+        results.append(("chibicc: several functions, (void) and multi-arg params, a real #include",
+                        ok, log if not ok else ""))
+
+        # 5a-ii. `ed` round-trips a file it did not create.
+        #
+        # The ed test above appends two lines to a *new* file and asserts on
+        # `1,$n` -- ed printing its own in-memory buffer. That holds whether
+        # or not a byte ever reaches the disk, and it never loads an existing
+        # file at all. Both halves of ed's file I/O were sized by sizeof(a
+        # pointer): it read 2 bytes of any file and wrote at most 2 back, so
+        # opening a real file showed its first two characters and saving
+        # destroyed it. The byte count is the assertion here -- "31 bytes (3
+        # lines)" cannot be satisfied by a truncated read -- and the trailing
+        # `cat` runs after ed has exited, so it is the file talking rather
+        # than the editor.
+        session.send_and_expect(
+            '(write-file "/ram0/ed_rt.txt" "alpha_one\\nbeta_two\\ngamma_three\\n")',
+            r"#t", timeout=4.0)
+        ok, log = session.send_and_expect(
+            "ed /ram0/ed_rt.txt\n1,$p\nw\nq", r"31 bytes \(3 lines\)", timeout=5.0)
+        results.append(("ed loads a whole file, not its first two bytes", ok, log if not ok else ""))
+        ok, log = session.send_and_expect(
+            "cat /ram0/ed_rt.txt",
+            r"alpha_one[\s\S]*beta_two[\s\S]*gamma_three", timeout=4.0)
+        results.append(("ed writes the whole buffer back", ok, log if not ok else ""))
+
+        # 5a-iii. /proc/meminfo reports the mounts that actually exist, in
+        # this build's own terms. The line it replaces was a fixed string
+        # naming "/sd0/ (VirtIO SD)" on every target -- including RP2350,
+        # which has no VirtIO at all -- and named /sd0 whether or not
+        # anything was mounted there.
+        ok, log = session.send_and_expect(
+            "cat /proc/meminfo",
+            r"Storage:.*/ram0/ \(FAT32 In-Memory RAMDisk\)", timeout=4.0)
+        results.append(("/proc/meminfo storage line comes from the mount table",
+                        ok, log if not ok else ""))
+
         # 5b. Filesystem Usage Metrics (df) & System Monitor (top)
         cmd_df = "cat /proc/df"
         ok, log = session.send_and_expect(cmd_df, r"Filesystem\s+512-blocks", timeout=4.0)

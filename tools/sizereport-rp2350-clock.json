@@ -49,7 +49,7 @@
     "net/stack.c": 169,
     "net/tcp.c": 243,
     "net/udp.c": 48,
-    "user/chibicc/codegen.c": 80,
+    "user/chibicc/codegen.c": 81,
     "user/chibicc/main.c": 8,
     "user/chibicc/parse.c": 52,
     "user/chibicc/pools.c": 17,
@@ -58,5 +58,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 143049
+  "total": 143050
 }
