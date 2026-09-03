@@ -251,6 +251,37 @@ which is the entire reason that guard exists.
 **S3 — convert `kernel/chan.c`'s endpoint busy flag** to `spinlock_t`.
 *Verify:* `chanechotest` and the rest of the IPC-heavy suite, unchanged.
 
+**DONE 2026-09-03, with a correction to this milestone's own wording.**
+"Convert the busy flag to `spinlock_t`" read as *hold a spinlock for the
+call*, and that would have been wrong twice over — `busy` is held across
+`chan_call_task()`, which calls `task_block()`, and a `spinlock_t` held
+across a block is the deadlock its own header warns about; and contention
+here must **refuse** (the caller gets -1) rather than wait, because on the
+re-entrant path a waiter would be waiting on itself.
+
+So the two jobs got separated rather than merged. `busy` stays a plain
+claim flag with a long lifetime; a new per-endpoint `spinlock_t` makes
+*reading-and-taking* that flag indivisible, and is held for three
+instructions. The release goes through the same lock, which is what gives
+the next hart to claim the endpoint release ordering over everything the
+call wrote into its buffers.
+
+*Verified:* QEMU **320/320**, three runs, including `chanechotest` (the
+milestone's named check) and the whole U-mode channel set. The load-bearing
+one is "Recursive Local Mount Is Refused, Not Fatal" — it exercises the
+refusal path directly, and had the lock been held across the call it would
+**hang** rather than fail, so its passing is evidence about the shape of
+the conversion and not just its correctness. RP2350 chess persona
+**24/24**, with all five driver-task tests (uart, blk, i2c, st7735,
+tm1638) — each of which counts `chan_call()`s actually served — passing on
+silicon. Static RAM **+64**: 16 endpoints x 4 bytes, in `.bss` and counted.
+
+**Found for S5:** `chan_call_task()` holds `irq_save()` across
+`task_block()` (`kernel/chan.c`), relying on the scheduler's
+flags-travel-with-the-task hand-off. That is correct per-hart today and is
+exactly the kind of site S5 has to reach a written verdict on rather than
+leave implied.
+
 **S4 — convert `kernel/palloc.c`'s bitmap critical section** to
 `spinlock_t`.
 *Verify:* palloc's existing stress/fragmentation coverage, unchanged;
