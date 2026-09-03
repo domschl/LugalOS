@@ -415,6 +415,7 @@ endif()
 set(SOURCES
     kernel/main.c
     kernel/hart.c
+    kernel/lock.c
     kernel/printk.c
     kernel/klog.c
     kernel/console.c

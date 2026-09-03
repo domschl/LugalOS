@@ -535,6 +535,27 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("SHA-256/HMAC-SHA-256 Against FIPS and RFC 4231 Vectors (N1)",
                         hmac_ok, log if not hmac_ok else ""))
 
+        # S1, plan/phase22_smp_locking_foundation.md: the two cross-hart lock
+        # types, before anything is converted to use them.
+        #
+        # Six checks, and the one that carries the phase is the third: the
+        # tick counter must be frozen across an irqsave-held spinlock and
+        # moving when it is not held. That is random.c's standard -- a
+        # measured effect rather than the implementation restating itself --
+        # and it was confirmed by removing irq_save() from the acquire and
+        # watching it fail (ticks 239 -> 242 while "held").
+        #
+        # What these deliberately do NOT claim: nothing here observes two
+        # harts racing, because no target can do that until phase 23's X1.
+        # They prove the primitives behave correctly under the concurrency
+        # this kernel has today -- preemption and yielding -- which is what
+        # S2-S6 are about to build on.
+        ok, log = session.send_and_expect("lockselftest\n",
+                                          r"LOCK_SELFTEST_(OK|FAIL)", timeout=30.0)
+        lock_ok = ok and "LOCK_SELFTEST_OK" in log
+        results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
+                        lock_ok, log if not lock_ok else ""))
+
         # The nonce source behind that gate. On QEMU there is no hardware
         # entropy and the command says so rather than inventing a verdict --
         # SKIP is the pass here, and RANDTEST_OK/WEAK is a hardware result.

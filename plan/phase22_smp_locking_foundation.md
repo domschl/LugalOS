@@ -154,6 +154,45 @@ hardware claims — against a real, measurable effect, not an assumption),
 and that a `ylock_t`'s owning task can re-enter while a different task
 attempting the same lock yields instead of proceeding.
 
+**DONE on QEMU 2026-09-03; hardware pass pending a board.**
+`arch/riscv/include/arch/atomic.h` (the §6.3 seam),
+`kernel/include/kernel/lock.h` + `kernel/lock.c`, `lockselftest` in the
+shell, and one new suite test per arch. **QEMU 320/320** (318 + 2), six
+checks passing on both RV32/M-mode and RV64/S-mode.
+
+`spinlock_t` and `ylock_t` are as specified. The atomic sits behind
+`arch_lock_try_acquire()`/`arch_lock_release()` rather than an inline
+`amoswap`, and the hook is shaped as "take/release this lock word" rather
+than "swap this integer" precisely so a SIO-hardware-spinlock
+implementation can express itself in it — a bare swap hook could not.
+
+Two notes on what the selftest does and does not establish, because the
+difference matters more than the pass:
+
+- **The interrupt-masking check is real.** The tick counter must be frozen
+  across an `irqsave`-held spinlock and moving when it is not held —
+  `kernel/random.c`'s standard, a measured effect rather than the
+  implementation restating itself. Confirmed by deleting `irq_save()` from
+  the acquire and watching it fail (ticks 239 → 242 during the "held"
+  window). Both directions are asserted; "it did not move" alone would
+  also pass on a board whose timer never fires.
+- **Nothing here proves atomicity.** Executed serially on one hart, a
+  plain `if (!held) held = true` gives the same answers as `amoswap`, so
+  the gate check pins down the *contract* (exactly one acquire per
+  release, and that the release actually releases) and not the property
+  the instruction was chosen for. Atomicity is first observable at phase
+  23's X1, where two harts race the same word. An earlier draft of that
+  comment claimed the test distinguished the two; it does not, and saying
+  so would have been the kind of unearned confidence §5 warns about.
+
+Still outstanding for S1: run `lockselftest` on real RP2350 silicon. That
+is not a formality — §6.3 exists because "the ISA defines `amoswap`" is
+not a statement about Hazard3, and an `amoswap.w.aq` that traps as
+illegal, or faults against a particular memory region, would be found
+here and nowhere else. 12 AMO instructions reach the linked image, so the
+question is now live rather than hypothetical. Cost so far: **+22 bytes**
+of static RAM.
+
 **S2 — convert `fs/p9_link.c`'s `p9_lock_t`** to `ylock_t`, deleting the
 local type.
 *Verify:* the existing two-node 9P test suite, unchanged — this is the
