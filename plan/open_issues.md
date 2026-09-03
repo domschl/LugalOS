@@ -395,3 +395,32 @@ told, and its own docstring records a false mismatch from guessing wrong
 would settle it. Deferred 2026-09-03 because only a clock board was
 attached, and a rewrite that cannot be run against a chess persona is
 worse than a narrower change that can.
+
+---
+
+## A trailing slash breaks path resolution below a mount root
+
+**Trigger:**
+
+```
+ls /flash0/system/        ->  ls: path 'system/' not found
+ls /flash0/system         ->  lists BIN, ETC correctly
+ls /flash0/               ->  lists correctly (it is the mount root)
+```
+
+So the trailing slash is harmless at a mount root and fatal one level
+down. Confirmed on RP2350 hardware, `rp2350-chess`, 2026-09-03.
+
+**Why it is parked:** it is a usability bug, not a correctness one --
+nothing in the tree writes a path that way, and the failure is a clean
+"not found" rather than a wrong answer. It was found because a new
+hardware-suite preflight probe used `ls /flash0/system/bin/` and reported
+a stale filesystem on a board that was correctly flashed, which is the
+more expensive shape of this: a diagnostic that fires on healthy input.
+The probe now omits the slash.
+
+**Fix, when it is worth it:** `kernel/path.c` / `vfs_resolve()` should
+strip a trailing separator from the relative part before lookup, the way
+it evidently already does for the mount-root case. Worth checking whether
+the same asymmetry affects `cat`, `cp` and the 9P walk, which take the
+same resolver -- the shell's `ls` is only where it happened to surface.

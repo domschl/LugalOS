@@ -1694,6 +1694,45 @@ def main() -> int:
         print("Board config: " + (f"built without {', '.join(off)}" if off
                                   else "every optional feature built in"))
 
+    # The *other* image. RP2350 flashes the OS and the filesystem
+    # independently (README, "Two images, flashed independently"), and
+    # flash.py writes whichever one it is handed -- so a board can be running
+    # a current kernel over a stale or absent /flash0.
+    #
+    # The symptom is not subtle but it is thoroughly misleading: every test
+    # that loads a user ELF fails at once -- B6, C3, C4, C2 and C6/C7 -- with
+    # five different assertion messages about isolation, argv, W^X and heap
+    # reclaim, and not one of them mentions storage. The actual console line,
+    # several screens up, is "[ELF Error] Failed to open
+    # '/flash0/system/bin/uhello.elf'". Walked into exactly this on
+    # 2026-09-03 flashing a chess-persona board (19/24, and it read as five
+    # regressions in the loader).
+    #
+    # One cheap probe up front, before anything can be blamed for it.
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            # No trailing slash: the shell's resolver rejects one below a
+            # mount root ("ls /flash0/system/" -> "path 'system/' not
+            # found", while "ls /flash0/system" lists fine and "ls /flash0/"
+            # works because it *is* the root). That quirk turned this probe
+            # into a false alarm on a correctly flashed board -- see
+            # plan/open_issues.md.
+            ser.write(b"ls /flash0/system/bin\n")
+            ser.flush()
+            listing = rp2350.drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
+        if "UHELLO" not in listing.upper():
+            print("\n[!] /flash0/system/bin looks empty or stale -- the user programs the")
+            print("    ELF-loading tests exec are not on this board. Flash the filesystem")
+            print("    image too, it is a separate UF2 from the OS:")
+            print("        cd tests/hw && uv run flash.py --uf2 ../../build/<preset>/flashfs.uf2")
+            print("    Continuing anyway; expect B6/C2/C3/C4 and C6/C7 to fail on storage,")
+            print("    not on what they are named for.\n")
+    except Exception:
+        pass  # a probe that cannot run must not stop the suite
+
     # test_heap_on_demand needs a clean, unfragmented heap for chibicc's fixed
     # 108 KB arena, so it has to run before *any* test that loads a U-mode ELF
     # program -- every distinct program's image stays cached in heap for the
