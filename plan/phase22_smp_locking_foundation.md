@@ -288,6 +288,40 @@ leave implied.
 `sizecheck` shows the expected small growth (a lock is a handful of
 bytes) and nothing more.
 
+**DONE 2026-09-03.** Both critical sections — the scan-then-claim in
+`palloc_pages()` and the bit-clearing loop in `palloc_free()` — now take a
+single `g_palloc_lock`. `kernel/irq.h` leaves the file's includes; they
+were its only users.
+
+The straightforward conversion S3 could not take, and worth saying why it
+is straightforward here: these regions call nothing at all. No printk, no
+yield, nothing that can block — the one expensive thing an allocation does,
+zeroing the pages it just claimed, was already deliberately outside the
+critical section before this phase existed. So `spinlock_t` is right on
+its own terms rather than by elimination.
+
+One lock for the whole allocator, not one per region: there is a single
+bitmap and a single pair of counters, so there is nothing to divide.
+
+*Verified:* QEMU **320/320**, four runs. Palloc's direct coverage is
+"Task Stacks Are Reclaimed On Exit, Via The Reaper (B2/B6)", which
+asserts `free before=N after=N` — exact page equality across a
+create-and-exit cycle, so a claim that leaked or a free that missed shows
+as a number rather than a crash — plus the buddy allocator's
+round/align/coalesce pair on the arena palloc hands it, and the C6/C7
+compiler-arena reclaim. RP2350 chess persona **24/24**, including "Buddy
+arena: board-sized, and not reserved until first use" and the heap
+headroom margins. `lockselftest` still 6/6 on silicon.
+
+Static RAM **+4** — one `spinlock_t`, which is the milestone's own
+prediction met exactly.
+
+*Observed, not fixed:* `palloc_stats()` reads `g_used_pages` and scans the
+bitmap outside the lock. It is a diagnostic, and the worst a racing reader
+gets is a figure that was true a moment ago — but it is an unsynchronised
+read of lock-protected state, and S5 owes it a written verdict rather than
+this parenthesis.
+
 **S5 — audit the rest of the tree.** `kernel/balloc.c`, `kernel/ticker.c`
 and `kernel/klog.c` currently have **no** `irq_save()` protection at all
 (confirmed by grep, not assumed) — each is either genuinely safe for a
