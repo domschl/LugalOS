@@ -26,6 +26,7 @@
     "kernel/console.c": 405,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
+    "kernel/hart.c": 32,
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
     "kernel/klog.c": 4153,
@@ -60,5 +61,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 154531
+  "total": 154563
 }

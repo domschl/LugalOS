@@ -1,4 +1,5 @@
 #include "kernel/meminfo.h"
+#include "kernel/hart.h"
 
 .section .text.entry
 .global _start
@@ -18,6 +19,16 @@ _start:
     /* RP2350 boots both cores; only core 0 (mhartid == 0) executes kernel_main */
     csrr t0, mhartid
     bnez t0, .Lsecondary_hart_loop
+
+    /* Park the raw hart id in tp until .bss has been cleared and
+     * SETUP_HART_POINTER can turn it into this hart's record pointer.
+     *
+     * It has to be captured *here*, not there: on CONFIG_MODE_S this code
+     * mret's down to S-mode a few instructions below, and mhartid is an
+     * M-mode CSR -- reading it after the transition traps as an illegal
+     * instruction. tp survives the transition, the .data copy and the .bss
+     * clear, none of which touch it. */
+    mv tp, t0
 
     /* Setup Machine trap vector base address first */
     la t0, trap_vector_entry
@@ -123,6 +134,12 @@ s_mode_start:
      * something written out here. */
     PAINT_BOOT_STACK t0, t1, t2
 
+    /* tp stops being the raw hart id and becomes this hart's record (S0,
+     * kernel/include/kernel/hart.h). After the .bss clear above, because
+     * g_harts lives in .bss. Before the first call, because the trap vector
+     * dereferences tp on every kernel trap from here on. */
+    SETUP_HART_POINTER t0, t1
+
     /* Jump to C kernel entry point */
     call kernel_main
 
@@ -160,32 +177,63 @@ s_mode_start:
  *
  * The invariant is one line, and everything here follows from it:
  *
- *     CSR_SCRATCH holds the current task's KERNEL stack pointer while U-mode
- *     is running, and ZERO while the kernel is running.
+ *     CSR_SCRATCH holds a pointer to THIS HART'S RECORD (hart_t, see
+ *     kernel/include/kernel/hart.h) while U-mode is running, and ZERO while
+ *     the kernel is running.
  *
  * So a single csrrw both switches stacks and reveals where the trap came
  * from: if the swapped-in value is non-zero we were in U-mode and now hold
- * the kernel stack; if it is zero we were already in the kernel and the swap
- * is simply undone. No separate "am I in user mode" flag exists to get out of
- * sync with reality.
+ * the hart record (whose first word is the kernel stack to switch onto); if
+ * it is zero we were already in the kernel and the swap is simply undone. No
+ * separate "am I in user mode" flag exists to get out of sync with reality.
  *
- * As of this commit nothing ever enters U-mode, so CSR_SCRATCH is always zero
- * and this is a behaviour-preserving refactor -- deliberately, so the switch
- * itself is proven by the existing suite before U-mode is added on top. */
+ * S0 (plan/phase22_smp_locking_foundation.md §6.2) changed *what* the CSR
+ * points at -- the kernel sp used to sit in the register itself and now sits
+ * in the record's first word -- and nothing about the shape of the test. The
+ * substance got slightly stronger on the way past: the non-zero value being
+ * branched on is now a .bss address fixed at link time rather than a stack
+ * pointer, so "a task whose sp is somehow zero looks like a kernel trap" is
+ * no longer expressible.
+ *
+ * The other half of S0 is `tp`. While the kernel executes, tp holds this
+ * hart's record; while U-mode executes, tp belongs to the user program. The
+ * vector below is where the swap happens in each direction, which is why the
+ * frame's tp slot is written in the two paths separately rather than in the
+ * common save block: on the way in from U-mode the slot has to receive the
+ * *user's* tp, taken before the kernel's is installed over it. */
 .align 4
 trap_vector_entry:
     csrrw sp, CSR_SCRATCH, sp
-    bnez sp, .Ltrap_have_kstack
+    bnez sp, .Ltrap_from_user
+
     /* Zero came back: this was a kernel trap, so CSR_SCRATCH was 0 and now
-     * holds the interrupted sp. Undo the swap to restore both. */
+     * holds the interrupted sp. Undo the swap to restore both. tp already
+     * holds this hart's record -- the kernel never stops holding it -- so the
+     * frame's tp slot just receives it back unchanged. */
     csrrw sp, CSR_SCRATCH, sp
-
-.Ltrap_have_kstack:
     addi sp, sp, -TRAP_FRAME_SIZE
+    REG_S tp,  3*REGBYTES(sp)
+    j .Ltrap_save
 
+.Ltrap_from_user:
+    /* sp holds this hart's record, CSR_SCRATCH holds the user's sp, and tp is
+     * still whatever the user program had in it.
+     *
+     * There is no stack to spill onto yet -- the user's is not trustworthy
+     * and the kernel's is what we are about to go and fetch -- so one
+     * register is spilled into the record itself (hart_t::tmp exists for
+     * exactly these eight instructions and nothing else). */
+    REG_S t0,  HART_OFF_TMP(sp)
+    mv t0, sp                          /* t0 = this hart's record */
+    REG_L sp,  HART_OFF_KERNEL_SP(t0)  /* onto the task's kernel stack */
+    addi sp, sp, -TRAP_FRAME_SIZE
+    REG_S tp,  3*REGBYTES(sp)          /* the USER's tp, before it is replaced */
+    mv tp, t0                          /* kernel invariant: tp = hart record */
+    REG_L t0,  HART_OFF_TMP(tp)        /* and the user's t0 back, for the frame */
+
+.Ltrap_save:
     REG_S ra,  0*REGBYTES(sp)
     REG_S gp,  2*REGBYTES(sp)
-    REG_S tp,  3*REGBYTES(sp)
     REG_S t0,  4*REGBYTES(sp)
     REG_S t1,  5*REGBYTES(sp)
     REG_S t2,  6*REGBYTES(sp)
@@ -253,9 +301,11 @@ trap_vector_entry:
     csrw CSR_EPC, t0
     csrw CSR_STATUS, t1
 
-    /* If this return goes to U-mode, re-arm CSR_SCRATCH with the kernel
-     * stack pointer so the *next* trap can switch back. t1 still holds the
-     * status word and t0/t1 are restored below, so both are free as temps.
+    /* If this return goes to U-mode, park the kernel stack pointer in this
+     * hart's record and point CSR_SCRATCH at the record, so the *next* trap
+     * can switch back. t1 still holds the status word and t0/t1 are restored
+     * below, so both are free as temps; tp still holds the record, because it
+     * is not restored from the frame until the block below.
      *
      * Previous privilege lives in different bits per mode: SPP is bit 8 of
      * sstatus, MPP is bits 12:11 of mstatus. Non-zero means we are returning
@@ -268,7 +318,8 @@ trap_vector_entry:
     and t0, t1, t0
     bnez t0, .Ltrap_exit_kernel
     addi t0, sp, TRAP_FRAME_SIZE
-    csrw CSR_SCRATCH, t0
+    REG_S t0, HART_OFF_KERNEL_SP(tp)
+    csrw CSR_SCRATCH, tp
 .Ltrap_exit_kernel:
 
     /* Restore general registers */

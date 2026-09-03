@@ -414,6 +414,7 @@ endif()
 # Core Sources
 set(SOURCES
     kernel/main.c
+    kernel/hart.c
     kernel/printk.c
     kernel/klog.c
     kernel/console.c
@@ -851,7 +852,12 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S)
+    # kernel/hart.c for the same reason LUGALOS_FLASH_MAP_DEFSYMS is shared
+    # above: both boot paths reference g_harts by name since S0
+    # (kernel/include/kernel/hart.h), so *every* image built from them needs
+    # it -- including this standalone hardware test, which is again how it
+    # was found (an undefined-symbol link error, not a wrong address).
+    add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S kernel/hart.c)
     target_link_options(minimal_rp2350.elf PRIVATE -T${LINKER_SCRIPT} ${LUGALOS_FLASH_MAP_DEFSYMS})
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD

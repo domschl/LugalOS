@@ -334,6 +334,34 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 
+        # S0, plan/phase22_smp_locking_foundation.md §6.2: the kernel can
+        # identify the hart it is running on.
+        #
+        # Worth a test of its own because no other test here can fail on it.
+        # Every build before S0 passed this whole suite while being completely
+        # unable to answer the question, and the interesting half of the
+        # answer is target-specific: on rv64-mmu the kernel runs in S-mode,
+        # where the obvious implementation (`csrr mhartid`) traps as an
+        # illegal instruction, because entry.S performs the M->S transition
+        # itself with no SBI firmware underneath to ask instead. So this
+        # asserting on *both* arches is the point -- passing on rv32 alone
+        # would say nothing about the case that motivated the work.
+        #
+        # `consistent: yes` is the real assertion. It checks that the record
+        # `tp` points at is the array slot the id inside that record names,
+        # which is what distinguishes a working hart pointer from one that
+        # merely holds a plausible address.
+        ok, log = session.send_and_expect(
+            "cat /proc/cpuinfo", r"hart:\s+0", timeout=3.0)
+        results.append(("Hart Identity Readable From The Kernel (S0)", ok, log if not ok else ""))
+
+        expect_priv = "S" if "64" in arch_name else "M"
+        ok, log = session.send_and_expect(
+            "cat /proc/cpuinfo",
+            rf"consistent:\s+yes[\s\S]*priv:\s+{expect_priv}", timeout=3.0)
+        results.append((f"Hart Record Is Self-Consistent, In {expect_priv}-Mode (S0)",
+                        ok, log if not ok else ""))
+
         # B2: /proc/ps now renders the real task table. Before B2 it was a
         # hardcoded string naming four tasks that did not exist, so this used
         # to assert on "vfs_server" -- a name nothing was ever scheduled under.

@@ -2,7 +2,9 @@
 
 **Status: planned 2026-08-29. Amended 2026-09-03 (§6) — one
 correction (S6's rule was inverted) and a new first milestone (S0).
-Planning only, no implementation yet.**
+S0 implemented and verified 2026-09-03 on QEMU and on RP2350 silicon
+(see its DONE note in §3); S1-S6 not started. All of it lives on branch
+`feature/multicore`.**
 Sequenced after phase 19's R4 (ENC28J60) and R5 (CYW43439) and phase 21's
 I7 (RP2350 flash backend), all three of which are blocked on hardware
 access today. Nothing in *this* phase requires hardware — see §3's Verify
@@ -343,6 +345,64 @@ behaviour-preserving on one hart by construction, in the same way §0
 describes the original `irq_save()` work being landed before preemption
 could exercise it. A `hart_id()` returning 0 on every current target is
 the whole observable effect.
+
+**DONE 2026-09-03.** `kernel/include/kernel/hart.h` + `kernel/hart.c`;
+`CSR_SCRATCH` now carries a `hart_t *` instead of a bare kernel `sp`, with
+the sp moved into the record's first word, and `tp` holds that record for
+as long as the kernel is executing. The shape of the trap vector's
+discrimination is unchanged (`csrrw` + `bnez`), so the restructure is a
+no-op on one hart — which is what made the existing suite a real
+regression check on it.
+
+Observable: `/proc/cpuinfo` (`fs/vfs_server.c`), reporting the hart id,
+the record address, and a `consistent:` line that walks the id in the
+record back to the `g_harts` slot that id names and checks `tp` actually
+points there. Four new QEMU tests assert it on both arches, deliberately
+including the privilege mode, because the interesting half of the claim is
+that this works *in S-mode* at all.
+
+Measured, not assumed:
+
+- **QEMU: 310/310** (was 306/306, plus the 4 new). Every U-mode, fault,
+  isolation and preemption test passes unchanged.
+- **RP2350 hardware** (`rp2350-clock` persona, Pico 2 W): `/proc/cpuinfo`
+  reads `hart: 0, consistent: yes, priv: M, xlen: 32` on real Hazard3
+  silicon, through the boot path in `arch/riscv/rp2350/boot_header.S` that
+  QEMU never executes — exactly the divergence
+  `[[falsify_on_hardware_not_qemu]]` exists to catch, and the reason
+  SETUP_HART_POINTER is a shared macro rather than one file's prologue.
+- `tests/hw/test_rp2350.py` gives a pass/fail set **byte-identical to a
+  pre-S0 build of the same persona flashed on the same board** (18/24 both
+  ways; the 5 failures and 1 skip are all this persona having SPISD,
+  ST7735, TM1638 and CHESS compiled out, plus K3's per-persona pin list).
+  That baseline was built and flashed rather than reasoned about, because
+  a suite written for the chess persona failing on the clock persona looks
+  exactly like a regression until someone goes and measures it.
+- `priostress` reports `total_ticks=598,598 -- FAIR` on both builds, three
+  runs each. It failed once on the first S0 run; that was the report
+  arriving late on a just-reflashed board, and it reproduced on neither
+  build afterwards.
+
+Two things found on the way and fixed here rather than filed:
+
+- **The scratch CSR was never zeroed at boot.** Its reset value is
+  architecturally undefined and the trap vector reads it before anything
+  writes it — on RP2350 the bootrom has been running in this hart's CSRs
+  for a while by then. Nothing had ever set it; the kernel was getting
+  away with whatever reset happened to leave behind. SETUP_HART_POINTER
+  now zeroes it, on both boot paths.
+- **`arch_enter_user()` was about to leak a kernel pointer.** With `tp`
+  holding a kernel .bss address, entering U-mode without clearing it would
+  hand every user program that pointer in a register. It is zeroed before
+  the trap return.
+
+Cost: **+32 bytes** of static RAM (`MAX_HARTS * sizeof(hart_t)`), and
+nothing else, on both RP2350 personas. A pre-existing **+192 bytes** in
+`kernel/sched.c` — left by commit `12384e8` (the timed-sleep fix), which
+re-baselined only the clock persona and so had `sizecheck` failing on main
+for the chess one — was found while re-cutting these baselines and landed
+separately on main as `0cebceb`, attributed to the commit that caused it
+rather than folded in here.
 
 ### 6.3 The atomic goes behind an arch hook
 

@@ -20,6 +20,7 @@
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/chan.h"
+#include "kernel/hart.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
 #include "arch/elf.h"
@@ -896,6 +897,52 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
         return (int)used;
+    } else if (strcmp(rel, "cpuinfo") == 0) {
+        /* S0, plan/phase22_smp_locking_foundation.md §6.2: which hart is
+         * executing, read back from the record `tp` points at.
+         *
+         * This exists because the claim it reports is not one the rest of
+         * the suite can make. Every other test here passes just as well with
+         * a kernel that cannot identify its own hart at all -- that was true
+         * of every build before S0. The specific thing worth showing is that
+         * the answer is available *in S-mode*, where the obvious
+         * implementation (`csrr mhartid`) traps as an illegal instruction
+         * because arch/riscv/common/entry.S performs the M->S transition
+         * itself and leaves no machine-mode CSR reachable. If this file
+         * renders on the RV64 build, that problem is solved; if S0 were
+         * wrong in that particular way, the build would not get this far
+         * without a fault.
+         *
+         * `consistent` is the assertion rather than the decoration. It walks
+         * back from the id in the record to the array slot that id names and
+         * checks the pointer `tp` actually holds is that slot -- so a `tp`
+         * pointing at the right kind of thing but the wrong entry, which is
+         * exactly the failure mode a second hart would introduce, shows as
+         * `no` rather than as a plausible-looking id. */
+        const hart_t *self = hart_self();
+        unsigned id = hart_id();
+        bool consistent = (id < MAX_HARTS) && (&g_harts[id] == self);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "hart:        %u\n", id);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "harts_max:   %d\n", MAX_HARTS);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "harts_online: 1\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "record:      0x%lx\n", (unsigned long)(uintptr_t)self);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "consistent:  %s\n", consistent ? "yes" : "no");
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "priv:        %s\n",
+#if defined(CONFIG_MODE_S)
+            "S"
+#else
+            "M"
+#endif
+            );
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "xlen:        %d\n", (int)(__riscv_xlen));
+        return (int)used;
     } else if (strcmp(rel, "config") == 0) {
         /* Board config (K3, plan/phase7_kernel_config.md): the generated
          * platform-default and pin-map values actually baked into this
@@ -1240,7 +1287,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif

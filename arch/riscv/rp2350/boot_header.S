@@ -6,6 +6,7 @@
  */
 
 #include "kernel/meminfo.h"
+#include "kernel/hart.h"
 
 .equ BINARY_INFO_MARKER_START,    0x7188ebf2
 .equ BINARY_INFO_MARKER_END,      0xe71aa390
@@ -82,6 +83,14 @@ _reset_handler:
     csrr t0, mhartid
     bnez t0, 3f
 
+    /* Park the raw hart id in tp until .bss is cleared and
+     * SETUP_HART_POINTER can turn it into this hart's record pointer (S0,
+     * kernel/include/kernel/hart.h). This path stays in M-mode throughout,
+     * so mhartid would still be readable later -- it is captured here anyway
+     * so that both boot paths do the identical thing in the identical place,
+     * which is the whole reason SETUP_HART_POINTER is a shared macro. */
+    mv tp, t0
+
     /* Setup Machine trap vector */
     la t0, trap_vector_entry
     csrw mtvec, t0
@@ -156,6 +165,13 @@ _reset_handler:
      * past __bss_end would erase the paint rather than corrupt anything and
      * the bug would present as "the stack is never used". */
     PAINT_BOOT_STACK t0, t1, t2
+
+    /* tp stops being the raw hart id and becomes this hart's record (S0,
+     * kernel/include/kernel/hart.h). After the .bss clear above, because
+     * g_harts lives in .bss. Before the calls below, because the trap vector
+     * dereferences tp on every kernel trap from here on -- and mtvec has been
+     * armed since the top of this function. */
+    SETUP_HART_POINTER t0, t1
 
     /* Hardware clock and timer initialization */
     call init_xosc
