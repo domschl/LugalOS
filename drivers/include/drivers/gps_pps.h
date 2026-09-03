@@ -148,4 +148,18 @@ bool gps_pps_trustworthy(void);
  * than no number. */
 bool gps_pps_offset_us(uint64_t t_us, int64_t *offset_us);
 
+/* The UTC epoch, in microseconds, at the local instant `t_us`.
+ *
+ * PPS and NMEA are each useless alone and a complete time reference together:
+ * the pulse says exactly *when* a second began and nothing about which one,
+ * the sentence says which and is far too coarse to say when. Pairing them
+ * gives a local stratum-0 reference that owes nothing to the network -- which
+ * matters because the alternative, an NTP offset over WLAN, carries several
+ * milliseconds of its own noise into a measurement of a quantity that is only
+ * tens of milliseconds wide.
+ *
+ * False when there is no trustworthy pulse, no labelled edge, or the label is
+ * too old to extrapolate from at the resolution being claimed. */
+bool gps_epoch_us(uint64_t t_us, int64_t *epoch_us);
+
 #endif /* DRIVERS_GPS_PPS_H */

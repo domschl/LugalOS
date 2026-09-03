@@ -156,6 +156,18 @@ static uint64_t   g_prev_pps_us;
 static uint64_t   g_pps_hist[PPS_HISTORY];
 static uint32_t   g_pps_hist_n;
 
+/* One PPS edge with the UTC second it began, which is what turns a pulse
+ * train into a clock.
+ *
+ * PPS says exactly *when* a second started and nothing about which second it
+ * was; NMEA says which second and is far too coarse to say when. Neither is a
+ * time reference alone. Together they are a local stratum-0 one, and the
+ * pairing is the whole trick: an RMC sentence reports the time of the pulse
+ * that preceded it, so the sentence's second labels the last edge seen. */
+static uint64_t   g_epoch_ref_us;   /* TIMER0 at that edge */
+static int64_t    g_epoch_ref_s;    /* the UTC second it began */
+static bool       g_epoch_ok;
+
 /* Written, read back, retried -- the third lesson from
  * drivers/uart1_link_rp2350.c, and the one that makes the other two
  * diagnosable: "a write, a read-back and a retry is cheap; believing a write
@@ -486,6 +498,23 @@ static void nmea_apply(const char *s, uint32_t len) {
             g.utc.month = (uint8_t)dec2(d + 2);
             g.utc.year  = (uint16_t)(2000u + dec2(d + 4));
             g.have_utc = true;
+
+            /* Label the pulse this sentence is talking about.
+             *
+             * Only when the pulse is recent: a module that has been quiet, or
+             * a sentence delayed past the next edge, would otherwise pin a
+             * second onto the wrong pulse and be wrong by exactly one second
+             * -- the failure mode that is hardest to see and most damaging,
+             * because everything downstream still looks plausible. Under
+             * 900 ms there is only one candidate. */
+            if (g.rmc_valid && g_prev_pps_valid) {
+                uint64_t age = time_get_us() - g_prev_pps_us;
+                if (age < 900000ull) {
+                    g_epoch_ref_us = g_prev_pps_us;
+                    g_epoch_ref_s  = time_to_epoch(&g.utc);
+                    g_epoch_ok = true;
+                }
+            }
         }
     }
 }
@@ -693,6 +722,26 @@ bool gps_pps_offset_us(uint64_t t_us, int64_t *offset_us) {
     return found;
 #else
     (void)t_us; (void)offset_us;
+    return false;
+#endif
+}
+
+bool gps_epoch_us(uint64_t t_us, int64_t *epoch_us) {
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    if (!epoch_us || !g_epoch_ok || !gps_pps_trustworthy()) return false;
+
+    /* Extrapolated from the labelled edge on the local counter. That is only
+     * honest for as long as the crystal's error stays below the resolution
+     * being claimed: at the 0.5 ppm this board measures, two minutes costs
+     * about 60 us, so the reference is refused beyond that rather than
+     * quietly degrading. In practice RMC relabels it every second. */
+    int64_t age = (int64_t)t_us - (int64_t)g_epoch_ref_us;
+    if (age < -1000000LL || age > 120000000LL) return false;
+
+    *epoch_us = g_epoch_ref_s * 1000000LL + age;
+    return true;
+#else
+    (void)t_us; (void)epoch_us;
     return false;
 #endif
 }

@@ -62,6 +62,18 @@ typedef struct {
     int64_t     pps_min_us, pps_max_us;
     uint32_t    pps_sd_us;
 
+    /* The radio's claim checked against the local GPS reference (PPS for the
+     * instant, NMEA for the second), in microseconds. This is the NTP
+     * comparison without the network, and it validates the second label that
+     * pps_* alone cannot. gerr_secbad counts frames that were a whole second
+     * or more out -- a decode fault rather than a delay, kept out of the mean
+     * so it cannot hide behind a plausible average. */
+    uint32_t    gerr_n;
+    uint32_t    gerr_secbad;
+    int64_t     gerr_last_us;
+    int64_t     gerr_mean_us;
+    uint32_t    gerr_sd_us;
+
     uint64_t    radio_at_us;
     bool        radio_at_us_ok;
     uint32_t    edges_dropped;   /* a ring too small, or a line too noisy */

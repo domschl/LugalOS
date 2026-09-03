@@ -138,6 +138,14 @@ def analyse(rows: list[dict]) -> str:
         note = (f"  ({len(runs)} runs in this log -- the board restarted. "
                 f"Analysing the longest, {len(rows)} samples;\n"
                 f"   figures derived from t_s cannot span a reboot.)")
+    # Everything measured against the local GPS is computed from *all* of this
+    # run's samples. The filters below concern the remote NTP reference -- its
+    # stratum, its round trip -- and a sample taken while that server was
+    # degraded is still a perfectly good PPS measurement, because the PPS path
+    # never consults it. Filtering first threw those away for no reason (found
+    # 2026-09-03: the reference spent 14 minutes off its own GPS, and 14 local
+    # measurements went with it).
+    local_rows = rows
     rows, slow = split_by_delay(rows)
     out = [f"{len(rows)} of {raw_n} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
     if off_stratum:
@@ -186,7 +194,7 @@ def analyse(rows: list[dict]) -> str:
     # Reported beside the NTP figure on purpose -- two independent routes to
     # one quantity, where a disagreement bigger than the two uncertainties
     # means one of them is wrong.
-    pv = [r["pps_us"] for r in rows if r.get("pps_us") is not None]
+    pv = [r["pps_us"] for r in local_rows if r.get("pps_us") is not None]
     if not pv:
         out.append("  dcf vs pps   : no GPS-referenced samples")
     else:
@@ -194,7 +202,7 @@ def analyse(rows: list[dict]) -> str:
         psd = (sum((x - pm) ** 2 for x in pv) / len(pv)) ** 0.5
         sem = psd / (len(pv) ** 0.5) if len(pv) > 1 else 0.0
         out.append(f"  dcf vs pps   : mean {pm / 1000:+.3f} ms, sd {psd / 1000:.3f} ms, "
-                   f"n={len(pv)}")
+                   f"n={len(pv)} (local reference; no stratum or rtt filter)")
         # Deliberately not named `ordered`: that name belongs to the DCF
         # block above and is still read after this one, so reusing it here
         # printed microseconds under a millisecond label.

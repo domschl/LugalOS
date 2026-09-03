@@ -1141,7 +1141,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
              * above say which. */
             "mark_from_edge=%s\nedges=%lu\nedges_dropped=%lu\n"
             "pps_n=%lu\npps_last_us=%ld\npps_mean_us=%ld\n"
-            "pps_sd_us=%lu\npps_min_us=%ld\npps_max_us=%ld\n",
+            "pps_sd_us=%lu\npps_min_us=%ld\npps_max_us=%ld\n"
+            "gerr_n=%lu\ngerr_secbad=%lu\ngerr_last_us=%ld\n"
+            "gerr_mean_us=%ld\ngerr_sd_us=%lu\n",
             (unsigned)st.decoder.pulses_seen, (unsigned)st.decoder.pulses_bad,
             (unsigned)st.decoder.glitches, (unsigned)st.decoder.sync_losses,
             (unsigned)st.decoder.frames_seen, (unsigned)st.decoder.frames_accepted,
@@ -1157,7 +1159,10 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             (unsigned long)st.edges_total, (unsigned long)st.edges_dropped,
             (unsigned long)st.pps_n, (long)st.pps_last_us,
             (long)st.pps_mean_us, (unsigned long)st.pps_sd_us,
-            (long)st.pps_min_us, (long)st.pps_max_us);
+            (long)st.pps_min_us, (long)st.pps_max_us,
+            (unsigned long)st.gerr_n, (unsigned long)st.gerr_secbad,
+            (long)st.gerr_last_us, (long)st.gerr_mean_us,
+            (unsigned long)st.gerr_sd_us);
 
         used += (uint32_t)ksnprintf(buf + used, cap - used, "quality=");
         for (unsigned i = 0; i < st.decoder.quality_count && used + 2 < cap; i++) {

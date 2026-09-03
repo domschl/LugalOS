@@ -95,6 +95,25 @@ static int64_t    g_pps_min_us, g_pps_max_us;
 static int64_t    g_pps_last_us;
 static bool       g_pps_have;
 
+/* The same comparison done entirely locally, second label included.
+ *
+ * pps_* above measures phase: how far the mark sits from the pulse that began
+ * some second. It cannot tell *which* second, so a decoder that got the minute
+ * wrong would still report a contented ~38 ms. NMEA supplies the label, and
+ * the pair is a local stratum-0 reference -- so this is the NTP comparison
+ * without the network: no WLAN round trip, no server, and microseconds of
+ * resolution instead of the several milliseconds an offset over WiFi carries.
+ *
+ * Kept alongside the NTP figure rather than replacing it. Two references that
+ * share no instrument are the only way to catch a fault in either, which is
+ * what §P4 asks for; but this one is the better of the two and should be
+ * believed first when they disagree. */
+static uint32_t   g_gerr_n;
+static int64_t    g_gerr_sum_us;
+static uint64_t   g_gerr_sumsq;
+static int64_t    g_gerr_last_us;
+static uint32_t   g_gerr_secbad;
+
 static bool        g_ever_synced;
 static rtc_time_t  g_last_sync_utc;
 static uint64_t    g_last_sync_ms;
@@ -241,6 +260,25 @@ void dcf77_service_feed(uint64_t now_ms) {
                 g_pps_last_us = off;
                 g_pps_have = true;
             }
+
+            /* The whole claim, against the local reference. */
+            int64_t gnow;
+            if (gps_epoch_us(g_radio_at_us, &gnow)) {
+                int64_t claimed = time_to_epoch(&got) * 1000000LL
+                                + (int64_t)got.ms * 1000LL;
+                int64_t err = claimed - gnow;
+                /* A whole second out is a decode fault, not a delay, and
+                 * averaging it in would hide it behind a plausible mean. It
+                 * is counted separately and loudly. */
+                if (err > 500000LL || err < -500000LL) {
+                    g_gerr_secbad++;
+                } else {
+                    g_gerr_sum_us += err;
+                    g_gerr_sumsq  += (uint64_t)(err * err);
+                    g_gerr_n++;
+                    g_gerr_last_us = err;
+                }
+            }
         }
         /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
          * own mark, not this call's `now`.
@@ -338,6 +376,21 @@ void dcf77_service_status(dcf_status_t *out) {
     } else {
         out->pps_mean_us = 0;
         out->pps_sd_us = 0;
+    }
+    out->gerr_n       = g_gerr_n;
+    out->gerr_secbad  = g_gerr_secbad;
+    out->gerr_last_us = g_gerr_last_us;
+    if (g_gerr_n) {
+        int64_t m = g_gerr_sum_us / (int64_t)g_gerr_n;
+        out->gerr_mean_us = m;
+        int64_t var = (int64_t)(g_gerr_sumsq / g_gerr_n) - m * m;
+        if (var < 0) var = 0;
+        uint64_t r = 0, v = (uint64_t)var;
+        while ((r + 1ull) * (r + 1ull) <= v) r++;
+        out->gerr_sd_us = (uint32_t)r;
+    } else {
+        out->gerr_mean_us = 0;
+        out->gerr_sd_us = 0;
     }
     out->edges_dropped = edgecap_dropped(&g_edges);
     out->edges_total = edgecap_total(&g_edges);
