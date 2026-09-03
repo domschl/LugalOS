@@ -1,6 +1,8 @@
 # Phase 22 — One real lock, before a second core ever needs one
 
-**Status: planned 2026-08-29. Planning only — no implementation yet.**
+**Status: planned 2026-08-29. Amended 2026-09-03 (§6) — one
+correction (S6's rule was inverted) and a new first milestone (S0).
+Planning only, no implementation yet.**
 Sequenced after phase 19's R4 (ENC28J60) and R5 (CYW43439) and phase 21's
 I7 (RP2350 flash backend), all three of which are blocked on hardware
 access today. Nothing in *this* phase requires hardware — see §3's Verify
@@ -193,6 +195,12 @@ must be released **before** `ctx_switch()`, never held across it.
 plus a new assertion-shaped test proving the lock is never live across a
 `ctx_switch()` call (a canary the switch path itself can check).
 
+> **Superseded 2026-09-03 — see §6.1.** The rule stated above ("released
+> before `ctx_switch()`, never held across it") is backwards, and the
+> *Verify* canary derived from it would fire on correct code. The lock is
+> held across the switch and released on the incoming stack. Read §6.1
+> before implementing this milestone.
+
 ## 4. Explicitly not in this phase
 
 - **Waking core 1.** Phase 23, entirely.
@@ -231,3 +239,137 @@ plus a new assertion-shaped test proving the lock is never live across a
   failure — it is the point of doing an audit rather than converting only
   the three sites already known about. A shorter list than expected would
   be more suspicious than a longer one.
+
+---
+
+## 6. Amendments (2026-09-03, review against the tree)
+
+The plan above was written 2026-08-29 from a reading of the kernel. It was
+re-checked against the tree on 2026-09-03, before any implementation, and
+four things changed. One of them is a correction, not an addition: **S6's
+stated design rule is the inverse of the correct one** (§6.1). The rest is
+work the original plan did not know it needed.
+
+What the re-check confirmed, so it does not have to be re-established:
+the A extension is already enabled on every target
+(`-march=rv32imac_zicsr_zbs` / `rv64gc`, `CMakeLists.txt:40-66`) and
+nothing in the tree uses an atomic today (grep for
+`amoswap|__atomic|lr.w|sc.w|__sync_` across `kernel/ arch/ drivers/ fs/
+net/` returns nothing), so §2's primitive needs no toolchain change. The
+48 `irq_save()` sites across 13 files are as described, and
+`kernel/klog.c` really does have none.
+
+### 6.1 S6's rule is backwards — release *after* the switch, not before
+
+§3's S6 says the scheduler lock "must be released **before**
+`ctx_switch()`, never held across it." Followed literally, that is a
+stack-corruption bug, and the reasoning is short enough to be checked
+here rather than discovered at phase 23's X1.
+
+`kernel/sched.c:359-390` writes the outgoing task's stack pointer
+*inside* `ctx_switch()` — `REG_S sp, 0(a0)` in
+`arch/riscv/common/switch.S` — which is strictly after the point where
+S6 would have released the lock:
+
+```
+unlock(sched)                            /* prev is READY and visible to hart 1 */
+ctx_switch(&g_tasks[prev].sp, ...)       /* prev.sp is written HERE */
+```
+
+Between those two lines the outgoing task is advertised as runnable while
+its parked `sp` still holds whatever the *previous* switch left there. A
+second hart that claims it in that window resumes from a stale stack
+pointer, and two harts then execute on one stack. The failure is
+intermittent, load-dependent, and destroys the evidence of its own cause —
+the worst possible shape for something a plan could have ruled out on
+paper.
+
+The correct rule is the opposite one: the outgoing task stays unclaimable
+until its context is saved, which means the lock (or an equivalent
+per-task parking flag) is **held across `ctx_switch()` and released by
+whoever lands on the incoming stack** — Linux's `finish_task_switch()`
+shape.
+
+This is not a foreign idea in this file. `sched_yield()` already does
+exactly this hand-off for the interrupt flags, and says so at
+`kernel/sched.c:381-386`: "Interrupts stay masked across the switch itself
+and are restored by whichever task resumes here, from the flags IT saved.
+The incoming task does the same for us." The lock follows the pattern the
+scheduler already uses; it was §3's rule, not the code, that had it
+backwards.
+
+S6's *Verify* line changes with it. The new assertion is not "the lock is
+never live across a `ctx_switch()`" — that canary would now fire on
+correct code. It is that no task is ever observable as READY while its
+parked `sp` is stale, i.e. the release happens on the incoming stack and
+nowhere else.
+
+### 6.2 New milestone S0 — per-hart state, before anything else
+
+Neither this phase nor phase 23 accounted for the fact that **a hart
+cannot currently find out which hart it is**, and that both of the
+conventional places to keep that answer are already occupied. This is the
+largest unpriced item in either document, it touches the most
+safety-critical assembly in the tree, and everything from S6 onward
+depends on it. It becomes S0, sequenced first.
+
+- **`mhartid` is unreadable on the RV64 target.** `entry.S` performs the
+  M→S transition itself (`arch/riscv/common/entry.S:38-70`,
+  `CONFIG_MODE_S`), and `mhartid` is an M-mode CSR: `csrr mhartid` from
+  S-mode traps as an illegal instruction. A `hart_id()` that compiles on
+  both builds cannot simply read the CSR — the value has to be captured
+  at boot, while still in M-mode, and kept somewhere S-mode can reach.
+- **`tp` is taken.** It is saved and restored as an ordinary task
+  register in the trap frame (`arch/riscv/common/entry.S:188,277`), so
+  the usual RISC-V convention of reserving `tp` for the per-hart pointer
+  is not free here — it means removing `tp` from the frame and auditing
+  every path that assumed it round-trips.
+- **`sscratch`/`mscratch` is taken, and load-bearing.** It holds the
+  current task's kernel `sp` while U-mode runs, and **zero while the
+  kernel runs**, so that one `csrrw` both switches stacks and reveals
+  where the trap came from (`arch/riscv/common/entry.S:163-179`). That
+  invariant is what removes the need for a separate "am I in user mode"
+  flag, and the file says as much.
+
+The way out is the xv6 shape: scratch holds a pointer to a per-hart
+struct whose first word is the kernel `sp`, with the "were we in U-mode"
+test becoming a field in that struct rather than a zero check on the
+register itself. That is a restructure of the trap entry invariant, not a
+one-line addition, and it is the reason S0 exists as its own milestone
+rather than a bullet inside S1.
+
+*Verify:* the existing trap, U-mode and fault suites unchanged — S0 is
+behaviour-preserving on one hart by construction, in the same way §0
+describes the original `irq_save()` work being landed before preemption
+could exercise it. A `hart_id()` returning 0 on every current target is
+the whole observable effect.
+
+### 6.3 The atomic goes behind an arch hook
+
+§2 argues the primitive is target-independent because "RISC-V
+`amoswap`/`lr`/`sc` are defined identically whether or not a second hart
+is ever listening." That is a statement about the ISA, and this project's
+own standing rule is that Hazard3 is not assumed to match the ISA until
+it has been measured against it — `[[falsify_on_hardware_not_qemu]]`,
+six divergences so far. RP2350 additionally ships 32 SIO hardware
+spinlocks, which exist precisely because cross-core exclusion is
+something the chip offers directly.
+
+So S1 gains one constraint: the atomic test-and-set sits behind a single
+arch-level hook, so that a RP2350 build can be switched to a SIO spinlock
+without touching one call site in `fs/`, `kernel/` or `drivers/`. Whether
+it needs to be is an X3-era measurement, not a decision to make now — the
+point is only that finding out must not be a refactor.
+
+### 6.4 S5's convert list is longer than S2-S4's three
+
+`kernel/printk.c` (`:78,92,99,108`) and `kernel/console.c`
+(`:111,118,129,204`) both guard shared static buffers with
+`irq_save()`/`irq_restore()`. They are not in the "no protection at all"
+bucket S5 names (`balloc.c`, `ticker.c`, `klog.c`), so the original text
+folded them into the general audit — but they are in fact the same
+convert-to-`spinlock_t` job as S3 and S4, and they are the *first* thing
+that visibly breaks once two harts run, well before any test asserts
+anything, because both harts print. They are called out here so the audit
+does not have to rediscover them, and so that S5's "converted / genuinely
+safe, and why" list starts from 15 known sites rather than 3.
