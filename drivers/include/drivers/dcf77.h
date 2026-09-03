@@ -37,6 +37,13 @@ void dcf77_power(bool on);
  * cooked "pulse active" boolean. */
 bool dcf77_raw_level(void);
 
+/* Is the module's power-on line actually asserted right now? Read from the
+ * pin, not from what dcf77_power() was last told, so it reports the hardware
+ * rather than this driver's intent. Distinguishes "the module is off" from
+ * "the module is on and hearing nothing", which look identical in every other
+ * statistic: both give a permanently idle OUT line. */
+bool dcf77_pon_asserted(void);
+
 /* What the driver currently believes about the two polarities. Both start
  * from the board file's CONFIG_DCF77_PON_ACTIVE_LOW / "OUT pulses high" and
  * can be corrected by dcf77_probe(). */

@@ -523,8 +523,30 @@ void clock_app_run(void) {
                 next_led_ms = now + 50u;
             } else {
                 uint32_t age = dcf77_service_age_s();
-                want = (age != 0xFFFFFFFFu) && (age < 48u * 3600u);
-                next_led_ms = now + 1000u;
+                if (age != 0xFFFFFFFFu && age < 48u * 3600u) {
+                    want = true;                   /* synced, and recently */
+                    next_led_ms = now + 1000u;
+                } else {
+                    /* Not synced -- so show whether the radio is being *heard*,
+                     * by mirroring the second pulse itself.
+                     *
+                     * This used to go dark here, which is right for "never
+                     * synced and nothing arriving" and badly wrong for the
+                     * case that actually matters during a calibration run: the
+                     * decoder runs continuously and never syncs, so a panel
+                     * showing perfect reception was indistinguishable from one
+                     * showing a disconnected antenna. That is not academic --
+                     * a loose DCF connector on 2026-09-03 cost an hour, and
+                     * the lamp that should have said so at a glance was dark
+                     * either way.
+                     *
+                     * A tick a second means the receiver is hearing the
+                     * carrier; dark means it is not. Same language as the
+                     * signal screen, which already mirrors the pulse for
+                     * exactly this reason. */
+                    want = s2.pulse;
+                    next_led_ms = now + 10u;
+                }
             }
             if (want != led_on) { led_on = want; clock_hw_indicator(CLOCK_IND_DCF, want); }
         }
