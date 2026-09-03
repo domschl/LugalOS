@@ -272,6 +272,78 @@ def discover_ports(console: str | None = None, net: str | None = None,
     return Rp2350Ports(console=console, net=net, uart=uart)
 
 
+_config_cache: "dict[str, int] | None" = None
+
+
+def board_config(console_port: str) -> "dict[str, int]":
+    """The ENABLE_* flags the attached board was actually built with, read
+    from /proc/config.
+
+    A board persona is not a smaller version of another one -- it is a
+    different set of drivers. rp2350-clock builds with SPISD, ST7735, TM1638
+    and CHESS off, because on the Pico-Clock-Green baseboard GP10-13 are the
+    LED matrix's shift registers rather than an SD bus. A test for a driver
+    task that was never compiled has nothing to talk to, and reporting that
+    as a failure is not a result: it says "this is broken" about a board that
+    is behaving exactly as built.
+
+    That mattered in practice. This suite reported 18/24 on the clock persona
+    with failure text reading "board firmware predates the `st7735stats`
+    command -- reflash it with the current build/rp2350/lugalos.uf2", which is
+    indistinguishable from a real staleness bug and cost a full build-flash-
+    measure cycle against the previous commit to rule out (2026-09-03).
+
+    The board has known this all along -- /proc/config reports every flag,
+    which is what phase 7's K3 built it for. Only the asking was missing.
+
+    Cached: the flags cannot change without a reflash, and every gated test
+    would otherwise open the console again to ask the same question.
+    """
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
+    cfg: "dict[str, int]" = {}
+    try:
+        with serial.Serial(console_port, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            # The clock persona's application owns the terminal until Ctrl-C
+            # hands it back, so ask for it before asking anything else.
+            ser.write(b"\x03")
+            ser.flush()
+            time.sleep(0.8)
+            drain(ser, quiet=0.5, deadline=3.0)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/config\n")
+            ser.flush()
+            out = drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
+        for key, val in re.findall(r"^(ENABLE_[A-Z0-9_]+)=(\d+)", out, re.M):
+            cfg[key] = int(val)
+    except Exception:
+        # An unreadable /proc/config must not silently disable every gated
+        # test -- an empty dict means feature_enabled() answers True and the
+        # tests run as they always did, failing honestly if the feature is
+        # genuinely absent.
+        return {}
+
+    _config_cache = cfg
+    return cfg
+
+
+def feature_enabled(console_port: str, flag: str) -> bool:
+    """Whether `flag` (e.g. "ENABLE_SPISD") is on for the attached board.
+
+    Unknown flags read as True on purpose: a board too old to report one, or
+    a name that has since been renamed, should run the test and let it fail
+    on its own terms rather than skip on a technicality. Silently skipping is
+    the one outcome worse than a confusing failure.
+    """
+    cfg = board_config(console_port)
+    return cfg.get(flag, 1) != 0
+
+
 def local_build_id(build_dir: "Path | None" = None) -> str | None:
     """The build id the local tree would produce. Returns None if no build
     exists.

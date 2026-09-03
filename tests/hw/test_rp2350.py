@@ -268,6 +268,9 @@ def test_type_ahead(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     assertion looks for. If the input is eaten, that line never appears.
     """
     name = "Type-ahead survives an engine search instead of being eaten"
+    if not rp2350.feature_enabled(ports.console, "ENABLE_CHESS"):
+        return (name, True, "SKIPPED: this persona builds without the chess engine "
+                             "(ENABLE_CHESS=0 in /proc/config); there is no search to type ahead of")
     KIWI = ("fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/"
             "R3K2R w KQkq - 0 1\n")
     try:
@@ -608,9 +611,29 @@ def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             time.sleep(0.3)
             ser.reset_input_buffer()
 
+            # kick_after, because this is the exact case rp2350.drain()
+            # grew it for -- its own docstring names "priostress's
+            # multi-second uninterrupted CPU spin" as the worst instance of
+            # the RP2350 USB quirk it works around: a bulk IN the device
+            # armed after a long quiet stretch can sit unpolled host-side
+            # essentially forever, and any fresh OUT traffic recovers it.
+            # test_blk_task and test_ntp.py both pass kick_after; this test,
+            # the one the mechanism was written for, never did.
+            #
+            # It cost three wrong explanations to find that, each refuted by
+            # re-running rather than by argument: a just-reflashed board
+            # settling (it reproduced on a board up for many minutes), the
+            # appliance persona's application owning the terminal (a Ctrl-C
+            # at suite start did not fix it), and DTR settling (a readiness
+            # handshake proving the shell answered did not fix it either).
+            # The report simply never crossed the wire.
+            #
+            # The deadline goes up with it: kicks only help if there is still
+            # time left to receive what they shake loose, and this persona
+            # runs five more tasks than the one these numbers were tuned on.
             ser.write(b"priostress\n")
             ser.flush()
-            out = rp2350.drain(ser, quiet=6.0, deadline=15.0)
+            out = rp2350.drain(ser, quiet=8.0, deadline=45.0, kick_after=1.5)
 
         text = out.decode("utf-8", errors="replace")
         m = re.search(r"done=1,1 total_ticks=(\d+),(\d+) -- (FAIR|UNFAIR)", text)
@@ -712,6 +735,9 @@ def test_blk_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     fell back to direct SPI access the whole time would still pass every
     functional filesystem test and prove nothing about this milestone."""
     name = "blk task: SD/block storage driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    if not rp2350.feature_enabled(ports.console, "ENABLE_SPISD"):
+        return (name, True, "SKIPPED: this persona builds without the SD/block driver "
+                             "(ENABLE_SPISD=0 in /proc/config)")
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -815,6 +841,9 @@ def test_st7735_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     Same shape as test_blk_task: the claim is "is the task actually serving
     these", via st7735_task_call_count() (`st7735stats`)."""
     name = "st7735 task: TFT canvas driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    if not rp2350.feature_enabled(ports.console, "ENABLE_ST7735"):
+        return (name, True, "SKIPPED: this persona builds without the ST7735 TFT driver "
+                             "(ENABLE_ST7735=0 in /proc/config)")
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -862,6 +891,9 @@ def test_tm1638_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     test_blk_task: the claim is "is the task actually serving these", via
     tm1638_task_call_count() (`tm1638stats`)."""
     name = "tm1638 task: 7-segment/keypad/LED driver is actually serving requests over chan_call(), on real silicon (M4.5)"
+    if not rp2350.feature_enabled(ports.console, "ENABLE_TM1638"):
+        return (name, True, "SKIPPED: this persona builds without the TM1638 keypad driver "
+                             "(ENABLE_TM1638=0 in /proc/config)")
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -1448,7 +1480,17 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ser.reset_input_buffer()
             out = ""
             for cmd in (b"cat /proc/meminfo\n",
-                        b"cc /sd0/prime.c /sd0/hwtest_cc.elf\n",
+                        # /flash0, not /sd0: this test is about whether the
+                        # compiler hands its arena back, which has nothing to
+                        # do with storage -- /sd0 was only ever where a .c
+                        # file happened to be. On rp2350-clock /sd0 never
+                        # mounts (GP10-13 drive the LED matrix, not an SD
+                        # bus), so the compile could not start and the test
+                        # failed for a reason unrelated to anything it
+                        # checks. /flash0 is built from the same
+                        # tools/sd_root tree on every persona, and /ram0 is
+                        # formatted at boot wherever /flash0 is read-only.
+                        b"cc /flash0/prime.c /ram0/hwtest_cc.elf\n",
                         b"cat /proc/meminfo\n"):
                 ser.write(cmd)
                 ser.flush()
@@ -1543,32 +1585,64 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ser.flush()
             out = rp2350.drain(ser, quiet=0.8, deadline=10.0).decode("utf-8", "replace")
 
+        # Split by what a persona actually builds. The single flat table this
+        # replaces was the chess persona's pin map, so on rp2350-clock it
+        # failed on ten keys that are correctly absent -- SPI1 (no SD bus:
+        # GP10-13 are the LED matrix's shift registers there), ST7735, TM1638
+        # -- and on two more whose values are legitimately different per
+        # board. That is the test reporting "wrong pins" about a board whose
+        # pins are right.
         expected = {
+            # Every RP2350 persona has these, with these values.
             "PALLOC_MAX_PAGES": "128",
             "UART0_BASE": "0x40070000",
             "UART0_TX_GPIO": "0",
             "UART0_RX_GPIO": "1",
-            "SPI1_BASE": "0x40088000",
-            "SPI1_SCK_GPIO": "10",
-            "SPI1_MOSI_GPIO": "11",
-            "SPI1_MISO_GPIO": "12",
-            "SPI1_CS_GPIO": "13",
-            "LED_ONBOARD_GPIO": "25",
-            "LED_EXT_GPIO": "16",
-            "SPI0_BASE": "0x40080000",
-            "ST7735_SCK_GPIO": "18",
-            "ST7735_MOSI_GPIO": "19",
-            "ST7735_CS_GPIO": "17",
-            "ST7735_DC_GPIO": "20",
-            "ST7735_RST_GPIO": "21",
-            "TM1638_STB_GPIO": "6",
-            "TM1638_CLK_GPIO": "7",
-            "TM1638_DIO_GPIO": "8",
         }
+        # Parsed from the reading this test already took, rather than via
+        # rp2350.feature_enabled(): that would reopen the console to fetch a
+        # file whose contents are sitting in `out`. It also keeps the check
+        # honest -- the flags and the pins are then read from the same
+        # snapshot, so they cannot disagree about which board this is.
+        def built_with(flag: str) -> bool:
+            m = re.search(rf"^{flag}=(\d+)", out, re.M)
+            return m is None or m.group(1) != "0"
+
+        if built_with("ENABLE_SPISD"):
+            expected.update({
+                "SPI1_BASE": "0x40088000",
+                "SPI1_SCK_GPIO": "10",
+                "SPI1_MOSI_GPIO": "11",
+                "SPI1_MISO_GPIO": "12",
+                "SPI1_CS_GPIO": "13",
+            })
+        if built_with("ENABLE_ST7735"):
+            expected.update({
+                "SPI0_BASE": "0x40080000",
+                "ST7735_SCK_GPIO": "18",
+                "ST7735_MOSI_GPIO": "19",
+                "ST7735_CS_GPIO": "17",
+                "ST7735_DC_GPIO": "20",
+                "ST7735_RST_GPIO": "21",
+            })
+        if built_with("ENABLE_TM1638"):
+            expected.update({
+                "TM1638_STB_GPIO": "6",
+                "TM1638_CLK_GPIO": "7",
+                "TM1638_DIO_GPIO": "8",
+            })
         checks = [
             (f"{key}={val}", re.search(rf"{key}={re.escape(val)}\b", out) is not None)
             for key, val in expected.items()
         ]
+        # The LED pin is a per-board fact (25/16 on chess, 9 on the Pico 2 W
+        # clock, which has no plain onboard LED at all -- its is on the
+        # wireless chip). Its *value* cannot be asserted without knowing the
+        # persona, but its presence can: K3 is about /proc/config reporting
+        # the pins that were compiled in, and a build that reported none
+        # would be the regression worth catching.
+        checks.append(("an LED pin is reported",
+                       re.search(r"LED_(ONBOARD|EXT)_GPIO=\d+", out) is not None))
         failed = [label for label, ok in checks if not ok]
         if failed:
             return (name, False, f"failed: {', '.join(failed)}\n{out[-800:]}")
@@ -1596,6 +1670,29 @@ def main() -> int:
         return 0
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
+
+    # Take the console before running anything, and learn what this board was
+    # built with while we are there (one read, cached for every gated test).
+    #
+    # Both halves matter. On an appliance persona the shell sits behind an
+    # application that owns the terminal until Ctrl-C hands it back -- which
+    # flash.py has always known and this suite never did. A test that writes
+    # its command into that application simply loses it, and the only test
+    # here that waits several silent seconds for a single line of output,
+    # `priostress`, is the one where losing it is indistinguishable from the
+    # scheduler misbehaving: it reports "no PrioStress report in console
+    # output". It failed roughly half the time on rp2350-clock, passed on
+    # every manual re-run, and was misread as a settling artifact of a
+    # just-reflashed board (2026-09-03) before the missing Ctrl-C turned up.
+    #
+    # Done once here rather than in each test: this is a property of the
+    # session, not of any one assertion, and a Ctrl-C per test would be
+    # sixteen chances to get it subtly wrong instead of one.
+    cfg = rp2350.board_config(ports.console)
+    if cfg:
+        off = sorted(k[len("ENABLE_"):] for k, v in cfg.items() if v == 0)
+        print("Board config: " + (f"built without {', '.join(off)}" if off
+                                  else "every optional feature built in"))
 
     # test_heap_on_demand needs a clean, unfragmented heap for chibicc's fixed
     # 108 KB arena, so it has to run before *any* test that loads a U-mode ELF
