@@ -92,24 +92,34 @@ def split_by_delay(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return good, bad
 
 
-def dedupe(rows: list[dict]) -> list[dict]:
-    """One row per sequence number, keeping the first heard.
+def split_runs(rows: list[dict]) -> list[list[dict]]:
+    """Split a log into boots, at every point the sequence number restarts.
 
-    The board broadcasts to 255.255.255.255 and a host with more than one
-    interface on the segment hears each datagram once per interface -- 161
-    lines carrying 104 distinct samples, in the run that found this. Nothing
-    downstream noticed, because a duplicate is a perfectly well-formed sample;
-    it simply counts twice. That biases every mean toward whichever samples
-    happened to arrive twice and understates the standard error by pretending
-    there is more independent data than there is.
+    The board numbers its samples from zero at boot and measures t_s from its
+    own start, so a log spanning a reboot holds two independent series sharing
+    one range of sequence numbers and one range of timestamps. Concatenating
+    them is not merely untidy: the crystal-drift fit regresses offset against
+    t_s, and t_s jumping backwards makes that fit describe nothing at all.
 
-    Keyed on the board's own sequence number rather than on the line text, so
-    two genuinely distinct samples that happen to agree in every field are
-    still counted twice, as they should be."""
-    seen: dict[int, dict] = {}
+    This replaces a dedupe-by-sequence-number that assumed repeated numbers
+    meant duplicated datagrams. They did not -- the board had been restarted
+    after a WLAN drop (user, 2026-09-03) -- and deduping would have silently
+    discarded a whole second run rather than reporting it. Checked against the
+    log that prompted it: three runs, and not one repeated sequence number
+    inside any of them, so there were no duplicates to remove in the first
+    place."""
+    runs: list[list[dict]] = []
+    cur: list[dict] = []
+    prev: int | None = None
     for r in rows:
-        seen.setdefault(r["seq"], r)
-    return [seen[k] for k in sorted(seen)]
+        if prev is not None and r["seq"] <= prev:
+            runs.append(cur)
+            cur = []
+        cur.append(r)
+        prev = r["seq"]
+    if cur:
+        runs.append(cur)
+    return runs
 
 
 def analyse(rows: list[dict]) -> str:
@@ -118,7 +128,16 @@ def analyse(rows: list[dict]) -> str:
 
     raw_n = len(rows)
     off_stratum = sum(1 for r in rows if r["stratum"] != 1)
-    rows = dedupe(rows)
+    # One boot only. Which one: the longest, because that is the run with the
+    # most to say, and a short tail after a restart should not displace hours
+    # of data.
+    runs = split_runs(rows)
+    note = ""
+    if len(runs) > 1:
+        rows = max(runs, key=len)
+        note = (f"  ({len(runs)} runs in this log -- the board restarted. "
+                f"Analysing the longest, {len(rows)} samples;\n"
+                f"   figures derived from t_s cannot span a reboot.)")
     rows, slow = split_by_delay(rows)
     out = [f"{len(rows)} of {raw_n} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
     if off_stratum:
@@ -148,6 +167,8 @@ def analyse(rows: list[dict]) -> str:
         out.append(f"  fit residual : {sd:.1f} ms sd  (how well a straight line describes it)")
 
     rtts = sorted(r["rtt_ms"] for r in rows)
+    if note:
+        out.append(note)
     out.append(f"  ntp rtt      : min {rtts[0]} / median {rtts[len(rtts) // 2]} / max {rtts[-1]} ms")
 
     # --- the DCF path.
