@@ -236,6 +236,9 @@ static void p0_body(void *arg) {
            "one initial step\n", CONFIG_DCF77_P0_NTP);
 
     uint64_t last_mark_ms = 0;
+    /* Previous cumulative quality totals, so each sample can report the mean
+     * over its own interval rather than over the board's uptime. */
+    uint32_t q_prev_sum = 0, q_prev_total = 0;
     bool     have_last_mark = false;
     uint32_t last_frames = 0;
 
@@ -319,8 +322,27 @@ static void p0_body(void *arg) {
 
         dcf_status_t d;
         dcf77_service_status(&d);
-        s.quality = (uint8_t)(d.decoder.quality_total
-            ? (d.decoder.quality_sum * 10u / d.decoder.quality_total) : 0u);
+        /* The quality of *this* minute, not of the board's whole uptime.
+         *
+         * This logged quality_sum/quality_total, a mean accumulated since boot
+         * and never rolled off. Within a few hundred seconds the history
+         * dominates and the figure stops moving: 155 consecutive samples over
+         * 4.7 hours all read exactly 69 (2026-09-03). That made the column
+         * look like a stable signal when it was really a frozen instrument,
+         * and it made P4's "does the delay move with signal strength?" question
+         * unanswerable, because the independent variable never varied.
+         *
+         * The difference between successive readings is the mean over the
+         * interval between them, which is the window that actually matters --
+         * and costs nothing, since both totals are already to hand. */
+        uint32_t dsum = d.decoder.quality_sum - q_prev_sum;
+        uint32_t dtot = d.decoder.quality_total - q_prev_total;
+        q_prev_sum = d.decoder.quality_sum;
+        q_prev_total = d.decoder.quality_total;
+        s.quality = (uint8_t)(dtot ? (dsum * 10u / dtot)
+                                   : (d.decoder.quality_total
+                                      ? d.decoder.quality_sum * 10u / d.decoder.quality_total
+                                      : 0u));
         uint32_t acc = d.decoder.frames_accepted;
         uint32_t delta = (acc >= last_frames) ? (acc - last_frames) : 0u;
         last_frames = acc;
