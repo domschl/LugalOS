@@ -194,6 +194,23 @@ bool dcf77_raw_level(void) {
 bool dcf77_pon_active_low(void)    { return g_pon_active_low; }
 bool dcf77_out_pulse_is_high(void) { return g_out_pulse_high; }
 
+/* The two pin states a remote diagnosis needs.
+ *
+ * dcf77_pin_report() prints a far better picture, but only to a console, and
+ * this board lives at the end of an antenna wire in another room. When
+ * reception stopped on 2026-09-03 the deciding question -- is the module
+ * powered, or is OUT simply idle because nothing is driving it? -- was
+ * unanswerable without carrying the board back to a cable, which is exactly
+ * the round trip /proc exists to avoid. */
+bool dcf77_pon_asserted(void) {
+#if CONFIG_DCF77_PON_GPIO >= 0
+    bool level = (REG(SIO_GPIO_IN) & (1u << CONFIG_DCF77_PON_GPIO)) != 0;
+    return CONFIG_DCF77_PON_ACTIVE_LOW ? !level : level;
+#else
+    return false;
+#endif
+}
+
 static bool pin_level(unsigned pin) {
     return (REG(SIO_GPIO_IN) & (1u << pin)) != 0;
 }

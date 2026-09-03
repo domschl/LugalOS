@@ -31,6 +31,7 @@
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
 /* Last, deliberately: the CONFIG_* guard arrives with the headers above. */
+#include "drivers/dcf77.h"
 #include "drivers/dcf77_service.h"
 #include "drivers/dcf77_p0log.h"
 #include "drivers/gps_pps.h"
@@ -1139,6 +1140,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
              * non-zero drop count on a quiet line means the ring is too small;
              * on a noisy one it is the noise itself, and the quality figures
              * above say which. */
+            "out_level=%u\npon_asserted=%s\n"
             "mark_from_edge=%s\nedges=%lu\nedges_dropped=%lu\n"
             "pps_n=%lu\npps_last_us=%ld\npps_mean_us=%ld\n"
             "pps_sd_us=%lu\npps_min_us=%ld\npps_max_us=%ld\n"
@@ -1155,6 +1157,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                 ? (st.decoder.quality_sum * 10u) / st.decoder.quality_total : 0),
             (unsigned)st.decoder.quality_total,
             (unsigned)st.decoder.clean_run_max,
+            (unsigned)(dcf77_raw_level() ? 1u : 0u),
+            dcf77_pon_asserted() ? "yes" : "no",
             st.radio_at_us_ok ? "yes" : "no",
             (unsigned long)st.edges_total, (unsigned long)st.edges_dropped,
             (unsigned long)st.pps_n, (long)st.pps_last_us,
