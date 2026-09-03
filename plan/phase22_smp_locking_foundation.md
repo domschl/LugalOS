@@ -185,13 +185,31 @@ difference matters more than the pass:
   comment claimed the test distinguished the two; it does not, and saying
   so would have been the kind of unearned confidence §5 warns about.
 
-Still outstanding for S1: run `lockselftest` on real RP2350 silicon. That
-is not a formality — §6.3 exists because "the ISA defines `amoswap`" is
-not a statement about Hazard3, and an `amoswap.w.aq` that traps as
-illegal, or faults against a particular memory region, would be found
-here and nowhere else. 12 AMO instructions reach the linked image, so the
-question is now live rather than hypothetical. Cost so far: **+22 bytes**
-of static RAM.
+**Hardware pass done 2026-09-03: `LOCK_SELFTEST_OK (6/6)` on a Pico 2 W
+(`rp2350-clock`).** This was not a formality — §6.3 exists because "the
+ISA defines `amoswap`" is not a statement about Hazard3, and 12 AMO
+instructions reach the linked image. `amoswap.w.aq` and `amoswap.w.rl`
+execute correctly on real silicon: no illegal-instruction trap, no fault
+against SRAM. The interrupt-masking measurement passes there too, which
+matters given how often QEMU has hidden a Hazard3 divergence before.
+
+Precisely what that settles: the instructions exist, execute, and behave
+correctly **on one hart**. It says nothing about whether Hazard3's AMOs
+are atomic *between* the two cores — that is unobservable until phase
+23's X1 puts a second hart on the same word, and it stays the open
+question §6.3 named. What is now closed is the cheaper failure it was
+also guarding against, which would have taken the board down on the first
+lock acquisition.
+
+`tests/hw/test_rp2350.py`: 24/24, three runs of four. The fourth returned
+22/24 (C6/C7 and B3) on the first run after a fresh flash, while the WLAN
+supervisor was still retrying its join; three settled runs afterwards were
+clean. C6/C7 asserts exact heap equality across a compile, which
+background allocation on a networked persona can disturb — plausible but
+not proven, and recorded in `plan/open_issues.md` rather than fixed by
+loosening a check that exists to catch arena leaks.
+
+Cost: **+22 bytes** of static RAM.
 
 **S2 — convert `fs/p9_link.c`'s `p9_lock_t`** to `ylock_t`, deleting the
 local type.

@@ -424,3 +424,26 @@ strip a trailing separator from the relative part before lookup, the way
 it evidently already does for the mount-root case. Worth checking whether
 the same asymmetry affects `cat`, `cp` and the 9P walk, which take the
 same resolver -- the shell's `ls` is only where it happened to surface.
+---
+## C6/C7's exact heap comparison is disturbed by background allocation
+
+**Trigger:** run `tests/hw/test_rp2350.py` against a networked persona
+(`rp2350-clock` on a Pico 2 W) in the first minute after a flash, while the
+WLAN supervisor is still retrying its join. Seen once in four runs on
+2026-09-03; three settled runs either side were clean.
+
+**Why it is parked:** the test reads `Pages Used` before and after a
+compile and requires them to be *equal* -- which is exactly the right
+assertion for what it checks (that chibicc's arena comes back), and exactly
+what any concurrent allocation elsewhere in the system breaks. The cause is
+consistent with the WLAN join path allocating between the two readings, but
+that was inferred from timing rather than demonstrated, so it is written
+down as an observation and not a diagnosis.
+
+**Fix, when it is worth it:** not by loosening the equality -- a tolerance
+band would blunt the one thing it detects. Better either to take both
+readings while the system is demonstrably quiescent (the suite already
+knows how to wait for a settled console), or to have the test compare only
+the pages attributable to the compile, which `/proc/meminfo`'s peak figure
+already distinguishes. Whichever, it should be a deliberate change to a
+leak-detection test rather than a drive-by loosening.
