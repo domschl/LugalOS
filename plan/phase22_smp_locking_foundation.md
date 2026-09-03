@@ -336,6 +336,124 @@ its disposition (converted / genuinely safe, and why) — measured, not
 assumed, the same discipline §3.1 of `plan/phase21_identity_and_authentication.md`
 used for RP2350's storage layout.
 
+**DONE 2026-09-03.** The headline: §1 counted **three** independent
+reinventions of the same lock. There are **six**.
+
+| # | Site | Shape | Disposition |
+|---|------|-------|-------------|
+| 1 | `fs/p9_link.c` `p9_lock_t` | re-entrant, yields | converted, S2 |
+| 2 | `kernel/chan.c` `ep->busy` | test-and-set, refuses | converted, S3 |
+| 3 | `kernel/palloc.c` bitmap | scan-then-claim | converted, S4 |
+| 4 | `kernel/printk.c` `printk_lock()` | re-entrant, **blocks**, directed wakeup | converted, S5 |
+| 5 | `drivers/enc28j60_rp2350.c` `g_busy` | test-and-set, yields | **not converted** — see below |
+| 6 | `drivers/cyw43_rp2350.c` `g_bus_busy` | test-and-set, yields | **not converted** — see below |
+
+#4 is the most developed of them — re-entrant *and* blocking *and* carrying
+a single-waiter hand-off, grown under M2's pressure when `uart_putc()`
+started blocking. It is kept rather than replaced by a `ylock_t`: that
+hand-off is a real property of the console path, and swapping it for
+yield-and-retry would change the scheduling of every `printk()` in the
+system to fix something a four-byte gate fixes without touching it. What
+changed is only that its check-then-set of `g_printk_owner` is now
+indivisible across harts.
+
+### Converted in S5
+
+- **`kernel/printk.c`** — `g_printk_gate` guards owner/depth/waiter.
+  Released before `task_block()`, never held across it.
+- **`kernel/klog.c`** — `g_klog_lock` guards the ring and `g_total`; two
+  harts writing `g_ring[g_total % SIZE]` would interleave characters and
+  tear the counter. The sink fanout stays *outside* it, because a sink's
+  `putc()` is a UART write that can block. Separately, `g_in_fanout`
+  became **per-hart**: it guards against a sink reaching `printk()` on the
+  same call stack, and a call stack belongs to a hart — shared, one hart's
+  fanout would have silently suppressed the other's console output rather
+  than merely nesting it. First use of S0's `hart_id()` outside a
+  diagnostic.
+- **`kernel/balloc.c`** — `g_balloc_lock` over the buddy tree, in both
+  `balloc_alloc()` and `balloc_free()`. The lazy `balloc_reserve()` stays
+  outside it (it calls `palloc` and `printk`). Converted despite having no
+  runtime caller but `ballocdemo` today: it hands out self-aligned
+  PMP-usable blocks, so its next caller is a driver or a loader, and it
+  will not think about locking any more than the three subsystems that
+  needed it retrofitted did.
+- **`kernel/palloc.c` `palloc_stats()` / `palloc_extra_stats()`** — both
+  scans now take the lock. The tempting argument, that a diagnostic can
+  tolerate a stale figure, is right about staleness and wrong about this:
+  an unlocked scan racing `bit_set()`/`bit_clear()` does not return an old
+  number, it returns a number for a heap state that never existed, in
+  exactly the report someone reads when already suspicious about the heap.
+- **`drivers/usb_cdc.c`** — `usb_cdc_putc()`'s producer-side ring update.
+  This is the one the audit would have missed by reasoning: it looks like
+  driver-local state that phase 23's X2 pinning would cover, and it is
+  not. The function has no `USB_UATTR`, so it is *kernel* code, reached
+  from the printk path by whichever task is printing and again from
+  `uart_rp2350.c`'s fallback. Its lock is deliberately in ordinary kernel
+  `.bss` and **not** in `g_usb`, which lives in `.ustacks16384` — the
+  region PMP-granted to the U-mode USB driver. A lock word there could be
+  corrupted into one that never reads free, promoting "a broken driver
+  corrupts its own ring", which phase 12's isolation contains, into "a
+  broken driver hangs the kernel in a spin", which it does not. The
+  kernel↔U-mode side of that ring needs no lock and did not get one: this
+  side only writes `head` and reads `tail`, the consumer only writes
+  `tail` and reads `head`, both aligned words — single-producer/
+  single-consumer, safe by construction, and never what the `irq_save()`
+  was for.
+
+### Examined and left alone, with reasons
+
+- **`kernel/sched.c`** (4 sites) — S6's entire subject. Not touched here.
+- **`kernel/ticker.c` `g_ticks`** — `ticker_count_tick()` is called only
+  from the timer ISR (`arch/riscv/common/trap.c:202`) and `g_ticks++` is
+  unprotected. Genuinely racy the moment a second hart takes timer
+  interrupts: two ISRs would lose increments. Left, because the fix
+  depends on a decision phase 23's **X4** has to make first — whether
+  RP2350 gives each core its own comparator, and therefore whether this
+  should be one atomic counter or one per hart. It is a diagnostic
+  counter (preemption tests, `lockselftest`'s masking check), so the cost
+  of being wrong is an undercount, not a corrupt kernel. **X4 owns this**;
+  it is written here so X4 cannot forget it.
+- **`kernel/device.c`** (`g_devs`, `g_num_devs`, `g_wire_owner`) — all 14
+  `dev_register()` call sites are in `kernel/board.c`'s boot-time probe,
+  before any second hart could exist. The header's "No locking: still
+  single-call-stack" is *true*, and stays true as long as registration is
+  boot-only. Becomes a real gap the day anything registers a device at
+  runtime (hot-plug, a loadable driver), which nothing does.
+- **`drivers/uart_16550.c` / `uart_rp2350.c`** — the `irq_save()` runs are
+  a deliberate *continuous* mask from a fast-path miss through
+  `task_block()`, documented in both files, so that a TX interrupt landing
+  in the gap cannot lose the wakeup. Correct per-hart; on two harts the
+  waiter slots (`g_tx_waiter`) become a race. Left because these are
+  driver-task-owned paths that phase 23's **X2** pins to core 0 — unlike
+  `usb_cdc_putc()` above, which only looked like one. If X2's pinning is
+  ever relaxed, these are the first sites to revisit.
+- **`drivers/uart_net.c`** demux ring — same class: reached through
+  `uart_16550.c`'s console path, driver-owned, X2-pinned.
+- **`drivers/enc28j60_rp2350.c`, `drivers/cyw43_rp2350.c`** — instances #5
+  and #6 in the table, both the `if (!busy) { busy = true; }`-under-mask
+  shape. Not converted, and this is a risk judgement rather than a
+  correctness one: both are single-bus claims held by their own
+  driver task, which X2 pins to core 0, and neither can be exercised from
+  the bench available today (`enc28j60` needs the gateway persona plus
+  real Ethernet hardware). Converting network drivers that cannot be
+  tested, to fix a race that pinning already prevents, is the wrong trade
+  for this milestone. They are named here so X2's "pin the driver tasks"
+  is understood as load-bearing rather than tidy.
+- **`kernel/chan.c` `chan_info()` / `chan_endpoint_busy()`** — single-byte
+  `bool` reads, which cannot tear. `chan_endpoint_busy()`'s one caller
+  (`uart_rp2350.c:957`) uses it to decide whether to retry or fall back,
+  and the next `chan_call()` re-checks under the lock, so a stale answer
+  costs at most one extra loop.
+- **`kernel/balloc.c` `balloc_stats()`** — one aligned 16-bit read. Left
+  unlocked *deliberately*, and the contrast with `palloc_stats()` above is
+  the point: that one composes a figure from a whole scan, this one reads
+  a single word that cannot tear, so the only thing exclusion would buy is
+  freshness.
+
+Static RAM: **+17**, measured — four `spinlock_t` at 4 bytes each (printk,
+klog, balloc, usb_cdc) plus one byte for `g_in_fanout` becoming
+`bool[MAX_HARTS]`. Per file: usb_cdc +4, balloc +4, printk +4, klog +5.
+
 **S6 — `kernel/sched.c`'s own `g_tasks`/`g_current`/`g_active`.** The
 hardest one, and deliberately last. The scheduler's critical section
 today both protects data *and* performs the context switch

@@ -155,13 +155,29 @@ void palloc_free(void *p, uint32_t n) {
     spin_unlock_irqrestore(&g_palloc_lock, irqf);
 }
 
+/* Under the lock, like every other read of the bitmap (S5).
+ *
+ * These are diagnostics, and the tempting argument is that a diagnostic can
+ * tolerate a figure that was true a moment ago. That argument is right about
+ * *staleness* and wrong about this: an unlocked scan is not a stale answer,
+ * it is a scan racing concurrent bit_set()/bit_clear() calls, which can count
+ * a run that never existed as a whole. `/proc/meminfo`'s free-page count and
+ * the largest-free-run figure are exactly what someone reads when they are
+ * already suspicious about the heap, and a number that is wrong in a way the
+ * allocator itself never was is worse than no number.
+ *
+ * Cheap to hold: the scan is bounded by g_num_pages (128 on RP2350, 4096 on
+ * QEMU) and calls nothing, which is the same reason palloc_pages() can use a
+ * spinlock at all. */
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages) {
     if (total_pages) *total_pages = g_num_pages;
     if (free_pages) {
+        uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
         uint32_t free_count = 0;
         for (uint32_t i = 0; i < g_num_pages; i++) {
             if (!bit_get(i)) free_count++;
         }
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
         *free_pages = free_count;
     }
 }
@@ -180,6 +196,10 @@ void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run) {
          *
          * Reported without regard to alignment: it is the ceiling on what any
          * request could get, not a promise that an aligned one will. */
+        /* Under the lock, for the reason palloc_stats() above gives at
+         * length: a run measured across concurrent claims is not a stale
+         * figure, it is a figure for a heap state that never existed. */
+        uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
         uint32_t best = 0, run = 0;
         for (uint32_t i = 0; i < g_num_pages; i++) {
             if (bit_get(i)) {
@@ -188,6 +208,7 @@ void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run) {
                 best = run;
             }
         }
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
         *largest_free_run = best;
     }
 }

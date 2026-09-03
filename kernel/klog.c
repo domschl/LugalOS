@@ -1,4 +1,6 @@
 #include "kernel/klog.h"
+#include "kernel/lock.h"
+#include "kernel/hart.h"
 #include <string.h>
 
 /* See kernel/include/kernel/klog.h for the rationale. */
@@ -17,22 +19,42 @@ static klog_sink_t g_sinks[KLOG_MAX_SINKS];
 
 /* Guards against a sink's putc() re-entering klog_write() (e.g. a future
  * sink that logs about its own failures). Without this, such a sink would
- * recurse until the stack died. Not a concurrency lock -- B2 needs a real
- * one, see the header. */
-static bool g_in_fanout;
+ * recurse until the stack died. Not a concurrency lock -- see below.
+ *
+ * S5 (plan/phase22_smp_locking_foundation.md) makes it per-hart, which is
+ * what it always meant. The thing it guards against is a sink's putc()
+ * reaching printk() and coming back here *on the same call stack*, and a
+ * call stack belongs to a hart. A single flag shared by two harts would
+ * have made one hart's fanout suppress the other's -- silently dropping
+ * that hart's console output rather than merely nesting it. */
+static bool g_in_fanout[MAX_HARTS];
+
+/* Guards the ring and its counter, and nothing else (S5).
+ *
+ * Not the fanout below: a sink's putc() is a UART write that can block
+ * (M2), and a spinlock_t held across a block is the deadlock its own header
+ * warns about. So the two halves of this function are protected by
+ * different things for different reasons -- the ring by a lock because two
+ * harts writing g_ring[g_total % SIZE] would interleave characters and tear
+ * the counter, the fanout by a per-hart flag because its hazard is
+ * recursion rather than concurrency. */
+static spinlock_t g_klog_lock;
 
 void klog_putc(char c) {
+    uintptr_t flags = spin_lock_irqsave(&g_klog_lock);
     g_ring[(uint32_t)(g_total % KLOG_RING_SIZE)] = c;
     g_total++;
+    spin_unlock_irqrestore(&g_klog_lock, flags);
 
-    if (g_in_fanout) return;
-    g_in_fanout = true;
+    unsigned h = hart_id();
+    if (g_in_fanout[h]) return;
+    g_in_fanout[h] = true;
     for (int i = 0; i < KLOG_MAX_SINKS; i++) {
         if (g_sinks[i].in_use && g_sinks[i].attached && g_sinks[i].putc) {
             g_sinks[i].putc(c);
         }
     }
-    g_in_fanout = false;
+    g_in_fanout[h] = false;
 }
 
 void klog_write(const char *s, uint32_t len) {

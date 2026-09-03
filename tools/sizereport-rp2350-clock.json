@@ -20,12 +20,12 @@
     "drivers/ramdisk.c": 8,
     "drivers/uart_net.c": 10540,
     "drivers/uart_rp2350.c": 1433,
-    "drivers/usb_cdc.c": 16712,
+    "drivers/usb_cdc.c": 16716,
     "fs/9p.c": 5837,
     "fs/p9_chan.c": 6152,
     "fs/p9_link.c": 12448,
     "fs/vfs_server.c": 10775,
-    "kernel/balloc.c": 2051,
+    "kernel/balloc.c": 2055,
     "kernel/chan.c": 997,
     "kernel/console.c": 405,
     "kernel/device.c": 136,
@@ -33,12 +33,12 @@
     "kernel/hart.c": 32,
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
-    "kernel/klog.c": 4153,
+    "kernel/klog.c": 4158,
     "kernel/line_editor.c": 4625,
     "kernel/lock.c": 22,
     "kernel/palloc.c": 36,
     "kernel/path.c": 68,
-    "kernel/printk.c": 16,
+    "kernel/printk.c": 20,
     "kernel/random.c": 8,
     "kernel/sched.c": 1165,
     "kernel/shell.c": 246,
@@ -60,5 +60,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 143172
+  "total": 143189
 }
