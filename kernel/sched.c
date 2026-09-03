@@ -5,6 +5,7 @@
 #include "kernel/chan.h"
 #include "kernel/irq.h"
 #include "kernel/printk.h"
+#include "kernel/time.h"
 #include <string.h>
 
 /* See kernel/include/kernel/sched.h for the rationale. */
@@ -238,6 +239,7 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     t->exit_status = 0;
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
+    t->wake_at_ms = 0;
 
     /* Paint it before priming, so a high-water mark can be recovered later
      * (§6, plan/phase15_memory_reclamation.md).
@@ -292,8 +294,21 @@ int task_create(const char *name, void (*entry)(void *), void *arg) {
 static int next_runnable(int from) {
     int chosen = -1;
     int chosen_prio = -1;
+    uint64_t now = 0;
+    bool have_now = false;
     for (int step = 1; step <= MAX_TASKS; step++) {
         int i = (from + step) % MAX_TASKS;
+        /* A sleeper whose time has come is made ready here, in the same scan
+         * that would otherwise skip it. The clock is read at most once per
+         * scan and only when some task is actually sleeping, so a system with
+         * no sleepers pays nothing. */
+        if (g_tasks[i].state == TASK_BLOCKED && g_tasks[i].wake_at_ms) {
+            if (!have_now) { now = time_get_ms(); have_now = true; }
+            if (now >= g_tasks[i].wake_at_ms) {
+                g_tasks[i].wake_at_ms = 0;
+                g_tasks[i].state = TASK_READY;
+            }
+        }
         if (g_tasks[i].state != TASK_READY) continue;
         if (g_tasks[i].priority > chosen_prio) {
             chosen = i;
@@ -385,8 +400,26 @@ void task_block(void) {
 int task_unblock(int pid) {
     if (!g_active || pid < 0 || pid >= MAX_TASKS) return -1;
     if (g_tasks[pid].state != TASK_BLOCKED) return -1;
+    g_tasks[pid].wake_at_ms = 0;   /* an explicit wake outranks a deadline */
     g_tasks[pid].state = TASK_READY;
     return 0;
+}
+
+void task_sleep_ms(uint32_t ms) {
+    uint64_t end = time_get_ms() + ms;
+    if (!g_active) {
+        while (time_get_ms() < end) { }
+        return;
+    }
+    /* Re-blocks around the deadline test rather than trusting one wake: if
+     * nothing else is runnable, task_block() returns immediately and the loop
+     * simply spins out the remaining time, which is what should happen when
+     * the CPU has nothing else to do. */
+    while (time_get_ms() < end) {
+        g_tasks[g_current].wake_at_ms = end;
+        task_block();
+    }
+    g_tasks[g_current].wake_at_ms = 0;
 }
 
 /* A dead task's stack, waiting to be freed by whoever runs next.

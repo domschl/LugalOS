@@ -2102,10 +2102,22 @@ bool cyw43_gspi_probe(void) { return false; }
  */
 #if defined(CONFIG_WL_CS_GPIO)
 
-static void wifi_sleep_ms(uint32_t ms) {
-    uint64_t end = time_get_ms() + ms;
-    while (time_get_ms() < end) sched_yield();
-}
+/* A real sleep, not a yield-spin.
+ *
+ * This used to spin on sched_yield(), which made the task permanently runnable
+ * and cost the clock's frame loop half its slices -- a visible flicker. The
+ * fix at the time was to demote the task to TASK_PRIO_BACKGROUND once the link
+ * was up, and that quietly broke everything this supervisor exists for: the
+ * scheduler picks the strictly highest-priority ready task, the clock's frame
+ * loop is always ready, so on that persona a BACKGROUND task never runs again.
+ * The board could join at boot and could never rejoin after a drop. A P4
+ * measurement run ended at the first WLAN drop on 2026-09-03 and did not come
+ * back.
+ *
+ * task_sleep_ms() removes the dilemma rather than trading one horn for the
+ * other: a sleeping task is not runnable, so it neither flickers the display
+ * nor needs a priority low enough to starve. */
+static void wifi_sleep_ms(uint32_t ms) { task_sleep_ms(ms); }
 
 /* How long a link may claim to be up while receiving nothing at all. Five
  * minutes is far longer than any quiet period a real segment has -- ARP alone
@@ -2168,16 +2180,13 @@ static void cyw43_autostart_body(void *arg) {
             if (!was_up) {
                 printk("cyw43: link up (\"%s\")\n", ssid);
                 was_up = true;
-                /* Bring-up is over; from here this task only watches. Drop
-                 * below everything else, because "watching" in a scheduler
-                 * with no timed sleep means spinning, and spinning at
-                 * TASK_PRIO_NORMAL shares the CPU round-robin with the
-                 * clock's frame pump -- which was visible as a flicker every
-                 * second for as long as the board stayed connected. At
-                 * BACKGROUND the spin consumes only what nothing else wants,
-                 * and it still notices a dropped link within its 2 s cadence
-                 * because wifi_sleep_ms() measures wall time, not turns. */
-                task_set_priority(sched_current_pid(), TASK_PRIO_BACKGROUND);
+                /* Stays at TASK_PRIO_NORMAL. It used to demote itself here so
+                 * that its yield-spin would not steal frames from the clock,
+                 * which worked for the flicker and disabled the supervisor:
+                 * a BACKGROUND task never runs on a persona whose frame loop
+                 * is always ready, so neither the liveness check below nor the
+                 * rejoin under it could ever execute again. wifi_sleep_ms()
+                 * now really sleeps, so there is nothing left to trade. */
             }
             attempt = 0;
 
@@ -2209,7 +2218,6 @@ static void cyw43_autostart_body(void *arg) {
                 last_rx_change_ms = now;   /* do not retry this every 2 s */
                 g_link_up = false;         /* fall through to the rejoin below */
                 was_up = false;
-                task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
                 continue;
             }
 
@@ -2220,9 +2228,6 @@ static void cyw43_autostart_body(void *arg) {
         if (was_up) {
             printk("cyw43: link lost -- rejoining \"%s\"\n", ssid);
             was_up = false;
-            /* A rejoin is bring-up again, and wants the CPU for the same
-             * reason the first one did. It goes back down on success. */
-            task_set_priority(sched_current_pid(), TASK_PRIO_NORMAL);
         }
 
         if (cyw43_join_wpa2(ssid, psk)) continue;   /* the loop above reports it */

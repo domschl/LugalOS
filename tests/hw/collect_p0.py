@@ -92,12 +92,33 @@ def split_by_delay(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return good, bad
 
 
+def dedupe(rows: list[dict]) -> list[dict]:
+    """One row per sequence number, keeping the first heard.
+
+    The board broadcasts to 255.255.255.255 and a host with more than one
+    interface on the segment hears each datagram once per interface -- 161
+    lines carrying 104 distinct samples, in the run that found this. Nothing
+    downstream noticed, because a duplicate is a perfectly well-formed sample;
+    it simply counts twice. That biases every mean toward whichever samples
+    happened to arrive twice and understates the standard error by pretending
+    there is more independent data than there is.
+
+    Keyed on the board's own sequence number rather than on the line text, so
+    two genuinely distinct samples that happen to agree in every field are
+    still counted twice, as they should be."""
+    seen: dict[int, dict] = {}
+    for r in rows:
+        seen.setdefault(r["seq"], r)
+    return [seen[k] for k in sorted(seen)]
+
+
 def analyse(rows: list[dict]) -> str:
     if len(rows) < 3:
         return f"{len(rows)} samples -- not enough for either result yet."
 
     raw_n = len(rows)
     off_stratum = sum(1 for r in rows if r["stratum"] != 1)
+    rows = dedupe(rows)
     rows, slow = split_by_delay(rows)
     out = [f"{len(rows)} of {raw_n} samples over {(rows[-1]['t_s'] - rows[0]['t_s']) / 3600:.2f} h"]
     if off_stratum:
@@ -153,8 +174,20 @@ def analyse(rows: list[dict]) -> str:
         sem = psd / (len(pv) ** 0.5) if len(pv) > 1 else 0.0
         out.append(f"  dcf vs pps   : mean {pm / 1000:+.3f} ms, sd {psd / 1000:.3f} ms, "
                    f"n={len(pv)}")
-        out.append(f"  -> delay     : {pm:+.0f} +/- {sem:.0f} us "
-                   f"(CONFIG_DCF77_DELAY_US = {round(pm)})")
+        # Deliberately not named `ordered`: that name belongs to the DCF
+        # block above and is still read after this one, so reusing it here
+        # printed microseconds under a millisecond label.
+        pps_sorted = sorted(pv)
+        med = pps_sorted[len(pps_sorted) // 2]
+        out.append(f"  -> delay     : mean {pm:+.0f} +/- {sem:.0f} us, "
+                   f"median {med:+d} us")
+        out.append(f"  -> quartiles : {pps_sorted[len(pps_sorted) // 4]} / {med} / "
+                   f"{pps_sorted[3 * len(pps_sorted) // 4]} us")
+        # The median, not the mean. A slow envelope edge gives a tail on the
+        # late side and no matching early one, so the mean chases the tail
+        # while the median tracks the delay the receiver actually has. The
+        # observed distribution is exactly that shape.
+        out.append(f"  -> CONFIG_DCF77_DELAY_US = {med}")
         if d:
             # The NTP route measures the radio's error against true time; the
             # PPS route measures the same lateness directly. They should agree

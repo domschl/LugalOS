@@ -109,10 +109,10 @@ static struct {
 static uint8_t g_server[IPV4_LEN];
 static bool    g_server_ok;
 
-static void p0_sleep_ms(uint32_t ms) {
-    uint64_t end = time_get_ms() + ms;
-    while (time_get_ms() < end) sched_yield();
-}
+/* Sleeps rather than yield-spinning. This task waits a minute between samples
+ * and used to stay runnable for the whole of it, taking round-robin slices
+ * from the clock's frame loop the entire time for no work at all. */
+static void p0_sleep_ms(uint32_t ms) { task_sleep_ms(ms); }
 
 /* Our wall clock as epoch milliseconds. */
 static int64_t wall_ms(void) {

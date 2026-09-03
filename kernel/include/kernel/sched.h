@@ -96,6 +96,10 @@ typedef struct task {
     /* M3: TASK_PRIO_NORMAL by default (task_create_sized() sets it), raised
      * or lowered only via task_set_priority(). */
     int          priority;
+    /* When a sleeping task becomes runnable again, in monotonic ms; 0 when it
+     * is not sleeping. A BLOCKED task with this set is woken by the scheduler
+     * itself rather than by another task calling task_unblock(). */
+    uint64_t     wake_at_ms;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -178,6 +182,27 @@ bool sched_task_exited_cleanly(int pid, long *status);
 
 /* Blocks/unblocks by pid. A BLOCKED task is skipped by sched_yield(). */
 void task_block(void);
+
+/* Sleeps the calling task for `ms`, without being runnable meanwhile.
+ *
+ * The primitive this scheduler was missing, and its absence was not academic.
+ * Watching for something in a scheduler with no timed sleep means spinning on
+ * sched_yield(), and a task that is always runnable takes its full share of
+ * the round robin: at TASK_PRIO_NORMAL that halved the clock's frame rate and
+ * showed as a visible flicker. The workaround was to drop such watchers to
+ * TASK_PRIO_BACKGROUND -- but next_runnable() picks the strictly highest
+ * priority ready task, and the clock's frame loop is *always* ready, so a
+ * BACKGROUND task on that persona never runs again at all.
+ *
+ * That combination silently disabled the WLAN supervisor: it joined at
+ * NORMAL, demoted itself on success, and from that moment could neither
+ * notice a dropped link nor rejoin one (found 2026-09-03, after a measurement
+ * run ended at the first WLAN drop). Sleeping properly removes the reason to
+ * demote anything.
+ *
+ * If nothing else is runnable this returns to spinning, which is the correct
+ * behaviour: the CPU has nothing better to do. */
+void task_sleep_ms(uint32_t ms);
 int  task_unblock(int pid);
 
 int         sched_current_pid(void);
