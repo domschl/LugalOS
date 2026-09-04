@@ -1,0 +1,13 @@
+08:49:50 state=track acc=12 rej=0 freq_ppb=0 off_us=1841 disp_us=4117 age_s=49 gerr_n=816 gerr_last=-2891 gerr_mean=-11976 gerr_sd=78632 gerr_min=-756531 gerr_max=-1806 frames=12 pulses=840 duty=840
+08:50:45 state=track acc=13 rej=0 freq_ppb=0 off_us=-5051 disp_us=3931 age_s=45 gerr_n=872 gerr_last=-2444 gerr_mean=-11382 gerr_sd=76099 gerr_min=-756531 gerr_max=-1806 frames=13 pulses=894 duty=862
+08:51:41 state=track acc=14 rej=0 freq_ppb=0 off_us=-2388 disp_us=3733 age_s=41 gerr_n=928 gerr_last=-2067 gerr_mean=-10830 gerr_sd=73799 gerr_min=-756531 gerr_max=-1806 frames=14 pulses=949 duty=860
+08:52:37 state=track acc=15 rej=0 freq_ppb=0 off_us=-5069 disp_us=3533 age_s=36 gerr_n=983 gerr_last=-1578 gerr_mean=-10327 gerr_sd=71735 gerr_min=-756531 gerr_max=-1578 frames=15 pulses=1003 duty=840
+08:53:33 state=track acc=16 rej=0 freq_ppb=0 off_us=422 disp_us=3521 age_s=32 gerr_n=1039 gerr_last=-1968 gerr_mean=-9864 gerr_sd=69802 gerr_min=-756531 gerr_max=-1318 frames=16 pulses=1058 duty=868
+08:54:29 state=track acc=17 rej=0 freq_ppb=0 off_us=-464 disp_us=3413 age_s=28 gerr_n=1095 gerr_last=-1899 gerr_mean=-9459 gerr_sd=68016 gerr_min=-756531 gerr_max=-1318 frames=17 pulses=1113 duty=842
+08:55:25 state=track acc=18 rej=0 freq_ppb=0 off_us=-6343 disp_us=3326 age_s=24 gerr_n=1151 gerr_last=-1538 gerr_mean=-9087 gerr_sd=66361 gerr_min=-756531 gerr_max=-1318 frames=18 pulses=1168 duty=838
+08:56:20 state=track acc=19 rej=0 freq_ppb=0 off_us=1064 disp_us=3318 age_s=20 gerr_n=1207 gerr_last=-1880 gerr_mean=-8734 gerr_sd=64823 gerr_min=-756531 gerr_max=-1051 frames=19 pulses=1223 duty=843
+08:57:16 state=track acc=20 rej=0 freq_ppb=-4012 off_us=5199 disp_us=3239 age_s=16 gerr_n=1263 gerr_last=-2188 gerr_mean=-8434 gerr_sd=63385 gerr_min=-756531 gerr_max=-1051 frames=20 pulses=1278 duty=886
+08:58:12 state=track acc=21 rej=0 freq_ppb=-3218 off_us=-3812 disp_us=3161 age_s=12 gerr_n=1319 gerr_last=-2770 gerr_mean=-8185 gerr_sd=62036 gerr_min=-756531 gerr_max=-1051 frames=21 pulses=1333 duty=888
+08:59:08 state=track acc=22 rej=0 freq_ppb=-3479 off_us=726 disp_us=3160 age_s=7 gerr_n=1374 gerr_last=-2562 gerr_mean=-7963 gerr_sd=60791 gerr_min=-756531 gerr_max=-1051 frames=22 pulses=1387 duty=888
+09:00:03 state=track acc=23 rej=0 freq_ppb=-2716 off_us=-4376 disp_us=3106 age_s=3 gerr_n=1430 gerr_last=-2791 gerr_mean=-7757 gerr_sd=59598 gerr_min=-756531 gerr_max=-1051 frames=23 pulses=1442 duty=919
+09:00:59 state=track acc=23 rej=0 freq_ppb=-2716 off_us=-4376 disp_us=3199 age_s=58 gerr_n=1486 gerr_last=-2418 gerr_mean=-7562 gerr_sd=58472 gerr_min=-756531 gerr_max=-1051 frames=23 pulses=1497 duty=870
