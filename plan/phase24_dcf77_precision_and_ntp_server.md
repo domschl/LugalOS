@@ -965,6 +965,47 @@ independent P0-harness comparison; and, with the antenna disconnected long
 enough, the same client correctly sees the server go unsynchronised rather
 than confidently wrong.
 
+### The P5/P6 verification run
+
+P5 and P6 are verified by one run, not two. §P6's criterion -- "with the
+antenna disconnected long enough, the same client correctly sees the server go
+unsynchronised" -- *is* §P5's holdover, seen from the far end of the wire, so
+separating them would mean disconnecting the antenna twice to learn one thing.
+
+**GPS stays connected throughout, and is never the thing under test.** §P5 as
+written judges the clock against the remote stratum-1 through P0's harness.
+That reference is now known to be the weaker one: P4 measured the NTP path
+carrying ~3 ms of systematic bias and 5-8 ms of noise, which is the same size
+as the drift holdover is supposed to reveal in its first hours. The pulse is
+three orders of magnitude better and owes nothing to the network, so
+`gps_err_*` in `/proc/clock` is the yardstick and the NTP comparison is kept
+as the cross-check. The loop is disciplined by the radio; GPS only ever
+watches. If those two became one source the run would prove nothing.
+
+| # | Step | Duration | Watch | Pass criterion |
+|---|------|----------|-------|----------------|
+| 0 | Flash; start a fresh log | -- | -- | -- |
+| 1 | Reconnect **both** antennas, place at the antenna position | -- | `/proc/gps` `state`; `/proc/dcf77` `pulses`, `duty_permille` | `state=locked`; duty ~850-900 permille |
+| 2 | Start `tests/hw/collect_p0.py` | -- | lines carry a `pps=` field | logging works |
+| 3 | **Lock-in** | ~30 min | `/proc/clock` `state`, `freq_ppb` | `unset`->`track`; `freq_ppb` ~= -460 +/- 100; `rejected` low |
+| 4 | **Confirm the server**: `chronyc sources -v` | once | stratum, refid | stratum 1, refid `DCF`, and chrony *accepts* it |
+| 5 | **Free run** | 24 h+ | `gps_err_mean_us`, `gps_err_sd_us` | error within +/- 2 ms (P4's measured DCF sd) |
+| 6 | **Holdover**: disconnect the **DCF antenna only** | 4-8 h | `state`, `dispersion_us`, `gps_err_*` | `state=holdover`; true error stays *inside* the reported dispersion |
+| 7 | Re-query with chrony during holdover | hourly | stratum | eventually stratum 16 / LI 3; chrony drops the source |
+| 8 | **Recovery**: reconnect the DCF antenna | ~10 min | `state`, `rejected`, `gps_err_*` | returns to `track` without a step; error back to step 5's range |
+
+**Step 6 is the run.** Everything before it establishes that the loop works
+when it can see the transmitter, which is the easy half. With the radio
+removed the loop is coasting on nothing but its learned rate, and the only
+question that matters is whether the dispersion it advertises is honest --
+because that number is what every NTP client on the segment will weight our
+answers by. GPS is what makes the question answerable: it still knows the
+truth while the board does not. A clock reporting 5 ms of dispersion while
+actually 40 ms out is not disciplined, it is confident, and §4 exists to stop
+exactly that.
+
+Only the DCF antenna comes off in step 6. GPS is the referee.
+
 **P7 — documentation.** README's networking section gains a "serving time"
 part with the *measured* accuracy, not an aspirational one; §3.3 in short form
 so the phase-modulation question is answered in the place people will ask it;
