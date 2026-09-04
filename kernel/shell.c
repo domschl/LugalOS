@@ -189,7 +189,9 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
-    cprintf("  smpstart        - Launch RP2350 core 1 over the SIO FIFO (X3)\n");
+    cprintf("  smpstart [join|locktest]\n");
+    cprintf("                  - Launch RP2350 core 1. Bare: X3's counter. 'join': core 1 enters\n");
+    cprintf("                    the scheduler (X7). 'locktest': cross-core mutual exclusion\n");
     cprintf("  smptest         - Two-hart concurrency: lost updates through the lock, and which harts ran\n");
     cprintf("  smpload [start|stop]\n");
     cprintf("                  - Background load on every hart, so the isolation suite runs against\n");
@@ -2086,9 +2088,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
-    } else if (strcmp(cmd_line, "smpstart") == 0) {
+    } else if (strncmp(cmd_line, "smpstart", 8) == 0 &&
+               (cmd_line[8] == '\0' || cmd_line[8] == ' ')) {
 #if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
-        smp_start_secondary();
+        /* Bare `smpstart` keeps X3's counter, which is the only program this
+         * path has ever been proven to run on silicon. The default stays the
+         * safe one until the others have earned it. */
+        unsigned mode = CORE1_MODE_PROBE;
+        if (strcmp(cmd_line, "smpstart join") == 0)          mode = CORE1_MODE_JOIN;
+        else if (strcmp(cmd_line, "smpstart locktest") == 0) mode = CORE1_MODE_LOCKTEST;
+        smp_start_secondary(mode);
 #else
         cprintf("smpstart: this build has no RP2350 second-core launch "
                 "(needs CONFIG_ENABLE_SMP on an RP2350 target)\n");

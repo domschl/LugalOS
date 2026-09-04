@@ -242,6 +242,22 @@ SECTIONS
         _stack_top = .;
     } > RAM
 
+    /* Core 1's stack (X7, plan/phase23_multicore_scheduling.md). Same size
+     * and same region as core 0's above, for the same reason -- see the
+     * note further down where SCRATCH_Y used to serve this purpose, and the
+     * hardware failure that moved it here.
+     *
+     * Unconditional rather than behind CONFIG_ENABLE_SMP, because a linker
+     * script cannot see the generated config header. It costs every RP2350
+     * persona 16 KB of ~360 KB; the 256 KB floor asserted below still
+     * holds. NOLOAD, so it occupies no flash. */
+    .stack1 (NOLOAD) : {
+        . = ALIGN(16);
+        _stack1_bottom = .;
+        . += 16k;
+        _stack1_top = .;
+    } > RAM
+
     /* X3 probe (plan/phase23_multicore_scheduling.md): a word no boot path
      * writes.
      *
@@ -317,27 +333,34 @@ SECTIONS
      * call or push between entry and that instruction, and core 1 never
      * leaves its `wfi` loop to acquire a stack at all. Whatever the bootrom
      * left there is dead by the time palloc_init() runs. */
-    /* SCRATCH_Y is core 1's stack now, not heap (X3,
-     * plan/phase23_multicore_scheduling.md).
+    /* Core 1's stack is `.stack1` in main RAM, above -- NOT SCRATCH_Y.
      *
-     * This is the case the note above anticipated in as many words: "if a
-     * future driver genuinely wants a scratch bank (they are unstriped, so
-     * they behave differently under contention), take it back out of the
-     * heap here at the same time." A second core's stack is exactly that
-     * case and then some -- SRAM0-7 are striped, so two cores hammering
-     * striped banks contend in a way an unstriped bank avoids by
-     * construction.
+     * X3 put it in SCRATCH_Y and argued the case well: the scratch banks are
+     * unstriped, so two cores hammering them do not contend the way they
+     * would on striped SRAM0-7. The argument was right and the size was
+     * wrong. 4 KB was justified as "core 1's own chain is shallow (entry ->
+     * secondary_main -> sched_yield -> ctx_switch, plus a trap frame)",
+     * which was true of X3's core 1, whose entire program was a counter.
      *
-     * 4 KB, and unconditional rather than behind CONFIG_ENABLE_SMP because a
-     * linker script cannot see the generated config header. It costs the
-     * heap 4 KB of ~360 KB on every RP2350 persona, SMP or not; the 256 KB
-     * floor asserted below is unaffected. Sized generously on purpose: core
-     * 1's own chain is shallow (entry -> secondary_main -> sched_yield ->
-     * ctx_switch, plus a trap frame), and once it picks up a task it runs on
-     * that task's stack, not this one. */
-    _stack1_bottom = ORIGIN(SCRATCH_Y);
-    _stack1_top    = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
-    _heap_end = ORIGIN(SCRATCH_Y);
+     * X7's core 1 runs secondary_main() for real: trap_init(), printk()
+     * through the console and chan layers, sched_secondary_init(),
+     * sched_yield(), ctx_switch(), and a trap frame on top of all of it at
+     * an arbitrary point. Core 0 measures 8372 bytes peak on that same code.
+     * 4 KB is not enough, and the failure is not a fault -- SCRATCH_Y ends
+     * at 0x20081000 with the page allocator's heap immediately below it, so
+     * an overflow corrupts the heap silently.
+     *
+     * That is exactly the bug .stack above was created to fix for core 0,
+     * written up two hundred lines earlier in this file, and repeated here
+     * for the second core. Observed on hardware 2026-09-04: core 1's first,
+     * shallow printk() came out, everything deeper after it took the board
+     * down hard enough that the USB console never came back.
+     *
+     * So core 1 gets the same 16 KB in main RAM that core 0 has, and
+     * SCRATCH_Y goes back to the heap. Net cost against X3: 3 pages. The
+     * unstriped-contention argument is a real but small optimisation, and it
+     * does not outrank not corrupting the heap. */
+    _heap_end = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
 
     /* --- The heap floor (§6, plan/phase15_memory_reclamation.md) ---
      *

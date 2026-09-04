@@ -583,6 +583,13 @@ void sched_yield(void) {
      * A bring-up hart that yields simply keeps going. */
     if (!sched_has_task()) return;
 
+    /* X7: the point at which core 1 notices it must get out of the XIP
+     * window before core 0 turns it off. One load of a .bss word that is
+     * zero except during a flash write, and a no-op on every target but an
+     * SMP RP2350. Here rather than in the idle loop because a task that
+     * computes without yielding still arrives via the preemption tick. */
+    smp_flash_park_check();
+
     /* Free any stack left by a task that exited before we were resumed. Safe
      * here and nowhere earlier: we are demonstrably not running on it. */
     sched_reap();

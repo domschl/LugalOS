@@ -222,7 +222,7 @@ _reset_handler:
  * from this same boot path -- does not link kernel/smp.c and has no
  * secondary_main() to call. It also never launches core 1, so the reference
  * is genuinely unreachable there rather than merely unresolved. */
-.weak core1_probe_main
+.weak core1_main
 .global core1_entry
 core1_entry:
     /* Proof of arrival, written before anything else can go wrong.
@@ -252,11 +252,12 @@ core1_entry:
 
     SETUP_HART_POINTER t0, t1
 
-    /* core1_probe_main(), not secondary_main(): X3 proves the launch first
-     * and joins the scheduler second. See kernel/smp.c for why those are
-     * deliberately separate milestones rather than one leap. */
-    call core1_probe_main
-    /* core1_probe_main() does not return. */
+    /* core1_main() dispatches on a mode core 0 set before the handshake:
+     * X3's bare counter, or secondary_main() (X7). The choice is made in C,
+     * on this core, so that the known-good program stays reachable at
+     * runtime rather than being a git revert away -- see kernel/smp.c. */
+    call core1_main
+    /* core1_main() does not return. */
 1:  wfi
     j 1b
 

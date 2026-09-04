@@ -1,6 +1,7 @@
 #include "lugalos_config.h"
 #include "kernel/hart.h"
 #include "kernel/lock.h"
+#include "arch/atomic.h"
 #include "kernel/sched.h"
 #include "kernel/irq.h"
 #include "kernel/ticker.h"
@@ -9,6 +10,7 @@
 #include "arch/trap.h"
 #include "arch/vmm.h"
 #include "kernel/console.h"
+#include "kernel/meminfo.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -37,6 +39,16 @@ unsigned smp_harts_online(void) {
     return n;
 }
 
+/* Bring-up progress, recorded where it survives the core dying (X7).
+ * RP2350 only -- it writes linker/rp2350.ld's .smpmark, which no boot path
+ * clears. A no-op elsewhere, so secondary_main() below reads the same on
+ * every target. */
+#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
+void smp_mark(uint32_t step);
+#else
+static inline void smp_mark(uint32_t step) { (void)step; }
+#endif
+
 #if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
 
 /* RP2350's SIO FIFO, the mailbox the bootrom listens on while core 1 waits.
@@ -50,7 +62,31 @@ unsigned smp_harts_online(void) {
 #define FIFO_ST_RDY     (1u << 1)   /* space available to write */
 
 extern void core1_entry(void);
+extern uint32_t _stack1_bottom;
 extern uint32_t _stack1_top;
+
+/* Core 1's stack high-water mark, in bytes, or 0 if it has never run.
+ *
+ * The whole reason X7's first hardware attempt took the board down was a
+ * stack sized by argument rather than by measurement -- 4 KB in SCRATCH_Y,
+ * chosen when core 1's entire program was a counter, against a chain that
+ * core 0 measures at 8372 bytes. So core 0 paints this stack before the
+ * launch and anything can read back what core 1 actually used, the same way
+ * kernel/meminfo.c already reports the boot stack and `ps` reports each
+ * task's. A number, not a belief. */
+uint32_t smp_core1_stack_used(void) {
+    const uintptr_t *p   = (const uintptr_t *)&_stack1_bottom;
+    const uintptr_t *top = (const uintptr_t *)&_stack1_top;
+    if (p[0] != STACK_POISON_WORD && p[0] == 0) return 0;  /* never painted */
+    while (p < top && *p == STACK_POISON_WORD) p++;
+    return (uint32_t)((uintptr_t)top - (uintptr_t)p);
+}
+
+static void smp_paint_core1_stack(void) {
+    uintptr_t *p   = (uintptr_t *)&_stack1_bottom;
+    uintptr_t *top = (uintptr_t *)&_stack1_top;
+    while (p < top) *p++ = STACK_POISON_WORD;
+}
 
 /* X3's evidence, and deliberately the whole of what core 1 does.
  *
@@ -71,13 +107,107 @@ extern uint32_t _stack1_top;
  * non-zero value can only have been written by core 1. */
 volatile uint32_t g_core1_ticks;
 
+/* X7: which program core 1 runs, chosen by core 0 before the handshake and
+ * read by core 1 in core1_main() below.
+ *
+ * The dispatch exists so X3's counter stays reachable at runtime. It is the
+ * only state of this path ever proven on silicon, and a bring-up whose
+ * fallback is `git revert` is a bring-up done blind -- which is exactly the
+ * position X3 was in when it wedged the board twice. `smpstart` still runs
+ * the counter; `smpstart join` is the new thing. */
+volatile uint32_t g_core1_mode = CORE1_MODE_PROBE;
+
 /* Core 1's entire program. No printk (the console path blocks and would
  * reach core 0's pinned uart task), no scheduler (core 1 has no task yet),
  * no interrupts (mstatus is zeroed in core1_entry). Just proof of life. */
-void core1_probe_main(void) {
+static void core1_probe_main(void) {
     for (;;) {
         g_core1_ticks++;
     }
+}
+
+/* How far core 1 got, written into the same word core1_entry's arrival
+ * marker uses (linker/rp2350.ld's .smpmark, which no boot path clears).
+ *
+ * X7's first hardware attempt died somewhere between core 1's first printk
+ * and the scheduler, and took core 0 with it -- so there was no console left
+ * to ask. A marker that survives is the only witness in that situation, and
+ * it is three instructions. The step numbering matches the plan's own
+ * ordering, which is what makes "it stopped at 05" an answer rather than a
+ * starting point. */
+void smp_mark(uint32_t step) {
+    extern uint32_t _smp_mark;
+    *(volatile uint32_t *)&_smp_mark = 0x51C0DE00u | step;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+}
+
+/* --- Cross-core mutual exclusion, measured -------------------------------
+ *
+ * §6.3 of the plan left this open and X7's own verify list named it: S1
+ * proved `amoswap.w.aq`/`.rl` *executes* correctly on Hazard3, and X1 proved
+ * the scheduler design on QEMU's two harts. Neither proved that the
+ * instruction excludes one RP2350 core from another, which is a different
+ * claim about the interconnect rather than about the core.
+ *
+ * Shaped like X3 deliberately: no scheduler, no traps, no printk on core 1 --
+ * just two cores, one word, and a count that is either exact or is not. A
+ * test that needs the scheduler cannot answer a question the scheduler
+ * depends on.
+ *
+ * Bounded acquires rather than spin_lock_irqsave(): if the primitive really
+ * is broken, an unbounded spin wedges the board and destroys the evidence.
+ * A failed acquire is counted and reported.
+ */
+#define XLOCK_ITERS 50000u
+
+volatile uint32_t g_xlock_word;
+volatile uint32_t g_xlock_locked;
+volatile uint32_t g_xlock_unlocked;
+volatile uint32_t g_xlock_harts;
+volatile uint32_t g_xlock_fail_c0;
+volatile uint32_t g_xlock_fail_c1;
+volatile uint32_t g_xlock_c1_done;
+
+static bool xlock_take(uint32_t budget) {
+    while (budget--) {
+        if (arch_lock_try_acquire(&g_xlock_word)) return true;
+    }
+    return false;
+}
+
+static void xlock_run(unsigned hart, volatile uint32_t *fails) {
+    for (uint32_t i = 0; i < XLOCK_ITERS; i++) {
+        if (!xlock_take(200000u)) { (*fails)++; break; }
+        g_xlock_locked++;
+        g_xlock_harts |= 1u << hart;
+        arch_lock_release(&g_xlock_word);
+
+        /* Unlocked, deliberately: split read-modify-write widens the window,
+         * so its losses are the contrast that says the exactness above meant
+         * something. Same argument as smp_selftest()'s. */
+        uint32_t v = g_xlock_unlocked;
+        g_xlock_unlocked = v + 1;
+    }
+}
+
+static void core1_locktest_main(void) {
+    xlock_run(1, &g_xlock_fail_c1);
+    g_xlock_c1_done = 1;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (;;) { g_core1_ticks++; }   /* fall back to proof-of-life */
+}
+
+/* Called from boot_header.S's core1_entry, on core 1, with tp/mtvec/stack
+ * already set and interrupts off. Never returns. */
+void core1_main(void) {
+    smp_mark(3);
+    if (g_core1_mode == CORE1_MODE_JOIN) {
+        secondary_main();       /* X7: trap_init, ticker, scheduler. */
+    }
+    if (g_core1_mode == CORE1_MODE_LOCKTEST) {
+        core1_locktest_main();  /* §6.3. */
+    }
+    core1_probe_main();         /* X3: proof of life, and nothing else. */
 }
 
 /* Hazard3's equivalent of Arm's SEV: `slt x0, x0, x1` is a hint encoding --
@@ -152,15 +282,157 @@ static bool smp_launch_core1(void) {
     }
     return i == 6;
 }
-int smp_start_secondary(void) {
+/* --- X7 step 6: parking core 1 across a flash write ----------------------
+ *
+ * drivers/flash_rp2350.c turns XIP off, and for that window every
+ * instruction fetch from 0x10000000-and-up faults or hangs. Its own routine
+ * is `.ramfunc` and masks interrupts -- which protects the core executing
+ * it, and says nothing about the other one. With core 1 scheduling, core 1
+ * is running flash-resident code at that instant, and the failure is a hung
+ * board with nothing left to report it.
+ *
+ * So core 0 asks, and waits for an acknowledgement from code that is
+ * demonstrably no longer in flash. The handshake is deliberately in that
+ * direction: "core 1 told me it is parked in RAM" is checkable, whereas
+ * "core 1 should be idle by now" is a hope.
+ *
+ * Both words live in .bss and the spin itself is `.ramfunc`, so nothing on
+ * core 1's side of the barrier touches the XIP window.
+ */
+volatile uint32_t g_flash_park_req;    /* core 0 -> core 1: park now */
+volatile uint32_t g_flash_park_ack;    /* core 1 -> core 0: parked, in RAM */
+
+/* The parking loop itself. Runs on core 1, from RAM, with interrupts already
+ * masked by its caller -- a timer tick here would vector to a handler in
+ * flash, which is the whole thing being avoided. */
+__attribute__((section(".ramfunc"), noinline))
+static void core1_park_spin(void) {
+    g_flash_park_ack = 1;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    while (g_flash_park_req) { }
+    g_flash_park_ack = 0;
+}
+
+/* Called from sched_yield() on every hart, and cheap by construction: one
+ * load of a .bss word that is zero except during a flash write. Only core 1
+ * parks -- core 0 is the one doing the writing. */
+void smp_flash_park_check(void) {
+    if (!g_flash_park_req || hart_id() == 0) return;
+    uintptr_t f = irq_save();
+    core1_park_spin();
+    irq_restore(f);
+}
+
+/* Called by core 0 immediately before XIP goes down. Returns true if core 1
+ * is parked in RAM *or* was never scheduling in the first place; false if it
+ * is running and did not park in time.
+ *
+ * A timeout refuses the flash write rather than proceeding hopefully. That
+ * is the one decision here that matters: a refused write is an error the
+ * caller can report, and a write that proceeds anyway is a board that stops
+ * mid-erase. */
+bool smp_flash_park_request(void) {
+    if (smp_harts_online() < 2) return true;   /* nothing to park */
+
+    g_flash_park_req = 1;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+    /* Generous: core 1 reaches the check on its next sched_yield(), and the
+     * preemption tick guarantees one within a tick even if it is running a
+     * task that never yields on its own. */
+    uint64_t deadline = time_get_us() + 200000;   /* 200 ms */
+    while (!g_flash_park_ack && time_get_us() < deadline) { }
+
+    if (g_flash_park_ack) return true;
+
+    g_flash_park_req = 0;
+    return false;
+}
+
+void smp_flash_park_release(void) {
+    g_flash_park_req = 0;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+int smp_start_secondary(unsigned mode) {
+    if (smp_harts_online() > 1) {
+        printk("[SMP] core 1 is already running; not launching again\n");
+        return -1;
+    }
+
     uint32_t before = g_core1_ticks;
-    printk("[SMP] core1 ticks before launch: %lu\n", (unsigned long)before);
+
+    /* Published before the handshake, and with a release fence: core 1 reads
+     * this as its very first C statement, so the store must be visible by
+     * then. The FIFO writes below are ordered after it on this core, but
+     * that is not by itself an ordering guarantee for the other one. */
+    g_core1_mode = mode;
+    smp_paint_core1_stack();
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+
+    printk("[SMP] launching core 1 in %s mode (ticks before: %lu)\n",
+           mode == CORE1_MODE_JOIN ? "JOIN" : "probe", (unsigned long)before);
 
     if (!smp_launch_core1()) {
         printk("[SMP] core 1 did not answer the launch handshake (still parked)\n");
         return -1;
     }
     printk("[SMP] launch handshake completed\n");
+
+    if (mode == CORE1_MODE_LOCKTEST) {
+        /* Core 0's half runs here, concurrently with core 1's. Interrupts
+         * masked across each critical section only -- a preemption while
+         * holding the word would be harmless (nothing else on this core
+         * touches it) but would skew the contention this is measuring. */
+        uintptr_t f = irq_save();
+        xlock_run(0, &g_xlock_fail_c0);
+        irq_restore(f);
+
+        uint64_t deadline = time_get_us() + 2000000;   /* 2 s */
+        while (!g_xlock_c1_done && time_get_us() < deadline) { }
+
+        uint32_t want = 2u * XLOCK_ITERS;
+        printk("[SMP] cross-core lock: locked=%lu (want %lu) unlocked=%lu (lost %lu)\n",
+               (unsigned long)g_xlock_locked, (unsigned long)want,
+               (unsigned long)g_xlock_unlocked,
+               (unsigned long)(want - g_xlock_unlocked));
+        printk("[SMP] cores seen=0x%lx  acquire failures: core0=%lu core1=%lu  core1 finished: %s\n",
+               (unsigned long)g_xlock_harts,
+               (unsigned long)g_xlock_fail_c0, (unsigned long)g_xlock_fail_c1,
+               g_xlock_c1_done ? "yes" : "NO");
+
+        bool ok = (g_xlock_locked == want) && (g_xlock_harts == 0x3u) &&
+                  g_xlock_c1_done && !g_xlock_fail_c0 && !g_xlock_fail_c1;
+        printk(ok ? "[SMP] XLOCK_OK -- amoswap excludes one Hazard3 core from the other\n"
+                  : "[SMP] XLOCK_FAIL -- cross-core mutual exclusion did NOT hold\n");
+        return ok ? 0 : -1;
+    }
+
+    if (mode == CORE1_MODE_JOIN) {
+        /* Core 1 announces itself from secondary_main(); what this waits for
+         * is the scheduler count, which only code running there can raise.
+         * Bounded on the microsecond timer, and a timeout is reported rather
+         * than spun on: a core that launched but never reached the scheduler
+         * is a different failure from one that never launched, and the two
+         * must not look the same. */
+        uint64_t deadline = time_get_us() + 500000;   /* 500 ms */
+        while (smp_harts_online() < 2 && time_get_us() < deadline) { }
+        if (smp_harts_online() >= 2) {
+            printk("[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler\n");
+            printk("[SMP] core 1 stack: %lu of %lu bytes used\n",
+                   (unsigned long)smp_core1_stack_used(),
+                   (unsigned long)((uintptr_t)&_stack1_top -
+                                   (uintptr_t)&_stack1_bottom));
+            return 0;
+        }
+        extern uint32_t _smp_mark;
+        printk("[SMP] CORE1_STALLED -- launched, but never reached the scheduler\n");
+        printk("[SMP] last step core 1 reached: 0x%lx "
+               "(03 core1_main, 04 vmm, 05 first printk, 06 trap_init, "
+               "07 ticker, 08 sched_secondary_init, 09 online, 10 idle)\n",
+               (unsigned long)*(volatile uint32_t *)&_smp_mark);
+        return -1;
+    }
 
     /* A bounded wait, on the microsecond timer rather than a spin count, so
      * the figure means something. Core 1 has nothing to do but increment. */
@@ -178,6 +450,15 @@ int smp_start_secondary(void) {
     return -1;
 }
 #endif /* CONFIG_ENABLE_SMP && CONFIG_BOARD_RP2350 */
+
+#if !(CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350))
+/* Every other target: there is no second core to park, and no XIP window to
+ * lose. Stubs rather than #ifdefs at the call sites, so sched_yield() and
+ * the flash driver read the same on every board. */
+bool smp_flash_park_request(void) { return true; }
+void smp_flash_park_release(void) { }
+void smp_flash_park_check(void) { }
+#endif
 
 void smp_release_secondaries(void) {
 #if CONFIG_ENABLE_SMP
@@ -216,6 +497,7 @@ void secondary_main(void) {
      * space the primary built. satp is per-hart, so until this runs we are in
      * bare mode while hart 0 translates. See vmm_secondary_init(). */
     vmm_secondary_init();
+    smp_mark(4);
 
     /* Say we are here, from the window where this hart owns no task.
      *
@@ -233,19 +515,23 @@ void secondary_main(void) {
      * reproduce the race. */
     printk("[SMP] hart %u: in the kernel, no task yet (pid %d)\n",
            hart_id(), sched_current_pid());
+    smp_mark(5);
 
     /* Per-hart interrupt state. trap_init() writes this hart's own PLIC
      * context since §6.1's fix; before it, this call would have
      * reconfigured hart 0's. */
     trap_init();
+    smp_mark(6);
 
     /* This hart's own preemption deadline. stimecmp and sie are per-hart
      * CSRs, so arming is genuinely local -- what is NOT local is the tick
      * *rate*, which the primary measured once and this reuses. */
     ticker_arm_this_hart();
+    smp_mark(7);
 
     /* Become a task, so there is something to switch away from. */
     int pid = sched_secondary_init();
+    smp_mark(8);
     if (pid < 0) {
         printk("[SMP] hart %u: no free task slot; parking\n", hart_id());
         for (;;) { __asm__ __volatile__("wfi"); }
@@ -256,7 +542,9 @@ void secondary_main(void) {
         g_online++;
         spin_unlock_irqrestore(&g_smp_lock, f);
     }
+    smp_mark(9);
     printk("[SMP] hart %u online as pid %d\n", hart_id(), pid);
+    smp_mark(10);
 
     /* Interrupts on, then idle: pull whatever the shared ready queue has.
      *

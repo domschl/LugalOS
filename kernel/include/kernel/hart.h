@@ -131,6 +131,7 @@
 #else /* !__ASSEMBLER__ */
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct hart {
     /* The current task's kernel stack pointer, parked here while that task
@@ -172,9 +173,31 @@ unsigned smp_harts_online(void);
  * hart. Prints SMP_SELFTEST_OK/_FAIL; returns the failure count. */
 int smp_selftest(void);
 
-/* Launches RP2350's core 1 over the SIO FIFO (X3). Explicit rather than
- * automatic at boot: see the definition. Returns 0 on success. */
-int smp_start_secondary(void);
+/* What core 1 runs once launched (X7). CORE1_MODE_PROBE is X3's bare
+ * counter -- the only state of this path proven on silicon, kept selectable
+ * because a bring-up whose fallback is a git revert is a bring-up done
+ * blind. CORE1_MODE_JOIN runs secondary_main() and joins the scheduler. */
+#define CORE1_MODE_PROBE    0u
+#define CORE1_MODE_JOIN     1u
+/* Cross-core mutual exclusion, with no scheduler and no traps on core 1 --
+ * the §6.3 question phase 22 left open and everything above depends on.
+ * Shaped like X3: run the smallest thing that can answer it. */
+#define CORE1_MODE_LOCKTEST 2u
+
+/* Launches RP2350's core 1 over the SIO FIFO (X3), running `mode`. Explicit
+ * rather than automatic at boot: see the definition. Returns 0 on success. */
+int smp_start_secondary(unsigned mode);
+
+/* Parking core 1 across a flash write (X7). RP2350 only, and no-ops
+ * everywhere else -- an RP2350 flash write turns XIP off, after which any
+ * instruction fetch by the *other* core hangs the board.
+ *
+ * smp_flash_park_request() returns false if core 1 is scheduling and did not
+ * park in time; the caller must then refuse the write rather than proceed.
+ * smp_flash_park_check() is the core-1 side, called from sched_yield(). */
+bool smp_flash_park_request(void);
+void smp_flash_park_release(void);
+void smp_flash_park_check(void);
 
 /* X5's background load: tasks that keep every hart busy so the isolation and
  * fault suite runs against a machine where another hart is demonstrably
