@@ -242,6 +242,29 @@ SECTIONS
         _stack_top = .;
     } > RAM
 
+    /* X3 probe (plan/phase23_multicore_scheduling.md): a word no boot path
+     * writes.
+     *
+     * Deliberately outside every region the RP2350 boot code touches --
+     * boot_header.S clears __bss_start..__bss_end and
+     * _ustacks_start.._ustacks_end, and PAINT_BOOT_STACK paints only
+     * _stack_bottom.._stack_top. That is what makes it usable as evidence:
+     * whatever is here at the point core 0 reads it was put there by
+     * something other than core 0's initialisation.
+     *
+     * The question it answers is whether core 1 executes this image at all.
+     * The comment in _reset_handler has always said "RP2350 boots both
+     * cores", but on RP-series silicon a secondary normally waits inside the
+     * *bootrom* for a SIO-FIFO launch sequence, in which case that mhartid
+     * branch is dead code and X3 needs the launch protocol rather than a
+     * stack. Guessing between those two costs a debugging session either
+     * way; this costs three instructions. */
+    . = ALIGN(4);
+    .smpmark (NOLOAD) : {
+        _smp_mark = .;
+        . += 4;
+    } > RAM
+
     . = ALIGN(4096);
     _kernel_end = .;
 
@@ -294,7 +317,27 @@ SECTIONS
      * call or push between entry and that instruction, and core 1 never
      * leaves its `wfi` loop to acquire a stack at all. Whatever the bootrom
      * left there is dead by the time palloc_init() runs. */
-    _heap_end = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
+    /* SCRATCH_Y is core 1's stack now, not heap (X3,
+     * plan/phase23_multicore_scheduling.md).
+     *
+     * This is the case the note above anticipated in as many words: "if a
+     * future driver genuinely wants a scratch bank (they are unstriped, so
+     * they behave differently under contention), take it back out of the
+     * heap here at the same time." A second core's stack is exactly that
+     * case and then some -- SRAM0-7 are striped, so two cores hammering
+     * striped banks contend in a way an unstriped bank avoids by
+     * construction.
+     *
+     * 4 KB, and unconditional rather than behind CONFIG_ENABLE_SMP because a
+     * linker script cannot see the generated config header. It costs the
+     * heap 4 KB of ~360 KB on every RP2350 persona, SMP or not; the 256 KB
+     * floor asserted below is unaffected. Sized generously on purpose: core
+     * 1's own chain is shallow (entry -> secondary_main -> sched_yield ->
+     * ctx_switch, plus a trap frame), and once it picks up a task it runs on
+     * that task's stack, not this one. */
+    _stack1_bottom = ORIGIN(SCRATCH_Y);
+    _stack1_top    = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
+    _heap_end = ORIGIN(SCRATCH_Y);
 
     /* --- The heap floor (§6, plan/phase15_memory_reclamation.md) ---
      *
@@ -336,7 +379,10 @@ SECTIONS
      * a future driver genuinely wants a scratch bank (they are unstriped, so
      * they behave differently under contention), take it back out of the heap
      * here at the same time. */
-    ASSERT(SIZEOF(.scratch_x) == 0 && SIZEOF(.scratch_y) == 0,
+    /* X3 took SCRATCH_Y for core 1's stack, so only SCRATCH_X remains
+     * heap-adjacent and unclaimed; the guard narrows to it rather than
+     * being dropped. */
+    ASSERT(SIZEOF(.scratch_x) == 0,
            "something now places into a scratch bank, but _heap_end hands both to the page allocator -- see plan/phase15_memory_reclamation.md")
 
     /* The whole writable region, so /proc/meminfo can report the heap and the

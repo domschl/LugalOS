@@ -19,7 +19,7 @@
 _start:
     /* RP2350 boots both cores; only core 0 (mhartid == 0) executes kernel_main */
     csrr t0, mhartid
-#if !CONFIG_ENABLE_SMP
+#if !CONFIG_ENABLE_SMP || defined(CONFIG_BOARD_RP2350)
     bnez t0, .Lsecondary_hart_loop
 #endif
 
@@ -42,11 +42,17 @@ _start:
 
     /* Setup stack pointer.
      *
+     * The SMP branches in this file are QEMU-only (`&& !CONFIG_BOARD_RP2350`
+     * throughout): RP2350 never executes _start at all -- it enters at
+     * _reset_handler in arch/riscv/rp2350/boot_header.S, and its core 1 is
+     * launched into core1_entry there by the bootrom rather than released
+     * from a spin loop here. Two boot paths, and this is the other one.
+     *
      * Every hart needs its own; sharing one would have two harts pushing to
      * the same address before either reaches C. Hart 0 keeps the linker's
      * boot stack, secondaries get .stack_secondary (see linker/rv64_mmu.ld).
      * Only hart 1 is supported, which MAX_HARTS already says. */
-#if CONFIG_ENABLE_SMP
+#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
     beqz tp, .Lprimary_stack
     la sp, _stack_secondary_top
     j .Lhave_stack
@@ -104,7 +110,7 @@ s_mode_start:
     csrw stvec, t0
 #endif
 
-#if CONFIG_ENABLE_SMP
+#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
     /* Everything above is per-hart CSR state and every hart must do it for
      * itself. Everything below -- the .data copy, the .bss clear, the stack
      * paint -- is one-time image setup that exactly one hart may do. */
@@ -171,7 +177,7 @@ s_mode_start:
     wfi
     j 3b
 
-#if CONFIG_ENABLE_SMP
+#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
 /* --- Secondary hart entry (X1, plan/phase23_multicore_scheduling.md) ---
  *
  * Reached with this hart's own CSRs configured, its own stack, and the raw

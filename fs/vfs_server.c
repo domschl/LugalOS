@@ -961,6 +961,18 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "domains_hart%u: %u\n", h, mem_domain_activations(h));
         }
+#if defined(CONFIG_BOARD_RP2350)
+        /* X3 probe: did a secondary core execute this image? See
+         * linker/rp2350.ld's .smpmark. 0x51C0DE01 means core 1 reached
+         * _reset_handler; anything else means it never ran our code -- it is
+         * still parked in the bootrom, and waking it needs the SIO-FIFO
+         * launch sequence rather than a stack. */
+        {
+            extern uint32_t _smp_mark;
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "core1_probe: 0x%lx\n", (unsigned long)_smp_mark);
+        }
+#endif
         return (int)used;
     } else if (strcmp(rel, "config") == 0) {
         /* Board config (K3, plan/phase7_kernel_config.md): the generated

@@ -172,6 +172,10 @@ unsigned smp_harts_online(void);
  * hart. Prints SMP_SELFTEST_OK/_FAIL; returns the failure count. */
 int smp_selftest(void);
 
+/* Launches RP2350's core 1 over the SIO FIFO (X3). Explicit rather than
+ * automatic at boot: see the definition. Returns 0 on success. */
+int smp_start_secondary(void);
+
 /* This hart's record. Valid from the moment SETUP_HART_POINTER runs, which
  * is before kernel_main() on both boot paths, so every caller in C is safe
  * by construction. */

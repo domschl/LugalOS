@@ -81,7 +81,26 @@ _entry_point:
 _reset_handler:
     /* Check mhartid: only core 0 executes boot init */
     csrr t0, mhartid
-    bnez t0, 3f
+    beqz t0, .Lcore0_boot
+
+    /* A secondary reaching _reset_handler at all leaves proof of it, then
+     * parks. See linker/rp2350.ld's .smpmark.
+     *
+     * Measured 2026-09-04: this never fires. The comment above -- "RP2350
+     * boots both cores" -- is wrong, and has been since it was written. Core
+     * 1 comes out of reset inside the *bootrom*, waiting on the SIO FIFO for
+     * the standard launch sequence, and never executes a byte of this image
+     * until sent one. So this branch is dead code, kept only because a probe
+     * that costs three instructions is worth more than a comment claiming
+     * the same thing.
+     *
+     * Core 1 enters at core1_entry below instead, because the bootrom jumps
+     * it straight there. */
+    la t1, _smp_mark
+    li t2, 0x51C0DE01
+    sw t2, 0(t1)
+    j 3f
+.Lcore0_boot:
 
     /* Park the raw hart id in tp until .bss is cleared and
      * SETUP_HART_POINTER can turn it into this hart's record pointer (S0,
@@ -186,6 +205,60 @@ _reset_handler:
 3:
     wfi
     j 3b
+
+/* --- Core 1 entry (X3, plan/phase23_multicore_scheduling.md) ---
+ *
+ * The bootrom jumps here after core 0 completes the SIO-FIFO launch
+ * sequence (see smp_launch_core1() in kernel/smp.c), with sp already set to
+ * the value we sent and mtvec already loaded from the vector_table word.
+ * Verified against the Pico SDK's multicore_launch_core1_raw() rather than
+ * assumed -- on RISC-V that word is mtvec, where on Arm it is VTOR.
+ *
+ * Everything core 0 does before this point has already happened: .data
+ * copied, .bss cleared, hardware clocks up. So unlike the QEMU secondary
+ * path in entry.S, there is nothing to wait for -- being launched *is* the
+ * release. */
+/* Weak, because minimal_rp2350.elf -- the standalone hardware test built
+ * from this same boot path -- does not link kernel/smp.c and has no
+ * secondary_main() to call. It also never launches core 1, so the reference
+ * is genuinely unreachable there rather than merely unresolved. */
+.weak core1_probe_main
+.global core1_entry
+core1_entry:
+    /* Proof of arrival, written before anything else can go wrong.
+     *
+     * If core 1 faults three instructions later, this word is still the
+     * difference between "the bootrom never started it" and "it started and
+     * died" -- and a fault here is silent, because nothing is set up yet to
+     * report one. */
+    la t0, _smp_mark
+    li t1, 0x51C0DE02
+    sw t1, 0(t0)
+
+    /* Park the raw hart id where SETUP_HART_POINTER expects it. Read from
+     * the CSR rather than assumed to be 1: MAX_HARTS is 2 today and the
+     * macro indexes g_harts by whatever this says. */
+    csrr tp, mhartid
+
+    /* This core's own trap vector. The bootrom set mtvec from the launch
+     * word already; setting it again from the symbol keeps the two boot
+     * paths saying the same thing rather than depending on what was sent. */
+    la t0, trap_vector_entry
+    csrw mtvec, t0
+
+    /* Interrupts off until secondary_main() decides otherwise, matching what
+     * core 0 does at the top of its own boot. */
+    csrw mstatus, zero
+
+    SETUP_HART_POINTER t0, t1
+
+    /* core1_probe_main(), not secondary_main(): X3 proves the launch first
+     * and joins the scheduler second. See kernel/smp.c for why those are
+     * deliberately separate milestones rather than one leap. */
+    call core1_probe_main
+    /* core1_probe_main() does not return. */
+1:  wfi
+    j 1b
 
 data_cpy_loop:
     lw a3, (a0)

@@ -4,6 +4,7 @@
 #include "kernel/sched.h"
 #include "kernel/irq.h"
 #include "kernel/ticker.h"
+#include "kernel/time.h"
 #include "kernel/printk.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -36,6 +37,148 @@ unsigned smp_harts_online(void) {
     return n;
 }
 
+#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
+
+/* RP2350's SIO FIFO, the mailbox the bootrom listens on while core 1 waits.
+ * Offsets and status bits from the SDK's own register header
+ * (src/rp2350/hardware_regs/include/hardware/regs/sio.h), not derived. */
+#define SIO_BASE_ADDR   0xd0000000UL
+#define SIO_FIFO_ST     (*(volatile uint32_t *)(SIO_BASE_ADDR + 0x50))
+#define SIO_FIFO_WR     (*(volatile uint32_t *)(SIO_BASE_ADDR + 0x54))
+#define SIO_FIFO_RD     (*(volatile uint32_t *)(SIO_BASE_ADDR + 0x58))
+#define FIFO_ST_VLD     (1u << 0)   /* data waiting to be read */
+#define FIFO_ST_RDY     (1u << 1)   /* space available to write */
+
+extern void core1_entry(void);
+extern uint32_t _stack1_top;
+
+/* X3's evidence, and deliberately the whole of what core 1 does.
+ *
+ * The milestone's bar is "proof core 1 executed anything at all (e.g. a
+ * counter core 1 increments that core 0 reads back)". Meeting exactly that
+ * bar first is not timidity, it is the only way to tell two very different
+ * failures apart: a launch handshake that never starts the core, and a core
+ * that starts and then dies inside the kernel it was pointed at.
+ *
+ * The first attempt skipped this step and sent core 1 straight into
+ * secondary_main() -- trap_init(), the ticker, the scheduler, printk. It
+ * wedged, and because everything downstream is silent when it does, there
+ * was no way to say which half had failed. This counter separates them: if
+ * it moves, the bootrom handshake, the stack, and core 1's first
+ * instructions are all good, and anything still broken is above that line.
+ *
+ * In .bss, which core 0 cleared at boot long before smpstart runs, so a
+ * non-zero value can only have been written by core 1. */
+volatile uint32_t g_core1_ticks;
+
+/* Core 1's entire program. No printk (the console path blocks and would
+ * reach core 0's pinned uart task), no scheduler (core 1 has no task yet),
+ * no interrupts (mstatus is zeroed in core1_entry). Just proof of life. */
+void core1_probe_main(void) {
+    for (;;) {
+        g_core1_ticks++;
+    }
+}
+
+/* Hazard3's equivalent of Arm's SEV: `slt x0, x0, x1` is a hint encoding --
+ * a no-op on a standard RISC-V core, decoded by Hazard3 as "unblock". Taken
+ * from the SDK's __hazard3_unblock() rather than invented; core 1 may be
+ * waiting for FIFO space in the blocked state, and nothing else wakes it. */
+static inline void hazard3_unblock(void) {
+    __asm__ __volatile__("slt x0, x0, x1" ::: "memory");
+}
+
+static void fifo_drain(void) {
+    while (SIO_FIFO_ST & FIFO_ST_VLD) (void)SIO_FIFO_RD;
+}
+
+/* Launches core 1 (X3).
+ *
+ * The sequence and its handshake are the bootrom's, transcribed from the
+ * SDK's multicore_launch_core1_raw(): six words, each echoed back by core 1,
+ * and any mismatch restarts from the beginning -- which is what makes it
+ * robust against a FIFO holding stale data from a previous attempt. The
+ * zeros are resynchronisation points, so the read FIFO is drained and core 1
+ * unblocked before each one.
+ *
+ * The third value is mtvec on RISC-V where it is VTOR on Arm; the SDK
+ * branches on __riscv for exactly that. Getting it from the CSR rather than
+ * from the symbol means core 1 starts with whatever core 0 is actually
+ * using.
+ *
+ * Returns false rather than spinning forever if core 1 does not answer --
+ * a board whose second core never comes up must still boot. */
+static bool smp_launch_core1(void) {
+    uintptr_t mtvec;
+    __asm__ __volatile__("csrr %0, mtvec" : "=r"(mtvec));
+
+    const uint32_t seq[6] = {
+        0, 0, 1,
+        (uint32_t)(uintptr_t)mtvec,
+        (uint32_t)(uintptr_t)&_stack1_top,
+        (uint32_t)(uintptr_t)core1_entry,
+    };
+
+    unsigned i = 0;
+
+    /* ONE budget for the whole handshake, decremented by every wait.
+     *
+     * The first version of this had a 2,000,000-iteration outer guard whose
+     * body contained two inner waits of 100,000 spins each -- a product of
+     * 4e11, which is "bounded" only in the sense that it terminates before
+     * the heat death of the universe. On hardware it wedged the board
+     * silently at boot and cost a BOOTSEL recovery. A budget that is not a
+     * single counter is not a budget. */
+    uint32_t budget = 2000000u;
+
+    while (i < 6 && budget > 0) {
+        uint32_t cmd = seq[i];
+        if (cmd == 0) {
+            fifo_drain();
+            hazard3_unblock();
+        }
+
+        while (!(SIO_FIFO_ST & FIFO_ST_RDY) && --budget) { }
+        if (budget == 0) break;
+        SIO_FIFO_WR = cmd;
+        hazard3_unblock();
+
+        while (!(SIO_FIFO_ST & FIFO_ST_VLD) && --budget) { }
+        if (budget == 0) break;
+        uint32_t resp = SIO_FIFO_RD;
+
+        i = (resp == cmd) ? i + 1 : 0;
+        budget--;
+    }
+    return i == 6;
+}
+int smp_start_secondary(void) {
+    uint32_t before = g_core1_ticks;
+    printk("[SMP] core1 ticks before launch: %lu\n", (unsigned long)before);
+
+    if (!smp_launch_core1()) {
+        printk("[SMP] core 1 did not answer the launch handshake (still parked)\n");
+        return -1;
+    }
+    printk("[SMP] launch handshake completed\n");
+
+    /* A bounded wait, on the microsecond timer rather than a spin count, so
+     * the figure means something. Core 1 has nothing to do but increment. */
+    uint64_t deadline = time_get_us() + 50000;   /* 50 ms */
+    while (time_get_us() < deadline) { }
+
+    uint32_t after = g_core1_ticks;
+    printk("[SMP] core1 ticks after 50ms: %lu (delta %lu)\n",
+           (unsigned long)after, (unsigned long)(after - before));
+    if (after != before) {
+        printk("[SMP] CORE1_ALIVE -- a second Hazard3 core is executing our code\n");
+        return 0;
+    }
+    printk("[SMP] CORE1_SILENT -- handshake completed but the counter never moved\n");
+    return -1;
+}
+#endif /* CONFIG_ENABLE_SMP && CONFIG_BOARD_RP2350 */
+
 void smp_release_secondaries(void) {
 #if CONFIG_ENABLE_SMP
     /* Everything a secondary will touch -- .bss cleared, g_harts zeroed, the
@@ -45,7 +188,25 @@ void smp_release_secondaries(void) {
      * is meant to publish. */
     __atomic_thread_fence(__ATOMIC_RELEASE);
     g_smp_release = SMP_RELEASE_MAGIC;
+#if defined(CONFIG_BOARD_RP2350)
+    /* Deliberately NOT launched here.
+     *
+     * RP2350's core 1 is inside the bootrom and has never executed this
+     * image -- established by probe on real silicon, see boot_header.S -- so
+     * starting it means a FIFO handshake with hardware, at boot, before
+     * there is a console to say anything on. The first version of this ran
+     * at boot, wedged, and produced a completely silent board that needed a
+     * BOOTSEL recovery to reflash.
+     *
+     * So the launch is an explicit `smpstart` from the shell instead. A
+     * board that boots is a board that can be reflashed, and X3's own bar --
+     * proof that core 1 executed anything at all -- does not require it to
+     * happen automatically. Making it a boot step is a later decision, once
+     * the handshake has a track record. */
+    printk("[SMP] core 1 is parked in the bootrom; `smpstart` launches it\n");
+#else
     printk("[SMP] Secondary harts released (max %d)\n", MAX_HARTS);
+#endif
 #endif
 }
 

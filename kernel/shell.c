@@ -187,6 +187,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+    cprintf("  smpstart        - Launch RP2350 core 1 over the SIO FIFO (X3)\n");
     cprintf("  smptest         - Two-hart concurrency: lost updates through the lock, and which harts ran\n");
     cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
     cprintf("  timeselftest    - Microsecond wall clock: round trip, sub-ms detail, rtc_time_t view\n");
@@ -2029,6 +2030,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
+    } else if (strcmp(cmd_line, "smpstart") == 0) {
+#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
+        smp_start_secondary();
+#else
+        cprintf("smpstart: this build has no RP2350 second-core launch "
+                "(needs CONFIG_ENABLE_SMP on an RP2350 target)\n");
+#endif
         return;
     } else if (strcmp(cmd_line, "smptest") == 0) {
         smp_selftest();

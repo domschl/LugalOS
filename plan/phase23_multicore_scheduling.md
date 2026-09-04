@@ -264,6 +264,26 @@ what X3's own hardware investigation finds; written as a separate
 milestone rather than folded into X3 so a "not needed after all" outcome
 is a one-line note here, not a surprise buried inside X3.
 
+**DONE 2026-09-04 — and it needed no code, which is the outcome this
+milestone was written to be able to report.**
+
+Two halves, both now answered:
+
+- *Is the comparator per-core?* Yes. The SDK's own register header, from
+  the datasheet: `SIO_MTIMECMP` is "core-local, i.e., each core gets a copy
+  of this register, with the comparison result routed to its own interrupt
+  line." So `ticker_arm_this_hart()` arming a secondary's deadline cannot
+  disturb the primary's, and the split X1 made — `ticker_init()` programs
+  and calibrates the shared tick generator, `ticker_arm_this_hart()` only
+  sets this hart's comparator and MTIE — is correct on RP2350 as written.
+- *Should the tick counter be one atomic or one per hart?* Per hart,
+  decided in X1 by need rather than preference: `lockselftest`'s masking
+  check holds a spinlock with interrupts off and asserts the counter is
+  frozen, which a global counter breaks by advancing from the *other*
+  hart's timer — failing a kernel whose masking is perfectly correct.
+
+S5 handed both questions here; neither survives into X5.
+
 **X5 — re-run the existing isolation/fault suite (phase 12's `isotest`
 family) with tasks actually distributed across both cores**, not just
 possible in principle. A driver's PMP grant faulting correctly on core 0
