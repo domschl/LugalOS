@@ -11,3 +11,47 @@
 08:59:08 state=track acc=22 rej=0 freq_ppb=-3479 off_us=726 disp_us=3160 age_s=7 gerr_n=1374 gerr_last=-2562 gerr_mean=-7963 gerr_sd=60791 gerr_min=-756531 gerr_max=-1051 frames=22 pulses=1387 duty=888
 09:00:03 state=track acc=23 rej=0 freq_ppb=-2716 off_us=-4376 disp_us=3106 age_s=3 gerr_n=1430 gerr_last=-2791 gerr_mean=-7757 gerr_sd=59598 gerr_min=-756531 gerr_max=-1051 frames=23 pulses=1442 duty=919
 09:00:59 state=track acc=23 rej=0 freq_ppb=-2716 off_us=-4376 disp_us=3199 age_s=58 gerr_n=1486 gerr_last=-2418 gerr_mean=-7562 gerr_sd=58472 gerr_min=-756531 gerr_max=-1051 frames=23 pulses=1497 duty=870
+09:01:54 state=track acc=24 rej=0 freq_ppb=-2380 off_us=-2706 disp_us=3120 age_s=54 gerr_n=1541 gerr_last=-2218 gerr_mean=-7375 gerr_sd=57428 gerr_min=-756531 gerr_max=-1051 frames=24 pulses=1552 duty=837
+09:02:50 state=track acc=25 rej=0 freq_ppb=-2656 off_us=939 disp_us=3129 age_s=50 gerr_n=1597 gerr_last=-2754 gerr_mean=-7208 gerr_sd=56419 gerr_min=-756531 gerr_max=-1051 frames=25 pulses=1607 duty=868
+09:03:46 state=track acc=26 rej=0 freq_ppb=-2111 off_us=-4262 disp_us=3078 age_s=46 gerr_n=1653 gerr_last=-2474 gerr_mean=-7054 gerr_sd=55461 gerr_min=-756531 gerr_max=-1051 frames=26 pulses=1662 duty=816
+09:04:42 state=track acc=27 rej=0 freq_ppb=-1295 off_us=-7029 disp_us=3130 age_s=41 gerr_n=1708 gerr_last=-1819 gerr_mean=-6897 gerr_sd=54567 gerr_min=-756531 gerr_max=-1051 frames=27 pulses=1716 duty=883
+09:05:37 state=track acc=28 rej=0 freq_ppb=-1133 off_us=-2960 disp_us=3067 age_s=37 gerr_n=1764 gerr_last=-2242 gerr_mean=-6745 gerr_sd=53701 gerr_min=-756531 gerr_max=-1051 frames=28 pulses=1771 duty=868
+09:06:33 state=track acc=29 rej=0 freq_ppb=-1153 off_us=-1580 disp_us=3014 age_s=33 gerr_n=1820 gerr_last=-2409 gerr_mean=-6609 gerr_sd=52874 gerr_min=-756531 gerr_max=-1051 frames=29 pulses=1826 duty=839
+09:07:29 state=track acc=30 rej=0 freq_ppb=-1418 off_us=802 disp_us=3024 age_s=28 gerr_n=1875 gerr_last=-2619 gerr_mean=-6488 gerr_sd=52097 gerr_min=-756531 gerr_max=-1051 frames=30 pulses=1880 duty=863
+09:08:24 state=track acc=31 rej=0 freq_ppb=-1552 off_us=65 disp_us=3006 age_s=24 gerr_n=1931 gerr_last=-2743 gerr_mean=-6378 gerr_sd=51340 gerr_min=-756531 gerr_max=-1051 frames=31 pulses=1935 duty=839
+09:09:20 state=track acc=32 rej=0 freq_ppb=-1647 off_us=-11 disp_us=2986 age_s=20 gerr_n=1987 gerr_last=-2810 gerr_mean=-6276 gerr_sd=50615 gerr_min=-756531 gerr_max=-1051 frames=32 pulses=1990 duty=868
+09:10:16 state=track acc=33 rej=0 freq_ppb=-1977 off_us=2918 disp_us=3076 age_s=15 gerr_n=2042 gerr_last=-2980 gerr_mean=-6184 gerr_sd=49932 gerr_min=-756531 gerr_max=-1051 frames=33 pulses=2045 duty=892
+09:11:11 state=track acc=34 rej=0 freq_ppb=-2440 off_us=5260 disp_us=3283 age_s=11 gerr_n=2098 gerr_last=-3109 gerr_mean=-6103 gerr_sd=49263 gerr_min=-756531 gerr_max=-1051 frames=34 pulses=2099 duty=891
+09:12:07 state=track acc=35 rej=0 freq_ppb=-2258 off_us=-1765 disp_us=3232 age_s=7 gerr_n=2154 gerr_last=-3742 gerr_mean=-6035 gerr_sd=48620 gerr_min=-756531 gerr_max=-1051 frames=35 pulses=2154 duty=887
+09:13:03 state=track acc=36 rej=0 freq_ppb=-2110 off_us=-1566 disp_us=3183 age_s=2 gerr_n=2209 gerr_last=-3649 gerr_mean=-5976 gerr_sd=48013 gerr_min=-756531 gerr_max=-1051 frames=36 pulses=2209 duty=921
+09:13:59 state=track acc=36 rej=0 freq_ppb=-2110 off_us=-1566 disp_us=3232 age_s=58 gerr_n=2265 gerr_last=-3569 gerr_mean=-5918 gerr_sd=47417 gerr_min=-756531 gerr_max=-1051 frames=36 pulses=2264 duty=847
+09:14:54 state=track acc=37 rej=0 freq_ppb=-1911 off_us=-2470 disp_us=3183 age_s=54 gerr_n=2321 gerr_last=-3377 gerr_mean=-5859 gerr_sd=46843 gerr_min=-756531 gerr_max=-1051 frames=37 pulses=2319 duty=838
+09:15:50 state=track acc=38 rej=0 freq_ppb=-2195 off_us=4367 disp_us=3303 age_s=49 gerr_n=2376 gerr_last=-4199 gerr_mean=-5813 gerr_sd=46299 gerr_min=-756531 gerr_max=-1051 frames=38 pulses=2374 duty=840
+09:16:45 state=track acc=39 rej=0 freq_ppb=-1923 off_us=-3543 disp_us=3267 age_s=45 gerr_n=2432 gerr_last=-4066 gerr_mean=-5776 gerr_sd=45763 gerr_min=-756531 gerr_max=-1051 frames=39 pulses=2428 duty=844
+09:17:41 state=track acc=40 rej=0 freq_ppb=-1572 off_us=-5362 disp_us=3266 age_s=41 gerr_n=2488 gerr_last=-3575 gerr_mean=-5732 gerr_sd=45246 gerr_min=-756531 gerr_max=-1051 frames=40 pulses=2483 duty=865
+09:18:37 state=track acc=41 rej=0 freq_ppb=-1424 off_us=-2600 disp_us=3223 age_s=36 gerr_n=2544 gerr_last=-3897 gerr_mean=-5690 gerr_sd=44746 gerr_min=-756531 gerr_max=-1051 frames=41 pulses=2538 duty=889
+09:19:33 state=track acc=42 rej=0 freq_ppb=-1405 off_us=-552 disp_us=3188 age_s=32 gerr_n=2599 gerr_last=-3797 gerr_mean=-5650 gerr_sd=44271 gerr_min=-756531 gerr_max=-1051 frames=42 pulses=2592 duty=816
+09:20:28 state=track acc=43 rej=0 freq_ppb=-1213 off_us=-3796 disp_us=3161 age_s=28 gerr_n=2655 gerr_last=-3673 gerr_mean=-5611 gerr_sd=43802 gerr_min=-756531 gerr_max=-1051 frames=43 pulses=2647 duty=888
+09:21:24 state=track acc=44 rej=0 freq_ppb=-994 off_us=-4751 disp_us=3147 age_s=23 gerr_n=2710 gerr_last=-3237 gerr_mean=-5567 gerr_sd=43357 gerr_min=-756531 gerr_max=-1051 frames=44 pulses=2702 duty=865
+09:22:20 state=track acc=45 rej=0 freq_ppb=-1049 off_us=397 disp_us=3130 age_s=19 gerr_n=2766 gerr_last=-3518 gerr_mean=-5519 gerr_sd=42917 gerr_min=-756531 gerr_max=-1051 frames=45 pulses=2756 duty=865
+09:23:16 state=track acc=46 rej=0 freq_ppb=-794 off_us=-6090 disp_us=3150 age_s=15 gerr_n=2822 gerr_last=-3400 gerr_mean=-5480 gerr_sd=42490 gerr_min=-756531 gerr_max=-1051 frames=46 pulses=2811 duty=894
+09:24:12 state=track acc=47 rej=0 freq_ppb=-720 off_us=-2660 disp_us=3115 age_s=11 gerr_n=2878 gerr_last=-3554 gerr_mean=-5436 gerr_sd=42076 gerr_min=-756531 gerr_max=-1051 frames=47 pulses=2866 duty=890
+09:25:25 UNREACHABLE
+09:26:41 state=track acc=49 rej=0 freq_ppb=-719 off_us=-7267 disp_us=3328 age_s=33 gerr_n=3020 gerr_last=-3868 gerr_mean=-5360 gerr_sd=41076 gerr_min=-756531 gerr_max=-1051 frames=49 pulses=3013 duty=866
+09:27:49 UNREACHABLE
+09:28:51 UNREACHABLE
+09:29:52 UNREACHABLE
+09:30:53 UNREACHABLE
+09:31:54 UNREACHABLE
+09:32:56 UNREACHABLE
+09:33:57 UNREACHABLE
+09:34:58 UNREACHABLE
+09:36:00 UNREACHABLE
+09:37:01 UNREACHABLE
+09:38:02 UNREACHABLE
+09:39:04 UNREACHABLE
+09:40:05 UNREACHABLE
+09:41:06 UNREACHABLE
+09:42:08 UNREACHABLE
+09:43:09 UNREACHABLE
+09:44:10 UNREACHABLE
