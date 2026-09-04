@@ -395,7 +395,7 @@ int dcf77_p0log_start(void) {
     /* Three pages, matching `netsrv` and `wifiup`: ntp_query() puts a 48-byte
      * packet and a result struct on this stack, but idstore_read() behind
      * node_* calls does not run here, so this is headroom rather than need. */
-    int pid = task_create_sized("p0log", p0_body, NULL, 3);
+    int pid = task_create_driver("p0log", p0_body, NULL, 3);
     if (pid < 0) printk("[P0] could not start the measurement task\n");
     return pid;
 }

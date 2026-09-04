@@ -5681,6 +5681,27 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
         ok = ok and "LOCK_SELFTEST_OK" in log
         out.append(("SMP: the scheduler lock hand-off holds under real contention (S6/X1)",
                     ok, log if not ok else ""))
+
+        # X2: per-task isolation, with the domain activated on a hart that is
+        # not the primary.
+        #
+        # "It still passes" is not enough on its own here. Driver tasks are
+        # pinned to hart 0, so a run could satisfy every isolation check
+        # while never once installing a restricted domain anywhere else --
+        # and would then prove nothing about the claim §1 makes. So this
+        # asserts the fault AND the evidence: /proc/cpuinfo counts
+        # restricted-domain activations per hart, and a non-zero count for
+        # hart 1 means the isolation being checked was installed by code
+        # running there.
+        ok, log = session.send_and_expect(
+            "exec /flash0/system/bin/uisolate.elf\nps", r"uprog\s+killed", timeout=30.0)
+        out.append(("SMP: an out-of-domain store still faults, on a two-hart kernel (X2)",
+                    ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("cat /proc/cpuinfo",
+                                          r"domains_hart1:\s*[1-9]", timeout=12.0)
+        out.append(("SMP: restricted domains were actually activated on hart 1 (X2)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

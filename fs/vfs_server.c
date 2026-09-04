@@ -479,8 +479,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
          * such pattern hunted down and loosened. Found the hard way (a
          * QEMU rv64 run that looked like a hang was actually 3 full
          * retries failing the same two now-broken regexes). */
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol  Stack\n");
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----  ---------\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol  Hart  Stack\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----  ----  ---------\n");
         int pid, state;
         const char *tname;
         long status;
@@ -507,6 +507,17 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             used = append_col(buf, used, cap, exitbuf, 7);
             used = append_col(buf, used, cap,
                               has_domain ? mem_domain_backend_name() : "-", 6);
+            /* X2: which hart this task may run on. "any" is the default and
+             * the common case; a number means it is pinned, which for a
+             * driver task is load-bearing rather than decorative -- several
+             * of phase 22's S5 dispositions rest on it. */
+            {
+                char hbuf[8];
+                int aff = task_affinity(pid);
+                if (aff < 0) ksnprintf(hbuf, sizeof(hbuf), "any");
+                else         ksnprintf(hbuf, sizeof(hbuf), "%d", aff);
+                used = append_col(buf, used, cap, hbuf, 6);
+            }
             /* Stack high-water against the size it was given (§6,
              * plan/phase15_memory_reclamation.md). "-" for the boot task,
              * whose stack is the linker's and is reported by the Boot Stack
@@ -942,6 +953,14 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             );
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "xlen:        %d\n", (int)(__riscv_xlen));
+        /* X2: restricted-domain activations per hart. Zero for hart 1 on a
+         * single-hart build, and the point of reporting it is that a test
+         * can tell "isolation was never exercised elsewhere" apart from
+         * "isolation held elsewhere". */
+        for (unsigned h = 0; h < MAX_HARTS; h++) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "domains_hart%u: %u\n", h, mem_domain_activations(h));
+        }
         return (int)used;
     } else if (strcmp(rel, "config") == 0) {
         /* Board config (K3, plan/phase7_kernel_config.md): the generated

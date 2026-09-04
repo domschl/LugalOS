@@ -1,4 +1,5 @@
 #include "kernel/mem_domain.h"
+#include "kernel/hart.h"
 #include "kernel/printk.h"
 #include "arch/csr.h"
 #include "kernel/palloc.h"
@@ -8,6 +9,12 @@
 
 void mem_domain_init(mem_domain_t *d) {
     if (d) memset(d, 0, sizeof(*d));
+}
+
+uint32_t g_domain_activations[MAX_HARTS];
+
+uint32_t mem_domain_activations(unsigned hart) {
+    return (hart < MAX_HARTS) ? g_domain_activations[hart] : 0;
 }
 
 int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perms) {
@@ -183,6 +190,17 @@ static uintptr_t napot_encode(uintptr_t base, uintptr_t size) {
 }
 
 int mem_domain_activate(const mem_domain_t *d) {
+    /* X2, plan/phase23_multicore_scheduling.md: which harts have actually
+     * activated a restricted domain.
+     *
+     * The milestone asks whether per-task isolation still holds "regardless
+     * of which hart activates a given domain". That question cannot be
+     * answered by a test that merely passes -- with driver tasks pinned to
+     * hart 0, a run could satisfy every isolation check while never once
+     * activating a domain anywhere else. This counter is what turns the
+     * claim into evidence: a non-zero entry for hart 1 means a restricted
+     * domain was installed there, by code running there. */
+    if (d) g_domain_activations[hart_id()]++;
     int n = d ? d->count : 0;
     if (n > MEM_DOMAIN_MAX_REGIONS) n = MEM_DOMAIN_MAX_REGIONS;
     if (n > PMP_DYNAMIC_ENTRIES) n = PMP_DYNAMIC_ENTRIES;
@@ -370,6 +388,17 @@ static uintptr_t *build_space(const mem_domain_t *d) {
 }
 
 int mem_domain_activate(const mem_domain_t *d) {
+    /* X2, plan/phase23_multicore_scheduling.md: which harts have actually
+     * activated a restricted domain.
+     *
+     * The milestone asks whether per-task isolation still holds "regardless
+     * of which hart activates a given domain". That question cannot be
+     * answered by a test that merely passes -- with driver tasks pinned to
+     * hart 0, a run could satisfy every isolation check while never once
+     * activating a domain anywhere else. This counter is what turns the
+     * claim into evidence: a non-zero entry for hart 1 means a restricted
+     * domain was installed there, by code running there. */
+    if (d) g_domain_activations[hart_id()]++;
     if (!vmm_paging_enabled()) return 0; /* nothing to enforce with */
 
     if (!d) {

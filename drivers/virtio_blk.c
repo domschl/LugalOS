@@ -226,7 +226,7 @@ static void blk_task_body(void *arg) {
  * before this ever runs. */
 int virtio_blk_task_start(void) {
     if (!g_mmio_base) return -1; /* no device to serve */
-    int pid = task_create_sized("blk", blk_task_body, NULL, 1);
+    int pid = task_create_driver("blk", blk_task_body, NULL, 1);
     if (pid < 0) {
         printk("[VirtIO-Blk] Could not start the blk task; storage stays on direct MMIO access.\n");
         return -1;

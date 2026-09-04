@@ -1124,7 +1124,7 @@ static void i2c_task_body(void *arg) {
  * the task is not alive, same as every boot-time read before this ever
  * ran. */
 int i2c_task_start(void) {
-    int pid = task_create_sized("i2c", i2c_task_body, NULL, 1);
+    int pid = task_create_driver("i2c", i2c_task_body, NULL, 1);
     if (pid < 0) {
         printk("[I2C] Could not start the i2c task; RTC/EEPROM stay on direct hardware access.\n");
         return -1;

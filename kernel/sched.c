@@ -204,6 +204,26 @@ int task_set_domain(int pid, mem_domain_t *domain) {
  * call to next_runnable(); no immediate re-yield is forced, since the
  * caller may be raising or lowering its *own* priority and forcing a
  * self-switch here would be a surprise side effect of a setter. */
+int task_affinity(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return -1;
+    if (g_tasks[pid].state == TASK_UNUSED) return -1;
+    return g_tasks[pid].hart_affinity;
+}
+
+int task_create_driver(const char *name, void (*entry)(void *), void *arg,
+                       uint32_t stack_pages) {
+    int pid = task_create_sized(name, entry, arg, stack_pages);
+    if (pid < 0) return pid;
+    /* Hart 0, not "the creating hart": drivers are brought up from
+     * kernel_main() on the primary, and that is also where their interrupts
+     * were enabled (arch_irq_enable() writes the calling hart's PLIC
+     * context). Pinning to whoever happened to create the task would be the
+     * same answer today and a different one the moment anything is started
+     * from elsewhere. */
+    task_set_affinity(pid, 0);
+    return pid;
+}
+
 int task_set_affinity(int pid, int hart) {
     if (pid < 0 || pid >= MAX_TASKS) return -1;
     if (g_tasks[pid].state == TASK_UNUSED) return -1;

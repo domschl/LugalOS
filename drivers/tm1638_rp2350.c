@@ -614,7 +614,7 @@ static void tm1638_task_body(void *arg) {
  * every function below falls back to direct hardware access whenever the
  * task is not alive, same as every boot-time call before this ever ran. */
 int tm1638_task_start(void) {
-    int pid = task_create_sized("tm1638", tm1638_task_body, NULL, 1);
+    int pid = task_create_driver("tm1638", tm1638_task_body, NULL, 1);
     if (pid < 0) {
         printk("[TM1638] Could not start the tm1638 task; keypad/display stay on direct hardware access.\n");
         return -1;

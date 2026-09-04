@@ -269,9 +269,33 @@ uint32_t sched_handoff_faults(void);
  * or an unused slot. */
 int  task_set_affinity(int pid, int hart);
 
+/* A task's hart pinning: -1 for any hart, otherwise the hart it is bound to.
+ * -1 for an out-of-range pid or an unused slot. Reported by `ps` so X2's
+ * pinning is a fact about the running system rather than a claim about the
+ * source -- the same argument phase 12's M6 made for the Isol column. */
+int  task_affinity(int pid);
+
 /* Turns the calling secondary hart's boot context into a task, so it has
  * something to switch away from, and marks it pinned here. Returns its pid,
  * or -1 if the table is full. */
 int  sched_secondary_init(void);
+
+/* Creates a task pinned to the boot hart (X2,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * For tasks that own a piece of hardware. A driver task's state is not just
+ * "shared data that happens to have one writer" -- it is device registers,
+ * a bus claim, an interrupt armed on a particular hart's controller context.
+ * Phase 22's S5 audit left several such sites unconverted *specifically*
+ * because this pinning exists (the UART wait paths, uart_net's demux,
+ * enc28j60's and cyw43's bus flags), so the pinning is load-bearing rather
+ * than tidy: relaxing it means going back and converting them first.
+ *
+ * A helper rather than "call task_set_affinity() after task_create()" so
+ * that the next driver cannot half-do it. Creating and pinning are one act;
+ * a window in which a driver task is briefly migratable is exactly the sort
+ * of thing that works until it doesn't. */
+int  task_create_driver(const char *name, void (*entry)(void *), void *arg,
+                        uint32_t stack_pages);
 
 #endif /* LUGALOS_KERNEL_SCHED_H */

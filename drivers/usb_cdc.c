@@ -1787,7 +1787,7 @@ static void usb_cdc_task_body(void *arg) {
  * usb_cdc_task_alive() reports so, and kernel/time.c's time_delay_us()
  * falls back to pumping directly, same as before this task existed. */
 int usb_cdc_task_start(void) {
-    int pid = task_create_sized("usbcdc", usb_cdc_task_body, NULL, 1);
+    int pid = task_create_driver("usbcdc", usb_cdc_task_body, NULL, 1);
     if (pid < 0) {
         printk("[USB] Could not start the usbcdc background task; servicing stays opportunistic.\n");
         return -1;

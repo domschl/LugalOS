@@ -427,6 +427,18 @@ indivisible across harts.
   driver-task-owned paths that phase 23's **X2** pins to core 0 — unlike
   `usb_cdc_putc()` above, which only looked like one. If X2's pinning is
   ever relaxed, these are the first sites to revisit.
+
+  > **Partly wrong — corrected by X2, 2026-09-04.** The pinning covers the
+  > *waiter* path (`uart_hw_putc_blocking()` is reached only from the
+  > driver task, except on the fallback taken when that task is absent or
+  > the p9share demux owns the wire). It does **not** cover `g_tx_batch` /
+  > `g_tx_batch_len`: `uart_flush()` and `uart_putc()` run in the context
+  > of whoever is printing — `printk_unlock()` calls the first, every
+  > console write the second — so two harts touch that buffer at once.
+  > Same shape as `usb_cdc_putc()`, and missed here for the same reason:
+  > the disposition asked which file the state lived in rather than who
+  > actually calls it. Both batches now take a `spinlock_t`
+  > (`g_tx_batch_lock`). The waiter disposition stands as written.
 - **`drivers/uart_net.c`** demux ring — same class: reached through
   `uart_16550.c`'s console path, driver-owned, X2-pinned.
 - **`drivers/enc28j60_rp2350.c`, `drivers/cyw43_rp2350.c`** — instances #5

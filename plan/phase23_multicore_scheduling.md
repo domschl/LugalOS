@@ -208,6 +208,49 @@ confirm phase 12's per-task PMP/Sv39 isolation guarantees hold regardless
 of which hart activates a given domain (§1 says they should; this
 milestone is where that claim gets checked rather than assumed).
 
+**DONE 2026-09-04.** Twelve driver tasks pinned — both UARTs, heartbeat,
+usbcdc, both block drivers, i2c, st7735, tm1638, clock, wifiup, p0log —
+via `task_create_driver()` rather than a `task_set_affinity()` call after
+each `task_create_sized()`. Creating and pinning are one act on purpose: a
+window in which a driver task is briefly migratable is the sort of thing
+that works until it doesn't, and a helper is what stops the next driver
+half-doing it. `ps` grew a **Hart** column, so the policy is a fact about
+the running system rather than a claim about the source — the argument
+phase 12's M6 made for `Isol`:
+
+```
+  0  RUNNING  kernel   -   -     0     -
+  1  BLOCKED  uart     -   -     0     744/4096 B
+  2  READY    idle     -   -     1     -
+  3  BLOCKED  blk      -   -     0     720/4096 B
+  5  READY    p9srv    -   -     any   648/12288 B
+```
+
+**The isolation claim is evidenced, not just unbroken.** "The isolation
+tests still pass" would prove nothing here: with drivers pinned to hart 0,
+a run can satisfy every check while never installing a restricted domain
+anywhere else. `mem_domain_activate()` now counts activations per hart and
+`/proc/cpuinfo` reports them, so the suite asserts both halves — an
+out-of-domain store still faults on a two-hart kernel, **and**
+`domains_hart1` is non-zero, meaning the isolation being checked was
+installed by code running there. Measured: `domains_hart0: 5,
+domains_hart1: 7` after two U-mode programs.
+
+**X2 disproved part of S5's audit, which is what it was for.** S5 left the
+UART paths unconverted on the strength of this pinning. Checking rather
+than inheriting shows it covers the waiter path but **not** `g_tx_batch`:
+`uart_flush()` and `uart_putc()` run in the caller's context — every
+console write, and `printk_unlock()` — so two harts share that buffer.
+Same shape as `usb_cdc_putc()`, missed for the same reason: the
+disposition asked which file the state lived in rather than who calls it.
+Both UARTs' batches now take a `spinlock_t`; phase 22's §S5 entry is
+corrected in place rather than left to read well.
+
+*Verified:* QEMU **330/330** (328 + 2 X2 checks). RP2350 chess persona
+**24/24**. Static RAM **+12** — the per-hart activation counters (+8) and
+one `spinlock_t` (+4); the other UART's lock and `hart_affinity` were
+already counted in X1.
+
 **X3 — RP2350 core-1 wake. Hardware-only, BLOCKED until bench access
 exists** — the same constraint named in `plan/phase21_identity_and_authentication.md`'s
 I7, for the same reason. The SIO FIFO launch sequence, `CONFIG_ENABLE_SMP`-gated.
