@@ -98,7 +98,19 @@ static volatile int g_printk_waiter = -1;
 static spinlock_t g_printk_gate;
 
 void printk_lock(void) {
-    int me = sched_current_pid();
+    /* The *context*, not the pid. A hart still in bring-up owns no task, and
+     * sched_current_pid() answers -1 there -- which is this lock's own
+     * "unowned" value, so using it would make an owned lock look free and let
+     * every hart straight in. sched_context_id() is never -1 and never
+     * collides with a pid, so the ownership and re-entrancy tests below are
+     * exactly as correct for a task-less hart as for a task.
+     *
+     * Until phase 23's identity fix that pid was reported as 0, which was
+     * worse than either: a bring-up hart matched `g_printk_owner == me`
+     * against a lock the boot task was holding on the *other* hart, took the
+     * re-entrant path, and both harts wrote the console at once. */
+    int me = sched_context_id();
+    bool blockable = sched_has_task();
     uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
     if (g_printk_owner == me) {
         /* Reentrant: the ISR-during-our-own-printk() case above. Proceeds
@@ -109,16 +121,20 @@ void printk_lock(void) {
         return;
     }
     while (g_printk_owner != -1) {
-        if (g_printk_waiter < 0) {
+        if (blockable && g_printk_waiter < 0) {
             g_printk_waiter = me;
             /* Released before blocking, never held across it. */
             spin_unlock_irqrestore(&g_printk_gate, flags);
             task_block();
             flags = spin_lock_irqsave(&g_printk_gate);
         } else {
-            /* Someone else is already the registered waiter. Fall back to
-             * polling rather than overwrite their slot and lose their
-             * wakeup -- same defensive shape as M2's UART waiters. */
+            /* Someone else is already the registered waiter -- or this hart
+             * owns no task and so cannot be one. Fall back to polling rather
+             * than overwrite their slot and lose their wakeup, which is the
+             * same defensive shape as M2's UART waiters. Polling terminates
+             * for a task-less hart because the owner is by definition a task
+             * running somewhere else, and sched_yield() from here is a plain
+             * spin. */
             spin_unlock_irqrestore(&g_printk_gate, flags);
             sched_yield();
             flags = spin_lock_irqsave(&g_printk_gate);

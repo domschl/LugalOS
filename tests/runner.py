@@ -5664,6 +5664,26 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
         ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
         out.append(("SMP: two-hart kernel boots to a shell (X1)", ok, log if not ok else ""))
 
+        # A hart that owns no task says so, instead of claiming to be task 0.
+        #
+        # secondary_main() printk()s from the window between the reset vector
+        # and sched_secondary_init(), where this hart has no task slot. Until
+        # the identity fix, sched_current_pid() answered 0 there -- naming the
+        # boot task, which is running on the *other* hart at that instant. The
+        # consequences needed a race to show (printk_lock() taking the
+        # re-entrant path through a lock hart 0 held; task_block() blocking the
+        # shell), but the cause does not: the pid is printed, so `pid -1` and
+        # `pid 0` separate fixed from broken in the boot log with no race to
+        # reproduce. Falsified by reverting only that one initialiser, which
+        # turns this line back into `pid 0`.
+        #
+        # It also establishes that printk() works at all from a task-less
+        # hart, which is what makes second-core bring-up debuggable -- X3 got
+        # its core running only by giving it no printk whatsoever.
+        ok = "[SMP] hart 1: in the kernel, no task yet (pid -1)" in log
+        out.append(("SMP: a hart with no task reports no pid, not task 0's (identity)",
+                    ok, log if not ok else ""))
+
         # A longer window than the same read gets on a single-hart target: two
         # harts boot noisily and this command can land while the tail of that
         # is still streaming, which cost an intermittent failure at 5 s on a

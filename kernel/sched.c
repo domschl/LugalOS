@@ -124,7 +124,12 @@ void sched_init(void) {
      * another hart resuming it would execute on hart 0's stack (X1). */
     g_tasks[0].hart_affinity = 0;
     g_tasks[0].priority = TASK_PRIO_NORMAL;
-    for (int h = 0; h < MAX_HARTS; h++) g_current[h] = 0;
+    /* Only the primary has a task here. Every other hart owns none until its
+     * own sched_secondary_init() -- and says so, rather than defaulting to 0
+     * and impersonating the boot task on a hart that is not running it. See
+     * sched_current_pid()'s comment in sched.h for what that cost. */
+    g_current[0] = 0;
+    for (int h = 1; h < MAX_HARTS; h++) g_current[h] = TASK_NO_PID;
     spinlock_init(&g_sched_lock);
     g_active = true;
 
@@ -133,7 +138,20 @@ void sched_init(void) {
 
 bool sched_active(void) { return g_active; }
 
-int sched_current_pid(void) { return g_active ? g_tasks[cur()].pid : 0; }
+int sched_current_pid(void) {
+    if (!g_active) return TASK_NO_PID;
+    int c = cur();
+    return (c >= 0) ? g_tasks[c].pid : TASK_NO_PID;
+}
+
+bool sched_has_task(void) { return g_active && cur() >= 0; }
+
+int sched_context_id(void) {
+    int pid = sched_current_pid();
+    /* Never -1, and never colliding with a pid: see sched.h. The hart id is
+     * valid from SETUP_HART_POINTER onward, which is before any C runs. */
+    return (pid >= 0) ? pid : (int)MAX_TASKS + (int)hart_id();
+}
 
 /* Whether there is a scheduler to block against yet. Boot runs a long way
  * before sched_init(): drivers brought up in that window must not call
@@ -143,7 +161,9 @@ int sched_current_pid(void) { return g_active ? g_tasks[cur()].pid : 0; }
 bool sched_is_active(void) { return g_active; }
 
 mem_domain_t *sched_current_domain(void) {
-    return g_active ? g_tasks[cur()].domain : NULL;
+    if (!g_active) return NULL;
+    int c = cur();
+    return (c >= 0) ? g_tasks[c].domain : NULL;
 }
 
 const char *sched_state_name(int state) {
@@ -292,7 +312,7 @@ bool sched_domain_in_use(const mem_domain_t *domain) {
 }
 
 void task_set_exit_status(long status) {
-    if (!g_active) return;
+    if (!g_active || !sched_has_task()) return;
     g_tasks[cur()].exit_status = status;
     g_tasks[cur()].exit_clean = true;
 }
@@ -557,6 +577,12 @@ uint32_t sched_stack_size(int pid) {
 void sched_yield(void) {
     if (!g_active) return;
 
+    /* Nothing to switch away from on a hart that owns no task -- and, before
+     * the identity fix, `prev` would have been 0 here and this hart would
+     * have parked the boot task's stack pointer over the boot task's own.
+     * A bring-up hart that yields simply keeps going. */
+    if (!sched_has_task()) return;
+
     /* Free any stack left by a task that exited before we were resumed. Safe
      * here and nowhere earlier: we are demonstrably not running on it. */
     sched_reap();
@@ -625,6 +651,18 @@ void sched_yield(void) {
 
 void task_block(void) {
     if (!g_active) return;
+
+    /* A hart with no task cannot block. Before phase 23's identity fix this
+     * did not return -- cur() answered 0 on a bring-up hart, so this marked
+     * the *boot task* BLOCKED, on a hart that was not running it, and nothing
+     * would ever wake it. That is a wedged shell, produced by a secondary
+     * hart printing one line too early.
+     *
+     * Returning is the honest answer rather than a panic: the caller wanted
+     * to wait, and a hart with no task waits by spinning. Every caller in
+     * this tree that can reach here from bring-up polls when it cannot
+     * block. */
+    if (!sched_has_task()) return;
     /* Marked BLOCKED under the lock, then released before yielding --
      * sched_yield() takes it again, and spinlock_t is not re-entrant.
      *
@@ -658,7 +696,9 @@ int task_unblock(int pid) {
 
 void task_sleep_ms(uint32_t ms) {
     uint64_t end = time_get_ms() + ms;
-    if (!g_active) {
+    /* Same for a hart with no task as for no scheduler at all: there is no
+     * wake_at_ms slot to write and nothing to block, so spin out the time. */
+    if (!g_active || !sched_has_task()) {
         while (time_get_ms() < end) { }
         return;
     }
@@ -710,7 +750,9 @@ static void sched_reap(void) {
 }
 
 void task_exit(void) {
-    if (!g_active) { for (;;) { } }
+    /* A hart with no task has nothing to exit; parking is all that is left,
+     * and is what the !g_active case has always done. */
+    if (!g_active || !sched_has_task()) { for (;;) { } }
 
     task_t *t = &g_tasks[cur()];
     printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);

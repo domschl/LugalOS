@@ -555,7 +555,11 @@ static void uart_hw_putc(char c) {
 
     uintptr_t flags = irq_save();
     if (REG(UART0_FR) & UART0_FR_TXFF) {
-        if (g_tx_waiter < 0) {
+        /* sched_has_task(): a hart with no task cannot be the waiter --
+         * task_block() would have nothing to block, and the slot would
+         * hold -1, which reads as "free". It polls instead, which is
+         * the branch already here for the other-waiter case. */
+        if (g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
             REG(UART0_IMSC) |= UART0_IMSC_TXIM;
             task_block();

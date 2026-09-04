@@ -37,7 +37,13 @@ void ylock_init(ylock_t *l) {
 }
 
 void ylock_acquire(ylock_t *l) {
-    int me = sched_current_pid();
+    /* The context, not the pid -- for the same reason printk_lock() uses it:
+     * -1 is this lock's "free" marker (see ylock_owner()), so a hart with no
+     * task must not identify as -1 or it would read its own held lock as
+     * unowned. sched_context_id() is never -1. Contention from such a hart
+     * spins rather than yields, which sched_yield() below already does for
+     * it; a bring-up hart taking a ylock is rare and short by construction. */
+    int me = sched_context_id();
     for (;;) {
         uintptr_t f = irq_save();
 

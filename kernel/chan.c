@@ -166,6 +166,15 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
     wait_for_init();
     int me = sched_current_pid();
 
+    /* A hart with no task cannot make this call: it would index g_wait_for[]
+     * with -1, and the task_block() below has nothing to block. Refusing is
+     * the right answer rather than a special case -- every caller of
+     * chan_call() in this tree already handles -1 by falling back to direct
+     * access, which is exactly what a bring-up hart should do. Before the
+     * identity fix this hart reported pid 0 and would have written the boot
+     * task's wait edge and blocked it. */
+    if (me < 0) return -1;
+
     /* Refuse rather than deadlock if this call would close a cycle in the
      * wait-for graph -- see g_wait_for's comment above. Caught here, before
      * anything is written to the endpoint, so a rejected call leaves no

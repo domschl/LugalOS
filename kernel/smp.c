@@ -215,10 +215,24 @@ void secondary_main(void) {
     /* First, before anything that touches a kernel address: join the address
      * space the primary built. satp is per-hart, so until this runs we are in
      * bare mode while hart 0 translates. See vmm_secondary_init(). */
-    /* First, before anything that touches a kernel address: join the address
-     * space the primary built. satp is per-hart, so until this runs we are in
-     * bare mode while hart 0 translates. See vmm_secondary_init(). */
     vmm_secondary_init();
+
+    /* Say we are here, from the window where this hart owns no task.
+     *
+     * This line is the point of the identity fix, not decoration. Everything
+     * between the reset vector and sched_secondary_init() below runs with no
+     * task slot, and until that fix sched_current_pid() answered 0 here --
+     * the boot task, running on a different hart at this instant. A printk
+     * from this window could take the re-entrant path through a lock hart 0
+     * was holding, and its task_block() on contention would have blocked the
+     * shell. So bring-up was undebuggable exactly where debugging matters:
+     * X3 got its second core running only by giving it no printk at all.
+     *
+     * The pid is printed rather than assumed. -1 is the fix working; 0 is the
+     * bug, and the two are distinguishable in the boot log without having to
+     * reproduce the race. */
+    printk("[SMP] hart %u: in the kernel, no task yet (pid %d)\n",
+           hart_id(), sched_current_pid());
 
     /* Per-hart interrupt state. trap_init() writes this hart's own PLIC
      * context since §6.1's fix; before it, this call would have

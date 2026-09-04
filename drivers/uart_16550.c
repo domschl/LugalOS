@@ -98,7 +98,11 @@ static void uart_hw_putc_blocking(char c) {
      * was asleep for -- a silent, permanent lost wakeup. */
     uintptr_t flags = irq_save();
     if ((uart_base[UART_LSR] & UART_LSR_THRE) == 0) {
-        if (g_tx_waiter < 0) {
+        /* sched_has_task(): a hart with no task cannot be the waiter --
+         * task_block() would have nothing to block, and the slot would
+         * hold -1, which reads as "free". It polls instead, which is
+         * the branch already here for the other-waiter case. */
+        if (g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
             uart_base[UART_IER] |= UART_IER_ETBEI;
             task_block();
@@ -116,7 +120,11 @@ static uint8_t uart_hw_getc_blocking(void) {
     if (hw_uart_has_char()) return hw_uart_getc();
     uintptr_t flags = irq_save();
     if (!hw_uart_has_char()) {
-        if (g_rx_waiter < 0) {
+        /* sched_has_task(): a hart with no task cannot be the waiter --
+         * task_block() would have nothing to block, and the slot would
+         * hold -1, which reads as "free". It polls instead, which is
+         * the branch already here for the other-waiter case. */
+        if (g_rx_waiter < 0 && sched_has_task()) {
             g_rx_waiter = sched_current_pid();
             uart_base[UART_IER] |= UART_IER_ERBFI;
             task_block();

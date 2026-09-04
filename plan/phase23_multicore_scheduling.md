@@ -1,17 +1,23 @@
 # Phase 23 — Waking the second core
 
-**Status: COMPLETE 2026-09-04 — X1, X2, X3, X4 and X5 all done, on branch
+**Status: COMPLETE 2026-09-04 — X1 through X6 all done, on branch
 `feature/multicore`.** Two harts share one ready queue and one scheduler
 lock (X1); driver tasks are pinned, and what that does *not* cover is
 written down (X2); RP2350's core 1 provably executes our code, launched
 over the SIO FIFO (X3), and needs no separate preemption timer (X4); the
 isolation and fault suite has been re-run with both harts demonstrably
-mid-task at the instant of each fault (X5).
+mid-task at the instant of each fault (X5); and a hart in bring-up no
+longer impersonates the boot task, which is what makes the next core-1
+step debuggable (X6, added after X5).
 
 Core 1 does **not** yet join the RP2350 scheduler — that was never a
-milestone here, and X3 records the two blockers. Planned 2026-08-29,
-amended 2026-09-03 (§6); §1's premise that RP2350 boots both cores was
-falsified by X3 and corrected where it was made.
+milestone here. X3 recorded two blockers for it; X6 measured them, found
+the first was not a blocker at all and the second was a one-line identity
+bug, and fixed it. What remains is RP2350-specific: per-core Xh3irq setup,
+PMP for hart 1, and the flash-write park handshake §6 records as owed.
+
+Planned 2026-08-29, amended 2026-09-03 (§6); §1's premise that RP2350
+boots both cores was falsified by X3 and corrected where it was made.
 Depends entirely on `plan/phase22_smp_locking_foundation.md` (S1-S6)
 being complete: every shared structure this phase's second hart could
 touch must already be protected by a real cross-hart lock before that
@@ -320,11 +326,27 @@ into `secondary_main()` — `trap_init`, ticker, scheduler, `printk` — and
 wedged; with everything downstream silent there was no way to tell a
 handshake that never started the core from a core that started and died.
 A bare `for(;;) g_core1_ticks++;` separates those two outcomes. Two
-blockers for the scheduler step were found there and are **not** solved
-here, recorded for X5's successor: `printk()` from core 1 reaches core 0's
-pinned UART task through a blocking `chan_call`, and `task_block()` before
-`sched_secondary_init()` would block task 0, since `g_current[1]` is
-still 0.
+blockers for the scheduler step were recorded here for X5's successor:
+`printk()` from core 1 reaches core 0's pinned UART task through a blocking
+`chan_call`, and `task_block()` before `sched_secondary_init()` would block
+task 0, since `g_current[1]` is still 0.
+
+> **Corrected 2026-09-04 — the first of those two is not a blocker, and the
+> second is bigger than it was written.** Measured on `rv64-smp`: a U-mode
+> task pinned to hart 1 printed through the whole path and the UART task's
+> own server-side counter advanced by 27 (`uartstats`, 27 → 54). A blocking
+> `chan_call` from a secondary hart to a hart-0-pinned driver task *works* —
+> the caller's task blocks, hart 0 serves it, the reply wakes it. That was
+> assumed to be a problem without being checked.
+>
+> The real blocker was the second one, and it is not specific to
+> `task_block()`: **a hart that owns no task reported itself as task 0**,
+> because `sched_current_pid()` read `g_current[hart]`, which `sched_init()`
+> set to 0 for every hart. So everything in the bring-up window acted on the
+> boot task — `task_block()` blocked it, and `printk_lock()`'s ownership test
+> matched a lock hart 0 was holding and took the re-entrant path, putting
+> both harts inside the console's exclusive region. See §3's identity-fix
+> entry below.
 
 *Verified:* RP2350 chess persona **24/24** on the X3 build (core 1 not
 launched); board stayed responsive after `smpstart`. QEMU **330/330**.
@@ -437,12 +459,82 @@ edge costs 18 bytes of text.
 the isotest family (`heartbeatisotest`, `tm1638isotest`, `i2cisotest`,
 `st7735isotest`, `blkisotest`, `uartisotest`, `usbisotest`,
 `clockisotest`) cannot be run under this milestone's conditions today,
-because RP2350's core 1 does not join the scheduler — X3 recorded the two
-blockers (`printk()` from core 1 reaches core 0's pinned UART task through a
-blocking `chan_call`; `task_block()` before `sched_secondary_init()` would
-block task 0). Those tests still pass on hardware exactly as before, on one
-core. Naming this is the point: X5's claim is about the generic domain
+because RP2350's core 1 does not join the scheduler. Those tests still pass
+on hardware exactly as before, on one core. Naming this is the point: X5's claim is about the generic domain
 tests on QEMU's two harts, not about the driver-domain tests on RP2350.
+
+**X6 — hart identity in the bring-up window. DONE 2026-09-04.** Added
+after X5, when the question "should we unblock `printk()` from core 1
+before doing anything else with multi-core?" was checked rather than
+answered from the X3 note.
+
+*The premise did not survive measurement.* A blocking `chan_call` from a
+secondary hart to a hart-0-pinned driver task already works: a U-mode probe
+pinned to hart 1 printed through `printk` → `uart_flush` → `chan_call` →
+the pinned UART task, and that task's own server-side counter moved 27 → 54
+(`uartstats`). The caller blocks, hart 0 serves, the reply wakes it. X3
+recorded this as a blocker without testing it.
+
+*The real defect was one line, and it produced both symptoms.*
+`sched_init()` set `g_current[h] = 0` for every hart, so
+`sched_current_pid()` answered **0** — the boot task — for any hart
+executing kernel code before its own `sched_secondary_init()`. Everything
+downstream then acted on a task running on a different hart at that
+instant:
+
+- `task_block()` marked the *boot task* BLOCKED, from a hart that was not
+  running it. Nothing would ever wake it: a wedged shell, caused by a
+  secondary hart printing one line too early.
+- `printk_lock()` compared `g_printk_owner == me` and matched a lock hart 0
+  was holding, took the re-entrant path, and let both harts into the region
+  whose entire purpose is that only one is inside it.
+
+The same window exists on the primary before `sched_init()`.
+
+*The fix separates two questions that had been sharing one answer.*
+`sched_current_pid()` now returns `TASK_NO_PID` (-1) when the hart owns no
+task, `sched_has_task()` answers "may I block?", and `sched_context_id()`
+gives a stable identity for whatever is executing — the pid where there is
+one, `MAX_TASKS + hart_id()` where there is not. The split matters because
+-1 is the *unowned* sentinel in every lock in this tree: a bring-up hart
+identifying as -1 would read as nobody, and a lock it held would look free
+to everyone including itself. Lock ownership uses the context id;
+anything that blocks, wakes, or indexes a task uses the pid and checks it.
+
+Consumers corrected, each of which had been silently using task 0's
+identity: `printk_lock()` (context id, and it polls instead of blocking when
+it cannot be a waiter), `chan_call()` (refuses from a task-less hart rather
+than indexing `g_wait_for[-1]`), `ylock_acquire()` (context id), and the
+UART TX/RX waiter slots in both drivers (poll instead of registering).
+`sched_yield()`, `task_block()`, `task_exit()`, `task_sleep_ms()` and
+`task_set_exit_status()` now return instead of operating on `g_tasks[-1]`
+or on task 0.
+
+*Verify, and it is deterministic.* `secondary_main()` prints from the
+task-less window, with the pid in the line rather than assumed:
+
+```
+[SMP] hart 1: in the kernel, no task yet (pid -1)
+```
+
+Reverting only the `g_current[]` initialiser turns that into `pid 0`, which
+is what the falsification run produced. The consequences need a race; the
+cause does not, so the boot log separates fixed from broken with nothing to
+reproduce. The line also establishes that `printk()` works at all from a
+task-less hart — which is what makes second-core bring-up debuggable, and
+is precisely what X3 lacked when it wedged the board twice and had to
+retreat to a core that only counts.
+
+*Verified:* QEMU **339/339**, three consecutive clean runs. RP2350 chess
+persona **24/24** on real hardware. Static RAM **+0** on both personas.
+
+*Not done here:* core 1 still does not join the RP2350 scheduler. What
+remains is RP2350-specific and was never part of this entry — per-core
+Xh3irq setup, PMP for hart 1, `ticker_arm_this_hart()` (X4 already settled
+that `SIO_MTIMECMP` is core-local), and the park-core-1 handshake around
+flash writes that §6 records as owed. This milestone removes the reason
+that work had to be done blind.
+
 
 *Verified:* QEMU **338/338**. RP2350 chess persona **24/24** on real
 hardware, including B3/B6/C3/C4's isolation tests — no regression from the

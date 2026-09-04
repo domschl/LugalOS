@@ -61,6 +61,12 @@
  * as tasks. Cost is a static array: (24-8) * sizeof(task_t), well under 1 KB. */
 #define MAX_TASKS 24
 
+/* "No task" -- what sched_current_pid() answers on a hart that is executing
+ * kernel code but does not own a task slot yet. Distinct from every real pid
+ * and, deliberately, the same value locks use for "unowned", so a caller that
+ * forgets to check gets a refusal rather than a wrong task. */
+#define TASK_NO_PID (-1)
+
 /* Default kernel stack size per task, in pages, for task_create()'s callers
  * that don't ask for a specific size. 8 KB: the deepest paths here are the
  * Lisp evaluator (bounded at LISP_MAX_EVAL_DEPTH) and the 9P server's
@@ -221,7 +227,42 @@ void task_block(void);
 void task_sleep_ms(uint32_t ms);
 int  task_unblock(int pid);
 
+/* The pid of the task this hart is running, or -1 if it is running none.
+ *
+ * The -1 case is real, and used to be silently answered as 0. A secondary
+ * hart executes kernel code from its reset vector until sched_secondary_init()
+ * gives it a slot, and before phase 23's identity fix this function reported
+ * that hart as task 0 -- the boot task, which is running on a *different*
+ * hart at the same instant. Anything that then acted on the answer acted on
+ * the wrong task: task_block() blocked the shell, and printk_lock()'s
+ * ownership test matched a lock hart 0 was holding and let both harts into
+ * the region at once. The same window exists on the primary before
+ * sched_init().
+ *
+ * So callers that index an array with this, or store it as an owner, must
+ * check for -1. Callers that only want a stable identity for the executing
+ * context -- a lock owner, a re-entrancy test -- want sched_context_id()
+ * instead, which is always valid. */
 int         sched_current_pid(void);
+
+/* Does this hart currently own a task slot? Equivalent to
+ * sched_current_pid() >= 0, spelled out for the code whose real question is
+ * "may I block?" rather than "who am I?". A hart with no task must not
+ * block: there is nothing to mark BLOCKED and nothing to resume. */
+bool        sched_has_task(void);
+
+/* A stable identity for whatever is executing on this hart, valid always --
+ * including before sched_init() and on a secondary hart during bring-up.
+ *
+ * It is the pid where there is one, and MAX_TASKS + hart_id() where there is
+ * not, so the two spaces cannot collide and neither can ever be -1. That
+ * matters because -1 is the "unowned" sentinel in every lock in this tree:
+ * a bring-up hart identifying as -1 would read as *nobody*, and a lock it
+ * held would look free to everyone including itself.
+ *
+ * Use this for lock ownership and re-entrancy. Use sched_current_pid() when
+ * the answer must name a task that can be blocked, woken, or indexed. */
+int         sched_context_id(void);
 
 /* True once there is a task table and a scheduler running. Code that may run
  * during boot must check this before blocking: before sched_init() there is
