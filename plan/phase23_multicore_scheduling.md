@@ -1,20 +1,20 @@
 # Phase 23 — Waking the second core
 
-**Status: COMPLETE 2026-09-04 — X1 through X6 all done, on branch
+**Status: X1-X6 DONE 2026-09-04, X7 OPEN, on branch
 `feature/multicore`.** Two harts share one ready queue and one scheduler
 lock (X1); driver tasks are pinned, and what that does *not* cover is
 written down (X2); RP2350's core 1 provably executes our code, launched
 over the SIO FIFO (X3), and needs no separate preemption timer (X4); the
 isolation and fault suite has been re-run with both harts demonstrably
 mid-task at the instant of each fault (X5); and a hart in bring-up no
-longer impersonates the boot task, which is what makes the next core-1
-step debuggable (X6, added after X5).
+longer impersonates the boot task (X6, added after X5).
 
-Core 1 does **not** yet join the RP2350 scheduler — that was never a
-milestone here. X3 recorded two blockers for it; X6 measured them, found
-the first was not a blocker at all and the second was a one-line identity
-bug, and fixed it. What remains is RP2350-specific: per-core Xh3irq setup,
-PMP for hart 1, and the flash-write park handshake §6 records as owed.
+**The generic two-hart scheduler is finished** and proven on `rv64-smp`.
+What is left is RP2350-specific, and is now X7 (added 2026-09-04): core 1
+joining the scheduler on real silicon. X3 recorded two blockers for it; X6
+measured them, found the first was not a blocker at all and the second was
+a one-line identity bug, and fixed it — which is why X7 is written as a
+bring-up sequence rather than as research.
 
 Planned 2026-08-29, amended 2026-09-03 (§6); §1's premise that RP2350
 boots both cores was falsified by X3 and corrected where it was made.
@@ -528,12 +528,105 @@ retreat to a core that only counts.
 *Verified:* QEMU **339/339**, three consecutive clean runs. RP2350 chess
 persona **24/24** on real hardware. Static RAM **+0** on both personas.
 
-*Not done here:* core 1 still does not join the RP2350 scheduler. What
-remains is RP2350-specific and was never part of this entry — per-core
-Xh3irq setup, PMP for hart 1, `ticker_arm_this_hart()` (X4 already settled
-that `SIO_MTIMECMP` is core-local), and the park-core-1 handshake around
-flash writes that §6 records as owed. This milestone removes the reason
-that work had to be done blind.
+*Not done here:* core 1 still does not join the RP2350 scheduler. That is
+X7 below, which this milestone exists to make approachable — the remaining
+work is a bring-up sequence, not an investigation, and it can now be done
+with a console rather than blind.
+
+**X7 — RP2350's core 1 joins the scheduler. OPEN, hardware.** The step X3
+deliberately stopped short of and X6 made approachable. Everything below is
+RP2350-specific: the generic two-hart scheduler is finished and proven on
+`rv64-smp`, so nothing here is about scheduling *design*, only about a
+second Hazard3 core and the things on this chip that are per-core or that
+couple to it.
+
+*Ordered, because the order is what keeps a failure diagnosable.*
+
+1. **Point core 1 at `secondary_main()` instead of `core1_probe_main()`.**
+   `boot_header.S`'s `core1_entry` already does everything before that: the
+   `0x51C0DE02` marker as its first instruction, `tp` from `mhartid`,
+   `mtvec`, `mstatus` zeroed, `SETUP_HART_POINTER`, and a stack in
+   SCRATCH_Y. **Keep the counter as a selectable fallback**, not as dead
+   code deleted on the way past — it is the only known-good state of this
+   path, and X3's cost was learned by not having one.
+
+   Note that `entry.S`'s secondary path stays excluded on this board
+   (`#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)`): core 1
+   arrives through `core1_entry`, never through `_start`. Nothing from
+   `_start`'s secondary path needs replicating — `.data`/`.bss` are hart 0's
+   work, and the `pmpaddr0`/`pmpcfg0` grant there is `CONFIG_MODE_S`-only,
+   so an M-mode RP2350 secondary has no default PMP region to install.
+
+2. **`trap_init()` on core 1.** Its RP2350 branch sets `mie.MEIE` and
+   `mstatus.MIE`, both per-hart CSRs, so calling it from core 1 configures
+   core 1 and nothing else. What must be *stated* rather than discovered:
+   `arch_irq_enable()` writes Hazard3's `MEIEA` (`trap.c:167`), which is
+   also per-core, and every driver called it on core 0 during boot — so
+   **core 1's `MEIEA` is empty and core 1 will take no device interrupts.**
+   That is the correct default, because X2 pins the driver tasks to hart 0
+   anyway; routing any device IRQ to core 1 is a separate policy decision,
+   not a step in this bring-up.
+
+3. **`ticker_arm_this_hart()` on core 1.** X4 already answered the hardware
+   question — `SIO_MTIMECMP` is core-local — and the call sets `mie.MTIE`
+   plus this core's deadline, both per-core. *Verify:* preemption actually
+   fires on core 1, using the per-hart tick counters X1 already added.
+   Arming a comparator and taking the interrupt are different claims.
+
+4. **`sched_secondary_init()`, then the idle loop.** Unchanged from the
+   QEMU path. X6 is what makes steps 1-3 safe to `printk` from at all.
+
+5. **PMP domains on core 1.** `mem_domain_activate()` writes PMP CSRs,
+   which are per-hart, and `sched_yield()` already calls it on every
+   resume — so a task migrating to core 1 should get its domain installed
+   there. "Should" is the operative word: X2 proved this on QEMU, where the
+   backend is Sv39. The PMP backend has never run on a second hart.
+   *Verify:* X5's own `isolationtest 1` / `deputytest 1` / `usertest 1` on
+   the board, plus the `domains_hart1` counter.
+
+6. **Park core 1 across flash writes.** The one genuinely new mechanism,
+   and the one that fails by hanging rather than reporting.
+   `drivers/flash_rp2350.c` turns XIP off, after which *every* instruction
+   fetch from `0x10000000`-and-up faults or hangs. Its own routine is
+   `.ramfunc` and runs with interrupts masked — but that protects the hart
+   executing it, and with core 1 scheduling, core 1 is running
+   flash-resident code at that instant. Needs an explicit handshake: core 1
+   into a `.ramfunc` spin (or a `wfi` with its timer masked) before XIP goes
+   down, released after. §6 already recorded this as owed by X3; it becomes
+   real here, because until now core 1 ran a counter that lives in `.bss`
+   and was never a problem.
+
+7. **Leave the launch explicit.** `smpstart` stays a shell command rather
+   than becoming automatic at boot until everything above is proven on
+   hardware. A board that boots is a board that can be reflashed — X3 paid
+   for that sentence twice.
+
+*Verify, on real hardware, and each of these is a claim the QEMU work
+cannot make:*
+
+- `harts_online: 2` on the board, replacing X3's `CORE1_ALIVE`.
+- `smptest` — lost updates through the lock, on two **Hazard3** cores.
+  X1 proved the scheduler design; S1 proved `amoswap.w.aq`/`.rl` executes
+  on this silicon. Neither proved cross-*core* atomicity on it, which is
+  §6.3's remaining open question and this is the first test that closes it.
+- `lockselftest` 7/7 with a second core genuinely running.
+- X5's isolation suite under `smpload`, on the board.
+- **The RP2350 driver-domain isotest family** (`heartbeatisotest`,
+  `tm1638isotest`, `i2cisotest`, `st7735isotest`, `blkisotest`,
+  `uartisotest`, `usbisotest`, `clockisotest`) under that load — the
+  exact set X5 named as out of its reach, and the reason it was.
+- A flash write (phase 21's I7 path) while core 1 is scheduling, for the
+  park handshake.
+- The hardware suite still 24/24, and the chess and clock personas still
+  building with `CONFIG_ENABLE_SMP=0`.
+
+*Risks, named:* the XIP failure mode is a hang with nothing left running to
+report it, so step 6 is where a BOOTSEL recovery is most likely and the
+counter fallback from step 1 is most valuable. And a two-core RP2350 shares
+one bus and one flash cache, so any *performance* claim from QEMU is
+worthless here — which is the whole reason this milestone exists separately
+from X1.
+
 
 
 *Verified:* QEMU **338/338**. RP2350 chess persona **24/24** on real
@@ -561,6 +654,12 @@ personas, re-baselined.
 
 ## 5. Risks, and what each looks like
 
+- **X7 fails by hanging, not by reporting.** Turning XIP off with core 1
+  fetching from flash leaves nothing running to say so — the same shape as
+  §6's I7 note, now with a second core in it. The mitigation is ordering
+  (X7's steps are sequenced so a failure names its own step) and keeping
+  X3's counter as a selectable fallback, since it is the only known-good
+  state of that path. Expect BOOTSEL recoveries; X3 needed two.
 - **X3 cannot be verified without real hardware.** Named plainly, the
   same way `plan/phase21_identity_and_authentication.md` names I7 —
   written down as blocked, not silently skipped, not claimed done on the
@@ -662,11 +761,16 @@ RP2350 flash backend) is scheduled *before* this phase, so by the time
 X3 wakes core 1, there will be a flash write path in the tree that
 assumes it is the only thing running.
 
-X3 therefore owes an explicit park-core-1 handshake around every flash
+This therefore owes an explicit park-core-1 handshake around every flash
 write — core 1 parked, or executing from SRAM, for the duration — and
-that requirement belongs to X3 rather than to I7, since I7 is correct as
-written for a single-core system. Naming it here so it is designed rather
-than debugged.
+that requirement belongs to this phase rather than to I7, since I7 is
+correct as written for a single-core system. Naming it here so it is
+designed rather than debugged.
+
+> **Assigned 2026-09-04 to X7, step 6.** It was written against X3, which
+> turned out not to need it: X3's core 1 runs a counter living in `.bss`
+> and never fetches from the XIP window. It becomes real the moment core 1
+> executes scheduler and task code, which is X7.
 
 ### 6.4 What the two usage scenarios are actually worth
 
