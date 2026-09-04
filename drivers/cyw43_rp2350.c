@@ -2317,6 +2317,7 @@ static void cyw43_autostart_body(void *arg) {
     bool was_up = false;
     uint32_t last_rx = 0;
     uint64_t last_rx_change_ms = 0;
+    uint64_t last_rssi_ms = 0;
     for (;;) {
         if (g_link_up) {
             if (!was_up) {
@@ -2350,15 +2351,37 @@ static void cyw43_autostart_body(void *arg) {
              * up in name only. Forcing a rejoin costs about five seconds and
              * is safe to do to a link that turns out to be fine; not doing it
              * costs the board until someone notices. */
-            /* Refreshed on the supervisor's own 2 s cadence: it is already
-             * awake, already knows the link is up, and an ioctl here costs one
-             * gSPI round trip against a task that is otherwise asleep. */
-            int32_t r;
-            if (cyw43_read_rssi(&r)) { g_rssi_dbm = r; g_rssi_valid = true; }
+            uint64_t now = time_get_ms();
+
+            /* Signal strength, occasionally and **under the bus lock**.
+             *
+             * The first version did neither and wedged the radio. It called
+             * cyw43_ioctl() straight from this task, unlocked, every two
+             * seconds -- while netsrv pumps packets over the same PIO gSPI bus
+             * from another task. Every other entry point in this driver goes
+             * through cyw43_lock() and this one simply did not, so two tasks
+             * drove the same state machine and it stopped: "pio transfer stuck
+             * (ti=1/1 ri=0/1 ctrl=0x00000000 pc=0)" followed by "ioctl cmd 127
+             * timed out", and a link that never came back (2026-09-04). A
+             * diagnostic that breaks the thing it is diagnosing is worse than
+             * no diagnostic.
+             *
+             * Thirty seconds, not two: RSSI is context for a drop, not a
+             * control input, and this board's display is the canary for bus
+             * hogs -- an idle CYW43 poll already costs a full gSPI
+             * transaction. Fifteen times less traffic loses nothing that
+             * matters. */
+            if (now - last_rssi_ms >= 30000ull) {
+                last_rssi_ms = now;
+                int32_t r;
+                cyw43_lock();
+                bool got_rssi = cyw43_read_rssi(&r);
+                cyw43_unlock();
+                if (got_rssi) { g_rssi_dbm = r; g_rssi_valid = true; }
+            }
 
             netif_t *nif = netif_default();
             uint32_t rx = nif ? nif->rx_frames : 0;
-            uint64_t now = time_get_ms();
             if (rx != last_rx) { last_rx = rx; last_rx_change_ms = now; }
             else if (last_rx_change_ms && now - last_rx_change_ms > RX_SILENCE_MS) {
                 printk("cyw43: link claims up but nothing received for %u s -- rejoining\n",
