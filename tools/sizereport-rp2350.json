@@ -37,7 +37,7 @@
     "kernel/path.c": 68,
     "kernel/printk.c": 20,
     "kernel/random.c": 8,
-    "kernel/sched.c": 1165,
+    "kernel/sched.c": 1177,
     "kernel/shell.c": 246,
     "kernel/ticker.c": 29,
     "kernel/time.c": 33,
@@ -63,5 +63,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 154799
+  "total": 154811
 }

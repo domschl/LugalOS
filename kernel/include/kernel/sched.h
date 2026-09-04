@@ -238,4 +238,15 @@ bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char 
  * call sched_yield() unconditionally. */
 bool sched_active(void);
 
+/* How many times a hart resumed from a context switch *without* holding the
+ * scheduler lock its predecessor should have handed it (S6,
+ * plan/phase22_smp_locking_foundation.md).
+ *
+ * Must be zero. It is the canary for the one rule this milestone turns on --
+ * that the lock is held across ctx_switch() and released on the incoming
+ * stack -- and it is deliberately the inverse of the check §3 originally
+ * specified, which would have fired on correct code. Checked by
+ * `lockselftest`. */
+uint32_t sched_handoff_faults(void);
+
 #endif /* LUGALOS_KERNEL_SCHED_H */

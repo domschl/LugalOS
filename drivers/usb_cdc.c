@@ -16,11 +16,15 @@
 
 static bool g_usb_cdc_connected = false;
 
-/* Guards usb_cdc_putc()'s producer-side ring update. Ordinary kernel .bss,
- * not g_usb -- see that function for why the distinction matters. */
-static spinlock_t g_usb_tx_lock;
-
 #if defined(CONFIG_BOARD_RP2350)
+
+/* Guards usb_cdc_putc()'s producer-side ring update. Ordinary kernel .bss,
+ * not g_usb -- see that function for why the distinction matters.
+ *
+ * Inside the RP2350 guard with the code that uses it: the QEMU targets
+ * compile this file down to stubs, and a lock defined there would be an
+ * unused-variable warning and four bytes of .bss on a board with no USB. */
+static spinlock_t g_usb_tx_lock;
 
 #define USB_BASE              0x50110000UL
 #define USB_DPRAM_BASE        0x50100000UL

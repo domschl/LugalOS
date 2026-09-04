@@ -279,7 +279,29 @@ int lock_selftest(void) {
               spawned && now_free && contender_got_in);
     }
 
-    if (g_fail == 0) cprintf("LOCK_SELFTEST_OK (6/6)\n");
+    /* --- 5. the scheduler lock is handed across every switch (S6) ------ */
+    {
+        /* Everything above already drove the scheduler hard -- the contender
+         * task was created, scheduled, blocked on a lock, resumed and
+         * exited, and this task yielded through all of it. So by the time we
+         * get here every landing site has been exercised: sched_yield()'s
+         * return path, task_start()'s first run, and task_exit()'s hand to a
+         * successor.
+         *
+         * A few more yields for good measure, then the count. Zero is the
+         * only acceptable answer: a single fault means some path released
+         * the lock before ctx_switch() rather than after, which on one hart
+         * merely trips this counter and on two would be the stale-sp stack
+         * corruption the whole rule exists to prevent. */
+        for (int i = 0; i < 20; i++) sched_yield();
+        uint32_t faults = sched_handoff_faults();
+        if (faults) cprintf("      %u resume(s) arrived without the lock\n",
+                            (unsigned)faults);
+        check("scheduler lock is handed across ctx_switch, not dropped before it",
+              faults == 0);
+    }
+
+    if (g_fail == 0) cprintf("LOCK_SELFTEST_OK (7/7)\n");
     else             cprintf("LOCK_SELFTEST_FAIL (%d failed)\n", g_fail);
     return g_fail;
 }

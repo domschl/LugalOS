@@ -545,6 +545,12 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # and it was confirmed by removing irq_save() from the acquire and
         # watching it fail (ticks 239 -> 242 while "held").
         #
+        # The seventh check is S6's: every resume from a ctx_switch() must
+        # arrive still holding the scheduler lock its predecessor took. That
+        # is the inverse of the canary the plan originally specified ("never
+        # held across the switch"), which would have fired on correct code --
+        # and unlike the race it guards against, it is observable on one hart.
+        #
         # What these deliberately do NOT claim: nothing here observes two
         # harts racing, because no target can do that until phase 23's X1.
         # They prove the primitives behave correctly under the concurrency

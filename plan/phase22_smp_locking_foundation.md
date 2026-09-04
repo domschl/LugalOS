@@ -474,6 +474,49 @@ plus a new assertion-shaped test proving the lock is never live across a
 > held across the switch and released on the incoming stack. Read §6.1
 > before implementing this milestone.
 
+**DONE 2026-09-04.** `g_sched_lock` covers the task table, the ready queue
+and the reap slot. `g_current` became `g_current[MAX_HARTS]` — per-hart and
+lock-free by construction, which is what lets the *shared* part shrink to
+the ready queue.
+
+**§6.1's correction was not a close call.** Implementing the rule as
+originally written — release before `ctx_switch()` — produces a kernel
+that cannot execute a single shell command. Not a rare race under
+contention: it boots to a prompt and then wedges on the first switch,
+measured by building it that way deliberately. The reason is that on this
+scheduler the lock hand-off and the *interrupt-flag* hand-off are the same
+hand-off. `spin_unlock_irqrestore()` before the switch re-enables
+interrupts mid-switch, so a timer can re-enter `sched_yield()` on
+half-updated state, and the release-without-acquire on the far side leaves
+the gate incoherent on top of that. The original rule would have broken an
+invariant this file has documented since B6.
+
+Three landing sites, each releasing exactly once — `sched_yield()` after
+its `ctx_switch()` returns, `task_start()` for a first run (with
+`IRQ_ENABLE_BIT`, since a task running for the first time has no saved
+flags), and *nowhere* in `task_exit()`, whose successor does the
+releasing. The one exception is `task_exit()`'s no-runnable-task path,
+which does release: there is no successor to hand it to, and parking
+forever holding it would wedge every other hart.
+
+*Verify:* the canary is `sched_handoff_faults()` — every resume from a
+switch must arrive still holding the lock its predecessor took. Zero, and
+**falsified**: with the old rule installed the build cannot run a command
+at all, which is a stronger failure than the counter it was meant to trip.
+`lockselftest` is now 7/7 on both arches and on RP2350 silicon. QEMU
+**324/324** twice, including the preemption, reaper, stack-reclaim and
+priority tests. RP2350 chess persona **24/24**, `priostress` FAIR.
+
+Static RAM **+12**, fully accounted: the lock (4), the fault counter (4),
+and `g_current` becoming an array (4).
+
+**What this does not establish.** Everything above ran on one hart. The
+race the rule exists to prevent — a second hart claiming a task whose
+parked `sp` is still stale — remains unobservable until phase 23's X1, as
+§5 said from the start. What has changed is that the design is now the
+right one and its inverse has been shown to fail loudly rather than
+subtly, which is the most this milestone could earn on its own.
+
 ## 4. Explicitly not in this phase
 
 - **Waking core 1.** Phase 23, entirely.

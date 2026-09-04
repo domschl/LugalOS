@@ -4,6 +4,8 @@
 #include "kernel/mem_domain.h"
 #include "kernel/chan.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
+#include "kernel/hart.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include <string.h>
@@ -16,8 +18,74 @@ static void sched_reap(void); /* defined below; used by sched_yield() above it *
 extern void task_trampoline(void);
 
 static task_t  g_tasks[MAX_TASKS];
-static int     g_current;      /* index into g_tasks */
+
+/* Which task each hart is running, as an index into g_tasks.
+ *
+ * S6 (plan/phase22_smp_locking_foundation.md): per-hart and lock-free by
+ * construction. "Which task am I running" is not shared state -- only the
+ * hart itself ever writes its own slot, and it does so while holding the
+ * scheduler lock anyway. Making this an array is what lets the *shared*
+ * part shrink to the ready queue, which is the only thing g_sched_lock has
+ * to cover. */
+static int     g_current[MAX_HARTS];
 static bool    g_active;
+
+/* Guards the task table -- the ready queue, task states, and the reap slot.
+ *
+ * ## The hand-off, which is the whole of this milestone
+ *
+ * This lock is acquired before a switch is chosen and released **on the
+ * incoming stack, by whoever lands there**. It is deliberately held
+ * *across* ctx_switch(), which is the opposite of what §3's S6 originally
+ * said, and the reason is worth stating where the code is rather than only
+ * in the plan:
+ *
+ * ctx_switch() (arch/riscv/common/switch.S) parks the outgoing task's stack
+ * pointer with `REG_S sp, 0(a0)` -- *inside* the call. Release the lock
+ * before making that call and there is a window in which the outgoing task
+ * is already marked READY, and so claimable by another hart, while its
+ * parked sp still holds whatever the previous switch left there. The hart
+ * that claims it resumes on a stale stack pointer and two harts then run on
+ * one stack. Intermittent, load-dependent, and it destroys the evidence of
+ * its own cause.
+ *
+ * So the outgoing task stays unclaimable until its context is saved. That
+ * is Linux's finish_task_switch() shape, and it is not a foreign idea in
+ * this file: sched_yield() has always handed the *interrupt flags* across a
+ * switch exactly this way -- "restored by whichever task resumes here, from
+ * the flags IT saved". The lock now travels the same route as the flags it
+ * is paired with.
+ *
+ * Three places a hart can land, and each must release exactly once:
+ *   - sched_yield(), after its ctx_switch() returns
+ *   - task_start(), for a task's first run -- it never returns from a
+ *     ctx_switch() at all, so it releases with interrupts enabled rather
+ *     than from saved flags
+ *   - nowhere in task_exit(), which switches away and never comes back;
+ *     its successor does the releasing
+ *
+ * Miss any one of them and the kernel stops at the next acquire. */
+static spinlock_t g_sched_lock;
+
+/* Did a resume ever arrive without the lock it should have been handed?
+ *
+ * The canary for the invariant above, and note it is the *inverse* of the
+ * one §3 originally specified: "the lock is never live across ctx_switch()"
+ * would now fire on correct code. What must hold is that a hart which has
+ * just been resumed is still holding the lock its predecessor took -- which
+ * is checkable on one hart today, unlike the race it protects against. */
+static uint32_t g_handoff_faults;
+
+/* This hart's current task index. */
+static inline int cur(void) { return g_current[hart_id()]; }
+static inline void set_cur(int t) { g_current[hart_id()] = t; }
+
+/* Called on every arrival from a switch. */
+static inline void handoff_check(void) {
+    if (!spin_is_locked(&g_sched_lock)) g_handoff_faults++;
+}
+
+uint32_t sched_handoff_faults(void) { return g_handoff_faults; }
 
 /* Deliberately no "currently switching" guard.
  *
@@ -50,7 +118,8 @@ void sched_init(void) {
     g_tasks[0].name = "kernel";
     g_tasks[0].stack_base = NULL;
     g_tasks[0].priority = TASK_PRIO_NORMAL;
-    g_current = 0;
+    for (int h = 0; h < MAX_HARTS; h++) g_current[h] = 0;
+    spinlock_init(&g_sched_lock);
     g_active = true;
 
     printk("[Sched] Cooperative round-robin scheduler online (max %d tasks)\n", MAX_TASKS);
@@ -58,7 +127,7 @@ void sched_init(void) {
 
 bool sched_active(void) { return g_active; }
 
-int sched_current_pid(void) { return g_active ? g_tasks[g_current].pid : 0; }
+int sched_current_pid(void) { return g_active ? g_tasks[cur()].pid : 0; }
 
 /* Whether there is a scheduler to block against yet. Boot runs a long way
  * before sched_init(): drivers brought up in that window must not call
@@ -68,7 +137,7 @@ int sched_current_pid(void) { return g_active ? g_tasks[g_current].pid : 0; }
 bool sched_is_active(void) { return g_active; }
 
 mem_domain_t *sched_current_domain(void) {
-    return g_active ? g_tasks[g_current].domain : NULL;
+    return g_active ? g_tasks[cur()].domain : NULL;
 }
 
 const char *sched_state_name(int state) {
@@ -120,7 +189,7 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     g_tasks[pid].domain = domain;
     /* If the task is the one running, the change takes effect now rather than
      * at the next switch. */
-    if (pid == g_current) return mem_domain_activate(domain);
+    if (pid == cur()) return mem_domain_activate(domain);
     return 0;
 }
 
@@ -162,8 +231,8 @@ bool sched_domain_in_use(const mem_domain_t *domain) {
 
 void task_set_exit_status(long status) {
     if (!g_active) return;
-    g_tasks[g_current].exit_status = status;
-    g_tasks[g_current].exit_clean = true;
+    g_tasks[cur()].exit_status = status;
+    g_tasks[cur()].exit_clean = true;
 }
 
 int sched_task_state(int pid) {
@@ -182,9 +251,16 @@ bool sched_task_exited_cleanly(int pid, long *status) {
 /* First-run entry for every task, reached from task_trampoline. */
 void task_start(void (*entry)(void *), void *arg) {
     /* A first run arrives here instead of returning from ctx_switch(), so it
-     * never passes the irq_restore() that every later resume goes through.
-     * Enabling interrupts here is what makes a new task preemptible. */
-    irq_restore(IRQ_ENABLE_BIT);
+     * never passes the release that every later resume goes through -- and
+     * it is holding the scheduler lock, handed to it by whoever switched to
+     * it. Releasing here is not tidiness: miss it and the very next acquire
+     * anywhere in the kernel spins forever.
+     *
+     * With IRQ_ENABLE_BIT rather than saved flags, because a task running
+     * for the first time has none. Enabling interrupts here is also what
+     * makes a new task preemptible, which is what this line did before S6. */
+    handoff_check();
+    spin_unlock_irqrestore(&g_sched_lock, IRQ_ENABLE_BIT);
     /* ...nor does a first run pass sched_yield()'s own leading sched_reap()
      * call, which is where every *later* resume frees whatever task_exit()
      * handed off right before switching to it. If task_exit() picks a task
@@ -203,8 +279,9 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     if (!entry || stack_pages == 0) return -1;
 
     /* Claiming a slot must be atomic with respect to anything else that scans
-     * the table, or two creators could pick the same one. */
-    uintptr_t flags = irq_save();
+     * the table, or two creators could pick the same one -- and since S6
+     * "anything else" includes another hart, which irq_save() never covered. */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
     int slot = -1;
     for (int i = 1; i < MAX_TASKS; i++) { /* slot 0 is always the boot task */
         if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) {
@@ -213,7 +290,7 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
             break;
         }
     }
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (slot < 0) {
         printk("[Sched] Task table full; '%s' not created\n", name ? name : "?");
@@ -363,15 +440,15 @@ void sched_yield(void) {
      * here and nowhere earlier: we are demonstrably not running on it. */
     sched_reap();
 
-    uintptr_t flags = irq_save();
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
 
-    int prev = g_current;
+    int prev = cur();
     int next = next_runnable(prev);
-    if (next < 0) { irq_restore(flags); return; } /* nothing else can run */
+    if (next < 0) { spin_unlock_irqrestore(&g_sched_lock, flags); return; }
 
     if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
     g_tasks[next].state = TASK_RUNNING;
-    g_current = next;
+    set_cur(next);
 
     /* B3: install the incoming task's memory domain. Done here rather than in
      * the U-mode entry path because a task's restrictions must be re-applied
@@ -384,24 +461,50 @@ void sched_yield(void) {
      *
      * Interrupts stay masked across the switch itself and are restored by
      * whichever task resumes here, from the flags IT saved. The incoming task
-     * does the same for us. */
+     * does the same for us. Since S6 the scheduler lock travels the same
+     * route: we are still holding it as we make this call, the task we
+     * switch to releases it once it is on its own stack, and whoever
+     * eventually resumes *us* has handed it back. That is what keeps `prev`
+     * unclaimable until ctx_switch() has finished parking its sp. */
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
 
-    irq_restore(flags);
+    /* Resumed. We are on our own stack again and should have been handed the
+     * lock; releasing it here is the other half of the hand-off. */
+    handoff_check();
+    spin_unlock_irqrestore(&g_sched_lock, flags);
     sched_reap();
 }
 
 void task_block(void) {
     if (!g_active) return;
-    g_tasks[g_current].state = TASK_BLOCKED;
+    /* Marked BLOCKED under the lock, then released before yielding --
+     * sched_yield() takes it again, and spinlock_t is not re-entrant.
+     *
+     * The gap between the two is harmless, and worth saying why rather than
+     * leaving a reader to wonder: BLOCKED means "do not pick me", so a hart
+     * scanning the table in that window declines to schedule a task that is
+     * still running here. The state this sets is the *absence* of a claim,
+     * which is the one transition that cannot race into a double-schedule. */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
+    g_tasks[cur()].state = TASK_BLOCKED;
+    spin_unlock_irqrestore(&g_sched_lock, flags);
     sched_yield();
 }
 
 int task_unblock(int pid) {
     if (!g_active || pid < 0 || pid >= MAX_TASKS) return -1;
-    if (g_tasks[pid].state != TASK_BLOCKED) return -1;
+    /* Test and transition under one lock: the check that it is BLOCKED and
+     * the store that makes it READY are the read-then-act pair a second
+     * hart can invalidate between, which would wake a task twice or wake
+     * one that had already gone. */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
+    if (g_tasks[pid].state != TASK_BLOCKED) {
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return -1;
+    }
     g_tasks[pid].wake_at_ms = 0;   /* an explicit wake outranks a deadline */
     g_tasks[pid].state = TASK_READY;
+    spin_unlock_irqrestore(&g_sched_lock, flags);
     return 0;
 }
 
@@ -416,10 +519,16 @@ void task_sleep_ms(uint32_t ms) {
      * simply spins out the remaining time, which is what should happen when
      * the CPU has nothing else to do. */
     while (time_get_ms() < end) {
-        g_tasks[g_current].wake_at_ms = end;
+        uintptr_t f = spin_lock_irqsave(&g_sched_lock);
+        g_tasks[cur()].wake_at_ms = end;
+        spin_unlock_irqrestore(&g_sched_lock, f);
         task_block();
     }
-    g_tasks[g_current].wake_at_ms = 0;
+    {
+        uintptr_t f = spin_lock_irqsave(&g_sched_lock);
+        g_tasks[cur()].wake_at_ms = 0;
+        spin_unlock_irqrestore(&g_sched_lock, f);
+    }
 }
 
 /* A dead task's stack, waiting to be freed by whoever runs next.
@@ -437,12 +546,17 @@ static void    *g_reap_stack;
 static uint32_t g_reap_pages;
 
 static void sched_reap(void) {
-    uintptr_t flags = irq_save();
+    /* The slot is claimed under the scheduler lock and freed outside it.
+     * That split is not stylistic: palloc_free() takes palloc's own lock
+     * (S4), and nesting the two would create a lock ordering this kernel
+     * has no reason to have. Taking the pointer out first makes the free a
+     * purely local operation. */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
     void *stack = g_reap_stack;
     uint32_t pages = g_reap_pages;
     g_reap_stack = NULL;
     g_reap_pages = 0;
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (stack) palloc_free(stack, pages);
 }
@@ -450,10 +564,15 @@ static void sched_reap(void) {
 void task_exit(void) {
     if (!g_active) { for (;;) { } }
 
-    task_t *t = &g_tasks[g_current];
+    task_t *t = &g_tasks[cur()];
     printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
-    uintptr_t flags = irq_save();
+    /* Taken here and never released on this path: this task switches away
+     * and nothing ever switches back to it, so the successor picked below
+     * inherits the lock and does the releasing. That is the hand-off in its
+     * starkest form -- see g_sched_lock's comment. The printk() above is
+     * deliberately outside it, because printk() can block. */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
 
     /* M5 Phase 2: if this task owned a chan endpoint with a request
      * pending, its caller would otherwise block forever waiting for a
@@ -463,12 +582,14 @@ void task_exit(void) {
      * picked as the very next task to run. */
     chan_owner_exited(t->pid);
 
-    int next = next_runnable(g_current);
+    int next = next_runnable(cur());
     if (next < 0) {
         /* No other runnable task. Nothing can reap this stack or resume us,
          * so keep it and park forever rather than returning into a caller
-         * that no longer exists. */
-        irq_restore(flags);
+         * that no longer exists. The lock IS released here, unlike the
+         * normal path below: there is no successor to hand it to, and
+         * parking forever while holding it would wedge every other hart. */
+        spin_unlock_irqrestore(&g_sched_lock, flags);
         printk("[Sched] No runnable task remains after #%d exited; halting task\n", t->pid);
         for (;;) { }
     }
@@ -495,8 +616,8 @@ void task_exit(void) {
     t->stack_pages = 0;
 
     g_tasks[next].state = TASK_RUNNING;
-    int prev = g_current;
-    g_current = next;
+    int prev = cur();
+    set_cur(next);
     (void)mem_domain_activate(g_tasks[next].domain);
 
     /* Parks the dead task's sp into a slot nobody will read again. The
