@@ -191,6 +191,13 @@ class QemuSession:
         read()-what's-new, sleep briefly, repeat -- until `expected_pattern`
         matches or `timeout` elapses.
 
+        **Expect the last line the command prints, not the first.** This
+        returns as soon as the pattern matches, so output produced afterwards
+        is captured only if it happened to arrive in the same read. Matching an
+        early confirmation and then asserting on a later line is a race that
+        passes on an idle machine and fails under load -- and fails looking
+        like a fault in the guest.
+
         This method (and how it reads QEMU's output -- see start()'s
         comment for that half) went through several revisions chasing what
         looked, for a long time, like an external QEMU stdio quirk: a
@@ -255,6 +262,26 @@ class QemuSession:
                 return False, accumulated.decode("utf-8", "replace")
             matched, text = check(accumulated)
             if matched:
+                # One more non-blocking read before returning.
+                #
+                # This returns on the first chunk in which the pattern
+                # matches, so anything the guest printed *after* it is in the
+                # result only by luck of chunk boundaries. A caller that waits
+                # for one line and then asserts on a later one is therefore
+                # racing, and it fails as a firmware fault rather than as a
+                # test bug -- which cost several dismissals of an "unexplained
+                # flake" before it was tracked down (2026-09-04, the I6 WLAN
+                # credential test).
+                #
+                # This does not make such a caller correct; the fix for that is
+                # to expect the *last* line the command produces. But it costs
+                # nothing, it strictly widens what is captured, and it removes
+                # the most common version of the race -- output already written
+                # to the log and simply not read yet.
+                trailing = self._log_file.read()
+                if trailing:
+                    accumulated += trailing
+                    text = accumulated.decode("utf-8", "replace")
                 return True, text
 
         return False, accumulated.decode("utf-8", "replace")
@@ -3221,12 +3248,27 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
         # digit short by hand, and a wrong-length string would fail this
         # test for the wrong reason (its own typo, not the code under test).
         new_psk_hex = bytes(range(0x50, 0x70)).hex()
-        ok, log = session.send_and_expect(f"wlan {new_ssid} {new_psk_hex}", r"credential installed", timeout=6.0)
+        # Waits for the *last* line the command produces, not the first.
+        #
+        # This expected "credential installed" and then asserted on the psk
+        # fingerprint, which the shell prints afterwards (cmd_wlan calls
+        # wlan_print_report() below its confirmation). send_and_expect()
+        # returns on the first read in which its pattern matches, so anything
+        # printed after that is in the log only if it happened to land in the
+        # same 20 ms chunk. It usually did; under host load it did not, and the
+        # test failed roughly one run in four with a log ending exactly at
+        # "credential installed" -- which reads as a firmware fault and is a
+        # test racing itself. Found 2026-09-04 after it had been dismissed as
+        # an unexplained flake several times across a session.
+        new_fp = hashlib.sha256(bytes.fromhex(new_psk_hex)).digest()[:8].hex()
+        ok, log = session.send_and_expect(f"wlan {new_ssid} {new_psk_hex}",
+                                          rf"psk fingerprint: {new_fp}", timeout=6.0)
         if not ok:
             return (name, False, f"installing a new credential failed: {log[-500:]}")
+        if "credential installed" not in log:
+            return (name, False, f"no confirmation of the install:\n{log[-500:]}")
         if log.count(new_psk_hex) != 1:
             return (name, False, f"the raw psk appeared {log.count(new_psk_hex)} times, expected 1 (echo only):\n{log[-500:]}")
-        new_fp = hashlib.sha256(bytes.fromhex(new_psk_hex)).digest()[:8].hex()
         if not re.search(rf"^psk fingerprint: {new_fp}\b", log, re.MULTILINE):
             return (name, False, f"the new credential's fingerprint does not match:\n{log[-500:]}")
 
