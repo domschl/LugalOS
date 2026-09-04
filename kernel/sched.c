@@ -536,6 +536,34 @@ static int next_runnable(int from) {
     return chosen;
 }
 
+/* Is there anything this hart could run, without taking the lock to ask?
+ *
+ * Deliberately racy, and safe because of what it is used for: an idle hart
+ * deciding whether to bother calling sched_yield(). A false negative costs
+ * one more turn round the idle loop; a false positive costs one sched_yield()
+ * that finds nothing. Neither can corrupt anything, because the real decision
+ * is still made under g_sched_lock inside sched_yield().
+ *
+ * It exists because the honest version was worse. A secondary hart idling as
+ * `for(;;) sched_yield();` takes g_sched_lock on every iteration, and the
+ * primary needs that same lock for every context switch, task_block() and
+ * task_unblock(). On QEMU the two harts are host threads that the OS
+ * timeslices, so nothing shows; on RP2350 they share one bus, the primary
+ * loses, and the machine stops. Reading plain words instead of taking an
+ * atomic is what makes an idle secondary cheap enough to not starve the
+ * hart doing the work. */
+bool sched_peek_runnable(void) {
+    if (!g_active) return false;
+    int h = (int)hart_id();
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state != TASK_READY) continue;
+        int aff = g_tasks[i].hart_affinity;
+        if (aff >= 0 && aff != h) continue;
+        return true;
+    }
+    return false;
+}
+
 uint32_t sched_stack_used(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return 0;
     task_t *t = &g_tasks[pid];

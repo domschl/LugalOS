@@ -432,6 +432,25 @@ int smp_start_secondary(unsigned mode) {
     }
     launched = true;
 
+    /* The deadman goes on FIRST, before anything that can hang.
+     *
+     * It used to be armed after the launch handshake, which was too late in
+     * two ways. The handshake itself can wedge, and -- less obviously -- the
+     * console on this board is USB, whose ring is drained by a task: a core 0
+     * that dies shortly after printing loses the message it printed, so
+     * "there was no output" never meant "it died before printing". Two runs
+     * were read that way before the distinction became clear. Arming here
+     * means the board comes back and .smpmark says how far core 1 got,
+     * whatever happened to the console. */
+    if (mode >= CORE1_MODE_JOIN) {
+        if (!rp2350_reboot_after_ms(8000)) {
+            printk("[SMP] warning: could not arm the reboot deadman; "
+                   "a hang here needs a physical BOOTSEL\n");
+        } else {
+            printk("[SMP] deadman armed: the board reboots in 8 s unless this finishes\n");
+        }
+    }
+
     uint32_t before = g_core1_ticks;
 
     /* Published before the handshake, and with a release fence: core 1 reads
@@ -448,6 +467,7 @@ int smp_start_secondary(unsigned mode) {
            (unsigned long)before);
 
     if (!smp_launch_core1()) {
+        rp2350_reboot_cancel();
         printk("[SMP] core 1 did not answer the launch handshake (still parked)\n");
         return -1;
     }
@@ -523,24 +543,6 @@ int smp_start_secondary(unsigned mode) {
     }
 
     if (mode >= CORE1_MODE_JOIN) {
-        /* A deadman, because this is the experiment that hangs boards.
-         *
-         * Three attempts at this milestone each ended with a board whose USB
-         * console never came back, each costing a physical BOOTSEL press and
-         * taking the evidence with it. A bootrom reboot armed *before* the
-         * risky window turns that into a board that reappears by itself --
-         * and it is not a power-on reset, so SRAM survives and .smpmark still
-         * names the last step core 1 reached. Read it back afterwards with
-         * `cat /proc/cpuinfo`.
-         *
-         * Cancelled below the moment core 1 is demonstrably scheduling. */
-        if (!rp2350_reboot_after_ms(5000)) {
-            printk("[SMP] warning: could not arm the reboot deadman; "
-                   "a hang here needs a physical BOOTSEL\n");
-        } else {
-            printk("[SMP] deadman armed: the board reboots in 5 s unless core 1 joins\n");
-        }
-
         /* Core 1 announces itself from secondary_main(); what this waits for
          * is the scheduler count, which only code running there can raise.
          * Bounded on the microsecond timer, and a timeout is reported rather
@@ -747,17 +749,45 @@ void secondary_main(void) {
     g_secondary_pid = pid;
     smp_mark(10);
 
-    /* Interrupts on, then idle: pull whatever the shared ready queue has.
+    /* Interrupts on, then idle: pull whatever the shared ready queue has,
+     * and halt between attempts.
      *
-     * sched_yield() returns immediately when nothing else can run, so this
-     * is a spin rather than a halt. That is deliberate for X1 -- a wfi here
+     * X1 wrote this as a bare `for(;;) sched_yield();` and said why: a wfi
      * would need a cross-hart wakeup on every task_unblock(), which is real
-     * work and not what this milestone is proving. It costs a busy core on
-     * an idle system, which on QEMU is a host thread and on RP2350 would be
-     * power; X2 or later can make it wfi once there is a reason to. */
+     * work, and the cost of spinning was "a busy core on an idle system,
+     * which on QEMU is a host thread and on RP2350 would be power". It also
+     * said "X2 or later can make it wfi once there is a reason to".
+     *
+     * X7 is that reason, and the cost was not power. sched_yield() takes
+     * g_sched_lock on every call, so a bare spin here hammers that lock from
+     * core 1 at full speed -- and core 0 needs the same lock for every
+     * context switch, every task_block() and every task_unblock(). On QEMU
+     * the two harts are host threads and the OS shares the CPU between them,
+     * so the starvation never appears. On silicon they share one bus, core 0
+     * loses, and the machine stops: this is what killed the board on X7's
+     * join attempts while the staged runs -- whose tail is a plain counter
+     * loop that takes no locks -- survived every time.
+     *
+     * The first fix was `wfi` between yields, waking on this hart's own timer
+     * so no cross-hart IPI was needed. It works and it is too blunt: QEMU's
+     * X2 check immediately reported domains_hart1: 0, because a hart that
+     * sleeps until the next tick never picks up a short-lived task at all.
+     * Fixing starvation by making the second hart useless is not a fix.
+     *
+     * So the idle hart asks a lock-free question instead, and only pays for
+     * the lock when the answer is yes. sched_peek_runnable() reads plain
+     * words; the backoff below touches no shared memory whatsoever, so an
+     * idle secondary generates no bus traffic the primary has to contend
+     * with. Latency stays in microseconds rather than up to a tick. */
     irq_restore(IRQ_ENABLE_BIT);
     for (;;) {
-        sched_yield();
+        if (sched_peek_runnable()) {
+            sched_yield();
+            continue;
+        }
+        /* Nothing for us. Back off on a local, so the primary owns the bus
+         * while this hart has nothing to do with it. */
+        for (volatile int spin = 0; spin < 64; spin++) { }
     }
 }
 #endif /* CONFIG_ENABLE_SMP */

@@ -269,6 +269,12 @@ int         sched_context_id(void);
  * nothing to block and nothing to wake it. */
 bool        sched_is_active(void);
 
+/* Whether this hart has anything runnable, answered WITHOUT the scheduler
+ * lock and therefore only approximately. For an idle hart deciding whether
+ * to call sched_yield() at all -- see the definition for why asking cheaply
+ * matters more than asking exactly. */
+bool        sched_peek_runnable(void);
+
 /* The running task's domain, or NULL if unrestricted. The syscall boundary
  * validates user pointers against it. */
 mem_domain_t *sched_current_domain(void);

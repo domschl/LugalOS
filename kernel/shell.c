@@ -189,7 +189,8 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
-    cprintf("  smpstart [join|locktest]\n");
+    cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
+    cprintf("  smpstart [join|locktest|stage1|stage2|stage3]\n");
     cprintf("                  - Launch RP2350 core 1. Bare: X3's counter. 'join': core 1 enters\n");
     cprintf("                    the scheduler (X7). 'locktest': cross-core mutual exclusion\n");
     cprintf("  smptest         - Two-hart concurrency: lost updates through the lock, and which harts ran\n");
@@ -2087,6 +2088,31 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
+    } else if (strcmp(cmd_line, "pinall") == 0) {
+        /* X7 bisect: pin every existing task to hart 0.
+         *
+         * Core 1 joining the scheduler and core 1 *running another task* are
+         * two different claims, and the second is where the board dies. With
+         * everything pinned here, core 1 has only its own idle task to run,
+         * so a survivor says "core 1 in the scheduler is fine, a migrating
+         * task is not" -- and a casualty says the opposite. Neither is
+         * inferable from a run where both are true at once.
+         *
+         * p9srv is the one that matters: it is the only kernel task created
+         * without an affinity (fs/p9_link.c's task_create_sized), so it is
+         * the only thing core 1 can currently steal. */
+        int n = 0;
+        for (uint32_t i = 0; ; i++) {
+            int pid, state; const char *nm;
+            if (!sched_task_info(i, &pid, &state, &nm)) break;
+            if (state == TASK_UNUSED || state == TASK_DEAD) continue;
+            if (task_affinity(pid) < 0 && task_set_affinity(pid, 0) == 0) {
+                cprintf("  pinned #%d '%s' to hart 0\n", pid, nm);
+                n++;
+            }
+        }
+        cprintf("PINALL_DONE %d task(s) newly pinned\n", n);
         return;
     } else if (strncmp(cmd_line, "smpstart", 8) == 0 &&
                (cmd_line[8] == '\0' || cmd_line[8] == ' ')) {
