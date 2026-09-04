@@ -41,6 +41,13 @@ PORT = 5959
 
 def parse(line: str) -> dict | None:
     f = line.split()
+    # Lines may carry the sender's address as a leading field. Older logs do
+    # not, and still parse -- see the note in the receive loop about why the
+    # address is recorded at all.
+    src = ""
+    if f and f[0] != "p0" and len(f) > 1 and f[1] == "p0":
+        src = f[0]
+        f = f[1:]
     # 10 fields is the pre-P4 line and still parses: the PPS offset was
     # appended rather than inserted, so a log spanning a firmware change reads
     # correctly throughout instead of being silently dropped at the boundary.
@@ -51,6 +58,7 @@ def parse(line: str) -> dict | None:
             "persona": f[1], "seq": int(f[2]), "t_s": int(f[3]),
             "off_ms": int(f[4]), "rtt_ms": int(f[5]), "stratum": int(f[6]),
             "dcf_ms": None if f[7] == "-" else int(f[7]),
+            "src": src,
             "q": int(f[8]), "frames": int(f[9]),
             "pps_us": None if len(f) < 11 or f[10] == "-" else int(f[10]),
         }
@@ -131,6 +139,18 @@ def analyse(rows: list[dict]) -> str:
     # One boot only. Which one: the longest, because that is the run with the
     # most to say, and a short tail after a restart should not displace hours
     # of data.
+    # One sender first. A segment can carry more than one board with the same
+    # persona, and merging them is not a degraded analysis but a meaningless
+    # one -- t_s and seq belong to whichever board emitted them.
+    srcs = {r["src"] for r in rows if r["src"]}
+    src_note = ""
+    if len(srcs) > 1:
+        best = max(srcs, key=lambda a: sum(
+            1 for r in rows if r["src"] == a and r.get("pps_us") is not None))
+        dropped = sum(1 for r in rows if r["src"] != best)
+        rows = [r for r in rows if r["src"] == best]
+        src_note = (f"  ({len(srcs)} boards broadcasting on this port; analysing "
+                    f"{best}, ignoring {dropped} lines from the others)")
     runs = split_runs(rows)
     note = ""
     if len(runs) > 1:
@@ -175,6 +195,8 @@ def analyse(rows: list[dict]) -> str:
         out.append(f"  fit residual : {sd:.1f} ms sd  (how well a straight line describes it)")
 
     rtts = sorted(r["rtt_ms"] for r in rows)
+    if src_note:
+        out.append(src_note)
     if note:
         out.append(note)
     out.append(f"  ntp rtt      : min {rtts[0]} / median {rtts[len(rtts) // 2]} / max {rtts[-1]} ms")
@@ -212,11 +234,18 @@ def analyse(rows: list[dict]) -> str:
                    f"median {med:+d} us")
         out.append(f"  -> quartiles : {pps_sorted[len(pps_sorted) // 4]} / {med} / "
                    f"{pps_sorted[3 * len(pps_sorted) // 4]} us")
-        # The median, not the mean. A slow envelope edge gives a tail on the
-        # late side and no matching early one, so the mean chases the tail
-        # while the median tracks the delay the receiver actually has. The
-        # observed distribution is exactly that shape.
-        out.append(f"  -> CONFIG_DCF77_DELAY_US = {med}")
+        # Mean, once there is enough data to see the shape. On a few dozen
+        # samples this looked late-tailed and the median was the safer choice;
+        # across 760 it is symmetric -- 5681 us below the median against 5752
+        # above, 2537/2864 at the deciles -- so the apparent tail was a
+        # small-sample artefact and the mean is simply the lower-variance
+        # estimator. Reported with its standard error, because a constant
+        # without one is an opinion.
+        skew = abs((pm - med) / psd) if psd else 0.0
+        pick = round(pm) if skew < 0.15 else med
+        out.append(f"  -> CONFIG_DCF77_DELAY_US = {pick} "
+                   f"({'mean' if pick != med else 'median'}, "
+                   f"+/- {sem:.0f} us)")
         if d:
             # The NTP route measures the radio's error against true time; the
             # PPS route measures the same lateness directly. They should agree
@@ -261,7 +290,13 @@ def main() -> int:
                 r = parse(line)
                 if not r:
                     continue
-                log.write(line + "\n")
+                # With the sender's address, because two boards broadcasting
+                # to the same port produced 1098 lines that looked like one
+                # series with 283 reboots in it (2026-09-04). They were an
+                # 18-hour run interleaved with a second board restarting every
+                # few minutes, and nothing in the wire format could tell them
+                # apart -- both carry the same persona string.
+                log.write(f"{addr[0]} {line}\n")
                 rows.append(r)
                 dcf = f"{r['dcf_ms']:+d} ms" if r["dcf_ms"] is not None else "-"
                 # P4 beside it on every line, in milliseconds so the two are

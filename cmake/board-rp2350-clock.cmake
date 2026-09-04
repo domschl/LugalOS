@@ -216,6 +216,23 @@ set(CONFIG_GPS_UBX_TIMEPULSE 1)
 # the 1 kHz we actually found -- so the bad setting is in flash.
 set(CONFIG_GPS_UBX_PERSIST 1)
 
+# The DCF-77 receiver's delay, measured rather than fitted (P4,
+# plan/phase24_dcf77_precision_and_ntp_server.md). The interval from the GPS
+# pulse that begins a second to this receiver's mark for that same second:
+# propagation from Mainflingen, the module's filters, its AGC and its
+# demodulator, all together.
+#
+# +37886 us +/- 62, from 1073 frames over 17.8 hours against a local
+# GPS reference. Cross-checked two ways: the phase measurement (PPS alone) and
+# the full epoch comparison (PPS for the instant, NMEA for the second) agree
+# to 1 microsecond, 37886 against -37887, which is as close to an independent
+# confirmation as this board can produce.
+#
+# A board fact, not a driver constant: it belongs to this module and this
+# antenna. A second receiver will have its own, and phase 17's D5 baseline
+# measured a different one on different hardware.
+set(CONFIG_DCF77_DELAY_US 37886)
+
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #
 # TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1

@@ -768,7 +768,44 @@ standard argument is a design constraint, not a preference, and the easiest
 way to honour it is for the code that *could* do it not to exist yet.
 
 **P4 — calibrate the constant, against PPS rather than against statistics.
-INSTRUMENTED 2026-09-02; the measurement run is what remains.**
+DONE 2026-09-04. `CONFIG_DCF77_DELAY_US = 37886`, +/- 62 us.**
+
+1073 frames over 17.8 hours against a local GPS reference. The three questions
+this step existed to ask, answered:
+
+* **Is the delay constant, or does it move with signal strength?** No
+  measurable dependence: r = +0.043 across 760 logged samples. That is a weak
+  test rather than a null result, and worth saying so -- reception was
+  uniformly excellent all night, so the quality score only ever spanned 6.2 to
+  7.0 and the independent variable barely varied. It took a fix to ask at all:
+  the logged score was a mean accumulated since boot, frozen at a constant 69
+  while the measurement's own scatter tripled.
+* **Is it stable across a temperature cycle?** Yes, to about +/- 0.6 ms. Two-hour
+  block medians run 37383 to 38598 us across the night with no monotonic trend
+  -- scatter around a fixed value, not drift.
+* **What is the distribution?** Symmetric, which contradicts this section's own
+  prediction of a late tail from a slow envelope edge. 5681 us below the median
+  against 5752 above; 2537/2864 at the deciles. The tail seen in the first
+  hours was a small-sample artefact, and the mean is therefore the better
+  estimator after all.
+
+**The cross-check is the strongest result here.** The phase measurement (PPS
+alone, saying when a second began) and the full epoch comparison (PPS for the
+instant, NMEA for the second) are separate code paths over the same frames,
+and they agree to **one microsecond**: +37886 against -37887, with
+`gerr_secbad = 0` confirming all 1073 second labels decoded correctly.
+
+The NTP route reads -40.6 ms against those -37.9, so **the ~3 ms systematic
+disagreement is in the network path**, not the radio -- as the board's owner
+suspected when asking why a local GPS was being checked against a remote
+server at all. §P4 wanted a disagreement between methods found here rather
+than in P6; it was, and it was attributed.
+
+Supporting health over the same run: 1078 frames accepted of 1079 seen,
+128588 edges captured with **zero dropped**, and a WLAN link that stayed up for
+17.8 unbroken hours after the scheduler's missing timed sleep was added.
+
+
 
 As built: `gps_pps_offset_us()` returns the offset of any instant from the PPS
 edge that began its second, refusing to answer when the nearest pulse is more
