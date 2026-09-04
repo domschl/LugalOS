@@ -123,11 +123,40 @@ static inline void plic_complete(uint32_t irq_num) {
 
 void trap_init(void) {
 #if defined(CONFIG_BOARD_RP2350)
-    /* Enable M-mode External Interrupts (MEIE bit 11 in mie) */
-    uintptr_t mie_val;
-    __asm__ __volatile__("csrr %0, mie" : "=r"(mie_val));
-    mie_val |= (1u << 11);
-    __asm__ __volatile__("csrw mie, %0" :: "r"(mie_val));
+    /* Clear this core's external-interrupt FORCE array before enabling
+     * anything (phase 23 X7).
+     *
+     * meifa (0xbe2) is "a read-write bit for every interrupt request; writing
+     * a 1 causes the corresponding bit to become pending in meipa" -- a
+     * software-triggered interrupt latch, per core, with no guaranteed reset
+     * value. Transcribed from the SDK's own
+     * runtime_init_per_core_h3_irq_registers (pico_crt0/crt0_riscv.S), which
+     * runs this on *every* core including core 1 at launch, iterating array
+     * windows 3..0 for up to 64 IRQs.
+     *
+     * This kernel never did it, which was survivable while only core 0
+     * existed and boot_header.S had left the core in a known state. Core 1
+     * comes out of the bootrom instead, having just been driven through a
+     * FIFO handshake, and a stale force bit there means it takes an external
+     * interrupt the instant MIE goes on -- into a handler that, for an IRQ
+     * with no registered owner, printk()s. From core 1. In a storm. That is
+     * a wedged board whose stopping point moves from run to run, which is
+     * exactly what X7's first three attempts produced.
+     *
+     * Harmless on core 0, where it has always been zero; the point is that
+     * "has always been" is not a property core 1 inherits. */
+    for (int w = 3; w >= 0; w--) {
+        __asm__ __volatile__("csrw 0xbe2, %0" :: "r"((uintptr_t)w)); /* RVCSR_MEIFA */
+    }
+
+    /* Enable M-mode External Interrupts, and only those.
+     *
+     * csrw rather than csrr/or/csrw, matching the SDK: it also clears MSIE
+     * and MTIE, so a core arrives with exactly one interrupt source armed and
+     * the timer is switched on deliberately later by ticker_arm_this_hart().
+     * The read-modify-write this replaced would have carried whatever the
+     * bootrom left in mie on a secondary. */
+    __asm__ __volatile__("csrw mie, %0" :: "r"((uintptr_t)(1u << 11)));
 
     /* Enable M-mode Global Interrupts (MIE bit 3 in mstatus) */
     uintptr_t mstatus_val;

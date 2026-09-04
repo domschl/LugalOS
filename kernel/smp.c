@@ -335,6 +335,17 @@ static bool smp_launch_core1(void) {
         i = (resp == cmd) ? i + 1 : 0;
         budget--;
     }
+
+    /* Leave core 1's mailbox empty.
+     *
+     * The SDK drains the FIFO around this handshake in both directions --
+     * multicore_launch_core1_raw() disables the FIFO IRQ across it and
+     * restores it afterwards, and multicore_reset_core1() has core 1 "drain
+     * its own mailbox FIFO" before reporting ready. Anything left in the
+     * FIFO keeps the SIO FIFO IRQ asserted, which is a live interrupt source
+     * on a core that is about to enable interrupts. Cheap insurance next to
+     * the cost of finding out. */
+    fifo_drain();
     return i == 6;
 }
 /* --- X7 step 6: parking core 1 across a flash write ----------------------
@@ -585,7 +596,7 @@ int smp_start_secondary(unsigned mode) {
             while (time_get_us() < until) { }
             uint32_t b = g_core1_ticks;
             printk("[SMP] stage %lu: marker 0x%lx, counter %lu -> %lu (delta %lu)\n",
-                   (unsigned long)(mode - CORE1_MODE_JOIN),
+                   (unsigned long)(mode - CORE1_MODE_STAGE1 + 1),
                    (unsigned long)*(volatile uint32_t *)&_smp_mark,
                    (unsigned long)a, (unsigned long)b, (unsigned long)(b - a));
             printk(b != a ? "[SMP] STAGE_OK -- core 1 survived every step of this stage\n"
