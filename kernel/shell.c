@@ -160,7 +160,9 @@ static void cmd_help(void) {
     cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
     cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
     cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
-    cprintf("  isolationtest   - U-mode task stores into kernel memory; must fault\n");
+    cprintf("  isolationtest [hart]\n");
+    cprintf("                  - U-mode task stores into kernel memory; must fault. With a hart id,\n");
+    cprintf("                    the probe is pinned there, so the fault is taken on that hart (X5)\n");
 #if defined(CONFIG_BOARD_RP2350)
     cprintf("  heartbeatisotest - Same, under the real heartbeat driver task's own SIO-window domain\n");
 #endif
@@ -189,6 +191,9 @@ static void cmd_help(void) {
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  smpstart        - Launch RP2350 core 1 over the SIO FIFO (X3)\n");
     cprintf("  smptest         - Two-hart concurrency: lost updates through the lock, and which harts ran\n");
+    cprintf("  smpload [start|stop]\n");
+    cprintf("                  - Background load on every hart, so the isolation suite runs against\n");
+    cprintf("                    a machine where another hart is mid-task when a fault lands (X5)\n");
     cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
     cprintf("  timeselftest    - Microsecond wall clock: round trip, sub-ms detail, rtc_time_t view\n");
     cprintf("  edgecapselftest - GPIO edge-capture ring: order, wrap, drop-the-new policy\n");
@@ -1077,6 +1082,15 @@ static mem_domain_t g_user_domain;
  * identically to "the write was correctly blocked". */
 static volatile bool g_user_entered;
 
+/* X5: the hart the probe was executing on when it entered U-mode.
+ *
+ * Recorded rather than inferred from the pin request, because those are
+ * different claims: task_set_affinity() saying "hart 1" and the task
+ * actually having run there is exactly the gap a pin that silently did
+ * nothing would hide -- and a pass built on that gap would be the kind of
+ * false positive g_user_entered above already exists to rule out. */
+static volatile int g_user_hart = -1;
+
 static void user_task_common(void (*entry)(void)) {
     mem_domain_init(&g_user_domain);
 
@@ -1099,6 +1113,7 @@ static void user_task_common(void (*entry)(void)) {
         return;
     }
     g_user_entered = true;
+    g_user_hart = (int)hart_id();
     /* ra = 0: every probe below ends with usys_exit() and an infinite loop,
      * so none of them ever returns. The ELF loader is what needs a real
      * return address. */
@@ -1109,8 +1124,38 @@ static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe);
 static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
 static void deputy_body(void *arg)    { (void)arg; user_task_common(user_deputy); }
 
-static void run_user_task(const char *name, void (*body)(void *)) {
+/* X5: parse the optional trailing hart id these probes now accept. Anything
+ * that is not a plain number in range means "unpinned", which is the old
+ * behaviour -- a typo must not silently pin to hart 0. */
+static int shell_hart_arg(const char *a) {
+    while (*a == ' ') a++;
+    if (*a < '0' || *a > '9') return -1;
+    int h = 0;
+    for (; *a >= '0' && *a <= '9'; a++) h = h * 10 + (*a - '0');
+    return (h < MAX_HARTS) ? h : -1;
+}
+
+/* `hart` is -1 for "wherever the scheduler puts it" -- the behaviour every
+ * caller had before X5 -- or a hart id to pin to. Pinning is what makes
+ * "a domain fault is handled correctly on a hart that is not the primary"
+ * a deterministic claim rather than a lucky draw: without it the probe
+ * lands wherever the ready queue happens to send it, which on a quiet
+ * machine is usually the hart the shell is on. */
+static void run_user_task(const char *name, void (*body)(void *), int hart) {
     g_user_entered = false;
+    g_user_hart = -1;
+
+    /* Refuse a hart that is not online, rather than pinning a task there and
+     * letting it sit READY forever. Found by running these probes under
+     * `qemu -smp 1`: the task was created, never became runnable on any hart,
+     * and the caller waited out its yield cap and gave up -- correctly
+     * reporting INCONCLUSIVE, but having leaked a task slot and a scratch
+     * page to say it. Refusing costs nothing and says something truer. */
+    if (hart >= 0 && hart >= (int)smp_harts_online()) {
+        printk("[UserTest] hart %d is not online (%u hart(s) running); "
+               "not pinning '%s' there\n", hart, smp_harts_online(), name);
+        return;
+    }
 
     /* §3.1: the probe's U-mode stack, for exactly as long as the probe. */
     if (!scratch_acquire(&g_user_stack_sc, 4096)) {
@@ -1119,7 +1164,12 @@ static void run_user_task(const char *name, void (*body)(void *)) {
     }
     g_user_stack = (uint8_t *)g_user_stack_sc.base;
 
-    int pid = task_create(name, body, NULL);
+    /* Pinned at creation, not after it: a task is READY the moment
+     * task_create() returns, and a second hart spinning in sched_yield()
+     * will take it out from under a task_set_affinity() that has not landed
+     * yet. That is not hypothetical -- it is how this pin was first written,
+     * and `isolationtest 0` duly reported running on hart 1. */
+    int pid = task_create_pinned(name, body, NULL, hart);
     if (pid < 0) {
         printk("[UserTest] Could not create the task\n");
         scratch_release(&g_user_stack_sc);
@@ -1147,13 +1197,18 @@ static void run_user_task(const char *name, void (*body)(void *)) {
         printk("[UserTest] Task did not exit; keeping its stack rather than "
                "freeing memory still in use\n");
     }
+
+    if (g_user_entered) {
+        printk("[UserTest] '%s' ran in U-mode on hart %d%s\n", name, g_user_hart,
+               (hart >= 0 && g_user_hart != hart) ? " -- NOT the hart it was pinned to" : "");
+    }
 }
 
-static void cmd_usertest(void) {
+static void cmd_usertest(int hart) {
     if (!mem_domain_enforced()) {
         printk("[UserTest] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5).\n");
     }
-    run_user_task("usertest", usertest_body);
+    run_user_task("usertest", usertest_body, hart);
 
     uintptr_t c = arch_last_ecall_cause();
     cprintf("\n[UserTest] Last ecall trap cause: %lu (%s)\n", (unsigned long)c,
@@ -1162,11 +1217,11 @@ static void cmd_usertest(void) {
     printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
 }
 
-static void cmd_deputytest(void) {
+static void cmd_deputytest(int hart) {
     g_deputy_target = 0xFEEDFACE;
     printk("[Deputy] Kernel target at %p holds 0x%lx before.\n",
            (const void *)&g_deputy_target, (unsigned long)g_deputy_target);
-    run_user_task("deputy", deputy_body);
+    run_user_task("deputy", deputy_body, hart);
     if (!g_user_entered) {
         cprintf("\n[Deputy] INCONCLUSIVE -- the task never entered U-mode.\n");
         return;
@@ -1336,7 +1391,7 @@ static void cmd_chan_echo_test(void) {
     }
 }
 
-static void cmd_usertest_isolation(void) {
+static void cmd_usertest_isolation(int hart) {
     /* State the enforcement capability here, not only in usertest: this is
      * the command whose result is meaningless without it. A "BREACHED" line
      * with no explanation reads as a bug rather than as the documented state
@@ -1347,7 +1402,7 @@ static void cmd_usertest_isolation(void) {
     }
     g_kernel_canary = 0xC0FFEE;
     printk("[Isolation] Canary before: 0x%lx\n", (unsigned long)g_kernel_canary);
-    run_user_task("intruder", intruder_body);
+    run_user_task("intruder", intruder_body, hart);
 
     if (!g_user_entered) {
         /* The task never reached U-mode, so the canary proves nothing about
@@ -2042,6 +2097,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "smptest") == 0) {
         smp_selftest();
         return;
+    } else if (strcmp(cmd_line, "smpload") == 0) {
+        smp_load_cmd(NULL);
+        return;
+    } else if (strncmp(cmd_line, "smpload ", 8) == 0) {
+        smp_load_cmd(&cmd_line[8]);
+        return;
     } else if (strcmp(cmd_line, "randtest") == 0) {
         random_selftest(4096);
         return;
@@ -2320,10 +2381,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         pmp_report();
         return;
     } else if (strcmp(cmd_line, "usertest") == 0) {
-        cmd_usertest();
+        cmd_usertest(-1);
+        return;
+    } else if (strncmp(cmd_line, "usertest ", 9) == 0) {
+        cmd_usertest(shell_hart_arg(&cmd_line[9]));
         return;
     } else if (strcmp(cmd_line, "isolationtest") == 0) {
-        cmd_usertest_isolation();
+        cmd_usertest_isolation(-1);
+        return;
+    } else if (strncmp(cmd_line, "isolationtest ", 14) == 0) {
+        cmd_usertest_isolation(shell_hart_arg(&cmd_line[14]));
         return;
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strcmp(cmd_line, "heartbeatisotest") == 0) {
@@ -2364,7 +2431,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #endif
     } else if (strcmp(cmd_line, "deputytest") == 0) {
-        cmd_deputytest();
+        cmd_deputytest(-1);
+        return;
+    } else if (strncmp(cmd_line, "deputytest ", 11) == 0) {
+        cmd_deputytest(shell_hart_arg(&cmd_line[11]));
         return;
     } else if (strcmp(cmd_line, "chanechotest") == 0) {
         cmd_chan_echo_test();

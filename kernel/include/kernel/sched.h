@@ -266,8 +266,21 @@ bool sched_active(void);
 uint32_t sched_handoff_faults(void);
 
 /* Pins `pid` to `hart` (-1 = any hart). Returns -1 for an out-of-range pid
- * or an unused slot. */
+ * or an unused slot.
+ *
+ * For a task that is already running. To create one already pinned, use
+ * task_create_pinned() or task_create_driver() -- setting the affinity after
+ * creation leaves a window in which another hart can claim the task, which
+ * X5 observed happening. */
 int  task_set_affinity(int pid, int hart);
+
+/* Creates a task already pinned to `hart` (-1 = any), with the affinity in
+ * place before it is ever READY. The general form of task_create_driver()
+ * below, for callers that need a hart other than the primary -- X5's
+ * isolation probes, which have to fault on a chosen hart rather than
+ * whichever one the ready queue happens to offer them. */
+int  task_create_pinned(const char *name, void (*entry)(void *), void *arg,
+                        int hart);
 
 /* A task's hart pinning: -1 for any hart, otherwise the hart it is bound to.
  * -1 for an out-of-range pid or an unused slot. Reported by `ps` so X2's

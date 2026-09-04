@@ -1,9 +1,17 @@
 # Phase 23 — Waking the second core
 
-**Status: planned 2026-08-29. Amended 2026-09-03 (§6) — three
-prerequisites X1 did not name, one coupling to phase 21's I7, and a
-stated expectation for each usage scenario. Planning only, no
-implementation yet.**
+**Status: COMPLETE 2026-09-04 — X1, X2, X3, X4 and X5 all done, on branch
+`feature/multicore`.** Two harts share one ready queue and one scheduler
+lock (X1); driver tasks are pinned, and what that does *not* cover is
+written down (X2); RP2350's core 1 provably executes our code, launched
+over the SIO FIFO (X3), and needs no separate preemption timer (X4); the
+isolation and fault suite has been re-run with both harts demonstrably
+mid-task at the instant of each fault (X5).
+
+Core 1 does **not** yet join the RP2350 scheduler — that was never a
+milestone here, and X3 records the two blockers. Planned 2026-08-29,
+amended 2026-09-03 (§6); §1's premise that RP2350 boots both cores was
+falsified by X3 and corrected where it was made.
 Depends entirely on `plan/phase22_smp_locking_foundation.md` (S1-S6)
 being complete: every shared structure this phase's second hart could
 touch must already be protected by a real cross-hart lock before that
@@ -355,6 +363,95 @@ possible in principle. A driver's PMP grant faulting correctly on core 0
 was proven once already; this milestone is where "and it still faults
 correctly if a user task on core 1 is running at the same instant" gets
 proven too, rather than assumed to follow.
+
+**DONE 2026-09-04.** QEMU **338/338** (330 + 8 X5 checks), all on the
+`rv64-smp` target under `qemu -smp 2`.
+
+The milestone's wording is the hard part: every one of those isolation tests
+*already* passed on a two-hart kernel before this milestone, and such a run
+proves nothing the single-hart run did not. Driver tasks are pinned to hart
+0 (X2), and a short-lived probe started from the shell lands wherever the
+ready queue sends it — on a quiet machine, usually the shell's own hart. So
+X5 needed two mechanisms, for two different things that could be untrue:
+
+- **`smpload start` / `smpload stop`** (`kernel/smp.c`) runs four yielding
+  tasks with a per-hart progress counter. The trap handler calls
+  `smp_load_note_fault()` *before* killing a faulting task, snapshotting
+  every hart's counter at that instant. `stop` then asserts that a hart
+  other than the one taking the fault had made progress **before** the
+  snapshot and made more **after** it. Both halves are needed: progress
+  before alone would pass for a hart that had since gone idle, progress
+  after alone for one that only started later. That is a claim about
+  simultaneity, and no number of passing tests can establish it.
+- **`isolationtest <hart>`** (and `deputytest`, `usertest`) pins the probe,
+  so "a domain fault is handled correctly on a hart that is not the primary"
+  stops being a lucky draw. Run in both directions, because hart 0 is the
+  busy one and an unpinned probe would rarely choose it — asking for hart 0
+  and getting it is what shows the pin is a constraint rather than a label.
+
+*Falsified, not just observed.* The same kernel under `qemu -smp 1` reports
+`hart 1: progress 0` and `SMPLOAD_FAIL (2 failed)` — no fault was taken
+while loaded, and no other hart was mid-task. The evidence tracks the second
+hart rather than the passage of time.
+
+**Three pre-existing bugs, each found by an X5 mechanism rather than by
+reading.**
+
+1. **Creating a task and pinning it were two steps, and another hart fits
+   between them.** `task_create_driver()` called `task_create_sized()` and
+   *then* `task_set_affinity()` — but a task is READY the moment creation
+   returns, so a second hart spinning in `sched_yield()` can claim it before
+   the pin lands. `sched.h`'s own comment on that function already said this
+   must not happen ("creating and pinning are one act; a window in which a
+   driver task is briefly migratable is exactly the sort of thing that works
+   until it doesn't"); the code did not implement it. Found by asking for
+   hart 0 and being told `ran in U-mode on hart 1 -- NOT the hart it was
+   pinned to`. Fixed by threading the affinity through a single
+   `task_create_full()`, set before the task is published, and publishing
+   under `g_sched_lock` so the release orders the affinity ahead of the
+   READY another hart's scan is looking for. It could not bite before X5
+   because drivers are created before `smp_release_secondaries()`.
+2. **`/proc` reads were silently truncated at 512 bytes.**
+   `print_proc_file()` (`user/lisp/lisp.c`) read into a fixed 512-byte
+   buffer while the generator had 896 available — so `ps` stopped mid-row at
+   eight tasks, with no error and no marker. It went unnoticed because the
+   machine normally runs six, and appeared the moment X5's load added four.
+   Now streamed through `vfs_open`/`vfs_pread`, which also makes the result
+   a consistent snapshot and, as a side effect, **saves 255 bytes** of
+   static RAM on every board.
+3. **A kernel task that returned was reported as `killed`.** `exit_clean`
+   was set only by `task_set_exit_status()`, which a U-mode program reaches
+   through `usys_exit` but a kernel task that simply returns never calls.
+   That column is exactly what phase 12's C3 suite reads to tell a contained
+   fault from an ordinary exit — a value printed for both is worth less than
+   it looks. `task_start()` now marks the return, guarded so a deliberate
+   status (`uargs`' 42) survives.
+
+The generator's own 896-byte cap is still a cap — `/proc/ps` runs out at
+about thirteen tasks against `MAX_TASKS` 24 — but it now stamps
+`-- truncated --` over the tail instead of ending mid-row. Enlarging it is
+the wrong trade at eight handles on a 264 KB part; being honest about the
+edge costs 18 bytes of text.
+
+*What X5 does **not** cover, and why.* Phase 12's RP2350-specific half of
+the isotest family (`heartbeatisotest`, `tm1638isotest`, `i2cisotest`,
+`st7735isotest`, `blkisotest`, `uartisotest`, `usbisotest`,
+`clockisotest`) cannot be run under this milestone's conditions today,
+because RP2350's core 1 does not join the scheduler — X3 recorded the two
+blockers (`printk()` from core 1 reaches core 0's pinned UART task through a
+blocking `chan_call`; `task_block()` before `sched_secondary_init()` would
+block task 0). Those tests still pass on hardware exactly as before, on one
+core. Naming this is the point: X5's claim is about the generic domain
+tests on QEMU's two harts, not about the driver-domain tests on RP2350.
+
+*Verified:* QEMU **338/338**. RP2350 chess persona **24/24** on real
+hardware, including B3/B6/C3/C4's isolation tests — no regression from the
+scheduler, trap and `/proc` changes, which affect every target. On that
+one-hart board `smpload` skips cleanly and `isolationtest 1` answers
+`hart 1 is not online (1 hart(s) running)` rather than pinning a task
+somewhere it can never run. Static RAM **-255 bytes** on both RP2350
+personas, re-baselined.
+
 
 ## 4. Explicitly not in this phase
 

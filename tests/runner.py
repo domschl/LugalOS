@@ -5702,6 +5702,95 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
                                           r"domains_hart1:\s*[1-9]", timeout=12.0)
         out.append(("SMP: restricted domains were actually activated on hart 1 (X2)",
                     ok, log if not ok else ""))
+
+        # ---- X5: the isolation and fault suite, on a machine that is
+        # actually using both cores at the moment each fault lands.
+        #
+        # Everything above this point would pass on a kernel where the second
+        # hart booted and then idled forever. That is the gap X5 exists to
+        # close, and it takes two separate mechanisms, because two different
+        # things could be untrue:
+        #
+        #   `smpload start` puts four yielding tasks on the ready queue and
+        #   keeps a per-hart progress counter. The trap handler snapshots
+        #   those counters *before* killing a faulting task, so `smpload stop`
+        #   can assert that a hart other than the one taking the fault had
+        #   made progress before the fault and made more after it -- a claim
+        #   about simultaneity, which no pair of passing tests can establish.
+        #
+        #   `isolationtest <hart>` pins the probe, so "a domain fault is
+        #   handled correctly on a hart that is not the primary" stops being
+        #   a lucky draw. Unpinned, the probe lands wherever the ready queue
+        #   sends it; on a quiet machine that is usually the shell's own hart,
+        #   and a green run would have proved nothing about hart 1.
+        ok, log = session.send_and_expect("smpload start", r"SMPLOAD_STARTED tasks=[1-9]",
+                                          timeout=30.0)
+        out.append(("SMP: a background load is running on every hart (X5)",
+                    ok, log if not ok else ""))
+
+        # The pinned half, both directions. Running it on hart 0 as well is
+        # not symmetry for its own sake: it is what shows the pin is a real
+        # constraint rather than a label, since hart 0 is the busy one and an
+        # unpinned probe would rarely choose it.
+        for hart in (1, 0):
+            ok, log = session.send_and_expect(
+                f"isolationtest {hart}",
+                r"ISOLATED \(kernel memory untouched\)", timeout=25.0)
+            if ok and f"ran in U-mode on hart {hart}" not in log:
+                ok = False   # it faulted, but not where we asked -- see above
+            if "NOT the hart it was pinned to" in log:
+                ok = False
+            out.append((f"SMP: a domain fault is contained when taken on hart {hart} (X5)",
+                        ok, log if not ok else ""))
+
+        # The syscall boundary, and an ordinary U-mode round trip, under the
+        # same load and on the non-primary hart -- the two halves of phase
+        # 12's suite that are about the kernel *not* faulting. A confused
+        # deputy check that only ever ran on hart 0 says nothing about the
+        # copy-in path a task on hart 1 uses.
+        ok, log = session.send_and_expect("deputytest 1",
+                                          r"DEPUTY_REFUSED.*OWNBUF_OK.*UNTOUCHED",
+                                          timeout=25.0)
+        ok = ok and "ran in U-mode on hart 1" in log
+        out.append(("SMP: the syscall boundary rejects a foreign pointer, on hart 1 (X5)",
+                    ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("usertest 1",
+                                          r"UMODE_OK.*cause: 8 \(U-mode.*ended cleanly",
+                                          timeout=25.0)
+        ok = ok and "ran in U-mode on hart 1" in log
+        out.append(("SMP: a U-mode task syscalls back cleanly from hart 1 (X5)",
+                    ok, log if not ok else ""))
+
+        # A loaded ELF, not a kernel-linked probe: the same distinction B6
+        # drew when uisolate.elf was added, now under load. Left unpinned on
+        # purpose -- the loader has no pinning API and should not need one,
+        # so this is the case where the scheduler chooses.
+        ok, log = session.send_and_expect(
+            "exec /flash0/system/bin/uisolate.elf\nps",
+            r"uprog\s+killed", timeout=30.0)
+        if "UISO_NOT_ISOLATED" in log:
+            ok = False
+        out.append(("SMP: a loaded ELF is still confined, and still reported killed (X5)",
+                    ok, log if not ok else ""))
+
+        # The verdict. Reads the counters before stopping the load, so
+        # "the other hart kept going after the fault" cannot be satisfied by
+        # progress made between the fault and the word `stop`.
+        ok, log = session.send_and_expect("smpload stop", r"SMPLOAD_(OK|FAIL)", timeout=45.0)
+        ok = ok and "SMPLOAD_OK" in log
+        out.append(("SMP: another hart was mid-task at the instant of each fault (X5)",
+                    ok, log if not ok else ""))
+
+        # And the machine is still usable afterwards. Every fault above was
+        # survivable in isolation; this asks whether five of them, taken on
+        # two harts with a load running, left a shell that still answers --
+        # which is the actual claim "the fault suite passes on two cores"
+        # is making.
+        ok, log = session.send_and_expect("cat /proc/cpuinfo", r"harts_online:\s*2",
+                                          timeout=15.0)
+        out.append(("SMP: both harts still scheduling after the fault suite (X5)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

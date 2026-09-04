@@ -452,7 +452,7 @@ static uint32_t append_col(char *buf, uint32_t used, uint32_t cap,
     return used;
 }
 
-static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
+static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t cap) {
     if (!rel || !buf || cap == 0) return -1;
     uint32_t used = 0;
 
@@ -1314,6 +1314,35 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     }
 #endif
     return -1;
+}
+
+/* Says so when the answer did not fit, instead of handing back a plausible
+ * prefix (X5, plan/phase23_multicore_scheduling.md).
+ *
+ * proc_buf is a fixed 896 bytes and several of these files are generated
+ * from tables that grow: /proc/ps runs out at about thirteen tasks against
+ * a MAX_TASKS of 24, and /proc/config has already come within 105 bytes of
+ * the limit once (see proc_buf's own comment). Every producer above stops
+ * cleanly at `cap`, which is safe and completely silent -- the reader gets a
+ * table that simply ends, with no way to tell a short system from a clipped
+ * one. Enlarging the buffer is the wrong trade at 8 handles on a 264 KB
+ * part; being honest about the edge costs 18 bytes of text.
+ *
+ * Stamped over the tail rather than appended, because by definition there is
+ * no room left to append into. */
+static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
+    int n = vfs_generate_proc_content_raw(rel, buf, cap);
+    if (n < 0) return n;
+
+    static const char mark[] = "\n-- truncated --\n";
+    const uint32_t mlen = (uint32_t)sizeof(mark) - 1;
+    if ((uint32_t)n >= cap - 1 && cap > mlen + 1) {
+        uint32_t at = cap - 1 - mlen;
+        for (uint32_t i = 0; i < mlen; i++) buf[at + i] = mark[i];
+        buf[cap - 1] = '\0';
+        n = (int)(cap - 1);
+    }
+    return n;
 }
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the

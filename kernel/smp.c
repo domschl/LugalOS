@@ -297,6 +297,21 @@ int smp_selftest(void) {
     cprintf("SMP_SELFTEST_SKIPPED\n");
     return 0;
 }
+
+/* Without a second hart there is nothing to distribute across, so this says
+ * so rather than starting a load that could only ever report one hart --
+ * the same reasoning as smp_selftest()'s skip above. */
+int smp_load_cmd(const char *arg) {
+    (void)arg;
+    cprintf("SMP load:\n");
+    cprintf("  [skip] this build has CONFIG_ENABLE_SMP=0; there is no second hart\n");
+    cprintf("         (cmake --preset rv64-smp, then run under qemu -smp 2)\n");
+    cprintf("SMPLOAD_SKIPPED\n");
+    return 0;
+}
+
+void smp_load_note_fault(void) { }
+
 #else
 
 #define SMPTEST_WORKERS 4
@@ -382,6 +397,189 @@ int smp_selftest(void) {
     if (fail == 0) cprintf("SMP_SELFTEST_OK (3/3)\n");
     else           cprintf("SMP_SELFTEST_FAIL (%d failed)\n", fail);
     return fail;
+}
+
+
+/* --- X5's background load ------------------------------------------------
+ *
+ * The milestone asks for the existing isolation and fault suite re-run "with
+ * tasks actually distributed across both cores, not just possible in
+ * principle". The distinction is the whole point, and it is easy to lose:
+ * every one of those tests already passes on a two-hart kernel, because the
+ * driver tasks are pinned to hart 0 (X2) and a short-lived probe task
+ * started from the shell will usually be picked up by the hart the shell is
+ * on. Such a run proves nothing that the single-hart run did not.
+ *
+ * So this provides the missing half: a background load that keeps every hart
+ * holding a real task, and -- more importantly -- evidence about the
+ * *instant* the fault was taken. smp_load_note_fault() snapshots every
+ * hart's progress from inside the trap handler, before the faulting task is
+ * killed. If the other hart's counter was already moving before that
+ * snapshot and kept moving after it, the other hart was executing a task at
+ * the moment the fault landed. That is a claim about simultaneity, which no
+ * amount of "both tests passed" can establish.
+ *
+ * The loaders yield rather than spin: a busy-wait load would test the
+ * scheduler's ability to be starved, which is not what is being asked.
+ */
+
+#define SMPLOAD_TASKS (MAX_HARTS * 2)
+
+static spinlock_t        g_load_lock;
+static volatile uint32_t g_load_prog[MAX_HARTS];      /* work done, per hart */
+static volatile int      g_load_run;                  /* loaders exit at 0 */
+static volatile int      g_load_alive;
+static volatile uint32_t g_load_at_fault[MAX_HARTS];  /* the snapshot */
+static volatile unsigned g_load_fault_hart;
+static volatile uint32_t g_load_faults;
+
+void smp_load_note_fault(void) {
+    if (!g_load_run) return;   /* no load: nothing to say, and nothing to lock */
+
+    uintptr_t f = spin_lock_irqsave(&g_load_lock);
+    for (unsigned h = 0; h < MAX_HARTS; h++) g_load_at_fault[h] = g_load_prog[h];
+    g_load_fault_hart = hart_id();
+    g_load_faults++;
+    spin_unlock_irqrestore(&g_load_lock, f);
+}
+
+/* Interrupts are off across the increment, which is why hart_id() and the
+ * slot it selects cannot disagree: a task can only migrate at a switch, and
+ * no switch can happen here. The lock is what makes the counter exact
+ * between the several loaders sharing one hart. */
+static void smpload_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        uintptr_t f = spin_lock_irqsave(&g_load_lock);
+        int run = g_load_run;
+        if (run) g_load_prog[hart_id()]++;
+        spin_unlock_irqrestore(&g_load_lock, f);
+        if (!run) break;
+        sched_yield();
+    }
+    uintptr_t f = spin_lock_irqsave(&g_load_lock);
+    g_load_alive--;
+    spin_unlock_irqrestore(&g_load_lock, f);
+}
+
+static void smpload_report(const char *tag) {
+    uintptr_t f = spin_lock_irqsave(&g_load_lock);
+    uint32_t p[MAX_HARTS];
+    for (unsigned h = 0; h < MAX_HARTS; h++) p[h] = g_load_prog[h];
+    uint32_t faults = g_load_faults;
+    int alive = g_load_alive;
+    spin_unlock_irqrestore(&g_load_lock, f);
+
+    cprintf("%s alive=%d faults=%u", tag, alive, (unsigned)faults);
+    for (unsigned h = 0; h < MAX_HARTS; h++) cprintf(" hart%u=%u", h, (unsigned)p[h]);
+    cprintf("\n");
+}
+
+static int smpload_start(void) {
+    if (g_load_run) {
+        cprintf("SMPLOAD_ALREADY_RUNNING\n");
+        return 0;
+    }
+    spinlock_init(&g_load_lock);
+    for (unsigned h = 0; h < MAX_HARTS; h++) { g_load_prog[h] = 0; g_load_at_fault[h] = 0; }
+    g_load_faults = 0;
+    g_load_fault_hart = (unsigned)-1;
+    g_load_alive = 0;
+    g_load_run = 1;
+
+    int made = 0;
+    for (int i = 0; i < SMPLOAD_TASKS; i++) {
+        if (task_create("smpload", smpload_worker, NULL) >= 0) { made++; g_load_alive++; }
+    }
+    if (made == 0) {
+        g_load_run = 0;
+        cprintf("SMPLOAD_FAIL (no free task slot)\n");
+        return 1;
+    }
+
+    /* Let them actually reach a hart before returning, so a test that reads
+     * the counters immediately does not see a zero it would have to retry
+     * around. Bounded, because a load that cannot start must not hang the
+     * shell it was typed into. */
+    for (int guard = 0; guard < 200000; guard++) {
+        uintptr_t f = spin_lock_irqsave(&g_load_lock);
+        uint32_t p0 = g_load_prog[0];
+        spin_unlock_irqrestore(&g_load_lock, f);
+        if (p0 > 0) break;
+        sched_yield();
+    }
+
+    cprintf("SMPLOAD_STARTED tasks=%d\n", made);
+    return 0;
+}
+
+static int smpload_stop(void) {
+    if (!g_load_run) {
+        cprintf("SMPLOAD_NOT_RUNNING\n");
+        return 0;
+    }
+
+    /* Read the evidence *before* stopping: after the loaders exit, "the
+     * other hart kept going after the fault" would be indistinguishable
+     * from "the other hart kept going until stop was typed". */
+    uintptr_t f = spin_lock_irqsave(&g_load_lock);
+    uint32_t p[MAX_HARTS], at[MAX_HARTS];
+    for (unsigned h = 0; h < MAX_HARTS; h++) { p[h] = g_load_prog[h]; at[h] = g_load_at_fault[h]; }
+    uint32_t faults = g_load_faults;
+    unsigned fh = g_load_fault_hart;
+    g_load_run = 0;
+    spin_unlock_irqrestore(&g_load_lock, f);
+
+    for (int guard = 0; guard < 2000000 && g_load_alive > 0; guard++) sched_yield();
+
+    int fail = 0;
+    cprintf("SMP load, across the isolation and fault suite:\n");
+    if (faults) cprintf("  faults taken while loaded: %u (last handled by hart %u)\n",
+                        (unsigned)faults, fh);
+    else        cprintf("  faults taken while loaded: none\n");
+    for (unsigned h = 0; h < MAX_HARTS; h++) {
+        if (faults) cprintf("  hart %u: progress %u, of which %u before the last fault\n",
+                            h, (unsigned)p[h], (unsigned)at[h]);
+        else        cprintf("  hart %u: progress %u\n", h, (unsigned)p[h]);
+    }
+
+    /* Not "no fault happened to occur": a load started and stopped with no
+     * isolation test run in between has established nothing, and saying so
+     * is the point. The alternative -- passing quietly -- is how a suite
+     * ends up reporting that it verified something it never ran. */
+    bool any_fault = (faults > 0);
+    cprintf("  [%s] a task was actually killed while the load was running\n",
+            any_fault ? "ok" : "FAIL");
+    if (!any_fault) fail++;
+
+    /* The claim the milestone rides on: at the instant of the fault, a hart
+     * other than the one taking it was mid-task -- it had made progress
+     * before the snapshot and made more after it. Both halves are needed.
+     * "Progress before" alone would pass for a hart that had since gone
+     * idle; "progress after" alone, for one that only started afterwards. */
+    bool concurrent = false;
+    for (unsigned h = 0; h < MAX_HARTS; h++) {
+        if (h == fh) continue;
+        if (at[h] > 0 && p[h] > at[h]) concurrent = true;
+    }
+    cprintf("  [%s] another hart was mid-task at the instant of the fault\n",
+            concurrent ? "ok" : "FAIL");
+    if (!concurrent) fail++;
+
+    bool drained = (g_load_alive == 0);
+    cprintf("  [%s] every loader exited when asked\n", drained ? "ok" : "FAIL");
+    if (!drained) fail++;
+
+    if (fail == 0) cprintf("SMPLOAD_OK (3/3)\n");
+    else           cprintf("SMPLOAD_FAIL (%d failed)\n", fail);
+    return fail;
+}
+
+int smp_load_cmd(const char *arg) {
+    if (arg && arg[0] == 's' && arg[1] == 't' && arg[2] == 'a') return smpload_start();
+    if (arg && arg[0] == 's' && arg[1] == 't' && arg[2] == 'o') return smpload_stop();
+    smpload_report("SMPLOAD");
+    return 0;
 }
 
 #endif /* CONFIG_ENABLE_SMP */

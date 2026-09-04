@@ -176,6 +176,19 @@ int smp_selftest(void);
  * automatic at boot: see the definition. Returns 0 on success. */
 int smp_start_secondary(void);
 
+/* X5's background load: tasks that keep every hart busy so the isolation and
+ * fault suite runs against a machine where another hart is demonstrably
+ * mid-task at the instant a fault is taken, rather than one where that is
+ * merely possible. `argv` is NULL (report), "start", or "stop".
+ * Prints SMPLOAD_*; returns the failure count. */
+int smp_load_cmd(const char *arg);
+
+/* Called from the trap handler when a U-mode fault kills a task. Snapshots
+ * every hart's load progress at that instant, which is what turns "the
+ * loaders ran at some point" into "the other hart was running one *then*".
+ * A no-op when no load is running, and on non-SMP builds. */
+void smp_load_note_fault(void);
+
 /* This hart's record. Valid from the moment SETUP_HART_POINTER runs, which
  * is before kernel_main() on both boot paths, so every caller in C is safe
  * by construction. */

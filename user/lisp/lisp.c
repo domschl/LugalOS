@@ -1733,14 +1733,36 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
 /* /proc/<name> files are real byte streams now (A1, vfs_open()/vfs_pread()),
  * not a printk() side effect -- read and print the actual content instead
  * of relying on vfs_read()/vfs_ls() to have printed it themselves. */
+/* Streamed rather than read in one gulp, which is how it was written until
+ * X5 (plan/phase23_multicore_scheduling.md).
+ *
+ * A single vfs_read() into a fixed 512-byte buffer silently truncated every
+ * /proc file that outgrew it -- and did so invisibly: no error, no marker,
+ * just a table that stops in the middle of a row. `ps` reached that point at
+ * eight tasks, so it went unnoticed on a machine that normally runs six, and
+ * surfaced the moment X5's background load added four more. The generator
+ * had 896 bytes available (fs/vfs_server.c) and the reader took 512 of them,
+ * which is the sort of mismatch that goes on being wrong quietly.
+ *
+ * Reading through one handle also makes the result a consistent snapshot:
+ * /proc content is generated once at open() time, so successive preads
+ * cannot show half of one task table and half of the next. */
 static void print_proc_file(const char *path) {
-    static char buf[512];
-    int len = vfs_read(path, buf, sizeof(buf));
-    if (len >= 0) {
-        cprintf("%s", buf);
-    } else {
+    int fd = vfs_open(path, VFS_O_READ);
+    if (fd < 0) {
         cprintf("(no data for '%s')\n", path);
+        return;
     }
+    static char buf[257];
+    uint64_t off = 0;
+    for (;;) {
+        int n = vfs_pread(fd, buf, sizeof(buf) - 1, off);
+        if (n <= 0) break;
+        buf[n] = '\0';
+        cprintf("%s", buf);
+        off += (uint64_t)n;
+    }
+    vfs_close(fd);
 }
 
 static lisp_val_t *prim_ps(lisp_val_t *args, lisp_val_t *env) {

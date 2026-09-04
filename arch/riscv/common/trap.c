@@ -590,6 +590,11 @@ void trap_handler(trap_frame_t *frame) {
         bool from_user = ((frame->status >> 11) & 3u) == 0;
 #endif
         if (from_user) {
+            /* X5: record what the other harts were doing at this instant,
+             * before the kill switches us away. A no-op unless a load is
+             * running (kernel/smp.c), so it costs an ordinary fault nothing
+             * but a predictable branch. */
+            smp_load_note_fault();
             printk("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
                    "terminating the task\n",
                    (unsigned long)code, (unsigned long)frame->epc,

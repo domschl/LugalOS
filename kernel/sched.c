@@ -15,6 +15,8 @@
 extern void ctx_switch(uintptr_t *old_sp, uintptr_t new_sp);
 
 static void sched_reap(void); /* defined below; used by sched_yield() above it */
+static int task_create_full(const char *name, void (*entry)(void *), void *arg,
+                            uint32_t stack_pages, int hart); /* defined below */
 extern void task_trampoline(void);
 
 static task_t  g_tasks[MAX_TASKS];
@@ -212,16 +214,13 @@ int task_affinity(int pid) {
 
 int task_create_driver(const char *name, void (*entry)(void *), void *arg,
                        uint32_t stack_pages) {
-    int pid = task_create_sized(name, entry, arg, stack_pages);
-    if (pid < 0) return pid;
     /* Hart 0, not "the creating hart": drivers are brought up from
      * kernel_main() on the primary, and that is also where their interrupts
      * were enabled (arch_irq_enable() writes the calling hart's PLIC
      * context). Pinning to whoever happened to create the task would be the
      * same answer today and a different one the moment anything is started
      * from elsewhere. */
-    task_set_affinity(pid, 0);
-    return pid;
+    return task_create_full(name, entry, arg, stack_pages, 0);
 }
 
 int task_set_affinity(int pid, int hart) {
@@ -334,12 +333,45 @@ void task_start(void (*entry)(void *), void *arg) {
      * resume. */
     sched_reap();
     entry(arg);
+
+    /* Returning from the body IS a clean exit, and until X5 it was reported
+     * as a kill. exit_clean was set only by task_set_exit_status(), which a
+     * U-mode program reaches through usys_exit but a kernel task that simply
+     * returns never calls -- so every such task showed "killed" in `ps`,
+     * next to the tasks the fault handler really did kill. That column is
+     * what the isolation suite reads to tell a contained fault from an
+     * ordinary exit, so a value it prints for both is worth less than it
+     * appears. The status is left at 0: a void body has no result, and 0 is
+     * what a task that returns nothing should report.
+     *
+     * A task killed from the trap handler cannot reach this line -- that
+     * task_exit() is called from the fault path and never returns -- so the
+     * distinction stays exactly where it belongs.
+     *
+     * Guarded, so a body that already reported a status through
+     * task_set_exit_status() keeps it: overwriting a deliberate 42 with a
+     * default 0 on the way out would break exactly the check that reads it
+     * (`uargs` in phase 12's C3 suite). */
+    if (!g_tasks[cur()].exit_clean) task_set_exit_status(0);
     task_exit();
 }
 
-int task_create_sized(const char *name, void (*entry)(void *), void *arg,
-                      uint32_t stack_pages) {
+/* The one creation path. `hart` is -1 for "any hart", or the hart to pin to.
+ *
+ * Pinning is threaded through here rather than applied by the caller
+ * afterwards because the affinity has to be in place *before* the task
+ * becomes READY. X2's task_create_driver() did apply it afterwards, and
+ * sched.h's own comment on that function already described why that is
+ * wrong -- "creating and pinning are one act; a window in which a driver
+ * task is briefly migratable is exactly the sort of thing that works until
+ * it doesn't". The window was real: with a second hart spinning in
+ * sched_yield(), it can claim the new task between task_create_sized()
+ * returning and task_set_affinity() landing. Found in X5, by pinning a
+ * probe to hart 0 and watching it run on hart 1. */
+static int task_create_full(const char *name, void (*entry)(void *), void *arg,
+                            uint32_t stack_pages, int hart) {
     if (!entry || stack_pages == 0) return -1;
+    if (hart >= (int)MAX_HARTS) return -1;
 
     /* Claiming a slot must be atomic with respect to anything else that scans
      * the table, or two creators could pick the same one -- and since S6
@@ -379,8 +411,8 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     t->exit_status = 0;
     /* Same reasoning, and X1 gives it teeth: a slot last used by a task
      * pinned to a hart would silently pin this one too. A new task is
-     * hart-agnostic until someone says otherwise. */
-    t->hart_affinity = -1;
+     * hart-agnostic unless this creation asked otherwise. */
+    t->hart_affinity = hart;
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;
@@ -414,15 +446,34 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     frame[2] = (uintptr_t)arg;             /* s1  */
 
     t->sp = (uintptr_t)frame;
+
+    /* Publishing the task, under the lock: the store that makes it READY is
+     * what another hart's scan is looking for, so everything that scan will
+     * then read -- sp, the domain, and above all hart_affinity -- has to be
+     * visible first. The lock's release does that ordering; a plain store
+     * here would leave a second hart free to observe READY with a stale
+     * affinity, which is the very race this path was restructured to close. */
+    uintptr_t pub = spin_lock_irqsave(&g_sched_lock);
     t->state = TASK_READY;
+    spin_unlock_irqrestore(&g_sched_lock, pub);
 
     printk("[Sched] Created task #%d '%s' (stack %p, %u KB)\n",
            slot, t->name, stack, (stack_pages * (uint32_t)PAGE_SIZE) / 1024);
     return slot;
 }
 
+int task_create_sized(const char *name, void (*entry)(void *), void *arg,
+                      uint32_t stack_pages) {
+    return task_create_full(name, entry, arg, stack_pages, -1);
+}
+
 int task_create(const char *name, void (*entry)(void *), void *arg) {
-    return task_create_sized(name, entry, arg, TASK_STACK_PAGES);
+    return task_create_full(name, entry, arg, TASK_STACK_PAGES, -1);
+}
+
+int task_create_pinned(const char *name, void (*entry)(void *), void *arg,
+                       int hart) {
+    return task_create_full(name, entry, arg, TASK_STACK_PAGES, hart);
 }
 
 /* Highest-priority runnable task, or -1 if none (M3,

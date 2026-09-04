@@ -1,10 +1,14 @@
 # Phase 22 — One real lock, before a second core ever needs one
 
-**Status: planned 2026-08-29. Amended 2026-09-03 (§6) — one
-correction (S6's rule was inverted) and a new first milestone (S0).
-S0 implemented and verified 2026-09-03 on QEMU and on RP2350 silicon
-(see its DONE note in §3); S1-S6 not started. All of it lives on branch
-`feature/multicore`.**
+**Status: COMPLETE 2026-09-04 — S0 through S6 all implemented and
+verified, on branch `feature/multicore`.** Per-hart identity (S0),
+`spinlock_t`/`ylock_t` on real `amoswap` (S1), the hand-rolled locks
+converted and the rest audited (S2-S5), and the scheduler lock held across
+`ctx_switch()` and released on the incoming stack (S6). Planned 2026-08-29,
+amended 2026-09-03 (§6) with one correction — S6's rule was inverted — and
+a new first milestone, S0. §1's claim that RP2350 boots both of its Hazard3
+cores was falsified on hardware by phase 23's X3; the correction is inline
+below. Phase 23 built on this and is complete too.
 Sequenced after phase 19's R4 (ENC28J60) and R5 (CYW43439) and phase 21's
 I7 (RP2350 flash backend), all three of which are blocked on hardware
 access today. Nothing in *this* phase requires hardware — see §3's Verify
