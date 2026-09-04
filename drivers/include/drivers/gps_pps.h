@@ -162,4 +162,20 @@ bool gps_pps_offset_us(uint64_t t_us, int64_t *offset_us);
  * too old to extrapolate from at the resolution being claimed. */
 bool gps_epoch_us(uint64_t t_us, int64_t *epoch_us);
 
+/* How wrong this board's own wall clock is, measured once a second against the
+ * pulse. Positive means the clock is ahead.
+ *
+ * The yardstick P5's verification needs, and **measurement only** -- nothing
+ * here sets a clock. The discipline loop is driven by the radio and this is
+ * the independent standard its result is judged against; if the two ever
+ * became the same source the verification would prove nothing. False until
+ * there is at least one sample. */
+typedef struct {
+    uint32_t n;
+    int64_t  last_us, mean_us, min_us, max_us;
+    uint32_t sd_us;
+} gps_clock_err_t;
+
+bool gps_clock_error(gps_clock_err_t *out);
+
 #endif /* DRIVERS_GPS_PPS_H */

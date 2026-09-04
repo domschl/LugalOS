@@ -1017,6 +1017,20 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             (long)d.mean_offset_us, (unsigned long)d.sd_offset_us,
             (unsigned long)d.age_s, (unsigned long)d.dispersion_us,
             (int)CONFIG_DCF77_DELAY_US);
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+        /* The independent check: this clock against the satellite pulse,
+         * once a second. Reported here beside what the loop believes about
+         * itself, because the interesting number is the difference between
+         * the two -- a clock whose dispersion says 5 ms while its true error
+         * is 40 ms is not disciplined, it is confident. */
+        gps_clock_err_t ce;
+        gps_clock_error(&ce);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "gps_err_n=%lu\ngps_err_last_us=%ld\ngps_err_mean_us=%ld\n"
+            "gps_err_sd_us=%lu\ngps_err_min_us=%ld\ngps_err_max_us=%ld\n",
+            (unsigned long)ce.n, (long)ce.last_us, (long)ce.mean_us,
+            (unsigned long)ce.sd_us, (long)ce.min_us, (long)ce.max_us);
+#endif
         return (int)used;
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS

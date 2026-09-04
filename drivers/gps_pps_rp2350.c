@@ -164,6 +164,23 @@ static uint32_t   g_pps_hist_n;
  * time reference alone. Together they are a local stratum-0 one, and the
  * pairing is the whole trick: an RMC sentence reports the time of the pulse
  * that preceded it, so the sentence's second labels the last edge seen. */
+/* P5's yardstick: this board's own clock, checked against the pulse.
+ *
+ * **Measurement only. Nothing here sets a clock** -- gps_pps.h's constraint is
+ * unchanged and this does not bend it. The discipline loop is driven by the
+ * radio; GPS is the independent standard the result is judged against, and
+ * those two must not become the same thing or the verification proves nothing.
+ *
+ * Sampled on the pulse itself, where the true epoch is known exactly rather
+ * than extrapolated: a PPS edge *is* a second boundary, and NMEA says which
+ * second. So this is the disciplined clock's actual error, once a second, at
+ * microsecond resolution -- against an NTP comparison that carries several
+ * milliseconds of its own noise and a measured bias besides. During holdover
+ * it is the only honest check that the reported dispersion is not a fiction. */
+static uint32_t   g_cerr_n;
+static int64_t    g_cerr_sum, g_cerr_last, g_cerr_min, g_cerr_max;
+static uint64_t   g_cerr_sumsq;
+
 static uint64_t   g_epoch_ref_us;   /* TIMER0 at that edge */
 static int64_t    g_epoch_ref_s;    /* the UTC second it began */
 static bool       g_epoch_ok;
@@ -570,6 +587,25 @@ void gps_poll(void) {
         }
         g_prev_pps_us = e.t_us;
         g_prev_pps_valid = true;
+        /* The clock's error at this pulse, before the pulse joins the
+         * history it would otherwise be compared against. */
+        if (g_epoch_ok && g_epoch_ref_us && e.t_us > g_epoch_ref_us) {
+            int64_t truth = g_epoch_ref_s * 1000000LL
+                          + (int64_t)(e.t_us - g_epoch_ref_us);
+            int64_t err = time_epoch_us_at(e.t_us) - truth;
+            /* A clock that has not been set yet is off by decades and would
+             * swamp every statistic here with one sample. */
+            if (err > -60000000LL && err < 60000000LL) {
+                if (!g_cerr_n) { g_cerr_min = g_cerr_max = err; }
+                else { if (err < g_cerr_min) g_cerr_min = err;
+                       if (err > g_cerr_max) g_cerr_max = err; }
+                g_cerr_sum += err;
+                g_cerr_sumsq += (uint64_t)(err * err);
+                g_cerr_last = err;
+                g_cerr_n++;
+            }
+        }
+
         g.pps_last_us = e.t_us;
         g_pps_hist[g_pps_hist_n % PPS_HISTORY] = e.t_us;
         g_pps_hist_n++;
@@ -698,6 +734,28 @@ void gps_nmea_types(char *buf, uint32_t cap) {
     buf[used] = '\0';
 #else
     (void)cap;
+#endif
+}
+
+bool gps_clock_error(gps_clock_err_t *out) {
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
+    if (!out) return false;
+    out->n = g_cerr_n;
+    out->last_us = g_cerr_last;
+    out->min_us = g_cerr_min;
+    out->max_us = g_cerr_max;
+    if (!g_cerr_n) { out->mean_us = 0; out->sd_us = 0; return false; }
+    int64_t m = g_cerr_sum / (int64_t)g_cerr_n;
+    out->mean_us = m;
+    int64_t var = (int64_t)(g_cerr_sumsq / g_cerr_n) - m * m;
+    uint64_t r = 0, v = (uint64_t)(var < 0 ? 0 : var);
+    while ((r + 1ull) * (r + 1ull) <= v) r++;
+    out->sd_us = (uint32_t)r;
+    return true;
+#else
+    if (out) { out->n = 0; out->last_us = out->mean_us = 0;
+               out->min_us = out->max_us = 0; out->sd_us = 0; }
+    return false;
 #endif
 }
 
