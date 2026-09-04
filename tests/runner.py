@@ -5629,6 +5629,65 @@ def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:
         return False, f"Error inspecting FAT32 image: {e}"
 
 
+
+def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, str]]:
+    """X1, plan/phase23_multicore_scheduling.md: a genuinely two-hart kernel.
+
+    Its own target, from its own build (`cmake --preset rv64-smp`), because
+    CONFIG_ENABLE_SMP is off everywhere else on purpose -- every board persona
+    boots on one hart and a regression in second-hart bring-up must not be
+    able to touch that. So this is skipped rather than failed when that build
+    is absent.
+
+    Three claims, in increasing order of what they cost to establish:
+
+      1. A second hart reaches the scheduler at all. /proc/cpuinfo counts
+         harts that got as far as sched_secondary_init(), so "2" is reported
+         by code running on hart 1.
+      2. Two tasks run concurrently and the lock holds. smptest increments a
+         shared counter through a spinlock from four workers and asserts no
+         lost updates, AND that the work executed on more than one hart -- the
+         part that distinguishes concurrency from the interleaving a single
+         preemptive hart already does. It also increments an unlocked counter
+         and reports its loss, which is what proves there was real contention
+         rather than an exactness that came for free.
+      3. Phase 22's scheduler hand-off survives real contention. lockselftest's
+         seventh check (S6) counts resumes that arrived without the lock their
+         predecessor should have handed over. On one hart that check can only
+         catch a coding mistake; here it is finally exposed to the race it was
+         written for.
+    """
+    out: list[tuple[str, bool, str]] = []
+    session = QemuSession(elf_path, img_path, "rv64-smp")
+    try:
+        session.start(extra_qemu_args=["-smp", "2"])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        out.append(("SMP: two-hart kernel boots to a shell (X1)", ok, log if not ok else ""))
+
+        # A longer window than the same read gets on a single-hart target: two
+        # harts boot noisily and this command can land while the tail of that
+        # is still streaming, which cost an intermittent failure at 5 s on a
+        # kernel that reports the right number every time when asked
+        # (verified: 5 consecutive reads, no interleaving).
+        ok, log = session.send_and_expect("cat /proc/cpuinfo", r"harts_online:\s*2", timeout=12.0)
+        out.append(("SMP: a second hart reached the scheduler (X1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("smptest", r"SMP_SELFTEST_(OK|FAIL)", timeout=60.0)
+        ok = ok and "SMP_SELFTEST_OK" in log
+        out.append(("SMP: no lost updates through the lock, on two harts (X1)", ok,
+                    log if not ok else ""))
+
+        ok, log = session.send_and_expect("lockselftest", r"LOCK_SELFTEST_(OK|FAIL)", timeout=45.0)
+        ok = ok and "LOCK_SELFTEST_OK" in log
+        out.append(("SMP: the scheduler lock hand-off holds under real contention (S6/X1)",
+                    ok, log if not ok else ""))
+    except Exception as e:  # noqa: BLE001
+        out.append(("SMP two-hart target", False, str(e)))
+    finally:
+        session.close()
+    return out
+
+
 def main() -> int:
     """Main entry point for LugalOS Test Suite."""
     project_root = Path(__file__).resolve().parent.parent
@@ -5766,6 +5825,17 @@ def main() -> int:
         _run_single(test_identity_record_auth(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
+
+    # 5. X1: the two-hart target. Built by `cmake --preset rv64-smp`; absent
+    # from a default checkout, and skipped rather than failed when so.
+    smp_elf = build_dir / "rv64-smp" / "lugalos.elf"
+    if smp_elf.exists():
+        print("\n[Target: RV64 SMP -- two harts]")
+        for r in test_smp_two_harts(smp_elf, build_dir / "rv64-smp" / "lugalos_sd.img"):
+            _run_single(r)
+    else:
+        print("\n[i] build/rv64-smp not present; skipping the two-hart target "
+              "(cmake --preset rv64-smp && cmake --build --preset rv64-smp)")
 
     duration = time.time() - start_time
     print("\n----------------------------------------------------------------------")

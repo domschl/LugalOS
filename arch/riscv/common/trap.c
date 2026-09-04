@@ -1,6 +1,7 @@
 #include "arch/trap.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
+#include "kernel/hart.h"
 #include "kernel/console.h"
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
@@ -80,20 +81,43 @@ static inline uint32_t meinext_irq(bool *valid) {
  * "standard" still deserves a source. */
 #define QEMU_PLIC_BASE     0x0c000000UL
 #if defined(CONFIG_MODE_S)
-#define QEMU_PLIC_CONTEXT  1u  /* hart 0, S-mode */
 #define QEMU_EXT_CAUSE     9u  /* Supervisor external interrupt */
 #else
-#define QEMU_PLIC_CONTEXT  0u  /* hart 0, M-mode */
 #define QEMU_EXT_CAUSE     11u /* Machine external interrupt */
 #endif
-#define QEMU_PLIC_CLAIM \
-    (QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u + 4u)
+
+/* The PLIC context of the hart executing this, by the convention documented
+ * above: hart N's M-mode context is 2N and its S-mode context is 2N+1.
+ *
+ * X1, plan/phase23_multicore_scheduling.md §6.1. This used to be the
+ * constant 1 (or 0), i.e. hart 0's context, baked into three separate
+ * address computations -- the claim/complete register, the priority
+ * threshold written at init, and the per-IRQ enable bit. §1 of that plan
+ * said the interrupt controllers were "already per-hart-addressable in
+ * principle", which was true of the hardware and not of this code.
+ *
+ * Getting it wrong is not a missing feature but active damage: a second
+ * hart claiming from hart 0's context takes an interrupt out of hart 0's
+ * queue, and writing hart 0's threshold from hart 1 reconfigures a context
+ * that is not its own. */
+static inline uint32_t plic_context(void) {
+#if defined(CONFIG_MODE_S)
+    return 2u * hart_id() + 1u;
+#else
+    return 2u * hart_id();
+#endif
+}
+
+static inline volatile uint32_t *plic_claim_reg(void) {
+    return (volatile uint32_t *)
+        (QEMU_PLIC_BASE + 0x200000u + plic_context() * 0x1000u + 4u);
+}
 
 static inline uint32_t plic_claim(void) {
-    return *(volatile uint32_t *)QEMU_PLIC_CLAIM;
+    return *plic_claim_reg();
 }
 static inline void plic_complete(uint32_t irq_num) {
-    *(volatile uint32_t *)QEMU_PLIC_CLAIM = irq_num;
+    *plic_claim_reg() = irq_num;
 }
 #endif
 
@@ -131,7 +155,7 @@ void trap_init(void) {
      * (arch_irq_enable() below). One flat priority level, the same choice
      * trap_handler()'s meinext path makes for RP2350 -- there is no
      * nested/preemptive interrupt priority anywhere in this kernel yet. */
-    *(volatile uint32_t *)(QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u) = 0;
+    *(volatile uint32_t *)(QEMU_PLIC_BASE + 0x200000u + plic_context() * 0x1000u) = 0;
 #endif
 }
 
@@ -156,8 +180,13 @@ void arch_irq_enable(uint32_t irq_num) {
      * "the lowest priority that still fires", correct for a kernel with one
      * flat interrupt level. */
     *(volatile uint32_t *)(QEMU_PLIC_BASE + 4u * irq_num) = 1;
+    /* The *calling* hart's context. Device drivers all initialise on hart 0,
+     * so this enables where it always did -- and phase 23's X2 pins driver
+     * tasks there deliberately, so routing a device IRQ to a second hart is
+     * a policy decision that belongs with X2 rather than a side effect of
+     * whoever happened to call this. */
     volatile uint32_t *enable = (volatile uint32_t *)
-        (QEMU_PLIC_BASE + 0x2000u + QEMU_PLIC_CONTEXT * 0x80u + (irq_num / 32u) * 4u);
+        (QEMU_PLIC_BASE + 0x2000u + plic_context() * 0x80u + (irq_num / 32u) * 4u);
     *enable |= (1u << (irq_num % 32u));
 #endif
 }

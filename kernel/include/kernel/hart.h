@@ -55,6 +55,19 @@
 
 #define MAX_HARTS 2
 
+/* The value the primary hart writes to g_smp_release once the kernel is far
+ * enough along for a secondary to run C code (X1,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * A magic value rather than a plain flag, because a secondary spins on this
+ * word while the primary is still *clearing .bss*, where the word lives.
+ * Before that clear it holds whatever the RAM held, so "nonzero means go"
+ * could release a hart into a half-initialised kernel. Requiring one
+ * specific 32-bit value makes an accidental release vanishingly unlikely --
+ * the same reasoning behind STACK_POISON's improbable byte-uniform pattern
+ * (kernel/include/kernel/meminfo.h). */
+#define SMP_RELEASE_MAGIC 0x5AFEC0DE
+
 #if __riscv_xlen == 64
 #define HART_REGBYTES   8
 #define HART_SIZE_SHIFT 5
@@ -138,6 +151,26 @@ typedef struct hart {
 } hart_t;
 
 extern hart_t g_harts[MAX_HARTS];
+
+/* Set to SMP_RELEASE_MAGIC by the primary hart once secondaries may run.
+ * Read by arch/riscv/common/entry.S's .Lsecondary_wait loop. */
+extern volatile uint32_t g_smp_release;
+
+/* Wakes the secondary harts. Called by the primary once the scheduler is up.
+ * A no-op unless CONFIG_ENABLE_SMP. */
+void smp_release_secondaries(void);
+
+/* Entry point for a secondary hart, called from entry.S with this hart's
+ * record already established. Does not return. */
+void secondary_main(void);
+
+/* How many harts have entered the scheduler, primary included. */
+unsigned smp_harts_online(void);
+
+/* X1's concurrency check: workers incrementing a shared counter through a
+ * lock, asserting no lost updates AND that the work ran on more than one
+ * hart. Prints SMP_SELFTEST_OK/_FAIL; returns the failure count. */
+int smp_selftest(void);
 
 /* This hart's record. Valid from the moment SETUP_HART_POINTER runs, which
  * is before kernel_main() on both boot paths, so every caller in C is safe

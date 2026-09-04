@@ -927,7 +927,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "harts_max:   %d\n", MAX_HARTS);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "harts_online: 1\n");
+            "harts_online: %u\n", smp_harts_online());
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "record:      0x%lx\n", (unsigned long)(uintptr_t)self);
         used += (uint32_t)ksnprintf(buf + used, cap - used,

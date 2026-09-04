@@ -75,6 +75,37 @@ SECTIONS
         _stack_bottom = .;
         . += 0x10000;
         _stack_top = .;
+
+        /* Secondary hart boot stack (X1,
+         * plan/phase23_multicore_scheduling.md §2).
+         *
+         * 16 KB, and this is a **guess, not a measurement** -- §2 asks for
+         * the latter and X1 cannot yet supply it, because nothing has run
+         * deeply on a second hart to measure. Said plainly rather than
+         * dressed up: the number is generous on purpose and owes a real
+         * figure.
+         *
+         * The reasoning behind "generous" is that a secondary's own call
+         * chain is shallow by construction -- secondary_main() ->
+         * sched_yield() -> ctx_switch(), plus a timer trap frame -- but a
+         * secondary does not only run its own chain. The moment it pulls a
+         * task off the shared queue it executes whatever that task does, on
+         * that task's palloc'd stack rather than this one; only the idle
+         * context lives here. 16 KB is therefore expected to be mostly
+         * unused, and the way to find out is the paint-and-scan
+         * kernel/meminfo.c already does for the primary, pointed at
+         * _stack_secondary_bottom..top. That is a follow-up, and it is
+         * written down as one.
+         *
+         * Allocated unconditionally, not behind CONFIG_ENABLE_SMP: a linker
+         * script cannot see the generated config header, and 16 KB of RAM on
+         * a 128 MB QEMU machine is not worth a second script to avoid. On
+         * RP2350, where it would matter, secondaries are not woken at all
+         * yet -- that is X3. */
+        . = ALIGN(4096);
+        _stack_secondary_bottom = .;
+        . += 0x4000;
+        _stack_secondary_top = .;
     } > RAM
 
     . = ALIGN(4096);

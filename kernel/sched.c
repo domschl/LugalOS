@@ -109,6 +109,7 @@ void sched_init(void) {
         g_tasks[i].pid = i;
         g_tasks[i].state = TASK_UNUSED;
         g_tasks[i].name = "(unused)";
+        g_tasks[i].hart_affinity = -1;   /* any hart, unless pinned */
     }
 
     /* The boot context becomes task 0. Its stack is the linker-provided boot
@@ -117,6 +118,9 @@ void sched_init(void) {
     g_tasks[0].state = TASK_RUNNING;
     g_tasks[0].name = "kernel";
     g_tasks[0].stack_base = NULL;
+    /* Pinned to the primary: this task runs on the linker's boot stack, so
+     * another hart resuming it would execute on hart 0's stack (X1). */
+    g_tasks[0].hart_affinity = 0;
     g_tasks[0].priority = TASK_PRIO_NORMAL;
     for (int h = 0; h < MAX_HARTS; h++) g_current[h] = 0;
     spinlock_init(&g_sched_lock);
@@ -200,6 +204,45 @@ int task_set_domain(int pid, mem_domain_t *domain) {
  * call to next_runnable(); no immediate re-yield is forced, since the
  * caller may be raising or lowering its *own* priority and forcing a
  * self-switch here would be a surprise side effect of a setter. */
+int task_set_affinity(int pid, int hart) {
+    if (pid < 0 || pid >= MAX_TASKS) return -1;
+    if (g_tasks[pid].state == TASK_UNUSED) return -1;
+    if (hart >= (int)MAX_HARTS) return -1;
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
+    g_tasks[pid].hart_affinity = hart;
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+    return 0;
+}
+
+/* A secondary hart's boot context becomes a task, the same way sched_init()
+ * does it for the primary -- there must always be something to switch away
+ * from, and set_cur() must name a real slot before this hart calls
+ * sched_yield().
+ *
+ * TASK_PRIO_IDLE so that any real work outranks it, and pinned to this hart
+ * because it runs on .stack_secondary. */
+int sched_secondary_init(void) {
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED) { slot = i; break; }
+    }
+    if (slot < 0) {
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return -1;
+    }
+    g_tasks[slot].state = TASK_RUNNING;
+    g_tasks[slot].name = "idle";
+    g_tasks[slot].stack_base = NULL;    /* the linker's, not palloc'd */
+    g_tasks[slot].stack_pages = 0;
+    g_tasks[slot].priority = TASK_PRIO_IDLE;
+    g_tasks[slot].hart_affinity = (int)hart_id();
+    g_tasks[slot].domain = NULL;
+    set_cur(slot);
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+    return slot;
+}
+
 int task_set_priority(int pid, int priority) {
     if (pid < 0 || pid >= MAX_TASKS) return -1;
     if (g_tasks[pid].state == TASK_UNUSED) return -1;
@@ -314,6 +357,10 @@ int task_create_sized(const char *name, void (*entry)(void *), void *arg,
     /* Cleared explicitly: a slot is reused from TASK_DEAD, so a previous
      * occupant's clean exit would otherwise be reported as this task's. */
     t->exit_status = 0;
+    /* Same reasoning, and X1 gives it teeth: a slot last used by a task
+     * pinned to a hart would silently pin this one too. A new task is
+     * hart-agnostic until someone says otherwise. */
+    t->hart_affinity = -1;
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;
@@ -387,6 +434,9 @@ static int next_runnable(int from) {
             }
         }
         if (g_tasks[i].state != TASK_READY) continue;
+        /* X1: a task pinned elsewhere is not runnable here. */
+        if (g_tasks[i].hart_affinity >= 0 &&
+            g_tasks[i].hart_affinity != (int)hart_id()) continue;
         if (g_tasks[i].priority > chosen_prio) {
             chosen = i;
             chosen_prio = g_tasks[i].priority;
@@ -445,6 +495,33 @@ void sched_yield(void) {
     int prev = cur();
     int next = next_runnable(prev);
     if (next < 0) { spin_unlock_irqrestore(&g_sched_lock, flags); return; }
+
+    /* next_runnable() can hand back the *calling* task, and switching to
+     * ourselves would be a silent corruption rather than a no-op.
+     *
+     * That scan does two jobs: it finds a READY task, and on the way it wakes
+     * any sleeper whose wake_at_ms has passed. The caller of sched_yield() is
+     * usually RUNNING and therefore skipped -- but a task inside
+     * task_sleep_ms() reaches here BLOCKED with a deadline set, so if that
+     * deadline has expired the scan wakes it, finds it READY, and returns it.
+     *
+     * ctx_switch(&X.sp, X.sp) is not a no-op: `next`'s sp is read into a1
+     * before the call, then the call stores the *current* sp over X.sp and
+     * restores registers from the value a1 held -- an older, stale frame of
+     * this same task. The result is a return into a dead stack, which shows
+     * up as an instruction access fault with a nonsense `ra`.
+     *
+     * Pre-existing and not an SMP bug: on one hart it needs a sleeping task
+     * whose deadline expired while nothing else was READY, which the shell
+     * and p9srv normally prevent by being runnable. Phase 23's X1 made it
+     * routine, because a second hart runs out of work far more often. Found
+     * 2026-09-04 by a double-schedule detector reporting a task as already
+     * running on the very hart that was about to switch to it. */
+    if (next == prev) {
+        g_tasks[prev].state = TASK_RUNNING;   /* the scan had marked us READY */
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return;
+    }
 
     if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
     g_tasks[next].state = TASK_RUNNING;

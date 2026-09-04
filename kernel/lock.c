@@ -265,9 +265,22 @@ int lock_selftest(void) {
         bool kept_out_at_depth_1 = !g_contender_acquired;
 
         ylock_release(&g_test_ylock);
-        bool now_free = (ylock_depth(&g_test_ylock) == 0) &&
-                        (ylock_owner(&g_test_ylock) == -1);
 
+        /* Deliberately NOT asserting depth==0 / owner==-1 here.
+         *
+         * That assertion was in this test and it was wrong -- valid only on a
+         * kernel where nothing else can run between the release and the next
+         * statement. With a second hart the contender is already inside the
+         * lock by the time this line executes, so the snapshot legitimately
+         * reads depth 1 owned by someone else, and the test failed on a
+         * kernel that was behaving perfectly (found by phase 23's X1,
+         * 2026-09-04).
+         *
+         * It was also redundant: the release is proven by the contender
+         * getting in, which is checked below and cannot happen unless the
+         * lock really was handed over. An intermediate state that a
+         * concurrent system may change at any moment is not something a test
+         * is entitled to observe. */
         for (int i = 0; i < 200 && spawned && !g_contender_done; i++) sched_yield();
         bool contender_got_in = g_contender_acquired && g_contender_done;
 
@@ -276,7 +289,7 @@ int lock_selftest(void) {
         check("ylock: a different task is scheduled but stays out while held",
               spawned && contender_scheduled && kept_out && still_held && kept_out_at_depth_1);
         check("ylock: the last release frees it and the waiter proceeds",
-              spawned && now_free && contender_got_in);
+              spawned && contender_got_in);
     }
 
     /* --- 5. the scheduler lock is handed across every switch (S6) ------ */

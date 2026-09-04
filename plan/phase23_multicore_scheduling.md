@@ -131,6 +131,78 @@ across `ctx_switch()`) gets its first genuine test.
 > `plan/phase22_smp_locking_foundation.md` §6.1 before writing X1's test,
 > since the canary it originally described would fire on correct code.
 
+**DONE 2026-09-04.** Two harts, one shared ready queue, `CONFIG_ENABLE_SMP`
+off by default. `cmake --preset rv64-smp` builds it; the suite runs it as
+its own target under `qemu -smp 2` and skips it when that build is absent.
+
+```
+workers=4 iters=20000  locked=80000 (want 80000)
+                       unlocked=79971 (lost 29)   harts=2
+```
+
+The unlocked counter is the point of that line. Without it, "80000 of
+80000" only shows that nothing went wrong; with it, 29 lost updates prove
+there was real contention for the lock to have prevented. Phase 22's claim
+is tested against a second hart for the first time, including S6's
+hand-off canary, which on one hart could only ever catch a coding mistake.
+
+**§1 was wrong by omission, and it cost the most time.** It listed
+"PMP/Sv39 activation is already hart-local" under what does not need to
+change. True of `mem_domain_activate()`, and irrelevant, because a
+secondary hart was never in the kernel's *own* address space to begin
+with: `satp` is per-hart, so hart 1 ran in bare mode while hart 0
+translated. It started, printed, entered the scheduler, and then resumed a
+task whose saved context held addresses it could not translate. The dumps
+showed one symbol as both `0x80235c90` and `0xffffffff80235c90`, which is
+what gave it away. `vmm_secondary_init()` fixes it.
+
+**Two more bugs, both real, neither anticipated:**
+
+- **`tp` was restored from the trap frame on kernel returns.** A task
+  preempted on one hart and resumed on another would restore the *old*
+  hart's record, so hart 1 adopted hart 0's identity, read the wrong
+  `g_current[]`, and both harts re-ran the primary's init in a loop. The
+  frame's copy names whichever hart took the trap; the correct action on a
+  kernel return is none at all, since `tp` already holds this hart's
+  record.
+- **`sched_yield()` could switch a task to itself.** `next_runnable()`
+  wakes any sleeper whose deadline passed *including the caller*, so a
+  task inside `task_sleep_ms()` could be returned as `next == prev`.
+  `ctx_switch(&X.sp, X.sp)` is not a no-op: it stores the current sp over
+  `X.sp` and restores from the value already read into `a1`, an older
+  frame of the same task. **Pre-existing and not an SMP bug** — on one
+  hart it needs a sleeper to expire while nothing else is READY, which the
+  shell and p9srv normally prevent. A second hart runs out of work far
+  more often, which is how X1 found it.
+
+**X4 is partly answered, by need.** `g_ticks` became per-hart. S5 had
+recorded it as racy and left the choice between one atomic counter and one
+per hart to X4; X1 forced it, because `lockselftest`'s masking check holds
+a spinlock with interrupts off and asserts the tick counter is frozen —
+and a *global* counter keeps advancing from the other hart's timer, failing
+a kernel whose masking is perfectly correct. Per hart is also what every
+reader already meant.
+
+**A test was wrong, not the kernel.** `lockselftest` asserted that
+immediately after the final `ylock_release()` the lock reads free. With a
+second hart the waiter is already inside it by the next statement, so the
+assertion observed an intermediate state a concurrent system may change at
+any moment. Removed; the release is proven by the waiter getting in, which
+was already checked.
+
+*Verified:* QEMU **328/328** (324 + 4 SMP), five consecutive runs. RP2350
+chess persona **24/24** with the gate off, `lockselftest` 7/7 on silicon.
+Static RAM **+208** on RP2350 where SMP is *not* enabled: `hart_affinity`
+across 24 task slots (+192, mostly alignment padding), per-hart `g_ticks`
+(+8), and `g_smp_release` (+8). The `smptest` statics are inside the gate,
+and on a non-SMP build the command reports SKIPPED rather than failing by
+design.
+
+**Affinity arrived early, in X1 rather than X2.** Not tuning: task 0 runs
+on the linker's boot stack and each secondary's idle task on
+`.stack_secondary`, so letting another hart pick one up puts two harts on
+one stack. X2 extends the same field to the driver tasks.
+
 **X2 — driver-task affinity.** Pin existing driver tasks to core 0;
 confirm phase 12's per-task PMP/Sv39 isolation guarantees hold regardless
 of which hart activates a given domain (§1 says they should; this

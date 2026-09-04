@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "kernel/meminfo.h"
 #include "kernel/hart.h"
 
@@ -18,9 +19,11 @@
 _start:
     /* RP2350 boots both cores; only core 0 (mhartid == 0) executes kernel_main */
     csrr t0, mhartid
+#if !CONFIG_ENABLE_SMP
     bnez t0, .Lsecondary_hart_loop
+#endif
 
-    /* Park the raw hart id in tp until .bss has been cleared and
+    /* Park the raw hart id until .bss has been cleared and
      * SETUP_HART_POINTER can turn it into this hart's record pointer.
      *
      * It has to be captured *here*, not there: on CONFIG_MODE_S this code
@@ -37,8 +40,20 @@ _start:
     /* Disable M-mode interrupts */
     csrw mstatus, zero
 
-    /* Setup stack pointer */
+    /* Setup stack pointer.
+     *
+     * Every hart needs its own; sharing one would have two harts pushing to
+     * the same address before either reaches C. Hart 0 keeps the linker's
+     * boot stack, secondaries get .stack_secondary (see linker/rv64_mmu.ld).
+     * Only hart 1 is supported, which MAX_HARTS already says. */
+#if CONFIG_ENABLE_SMP
+    beqz tp, .Lprimary_stack
+    la sp, _stack_secondary_top
+    j .Lhave_stack
+.Lprimary_stack:
+#endif
     la sp, _stack_top
+.Lhave_stack:
 
 #if defined(CONFIG_MODE_S)
     /* Configure PMP0 to grant S/U-mode full access to all memory */
@@ -87,6 +102,13 @@ s_mode_start:
     /* Setup Supervisor trap vector base address */
     la t0, trap_vector_entry
     csrw stvec, t0
+#endif
+
+#if CONFIG_ENABLE_SMP
+    /* Everything above is per-hart CSR state and every hart must do it for
+     * itself. Everything below -- the .data copy, the .bss clear, the stack
+     * paint -- is one-time image setup that exactly one hart may do. */
+    bnez tp, .Lsecondary_wait
 #endif
 
     /* Copy .data section from Flash to SRAM if _sidata != _data_start */
@@ -148,6 +170,37 @@ s_mode_start:
 .Lsecondary_hart_loop:
     wfi
     j 3b
+
+#if CONFIG_ENABLE_SMP
+/* --- Secondary hart entry (X1, plan/phase23_multicore_scheduling.md) ---
+ *
+ * Reached with this hart's own CSRs configured, its own stack, and the raw
+ * hart id still in tp. It must not touch memory the primary has not finished
+ * preparing, so it waits here for an explicit release.
+ *
+ * The release is a *magic value*, not "nonzero", and that is deliberate.
+ * g_smp_release lives in .bss, which the primary is in the middle of
+ * clearing while this loop runs -- so before that clear the word holds
+ * whatever the RAM held, and a nonzero test could let this hart through into
+ * a kernel whose .bss is half-zeroed. Requiring one specific 32-bit value
+ * makes an accidental release vanishingly unlikely, and the primary writes
+ * it only after SETUP_HART_POINTER and kernel_main have had their turn. Same
+ * reasoning as STACK_POISON's choice of a byte-uniform improbable pattern.
+ */
+.Lsecondary_wait:
+    la t0, g_smp_release
+    li t2, SMP_RELEASE_MAGIC
+1:
+    lw t1, 0(t0)
+    bne t1, t2, 1b
+
+    /* Safe now: .bss is cleared, so g_harts is zeroed and this hart may take
+     * its record. */
+    SETUP_HART_POINTER t0, t1
+    call secondary_main
+    /* secondary_main() does not return; if it ever does, park. */
+    j .Lsecondary_hart_loop
+#endif
 
 /* --- Trap CSR names, by privilege mode ---
  * The two builds differ only in which CSR set they use, never in structure:
@@ -320,12 +373,35 @@ trap_vector_entry:
     addi t0, sp, TRAP_FRAME_SIZE
     REG_S t0, HART_OFF_KERNEL_SP(tp)
     csrw CSR_SCRATCH, tp
+    /* Returning to U-mode: give the user program its own tp back. This is
+     * the ONLY path that reloads tp from the frame -- see the kernel case
+     * below for why. */
+    REG_L tp,  3*REGBYTES(sp)
 .Ltrap_exit_kernel:
+    /* Returning to kernel mode: tp is left exactly as it is, deliberately
+     * NOT reloaded from the frame (X1,
+     * plan/phase23_multicore_scheduling.md).
+     *
+     * The frame's copy was written when this trap was taken, and names
+     * whichever hart took it. A task can be preempted on one hart and
+     * resumed on another -- that is the entire point of a shared ready queue
+     * -- and restoring tp from its frame would hand the *new* hart the *old*
+     * hart's record. It would then read the wrong g_current[], schedule a
+     * task already running elsewhere, and both harts would execute the same
+     * stack.
+     *
+     * That is not hypothetical: it is what this did before the fix, and the
+     * symptom was hart 1 adopting hart 0's identity mid-boot and re-running
+     * the primary's init sequence in a loop.
+     *
+     * tp already holds *this* hart's record -- the trap vector set it on
+     * entry and nothing since has changed it -- so the correct action is
+     * none at all. */
 
     /* Restore general registers */
     REG_L ra,  0*REGBYTES(sp)
     REG_L gp,  2*REGBYTES(sp)
-    REG_L tp,  3*REGBYTES(sp)
+    /* tp deliberately absent: restored above, and only for a U-mode return. */
     REG_L t0,  4*REGBYTES(sp)
     REG_L t1,  5*REGBYTES(sp)
     REG_L t2,  6*REGBYTES(sp)

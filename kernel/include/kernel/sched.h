@@ -100,6 +100,22 @@ typedef struct task {
      * is not sleeping. A BLOCKED task with this set is woken by the scheduler
      * itself rather than by another task calling task_unblock(). */
     uint64_t     wake_at_ms;
+    /* Which hart may run this task: -1 for any, otherwise a hart id (X1,
+     * plan/phase23_multicore_scheduling.md).
+     *
+     * X1 needs this for correctness, not tuning, which is why it arrives
+     * before X2's driver pinning rather than with it. Almost every task here
+     * is hart-agnostic -- its stack came from palloc and means the same thing
+     * on either hart. The exceptions are the boot contexts: task 0 runs on
+     * the linker's boot stack and each secondary's idle task runs on
+     * .stack_secondary. Let another hart pick one of those up and two harts
+     * are executing on one stack, which is precisely the failure S6's
+     * hand-off rule exists to prevent -- arriving by a different route.
+     *
+     * X2 extends this to the driver tasks. The field is deliberately general
+     * from the start so that doing so is a call to task_set_affinity() and
+     * not a second mechanism. */
+    int          hart_affinity;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -248,5 +264,14 @@ bool sched_active(void);
  * specified, which would have fired on correct code. Checked by
  * `lockselftest`. */
 uint32_t sched_handoff_faults(void);
+
+/* Pins `pid` to `hart` (-1 = any hart). Returns -1 for an out-of-range pid
+ * or an unused slot. */
+int  task_set_affinity(int pid, int hart);
+
+/* Turns the calling secondary hart's boot context into a task, so it has
+ * something to switch away from, and marks it pinned here. Returns its pid,
+ * or -1 if the table is full. */
+int  sched_secondary_init(void);
 
 #endif /* LUGALOS_KERNEL_SCHED_H */

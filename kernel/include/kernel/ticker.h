@@ -37,6 +37,11 @@ bool ticker_init(uint32_t hz);
 void ticker_next(void);
 
 bool     ticker_enabled(void);
+
+/* Arms the calling hart's own preemption deadline, reusing the rate
+ * ticker_init() measured. For secondary harts (X1); see the definition for
+ * why this is not simply ticker_init() called twice. */
+void     ticker_arm_this_hart(void);
 uint64_t ticker_ticks(void);
 void     ticker_count_tick(void);
 
