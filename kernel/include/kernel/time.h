@@ -41,6 +41,27 @@ void time_set_utc(const rtc_time_t *tm);
 int64_t time_epoch_us(void);
 void    time_set_epoch_us(int64_t us);
 
+/* The wall clock as it read at a past monotonic instant. What a discipline
+ * loop needs: a radio frame is recognised long after the mark it timestamps,
+ * and comparing the mark against the clock's reading *now* would fold that
+ * delay straight into the measurement. */
+int64_t time_epoch_us_at(uint64_t mono_us);
+
+/* The clock's rate, in parts per billion against the raw monotonic counter.
+ * Billion rather than million because this board's crystal error is -0.46 ppm
+ * -- a ppm knob could only round that to nothing or to double. */
+void    time_set_freq_ppb(int32_t ppb);
+int32_t time_freq_ppb(void);
+
+/* Pays off `amount_us` of accumulated offset by running at a different rate
+ * for `over_ms`, instead of stepping. Positive amount moves the clock forward.
+ * A clock that jumps backwards to correct itself breaks anything timing an
+ * interval across the jump -- which after P6 is every NTP client on the
+ * segment -- so stepping is reserved for the case where the clock is so wrong
+ * that monotonicity is not worth preserving. */
+void    time_slew_us(int64_t amount_us, uint32_t over_ms);
+bool    time_slewing(void);
+
 /* False while the clock still holds the instant compiled into kernel/time.c
  * -- i.e. nothing (RTC, NTP, DCF-77 or a person) has ever set it. The value
  * is plausible either way, so this is the only way to know. */

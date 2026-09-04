@@ -9,6 +9,8 @@
 #include "drivers/at24c32.h"
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"
+#include "kernel/discipline.h"
+#include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/klog.h"
@@ -991,6 +993,32 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 #endif
         return (int)used;
     }
+    else if (strcmp(rel, "clock") == 0) {
+        /* The discipline loop's own account of itself (P5). Everywhere else
+         * this tree reports what a device did; this reports what the clock
+         * believes about itself, which is the only way to tell a clock that is
+         * right from one that is merely confident. */
+        disc_status_t d;
+        discipline_status(&d);
+        static const char *const NAMES[] = { "unset", "step", "track", "holdover" };
+        uint32_t used = 0;
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "state=%s\nsamples=%lu\naccepted=%lu\nrejected=%lu\n",
+            NAMES[(unsigned)d.state <= 3u ? (unsigned)d.state : 0u],
+            (unsigned long)d.samples, (unsigned long)d.accepted,
+            (unsigned long)d.rejected);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "freq_ppb=%ld\nslewing=%s\nlast_offset_us=%ld\n",
+            (long)d.freq_ppb, time_slewing() ? "yes" : "no",
+            (long)d.last_offset_us);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "mean_offset_us=%ld\nsd_offset_us=%lu\nage_s=%lu\n"
+            "dispersion_us=%lu\ndelay_const_us=%d\n",
+            (long)d.mean_offset_us, (unsigned long)d.sd_offset_us,
+            (unsigned long)d.age_s, (unsigned long)d.dispersion_us,
+            (int)CONFIG_DCF77_DELAY_US);
+        return (int)used;
+    }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     else if (strcmp(rel, "gps") == 0) {
         /* P3b's window on the transfer standard, and the reason it is a file
@@ -1198,7 +1226,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif

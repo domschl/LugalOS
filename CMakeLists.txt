@@ -428,6 +428,7 @@ set(SOURCES
     kernel/uaccess.c
     kernel/ticker.c
     kernel/time.c
+    kernel/discipline.c
     kernel/timezone.c
     # N1 (plan/phase18_networking_and_auth.md): SHA-256/HMAC-SHA-256 for the
     # 9P Tauth gate. Target-independent and built everywhere, including the

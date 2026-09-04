@@ -5,6 +5,7 @@
 #include "drivers/dcf77.h"
 #include "drivers/edgecap.h"
 #include "drivers/gps_pps.h"
+#include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -113,6 +114,16 @@ static int64_t    g_gerr_sum_us;
 static uint64_t   g_gerr_sumsq;
 static int64_t    g_gerr_last_us;
 static uint32_t   g_gerr_secbad;
+
+/* P5: when the DS3231 was last written from the disciplined clock.
+ *
+ * Hourly, not per discipline step. The chip is the power-cut backup, not the
+ * clock -- it has a 1 s resolution the loop long since bettered, and writing
+ * it every minute would spend bus traffic and EEPROM-adjacent wear to store a
+ * worse copy of something already correct. Hourly keeps a cold start within a
+ * second and costs nothing. */
+static uint64_t   g_rtc_written_ms;
+static bool       g_rtc_ever_written;
 
 static bool        g_ever_synced;
 static rtc_time_t  g_last_sync_utc;
@@ -259,6 +270,34 @@ void dcf77_service_feed(uint64_t now_ms) {
                 g_pps_n++;
                 g_pps_last_us = off;
                 g_pps_have = true;
+            }
+
+            /* P5: the same frame, as a phase measurement for the clock.
+             *
+             * This is what turns the radio from a thing that sets the clock
+             * once a night into a reference the clock tracks continuously.
+             * The offset is our own reading at the mark against what the radio
+             * says the time was there -- the decoded second plus the receiver
+             * delay P4 measured, because the mark arrives that much after the
+             * second it labels.
+             *
+             * Only from an edge-snapped mark, for the same reason P4 is: the
+             * millisecond fallback is quantised at 25-35 ms by the debounce,
+             * which is larger than the offsets being disciplined and would
+             * feed the loop noise it cannot distinguish from real error. */
+            int64_t true_us = time_to_epoch(&got) * 1000000LL
+                            + (int64_t)CONFIG_DCF77_DELAY_US;
+            int64_t ours_us = time_epoch_us_at(g_radio_at_us);
+            if (discipline_feed(ours_us - true_us, g_radio_at_us)) {
+                uint64_t now_ms2 = time_get_ms();
+                if (!g_rtc_ever_written ||
+                    now_ms2 - g_rtc_written_ms >= 3600ull * 1000ull) {
+                    rtc_time_t bk;
+                    time_get_utc(&bk);
+                    i2c_rtc_write_time(&bk);
+                    g_rtc_written_ms = now_ms2;
+                    g_rtc_ever_written = true;
+                }
             }
 
             /* The whole claim, against the local reference. */

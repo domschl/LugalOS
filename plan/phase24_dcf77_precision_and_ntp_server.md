@@ -861,6 +861,51 @@ comparison is re-run alongside as an independent cross-check** -- two methods
 that disagree by more than their stated uncertainties mean one of them is
 wrong, and finding that out here is much cheaper than finding it out in P6.
 
+**P5 — discipline, not a nightly step. BUILT 2026-09-04; the multi-day
+verification run is what remains.**
+
+As built, in three pieces:
+
+* **`kernel/time.c` learned a rate.** The monotonic-to-wall conversion carries
+  a `freq_ppb` correction and a separate temporary `slew_ppb`. Parts per
+  *billion* because the quantity is smaller than a part per million -- this
+  crystal measured -0.46 ppm, and a ppm knob could only round that to nothing
+  or to double. Every setter rebases through the same arithmetic the reader
+  uses, so a rate change applies from now rather than retroactively rewriting
+  how much time has passed; if the two could differ, each rebase would inject
+  the very step this exists to avoid. `time_epoch_us_at()` answers what the
+  clock read at a past instant, which a discipline loop needs because a frame
+  is recognised long after the mark it timestamps.
+* **`kernel/discipline.c` is the loop**, and deliberately knows nothing about
+  radio: it takes an offset and the instant that offset refers to. DCF-77 is
+  the first caller, P6's server needs the same clock, and an NTP client
+  disciplining from the network would feed the identical interface.
+* **The DCF service feeds it every accepted frame**, and writes the DS3231
+  hourly rather than per step -- the chip is the power-cut backup, not the
+  clock, and its 1 s resolution is worse than what the loop already holds.
+
+The thresholds are measured rather than chosen. Outlier rejection is at 25 ms
+because P4 measured this receiver at 2.03 ms sd over 1073 frames, so that is
+past ten sigma: a frame that far out is not noisy, it is wrong, and DCF-77
+delivers those under marginal reception *with correct parity*, because parity
+catches a flipped bit and not a plausible minute. Rejection gives up after
+five consecutive refusals, because a loop that can only reject has stopped
+working if the world really did move.
+
+`/proc/clock` reports state, rate, offsets and dispersion. Dispersion is what
+makes holdover honest -- a clock that has lost its reference stays useful only
+if it says how much less it should be trusted -- and P6 reports it straight
+into NTP's root dispersion.
+
+Verified in the suite on every target (`disciplineselftest`, six checks), not
+only on hardware: a 900 ms offset steps, a 2 ms offset tracks, a 200 ms jump is
+rejected, persistent disagreement is eventually believed, a steady drift is
+learned as a *rate* rather than repeatedly corrected as a phase, and dispersion
+is reported. It drives the shipping entry point and restores the clock
+afterwards, so it is safe on a board whose clock other things are using.
+
+**Original text follows.**
+
 **P5 — discipline, not a nightly step.** The phase's real work. Every accepted
 frame is a phase measurement; a run of them is a frequency measurement.
 Two-state loop -- phase offset and a ppm correction applied to the

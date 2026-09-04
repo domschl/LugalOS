@@ -30,6 +30,24 @@ static uint64_t g_boot_us_offset = 0;
 static int64_t  g_base_epoch_us = 1785931200000000LL; /* 2026-08-05 12:00:00 UTC */
 static uint64_t g_base_mono_us = 0;
 
+/* The wall clock's rate, as a correction to the monotonic counter in parts per
+ * billion (P5, plan/phase24_dcf77_precision_and_ntp_server.md).
+ *
+ * Parts per *billion* rather than million because the quantity being corrected
+ * is smaller than a part per million: this board's crystal measured -0.46 ppm,
+ * so a ppm-resolution knob could only round it to zero or double it. Positive
+ * means the wall clock runs faster than the raw counter.
+ *
+ * g_slew_ppb is separate and temporary. Steering out an accumulated offset by
+ * changing the rate for a while is what keeps the clock monotonic -- a clock
+ * that jumps backwards to correct itself is useless to anything timing an
+ * interval across the jump, which after P6 includes every NTP client on the
+ * segment. The long-term correction describes the crystal; the slew describes
+ * a debt being paid off. */
+static int32_t  g_freq_ppb = 0;
+static int32_t  g_slew_ppb = 0;
+static uint64_t g_slew_until_mono_us = 0;
+
 /* Whether anything has ever set this clock, as opposed to it still holding
  * the instant compiled in above. The difference is invisible in the value --
  * 2026-08-05 12:00 UTC is a perfectly plausible time, and on a board in CEST
@@ -184,14 +202,68 @@ unsigned time_weekday(const rtc_time_t *tm) {
     return (w == 0) ? 7u : (unsigned)w;
 }
 
+/* The correction accrued over `elapsed` microseconds of raw counter.
+ *
+ * Split from the caller so the rebase in every setter uses exactly the same
+ * arithmetic the reader does -- if they could differ, each rebase would inject
+ * a small step, which is precisely what all of this exists to avoid. */
+static int64_t rate_correction(uint64_t elapsed_us, uint64_t at_mono_us) {
+    int64_t ppb = g_freq_ppb;
+    if (g_slew_ppb && at_mono_us < g_slew_until_mono_us) ppb += g_slew_ppb;
+    /* elapsed * ppb / 1e9, ordered to keep the intermediate in range: an hour
+     * is 3.6e9 us, and 3.6e9 * 1e6 overflows nothing in 64 bits but a
+     * carelessly large ppb would, so the divide happens on the larger term. */
+    return (int64_t)(elapsed_us / 1000u) * ppb / 1000000LL;
+}
+
+int64_t time_epoch_us_at(uint64_t mono_us) {
+    uint64_t elapsed = mono_us > g_base_mono_us ? mono_us - g_base_mono_us : 0;
+    return g_base_epoch_us + (int64_t)elapsed + rate_correction(elapsed, mono_us);
+}
+
 int64_t time_epoch_us(void) {
-    return g_base_epoch_us + (int64_t)(time_get_us() - g_base_mono_us);
+    return time_epoch_us_at(time_get_us());
+}
+
+/* Moves the base to *now* without moving the clock, so a rate change applies
+ * from here rather than retroactively rewriting how much time has passed. */
+static void rebase(void) {
+    uint64_t now = time_get_us();
+    g_base_epoch_us = time_epoch_us_at(now);
+    g_base_mono_us = now;
 }
 
 void time_set_epoch_us(int64_t us) {
     g_clock_set = true;
     g_base_epoch_us = us;
     g_base_mono_us = time_get_us();
+}
+
+void time_set_freq_ppb(int32_t ppb) {
+    /* Clamped, because a discipline loop that has diverged must not be able to
+     * make the clock run at an arbitrary rate. 100 ppm is far outside any
+     * crystal this runs on and far inside anything that would break. */
+    if (ppb >  100000) ppb =  100000;
+    if (ppb < -100000) ppb = -100000;
+    rebase();
+    g_freq_ppb = ppb;
+}
+
+int32_t time_freq_ppb(void) { return g_freq_ppb; }
+
+void time_slew_us(int64_t amount_us, uint32_t over_ms) {
+    rebase();
+    if (!over_ms || !amount_us) { g_slew_ppb = 0; g_slew_until_mono_us = 0; return; }
+    /* The rate that pays off `amount_us` across `over_ms`, in ppb. */
+    int64_t ppb = amount_us * 1000000LL / (int64_t)over_ms;
+    if (ppb >  500000) ppb =  500000;      /* 500 ppm: 1.8 s per hour, plenty */
+    if (ppb < -500000) ppb = -500000;
+    g_slew_ppb = (int32_t)ppb;
+    g_slew_until_mono_us = time_get_us() + (uint64_t)over_ms * 1000ull;
+}
+
+bool time_slewing(void) {
+    return g_slew_ppb != 0 && time_get_us() < g_slew_until_mono_us;
 }
 
 void time_get_utc(rtc_time_t *tm) {

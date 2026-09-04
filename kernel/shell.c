@@ -12,6 +12,7 @@
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
@@ -2036,6 +2037,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "timeselftest") == 0) {
         time_selftest();
+        return;
+    } else if (strcmp(cmd_line, "disciplineselftest") == 0) {
+        discipline_selftest();
         return;
     } else if (strcmp(cmd_line, "idstoreselftest") == 0) {
         idstore_selftest();

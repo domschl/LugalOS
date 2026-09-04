@@ -530,6 +530,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Microsecond Wall Clock: Round Trip And Sub-Millisecond Detail (P2)",
                         t_ok, log if not t_ok else ""))
 
+        # P5: the discipline loop. Every property here is one the loop must
+        # have to be worth running at all -- it steps a wildly wrong clock
+        # rather than slewing for hours, never steps a nearly-right one,
+        # rejects the plausible-but-wrong frame that marginal reception
+        # actually produces, gives up rejecting when the world really has
+        # moved, and learns a *rate* from a run of phase measurements rather
+        # than only chasing each one. Driven through the shipping entry point
+        # and it restores the clock afterwards, so it is safe on a board whose
+        # clock other things are using.
+        ok, log = session.send_and_expect("disciplineselftest\n",
+                                          r"DISCIPLINE_SELFTEST_(OK|FAIL)", timeout=20.0)
+        d_ok = ok and "DISCIPLINE_SELFTEST_OK" in log
+        results.append(("Clock Discipline: Step, Slew, Outlier Rejection And Rate Learning (P5)",
+                        d_ok, log if not d_ok else ""))
+
         ok, log = session.send_and_expect("dcf77selftest\n",
                                           r"DCF77_SELFTEST_(OK|FAIL)", timeout=30.0)
         sel_ok = ok and "DCF77_SELFTEST_OK" in log
