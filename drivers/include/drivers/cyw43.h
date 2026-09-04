@@ -105,6 +105,17 @@ typedef struct {
 
 void cyw43_link_status(cyw43_link_status_t *out);
 
+/* Escalating recovery for a link that will not come back: 1 disassociates,
+ * 2 takes the interface down and up and re-arms the event mask. Level 0 -- a
+ * plain re-join -- is what the caller should try first and is what the vendor
+ * driver does; these exist because that can be permanently insufficient. */
+void cyw43_link_recover(unsigned level);
+
+/* Performs work the event handler deferred because it cannot touch the bus --
+ * currently the disassociate a DEAUTH_IND(reason 2) requires. Call from a task
+ * before attempting a re-join. */
+void cyw43_service_pending(void);
+
 int cyw43_autostart_task_start(void);
 
 #endif /* DRIVERS_CYW43_H */

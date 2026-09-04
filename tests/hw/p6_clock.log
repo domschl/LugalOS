@@ -67,3 +67,15 @@
 09:54:23 UNREACHABLE
 09:55:25 UNREACHABLE
 09:56:26 UNREACHABLE
+09:57:27 UNREACHABLE
+09:58:28 UNREACHABLE
+09:59:30 UNREACHABLE
+10:00:31 UNREACHABLE
+10:01:32 UNREACHABLE
+10:02:29 state=unset acc=0 rej=0 freq_ppb=0 off_us=0 disp_us=0 age_s=0 gerr_n=41 gerr_last=353994 gerr_mean=353985 gerr_sd=227 gerr_min=353977 gerr_max=353995 frames=0 pulses=44 duty=883
+10:03:24 state=unset acc=0 rej=0 freq_ppb=0 off_us=0 disp_us=0 age_s=0 gerr_n=96 gerr_last=21 gerr_mean=151187 gerr_sd=175095 gerr_min=-1 gerr_max=353995 frames=0 pulses=98 duty=864
+10:04:20 state=unset acc=0 rej=0 freq_ppb=0 off_us=0 disp_us=0 age_s=0 gerr_n=152 gerr_last=38 gerr_mean=95497 gerr_sd=157098 gerr_min=-1 gerr_max=353995 frames=0 pulses=153 duty=891
+10:05:16 state=track acc=1 rej=0 freq_ppb=0 off_us=1382 disp_us=450 age_s=15 gerr_n=207 gerr_last=12 gerr_mean=70134 gerr_sd=141067 gerr_min=-1 gerr_max=353995 frames=1 pulses=207 duty=894
+10:06:12 state=track acc=2 rej=0 freq_ppb=0 off_us=-3385 disp_us=2713 age_s=11 gerr_n=263 gerr_last=-22 gerr_mean=55190 gerr_sd=128407 gerr_min=-102 gerr_max=353995 frames=2 pulses=262 duty=891
+10:07:08 state=track acc=3 rej=0 freq_ppb=0 off_us=-1998 disp_us=2242 age_s=8 gerr_n=320 gerr_last=-49 gerr_mean=45383 gerr_sd=118301 gerr_min=-102 gerr_max=353995 frames=3 pulses=318 duty=891
+10:08:03 state=track acc=4 rej=0 freq_ppb=0 off_us=327 disp_us=1967 age_s=3 gerr_n=375 gerr_last=-62 gerr_mean=38735 gerr_sd=110452 gerr_min=-102 gerr_max=353995 frames=4 pulses=372 duty=916
