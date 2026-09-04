@@ -9,6 +9,7 @@
 #include "kernel/printk.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
+#include "arch/rp2350_bootrom.h"
 #include "kernel/console.h"
 #include "kernel/meminfo.h"
 #include <stddef.h>
@@ -167,6 +168,12 @@ volatile uint32_t g_xlock_harts;
 volatile uint32_t g_xlock_fail_c0;
 volatile uint32_t g_xlock_fail_c1;
 volatile uint32_t g_xlock_c1_done;
+volatile uint32_t g_xlock_c1_ready;
+volatile uint32_t g_xlock_go;
+/* When each core's loop ran, so the overlap is measured rather than inferred
+ * from whether the racy counter happened to lose anything. */
+volatile uint64_t g_xlock_t0_start, g_xlock_t0_end;
+volatile uint64_t g_xlock_t1_start, g_xlock_t1_end;
 
 static bool xlock_take(uint32_t budget) {
     while (budget--) {
@@ -191,7 +198,26 @@ static void xlock_run(unsigned hart, volatile uint32_t *fails) {
 }
 
 static void core1_locktest_main(void) {
+    /* Start together, or this measures nothing.
+     *
+     * The first run on hardware reported a perfect locked count and `lost 0`
+     * on the unlocked counter -- which is not a pass, it is the signature of
+     * two loops that never overlapped. Core 1 has a bootrom launch and its
+     * own entry path to get through while core 0 starts immediately, and
+     * 50,000 iterations of a few instructions are gone in about a
+     * millisecond. Both cores finished; neither met the other.
+     *
+     * smp_selftest() already documents this trap for the QEMU case ("if both
+     * counters come out exact, there was no contention and the result proved
+     * nothing"). Here it is the whole experiment, so the barrier is not
+     * optional. */
+    g_xlock_c1_ready = 1;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    while (!g_xlock_go) { }
+
+    g_xlock_t1_start = time_get_us();
     xlock_run(1, &g_xlock_fail_c1);
+    g_xlock_t1_end = time_get_us();
     g_xlock_c1_done = 1;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     for (;;) { g_core1_ticks++; }   /* fall back to proof-of-life */
@@ -355,10 +381,16 @@ void smp_flash_park_release(void) {
 }
 
 int smp_start_secondary(unsigned mode) {
-    if (smp_harts_online() > 1) {
-        printk("[SMP] core 1 is already running; not launching again\n");
+    /* One launch per boot, whatever the mode. harts_online() alone is not
+     * enough: probe and locktest leave core 1 running without ever entering
+     * the scheduler, so it stays 1 while core 1 is very much alive, and a
+     * second handshake would be talking to a core that is not listening. */
+    static bool launched;
+    if (launched || smp_harts_online() > 1) {
+        printk("[SMP] core 1 has already been launched this boot; reboot first\n");
         return -1;
     }
+    launched = true;
 
     uint32_t before = g_core1_ticks;
 
@@ -371,7 +403,9 @@ int smp_start_secondary(unsigned mode) {
     __atomic_thread_fence(__ATOMIC_RELEASE);
 
     printk("[SMP] launching core 1 in %s mode (ticks before: %lu)\n",
-           mode == CORE1_MODE_JOIN ? "JOIN" : "probe", (unsigned long)before);
+           mode == CORE1_MODE_JOIN     ? "JOIN"     :
+           mode == CORE1_MODE_LOCKTEST ? "locktest" : "probe",
+           (unsigned long)before);
 
     if (!smp_launch_core1()) {
         printk("[SMP] core 1 did not answer the launch handshake (still parked)\n");
@@ -384,8 +418,22 @@ int smp_start_secondary(unsigned mode) {
          * masked across each critical section only -- a preemption while
          * holding the word would be harmless (nothing else on this core
          * touches it) but would skew the contention this is measuring. */
+        /* Wait for core 1 to reach its side of the barrier, then release
+         * both. Bounded: a core 1 that never arrives is reported, not spun
+         * on. */
+        uint64_t ready_by = time_get_us() + 1000000;   /* 1 s */
+        while (!g_xlock_c1_ready && time_get_us() < ready_by) { }
+        if (!g_xlock_c1_ready) {
+            printk("[SMP] XLOCK_FAIL -- core 1 never reached the barrier\n");
+            return -1;
+        }
+        g_xlock_go = 1;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
         uintptr_t f = irq_save();
+        g_xlock_t0_start = time_get_us();
         xlock_run(0, &g_xlock_fail_c0);
+        g_xlock_t0_end = time_get_us();
         irq_restore(f);
 
         uint64_t deadline = time_get_us() + 2000000;   /* 2 s */
@@ -401,23 +449,83 @@ int smp_start_secondary(unsigned mode) {
                (unsigned long)g_xlock_fail_c0, (unsigned long)g_xlock_fail_c1,
                g_xlock_c1_done ? "yes" : "NO");
 
-        bool ok = (g_xlock_locked == want) && (g_xlock_harts == 0x3u) &&
+        /* The overlap, in microseconds. Two loops that both finished prove
+         * nothing about exclusion if they never ran at the same time, and
+         * the first hardware run looked perfect for exactly that reason. */
+        uint64_t lo = g_xlock_t0_start > g_xlock_t1_start ? g_xlock_t0_start : g_xlock_t1_start;
+        uint64_t hi = g_xlock_t0_end   < g_xlock_t1_end   ? g_xlock_t0_end   : g_xlock_t1_end;
+        long overlap = (hi > lo) ? (long)(hi - lo) : 0;
+        printk("[SMP] core0 ran %lu..%lu us, core1 ran %lu..%lu us -- overlap %ld us\n",
+               (unsigned long)g_xlock_t0_start, (unsigned long)g_xlock_t0_end,
+               (unsigned long)g_xlock_t1_start, (unsigned long)g_xlock_t1_end,
+               overlap);
+
+        bool ok = (overlap > 0) && (g_xlock_locked == want) && (g_xlock_harts == 0x3u) &&
                   g_xlock_c1_done && !g_xlock_fail_c0 && !g_xlock_fail_c1;
+
+        /* Reported, never asserted: "a race must lose at least one update" is
+         * probabilistic, and a test that fails when the machine happens to
+         * schedule kindly is worse than one that says what it saw. But with
+         * the barrier above, no loss at all means the two loops still did not
+         * meet -- and then the exact count above is not evidence of anything.
+         * Saying so is the difference between a result and a green tick. */
+        if (g_xlock_unlocked == want) {
+            printk("[SMP] note: the unlocked counter lost nothing. With a real overlap\n"
+                   "      above that is luck; with none, the exact count proves nothing\n");
+        }
+        if (overlap <= 0) {
+            printk("[SMP] the two loops never ran at the same time -- this measured nothing\n");
+        }
+
         printk(ok ? "[SMP] XLOCK_OK -- amoswap excludes one Hazard3 core from the other\n"
                   : "[SMP] XLOCK_FAIL -- cross-core mutual exclusion did NOT hold\n");
         return ok ? 0 : -1;
     }
 
     if (mode == CORE1_MODE_JOIN) {
+        /* A deadman, because this is the experiment that hangs boards.
+         *
+         * Three attempts at this milestone each ended with a board whose USB
+         * console never came back, each costing a physical BOOTSEL press and
+         * taking the evidence with it. A bootrom reboot armed *before* the
+         * risky window turns that into a board that reappears by itself --
+         * and it is not a power-on reset, so SRAM survives and .smpmark still
+         * names the last step core 1 reached. Read it back afterwards with
+         * `cat /proc/cpuinfo`.
+         *
+         * Cancelled below the moment core 1 is demonstrably scheduling. */
+        if (!rp2350_reboot_after_ms(5000)) {
+            printk("[SMP] warning: could not arm the reboot deadman; "
+                   "a hang here needs a physical BOOTSEL\n");
+        } else {
+            printk("[SMP] deadman armed: the board reboots in 5 s unless core 1 joins\n");
+        }
+
         /* Core 1 announces itself from secondary_main(); what this waits for
          * is the scheduler count, which only code running there can raise.
          * Bounded on the microsecond timer, and a timeout is reported rather
          * than spun on: a core that launched but never reached the scheduler
          * is a different failure from one that never launched, and the two
          * must not look the same. */
+        /* Watch core 1's progress rather than only its result.
+         *
+         * Between its first printk and going online, core 1 emits nothing --
+         * it only writes .smpmark. So core 0 can safely report what it sees
+         * without contending for the console with a core that is mid-bring-up,
+         * and a step that is reached but never left names itself. This is the
+         * console X3 did not have. */
+        extern uint32_t _smp_mark;
         uint64_t deadline = time_get_us() + 500000;   /* 500 ms */
-        while (smp_harts_online() < 2 && time_get_us() < deadline) { }
+        uint32_t last = 0;
+        while (smp_harts_online() < 2 && time_get_us() < deadline) {
+            uint32_t m = *(volatile uint32_t *)&_smp_mark;
+            if (m != last) {
+                last = m;
+                printk("[SMP]   core 1 reached step 0x%lx\n", (unsigned long)m);
+            }
+        }
         if (smp_harts_online() >= 2) {
+            rp2350_reboot_cancel();
             printk("[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler\n");
             printk("[SMP] core 1 stack: %lu of %lu bytes used\n",
                    (unsigned long)smp_core1_stack_used(),
@@ -425,7 +533,7 @@ int smp_start_secondary(unsigned mode) {
                                    (uintptr_t)&_stack1_bottom));
             return 0;
         }
-        extern uint32_t _smp_mark;
+        rp2350_reboot_cancel();
         printk("[SMP] CORE1_STALLED -- launched, but never reached the scheduler\n");
         printk("[SMP] last step core 1 reached: 0x%lx "
                "(03 core1_main, 04 vmm, 05 first printk, 06 trap_init, "

@@ -147,15 +147,13 @@ void printk_lock(void) {
 
 void printk_unlock(void) {
     uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
-    if (--g_printk_depth > 0) {
+    if (g_printk_depth > 1) {
+        g_printk_depth--;
         spin_unlock_irqrestore(&g_printk_gate, flags);
         return;
     }
-    g_printk_owner = -1;
-    int waiter = g_printk_waiter;
-    g_printk_waiter = -1;
     spin_unlock_irqrestore(&g_printk_gate, flags);
-    if (waiter >= 0) task_unblock(waiter);
+
     /* M4: send whatever this message batched into uart_putc()'s buffer
      * (drivers/uart.h) now that the message is complete -- the *outermost*
      * unlock only, matching "one message, one flush" rather than flushing
@@ -163,8 +161,33 @@ void printk_unlock(void) {
      * place this is called (uart_getc()/uart_has_char() also flush, for
      * output that never goes through printk_lock() at all -- line editor
      * redraws, raw console_putc() sequences), but the natural one for the
-     * printk/cprintf/printk_debug family specifically. */
+     * printk/cprintf/printk_debug family specifically.
+     *
+     * Inside the ownership, not after it (phase 23 X7).
+     *
+     * This used to release the lock first and flush afterwards, which is
+     * correct on one hart and wrong on two. g_tx_batch is a single shared
+     * buffer: release ownership, and the other core immediately acquires it
+     * and starts appending its own message into that buffer -- and then this
+     * core's uart_flush() picks the batch up and sends both, spliced
+     * together. Observed on RP2350 as core 0 and core 1 interleaving
+     * character by character, which looked exactly like a failed lock and
+     * was not: `smpstart locktest` shows amoswap excluding the two cores
+     * correctly. The lock was working; the delivery had escaped it.
+     *
+     * Holding across this is within contract -- printk_lock() is explicitly
+     * the kind that can be held across a block (see its own comment), which
+     * is why it is not a spinlock. A caller that formats a message owns that
+     * message until it is on the wire. */
     uart_flush();
+
+    flags = spin_lock_irqsave(&g_printk_gate);
+    g_printk_depth = 0;
+    g_printk_owner = -1;
+    int waiter = g_printk_waiter;
+    g_printk_waiter = -1;
+    spin_unlock_irqrestore(&g_printk_gate, flags);
+    if (waiter >= 0) task_unblock(waiter);
 }
 
 static void print_num(putc_fn pc, unsigned long num, int base) {

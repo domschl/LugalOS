@@ -75,6 +75,36 @@ bool rp2350_reboot_to_bootsel(void) {
     return false; /* reached only if the bootrom refused the request */
 }
 
+/* Arms a reboot `ms` from now and RETURNS -- the same bootrom entry point as
+ * rp2350_reboot() below, minus NO_RETURN_ON_SUCCESS.
+ *
+ * A deadman for experiments that can hang the machine (phase 23 X7's core-1
+ * bring-up). Three attempts at that milestone each left a board whose USB
+ * console never came back, and each one cost a physical BOOTSEL press and
+ * took the evidence with it. A scheduled reboot converts that into a board
+ * that reappears on its own -- and, because a bootrom reboot is not a
+ * power-on reset, SRAM survives it, so linker/rp2350.ld's .smpmark still
+ * holds the last step the wedged core reached. The failure reports itself
+ * after the fact instead of being silent.
+ *
+ * rp2350_reboot_cancel() below withdraws it if the experiment survives. */
+bool rp2350_reboot_after_ms(uint32_t ms) {
+    rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
+    if (!reboot) return false;
+    return reboot(REBOOT2_FLAG_REBOOT_TYPE_NORMAL, ms, 0, 0) >= 0;
+}
+
+/* Withdraws a pending rp2350_reboot_after_ms() by disabling the watchdog the
+ * bootrom armed it with. WATCHDOG_CTRL bit 30 is ENABLE (RP2350 datasheet
+ * §12.9.2); the write is a plain clear, and the 0xd0000000-style password
+ * registers elsewhere in the chip do not apply to this one. */
+#define WATCHDOG_CTRL   (*(volatile uint32_t *)(0x400d8000UL + 0x00))
+#define WATCHDOG_ENABLE (1u << 30)
+
+void rp2350_reboot_cancel(void) {
+    WATCHDOG_CTRL &= ~WATCHDOG_ENABLE;
+}
+
 bool rp2350_reboot(void) {
     rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
     if (!reboot) return false;
@@ -100,6 +130,9 @@ bool rp2350_reboot(void) {
 bool rp2350_reboot_to_bootsel(void) {
     return false; /* no bootrom to call on QEMU targets */
 }
+
+bool rp2350_reboot_after_ms(uint32_t ms) { (void)ms; return false; }
+void rp2350_reboot_cancel(void) { }
 
 bool rp2350_reboot(void) {
     return false; /* likewise: nothing to ask for a reset here */
