@@ -233,6 +233,12 @@ set(CONFIG_GPS_UBX_PERSIST 1)
 # measured a different one on different hardware.
 set(CONFIG_DCF77_DELAY_US 37886)
 
+# Serve time to the segment (P6). On this persona only: it is the one with a
+# radio and a receiver. A board without a time source can still run the server
+# honestly -- it would answer LI 3 / stratum 16 forever -- but a port that is
+# not listening states that more clearly than one that is listening to say no.
+set(CONFIG_ENABLE_NTP_SERVER 1)
+
 # --- P0: the measurement instrument (phase 24) -------------------------------
 #
 # TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1

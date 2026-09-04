@@ -14,3 +14,12 @@ set(CONFIG_PALLOC_MAX_PAGES 4096)
 # plan/phase15_memory_reclamation.md).
 set(CONFIG_BALLOC_ARENA_PAGES 16)
 set(CONFIG_UART0_BASE       0x10000000)
+
+# P6: the NTP server, on the QEMU targets so the suite can exercise it.
+#
+# These boards have no radio, so the server here can only ever answer
+# "unsynchronised" -- which is exactly the property most worth testing. §4's
+# whole claim is that admitting ignorance beats advertising a confidence that
+# cannot be justified, and a target with nothing to be confident *about* is
+# where that claim is checkable without hardware.
+set(CONFIG_ENABLE_NTP_SERVER 1)

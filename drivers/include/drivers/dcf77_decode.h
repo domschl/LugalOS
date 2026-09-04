@@ -90,6 +90,13 @@ typedef struct {
                                  * Z1/Z2 bits -- what was subtracted to reach
                                  * the UTC that dcf77_take_time() hands back */
     bool     is_dst;            /* that frame said CEST */
+    /* A2 (bit 19): the transmitter announces a leap second in the coming hour.
+     * Parsed and discarded until P6 needed it. Being DCF-disciplined is
+     * *better* than being GPS-fed in exactly this one respect -- the warning
+     * arrives in band, on the air, so it can be passed straight through to
+     * NTP's leap indicator instead of having to be learned from a table
+     * somebody remembered to update. */
+    bool     leap_announced;
 } dcf77_stats_t;
 
 typedef struct {

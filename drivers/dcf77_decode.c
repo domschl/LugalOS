@@ -110,6 +110,10 @@ static bool decode_frame(dcf77_t *d, rtc_time_t *out) {
         !even_parity_ok(b, 29, 35) ||
         !even_parity_ok(b, 36, 58)) { d->stats.parity_errors++; return false; }
 
+    /* A2: taken from a frame that has already passed framing and parity, so
+     * it is as trustworthy as the time in the same frame and no more. */
+    d->stats.leap_announced = b[19] != 0;
+
     unsigned minute  = bcd(b, 21, 7);
     unsigned hour    = bcd(b, 29, 6);
     unsigned day     = bcd(b, 36, 6);

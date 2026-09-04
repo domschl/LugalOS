@@ -3362,6 +3362,105 @@ def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tup
         peer.close()
 
 
+def test_ntp_server(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """P6: the board answering as a time server.
+
+    These targets have no radio, so the clock is never disciplined and the
+    server can only answer "unsynchronised" -- which is the case most worth
+    pinning down. §4's design principle is that a server advertising a
+    confidence it cannot justify is worse than one admitting it has none,
+    because clients believe stratum numbers; a target with nothing to be
+    confident about is where that principle is checkable without hardware.
+
+    So this asserts the honest-refusal path byte for byte: LI 3, stratum 16,
+    and the origin timestamp echoed back -- the field a client uses to know the
+    reply is its own, and getting it wrong makes every reply untrackable
+    regardless of how good the time in it is.
+    """
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import netpeer
+
+    name = "NTP Server: Answers, And Admits It Is Unsynchronised (P6)"
+    arch_img = img_path.with_name(f"test_{arch_name}_ntpsrv_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    GUEST_IP = bytes([192, 168, 77, 2])
+    PEER_IP = bytes([192, 168, 77, 1])
+    PEER_MAC = b"\x02\x00\x00\x00\x00\x42"
+    GUEST_MAC = bytes.fromhex("525400123456")
+
+    peer = netpeer.NetPeer()
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=peer.qemu_args())
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "192.168.77.2" "255.255.255.0")\nexit',
+            r"\[Net\] 192\.168\.77\.2/255\.255\.255\.0", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        # A version 4 client request, with a transmit timestamp we can look for
+        # coming back in the origin field.
+        req = bytearray(48)
+        req[0] = (0 << 6) | (4 << 3) | 3          # LI 0, VN 4, mode 3 = client
+        req[2] = 6
+        MARK = bytes.fromhex("DEADBEEFCAFEBABE")
+        req[40:48] = MARK
+
+        peer.clear()
+        peer.send(netpeer.eth_frame(
+            GUEST_MAC, PEER_MAC, netpeer.ETHERTYPE_IPV4,
+            netpeer.ipv4_packet(PEER_IP, GUEST_IP, 17,
+                                netpeer.udp_datagram(PEER_IP, GUEST_IP, 50123, 123, bytes(req)))))
+
+        reply = None
+        for f in peer.wait_for(1, timeout=6.0):
+            try:
+                _d, _s, etype, payload = netpeer.parse_eth(f)
+                if etype != netpeer.ETHERTYPE_IPV4:
+                    continue
+                ip = netpeer.parse_ipv4(payload)
+                if ip is None or ip["proto"] != 17:
+                    continue
+                dgram = ip["payload"]
+                if len(dgram) < 8 or int.from_bytes(dgram[0:2], "big") != 123:
+                    continue
+                reply = dgram[8:]
+            except Exception:
+                continue
+        if reply is None or len(reply) < 48:
+            return (name, False, "no NTP reply from the guest on port 123")
+
+        li = (reply[0] >> 6) & 0x3
+        vn = (reply[0] >> 3) & 0x7
+        mode = reply[0] & 0x7
+        problems = []
+        if mode != 4:
+            problems.append(f"mode {mode}, expected 4 (server)")
+        if vn != 4:
+            problems.append(f"version {vn} echoed back, expected 4")
+        if li != 3:
+            problems.append(f"leap indicator {li}, expected 3 (unsynchronised)")
+        if reply[1] != 16:
+            problems.append(f"stratum {reply[1]}, expected 16 while unsynchronised")
+        if reply[24:32] != MARK:
+            problems.append("origin timestamp was not the request's transmit stamp")
+        if reply[3] != (-20) & 0xFF:
+            problems.append(f"precision {reply[3]:#x}, expected 0xec (2^-20 s)")
+        if problems:
+            return (name, False, "; ".join(problems))
+        return (name, True, "")
+    finally:
+        session.close()
+        peer.close()
+        arch_img.unlink(missing_ok=True)
+
+
 def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R2, plan/phase19_ip_stack_and_ethernet.md: ARP, IPv4, ICMP and UDP,
     against a peer that can build anything.
@@ -5514,6 +5613,7 @@ def main() -> int:
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ip_stack(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_ntp_server(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ntp_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
@@ -5550,6 +5650,7 @@ def main() -> int:
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ip_stack(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_ntp_server(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ntp_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))

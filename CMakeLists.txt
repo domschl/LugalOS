@@ -510,6 +510,7 @@ set(SOURCES
     # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
     # and arithmetic should not be debugged by flashing.
     net/ntp.c
+    net/ntp_server.c
     # P3 (plan/phase24_dcf77_precision_and_ntp_server.md): timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything

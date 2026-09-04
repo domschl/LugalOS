@@ -921,6 +921,39 @@ deliberate holdover -- antenna disconnected for some hours -- during which the
 reported dispersion is checked to grow at the ppm rate P0 measured, and the
 error is checked to stay inside it.
 
+**P6 — the NTP server. BUILT 2026-09-04; the unsynchronised half is verified
+against chrony, the disciplined half needs the board back at its antennas.**
+
+`net/ntp_server.c` binds UDP 123 from `net_set_address()`, beside the 9P
+listener and for the same reason -- configuration completing is the event, and
+how it completed is not that decision's business. Two earlier placements were
+wrong in instructive ways, both recorded in the source: `main()` never ran at
+all on a wireless persona, because the netif does not exist there until the
+radio joins some forty seconds later; and the autoconfig path missed every
+board configured by hand, including the one the suite drives.
+
+Everything the reply asserts is derived from what the discipline loop knows.
+Stratum 1 only while genuinely tracking, refid `DCF`, root delay zero (a
+primary reference has no upstream to have been delayed by -- the radio's own
+propagation is calibrated out and what remains of it lives in the dispersion,
+where uncertainty belongs), root dispersion straight from P5, and LI 3 /
+stratum 16 once dispersion passes a second. The leap indicator comes from the
+frame's own A2 bit, which the decoder parsed and discarded until now: a leap
+second announced on the air reaches NTP clients as an announced leap second,
+which is the one respect in which being DCF-disciplined beats being GPS-fed.
+
+**Verified with chrony, on the bench, at a desk with no reception:**
+
+    li=3 vn=4 mode=4 stratum=16 precision=-20
+    root_delay=0.000000s root_disp=1.000000s  origin echoed: True
+    chronyd: "No suitable source for synchronisation"
+
+That is §4's principle proved by a client that is not ours: the board admits
+it does not know, and a mature implementation believes it and declines. A
+board claiming stratum 1 there would have been believed just as readily.
+
+**Original text follows.**
+
 **P6 — the NTP server.** `net/ntp_server.c`, `udp_bind(123, ...)`, replying
 from the callback the way `udp_echo_cb()` already does. T2 stamped on receipt,
 T3 on send, both in µs. Stratum, refid, leap indicator, root dispersion and

@@ -1,3 +1,4 @@
+#include "net/ntp_server.h"
 #include "net/ip.h"
 #include "net/net_internal.h"
 #include "net/tcp.h"
@@ -97,6 +98,25 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
     if (tcp_listen(564) != 0) {
         cprintf("[Net] address set, but the 9P listener could not start\n");
     }
+
+#if CONFIG_ENABLE_NTP_SERVER
+    /* And time, for the same reason and in the same place (P6). Here rather
+     * than in main() because on a wireless persona the netif does not exist
+     * when main() runs -- the radio joins asynchronously and the address lands
+     * some forty seconds later -- so `if (netif_default())` was simply false
+     * and the call was skipped in silence. /proc/net's "udp bindings: 0" is
+     * what said so; a server that never binds and never complains is the worst
+     * of both, a closed port behind a healthy-looking log.
+     *
+     * Here rather than in the autoconfig path, too: an explicit (net-config)
+     * returns before that runs, so binding there covered the board on a shelf
+     * and missed every board someone had configured by hand -- including the
+     * one the test suite drives. Configuration completing is the event; how it
+     * completed is not this decision's business. */
+    if (ntp_server_start() != 0) {
+        cprintf("[Net] address set, but UDP 123 could not be bound\n");
+    }
+#endif
     return 0;
 }
 
@@ -253,6 +273,7 @@ static void net_autoconfig_once(void) {
     printk("[Net] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u (from the identity record)\n",
            ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
            gw[0], gw[1], gw[2], gw[3]);
+
 }
 
 static void net_task_body(void *arg) {
