@@ -367,26 +367,60 @@ which already exists for the recursion guard).
 
 ---
 
-## `tests/hw/test_rp2350.py` targets the chess persona
+## `K3` checks pin values from a table, not from the build
 
-**Trigger:** run it against a board flashed with `rp2350-clock`. It reports
-18/24, and five of the six non-passes name things that look like stale
-firmware ("board firmware predates the `st7735stats` command", "reflash it
-with the current build/rp2350/lugalos.uf2").
+**Trigger:** none today -- the test passes on both personas. This is about
+how it knows what to expect.
 
-**Why it is parked:** none of them are regressions. The clock persona
-builds with `LUGALOS_ENABLE_SPISD/ST7735/TM1638/CHESS = OFF`, so the block,
-TFT, keypad and engine tests have nothing to talk to; `K3` checks
-per-persona pins; and `C6/C7` compiles `/sd0/prime.c`, which cannot work
-because `/sd0` never mounts on this board -- GP10-13 are the clock
-display's shift registers, not an SD bus (see
-`cmake/board-rp2350-clock.cmake`). Confirmed 2026-09-03 by building and
-flashing the previous commit and diffing the pass/fail *sets*, which were
-identical.
+**Why it is parked:** `test_config_pins` carries a hardcoded table of pin
+values, now split into a universal block plus per-feature blocks gated on
+`ENABLE_SPISD` / `ENABLE_ST7735` / `ENABLE_TM1638` read from
+`/proc/config`. That fixed the failure (the table was the chess persona's
+map, so ten correctly-absent keys read as wrong pins on rp2350-clock), but
+the table is still a hand-maintained second copy of
+`cmake/board-*.cmake`, and a persona whose pins nobody adds here is
+checked against nothing. `LED_EXT_GPIO` already had to drop to a presence
+check for exactly that reason -- it is 16 on chess and 9 on the clock
+board, which has no plain onboard LED at all.
 
-**Fix, when it is worth it:** have each test skip rather than fail when
-`/proc/config` says its feature is compiled out -- the file already
-reports every `ENABLE_*` flag, so the information is on the board and only
-the check is missing. Until then, the pass/fail set (not the count) is the
-comparison to make, and a `git worktree` build of the previous commit is
-the way to get a baseline.
+**Fix, when it is worth it:** every build directory already generates
+`lugalos_config.h` (`cmake/gen_config.cmake`) with the real
+`#define CONFIG_*` values, so the test could compare `/proc/config`
+against the header for the build the board was flashed from and drop the
+table entirely -- checking every key automatically, on any persona,
+present and future. The awkward part is knowing *which* build directory:
+`rp2350.local_build_id()` already has this problem and solves it by being
+told, and its own docstring records a false mismatch from guessing wrong
+(2026-09-01). Matching `/proc/buildid` against each `build/rp2350*/`
+would settle it. Deferred 2026-09-03 because only a clock board was
+attached, and a rewrite that cannot be run against a chess persona is
+worse than a narrower change that can.
+
+---
+
+## A trailing slash breaks path resolution below a mount root
+
+**Trigger:**
+
+```
+ls /flash0/system/        ->  ls: path 'system/' not found
+ls /flash0/system         ->  lists BIN, ETC correctly
+ls /flash0/               ->  lists correctly (it is the mount root)
+```
+
+So the trailing slash is harmless at a mount root and fatal one level
+down. Confirmed on RP2350 hardware, `rp2350-chess`, 2026-09-03.
+
+**Why it is parked:** it is a usability bug, not a correctness one --
+nothing in the tree writes a path that way, and the failure is a clean
+"not found" rather than a wrong answer. It was found because a new
+hardware-suite preflight probe used `ls /flash0/system/bin/` and reported
+a stale filesystem on a board that was correctly flashed, which is the
+more expensive shape of this: a diagnostic that fires on healthy input.
+The probe now omits the slash.
+
+**Fix, when it is worth it:** `kernel/path.c` / `vfs_resolve()` should
+strip a trailing separator from the relative part before lookup, the way
+it evidently already does for the mount-root case. Worth checking whether
+the same asymmetry affects `cat`, `cp` and the 9P walk, which take the
+same resolver -- the shell's `ls` is only where it happened to surface.
