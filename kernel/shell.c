@@ -190,6 +190,7 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
+    cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
     cprintf("  smpstart [join|locktest|stage1|stage2|stage3]\n");
     cprintf("                  - Launch RP2350 core 1. Bare: X3's counter. 'join': core 1 enters\n");
     cprintf("                    the scheduler (X7). 'locktest': cross-core mutual exclusion\n");
@@ -2089,6 +2090,26 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
+    } else if (strcmp(cmd_line, "flashpark") == 0) {
+        /* X7 step 6: exercise the park handshake without turning XIP off.
+         *
+         * The only real flash writer in this tree is the identity store
+         * (phase 21's I7), and provisioning to test a lock would destroy the
+         * record it writes. What is new here is the handshake -- core 1
+         * noticing the request from sched_yield() and acknowledging from a
+         * .ramfunc spin -- and that is exactly what this measures. The
+         * XIP-off sequence below it is unchanged and already proven on one
+         * core, so the untested combination is narrow and stated rather than
+         * quietly assumed. */
+        uint64_t t0 = time_get_us();
+        bool parked = smp_flash_park_request();
+        uint64_t t1 = time_get_us();
+        smp_flash_park_release();
+        cprintf("  harts online: %u\n", smp_harts_online());
+        cprintf("  park request: %s after %lu us\n",
+                parked ? "acknowledged" : "TIMED OUT", (unsigned long)(t1 - t0));
+        cprintf(parked ? "FLASHPARK_OK\n" : "FLASHPARK_FAIL\n");
+        return;
     } else if (strcmp(cmd_line, "pinall") == 0) {
         /* X7 bisect: pin every existing task to hart 0.
          *
@@ -2126,6 +2147,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         else if (strcmp(cmd_line, "smpstart stage1") == 0)   mode = CORE1_MODE_STAGE1;
         else if (strcmp(cmd_line, "smpstart stage2") == 0)   mode = CORE1_MODE_STAGE2;
         else if (strcmp(cmd_line, "smpstart stage3") == 0)   mode = CORE1_MODE_STAGE3;
+        else if (strcmp(cmd_line, "smpstart joinq") == 0)    mode = CORE1_MODE_JOINQ;
         smp_start_secondary(mode);
 #else
         cprintf("smpstart: this build has no RP2350 second-core launch "

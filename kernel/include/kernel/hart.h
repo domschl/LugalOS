@@ -200,6 +200,10 @@ int smp_selftest(void);
 #define CORE1_MODE_STAGE1   3u
 #define CORE1_MODE_STAGE2   4u
 #define CORE1_MODE_STAGE3   5u
+/* Join, and say nothing at all. Core 0 records progress in the marker word
+ * and reboots deliberately, so the result is readable afterwards without the
+ * console having to survive -- which is exactly what is in question. */
+#define CORE1_MODE_JOINQ    6u
 
 /* Launches RP2350's core 1 over the SIO FIFO (X3), running `mode`. Explicit
  * rather than automatic at boot: see the definition. Returns 0 on success. */

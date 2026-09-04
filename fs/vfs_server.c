@@ -971,6 +971,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             extern uint32_t _smp_mark;
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "core1_probe: 0x%lx\n", (unsigned long)_smp_mark);
+        {
+            extern uint32_t _smp_mark0;
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "core0_probe: 0x%lx\n", (unsigned long)_smp_mark0);
+        }
         }
 #endif
         return (int)used;

@@ -1,6 +1,6 @@
 {
-  "heap_bytes": 364544,
-  "heap_pages": 89,
+  "heap_bytes": 352256,
+  "heap_pages": 86,
   "per_file": {
     "arch/riscv/common/elf.c": 1456,
     "arch/riscv/common/mem_domain.c": 8,
@@ -20,7 +20,7 @@
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 8,
     "drivers/uart_net.c": 10540,
-    "drivers/uart_rp2350.c": 1437,
+    "drivers/uart_rp2350.c": 1697,
     "drivers/usb_cdc.c": 16716,
     "fs/9p.c": 5837,
     "fs/p9_chan.c": 6152,
@@ -64,5 +64,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 143366
+  "total": 143626
 }

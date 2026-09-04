@@ -1,6 +1,6 @@
 # Phase 23 — Waking the second core
 
-**Status: X1-X6 DONE 2026-09-04, X7 OPEN, on branch
+**Status: COMPLETE 2026-09-04 — X1 through X7 all done, on branch
 `feature/multicore`.** Two harts share one ready queue and one scheduler
 lock (X1); driver tasks are pinned, and what that does *not* cover is
 written down (X2); RP2350's core 1 provably executes our code, launched
@@ -9,12 +9,11 @@ isolation and fault suite has been re-run with both harts demonstrably
 mid-task at the instant of each fault (X5); and a hart in bring-up no
 longer impersonates the boot task (X6, added after X5).
 
-**The generic two-hart scheduler is finished** and proven on `rv64-smp`.
-What is left is RP2350-specific, and is now X7 (added 2026-09-04): core 1
-joining the scheduler on real silicon. X3 recorded two blockers for it; X6
-measured them, found the first was not a blocker at all and the second was
-a one-line identity bug, and fixed it — which is why X7 is written as a
-bring-up sequence rather than as research.
+**Core 1 schedules tasks on real RP2350 silicon** (X7): two Hazard3 cores
+share one ready queue, PMP domains are enforced on the secondary, and the
+whole isolation suite passes with both cores busy. The bug that stood in the
+way was a tight test-and-set spin starving the other core — invisible on
+QEMU, fatal on one bus.
 
 Planned 2026-08-29, amended 2026-09-03 (§6); §1's premise that RP2350
 boots both cores was falsified by X3 and corrected where it was made.
@@ -626,6 +625,111 @@ counter fallback from step 1 is most valuable. And a two-core RP2350 shares
 one bus and one flash cache, so any *performance* claim from QEMU is
 worthless here — which is the whole reason this milestone exists separately
 from X1.
+
+**DONE 2026-09-04 — core 1 is in the scheduler on real silicon.**
+
+```
+[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler as pid 9
+[SMP] core 1 stack: 772 of 16384 bytes used
+
+ps:   9  RUNNING  idle  -  -  1  -
+
+smptest:  locked=80000 (want 80000)  unlocked=79999 (lost 1)  harts=2
+          SMP_SELFTEST_OK (3/3)
+```
+
+*The bug was one thing, and it was not what the first three attempts
+concluded.* **A tight test-and-set spin starves the other core.** Every
+`spin_lock_irqsave()` waiter re-issued `amoswap`, which takes exclusive
+ownership of the cache line on every attempt — so a waiter can keep the
+*holder* from getting the line back to release with. On QEMU the harts are
+host threads the OS timeslices and it never appears. On RP2350's two cores
+and one bus it is a deadlock by starvation, and both cores stop. The
+primitive is now test-and-**test**-and-set: wait on plain loads, back off on
+a local, and only attempt the atomic once the word looks free.
+
+The same shape appeared twice more and was fixed the same way: X1's
+secondary idle loop (`for(;;) sched_yield();`) took `g_sched_lock` on every
+iteration, and now asks `sched_peek_runnable()` — a deliberately racy,
+lock-free question — before paying for the lock. X1's own comment had
+predicted "X2 or later can make it wfi once there is a reason to" and named
+the cost as power; the cost was starvation. `wfi` itself was tried first and
+QEMU's X2 check rejected it within one run (`domains_hart1: 0` — a hart
+asleep until the next tick never picks up a short-lived task).
+
+*What found it was instrumentation, not reading.* Three things, in order of
+how much they were worth:
+
+1. **A deadman.** `rp2350_reboot_after_ms()` arms a bootrom reboot before the
+   risky window. A bootrom reboot is not a power-on reset, so SRAM survives
+   and `.smpmark` still names the last step reached. This converted "a dead
+   board, a BOOTSEL press, and no evidence" into a board that comes back and
+   says what happened. Every attempt after it was cheap.
+2. **A marker for *both* cores.** `core1_probe` alone answers half the
+   question. The half that mattered was `core0_probe: 0xc0de0007` — core 0
+   died *inside a printk*, while core 1 idled fine. Until that word existed,
+   "core 1 killed the board" and "the board died while core 1 was up" were
+   indistinguishable, and three attempts were spent on the wrong one.
+3. **Staged modes.** `smpstart stage1|stage2|stage3` runs the first N steps
+   of `secondary_main()` and then falls into X3's counter, so core 0 sees the
+   marker *and* whether core 1 is still executing. All three passed, which
+   located the fault in the tail rather than in any step — and the tail is
+   where the lock spin was.
+
+*Two wrong conclusions, corrected by measurement.* The 4 KB stack in
+SCRATCH_Y was diagnosed as the cause and moved to a 16 KB `.stack1` in RAM.
+The instrumentation added at the same time then measured actual usage at
+**772 bytes** — so the stack was never the bug. The move stands (4 KB with
+the heap immediately below is a real hazard, and the number is now known
+rather than argued), but the diagnosis was wrong. Likewise the console
+interleaving was read as a failed lock; `smpstart locktest` showed `amoswap`
+excluding the two cores correctly, and the actual defect was `uart_flush()`
+running after `printk_unlock()` released ownership, over a single shared
+`g_tx_batch`. That is fixed by per-hart batches, not by holding the lock
+across a blocking flush — which would deadlock against the uart task.
+
+*From the SDK, and this is what unblocked it.* `runtime_init_per_core_h3_irq_registers`
+(`pico_crt0/crt0_riscv.S`) runs on every core, core 1 at launch included, and
+clears **`meifa`** — Hazard3's per-core external-interrupt *force* array, CSR
+`0xbe2`, windows 3..0. It has no guaranteed reset value, and a stale bit
+means a core takes an external interrupt the instant `mstatus.MIE` goes on.
+This kernel had never cleared it, which was survivable while only core 0
+existed because `boot_header.S` brought that core up from reset itself. Core
+1 arrives from the bootrom instead. Also from the same source: `mie` is now
+written rather than read-modify-written, and the launch drains core 1's
+mailbox FIFO.
+
+*Verified on a Pico 2 (chess persona), all with core 1 scheduling:*
+
+- `harts_online: 2`, and `ps` showing pid 9 `idle` RUNNING on hart 1.
+- **`smptest`: `locked=80000 (want 80000) unlocked=79999 (lost 1) harts=2`.**
+  Zero lost through the lock under real contention between two Hazard3
+  cores — §6.3's open question, closed on silicon rather than by argument.
+- `lockselftest` **7/7**, including S6's hand-off canary, with two cores live.
+- `isolationtest 1` and `deputytest 1`: a U-mode probe **pinned to hart 1**
+  faulted on hart 1, kernel memory untouched, syscall boundary held. **PMP
+  domains enforced on a non-primary Hazard3 core** — X7 step 5, and the
+  thing X2 could only ever prove on Sv39.
+- The **whole RP2350 driver-domain isotest family** under `smpload` —
+  heartbeat, i2c, uart, usb, st7735, tm1638, blk — every one ISOLATED, with
+  `SMPLOAD_OK (3/3)`: 7 faults taken while loaded, another hart mid-task at
+  the instant of each. This is exactly the set X5 named as out of its reach.
+- `flashpark`: core 1 acknowledges the park request from a `.ramfunc` spin
+  in **25 µs** (10 µs single-core).
+- RP2350 hardware suite **24/24** on the non-SMP chess persona. QEMU
+  **339/339**. Static RAM **+260** (the second hart's TX batch and its length
+  word), re-baselined; heap 86 → 83 pages for core 1's 16 KB stack.
+
+*Not covered, and stated rather than implied.* The park handshake is
+exercised through `flashpark`, which requests and releases without turning
+XIP off. The only real flash writer in the tree is phase 21's identity store,
+and provisioning to test a lock would destroy the record it writes. The
+XIP-off sequence itself is unchanged and proven single-core; the untested
+combination is "core 1 parked **and** XIP actually down", which is narrow and
+now named. Core 1 also still takes no device interrupts — its `MEIEA` is
+empty because every driver enabled its IRQ on core 0 — which is the correct
+default given X2's pinning, not an oversight.
+
 
 
 

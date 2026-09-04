@@ -279,6 +279,12 @@ SECTIONS
     .smpmark (NOLOAD) : {
         _smp_mark = .;
         . += 4;
+        /* The primary's own progress, same trick as core 1's word beside it
+         * (X7). When both cores stop, "how far did core 1 get" answers half
+         * the question -- and the half that was missing turned out to be
+         * where core 0 was standing when it did. */
+        _smp_mark0 = .;
+        . += 4;
     } > RAM
 
     . = ALIGN(4096);

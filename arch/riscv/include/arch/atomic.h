@@ -44,6 +44,23 @@
  * may be observed by another hart before the swap is. Without it the compiler
  * and the hardware are both free to hoist the critical section's first read
  * above the acquire, which is the whole thing the lock exists to prevent. */
+/* Is the word free, by a plain load rather than an atomic?
+ *
+ * The read half of a test-and-test-and-set (X7,
+ * plan/phase23_multicore_scheduling.md). A waiter that keeps issuing
+ * amoswap takes exclusive ownership of the line on every attempt, and on
+ * RP2350 -- two cores, one bus, no fairness guarantee -- that is enough for
+ * the spinning core to starve the *holder* out of releasing. Both cores then
+ * stop, which is what X7 spent several hardware runs reproducing: core 0 and
+ * core 1 stuck in printk at the same instant, each waiting for a gate the
+ * other could not reach.
+ *
+ * Reading is not a substitute for the atomic; it decides only whether the
+ * atomic is worth attempting. The acquire below still settles who wins. */
+static inline bool arch_lock_looks_free(const volatile uint32_t *word) {
+    return *word == 0;
+}
+
 static inline bool arch_lock_try_acquire(volatile uint32_t *word) {
     uint32_t prev;
     __asm__ __volatile__("amoswap.w.aq %0, %2, (%1)"

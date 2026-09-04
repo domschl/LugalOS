@@ -146,6 +146,14 @@ void smp_mark(uint32_t step) {
     __atomic_thread_fence(__ATOMIC_RELEASE);
 }
 
+/* The same, for the primary. Both cores stopping is two questions, and the
+ * marker only ever answered one of them. */
+static void smp_mark0(uint32_t step) {
+    extern uint32_t _smp_mark0;
+    *(volatile uint32_t *)&_smp_mark0 = 0xC0DE0000u | step;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+}
+
 /* --- Cross-core mutual exclusion, measured -------------------------------
  *
  * §6.3 of the plan left this open and X7's own verify list named it: S1
@@ -231,7 +239,7 @@ static void core1_locktest_main(void) {
  * already set and interrupts off. Never returns. */
 void core1_main(void) {
     smp_mark(3);
-    if (g_core1_mode == CORE1_MODE_JOIN) {
+    if (g_core1_mode == CORE1_MODE_JOIN || g_core1_mode == CORE1_MODE_JOINQ) {
         secondary_main();       /* X7: trap_init, ticker, scheduler. */
     }
     if (g_core1_mode == CORE1_MODE_LOCKTEST) {
@@ -242,15 +250,15 @@ void core1_main(void) {
      * through to the counter. Core 0 can then see both how far the marker got
      * and whether core 1 is still executing at all -- which "it stopped at
      * step 7" alone cannot tell you. */
-    if (g_core1_mode >= CORE1_MODE_STAGE1) {
+    if (g_core1_mode >= CORE1_MODE_STAGE1 && g_core1_mode <= CORE1_MODE_STAGE3) {
         trap_init();
         smp_mark(6);
     }
-    if (g_core1_mode >= CORE1_MODE_STAGE2) {
+    if (g_core1_mode >= CORE1_MODE_STAGE2 && g_core1_mode <= CORE1_MODE_STAGE3) {
         ticker_arm_this_hart();
         smp_mark(7);
     }
-    if (g_core1_mode >= CORE1_MODE_STAGE3) {
+    if (g_core1_mode == CORE1_MODE_STAGE3) {
         int pid = sched_secondary_init();
         smp_mark(8);
         if (pid >= 0) {
@@ -432,6 +440,8 @@ int smp_start_secondary(unsigned mode) {
     }
     launched = true;
 
+    smp_mark0(1);
+
     /* The deadman goes on FIRST, before anything that can hang.
      *
      * It used to be armed after the launch handshake, which was too late in
@@ -451,6 +461,7 @@ int smp_start_secondary(unsigned mode) {
         }
     }
 
+    smp_mark0(2);
     uint32_t before = g_core1_ticks;
 
     /* Published before the handshake, and with a release fence: core 1 reads
@@ -459,6 +470,7 @@ int smp_start_secondary(unsigned mode) {
      * that is not by itself an ordering guarantee for the other one. */
     g_core1_mode = mode;
     smp_paint_core1_stack();
+    smp_mark0(3);
     __atomic_thread_fence(__ATOMIC_RELEASE);
 
     printk("[SMP] launching core 1 in %s mode (ticks before: %lu)\n",
@@ -471,7 +483,9 @@ int smp_start_secondary(unsigned mode) {
         printk("[SMP] core 1 did not answer the launch handshake (still parked)\n");
         return -1;
     }
+    smp_mark0(4);
     printk("[SMP] launch handshake completed\n");
+    smp_mark0(5);
 
     if (mode == CORE1_MODE_LOCKTEST) {
         /* Core 0's half runs here, concurrently with core 1's. Interrupts
@@ -574,6 +588,7 @@ int smp_start_secondary(unsigned mode) {
         unsigned n = 0;
         uint32_t last = 0;
         uint64_t deadline = time_get_us() + 500000;   /* 500 ms */
+        smp_mark0(6);
         while (smp_harts_online() < 2 && time_get_us() < deadline) {
             uint32_t m = *(volatile uint32_t *)&_smp_mark;
             if (m != last) {
@@ -582,11 +597,34 @@ int smp_start_secondary(unsigned mode) {
             }
         }
 
+        smp_mark0(7);
+
+        /* The quiet variant answers the question the noisy one cannot.
+         *
+         * core0_probe read back 0xc0de0007 -- core 0 got past the wait, and
+         * died in the printk immediately after, while core 1 was idling in
+         * the scheduler. So "does core 1 in the scheduler kill the board" and
+         * "does the console survive two cores" are different questions, and
+         * every run so far has answered them together. This one uses no
+         * console at all: it marks, waits two seconds alongside a live core
+         * 1, marks again, and reboots on purpose. If the second mark is
+         * there, core 1 is not the problem. */
+        if (mode == CORE1_MODE_JOINQ) {
+            smp_mark0(0x20);
+            uint64_t until = time_get_us() + 2000000;
+            while (time_get_us() < until) { }
+            smp_mark0(0x21);
+            if (smp_harts_online() >= 2) smp_mark0(0x22);
+            rp2350_reboot_cancel();
+            rp2350_reboot();          /* deliberate, so the marks are readable */
+            for (;;) { }
+        }
+
         printk("[SMP] core 1 step trace:");
         for (unsigned i = 0; i < n; i++) printk(" 0x%lx", (unsigned long)trace[i]);
         printk("%s\n", n ? "" : " (none seen)");
 
-        if (mode != CORE1_MODE_JOIN) {
+        if (mode != CORE1_MODE_JOIN && mode != CORE1_MODE_JOINQ) {
             /* A stage stops short of the scheduler on purpose, so
              * harts_online never reaches 2. What says it survived is the
              * counter: core 1 falls into core1_probe_main() after its last
@@ -605,8 +643,10 @@ int smp_start_secondary(unsigned mode) {
                           : "[SMP] STAGE_DEAD -- core 1 stopped executing\n");
             return (b != a) ? 0 : -1;
         }
+        smp_mark0(8);
         if (smp_harts_online() >= 2) {
             rp2350_reboot_cancel();
+            smp_mark0(9);
             printk("[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler as pid %d\n",
                    g_secondary_pid);
             printk("[SMP] core 1 stack: %lu of %lu bytes used\n",

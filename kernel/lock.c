@@ -13,13 +13,30 @@ void spinlock_init(spinlock_t *l) { if (l) l->word = 0; }
 
 uintptr_t spin_lock_irqsave(spinlock_t *l) {
     uintptr_t flags = irq_save();
-    while (!arch_lock_try_acquire(&l->word)) {
-        /* Spin. Nothing else is correct here: the holder is either running on
-         * another hart (so waiting is exactly right) or is a handful of
-         * instructions from releasing on this one. Yielding instead would
-         * make this a ylock_t, with a ylock_t's rules -- see the header. */
+    for (;;) {
+        if (arch_lock_try_acquire(&l->word)) return flags;
+
+        /* Test-and-TEST-and-set: wait with plain loads, and only attempt the
+         * atomic again once the word looks free (X7,
+         * plan/phase23_multicore_scheduling.md).
+         *
+         * Spinning on the atomic itself is what this used to do, and the old
+         * comment defended it -- "the holder is either running on another
+         * hart, so waiting is exactly right". Waiting is right; *how* was
+         * not. Every amoswap takes exclusive ownership of the cache line, so
+         * a waiter hammering it can keep the holder from getting the line
+         * back to release with. On QEMU the harts are host threads the OS
+         * timeslices and it never shows. On RP2350's two cores and one bus
+         * it deadlocks by starvation, and both cores stop: X7 reproduced
+         * exactly that, with core 0 and core 1 recorded stuck inside printk
+         * at the same instant.
+         *
+         * The backoff between reads touches nothing shared at all, which is
+         * what gives the holder the bus back. */
+        while (!arch_lock_looks_free(&l->word)) {
+            for (volatile int spin = 0; spin < 16; spin++) { }
+        }
     }
-    return flags;
 }
 
 void spin_unlock_irqrestore(spinlock_t *l, uintptr_t flags) {
