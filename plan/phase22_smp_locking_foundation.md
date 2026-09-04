@@ -47,7 +47,16 @@ RP2350 already boots both of its Hazard3 cores — `arch/riscv/common/entry.S`
 checks `mhartid` at the reset vector and parks anything nonzero in a `wfi`
 loop (`arch/riscv/rp2350/boot_header.S` has the same parking loop for the
 RP2350-specific boot path). Nothing currently wakes it: no SIO FIFO launch
-vector, no stack, no task. Phase 15 already noted this in passing while
+vector, no stack, no task.
+
+> **Corrected 2026-09-04 by phase 23's X3, on hardware.** The first
+> sentence of this paragraph is false, and so were the comments in both
+> boot paths that said it. RP2350 does *not* boot both cores: core 1
+> stays in the bootrom until the SIO FIFO launch sequence is sent to it,
+> so those `mhartid` parking branches have never executed a single
+> instruction — a probe written into memory no boot path clears read back
+> 0. The rest stands: nothing wakes it, and it takes no stack.
+> See `plan/phase23_multicore_scheduling.md` §3, X3. Phase 15 already noted this in passing while
 doing something else entirely: "Core 1 never takes a stack at all — it
 branches straight to `wfi` and spins" (`plan/phase15_memory_reclamation.md`).
 

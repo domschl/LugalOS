@@ -17,7 +17,13 @@
 #endif
 
 _start:
-    /* RP2350 boots both cores; only core 0 (mhartid == 0) executes kernel_main */
+    /* Only hart 0 executes kernel_main; secondaries park below (or, with
+     * CONFIG_ENABLE_SMP on QEMU, fall through to the secondary path).
+     *
+     * This used to say "RP2350 boots both cores". It does not: measured
+     * 2026-09-04, core 1 sits in the bootrom until sent the SIO FIFO launch
+     * sequence. On RP2350 the mhartid test here is dead code. On QEMU both
+     * harts really do arrive. See kernel/smp.c. */
     csrr t0, mhartid
 #if !CONFIG_ENABLE_SMP || defined(CONFIG_BOARD_RP2350)
     bnez t0, .Lsecondary_hart_loop

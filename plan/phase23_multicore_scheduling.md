@@ -258,6 +258,71 @@ I7, for the same reason. The SIO FIFO launch sequence, `CONFIG_ENABLE_SMP`-gated
 counter core 1 increments that core 0 reads back) — cannot be verified
 any other way, and is not claimed done until it is.
 
+**DONE 2026-09-04 — hardware-verified on a Pico 2 (chess persona).**
+
+```
+[SMP] core1 ticks before launch: 0
+[SMP] launch handshake completed
+[SMP] core1 ticks after 50ms: 1310682 (delta 1310682)
+[SMP] CORE1_ALIVE -- a second Hazard3 core is executing our code
+core1_probe: 0x51c0de02
+```
+
+Exactly this milestone's bar and no more: core 1 executes our code and
+counts. It does **not** join the scheduler. Build with `cmake --preset
+rp2350-smp`; `smpstart` in the shell performs the launch.
+
+*The phase's premise was wrong.* `plan/phase22_smp_locking_foundation.md`
+§1 said "RP2350 already boots both of its Hazard3 cores ... and parks
+anything nonzero in a `wfi` loop", and both boot paths carried a comment
+saying the same.
+A three-instruction probe — a `.smpmark` write on the secondary path, into
+a `(NOLOAD)` section placed where no boot path clears it (above
+`__bss_end`, outside the painted stack) — read back **0**. Core 1 had
+never executed a byte of this image; it waits in the bootrom, so the
+`mhartid` branch in `_reset_handler` has been dead code since it was
+written. Re-reading the comment could not have settled that.
+
+*The launch protocol was transcribed from the Pico SDK, not inferred:*
+the six-word sequence `{0, 0, 1, vector_table, sp, entry}` pushed through
+the SIO FIFO (`SIO+0x50` ST, `+0x54` WR, `+0x58` RD) with an echo
+handshake that restarts from the top on any mismatch. On RISC-V the third
+word is `mtvec` where Arm uses VTOR. Hazard3's SEV equivalent is
+`slt x0, x0, x1`, a hint encoding. `core1_entry` writes its marker
+`0x51C0DE02` as its **first instruction**, before touching `tp`, `mtvec`
+or `mstatus`, so "the core started" and "the core got through setup" stay
+distinguishable.
+
+*Core 1's stack is SCRATCH_Y* — exactly the case `linker/rp2350.ld`
+already anticipated in a comment ("take it back out of the heap here"),
+and unstriped, so the two cores do not contend for it the way they would
+on striped SRAM0-7. Heap **90 → 89 pages**. Static RAM **+0** with SMP
+off: it all compiles out.
+
+*Two mistakes worth recording, both of which cost a BOOTSEL recovery.*
+(1) A budget that is not a single counter is not a budget — the first
+handshake wrapped two 100k inner waits in a 2M outer guard, a product of
+4×10¹¹, i.e. no bound at all. It is now one shared budget. (2) Launching
+at boot, before a console existed, wedged the board into total silence.
+The launch is an explicit shell command now, because a board that boots is
+a board that can be reflashed.
+
+*Core 1 only counts, deliberately.* The first attempt sent it straight
+into `secondary_main()` — `trap_init`, ticker, scheduler, `printk` — and
+wedged; with everything downstream silent there was no way to tell a
+handshake that never started the core from a core that started and died.
+A bare `for(;;) g_core1_ticks++;` separates those two outcomes. Two
+blockers for the scheduler step were found there and are **not** solved
+here, recorded for X5's successor: `printk()` from core 1 reaches core 0's
+pinned UART task through a blocking `chan_call`, and `task_block()` before
+`sched_secondary_init()` would block task 0, since `g_current[1]` is
+still 0.
+
+*Verified:* RP2350 chess persona **24/24** on the X3 build (core 1 not
+launched); board stayed responsive after `smpstart`. QEMU **330/330**.
+`rp2350-chess` and `rp2350-clock` still build with `CONFIG_ENABLE_SMP=0`.
+
+
 **X4 — per-core preemption timer**, if §2's open question about RP2350's
 timer hardware requires one. May turn out to be unnecessary depending on
 what X3's own hardware investigation finds; written as a separate
@@ -310,7 +375,9 @@ proven too, rather than assumed to follow.
 - **X3 cannot be verified without real hardware.** Named plainly, the
   same way `plan/phase21_identity_and_authentication.md` names I7 —
   written down as blocked, not silently skipped, not claimed done on the
-  strength of X1's QEMU pass alone.
+  strength of X1's QEMU pass alone. *Resolved 2026-09-04: bench access
+  arrived and X3 was verified on a Pico 2. The risk was real — QEMU
+  could not have shown that core 1 never leaves the bootrom.*
 - **X1 passing is necessary, not sufficient.** A clean two-hart QEMU
   result is real evidence the *scheduler design* is sound; it is not
   evidence about RP2350's actual Hazard3 core-launch behavior, interrupt
