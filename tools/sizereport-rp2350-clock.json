@@ -9,9 +9,9 @@
     "drivers/cyw43_rp2350.c": 11909,
     "drivers/dcf77_p0log.c": 596,
     "drivers/dcf77_rp2350.c": 298,
-    "drivers/dcf77_service.c": 854,
+    "drivers/dcf77_service.c": 863,
     "drivers/edgecap.c": 21,
-    "drivers/gps_pps_rp2350.c": 974,
+    "drivers/gps_pps_rp2350.c": 1018,
     "drivers/i2c_rtc.c": 856,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_app.c": 196,
@@ -30,6 +30,7 @@
     "kernel/console.c": 405,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
+    "kernel/discipline.c": 113,
     "kernel/hart.c": 32,
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
@@ -43,11 +44,12 @@
     "kernel/sched.c": 1165,
     "kernel/shell.c": 246,
     "kernel/ticker.c": 29,
-    "kernel/time.c": 17,
+    "kernel/time.c": 33,
     "kernel/timezone.c": 4,
     "net/arp.c": 196,
     "net/netif.c": 12,
     "net/ntp.c": 64,
+    "net/ntp_server.c": 18,
     "net/stack.c": 169,
     "net/tcp.c": 243,
     "net/udp.c": 48,
@@ -60,5 +62,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39836
   },
-  "total": 143189
+  "total": 143389
 }
