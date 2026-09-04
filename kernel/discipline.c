@@ -195,9 +195,10 @@ void discipline_selftest(void) {
     /* Everything here drives the real entry point, so what is tested is what
      * ships -- and everything is put back afterwards, because this runs on a
      * board whose clock other things are using. */
+    uint64_t saved_mono  = time_get_us();
     int64_t  saved_epoch = time_epoch_us();
     int32_t  saved_freq  = time_freq_ppb();
-    uint64_t t = time_get_us();
+    uint64_t t = saved_mono;
     int pass = 0, fail = 0;
     #define CHECK(name, cond) do { \
         if (cond) { pass++; printk("  [ok]   %s\n", name); } \
@@ -260,5 +261,10 @@ void discipline_selftest(void) {
     discipline_reset();
     time_set_freq_ppb(saved_freq);
     time_slew_us(0, 0);
-    time_set_epoch_us(saved_epoch);
+    /* Restored *forward* by however long this took, not to the instant it
+     * started. Putting back the saved reading would step the clock backwards
+     * by the test's own duration -- about 30 ms -- which is a small version of
+     * exactly the thing this loop exists to avoid, and would be a strange
+     * thing for its selftest to do. */
+    time_set_epoch_us(saved_epoch + (int64_t)(time_get_us() - saved_mono));
 }
