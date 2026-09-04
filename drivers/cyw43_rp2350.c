@@ -438,6 +438,32 @@ static void cyw43_unlock(void) { g_bus_busy = false; }
 /* WLC_GET_RSSI. The firmware returns a signed dBm; -30 is next to the AP and
  * anything past about -75 is where a 2.4 GHz link starts dropping frames. */
 #define IOCTL_CMD_GET_RSSI    127u
+
+/* How often to ask the firmware whether it is still associated, and how many
+ * consecutive refusals count as "no".
+ *
+ * Needed because this driver's link detection is *event-driven*, and the
+ * failure that matters most produces no event. A DEAUTH or DISASSOC is the AP
+ * saying goodbye; an AP that vanishes -- powered off, out of range, a roam
+ * that does not complete -- says nothing at all, so g_link_up stays true and
+ * the supervisor sleeps contentedly on a dead link. Measured on the bench
+ * 2026-09-04: six ping outages up to fourteen seconds, and the board reported
+ * "drops: 0, up for 1292s" throughout. The only backstop was the five-minute
+ * RX-silence check, which is a long time to be off the network and looks
+ * exactly like being stuck.
+ *
+ * WLC_GET_BSSID is the authoritative answer -- the firmware returns
+ * BCME_NOTASSOCIATED when there is no association, whatever events did or did
+ * not arrive. Two consecutive failures rather than one, because this transport
+ * has been seen to wedge briefly (the PIO stall above), and a bus hiccup must
+ * not be mistaken for a lost association. */
+#define LINK_PROBE_MS      10000u
+#define LINK_PROBE_FAILS   2u
+
+/* Recorded as the "event" for a drop nothing reported. Distinct from any real
+ * firmware event number so /proc/net can tell the two apart: a drop the AP
+ * announced is a different animal from one we had to go and discover. */
+#define DROP_EV_PROBE      0xFFFFFFFFu
 #define CYW43_EV_DISASSOC    11u
 #define CYW43_EV_DISASSOC_IND 12u
 #define CYW43_EV_LINK        16u
@@ -2318,6 +2344,8 @@ static void cyw43_autostart_body(void *arg) {
     uint32_t last_rx = 0;
     uint64_t last_rx_change_ms = 0;
     uint64_t last_rssi_ms = 0;
+    uint64_t last_probe_ms = 0;
+    unsigned probe_fails = 0;
     for (;;) {
         if (g_link_up) {
             if (!was_up) {
@@ -2352,6 +2380,31 @@ static void cyw43_autostart_body(void *arg) {
              * is safe to do to a link that turns out to be fine; not doing it
              * costs the board until someone notices. */
             uint64_t now = time_get_ms();
+
+            /* Is the firmware still associated? Ask it, rather than waiting to
+             * be told. See LINK_PROBE_MS above for why waiting is not enough. */
+            if (now - last_probe_ms >= LINK_PROBE_MS) {
+                last_probe_ms = now;
+                uint8_t bssid[6];
+                uint32_t got = 0;
+                cyw43_lock();
+                g_ioctl_quiet = true;
+                bool assoc = cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_BSSID, 0,
+                                         bssid, sizeof(bssid), &got) && got >= 6;
+                g_ioctl_quiet = false;
+                cyw43_unlock();
+                if (assoc) {
+                    probe_fails = 0;
+                } else if (++probe_fails >= LINK_PROBE_FAILS) {
+                    printk("cyw43: firmware is not associated though no event "
+                           "said so -- rejoining\n");
+                    note_drop(DROP_EV_PROBE, 0, 0);
+                    g_link_up = false;
+                    was_up = false;
+                    probe_fails = 0;
+                    continue;
+                }
+            }
 
             /* Signal strength, occasionally and **under the bus lock**.
              *

@@ -858,12 +858,23 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
                     w.rssi_valid ? "" : "stale ", (long)w.rssi_dbm,
                     (unsigned long)w.joins, (unsigned long)w.drops);
                 if (w.drops) {
-                    used += (uint32_t)ksnprintf(buf + used, cap - used,
-                        "wlan last drop: ev=%lu status=%lu reason=%lu %lus ago\n",
-                        (unsigned long)w.last_drop_ev,
-                        (unsigned long)w.last_drop_status,
-                        (unsigned long)w.last_drop_reason,
-                        (unsigned long)w.s_since_drop);
+                    /* A drop the AP announced and one we had to go and
+                     * discover are different animals, and the distinction is
+                     * the first thing worth knowing: an announced deauth is
+                     * the network behaving normally, a polled one means
+                     * something went away silently. */
+                    if (w.last_drop_ev == 0xFFFFFFFFu) {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "wlan last drop: found by poll (no event) %lus ago\n",
+                            (unsigned long)w.s_since_drop);
+                    } else {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "wlan last drop: ev=%lu status=%lu reason=%lu %lus ago\n",
+                            (unsigned long)w.last_drop_ev,
+                            (unsigned long)w.last_drop_status,
+                            (unsigned long)w.last_drop_reason,
+                            (unsigned long)w.s_since_drop);
+                    }
                 }
                 if (w.link_up) {
                     used += (uint32_t)ksnprintf(buf + used, cap - used,
