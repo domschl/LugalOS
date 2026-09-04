@@ -183,6 +183,23 @@ int smp_selftest(void);
  * the §6.3 question phase 22 left open and everything above depends on.
  * Shaped like X3: run the smallest thing that can answer it. */
 #define CORE1_MODE_LOCKTEST 2u
+/* Staged bring-up: core 1 performs secondary_main()'s first N steps and then
+ * falls into the proof-of-life counter instead of continuing.
+ *
+ * Running the whole of secondary_main() at once produced a dead board and a
+ * step number, which says where it stopped and nothing about why. Each stage
+ * is separately observable -- core 0 reads the marker AND watches the counter
+ * move -- so "trap_init is safe, the ticker is not" is a result rather than
+ * an inference. This is X3's discipline applied to the inside of a function.
+ *
+ *   stage 1: trap_init()
+ *   stage 2: + ticker_arm_this_hart()
+ *   stage 3: + sched_secondary_init()
+ *   stage 4: + the idle loop (i.e. the full join)
+ */
+#define CORE1_MODE_STAGE1   3u
+#define CORE1_MODE_STAGE2   4u
+#define CORE1_MODE_STAGE3   5u
 
 /* Launches RP2350's core 1 over the SIO FIFO (X3), running `mode`. Explicit
  * rather than automatic at boot: see the definition. Returns 0 on success. */

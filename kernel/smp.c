@@ -30,6 +30,10 @@
  * SMP_RELEASE_MAGIC in kernel/hart.h. */
 volatile uint32_t g_smp_release;
 
+/* Published by a secondary once it has a task, read by the primary so the
+ * secondary does not have to print during bring-up. -1 until then. */
+volatile int g_secondary_pid = -1;
+
 static spinlock_t g_smp_lock;
 static unsigned   g_online = 1;   /* the primary is online by definition */
 
@@ -233,6 +237,31 @@ void core1_main(void) {
     if (g_core1_mode == CORE1_MODE_LOCKTEST) {
         core1_locktest_main();  /* §6.3. */
     }
+
+    /* Staged bring-up: do the first N of secondary_main()'s steps, then fall
+     * through to the counter. Core 0 can then see both how far the marker got
+     * and whether core 1 is still executing at all -- which "it stopped at
+     * step 7" alone cannot tell you. */
+    if (g_core1_mode >= CORE1_MODE_STAGE1) {
+        trap_init();
+        smp_mark(6);
+    }
+    if (g_core1_mode >= CORE1_MODE_STAGE2) {
+        ticker_arm_this_hart();
+        smp_mark(7);
+    }
+    if (g_core1_mode >= CORE1_MODE_STAGE3) {
+        int pid = sched_secondary_init();
+        smp_mark(8);
+        if (pid >= 0) {
+            uintptr_t f = spin_lock_irqsave(&g_smp_lock);
+            g_online++;
+            spin_unlock_irqrestore(&g_smp_lock, f);
+            g_secondary_pid = pid;
+        }
+        smp_mark(9);
+    }
+
     core1_probe_main();         /* X3: proof of life, and nothing else. */
 }
 
@@ -482,7 +511,7 @@ int smp_start_secondary(unsigned mode) {
         return ok ? 0 : -1;
     }
 
-    if (mode == CORE1_MODE_JOIN) {
+    if (mode >= CORE1_MODE_JOIN) {
         /* A deadman, because this is the experiment that hangs boards.
          *
          * Three attempts at this milestone each ended with a board whose USB
@@ -514,19 +543,59 @@ int smp_start_secondary(unsigned mode) {
          * without contending for the console with a core that is mid-bring-up,
          * and a step that is reached but never left names itself. This is the
          * console X3 did not have. */
+        /* Record silently, report afterwards.
+         *
+         * The first version of this printk()'d each step as it saw it, and
+         * that put core 0 into the console -- printk, uart batch, a blocking
+         * chan_call to the uart task -- for the whole of core 1's bring-up
+         * window. Core 1 then stalled at a different step on each run (0x09,
+         * then 0x07), which is the signature of contention rather than of a
+         * broken step. An observer that changes what it observes is not an
+         * observer.
+         *
+         * So the wait touches nothing but two volatile loads and a timer:
+         * no console, no locks beyond the one harts_online() needs. The
+         * trace is printed once core 1 is either up or gone. */
         extern uint32_t _smp_mark;
-        uint64_t deadline = time_get_us() + 500000;   /* 500 ms */
+        uint32_t trace[16];
+        unsigned n = 0;
         uint32_t last = 0;
+        uint64_t deadline = time_get_us() + 500000;   /* 500 ms */
         while (smp_harts_online() < 2 && time_get_us() < deadline) {
             uint32_t m = *(volatile uint32_t *)&_smp_mark;
             if (m != last) {
                 last = m;
-                printk("[SMP]   core 1 reached step 0x%lx\n", (unsigned long)m);
+                if (n < 16) trace[n++] = m;
             }
+        }
+
+        printk("[SMP] core 1 step trace:");
+        for (unsigned i = 0; i < n; i++) printk(" 0x%lx", (unsigned long)trace[i]);
+        printk("%s\n", n ? "" : " (none seen)");
+
+        if (mode != CORE1_MODE_JOIN) {
+            /* A stage stops short of the scheduler on purpose, so
+             * harts_online never reaches 2. What says it survived is the
+             * counter: core 1 falls into core1_probe_main() after its last
+             * stage, so a moving counter means every step it did perform
+             * left it alive and executing. */
+            rp2350_reboot_cancel();
+            uint32_t a = g_core1_ticks;
+            uint64_t until = time_get_us() + 50000;
+            while (time_get_us() < until) { }
+            uint32_t b = g_core1_ticks;
+            printk("[SMP] stage %lu: marker 0x%lx, counter %lu -> %lu (delta %lu)\n",
+                   (unsigned long)(mode - CORE1_MODE_JOIN),
+                   (unsigned long)*(volatile uint32_t *)&_smp_mark,
+                   (unsigned long)a, (unsigned long)b, (unsigned long)(b - a));
+            printk(b != a ? "[SMP] STAGE_OK -- core 1 survived every step of this stage\n"
+                          : "[SMP] STAGE_DEAD -- core 1 stopped executing\n");
+            return (b != a) ? 0 : -1;
         }
         if (smp_harts_online() >= 2) {
             rp2350_reboot_cancel();
-            printk("[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler\n");
+            printk("[SMP] CORE1_SCHEDULING -- core 1 joined the scheduler as pid %d\n",
+                   g_secondary_pid);
             printk("[SMP] core 1 stack: %lu of %lu bytes used\n",
                    (unsigned long)smp_core1_stack_used(),
                    (unsigned long)((uintptr_t)&_stack1_top -
@@ -650,8 +719,21 @@ void secondary_main(void) {
         g_online++;
         spin_unlock_irqrestore(&g_smp_lock, f);
     }
-    smp_mark(9);
-    printk("[SMP] hart %u online as pid %d\n", hart_id(), pid);
+    /* Core 0 reports this, not core 1.
+     *
+     * The first attempt printk()'d here and died doing it -- .smpmark read
+     * back 0x51c0de09, i.e. past sched_secondary_init() and past g_online++,
+     * stopped inside this line. It is the first printk core 1 makes while
+     * *owning a task*, which is the first one that takes the blocking
+     * chan_call() to the uart task pinned to core 0 rather than the
+     * no-task fallback. Whether that path is safe during bring-up is a
+     * question for after core 1 is stably scheduling, not a thing to answer
+     * by wedging the board.
+     *
+     * So the bring-up core says nothing and the healthy core reports on its
+     * behalf -- X3's discipline, which is what got a second core running at
+     * all. g_secondary_pid is published for core 0 to read. */
+    g_secondary_pid = pid;
     smp_mark(10);
 
     /* Interrupts on, then idle: pull whatever the shared ready queue has.

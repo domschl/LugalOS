@@ -2,6 +2,7 @@
 #include "drivers/uart_net.h"
 #include "kernel/devirq.h"
 #include "kernel/sched.h"
+#include "kernel/hart.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/chan.h"
@@ -350,8 +351,25 @@ static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
  * a single flush attempt would overrun it. Re-checking under the lock each
  * time closes that. */
 #define UART_TX_BATCH_CAP 256
-static char     g_tx_batch[UART_TX_BATCH_CAP];
-static uint32_t g_tx_batch_len;
+/* One batch per hart (phase 23 X7).
+ *
+ * It was a single shared buffer, and on two cores that spliced messages
+ * together character by character: printk_unlock() releases the printk lock
+ * and then flushes, so the other core acquires the lock and starts appending
+ * into the same buffer in between, and this core's flush picks up both.
+ * Observed on RP2350 as core 0 and core 1 interleaving mid-word.
+ *
+ * The obvious fix -- flush while still holding the printk lock -- trades one
+ * bug for a worse one: the flush blocks in chan_call() waiting for the uart
+ * task, so printk ownership would be held across that wait, and anything the
+ * uart task itself needs printk for would deadlock against it. Splitting the
+ * buffer removes the sharing instead of serialising it, and no lock is held
+ * across a block. Costs MAX_HARTS x 256 bytes.
+ *
+ * The lock stays: it still guards each hart's own buffer against preemption
+ * on that hart, which is what it was added for. */
+static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
+static uint32_t g_tx_batch_len[MAX_HARTS];
 /* Guards g_tx_batch/g_tx_batch_len (X2,
  * plan/phase23_multicore_scheduling.md).
  *
@@ -373,10 +391,11 @@ static spinlock_t g_tx_batch_lock;
 void uart_flush(void) {
     char local[UART_TX_BATCH_CAP];
     uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
-    uint32_t len = g_tx_batch_len;
+    unsigned h = hart_id();
+    uint32_t len = g_tx_batch_len[h];
     if (len > 0) {
-        memcpy(local, g_tx_batch, len);
-        g_tx_batch_len = 0;
+        memcpy(local, g_tx_batch[h], len);
+        g_tx_batch_len[h] = 0;
     }
     spin_unlock_irqrestore(&g_tx_batch_lock, flags);
     if (len == 0) return;
@@ -406,7 +425,7 @@ void uart_flush(void) {
 
 void uart_putc(char c) {
     uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
-    while (g_tx_batch_len >= UART_TX_BATCH_CAP) {
+    while (g_tx_batch_len[hart_id()] >= UART_TX_BATCH_CAP) {
         /* Released around uart_flush(), which takes this same lock --
          * spinlock_t is not re-entrant, and the re-check on re-acquire is
          * what makes dropping it safe (the existing comment above the batch
@@ -415,7 +434,7 @@ void uart_putc(char c) {
         uart_flush();
         flags = spin_lock_irqsave(&g_tx_batch_lock);
     }
-    g_tx_batch[g_tx_batch_len++] = c;
+    g_tx_batch[hart_id()][g_tx_batch_len[hart_id()]++] = c;
     spin_unlock_irqrestore(&g_tx_batch_lock, flags);
 }
 

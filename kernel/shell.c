@@ -2097,6 +2097,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         unsigned mode = CORE1_MODE_PROBE;
         if (strcmp(cmd_line, "smpstart join") == 0)          mode = CORE1_MODE_JOIN;
         else if (strcmp(cmd_line, "smpstart locktest") == 0) mode = CORE1_MODE_LOCKTEST;
+        else if (strcmp(cmd_line, "smpstart stage1") == 0)   mode = CORE1_MODE_STAGE1;
+        else if (strcmp(cmd_line, "smpstart stage2") == 0)   mode = CORE1_MODE_STAGE2;
+        else if (strcmp(cmd_line, "smpstart stage3") == 0)   mode = CORE1_MODE_STAGE3;
         smp_start_secondary(mode);
 #else
         cprintf("smpstart: this build has no RP2350 second-core launch "
