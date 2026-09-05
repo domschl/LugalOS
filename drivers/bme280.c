@@ -51,6 +51,13 @@ static struct {
     bme280_part_t  part;
     uint8_t        addr;
     bme280_calib_t cal;
+    /* Which bus transfer failed last, and how many have. Hardware
+     * instrumentation: on the first board this ran on, one read in three
+     * failed once the radio was up, and "the measurement failed" does not
+     * say which of a read's several transfers did. */
+    const char    *last_fail;
+    uint32_t       fail_count;
+    uint32_t       poll_count;
 } g;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
@@ -230,13 +237,19 @@ void bme280_compensate(const bme280_calib_t *cal,
     out->have_humidity = true;
 }
 
+static bool fail(const char *where) {
+    g.last_fail = where;
+    g.fail_count++;
+    return false;
+}
+
 bool bme280_read(bme280_reading_t *out) {
     if (!out || g.part == BME280_PART_NONE) return false;
 
     /* Forced mode is one-shot: the part returns to sleep after each
      * measurement, so every read starts by asking for one. */
-    if (g.part == BME280_PART_BME280 && !wr(REG_CTRL_HUM, OSRS_X1)) return false;
-    if (!wr(REG_CTRL_MEAS, CTRL_MEAS_FORCED)) return false;
+    if (g.part == BME280_PART_BME280 && !wr(REG_CTRL_HUM, OSRS_X1)) return fail("ctrl_hum write");
+    if (!wr(REG_CTRL_MEAS, CTRL_MEAS_FORCED)) return fail("ctrl_meas write");
 
     /* Under 10 ms at this oversampling. Polled rather than delayed blindly,
      * and bounded rather than polled forever -- the rule every wait in this
@@ -244,18 +257,19 @@ bool bme280_read(bme280_reading_t *out) {
     uint64_t deadline = time_get_ms() + 100u;
     for (;;) {
         uint8_t status = 0;
-        if (!rd(REG_STATUS, &status, 1u)) return false;
+        g.poll_count++;
+        if (!rd(REG_STATUS, &status, 1u)) return fail("status poll");
         if (!(status & STATUS_MEASURING)) break;
         if (time_get_ms() >= deadline) {
             printk("[BME280] The measurement did not finish within 100 ms.\n");
-            return false;
+            return fail("measurement timeout");
         }
         sched_yield();
     }
 
     uint8_t d[8];
     uint32_t want = (g.part == BME280_PART_BME280) ? 8u : 6u;
-    if (!rd(REG_PRESS_MSB, d, want)) return false;
+    if (!rd(REG_PRESS_MSB, d, want)) return fail("data read");
 
     int32_t raw_press = (int32_t)(((uint32_t)d[0] << 12) | ((uint32_t)d[1] << 4) | (d[2] >> 4));
     int32_t raw_temp  = (int32_t)(((uint32_t)d[3] << 12) | ((uint32_t)d[4] << 4) | (d[5] >> 4));
@@ -335,11 +349,16 @@ void bme280_print_status(void) {
     }
 
     bme280_reading_t r;
+    uint32_t polls_before = g.poll_count;
     if (!bme280_read(&r)) {
-        cprintf("sensor: %s at 0x%02x, but the measurement failed\n",
-                bme280_part_name(), g.addr);
+        cprintf("sensor: %s at 0x%02x, but the measurement failed -- %s "
+                "(failures %lu, polls this read %lu)\n",
+                bme280_part_name(), g.addr, g.last_fail ? g.last_fail : "?",
+                (unsigned long)g.fail_count,
+                (unsigned long)(g.poll_count - polls_before));
         return;
     }
+    uint32_t polls = g.poll_count - polls_before;
 
     /* Printed as fixed-point by hand: there is no float formatting in this
      * kernel's printk, and introducing one for three numbers would be a poor
@@ -356,5 +375,6 @@ void bme280_print_status(void) {
         uint32_t rh10 = (r.humidity_rh1024 * 10u) >> 10;
         cprintf(", %lu.%lu %%RH", (unsigned long)(rh10 / 10u), (unsigned long)(rh10 % 10u));
     }
-    cprintf("  (forced mode, x1 oversampling)\n");
+    cprintf("  (forced mode, x1 oversampling, %lu status poll%s)\n",
+            (unsigned long)polls, polls == 1u ? "" : "s");
 }
