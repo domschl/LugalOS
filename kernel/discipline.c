@@ -32,29 +32,42 @@
  * rather than all of it. */
 #define PHASE_DIV 8
 
-/* The frequency estimate needs a *baseline*, not a gain.
+/* The frequency term integrates the offset. It is the I of a PI loop, and the
+ * two previous versions were both the wrong shape.
  *
- * The first version differenced consecutive samples and divided by 16. That is
- * the worst available estimator, and the bench said so within forty minutes:
- * freq_ppb swung 514, 586, -1187, 398, 3181, -958 while the crystal's true
- * error is about -460 ppb. The arithmetic is unforgiving -- differencing two
- * samples 60 s apart turns this receiver's 1.9 ms of phase noise into
- * 1900 us * sqrt(2) / 60 s = 45000 ppb of apparent rate error, so even after
- * dividing by 16 each update injected thousands of ppb of noise into a
- * quantity of a few hundred. It never converged; it random-walked.
+ * Differencing consecutive samples came first and random-walked: 1.9 ms of
+ * phase noise over a 60 s baseline is 45000 ppb of apparent rate error, so
+ * every update injected thousands of ppb into a quantity of a few hundred.
  *
- * A least-squares slope over the whole run fixes it, because the uncertainty
- * of a regression falls as sigma*sqrt(12/n)/T rather than as sigma/dt: about
- * three hours of samples gets to 50 ppb, where two-point differencing would
- * need fifteen. Kept as running sums rather than a stored series, so it costs
- * five accumulators instead of a page of history.
+ * A least-squares slope over the whole run replaced it, and was quieter but
+ * measured the wrong thing. It regressed the *observed* offset against time --
+ * and the phase slew re-flattens that offset every minute, so its slope is
+ * near zero precisely when the loop is working. Seventeen hours on the bench
+ * showed freq_ppb decaying -209, -95, -36, -29, -20, -13 toward nothing, while
+ * the crystal it was supposed to be learning sits at about -460 ppb (2026-09-05).
+ * The clock stayed right the whole time because the slew was doing all the
+ * work, leaving a standing offset of about -700 us as its signature -- and a
+ * frequency estimate that had learned nothing.
  *
- * It does not forget, which is right for a crystal P0 measured stable to
- * +/-0.01 ppm and wrong after anything that invalidates the past -- so a step
- * or a re-acquisition clears it, and those are exactly the events that mean
- * the old samples describe a different clock. */
-#define FREQ_MIN_SAMPLES 20
-#define FREQ_MIN_SPAN_S  900
+ * That is invisible while the radio is present and fatal the moment it is not:
+ * in holdover the slew expires after a minute and the clock coasts on
+ * freq_ppb, so a rate estimate of -13 ppb against a true -460 drifts 1.6 ms an
+ * hour while the reported dispersion grows at a floored 10 ppb.
+ *
+ * An integrator has no such blind spot. A standing offset is exactly what it
+ * consumes: freq moves until the offset it is fed goes to zero, which happens
+ * only when the rate correction matches the crystal. The divisor sets how
+ * fast -- 64 moves about 3 ppb per sample against the ~200 us standing offset
+ * this receiver produces, so it crosses 460 ppb in a couple of hours, while
+ * dividing a 2 ms noise sample down to 31 ppb of jitter that successive
+ * samples largely cancel. */
+#define FREQ_INT_DIV     64
+
+/* Below this interval a sample says nothing about rate -- it is the same
+ * minute's noise measured twice -- and above it the two are not describing one
+ * stretch of the same crystal. */
+#define FREQ_MIN_DT_US   (30ull * 1000000ull)
+#define FREQ_MAX_DT_US   (3600ull * 1000000ull)
 
 /* How long the offset correction is spread over. One sample interval, so the
  * debt is paid off by the time the next measurement arrives and each sample
@@ -88,13 +101,13 @@ static int64_t  g_sum_us;
 static uint64_t g_sumsq;
 static uint32_t g_n;
 
-/* Running sums for the least-squares slope. `t` is seconds since the first
- * accepted sample, which keeps every product comfortably inside 64 bits even
- * across a multi-day run. */
-static uint64_t g_t0_mono;
-static int64_t  g_st, g_stt, g_sy, g_sty;
-static uint32_t g_sn;
-static int64_t  g_span_s;
+/* How much the rate estimate is still moving, as an exponential average of
+ * the size of its own steps. This is what dispersion is entitled to claim: a
+ * freq_ppb that is still wandering by 200 ppb per sample does not know the
+ * crystal to 10, and saying otherwise is the mistake both previous versions
+ * made in different ways. */
+static uint32_t g_freq_wander_ppb;
+static uint32_t g_freq_updates;
 
 static uint32_t isqrt64(uint64_t v) {
     uint64_t r = 0;
@@ -119,15 +132,18 @@ static uint32_t isqrt64(uint64_t v) {
  * more code for a difference that only exists when the answer should be
  * pessimistic anyway. */
 static uint32_t freq_uncertainty_ppb(uint32_t sd_us) {
-    if (g_sn < FREQ_MIN_SAMPLES || g_span_s < FREQ_MIN_SPAN_S) return UNKNOWN_PPB_ERR;
-    /* sigma * sqrt(12/n) / T, in ppb: microseconds over seconds is ppm, so a
-     * further factor of 1000. sqrt(12/n) is computed as sqrt(12*1e6/n)/1000
-     * to keep it in integers. */
-    uint32_t root = isqrt64(12ull * 1000000ull / g_sn);
-    uint64_t ppb = (uint64_t)sd_us * root * 1000ull / (1000ull * (uint64_t)g_span_s);
+    (void)sd_us;
+    /* Until the integrator has had time to move, the rate is simply unknown
+     * and an uncorrected crystal is the honest assumption. */
+    if (g_freq_updates < 20u) return UNKNOWN_PPB_ERR;
+    /* After that, how far the estimate is still moving per sample *is* how
+     * well it is known. Doubled, because successive steps only partly cancel
+     * and the safe direction here is pessimism: an overstated dispersion
+     * costs a client some precision, an understated one costs it the truth. */
+    uint32_t ppb = g_freq_wander_ppb * 2u;
     if (ppb < 10) ppb = 10;
     if (ppb > UNKNOWN_PPB_ERR) ppb = UNKNOWN_PPB_ERR;
-    return (uint32_t)ppb;
+    return ppb;
 }
 
 bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
@@ -144,7 +160,7 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
         g_have_last = false;
         /* The accumulated slope described the clock as it was before the step
          * and says nothing about the one that exists now. */
-        g_t0_mono = 0; g_st = g_stt = g_sy = g_sty = 0; g_sn = 0; g_span_s = 0;
+        g_freq_wander_ppb = 0; g_freq_updates = 0;
         g_consec_rejects = 0;
         g_last_offset_us = 0;
         g_last_at_mono = at_mono_us;
@@ -173,29 +189,22 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
     }
     g_consec_rejects = 0;
 
-    /* --- frequency: the slope of the whole run, not the last two points --- */
-    if (!g_sn) g_t0_mono = at_mono_us;
-    {
-        int64_t t = (int64_t)((at_mono_us - g_t0_mono) / 1000000ull);
-        g_st += t; g_stt += t * t; g_sy += offset_us; g_sty += t * offset_us;
-        g_sn++;
-        g_span_s = t;
-        if (g_sn >= FREQ_MIN_SAMPLES && t >= FREQ_MIN_SPAN_S) {
-            int64_t n = (int64_t)g_sn;
-            int64_t denom = n * g_stt - g_st * g_st;
-            if (denom > 0) {
-                /* Slope in microseconds of offset per second, scaled to ppb:
-                 * 1 us/s is 1 ppm is 1000 ppb. Numerator scaled before the
-                 * divide so the result keeps its resolution. */
-                int64_t num = n * g_sty - g_st * g_sy;
-                int64_t slope_ppb = num * 1000LL / denom;
-                /* The clock gains offset at `slope`; correcting it means
-                 * running slower by the same amount. Absolute, not
-                 * incremental: the regression already integrates every sample,
-                 * so adding a fraction of it each time would integrate twice. */
-                g_freq_ppb = (int32_t)(-slope_ppb);
-                time_set_freq_ppb(g_freq_ppb);
-            }
+    /* --- frequency: integrate the offset the slew keeps having to remove --- */
+    if (g_have_last && at_mono_us > g_last_at_mono) {
+        uint64_t dt_us = at_mono_us - g_last_at_mono;
+        if (dt_us > FREQ_MIN_DT_US && dt_us < FREQ_MAX_DT_US) {
+            /* A clock that is persistently fast needs to run slower, in
+             * proportion to how fast and for how long it has been so. That is
+             * the whole of it -- and unlike a slope through the observed
+             * offsets, it cannot be flattened by the correction being
+             * applied, because the correction is what it is accumulating. */
+            int32_t step = (int32_t)(offset_us / FREQ_INT_DIV);
+            g_freq_ppb -= step;
+            time_set_freq_ppb(g_freq_ppb);
+
+            uint32_t mag = (uint32_t)(step < 0 ? -step : step);
+            g_freq_wander_ppb = (g_freq_wander_ppb * 7u + mag) / 8u;
+            g_freq_updates++;
         }
     }
 
@@ -261,10 +270,8 @@ void discipline_reset(void) {
     g_sum_us = 0;
     g_sumsq = 0;
     g_n = 0;
-    g_t0_mono = 0;
-    g_st = g_stt = g_sy = g_sty = 0;
-    g_sn = 0;
-    g_span_s = 0;
+    g_freq_wander_ppb = 0;
+    g_freq_updates = 0;
 }
 
 void discipline_selftest(void) {
@@ -312,41 +319,44 @@ void discipline_selftest(void) {
         last = discipline_feed(2000 + 200000, t + (uint64_t)(120 + 60 * i) * 1000000ull);
     CHECK("persistent disagreement is eventually believed", last);
 
-    /* 5. A clock losing time at a steady rate has its *rate* learned, and
-     *    learned to the right value -- the difference between a clock that
-     *    holds over usefully and one that merely claims to.
+    /* 5. A standing offset -- the signature of a crystal running at the wrong
+     *    rate while a phase correction keeps papering over it -- is consumed
+     *    by the frequency term rather than papered over forever.
      *
-     *    Forty samples a minute apart, each 1000 us later than the last: a
-     *    drift of exactly 1000 us / 60 s = 16667 ppb. The regression should
-     *    recover that and correct against it, so freq_ppb lands near -16667.
-     *    Asserting the value rather than the sign is the point -- the previous
-     *    estimator would pass a sign test and still be useless, which is how
-     *    it survived to the bench. */
+     *    This is the case the previous two estimators both got wrong, and the
+     *    reason the test now feeds a *constant* offset instead of a ramp. An
+     *    open-loop ramp made a regression look like it worked; what the bench
+     *    actually produces is a persistent few hundred microseconds that the
+     *    slew removes every minute and the rate term never learns from.
+     *
+     *    Forty samples of a steady +640 us must move freq by
+     *    40 * 640 / 64 = -400 ppb. Asserting the arithmetic exactly, because
+     *    "it moved the right way" is precisely the assertion that let a
+     *    useless estimator ship twice. */
     discipline_reset();
     time_set_freq_ppb(0);
     for (int i = 0; i < 40; i++)
-        discipline_feed((int64_t)i * 1000, t + (uint64_t)i * 60000000ull);
+        discipline_feed(640, t + (uint64_t)i * 60000000ull);
     discipline_status(&d);
-    CHECK("a steady drift is learned as a rate, to within 5%",
-          d.freq_ppb < -15800 && d.freq_ppb > -17500);
-    printk("  freq estimate after 40 samples drifting 1 ms/min: %ld ppb "
-           "(expected about -16667)\n", (long)d.freq_ppb);
+    CHECK("a standing offset is integrated into the rate",
+          d.freq_ppb < -380 && d.freq_ppb > -420);
+    printk("  freq after 40 samples of a steady +640 us offset: %ld ppb "
+           "(expected about -400)\n", (long)d.freq_ppb);
 
-    /* 6. And the rate's *uncertainty* falls out of the data rather than being
-     *    asserted. With no scatter at all the slope is exact, so dispersion
-     *    should grow only slowly; the failure this replaced claimed a fixed
-     *    20 ppb while its estimator wandered by 2000. */
-    uint32_t disp_clean = d.dispersion_us;
+    /* 6. And the dispersion follows the estimate's own restlessness. A rate
+     *    still moving in large steps is not known to ten parts per billion,
+     *    whatever a constant might have claimed. */
+    uint32_t disp_steady = d.dispersion_us;
     discipline_reset();
     time_set_freq_ppb(0);
-    for (int i = 0; i < 40; i++)   /* same span, but noisy */
-        discipline_feed((int64_t)i * 1000 + ((i & 1) ? 4000 : -4000),
+    for (int i = 0; i < 40; i++)   /* same mean, alternating +/-8 ms of noise */
+        discipline_feed(640 + ((i & 1) ? 8000 : -8000),
                         t + (uint64_t)i * 60000000ull);
     discipline_status(&d);
-    CHECK("noisy samples give a larger dispersion than clean ones",
-          d.dispersion_us > disp_clean);
-    printk("  dispersion clean=%lu us  noisy=%lu us\n",
-           (unsigned long)disp_clean, (unsigned long)d.dispersion_us);
+    CHECK("a noisier rate estimate reports a larger dispersion",
+          d.dispersion_us > disp_steady);
+    printk("  dispersion steady=%lu us  noisy=%lu us\n",
+           (unsigned long)disp_steady, (unsigned long)d.dispersion_us);
 
     /* 7. Holdover reports a dispersion that grows, because a clock that has
      *    lost its reference is still useful only if it says how much less. */
