@@ -1,11 +1,13 @@
 # Phase 26 — A node that measures something, and says so
 
-**Status: in progress, 2026-09-05.** Q0, Q1, Q2 and the Q4 driver are
-implemented and merged on `feature/mqtt-sensors`; the sensor persona
-(`rp2350-sensor`) builds and is ready to flash. Hardware bring-up is next.
-Dated notes are at the end of each milestone in §6.
+**Status: in progress, 2026-09-05.** Q0, Q1, Q2 and Q4 are implemented on
+`feature/mqtt-sensors` and verified on hardware: an `rp2350-sensor` board with
+a BME280 reads its sensor and publishes to `nalanda` over WiFi. Q3, Q5 and Q6
+are open. Dated notes are at the end of each milestone in §6. Fixing a CYW43
+bus-lock bug found during that bring-up was not in this plan and is not a
+milestone of it; see §9 and the commit.
 
-**Status: planned 2026-09-05.** Succeeds `plan/phase19_ip_stack_and_ethernet.md`
+Planned 2026-09-05. Succeeds `plan/phase19_ip_stack_and_ethernet.md`
 (concluded) and stands beside `plan/phase24_dcf77_precision_and_ntp_server.md`
 (planned, in progress). It needs nothing from phase 24 and phase 24 needs
 nothing from it; they share only the stack underneath.
