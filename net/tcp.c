@@ -41,6 +41,14 @@
 
 #define TCP_MAX_CONNS 2
 
+/* Q0's stream ring indexes the receive buffer modulo its size and lets the
+ * byte counters wrap at 2^32. Both are only correct for a power-of-two size,
+ * which P9_MAX_MSIZE is on every target today (2048 on RP2350, 4096
+ * elsewhere). Asserted rather than assumed, because the failure would be a
+ * silently misplaced byte rather than a build error. */
+_Static_assert((P9_MAX_MSIZE & (P9_MAX_MSIZE - 1)) == 0,
+               "P9_MAX_MSIZE must be a power of two for the stream receive ring");
+
 typedef enum {
     TCP_CLOSED = 0, TCP_LISTEN, TCP_SYN_SENT, TCP_SYN_RECEIVED, TCP_ESTABLISHED,
     TCP_FIN_WAIT_1, TCP_FIN_WAIT_2, TCP_CLOSE_WAIT, TCP_CLOSING,
@@ -81,6 +89,26 @@ typedef struct {
      * ever asks for in one piece. */
     uint8_t *rx;
     uint32_t rx_len;
+
+    /* Q0, stream connections only: `rx` is a single-producer/single-consumer
+     * ring, and these two are what make it safe to read from a task that is
+     * not the pump.
+     *
+     * The 9P face consumes `rx` by memmove()ing the remainder down, which is
+     * correct on `netsrv`'s own call stack and only there -- a reader on
+     * another task moves the very bytes tcp_input() is appending to. A stream
+     * has an owner that is never the pump, and on RP2350 those two run on
+     * different cores at the same instant, so the shape has to change rather
+     * than the odds.
+     *
+     * So for a stream: `rx_len` is a **monotonic byte counter written only by
+     * the pump**, `rx_head` a monotonic counter **written only by the
+     * owner**, occupancy is their difference, and the buffer is indexed
+     * modulo its size. Neither side ever moves memory the other is touching,
+     * and the counters wrapping at 2^32 is harmless because only the
+     * difference is ever used. P9_MAX_MSIZE is a power of two on every
+     * target, so the modulo is a mask. */
+    uint32_t rx_head;
 
     /* Send: one complete 9P reply, retained until every byte of it is
      * acknowledged, which is what makes retransmission a matter of rewinding
@@ -176,6 +204,7 @@ static uint16_t tcp_checksum(const uint8_t *src, const uint8_t *dst,
  * zero, which is correct and handled: tcp_service() sends a window update as
  * soon as the 9P server takes the frame. */
 static uint32_t rcv_window(const tcp_conn_t *c) {
+    if (c->is_stream) return P9_MAX_MSIZE - (c->rx_len - c->rx_head);
     return P9_MAX_MSIZE - c->rx_len;
 }
 
@@ -253,6 +282,7 @@ static void conn_release(tcp_conn_t *c) {
     c->state = TCP_CLOSED;
     c->epoch++;            /* every link handed out for this slot is now stale */
     c->rx_len = 0;
+    c->rx_head = 0;
     c->tx_len = 0;
     c->rto_at_ms = 0;
     c->fin_sent = false;
@@ -632,15 +662,27 @@ int tcp_stream_ready(tcp_stream_t *s) {
 int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
     tcp_conn_t *c = stream_conn(s);
     if (!c || !buf) return -1;
-    if (c->rx_len == 0) return 0;
 
-    uint32_t n = (c->rx_len < max) ? c->rx_len : max;
-    memcpy(buf, c->rx, n);
-    c->rx_len -= n;
-    if (c->rx_len) memmove(c->rx, c->rx + n, c->rx_len);
+    uint32_t avail = c->rx_len - c->rx_head;      /* wrap-safe: a difference */
+    if (avail == 0) return 0;
+    uint32_t n = (avail < max) ? avail : max;
+
+    uint32_t off = c->rx_head % P9_MAX_MSIZE;
+    uint32_t first = P9_MAX_MSIZE - off;
+    if (first > n) first = n;
+    memcpy(buf, c->rx + off, first);
+    if (n > first) memcpy(buf + first, c->rx, n - first);
+
+    /* The copy must be finished before the space is handed back, or the pump
+     * can overwrite bytes still being read out. */
+    __asm__ __volatile__("fence r, w" ::: "memory");
+    c->rx_head += n;
+
     /* The window just reopened, and saying so promptly is what keeps a peer
      * that filled the buffer from waiting on its own persist timer -- the
-     * same reason link_recv_frame() does it. */
+     * same reason link_recv_frame() does it. A plain store from the owner's
+     * task: the pump may clear it in the same breath, which costs one pump of
+     * delay and never a wrong window. */
     c->need_ack = true;
     return (int)n;
 }
@@ -887,8 +929,22 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
             data_len = space;
         }
         if (data_len) {
-            memcpy(c->rx + c->rx_len, data, data_len);
-            c->rx_len += data_len;
+            if (c->is_stream) {
+                /* Into the ring, in up to two pieces. The counter is
+                 * published only after the bytes are in place, or an owner on
+                 * another core can see the length of data it cannot yet
+                 * see. */
+                uint32_t off = c->rx_len % P9_MAX_MSIZE;
+                uint32_t first = P9_MAX_MSIZE - off;
+                if (first > data_len) first = data_len;
+                memcpy(c->rx + off, data, first);
+                if (data_len > first) memcpy(c->rx, data + first, data_len - first);
+                __asm__ __volatile__("fence w, w" ::: "memory");
+                c->rx_len += data_len;
+            } else {
+                memcpy(c->rx + c->rx_len, data, data_len);
+                c->rx_len += data_len;
+            }
             c->rcv_nxt += data_len;
         }
         c->need_ack = true;
@@ -1012,5 +1068,6 @@ void tcp_conn_str(uint32_t index, char *out, uint32_t max) {
               c->peer_ip[0], c->peer_ip[1], c->peer_ip[2], c->peer_ip[3],
               c->peer_port, c->local_port, state_name(c->state),
               c->is_stream ? " stream" : "",
-              (unsigned long)c->rx_len, (unsigned long)c->tx_len);
+              (unsigned long)(c->is_stream ? c->rx_len - c->rx_head : c->rx_len),
+              (unsigned long)c->tx_len);
 }
