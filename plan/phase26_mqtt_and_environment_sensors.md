@@ -1,11 +1,14 @@
 # Phase 26 — A node that measures something, and says so
 
-**Status: in progress, 2026-09-05.** Q0, Q1, Q2 and Q4 are implemented on
-`feature/mqtt-sensors` and verified on hardware: an `rp2350-sensor` board with
-a BME280 reads its sensor and publishes to `nalanda` over WiFi. Q3, Q5 and Q6
-are open. Dated notes are at the end of each milestone in §6. Fixing a CYW43
-bus-lock bug found during that bring-up was not in this plan and is not a
-milestone of it; see §9 and the commit.
+**Status: Q0–Q6 done, 2026-09-05**, on `feature/mqtt-sensors` and verified on
+hardware. An `rp2350-sensor` board with a BME280, told its broker once with
+`mqttcfg`, comes up on WiFi by itself, announces `online`, publishes
+temperature, pressure and humidity under rules of their own, receives messages
+sent to it, and is announced gone by its will when it dies — with nothing
+typed. Dated notes are at the end of each milestone in §6. Q8 (QoS 1) remains
+optional and unbuilt; §3.3 argues it should stay that way until something asks
+for it. Fixing a CYW43 bus-lock bug found during bring-up was not in this plan
+and is not a milestone of it; see §9 and the commit.
 
 Planned 2026-09-05. Succeeds `plan/phase19_ip_stack_and_ethernet.md`
 (concluded) and stands beside `plan/phase24_dcf77_precision_and_ntp_server.md`
