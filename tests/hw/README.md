@@ -276,6 +276,27 @@ earlier version of this test flushed the input buffer *after* driving the
 reset lines, which discarded the banner — it reported "this host cannot
 reset the board" about a host that resets it perfectly.
 
+### The GPIO toggle: no user LED on this board
+
+The NANO has **no user LED** — `LED1` in the schematic is a hardwired 5 V
+power indicator, and `LED0`/`LED3`/`LEDMOD` belong to the Ethernet PHY. E1's
+toggle therefore drives **GPIO20 (header P1 pin 13)** and reads the pad back
+through the input buffer, which needs no instruments:
+
+```
+gpio20  = drive 1 reads 1, drive 0 reads 0  PASS
+gpio20  = released, pull-down reads 0, pull-up reads 1  PASS (reading the pad, and the pin is free)
+```
+
+The second line is the one that matters: with the output disabled and
+`GPIO_OUT` left high, a `GPIO_IN` that merely mirrored `GPIO_OUT` would read 1
+both times. Reading 0 then 1 proves the pad is being measured — and that
+GPIO20 has nothing else on it.
+
+GPIO20–23 are the free pins on this board (all four on P1). Avoid GPIO7/8
+(I2C), GPIO34–38 (strapping; GPIO36 has a 10 kΩ pull-up, GPIO37/38 are the
+console), and GPIO14–19 plus GPIO54 (the C6).
+
 ### Flash backup — a prerequisite, not a suggestion
 
 **E6 must not begin until the factory image is safely off the board.** The

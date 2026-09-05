@@ -8,7 +8,9 @@
  *
  * Actions:
  *   1. Writes a banner to UART0
- *   2. Echoes received characters back
+ *   2. Reports misa/mtvec/mhartid/mstatus straight off the silicon
+ *   3. Drives GPIO20 and reads the pad back, both levels
+ *   4. Echoes received characters back, toggling GPIO20 on each heartbeat
  *
  * ## Why this is so much smaller than the RP2350 one
  *
@@ -110,6 +112,105 @@ static void uart_puthex(uint32_t v) {
 /* Reads a CSR by name into a variable. */
 #define READ_CSR(name) ({ uint32_t __v; __asm__ volatile ("csrr %0, " name : "=r"(__v)); __v; })
 
+/* ---- GPIO -------------------------------------------------------------
+ *
+ * The milestone asks for a GPIO toggle. On this board that is not a matter
+ * of finding an LED: **the ESP32-P4-NANO has no user LED.** The schematic's
+ * only LED1 is a 5 V power indicator hardwired through R1 to VCC_5V, and
+ * LED0/LED3/LEDMOD are pins of the IP101GRI Ethernet PHY. So the toggle is
+ * made observable a better way -- by reading the pad back through the input
+ * buffer, which proves drive *and* sense in one step and needs no scope.
+ *
+ * Pin choice, from ESP32-P4-NANO-schematic.pdf: GPIO20, which reaches
+ * header P1 pin 13 and touches nothing else on the board. GPIO7/GPIO8 are
+ * the I2C the factory demo fails on; GPIO34-38 are strapping pins
+ * (datasheet Table 3-1) and GPIO36 carries a 10 kOhm pull-up (R41); GPIO54
+ * resets the C6; GPIO14-19 are its SDIO. GPIO20-23 are the clean ones, all
+ * four on P1, connected to the P4 and the header and nothing besides.
+ *
+ * Every offset below is from the TRM, chapter 10 "GPIO Matrix and IO MUX",
+ * not from inference -- §3.2 of the plan, and phase 24's 0x88888888 bug,
+ * are why. GPIO Matrix at 0x500E_0000 and IO MUX at 0x500E_1000 are from
+ * the TRM's own peripheral address table. */
+#define GPIO_BASE               0x500E0000UL
+#define GPIO_OUT_W1TS_REG       (GPIO_BASE + 0x0008)   /* Register 10.2 */
+#define GPIO_OUT_W1TC_REG       (GPIO_BASE + 0x000C)   /* Register 10.3 */
+#define GPIO_ENABLE_W1TS_REG    (GPIO_BASE + 0x0024)   /* Register 10.8 */
+#define GPIO_ENABLE_W1TC_REG    (GPIO_BASE + 0x0028)   /* Register 10.9 */
+#define GPIO_IN_REG             (GPIO_BASE + 0x003C)   /* Register 10.13 */
+#define GPIO_FUNC_OUT_SEL_CFG(n) (GPIO_BASE + 0x0558 + 4u * (n))  /* Reg 10.30 */
+
+#define IOMUX_BASE              0x500E1000UL
+#define IOMUX_GPIO_REG(n)       (IOMUX_BASE + 0x0004 + 4u * (n))  /* Reg 10.43 */
+
+/* IO_MUX_GPIOn_REG fields (Register 10.43): MCU_SEL [14:12], FUN_DRV
+ * [11:10] (reset 0x2, ~20 mA), FUN_IE [9]. Function 1 is the GPIO function
+ * "for all pins" per the TRM's programming procedure, and MCU_SEL resets to
+ * 0 -- so selecting it is required, not a formality. */
+#define IOMUX_MCU_SEL_SHIFT     12
+#define IOMUX_MCU_SEL_MASK      (7u << IOMUX_MCU_SEL_SHIFT)
+#define IOMUX_FUN_GPIO          (1u << IOMUX_MCU_SEL_SHIFT)
+#define IOMUX_FUN_IE            (1u << 9)
+#define IOMUX_FUN_PU            (1u << 8)
+#define IOMUX_FUN_PD            (1u << 7)
+
+/* GPIO_FUNCn_OUT_SEL_CFG_REG (Register 10.30): OUT_SEL [8:0] picks which of
+ * 256 peripheral signals drives the pin, and 256 is the special index
+ * meaning "drive from GPIO_OUT_REG" (IDF's SIG_GPIO_OUT_IDX). It is also
+ * the reset value, 0x100 -- written anyway rather than inherited, on the
+ * same principle that makes E2 configure the UART instead of living off the
+ * ROM's leftovers. OE_SEL [10] makes the output enable ours rather than a
+ * peripheral's. */
+#define GPIO_SIG_OUT_IDX        256u
+#define GPIO_FUNC_OE_SEL        (1u << 10)
+
+#define GPIO_TOGGLE_PIN         20u   /* header P1 pin 13 */
+
+static void gpio_out_init(unsigned pin) {
+    uint32_t cfg = REG(IOMUX_GPIO_REG(pin));
+    cfg &= ~IOMUX_MCU_SEL_MASK;
+    /* FUN_IE stays on deliberately: with the input buffer enabled the pad
+     * can be read back while we are driving it, which is what turns this
+     * from "we wrote a register" into a measurement. */
+    REG(IOMUX_GPIO_REG(pin)) = cfg | IOMUX_FUN_GPIO | IOMUX_FUN_IE;
+    REG(GPIO_FUNC_OUT_SEL_CFG(pin)) = GPIO_SIG_OUT_IDX | GPIO_FUNC_OE_SEL;
+    REG(GPIO_ENABLE_W1TS_REG) = 1u << pin;
+}
+
+static void gpio_write(unsigned pin, bool high) {
+    REG(high ? GPIO_OUT_W1TS_REG : GPIO_OUT_W1TC_REG) = 1u << pin;
+}
+
+static bool gpio_read(unsigned pin) {
+    return (REG(GPIO_IN_REG) >> pin) & 1u;
+}
+
+/* Release the pin and let a weak internal resistor decide its level.
+ *
+ * This exists to falsify the obvious objection to the drive test above: that
+ * GPIO_IN might simply be echoing GPIO_OUT back to us, in which case
+ * "drive 1 reads 1" proves only that a register remembers what was written
+ * to it. With the output disabled and GPIO_OUT left high, a mirror would
+ * still read 1 -- so if the pad instead follows a pull-down to 0 and a
+ * pull-up to 1, GPIO_IN is reading the physical pin.
+ *
+ * It doubles as a check on the schematic: a pin that follows a weak internal
+ * pull in *both* directions has nothing else driving it, which is what
+ * "GPIO20 touches only the P4 and header P1" predicts. */
+static bool gpio_float_reads(unsigned pin, bool pull_up) {
+    uint32_t cfg = REG(IOMUX_GPIO_REG(pin)) & ~(IOMUX_FUN_PU | IOMUX_FUN_PD);
+    REG(IOMUX_GPIO_REG(pin)) = cfg | (pull_up ? IOMUX_FUN_PU : IOMUX_FUN_PD);
+    REG(GPIO_ENABLE_W1TC_REG) = 1u << pin;
+    /* The pad is driven through a ~45 kOhm resistor into whatever
+     * capacitance the header and a probe present; give it time to settle
+     * rather than sampling the edge. */
+    for (volatile unsigned i = 0; i < 20000u; i++) { }
+    bool v = gpio_read(pin);
+    REG(IOMUX_GPIO_REG(pin)) = cfg;              /* pulls off again */
+    REG(GPIO_ENABLE_W1TS_REG) = 1u << pin;       /* back to driving */
+    return v;
+}
+
 void minimal_main(void) {
     /* Drain whatever the ROM's download session left in the RX FIFO.
      *
@@ -150,6 +251,32 @@ void minimal_main(void) {
     uart_puts("  mhartid = "); uart_puthex(READ_CSR("mhartid")); uart_puts("\n");
     uart_puts("  mstatus = "); uart_puthex(READ_CSR("mstatus")); uart_puts("\n");
 
+    /* Drive GPIO20 and read the pad back. Both levels, because a stuck-high
+     * pin passes a test that only ever checks for 1 -- the same trap as a
+     * heartbeat that cannot fail. */
+    gpio_out_init(GPIO_TOGGLE_PIN);
+    gpio_write(GPIO_TOGGLE_PIN, true);
+    bool hi = gpio_read(GPIO_TOGGLE_PIN);
+    gpio_write(GPIO_TOGGLE_PIN, false);
+    bool lo = gpio_read(GPIO_TOGGLE_PIN);
+    uart_puts("  gpio20  = drive 1 reads ");
+    uart_putc(hi ? '1' : '0');
+    uart_puts(", drive 0 reads ");
+    uart_putc(lo ? '1' : '0');
+    uart_puts(hi && !lo ? "  PASS\n" : "  FAIL\n");
+
+    /* ...and prove that was the pad, not GPIO_OUT reflected back. GPIO_OUT
+     * is left high throughout; only the pulls change. */
+    gpio_write(GPIO_TOGGLE_PIN, true);
+    bool pd = gpio_float_reads(GPIO_TOGGLE_PIN, false);
+    bool pu = gpio_float_reads(GPIO_TOGGLE_PIN, true);
+    uart_puts("  gpio20  = released, pull-down reads ");
+    uart_putc(pd ? '1' : '0');
+    uart_puts(", pull-up reads ");
+    uart_putc(pu ? '1' : '0');
+    uart_puts(!pd && pu ? "  PASS (reading the pad, and the pin is free)\n"
+                        : "  FAIL\n");
+
     uart_puts("[P4_MINIMAL] echo test -- type, and it comes back:\n");
 
     /* Until the first character arrives, say so again periodically.
@@ -185,8 +312,16 @@ void minimal_main(void) {
 
         if (++spin >= 300000u) {
             spin = 0;
+            /* The toggle the milestone asks for, on the heartbeat: GPIO20
+             * carries a square wave at half the beat rate, so header P1 pin
+             * 13 says the same thing the console does to anyone holding a
+             * meter instead of a terminal. */
+            ++beats;
+            gpio_write(GPIO_TOGGLE_PIN, (beats & 1u) != 0u);
             uart_puts("[P4_MINIMAL] alive, beat ");
-            uart_puthex(++beats);
+            uart_puthex(beats);
+            uart_puts(" gpio20=");
+            uart_putc(gpio_read(GPIO_TOGGLE_PIN) ? '1' : '0');
             uart_puts("\n");
         }
     }

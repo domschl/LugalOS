@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-05. E0 done; E1 done bar the GPIO toggle.** This is the first of three
+**Status: in progress, 2026-09-05. E0 and E1 done; E2 is next.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -450,8 +450,7 @@ commands against the board.
 
 ### E1 — `tools/minimal_esp32p4.c`
 
-**DONE, 2026-09-05, bar the GPIO toggle.** Everything the milestone asks for
-except one item that needs a document not on this machine (below).
+**DONE, 2026-09-05.** Everything the milestone asks for, on hardware.
 
 **Our code runs on the ESP32-P4 and drives UART0.** Proven by echo:
 `PROBE123\r` sent, `PROBE123\n\r` returned -- ten bytes for nine, with the
@@ -671,17 +670,74 @@ from a measurement that could not have returned anything else. The habit that
 caught them was the same one that eventually caught that — read the raw bytes
 the instrument collected before believing the verdict it printed on them.
 
-#### Remaining before E1 is done
+#### The GPIO toggle, and how to observe one on a board with no LED
 
-**One item, and it is blocked on a document rather than on the board.** The
-GPIO toggle the milestone asks for. The registers are confirmed and ready
-(`GPIO_OUT_W1TS` at `+0x8`, `GPIO_ENABLE_W1TS` at `+0x24`, base
-`0x500E0000`), but no pin has been chosen: `ESP32-P4-NANO-schematic.pdf` was
-read on the macOS machine and is not on this one, and this board has a DSI
-display, an Ethernet PHY and a C6 co-processor on its pins. Driving a guessed
-GPIO on it is not the kind of thing to do blind, and a toggle with nothing
-observable attached proves nothing anyway. Needs the schematic, and a pin
-that is either an LED or genuinely unconnected.
+**`ESP32-P4-NANO-schematic.pdf` settles it: this board has no user LED.** The
+only `LED1` is a 5 V power indicator, hardwired through R1 to `VCC_5V` with no
+GPIO anywhere near it, and `LED0`/`LED3`/`LEDMOD` are pins of the IP101GRI
+Ethernet PHY. So "toggle a GPIO and watch it blink" was never available here,
+and a toggle with nothing attached proves only that a register accepted a
+write.
+
+**The pin: GPIO20, on header P1 pin 13.** Chosen by elimination against the
+schematic and datasheet, because most of this chip's pins are spoken for:
+GPIO7/GPIO8 are the I2C the factory demo fails on; GPIO34–GPIO38 are
+strapping pins (datasheet Table 3-1) and GPIO36 carries R41, a 10 kΩ pull-up;
+GPIO14–GPIO19 are the C6's SDIO and GPIO54 its reset; GPIO37/38 are the
+console. GPIO20–GPIO23 are the clean ones — each appears exactly twice in the
+netlist, at the P4 and at header P1, with no passives between.
+
+**Observed by reading the pad back, in two stages, because the first stage
+alone proves less than it looks.**
+
+```
+gpio20  = drive 1 reads 1, drive 0 reads 0  PASS
+gpio20  = released, pull-down reads 0, pull-up reads 1  PASS (reading the pad, and the pin is free)
+```
+
+The first line drives the pin and reads `GPIO_IN` back, both ways round —
+both ways, because a stuck-high pin passes a test that only ever checks for
+1, which is the same defect as a heartbeat that cannot fail.
+
+The second line exists to falsify the obvious objection to the first: that
+`GPIO_IN` might simply be echoing `GPIO_OUT`, in which case the whole thing
+proves that a register remembers what was written to it. So the output is
+disabled with `GPIO_OUT` **left high**, and the pad is handed to a weak
+internal pull — down, then up. A mirror would read 1 both times. It read 0
+then 1, so `GPIO_IN` is the physical pin.
+
+That second stage also, for free, confirms the schematic reading by
+measurement: a pin that follows a ~45 kΩ internal pull in *both* directions
+has nothing else driving it, which is exactly what "GPIO20 touches only the
+P4 and header P1" predicts. The netlist claim and the electrical claim now
+agree.
+
+On the heartbeat, GPIO20 carries a square wave at half the beat rate, so P1
+pin 13 tells anyone with a meter what the console tells anyone with a
+terminal.
+
+**Registers, all from the TRM chapter 10 rather than inferred** (§3.2's rule,
+and phase 24's `0x88888888` is why): GPIO Matrix at `0x500E_0000` —
+`OUT_W1TS` `0x08`, `OUT_W1TC` `0x0C`, `ENABLE_W1TS` `0x24`, `ENABLE_W1TC`
+`0x28`, `IN` `0x3C`, `FUNCn_OUT_SEL_CFG` `0x558+4n`; IO MUX at `0x500E_1000`
+— `IO_MUX_GPIOn_REG` at `0x04+4n`, `MCU_SEL` [14:12], `FUN_DRV` [11:10],
+`FUN_IE` [9], `FUN_PU` [8], `FUN_PD` [7].
+
+Two of those needed the TRM and would have been got wrong from the plan's
+earlier notes alone:
+
+* **`MCU_SEL` resets to 0, not to the GPIO function.** Function 1 is the GPIO
+  function "for all pins", and selecting it is required — `GPIO_ENABLE` and
+  `GPIO_OUT` on their own drive nothing. The original E1 note listed only
+  `GPIO_OUT_W1TS` and `GPIO_ENABLE_W1TS` as "confirmed and ready", which
+  would not have toggled anything.
+* **`GPIO_FUNCn_OUT_SEL` is 9 bits and the "plain GPIO" index is 256**, not
+  the 128 older Espressif parts use. It happens to be the reset value
+  (`0x100`), so inheriting it would have worked — which is precisely why it
+  is written explicitly instead, on the same principle that makes E2
+  configure the UART rather than live off the ROM's leftovers.
+
+`tools/minimal_esp32p4.c` is 1229 bytes of text, up from 695.
 
 #### Original specification
 
