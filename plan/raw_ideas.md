@@ -88,7 +88,14 @@
 ### New platforms
 
 - K210 MAIX bit (to consider: niche hardware, older, huge SRAM) ('compute-node'?, can maybe even do simply AI stuff, image-recog?)
-- ESP32 P4 (to consider: hardware (probably!) not fully open, binary blobs, esp. for ESP32 C6 wifi modules that are connected, comes with ethernet): Model: Waveshare ESP32-P4-NANO + Lautsprecher, RISC-V,32MB PSRAM, HMI, MIPI-CSI/ DS, 28 GPIOs
+- ~~ESP32 P4 (to consider: hardware (probably!) not fully open, binary blobs, esp. for ESP32 C6 wifi modules that are connected, comes with ethernet): Model: Waveshare ESP32-P4-NANO + Lautsprecher, RISC-V,32MB PSRAM, HMI, MIPI-CSI/ DS, 28 GPIOs~~
+  *Scheduled 2026-09-05 as `plan/phase27_esp32p4_bringup.md` (bring-up), 28
+  (Ethernet) and 29 (the NTP server, rewriting phase 25). The blob concern
+  above resolved on inspection: the P4's Ethernet MAC is on-die with open
+  reference code, so the wired path carries no blob at all, and the C6-MINI's
+  Wi-Fi blob stays on its own die behind SDIO — the CYW43 arrangement. An
+  ESP32-C3 port was considered on the same day and rejected: RV32IMC (no A
+  extension), and its radio would put the blob inside our own address space.*
 - VisionFive 2 (entirely different class of hardware, contains many more complex problems, allows bare metal)
 
 ### Application scenarios:

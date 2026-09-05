@@ -1411,7 +1411,10 @@ Four things worth recording:
 
 ## 7. Explicitly not in this phase
 
-* **The ESP32-P4 port** -- phase 20. It is the blob-free-est destination
+* **The ESP32-P4 port** -- phase 20. *(2026-09-05: it became phases 27-29,
+  not 20 -- phases 20 through 26 went elsewhere. The judgement below held up
+  under a proper look at the silicon and needs no revision; see
+  `plan/phase27_esp32p4_bringup.md`.)* It is the blob-free-est destination
   available (Ethernet MAC on-die, external PHY over MDIO, full public TRM,
   RISC-V) and precisely for that reason it is a *port*, not a networking
   feature: ROM boot image format, flash, PSRAM, caches, a new interrupt

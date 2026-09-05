@@ -5,6 +5,33 @@ verification run was in progress, so that what that phase cost to learn is
 available to the next one rather than re-derived. Nothing here is committed
 to; the milestone breakdown comes later.
 
+**Superseded as a target, 2026-09-05 — kept as the source material.** The
+server described here is now **phase 29**, on an ESP32-P4 rather than on an
+RP2350 with an ENC28J60, reached through
+[`plan/phase27_esp32p4_bringup.md`](phase27_esp32p4_bringup.md) (the platform)
+and phase 28 (Ethernet). See that document's addendum for the full argument.
+
+The short form is that this note's own §3 made the case: it identified
+**software timestamping** as what actually limits precision next, and named
+the hard half honestly — *"neither the ENC28J60 nor the W5500 has hardware
+transmit timestamping"* — which is what pushed it toward interleaved mode as a
+compensation for missing silicon. The ESP32-P4's EMAC has IEEE 1588v2
+timestamping in the MAC, both directions. So the platform change does not
+merely move this design to faster hardware; it removes the constraint that
+shaped it.
+
+Nothing here is discarded. §2 (what phase 24 established), §5 (the method
+lessons, which are platform-independent and outlive both boards) and §6 (the
+open questions) carry over to phase 29 unchanged. §3 and §4 are the parts the
+new hardware rewrites: §4's argument for wired Ethernet over WiFi still holds
+and holds more strongly, since the P4's MAC is on-die. What does *not* carry
+over is `drivers/edgecap.c` and `drivers/gps_pps_rp2350.c` — the P4 has GPIO
+and timer ETM, so PPS capture can happen in hardware with no ISR in the path.
+
+**The RP2350 boards stay exactly where they are.** Phase 24's DCF-77 clock and
+the GPS/PPS reference are what phase 29 gets measured *against*. §5 of this
+note is the reason: never let the thing under test also be the referee.
+
 ## 1. What this is, and what it is not
 
 A second board whose only job is to serve time accurately: **GPS/PPS as the
