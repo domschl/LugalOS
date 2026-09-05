@@ -186,8 +186,13 @@ uint64_t run_perft_cores(Position *root, int depth, int workers, int *used) {
     if (workers > PERFT_MAX_WORKERS) workers = PERFT_MAX_WORKERS;
     if (workers <= 1) return run_perft(root, depth);
 
-    /* One shared root list. Generated once, never written again. */
-    static MoveList root_list;
+    /* One shared root list. Generated once, never written again, and a local
+     * rather than a static: workers read it concurrently but are all joined
+     * before this returns, so the stack frame outlives every reader. 516
+     * bytes of static RAM on a 264 KB part is not worth a lifetime that is
+     * longer than it needs to be -- and sizereport charges it to every
+     * RP2350 persona, chess or not. */
+    MoveList root_list;
     generate_moves(root, &root_list);
 
     perft_worker_t *w = (perft_worker_t *)palloc_pages(PERFT_WORKER_PAGES * (uint32_t)workers);

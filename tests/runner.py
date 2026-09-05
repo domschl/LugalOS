@@ -5838,6 +5838,28 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
                                           r"\(cores used: 2, \d+ ms\)", timeout=120.0)
         out.append(("SMP: perft split across two harts gives the same exact counts (X8)",
                     ok, log if not ok else ""))
+
+        # X8b: the search's second core, asserted on what it did rather than
+        # on how long it took.
+        #
+        # A Lazy SMP helper contributes only through the shared transposition
+        # table and its own result is discarded, so there is no output that is
+        # *supposed* to change -- and the timing that does change is exactly
+        # the kind of wall-clock assertion this suite has been bitten by
+        # before. What is checkable is that the helper ran at all: it reports
+        # its own node count, kept separate from the primary's precisely so
+        # this question stays answerable. Zero means it never started, which
+        # is what a silent fallback to one core looks like.
+        ok, log = session.send_and_expect("(chess-selftest 1)",
+                                          r"cores requested 1, harts online 2, "
+                                          r"helper nodes 0", timeout=60.0)
+        out.append(("SMP: chess on one core runs no helper (X8b)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(chess-selftest 2)",
+                                          r"cores requested 2, harts online 2, "
+                                          r"helper nodes [1-9]\d+", timeout=60.0)
+        out.append(("SMP: chess on two cores really searches on the second (X8b)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

@@ -35,6 +35,8 @@
 #endif
 #if CONFIG_ENABLE_CHESS
 #include "chess_ui.h"
+#include "search.h"
+#include "tt.h"
 #include "pgn.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
@@ -1240,9 +1242,23 @@ static lisp_val_t *prim_chess_san_selftest(lisp_val_t *args, lisp_val_t *env) {
     return pgn_selftest() == 0 ? &true_val : &false_val;
 }
 
+/* `(chess-selftest [cores])` -- `cores` added by X8b
+ * (plan/phase23_multicore_scheduling.md), defaulting to 1, which is exactly
+ * the pre-X8b path. The command reports cores requested, harts online and
+ * helper nodes alongside the usual result, so a run that silently fell back
+ * to one core cannot be mistaken for a two-core one. */
 static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
-    (void)args; (void)env;
-    chess_selftest();
+    (void)env;
+    /* Optional third-of-nothing: `(chess-selftest cores [tt_kb])`. The table
+     * size is exposed here only because X8b needed to test its own
+     * explanation for why two cores bought nothing -- if the TT is the
+     * bound, enlarging it must change the answer, and asserting that without
+     * measuring it would be the kind of claim this project does not make. */
+    int kb    = (int)arg_int(args, 1, 0);
+    int depth = (int)arg_int(args, 2, 0);
+    if (kb > 0) tt_embedded_bytes = (uint32_t)kb * 1024u;
+    chess_selftest_bench((int)arg_int(args, 0, 1), depth);
+    if (kb > 0) tt_embedded_bytes = 32u * 1024u;
     return &true_val;
 }
 
@@ -1295,12 +1311,18 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
  * working as the lower-level, hardware-independent-of-choice names
  * either way. */
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
-    (void)args; (void)env;
+    (void)env;
+    /* `(chess [cores])`, X8b: how many cores the engine may search on for
+     * this session. 1 is the default and the pre-X8b behaviour; the setting
+     * is cleared when the session ends, so it never leaks into the next. */
+    g_search_cores = (int)arg_int(args, 0, 1);
+    if (g_search_cores < 1) g_search_cores = 1;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
 #else
     chess_console_run(); /* returns on 'quit' */
 #endif
+    g_search_cores = 1;
     return &true_val;
 }
 #endif

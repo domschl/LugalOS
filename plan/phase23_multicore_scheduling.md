@@ -777,18 +777,76 @@ an error: it clamps to what is online and reports `cores used`, so a silent
 fallback cannot be mistaken for a working split — which is exactly what the
 QEMU regression test asserts, for both core counts.
 
-**X8b — chess search on two cores. OPEN.** Deliberately second, and expected
-to be worth much less than X8a. `user/chess/src/search.c` keeps every piece
-of per-thread state in file-statics (`history_table`, `killer_moves`,
-`sort_scores`, the pv/quiescence pools, `nodes_searched`, `stop_search`), so
-the mechanical cost is threading a context through the hottest code in the
-engine. The payoff is capped by something else: Lazy SMP's gain comes mostly
-from a large shared transposition table, and `tt.c` fixes this one at 32 KB /
-2048 entries under `LUGALCHESS_EMBEDDED`, which two searchers saturate almost
-immediately. Concurrent TT writes also need either a lock on every probe or
-Hyatt's lockless XOR-key trick. Expect well under the 1.3-1.6x that Lazy SMP
-usually quotes, and a smaller Elo gain than that — the measurement, not the
-hope, is what this milestone should report.
+**X8b — chess search on two cores. DONE 2026-09-05.** Lazy SMP: a helper
+searches the same root to its own schedule, sharing only the transposition
+table, and its result is discarded. `(chess [cores])` and
+`(chess-selftest [cores] [tt_kb] [depth])`.
+
+*Time to a fixed depth, which is the measurement Lazy SMP is judged on:*
+
+```
+RP2350, depth 7, 32 KB TT   1 core  9532 / 9871 / 10006 ms
+                            2 cores 6173 / 6170 /  6369 ms      1.60x
+
+QEMU,   depth 9, 32 KB TT   1 core  11746 ms (median of 3)
+                            2 cores  9592 ms                    1.22x
+QEMU,   depth 9, 1 MB TT    1 core   9348 ms
+                            2 cores  6407 ms                    1.46x
+```
+
+*The first metric was the wrong one, and it said the opposite.* Measured as
+"how deep in a fixed 2 seconds", one core and two scored identically — mean
+depth 7.75 either way — and the primary searched ~8% *fewer* nodes with a
+helper running. That reads as "the helper is pure overhead". It was an
+artifact: at that budget the position bottoms out at depth 8 whatever you do,
+so the metric had no room to show a difference. Time-to-depth has room, and
+the same build then shows 1.6x. A saturating measurement does not report a
+null result, it reports nothing.
+
+*The TT is the bound, and that was tested rather than asserted.* The claim
+going in was "Lazy SMP's gain comes from a shared table, and 2048 entries is
+too small for two searchers". If true, enlarging it must change the answer —
+so `tt_embedded_bytes` became settable and it does: 32 KB → 1 MB takes the
+QEMU speedup from 1.22x to 1.46x, and speeds the *single*-core search up too.
+The default is unchanged at 32 KB, which is what RP2350's heap can spare; the
+knob exists because the explanation needed testing.
+
+*QEMU and hardware disagree, and hardware is better.* §5 warned that a
+two-core RP2350 shares one bus and one flash cache so any performance claim
+from QEMU is worthless here — correctly, though not in the direction
+expected: silicon gives 1.6x where QEMU gives 1.22x at the same table size.
+An early single hardware sample showed two cores *slower*; it was noise from
+the measurement harness, and three consistent pairs replaced it. One sample
+was not a result.
+
+*Correctness first, because a shared table across cores is not safe by
+default.* A `TTEntry` is a key plus five fields written without a lock, so
+two cores can interleave and leave one core's key beside the other's move —
+and a move that is legal in this position but belongs to another is not
+rejected by anything, it is simply played. `tt.c` now uses Hyatt's lockless
+scheme: store the key XOR-ed with the payload and re-derive it on probe, so a
+torn entry fails the comparison and costs a lookup rather than a wrong move.
+
+*Per-thread state is selected by `hart_id()`*, not by a context threaded
+through every function — a deliberate trade that keeps the diff to the
+engine's hottest code down to an array name. It is correct **only** because
+search workers are pinned and never migrate mid-search; a migrating search
+would swap its own heuristics and per-ply pools underneath itself. The
+invariant lives in another file, so it is written down in both.
+
+*Two accounting bugs found by their own output.* `nodes_searched` was one
+shared counter, so the helper's "own" node count came out exactly equal to
+the total — the giveaway that it was measuring both cores. It is per-hart
+now, with the helper's reported separately, which is what makes "did the
+second core do anything" a checkable question and is what the QEMU
+regression test asserts. And the helper's `Position` was a file-static:
+~8 KB of static RAM charged to every RP2350 persona including those that
+never start a helper. It comes from the heap now and is released with the
+pools. Net static RAM **+32 bytes**.
+
+*Verified:* QEMU **343/343**. RP2350 hardware suite **24/24** on the non-SMP
+chess persona. On two cores the helper is asserted to have run — a zero node
+count is what a silent fallback to one core looks like, and it fails.
 
 
 
