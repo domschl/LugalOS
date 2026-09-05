@@ -20,6 +20,10 @@ void chess_selftest(void);
  * dependency, same as chess_selftest() above. */
 void chess_perft(int max_depth);
 
+/* As above, with each position's perft split across `cores` (X8,
+ * plan/phase23_multicore_scheduling.md). One core is the pre-X8 behaviour. */
+void chess_perft_cores(int max_depth, int cores);
+
 /* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
  * scenario 1.1, no hardware dependency. Builds and runs on every target.
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */

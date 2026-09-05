@@ -1246,15 +1246,21 @@ static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `(perft [n])` (J4, plan/phase10_chess_completion.md) -- move-generation
- * correctness suite, `n` defaulting to 0 (chess_perft()'s own "<=0 means
- * the documented default depth" convention, matching upstream's own
- * `run_perft_tests()` no-argument wrapper) when omitted. No hardware
- * dependency, same as chess-selftest above. */
+/* `(perft [n] [cores])` (J4, plan/phase10_chess_completion.md; `cores` added
+ * by X8, plan/phase23_multicore_scheduling.md) -- move-generation correctness
+ * suite, `n` defaulting to 0 (chess_perft()'s own "<=0 means the documented
+ * default depth" convention, matching upstream's own `run_perft_tests()`
+ * no-argument wrapper) when omitted.
+ *
+ * `cores` defaults to 1, which is exactly the pre-X8 behaviour. Asking for
+ * more than are online is not an error: run_perft_cores() clamps and reports
+ * what it actually used, because the interesting comparison is one run
+ * against another on the same board rather than a refusal. */
 static lisp_val_t *prim_perft(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     int max_depth = (int)arg_int(args, 0, 0);
-    chess_perft(max_depth);
+    int cores     = (int)arg_int(args, 1, 1);
+    chess_perft_cores(max_depth, cores);
     return &true_val;
 }
 

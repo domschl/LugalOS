@@ -5811,6 +5811,33 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
                                           timeout=15.0)
         out.append(("SMP: both harts still scheduling after the fault suite (X5)",
                     ok, log if not ok else ""))
+
+        # ---- X8: the second core doing visible work, checked against a
+        # published answer rather than against itself.
+        #
+        # perft's node counts are exact and externally documented, and
+        # perft.c's table already carries them. So splitting the root move
+        # list across two harts is verified by the same assertion that
+        # verifies the single-core path: any mistake in the split -- a
+        # dropped root move, a shared ply index, two workers on one board --
+        # changes the count, and the count is checked against the table.
+        # Nothing else in this tree validates a concurrency change that
+        # cleanly, which is why X8 leads with perft rather than the search.
+        #
+        # Both core counts are run. One core is the pre-X8 path and must
+        # still be right; two cores must produce the identical answer AND
+        # report that it really used two, so a silent fallback to one cannot
+        # pass for a working split.
+        ok, log = session.send_and_expect("(perft 3 1)",
+                                          r"PERFT Results: \d+ passed depths, 0 errors "
+                                          r"\(cores used: 1, \d+ ms\)", timeout=120.0)
+        out.append(("SMP: perft is still exact on one core (X8)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(perft 3 2)",
+                                          r"PERFT Results: \d+ passed depths, 0 errors "
+                                          r"\(cores used: 2, \d+ ms\)", timeout=120.0)
+        out.append(("SMP: perft split across two harts gives the same exact counts (X8)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

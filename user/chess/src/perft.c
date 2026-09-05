@@ -46,6 +46,8 @@
 #include "move.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"
+#include "kernel/sched.h"
+#include "kernel/hart.h"
 
 /* Generous relative to any depth perft is actually run at -- the deepest
  * table entry is 7, and perft's own node counts make depth 10+ take longer
@@ -54,31 +56,201 @@
  * ply range. */
 #define PERFT_MAX_PLY 32
 
-static MoveList *perft_movelists = NULL;
-static uint32_t perft_movelists_pages = 0;
-static int perft_ply = 0;
+/* One worker per hart, no more: the split is over root moves and this kernel
+ * has exactly MAX_HARTS of them. */
+#define PERFT_MAX_WORKERS MAX_HARTS
 
-static bool perft_pools_init(void) {
-    if (perft_movelists != NULL) {
+/* One of these per worker (X8, plan/phase23_multicore_scheduling.md).
+ *
+ * `perft_movelists` and `perft_ply` used to be plain file-statics, which is
+ * correct for one caller and fatal for two: the ply index selects which
+ * MoveList a recursion level owns, so two cores sharing it would hand each
+ * other's still-in-progress lists back and forth. Splitting them into a
+ * context is the whole of what parallel perft needed from this file --
+ * run_perft()'s own signature and behaviour are unchanged, and the
+ * single-threaded path still uses exactly one context.
+ *
+ * Note what is NOT here, because it is what makes this cheap: the move
+ * generator's magic-bitboard tables (user/chess/src/bitboard.c) are written
+ * once by init_bitboards() and read-only afterwards, so every worker shares
+ * them with no synchronisation at all. */
+typedef struct {
+    MoveList *lists;    /* PERFT_MAX_PLY entries */
+    uint32_t  pages;    /* what to hand back to palloc */
+    int       ply;
+} perft_ctx_t;
+
+static perft_ctx_t perft_main;   /* the single-threaded path's context */
+
+static bool perft_ctx_init(perft_ctx_t *c) {
+    if (c->lists != NULL) {
         return true; /* already allocated -- idempotent, like search_pools_init(). */
     }
     uint32_t bytes = (uint32_t)(PERFT_MAX_PLY * sizeof(MoveList));
-    perft_movelists_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    perft_movelists = (MoveList *)palloc_pages(perft_movelists_pages);
-    if (perft_movelists == NULL) {
-        perft_movelists_pages = 0;
+    c->pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    c->lists = (MoveList *)palloc_pages(c->pages);
+    if (c->lists == NULL) {
+        c->pages = 0;
         return false;
     }
+    c->ply = 0;
     return true;
 }
 
-static void perft_pools_free(void) {
-    if (perft_movelists == NULL) {
+static void perft_ctx_free(perft_ctx_t *c) {
+    if (c->lists == NULL) {
         return;
     }
-    palloc_free(perft_movelists, perft_movelists_pages);
-    perft_movelists = NULL;
-    perft_movelists_pages = 0;
+    palloc_free(c->lists, c->pages);
+    c->lists = NULL;
+    c->pages = 0;
+    c->ply = 0;
+}
+
+static void perft_pools_free(void) { perft_ctx_free(&perft_main); }
+
+static uint64_t perft_rec(perft_ctx_t *c, Position *pos, int depth); /* below */
+
+/* --- Root splitting across cores (X8) ------------------------------------
+ *
+ * Perft is the honest first use of a second core, and the reason is the test
+ * table below: the node counts are exact and published, so a parallel run is
+ * either right or wrong with no argument about it. Nothing else in this tree
+ * verifies a concurrency change that cleanly.
+ *
+ * The split is over root moves. Each worker takes moves offset, offset+N,
+ * offset+2N... from one shared read-only list, walks its own copy of the
+ * position, and returns a count; the counts sum exactly because the subtrees
+ * are disjoint. No transposition table, no move ordering, no feedback of any
+ * kind between workers -- which is why this parallelises and the search does
+ * not.
+ *
+ * Round-robin rather than contiguous blocks, deliberately: root moves have
+ * wildly different subtree sizes (a queen move against a pawn push), so
+ * handing worker 0 the first half would leave one core idle for most of the
+ * run. Interleaving does not balance it perfectly -- nothing static does --
+ * and the measured speedup is reported rather than claimed.
+ */
+
+typedef struct {
+    Position     pos;        /* this worker's own board; make/unmake mutate it */
+    perft_ctx_t  ctx;
+    const Move  *moves;      /* the shared root list, read-only */
+    int          nmoves;
+    int          offset;     /* first root move index for this worker */
+    int          stride;     /* how many workers there are */
+    int          depth;
+    volatile uint64_t nodes;
+    volatile int done;
+} perft_worker_t;
+
+/* Pages per worker record, rounded up. A Position carries MAX_PLYS of undo
+ * state, so this is ~8 KB and not something to put on a task stack. */
+#define PERFT_WORKER_PAGES \
+    ((uint32_t)((sizeof(perft_worker_t) + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE))
+
+static uint64_t perft_worker_run(perft_worker_t *w) {
+    uint64_t nodes = 0ULL;
+    for (int i = w->offset; i < w->nmoves; i += w->stride) {
+        if (!make_move(&w->pos, w->moves[i])) {
+            continue;   /* illegal: the same one every worker would also skip */
+        }
+        nodes += perft_rec(&w->ctx, &w->pos, w->depth - 1);
+        unmake_move(&w->pos);
+    }
+    return nodes;
+}
+
+static void perft_worker_body(void *arg) {
+    perft_worker_t *w = (perft_worker_t *)arg;
+    w->nodes = perft_worker_run(w);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    w->done = 1;
+}
+
+/* Splits `depth` across `workers` cores. Returns the node count, identical to
+ * run_perft() for any worker count -- that identity is the test.
+ *
+ * Falls back to one worker whenever a second cannot be had (no SMP, only one
+ * hart online, no memory, no free task slot) rather than failing: a caller
+ * asking for two cores on a machine with one wants the answer, not an error.
+ * How many actually ran is reported through `*used` so nobody has to infer it
+ * from the timing. */
+uint64_t run_perft_cores(Position *root, int depth, int workers, int *used) {
+    if (used) *used = 1;
+    if (depth <= 0) return 1ULL;
+
+    unsigned online = smp_harts_online();
+    if (workers < 1) workers = 1;
+    if ((unsigned)workers > online) workers = (int)online;
+    if (workers > PERFT_MAX_WORKERS) workers = PERFT_MAX_WORKERS;
+    if (workers <= 1) return run_perft(root, depth);
+
+    /* One shared root list. Generated once, never written again. */
+    static MoveList root_list;
+    generate_moves(root, &root_list);
+
+    perft_worker_t *w = (perft_worker_t *)palloc_pages(PERFT_WORKER_PAGES * (uint32_t)workers);
+    if (!w) return run_perft(root, depth);
+
+    int made = 0;
+    for (int i = 0; i < workers; i++) {
+        w[i].pos    = *root;
+        w[i].ctx.lists = NULL;
+        w[i].ctx.pages = 0;
+        w[i].ctx.ply   = 0;
+        w[i].moves  = root_list.moves;
+        w[i].nmoves = root_list.count;
+        w[i].offset = i;
+        w[i].stride = workers;
+        w[i].depth  = depth;
+        w[i].nodes  = 0;
+        w[i].done   = 0;
+        if (!perft_ctx_init(&w[i].ctx)) break;
+        made++;
+    }
+    if (made < workers) {
+        /* Could not equip everyone. Rather than run a split that would drop
+         * whole root moves and report a wrong count, hand the pages back and
+         * do it on one core. A wrong perft number is worse than a slow one. */
+        for (int i = 0; i < made; i++) perft_ctx_free(&w[i].ctx);
+        palloc_free(w, PERFT_WORKER_PAGES * (uint32_t)workers);
+        return run_perft(root, depth);
+    }
+
+    /* Workers 1..n-1 on their own harts; worker 0 is this task, on this one.
+     * Pinned at creation (task_create_pinned), because a task that is READY
+     * before its affinity lands can be claimed by the wrong hart -- X5 found
+     * that the hard way. */
+    int spawned = 0;
+    for (int i = 1; i < workers; i++) {
+        if (task_create_pinned("perftw", perft_worker_body, &w[i], i) < 0) break;
+        spawned++;
+    }
+
+    w[0].nodes = perft_worker_run(&w[0]);
+    w[0].done  = 1;
+
+    /* Anything that could not be spawned is run here, so no root move is
+     * silently dropped. */
+    for (int i = 1 + spawned; i < workers; i++) {
+        w[i].nodes = perft_worker_run(&w[i]);
+        w[i].done  = 1;
+    }
+
+    for (int i = 1; i <= spawned; i++) {
+        while (!w[i].done) sched_yield();
+    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    uint64_t nodes = 0ULL;
+    for (int i = 0; i < workers; i++) {
+        nodes += w[i].nodes;
+        perft_ctx_free(&w[i].ctx);
+    }
+    palloc_free(w, PERFT_WORKER_PAGES * (uint32_t)workers);
+    if (used) *used = 1 + spawned;
+    return nodes;
 }
 
 typedef struct {
@@ -141,44 +313,58 @@ static void print_u64(uint64_t v) {
     }
 }
 
-// Recursive perft runner
-uint64_t run_perft(Position *pos, int depth) {
+// Recursive perft runner, against one worker's own pools.
+static uint64_t perft_rec(perft_ctx_t *c, Position *pos, int depth) {
     if (depth == 0) {
         return 1ULL;
     }
-    if (perft_movelists == NULL && !perft_pools_init()) {
-        return 0ULL;
-    }
-    if (perft_ply >= PERFT_MAX_PLY) {
+    if (c->ply >= PERFT_MAX_PLY) {
         return 0ULL; /* should never trigger -- see PERFT_MAX_PLY's comment. */
     }
 
-    MoveList *list = &perft_movelists[perft_ply];
+    MoveList *list = &c->lists[c->ply];
     generate_moves(pos, list);
     uint64_t nodes = 0ULL;
 
-    perft_ply++;
+    c->ply++;
     for (int i = 0; i < list->count; i++) {
         if (!make_move(pos, list->moves[i])) {
             continue;
         }
-        nodes += run_perft(pos, depth - 1);
+        nodes += perft_rec(c, pos, depth - 1);
         unmake_move(pos);
     }
-    perft_ply--;
+    c->ply--;
 
     return nodes;
 }
 
+uint64_t run_perft(Position *pos, int depth) {
+    if (depth == 0) {
+        return 1ULL;
+    }
+    if (perft_main.lists == NULL && !perft_ctx_init(&perft_main)) {
+        return 0ULL;
+    }
+    return perft_rec(&perft_main, pos, depth);
+}
+
 int run_perft_tests_depth(int max_depth) {
+    return run_perft_tests_cores(max_depth, 1);
+}
+
+int run_perft_tests_cores(int max_depth, int workers) {
     int errors = 0;
     int passed = 0;
+    int used_max = 1;
 
     if (max_depth <= 0) {
         max_depth = 5;
     }
 
-    printf("Starting PERFT Verification Suite (Max Depth: %d)...\n", max_depth);
+    printf("Starting PERFT Verification Suite (Max Depth: %d, cores requested: %d)...\n",
+           max_depth, workers);
+    uint64_t suite_start_ms = time_get_ms();
     printf("========================================================================\n");
 
     for (int i = 0; i < perft_cases_count; i++) {
@@ -199,9 +385,11 @@ int run_perft_tests_depth(int max_depth) {
 
             printf("%d ", d);
 
+            int used = 1;
             uint64_t start_ms = time_get_ms();
-            uint64_t actual = run_perft(&pos, d);
+            uint64_t actual = run_perft_cores(&pos, d, workers, &used);
             uint64_t elapsed_ms = time_get_ms() - start_ms;
+            if (used > used_max) used_max = used;
 
             if (actual != expected) {
                 printf("\n  -> ERROR at Depth %d: Expected ", d);
@@ -230,7 +418,16 @@ int run_perft_tests_depth(int max_depth) {
         printf("\n------------------------------------------------------------------------\n");
     }
 
-    printf("PERFT Results: %d passed depths, %d errors.\n", passed, errors);
+    /* Total elapsed, in-guest. The per-depth nps figures above are already
+     * measured here, but a caller comparing one core against two wants a
+     * single number that is not their own terminal round-trip -- timing this
+     * from the host measures the host's sleep, which is how the first X8
+     * hardware run managed to report two cores as slower than one. */
+    uint64_t suite_ms = time_get_ms() - suite_start_ms;
+    printf("PERFT Results: %d passed depths, %d errors (cores used: %d, ",
+           passed, errors, used_max);
+    print_u64(suite_ms);
+    printf(" ms).\n");
     perft_pools_free();
     return errors;
 }

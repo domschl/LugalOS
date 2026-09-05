@@ -730,6 +730,66 @@ now named. Core 1 also still takes no device interrupts — its `MEIEA` is
 empty because every driver enabled its IRQ on core 0 — which is the correct
 default given X2's pinning, not an oversight.
 
+**X8 — the second core doing visible work: perft and chess on 1 or 2 cores.**
+X1-X7 built and proved the mechanism; nothing yet *used* it. Two workloads,
+and they are not equally suited, which is the point of doing both.
+
+**X8a — parallel perft. DONE 2026-09-05.**
+
+```
+QEMU   (perft 4 1)  96 passed depths, 0 errors   15.2 s
+       (perft 4 2)  96 passed depths, 0 errors    8.2 s     1.85x
+
+RP2350 (perft 3 1)  75 passed depths, 0 errors  10450 ms
+       (perft 3 2)  75 passed depths, 0 errors   5322 ms    1.96x
+```
+
+*Why perft first, and not chess.* Its node counts are exact, published, and
+already sitting in `perft.c`'s own table. So the parallel path is verified by
+the same assertion that verifies the serial one: a dropped root move, a
+shared ply index, two workers on one board — every way a split can go wrong
+changes the count, and the count is checked against a number nobody in this
+project chose. **Nothing else in this tree validates a concurrency change
+that cleanly.** A search is the opposite: get the parallelism subtly wrong
+and it still returns a legal move, slightly worse, and you argue about it for
+a week.
+
+*The split is over root moves*, round-robin rather than in blocks — root
+subtrees differ by orders of magnitude, so contiguous halves would leave one
+core idle for most of the run. Each worker walks its own copy of the position
+with its own move-list pool; the counts sum exactly because the subtrees are
+disjoint. There is no transposition table, no move ordering and no feedback
+of any kind between workers, which is precisely why this parallelises.
+
+*What it cost in the engine:* `perft_movelists` and `perft_ply` were
+file-statics, correct for one caller and fatal for two, since the ply index
+selects which list a recursion level owns. They became a `perft_ctx_t`.
+`run_perft()`'s signature and behaviour are unchanged. Nothing else needed
+touching — the magic-bitboard tables are written once by `init_bitboards()`
+and are read-only afterwards, so every worker shares them with no
+synchronisation at all.
+
+*Two honest notes.* The first hardware run reported two cores as **slower**
+than one, because it was timed from the host and what it measured was the
+probe's own sleep. The suite now reports its own elapsed milliseconds, and
+the figures above are in-guest. And `(perft n 2)` on a one-hart build is not
+an error: it clamps to what is online and reports `cores used`, so a silent
+fallback cannot be mistaken for a working split — which is exactly what the
+QEMU regression test asserts, for both core counts.
+
+**X8b — chess search on two cores. OPEN.** Deliberately second, and expected
+to be worth much less than X8a. `user/chess/src/search.c` keeps every piece
+of per-thread state in file-statics (`history_table`, `killer_moves`,
+`sort_scores`, the pv/quiescence pools, `nodes_searched`, `stop_search`), so
+the mechanical cost is threading a context through the hottest code in the
+engine. The payoff is capped by something else: Lazy SMP's gain comes mostly
+from a large shared transposition table, and `tt.c` fixes this one at 32 KB /
+2048 entries under `LUGALCHESS_EMBEDDED`, which two searchers saturate almost
+immediately. Concurrent TT writes also need either a lock on every probe or
+Hyatt's lockless XOR-key trick. Expect well under the 1.3-1.6x that Lazy SMP
+usually quotes, and a smaller Elo gain than that — the measurement, not the
+hope, is what this milestone should report.
+
 
 
 

@@ -616,8 +616,15 @@ void chess_selftest(void) {
  * release pair, so a session-boundary bug fixed once for the others is
  * fixed here too rather than needing its own copy to get right. */
 void chess_perft(int max_depth) {
+    chess_perft_cores(max_depth, 1);
+}
+
+/* X8: the same suite, split across `cores`. The session bracket is unchanged
+ * -- workers share the bitboard/zobrist tables chess_ensure_init() builds,
+ * which are read-only once built, so one init still covers every core. */
+void chess_perft_cores(int max_depth, int cores) {
     if (!chess_ensure_init()) return;
-    run_perft_tests_depth(max_depth);
+    run_perft_tests_cores(max_depth, cores);
     chess_session_end();
 }
 
