@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-05. E0 done; E1 next.** This is the first of three
+**Status: in progress, 2026-09-05. E0 done; E1 substantially done.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -444,6 +444,116 @@ No code was written. Everything above is reading, plus four read-only
 commands against the board.
 
 ### E1 — `tools/minimal_esp32p4.c`
+
+**IN PROGRESS, 2026-09-05. The central question is answered; one observation
+is still outstanding.**
+
+**Our code runs on the ESP32-P4 and drives UART0.** Proven twice, by echo:
+`PROBE123\r` sent, `PROBE123\n\r` returned -- ten bytes for nine, with the
+`\n` *before* the `\r`, which is the exact signature of this program's
+`if (c == '\r') uart_putc('\n'); uart_putc(c);` and cannot be produced by a
+hardware loopback. That is E1's "done when", and it is met.
+
+Still outstanding: capturing the board's own **unprompted** banner and CSR
+dump. Not because it fails -- because the board needs a physical button press
+to reload, and the last load left it wedged (see the drain-loop note below,
+now fixed but not yet re-run). It is one BOOT+RESET away.
+
+Files: `tools/minimal_esp32p4.c`, `tools/minimal_esp32p4_entry.S`,
+`tools/minimal_esp32p4.ld`, `tools/build_minimal_esp32p4.sh`. 695 bytes of
+text, running from L2MEM at `0x4ff00000`.
+
+#### What E1 settled that E0 could not
+
+* **The boot question never had to be answered.** E1 was specified to decide
+  direct-boot versus image-format empirically. It turned out to need neither:
+  `esptool load-ram` delivers an image over the download protocol straight
+  into L2MEM and jumps to it, so the first program ran with **no flash write
+  at all**. That is strictly better than the plan assumed -- nothing can brick
+  the board, the factory image is untouched, and iteration costs one command.
+  The flash boot path is now E6's problem, where it belongs, rather than a
+  prerequisite for seeing any output.
+* **The ROM leaves UART0 fully configured** -- clocked, muxed, 115200 8N1 on
+  GPIO37/38 -- so `minimal_esp32p4.c` writes bytes and nothing else. Contrast
+  `tools/minimal_rp2350.c`, which needs clk_peri, three unresets, two pad
+  muxes and a baud divisor first. E2 must still configure the UART itself; a
+  kernel that inherits a bootloader's leftovers breaks the first time it is
+  booted differently.
+* **The ROM's RAM map**, which E0 left explicitly open, is recorded in IDF's
+  `components/bootloader/subproject/main/ld/esp32p4/bootloader.memory.ld.in`:
+  `0x4ff296b8`-`0x4ff3afc0` shared buffers (live during download mode, so
+  this is the one that constrains us), `0x4ff3afc0`-`0x4ff3fba4` CPU1 stack,
+  `0x4ff3fba4`-`0x4ff40000` ROM .bss/.data. The linker script keeps
+  everything below `0x4ff28000`.
+* **The board is a factory-demo board.** Flash holds a Waveshare ESP-IDF app
+  that fails an I2C probe and then watchdogs every five seconds. Its crash
+  dump was useful before we wrote a line: `MTVEC : 0x4ff00003` -- low bits
+  `0b11`, CLIC mode 3 -- is live-silicon confirmation of E0 section 8's
+  finding that `mtvec.MODE` is read-only at CLIC. Its constant chatter on
+  UART0 is also the first thing to suspect when esptool reports "serial
+  noise".
+
+#### Three traps, each of which cost real time
+
+1. **Do not reset the board over the native USB-Serial-JTAG port.** It works
+   -- the chip enters download mode and the ROM banner is readable -- and it
+   leaves UART0 in a state where our own transmissions come back corrupted.
+   Measured: a program writing `'A'` continuously produced a saturated stream
+   of `0x05` at 115200, and a sweep of 22 host baud rates from 9600 to
+   1152000 found **none** that decoded it. Entering download mode with the
+   BOOT+RESET buttons instead gives clean 115200 in both directions every
+   time. The mechanism is not established and does not need to be; the rule
+   is: **buttons, then load over UART0, and never touch the other socket.**
+2. **An unbounded RX drain will hang the board silently.** The program drains
+   the RX FIFO at startup to discard bytes the load protocol leaves behind.
+   Written as `while (uart_has_char()) uart_getc();` that is an infinite loop
+   whenever the UART is misconfigured and refilling with noise -- which is
+   exactly the state trap 1 produces. The board then prints nothing, echoes
+   nothing, and silently swallows esptool's sync frames, which is
+   indistinguishable from "our code never ran". Now bounded at 256 bytes.
+3. **A heartbeat that stops when observed is not an instrument.** The banner
+   is emitted while esptool still owns the serial port, so it is always lost;
+   a periodic "still alive" line was added to compensate. Gating it on "no
+   character received yet" made it useless, because merely *opening* the host
+   port puts a stray byte in the RX FIFO. It is unconditional now.
+
+#### The workflow, as it actually is
+
+```
+hold BOOT, tap RESET, release BOOT          # download mode; no software substitute
+tools/build_minimal_esp32p4.sh run          # build, elf2image, load-ram over UART0
+                                            # console: /dev/cu.usbserial-0001 @ 115200
+tap RESET                                   # back to whatever is in flash
+```
+
+**The board's auto-reset circuit exists and does not help.** U6, an EMH4T2R
+pair, wires the CH343P's RTS to ESP_EN and DTR to GPIO35 -- the standard
+arrangement that normally makes buttons unnecessary. Driving those lines from
+macOS produced no reset across four polarity and timing combinations, which
+points at the built-in CH34x driver not carrying modem-control lines rather
+than at the board. **Worth retrying under Linux**, and a genuine papercut for
+`tests/hw/` in E8: a board that cannot be reset from software cannot be in an
+unattended test suite.
+
+Flash was **not** backed up: three attempts over both ports failed at 921600
+and at 460800 with sync errors. Nothing has written flash, so it has not
+mattered yet, but E6 must not begin until a backup exists.
+
+#### Remaining before E1 is done
+
+1. One BOOT+RESET, then reload the current build and capture the banner plus
+   the `misa`/`mtvec`/`mhartid`/`mstatus` dump. The CSR values are the point:
+   they are E0's document-derived claims about U-mode and CLIC, checked
+   against the silicon.
+2. Add the GPIO toggle the milestone asks for. Deliberately left out of the
+   first program: with the ROM having already proved UART0 works, a GPIO adds
+   a register set to get wrong without adding information. Registers are
+   confirmed and ready (`GPIO_OUT_W1TS` at `+0x8`, `GPIO_ENABLE_W1TS` at
+   `+0x24`, base `0x500E0000`).
+3. Write the flashing procedure into `tests/hw/README.md`.
+
+#### Original specification
+
 
 A standalone bare-metal program in the exact spirit of
 `tools/minimal_rp2350.c`: initialise UART0 (`0x500CA000`, from
