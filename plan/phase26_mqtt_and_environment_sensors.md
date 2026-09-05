@@ -566,6 +566,63 @@ at all. All three share one forced-mode measurement per cycle (cached for a
 second), because three conversions where one would do is three times the
 self-heating.
 
+### Q5b — Filtering, and a publish rule per measurement
+
+*Added and done 2026-09-05, at the user's request, after Q5 ran on hardware.*
+
+Q5 published every source on one fixed period, which is wrong in both
+directions at once: it floods a broker with a value nobody is watching, and
+it still reports a fast-moving one no sooner than the next tick. Two changes
+fix that, and they belong together because neither works alone.
+
+**An exponential moving average per source.** A sensor read twice disagrees
+with itself in the last digit or two; publishing that raw fills a database
+with noise *and* makes any change-based rule fire on the noise rather than on
+the weather. Carried on an accumulator scaled by 2^k rather than the naive
+`y += (x - y) >> k`, which loses every difference smaller than 2^k to
+truncation and so creeps toward the input and stops short — a permanent
+offset indistinguishable from a miscalibrated part.
+
+**A rule per measurement**, because the three do not behave alike:
+
+    publish when   the filtered value moved by at least `delta`
+    but never      more often than `min_interval_s`
+    and always     at least every `max_interval_s`
+
+The delta makes a fast-changing measurement report quickly and a still one
+stay quiet; the minimum stops a noisy signal flooding the broker; the maximum
+is a heartbeat, because a value that has not changed all afternoon must still
+arrive or it cannot be told from a dead node. The comparison is against the
+last *published* value, not the last sampled one — that hysteresis is what
+stops a value drifting across the threshold from publishing every sample.
+
+Sources therefore return an **integer** with a declared number of decimals
+rather than a formatted string: neither filtering nor a threshold is possible
+otherwise, and formatting moves to one place that gets the sign of a value
+between -1 and 0 right once instead of once per source.
+
+Defaults: sample every 5 s, publish on 0.10 °C / 0.10 hPa / 0.50 %RH, at most
+every 5 s, at least every 300 s, EMA 1/8. Each delta sits just above that
+measurement's own noise, so a publish means something moved.
+
+**Verified on hardware, by touching the sensor.** Over one three-minute
+window, on one node, with the same 5 s sampling:
+
+| topic | publishes | why |
+|---|---|---|
+| temperature | 25 | touched: 26.3 → 30.7 °C and back |
+| humidity | 16 | followed the touch, but a 0.5 %RH delta |
+| pressure | 2 | unaffected — heartbeats only |
+
+The rising series (29.46, 29.68, 29.91, 30.13, 30.33, 30.51, 30.68) is
+monotone at exactly the 5 s minimum, and the decay likewise — no jitter
+reversals, which is the filter, and no faster than the rate limit, which is
+the rule. Before the touch the same node published each measurement only on
+its heartbeat. `test_mqttd_publish_rules` checks the rate limit and the
+heartbeat separately in QEMU, since a test that only counts messages passes
+for the wrong reasons.
+
+
 ### Q6 — Persistence and provisioning
 `IDSTORE_FIELD_MQTT`, `mqttcfg` (+`clear`), `tools/provision.py --mqtt`,
 `/proc/node` reporting the broker, and `mqttd` autostarting when a broker and

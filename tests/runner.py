@@ -4117,6 +4117,104 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
         accepting.close()
 
 
+def test_mqttd_publish_rules(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q5b: the per-measurement publish rule -- rate limit, change threshold,
+    and heartbeat.
+
+    A sensor node that publishes on a fixed drumbeat is either too chatty or
+    too slow, and averaging over one reading is not averaging. So each source
+    carries a rule: publish when the filtered value has moved by `delta`, but
+    never more often than `min`, and always at least every `max`.
+
+    Those are three different behaviours and this checks them separately,
+    because a test that only counts messages passes for the wrong reasons.
+    The synthetic source counts up by one per sample, which makes each rule's
+    effect arithmetic rather than a matter of taste:
+
+      * **rate limit** -- the value changes every single sample, so a rule
+        with a large `min` must still publish only about once per `min`;
+      * **heartbeat** -- a `delta` the counter can never reach means change
+        never triggers, so every publish that does happen is the heartbeat,
+        arriving about every `max`.
+
+    Timings are asserted as ranges with real slack: this is a guest under
+    QEMU talking to a socket, and the point is to catch a rule that does not
+    work at all, not to measure a scheduler.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Appliance: Rate Limit, Change Threshold And Heartbeat"
+    broker = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        ok, log = session.send_and_expect("mqttd fake\n", r"synthetic source", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not register a source: {log[-400:]}")
+
+        # --- 1. Rate limit. The counter moves every sample and delta is 0, so
+        # only min_interval can hold it back.
+        ok, log = session.send_and_expect(
+            "mqttd rule fake 4 600 0 0\n", r"publishes on a move of", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqttd rule` was not accepted: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            f"mqttd start 10.0.2.2:{broker.port} 1\n",
+            r"mqttd: started as pid \d+", timeout=10.0)
+        if not ok:
+            return (name, False, f"mqttd did not start: {log[-500:]}")
+        if not broker.wait_for_connect(timeout=25.0):
+            return (name, False, "mqttd never connected")
+
+        time.sleep(17.0)
+        fakes = [p for p in broker.publishes if p.topic.endswith("/fake")]
+        # ~17 s at one publish per 4 s, plus the first one on connect.
+        if not (3 <= len(fakes) <= 7):
+            return (name, False,
+                    f"a 4 s rate limit over ~17 s produced {len(fakes)} publishes; "
+                    f"expected about 5 (sampling was once a second, and the value "
+                    f"changed every sample)")
+
+        # --- 2. Heartbeat. A delta the counter cannot reach in one step means
+        # change never fires, so what arrives is the heartbeat alone.
+        ok, log = session.send_and_expect(
+            "mqttd rule fake 1 5 100000 0\n", r"publishes on a move of", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not set the heartbeat rule: {log[-400:]}")
+        before = len(broker.publishes)
+        time.sleep(16.0)
+        beats = [p for p in broker.publishes[before:] if p.topic.endswith("/fake")]
+        if not (2 <= len(beats) <= 5):
+            return (name, False,
+                    f"a 5 s heartbeat over ~16 s produced {len(beats)} publishes; "
+                    f"expected about 3. A value that never changes must still be "
+                    f"reported, or it cannot be told from a dead node")
+        # And they must be *fresh* samples, not the same number resent.
+        values = [int(p.payload) for p in beats]
+        if len(set(values)) != len(values):
+            return (name, False, f"the heartbeat resent a stale value: {values}")
+
+        return (name, True,
+                f"rate limit held a per-sample change to {len(fakes)} publishes, "
+                f"and a value that never moved enough still beat {len(beats)} times")
+    finally:
+        session.close()
+        broker.close()
+
+
 def test_mqttd_appliance(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """Q5, plan/phase26_mqtt_and_environment_sensors.md: the task that makes a
     sensor node an appliance -- and specifically what it does when the broker
@@ -6384,6 +6482,7 @@ def main() -> int:
         _run_single(test_bme280_compensation(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqttd_appliance(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqttd_publish_rules(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -6426,6 +6525,7 @@ def main() -> int:
         _run_single(test_bme280_compensation(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqttd_appliance(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqttd_publish_rules(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))

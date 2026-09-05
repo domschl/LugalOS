@@ -144,7 +144,7 @@ static void cmd_help(void) {
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
     cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>|disconnect]\n");
     cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
-    cprintf("  mqttd [start <ip>[:port] [period] [user [pass]]|stop|fake] - publish on a period\n");
+    cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>]\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -739,18 +739,22 @@ static void cmd_sensor(const char *arg) {
 /* `mqttd ...` -- Q5, the appliance loop.
  *
  *   mqttd                          what it is doing
- *   mqttd start <ip>[:port] [period_s] [user [pass]]
+ *   mqttd start <ip>[:port] [sample_s] [user [pass]]
  *   mqttd stop
  *   mqttd fake                     register a synthetic source (see below)
+ *   mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]
+ *
+ * `sample_s` is how often a source is *read*; how often it is published is
+ * the source's own rule, which is the point of having one.
  *
  * `mqttd fake` exists so the publish, reconnect and will machinery can be
  * tested where there is no sensor -- which is every QEMU target, and is also
  * where a broker can be killed mid-run on purpose. It counts up from zero so
  * a test can tell one publish from the next. */
-static bool shell_fake_source(char *out, uint32_t max, void *ctx) {
-    static uint32_t n;
+static bool shell_fake_source(int32_t *out, void *ctx) {
+    static int32_t n;
     (void)ctx;
-    ksnprintf(out, max, "%lu", (unsigned long)n++);
+    *out = n++;
     return true;
 }
 
@@ -767,7 +771,12 @@ static void cmd_mqttd(const char *arg) {
     }
 
     if (strncmp(arg, "fake", 4) == 0) {
-        if (mqttd_add_source("fake", shell_fake_source, NULL) != 0) {
+        /* No filtering and no delta: a test wants to see exactly what the
+         * rule does, not what the rule does to a filtered signal. The rule
+         * itself is then set with `mqttd rule`. */
+        mqttd_rule_t r = { .min_interval_s = 1, .max_interval_s = 10,
+                           .delta = 0, .alpha_shift = 0 };
+        if (mqttd_add_source("fake", shell_fake_source, NULL, 0, &r) != 0) {
             cprintf("mqttd: no room for another source\n");
             return;
         }
@@ -799,7 +808,7 @@ static void cmd_mqttd(const char *arg) {
         while (*a == ' ') a++;
         unsigned period = 0;
         while (*a >= '0' && *a <= '9') period = period * 10u + (unsigned)(*a++ - '0');
-        cfg.period_s = (uint16_t)period;
+        cfg.sample_s = (uint16_t)period;
 
         static char user[64], pass[64];
         user[0] = pass[0] = '\0';
@@ -824,7 +833,49 @@ static void cmd_mqttd(const char *arg) {
         return;
     }
 
-    cprintf("usage: mqttd [start <ip>[:port] [period_s] [user [pass]] | stop | fake]\n");
+    if (strncmp(arg, "rule ", 5) == 0) {
+        /* mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift] */
+        const char *a = arg + 5;
+        while (*a == ' ') a++;
+        char name[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && n < sizeof(name) - 1u) name[n++] = *a++;
+        name[n] = '\0';
+
+        const mqttd_rule_t *cur = mqttd_get_rule(name);
+        if (!cur) {
+            cprintf("mqttd: no source called \"%s\"\n", name);
+            return;
+        }
+        mqttd_rule_t r = *cur;
+        unsigned v[4];
+        uint32_t got = 0;
+        while (got < 4u) {
+            while (*a == ' ') a++;
+            if (*a < '0' || *a > '9') break;
+            unsigned x = 0;
+            while (*a >= '0' && *a <= '9') x = x * 10u + (unsigned)(*a++ - '0');
+            v[got++] = x;
+        }
+        if (got < 3u) {
+            cprintf("usage: mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]\n");
+            cprintf("       delta is in the source's own units (0.01 for the sensor)\n");
+            return;
+        }
+        r.min_interval_s = (uint16_t)v[0];
+        r.max_interval_s = (uint16_t)v[1];
+        r.delta = (int32_t)v[2];
+        if (got >= 4u) r.alpha_shift = (uint8_t)v[3];
+        if (mqttd_set_rule(name, &r) != 0) { cprintf("mqttd: could not set it\n"); return; }
+        cprintf("mqttd: %s publishes on a move of %ld, at most every %us, "
+                "at least every %us, ema 1/%u\n",
+                name, (long)r.delta, r.min_interval_s, r.max_interval_s,
+                1u << r.alpha_shift);
+        return;
+    }
+
+    cprintf("usage: mqttd [start <ip>[:port] [sample_s] [user [pass]] | stop | fake\n");
+    cprintf("             | rule <name> <min_s> <max_s> <delta> [alpha_shift]]\n");
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */

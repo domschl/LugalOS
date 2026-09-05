@@ -45,21 +45,141 @@ static struct {
     uint64_t started_ms;
 } g;
 
-static struct {
+typedef struct {
     const char     *name;
     mqttd_sample_fn fn;
     void           *ctx;
-} g_src[MQTTD_MAX_SOURCES];
+    uint8_t         decimals;
+    mqttd_rule_t    rule;
+
+    /* --- filter state ---
+     * `acc` holds the average scaled by 2^alpha_shift. Keeping the extra bits
+     * is what makes the filter converge: the naive form, y += (x - y) >> k,
+     * loses every difference smaller than 2^k to truncation, so it creeps
+     * towards the input and stops a step or two short -- a permanent offset
+     * that looks exactly like a miscalibrated sensor. */
+    int32_t  acc;
+    bool     primed;
+
+    /* --- rule state --- */
+    int32_t  filtered;
+    int32_t  last_sent;
+    uint64_t last_sent_ms;
+    bool     ever_sent;
+    uint32_t publishes;
+} mqttd_source_state_t;
+
+static mqttd_source_state_t g_src[MQTTD_MAX_SOURCES];
 static uint32_t g_src_count;
 
-int mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx) {
+static const mqttd_rule_t g_default_rule = {
+    .min_interval_s = MQTTD_DEFAULT_MIN_INTERVAL_S,
+    .max_interval_s = MQTTD_DEFAULT_MAX_INTERVAL_S,
+    .delta          = 0,
+    .alpha_shift    = MQTTD_DEFAULT_ALPHA_SHIFT,
+};
+
+int mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
+                     uint8_t decimals, const mqttd_rule_t *rule) {
     if (!name || !*name || !fn) return -1;
     if (g_src_count >= MQTTD_MAX_SOURCES) return -1;
-    g_src[g_src_count].name = name;
-    g_src[g_src_count].fn = fn;
-    g_src[g_src_count].ctx = ctx;
+    mqttd_source_state_t *st = &g_src[g_src_count];
+    memset(st, 0, sizeof(*st));
+    st->name = name;
+    st->fn = fn;
+    st->ctx = ctx;
+    st->decimals = decimals;
+    st->rule = rule ? *rule : g_default_rule;
+    /* An alpha shift wide enough to overflow the accumulator is a
+     * configuration mistake that would present as wild readings. 12 leaves
+     * plenty of headroom over any fixed-point value a sensor produces. */
+    if (st->rule.alpha_shift > 12u) st->rule.alpha_shift = 12u;
+    if (st->rule.delta < 0) st->rule.delta = -st->rule.delta;
     g_src_count++;
     return 0;
+}
+
+static mqttd_source_state_t *find_source(const char *name) {
+    if (!name) return NULL;
+    for (uint32_t i = 0; i < g_src_count; i++)
+        if (strcmp(g_src[i].name, name) == 0) return &g_src[i];
+    return NULL;
+}
+
+int mqttd_set_rule(const char *name, const mqttd_rule_t *rule) {
+    mqttd_source_state_t *st = find_source(name);
+    if (!st || !rule) return -1;
+    st->rule = *rule;
+    if (st->rule.alpha_shift > 12u) st->rule.alpha_shift = 12u;
+    if (st->rule.delta < 0) st->rule.delta = -st->rule.delta;
+    /* The filter is re-primed rather than rescaled: acc is held scaled by the
+     * *old* shift, and reinterpreting it under a new one would produce one
+     * spectacularly wrong reading. */
+    st->primed = false;
+    return 0;
+}
+
+const mqttd_rule_t *mqttd_get_rule(const char *name) {
+    mqttd_source_state_t *st = find_source(name);
+    return st ? &st->rule : NULL;
+}
+
+/* y += (x - y) / 2^k, carried on an accumulator scaled by 2^k. */
+static int32_t filter_step(mqttd_source_state_t *st, int32_t x) {
+    uint8_t k = st->rule.alpha_shift;
+    if (k == 0) return x;
+    if (!st->primed) {
+        /* Start at the first real reading, not at zero: a filter that ramps
+         * up from nothing publishes a minute of fiction after every boot. */
+        st->acc = x << k;
+        st->primed = true;
+        return x;
+    }
+    st->acc += x - (st->acc >> k);
+    return st->acc >> k;
+}
+
+/* Signed fixed-point, `dec` places. Done by hand because this kernel's
+ * printk has no float formatting, and by hand *here* rather than in each
+ * source because the sign of a value between -1 and 0 is the kind of detail
+ * that is got wrong once per source otherwise. */
+static void fmt_fixed(char *out, uint32_t max, int32_t v, uint8_t dec) {
+    if (!out || max == 0) return;
+    char digits[16];
+    uint32_t n = 0;
+    bool neg = v < 0;
+    uint64_t a = neg ? (uint64_t)(-(int64_t)v) : (uint64_t)v;
+    do {
+        digits[n++] = (char)('0' + (a % 10u));
+        a /= 10u;
+    } while ((a || n <= dec) && n < sizeof(digits));
+
+    uint32_t o = 0;
+    if (neg && o + 1u < max) out[o++] = '-';
+    while (n > 0 && o + 1u < max) {
+        n--;
+        out[o++] = digits[n];
+        if (n == dec && dec && o + 1u < max) out[o++] = '.';
+    }
+    out[o] = '\0';
+}
+
+/* The rule, in one place: has this value earned a publish yet? */
+static bool due(const mqttd_source_state_t *st, uint64_t now) {
+    if (!st->ever_sent) return true;          /* the first reading always goes */
+
+    uint64_t since = now - st->last_sent_ms;
+    if (st->rule.min_interval_s &&
+        since < (uint64_t)st->rule.min_interval_s * 1000u)
+        return false;                          /* too soon, whatever it did */
+
+    int32_t moved = st->filtered - st->last_sent;
+    if (moved < 0) moved = -moved;
+    if (moved >= st->rule.delta && (st->rule.delta > 0 || moved > 0))
+        return true;                           /* it moved enough */
+
+    return st->rule.max_interval_s &&
+           since >= (uint64_t)st->rule.max_interval_s * 1000u;   /* heartbeat */
 }
 
 void mqttd_clear_sources(void) { g_src_count = 0; }
@@ -101,25 +221,42 @@ static bool connect_once(void) {
     return true;
 }
 
-static void publish_all(void) {
+/* Sample every source, filter, and publish the ones whose rule says so. */
+static void sample_and_publish(void) {
+    uint64_t now = time_get_ms();
+
     for (uint32_t i = 0; i < g_src_count; i++) {
-        char value[MQTTD_VALUE_MAX];
-        value[0] = '\0';
-        if (!g_src[i].fn(value, sizeof(value), g_src[i].ctx) || !value[0]) {
-            /* A failed reading publishes nothing. A stale or zero value on a
-             * measurement topic is worse than a gap: a gap is visible. */
+        mqttd_source_state_t *st = &g_src[i];
+
+        int32_t raw = 0;
+        if (!st->fn(&raw, st->ctx)) {
+            /* A failed reading publishes nothing and does not enter the
+             * filter either: feeding it a fabricated value would drag the
+             * average, and a gap in a series is visible where a wrong number
+             * is not. */
             g.skipped++;
             continue;
         }
+
+        st->filtered = filter_step(st, raw);
+        if (!due(st, now)) continue;
+
+        char value[MQTTD_VALUE_MAX];
+        fmt_fixed(value, sizeof(value), st->filtered, st->decimals);
+
         char topic[160];
-        topic_for(topic, sizeof(topic), g_src[i].name);
-        if (mqtt_publish(topic, value, (uint32_t)strlen(value), false) == 0) {
-            g.published++;
-        } else {
+        topic_for(topic, sizeof(topic), st->name);
+        if (mqtt_publish(topic, value, (uint32_t)strlen(value), false) != 0) {
             /* Left for the loop to notice: mqtt_publish() has already dropped
-             * the connection if the transport failed. */
+             * the connection if the transport failed. Deliberately not marked
+             * as sent, so the value goes out on the next pass. */
             return;
         }
+        st->last_sent = st->filtered;
+        st->last_sent_ms = now;
+        st->ever_sent = true;
+        st->publishes++;
+        g.published++;
     }
 }
 
@@ -142,10 +279,15 @@ static void mqttd_body(void *arg) {
                 backoff_ms = BACKOFF_MIN_MS;
                 attempts = 0;
                 announced_down = false;
-                /* Publish immediately on connect rather than waiting a whole
+                /* Sample immediately on connect rather than waiting a whole
                  * period: the first thing anyone does after a reconnect is
-                 * look for a fresh value. */
+                 * look for a fresh value. Every source is marked unsent too,
+                 * so each publishes once on the new connection regardless of
+                 * how still it has been -- a subscriber that joined during
+                 * the outage would otherwise wait a full heartbeat to see
+                 * anything. */
                 g.last_sample_ms = 0;
+                for (uint32_t i = 0; i < g_src_count; i++) g_src[i].ever_sent = false;
             } else {
                 /* Said a few times, then silently. The retries never stop;
                  * the log lines do. */
@@ -170,12 +312,12 @@ static void mqttd_body(void *arg) {
         mqtt_service();
 
         uint64_t now = time_get_ms();
-        uint32_t period_ms = (uint32_t)(g.cfg.period_s ? g.cfg.period_s
-                                                       : MQTTD_DEFAULT_PERIOD) * 1000u;
+        uint32_t sample_ms = (uint32_t)(g.cfg.sample_s ? g.cfg.sample_s
+                                                       : MQTTD_DEFAULT_SAMPLE_S) * 1000u;
         if (mqtt_state() == MQTT_CONNECTED &&
-            (g.last_sample_ms == 0 || now - g.last_sample_ms >= period_ms)) {
+            (g.last_sample_ms == 0 || now - g.last_sample_ms >= sample_ms)) {
             g.last_sample_ms = now;
-            publish_all();
+            sample_and_publish();
         }
 
         task_sleep_ms(TICK_MS);
@@ -207,7 +349,7 @@ int mqttd_start(const mqttd_config_t *cfg) {
     memset(&g.cfg, 0, sizeof(g.cfg));
     memcpy(g.cfg.broker, cfg->broker, IPV4_LEN);
     g.cfg.port = cfg->port;
-    g.cfg.period_s = cfg->period_s;
+    g.cfg.sample_s = cfg->sample_s;
     g.cfg.keepalive_s = cfg->keepalive_s;
     /* Copied, not pointed at: the caller's strings are usually a shell
      * command line that is gone by the first reconnect. */
@@ -240,15 +382,24 @@ void mqttd_print_status(void) {
         return;
     }
     uint64_t up = (time_get_ms() - g.started_ms) / 1000u;
-    cprintf("mqttd: %u.%u.%u.%u:%u, every %us, topics under %s/%s/\n",
+    cprintf("mqttd: %u.%u.%u.%u:%u, sampling every %us, topics under %s/%s/\n",
             g.cfg.broker[0], g.cfg.broker[1], g.cfg.broker[2], g.cfg.broker[3],
             g.cfg.port ? g.cfg.port : (unsigned)MQTT_DEFAULT_PORT,
-            g.cfg.period_s ? g.cfg.period_s : (unsigned)MQTTD_DEFAULT_PERIOD,
+            g.cfg.sample_s ? g.cfg.sample_s : (unsigned)MQTTD_DEFAULT_SAMPLE_S,
             prefix(), node_name());
     cprintf("       up %lum%lus, %s, published %lu, skipped %lu, connect failures %lu\n",
             (unsigned long)(up / 60u), (unsigned long)(up % 60u),
             mqtt_state_str(), (unsigned long)g.published,
             (unsigned long)g.skipped, (unsigned long)g.connect_fails);
-    for (uint32_t i = 0; i < g_src_count; i++)
-        cprintf("       source: %s/%s/%s\n", prefix(), node_name(), g_src[i].name);
+    for (uint32_t i = 0; i < g_src_count; i++) {
+        const mqttd_source_state_t *st = &g_src[i];
+        char last[MQTTD_VALUE_MAX], d[MQTTD_VALUE_MAX];
+        fmt_fixed(last, sizeof(last), st->filtered, st->decimals);
+        fmt_fixed(d, sizeof(d), st->rule.delta, st->decimals);
+        cprintf("       %-12s %s  (sent %lu; publish on %s, %us..%us, ema 1/%u)\n",
+                st->name, st->ever_sent ? last : "--",
+                (unsigned long)st->publishes, d,
+                st->rule.min_interval_s, st->rule.max_interval_s,
+                1u << st->rule.alpha_shift);
+    }
 }

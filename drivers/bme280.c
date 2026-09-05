@@ -367,45 +367,64 @@ static bool cached_read(void) {
     return g_cached_ok;
 }
 
-static bool src_temperature(char *out, uint32_t max, void *ctx) {
+static bool src_temperature(int32_t *out, void *ctx) {
     (void)ctx;
     if (!cached_read()) return false;
-    long w = (long)g_cached.temperature_c100 / 100;
-    long f = (long)g_cached.temperature_c100 % 100;
-    if (f < 0) f = -f;
-    /* A negative temperature between -1 and 0 has a whole part of 0, so the
-     * sign has to be carried explicitly or -0.42 prints as 0.42. */
-    ksnprintf(out, max, "%s%ld.%02ld",
-              (g_cached.temperature_c100 < 0 && w == 0) ? "-" : "", w, f);
+    *out = g_cached.temperature_c100;              /* already 0.01 C */
     return true;
 }
 
-static bool src_pressure(char *out, uint32_t max, void *ctx) {
+static bool src_pressure(int32_t *out, void *ctx) {
     (void)ctx;
     if (!cached_read()) return false;
-    uint32_t pa = g_cached.pressure_pa256 >> 8;      /* Q24.8 -> whole pascals */
-    ksnprintf(out, max, "%lu.%02lu",
-              (unsigned long)(pa / 100u), (unsigned long)(pa % 100u));
+    /* Q24.8 pascals -> hundredths of a hectopascal, which is the same number
+     * a person reads: 96374 is 963.74 hPa. Pa/256 gives whole pascals, and a
+     * pascal is 0.01 hPa, so the two scalings cancel to a plain shift. */
+    *out = (int32_t)(g_cached.pressure_pa256 >> 8);
     return true;
 }
 
-static bool src_humidity(char *out, uint32_t max, void *ctx) {
+static bool src_humidity(int32_t *out, void *ctx) {
     (void)ctx;
     if (!cached_read() || !g_cached.have_humidity) return false;
-    uint32_t rh100 = (g_cached.humidity_rh1024 * 100u) >> 10;
-    ksnprintf(out, max, "%lu.%02lu",
-              (unsigned long)(rh100 / 100u), (unsigned long)(rh100 % 100u));
+    *out = (int32_t)((g_cached.humidity_rh1024 * 100u) >> 10);   /* 0.01 %RH */
     return true;
 }
 
-/* Registered only when a part actually answered: a board with no sensor
- * publishes no measurement topics at all, rather than publishing zeroes that
- * a dashboard would happily plot. */
+/* Per-measurement rules, because the three do not behave alike and a single
+ * rule would be wrong for at least two of them.
+ *
+ * The deltas are set just above each measurement's own noise, so that a
+ * publish means something moved rather than that the last bit wobbled:
+ *
+ *   temperature  0.10 C   room air genuinely moves this much; the part's own
+ *                         noise after filtering is well under it
+ *   pressure     0.10 hPa the x1 oversampling noise is ~0.026 hPa, and real
+ *                         weather moves ~1 hPa an hour -- so this reports a
+ *                         front arriving without reporting the sea state
+ *   humidity     0.50 %RH the noisiest of the three by some way, and the one
+ *                         nobody reads to two decimal places
+ *
+ * All three filter at 1/8, which at a 5 s sample period settles a step change
+ * in well under a minute while removing most of the per-reading jitter.
+ */
 void bme280_register_sources(void) {
     if (g.part == BME280_PART_NONE) return;
-    mqttd_add_source("temperature", src_temperature, NULL);
-    mqttd_add_source("pressure", src_pressure, NULL);
-    if (g.part == BME280_PART_BME280) mqttd_add_source("humidity", src_humidity, NULL);
+
+    static const mqttd_rule_t temp_rule = {
+        .min_interval_s = 5, .max_interval_s = 300, .delta = 10, .alpha_shift = 3,
+    };
+    static const mqttd_rule_t press_rule = {
+        .min_interval_s = 5, .max_interval_s = 300, .delta = 10, .alpha_shift = 3,
+    };
+    static const mqttd_rule_t hum_rule = {
+        .min_interval_s = 5, .max_interval_s = 300, .delta = 50, .alpha_shift = 3,
+    };
+
+    mqttd_add_source("temperature", src_temperature, NULL, 2, &temp_rule);
+    mqttd_add_source("pressure", src_pressure, NULL, 2, &press_rule);
+    if (g.part == BME280_PART_BME280)
+        mqttd_add_source("humidity", src_humidity, NULL, 2, &hum_rule);
 }
 
 void bme280_print_status(void) {
