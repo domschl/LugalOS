@@ -56,12 +56,34 @@
  *
  * An integrator has no such blind spot. A standing offset is exactly what it
  * consumes: freq moves until the offset it is fed goes to zero, which happens
- * only when the rate correction matches the crystal. The divisor sets how
- * fast -- 64 moves about 3 ppb per sample against the ~200 us standing offset
- * this receiver produces, so it crosses 460 ppb in a couple of hours, while
- * dividing a 2 ms noise sample down to 31 ppb of jitter that successive
- * samples largely cancel. */
-#define FREQ_INT_DIV     64
+ * only when the rate correction matches the crystal.
+ *
+ * The divisor sets how fast, and 64 was too fast. Three hours on the bench
+ * (2026-09-05) put numbers on it. The whole of the crystal's 460 ppb error
+ * shows up as a standing offset of only
+ *
+ *     SLEW_MS/1000 * PHASE_DIV * 460 ppb = 221 us
+ *
+ * because the phase loop has already removed an eighth of it every minute --
+ * while a single DCF-77 frame lands with a scatter of 2077 us. The quantity
+ * being measured sits ten times below the noise it is buried in. At a divisor
+ * of 64 the loop corrected 0.75% of its own error per frame while taking a
+ * 32 ppb random step, and freq_ppb duly wandered over -727..-22 ppb around a
+ * true -460. Predicted equilibrium wander 265 ppb, measured 199. The loop was
+ * right; its gain was not.
+ *
+ * Wander falls as 1/sqrt(divisor) while the time constant grows linearly, so
+ * 256 buys a quieter estimate (about 130 ppb) at a time constant of 8.9 hours.
+ * That is the trade: long enough to average a night of radio noise down,
+ * short enough to still follow a crystal that moves with the room. Going
+ * further -- 512, 18 hours -- would no longer track a diurnal swing. */
+#define FREQ_INT_DIV     256
+
+/* The loop's own time constant, in samples: the standing offset a rate error
+ * of one ppb produces, divided into the divisor. About 533 frames, so nearly
+ * nine hours of once-a-minute DCF-77. Derived rather than written down, so
+ * that retuning the constants above cannot leave it quietly wrong. */
+#define FREQ_LOOP_TAU_N  ((FREQ_INT_DIV * 1000u) / ((SLEW_MS / 1000u) * PHASE_DIV))
 
 /* Below this interval a sample says nothing about rate -- it is the same
  * minute's noise measured twice -- and above it the two are not describing one
@@ -101,12 +123,9 @@ static int64_t  g_sum_us;
 static uint64_t g_sumsq;
 static uint32_t g_n;
 
-/* How much the rate estimate is still moving, as an exponential average of
- * the size of its own steps. This is what dispersion is entitled to claim: a
- * freq_ppb that is still wandering by 200 ppb per sample does not know the
- * crystal to 10, and saying otherwise is the mistake both previous versions
- * made in different ways. */
-static uint32_t g_freq_wander_ppb;
+/* How many times the rate estimate has been updated. Dispersion needs it to
+ * know whether the loop has run long enough for its noise floor to be the
+ * dominant error -- see freq_uncertainty_ppb(). */
 static uint32_t g_freq_updates;
 
 static uint32_t isqrt64(uint64_t v) {
@@ -131,16 +150,47 @@ static uint32_t isqrt64(uint64_t v) {
  * settles by itself as the loop locks; residuals would be more correct and
  * more code for a difference that only exists when the answer should be
  * pessimistic anyway. */
+/* How well the rate is known, in ppb.
+ *
+ * The previous answer -- an average of the integrator's own step size,
+ * doubled -- was measured against the hardware and found to understate by
+ * five times: it reported about 50 ppb while freq_ppb was demonstrably
+ * wandering by 250. Averaging the steps measures how hard the loop is
+ * pulling, not how far from the truth it has been pulled, and those are
+ * different numbers whenever the steps are noise rather than signal.
+ *
+ * A first-order loop driven by white noise has a known answer. Each sample
+ * displaces the estimate by sd/FREQ_INT_DIV, and those displacements decay
+ * with the loop's time constant, so the estimate settles at
+ *
+ *     wander = (sd / FREQ_INT_DIV) * sqrt(TAU / 2)
+ *
+ * which for the bench's 2077 us of DCF-77 scatter predicted 265 ppb against
+ * 199 measured -- agreement to within the length of the run. Reading it from
+ * sd_offset_us rather than accumulating more state has a second virtue: when
+ * reception degrades the scatter rises and the claimed rate knowledge falls
+ * out of it automatically, which is what the pre-dawn hours need. */
 static uint32_t freq_uncertainty_ppb(uint32_t sd_us) {
-    (void)sd_us;
-    /* Until the integrator has had time to move, the rate is simply unknown
-     * and an uncorrected crystal is the honest assumption. */
-    if (g_freq_updates < 20u) return UNKNOWN_PPB_ERR;
-    /* After that, how far the estimate is still moving per sample *is* how
-     * well it is known. Doubled, because successive steps only partly cancel
-     * and the safe direction here is pessimism: an overstated dispersion
-     * costs a client some precision, an understated one costs it the truth. */
-    uint32_t ppb = g_freq_wander_ppb * 2u;
+    /* sqrt(TAU/2), carried times 100 so the divide below keeps its digits. */
+    uint32_t root_q = isqrt64((uint64_t)FREQ_LOOP_TAU_N * 10000ull / 2ull);
+    uint32_t ppb = (uint32_t)((uint64_t)sd_us * root_q
+                              / (100ull * (uint64_t)FREQ_INT_DIV));
+
+    /* Before the loop has run for a time constant the estimate is still
+     * walking in from wherever it started, and that transient dwarfs the
+     * noise floor above. Fade the uncorrected-crystal assumption out across
+     * the first TAU samples rather than dropping it at a threshold: a step
+     * here would show up in a served root dispersion as a cliff.
+     *
+     * This costs little while the radio is present -- dispersion is
+     * age * ppb, and age is a minute -- and is exactly the pessimism holdover
+     * wants from a clock that booted an hour ago. */
+    if (ppb > UNKNOWN_PPB_ERR) ppb = UNKNOWN_PPB_ERR;
+    if (g_freq_updates < FREQ_LOOP_TAU_N) {
+        uint32_t left = FREQ_LOOP_TAU_N - g_freq_updates;
+        ppb += (uint32_t)((uint64_t)(UNKNOWN_PPB_ERR - ppb) * left / FREQ_LOOP_TAU_N);
+    }
+
     if (ppb < 10) ppb = 10;
     if (ppb > UNKNOWN_PPB_ERR) ppb = UNKNOWN_PPB_ERR;
     return ppb;
@@ -160,7 +210,7 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
         g_have_last = false;
         /* The accumulated slope described the clock as it was before the step
          * and says nothing about the one that exists now. */
-        g_freq_wander_ppb = 0; g_freq_updates = 0;
+        g_freq_updates = 0;
         g_consec_rejects = 0;
         g_last_offset_us = 0;
         g_last_at_mono = at_mono_us;
@@ -202,8 +252,6 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
             g_freq_ppb -= step;
             time_set_freq_ppb(g_freq_ppb);
 
-            uint32_t mag = (uint32_t)(step < 0 ? -step : step);
-            g_freq_wander_ppb = (g_freq_wander_ppb * 7u + mag) / 8u;
             g_freq_updates++;
         }
     }
@@ -270,7 +318,6 @@ void discipline_reset(void) {
     g_sum_us = 0;
     g_sumsq = 0;
     g_n = 0;
-    g_freq_wander_ppb = 0;
     g_freq_updates = 0;
 }
 
@@ -329,34 +376,57 @@ void discipline_selftest(void) {
      *    actually produces is a persistent few hundred microseconds that the
      *    slew removes every minute and the rate term never learns from.
      *
-     *    Forty samples of a steady +640 us must move freq by
-     *    40 * 640 / 64 = -400 ppb. Asserting the arithmetic exactly, because
-     *    "it moved the right way" is precisely the assertion that let a
-     *    useless estimator ship twice. */
+     *    Six hundred samples of a steady +640 us must move freq by
+     *    599 * (640 / 256) = -1198 ppb -- 599 and not 600 because the first
+     *    sample has no predecessor to measure an interval against. Asserting
+     *    the arithmetic exactly, because "it moved the right way" is
+     *    precisely the assertion that let a useless estimator ship twice.
+     *
+     *    Six hundred and not forty: at a divisor of 256 the run also has to
+     *    outlast FREQ_LOOP_TAU_N for check 6 below to see past the startup
+     *    transient. */
     discipline_reset();
     time_set_freq_ppb(0);
-    for (int i = 0; i < 40; i++)
+    for (int i = 0; i < 600; i++)
         discipline_feed(640, t + (uint64_t)i * 60000000ull);
     discipline_status(&d);
-    CHECK("a standing offset is integrated into the rate",
-          d.freq_ppb < -380 && d.freq_ppb > -420);
-    printk("  freq after 40 samples of a steady +640 us offset: %ld ppb "
-           "(expected about -400)\n", (long)d.freq_ppb);
+    CHECK("a standing offset is integrated into the rate", d.freq_ppb == -1198);
+    printk("  freq after 600 samples of a steady +640 us offset: %ld ppb "
+           "(expected -1198)\n", (long)d.freq_ppb);
 
-    /* 6. And the dispersion follows the estimate's own restlessness. A rate
-     *    still moving in large steps is not known to ten parts per billion,
-     *    whatever a constant might have claimed. */
-    uint32_t disp_steady = d.dispersion_us;
+    /* 6. And the rate is claimed to be known only as well as the radio noise
+     *    the loop had to average to learn it.
+     *
+     *    This is the check that was missing. Its predecessor compared two
+     *    dispersions -- but dispersion is age * uncertainty + sd, the
+     *    selftest's synthetic timestamps leave age at zero, and so it was
+     *    only ever comparing sd against sd. It passed while the uncertainty
+     *    it was supposed to be testing understated the hardware by five
+     *    times. Call the estimator directly and assert its arithmetic.
+     *
+     *    sqrt(TAU/2) = sqrt(533/2) = 16.32, so 2077 us of DCF-77 scatter --
+     *    the bench figure -- must yield 2077 * 16.32 / 256 = 132 ppb, which
+     *    is the number the hardware showed wandering by (199 measured over
+     *    1.4 time constants, at the divisor of 64 that predicts 265). */
+    CHECK("rate uncertainty follows the radio noise",
+          freq_uncertainty_ppb(2077) == 132 && freq_uncertainty_ppb(8000) == 510);
+    printk("  rate uncertainty: sd 2077 us -> %lu ppb, sd 8000 us -> %lu ppb\n",
+           (unsigned long)freq_uncertainty_ppb(2077),
+           (unsigned long)freq_uncertainty_ppb(8000));
+
+    /* 6b. And a clock that has not yet run for a time constant says so, by
+     *     fading out the uncorrected-crystal assumption rather than holding
+     *     it and then dropping it at a threshold. */
     discipline_reset();
     time_set_freq_ppb(0);
-    for (int i = 0; i < 40; i++)   /* same mean, alternating +/-8 ms of noise */
-        discipline_feed(640 + ((i & 1) ? 8000 : -8000),
-                        t + (uint64_t)i * 60000000ull);
-    discipline_status(&d);
-    CHECK("a noisier rate estimate reports a larger dispersion",
-          d.dispersion_us > disp_steady);
-    printk("  dispersion steady=%lu us  noisy=%lu us\n",
-           (unsigned long)disp_steady, (unsigned long)d.dispersion_us);
+    uint32_t u_fresh = freq_uncertainty_ppb(2077);
+    for (int i = 0; i < 300; i++)
+        discipline_feed(640, t + (uint64_t)i * 60000000ull);
+    uint32_t u_half = freq_uncertainty_ppb(2077);
+    CHECK("an unconverged rate is not claimed to be known",
+          u_fresh == UNKNOWN_PPB_ERR && u_half < u_fresh && u_half > 132);
+    printk("  rate uncertainty: 0 samples %lu ppb, 300 %lu ppb, settled 132 ppb\n",
+           (unsigned long)u_fresh, (unsigned long)u_half);
 
     /* 7. Holdover reports a dispersion that grows, because a clock that has
      *    lost its reference is still useful only if it says how much less. */
