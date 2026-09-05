@@ -136,6 +136,7 @@ static void cmd_help(void) {
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
+    cprintf("  net echotest <ip> <port> [bytes] - Round-trip bytes through a TCP echo server\n");
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
@@ -465,6 +466,141 @@ static void cmd_net_udpecho(unsigned port) {
         return;
     }
     cprintf("net: echoing UDP on port %u\n", port);
+}
+
+/* `net echotest <ip> <port> [bytes]` -- Q0's byte stream, end to end.
+ *
+ * The counterpart to `net txtest`/`net rxtest` one layer up: those prove a
+ * driver moves frames, this proves a *connection* moves bytes in order and
+ * without loss. It dials an ordinary TCP echo server (tests/echoserver.py, or
+ * anything that returns what it is given), writes a position-dependent
+ * pattern and checks every byte that comes back against the same pattern --
+ * so a duplicated, dropped or reordered run is caught, not only a corrupted
+ * byte.
+ *
+ * The write loop is the part worth reading. tcp_stream_write() takes what
+ * fits and says how much, and the task that drains the buffer is `netsrv` --
+ * so the yield is not politeness, it is the only reason the loop terminates.
+ * Same shape as ntp_query()'s wait, and the same Ctrl-C check inside it. */
+static uint8_t echotest_byte(uint32_t i) {
+    return (uint8_t)(i * 31u + (i >> 8) * 7u + 13u);
+}
+
+static void cmd_net_echotest(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    char ipbuf[16];
+    uint32_t n = 0;
+    while (*arg && *arg != ' ' && n < sizeof(ipbuf) - 1) ipbuf[n++] = *arg++;
+    ipbuf[n] = '\0';
+
+    uint8_t ip[IPV4_LEN];
+    if (!ipv4_parse(ipbuf, ip)) {
+        cprintf("usage: net echotest <ip> <port> [bytes]\n");
+        return;
+    }
+    while (*arg == ' ') arg++;
+    unsigned port = 0;
+    while (*arg >= '0' && *arg <= '9') port = port * 10u + (unsigned)(*arg++ - '0');
+    if (port == 0 || port > 65535u) {
+        cprintf("usage: net echotest <ip> <port> [bytes]\n");
+        return;
+    }
+    while (*arg == ' ') arg++;
+    unsigned total = 0;
+    while (*arg >= '0' && *arg <= '9') total = total * 10u + (unsigned)(*arg++ - '0');
+    if (total == 0) total = 8192u;
+
+    tcp_stream_t st;
+    if (tcp_stream_open(&st, ip, (uint16_t)port) != 0) {
+        cprintf("net: could not open a stream (no address configured, or both "
+                "connection slots are busy)\n");
+        return;
+    }
+    console_interrupt_clear();
+    cprintf("net: echotest to %s:%u, %u bytes\n", ipbuf, port, total);
+
+    int rc;
+    uint64_t deadline = time_get_ms() + 5000u;
+    while ((rc = tcp_stream_ready(&st)) == 0) {
+        if (console_interrupt_requested()) {
+            cprintf("net: interrupted while connecting\n");
+            tcp_stream_close(&st);
+            return;
+        }
+        if (time_get_ms() >= deadline) {
+            cprintf("net: no answer to the SYN after 5 s\n");
+            tcp_stream_close(&st);
+            return;
+        }
+        sched_yield();
+    }
+    if (rc < 0) {
+        cprintf("net: connection refused or unreachable\n");
+        tcp_stream_close(&st);
+        return;
+    }
+
+    uint8_t wbuf[256], rbuf[256];
+    uint32_t sent = 0, got = 0;
+    uint32_t bad_at = 0xffffffffu;
+    const char *failed = NULL;
+    uint64_t t0 = time_get_ms();
+    uint64_t last_progress = t0;
+
+    while (got < total) {
+        bool progress = false;
+
+        if (sent < total) {
+            uint32_t chunk = total - sent;
+            if (chunk > sizeof(wbuf)) chunk = (uint32_t)sizeof(wbuf);
+            for (uint32_t i = 0; i < chunk; i++) wbuf[i] = echotest_byte(sent + i);
+            int w = tcp_stream_write(&st, wbuf, chunk);
+            if (w < 0) { failed = "the connection went away while writing"; break; }
+            if (w > 0) { sent += (uint32_t)w; progress = true; }
+        }
+
+        int r = tcp_stream_read(&st, rbuf, sizeof(rbuf));
+        if (r < 0) { failed = "the connection went away while reading"; break; }
+        if (r > 0) {
+            for (int i = 0; i < r; i++) {
+                if (rbuf[i] != echotest_byte(got + (uint32_t)i)) {
+                    bad_at = got + (uint32_t)i;
+                    break;
+                }
+            }
+            got += (uint32_t)r;
+            progress = true;
+            if (bad_at != 0xffffffffu) break;
+        }
+
+        if (console_interrupt_requested()) { failed = "interrupted"; break; }
+
+        if (progress) {
+            last_progress = time_get_ms();
+        } else if (time_get_ms() - last_progress > 5000u) {
+            failed = "stalled for 5 s with neither side moving";
+            break;
+        }
+        sched_yield();
+    }
+
+    uint64_t ms = time_get_ms() - t0;
+    bool peer_closed = tcp_stream_peer_closed(&st);
+    tcp_stream_close(&st);
+
+    if (bad_at != 0xffffffffu) {
+        cprintf("net: echotest MISMATCH at byte %lu (wrote %lu, read %lu)\n",
+                (unsigned long)bad_at, (unsigned long)sent, (unsigned long)got);
+    } else if (failed) {
+        cprintf("net: echotest failed -- %s (wrote %lu, read %lu of %u)\n",
+                failed, (unsigned long)sent, (unsigned long)got, total);
+    } else {
+        unsigned long rate = (unsigned long)(ms ? ((uint64_t)total * 1000u) / ms : 0u);
+        cprintf("net: echotest ok, %u bytes echoed in %lu ms (%lu B/s)%s\n",
+                total, (unsigned long)ms, rate,
+                peer_closed ? ", peer had closed" : "");
+    }
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -2315,6 +2451,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         } else {
             cprintf("net: could not listen\n");
         }
+        return;
+    } else if (strncmp(cmd_line, "net echotest", 12) == 0) {
+        cmd_net_echotest(&cmd_line[12]);
         return;
     } else if (strncmp(cmd_line, "net udpecho", 11) == 0) {
         cmd_net_udpecho(shell_trailing_uint(&cmd_line[11]));

@@ -103,6 +103,14 @@ typedef struct {
      * withholding DEV_F_BACKGROUND_9P. */
     bool is_client;
 
+    /* Q0: this connection carries bytes, not 9P frames. Distinct from
+     * is_client on purpose -- (net-mount) dials 9P deliberately, so "we
+     * dialled" and "this is not 9P" are two different facts and conflating
+     * them is how a stream would end up being offered to the 9P server. A
+     * stream connection has no p9_link_t face: conn_init_link() is never
+     * called for one. */
+    bool is_stream;
+
     /* Bumped every time the slot is reused. The link carries its own epoch in
      * `ctx`, so a mount left holding a link whose connection has since died
      * and been replaced fails cleanly instead of silently attaching itself to
@@ -236,7 +244,11 @@ static void tcp_reset_stray(const uint8_t peer_ip[IPV4_LEN], const uint8_t *seg,
 }
 
 static void conn_release(tcp_conn_t *c) {
-    if (c->state != TCP_CLOSED) p9_link_unregister_background(&c->link);
+    /* A stream has no link face, so there is nothing registered under it.
+     * The call would be a harmless pointer comparison, but "no link" is the
+     * property being maintained and code that pretends otherwise invites the
+     * next reader to hand one out. */
+    if (c->state != TCP_CLOSED && !c->is_stream) p9_link_unregister_background(&c->link);
     c->in_use = false;
     c->state = TCP_CLOSED;
     c->epoch++;            /* every link handed out for this slot is now stale */
@@ -485,7 +497,16 @@ static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
  * Returns a link that is not yet usable: the caller polls tcp_link_ready()
  * until the handshake completes. Non-blocking on purpose -- the task that
  * would have to wait is often the one whose pump completes it. */
-p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
+/* The half of an active open that has nothing to do with what the connection
+ * will carry. Shared by tcp_connect() (9P) and tcp_stream_open() (Q0, bytes)
+ * so the two cannot drift in the sequence-number and buffer arithmetic, which
+ * is the part neither of them is really about.
+ *
+ * Deliberately stops short of sending the SYN: the caller has to install the
+ * connection's *face* -- a p9_link_t or a stream handle -- before a reply can
+ * arrive on another task, and that means before the SYN goes out rather than
+ * after. */
+static tcp_conn_t *conn_dial(const uint8_t ip[IPV4_LEN], uint16_t port) {
     if (!net_configured() || !ip || port == 0) return NULL;
     if (ensure_bufs() != 0) return NULL;
 
@@ -511,13 +532,22 @@ p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
     c->snd_nxt = g_iss_counter;
     g_iss_counter += 0x10000u + (uint32_t)time_get_ms();
     c->snd_wnd = TCP_OUR_MSS;      /* until the peer tells us otherwise */
+    return c;
+}
 
-    conn_init_link(c);
+static void conn_start_syn(tcp_conn_t *c) {
     tcp_emit(c, TCP_SYN, c->snd_nxt, NULL, 0, true);
     c->snd_nxt++;
     c->rto_ms = TCP_RTO_INITIAL_MS;
     c->rto_at_ms = time_get_ms() + c->rto_ms;
     c->retries = 0;
+}
+
+p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
+    tcp_conn_t *c = conn_dial(ip, port);
+    if (!c) return NULL;
+    conn_init_link(c);
+    conn_start_syn(c);
     return &c->link;
 }
 
@@ -543,6 +573,160 @@ void tcp_close(p9_link_t *link) {
     } else {
         conn_abort(c);
     }
+}
+
+/* --- Q0: the byte-stream view of a connection ---
+ *
+ * The framing is the only thing that differs from the p9_link_t face above.
+ * link_recv_frame() copies out a 9P frame's worth and memmove()s the rest
+ * down; tcp_stream_read() is that function with the length-prefix check
+ * deleted. link_send_frame() refuses a second frame while one is
+ * outstanding, because a 9P reply is all-or-nothing; tcp_stream_write()
+ * appends whatever fits, because a stream is not.
+ *
+ * That appending is well-defined only because the ACK path already compacts
+ * the send buffer -- it drops the acknowledged prefix and advances tx_seq --
+ * so the free space at c->tx + c->tx_len is genuinely free and the bytes
+ * before it are exactly the ones that may still need retransmitting. Nothing
+ * new was needed for that; see the "Drop the acknowledged prefix" branch in
+ * tcp_input().
+ */
+
+static tcp_conn_t *stream_conn(tcp_stream_t *s) {
+    if (!s || !s->open || s->index >= TCP_MAX_CONNS) return NULL;
+    tcp_conn_t *c = &g_conns[s->index];
+    /* Three questions, and all three matter: is the slot live, is it still
+     * *this* connection (the epoch), and is it still a stream. The last one
+     * costs nothing and makes a handle that somehow outlived its slot unable
+     * to reach a 9P connection that took its place. */
+    if (!c->in_use || !c->is_stream || c->epoch != s->epoch) return NULL;
+    return c;
+}
+
+int tcp_stream_open(tcp_stream_t *s, const uint8_t ip[IPV4_LEN], uint16_t port) {
+    if (!s) return -1;
+    s->open = false;
+    tcp_conn_t *c = conn_dial(ip, port);
+    if (!c) return -1;
+
+    /* The face goes on before the SYN, so a reply arriving on netsrv while
+     * this task is descheduled finds a connection that is already what it
+     * claims to be. Deliberately no conn_init_link(): a stream has no link. */
+    c->is_stream = true;
+    s->index = (uint32_t)(c - g_conns);
+    s->epoch = c->epoch;
+    s->open = true;
+
+    conn_start_syn(c);
+    return 0;
+}
+
+int tcp_stream_ready(tcp_stream_t *s) {
+    tcp_conn_t *c = stream_conn(s);
+    if (!c) return -1;
+    if (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT) return 1;
+    if (c->state == TCP_SYN_SENT) return 0;
+    return -1;
+}
+
+int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
+    tcp_conn_t *c = stream_conn(s);
+    if (!c || !buf) return -1;
+    if (c->rx_len == 0) return 0;
+
+    uint32_t n = (c->rx_len < max) ? c->rx_len : max;
+    memcpy(buf, c->rx, n);
+    c->rx_len -= n;
+    if (c->rx_len) memmove(c->rx, c->rx + n, c->rx_len);
+    /* The window just reopened, and saying so promptly is what keeps a peer
+     * that filled the buffer from waiting on its own persist timer -- the
+     * same reason link_recv_frame() does it. */
+    c->need_ack = true;
+    return (int)n;
+}
+
+/* --- Who may touch a connection's send buffer, and when ---
+ *
+ * A stream is written from whichever task owns it, and the pump runs on
+ * `netsrv`. Two tasks, one connection -- and net_task_body()'s own comment
+ * says why net/tcp.c holds no locks: everything happens "on this call
+ * stack". A writer that appends at c->tx_len while the ACK path is
+ * memmove()ing the acknowledged prefix down, or that builds a segment in the
+ * one shared net_tx_payload() buffer while tcp_service() is building
+ * another, breaks that premise rather than working around it.
+ *
+ * So the same contract link_send_frame() already keeps, stated as a rule:
+ *
+ *   * **A caller fills the send buffer only when it is empty**, so the only
+ *     0 -> n transition is the writer's and the only n -> less transition is
+ *     the pump's. Neither ever sees the other mid-update.
+ *   * **A caller never transmits.** tcp_service() does, one scheduling round
+ *     later at the latest, on the one call stack allowed to touch the shared
+ *     transmit buffer.
+ *
+ * The cost is that a write takes one buffer-load at a time and the next has
+ * to wait for the acknowledgement -- exactly what a 9P reply already does.
+ * Measured at 1.2 MB/s over slirp, which is not the limit anything here
+ * cares about.
+ *
+ * This was not a theoretical tidy-up: with the writer transmitting, a 64 KB
+ * echo stalled roughly one run in four, at a different point each time, with
+ * both sides waiting for the other. */
+
+uint32_t tcp_stream_writable(tcp_stream_t *s) {
+    tcp_conn_t *c = stream_conn(s);
+    if (!c) return 0;
+    if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return 0;
+    return c->tx_len ? 0 : P9_MAX_MSIZE;
+}
+
+int tcp_stream_write(tcp_stream_t *s, const uint8_t *buf, uint32_t len) {
+    tcp_conn_t *c = stream_conn(s);
+    if (!c || !buf) return -1;
+    /* Writing into a handshake is not an error worth failing a caller for,
+     * but there is nowhere to put the bytes yet: report zero taken, which is
+     * the same thing a full buffer reports and the same loop handles it. */
+    if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) {
+        return (c->state == TCP_SYN_SENT) ? 0 : -1;
+    }
+    if (len == 0) return 0;
+    if (c->tx_len != 0) return 0;          /* still draining -- yield and retry */
+
+    uint32_t n = (len < P9_MAX_MSIZE) ? len : P9_MAX_MSIZE;
+    c->tx_seq = c->snd_nxt;
+    memcpy(c->tx, buf, n);
+    /* The bytes and the sequence number must be visible before the length
+     * that publishes them, or the pump on another hart can transmit a buffer
+     * it can see the size of and not yet the contents of. */
+    __asm__ __volatile__("fence w, w" ::: "memory");
+    c->tx_len = n;
+    return (int)n;
+}
+
+bool tcp_stream_peer_closed(tcp_stream_t *s) {
+    tcp_conn_t *c = stream_conn(s);
+    if (!c) return true;
+    return c->state == TCP_CLOSE_WAIT || c->state == TCP_LAST_ACK ||
+           c->state == TCP_CLOSING || c->state == TCP_TIME_WAIT;
+}
+
+void tcp_stream_close(tcp_stream_t *s) {
+    tcp_conn_t *c = stream_conn(s);
+    if (c) {
+        if (c->state == TCP_ESTABLISHED) {
+            send_fin(c);
+            c->state = TCP_FIN_WAIT_1;
+        } else if (c->state == TCP_CLOSE_WAIT) {
+            send_fin(c);
+            c->state = TCP_LAST_ACK;
+        } else {
+            conn_abort(c);
+        }
+    }
+    /* Released either way: a handle whose connection is already gone is
+     * exactly the case a caller cannot distinguish, and leaving it "open"
+     * would make close() something that has to be called twice. */
+    if (s) s->open = false;
 }
 
 void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
@@ -760,12 +944,16 @@ void tcp_service(void) {
         /* Service 9P only when the send buffer is empty, which is what lets
          * link_send_frame() be non-blocking: the reply always has somewhere
          * to go. */
-        if (c->state == TCP_ESTABLISHED && c->tx_len == 0 && !c->is_client) {
+        if (c->state == TCP_ESTABLISHED && c->tx_len == 0 &&
+            !c->is_client && !c->is_stream) {
             p9_link_service(&c->link);
         }
 
-        /* A peer that has closed and whose reply has drained gets our FIN. */
-        if (c->state == TCP_CLOSE_WAIT && c->tx_len == 0 && !c->fin_sent && !c->is_client) {
+        /* A peer that has closed and whose reply has drained gets our FIN.
+         * Not for a stream: half-close is legitimate there, and the owner
+         * decides when the conversation is over. */
+        if (c->state == TCP_CLOSE_WAIT && c->tx_len == 0 && !c->fin_sent &&
+            !c->is_client && !c->is_stream) {
             send_fin(c);
             c->state = TCP_LAST_ACK;
         }
@@ -820,8 +1008,9 @@ void tcp_conn_str(uint32_t index, char *out, uint32_t max) {
     out[0] = '\0';
     if (index >= TCP_MAX_CONNS || !g_conns[index].in_use) return;
     const tcp_conn_t *c = &g_conns[index];
-    ksnprintf(out, max, "%u.%u.%u.%u:%u -> :%u %s rx %lu tx %lu\n",
+    ksnprintf(out, max, "%u.%u.%u.%u:%u -> :%u %s%s rx %lu tx %lu\n",
               c->peer_ip[0], c->peer_ip[1], c->peer_ip[2], c->peer_ip[3],
               c->peer_port, c->local_port, state_name(c->state),
+              c->is_stream ? " stream" : "",
               (unsigned long)c->rx_len, (unsigned long)c->tx_len);
 }

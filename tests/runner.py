@@ -3922,6 +3922,122 @@ def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str
         arch_img.unlink(missing_ok=True)
 
 
+def test_tcp_stream(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q0, plan/phase26_mqtt_and_environment_sensors.md: a TCP connection
+    carrying bytes rather than 9P frames.
+
+    Until Q0 the only thing that could speak over a connection was 9P, because
+    the framing assumption lived in link_poll()/link_recv_frame() -- so an
+    MQTT client (Q1) needed a second *view* of a connection, not a second
+    transport. This proves the view: 64 KB out and 64 KB back, in order, byte
+    for byte, through a real socket on the host.
+
+    **The peer is an ordinary host echo server, not a packet-level peer.**
+    tests/netpeer.py exists for what a socket cannot do (a RST mid-stream, a
+    lost segment) and test_tcp_under_impairment already uses it for that. What
+    is under test here is the opposite: that a long, boring, correct
+    conversation stays correct, which a real TCP stack on the other end is the
+    honest way to check. QEMU's slirp puts the host at 10.0.2.2, so the guest
+    dials a listener on the host's loopback with no forwarding rule needed.
+
+    The pattern is position-dependent (see echotest_byte() in kernel/shell.c),
+    so a run of bytes that is duplicated, dropped or reordered fails the
+    comparison -- not only a corrupted one. The guest does the comparing, and
+    reports the first offset that disagreed.
+    """
+    import threading
+
+    name = "TCP Byte Stream: 64 KB Round Trip Through A Host Echo Server"
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    srv.settimeout(30.0)
+
+    seen = {"bytes": 0, "eof": False, "error": None}
+
+    def echo() -> None:
+        """Echoes until the peer closes. A graceful FIN from the guest shows up
+        here as a clean EOF; a reset shows up as ECONNRESET, which is the
+        difference tcp_stream_close() is asserted on below."""
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(30.0)
+            with conn:
+                while True:
+                    b = conn.recv(4096)
+                    if not b:
+                        seen["eof"] = True
+                        break
+                    seen["bytes"] += len(b)
+                    conn.sendall(b)
+        except Exception as exc:  # noqa: BLE001 -- reported, not raised, from a thread
+            seen["error"] = repr(exc)
+
+    thread = threading.Thread(target=echo, daemon=True)
+    thread.start()
+
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 10.0.2.15/24 with 10.0.2.2 as the gateway is slirp's own layout; the
+        # gateway address is also the host, which is what makes the echo
+        # server reachable without a hostfwd rule.
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        ok, log = session.send_and_expect(
+            f"net echotest 10.0.2.2 {port} 65536\n",
+            r"echotest (ok,|failed|MISMATCH)", timeout=45.0)
+        if not ok:
+            return (name, False,
+                    f"no verdict from `net echotest` in 45 s -- the stream stalled "
+                    f"(host saw {seen['bytes']} bytes):\n{log[-700:]}")
+        if "MISMATCH" in log:
+            return (name, False, f"the echoed bytes are not the bytes sent:\n{log[-500:]}")
+        if "echotest failed" in log:
+            return (name, False, f"the stream did not complete:\n{log[-500:]}")
+
+        # The guest says it round-tripped 64 KB; the host has to agree, or the
+        # guest compared something it generated against itself.
+        thread.join(timeout=10.0)
+        if seen["bytes"] != 65536:
+            return (name, False,
+                    f"the guest reported success but the host echoed {seen['bytes']} "
+                    f"bytes, not 65536 (thread error: {seen['error']})")
+        if not seen["eof"]:
+            return (name, False,
+                    f"the connection did not close gracefully -- the host never saw EOF "
+                    f"(error: {seen['error']}). tcp_stream_close() must send a FIN, not a reset.")
+
+        # /proc/net has to name it as a stream, which is what distinguishes a
+        # connection the 9P server must never be offered from one it serves.
+        ok, log = session.send_and_expect("net\n", r"arp cache", timeout=8.0)
+        if not ok:
+            return (name, False, f"`net` did not answer after the transfer: {log[-400:]}")
+        if "stream" not in log:
+            return (name, False,
+                    f"the connection is not reported as a stream, so a p9_link_t face "
+                    f"may have been installed on it:\n{log[-600:]}")
+
+        return (name, True, "64 KB echoed byte-for-byte, closed with a FIN, reported as a stream")
+    finally:
+        session.close()
+        srv.close()
+
+
 def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R3, plan/phase19_ip_stack_and_ethernet.md: the TCP state machine, driven
     by a client with no stack under it.
@@ -5951,6 +6067,7 @@ def main() -> int:
         _run_single(test_ntp_server(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ntp_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_tcp_stream(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -5988,6 +6105,7 @@ def main() -> int:
         _run_single(test_ntp_server(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ntp_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_tcp_stream(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
