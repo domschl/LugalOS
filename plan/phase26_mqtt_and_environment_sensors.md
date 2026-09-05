@@ -677,6 +677,20 @@ where we chose the moment.
   (a bit-banged transfer competing with something that must not be delayed).
   Now cheaper to fix than it was: phases 22/23 shipped, and pinning `mqttd`
   to the second core is available if it happens.
+
+  *2026-09-05: this appeared, and it was not this.* Three `sensor` reads in
+  eight failed once the radio was up — exactly the symptom described above.
+  It was a **consequence of a wedged radio**, not contention with a working
+  one: the CYW43's supervisor polled RSSI over the bus without taking the bus
+  lock, which stopped the PIO state machine underneath `netsrv` mid-transfer
+  and desynchronised the gSPI stream; the driver then spun on second-long
+  ioctl timeouts, and *that* starved the `i2c` task inside its own bounded
+  register polls. With the lock taken, the same board reads 8/8 idle, 10/10
+  under a 400-packet ping flood, and 12/12 through a five-minute soak.
+  **The measurement that separates the two hypotheses is a ping flood against
+  a healthy radio.** Worth remembering: the wrong conclusion here was both
+  plausible and written down in advance, which is what would have made it
+  convincing.
 * **The 24-hour soak fails at hour 19.** Looks like: a reconnect loop, a
   wedged parser, or a heap that crept. This is the risk the soak exists to
   find, and the counters in `/proc/mqtt` are there so the answer is a number
