@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: planned, 2026-09-05.** Not started. This is the first of three
+**Status: in progress, 2026-09-05. E0 done; E1 next.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -43,7 +43,7 @@ Waveshare ESP32-P4-NANO. What matters here, and what does not:
 | SPI flash (XIP through a two-level cache) | **27** (E6) |
 | UART, USB Serial/JTAG, GPIO, I2C | **27** |
 | IP101GRI Ethernet PHY on RMII (MDIO GPIO52, MDC GPIO31, PHY reset GPIO51) | 28 |
-| ESP32-C6-MINI Wi-Fi 6 co-processor, **SDIO only** | 29 at the earliest, possibly never |
+| ESP32-C6-MINI-1-N4 Wi-Fi 6 co-processor, **SDIO only** (C6 IO18–23 ↔ P4 GPIO14–19; reset on GPIO54) | 29 at the earliest, possibly never |
 | MIPI CSI/DSI, H264, ISP, PPA, 2D-DMA, audio | not planned |
 | LP core (RV32 @40 MHz), 32 KB LP SRAM | not planned |
 
@@ -63,6 +63,12 @@ the transport is a genuine step up in difficulty from gSPI and from
 `drivers/spisd_rp2350.c`'s SPI-mode SD. It is out of scope here and stays out
 until the board has earned it.
 
+*(2026-09-05, E0 §7: confirmed against the schematic rather than the vendor
+wiki. C6 `IO18`–`IO23` — that chip's fixed SDIO-slave pins — go to P4 nets
+GPIO14–GPIO19 with 51 kΩ pull-ups, and there is no SPI alternative routed. The
+P4 can also hard-reset the C6 over GPIO54, which is what an ESP-Hosted
+bring-up needs.)*
+
 ## 2. What ports for free, and why
 
 The honest good news, established by reading rather than hoping:
@@ -77,10 +83,12 @@ The honest good news, established by reading rather than hoping:
   `riscv32-esp-elf`, no IDF toolchain, no new install. IDF enters this tree
   only as *reference source* and, much later, if the C6 firmware ever gets
   built.
-* **`mtime` is standard.** The datasheet says "Compliant with RISC-V Core
-  Local Interrupt (CLINT)". `kernel/ticker.c`'s RP2350 path is a special case
-  built on SIO's non-standard mtime block at `SIO_BASE + 0x1a4`; the P4 gets
-  the *ordinary* one, which makes the P4 path the simpler of the two.
+* **`mtime` is a real memory-mapped CLINT**, at `0x20000000` with the
+  standard `mtimecmp`/`mtime` register set (E0 §2) — against RP2350's SIO
+  block at `SIO_BASE + 0x1a4`. *Half-true as originally written, and corrected
+  2026-09-05: the counter is ordinary and slightly better than RP2350's (it
+  has an atomic-read sampling mode), but its **interrupt** is not — it arrives
+  through the CLIC as interrupt 7, so it is not free of §3.4's work.*
 * **PMP budget roughly quadruples.** "Up to 32 PMP regions and 16 PMA
   regions", against RP2350's 8 — of which `arch/riscv/common/pmp_probe.c`
   already records that entries 8/9/10 ship preconfigured (`pmpcfg2 =
@@ -131,6 +139,11 @@ phase's registers are not in any document we currently have.
 E0 fetches the TRM. Until it is on disk, IDF's `components/soc/esp32p4/register/`
 is the *secondary* source, and where the two disagree the TRM wins.
 
+*(2026-09-05: done. `esp32-p4_technical_reference_manual_en.pdf`, 23.5 MB, is
+in `~/gith/esp/datasheet/` beside the datasheet. It is marked **PRELIMINARY**,
+so the ordering above still stands and IDF stays the second opinion rather
+than the first. One correction it already forced is recorded in §3.4.)*
+
 ### 3.3 Chip revision is not a detail here
 
 IDF carries two register sets — `components/soc/esp32p4/register/hw_ver1/`
@@ -144,6 +157,12 @@ to continue on a revision it was not built for rather than running on
 plausible-looking wrong registers. This is the `pps_storm_rate` lesson in a
 new place: a measurement that can only ever say one thing is worse than none.
 
+*(2026-09-05, E0 §5: the board in hand is **v1.3**, so this hazard is live
+rather than hypothetical. It takes the `hw_ver1` register set, the
+**non-standard** CLIC — threshold in a memory-mapped register, `mintstatus` at
+`0x346`, no `mintthresh` — and `rv32imafc` without Zb. E3 is written against
+that variant.)*
+
 ### 3.4 The interrupt controller
 
 CLIC, with `mtvec` mode 3, a jump table at `MTVT` (CSR 0x307), 32 external
@@ -152,12 +171,31 @@ lines at offset 16, and a priority threshold rather than a simple enable mask
 Hazard3-specific paths behind `#if defined(CONFIG_BOARD_RP2350)`; the P4 gets
 a peer, not a rewrite.
 
-Worth trying first, though: the datasheet claims CLINT compliance *as well*.
+~~Worth trying first, though: the datasheet claims CLINT compliance *as well*.
 If plain direct-mode `mtvec` with a timer interrupt works, E3 can land before
 E4 and the tick is available while the interrupt controller is still being
-understood. That ordering is cheap to attempt and expensive to skip.
+understood.~~
 
-### 3.5 U-mode: the one genuine go/no-go
+***2026-09-05, E0 §8 — this shortcut does not exist.*** The TRM's `mtvec`
+description is unambiguous: *"MODE ... Only CLIC mode 0x3 is available.
+(RO)"*. The field cannot be written to anything else, so there is no
+direct-mode or vectored-CLINT `mtvec` on this core. And the timer interrupt is
+itself a CLIC interrupt — pending in `clicintip[7]`, enabled by
+`clicintie[7]` — so it does not arrive at all until the CLIC is up.
+
+The interrupt controller therefore comes **before** the tick, not after: E3
+and E4 are swapped in §4. The datasheet's "Compliant with CLINT" refers to
+the memory-mapped timer and software-interrupt block (E0 §2), not to a
+`mtvec` mode. A reasonable inference from a datasheet line, wrong on the
+silicon, caught by reading the TRM before writing code — which is the whole
+argument for E0 existing.
+
+### 3.5 U-mode: the one genuine go/no-go — **passed, 2026-09-05**
+
+*(E0 §1: `misa` reads `U = 1` ("User mode implemented"), `S = 0` ("Supervisor
+mode implemented"). M+U with PMP and no S-mode — the RP2350 shape exactly, so
+`CONFIG_NOMMU=1 CONFIG_MODE_M=1` is right. The paragraphs below are kept as
+written because the reasoning is what made this the first question asked.)*
 
 **Everything phase 12 built assumes M-mode plus U-mode.** All seven drivers,
 `arch/riscv/common/umode.c`, `mem_domain.c`, the per-task PMP grants that
@@ -171,7 +209,14 @@ would change the phase from "port" to "do not port". E0 confirms it from the
 TRM; E5 proves it on silicon by taking a deliberate fault.
 
 If U-mode turns out to be absent, phase 27 stops at E4 and the whole P4 line
-gets re-argued from there.
+gets re-argued from there. *(It is not absent. E5 still has to prove it on
+silicon — a CSR bit that says a mode exists is not the same as a task running
+in it — but the phase is not at risk.)*
+
+One rider from the TRM, recorded here because it will look like a bug
+otherwise: the core is compatible with **privileged spec version 1.10**, not
+1.11 or 1.12. Read CSR layouts from the TRM, never from current
+documentation.
 
 ### 3.6 Flash, cache, and the write-while-executing problem
 
@@ -200,23 +245,203 @@ each ends with something observable on real hardware. There is no QEMU here
 
 ### E0 — Documents, board facts, and the go/no-go
 
-Before a line of code. Fetch the **ESP32-P4 Technical Reference Manual** to
-`~/gith/esp/datasheet/`, alongside the datasheet already there. Read the
-High-Performance CPU chapter and answer, in writing, in this document:
+**DONE, 2026-09-05.** The TRM is at
+`~/gith/esp/datasheet/esp32-p4_technical_reference_manual_en.pdf` (23.5 MB,
+marked PRELIMINARY), beside the datasheet. Answers below; line references are
+into the extracted text of that PDF, section numbers into the TRM itself.
 
-1. **Does the P4 implement U-mode?** (§3.5. If no, the phase stops.)
-2. What is the CLINT base address, and does `mtime`/`mtimecmp` behave as the
-   privileged spec says?
-3. What does the ROM leave configured — clock tree, cache, MSPI — at the
-   moment it hands over?
-4. What is the direct-boot mechanism on this part, and its magic?
+**Sources used, in order of authority:** the TRM; the connected board, read
+with `esptool`/`espefuse` v5.4.0 (via `uv tool run`, nothing installed
+system-wide, read-only commands only); the Waveshare schematic
+(`ESP32-P4-NANO-schematic.pdf`, rendered and read as an image — its PDF text
+layer carries the labels but not the connectivity); and IDF headers last,
+only where the TRM is silent.
 
-Also: read the chip revision off the board and record it. Check the Waveshare
-schematic for whether anything besides SDIO is routed between the P4 and the
-C6-MINI (it changes phase 29's cost, and it is a five-minute answer now
-versus a discovery later).
+#### 1. Does the P4 implement U-mode? — **YES. The phase proceeds.**
 
-Deliverable: this section, filled in, with page references. No code.
+`misa` is explicit (TRM §2, register description): **"U — User mode
+implemented = 1. (RO)"**, and beside it **"S — Supervisor mode implemented =
+0. (RO)"**. The CPU feature list adds "User (U) privilege mode execution" and
+"Standard physical memory protection (PMP) configurable up to 32 regions and
+custom attributes (PMA) configurable up to 16 regions".
+
+So the P4 is **M+U with PMP and no S-mode** — precisely the RP2350 shape, and
+`CONFIG_NOMMU=1 CONFIG_MODE_M=1` is the right configuration. Everything phase
+12 built has a home here.
+
+Two riders, neither a problem:
+
+* The core is "Compatible with RISC-V Privileged Architecture, **Version
+  1.10**" — an older privileged spec than the 1.11/1.12 most current
+  documentation assumes. CSR *details* should be read from the TRM, not from
+  a modern spec, and this is a standing hazard for the whole phase.
+* `mintstatus.UIL` is "Hardwired to 0x0 as **user mode interrupts are not
+  supported**". We do not want U-mode interrupt delegation, so this costs
+  nothing — but it is worth knowing before someone tries.
+
+#### 2. CLINT, `mtime`, and the interrupt controller
+
+The core-local blocks are memory-mapped, not at the usual CLINT address
+(TRM §2.8.3, Table 2.8-2):
+
+| Block | Range |
+|---|---|
+| CLINT (self) | `0x20000000` – `0x2000FFFF` |
+| CLINT (other core) | `0x20010000` – `0x2001FFFF` |
+| CLIC (self) | `0x20800000` – `0x2080FFFF` |
+| CLIC (other core) | `0x20810000` – `0x2081FFFF` |
+
+*(Note for anyone reading IDF instead of the TRM: `soc.h` labels
+`0x20000000`–`0x28000000` as `SOC_DEBUG_LOW/HIGH`, "Debug region, not used by
+software". That comment is misleading — this is the core-local register
+window.)*
+
+Timer registers, offsets from the CLINT base (TRM §2.9.3.5, registers
+2.101–2.107):
+
+| Register | Offset |
+|---|---|
+| `mtimecmplo` / `mtimecmphi` | `0x4000` / `0x4004` |
+| `mtimeloadlo` / `mtimeloadhi` | `0x4008` / `0x400C` |
+| `mtimectl` | `0x4010` |
+| `mtimelo` / `mtimehi` | `0xBFF8` / `0xBFFC` |
+
+Three things that shape `kernel/ticker.c`'s P4 arm:
+
+* **The counter does not run until told to.** `mtimectl.MTIME_EN` enables it,
+  and *"This bit is implemented only in Core 0"* — Core 1 can reach Core 0's
+  CLINT to start or pause it, but its own `mtimectl` does nothing. This is
+  structurally the same surprise RP2350 had, which `ticker.c` already
+  documents ("mtime does not run on its own"), so the shape is familiar.
+* **`mtimectl.MTIME_SAM` gives an atomic 64-bit read.** It configures
+  sampling so that reading one half latches the other. That is strictly
+  better than `ticker.c`'s existing `do { hi; lo; } while (hi != hi)` loop,
+  and the P4 arm should use it rather than copying the RP2350 idiom.
+* **The timer interrupt is a CLIC interrupt.** Pending state is
+  `clicintip[7]`, enable is `clicintie[7]`; the software interrupt is
+  interrupt 3. Each CLIC unit carries 32 external interrupts plus these 2.
+
+#### 3. What the ROM leaves configured — **partly unanswered, by design**
+
+The TRM documents the boot *mode* selection but not what the ROM's own code
+leaves behind. Two things are settled:
+
+* **Boot mode is strapped on GPIO35/36/37/38** (TRM §12.2.2, Table 12.2-2).
+  SPI Boot is the default; Joint Download Boot covers USB-Serial-JTAG, UART,
+  SPI-slave and USB-OTG download.
+* **The ROM's second-stage bootloader offset is `0x2000`** on this part
+  (IDF `components/esp_rom/esp32p4/esp_rom_caps.h`,
+  `ESP_ROM_BOOTLOADER_OFFSET_FLASH`) — not `0x0` as on the C3.
+
+The rest — clock tree, cache, MSPI state at hand-over — is not in the TRM and
+should not be guessed. **It is E1's experiment, which is what E1 is for.**
+Recording the question as still open is the honest outcome here; inventing an
+answer from IDF's bootloader source would be inference dressed as fact.
+
+#### 4. Direct boot — **available on this chip, mechanism still to confirm**
+
+`espefuse summary` on the attached board reports `DIS_DIRECT_BOOT = False`,
+so direct boot is *enabled*. The magic value and entry convention are not in
+the TRM and are not in esptool's source either; E1 establishes them
+empirically, with the `0x2000` image-format route as the fallback.
+
+The rest of the security fuse block is virgin, which matters more than it
+looks: `SECURE_BOOT_EN = False`, `SPI_BOOT_CRYPT_CNT = Disable`,
+`DIS_DOWNLOAD_MODE = False`, `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE = False`,
+`DIS_PAD_JTAG = False`. **Download mode cannot be locked out by anything we
+flash, so the board is not brickable by a bad image** — strapping into Joint
+Download Boot always recovers it. Nothing in this phase should burn a fuse.
+
+#### 5. The board in hand
+
+Read from the attached board, 2026-09-05:
+
+* **ESP32-P4 revision v1.3**, dual core + LP core, 400 MHz, 40 MHz crystal.
+  MAC `80:f1:b2:d2:f0:53`.
+* **Flash: 16 MB**, GD25Q128ESIG (`manufacturer c8, device 4018`), quad-IO.
+* Connected over the **P4's own USB-Serial-JTAG** (`/dev/cu.usbmodem5B610420061`).
+  The board's *other* USB socket goes to a CH343P USB-UART bridge and was not
+  enumerated; both exist and they are not the same port.
+
+**v1.3 is the finding that changes code.** §3.3 warned that revision decides
+the programming model, and this die lands on the older side of the split:
+
+* **Non-standard CLIC.** IDF gates on `CONFIG_ESP32P4_SELECTS_REV_LESS_V3`,
+  and for revisions below v3 records: *"The ESP32-P4 implements a non-standard
+  version of the CLIC: the interrupt threshold is configured via a
+  memory-mapped register instead of a CSR; the `mintstatus` CSR is at
+  **0x346** instead of 0xFB1 as per the official specification"*
+  (`components/soc/esp32p4/include/soc/interrupt_reg.h`). There is no
+  `mintthresh`. E3 must be written against the non-standard variant.
+* **Register set `hw_ver1`**, not `hw_ver3`
+  (`components/soc/esp32p4/register/`).
+* **`-march=rv32imafc`**, not `rv32imafcb` — no Zb on this die. We compile
+  `rv32imac_zicsr_zifencei` (a subset of both), so this costs nothing, but it
+  is why we should not reach for bit-manipulation intrinsics.
+
+The kernel reads and logs the revision at boot and refuses an unexpected one
+(§3.3). It is now known which value that check must accept.
+
+#### 6. The console, and a gift
+
+**P4 UART0 is GPIO37 (TX) / GPIO38 (RX)** — `U0TXD_GPIO_NUM 37`,
+`U0RXD_GPIO_NUM 38` in `components/soc/esp32p4/include/soc/uart_pins.h`, and
+the schematic wires exactly those two to the CH343P bridge (its TXD to
+GPIO38, its RXD to GPIO37).
+
+These are the ROM's *own* default UART pins. So **the ROM's boot messages
+come out of the CH343P port with nothing configured**, which hands E1 an
+instrument before E1 has written one — and, more importantly, tells us
+whether the CPU reached the ROM at all when our own code is silent. Plug in
+the second USB socket before starting E1.
+
+Note that GPIO37/38 are also two of the four boot-strapping pins. That is
+normal on this family and is not a conflict, but it is why the bridge's
+DTR/RTS lines matter.
+
+#### 7. The P4 ↔ C6-MINI interconnect — **SDIO, confirmed, with no SPI escape**
+
+From the schematic (rendered and read directly; the text layer does not carry
+connectivity). The part is an **ESP32-C6-MINI-1-N4**, and the wiring is:
+
+| C6-MINI pin | C6 signal | P4 net |
+|---|---|---|
+| 24 | IO18 | GPIO14 – GPIO19, one each |
+| 25–29 | IO19, IO20, IO21, IO22, IO23 | (all with 51 kΩ pull-ups to 3V3) |
+| 8 | EN / CHIP_PU | **GPIO54**, via 0 Ω R54 |
+| 5 | IO2 | **GPIO6**, via 0 Ω R52 |
+| 30, 31 | U0RXD, U0TXD | routed as named nets; destination not resolved |
+
+C6 `IO18`–`IO23` are that chip's fixed SDIO-slave pins, and the 51 kΩ
+pull-ups are the SDIO bus terminations. **So §1's "SDIO only" is confirmed for
+the data path** — there is no SPI alternative on this board, and any future
+Wi-Fi work needs a real SDIO host driver.
+
+Two findings worth having anyway: the P4 can **hard-reset the co-processor**
+over GPIO54, which is exactly what an ESP-Hosted bring-up needs and is not
+something to discover later; and GPIO6 reaches C6 IO2, which is free for a
+handshake. Whether the C6's UART lands on P4 pins (which would offer a slow
+but far simpler transport) is **still open** — the nets exist, the
+destination was not resolved, and it is worth five more minutes before any
+Wi-Fi work, not now.
+
+#### 8. What E0 changes in this plan
+
+Recorded here rather than silently edited, since the corrections are the
+point:
+
+1. **§3.4's shortcut is dead, and E3/E4 swap.** `mtvec.MODE` is **read-only
+   at `0x3`**: *"Only CLIC mode 0x3 is available. (RO)"*. There is no
+   direct-mode or vectored-CLINT `mtvec` on this core, and the timer
+   interrupt arrives through `clicintie[7]`. So the tick **cannot** land
+   before the interrupt controller does. The milestones below are reordered:
+   **E3 is now traps and CLIC, E4 is now time.**
+2. **§3.3's hazard is live, not hypothetical** — this die is v1.3 (§5).
+3. **§1's SDIO row is confirmed** and gains pin numbers (§7).
+4. **§3.5 is settled** and the go/no-go is passed (§1).
+
+No code was written. Everything above is reading, plus four read-only
+commands against the board.
 
 ### E1 — `tools/minimal_esp32p4.c`
 
@@ -253,24 +478,43 @@ easier every one of these milestones is to debug.
 Done when: a shell prompt over UART0, `ls /proc`, and `cat /proc/meminfo`
 reporting a plausible 768 KB.
 
-### E3 — Time
+### E3 — Traps and the CLIC
 
-`kernel/ticker.c` gains a P4 arm on the standard CLINT (§3.4). `time_init()`,
-the monotonic clock, `ticker_init(100)`, preemption, `sched_init()`, and the
-existing task tests.
+*(Was E4. E0 §8 established that this must come first: `mtvec.MODE` is
+read-only at CLIC mode, and the timer interrupt itself arrives as
+`clicintie[7]`, so there is no tick without an interrupt controller.)*
+
+CLIC setup at `0x20800000`, `mtvt`, and the P4 arm in
+`arch/riscv/common/trap.c` beside the existing Hazard3 one. Then
+`kernel/devirq.c` routing a real peripheral interrupt — UART RX is the
+natural first, since the console already wants it.
+
+**Written against the non-standard CLIC** (E0 §5): interrupt threshold in a
+memory-mapped register rather than a CSR, and `mintstatus` at `0x346`. The
+standard variant belongs to v3 silicon we do not have; if a v3 board ever
+arrives, this is the file that learns about it, behind the revision check
+§3.3 asks for.
+
+Done when: a UART RX interrupt reaches a handler; a deliberate illegal
+instruction produces the same diagnostic dump the RP2350 build produces.
+
+### E4 — Time
+
+*(Was E3.)*
+
+`kernel/ticker.c` gains a P4 arm on the CLINT at `0x20000000` (E0 §2).
+`time_init()`, the monotonic clock, `ticker_init(100)`, preemption,
+`sched_init()`, and the existing task tests.
+
+Three specifics from E0 §2, so they are not rediscovered at the bench:
+`mtimectl.MTIME_EN` must be set or the counter never moves, and only Core 0's
+copy of that bit does anything; the timer interrupt is CLIC interrupt 7; and
+`mtimectl.MTIME_SAM` gives an atomic 64-bit read, so the P4 arm should use it
+rather than copying the RP2350 path's re-read loop.
 
 Done when: `uspin.elf` is preempted, and the tick rate measured against a
 host stopwatch over ten minutes is within the same tolerance the RP2350 build
 holds.
-
-### E4 — Traps and device interrupts
-
-CLIC setup, `mtvt`, the P4 arm in `arch/riscv/common/trap.c`, and
-`kernel/devirq.c` routing a real peripheral interrupt (UART RX is the natural
-first one, since the console already wants it).
-
-Done when: a UART RX interrupt reaches a handler; a deliberate illegal
-instruction produces the same diagnostic dump the RP2350 build produces.
 
 ### E5 — PMP, U-mode, and the isolation model
 
