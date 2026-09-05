@@ -420,10 +420,12 @@ Wi-Fi work needs a real SDIO host driver.
 Two findings worth having anyway: the P4 can **hard-reset the co-processor**
 over GPIO54, which is exactly what an ESP-Hosted bring-up needs and is not
 something to discover later; and GPIO6 reaches C6 IO2, which is free for a
-handshake. Whether the C6's UART lands on P4 pins (which would offer a slow
-but far simpler transport) is **still open** — the nets exist, the
-destination was not resolved, and it is worth five more minutes before any
-Wi-Fi work, not now.
+handshake. Whether the C6's UART lands on P4 pins — which would have offered a slow but
+far simpler transport — is **now closed, and the answer is no**: `C6_U0RXD`
+and `C6_U0TXD` go to pin header **P2** (pins 19 and 20), alongside `C6_IO9`
+and the C6's USB pair, not to the P4. They are there to flash and talk to the
+co-processor from outside. So SDIO really is the only P4-to-C6 path, and any
+future Wi-Fi work needs a genuine SDIO host driver with no fallback.
 
 #### 8. What E0 changes in this plan
 
@@ -493,29 +495,55 @@ text, running from L2MEM at `0x4ff00000`.
   UART0 is also the first thing to suspect when esptool reports "serial
   noise".
 
-#### Three traps, each of which cost real time
+#### One real trap, one retraction, and the mistake underneath both
 
-1. **Do not reset the board over the native USB-Serial-JTAG port.** It works
-   -- the chip enters download mode and the ROM banner is readable -- and it
-   leaves UART0 in a state where our own transmissions come back corrupted.
-   Measured: a program writing `'A'` continuously produced a saturated stream
-   of `0x05` at 115200, and a sweep of 22 host baud rates from 9600 to
-   1152000 found **none** that decoded it. Entering download mode with the
-   BOOT+RESET buttons instead gives clean 115200 in both directions every
-   time. The mechanism is not established and does not need to be; the rule
-   is: **buttons, then load over UART0, and never touch the other socket.**
-2. **An unbounded RX drain will hang the board silently.** The program drains
-   the RX FIFO at startup to discard bytes the load protocol leaves behind.
-   Written as `while (uart_has_char()) uart_getc();` that is an infinite loop
-   whenever the UART is misconfigured and refilling with noise -- which is
-   exactly the state trap 1 produces. The board then prints nothing, echoes
-   nothing, and silently swallows esptool's sync frames, which is
-   indistinguishable from "our code never ran". Now bounded at 256 bytes.
-3. **A heartbeat that stops when observed is not an instrument.** The banner
-   is emitted while esptool still owns the serial port, so it is always lost;
-   a periodic "still alive" line was added to compensate. Gating it on "no
-   character received yet" made it useless, because merely *opening* the host
-   port puts a stray byte in the RX FIFO. It is unconditional now.
+**The mistake first, because it produced the other two.** Loading was done by
+ad-hoc scripts that took an *image* path, while only the build script ran
+`elf2image`. So from 16:55 onward every load re-delivered a **stale image**
+built before any of the afternoon's edits: the source was changed four times,
+rebuilt each time, and the board kept running the first binary. Symptoms —
+a program that echoed correctly but never printed, and that ignored changes
+which should plainly have made it print — were diagnosed twice, confidently,
+and both diagnoses were wrong. The timestamps settled it in seconds, and
+should have been the first thing checked rather than the last.
+
+`tools/p4run.py` now takes an **ELF** and regenerates the image every time, so
+there is no stale artifact left to load. That is the fix; the discipline
+("check what you actually flashed before theorising about why it misbehaves")
+is the lesson, and it is the same shape as phase 24's `pps_storm_rate`: a
+measurement that could only ever say one thing.
+
+**Retracted — the drain loop never hung anything.** An earlier version of this
+section reported that an unbounded `while (uart_has_char()) uart_getc();`
+wedged the board. It cannot have: no build containing that drain was ever
+loaded. The board was running the original drain-free program the whole time.
+The bound in `minimal_esp32p4.c` is kept anyway — an unbounded drain on a
+misconfigured UART *is* an infinite loop, and the cost of the bound is one
+comparison — but it is a precaution, not a fix for anything observed.
+
+**Unresolved — whether resetting over the native USB port corrupts UART0.**
+The evidence is genuinely mixed and this needs settling on Linux:
+
+* *For:* a freshly-built program writing `'A'` continuously, loaded after a
+  USB-Serial-JTAG reset, produced a saturated stream of `0x05` at 115200, and
+  a sweep of 22 host baud rates from 9600 to 1152000 decoded none of it.
+* *Against:* on that same path, minutes later, the echo test was byte-perfect.
+  A corrupted UART does not echo cleanly.
+
+The likelier explanation is now the spew program itself: it writes to the TX
+FIFO as fast as the CPU allows, gated only by a `TXFIFO_CNT` field this tree
+has not yet verified against hardware, so FIFO overrun is at least as good a
+suspect as the reset path. **Re-test on Linux with a fresh image before
+believing either story.** Until then the safe habit costs nothing: use the
+CH343P port for everything.
+
+**Stands — a heartbeat that stops when observed is not an instrument.** The
+banner is emitted while esptool still owns the port and is therefore always
+lost; a periodic "still alive" line compensates. Gating it on "no character
+received yet" made it useless, because merely *opening* the host port is
+enough to put a stray byte in the RX FIFO. Unconditional now. This one is
+solid: it is why the board looked dead for most of an afternoon while it was
+in fact echoing perfectly.
 
 #### The workflow, as it actually is
 
@@ -538,6 +566,71 @@ unattended test suite.
 Flash was **not** backed up: three attempts over both ports failed at 921600
 and at 460800 with sync errors. Nothing has written flash, so it has not
 mattered yet, but E6 must not begin until a backup exists.
+
+#### Continuing on Linux — start here
+
+The work moves to a Linux host, chiefly to get the board resettable from
+software. Everything needed is committed; nothing depends on the macOS
+machine.
+
+**Prerequisites.**
+
+* A RISC-V cross toolchain. `tools/build_minimal_esp32p4.sh` searches
+  `riscv64-elf-gcc`, `riscv-none-elf-gcc`, `riscv32-elf-gcc`,
+  `riscv64-unknown-elf-gcc`, `riscv32-unknown-elf-gcc`,
+  `riscv64-linux-gnu-gcc` — Debian/Ubuntu's `gcc-riscv64-unknown-elf` or
+  `gcc-riscv64-linux-gnu` is enough. It must build
+  `-march=rv32imac_zicsr_zifencei -mabi=ilp32`; nothing exotic.
+* `uv`. Both `tools/p4run.py` (via a PEP 723 shebang) and esptool run through
+  it, so there is no pip install and no system Python change.
+* Serial access: add yourself to `dialout` (or `uucp`) and re-login, or the
+  ports are unreadable and the failure looks like absent hardware.
+* **Both USB cables.** The CH343P bridge (`/dev/ttyUSB0`) is the one that
+  matters; the native USB-Serial-JTAG (`/dev/ttyACM0`) is currently a trap.
+
+**The first three commands, in order.**
+
+```
+tools/p4run.py --reset-test     # 1. can this host reset the board? THE question
+tools/build_minimal_esp32p4.sh  # 2. does it build here?
+tools/build_minimal_esp32p4.sh run   # 3. build, image, load, listen
+```
+
+**1 is the reason for the move.** On macOS no DTR/RTS sequence reset the
+board, which is almost certainly the built-in CH34x driver not carrying
+modem-control lines rather than the hardware — the circuit is there (U6,
+EMH4T2R: RTS to ESP_EN, DTR to GPIO35). If `--reset-test` prints
+`ROM banner: True` for any sequence, the buttons stop being necessary, E1's
+remaining work becomes a single command, and **E8 gets an unattended hardware
+suite**, which it cannot have otherwise. Record the answer here either way.
+
+**State of the board as it is handed over.** It is running the *first* build
+of `minimal_esp32p4.c` from RAM — it echoes, it prints nothing unprompted.
+Flash is untouched and still holds the Waveshare factory demo (an ESP-IDF app
+that fails an I2C probe and watchdogs every five seconds). A reset returns it
+to that demo; nothing this phase has done is persistent. `tools/p4run.py
+--probe` identifies what is running: `PROBE123\n\r` back means our program,
+silence means the factory app or download mode.
+
+**Three things to settle on Linux, in priority order.**
+
+1. **Software reset** (above). Everything else is easier if this works.
+2. **Finish E1's observation**: load the current build and capture the banner
+   plus the `misa`/`mtvec`/`mhartid`/`mstatus` dump. Expect `misa` bit 20 (U)
+   set and bit 18 (S) clear, and `mtvec` low bits `0b11`. Those are E0's
+   document-derived claims about U-mode and CLIC, checked against silicon —
+   the whole reason the dump is in the program.
+3. **Re-test the native-USB-reset question** with a freshly built image, and
+   either confirm or delete the unresolved trap above. If FIFO overrun is the
+   real cause, that also means `TXFIFO_CNT`'s bit position needs verifying on
+   hardware before E2 trusts it for the kernel's UART driver.
+
+**And a prerequisite that is still outstanding: back up the flash.** Three
+attempts failed with sync errors (921600 and 460800, both ports). Nothing has
+written flash so it has not mattered, but **E6 must not begin until
+`esptool read-flash 0 0x1000000` has produced a good 16 MB image** — the
+factory demo is not obtainable again once overwritten. Linux is likely to
+manage the sustained read that macOS would not.
 
 #### Remaining before E1 is done
 

@@ -38,21 +38,32 @@
 # where our own output comes back corrupted -- see the E1 notes in
 # plan/phase27_esp32p4_bringup.md. It cost most of an afternoon.
 #
-# Console: /dev/cu.usbserial-0001 (the CH343P, wired to UART0 on GPIO37/38)
-# at 115200 8N1 -- the ROM's own pins and baud, which is why this program does
-# not configure the UART at all.
+# Console: the CH343P bridge, wired to UART0 on GPIO37/38, at 115200 8N1 --
+# the ROM's own pins and baud, which is why this program does not configure the
+# UART at all. /dev/ttyUSB0 on Linux, /dev/cu.usbserial-* on macOS;
+# tools/p4run.py finds it.
 
 set -eu
 
 cd "$(dirname "$0")/.."
 OUT=build/esp32p4-minimal
-PORT="${LUGALOS_P4_PORT:-/dev/cu.usbserial-0001}"
 
 # The toolchain already installed for every other target in this tree. The P4
 # is RV32IMAFC (revision <v3 has no Zb; E0 §5), and we compile the IMAC subset
 # -- no float, no bit-manipulation, nothing the kernel would not also use.
-CC=$(command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv32-elf-gcc)
-OBJCOPY=$(command -v riscv64-elf-objcopy || command -v riscv-none-elf-objcopy)
+#
+# The search order matches cmake/toolchain-rp2350.cmake's, plus the names
+# Linux distributions actually ship, so this builds on either host.
+find_tool() {
+    for n in "$@"; do
+        if command -v "$n" >/dev/null 2>&1; then command -v "$n"; return 0; fi
+    done
+    echo "no RISC-V cross tool found (tried: $*)" >&2; exit 1
+}
+CC=$(find_tool riscv64-elf-gcc riscv-none-elf-gcc riscv32-elf-gcc \
+               riscv64-unknown-elf-gcc riscv32-unknown-elf-gcc riscv64-linux-gnu-gcc)
+OBJCOPY=$(find_tool riscv64-elf-objcopy riscv-none-elf-objcopy riscv32-elf-objcopy \
+                    riscv64-unknown-elf-objcopy riscv64-linux-gnu-objcopy)
 ARCH="-march=rv32imac_zicsr_zifencei -mabi=ilp32"
 
 mkdir -p "$OUT"
@@ -66,7 +77,7 @@ $CC $ARCH -mcmodel=medany -ffreestanding -nostdlib -fno-builtin \
 
 $OBJCOPY -O binary "$OUT/minimal_esp32p4.elf" "$OUT/minimal_esp32p4.bin"
 echo "built $OUT/minimal_esp32p4.elf"
-riscv64-elf-size "$OUT/minimal_esp32p4.elf" 2>/dev/null || true
+"${CC%gcc}size" "$OUT/minimal_esp32p4.elf" 2>/dev/null || true
 
 [ "${1:-}" = "run" ] || exit 0
 
@@ -76,12 +87,7 @@ riscv64-elf-size "$OUT/minimal_esp32p4.elf" 2>/dev/null || true
 # there is no reason to have two.
 esp() { uv tool run --from esptool "$@"; }
 
-esp esptool --chip esp32p4 elf2image \
-    -o "$OUT/minimal_esp32p4.img" "$OUT/minimal_esp32p4.elf"
-
-echo
-echo ">>> Put the board in download mode now:"
-echo ">>>   hold BOOT, press and release RESET, release BOOT"
-echo
-esp esptool --chip esp32p4 --port "$PORT" --before no-reset --after no-reset \
-    --no-stub load-ram "$OUT/minimal_esp32p4.img"
+# tools/p4run.py owns the loading: it autodetects the port on both Linux and
+# macOS, tries an automatic reset before asking for buttons, and listens to the
+# console afterwards. Pass LUGALOS_P4_PORT to override the port.
+exec tools/p4run.py "$OUT/minimal_esp32p4.elf" --listen-secs 10
