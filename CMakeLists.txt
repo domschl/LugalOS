@@ -534,6 +534,14 @@ set(SOURCES
     # where the off-by-one lives; the interrupt half compiles away on anything
     # that is not RP2350.
     drivers/edgecap.c
+    # Q4 (plan/phase26_mqtt_and_environment_sensors.md): the BMP280/BME280
+    # environment sensors. Built for every target because the datasheet's
+    # fixed-point compensation is the fiddly part and `sensor selftest`
+    # exercises it with no sensor present; the bus access underneath goes
+    # through i2c_xfer(), which is already a stub where there is no
+    # controller. Deliberately NOT in the -fno-jump-tables list below: it has
+    # no UATTR code, since it rides the shared i2c task rather than being one.
+    drivers/bme280.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c

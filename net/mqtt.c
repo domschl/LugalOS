@@ -6,6 +6,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 /* See net/include/net/mqtt.h for what this speaks and what it deliberately
@@ -90,7 +91,8 @@ static struct {
     char           broker_str[16];
     uint16_t       keepalive_s;
 
-    uint8_t        rx[MQTT_RX_MAX];
+    uint8_t       *rx;             /* MQTT_RX_MAX, from ensure_bufs() */
+    uint8_t       *tx;             /* MQTT_TX_MAX, immediately after it */
     uint32_t       rx_len;
     uint32_t       skip;           /* bytes of an oversize packet still to discard */
 
@@ -103,7 +105,23 @@ static struct {
     bool           connected_once;
 } g;
 
-static uint8_t g_txbuf[MQTT_TX_MAX];
+/* One page, taken the first time anything actually dials a broker and never
+ * freed -- net/tcp.c's ensure_bufs() rule, unchanged and for the same reason:
+ * a board that never connects to a broker pays nothing, and the chess and
+ * clock personas never do. Keeping these as statics cost every persona 1 KB
+ * of the RP2350's 512 KB whether or not it had a broker, which `sizecheck`
+ * duly refused. */
+static int ensure_bufs(void) {
+    if (g.rx) return 0;
+    uint8_t *page = (uint8_t *)palloc_pages(1);
+    if (!page) {
+        printk("[MQTT] No memory for the packet buffers.\n");
+        return -1;
+    }
+    g.rx = page;
+    g.tx = page + MQTT_RX_MAX;
+    return 0;
+}
 
 mqtt_state_t mqtt_state(void) { return g.state; }
 const mqtt_counters_t *mqtt_counters(void) { return &g.ctr; }
@@ -188,7 +206,7 @@ static uint32_t str_field_len(const char *s) {
 static bool have(const char *s) { return s && s[0]; }
 
 /* Builds a packet's fixed header ahead of a body already at
- * g_txbuf[5..], and returns the offset the complete packet starts at.
+ * g.tx[5..], and returns the offset the complete packet starts at.
  *
  * Building the body first and the header second is what avoids a second
  * buffer: the header's own length depends on the body's length through the
@@ -198,8 +216,8 @@ static uint32_t frame_packet(uint8_t type_and_flags, uint32_t body_len, uint32_t
     uint8_t vi[4];
     uint32_t vn = mqtt_varint_encode(body_len, vi);
     uint32_t start = 5u - (1u + vn);
-    g_txbuf[start] = type_and_flags;
-    memcpy(g_txbuf + start + 1u, vi, vn);
+    g.tx[start] = type_and_flags;
+    memcpy(g.tx + start + 1u, vi, vn);
     *out_len = 1u + vn + body_len;
     return start;
 }
@@ -369,6 +387,7 @@ int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms) {
     if (!net_configured()) return MQTT_ERR_NO_NET;
 
     if (g.state != MQTT_CLOSED) mqtt_disconnect();
+    if (ensure_bufs() != 0) return MQTT_ERR_NO_NET;
 
     g.cfg = *cfg;
     g.keepalive_s = cfg->keepalive_s ? cfg->keepalive_s : (uint16_t)MQTT_DEFAULT_KEEPALIVE;
@@ -420,25 +439,25 @@ int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms) {
     if (flags & CF_WILL) body += str_field_len(cfg->will_topic) + str_field_len(cfg->will_payload);
     if (flags & CF_USERNAME) body += str_field_len(cfg->username);
     if (flags & CF_PASSWORD) body += str_field_len(cfg->password);
-    if (5u + body > sizeof(g_txbuf)) { drop_connection(); return MQTT_ERR_TOOBIG; }
+    if (5u + body > MQTT_TX_MAX) { drop_connection(); return MQTT_ERR_TOOBIG; }
 
     uint32_t o = 5u;
-    o = put_str(g_txbuf, o, "MQTT");
-    g_txbuf[o++] = MQTT_PROTOCOL_LEVEL;
-    g_txbuf[o++] = flags;
-    g_txbuf[o++] = (uint8_t)(g.keepalive_s >> 8);
-    g_txbuf[o++] = (uint8_t)g.keepalive_s;
-    o = put_str(g_txbuf, o, g.client_id);
+    o = put_str(g.tx, o, "MQTT");
+    g.tx[o++] = MQTT_PROTOCOL_LEVEL;
+    g.tx[o++] = flags;
+    g.tx[o++] = (uint8_t)(g.keepalive_s >> 8);
+    g.tx[o++] = (uint8_t)g.keepalive_s;
+    o = put_str(g.tx, o, g.client_id);
     if (flags & CF_WILL) {
-        o = put_str(g_txbuf, o, cfg->will_topic);
-        o = put_str(g_txbuf, o, cfg->will_payload);
+        o = put_str(g.tx, o, cfg->will_topic);
+        o = put_str(g.tx, o, cfg->will_payload);
     }
-    if (flags & CF_USERNAME) o = put_str(g_txbuf, o, cfg->username);
-    if (flags & CF_PASSWORD) o = put_str(g_txbuf, o, cfg->password);
+    if (flags & CF_USERNAME) o = put_str(g.tx, o, cfg->username);
+    if (flags & CF_PASSWORD) o = put_str(g.tx, o, cfg->password);
 
     uint32_t pkt_len = 0;
     uint32_t start = frame_packet(MQTT_CONNECT, o - 5u, &pkt_len);
-    int rc = write_all(g_txbuf + start, pkt_len, 5000u);
+    int rc = write_all(g.tx + start, pkt_len, 5000u);
     if (rc != 0) { drop_connection(); return rc; }
 
     /* --- CONNACK --- */
@@ -469,16 +488,16 @@ int mqtt_publish(const char *topic, const void *payload, uint32_t len, bool reta
     if (strlen(topic) > MQTT_TOPIC_MAX) return MQTT_ERR_TOOBIG;
 
     uint32_t body = str_field_len(topic) + len;   /* QoS 0: no packet id */
-    if (5u + body > sizeof(g_txbuf)) return MQTT_ERR_TOOBIG;
+    if (5u + body > MQTT_TX_MAX) return MQTT_ERR_TOOBIG;
 
-    uint32_t o = put_str(g_txbuf, 5u, topic);
-    if (len) memcpy(g_txbuf + o, payload, len);
+    uint32_t o = put_str(g.tx, 5u, topic);
+    if (len) memcpy(g.tx + o, payload, len);
     o += len;
 
     uint32_t pkt_len = 0;
     uint32_t start = frame_packet((uint8_t)(MQTT_PUBLISH | (retain ? 0x01u : 0x00u)),
                                   o - 5u, &pkt_len);
-    int rc = write_all(g_txbuf + start, pkt_len, 5000u);
+    int rc = write_all(g.tx + start, pkt_len, 5000u);
     if (rc != 0) {
         if (rc == MQTT_ERR_TCP) drop_connection();
         return rc;

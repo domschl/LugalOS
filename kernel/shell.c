@@ -16,6 +16,7 @@
 #include "kernel/time.h"
 #include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/bme280.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -141,6 +142,7 @@ static void cmd_help(void) {
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
     cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>|disconnect]\n");
+    cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -710,6 +712,26 @@ static void cmd_mqtt(const char *arg) {
 
     cprintf("usage: mqtt [selftest | connect <ip>[:port] [user [pass]] | "
             "pub <topic> <payload> | disconnect]\n");
+}
+
+/* `sensor [selftest]` -- Q4, plan/phase26_mqtt_and_environment_sensors.md.
+ *
+ * With no argument: one forced-mode measurement, compensated, in units a
+ * person reads. `sensor selftest` runs the compensation arithmetic against a
+ * vector computed independently by tools/bme280_reference.py, and needs no
+ * sensor, no bus and no hardware -- which is why it runs in CI on both QEMU
+ * targets. */
+static void cmd_sensor(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (strncmp(arg, "selftest", 8) == 0) { bme280_selftest(true); return; }
+    if (strncmp(arg, "init", 4) == 0) {
+        bme280_part_t part = bme280_init();
+        cprintf("sensor: %s\n", part == BME280_PART_NONE
+                ? "nothing found at 0x76 or 0x77" : bme280_part_name());
+        return;
+    }
+    if (*arg) { cprintf("usage: sensor [selftest | init]\n"); return; }
+    bme280_print_status();
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -2538,6 +2560,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
+        return;
+    } else if (strcmp(cmd_line, "sensor") == 0) {
+        cmd_sensor("");
+        return;
+    } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
+        cmd_sensor(&cmd_line[7]);
         return;
     } else if (strcmp(cmd_line, "mqtt") == 0) {
         cmd_mqtt("");

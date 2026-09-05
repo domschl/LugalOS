@@ -4,6 +4,7 @@
 #include "drivers/uart_net.h"
 #include "drivers/usb_cdc.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/bme280.h"
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
 #include "kernel/console.h"
@@ -104,6 +105,12 @@ uintptr_t board_uart_base(void) {
  * been detected, and both were telling the truth about different things. */
 static int probe_i2c_rtc(void)  { i2c_rtc_init();  return i2c_rtc_is_detected() ? 0 : -1; }
 static int probe_at24c32(void)  { at24c32_init();  return 0; }
+/* Q4: like the RTC above, reports whether a part actually answered rather
+ * than whether the probe ran -- on a sensor persona, /proc/devices saying
+ * "sensor present" when nothing is on the bus is precisely the lie that
+ * costs an afternoon. Runs before i2c_task_start(), so it reaches the bus
+ * directly; every later read goes through the shared task. */
+static int probe_bme280(void)   { return bme280_init() ? 0 : -1; }
 static int probe_usb_cdc(void)  { usb_cdc_init();  return 0; }
 
 /* Console devices, exposed so the console stream can be bound to one by name
@@ -167,6 +174,9 @@ static const dev_driver_t dev_rtc = {
 };
 static const dev_driver_t dev_eeprom = {
     .name = "eeprom", .kind = DEV_KIND_EEPROM, .probe = probe_at24c32,
+};
+static const dev_driver_t dev_bme280 = {
+    .name = "sensor", .kind = DEV_KIND_SENSOR, .probe = probe_bme280,
 };
 static const dev_driver_t dev_usb = {
     .name = "usb", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_ACM0, .probe = probe_usb_cdc,
@@ -267,6 +277,7 @@ static const dev_driver_t dev_vnet = {
 
 void board_register_devices(void) {
     dev_register(&dev_rtc);
+    dev_register(&dev_bme280);
     dev_register(&dev_eeprom);
     dev_register(&dev_usb);
     dev_register(&dev_uart);

@@ -1,5 +1,10 @@
 # Phase 26 — A node that measures something, and says so
 
+**Status: in progress, 2026-09-05.** Q0, Q1, Q2 and the Q4 driver are
+implemented and merged on `feature/mqtt-sensors`; the sensor persona
+(`rp2350-sensor`) builds and is ready to flash. Hardware bring-up is next.
+Dated notes are at the end of each milestone in §6.
+
 **Status: planned 2026-09-05.** Succeeds `plan/phase19_ip_stack_and_ethernet.md`
 (concluded) and stands beside `plan/phase24_dcf77_precision_and_ntp_server.md`
 (planned, in progress). It needs nothing from phase 24 and phase 24 needs
@@ -437,6 +442,23 @@ round-trips 64 KB in both directions with the writer looping over partial
 writes, and closes gracefully (FIN, both ways, no RST). `net` still reports
 the connection. Existing TCP and 9P tests unchanged and passing.
 
+*Done 2026-09-05.* `test_tcp_stream`, on rv32 and rv64. Three things the plan
+did not anticipate, all found by the work rather than reasoned about:
+
+* **The write discipline.** Appending at `tx_len` and transmitting from the
+  writer's task broke the "everything on one call stack" premise
+  `net_task_body()` already documented, and stalled a 64 KB echo about one run
+  in four. The capture showed 3840-byte segments on a 1500-byte MTU -- two
+  frame builds interleaved in the one shared transmit buffer. Now: a caller
+  fills the buffer only when it is empty, and never transmits.
+* **The receive side had the same shape**, and one hart merely hides it --
+  `netsrv` and a stream's owner run on different RP2350 cores at the same
+  instant. A stream's `rx` is now an SPSC ring (monotonic counters, no
+  memmove, fences both ways). The 9P face is untouched.
+* **The handle is caller-owned**, not pooled per slot: a pool would hand the
+  same struct back on the next open of that slot, so a stale holder would read
+  the *new* epoch out of it and its staleness check would pass.
+
 ### Q1 — The client core: connect, publish, ping, disconnect
 `net/mqtt.c` + `net/include/net/mqtt.h`. Varint codec, CONNECT (with
 optional username/password and a will), CONNACK with all five return codes
@@ -447,6 +469,15 @@ publishes to `tests/mqttbroker.py` (§7) and the broker asserts the exact bytes
 of the CONNECT and PUBLISH; a wrong password produces CONNACK 0x04 and a
 distinguishable error, not a hang.
 
+*Done 2026-09-05.* All three, as `test_mqtt_varint` and `test_mqtt_client`.
+§7(a)'s premise held on the first try: a guest-originated connection to
+10.0.2.2 reaches a listener on the host's loopback, so no `guestfwd` was
+needed. One bug the tests earned: `mqtt_disconnect()` wrote two bytes and
+closed at once, and the broker saw a FIN and no DISCONNECT -- a FIN takes the
+sequence number after the last data byte, so sending one with bytes still
+buffered gives it *theirs*. `tcp_stream_close()` now defers to the pump, which
+is a stream-wide fix rather than an MQTT one.
+
 ### Q2 — The surfaces: `mqtt`, `/proc/mqtt`, Lisp
 `mqtt connect [host[:port]] | pub <topic> <payload> | status | disconnect`,
 `(mqtt-connect …)` / `(mqtt-publish "topic" "payload")` /
@@ -456,6 +487,12 @@ drops) — inside the 896-byte `proc_buf`, like `/proc/net`.
 **Exit:** a QEMU test drives a publish from the shell *and* from Lisp and
 sees both at the host broker; Ctrl-C interrupts a publish to a black-holed
 address within a second.
+
+*Partly done 2026-09-05.* The `mqtt` command exists and is what Q1 is tested
+through. `/proc/mqtt` and the Lisp bindings are still open, as is the fact
+that nothing services the connection *between* commands until `mqttd` (Q5)
+exists -- a session left idle past the keepalive is dropped by the broker.
+The command's own help says so.
 
 ### Q3 — Inbound: subscribe and receive
 SUBSCRIBE/SUBACK (granted QoS checked, 0x80 = refused and said so),
@@ -475,6 +512,19 @@ reference on both QEMU targets in CI; on hardware, a BME280 on the
 `rp2350-wifi` persona reports plausible values that track a hand-held
 reference within a degree, `i2c scan` shows RTC and sensor coexisting, and
 `i2c_task_call_count()` shows both routed through the one task.
+
+*Software done 2026-09-05, hardware pending.* `I2C_OP_XFER` landed as §4.3
+described -- one generic op, so `drivers/bme280.c` is ordinary M-mode code
+needing no `-fno-jump-tables` entry. `test_bme280_compensation` agrees with
+`tools/bme280_reference.py` bit for bit on both targets (20.50 C, 989.57 hPa,
+73.3 %RH). The sensor is a `DEV_KIND_SENSOR` in the device registry, so it is
+probed at boot and `/proc/devices` reports whether a part actually answered
+rather than whether the probe ran.
+
+**The hardware half of this criterion is revised**: the test board carries no
+RTC, so "RTC and sensor coexisting" cannot be checked on it. What can be, and
+what replaces it: the sensor answering on the same I2C0 pins every persona
+declares for an RTC, through the shared task, with the radio running.
 
 ### Q5 — `mqttd`, the service that ties them together
 A background task: connect, publish `online` retained, sample every

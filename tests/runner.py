@@ -3922,6 +3922,63 @@ def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str
         arch_img.unlink(missing_ok=True)
 
 
+def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q4: the BMP280/BME280 compensation arithmetic, with no sensor.
+
+    The raw registers are meaningless without the per-part calibration
+    constants, and t_fine from the temperature step feeds both of the others
+    -- so an error in temperature quietly corrupts all three. These are twenty
+    lines of shifts and magic constants where a misplaced >>12 yields
+    plausible-looking nonsense, which is exactly the failure a reading on a
+    desk does not catch.
+
+    So the guest computes the datasheet vector and this checks it against
+    tools/bme280_reference.py, a separate transcription of the same formulas.
+    Agreement shows the arithmetic was not mistyped. It does *not* prove the
+    register map -- both transcriptions read the same map from the same page
+    -- which is what Q4's hardware exit criterion and a golden vector from a
+    real part are for, and the plan says so rather than claiming more.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import bme280_reference
+
+    name = "BME280: Datasheet Compensation Against An Independent Reference"
+    want_t, want_p, want_h = bme280_reference.compensate(
+        bme280_reference.VECTOR_CAL, **bme280_reference.VECTOR_RAW)
+
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("sensor selftest\n",
+                                          r"bme280 selftest: \d+ case", timeout=6.0)
+        if not ok:
+            return (name, False, f"`sensor selftest` did not answer: {log[-400:]}")
+        m = re.search(r"bme280 selftest: (\d+) case", log)
+        if not m or int(m.group(1)) != 0:
+            return (name, False,
+                    f"the compensation does not match the reference "
+                    f"(expected {want_t}, {want_p}, {want_h}):\n{log[-700:]}")
+
+        # With no sensor fitted -- and there is none on either QEMU target --
+        # the driver must say so rather than report zeroes as a measurement.
+        ok, log = session.send_and_expect("sensor\n", r"sensor: |@0x", timeout=6.0)
+        if not ok:
+            return (name, False, f"`sensor` did not answer: {log[-400:]}")
+        if "none found" not in log:
+            return (name, False,
+                    f"a target with no I2C controller reported a sensor:\n{log[-500:]}")
+
+        return (name, True,
+                f"temperature {want_t/100:.2f} C, pressure {want_p/25600:.2f} hPa, "
+                f"humidity {want_h/1024:.1f} %RH -- bit-identical to the reference")
+    finally:
+        session.close()
+
+
 def test_mqtt_varint(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """Q1: the Remaining Length varint, at every boundary, with no network.
 
@@ -6207,6 +6264,7 @@ def main() -> int:
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_stream(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_varint(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_bme280_compensation(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
@@ -6247,6 +6305,7 @@ def main() -> int:
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_stream(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqtt_varint(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_bme280_compensation(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
