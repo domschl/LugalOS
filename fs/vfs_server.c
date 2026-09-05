@@ -10,6 +10,7 @@
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"
 #include "kernel/discipline.h"
+#include "drivers/cyw43.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -853,6 +854,35 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 arp_entry_str(i, line, sizeof(line));
                 if (line[0]) used += (uint32_t)ksnprintf(buf + used, cap - used, "  %s", line);
             }
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
+            /* The radio's own account of itself, and the reason it is here
+             * rather than in the log: a drop reason printed to /proc/kmsg dies
+             * when the board is unplugged to go and read it. These survive the
+             * reconnection, so they can be read afterwards, over the very link
+             * whose loss they describe. */
+            {
+                cyw43_link_status_t w;
+                cyw43_link_status(&w);
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "wlan link: %s\nwlan rssi_dbm: %s%ld\n"
+                    "wlan joins: %lu\nwlan drops: %lu\n",
+                    w.link_up ? "up" : "down",
+                    w.rssi_valid ? "" : "stale ", (long)w.rssi_dbm,
+                    (unsigned long)w.joins, (unsigned long)w.drops);
+                if (w.drops) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "wlan last drop: ev=%lu status=%lu reason=%lu %lus ago\n",
+                        (unsigned long)w.last_drop_ev,
+                        (unsigned long)w.last_drop_status,
+                        (unsigned long)w.last_drop_reason,
+                        (unsigned long)w.s_since_drop);
+                }
+                if (w.link_up) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "wlan up for: %lus\n", (unsigned long)w.s_since_up);
+                }
+            }
+#endif
         }
         return (int)used;
     } else if (strcmp(rel, "ports") == 0) {

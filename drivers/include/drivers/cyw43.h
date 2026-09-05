@@ -77,6 +77,45 @@ uint32_t cyw43_rx_high_water(void);
  * not hold the console; retries the join with a backoff and does not give
  * up, because the case that matters is a power cut where the router comes
  * back later than this board does. Returns the pid, or -1. */
+/* Why the link is, or was last, not up -- and how strong it is when it is.
+ *
+ * Exists because the decoded drop reason used to live only in /proc/kmsg,
+ * which is RAM: fetching it meant carrying the board to a cable, which unplugs
+ * it, which clears the very thing being fetched. Three drops at one location
+ * were written off as "unknown" for exactly that reason. These fields survive
+ * the reconnection, so the incident report outlives the incident and can be
+ * read over the network once the link is back.
+ *
+ * `rssi_dbm` is the last reading taken while associated and is deliberately
+ * *not* cleared on a drop: what the signal was just before the link went away
+ * is the most useful number here. -30 is next to the AP; past about -75 a
+ * 2.4 GHz link starts losing frames. */
+typedef struct {
+    bool     link_up;
+    int32_t  rssi_dbm;
+    bool     rssi_valid;
+    uint32_t drops;              /* link-down transitions since boot */
+    uint32_t joins;              /* successful joins since boot */
+    uint32_t last_drop_ev;       /* firmware event type that dropped it */
+    uint32_t last_drop_status;
+    uint32_t last_drop_reason;
+    uint32_t s_since_drop;
+    uint32_t s_since_up;
+} cyw43_link_status_t;
+
+void cyw43_link_status(cyw43_link_status_t *out);
+
+/* Escalating recovery for a link that will not come back: 1 disassociates,
+ * 2 takes the interface down and up and re-arms the event mask. Level 0 -- a
+ * plain re-join -- is what the caller should try first and is what the vendor
+ * driver does; these exist because that can be permanently insufficient. */
+void cyw43_link_recover(unsigned level);
+
+/* Performs work the event handler deferred because it cannot touch the bus --
+ * currently the disassociate a DEAUTH_IND(reason 2) requires. Call from a task
+ * before attempting a re-join. */
+void cyw43_service_pending(void);
+
 int cyw43_autostart_task_start(void);
 
 #endif /* DRIVERS_CYW43_H */

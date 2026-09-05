@@ -988,11 +988,28 @@ watches. If those two became one source the run would prove nothing.
 | 1 | Reconnect **both** antennas, place at the antenna position | -- | `/proc/gps` `state`; `/proc/dcf77` `pulses`, `duty_permille` | `state=locked`; duty ~850-900 permille |
 | 2 | Start `tests/hw/collect_p0.py` | -- | lines carry a `pps=` field | logging works |
 | 3 | **Lock-in** | ~30 min | `/proc/clock` `state`, `freq_ppb` | `unset`->`track`; `freq_ppb` ~= -460 +/- 100; `rejected` low |
-| 4 | **Confirm the server**: `chronyc sources -v` | once | stratum, refid | stratum 1, refid `DCF`, and chrony *accepts* it |
+| 4 | **Confirm the server**: `chronyd -Q -t 12 'server <board> iburst maxsamples 4'` | once | stratum, refid, whether chrony selects it | stratum 1, refid `DCF`, and chrony reports an offset rather than "No suitable source" |
 | 5 | **Free run** | 24 h+ | `gps_err_mean_us`, `gps_err_sd_us` | error within +/- 2 ms (P4's measured DCF sd) |
 | 6 | **Holdover**: disconnect the **DCF antenna only** | 4-8 h | `state`, `dispersion_us`, `gps_err_*` | `state=holdover`; true error stays *inside* the reported dispersion |
-| 7 | Re-query with chrony during holdover | hourly | stratum | eventually stratum 16 / LI 3; chrony drops the source |
+| 7 | Re-query with `chronyd -Q` during holdover | hourly | stratum | eventually stratum 16 / LI 3, and chrony says "No suitable source for synchronisation" |
 | 8 | **Recovery**: reconnect the DCF antenna | ~10 min | `state`, `rejected`, `gps_err_*` | returns to `track` without a step; error back to step 5's range |
+
+**On querying it.** `chronyc` talks to a *local chronyd daemon* over its own
+control protocol; it cannot query an NTP server directly, so pointing it at
+this board gives "506 Cannot talk to daemon" -- which says only that no
+chronyd is running on the asking machine, and nothing at all about the board.
+The one-shot form is what to use:
+
+    chronyd -Q -t 12 'server 192.168.178.22 iburst maxsamples 4'
+
+`-Q` queries without touching the system clock and needs no daemon or config.
+Its verdict is the interesting part: "System clock wrong by N seconds
+(ignored)" means chrony *selected* the board and measured against it, while
+"No suitable source for synchronisation" means it refused -- which is the
+correct and desired answer during holdover, and the one §4 was written to
+produce. For the wire fields themselves -- stratum, refid, root dispersion,
+leap indicator -- a forty-line raw UDP query reads them all directly, and
+does not depend on chrony's selection logic agreeing with us about anything.
 
 **Step 6 is the run.** Everything before it establishes that the loop works
 when it can see the transmitter, which is the easy half. With the radio

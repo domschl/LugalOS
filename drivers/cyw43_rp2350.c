@@ -263,6 +263,11 @@ static const uint16_t g_gspi_prog[6] = {
 #define SDPCM_TX_PADDING            2u
 
 /* ioctl command numbers (the WLC_* set). */
+/* WLC_UP / WLC_DOWN / WLC_DISASSOC: the escalating recovery ladder (see
+ * cyw43_link_recover). Standard Broadcom numbers. */
+#define IOCTL_CMD_UP                 2u
+#define IOCTL_CMD_DOWN               3u
+#define IOCTL_CMD_DISASSOC          52u
 #define IOCTL_CMD_SET_INFRA         20u
 #define IOCTL_CMD_SET_AUTH          22u
 #define IOCTL_CMD_GET_BSSID         23u
@@ -430,6 +435,9 @@ static void cyw43_unlock(void) { g_bus_busy = false; }
 #define CYW43_EV_SET_SSID     0u
 #define CYW43_EV_AUTH         3u
 #define CYW43_EV_DEAUTH_IND   6u
+/* WLC_GET_RSSI. The firmware returns a signed dBm; -30 is next to the AP and
+ * anything past about -75 is where a 2.4 GHz link starts dropping frames. */
+#define IOCTL_CMD_GET_RSSI    127u
 #define CYW43_EV_DISASSOC    11u
 #define CYW43_EV_DISASSOC_IND 12u
 #define CYW43_EV_LINK        16u
@@ -474,6 +482,56 @@ static volatile join_fail_t g_join_fail;
 /* Carrier state. Set when a join reaches JOIN_ALL and cleared by a link-down,
  * disassociation or deauthentication event -- never inferred. */
 static bool g_link_up;
+
+/* A disassociate the firmware needs but the event handler must not issue.
+ *
+ * The vendor driver, on DEAUTH_IND with reason 2, sets pend_disassoc and
+ * issues WLC_SET_DISASSOC from its poll loop
+ * (pico-sdk/lib/cyw43-driver/src/cyw43_ctrl.c:397). This driver knew that --
+ * the comment on the DEAUTH_IND case says the reference "disassociates and
+ * carries on" -- and implemented only the half that stops treating the deauth
+ * as a wrong password. The disassociate itself was never written, which left
+ * the firmware half-associated after every drop, in a state no amount of
+ * repeated WLC_SET_SSID recovers from. That is why the board would rejoin
+ * instantly after a power cycle and never after a drop (2026-09-04).
+ *
+ * Deferred rather than done in place for the same reason the SDK defers it:
+ * the handler runs inside packet processing, and an ioctl from there would
+ * re-enter the bus it is already using. */
+static volatile bool g_pend_disassoc;
+
+/* Why the link went away, kept rather than only printed.
+ *
+ * The driver decoded the firmware's event and logged it, which is exactly the
+ * fact needed to tell a weak signal from a driver fault -- and exactly the
+ * fact that cannot survive being fetched, because /proc/kmsg is in RAM and
+ * carrying the board to a cable unplugs it. Three drops at one location were
+ * diagnosed as "unknown" for that reason (2026-09-04).
+ *
+ * So the last drop's event, status and reason live here, along with counters,
+ * and are readable over the network *after* the link comes back. The incident
+ * report outlives the incident. */
+static uint32_t g_drops;             /* link-down events since boot */
+static uint32_t g_joins;             /* successful joins since boot */
+static uint32_t g_last_drop_ev;      /* the event type that dropped it */
+static uint32_t g_last_drop_status;
+static uint32_t g_last_drop_reason;
+static uint64_t g_last_drop_ms;
+static uint64_t g_last_up_ms;
+static int32_t  g_rssi_dbm;          /* refreshed while the link is up */
+static bool     g_rssi_valid;
+
+static void note_drop(uint32_t ev, uint32_t status, uint32_t reason) {
+    /* Only the transition, not every event that arrives while already down --
+     * otherwise a flapping AP inflates the count and the *first* reason, which
+     * is the interesting one, is overwritten by its consequences. */
+    if (!g_link_up) return;
+    g_drops++;
+    g_last_drop_ev = ev;
+    g_last_drop_status = status;
+    g_last_drop_reason = reason;
+    g_last_drop_ms = time_get_ms();
+}
 
 /* Whether the chip has firmware running and is answering ioctls. Anything
  * that talks to the firmware -- joining, the LED, the netif -- is
@@ -1268,6 +1326,7 @@ static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
             if (flags & 1u) {
                 if (itf == CYW43_ITF_STA) g_join_state |= JOIN_LINK;
             } else {
+                note_drop(CYW43_EV_LINK, status, reason);
                 g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
                 g_link_up = false;
             }
@@ -1285,12 +1344,15 @@ static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
          * as a failure either; it disassociates and carries on. The
          * authoritative wrong-password signal is a PSK_SUP failure, which is
          * where that verdict now comes from exclusively. */
+        note_drop(CYW43_EV_DEAUTH_IND, status, reason);
+        if (status == 0 && reason == 2u) g_pend_disassoc = true;
         g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
         g_link_up = false;
         break;
 
     case CYW43_EV_DISASSOC:
     case CYW43_EV_DISASSOC_IND:
+        note_drop(type, status, reason);
         g_join_state &= ~(JOIN_LINK | JOIN_KEYED | JOIN_AUTH);
         g_link_up = false;
         break;
@@ -1300,7 +1362,11 @@ static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
     }
 
     /* Carrier is this, and only this. */
-    if ((g_join_state & JOIN_ALL) == JOIN_ALL) g_link_up = true;
+    if ((g_join_state & JOIN_ALL) == JOIN_ALL && !g_link_up) {
+        g_link_up = true;
+        g_joins++;
+        g_last_up_ms = time_get_ms();
+    }
 }
 
 static int cyw43_pump(void) {
@@ -1601,6 +1667,25 @@ bool cyw43_is_ready(void) { return g_fw_ready; }
  * firmware takes either -- a passphrase gets flag 1 and is hashed on the
  * chip -- so handing it the PMK with flag 0 is the same join with one less
  * secret at rest. */
+/* Signal strength, in dBm, straight from the firmware.
+ *
+ * The number that turns "the link dropped" into "the link dropped at -78 dBm",
+ * which is the difference between a marginal position and a driver fault. Only
+ * meaningful while associated -- the firmware has nothing to measure
+ * otherwise -- so the caller checks the link first and the value is left as
+ * the last one seen rather than zeroed, since what it read just before a drop
+ * is precisely the interesting part. */
+static bool cyw43_read_rssi(int32_t *out) {
+    uint8_t buf[4] = { 0, 0, 0, 0 };
+    uint32_t got = 0;
+    if (!cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_RSSI, 0, buf, sizeof(buf), &got))
+        return false;
+    if (got < 4) return false;
+    *out = (int32_t)((uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                     ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24));
+    return true;
+}
+
 static bool cyw43_ioctl_set_u32(uint32_t cmd, uint32_t iface, uint32_t val) {
     uint8_t v[4];
     put_u32(v, val);
@@ -1818,6 +1903,28 @@ static int cyw43_netif_poll(netif_t *nif);
 static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len);
 
 /* Read the MAC the firmware reports and register with net/netif.c. */
+/* Which asynchronous events the firmware should send us.
+ *
+ * Extracted from the bring-up because recovery needs it too: WLC_DOWN drops
+ * the interface's configuration, and a join that follows without re-arming
+ * this would wait fifteen seconds for events that can no longer arrive --
+ * turning the strongest rung of the recovery ladder into the one that
+ * guarantees failure. */
+static bool cyw43_set_event_mask(void) {
+    static const uint8_t wanted_events[] = {
+        CYW43_EV_SET_SSID, CYW43_EV_AUTH, CYW43_EV_DEAUTH_IND,
+        CYW43_EV_DISASSOC, CYW43_EV_DISASSOC_IND,
+        CYW43_EV_LINK, CYW43_EV_PSK_SUP,
+    };
+    uint8_t evt_mask[4 + 24];
+    memset(evt_mask, 0, sizeof(evt_mask));
+    for (unsigned i = 0; i < sizeof(wanted_events); i++) {
+        unsigned ev = wanted_events[i];
+        evt_mask[4 + (ev / 8u)] |= (uint8_t)(1u << (ev % 8u));
+    }
+    return cyw43_set_iovar("bsscfg:event_msgs", evt_mask, sizeof(evt_mask));
+}
+
 static bool cyw43_register_netif(void) {
     uint8_t mac[8];
     memset(mac, 0, sizeof(mac));
@@ -1939,18 +2046,7 @@ static bool cyw43_probe_locked(void) {
      * machine reads, and nothing else -- in particular not the scan and
      * probe-request chatter that made an unfiltered mask unusable.
      * Layout is iface (u32) then a 24-byte bitmap, one bit per event. */
-    static const uint8_t wanted_events[] = {
-        CYW43_EV_SET_SSID, CYW43_EV_AUTH, CYW43_EV_DEAUTH_IND,
-        CYW43_EV_DISASSOC, CYW43_EV_DISASSOC_IND,
-        CYW43_EV_LINK, CYW43_EV_PSK_SUP,
-    };
-    uint8_t evt_mask[4 + 24];
-    memset(evt_mask, 0, sizeof(evt_mask));
-    for (unsigned i = 0; i < sizeof(wanted_events); i++) {
-        unsigned ev = wanted_events[i];
-        evt_mask[4 + (ev / 8u)] |= (uint8_t)(1u << (ev % 8u));
-    }
-    if (!cyw43_set_iovar("bsscfg:event_msgs", evt_mask, sizeof(evt_mask))) return false;
+    if (!cyw43_set_event_mask()) return false;
 
     /* Regulatory domain. The CLM carries per-region transmit limits, but
      * until a country is selected the firmware has no region to apply
@@ -2003,6 +2099,52 @@ bool cyw43_gspi_probe(void) {
     bool r = cyw43_probe_locked();
     cyw43_unlock();
     return r;
+}
+
+/* Escalating recovery, tried in order across successive failed rejoins.
+ *
+ * Level 0 is a plain re-join and is what the vendor driver does; it is right
+ * most of the time and is left as the first thing tried. The rungs above it
+ * exist because the bench proved a plain re-join can be *permanently*
+ * insufficient: same position, same AP, a power cycle joins in seconds while
+ * an unlimited number of SET_SSID retries never do.
+ *
+ *   1: disassociate first -- clears the half-associated state a deauth leaves
+ *   2: take the interface down and back up, then re-arm the event mask, which
+ *      WLC_DOWN discards and without which the next join would wait fifteen
+ *      seconds for events that can no longer arrive
+ *
+ * Deliberately not a fourth rung reloading the firmware: that is a thirty
+ * second outage and nothing yet observed needs it. If level 2 ever proves
+ * insufficient, this is where it goes. */
+void cyw43_link_recover(unsigned level) {
+    cyw43_lock();
+    if (level >= 1) {
+        printk("cyw43: recovery: disassociating\n");
+        cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DISASSOC, 0, NULL, 0, NULL);
+        time_delay_us(100000);
+    }
+    if (level >= 2) {
+        printk("cyw43: recovery: interface down and up\n");
+        cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DOWN, 0, NULL, 0, NULL);
+        time_delay_us(200000);
+        cyw43_ioctl(IOCTL_SET, IOCTL_CMD_UP, 0, NULL, 0, NULL);
+        time_delay_us(200000);
+        if (!cyw43_set_event_mask())
+            printk("cyw43: recovery: could not re-arm the event mask\n");
+    }
+    cyw43_unlock();
+}
+
+/* Issues the disassociate a DEAUTH_IND asked for, if one is pending. Called
+ * from the supervisor, which is a task and may hold the bus. */
+void cyw43_service_pending(void) {
+    if (!g_pend_disassoc) return;
+    g_pend_disassoc = false;
+    printk("cyw43: deauth reason 2 -- disassociating, as the reference does\n");
+    cyw43_lock();
+    cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DISASSOC, 0, NULL, 0, NULL);
+    cyw43_unlock();
 }
 
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
@@ -2208,6 +2350,12 @@ static void cyw43_autostart_body(void *arg) {
              * up in name only. Forcing a rejoin costs about five seconds and
              * is safe to do to a link that turns out to be fine; not doing it
              * costs the board until someone notices. */
+            /* Refreshed on the supervisor's own 2 s cadence: it is already
+             * awake, already knows the link is up, and an ioctl here costs one
+             * gSPI round trip against a task that is otherwise asleep. */
+            int32_t r;
+            if (cyw43_read_rssi(&r)) { g_rssi_dbm = r; g_rssi_valid = true; }
+
             netif_t *nif = netif_default();
             uint32_t rx = nif ? nif->rx_frames : 0;
             uint64_t now = time_get_ms();
@@ -2230,6 +2378,18 @@ static void cyw43_autostart_body(void *arg) {
             was_up = false;
         }
 
+        /* Whatever the event handler could not do itself, before asking the
+         * firmware for anything else. A deauth's disassociate belongs here. */
+        cyw43_service_pending();
+
+        /* Escalate only after plain re-joins have actually failed. The first
+         * two attempts are what the vendor driver does and are usually right;
+         * beyond that the firmware is in a state a re-join cannot clear, and
+         * repeating it forever is what turned a recoverable drop into a dead
+         * board until someone power-cycled it. */
+        if (attempt == 2u)      cyw43_link_recover(1);
+        else if (attempt >= 4u) cyw43_link_recover(2);
+
         if (cyw43_join_wpa2(ssid, psk)) continue;   /* the loop above reports it */
 
         unsigned idx = attempt < 4 ? attempt : 3;
@@ -2241,12 +2401,31 @@ static void cyw43_autostart_body(void *arg) {
                    ssid, (unsigned)(backoff_ms[idx] / 1000));
         }
         wifi_sleep_ms(backoff_ms[idx]);
-        if (attempt < 4) attempt++;
+        /* Counts past the backoff table's last index on purpose: the backoff
+         * saturates, the *recovery level* does not, and conflating the two
+         * would cap the ladder at whichever rung the backoff happened to
+         * stop at. */
+        if (attempt < 1000u) attempt++;
     }
 
     /* Not reached: this task supervises for the life of the board. The PSK
      * stays in its stack because there is no later point at which it is done
      * with -- a rejoin needs it again. */
+}
+
+void cyw43_link_status(cyw43_link_status_t *out) {
+    if (!out) return;
+    uint64_t now = time_get_ms();
+    out->link_up = g_link_up;
+    out->rssi_dbm = g_rssi_dbm;
+    out->rssi_valid = g_rssi_valid;
+    out->drops = g_drops;
+    out->joins = g_joins;
+    out->last_drop_ev = g_last_drop_ev;
+    out->last_drop_status = g_last_drop_status;
+    out->last_drop_reason = g_last_drop_reason;
+    out->s_since_drop = g_last_drop_ms ? (uint32_t)((now - g_last_drop_ms) / 1000u) : 0;
+    out->s_since_up   = g_last_up_ms   ? (uint32_t)((now - g_last_up_ms) / 1000u) : 0;
 }
 
 int cyw43_autostart_task_start(void) {
