@@ -5,9 +5,9 @@
  * the boot banner (kernel/main.c) and /proc/version (fs/vfs_server.c).
  * Bump here; nowhere else in C source should hardcode a version number. */
 #define LUGALOS_VERSION_MAJOR 0
-#define LUGALOS_VERSION_MINOR 14
+#define LUGALOS_VERSION_MINOR 15
 #define LUGALOS_VERSION_PATCH 0
-#define LUGALOS_VERSION "0.14.0"
+#define LUGALOS_VERSION "0.15.0"
 
 /* Git-derived build identifier: "<commit-count>.<short-hash>", with a '+'
  * suffix when the tree had uncommitted changes. Generated per build by

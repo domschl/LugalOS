@@ -34,6 +34,8 @@ typedef enum {
     DEV_KIND_CLOCK,     /* real-time clock */
     DEV_KIND_EEPROM,    /* small byte-addressable persistent store */
     DEV_KIND_BLOCK,     /* block device (get() returns block_dev_t *) */
+    DEV_KIND_SENSOR,    /* environment sensor -- Q4,
+                           plan/phase26_mqtt_and_environment_sensors.md */
     DEV_KIND_NETIF,     /* frame source (get() returns netif_t *) -- R1,
                          * plan/phase19_ip_stack_and_ethernet.md. Registered
                          * here as well as in net/netif.c's own table so that

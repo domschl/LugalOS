@@ -75,6 +75,10 @@
 - Keyboard support: QYF-TM1638 (4x4 matrix + 8 7segment), PS/2 standard, I2C-keyboard (M5 Stack CardKB)
 - Network (W5500 ethernet), blackbox support for RP2350 W wireless
 - I2C environment sensors
+  **DONE 2026-09-05, in 0.15.0.** Originally planned -- see `plan/phase26_mqtt_and_environment_sensors.md`.
+  BMP280 and BME280 on the bus the RTC and EEPROM already share, riding the
+  existing U-mode `i2c` task through one new generic transfer opcode -- so the
+  *next* I2C part after these two costs no kernel-surface change at all.
 - DVI graphics (RP2350 PIO programming)
   
 ### Integration
@@ -92,5 +96,10 @@
 - Stand-alone 'workstation' with keyboard, display, and P9 connectivity
 - Chess computer (port of ~/gith/domschl/LugalChess) to LugalOS (uses SP7735 128x160 graphics and QYF-TM1638 for input and additional status infos)
 - remote environment sensors
+  **DONE 2026-09-05, in 0.15.0.** Originally planned -- see `plan/phase26_mqtt_and_environment_sensors.md`.
+  An MQTT 3.1.1 client (no encryption, optional password auth) over the phase 19
+  stack, and a sensor persona that joins its WiFi, samples and publishes from a
+  USB charger with nothing typed. The one new piece of plumbing underneath is a
+  raw TCP byte stream: `net/tcp.c` hands out 9P links and nothing else today.
 - clock with matrix led display (waveshare pico-clock-green: https://www.waveshare.com/wiki/Pico-Clock-Green )
   

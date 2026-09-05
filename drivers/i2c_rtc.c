@@ -202,11 +202,11 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
     return !abort;
 }
 
-static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
-    // 1. Write register index first
-    if (!i2c_write_bytes(addr, &reg, 1)) return false;
-
-    // 2. Read bytes
+/* The read half, split out of i2c_read_bytes() so the generic transfer op
+ * (I2C_OP_XFER, Q4) can reuse it byte for byte rather than growing a second
+ * copy of the same controller sequence. No behaviour change: the RTC path
+ * still reaches it through i2c_read_bytes() exactly as before. */
+static bool i2c_read_phase(uint8_t addr, uint8_t *dst, int len) {
     REG(IC_ENABLE) = 0;
     REG(IC_TAR) = addr;
     REG(IC_ENABLE) = 1;
@@ -238,6 +238,32 @@ static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
         dst[i] = (uint8_t)REG(IC_DATA_CMD);
     }
     return !abort;
+}
+
+static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
+    if (!i2c_write_bytes(addr, &reg, 1)) return false;
+    return i2c_read_phase(addr, dst, len);
+}
+
+/* Q4, plan/phase26_mqtt_and_environment_sensors.md: write `wlen` bytes, then
+ * read `rlen`. Either half may be empty.
+ *
+ * This is every register access an I2C device generally needs, and that is
+ * the point of having it: with one generic operation in the shared task, a
+ * new part is a self-contained M-mode file rather than another opcode in a
+ * U-mode dispatch that every future device would have to grow.
+ *
+ * It is not a loss of isolation. The U-mode `i2c` task exists to protect the
+ * kernel from a bus driver's bugs, not the bus from its callers -- every
+ * caller is kernel-side code in this same tree, and a generic opcode gives
+ * them nothing they could not have by adding a case. The bound that does
+ * matter, request and response size, is enforced by I2C_REQ_CAP/
+ * I2C_RESP_CAP exactly as it is for every other op. */
+static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+                         uint8_t *r, int rlen) {
+    if (wlen > 0 && !i2c_write_bytes(addr, w, wlen)) return false;
+    if (rlen > 0 && !i2c_read_phase(addr, r, rlen)) return false;
+    return true;
 }
 
 static bool i2c_probe_addr(uint8_t addr) {
@@ -274,6 +300,10 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
 }
 static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
     (void)addr; (void)reg; (void)dst; (void)len; return false;
+}
+static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+                         uint8_t *r, int rlen) {
+    (void)addr; (void)w; (void)wlen; (void)r; (void)rlen; return false;
 }
 #endif
 
@@ -570,6 +600,17 @@ void i2c_scan_bus(void) {
 #define I2C_OP_RTC_STATUS     ((uint8_t)'O')
 #define I2C_OP_EE_READ        ((uint8_t)'R')
 #define I2C_OP_EE_WRITE       ((uint8_t)'X')
+/* Q4: the generic transfer -- write then read, for any address on this bus.
+ * The last device-specific opcode this task should need: a new part
+ * (drivers/bme280.c is the first) is M-mode code that builds requests, not
+ * another case in here.
+ *
+ *   request:  'F', addr, wlen, rlen, w[wlen]
+ *   response: ok, r[rlen]
+ */
+#define I2C_OP_XFER           ((uint8_t)'F')
+#define I2C_XFER_WMAX 16u
+#define I2C_XFER_RMAX 64u
 
 #define I2C_REQ_CAP  (5u + AT24C32_CHUNK_MAX)
 #define I2C_RESP_CAP (4u + AT24C32_CHUNK_MAX)
@@ -980,6 +1021,30 @@ I2C_UATTR static void i2c_umode_body(void) {
             resp_len = 4;
             break;
         }
+        case I2C_OP_XFER: {
+            /* i2c_usys_read_reg() already takes a write length, so the
+             * generic op maps straight onto it with nothing new in U-mode. */
+            bool ok = false;
+            uint32_t rlen = 0;
+            if (req_len >= 4) {
+                uint8_t addr = req[1];
+                uint32_t wlen = req[2];
+                rlen = req[3];
+                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
+                    (long)(4u + wlen) <= req_len) {
+                    if (rlen) {
+                        ok = i2c_usys_read_reg(addr, &req[4], (int)wlen,
+                                               &resp[1], (int)rlen);
+                    } else {
+                        ok = i2c_usys_write_bytes(addr, &req[4], (int)wlen);
+                    }
+                }
+            }
+            if (!ok) rlen = 0;
+            resp[0] = ok ? 1 : 0;
+            resp_len = 1u + rlen;
+            break;
+        }
         default:
             resp_len = 0;
             break;
@@ -1080,6 +1145,24 @@ static void i2c_task_body(void *arg) {
                 memcpy(&g_i2c_resp[1], &v, sizeof(v)); /* native byte order -- matches get_i32() */
             }
             chan_serve_reply(g_i2c_ep, ok ? 5u : 1u);
+            break;
+        }
+        case I2C_OP_XFER: {
+            bool ok = false;
+            uint32_t rlen = 0;
+            if (req_len >= 4) {
+                uint8_t addr = g_i2c_req[1];
+                uint32_t wlen = g_i2c_req[2];
+                rlen = g_i2c_req[3];
+                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
+                    (uint32_t)req_len >= 4u + wlen) {
+                    ok = i2c_xfer_raw(addr, &g_i2c_req[4], (int)wlen,
+                                      &g_i2c_resp[1], (int)rlen);
+                }
+            }
+            if (!ok) rlen = 0;
+            g_i2c_resp[0] = ok ? 1 : 0;
+            chan_serve_reply(g_i2c_ep, 1 + rlen);
             break;
         }
         case I2C_OP_EE_READ: {
@@ -1283,6 +1366,35 @@ bool i2c_rtc_write_time(const rtc_time_t *tm) {
         /* IPC failed -- fall through to direct access. */
     }
     return i2c_rtc_hw_write_time(tm);
+}
+
+/* Q4: the generic transfer, as every other public facade in this file works
+ * -- through the shared task when it is alive, straight at the hardware when
+ * it is not (during boot, before sched_init(), or on a target with no task).
+ * That is what lets drivers/bme280.c be ordinary M-mode code with no
+ * knowledge of the task at all. */
+bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
+              uint8_t *r, uint32_t rlen) {
+    if (wlen > I2C_XFER_WMAX || rlen > I2C_XFER_RMAX) return false;
+    if ((wlen && !w) || (rlen && !r)) return false;
+
+    if (i2c_task_alive()) {
+        uint8_t req[4 + I2C_XFER_WMAX];
+        uint8_t resp[1 + I2C_XFER_RMAX];
+        req[0] = I2C_OP_XFER;
+        req[1] = addr;
+        req[2] = (uint8_t)wlen;
+        req[3] = (uint8_t)rlen;
+        if (wlen) memcpy(&req[4], w, wlen);
+        int n = i2c_task_call(req, 4u + wlen, resp, sizeof(resp));
+        if (n < 1 || resp[0] != 1) return false;
+        if (rlen) {
+            if ((uint32_t)n < 1u + rlen) return false;
+            memcpy(r, &resp[1], rlen);
+        }
+        return true;
+    }
+    return i2c_xfer_raw(addr, w, (int)wlen, r, (int)rlen);
 }
 
 bool i2c_rtc_read_temperature_c(int *temp_c) {

@@ -1436,6 +1436,14 @@ Four things worth recording:
   **It gets its own milestone when the first sensor persona wants one**, not a
   corner of R2: the thing that makes it worth building is a board that needs
   it, and there is not one yet.
+
+  *Discharged 2026-09-05.* The first sensor persona is planned
+  (`plan/phase26_mqtt_and_environment_sensors.md`) and it does **not** want
+  one: `netcfg` plus a router reservation on the radio's MAC already brings a
+  board up unattended, and the cost this bullet named -- hand-assigning
+  addresses across several nodes -- is paid on the router either way. Still no
+  DHCP, with the reason updated rather than merely repeated; see that phase's
+  §8.
 * **Confidentiality on the wire.** Phase 18 §1's threat model is inherited
   unchanged: auth proves who attaches, and does not hide what they then read.
 

@@ -1,12 +1,13 @@
 {
-  "heap_bytes": 364544,
-  "heap_pages": 89,
+  "heap_bytes": 360448,
+  "heap_pages": 88,
   "per_file": {
     "arch/riscv/common/elf.c": 1456,
     "arch/riscv/common/mem_domain.c": 8,
     "arch/riscv/common/trap.c": 2694,
     "arch/riscv/rv32_nommu/vmm.c": 4,
     "drivers/at24c32.c": 1,
+    "drivers/bme280.c": 81,
     "drivers/edgecap.c": 21,
     "drivers/enc28j60_rp2350.c": 1612,
     "drivers/i2c_rtc.c": 856,
@@ -39,16 +40,18 @@
     "kernel/printk.c": 20,
     "kernel/random.c": 8,
     "kernel/sched.c": 1369,
-    "kernel/shell.c": 246,
+    "kernel/shell.c": 635,
     "kernel/smp.c": 8,
     "kernel/ticker.c": 37,
     "kernel/time.c": 33,
     "kernel/timezone.c": 4,
     "net/arp.c": 196,
+    "net/mqtt.c": 244,
+    "net/mqttd.c": 644,
     "net/netif.c": 12,
     "net/ntp.c": 64,
     "net/stack.c": 169,
-    "net/tcp.c": 243,
+    "net/tcp.c": 275,
     "net/udp.c": 48,
     "user/chibicc/codegen.c": 81,
     "user/chibicc/main.c": 8,
@@ -59,5 +62,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 133386
+  "total": 134776
 }

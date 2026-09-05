@@ -3922,6 +3922,759 @@ def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str
         arch_img.unlink(missing_ok=True)
 
 
+def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q4: the BMP280/BME280 compensation arithmetic, with no sensor.
+
+    The raw registers are meaningless without the per-part calibration
+    constants, and t_fine from the temperature step feeds both of the others
+    -- so an error in temperature quietly corrupts all three. These are twenty
+    lines of shifts and magic constants where a misplaced >>12 yields
+    plausible-looking nonsense, which is exactly the failure a reading on a
+    desk does not catch.
+
+    So the guest computes the datasheet vector and this checks it against
+    tools/bme280_reference.py, a separate transcription of the same formulas.
+    Agreement shows the arithmetic was not mistyped. It does *not* prove the
+    register map -- both transcriptions read the same map from the same page
+    -- which is what Q4's hardware exit criterion and a golden vector from a
+    real part are for, and the plan says so rather than claiming more.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import bme280_reference
+
+    name = "BME280: Datasheet Compensation Against An Independent Reference"
+    want_t, want_p, want_h = bme280_reference.compensate(
+        bme280_reference.VECTOR_CAL, **bme280_reference.VECTOR_RAW)
+
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("sensor selftest\n",
+                                          r"bme280 selftest: \d+ case", timeout=6.0)
+        if not ok:
+            return (name, False, f"`sensor selftest` did not answer: {log[-400:]}")
+        m = re.search(r"bme280 selftest: (\d+) case", log)
+        if not m or int(m.group(1)) != 0:
+            return (name, False,
+                    f"the compensation does not match the reference "
+                    f"(expected {want_t}, {want_p}, {want_h}):\n{log[-700:]}")
+
+        # With no sensor fitted -- and there is none on either QEMU target --
+        # the driver must say so rather than report zeroes as a measurement.
+        ok, log = session.send_and_expect("sensor\n", r"sensor: |@0x", timeout=6.0)
+        if not ok:
+            return (name, False, f"`sensor` did not answer: {log[-400:]}")
+        if "none found" not in log:
+            return (name, False,
+                    f"a target with no I2C controller reported a sensor:\n{log[-500:]}")
+
+        return (name, True,
+                f"temperature {want_t/100:.2f} C, pressure {want_p/25600:.2f} hPa, "
+                f"humidity {want_h/1024:.1f} %RH -- bit-identical to the reference")
+    finally:
+        session.close()
+
+
+def test_mqtt_varint(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q1: the Remaining Length varint, at every boundary, with no network.
+
+    The only arithmetic in MQTT and the only place a wrong implementation
+    desynchronises a stream *silently* rather than failing -- so it is a pure
+    function built for every target, and this runs it on both QEMU
+    architectures. The same argument CMakeLists.txt already makes for
+    net/ntp.c and kernel/sha256.c: arithmetic should not be debugged by
+    flashing.
+    """
+    name = "MQTT: Remaining Length Varint At Every Boundary"
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("mqtt selftest\n", r"mqtt selftest: \d+ case", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqtt selftest` did not answer: {log[-400:]}")
+        m = re.search(r"mqtt selftest: (\d+) case", log)
+        if not m or int(m.group(1)) != 0:
+            return (name, False, f"the varint codec failed its own boundary vector:\n{log[-700:]}")
+        return (name, True, "every boundary, both malformed shapes, and the truncated case")
+    finally:
+        session.close()
+
+
+def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q1, plan/phase26_mqtt_and_environment_sensors.md: an MQTT 3.1.1 client
+    against a real broker on a real socket.
+
+    tests/mqttbroker.py speaks the actual protocol over TCP and records every
+    byte, so this asserts on what the client *sent* -- the protocol name and
+    level, the flags, the keepalive, the client id, the credentials -- rather
+    than merely on whether something happened. Reached through slirp at
+    10.0.2.2, the same path test_tcp_stream proved.
+
+    Both outcomes are covered in one session: a broker that refuses with
+    "bad username or password" (CONNACK 0x04), which must produce a
+    distinguishable error rather than a hang, and one that accepts, which must
+    carry a publish through with its payload intact.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Client: CONNECT, Refusal, PUBLISH, DISCONNECT"
+    refusing = MqttBroker(connack_rc=4)
+    accepting = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        # 1. A broker that says no. The reason has to survive to the console:
+        # "rc=4" is not a diagnosis, and a wrong password is the single most
+        # common thing to debug against a real broker.
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{refusing.port} someone wrongpass\n",
+            r"mqtt: (the broker rejected|.*refused|.*did not answer)", timeout=25.0)
+        if not ok:
+            return (name, False, f"a refused CONNECT produced no verdict:\n{log[-700:]}")
+        if "bad username or password" not in log:
+            return (name, False,
+                    f"the broker's refusal reason did not reach the console:\n{log[-700:]}")
+        if not refusing.wait_for_connect(timeout=5.0):
+            return (name, False, "the refusing broker never saw a CONNECT")
+        c = refusing.connect
+        if c.protocol != "MQTT" or c.level != 4:
+            return (name, False, f"not MQTT 3.1.1 on the wire: protocol={c.protocol!r} level={c.level}")
+        if c.username != "someone" or c.password != "wrongpass":
+            return (name, False, f"credentials did not arrive as sent: {c!r}")
+
+        # 2. A broker that accepts, and a publish that has to arrive intact.
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{accepting.port}\n",
+            r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
+        if not ok or "CONNECTED" not in log:
+            return (name, False, f"the client did not connect:\n{log[-700:]}")
+        if not accepting.wait_for_connect(timeout=5.0):
+            return (name, False, "the accepting broker never saw a CONNECT")
+        c = accepting.connect
+        if not c.clean_session:
+            return (name, False, "clean-session was not set")
+        if c.keepalive != 60:
+            return (name, False, f"keepalive was {c.keepalive}, not the 60 s default")
+        if not c.client_id:
+            return (name, False, "the client id was empty -- node_name() should supply one")
+        if c.username is not None:
+            return (name, False, f"a username was sent when none was configured: {c!r}")
+
+        payload = "21.94"
+        ok, log = session.send_and_expect(
+            f"mqtt pub lugalos/test/temperature {payload}\n",
+            r"mqtt: published|mqtt: ", timeout=15.0)
+        if not ok or "published" not in log:
+            return (name, False, f"the publish did not go out:\n{log[-500:]}")
+        if not accepting.wait_for_publish(timeout=10.0):
+            return (name, False, "the broker never received the PUBLISH")
+        pub = accepting.publishes[0]
+        if pub.topic != "lugalos/test/temperature":
+            return (name, False, f"topic arrived as {pub.topic!r}")
+        if pub.payload != payload.encode():
+            return (name, False, f"payload arrived as {pub.payload!r}, not {payload!r}")
+        if pub.qos != 0:
+            return (name, False, f"published at QoS {pub.qos}, not 0")
+
+        # 3. A clean DISCONNECT, which is what tells a broker not to publish
+        # the will -- the difference between "went away" and "meant to go".
+        ok, log = session.send_and_expect("mqtt disconnect\n", r"mqtt: disconnected", timeout=10.0)
+        if not ok:
+            return (name, False, f"disconnect did not report: {log[-400:]}")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not accepting.disconnected_cleanly:
+            time.sleep(0.05)
+        if not accepting.disconnected_cleanly:
+            return (name, False, "the broker never saw a DISCONNECT packet")
+
+        return (name, True,
+                f"CONNECT asserted byte-for-byte, refusal reported as "
+                f"\"bad username or password\", publish and clean disconnect")
+    finally:
+        session.close()
+        refusing.close()
+        accepting.close()
+
+
+def test_mqttd_publish_rules(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q5b: the per-measurement publish rule -- rate limit, change threshold,
+    and heartbeat.
+
+    A sensor node that publishes on a fixed drumbeat is either too chatty or
+    too slow, and averaging over one reading is not averaging. So each source
+    carries a rule: publish when the filtered value has moved by `delta`, but
+    never more often than `min`, and always at least every `max`.
+
+    Those are three different behaviours and this checks them separately,
+    because a test that only counts messages passes for the wrong reasons.
+    The synthetic source counts up by one per sample, which makes each rule's
+    effect arithmetic rather than a matter of taste:
+
+      * **rate limit** -- the value changes every single sample, so a rule
+        with a large `min` must still publish only about once per `min`;
+      * **heartbeat** -- a `delta` the counter can never reach means change
+        never triggers, so every publish that does happen is the heartbeat,
+        arriving about every `max`.
+
+    Timings are asserted as ranges with real slack: this is a guest under
+    QEMU talking to a socket, and the point is to catch a rule that does not
+    work at all, not to measure a scheduler.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Appliance: Rate Limit, Change Threshold And Heartbeat"
+    broker = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        ok, log = session.send_and_expect("mqttd fake\n", r"synthetic source", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not register a source: {log[-400:]}")
+
+        # --- 1. Rate limit. The counter moves every sample and delta is 0, so
+        # only min_interval can hold it back.
+        ok, log = session.send_and_expect(
+            "mqttd rule fake 4 600 0 0\n", r"publishes on a move of", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqttd rule` was not accepted: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            f"mqttd start 10.0.2.2:{broker.port} 1\n",
+            r"mqttd: started as pid \d+", timeout=10.0)
+        if not ok:
+            return (name, False, f"mqttd did not start: {log[-500:]}")
+        if not broker.wait_for_connect(timeout=25.0):
+            return (name, False, "mqttd never connected")
+
+        time.sleep(17.0)
+        fakes = [p for p in broker.publishes if p.topic.endswith("/fake")]
+        # ~17 s at one publish per 4 s, plus the first one on connect.
+        if not (3 <= len(fakes) <= 7):
+            return (name, False,
+                    f"a 4 s rate limit over ~17 s produced {len(fakes)} publishes; "
+                    f"expected about 5 (sampling was once a second, and the value "
+                    f"changed every sample)")
+
+        # --- 2. Heartbeat. A delta the counter cannot reach in one step means
+        # change never fires, so what arrives is the heartbeat alone.
+        ok, log = session.send_and_expect(
+            "mqttd rule fake 1 5 100000 0\n", r"publishes on a move of", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not set the heartbeat rule: {log[-400:]}")
+        before = len(broker.publishes)
+        time.sleep(16.0)
+        beats = [p for p in broker.publishes[before:] if p.topic.endswith("/fake")]
+        if not (2 <= len(beats) <= 5):
+            return (name, False,
+                    f"a 5 s heartbeat over ~16 s produced {len(beats)} publishes; "
+                    f"expected about 3. A value that never changes must still be "
+                    f"reported, or it cannot be told from a dead node")
+        # And they must be *fresh* samples, not the same number resent.
+        values = [int(p.payload) for p in beats]
+        if len(set(values)) != len(values):
+            return (name, False, f"the heartbeat resent a stale value: {values}")
+
+        return (name, True,
+                f"rate limit held a per-sample change to {len(fakes)} publishes, "
+                f"and a value that never moved enough still beat {len(beats)} times")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_mqtt_config_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q6, plan/phase26_mqtt_and_environment_sensors.md: the broker lives in
+    the identity record, and a stored broker is the intent to publish.
+
+    The same shape as test_wlan_credential_roundtrip, and for the same reason:
+    a field is only useful if the host writer and the on-device reader agree
+    about its bytes, and the cheapest way to be sure is to have one write it
+    and the other read it back. tools/provision.py's build_mqtt_blob() and
+    kernel/identity.c's mqtt_serialise() are two implementations of one
+    layout, so this is the test that stops them drifting.
+
+    Then the part that makes it a milestone rather than a field: **nothing is
+    typed**. The board is booted with a record and `mqttd` has to be running,
+    dialling the stored broker, because a stored broker is the intent to
+    publish -- exactly the rule stored WLAN credentials already follow for
+    joining. There is no enable flag to forget.
+    """
+    import shutil
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Config In The Identity Record, And An Autostart With Nothing Typed"
+    arch_img = img_path.with_name(f"test_{arch_name}_mqttcfg_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    broker = MqttBroker()
+    # 10.0.2.2 is the host as slirp presents it, so the record points the
+    # guest at this very broker.
+    spec = f"10.0.2.2:{broker.port},sensors,hunter2"
+    id_img = img_path.with_name(f"test_{arch_name}_mqttcfg_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes(range(8))),
+        (provision.FIELD_NAME, b"sensor-node"),
+        (provision.FIELD_IPV4, bytes(int(o) for part in
+            ("10.0.2.15", "255.255.255.0", "10.0.2.2") for o in part.split("."))),
+        (provision.FIELD_MQTT, provision.build_mqtt_blob(spec, 2)),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=10.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. Nothing has been typed, and mqttd must already be dialling the
+        # stored broker with the record's credentials.
+        #
+        # Asserted *before* anything is typed, and not only because it is the
+        # milestone: mqttd logs its connection to the console, and typing into
+        # a line editor while the guest is printing interleaves the two and
+        # garbles the command. Let the noisy part finish first.
+        if not broker.wait_for_connect(timeout=40.0):
+            return (name, False,
+                    "mqttd did not autostart: a stored broker is meant to be the intent "
+                    "to publish, with no separate enable flag")
+        c = broker.connect
+        if c.username != "sensors" or c.password != "hunter2":
+            return (name, False, f"the record's credentials did not reach CONNECT: {c!r}")
+        if c.client_id != "sensor-node":
+            return (name, False,
+                    f"client id was {c.client_id!r}; it should be the record's node name")
+        time.sleep(1.0)
+
+        # 2. The device reads back what the host wrote.
+        ok, log = session.send_and_expect("mqttcfg\n", r"^broker :", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqttcfg` did not answer: {log[-400:]}")
+        if not re.search(rf"^broker : 10\.0\.2\.2:{broker.port}\b", log, re.MULTILINE):
+            return (name, False, f"the stored broker did not read back:\n{log[-600:]}")
+        if not re.search(r"^user   : sensors\b", log, re.MULTILINE):
+            return (name, False, f"the stored username did not read back:\n{log[-600:]}")
+        if not re.search(r"^pass   : set\b", log, re.MULTILINE):
+            return (name, False, f"the password should read back as `set`:\n{log[-600:]}")
+        if "hunter2" in log:
+            return (name, False, "the password was printed back; it must only ever be named")
+
+        # 3. It is on /proc/node too, so a board can be asked over 9P what it
+        # will do before it is rebooted.
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^mqtt:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+        if not re.search(rf"^mqtt: 10\.0\.2\.2:{broker.port} user sensors pass set",
+                         log, re.MULTILINE):
+            return (name, False, f"/proc/node does not report the broker:\n{log[-600:]}")
+        if "hunter2" in log:
+            return (name, False, "/proc/node printed the password")
+
+        # 4. And it can be withdrawn again, or a stale broker could only ever
+        # be overwritten, never removed.
+        ok, log = session.send_and_expect("mqttcfg clear\n", r"mqttcfg: cleared", timeout=8.0)
+        if not ok:
+            return (name, False, f"`mqttcfg clear` did not report: {log[-400:]}")
+        ok, log = session.send_and_expect("mqttcfg\n", r"broker : none stored", timeout=6.0)
+        if not ok:
+            return (name, False, f"the broker survived a clear:\n{log[-500:]}")
+
+        # 5. Clearing it must not have taken the address with it -- the record
+        # is rewritten whole on every write, and a field that is not carried
+        # forward is a field that is silently lost.
+        ok, log = session.send_and_expect("netcfg\n", r"^address:", timeout=6.0)
+        if not ok:
+            return (name, False, f"`netcfg` did not answer: {log[-400:]}")
+        if not re.search(r"^address: 10\.0\.2\.15\b", log, re.MULTILINE):
+            return (name, False,
+                    f"clearing the broker dropped the stored address:\n{log[-500:]}")
+
+        return (name, True,
+                "host-written record read back on the device, reported by /proc/node "
+                "without the password, autostarted with nothing typed, and cleared "
+                "without disturbing the address beside it")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_mqtt_subscribe(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q3: the inbound half -- SUBSCRIBE, a delivered PUBLISH, and the two
+    ways a broker can desynchronise a small client.
+
+    The happy path is the least interesting third of this. What matters is
+    §3.5's bounds, because inbound PUBLISH is the only place this client
+    parses bytes a stranger chose:
+
+      * **an oversize packet must be consumed, not dropped.** A client that
+        drops the bytes it cannot hold is left mid-packet forever, and every
+        subsequent byte is read as a header. The check is not that the big one
+        is discarded -- it is that the *next small one still arrives*.
+      * **a malformed Remaining Length must close the connection.** There is
+        no resynchronising a stream whose framing is wrong, and carrying on is
+        how a parser starts executing whatever follows.
+
+    A broker that could only behave correctly could not test either.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker, encode_varint
+
+    name = "MQTT Subscribe: Delivery, An Oversize Packet, And Broken Framing"
+    broker = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{broker.port}\n", r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
+        if not ok or "CONNECTED" not in log:
+            return (name, False, f"the client did not connect:\n{log[-600:]}")
+
+        # 1. SUBSCRIBE, and the broker's granted QoS.
+        ok, log = session.send_and_expect(
+            "mqtt sub lugalos/cmd/#\n", r"mqtt: subscribed|mqtt: ", timeout=15.0)
+        if not ok or "subscribed" not in log:
+            return (name, False, f"subscribe did not complete:\n{log[-600:]}")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not broker.subscriptions:
+            time.sleep(0.05)
+        if "lugalos/cmd/#" not in broker.subscriptions:
+            return (name, False, f"the broker saw {broker.subscriptions!r}, not the filter sent")
+
+        # 2. A delivered message. The client is pumped by whatever command is
+        # running, so a publish is issued alongside to give it a turn.
+        broker.publish("lugalos/cmd/hello", b"world")
+        ok, log = session.send_and_expect(
+            "mqtt pub lugalos/tick 1\n", r"lugalos/cmd/hello -> world", timeout=15.0)
+        if not ok:
+            return (name, False, f"the subscribed message was not delivered:\n{log[-700:]}")
+
+        # 3. An oversize PUBLISH -- four times the reassembly buffer. The
+        # client must swallow it whole and stay in frame, which is proved by
+        # the small one after it arriving normally.
+        broker.publish("lugalos/cmd/big", b"X" * 4096)
+        time.sleep(1.0)
+        broker.publish("lugalos/cmd/after", b"still-here")
+        ok, log = session.send_and_expect(
+            "mqtt pub lugalos/tick 2\n", r"lugalos/cmd/after -> still-here", timeout=20.0)
+        if not ok:
+            return (name, False,
+                    f"the stream did not survive an oversize packet -- the client is "
+                    f"desynchronised, which is what consuming the bytes exists to "
+                    f"prevent:\n{log[-700:]}")
+
+        # 4. Broken framing: a Remaining Length with a fifth continuation
+        # byte, which no valid packet contains. The connection must close
+        # rather than the parser carrying on into the payload.
+        broker._send(bytes([0x30, 0xff, 0xff, 0xff, 0xff, 0x7f]) + b"junk")
+        # The connection pump wakes every 200 ms, so the close is not instant.
+        # Poll the status rather than reading it once and racing it.
+        closed = False
+        deadline = time.time() + 20.0
+        while time.time() < deadline and not closed:
+            ok, log = session.send_and_expect("mqtt\n", r"state (CLOSED|CONNECTED)", timeout=10.0)
+            if not ok:
+                return (name, False,
+                        f"`mqtt` did not report after the malformed packet: {log[-400:]}")
+            closed = "CLOSED" in log
+            if not closed:
+                time.sleep(1.0)
+        if not closed:
+            return (name, False,
+                    f"a malformed Remaining Length left the connection open; there is no "
+                    f"resynchronising a stream whose framing is wrong:\n{log[-500:]}")
+
+        return (name, True,
+                "subscribed and delivered, survived a 4 KB packet with the next one "
+                "still arriving, and closed on a fifth continuation byte")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_mqttd_appliance(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q5, plan/phase26_mqtt_and_environment_sensors.md: the task that makes a
+    sensor node an appliance -- and specifically what it does when the broker
+    goes away.
+
+    The interesting behaviour of an unattended publisher is not that it
+    publishes. It is:
+
+      * the retained "online" it announces on connect, and the retained
+        "offline" *will* the broker publishes when the node stops without
+        saying goodbye -- a subscriber cannot otherwise tell "quiet because
+        nothing changed" from "gone";
+      * that it keeps publishing on its period without anyone typing;
+      * that when the broker dies mid-run it reconnects, re-announces, and
+        resumes -- forever, with backoff.
+
+    All of which is hard to arrange on hardware and trivial here: the broker
+    is a Python object that can simply be closed and replaced on the same
+    port. `mqttd fake` supplies a synthetic counting source, so this runs on
+    targets with no I2C controller at all -- which is both QEMU ones.
+    """
+    import threading  # noqa: F401  (imported for symmetry with the peers above)
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Appliance: Announce, Publish On A Period, Survive A Dead Broker"
+    broker = MqttBroker()
+    port = broker.port
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        ok, log = session.send_and_expect("mqttd fake\n", r"synthetic source", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not register a source: {log[-400:]}")
+
+        # A two-second period, so a handful of cycles fit in a test rather than
+        # in an afternoon.
+        ok, log = session.send_and_expect(
+            f"mqttd start 10.0.2.2:{port} 2\n", r"mqttd: started as pid \d+", timeout=10.0)
+        if not ok:
+            return (name, False, f"mqttd did not start: {log[-500:]}")
+
+        if not broker.wait_for_connect(timeout=25.0):
+            return (name, False, "mqttd never connected to the broker")
+
+        # 1. The will is registered as part of CONNECT, not published later --
+        # that is the whole point of it.
+        c = broker.connect
+        if c.will_topic is None:
+            return (name, False, f"no will was registered: {c!r}")
+        if not c.will_topic.endswith("/status") or c.will_payload != "offline":
+            return (name, False, f"the will is not the status pair: {c!r}")
+        if not c.will_retain:
+            return (name, False, "the will is not retained, so a late subscriber learns nothing")
+
+        # 2. "online" retained, then measurements on the period.
+        if not broker.wait_for_publish(timeout=20.0, count=4):
+            got = len(broker.publishes)
+            return (name, False,
+                    f"expected an announcement and several measurements, saw {got}")
+        first = broker.publishes[0]
+        if not first.topic.endswith("/status") or first.payload != b"online":
+            return (name, False, f"the first publish was not the announcement: {first!r}")
+        if not first.retain:
+            return (name, False, "the announcement is not retained")
+
+        measurements = [p for p in broker.publishes if p.topic.endswith("/fake")]
+        if len(measurements) < 2:
+            return (name, False,
+                    f"expected repeated measurements, saw {len(measurements)}")
+        # The synthetic source counts up, so this also proves each publish is a
+        # fresh sample rather than the same one resent.
+        values = [int(p.payload) for p in measurements[:3]]
+        if values != sorted(values) or len(set(values)) != len(values):
+            return (name, False, f"measurements did not advance: {values}")
+
+        # 3. The broker dies. A new one takes the same port, and the node has
+        # to find its way back with no help.
+        broker.close()
+        # The replacement listens on the port mqttd is already dialling -- the
+        # node gets no help finding it, which is the point.
+        revived = MqttBroker(port=port)
+        try:
+            if not revived.wait_for_connect(timeout=90.0):
+                return (name, False,
+                        "mqttd did not reconnect after the broker was replaced")
+            if not revived.wait_for_publish(timeout=30.0, count=2):
+                return (name, False, "reconnected, but stopped publishing")
+            again = revived.publishes[0]
+            if not again.topic.endswith("/status") or again.payload != b"online":
+                return (name, False,
+                        f"did not re-announce itself after reconnecting: {again!r}")
+        finally:
+            revived.close()
+
+        return (name, True,
+                "will registered at CONNECT, retained online/offline pair, "
+                "measurements advancing on the period, and a reconnect that "
+                "re-announced itself")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_tcp_stream(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q0, plan/phase26_mqtt_and_environment_sensors.md: a TCP connection
+    carrying bytes rather than 9P frames.
+
+    Until Q0 the only thing that could speak over a connection was 9P, because
+    the framing assumption lived in link_poll()/link_recv_frame() -- so an
+    MQTT client (Q1) needed a second *view* of a connection, not a second
+    transport. This proves the view: 64 KB out and 64 KB back, in order, byte
+    for byte, through a real socket on the host.
+
+    **The peer is an ordinary host echo server, not a packet-level peer.**
+    tests/netpeer.py exists for what a socket cannot do (a RST mid-stream, a
+    lost segment) and test_tcp_under_impairment already uses it for that. What
+    is under test here is the opposite: that a long, boring, correct
+    conversation stays correct, which a real TCP stack on the other end is the
+    honest way to check. QEMU's slirp puts the host at 10.0.2.2, so the guest
+    dials a listener on the host's loopback with no forwarding rule needed.
+
+    The pattern is position-dependent (see echotest_byte() in kernel/shell.c),
+    so a run of bytes that is duplicated, dropped or reordered fails the
+    comparison -- not only a corrupted one. The guest does the comparing, and
+    reports the first offset that disagreed.
+    """
+    import threading
+
+    name = "TCP Byte Stream: 64 KB Round Trip Through A Host Echo Server"
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    srv.settimeout(30.0)
+
+    seen = {"bytes": 0, "eof": False, "error": None}
+
+    def echo() -> None:
+        """Echoes until the peer closes. A graceful FIN from the guest shows up
+        here as a clean EOF; a reset shows up as ECONNRESET, which is the
+        difference tcp_stream_close() is asserted on below."""
+        try:
+            conn, _ = srv.accept()
+            conn.settimeout(30.0)
+            with conn:
+                while True:
+                    b = conn.recv(4096)
+                    if not b:
+                        seen["eof"] = True
+                        break
+                    seen["bytes"] += len(b)
+                    conn.sendall(b)
+        except Exception as exc:  # noqa: BLE001 -- reported, not raised, from a thread
+            seen["error"] = repr(exc)
+
+    thread = threading.Thread(target=echo, daemon=True)
+    thread.start()
+
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 10.0.2.15/24 with 10.0.2.2 as the gateway is slirp's own layout; the
+        # gateway address is also the host, which is what makes the echo
+        # server reachable without a hostfwd rule.
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        ok, log = session.send_and_expect(
+            f"net echotest 10.0.2.2 {port} 65536\n",
+            r"echotest (ok,|failed|MISMATCH)", timeout=45.0)
+        if not ok:
+            return (name, False,
+                    f"no verdict from `net echotest` in 45 s -- the stream stalled "
+                    f"(host saw {seen['bytes']} bytes):\n{log[-700:]}")
+        if "MISMATCH" in log:
+            return (name, False, f"the echoed bytes are not the bytes sent:\n{log[-500:]}")
+        if "echotest failed" in log:
+            return (name, False, f"the stream did not complete:\n{log[-500:]}")
+
+        # The guest says it round-tripped 64 KB; the host has to agree, or the
+        # guest compared something it generated against itself.
+        thread.join(timeout=10.0)
+        if seen["bytes"] != 65536:
+            return (name, False,
+                    f"the guest reported success but the host echoed {seen['bytes']} "
+                    f"bytes, not 65536 (thread error: {seen['error']})")
+        if not seen["eof"]:
+            return (name, False,
+                    f"the connection did not close gracefully -- the host never saw EOF "
+                    f"(error: {seen['error']}). tcp_stream_close() must send a FIN, not a reset.")
+
+        # /proc/net has to name it as a stream, which is what distinguishes a
+        # connection the 9P server must never be offered from one it serves.
+        ok, log = session.send_and_expect("net\n", r"arp cache", timeout=8.0)
+        if not ok:
+            return (name, False, f"`net` did not answer after the transfer: {log[-400:]}")
+        if "stream" not in log:
+            return (name, False,
+                    f"the connection is not reported as a stream, so a p9_link_t face "
+                    f"may have been installed on it:\n{log[-600:]}")
+
+        return (name, True, "64 KB echoed byte-for-byte, closed with a FIN, reported as a stream")
+    finally:
+        session.close()
+        srv.close()
+
+
 def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R3, plan/phase19_ip_stack_and_ethernet.md: the TCP state machine, driven
     by a client with no stack under it.
@@ -5951,6 +6704,14 @@ def main() -> int:
         _run_single(test_ntp_server(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_ntp_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_tcp_stream(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_varint(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_bme280_compensation(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqttd_appliance(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqttd_publish_rules(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_config_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_subscribe(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -5988,6 +6749,14 @@ def main() -> int:
         _run_single(test_ntp_server(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_ntp_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_tcp_stream(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_varint(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_bme280_compensation(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqttd_appliance(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqttd_publish_rules(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_config_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_subscribe(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))

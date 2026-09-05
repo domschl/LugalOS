@@ -32,6 +32,7 @@ static const char *kind_name(dev_kind_t k) {
         case DEV_KIND_CLOCK:   return "clock";
         case DEV_KIND_EEPROM:  return "eeprom";
         case DEV_KIND_BLOCK:   return "block";
+        case DEV_KIND_SENSOR:  return "sensor";
         case DEV_KIND_NETIF:   return "netif";
     }
     return "?";

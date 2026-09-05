@@ -225,6 +225,50 @@ bool node_grants(char *out, uint32_t cap, uint32_t *len_out);
  * to would be a worse failure than not having one. */
 node_id_result_t node_identity_set_grants(const char *text, uint32_t len);
 
+/* --- Q6, plan/phase26_mqtt_and_environment_sensors.md: where this node
+ * publishes ---
+ *
+ * The same argument the address itself settled (README §4b): the identity
+ * record, not init.lisp. The /flash0 image is byte-identical on every board
+ * and that is worth keeping; the record is already per-board, already
+ * survives reflashing, and already holds a credential.
+ *
+ * **A stored broker is the intent to publish**, with no separate enable flag
+ * -- exactly the rule stored WLAN credentials already follow for joining. A
+ * board with no broker on record runs `mqttd` not at all. */
+#define NODE_MQTT_USER_MAX    63
+#define NODE_MQTT_PASS_MAX    63
+#define NODE_MQTT_PREFIX_MAX  31
+
+/* ip[4] + three u16 + three length-prefixed strings, at their maxima. */
+#define NODE_MQTT_BLOB_MAX (4u + 6u + (1u + NODE_MQTT_USER_MAX) + \
+                            (1u + NODE_MQTT_PASS_MAX) + (1u + NODE_MQTT_PREFIX_MAX))
+
+typedef struct {
+    uint8_t  broker[NODE_IPV4_LEN];
+    uint16_t port;
+    uint16_t sample_s;
+    uint16_t keepalive_s;
+    char     username[NODE_MQTT_USER_MAX + 1];
+    char     password[NODE_MQTT_PASS_MAX + 1];
+    char     prefix[NODE_MQTT_PREFIX_MAX + 1];
+} node_mqtt_t;
+
+/* Whether the identity store reads back valid *at this moment*. Boot-time
+ * callers need it because "nothing stored" and "not readable yet" are
+ * different answers with the same shape -- see the implementation. */
+bool node_record_readable(void);
+
+/* False when no broker is on record, which is the normal state of every board
+ * that is not a sensor node. */
+bool node_mqtt(node_mqtt_t *out);
+
+/* `mqttcfg <ip>[:port] [user [pass]]` and tools/provision.py --mqtt. A broker
+ * of 0.0.0.0 is refused: it is not an address, and storing it would make a
+ * board retry forever against nothing. */
+node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg);
+node_id_result_t node_identity_clear_mqtt(void);
+
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
                                         const uint8_t mask[NODE_IPV4_LEN],
                                         const uint8_t gw[NODE_IPV4_LEN]);

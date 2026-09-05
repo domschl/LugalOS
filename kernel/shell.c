@@ -16,6 +16,7 @@
 #include "kernel/time.h"
 #include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/bme280.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -48,6 +49,8 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/ntp.h"
+#include "net/mqtt.h"
+#include "net/mqttd.h"
 #include "drivers/edgecap.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
@@ -136,8 +139,14 @@ static void cmd_help(void) {
     cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
     cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
     cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
+    cprintf("  net echotest <ip> <port> [bytes] - Round-trip bytes through a TCP echo server\n");
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
+    cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>\n");
+    cprintf("       |sub <filter>|unsub <filter>|disconnect]\n");
+    cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
+    cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>]\n");
+    cprintf("  mqttcfg [<ip>[:port] [sample_s] [user [pass]]|clear] - broker kept in the record\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -465,6 +474,463 @@ static void cmd_net_udpecho(unsigned port) {
         return;
     }
     cprintf("net: echoing UDP on port %u\n", port);
+}
+
+/* `net echotest <ip> <port> [bytes]` -- Q0's byte stream, end to end.
+ *
+ * The counterpart to `net txtest`/`net rxtest` one layer up: those prove a
+ * driver moves frames, this proves a *connection* moves bytes in order and
+ * without loss. It dials an ordinary TCP echo server (tests/echoserver.py, or
+ * anything that returns what it is given), writes a position-dependent
+ * pattern and checks every byte that comes back against the same pattern --
+ * so a duplicated, dropped or reordered run is caught, not only a corrupted
+ * byte.
+ *
+ * The write loop is the part worth reading. tcp_stream_write() takes what
+ * fits and says how much, and the task that drains the buffer is `netsrv` --
+ * so the yield is not politeness, it is the only reason the loop terminates.
+ * Same shape as ntp_query()'s wait, and the same Ctrl-C check inside it. */
+static uint8_t echotest_byte(uint32_t i) {
+    return (uint8_t)(i * 31u + (i >> 8) * 7u + 13u);
+}
+
+static void cmd_net_echotest(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    char ipbuf[16];
+    uint32_t n = 0;
+    while (*arg && *arg != ' ' && n < sizeof(ipbuf) - 1) ipbuf[n++] = *arg++;
+    ipbuf[n] = '\0';
+
+    uint8_t ip[IPV4_LEN];
+    if (!ipv4_parse(ipbuf, ip)) {
+        cprintf("usage: net echotest <ip> <port> [bytes]\n");
+        return;
+    }
+    while (*arg == ' ') arg++;
+    unsigned port = 0;
+    while (*arg >= '0' && *arg <= '9') port = port * 10u + (unsigned)(*arg++ - '0');
+    if (port == 0 || port > 65535u) {
+        cprintf("usage: net echotest <ip> <port> [bytes]\n");
+        return;
+    }
+    while (*arg == ' ') arg++;
+    unsigned total = 0;
+    while (*arg >= '0' && *arg <= '9') total = total * 10u + (unsigned)(*arg++ - '0');
+    if (total == 0) total = 8192u;
+
+    tcp_stream_t st;
+    if (tcp_stream_open(&st, ip, (uint16_t)port) != 0) {
+        cprintf("net: could not open a stream (no address configured, or both "
+                "connection slots are busy)\n");
+        return;
+    }
+    console_interrupt_clear();
+    cprintf("net: echotest to %s:%u, %u bytes\n", ipbuf, port, total);
+
+    int rc;
+    uint64_t deadline = time_get_ms() + 5000u;
+    while ((rc = tcp_stream_ready(&st)) == 0) {
+        if (console_interrupt_requested()) {
+            cprintf("net: interrupted while connecting\n");
+            tcp_stream_close(&st);
+            return;
+        }
+        if (time_get_ms() >= deadline) {
+            cprintf("net: no answer to the SYN after 5 s\n");
+            tcp_stream_close(&st);
+            return;
+        }
+        sched_yield();
+    }
+    if (rc < 0) {
+        cprintf("net: connection refused or unreachable\n");
+        tcp_stream_close(&st);
+        return;
+    }
+
+    uint8_t wbuf[256], rbuf[256];
+    uint32_t sent = 0, got = 0;
+    uint32_t bad_at = 0xffffffffu;
+    const char *failed = NULL;
+    uint64_t t0 = time_get_ms();
+    uint64_t last_progress = t0;
+
+    while (got < total) {
+        bool progress = false;
+
+        if (sent < total) {
+            uint32_t chunk = total - sent;
+            if (chunk > sizeof(wbuf)) chunk = (uint32_t)sizeof(wbuf);
+            for (uint32_t i = 0; i < chunk; i++) wbuf[i] = echotest_byte(sent + i);
+            int w = tcp_stream_write(&st, wbuf, chunk);
+            if (w < 0) { failed = "the connection went away while writing"; break; }
+            if (w > 0) { sent += (uint32_t)w; progress = true; }
+        }
+
+        int r = tcp_stream_read(&st, rbuf, sizeof(rbuf));
+        if (r < 0) { failed = "the connection went away while reading"; break; }
+        if (r > 0) {
+            for (int i = 0; i < r; i++) {
+                if (rbuf[i] != echotest_byte(got + (uint32_t)i)) {
+                    bad_at = got + (uint32_t)i;
+                    break;
+                }
+            }
+            got += (uint32_t)r;
+            progress = true;
+            if (bad_at != 0xffffffffu) break;
+        }
+
+        if (console_interrupt_requested()) { failed = "interrupted"; break; }
+
+        if (progress) {
+            last_progress = time_get_ms();
+        } else if (time_get_ms() - last_progress > 5000u) {
+            failed = "stalled for 5 s with neither side moving";
+            break;
+        }
+        sched_yield();
+    }
+
+    uint64_t ms = time_get_ms() - t0;
+    bool peer_closed = tcp_stream_peer_closed(&st);
+    tcp_stream_close(&st);
+
+    if (bad_at != 0xffffffffu) {
+        cprintf("net: echotest MISMATCH at byte %lu (wrote %lu, read %lu)\n",
+                (unsigned long)bad_at, (unsigned long)sent, (unsigned long)got);
+    } else if (failed) {
+        cprintf("net: echotest failed -- %s (wrote %lu, read %lu of %u)\n",
+                failed, (unsigned long)sent, (unsigned long)got, total);
+    } else {
+        unsigned long rate = (unsigned long)(ms ? ((uint64_t)total * 1000u) / ms : 0u);
+        cprintf("net: echotest ok, %u bytes echoed in %lu ms (%lu B/s)%s\n",
+                total, (unsigned long)ms, rate,
+                peer_closed ? ", peer had closed" : "");
+    }
+}
+
+static void shell_mqtt_message(const char *topic, const uint8_t *payload,
+                               uint32_t len, bool retained, void *ctx);
+
+/* `mqtt ...` -- Q2, plan/phase26_mqtt_and_environment_sensors.md.
+ *
+ *   mqtt                              what the client is doing
+ *   mqtt selftest                     the varint boundary vector; no network
+ *   mqtt connect <ip>[:port] [user [pass]]
+ *   mqtt pub <topic> <payload...>
+ *   mqtt disconnect
+ *
+ * The connection is serviced while a command runs and not between commands:
+ * until `mqttd` (Q5) exists there is no task whose job that is, so a session
+ * left idle past the keepalive is dropped by the broker. Stated here because
+ * it looks like a bug and is a missing milestone. */
+static void cmd_mqtt(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    if (!*arg) { mqtt_print_status(); return; }
+
+    if (strncmp(arg, "selftest", 8) == 0) {
+        mqtt_selftest(true);
+        return;
+    }
+
+    if (strncmp(arg, "disconnect", 10) == 0) {
+        if (mqtt_state() == MQTT_CLOSED) { cprintf("mqtt: not connected\n"); return; }
+        mqtt_disconnect();
+        cprintf("mqtt: disconnected\n");
+        return;
+    }
+
+    if (strncmp(arg, "connect", 7) == 0) {
+        const char *a = arg + 7;
+        while (*a == ' ') a++;
+
+        char host[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && *a != ':' && n < sizeof(host) - 1u) host[n++] = *a++;
+        host[n] = '\0';
+
+        mqtt_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        if (!ipv4_parse(host, cfg.broker)) {
+            cprintf("usage: mqtt connect <ip>[:port] [user [password]]\n");
+            return;
+        }
+        if (*a == ':') {
+            a++;
+            unsigned port = 0;
+            while (*a >= '0' && *a <= '9') port = port * 10u + (unsigned)(*a++ - '0');
+            cfg.port = (uint16_t)port;
+        }
+
+        /* Username and password, each up to the next space. Copied into
+         * buffers with a lifetime past this call because mqtt_connect() keeps
+         * the config; the strings in `cmd_line` do not outlive the command. */
+        static char user[64], pass[64];
+        user[0] = pass[0] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(user) - 1u) user[n++] = *a++;
+        user[n] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(pass) - 1u) pass[n++] = *a++;
+        pass[n] = '\0';
+        if (user[0]) cfg.username = user;
+        if (pass[0]) cfg.password = pass;
+
+        if (pass[0] && !user[0]) {
+            cprintf("mqtt: MQTT 3.1.1 has no password without a username\n");
+            return;
+        }
+
+        console_interrupt_clear();
+        cprintf("mqtt: connecting to %s:%u...\n", host,
+                cfg.port ? cfg.port : (unsigned)MQTT_DEFAULT_PORT);
+        int rc = mqtt_connect(&cfg, 8000u);
+        if (rc != 0) {
+            cprintf("mqtt: %s\n", mqtt_err_str(rc));
+            return;
+        }
+        mqtt_print_status();
+        return;
+    }
+
+    if (strncmp(arg, "sub ", 4) == 0 || strncmp(arg, "unsub ", 6) == 0) {
+        bool sub = arg[0] == 's';
+        const char *a = arg + (sub ? 4 : 6);
+        while (*a == ' ') a++;
+        if (!*a) {
+            cprintf("usage: mqtt %s <topic-filter>\n", sub ? "sub" : "unsub");
+            return;
+        }
+        /* The filter is copied into a static: mqtt_subscribe() only needs it
+         * for the call, but the handler prints topics for the rest of the
+         * session and `cmd_line` is gone by then. */
+        static char filter[MQTT_TOPIC_MAX + 1];
+        strncpy(filter, a, sizeof(filter) - 1);
+        filter[sizeof(filter) - 1] = '\0';
+
+        console_interrupt_clear();
+        if (sub) mqtt_set_handler(shell_mqtt_message, NULL);
+        int rc = sub ? mqtt_subscribe(filter, 5000u) : mqtt_unsubscribe(filter, 5000u);
+        if (rc == MQTT_ERR_REFUSED) {
+            cprintf("mqtt: the broker declined \"%s\" -- usually an ACL\n", filter);
+            return;
+        }
+        if (rc != 0) { cprintf("mqtt: %s\n", mqtt_err_str(rc)); return; }
+        cprintf("mqtt: %ssubscribed %s \"%s\"\n", sub ? "" : "un",
+                sub ? "to" : "from", filter);
+        if (sub)
+            cprintf("      arrivals print as they come in, while something pumps the "
+                    "connection (`mqttd`, or another mqtt command)\n");
+        return;
+    }
+
+    if (strncmp(arg, "pub ", 4) == 0) {
+        const char *a = arg + 4;
+        while (*a == ' ') a++;
+        char topic[MQTT_TOPIC_MAX + 1];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && n < sizeof(topic) - 1u) topic[n++] = *a++;
+        topic[n] = '\0';
+        while (*a == ' ') a++;
+        if (!topic[0]) {
+            cprintf("usage: mqtt pub <topic> <payload>\n");
+            return;
+        }
+        console_interrupt_clear();
+        int rc = mqtt_publish(topic, a, (uint32_t)strlen(a), false);
+        if (rc != 0) { cprintf("mqtt: %s\n", mqtt_err_str(rc)); return; }
+        cprintf("mqtt: published %lu bytes to %s\n", (unsigned long)strlen(a), topic);
+        return;
+    }
+
+    cprintf("usage: mqtt [selftest | connect <ip>[:port] [user [pass]] | "
+            "pub <topic> <payload>\n");
+    cprintf("            | sub <filter> | unsub <filter> | disconnect]\n");
+}
+
+/* `sensor [selftest]` -- Q4, plan/phase26_mqtt_and_environment_sensors.md.
+ *
+ * With no argument: one forced-mode measurement, compensated, in units a
+ * person reads. `sensor selftest` runs the compensation arithmetic against a
+ * vector computed independently by tools/bme280_reference.py, and needs no
+ * sensor, no bus and no hardware -- which is why it runs in CI on both QEMU
+ * targets. */
+static void cmd_sensor(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (strncmp(arg, "selftest", 8) == 0) { bme280_selftest(true); return; }
+    if (strncmp(arg, "init", 4) == 0) {
+        bme280_part_t part = bme280_init();
+        cprintf("sensor: %s\n", part == BME280_PART_NONE
+                ? "nothing found at 0x76 or 0x77" : bme280_part_name());
+        return;
+    }
+    if (*arg) { cprintf("usage: sensor [selftest | init]\n"); return; }
+    bme280_print_status();
+}
+
+/* `mqttd ...` -- Q5, the appliance loop.
+ *
+ *   mqttd                          what it is doing
+ *   mqttd start <ip>[:port] [sample_s] [user [pass]]
+ *   mqttd stop
+ *   mqttd fake                     register a synthetic source (see below)
+ *   mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]
+ *
+ * `sample_s` is how often a source is *read*; how often it is published is
+ * the source's own rule, which is the point of having one.
+ *
+ * `mqttd fake` exists so the publish, reconnect and will machinery can be
+ * tested where there is no sensor -- which is every QEMU target, and is also
+ * where a broker can be killed mid-run on purpose. It counts up from zero so
+ * a test can tell one publish from the next. */
+/* Prints an inbound PUBLISH. Deliberately does nothing else: the client is
+ * inside its own lock when this runs, and the send buffer a reply would need
+ * is the one being drained. */
+static void shell_mqtt_message(const char *topic, const uint8_t *payload,
+                               uint32_t len, bool retained, void *ctx) {
+    (void)ctx;
+    cprintf("mqtt: %s%s -> ", topic, retained ? " (retained)" : "");
+    for (uint32_t i = 0; i < len && i < 200u; i++) {
+        char c = (char)payload[i];
+        /* A payload is arbitrary bytes from a stranger; printing a control
+         * character straight to a terminal is how a subscriber ends up
+         * repainting someone else's screen. */
+        cprintf("%c", (c >= 0x20 && c < 0x7f) ? c : '.');
+    }
+    if (len > 200u) cprintf("... (%lu bytes)", (unsigned long)len);
+    cprintf("\n");
+}
+
+static bool shell_fake_source(int32_t *out, void *ctx) {
+    static int32_t n;
+    (void)ctx;
+    *out = n++;
+    return true;
+}
+
+static void cmd_mqttd(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    if (!*arg) { mqttd_print_status(); return; }
+
+    if (strncmp(arg, "stop", 4) == 0) {
+        if (!mqttd_running()) { cprintf("mqttd: not running\n"); return; }
+        mqttd_stop();
+        cprintf("mqttd: stopped\n");
+        return;
+    }
+
+    if (strncmp(arg, "fake", 4) == 0) {
+        /* No filtering and no delta: a test wants to see exactly what the
+         * rule does, not what the rule does to a filtered signal. The rule
+         * itself is then set with `mqttd rule`. */
+        mqttd_rule_t r = { .min_interval_s = 1, .max_interval_s = 10,
+                           .delta = 0, .alpha_shift = 0 };
+        if (mqttd_add_source("fake", shell_fake_source, NULL, 0, &r) != 0) {
+            cprintf("mqttd: no room for another source\n");
+            return;
+        }
+        cprintf("mqttd: registered a synthetic source \"fake\"\n");
+        return;
+    }
+
+    if (strncmp(arg, "start", 5) == 0) {
+        const char *a = arg + 5;
+        while (*a == ' ') a++;
+
+        char host[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && *a != ':' && n < sizeof(host) - 1u) host[n++] = *a++;
+        host[n] = '\0';
+
+        mqttd_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        if (!ipv4_parse(host, cfg.broker)) {
+            cprintf("usage: mqttd start <ip>[:port] [period_s] [user [pass]]\n");
+            return;
+        }
+        if (*a == ':') {
+            a++;
+            unsigned port = 0;
+            while (*a >= '0' && *a <= '9') port = port * 10u + (unsigned)(*a++ - '0');
+            cfg.port = (uint16_t)port;
+        }
+        while (*a == ' ') a++;
+        unsigned period = 0;
+        while (*a >= '0' && *a <= '9') period = period * 10u + (unsigned)(*a++ - '0');
+        cfg.sample_s = (uint16_t)period;
+
+        static char user[64], pass[64];
+        user[0] = pass[0] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(user) - 1u) user[n++] = *a++;
+        user[n] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(pass) - 1u) pass[n++] = *a++;
+        pass[n] = '\0';
+        if (user[0]) cfg.username = user;
+        if (pass[0]) cfg.password = pass;
+
+        if (mqttd_source_count() == 0)
+            cprintf("mqttd: no sources registered -- it will publish status "
+                    "and nothing else (`mqttd fake` adds one)\n");
+
+        int pid = mqttd_start(&cfg);
+        if (pid < 0) { cprintf("mqttd: could not start\n"); return; }
+        cprintf("mqttd: started as pid %d\n", pid);
+        return;
+    }
+
+    if (strncmp(arg, "rule ", 5) == 0) {
+        /* mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift] */
+        const char *a = arg + 5;
+        while (*a == ' ') a++;
+        char name[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && n < sizeof(name) - 1u) name[n++] = *a++;
+        name[n] = '\0';
+
+        const mqttd_rule_t *cur = mqttd_get_rule(name);
+        if (!cur) {
+            cprintf("mqttd: no source called \"%s\"\n", name);
+            return;
+        }
+        mqttd_rule_t r = *cur;
+        unsigned v[4];
+        uint32_t got = 0;
+        while (got < 4u) {
+            while (*a == ' ') a++;
+            if (*a < '0' || *a > '9') break;
+            unsigned x = 0;
+            while (*a >= '0' && *a <= '9') x = x * 10u + (unsigned)(*a++ - '0');
+            v[got++] = x;
+        }
+        if (got < 3u) {
+            cprintf("usage: mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]\n");
+            cprintf("       delta is in the source's own units (0.01 for the sensor)\n");
+            return;
+        }
+        r.min_interval_s = (uint16_t)v[0];
+        r.max_interval_s = (uint16_t)v[1];
+        r.delta = (int32_t)v[2];
+        if (got >= 4u) r.alpha_shift = (uint8_t)v[3];
+        if (mqttd_set_rule(name, &r) != 0) { cprintf("mqttd: could not set it\n"); return; }
+        cprintf("mqttd: %s publishes on a move of %ld, at most every %us, "
+                "at least every %us, ema 1/%u\n",
+                name, (long)r.delta, r.min_interval_s, r.max_interval_s,
+                1u << r.alpha_shift);
+        return;
+    }
+
+    cprintf("usage: mqttd [start <ip>[:port] [sample_s] [user [pass]] | stop | fake\n");
+    cprintf("             | rule <name> <min_s> <max_s> <delta> [alpha_shift]]\n");
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -817,6 +1283,82 @@ static void cmd_netcfg(const char *arg) {
     if (rc != NODE_ID_OK) { cprintf("netcfg: %s\n", node_id_result_str(rc)); return; }
     cprintf("netcfg: stored -- applied at every boot, before the stack task starts\n");
     netcfg_print_report();
+}
+
+/* `mqttcfg` -- Q6: the broker this board publishes to, kept in the identity
+ * record, so a sensor node needs nothing typed after the first time.
+ *
+ *   mqttcfg                                  what is stored
+ *   mqttcfg <ip>[:port] [sample_s] [user [pass]]
+ *   mqttcfg clear
+ *
+ * Mirrors `netcfg` down to the shape of its report, because they answer the
+ * same kind of question about the same record. The password is printed as
+ * `set`, never as its value -- the same rule §6 of phase 21 applies to the
+ * device key. */
+static void mqttcfg_print_report(void) {
+    node_mqtt_t m;
+    if (!node_mqtt(&m)) {
+        cprintf("broker : none stored -- this board publishes nothing by itself\n");
+        cprintf("         set one with `mqttcfg <ip>[:port] [sample_s] [user [pass]]`\n");
+        return;
+    }
+    cprintf("broker : %u.%u.%u.%u:%u\n", m.broker[0], m.broker[1], m.broker[2],
+            m.broker[3], m.port ? m.port : (unsigned)MQTT_DEFAULT_PORT);
+    cprintf("sample : %us\n", m.sample_s ? m.sample_s : (unsigned)MQTTD_DEFAULT_SAMPLE_S);
+    cprintf("user   : %s\n", m.username[0] ? m.username : "(none)");
+    cprintf("pass   : %s\n", m.password[0] ? "set" : "(none)");
+    cprintf("prefix : %s\n", m.prefix[0] ? m.prefix : "lugalos");
+    cprintf("A stored broker is the intent to publish: mqttd starts at boot.\n");
+}
+
+static void cmd_mqttcfg(const char *arg) {
+    if (!arg || !*arg) { mqttcfg_print_report(); return; }
+
+    if (strcmp(arg, "clear") == 0) {
+        node_id_result_t rc = node_identity_clear_mqtt();
+        if (rc == NODE_ID_OK) cprintf("mqttcfg: cleared -- this board will publish nothing\n");
+        else                  cprintf("mqttcfg: %s\n", node_id_result_str(rc));
+        return;
+    }
+
+    char hostpart[32], sample[16], user[NODE_MQTT_USER_MAX + 1], pass[NODE_MQTT_PASS_MAX + 1];
+    const char *p = arg;
+    p = next_token(p, hostpart, sizeof(hostpart));
+    p = next_token(p, sample, sizeof(sample));
+    p = next_token(p, user, sizeof(user));
+    next_token(p, pass, sizeof(pass));
+
+    node_mqtt_t m;
+    memset(&m, 0, sizeof(m));
+
+    char *colon = NULL;
+    for (char *c = hostpart; *c; c++) if (*c == ':') { colon = c; break; }
+    if (colon) {
+        *colon = '\0';
+        unsigned port = 0;
+        for (const char *d = colon + 1; *d >= '0' && *d <= '9'; d++)
+            port = port * 10u + (unsigned)(*d - '0');
+        m.port = (uint16_t)port;
+    }
+    if (!ipv4_parse(hostpart, m.broker)) {
+        cprintf("usage: mqttcfg <ip>[:port] [sample_s] [user [pass]] | mqttcfg clear\n");
+        return;
+    }
+    for (const char *d = sample; *d >= '0' && *d <= '9'; d++)
+        m.sample_s = (uint16_t)(m.sample_s * 10u + (unsigned)(*d - '0'));
+    strncpy(m.username, user, sizeof(m.username) - 1);
+    strncpy(m.password, pass, sizeof(m.password) - 1);
+
+    if (m.password[0] && !m.username[0]) {
+        cprintf("mqttcfg: MQTT 3.1.1 has no password without a username\n");
+        return;
+    }
+
+    node_id_result_t rc = node_identity_set_mqtt(&m);
+    if (rc != NODE_ID_OK) { cprintf("mqttcfg: %s\n", node_id_result_str(rc)); return; }
+    cprintf("mqttcfg: stored -- mqttd starts at every boot from here on\n");
+    mqttcfg_print_report();
 }
 
 static void cmd_wlan(const char *arg) {
@@ -2294,6 +2836,30 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
         return;
+    } else if (strcmp(cmd_line, "sensor") == 0) {
+        cmd_sensor("");
+        return;
+    } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
+        cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "mqttcfg") == 0) {
+        cmd_mqttcfg(NULL);
+        return;
+    } else if (strncmp(cmd_line, "mqttcfg ", 8) == 0) {
+        cmd_mqttcfg(&cmd_line[8]);
+        return;
+    } else if (strcmp(cmd_line, "mqttd") == 0) {
+        cmd_mqttd("");
+        return;
+    } else if (strncmp(cmd_line, "mqttd ", 6) == 0) {
+        cmd_mqttd(&cmd_line[6]);
+        return;
+    } else if (strcmp(cmd_line, "mqtt") == 0) {
+        cmd_mqtt("");
+        return;
+    } else if (strncmp(cmd_line, "mqtt ", 5) == 0) {
+        cmd_mqtt(&cmd_line[5]);
+        return;
     } else if (strcmp(cmd_line, "ntp") == 0) {
         cmd_ntp(NULL);
         return;
@@ -2315,6 +2881,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         } else {
             cprintf("net: could not listen\n");
         }
+        return;
+    } else if (strncmp(cmd_line, "net echotest", 12) == 0) {
+        cmd_net_echotest(&cmd_line[12]);
         return;
     } else if (strncmp(cmd_line, "net udpecho", 11) == 0) {
         cmd_net_udpecho(shell_trailing_uint(&cmd_line[11]));
@@ -2388,6 +2957,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         bool ok = cyw43_join_wpa2(ssid, psk);
         memset(psk, 0, sizeof(psk));
         cprintf(ok ? "wifi: joined\n" : "wifi: join failed\n");
+        return;
+    } else if (strcmp(cmd_line, "wifi drop") == 0) {
+        cyw43_link_drop();
+        cprintf("wifi: carrier dropped -- the supervisor will rejoin\n");
+        return;
+    } else if (strncmp(cmd_line, "wifi recover", 12) == 0) {
+        unsigned level = shell_trailing_uint(&cmd_line[12]);
+        if (level == 0 || level > 3) level = 1;
+        cprintf("wifi: recovery level %u%s\n", level,
+                level == 3 ? " (reset + firmware reload, about a minute)" : "");
+        cyw43_link_recover(level);
         return;
     } else if (strcmp(cmd_line, "wifi stats") == 0) {
         cprintf("wifi: rx ring high-water %u, %u frames dropped (ring full)\n",

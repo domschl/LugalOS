@@ -111,6 +111,14 @@ void cyw43_link_status(cyw43_link_status_t *out);
  * driver does; these exist because that can be permanently insufficient. */
 void cyw43_link_recover(unsigned level);
 
+/* Drops carrier so the supervisor rejoins, without touching the AP.
+ *
+ * A test affordance, and not a luxury one: "handles a reconnect correctly" is
+ * otherwise only observable by walking out of range or rebooting the router,
+ * which is not a thing anyone does twice. `wifi drop` at the console is the
+ * whole of it. */
+void cyw43_link_drop(void);
+
 /* Performs work the event handler deferred because it cannot touch the bus --
  * currently the disassociate a DEAUTH_IND(reason 2) requires. Call from a task
  * before attempting a re-join. */

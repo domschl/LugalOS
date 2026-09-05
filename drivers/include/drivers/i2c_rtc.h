@@ -42,6 +42,22 @@ int i2c_task_start(void);
 // boot -- see drivers/spisd_rp2350.c's g_blk_calls comment for the reasoning.
 uint32_t i2c_task_call_count(void);
 
+/* Q4, plan/phase26_mqtt_and_environment_sensors.md: one generic transfer for
+ * any device on this bus -- write `wlen` bytes, then read `rlen`; either half
+ * may be empty. Routed through the shared "i2c" task when it is running, so a
+ * caller never contends with the RTC or the EEPROM for the bus, and taken
+ * straight to the hardware before that task exists.
+ *
+ * This exists so that adding an I2C part costs no kernel-surface change:
+ * drivers/bme280.c is ordinary M-mode code that builds requests here, rather
+ * than another opcode in a U-mode dispatch (and so, unlike the drivers with
+ * UATTR code in them, it needs no -fno-jump-tables entry in CMakeLists.txt).
+ *
+ * Bounded at 16 bytes written and 64 read, which is the shape a register map
+ * needs -- a bulk device wants its own op, not a bigger one of these. */
+bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
+              uint8_t *r, uint32_t rlen);
+
 /* Internal: used by drivers/at24c32.c to route EEPROM ops through this same
  * task/endpoint instead of duplicating bus-arbitration logic. Not meant for
  * callers outside this driver pair. */

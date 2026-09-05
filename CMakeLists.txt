@@ -524,11 +524,29 @@ set(SOURCES
     # and arithmetic should not be debugged by flashing.
     net/ntp.c
     net/ntp_server.c
+    # Q1 (plan/phase26_mqtt_and_environment_sensors.md): the MQTT 3.1.1
+    # client. Built for every target for the same reason the SNTP client
+    # above is -- the byte counting and the Remaining Length varint are the
+    # fiddly part, and `mqtt selftest` exercises them with no network at all.
+    net/mqtt.c
+    # Q5: the task that turns the client above into an appliance. Built
+    # everywhere because its sources are registered rather than compiled in,
+    # so a QEMU target exercises the whole publish/reconnect/will machinery
+    # with a synthetic source and no sensor.
+    net/mqttd.c
     # P3 (plan/phase24_dcf77_precision_and_ntp_server.md): timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything
     # that is not RP2350.
     drivers/edgecap.c
+    # Q4 (plan/phase26_mqtt_and_environment_sensors.md): the BMP280/BME280
+    # environment sensors. Built for every target because the datasheet's
+    # fixed-point compensation is the fiddly part and `sensor selftest`
+    # exercises it with no sensor present; the bus access underneath goes
+    # through i2c_xfer(), which is already a stub where there is no
+    # controller. Deliberately NOT in the -fno-jump-tables list below: it has
+    # no UATTR code, since it rides the shared i2c task rather than being one.
+    drivers/bme280.c
     fs/p9_chan.c
     libc/string.c
     user/lisp/lisp.c

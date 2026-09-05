@@ -769,6 +769,23 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             } else {
                 used += (uint32_t)ksnprintf(buf + used, cap - used, "ipv4: none\n");
             }
+
+            /* Q6: where this board publishes, so it can be asked over 9P
+             * before rebooting it -- the same reason the address above is
+             * here. The password is named, never shown, like the device key
+             * fingerprint further up. */
+            node_mqtt_t mq;
+            if (node_mqtt(&mq)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "mqtt: %u.%u.%u.%u:%u user %s pass %s prefix %s\n",
+                    mq.broker[0], mq.broker[1], mq.broker[2], mq.broker[3],
+                    mq.port ? mq.port : 1883u,
+                    mq.username[0] ? mq.username : "(none)",
+                    mq.password[0] ? "set" : "(none)",
+                    mq.prefix[0] ? mq.prefix : "lugalos");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "mqtt: none\n");
+            }
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);
