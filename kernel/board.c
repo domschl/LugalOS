@@ -110,7 +110,14 @@ static int probe_at24c32(void)  { at24c32_init();  return 0; }
  * "sensor present" when nothing is on the bus is precisely the lie that
  * costs an afternoon. Runs before i2c_task_start(), so it reaches the bus
  * directly; every later read goes through the shared task. */
-static int probe_bme280(void)   { return bme280_init() ? 0 : -1; }
+static int probe_bme280(void)   {
+    if (!bme280_init()) return -1;
+    /* Q5: a part that answered becomes publishable. Registering here rather
+     * than in mqttd_start() keeps mqttd ignorant of I2C, and means a board
+     * with no sensor registers nothing rather than publishing zeroes. */
+    bme280_register_sources();
+    return 0;
+}
 static int probe_usb_cdc(void)  { usb_cdc_init();  return 0; }
 
 /* Console devices, exposed so the console stream can be bound to one by name

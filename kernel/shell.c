@@ -50,6 +50,7 @@
 #include "net/tcp.h"
 #include "net/ntp.h"
 #include "net/mqtt.h"
+#include "net/mqttd.h"
 #include "drivers/edgecap.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
@@ -143,6 +144,7 @@ static void cmd_help(void) {
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
     cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>|disconnect]\n");
     cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
+    cprintf("  mqttd [start <ip>[:port] [period] [user [pass]]|stop|fake] - publish on a period\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -732,6 +734,97 @@ static void cmd_sensor(const char *arg) {
     }
     if (*arg) { cprintf("usage: sensor [selftest | init]\n"); return; }
     bme280_print_status();
+}
+
+/* `mqttd ...` -- Q5, the appliance loop.
+ *
+ *   mqttd                          what it is doing
+ *   mqttd start <ip>[:port] [period_s] [user [pass]]
+ *   mqttd stop
+ *   mqttd fake                     register a synthetic source (see below)
+ *
+ * `mqttd fake` exists so the publish, reconnect and will machinery can be
+ * tested where there is no sensor -- which is every QEMU target, and is also
+ * where a broker can be killed mid-run on purpose. It counts up from zero so
+ * a test can tell one publish from the next. */
+static bool shell_fake_source(char *out, uint32_t max, void *ctx) {
+    static uint32_t n;
+    (void)ctx;
+    ksnprintf(out, max, "%lu", (unsigned long)n++);
+    return true;
+}
+
+static void cmd_mqttd(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    if (!*arg) { mqttd_print_status(); return; }
+
+    if (strncmp(arg, "stop", 4) == 0) {
+        if (!mqttd_running()) { cprintf("mqttd: not running\n"); return; }
+        mqttd_stop();
+        cprintf("mqttd: stopped\n");
+        return;
+    }
+
+    if (strncmp(arg, "fake", 4) == 0) {
+        if (mqttd_add_source("fake", shell_fake_source, NULL) != 0) {
+            cprintf("mqttd: no room for another source\n");
+            return;
+        }
+        cprintf("mqttd: registered a synthetic source \"fake\"\n");
+        return;
+    }
+
+    if (strncmp(arg, "start", 5) == 0) {
+        const char *a = arg + 5;
+        while (*a == ' ') a++;
+
+        char host[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && *a != ':' && n < sizeof(host) - 1u) host[n++] = *a++;
+        host[n] = '\0';
+
+        mqttd_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        if (!ipv4_parse(host, cfg.broker)) {
+            cprintf("usage: mqttd start <ip>[:port] [period_s] [user [pass]]\n");
+            return;
+        }
+        if (*a == ':') {
+            a++;
+            unsigned port = 0;
+            while (*a >= '0' && *a <= '9') port = port * 10u + (unsigned)(*a++ - '0');
+            cfg.port = (uint16_t)port;
+        }
+        while (*a == ' ') a++;
+        unsigned period = 0;
+        while (*a >= '0' && *a <= '9') period = period * 10u + (unsigned)(*a++ - '0');
+        cfg.period_s = (uint16_t)period;
+
+        static char user[64], pass[64];
+        user[0] = pass[0] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(user) - 1u) user[n++] = *a++;
+        user[n] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(pass) - 1u) pass[n++] = *a++;
+        pass[n] = '\0';
+        if (user[0]) cfg.username = user;
+        if (pass[0]) cfg.password = pass;
+
+        if (mqttd_source_count() == 0)
+            cprintf("mqttd: no sources registered -- it will publish status "
+                    "and nothing else (`mqttd fake` adds one)\n");
+
+        int pid = mqttd_start(&cfg);
+        if (pid < 0) { cprintf("mqttd: could not start\n"); return; }
+        cprintf("mqttd: started as pid %d\n", pid);
+        return;
+    }
+
+    cprintf("usage: mqttd [start <ip>[:port] [period_s] [user [pass]] | stop | fake]\n");
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -2566,6 +2659,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "mqttd") == 0) {
+        cmd_mqttd("");
+        return;
+    } else if (strncmp(cmd_line, "mqttd ", 6) == 0) {
+        cmd_mqttd(&cmd_line[6]);
         return;
     } else if (strcmp(cmd_line, "mqtt") == 0) {
         cmd_mqtt("");

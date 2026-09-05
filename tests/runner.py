@@ -4117,6 +4117,123 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
         accepting.close()
 
 
+def test_mqttd_appliance(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q5, plan/phase26_mqtt_and_environment_sensors.md: the task that makes a
+    sensor node an appliance -- and specifically what it does when the broker
+    goes away.
+
+    The interesting behaviour of an unattended publisher is not that it
+    publishes. It is:
+
+      * the retained "online" it announces on connect, and the retained
+        "offline" *will* the broker publishes when the node stops without
+        saying goodbye -- a subscriber cannot otherwise tell "quiet because
+        nothing changed" from "gone";
+      * that it keeps publishing on its period without anyone typing;
+      * that when the broker dies mid-run it reconnects, re-announces, and
+        resumes -- forever, with backoff.
+
+    All of which is hard to arrange on hardware and trivial here: the broker
+    is a Python object that can simply be closed and replaced on the same
+    port. `mqttd fake` supplies a synthetic counting source, so this runs on
+    targets with no I2C controller at all -- which is both QEMU ones.
+    """
+    import threading  # noqa: F401  (imported for symmetry with the peers above)
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Appliance: Announce, Publish On A Period, Survive A Dead Broker"
+    broker = MqttBroker()
+    port = broker.port
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        ok, log = session.send_and_expect("mqttd fake\n", r"synthetic source", timeout=6.0)
+        if not ok:
+            return (name, False, f"could not register a source: {log[-400:]}")
+
+        # A two-second period, so a handful of cycles fit in a test rather than
+        # in an afternoon.
+        ok, log = session.send_and_expect(
+            f"mqttd start 10.0.2.2:{port} 2\n", r"mqttd: started as pid \d+", timeout=10.0)
+        if not ok:
+            return (name, False, f"mqttd did not start: {log[-500:]}")
+
+        if not broker.wait_for_connect(timeout=25.0):
+            return (name, False, "mqttd never connected to the broker")
+
+        # 1. The will is registered as part of CONNECT, not published later --
+        # that is the whole point of it.
+        c = broker.connect
+        if c.will_topic is None:
+            return (name, False, f"no will was registered: {c!r}")
+        if not c.will_topic.endswith("/status") or c.will_payload != "offline":
+            return (name, False, f"the will is not the status pair: {c!r}")
+        if not c.will_retain:
+            return (name, False, "the will is not retained, so a late subscriber learns nothing")
+
+        # 2. "online" retained, then measurements on the period.
+        if not broker.wait_for_publish(timeout=20.0, count=4):
+            got = len(broker.publishes)
+            return (name, False,
+                    f"expected an announcement and several measurements, saw {got}")
+        first = broker.publishes[0]
+        if not first.topic.endswith("/status") or first.payload != b"online":
+            return (name, False, f"the first publish was not the announcement: {first!r}")
+        if not first.retain:
+            return (name, False, "the announcement is not retained")
+
+        measurements = [p for p in broker.publishes if p.topic.endswith("/fake")]
+        if len(measurements) < 2:
+            return (name, False,
+                    f"expected repeated measurements, saw {len(measurements)}")
+        # The synthetic source counts up, so this also proves each publish is a
+        # fresh sample rather than the same one resent.
+        values = [int(p.payload) for p in measurements[:3]]
+        if values != sorted(values) or len(set(values)) != len(values):
+            return (name, False, f"measurements did not advance: {values}")
+
+        # 3. The broker dies. A new one takes the same port, and the node has
+        # to find its way back with no help.
+        broker.close()
+        # The replacement listens on the port mqttd is already dialling -- the
+        # node gets no help finding it, which is the point.
+        revived = MqttBroker(port=port)
+        try:
+            if not revived.wait_for_connect(timeout=90.0):
+                return (name, False,
+                        "mqttd did not reconnect after the broker was replaced")
+            if not revived.wait_for_publish(timeout=30.0, count=2):
+                return (name, False, "reconnected, but stopped publishing")
+            again = revived.publishes[0]
+            if not again.topic.endswith("/status") or again.payload != b"online":
+                return (name, False,
+                        f"did not re-announce itself after reconnecting: {again!r}")
+        finally:
+            revived.close()
+
+        return (name, True,
+                "will registered at CONNECT, retained online/offline pair, "
+                "measurements advancing on the period, and a reconnect that "
+                "re-announced itself")
+    finally:
+        session.close()
+        broker.close()
+
+
 def test_tcp_stream(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """Q0, plan/phase26_mqtt_and_environment_sensors.md: a TCP connection
     carrying bytes rather than 9P frames.
@@ -6266,6 +6383,7 @@ def main() -> int:
         _run_single(test_mqtt_varint(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_bme280_compensation(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqttd_appliance(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -6307,6 +6425,7 @@ def main() -> int:
         _run_single(test_mqtt_varint(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_bme280_compensation(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqttd_appliance(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))

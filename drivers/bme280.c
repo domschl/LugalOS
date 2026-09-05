@@ -4,6 +4,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "net/mqttd.h"
 #include <string.h>
 
 /* See drivers/include/drivers/bme280.h for the part-vs-part story and why
@@ -339,6 +340,72 @@ uint32_t bme280_selftest(bool report) {
     if (report) cprintf("bme280 selftest: %lu case%s failed\n",
                         (unsigned long)failed, failed == 1u ? "" : "s");
     return failed;
+}
+
+/* --- Q5: the part as three mqttd sources ---
+ *
+ * One measurement is one topic, so each is its own source rather than one
+ * source publishing a compound payload: a subscriber that wants temperature
+ * should not have to parse JSON to get it, and a broker's ACLs work on
+ * topics. Formatted as fixed-point by hand for the reason
+ * bme280_print_status() already is -- there is no float formatting in this
+ * kernel and three numbers do not justify introducing one.
+ *
+ * All three take ONE measurement between them, not three: g_cached is
+ * refreshed only when it is older than a second, so a publish cycle wakes the
+ * part once. Three forced-mode conversions where one would do is both three
+ * times the self-heating and three times the chance of meeting a bus error. */
+static bme280_reading_t g_cached;
+static uint64_t         g_cached_ms;
+static bool             g_cached_ok;
+
+static bool cached_read(void) {
+    uint64_t now = time_get_ms();
+    if (g_cached_ms && now - g_cached_ms < 1000u) return g_cached_ok;
+    g_cached_ok = bme280_read(&g_cached);
+    g_cached_ms = now;
+    return g_cached_ok;
+}
+
+static bool src_temperature(char *out, uint32_t max, void *ctx) {
+    (void)ctx;
+    if (!cached_read()) return false;
+    long w = (long)g_cached.temperature_c100 / 100;
+    long f = (long)g_cached.temperature_c100 % 100;
+    if (f < 0) f = -f;
+    /* A negative temperature between -1 and 0 has a whole part of 0, so the
+     * sign has to be carried explicitly or -0.42 prints as 0.42. */
+    ksnprintf(out, max, "%s%ld.%02ld",
+              (g_cached.temperature_c100 < 0 && w == 0) ? "-" : "", w, f);
+    return true;
+}
+
+static bool src_pressure(char *out, uint32_t max, void *ctx) {
+    (void)ctx;
+    if (!cached_read()) return false;
+    uint32_t pa = g_cached.pressure_pa256 >> 8;      /* Q24.8 -> whole pascals */
+    ksnprintf(out, max, "%lu.%02lu",
+              (unsigned long)(pa / 100u), (unsigned long)(pa % 100u));
+    return true;
+}
+
+static bool src_humidity(char *out, uint32_t max, void *ctx) {
+    (void)ctx;
+    if (!cached_read() || !g_cached.have_humidity) return false;
+    uint32_t rh100 = (g_cached.humidity_rh1024 * 100u) >> 10;
+    ksnprintf(out, max, "%lu.%02lu",
+              (unsigned long)(rh100 / 100u), (unsigned long)(rh100 % 100u));
+    return true;
+}
+
+/* Registered only when a part actually answered: a board with no sensor
+ * publishes no measurement topics at all, rather than publishing zeroes that
+ * a dashboard would happily plot. */
+void bme280_register_sources(void) {
+    if (g.part == BME280_PART_NONE) return;
+    mqttd_add_source("temperature", src_temperature, NULL);
+    mqttd_add_source("pressure", src_pressure, NULL);
+    if (g.part == BME280_PART_BME280) mqttd_add_source("humidity", src_humidity, NULL);
 }
 
 void bme280_print_status(void) {

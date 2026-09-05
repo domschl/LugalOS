@@ -90,6 +90,10 @@ const bme280_calib_t *bme280_calibration(void);
  * prints each when `report` is true. Needs no sensor and no bus. */
 uint32_t bme280_selftest(bool report);
 
+/* Q5: registers this part's measurements with `mqttd`, one topic each, but
+ * only if a part was actually found. Called after bme280_init(). */
+void bme280_register_sources(void);
+
 /* The human-readable report behind `sensor` and /proc/sensors. */
 void bme280_print_status(void);
 

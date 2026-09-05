@@ -130,7 +130,8 @@ class MqttBroker:
     rather than racing the guest."""
 
     def __init__(self, connack_rc: int = 0, split_headers: bool = False,
-                 stall_after: int | None = None, keep_listening: bool = False):
+                 stall_after: int | None = None, keep_listening: bool = False,
+                 port: int = 0):
         self.connack_rc = connack_rc
         self.split_headers = split_headers
         self.stall_after = stall_after
@@ -147,7 +148,10 @@ class MqttBroker:
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("127.0.0.1", 0))
+        # port=0 lets the OS choose; a specific port is what a reconnect test
+        # needs, since the client is already dialling the old one. SO_REUSEADDR
+        # above is what makes re-binding it immediately possible.
+        self._sock.bind(("127.0.0.1", port))
         self._sock.listen(1)
         self._sock.settimeout(60.0)
         self.port: int = self._sock.getsockname()[1]
