@@ -1551,7 +1551,7 @@ bool clock_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * every client call below falls back to direct hardware access whenever the
  * task is not alive, same as every other M4.5 conversion. */
 int pico_clock_green_task_start(void) {
-    int pid = task_create_sized("clock", clock_task_body, NULL, 1);
+    int pid = task_create_driver("clock", clock_task_body, NULL, 1);
     if (pid < 0) {
         printk("[Clock] Could not start the clock task; the appliance stays on direct hardware access.\n");
         return -1;

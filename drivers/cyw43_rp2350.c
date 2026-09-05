@@ -2508,7 +2508,7 @@ int cyw43_autostart_task_start(void) {
     /* Three pages. idstore_read() alone puts a 4 KB record buffer on this
      * stack before anything else happens, and the firmware upload runs on top
      * of that -- the same reasoning that gives `netsrv` three. */
-    int pid = task_create_sized("wifiup", cyw43_autostart_body, NULL, 3);
+    int pid = task_create_driver("wifiup", cyw43_autostart_body, NULL, 3);
     if (pid < 0) {
         printk("cyw43: could not start the autostart task\n");
         return pid;

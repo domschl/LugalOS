@@ -1,6 +1,7 @@
 #include "arch/trap.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
+#include "kernel/hart.h"
 #include "kernel/console.h"
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
@@ -80,30 +81,82 @@ static inline uint32_t meinext_irq(bool *valid) {
  * "standard" still deserves a source. */
 #define QEMU_PLIC_BASE     0x0c000000UL
 #if defined(CONFIG_MODE_S)
-#define QEMU_PLIC_CONTEXT  1u  /* hart 0, S-mode */
 #define QEMU_EXT_CAUSE     9u  /* Supervisor external interrupt */
 #else
-#define QEMU_PLIC_CONTEXT  0u  /* hart 0, M-mode */
 #define QEMU_EXT_CAUSE     11u /* Machine external interrupt */
 #endif
-#define QEMU_PLIC_CLAIM \
-    (QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u + 4u)
+
+/* The PLIC context of the hart executing this, by the convention documented
+ * above: hart N's M-mode context is 2N and its S-mode context is 2N+1.
+ *
+ * X1, plan/phase23_multicore_scheduling.md §6.1. This used to be the
+ * constant 1 (or 0), i.e. hart 0's context, baked into three separate
+ * address computations -- the claim/complete register, the priority
+ * threshold written at init, and the per-IRQ enable bit. §1 of that plan
+ * said the interrupt controllers were "already per-hart-addressable in
+ * principle", which was true of the hardware and not of this code.
+ *
+ * Getting it wrong is not a missing feature but active damage: a second
+ * hart claiming from hart 0's context takes an interrupt out of hart 0's
+ * queue, and writing hart 0's threshold from hart 1 reconfigures a context
+ * that is not its own. */
+static inline uint32_t plic_context(void) {
+#if defined(CONFIG_MODE_S)
+    return 2u * hart_id() + 1u;
+#else
+    return 2u * hart_id();
+#endif
+}
+
+static inline volatile uint32_t *plic_claim_reg(void) {
+    return (volatile uint32_t *)
+        (QEMU_PLIC_BASE + 0x200000u + plic_context() * 0x1000u + 4u);
+}
 
 static inline uint32_t plic_claim(void) {
-    return *(volatile uint32_t *)QEMU_PLIC_CLAIM;
+    return *plic_claim_reg();
 }
 static inline void plic_complete(uint32_t irq_num) {
-    *(volatile uint32_t *)QEMU_PLIC_CLAIM = irq_num;
+    *plic_claim_reg() = irq_num;
 }
 #endif
 
 void trap_init(void) {
 #if defined(CONFIG_BOARD_RP2350)
-    /* Enable M-mode External Interrupts (MEIE bit 11 in mie) */
-    uintptr_t mie_val;
-    __asm__ __volatile__("csrr %0, mie" : "=r"(mie_val));
-    mie_val |= (1u << 11);
-    __asm__ __volatile__("csrw mie, %0" :: "r"(mie_val));
+    /* Clear this core's external-interrupt FORCE array before enabling
+     * anything (phase 23 X7).
+     *
+     * meifa (0xbe2) is "a read-write bit for every interrupt request; writing
+     * a 1 causes the corresponding bit to become pending in meipa" -- a
+     * software-triggered interrupt latch, per core, with no guaranteed reset
+     * value. Transcribed from the SDK's own
+     * runtime_init_per_core_h3_irq_registers (pico_crt0/crt0_riscv.S), which
+     * runs this on *every* core including core 1 at launch, iterating array
+     * windows 3..0 for up to 64 IRQs.
+     *
+     * This kernel never did it, which was survivable while only core 0
+     * existed and boot_header.S had left the core in a known state. Core 1
+     * comes out of the bootrom instead, having just been driven through a
+     * FIFO handshake, and a stale force bit there means it takes an external
+     * interrupt the instant MIE goes on -- into a handler that, for an IRQ
+     * with no registered owner, printk()s. From core 1. In a storm. That is
+     * a wedged board whose stopping point moves from run to run, which is
+     * exactly what X7's first three attempts produced.
+     *
+     * Harmless on core 0, where it has always been zero; the point is that
+     * "has always been" is not a property core 1 inherits. */
+    for (int w = 3; w >= 0; w--) {
+        __asm__ __volatile__("csrw 0xbe2, %0" :: "r"((uintptr_t)w)); /* RVCSR_MEIFA */
+    }
+
+    /* Enable M-mode External Interrupts, and only those.
+     *
+     * csrw rather than csrr/or/csrw, matching the SDK: it also clears MSIE
+     * and MTIE, so a core arrives with exactly one interrupt source armed and
+     * the timer is switched on deliberately later by ticker_arm_this_hart().
+     * The read-modify-write this replaced would have carried whatever the
+     * bootrom left in mie on a secondary. */
+    __asm__ __volatile__("csrw mie, %0" :: "r"((uintptr_t)(1u << 11)));
 
     /* Enable M-mode Global Interrupts (MIE bit 3 in mstatus) */
     uintptr_t mstatus_val;
@@ -131,7 +184,7 @@ void trap_init(void) {
      * (arch_irq_enable() below). One flat priority level, the same choice
      * trap_handler()'s meinext path makes for RP2350 -- there is no
      * nested/preemptive interrupt priority anywhere in this kernel yet. */
-    *(volatile uint32_t *)(QEMU_PLIC_BASE + 0x200000u + QEMU_PLIC_CONTEXT * 0x1000u) = 0;
+    *(volatile uint32_t *)(QEMU_PLIC_BASE + 0x200000u + plic_context() * 0x1000u) = 0;
 #endif
 }
 
@@ -156,8 +209,13 @@ void arch_irq_enable(uint32_t irq_num) {
      * "the lowest priority that still fires", correct for a kernel with one
      * flat interrupt level. */
     *(volatile uint32_t *)(QEMU_PLIC_BASE + 4u * irq_num) = 1;
+    /* The *calling* hart's context. Device drivers all initialise on hart 0,
+     * so this enables where it always did -- and phase 23's X2 pins driver
+     * tasks there deliberately, so routing a device IRQ to a second hart is
+     * a policy decision that belongs with X2 rather than a side effect of
+     * whoever happened to call this. */
     volatile uint32_t *enable = (volatile uint32_t *)
-        (QEMU_PLIC_BASE + 0x2000u + QEMU_PLIC_CONTEXT * 0x80u + (irq_num / 32u) * 4u);
+        (QEMU_PLIC_BASE + 0x2000u + plic_context() * 0x80u + (irq_num / 32u) * 4u);
     *enable |= (1u << (irq_num % 32u));
 #endif
 }
@@ -561,6 +619,11 @@ void trap_handler(trap_frame_t *frame) {
         bool from_user = ((frame->status >> 11) & 3u) == 0;
 #endif
         if (from_user) {
+            /* X5: record what the other harts were doing at this instant,
+             * before the kill switches us away. A no-op unless a load is
+             * running (kernel/smp.c), so it costs an ordinary fault nothing
+             * but a predictable branch. */
+            smp_load_note_fault();
             printk("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
                    "terminating the task\n",
                    (unsigned long)code, (unsigned long)frame->epc,

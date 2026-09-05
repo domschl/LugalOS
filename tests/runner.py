@@ -334,6 +334,34 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         results.append(("/proc/version Metrics", ok, log if not ok else ""))
 
+        # S0, plan/phase22_smp_locking_foundation.md §6.2: the kernel can
+        # identify the hart it is running on.
+        #
+        # Worth a test of its own because no other test here can fail on it.
+        # Every build before S0 passed this whole suite while being completely
+        # unable to answer the question, and the interesting half of the
+        # answer is target-specific: on rv64-mmu the kernel runs in S-mode,
+        # where the obvious implementation (`csrr mhartid`) traps as an
+        # illegal instruction, because entry.S performs the M->S transition
+        # itself with no SBI firmware underneath to ask instead. So this
+        # asserting on *both* arches is the point -- passing on rv32 alone
+        # would say nothing about the case that motivated the work.
+        #
+        # `consistent: yes` is the real assertion. It checks that the record
+        # `tp` points at is the array slot the id inside that record names,
+        # which is what distinguishes a working hart pointer from one that
+        # merely holds a plausible address.
+        ok, log = session.send_and_expect(
+            "cat /proc/cpuinfo", r"hart:\s+0", timeout=3.0)
+        results.append(("Hart Identity Readable From The Kernel (S0)", ok, log if not ok else ""))
+
+        expect_priv = "S" if "64" in arch_name else "M"
+        ok, log = session.send_and_expect(
+            "cat /proc/cpuinfo",
+            rf"consistent:\s+yes[\s\S]*priv:\s+{expect_priv}", timeout=3.0)
+        results.append((f"Hart Record Is Self-Consistent, In {expect_priv}-Mode (S0)",
+                        ok, log if not ok else ""))
+
         # B2: /proc/ps now renders the real task table. Before B2 it was a
         # hardcoded string naming four tasks that did not exist, so this used
         # to assert on "vfs_server" -- a name nothing was ever scheduled under.
@@ -506,6 +534,33 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         hmac_ok = ok and "HMAC_SELFTEST_OK" in log
         results.append(("SHA-256/HMAC-SHA-256 Against FIPS and RFC 4231 Vectors (N1)",
                         hmac_ok, log if not hmac_ok else ""))
+
+        # S1, plan/phase22_smp_locking_foundation.md: the two cross-hart lock
+        # types, before anything is converted to use them.
+        #
+        # Six checks, and the one that carries the phase is the third: the
+        # tick counter must be frozen across an irqsave-held spinlock and
+        # moving when it is not held. That is random.c's standard -- a
+        # measured effect rather than the implementation restating itself --
+        # and it was confirmed by removing irq_save() from the acquire and
+        # watching it fail (ticks 239 -> 242 while "held").
+        #
+        # The seventh check is S6's: every resume from a ctx_switch() must
+        # arrive still holding the scheduler lock its predecessor took. That
+        # is the inverse of the canary the plan originally specified ("never
+        # held across the switch"), which would have fired on correct code --
+        # and unlike the race it guards against, it is observable on one hart.
+        #
+        # What these deliberately do NOT claim: nothing here observes two
+        # harts racing, because no target can do that until phase 23's X1.
+        # They prove the primitives behave correctly under the concurrency
+        # this kernel has today -- preemption and yielding -- which is what
+        # S2-S6 are about to build on.
+        ok, log = session.send_and_expect("lockselftest\n",
+                                          r"LOCK_SELFTEST_(OK|FAIL)", timeout=30.0)
+        lock_ok = ok and "LOCK_SELFTEST_OK" in log
+        results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
+                        lock_ok, log if not lock_ok else ""))
 
         # The nonce source behind that gate. On QEMU there is no hardware
         # entropy and the command says so rather than inventing a verdict --
@@ -5574,6 +5629,244 @@ def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:
         return False, f"Error inspecting FAT32 image: {e}"
 
 
+
+def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, str]]:
+    """X1, plan/phase23_multicore_scheduling.md: a genuinely two-hart kernel.
+
+    Its own target, from its own build (`cmake --preset rv64-smp`), because
+    CONFIG_ENABLE_SMP is off everywhere else on purpose -- every board persona
+    boots on one hart and a regression in second-hart bring-up must not be
+    able to touch that. So this is skipped rather than failed when that build
+    is absent.
+
+    Three claims, in increasing order of what they cost to establish:
+
+      1. A second hart reaches the scheduler at all. /proc/cpuinfo counts
+         harts that got as far as sched_secondary_init(), so "2" is reported
+         by code running on hart 1.
+      2. Two tasks run concurrently and the lock holds. smptest increments a
+         shared counter through a spinlock from four workers and asserts no
+         lost updates, AND that the work executed on more than one hart -- the
+         part that distinguishes concurrency from the interleaving a single
+         preemptive hart already does. It also increments an unlocked counter
+         and reports its loss, which is what proves there was real contention
+         rather than an exactness that came for free.
+      3. Phase 22's scheduler hand-off survives real contention. lockselftest's
+         seventh check (S6) counts resumes that arrived without the lock their
+         predecessor should have handed over. On one hart that check can only
+         catch a coding mistake; here it is finally exposed to the race it was
+         written for.
+    """
+    out: list[tuple[str, bool, str]] = []
+    session = QemuSession(elf_path, img_path, "rv64-smp")
+    try:
+        session.start(extra_qemu_args=["-smp", "2"])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        out.append(("SMP: two-hart kernel boots to a shell (X1)", ok, log if not ok else ""))
+
+        # A hart that owns no task says so, instead of claiming to be task 0.
+        #
+        # secondary_main() printk()s from the window between the reset vector
+        # and sched_secondary_init(), where this hart has no task slot. Until
+        # the identity fix, sched_current_pid() answered 0 there -- naming the
+        # boot task, which is running on the *other* hart at that instant. The
+        # consequences needed a race to show (printk_lock() taking the
+        # re-entrant path through a lock hart 0 held; task_block() blocking the
+        # shell), but the cause does not: the pid is printed, so `pid -1` and
+        # `pid 0` separate fixed from broken in the boot log with no race to
+        # reproduce. Falsified by reverting only that one initialiser, which
+        # turns this line back into `pid 0`.
+        #
+        # It also establishes that printk() works at all from a task-less
+        # hart, which is what makes second-core bring-up debuggable -- X3 got
+        # its core running only by giving it no printk whatsoever.
+        ok = "[SMP] hart 1: in the kernel, no task yet (pid -1)" in log
+        out.append(("SMP: a hart with no task reports no pid, not task 0's (identity)",
+                    ok, log if not ok else ""))
+
+        # A longer window than the same read gets on a single-hart target: two
+        # harts boot noisily and this command can land while the tail of that
+        # is still streaming, which cost an intermittent failure at 5 s on a
+        # kernel that reports the right number every time when asked
+        # (verified: 5 consecutive reads, no interleaving).
+        ok, log = session.send_and_expect("cat /proc/cpuinfo", r"harts_online:\s*2", timeout=12.0)
+        out.append(("SMP: a second hart reached the scheduler (X1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("smptest", r"SMP_SELFTEST_(OK|FAIL)", timeout=60.0)
+        ok = ok and "SMP_SELFTEST_OK" in log
+        out.append(("SMP: no lost updates through the lock, on two harts (X1)", ok,
+                    log if not ok else ""))
+
+        ok, log = session.send_and_expect("lockselftest", r"LOCK_SELFTEST_(OK|FAIL)", timeout=45.0)
+        ok = ok and "LOCK_SELFTEST_OK" in log
+        out.append(("SMP: the scheduler lock hand-off holds under real contention (S6/X1)",
+                    ok, log if not ok else ""))
+
+        # X2: per-task isolation, with the domain activated on a hart that is
+        # not the primary.
+        #
+        # "It still passes" is not enough on its own here. Driver tasks are
+        # pinned to hart 0, so a run could satisfy every isolation check
+        # while never once installing a restricted domain anywhere else --
+        # and would then prove nothing about the claim §1 makes. So this
+        # asserts the fault AND the evidence: /proc/cpuinfo counts
+        # restricted-domain activations per hart, and a non-zero count for
+        # hart 1 means the isolation being checked was installed by code
+        # running there.
+        ok, log = session.send_and_expect(
+            "exec /flash0/system/bin/uisolate.elf\nps", r"uprog\s+killed", timeout=30.0)
+        out.append(("SMP: an out-of-domain store still faults, on a two-hart kernel (X2)",
+                    ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("cat /proc/cpuinfo",
+                                          r"domains_hart1:\s*[1-9]", timeout=12.0)
+        out.append(("SMP: restricted domains were actually activated on hart 1 (X2)",
+                    ok, log if not ok else ""))
+
+        # ---- X5: the isolation and fault suite, on a machine that is
+        # actually using both cores at the moment each fault lands.
+        #
+        # Everything above this point would pass on a kernel where the second
+        # hart booted and then idled forever. That is the gap X5 exists to
+        # close, and it takes two separate mechanisms, because two different
+        # things could be untrue:
+        #
+        #   `smpload start` puts four yielding tasks on the ready queue and
+        #   keeps a per-hart progress counter. The trap handler snapshots
+        #   those counters *before* killing a faulting task, so `smpload stop`
+        #   can assert that a hart other than the one taking the fault had
+        #   made progress before the fault and made more after it -- a claim
+        #   about simultaneity, which no pair of passing tests can establish.
+        #
+        #   `isolationtest <hart>` pins the probe, so "a domain fault is
+        #   handled correctly on a hart that is not the primary" stops being
+        #   a lucky draw. Unpinned, the probe lands wherever the ready queue
+        #   sends it; on a quiet machine that is usually the shell's own hart,
+        #   and a green run would have proved nothing about hart 1.
+        ok, log = session.send_and_expect("smpload start", r"SMPLOAD_STARTED tasks=[1-9]",
+                                          timeout=30.0)
+        out.append(("SMP: a background load is running on every hart (X5)",
+                    ok, log if not ok else ""))
+
+        # The pinned half, both directions. Running it on hart 0 as well is
+        # not symmetry for its own sake: it is what shows the pin is a real
+        # constraint rather than a label, since hart 0 is the busy one and an
+        # unpinned probe would rarely choose it.
+        for hart in (1, 0):
+            ok, log = session.send_and_expect(
+                f"isolationtest {hart}",
+                r"ISOLATED \(kernel memory untouched\)", timeout=25.0)
+            if ok and f"ran in U-mode on hart {hart}" not in log:
+                ok = False   # it faulted, but not where we asked -- see above
+            if "NOT the hart it was pinned to" in log:
+                ok = False
+            out.append((f"SMP: a domain fault is contained when taken on hart {hart} (X5)",
+                        ok, log if not ok else ""))
+
+        # The syscall boundary, and an ordinary U-mode round trip, under the
+        # same load and on the non-primary hart -- the two halves of phase
+        # 12's suite that are about the kernel *not* faulting. A confused
+        # deputy check that only ever ran on hart 0 says nothing about the
+        # copy-in path a task on hart 1 uses.
+        ok, log = session.send_and_expect("deputytest 1",
+                                          r"DEPUTY_REFUSED.*OWNBUF_OK.*UNTOUCHED",
+                                          timeout=25.0)
+        ok = ok and "ran in U-mode on hart 1" in log
+        out.append(("SMP: the syscall boundary rejects a foreign pointer, on hart 1 (X5)",
+                    ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("usertest 1",
+                                          r"UMODE_OK.*cause: 8 \(U-mode.*ended cleanly",
+                                          timeout=25.0)
+        ok = ok and "ran in U-mode on hart 1" in log
+        out.append(("SMP: a U-mode task syscalls back cleanly from hart 1 (X5)",
+                    ok, log if not ok else ""))
+
+        # A loaded ELF, not a kernel-linked probe: the same distinction B6
+        # drew when uisolate.elf was added, now under load. Left unpinned on
+        # purpose -- the loader has no pinning API and should not need one,
+        # so this is the case where the scheduler chooses.
+        ok, log = session.send_and_expect(
+            "exec /flash0/system/bin/uisolate.elf\nps",
+            r"uprog\s+killed", timeout=30.0)
+        if "UISO_NOT_ISOLATED" in log:
+            ok = False
+        out.append(("SMP: a loaded ELF is still confined, and still reported killed (X5)",
+                    ok, log if not ok else ""))
+
+        # The verdict. Reads the counters before stopping the load, so
+        # "the other hart kept going after the fault" cannot be satisfied by
+        # progress made between the fault and the word `stop`.
+        ok, log = session.send_and_expect("smpload stop", r"SMPLOAD_(OK|FAIL)", timeout=45.0)
+        ok = ok and "SMPLOAD_OK" in log
+        out.append(("SMP: another hart was mid-task at the instant of each fault (X5)",
+                    ok, log if not ok else ""))
+
+        # And the machine is still usable afterwards. Every fault above was
+        # survivable in isolation; this asks whether five of them, taken on
+        # two harts with a load running, left a shell that still answers --
+        # which is the actual claim "the fault suite passes on two cores"
+        # is making.
+        ok, log = session.send_and_expect("cat /proc/cpuinfo", r"harts_online:\s*2",
+                                          timeout=15.0)
+        out.append(("SMP: both harts still scheduling after the fault suite (X5)",
+                    ok, log if not ok else ""))
+
+        # ---- X8: the second core doing visible work, checked against a
+        # published answer rather than against itself.
+        #
+        # perft's node counts are exact and externally documented, and
+        # perft.c's table already carries them. So splitting the root move
+        # list across two harts is verified by the same assertion that
+        # verifies the single-core path: any mistake in the split -- a
+        # dropped root move, a shared ply index, two workers on one board --
+        # changes the count, and the count is checked against the table.
+        # Nothing else in this tree validates a concurrency change that
+        # cleanly, which is why X8 leads with perft rather than the search.
+        #
+        # Both core counts are run. One core is the pre-X8 path and must
+        # still be right; two cores must produce the identical answer AND
+        # report that it really used two, so a silent fallback to one cannot
+        # pass for a working split.
+        ok, log = session.send_and_expect("(perft 3 1)",
+                                          r"PERFT Results: \d+ passed depths, 0 errors "
+                                          r"\(cores used: 1, \d+ ms\)", timeout=120.0)
+        out.append(("SMP: perft is still exact on one core (X8)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(perft 3 2)",
+                                          r"PERFT Results: \d+ passed depths, 0 errors "
+                                          r"\(cores used: 2, \d+ ms\)", timeout=120.0)
+        out.append(("SMP: perft split across two harts gives the same exact counts (X8)",
+                    ok, log if not ok else ""))
+
+        # X8b: the search's second core, asserted on what it did rather than
+        # on how long it took.
+        #
+        # A Lazy SMP helper contributes only through the shared transposition
+        # table and its own result is discarded, so there is no output that is
+        # *supposed* to change -- and the timing that does change is exactly
+        # the kind of wall-clock assertion this suite has been bitten by
+        # before. What is checkable is that the helper ran at all: it reports
+        # its own node count, kept separate from the primary's precisely so
+        # this question stays answerable. Zero means it never started, which
+        # is what a silent fallback to one core looks like.
+        ok, log = session.send_and_expect("(chess-selftest 1)",
+                                          r"cores requested 1, harts online 2, "
+                                          r"helper nodes 0", timeout=60.0)
+        out.append(("SMP: chess on one core runs no helper (X8b)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("(chess-selftest 2)",
+                                          r"cores requested 2, harts online 2, "
+                                          r"helper nodes [1-9]\d+", timeout=60.0)
+        out.append(("SMP: chess on two cores really searches on the second (X8b)",
+                    ok, log if not ok else ""))
+    except Exception as e:  # noqa: BLE001
+        out.append(("SMP two-hart target", False, str(e)))
+    finally:
+        session.close()
+    return out
+
+
 def main() -> int:
     """Main entry point for LugalOS Test Suite."""
     project_root = Path(__file__).resolve().parent.parent
@@ -5711,6 +6004,17 @@ def main() -> int:
         _run_single(test_identity_record_auth(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")
+
+    # 5. X1: the two-hart target. Built by `cmake --preset rv64-smp`; absent
+    # from a default checkout, and skipped rather than failed when so.
+    smp_elf = build_dir / "rv64-smp" / "lugalos.elf"
+    if smp_elf.exists():
+        print("\n[Target: RV64 SMP -- two harts]")
+        for r in test_smp_two_harts(smp_elf, build_dir / "rv64-smp" / "lugalos_sd.img"):
+            _run_single(r)
+    else:
+        print("\n[i] build/rv64-smp not present; skipping the two-hart target "
+              "(cmake --preset rv64-smp && cmake --build --preset rv64-smp)")
 
     duration = time.time() - start_time
     print("\n----------------------------------------------------------------------")

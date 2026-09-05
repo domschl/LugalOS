@@ -424,3 +424,65 @@ strip a trailing separator from the relative part before lookup, the way
 it evidently already does for the mount-root case. Worth checking whether
 the same asymmetry affects `cat`, `cp` and the 9P walk, which take the
 same resolver -- the shell's `ls` is only where it happened to surface.
+---
+## C6/C7's exact heap comparison is disturbed by background allocation
+
+**Trigger:** run `tests/hw/test_rp2350.py` against a networked persona
+(`rp2350-clock` on a Pico 2 W) in the first minute after a flash, while the
+WLAN supervisor is still retrying its join. Seen once in four runs on
+2026-09-03; three settled runs either side were clean.
+
+**Why it is parked:** the test reads `Pages Used` before and after a
+compile and requires them to be *equal* -- which is exactly the right
+assertion for what it checks (that chibicc's arena comes back), and exactly
+what any concurrent allocation elsewhere in the system breaks. The cause is
+consistent with the WLAN join path allocating between the two readings, but
+that was inferred from timing rather than demonstrated, so it is written
+down as an observation and not a diagnosis.
+
+**Fix, when it is worth it:** not by loosening the equality -- a tolerance
+band would blunt the one thing it detects. Better either to take both
+readings while the system is demonstrably quiescent (the suite already
+knows how to wait for a settled console), or to have the test compare only
+the pages attributable to the compile, which `/proc/meminfo`'s peak figure
+already distinguishes. Whichever, it should be a deliberate change to a
+leak-detection test rather than a drive-by loosening.
+
+---
+
+## `sizereport` cannot see initialised statics on RP2350
+
+**Trigger:** add an initialised static (`static thing_t x = { ... };` with
+any non-zero field) to any file in an RP2350 build. It costs exactly as
+much RAM as the equivalent zero-initialised object and
+`cmake --build build/rp2350 --target sizecheck` does not count a byte of
+it.
+
+**Why:** `tools/sizereport.py` sums `nm` symbols typed `b` or `d`. On
+RP2350 initialised data lands in `.data`, which `linker/rp2350.ld` places
+inside an executable PT_LOAD (it shares the segment with `.ramfunc` --
+there is a comment in CMakeLists.txt about that PT_LOAD being genuinely
+RWX). `nm` therefore types those symbols `t`, and the filter drops them.
+Measured 2026-09-03: in RP2350's RAM window there are 329 `b` symbols,
+68 `t`, and **zero** `d`. The RV32 QEMU build, for contrast, has 59 `d`.
+
+Found the expensive way. S2 first wrote its two locks as
+`static ylock_t g_pump_lock = YLOCK_INIT;`, and `sizecheck` reported a
+24-byte *saving* on a like-for-like replacement of two 12-byte objects --
+the memory had not gone anywhere, it had become invisible. Rewritten to
+rely on all-zero being a valid free lock, they report `+0`, which is the
+truth.
+
+**Why it matters more than 24 bytes:** on RP2350 `.bss` and the heap are
+the same memory, which is the entire reason this guard exists. A blind
+spot in it is a way to spend heap without anyone being told -- and it
+rewards exactly the habit (a self-documenting initialiser) that a reviewer
+would otherwise encourage.
+
+**Fix, when it is worth it:** count symbols by *section* rather than by
+`nm` type -- `readelf -sW` gives a section index per symbol, so `.data`
+can be counted wherever the linker has put it and `.ramfunc`'s actual code
+can still be excluded deliberately rather than by accident. Until then the
+convention is: on RP2350, prefer zero-initialised statics, and treat any
+size *drop* on a change that added state as a measurement bug until proven
+otherwise.

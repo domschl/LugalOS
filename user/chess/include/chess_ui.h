@@ -18,7 +18,18 @@ void chess_selftest(void);
  * suite (perft.c's own test-case table). `max_depth <= 0` uses
  * run_perft_tests_depth()'s own documented default (5). No hardware
  * dependency, same as chess_selftest() above. */
+void chess_selftest_cores(int cores);
+
+/* As above; `fixed_depth > 0` searches to exactly that depth with no time
+ * limit and reports elapsed ms -- the time-to-depth measurement Lazy SMP is
+ * actually judged on (X8b). 0 keeps the 2-second budget. */
+void chess_selftest_bench(int cores, int fixed_depth);
+
 void chess_perft(int max_depth);
+
+/* As above, with each position's perft split across `cores` (X8,
+ * plan/phase23_multicore_scheduling.md). One core is the pre-X8 behaviour. */
+void chess_perft_cores(int max_depth, int cores);
 
 /* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
  * scenario 1.1, no hardware dependency. Builds and runs on every target.

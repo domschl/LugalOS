@@ -16,6 +16,11 @@ typedef struct vmm_space {
 } vmm_space_t;
 
 void vmm_init(void);
+
+/* Joins a secondary hart to the kernel address space vmm_init() built.
+ * satp is per-hart, so without this a secondary runs in bare mode while the
+ * primary translates -- see the definition. No-op where paging is off. */
+void vmm_secondary_init(void);
 int vmm_map_page(vmm_space_t *space, uintptr_t vaddr, uintptr_t paddr, uint32_t flags);
 void vmm_switch_space(vmm_space_t *space);
 void *vmm_alloc_page(void);

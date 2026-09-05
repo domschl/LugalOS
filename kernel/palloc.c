@@ -1,6 +1,6 @@
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
-#include "kernel/irq.h"
+#include "kernel/lock.h"
 #include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -26,6 +26,14 @@ static uint8_t   g_bitmap[(PALLOC_MAX_PAGES + 7) / 8];
  * between them. */
 static uint32_t  g_used_pages;
 static uint32_t  g_peak_used;
+
+/* Guards the bitmap and the two counters above (S4,
+ * plan/phase22_smp_locking_foundation.md). One lock for the whole
+ * allocator, not one per region: there is a single bitmap and a single
+ * pair of counters, so there is nothing to divide. Zero-initialised, which
+ * is a free spinlock_t -- and on RP2350 that also keeps it in .bss where
+ * tools/sizereport.py can see it (see kernel/lock.h). */
+static spinlock_t g_palloc_lock;
 
 static inline bool bit_get(uint32_t i) {
     return (g_bitmap[i / 8] >> (i % 8)) & 1u;
@@ -86,8 +94,18 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
 
     /* The scan-then-claim below is only correct if nothing else can claim a
      * page between finding a free run and marking it. Cooperative scheduling
-     * made that true for free; preemption does not. */
-    uintptr_t irqf = irq_save();
+     * made that true for free; preemption does not, and neither does a
+     * second hart -- irq_save() masked only the hart that called it, so two
+     * harts could find the same free run and both claim it (S3's endpoint
+     * race, but over the page bitmap and with no refusal path to catch it).
+     *
+     * A spinlock_t rather than a ylock_t, and here that is the easy call:
+     * this region is a bounded scan over a bitmap with no call out of it at
+     * all -- no printk, no yield, nothing that can block. The one expensive
+     * thing an allocation does, zeroing the pages, is deliberately outside
+     * (see below). S3 had to split its claim in two precisely because it
+     * could not say that; this one can. */
+    uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
 
     /* First fit. The page count here is small (128 on RP2350, 4096 on QEMU)
      * and allocation is rare -- task creation and page tables -- so a linear
@@ -103,12 +121,12 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
         for (uint32_t j = 0; j < n; j++) bit_set(i + j);
         g_used_pages += n;
         if (g_used_pages > g_peak_used) g_peak_used = g_used_pages;
-        irq_restore(irqf);
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
         void *p = (void *)(g_base + (uintptr_t)i * PAGE_SIZE);
         memset(p, 0, (size_t)n * PAGE_SIZE); /* outside the critical section */
         return p;
     }
-    irq_restore(irqf);
+    spin_unlock_irqrestore(&g_palloc_lock, irqf);
     return NULL;
 }
 
@@ -123,7 +141,7 @@ void palloc_free(void *p, uint32_t n) {
     uint32_t idx = (uint32_t)(off / PAGE_SIZE);
     if (idx >= g_num_pages || idx + n > g_num_pages) return;
 
-    uintptr_t irqf = irq_save();
+    uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
     /* Only count down pages that were actually allocated. Clearing an already
      * clear bit is harmless to the bitmap, so a double free was previously a
      * no-op; an unguarded g_used_pages-- would turn it into a counter that
@@ -134,16 +152,32 @@ void palloc_free(void *p, uint32_t n) {
             g_used_pages--;
         }
     }
-    irq_restore(irqf);
+    spin_unlock_irqrestore(&g_palloc_lock, irqf);
 }
 
+/* Under the lock, like every other read of the bitmap (S5).
+ *
+ * These are diagnostics, and the tempting argument is that a diagnostic can
+ * tolerate a figure that was true a moment ago. That argument is right about
+ * *staleness* and wrong about this: an unlocked scan is not a stale answer,
+ * it is a scan racing concurrent bit_set()/bit_clear() calls, which can count
+ * a run that never existed as a whole. `/proc/meminfo`'s free-page count and
+ * the largest-free-run figure are exactly what someone reads when they are
+ * already suspicious about the heap, and a number that is wrong in a way the
+ * allocator itself never was is worse than no number.
+ *
+ * Cheap to hold: the scan is bounded by g_num_pages (128 on RP2350, 4096 on
+ * QEMU) and calls nothing, which is the same reason palloc_pages() can use a
+ * spinlock at all. */
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages) {
     if (total_pages) *total_pages = g_num_pages;
     if (free_pages) {
+        uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
         uint32_t free_count = 0;
         for (uint32_t i = 0; i < g_num_pages; i++) {
             if (!bit_get(i)) free_count++;
         }
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
         *free_pages = free_count;
     }
 }
@@ -162,6 +196,10 @@ void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run) {
          *
          * Reported without regard to alignment: it is the ceiling on what any
          * request could get, not a promise that an aligned one will. */
+        /* Under the lock, for the reason palloc_stats() above gives at
+         * length: a run measured across concurrent claims is not a stale
+         * figure, it is a figure for a heap state that never existed. */
+        uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
         uint32_t best = 0, run = 0;
         for (uint32_t i = 0; i < g_num_pages; i++) {
             if (bit_get(i)) {
@@ -170,6 +208,7 @@ void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run) {
                 best = run;
             }
         }
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
         *largest_free_run = best;
     }
 }

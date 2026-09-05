@@ -38,6 +38,12 @@ static inline int score_from_tt(int score, int ply) {
     return score;
 }
 
+/* Size of the embedded transposition table, in bytes (X8b). 32 KB by
+ * default, which is what RP2350's heap can spare and what every measurement
+ * before X8b used. It is exposed because it, and not the threading, is what
+ * bounds Lazy SMP's usefulness here. Takes effect at the next init_tt(). */
+extern uint32_t tt_embedded_bytes;
+
 void init_tt(int size_mb);
 void free_tt(void);
 void clear_tt(void);

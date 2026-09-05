@@ -127,6 +127,16 @@ endif()
 # by default. Baked into lugalos_config.h below so C code gates uniformly with
 # #if CONFIG_ENABLE_CC regardless of target.
 option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
+
+# X1, plan/phase23_multicore_scheduling.md §2: waking a second hart, behind a
+# build-time gate that is OFF by default.
+#
+# The gate is the point, not a formality. Every board persona in this tree
+# boots on one hart today, and a regression in second-hart bring-up must not
+# be able to put that at risk -- the same reasoning phase 8 built this
+# mechanism for. With it off, arch/riscv/common/entry.S parks secondary harts
+# exactly as it did before phase 23 existed.
+option(LUGALOS_ENABLE_SMP "Wake secondary harts (phase 23; QEMU RV64 only so far)" OFF)
 option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
 
 # Same mechanism, RP2350-only hardware (H3, plan/phase9_chess_computer.md).
@@ -365,7 +375,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
     set(LUGALOS_CONFIG_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_config.h)
     execute_process(COMMAND ${CMAKE_COMMAND}
         -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
-        -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
+        -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
         -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
@@ -397,7 +407,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
     add_custom_command(OUTPUT ${LUGALOS_CONFIG_HEADER}
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
-            -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED}
+            -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
             -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
@@ -414,6 +424,9 @@ endif()
 # Core Sources
 set(SOURCES
     kernel/main.c
+    kernel/hart.c
+    kernel/lock.c
+    kernel/smp.c
     kernel/printk.c
     kernel/klog.c
     kernel/console.c
@@ -851,7 +864,12 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
-    add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S)
+    # kernel/hart.c for the same reason LUGALOS_FLASH_MAP_DEFSYMS is shared
+    # above: both boot paths reference g_harts by name since S0
+    # (kernel/include/kernel/hart.h), so *every* image built from them needs
+    # it -- including this standalone hardware test, which is again how it
+    # was found (an undefined-symbol link error, not a wrong address).
+    add_executable(minimal_rp2350.elf arch/riscv/rp2350/boot_header.S tools/minimal_rp2350.c arch/riscv/common/entry.S kernel/hart.c)
     target_link_options(minimal_rp2350.elf PRIVATE -T${LINKER_SCRIPT} ${LUGALOS_FLASH_MAP_DEFSYMS})
     set_target_properties(minimal_rp2350.elf PROPERTIES COMPILE_FLAGS "-Dminimal_main=kernel_main")
     add_custom_command(TARGET minimal_rp2350.elf POST_BUILD

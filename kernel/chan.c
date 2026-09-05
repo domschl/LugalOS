@@ -2,6 +2,7 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 #include <string.h>
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
@@ -24,7 +25,16 @@ struct chan_endpoint {
     uint8_t        *resp_buf;
     uint32_t        resp_cap;
     bool            in_use;
+    /* Claimed for the duration of one call, including the blocking wait
+     * inside chan_call_task(). NOT a lock: contention on it must *refuse*
+     * (the caller gets -1) rather than wait, because what it protects is a
+     * single-slot buffer whose second writer would corrupt the first's
+     * in-flight request. See chan_call(). */
     bool            busy;
+    /* Guards the check-and-set of `busy` above, and nothing else -- a
+     * handful of instructions that never block (S3,
+     * plan/phase22_smp_locking_foundation.md). */
+    spinlock_t      lock;
 };
 
 static chan_endpoint_t g_endpoints[CHAN_MAX_ENDPOINTS];
@@ -83,6 +93,7 @@ int chan_register(const char *name, chan_handler_fn handler, void *ctx,
     ep->resp_cap = resp_cap;
     ep->in_use   = true;
     ep->busy     = false;
+    spinlock_init(&ep->lock);
     return 0;
 }
 
@@ -117,6 +128,7 @@ int chan_register_task(const char *name, int owner_pid,
     ep->resp_cap = resp_cap;
     ep->in_use   = true;
     ep->busy     = false;
+    spinlock_init(&ep->lock);
     return 0;
 }
 
@@ -153,6 +165,15 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
 
     wait_for_init();
     int me = sched_current_pid();
+
+    /* A hart with no task cannot make this call: it would index g_wait_for[]
+     * with -1, and the task_block() below has nothing to block. Refusing is
+     * the right answer rather than a special case -- every caller of
+     * chan_call() in this tree already handles -1 by falling back to direct
+     * access, which is exactly what a bring-up hart should do. Before the
+     * identity fix this hart reported pid 0 and would have written the boot
+     * task's wait edge and blocked it. */
+    if (me < 0) return -1;
 
     /* Refuse rather than deadlock if this call would close a cycle in the
      * wait-for graph -- see g_wait_for's comment above. Caught here, before
@@ -191,10 +212,28 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
      * between the two (M3 preemption): without the mask, two callers whose
      * check-and-set straddle a preemption both see busy == false and both
      * proceed, and their memcpy()s below race on the same ep->req_buf. */
-    uintptr_t flags = irq_save();
-    if (ep->busy) { irq_restore(flags); return -1; }
+    /* S3: the lock covers these three lines and stops. It is deliberately
+     * NOT held for the duration of the call, and the reason is exactly the
+     * distinction kernel/lock.h draws between its two types:
+     *
+     *   - `busy` is held across chan_call_task(), which calls task_block().
+     *     A spinlock_t held across a block is the deadlock its own header
+     *     warns about: the holder cannot run to release it.
+     *   - Contention here must *refuse*, not wait. A caller that finds the
+     *     endpoint busy gets -1 and decides for itself; spinning or
+     *     yielding until it frees would change chan_call()'s contract, and
+     *     on the re-entrant path (a recursive local 9P mount) the waiter
+     *     would be waiting on itself.
+     *
+     * So the claim stays a plain flag with a long lifetime, and the lock
+     * only makes reading-and-taking that flag indivisible. Two different
+     * jobs; conflating them is how this goes wrong. irq_save() alone was
+     * never going to stop a second hart arriving here at the same instant,
+     * which is what changes now. */
+    uintptr_t flags = spin_lock_irqsave(&ep->lock);
+    if (ep->busy) { spin_unlock_irqrestore(&ep->lock, flags); return -1; }
     ep->busy = true;
-    irq_restore(flags);
+    spin_unlock_irqrestore(&ep->lock, flags);
 
     /* Copy IN. The handler must never see the caller's pointer -- that is
      * Rule 1, and it is what keeps this identical to the MMU case (where the
@@ -206,7 +245,13 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
         ? chan_call_task(ep, req_len)
         : ep->handler(ep->ctx, ep->req_buf, req_len, ep->resp_buf, ep->resp_cap);
 
+    /* Released under the same lock as the claim. The store is a single byte
+     * and would not tear, but going through the lock is what gives the next
+     * hart to take this endpoint release ordering over everything the call
+     * above wrote into its buffers. */
+    flags = spin_lock_irqsave(&ep->lock);
     ep->busy = false;
+    spin_unlock_irqrestore(&ep->lock, flags);
 
     if (resp_len < 0) return -1;
     if ((uint32_t)resp_len > ep->resp_cap) return -1; /* handler overran its contract */

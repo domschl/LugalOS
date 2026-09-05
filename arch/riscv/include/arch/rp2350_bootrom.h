@@ -22,6 +22,12 @@ bool rp2350_reboot_to_bootsel(void);
  * bootrom function could not be found, or on a non-RP2350 build. */
 bool rp2350_reboot(void);
 
+/* Arms a reboot `ms` from now and returns; rp2350_reboot_cancel() withdraws
+ * it. A deadman for anything that can hang the machine -- a bootrom reboot
+ * preserves SRAM, so evidence written to a NOLOAD section survives it. */
+bool rp2350_reboot_after_ms(uint32_t ms);
+void rp2350_reboot_cancel(void);
+
 /* Looks up a bootrom function by its two-character ROM table code (e.g.
  * ROM_TABLE_CODE('R','E') for flash_range_erase). Returns NULL if this build
  * has no bootrom or the code is not present on this silicon.

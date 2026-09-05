@@ -1,6 +1,10 @@
 {
     "version": 2,
-    "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 0
+    },
     "configurePresets": [
         {
             "name": "rv32-nommu",
@@ -24,7 +28,7 @@
         },
         {
             "name": "rp2350-chess",
-            "displayName": "RP2350 (Pico 2) — chess-computer persona",
+            "displayName": "RP2350 (Pico 2) \u2014 chess-computer persona",
             "description": "Raspberry Pi Pico 2, default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in (plan/phase9_chess_computer.md).",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/rp2350",
@@ -34,7 +38,7 @@
         },
         {
             "name": "rp2350-clock",
-            "displayName": "RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona",
+            "displayName": "RP2350 (Pico 2 / Pico 2 W) \u2014 Pico-Clock-Green persona",
             "description": "Waveshare Pico-Clock-Green baseboard (plan/phase11_pico_clock_green.md). GP10-13 drive the SM16106 LED matrix instead of the SD card, so SPI1/SD, the ST7735 TFT and the TM1638 keypad are all built out.",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/rp2350-clock",
@@ -70,7 +74,7 @@
         },
         {
             "name": "rp2350-wifi",
-            "displayName": "RP2350W (Pico 2 W) — wireless netif persona",
+            "displayName": "RP2350W (Pico 2 W) \u2014 wireless netif persona",
             "description": "Bare Pico 2 W with an SD card on SPI1, CYW43439 pins (GP23/24/25/29) reserved (plan/phase19_ip_stack_and_ethernet.md R5). No display, keypad or matrix. Carries drivers/cyw43_rp2350.c (R5); the gSPI bus layer is in progress and not yet answering, so this persona is still a headless USB 9P node in practice. A different physical Pico 2 W than the one under the Pico-Clock-Green baseboard (rp2350-clock).",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/rp2350-wifi",
@@ -85,14 +89,62 @@
                 "LUGALOS_ENABLE_DCF77": "OFF",
                 "LUGALOS_ENABLE_GPS": "OFF"
             }
+        },
+        {
+            "name": "rv64-smp",
+            "displayName": "QEMU RV64 (Sv39 MMU) - SMP, two harts",
+            "description": "X1, plan/phase23_multicore_scheduling.md: the rv64-mmu build with CONFIG_ENABLE_SMP. Run it with qemu-system-riscv64 -M virt -smp 2. A separate preset rather than a flag on rv64-mmu so the single-hart build every other test uses stays exactly what it was.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/rv64-smp",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv64-mmu.cmake",
+                "LUGALOS_ENABLE_SMP": "ON"
+            }
+        },
+        {
+            "name": "rp2350-smp",
+            "displayName": "RP2350 (Pico 2) \u2014 chess persona, both cores",
+            "description": "X3, plan/phase23_multicore_scheduling.md: the chess persona with CONFIG_ENABLE_SMP, which adds the SIO-FIFO launch for core 1 and the `smpstart` command. A separate preset rather than a flag on rp2350-chess so every shipping persona keeps booting single-core.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/rp2350-smp",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
+                "LUGALOS_ENABLE_SMP": "ON"
+            }
         }
     ],
     "buildPresets": [
-        { "name": "rv32-nommu", "configurePreset": "rv32-nommu" },
-        { "name": "rv64-mmu", "configurePreset": "rv64-mmu" },
-        { "name": "rp2350-chess", "configurePreset": "rp2350-chess" },
-        { "name": "rp2350-clock", "configurePreset": "rp2350-clock" },
-        { "name": "rp2350-gateway", "configurePreset": "rp2350-gateway" },
-        { "name": "rp2350-wifi", "configurePreset": "rp2350-wifi" }
+        {
+            "name": "rv32-nommu",
+            "configurePreset": "rv32-nommu"
+        },
+        {
+            "name": "rv64-mmu",
+            "configurePreset": "rv64-mmu"
+        },
+        {
+            "name": "rp2350-chess",
+            "configurePreset": "rp2350-chess"
+        },
+        {
+            "name": "rp2350-clock",
+            "configurePreset": "rp2350-clock"
+        },
+        {
+            "name": "rp2350-gateway",
+            "configurePreset": "rp2350-gateway"
+        },
+        {
+            "name": "rp2350-wifi",
+            "configurePreset": "rp2350-wifi"
+        },
+        {
+            "name": "rv64-smp",
+            "configurePreset": "rv64-smp"
+        },
+        {
+            "name": "rp2350-smp",
+            "configurePreset": "rp2350-smp"
+        }
     ]
 }

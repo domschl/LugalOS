@@ -709,7 +709,7 @@ static void blk_task_body(void *arg) {
  * hardware access whenever the task is not alive, same as every boot-time
  * read before this ever runs. */
 int spisd_task_start(void) {
-    int pid = task_create_sized("sdblk", blk_task_body, NULL, 1);
+    int pid = task_create_driver("sdblk", blk_task_body, NULL, 1);
     if (pid < 0) {
         printk("[SPI SD] Could not start the sdblk task; storage stays on direct hardware access.\n");
         return -1;
