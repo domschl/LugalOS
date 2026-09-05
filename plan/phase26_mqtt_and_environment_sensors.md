@@ -537,6 +537,35 @@ host broker killed and restarted in the middle — the node reconnects,
 republishes `online`, and the broker sees the will in between. On hardware,
 the same against `nalanda`.
 
+*Done 2026-09-05.* `test_mqttd_appliance` on rv32 and rv64: the will is
+registered as part of CONNECT (not published later, which is the whole point
+of it), the retained `online` announcement precedes the measurements, the
+synthetic source's values advance so a publish is provably a fresh sample
+rather than the same one resent, and the broker is then **closed and replaced
+on the same port** — the node reconnects with no help and re-announces itself.
+
+On hardware, against `nalanda`: five cycles at a 20 s period, each carrying
+temperature, pressure and humidity from the fitted BME280, with `published 22,
+skipped 0, connect failures 0`. Two paths the QEMU test cannot reach were
+checked there too — a `PINGREQ` when the publish period is longer than the
+keepalive (`pings 1` after 72 s idle), and the **will on an ungraceful
+death**: the board was dropped into BOOTSEL mid-session, and a subscriber
+arriving afterwards still received `status -> "offline" retained`.
+
+**It also closed a hole Q1 left**, which is why it earned its place ahead of
+Q3: nothing serviced an MQTT connection between shell commands, so an idle
+session was dropped at the keepalive while the client still believed it was
+connected — observed on hardware as `state CONNECTED, pings 0` over a TCP
+connection that had gone to CLOSE_WAIT. With `mqttd` running, the same board
+holds ESTABLISHED indefinitely.
+
+The sensor's three measurements are registered as `mqttd` sources rather than
+called by it, so `mqttd` knows nothing about I2C — which is what lets the whole
+publish/reconnect/will machinery be tested on a target with no I2C controller
+at all. All three share one forced-mode measurement per cycle (cached for a
+second), because three conversions where one would do is three times the
+self-heating.
+
 ### Q6 — Persistence and provisioning
 `IDSTORE_FIELD_MQTT`, `mqttcfg` (+`clear`), `tools/provision.py --mqtt`,
 `/proc/node` reporting the broker, and `mqttd` autostarting when a broker and
