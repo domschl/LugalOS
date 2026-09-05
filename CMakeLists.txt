@@ -524,6 +524,11 @@ set(SOURCES
     # and arithmetic should not be debugged by flashing.
     net/ntp.c
     net/ntp_server.c
+    # Q1 (plan/phase26_mqtt_and_environment_sensors.md): the MQTT 3.1.1
+    # client. Built for every target for the same reason the SNTP client
+    # above is -- the byte counting and the Remaining Length varint are the
+    # fiddly part, and `mqtt selftest` exercises them with no network at all.
+    net/mqtt.c
     # P3 (plan/phase24_dcf77_precision_and_ntp_server.md): timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything

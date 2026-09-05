@@ -48,6 +48,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/ntp.h"
+#include "net/mqtt.h"
 #include "drivers/edgecap.h"
 #include "arch/elf.h"
 #include "kernel/path.h"
@@ -139,6 +140,7 @@ static void cmd_help(void) {
     cprintf("  net echotest <ip> <port> [bytes] - Round-trip bytes through a TCP echo server\n");
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
+    cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>|disconnect]\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -601,6 +603,113 @@ static void cmd_net_echotest(const char *arg) {
                 total, (unsigned long)ms, rate,
                 peer_closed ? ", peer had closed" : "");
     }
+}
+
+/* `mqtt ...` -- Q2, plan/phase26_mqtt_and_environment_sensors.md.
+ *
+ *   mqtt                              what the client is doing
+ *   mqtt selftest                     the varint boundary vector; no network
+ *   mqtt connect <ip>[:port] [user [pass]]
+ *   mqtt pub <topic> <payload...>
+ *   mqtt disconnect
+ *
+ * The connection is serviced while a command runs and not between commands:
+ * until `mqttd` (Q5) exists there is no task whose job that is, so a session
+ * left idle past the keepalive is dropped by the broker. Stated here because
+ * it looks like a bug and is a missing milestone. */
+static void cmd_mqtt(const char *arg) {
+    while (*arg == ' ') arg++;
+
+    if (!*arg) { mqtt_print_status(); return; }
+
+    if (strncmp(arg, "selftest", 8) == 0) {
+        mqtt_selftest(true);
+        return;
+    }
+
+    if (strncmp(arg, "disconnect", 10) == 0) {
+        if (mqtt_state() == MQTT_CLOSED) { cprintf("mqtt: not connected\n"); return; }
+        mqtt_disconnect();
+        cprintf("mqtt: disconnected\n");
+        return;
+    }
+
+    if (strncmp(arg, "connect", 7) == 0) {
+        const char *a = arg + 7;
+        while (*a == ' ') a++;
+
+        char host[24];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && *a != ':' && n < sizeof(host) - 1u) host[n++] = *a++;
+        host[n] = '\0';
+
+        mqtt_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        if (!ipv4_parse(host, cfg.broker)) {
+            cprintf("usage: mqtt connect <ip>[:port] [user [password]]\n");
+            return;
+        }
+        if (*a == ':') {
+            a++;
+            unsigned port = 0;
+            while (*a >= '0' && *a <= '9') port = port * 10u + (unsigned)(*a++ - '0');
+            cfg.port = (uint16_t)port;
+        }
+
+        /* Username and password, each up to the next space. Copied into
+         * buffers with a lifetime past this call because mqtt_connect() keeps
+         * the config; the strings in `cmd_line` do not outlive the command. */
+        static char user[64], pass[64];
+        user[0] = pass[0] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(user) - 1u) user[n++] = *a++;
+        user[n] = '\0';
+        while (*a == ' ') a++;
+        n = 0;
+        while (*a && *a != ' ' && n < sizeof(pass) - 1u) pass[n++] = *a++;
+        pass[n] = '\0';
+        if (user[0]) cfg.username = user;
+        if (pass[0]) cfg.password = pass;
+
+        if (pass[0] && !user[0]) {
+            cprintf("mqtt: MQTT 3.1.1 has no password without a username\n");
+            return;
+        }
+
+        console_interrupt_clear();
+        cprintf("mqtt: connecting to %s:%u...\n", host,
+                cfg.port ? cfg.port : (unsigned)MQTT_DEFAULT_PORT);
+        int rc = mqtt_connect(&cfg, 8000u);
+        if (rc != 0) {
+            cprintf("mqtt: %s\n", mqtt_err_str(rc));
+            return;
+        }
+        mqtt_print_status();
+        return;
+    }
+
+    if (strncmp(arg, "pub ", 4) == 0) {
+        const char *a = arg + 4;
+        while (*a == ' ') a++;
+        char topic[MQTT_TOPIC_MAX + 1];
+        uint32_t n = 0;
+        while (*a && *a != ' ' && n < sizeof(topic) - 1u) topic[n++] = *a++;
+        topic[n] = '\0';
+        while (*a == ' ') a++;
+        if (!topic[0]) {
+            cprintf("usage: mqtt pub <topic> <payload>\n");
+            return;
+        }
+        console_interrupt_clear();
+        int rc = mqtt_publish(topic, a, (uint32_t)strlen(a), false);
+        if (rc != 0) { cprintf("mqtt: %s\n", mqtt_err_str(rc)); return; }
+        cprintf("mqtt: published %lu bytes to %s\n", (unsigned long)strlen(a), topic);
+        return;
+    }
+
+    cprintf("usage: mqtt [selftest | connect <ip>[:port] [user [pass]] | "
+            "pub <topic> <payload> | disconnect]\n");
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */
@@ -2429,6 +2538,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
+        return;
+    } else if (strcmp(cmd_line, "mqtt") == 0) {
+        cmd_mqtt("");
+        return;
+    } else if (strncmp(cmd_line, "mqtt ", 5) == 0) {
+        cmd_mqtt(&cmd_line[5]);
         return;
     } else if (strcmp(cmd_line, "ntp") == 0) {
         cmd_ntp(NULL);

@@ -139,6 +139,15 @@ typedef struct {
      * called for one. */
     bool is_stream;
 
+    /* Q0: the owner has closed a stream whose send buffer has not drained.
+     * A FIN occupies the sequence number after the last data byte, so sending
+     * one while bytes are still buffered gives it *their* number and the data
+     * is never seen -- which is exactly what happened to the first MQTT
+     * DISCONNECT: two bytes written, close called immediately, broker saw a
+     * FIN and no packet. The close is therefore deferred to the pump, which
+     * sends it once the buffer is empty. */
+    bool close_pending;
+
     /* Bumped every time the slot is reused. The link carries its own epoch in
      * `ctx`, so a mount left holding a link whose connection has since died
      * and been replaced fails cleanly instead of silently attaching itself to
@@ -284,6 +293,7 @@ static void conn_release(tcp_conn_t *c) {
     c->rx_len = 0;
     c->rx_head = 0;
     c->tx_len = 0;
+    c->close_pending = false;
     c->rto_at_ms = 0;
     c->fin_sent = false;
     c->need_ack = false;
@@ -755,7 +765,12 @@ bool tcp_stream_peer_closed(tcp_stream_t *s) {
 void tcp_stream_close(tcp_stream_t *s) {
     tcp_conn_t *c = stream_conn(s);
     if (c) {
-        if (c->state == TCP_ESTABLISHED) {
+        if (c->tx_len != 0 &&
+            (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT)) {
+            /* Bytes still buffered: let the pump send the FIN after them.
+             * Sending it here would number it as if it were the data. */
+            c->close_pending = true;
+        } else if (c->state == TCP_ESTABLISHED) {
             send_fin(c);
             c->state = TCP_FIN_WAIT_1;
         } else if (c->state == TCP_CLOSE_WAIT) {
@@ -1003,6 +1018,20 @@ void tcp_service(void) {
         if (c->state == TCP_ESTABLISHED && c->tx_len == 0 &&
             !c->is_client && !c->is_stream) {
             p9_link_service(&c->link);
+        }
+
+        /* A stream whose owner closed while bytes were still buffered: the
+         * data has now gone out, so the FIN can follow it with the sequence
+         * number that is genuinely next. */
+        if (c->close_pending && c->tx_len == 0 && !c->fin_sent) {
+            c->close_pending = false;
+            if (c->state == TCP_ESTABLISHED) {
+                send_fin(c);
+                c->state = TCP_FIN_WAIT_1;
+            } else if (c->state == TCP_CLOSE_WAIT) {
+                send_fin(c);
+                c->state = TCP_LAST_ACK;
+            }
         }
 
         /* A peer that has closed and whose reply has drained gets our FIN.

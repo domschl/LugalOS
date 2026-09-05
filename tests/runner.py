@@ -3922,6 +3922,144 @@ def test_ntp_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str
         arch_img.unlink(missing_ok=True)
 
 
+def test_mqtt_varint(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q1: the Remaining Length varint, at every boundary, with no network.
+
+    The only arithmetic in MQTT and the only place a wrong implementation
+    desynchronises a stream *silently* rather than failing -- so it is a pure
+    function built for every target, and this runs it on both QEMU
+    architectures. The same argument CMakeLists.txt already makes for
+    net/ntp.c and kernel/sha256.c: arithmetic should not be debugged by
+    flashing.
+    """
+    name = "MQTT: Remaining Length Varint At Every Boundary"
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("mqtt selftest\n", r"mqtt selftest: \d+ case", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqtt selftest` did not answer: {log[-400:]}")
+        m = re.search(r"mqtt selftest: (\d+) case", log)
+        if not m or int(m.group(1)) != 0:
+            return (name, False, f"the varint codec failed its own boundary vector:\n{log[-700:]}")
+        return (name, True, "every boundary, both malformed shapes, and the truncated case")
+    finally:
+        session.close()
+
+
+def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q1, plan/phase26_mqtt_and_environment_sensors.md: an MQTT 3.1.1 client
+    against a real broker on a real socket.
+
+    tests/mqttbroker.py speaks the actual protocol over TCP and records every
+    byte, so this asserts on what the client *sent* -- the protocol name and
+    level, the flags, the keepalive, the client id, the credentials -- rather
+    than merely on whether something happened. Reached through slirp at
+    10.0.2.2, the same path test_tcp_stream proved.
+
+    Both outcomes are covered in one session: a broker that refuses with
+    "bad username or password" (CONNACK 0x04), which must produce a
+    distinguishable error rather than a hang, and one that accepts, which must
+    carry a publish through with its payload intact.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Client: CONNECT, Refusal, PUBLISH, DISCONNECT"
+    refusing = MqttBroker(connack_rc=4)
+    accepting = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+
+        # 1. A broker that says no. The reason has to survive to the console:
+        # "rc=4" is not a diagnosis, and a wrong password is the single most
+        # common thing to debug against a real broker.
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{refusing.port} someone wrongpass\n",
+            r"mqtt: (the broker rejected|.*refused|.*did not answer)", timeout=25.0)
+        if not ok:
+            return (name, False, f"a refused CONNECT produced no verdict:\n{log[-700:]}")
+        if "bad username or password" not in log:
+            return (name, False,
+                    f"the broker's refusal reason did not reach the console:\n{log[-700:]}")
+        if not refusing.wait_for_connect(timeout=5.0):
+            return (name, False, "the refusing broker never saw a CONNECT")
+        c = refusing.connect
+        if c.protocol != "MQTT" or c.level != 4:
+            return (name, False, f"not MQTT 3.1.1 on the wire: protocol={c.protocol!r} level={c.level}")
+        if c.username != "someone" or c.password != "wrongpass":
+            return (name, False, f"credentials did not arrive as sent: {c!r}")
+
+        # 2. A broker that accepts, and a publish that has to arrive intact.
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{accepting.port}\n",
+            r"state CONNECTED|mqtt: ", timeout=25.0)
+        if not ok or "CONNECTED" not in log:
+            return (name, False, f"the client did not connect:\n{log[-700:]}")
+        if not accepting.wait_for_connect(timeout=5.0):
+            return (name, False, "the accepting broker never saw a CONNECT")
+        c = accepting.connect
+        if not c.clean_session:
+            return (name, False, "clean-session was not set")
+        if c.keepalive != 60:
+            return (name, False, f"keepalive was {c.keepalive}, not the 60 s default")
+        if not c.client_id:
+            return (name, False, "the client id was empty -- node_name() should supply one")
+        if c.username is not None:
+            return (name, False, f"a username was sent when none was configured: {c!r}")
+
+        payload = "21.94"
+        ok, log = session.send_and_expect(
+            f"mqtt pub lugalos/test/temperature {payload}\n",
+            r"mqtt: published|mqtt: ", timeout=15.0)
+        if not ok or "published" not in log:
+            return (name, False, f"the publish did not go out:\n{log[-500:]}")
+        if not accepting.wait_for_publish(timeout=10.0):
+            return (name, False, "the broker never received the PUBLISH")
+        pub = accepting.publishes[0]
+        if pub.topic != "lugalos/test/temperature":
+            return (name, False, f"topic arrived as {pub.topic!r}")
+        if pub.payload != payload.encode():
+            return (name, False, f"payload arrived as {pub.payload!r}, not {payload!r}")
+        if pub.qos != 0:
+            return (name, False, f"published at QoS {pub.qos}, not 0")
+
+        # 3. A clean DISCONNECT, which is what tells a broker not to publish
+        # the will -- the difference between "went away" and "meant to go".
+        ok, log = session.send_and_expect("mqtt disconnect\n", r"mqtt: disconnected", timeout=10.0)
+        if not ok:
+            return (name, False, f"disconnect did not report: {log[-400:]}")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not accepting.disconnected_cleanly:
+            time.sleep(0.05)
+        if not accepting.disconnected_cleanly:
+            return (name, False, "the broker never saw a DISCONNECT packet")
+
+        return (name, True,
+                f"CONNECT asserted byte-for-byte, refusal reported as "
+                f"\"bad username or password\", publish and clean disconnect")
+    finally:
+        session.close()
+        refusing.close()
+        accepting.close()
+
+
 def test_tcp_stream(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """Q0, plan/phase26_mqtt_and_environment_sensors.md: a TCP connection
     carrying bytes rather than 9P frames.
@@ -6068,6 +6206,8 @@ def main() -> int:
         _run_single(test_ntp_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_state_machine(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_stream(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_varint(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -6106,6 +6246,8 @@ def main() -> int:
         _run_single(test_ntp_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_state_machine(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_stream(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_varint(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))
