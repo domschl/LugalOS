@@ -20,30 +20,47 @@ download protocol into L2MEM and jumps to it; a reset restores whatever is in
 flash. That is deliberate for the whole of E1 -- see the header comment in
 tools/minimal_esp32p4.c.
 
-## Ports
+## Ports, and the two jobs they do
 
-Two USB sockets, and they are not interchangeable:
+This script needs two things from the wiring, and they are not always the
+same cable:
 
-  * **the CH343P bridge** -- a real UART on the P4's UART0 (GPIO37/38, the
-    ROM's own pins). Linux: /dev/ttyUSB*. macOS: /dev/cu.usbserial-*.
-    **Everything should go through this one.**
-  * **the native USB-Serial-JTAG** -- Linux: /dev/ttyACM*. macOS:
-    /dev/cu.usbmodem*. Resetting the chip through it *may* leave UART0
-    emitting bytes that decode at no baud rate we could find; the evidence is
-    mixed and unresolved (see E1 in the plan). Detected only so this script
-    can warn when it is the only port present.
+  * a **console**: full-duplex bytes to and from the P4's UART0 (GPIO37/38,
+    the ROM's own pins). Loading needs both directions -- esptool talks.
+  * a **reset line**: DTR/RTS reaching the board's U6 (EMH4T2R), which wires
+    RTS to ESP_EN and DTR to GPIO35. This is what makes the BOOT and RESET
+    buttons unnecessary.
+
+Ports cannot be told apart by name. On Linux the CH343P bridge enumerates
+through `cdc_acm` as /dev/ttyACM*, and so does the P4's own native
+USB-Serial-JTAG -- the very port that must be avoided. Detection is therefore
+by USB VID:PID, and the roles can be split with --port / --reset-port or the
+LUGALOS_P4_PORT / LUGALOS_P4_RESET_PORT environment variables.
+
+On the development board as wired 2026-09-05 they *are* split, and the split
+is not a preference:
+
+  * CH343P (1a86:55d3), /dev/ttyACM0 -- its RTS resets the board and its RX
+    carries UART0 output, but the host-to-board TX path is dead. esptool's
+    own words: "Download mode successfully detected, but getting no sync
+    reply: The serial TX path seems to be down."
+  * CP2102 (10c4:ea60), /dev/ttyUSB0 -- an external bridge wired to UART0.
+    Full duplex, syncs at 921600, no modem lines to the board at all.
+
+So: reset over the CH343P, talk over the CP2102. A stock board with a working
+CH343P uses that one port for both, which is what the defaults do.
 
 ## --reset-test, and why it is the first thing to run on a new host
 
-The board has the standard auto-reset circuit: U6 (EMH4T2R) wires the
-bridge's RTS to ESP_EN and DTR to GPIO35. If the host's USB-serial driver
-carries modem-control lines, esptool can reset the board into download mode
-with no buttons, and `tests/hw/` can eventually run unattended.
+If the host's driver carries the modem-control lines, esptool can reset the
+board into download mode with no buttons, and `tests/hw/` can eventually run
+unattended. `--reset-test` answers that in about ten seconds by driving the
+lines and watching for the ROM's banner -- both a plain reset (into whatever
+is in flash) and a strapped reset (into download mode), because E8 needs the
+second one and only the second one is hard.
 
-On macOS with the built-in CH34x driver it does not work -- four polarity and
-timing combinations produced no reset, 2026-09-05. Linux's ch341 driver is
-expected to do better. `--reset-test` answers that in about ten seconds by
-pulsing the lines and watching for the ROM's banner.
+macOS, built-in CH34x driver: no sequence produced a reset, 2026-09-05.
+Linux, cdc_acm: both work. See plan/phase27_esp32p4_bringup.md.
 """
 
 import argparse
@@ -56,13 +73,43 @@ import time
 
 import serial
 
-CONSOLE_GLOBS = ["/dev/ttyUSB*", "/dev/cu.usbserial-*"]
-JTAG_GLOBS = ["/dev/ttyACM*", "/dev/cu.usbmodem*"]
 BAUD = 115200
 
+# USB identities rather than device-name globs. On Linux the CH343P and the
+# P4's native USB-Serial-JTAG both arrive as /dev/ttyACM*, so a glob cannot
+# distinguish the port we want from the one we must not touch.
+CH34X = {(0x1A86, 0x55D3), (0x1A86, 0x55D4), (0x1A86, 0x7523)}   # CH343P/CH9102/CH340
+CP210X = {(0x10C4, 0xEA60)}                                       # CP2102
+FTDI = {(0x0403, 0x6001), (0x0403, 0x6015)}
+JTAG = {(0x303A, 0x1001), (0x303A, 0x1002)}                       # the socket to avoid
 
-def find_port(globs):
-    for g in globs:
+# Console candidates, best first. The CP210x/FTDI adapters come first because
+# a host that has one has had it wired to UART0 deliberately; the CH343P is
+# the stock on-board bridge and the fallback.
+CONSOLE_PREF = [CP210X, FTDI, CH34X]
+
+
+def usb_ports():
+    """Every serial port with a USB identity, as (device, vid, pid, desc)."""
+    from serial.tools import list_ports
+    out = []
+    for p in sorted(list_ports.comports(), key=lambda x: x.device):
+        if p.vid is None:
+            continue
+        out.append((p.device, p.vid, p.pid, p.description or ""))
+    return out
+
+
+def _pick(ports, idsets):
+    for ids in idsets:
+        for dev, vid, pid, _ in ports:
+            if (vid, pid) in ids:
+                return dev
+    return None
+
+
+def _legacy_glob():
+    for g in ("/dev/cu.usbserial-*", "/dev/ttyUSB*"):
         hits = sorted(glob.glob(g))
         if hits:
             return hits[0]
@@ -70,23 +117,95 @@ def find_port(globs):
 
 
 def console_port(explicit):
+    """The port that carries bytes both ways."""
     if explicit:
         return explicit
     env = os.environ.get("LUGALOS_P4_PORT")
     if env:
         return env
-    p = find_port(CONSOLE_GLOBS)
+    ports = usb_ports()
+    p = _pick(ports, CONSOLE_PREF)
     if p:
         return p
-    j = find_port(JTAG_GLOBS)
+    p = _legacy_glob()
+    if p:
+        return p
+    j = _pick(ports, [JTAG])
     if j:
         sys.exit(
             "Only the native USB-Serial-JTAG port was found (%s).\n"
             "That is the wrong socket: driving the board through it may "
-            "corrupt UART0 (E1, unresolved).\nPlug in the CH343P cable, or "
-            "pass --port to override deliberately." % j
+            "corrupt UART0 (E1, unresolved).\nPlug in the CH343P or a UART "
+            "bridge, or pass --port to override deliberately." % j
         )
-    sys.exit("No serial port found. Looked for: %s" % ", ".join(CONSOLE_GLOBS))
+    sys.exit("No USB serial port found. Seen: %s" % (
+        ", ".join("%s %04x:%04x" % (d, v, i) for d, v, i, _ in ports) or "none"))
+
+
+def reset_port(explicit, console):
+    """The port whose DTR/RTS reach ESP_EN and GPIO35.
+
+    Defaults to the CH343P when one is present -- on this board it is the only
+    bridge wired to U6 -- and otherwise to the console port, which is the
+    stock single-cable arrangement."""
+    if explicit:
+        return explicit
+    env = os.environ.get("LUGALOS_P4_RESET_PORT")
+    if env:
+        return env
+    p = _pick(usb_ports(), [CH34X])
+    return p or console
+
+
+def _drive(s, seq):
+    for dtr, rts, dwell in seq:
+        s.dtr, s.rts = dtr, rts
+        time.sleep(dwell)
+
+
+# RTS reaches ESP_EN and DTR reaches GPIO35, both through U6's transistor
+# pair, so asserting a line pulls the board's pin low.
+#
+#   RUN      -- hold EN low, release it, leave GPIO35 alone: boots flash.
+#   DOWNLOAD -- hold EN low, then release EN while GPIO35 is held low: the
+#               ROM samples the strap and waits for a download instead.
+SEQ_RUN = [(False, True, 0.15), (False, False, 0.05)]
+SEQ_DOWNLOAD = [(False, True, 0.15), (True, False, 0.15), (False, False, 0.05)]
+
+
+def pulse(port, seq, listen=1.5, watch=None):
+    """Drive a reset sequence and return whatever the board says afterwards.
+
+    `watch` is the port to read from, which is not always the port being
+    driven: on a board whose reset lines and console are different cables,
+    the ROM banner comes back on the console."""
+    s = open_console(port)
+    same = watch is None or watch == port
+    r = s if same else open_console(watch)
+    try:
+        # Flush BEFORE driving, never after. The ROM's banner is emitted
+        # within a few tens of milliseconds of EN being released -- inside
+        # the sequence's own final dwell -- so a flush placed after the drive
+        # discards the one line that says whether the reset happened and
+        # which mode it chose. That read as "this host cannot reset the
+        # board" on a host that resets it perfectly.
+        r.reset_input_buffer()
+        _drive(s, seq)
+        buf = bytearray()
+        t0 = time.time()
+        while time.time() - t0 < listen:
+            buf.extend(r.read(4096))
+    finally:
+        if not same:
+            r.close()
+        s.close()
+    return bytes(buf).decode("utf-8", "replace")
+
+
+def enter_download(port, watch=None):
+    """Reset the board into the ROM's download mode. True if it said so."""
+    txt = pulse(port, SEQ_DOWNLOAD, listen=1.5, watch=watch)
+    return "waiting for download" in txt or "DOWNLOAD" in txt
 
 
 def open_console(port):
@@ -128,6 +247,22 @@ class Watcher:
         self._t.join(timeout=2)
         self.s.close()
 
+    def drive(self, seq):
+        """Drive a reset sequence on the port this watcher already holds.
+
+        Opening a second handle to drive the lines would work on Linux and
+        is a race everywhere else; the watcher owns the port, so the reset
+        goes through it."""
+        _drive(self.s, seq)
+
+    def wait_for(self, needle, secs):
+        t0 = time.time()
+        while time.time() - t0 < secs:
+            if needle in self.text():
+                return True
+            time.sleep(0.05)
+        return False
+
     def text(self):
         return bytes(self.buf).decode("utf-8", "replace")
 
@@ -164,75 +299,108 @@ def esptool(*args, timeout=180):
     )
 
 
-def load(port, img, reset):
+def load(port, img, reset, rport=None, driver=None):
     """Get the chip into download mode and deliver the image.
 
-    `reset` picks how download mode is entered: "auto" lets esptool drive the
-    reset lines, "none" assumes the board is already there (the BOOT+RESET
-    buttons). "auto" is tried first and falls through to polling, so that a
-    host whose driver *does* carry the modem lines needs no buttons and one
-    whose driver does not still works."""
-    before = "default-reset" if reset == "auto" else "no-reset"
-    deadline = time.time() + (10 if reset == "auto" else 180)
+    Download mode is entered by driving the reset lines here rather than by
+    letting esptool do it with --before default-reset. That is not
+    duplication: esptool drives the lines on the same port it then talks on,
+    and on this board those are two different cables. Doing it ourselves is
+    also what makes the reset port configurable at all.
+
+    `reset` picks the mechanism: "auto" drives the lines, "none" assumes the
+    board is already in download mode (the BOOT+RESET buttons). "auto" falls
+    back to the buttons, so a host whose driver does not carry the modem
+    lines still works."""
+    rport = rport or port
+    deadline = time.time() + 180
     told = False
     attempt = 0
+    r = None
     while time.time() < deadline:
         attempt += 1
-        r = esptool("--port", port, "--before", before, "--after", "no-reset",
-                    "--connect-attempts", "1", "--no-stub", "load-ram", img)
-        if r.returncode == 0:
-            print("loaded (attempt %d, --before %s)" % (attempt, before))
-            return True
-        if reset == "auto" and time.time() >= deadline:
-            print("automatic reset did not get us into download mode; "
-                  "falling back to the buttons.")
-            before, reset = "no-reset", "none"
-            deadline = time.time() + 180
-        if not told and before == "no-reset":
+        if reset == "auto":
+            if driver is not None:
+                driver.drive(SEQ_DOWNLOAD)
+                ok = driver.wait_for("waiting for download", 2.0)
+            else:
+                ok = enter_download(rport, watch=port)
+            if not ok:
+                print("reset lines did not produce download mode on %s; "
+                      "falling back to the buttons." % rport)
+                reset = "none"
+                continue
+        elif not told:
             print(">>> Put the board in download mode: hold BOOT, tap RESET, "
                   "release BOOT.\n>>> Polling for up to 3 minutes...")
             told = True
+        r = esptool("--port", port, "--before", "no-reset", "--after", "no-reset",
+                    "--connect-attempts", "1", "--no-stub", "load-ram", img)
+        if r.returncode == 0:
+            print("loaded (attempt %d, reset %s via %s)" % (attempt, reset, rport))
+            return True
         time.sleep(0.7)
-    print("FAILED to load. Last esptool error:\n" + (r.stderr or r.stdout)[-400:])
+    print("FAILED to load. Last esptool error:\n"
+          + ((r.stderr or r.stdout)[-400:] if r else "(never got to download mode)"))
     return False
 
 
-def cmd_reset_test(port):
-    """Can this host reset the board without the buttons?"""
-    seqs = [
-        ("classic (RTS then DTR)", [(False, True, 0.15), (True, False, 0.10), (False, False, 0.05)]),
-        ("reset only (RTS pulse)", [(False, True, 0.15), (False, False, 0.05)]),
-        ("inverted (DTR then RTS)", [(True, False, 0.15), (False, True, 0.10), (False, False, 0.05)]),
-        ("both asserted first", [(True, True, 0.15), (False, True, 0.10), (False, False, 0.05)]),
-    ]
-    any_hit = False
-    for name, seq in seqs:
-        s = open_console(port)
-        for dtr, rts, dwell in seq:
-            s.dtr, s.rts = dtr, rts
-            time.sleep(dwell)
-        s.reset_input_buffer()
-        buf = bytearray()
-        t0 = time.time()
-        while time.time() - t0 < 1.5:
-            buf.extend(s.read(4096))
-        s.close()
-        txt = bytes(buf).decode("utf-8", "replace")
-        hit = "ESP-ROM" in txt
-        any_hit |= hit
-        boot = [l for l in txt.splitlines() if l.startswith("rst:")]
-        print("%-26s %5d bytes  ROM banner: %-5s %s"
-              % (name, len(buf), hit, boot[0] if boot else ""))
+def cmd_reset_test(port, rport):
+    """Can this host reset the board without the buttons?
+
+    Two questions, and the second is the one that matters. Booting flash on
+    demand is convenient; resetting *into download mode* on demand is what
+    lets a test suite load a fresh image with nobody in the room, and it is
+    the harder of the two because it needs DTR as well as RTS.
+
+    The verdict is read from the ROM's own banner, which names the boot mode
+    it chose -- `boot:0x307 (DOWNLOAD(USB/UART0/SPI))` against the ordinary
+    flash boot. Guessing from silence was what made the first version of this
+    test ambiguous."""
+    results = []
+    for name, seq in (("run (RTS pulse)", SEQ_RUN),
+                      ("download (RTS + DTR strap)", SEQ_DOWNLOAD)):
+        txt = pulse(rport, seq, listen=2.0, watch=port)
+        rst = [l for l in txt.splitlines() if l.startswith("rst:")]
+        booted = "ESP-ROM" in txt or bool(rst)
+        dl = "waiting for download" in txt
+        results.append((name, booted, dl))
+        print("%-28s %5d bytes  reset: %-5s  %s"
+              % (name, len(txt), booted, rst[0] if rst else
+                 ("(no rst: line)" if not booted else "")))
     print()
-    if any_hit:
-        print("This host CAN reset the board from software. Use --reset auto, "
-              "and note it in plan/phase27_esp32p4_bringup.md -- it is what "
-              "E8's unattended hardware suite needs.")
-    else:
-        print("No sequence reset the board: this host's USB-serial driver is "
-              "not carrying the modem-control lines. The BOOT+RESET buttons "
-              "are the mechanism here (as on macOS, 2026-09-05).")
-    return 0 if any_hit else 1
+    can_reset = any(b for _, b, _ in results)
+    can_download = results[-1][2]
+    if can_download:
+        print("This host can reset the board into DOWNLOAD MODE from software.\n"
+              "Loading needs no buttons (--reset auto is the default), and E8 "
+              "can have an unattended hardware suite.")
+        return 0
+    if can_reset:
+        print("This host can reset the board, but could not strap it into "
+              "download mode.\nRESET works, BOOT does not: check that DTR "
+              "reaches GPIO35 on %s." % rport)
+        return 1
+    print("No sequence reset the board: this host's USB-serial driver is not "
+          "carrying the modem-control lines on %s.\nThe BOOT+RESET buttons are "
+          "the mechanism here (as on macOS, 2026-09-05)." % rport)
+    return 1
+
+
+def cmd_ports():
+    """What is plugged in, and which role each port was given."""
+    ports = usb_ports()
+    if not ports:
+        print("no USB serial ports found")
+        return 1
+    known = {**{k: "CH34x bridge" for k in CH34X},
+             **{k: "CP210x bridge" for k in CP210X},
+             **{k: "FTDI bridge" for k in FTDI},
+             **{k: "native USB-Serial-JTAG (avoid)" for k in JTAG}}
+    for dev, vid, pid, desc in ports:
+        print("  %-16s %04x:%04x  %-30s %s"
+              % (dev, vid, pid, known.get((vid, pid), "unknown"), desc))
+    return 0
 
 
 def cmd_probe(port):
@@ -247,11 +415,17 @@ def cmd_probe(port):
     s.close()
     print("sent 9 bytes: %r" % b"PROBE123\r")
     print("got %d bytes: %r" % (len(got), got))
-    # minimal_esp32p4.c turns a received '\r' into '\n' then '\r', so a correct
-    # echo is TEN bytes, not nine. A plain wire loopback returns nine.
-    if got == b"PROBE123\n\r":
-        print("VERDICT: our program is running (10 bytes, '\\n' before '\\r' -- "
-              "its own echo semantics, which a loopback cannot produce).")
+    # minimal_esp32p4.c turns a received '\r' into '\n' then '\r', so its echo
+    # is TEN bytes for nine, with the '\n' first. A plain wire loopback
+    # returns the nine it was given and cannot invent the '\n'.
+    #
+    # Searched for, not compared against: the heartbeat is unconditional (for
+    # good reason -- see minimal_esp32p4.c), so the echo almost always arrives
+    # with a beat line wrapped around it. An equality test here reported
+    # "not our signature" about a reply that was sitting in plain sight.
+    if b"PROBE123\n\r" in got:
+        print("VERDICT: our program is running ('\\n' before '\\r' -- its own "
+              "echo semantics, which a loopback cannot produce).")
         return 0
     if b"PROBE123" in got:
         print("VERDICT: something echoes, but not with our signature. "
@@ -267,18 +441,32 @@ def main():
     ap.add_argument("image", nargs="?",
                     help="an .elf (the image is regenerated from it) or an .img")
     ap.add_argument("--port", help="console port (default: autodetect)")
+    ap.add_argument("--reset-port",
+                    help="port whose DTR/RTS reach ESP_EN and GPIO35 "
+                         "(default: the CH34x bridge, else the console port)")
     ap.add_argument("--reset", choices=["auto", "none"], default="auto")
     ap.add_argument("--listen-secs", type=float, default=8.0)
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
     ap.add_argument("--probe", action="store_true", help="echo test")
     ap.add_argument("--reset-test", action="store_true", help="can we reset from software?")
+    ap.add_argument("--ports", action="store_true", help="list USB serial ports and exit")
+    ap.add_argument("--run", action="store_true",
+                    help="reset the board into whatever is in flash, and listen")
     a = ap.parse_args()
 
+    if a.ports:
+        return cmd_ports()
+
     port = console_port(a.port)
-    print("console: %s @ %d" % (port, BAUD))
+    rport = reset_port(a.reset_port, port)
+    print("console: %s @ %d%s"
+          % (port, BAUD, "" if rport == port else "   reset lines: %s" % rport))
 
     if a.reset_test:
-        return cmd_reset_test(port)
+        return cmd_reset_test(port, rport)
+    if a.run:
+        print(pulse(rport, SEQ_RUN, listen=a.listen_secs, watch=port))
+        return 0
     if a.probe:
         return cmd_probe(port)
     if a.listen or not a.image:
@@ -288,11 +476,31 @@ def main():
         print(w.text())
         return 0
 
-    if not load(port, image_for(a.image), a.reset):
+    img = image_for(a.image)
+
+    # When the reset lines and the console are different cables, the reset
+    # port's RX is still wired to UART0 -- so it can be held open and read
+    # *through* the load, and the program's first words survive.
+    #
+    # That matters more than it sounds. The banner and the CSR dump are
+    # printed once, in the instant after the ROM jumps to us, while esptool
+    # still owns the port it loaded over. On a single-cable host they are
+    # simply lost, which is why minimal_esp32p4.c re-announces itself on a
+    # heartbeat. Here they are not lost, and the CSR dump is the whole
+    # observational point of E1.
+    if rport != port:
+        with Watcher(rport) as w:
+            if not load(port, img, a.reset, rport, driver=w):
+                return 1
+            time.sleep(a.listen_secs)
+        print("=== %d bytes on %s, across the load ===" % (len(w.buf), rport))
+        print(w.text())
+        return 0
+
+    if not load(port, img, a.reset, rport):
         return 1
-    # Listen only after the loader has released the port. The program's banner
-    # is emitted into that gap and is normally lost, which is why
-    # minimal_esp32p4.c re-announces itself rather than speaking once.
+    # Single cable: listen only after the loader has released the port. The
+    # banner is emitted into that gap and is normally lost.
     with Watcher(port) as w:
         time.sleep(a.listen_secs)
     print("=== %d bytes in %.0fs, nothing sent ===" % (len(w.buf), a.listen_secs))

@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-05. E0 done; E1 substantially done.** This is the first of three
+**Status: in progress, 2026-09-05. E0 done; E1 done bar the GPIO toggle.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -77,12 +77,15 @@ The honest good news, established by reading rather than hoping:
   "standard RV32IMAFCZc extensions", so the A extension is present and
   `arch/riscv/include/arch/atomic.h` needs no `#if` at all. This was the first
   thing checked, because it was the ESP32-C3's disqualifying property.
+  *Confirmed on silicon 2026-09-05, E1: `misa = 0x40901125`, bit 0 set. No
+  longer a reading of a datasheet.*
 * **The toolchain is the one already installed.** `riscv64-elf-gcc` 16.2.0
   (Homebrew) compiles `-march=rv32imafc_zicsr_zifencei -mabi=ilp32` and
   `-march=rv32imac_zicsr_zifencei`; verified by test compile, 2026-09-05. No
   `riscv32-esp-elf`, no IDF toolchain, no new install. IDF enters this tree
   only as *reference source* and, much later, if the C6 firmware ever gets
-  built.
+  built. *Equally true of the distribution `riscv64-elf-gcc` on Arch: the
+  same 695-byte binary, byte-for-byte the same size, built on both hosts.*
 * **`mtime` is a real memory-mapped CLINT**, at `0x20000000` with the
   standard `mtimecmp`/`mtime` register set (E0 §2) — against RP2350's SIO
   block at `SIO_BASE + 0x1a4`. *Half-true as originally written, and corrected
@@ -447,19 +450,19 @@ commands against the board.
 
 ### E1 — `tools/minimal_esp32p4.c`
 
-**IN PROGRESS, 2026-09-05. The central question is answered; one observation
-is still outstanding.**
+**DONE, 2026-09-05, bar the GPIO toggle.** Everything the milestone asks for
+except one item that needs a document not on this machine (below).
 
-**Our code runs on the ESP32-P4 and drives UART0.** Proven twice, by echo:
+**Our code runs on the ESP32-P4 and drives UART0.** Proven by echo:
 `PROBE123\r` sent, `PROBE123\n\r` returned -- ten bytes for nine, with the
 `\n` *before* the `\r`, which is the exact signature of this program's
 `if (c == '\r') uart_putc('\n'); uart_putc(c);` and cannot be produced by a
 hardware loopback. That is E1's "done when", and it is met.
 
-Still outstanding: capturing the board's own **unprompted** banner and CSR
-dump. Not because it fails -- because the board needs a physical button press
-to reload, and the last load left it wedged (see the drain-loop note below,
-now fixed but not yet re-run). It is one BOOT+RESET away.
+**And the board now says all of it unprompted, on one command, with nobody
+touching it** -- see "What Linux answered" below, which is where the
+outstanding observation, the reset question and the flash backup all got
+settled.
 
 Files: `tools/minimal_esp32p4.c`, `tools/minimal_esp32p4_entry.S`,
 `tools/minimal_esp32p4.ld`, `tools/build_minimal_esp32p4.sh`. 695 bytes of
@@ -548,102 +551,137 @@ in fact echoing perfectly.
 #### The workflow, as it actually is
 
 ```
-hold BOOT, tap RESET, release BOOT          # download mode; no software substitute
-tools/build_minimal_esp32p4.sh run          # build, elf2image, load-ram over UART0
-                                            # console: /dev/cu.usbserial-0001 @ 115200
-tap RESET                                   # back to whatever is in flash
+tools/build_minimal_esp32p4.sh run     # build, elf2image, reset into download
+                                       # mode, load-ram, listen. No buttons.
+tools/p4run.py --probe                 # is our program still running?
+tools/p4run.py --run                   # back to whatever is in flash
 ```
 
-**The board's auto-reset circuit exists and does not help.** U6, an EMH4T2R
-pair, wires the CH343P's RTS to ESP_EN and DTR to GPIO35 -- the standard
-arrangement that normally makes buttons unnecessary. Driving those lines from
-macOS produced no reset across four polarity and timing combinations, which
-points at the built-in CH34x driver not carrying modem-control lines rather
-than at the board. **Worth retrying under Linux**, and a genuine papercut for
-`tests/hw/` in E8: a board that cannot be reset from software cannot be in an
-unattended test suite.
+On macOS it was three steps with a button press at each end, because the
+built-in CH34x driver does not carry the modem-control lines. That was a host
+limitation, not a board one -- see below.
 
-Flash was **not** backed up: three attempts over both ports failed at 921600
-and at 460800 with sync errors. Nothing has written flash, so it has not
-mattered yet, but E6 must not begin until a backup exists.
+#### What Linux answered — 2026-09-05
 
-#### Continuing on Linux — start here
+The work moved to a Linux laptop to get the board resettable from software.
+It is, and the other two open questions fell out of the same session.
 
-The work moves to a Linux host, chiefly to get the board resettable from
-software. Everything needed is committed; nothing depends on the macOS
-machine.
-
-**Prerequisites.**
-
-* A RISC-V cross toolchain. `tools/build_minimal_esp32p4.sh` searches
-  `riscv64-elf-gcc`, `riscv-none-elf-gcc`, `riscv32-elf-gcc`,
-  `riscv64-unknown-elf-gcc`, `riscv32-unknown-elf-gcc`,
-  `riscv64-linux-gnu-gcc` — Debian/Ubuntu's `gcc-riscv64-unknown-elf` or
-  `gcc-riscv64-linux-gnu` is enough. It must build
-  `-march=rv32imac_zicsr_zifencei -mabi=ilp32`; nothing exotic.
-* `uv`. Both `tools/p4run.py` (via a PEP 723 shebang) and esptool run through
-  it, so there is no pip install and no system Python change.
-* Serial access: add yourself to `dialout` (or `uucp`) and re-login, or the
-  ports are unreadable and the failure looks like absent hardware.
-* **Both USB cables.** The CH343P bridge (`/dev/ttyUSB0`) is the one that
-  matters; the native USB-Serial-JTAG (`/dev/ttyACM0`) is currently a trap.
-
-**The first three commands, in order.**
+**1. Software reset works, and so does software *download mode*.** This was
+the priority, because E8's unattended hardware suite is impossible without
+it. Linux's `cdc_acm` carries the modem-control lines that macOS's built-in
+CH34x driver would not, so U6 does exactly what the schematic says. The
+verdict comes from the ROM naming its own boot mode, not from inference:
 
 ```
-tools/p4run.py --reset-test     # 1. can this host reset the board? THE question
-tools/build_minimal_esp32p4.sh  # 2. does it build here?
-tools/build_minimal_esp32p4.sh run   # 3. build, image, load, listen
+run (RTS pulse)               2812 bytes  reset: True   rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+download (RTS + DTR strap)     128 bytes  reset: True   rst:0x1 (POWERON),boot:0x307 (DOWNLOAD(USB/UART0/SPI))
 ```
 
-**1 is the reason for the move.** On macOS no DTR/RTS sequence reset the
-board, which is almost certainly the built-in CH34x driver not carrying
-modem-control lines rather than the hardware — the circuit is there (U6,
-EMH4T2R: RTS to ESP_EN, DTR to GPIO35). If `--reset-test` prints
-`ROM banner: True` for any sequence, the buttons stop being necessary, E1's
-remaining work becomes a single command, and **E8 gets an unattended hardware
-suite**, which it cannot have otherwise. Record the answer here either way.
+`tools/build_minimal_esp32p4.sh run` is now one command, start to finish,
+with nobody touching the board. **The macOS finding was about the host, not
+the board** -- worth stating plainly, because "the auto-reset circuit exists
+and does not help" was written down twice and was wrong about the cause both
+times.
 
-**State of the board as it is handed over.** It is running the *first* build
-of `minimal_esp32p4.c` from RAM — it echoes, it prints nothing unprompted.
-Flash is untouched and still holds the Waveshare factory demo (an ESP-IDF app
-that fails an I2C probe and watchdogs every five seconds). A reset returns it
-to that demo; nothing this phase has done is persistent. `tools/p4run.py
---probe` identifies what is running: `PROBE123\n\r` back means our program,
-silence means the factory app or download mode.
+**2. The CSR dump, off silicon.** The last outstanding E1 observation. Every
+one of these was an E0 claim derived from documents; the silicon agrees with
+all of them:
 
-**Three things to settle on Linux, in priority order.**
+| CSR | Read | Says |
+|---|---|---|
+| `misa` | `0x40901125` | MXL=1 (RV32); **A set** (bit 0); I, M, F, C; **U set** (bit 20); **S clear** (bit 18); X set |
+| `mtvec` | `0x4fc00b03` | low bits `0b11` — CLIC mode 3, §3.4 |
+| `mhartid` | `0x00000000` | hart 0 |
+| `mstatus` | `0x00000080` | MPIE set, MIE clear, MPP = U |
 
-1. **Software reset** (above). Everything else is easier if this works.
-2. **Finish E1's observation**: load the current build and capture the banner
-   plus the `misa`/`mtvec`/`mhartid`/`mstatus` dump. Expect `misa` bit 20 (U)
-   set and bit 18 (S) clear, and `mtvec` low bits `0b11`. Those are E0's
-   document-derived claims about U-mode and CLIC, checked against silicon —
-   the whole reason the dump is in the program.
-3. **Re-test the native-USB-reset question** with a freshly built image, and
-   either confirm or delete the unresolved trap above. If FIFO overrun is the
-   real cause, that also means `TXFIFO_CNT`'s bit position needs verifying on
-   hardware before E2 trusts it for the kernel's UART driver.
+**The A bit is the one that matters.** §2's first bullet — "the atomics
+compile unchanged", the property whose absence disqualified the ESP32-C3 —
+was a datasheet reading until now. It is a measurement. `misa` bit 20 set
+with bit 18 clear is the other one: M+U with no S-mode, which is the
+assumption phase 12's whole U-mode driver model rests on (§3.5), and `mtvec`
+`0b11` confirms E0 §8 and the factory demo's crash dump independently.
 
-**And a prerequisite that is still outstanding: back up the flash.** Three
-attempts failed with sync errors (921600 and 460800, both ports). Nothing has
-written flash so it has not mattered, but **E6 must not begin until
-`esptool read-flash 0 0x1000000` has produced a good 16 MB image** — the
-factory demo is not obtainable again once overwritten. Linux is likely to
-manage the sustained read that macOS would not.
+`misa` bit 23 (X) is also set, i.e. non-standard extensions are present.
+Nothing in this phase wants them; recorded so that a later reader does not
+mistake it for corruption.
+
+**3. Flash is backed up, and E6 is unblocked.** The sync errors that defeated
+three attempts on macOS did not recur: 16,777,216 bytes at 921600 in 241 s
+over the CP2102. **Verified afterwards with `esptool verify-flash`, which
+compares a digest computed *on the chip* rather than re-reading down the same
+path that produced the file** — a re-read can reproduce its own transfer bug
+and look like agreement. It matched.
+
+Kept at `~/gith/esp/p4nano-factory-flash/`, outside the repository, with a
+README recording chip revision (ESP32-P4 v1.3), flash part (GigaDevice
+`c8 4018`, 16 MB), MAC, and the restore command. **E6's precondition is
+met.**
+
+#### The ports, and a portability lesson worth more than the fix
+
+The tooling had to be rewritten, and not for a small reason: **its port
+detection was wrong in a way that would have looked like broken hardware.**
+
+`p4run.py` chose ports by device-name glob — `/dev/ttyUSB*` for the CH343P,
+`/dev/ttyACM*` for the native USB-Serial-JTAG. That mapping is a macOS habit
+and it does not survive the move. On Linux the CH343P enumerates through
+`cdc_acm` as `/dev/ttyACM0`, which is exactly the pattern the script had
+learned to refuse; and `/dev/ttyUSB0` here is a CP2102 wired to UART0.
+Detection now goes by USB VID:PID, and `--ports` prints what it found.
+
+The roles then split, which the old single-port model could not express:
+
+| cable | VID:PID | here | role |
+|---|---|---|---|
+| CH343P (on-board) | `1a86:55d3` | `/dev/ttyACM0` | reset lines, and UART0 RX |
+| CP2102 (external, on UART0) | `10c4:ea60` | `/dev/ttyUSB0` | console, full duplex |
+
+The CH343P's **host-to-board TX path is dead on this board**. esptool
+diagnosed it in one line where a session of guessing would not have:
+*"Download mode successfully detected, but getting no sync reply: The serial
+TX path seems to be down."* Its RX and its modem lines are fine, so it keeps
+the reset job and the console moves to the CP2102. `--port` / `--reset-port`
+and `LUGALOS_P4_PORT` / `LUGALOS_P4_RESET_PORT` express the split; a stock
+board with a working CH343P uses one cable for both, which is the default.
+
+**The split turned out to be a capability, not a workaround.** The reset
+port's RX is still UART0, so it can be held open and read *through* the
+load — and the banner and CSR dump, printed once in the instant the ROM
+jumps to us while esptool still owns the port it loaded over, survive. On a
+single-cable host they are lost; that is why `minimal_esp32p4.c` re-announces
+itself on a heartbeat. Item 2 above was captured this way.
+
+**Two bugs found by disbelieving a clean-looking result**, both in code
+written this session:
+
+* `--reset-test` reported *"this host's USB-serial driver is not carrying the
+  modem-control lines"* about a host that resets the board perfectly. It
+  flushed the input buffer *after* driving the reset lines, and the ROM
+  banner arrives inside the sequence's own final 50 ms dwell — so the one
+  line that says whether the reset happened was thrown away every time.
+  Flush before driving, never after.
+* `--probe` reported *"something echoes, but not with our signature"* about
+  a reply sitting in plain sight in its own debug output. It compared the
+  whole read against `PROBE123\n\r` with `==`, and the heartbeat — correctly
+  unconditional — almost always wraps a beat line around the echo. Searched
+  for, not compared against.
+
+Both had the shape the stale-image mistake had: a confident negative verdict
+from a measurement that could not have returned anything else. The habit that
+caught them was the same one that eventually caught that — read the raw bytes
+the instrument collected before believing the verdict it printed on them.
 
 #### Remaining before E1 is done
 
-1. One BOOT+RESET, then reload the current build and capture the banner plus
-   the `misa`/`mtvec`/`mhartid`/`mstatus` dump. The CSR values are the point:
-   they are E0's document-derived claims about U-mode and CLIC, checked
-   against the silicon.
-2. Add the GPIO toggle the milestone asks for. Deliberately left out of the
-   first program: with the ROM having already proved UART0 works, a GPIO adds
-   a register set to get wrong without adding information. Registers are
-   confirmed and ready (`GPIO_OUT_W1TS` at `+0x8`, `GPIO_ENABLE_W1TS` at
-   `+0x24`, base `0x500E0000`).
-3. Write the flashing procedure into `tests/hw/README.md`.
+**One item, and it is blocked on a document rather than on the board.** The
+GPIO toggle the milestone asks for. The registers are confirmed and ready
+(`GPIO_OUT_W1TS` at `+0x8`, `GPIO_ENABLE_W1TS` at `+0x24`, base
+`0x500E0000`), but no pin has been chosen: `ESP32-P4-NANO-schematic.pdf` was
+read on the macOS machine and is not on this one, and this board has a DSI
+display, an Ethernet PHY and a C6 co-processor on its pins. Driving a guessed
+GPIO on it is not the kind of thing to do blind, and a toggle with nothing
+observable attached proves nothing anyway. Needs the schematic, and a pin
+that is either an LED or genuinely unconnected.
 
 #### Original specification
 
@@ -767,9 +805,17 @@ reach the broker, with the P4 having no network stack of its own.
 ### E8 — The hardware suite, and the documents
 
 `tests/hw/` grows a P4 arm the way `test_rp2350.py` and `test_gateway.py`
-already work: skipped when no board is attached, never failed. `tests/hw/README.md`
-gains the flashing procedure from E1. `README.md` gains the P4 as a supported
-target. `plan/open_issues.md` receives everything parked along the way.
+already work: skipped when no board is attached, never failed. `README.md`
+gains the P4 as a supported target. `plan/open_issues.md` receives everything
+parked along the way.
+
+**Its precondition is already met, which was not a given.** This milestone
+needs a board that can be reset, reloaded and returned to flash with nobody
+in the room, and on macOS that looked impossible. On Linux `tools/p4run.py`
+does all three (E1, "What Linux answered"), so the suite can drive a load
+itself rather than asking a human for BOOT+RESET. `tests/hw/README.md`
+already carries the flashing procedure from E1 — done ahead of this
+milestone, since the procedure was what E1 spent its time establishing.
 
 The `hw_suite_is_chess_persona` lesson applies: whatever the suite needs
 flashed, it needs *all* of it flashed, and it should say so when it isn't —

@@ -201,3 +201,97 @@ goes a layer deeper: the chip's own raw `EIE`/`EIR`/`ESTAT`/`ECON1`/`ECON2`,
 many times the driver's own MAC/PHY recovery has fired since boot -- see
 the wiring section above for what a nonzero, climbing reinit count means
 and why it is expected rather than a fault.
+
+## ESP32-P4 (Waveshare ESP32-P4-NANO) — loading and reset
+
+Phase 27's second silicon. Nothing here is a test yet: E1 is a standalone
+bare-metal program, and the hardware suite is E8's work. This is the
+procedure for getting code onto the board, written down because the port
+arrangement is the part that costs an afternoon if guessed at.
+
+**Nothing in this section writes flash.** `esptool load-ram` delivers an
+image over the download protocol straight into L2MEM and jumps to it, so a
+reset restores whatever is in flash and there is nothing to brick. Writing
+flash starts at E6, and E6 is gated on the backup below.
+
+```sh
+tools/p4run.py --ports              # which cable is which
+tools/p4run.py --reset-test         # can this host reset the board?
+tools/build_minimal_esp32p4.sh run  # build, image, load into RAM, listen
+tools/p4run.py --probe              # is our program still running?
+tools/p4run.py --run                # reset back into whatever is in flash
+```
+
+### The two ports, and why names are not enough
+
+The script needs two things from the wiring, and they are not always the
+same cable: a **console** (full duplex — loading means esptool talks) and a
+**reset line** (DTR/RTS reaching U6, which wires RTS to ESP_EN and DTR to
+GPIO35).
+
+Ports cannot be told apart by device name. On Linux the CH343P bridge
+enumerates through `cdc_acm` as `/dev/ttyACM*` — and so does the P4's own
+native USB-Serial-JTAG, the one socket that must be avoided. `p4run.py`
+therefore identifies ports by USB VID:PID; `--ports` prints what it found.
+Override with `--port` / `--reset-port` or `LUGALOS_P4_PORT` /
+`LUGALOS_P4_RESET_PORT`.
+
+On the development board as wired, the two roles are split, and not by
+preference:
+
+| cable | VID:PID | here | role |
+|---|---|---|---|
+| CH343P (on-board) | `1a86:55d3` | `/dev/ttyACM0` | reset lines, and UART0 RX |
+| CP2102 (external, wired to UART0) | `10c4:ea60` | `/dev/ttyUSB0` | console, full duplex |
+
+The CH343P's host-to-board TX path is dead on this board — esptool's own
+diagnosis is *"Download mode successfully detected, but getting no sync
+reply: The serial TX path seems to be down."* Its RX and its modem lines
+work fine, which is why it keeps the reset job. A stock board with a working
+CH343P uses that one cable for both, which is what the defaults do.
+
+The split buys something a single cable cannot: the reset port's RX is still
+UART0, so it can be held open and read *through* the load. The banner and
+the `misa`/`mtvec`/`mhartid`/`mstatus` dump are printed once, in the instant
+the ROM jumps to us, while esptool still owns the port it loaded over — on a
+single-cable host they are simply lost.
+
+### Reset
+
+Linux (`cdc_acm`) carries the modem-control lines, so loading needs no
+buttons: `p4run.py` drives RTS and DTR itself and the ROM confirms which
+mode it chose. macOS's built-in CH34x driver does not carry them; there the
+script falls back to asking for **hold BOOT, tap RESET, release BOOT**.
+
+`--reset-test` distinguishes the two cases that matter, because only the
+second is hard and only the second is what an unattended suite needs:
+
+```
+run (RTS pulse)               2812 bytes  reset: True   rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+download (RTS + DTR strap)     128 bytes  reset: True   rst:0x1 (POWERON),boot:0x307 (DOWNLOAD(USB/UART0/SPI))
+```
+
+Read the verdict off the ROM's own `boot:` line rather than off silence. An
+earlier version of this test flushed the input buffer *after* driving the
+reset lines, which discarded the banner — it reported "this host cannot
+reset the board" about a host that resets it perfectly.
+
+### Flash backup — a prerequisite, not a suggestion
+
+**E6 must not begin until the factory image is safely off the board.** The
+Waveshare factory demo is not obtainable again once overwritten.
+
+Taken 2026-09-05 and kept outside the repository (16 MB of vendor binary is
+not something to carry in git) at `~/gith/esp/p4nano-factory-flash/`, with a
+`README.md` recording chip revision, flash part and restore command:
+
+```sh
+esptool --chip esp32p4 --port /dev/ttyUSB0 --baud 921600 \
+        read-flash 0 0x1000000 p4nano-factory-16mb.bin
+esptool --chip esp32p4 --port /dev/ttyUSB0 --baud 921600 \
+        verify-flash 0 p4nano-factory-16mb.bin
+```
+
+Run `verify-flash` afterwards and do not skip it: it compares an on-chip
+digest rather than re-reading over the same path that produced the file, so
+it can catch a transfer that was quietly wrong. This one matched.

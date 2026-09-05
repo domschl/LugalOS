@@ -16,32 +16,28 @@
 # download protocol into L2MEM and jumps to it; the factory image, or whatever
 # else is in flash, is untouched. A power cycle restores the board exactly.
 #
-# Entering download mode is manual:
+# **On Linux, entering download mode is automatic.** The board's U6 (an
+# EMH4T2R pair) wires the bridge's RTS to ESP_EN and DTR to GPIO35, and
+# tools/p4run.py drives those lines itself: no buttons, and the ROM confirms
+# the mode it chose ("boot:0x307 (DOWNLOAD(USB/UART0/SPI))"). Verified
+# 2026-09-05. On a host whose driver does not carry the modem-control lines
+# -- macOS with the built-in CH34x driver does not -- it falls back to asking:
 #
 #   hold BOOT, press and release RESET, release BOOT
 #
-# then run this with "run". Press RESET afterwards to return the board to
-# whatever is in flash.
+# Press RESET afterwards, or run `tools/p4run.py --run`, to return the board
+# to whatever is in flash.
 #
-# **The board does have an auto-reset circuit and it still does not help.**
-# The schematic shows U6, an EMH4T2R transistor pair wiring the CH343P's RTS
-# to ESP_EN and DTR to GPIO35 -- the standard ESP arrangement, which normally
-# lets esptool reset the board into download mode with no buttons at all.
-# Driving those lines from macOS does nothing: four polarity/timing
-# combinations were tried against the ROM banner on 2026-09-05 and not one
-# produced a reset, which points at the built-in CH34x driver not carrying
-# modem-control lines rather than at the board. Worth retrying under Linux;
-# until then, the buttons are the mechanism.
+# Do NOT reach for the native USB-Serial-JTAG socket. Resetting the chip
+# through it may leave UART0 emitting bytes that decode at no baud rate we
+# could find; the evidence is mixed and the question is unresolved. See the
+# E1 notes in plan/phase27_esp32p4_bringup.md.
 #
-# Do NOT reach for the other USB socket to avoid the buttons. Resetting over
-# the native USB-Serial-JTAG port does work, but it leaves UART0 in a state
-# where our own output comes back corrupted -- see the E1 notes in
-# plan/phase27_esp32p4_bringup.md. It cost most of an afternoon.
-#
-# Console: the CH343P bridge, wired to UART0 on GPIO37/38, at 115200 8N1 --
-# the ROM's own pins and baud, which is why this program does not configure the
-# UART at all. /dev/ttyUSB0 on Linux, /dev/cu.usbserial-* on macOS;
-# tools/p4run.py finds it.
+# Console: UART0 on GPIO37/38 at 115200 8N1 -- the ROM's own pins and baud,
+# which is why this program does not configure the UART at all. Which cable
+# that is depends on the host, so tools/p4run.py identifies ports by USB
+# VID:PID rather than by name; run `tools/p4run.py --ports` to see what it
+# found. Override with LUGALOS_P4_PORT and LUGALOS_P4_RESET_PORT.
 
 set -eu
 
@@ -87,7 +83,9 @@ echo "built $OUT/minimal_esp32p4.elf"
 # there is no reason to have two.
 esp() { uv tool run --from esptool "$@"; }
 
-# tools/p4run.py owns the loading: it autodetects the port on both Linux and
-# macOS, tries an automatic reset before asking for buttons, and listens to the
-# console afterwards. Pass LUGALOS_P4_PORT to override the port.
+# tools/p4run.py owns the loading: it identifies the ports, resets the board
+# into download mode itself (falling back to asking for the buttons), and
+# listens to the console afterwards. Where the reset lines and the console are
+# different cables it watches UART0 *through* the load, so the banner and the
+# CSR dump -- printed once, in the instant the ROM jumps to us -- survive.
 exec tools/p4run.py "$OUT/minimal_esp32p4.elf" --listen-secs 10
