@@ -1,14 +1,21 @@
 # Phase 26 — A node that measures something, and says so
 
-**Status: Q0–Q6 done, 2026-09-05**, on `feature/mqtt-sensors` and verified on
-hardware. An `rp2350-sensor` board with a BME280, told its broker once with
-`mqttcfg`, comes up on WiFi by itself, announces `online`, publishes
+**Status: CONCLUDED, 2026-09-05**, shipped as 0.15.0. Q0–Q7 are done and
+verified on hardware: an `rp2350-sensor` board with a BME280, told its broker
+once with `mqttcfg`, comes up on WiFi by itself, announces `online`, publishes
 temperature, pressure and humidity under rules of their own, receives messages
 sent to it, and is announced gone by its will when it dies — with nothing
-typed. Dated notes are at the end of each milestone in §6. Q8 (QoS 1) remains
-optional and unbuilt; §3.3 argues it should stay that way until something asks
-for it. Fixing a CYW43 bus-lock bug found during bring-up was not in this plan
-and is not a milestone of it; see §9 and the commit.
+typed. Dated notes are at the end of each milestone in §6.
+
+**The two things left undone, deliberately.** Q7's 24-hour soak has not been
+run; the longest continuous observation is fifteen minutes of ping (1797/1800)
+plus several minutes of publishing. And Q8 (QoS 1) is unbuilt — §3.3 argues it
+should stay that way until an *aperiodic* publisher exists to want it, since
+what QoS 1 protects is the reconnect and a superseded measurement is not worth
+re-delivering.
+
+Fixing a CYW43 bus-lock bug found during bring-up was not in this plan and is
+not a milestone of it; see §9 and the commit.
 
 Planned 2026-09-05. Succeeds `plan/phase19_ip_stack_and_ethernet.md`
 (concluded) and stands beside `plan/phase24_dcf77_precision_and_ntp_server.md`
@@ -716,6 +723,26 @@ program starts by itself only on an appliance persona, never in the general
 build. Everything else in Q0–Q6 works on `rp2350-wifi` by hand, and that is
 how it gets tested; the persona adds unattendedness and subtracts a compiler.
 
+*Done 2026-09-05, except the soak.* `cmake/board-rp2350-sensor.cmake` and the
+`rp2350-sensor` preset: a Pico 2 W with a BME280 on I2C0 and nothing else --
+no SD, no display, no keypad, no RTC, no compiler. The README documents the
+wiring, the client, the publish rules and the record.
+
+**The persona's own justification changed while it was being built**, and the
+board file now says so. This section originally argued that a persona exists
+because "autostart is what a persona is for". Q6 made that wrong: publishing
+follows R5's rule instead -- a stored credential is the intent to use it -- so
+*any* persona with a broker in its record starts `mqttd`, exactly as any
+persona with stored WLAN credentials joins. What this persona actually
+contributes is subtraction.
+
+**The 24-hour soak is not done**, and nothing here should be read as claiming
+it. The longest continuous evidence is fifteen minutes of ping (1797/1800,
+0.2% loss, no stall) after the CYW43 fix, plus several minutes of publishing
+at a 5 s sample period. `sizecheck` passes on every persona against
+re-baselined numbers.
+
+
 ### Q8 — QoS 1 publish (optional, see §3.3)
 Only if an aperiodic publisher appears. One in-flight message, packet id,
 PUBACK wait, `DUP` on retransmit, retry across a reconnect.
@@ -860,6 +887,19 @@ The numbers to hold this to, checked with `sizecheck` at Q7:
   struct, `mqttd`'s task stack, and the sensor's calibration block (~40
   bytes). Target: **under 2 KB** on top of today's baseline for a persona with
   both features on, and **zero** for one with them off.
+
+  *Outcome, 2026-09-05: the first half was met and the second was not.* The
+  packet buffers are taken from `palloc` on first connect, so a board that
+  never dials a broker pays none of the 1 KB that dominated the first
+  measurement -- but roughly **1.4 KB of static state remains on every
+  persona**, whether or not it publishes: 644 bytes of `mqttd`'s source table
+  and rules, 244 of client state, 275 of the stream's per-connection fields,
+  and ~130 across the sensor and the record accessors. The `CONFIG_ENABLE_*`
+  flags §10 assumed would carry this were judged disproportionate at the time
+  (420 bytes) and were never added; at 1.4 KB that judgement is worth
+  revisiting, and it is the obvious follow-up if a memory-tight persona ever
+  needs the room. Recorded rather than re-baselined quietly, because "zero
+  when off" was a stated goal and it was missed.
 * **New heap:** none. The stream reuses the TCP buffers `ensure_bufs()`
   already allocates.
 * **Flash:** MQTT ≈ 4 KB, the sensor driver ≈ 3 KB including the 64-bit

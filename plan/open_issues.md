@@ -15,6 +15,57 @@ phase doc and the commit carry the history.
 
 ---
 
+## Pressure is published as station pressure, not reduced to sea level
+
+**Trigger:** subscribe to a sensor node's `pressure` topic and compare it with
+any weather service. The board at 520 m publishes `963.69`; every app and
+dashboard for the same place and moment says about `1025`. Both are correct
+and they are not the same quantity.
+
+`drivers/bme280.c` publishes what the part measures -- **station pressure**,
+the actual air pressure where the sensor sits. What is conventionally shown,
+and what "1013.25 hPa" means, is pressure **reduced to sea level** (QNH; *auf
+Normalnull*, NN). The difference is about 60 hPa at 520 m, which is far larger
+than any weather variation, so an unreduced reading does not look like a
+slightly wrong number -- it looks like a permanent deep storm, and it cannot
+be compared with anything.
+
+**Why it is parked:** the reduction needs a fact the board does not have. It
+is not a calibration constant or a property of the part; it is **where the
+sensor was installed**, which only the person installing it knows. Publishing
+a reduced pressure without that number would mean inventing it, and inventing
+it is worse than publishing the honest raw quantity -- which is at least
+correct, labelled, and convertible by anyone who does know the altitude.
+
+**Fix, when it is worth it:**
+
+1. An **installation altitude in metres**, configurable and persistent. The
+   identity record is the right home, beside the broker and the address: it is
+   per-board, it survives reflashing, and altitude is exactly the kind of
+   per-board fact I9 put the address there for. `mqttcfg` would gain it, or it
+   would get its own small setter.
+2. The reduction itself, which is the barometric formula
+
+       p_0 = p * (1 - (0.0065 * h) / (T + 0.0065 * h + 273.15)) ** -5.257
+
+   using the measured temperature, so it tracks the day rather than assuming a
+   standard atmosphere. **This is the part with a real cost**: that exponent
+   needs `exp`/`log`, and this kernel has no floating point and no math
+   library. Either a fixed-point exponential, or -- probably better for a
+   range of 0-3000 m -- a small interpolation table, since the correction is
+   smooth and one part in a thousand is far below the sensor's own accuracy.
+3. A decision about **what to publish**. Publishing only the reduced value
+   loses the honest measurement; publishing only the raw one keeps the problem.
+   Two topics (`pressure` and `pressure_msl`) costs one more source slot and
+   lets a subscriber choose, which is probably right -- and is why this is a
+   design note rather than a one-line change.
+
+Until then, the published `pressure` is station pressure and the README's
+example values are station pressure. Anyone comparing them with a forecast
+needs to reduce them first.
+
+---
+
 ## SD card removed while mounted hangs the board
 
 **Trigger:** physically pull the SD card out of a running board.

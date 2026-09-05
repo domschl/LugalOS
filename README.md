@@ -17,7 +17,7 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 343 tests on QEMU RV32
+**Working today**, verified by the automated test suite (`tests/runner.py`, 359 tests on QEMU RV32
 NOMMU, RV64 MMU and a two-hart RV64 SMP target) and by hardware-in-the-loop suites (`tests/hw/`,
 against real RP2350 silicon: 24 core tests, 15 more for the wired gateway, 6 over the radio, 3
 against a GPS-disciplined reference clock):
@@ -35,6 +35,15 @@ against a GPS-disciplined reference clock):
   (`heartbeatisotest`, `tm1638isotest`, `i2cisotest`, `st7735isotest`, `blkisotest`, `uartisotest`,
   `usbisotest`) that deliberately stores outside the driver's own grant and asserts the store faults
   and a canary in kernel memory stays untouched.
+- **An environment sensor node that publishes by itself**: a BMP280/BME280 on the shared I2C bus,
+  read through the same PMP-isolated driver task as the RTC, and an **MQTT 3.1.1 client** over this
+  project's own TCP — publish, subscribe, keepalive and a last will, with no encryption and
+  optional password auth. Each measurement carries an exponential filter and its own publish rule
+  (on a change of *delta*, never faster than a minimum, always within a maximum), so a still value
+  stays quiet and a moving one reports at once. The broker lives in the identity record, which
+  makes a stored broker the intent to publish: an `rp2350-sensor` board joins its WiFi, announces
+  itself, publishes temperature, pressure and humidity, and is announced gone by its will — with
+  nothing typed. See [Sensors and MQTT](#sensors-and-mqtt-a-node-that-measures-something-and-says-so).
 - **Both cores of an RP2350, running one scheduler**: the second Hazard3 core is launched over the
   SIO FIFO, joins the shared ready queue, and runs ordinary tasks — with the same PMP-enforced
   per-task isolation on the secondary as on the primary, verified by a fault deliberately taken
@@ -303,6 +312,7 @@ Available configure presets:
   "rp2350-clock"   - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
   "rp2350-gateway" - RP2350 (Pico 2) — network gateway persona
   "rp2350-wifi"    - RP2350W (Pico 2 W) — wireless netif persona
+  "rp2350-sensor"  - RP2350W (Pico 2 W) — environment sensor persona
   "rv64-smp"       - QEMU RV64 (Sv39 MMU) — SMP, two harts
   "rp2350-smp"     - RP2350 (Pico 2) — chess persona, both cores
 ```
@@ -448,6 +458,33 @@ DS1307/DS3231 RTC Module   Raspberry Pi Pico 2 (RP2350)
 > Internal pull-ups on GP4/GP5 are enabled by the driver, so no external pull-up resistors are
 > required. The same bus reaches the RTC at `0x68` (`i2c_rtc.c`) and, if present, an AT24C32
 > EEPROM at `0x57` (`at24c32.c`) — `(i2c-scan)` lists whatever actually responds.
+
+### BME280 / BMP280 Sensor Wiring (`rp2350-sensor` persona, Pico 2 W I2C0)
+
+The same two wires as the RTC above, because it is the same bus. `drivers/bme280.c` reaches it
+through the shared `i2c` driver task rather than touching the controller itself — a second bus
+master on one pair of pins is not a design, it is a race.
+
+```
+BME280 / BMP280 Module     Raspberry Pi Pico 2 W (RP2350)
+──────────────────────     ─────────────────────────────
+      VCC ──────────►  Pin 36  3V3(OUT)
+      GND ──────────►  Pin 38  GND
+      SDA ──────────►  Pin  6  GPIO4  (I2C0 SDA)
+      SCL ──────────►  Pin  7  GPIO5  (I2C0 SCL)
+      SDO ──────────►  leave as the module strapped it
+      CSB ──────────►  leave alone (high selects I2C; every I2C breakout pulls it up)
+```
+
+> **Which part is fitted is discovered, not configured.** Register `0xD0` is the chip id: `0x60`
+> is a BME280 (temperature, pressure, humidity), `0x58` a BMP280 (no humidity), and the driver
+> probes `0x76` then `0x77` so either SDO strapping is found. A breakout sold as "BMP280" may
+> carry something else entirely — `0x55` is a BMP180 with a different register map, `0x61` a
+> BME680 — and both are named in the boot log rather than reported as "not found".
+>
+> `i2c scan` lists what actually answered; `sensor` takes one measurement and prints it; `sensor
+> selftest` checks the datasheet's fixed-point compensation against a vector computed
+> independently by `tools/bme280_reference.py`, and needs no sensor at all.
 
 ### ENC28J60 Ethernet Wiring (`rp2350-gateway` persona, Pico 2 SPI0)
 
@@ -1031,6 +1068,137 @@ macOS is a different story, and not because of anything in this code — see
 ---
 
 
+## Sensors and MQTT: a node that measures something, and says so
+
+`plan/phase26_mqtt_and_environment_sensors.md`. A Pico 2 W with a BME280 on four wires, powered
+from a phone charger, joins its WiFi, samples, and publishes to whatever broker the house already
+runs — with nothing typed after the first time.
+
+### The client, and what it deliberately is not
+
+**MQTT 3.1.1** (protocol level 4), because it is what every broker still speaks and what
+`mosquitto` defaults to; 5.0's additions are things a node with four topics does not use. QoS 0,
+publish and subscribe, keepalive, last will. No TLS, no QoS 2, and no QoS 1 yet — TCP already
+retransmits, and what QoS 1 actually protects is the *reconnect*, where re-delivering a
+measurement that has since been superseded is arguably worse than dropping it.
+
+> **The password crosses the LAN in the clear.** MQTT's CONNECT packet carries the username and
+> password as plain length-prefixed UTF-8, and there is no TLS on this board. Anyone with a packet
+> capture on the segment — or on the WiFi, if the AP is open — has the password and can replay it.
+> This is phase 18's threat model inherited unchanged: **auth proves who is talking; it does not
+> hide what they say.** Give each node its own password, make it one that means nothing anywhere
+> else, and bound what that account may publish with the broker's ACLs.
+
+Two protocol details that cause support questions, recorded once so nobody has to rediscover them:
+3.1.1 has **no password without a username** (a password flag with no username flag is a protocol
+error, refused locally here with a reason rather than sent for a broker to reject confusingly),
+and the **client id must be unique on the broker** — two nodes sharing one disconnect each other in
+a permanent loop that looks exactly like a flaky network. The id defaults to `node_name()`, which
+the identity record already makes per-board.
+
+### Telling a board where to publish, once
+
+```bash
+lsh> mqttcfg 192.168.178.32 5           # broker, and how often to sample
+mqttcfg: stored -- mqttd starts at every boot from here on
+```
+
+That goes in the **identity record**, beside the address and WLAN credentials it is reached with,
+for the reason those are there: since I7a the `/flash0` image is byte-identical on every board, and
+a broker in a boot script would make the filesystem per-board again. `tools/provision.py --mqtt
+IP[:PORT][,USER[,PASS]]` writes the same field from the host, `mqttcfg clear` removes it, and
+`cat /proc/node` reports it — with the password named, never shown — so a board can be asked what
+it will do before it is rebooted.
+
+**A stored broker is the intent to publish.** There is no separate enable flag, exactly as stored
+WLAN credentials are the intent to join. A board with no broker on record runs `mqttd` not at all.
+
+### What it publishes, and when
+
+```
+$ mosquitto_sub -h nalanda -t 'lugalos/#' -v
+lugalos/kitchen-sensor/status       online          # retained
+lugalos/kitchen-sensor/temperature  26.11
+lugalos/kitchen-sensor/pressure     963.69       # station pressure, see below
+lugalos/kitchen-sensor/humidity     46.08
+```
+
+and when the board dies without saying goodbye, the broker publishes the **will** it registered on
+connect:
+
+```
+lugalos/kitchen-sensor/status       offline         # retained
+```
+
+That pair is what lets a subscriber tell "quiet because nothing changed" from "gone". A sensor
+node's most important message is the one it cannot send.
+
+> **`pressure` is station pressure, not reduced to sea level.** It is what the part measures where
+> it sits; what weather services show is pressure reduced to sea level (QNH / *NN*). At 520 m the
+> difference is about 60 hPa — far larger than any weather variation — so the two are not
+> comparable without converting. Reducing it needs the sensor's **installation altitude**, which is
+> a fact only the installer has, and inventing one would be worse than publishing the honest raw
+> quantity. See `plan/open_issues.md` for what adding it properly would take.
+
+**Each measurement decides for itself when to speak.** Publishing on a fixed period is wrong in
+both directions at once — it floods a broker with a value nobody is watching, and still reports a
+fast-moving one no sooner than the next tick. So each carries an exponential moving average and a
+rule:
+
+    publish when   the filtered value moved by at least `delta`
+    but never      more often than `min_interval_s`
+    and always     at least every `max_interval_s`
+
+The delta makes a fast-changing measurement report quickly and a still one stay quiet; the minimum
+stops noise flooding the broker; the maximum is a heartbeat, because a value that has not changed
+all afternoon must still arrive or it cannot be told from a dead node. Defaults are per
+measurement, each delta set just above that measurement's own noise: **0.10 °C**, **0.10 hPa**,
+**0.50 %RH**, sampled every 5 s, at most every 5 s, at least every 300 s.
+
+What that looks like in practice — one board, one three-minute window, the same 5 s sampling, with
+a finger held on the sensor partway through:
+
+| topic | publishes | why |
+|---|---|---|
+| `temperature` | 25 | touched: 26.3 → 30.7 °C and back |
+| `humidity` | 16 | followed the touch, but a 0.5 %RH delta |
+| `pressure` | 2 | unaffected — heartbeats only |
+
+`mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]` tunes any of them live.
+
+### Talking back to a board
+
+```bash
+lsh> mqtt sub lugalos/cmd/#
+mqtt: subscribed to "lugalos/cmd/#"
+mqtt: lugalos/cmd/led -> on
+```
+
+Inbound PUBLISH is the only place this client parses bytes a stranger chose, so two rules are part
+of the contract rather than implementation detail. A packet larger than the 512-byte reassembly
+buffer is **counted and its bytes discarded, not dropped** — dropping what you cannot hold leaves
+the stream desynchronised at a packet boundary forever, which is the classic way a small MQTT
+client wedges. And a malformed Remaining Length **closes the connection**, because there is no
+resynchronising a stream whose framing is wrong.
+
+### Doing it by hand
+
+Everything above works interactively, on any persona with a network:
+
+```
+mqtt connect <ip>[:port] [user [pass]]     mqtt pub <topic> <payload>
+mqtt sub <filter>    mqtt unsub <filter>   mqtt disconnect
+mqtt                                       state, counters, credentials
+mqtt selftest                              the Remaining Length varint, at every boundary
+mqttd start <ip>[:port] [sample_s]         the appliance loop, by hand
+mqttd stop | fake | rule <name> ...
+sensor | sensor selftest | sensor init
+```
+
+A connection is serviced for as long as it exists, by a small task started with it and exiting with
+it — so a session opened at the prompt is not dropped at the keepalive, and a subscription delivers
+between commands, whoever opened it.
+
 ## Interactive Workflow Examples
 
 ### 1. FAT32 Subdirectories and File Operations
@@ -1471,6 +1639,55 @@ matched on the first attempt for the wrong reason.
 ---
 
 ## History
+
+- **2026-09-05: Release 0.15.0 — A node that measures something, and says so: MQTT and
+  environment sensors.** A Pico 2 W with a BME280 on four wires, told its broker once, joins its
+  WiFi and publishes temperature, pressure and humidity from a phone charger with nothing typed —
+  announcing itself on arrival and announced gone by its will when it dies
+  (`plan/phase26_mqtt_and_environment_sensors.md`).
+
+  **The one piece of new plumbing was neither MQTT nor I2C.** `net/tcp.c` handed out `p9_link_t`
+  and nothing else, because when it was written the only thing that spoke over a connection was 9P
+  and its length prefix *was* the framing. A protocol with framing of its own needed a second
+  *view* of a connection rather than a second transport: `tcp_stream_*`, on the same slot table,
+  the same buffers and the same pump, costing no new memory. Writing it taught the rest. The first
+  version transmitted from the writer's task, which broke the "everything on one call stack"
+  premise `net_task_body()` had documented all along — a 64 KB echo stalled about one run in four,
+  and the capture showed 3840-byte segments on a 1500-byte MTU, two frame builds interleaved in the
+  one shared transmit buffer. The receive side had the same shape, which a single hart merely
+  hides, so a stream's receive buffer is now a lock-free SPSC ring.
+
+  **Each measurement decides for itself when to speak.** An exponential moving average kills the
+  jitter; a rule per measurement decides the rest — publish on a move of *delta*, never faster than
+  a minimum, always within a maximum. The heartbeat is not optional: a value that has not changed
+  all afternoon must still arrive, or it cannot be told from a dead node. Over one three-minute
+  window on one board, with a finger held on the sensor partway through, temperature published 25
+  times, humidity 16 and pressure twice — same node, same 5 s sampling, three cadences chosen by
+  what each value actually did.
+
+  **What silicon showed, again.** The radio wedged seconds after every association and stayed
+  wedged, and the cause was not the PIO program: the CYW43 supervisor's RSSI poll — added the day
+  before — reached the bus without the bus lock, and `pio_gspi_transfer()` begins by disabling the
+  state machine, so a preempted transfer had its SM stopped underneath it. The capture said so
+  literally (`ctrl=0x00000000`). Every other bus user already locked; one did not. The fix is three
+  things, because fixing only the first would leave the class open: the poll takes the lock, the
+  transfer warns if entered without it, and a new recovery level resets the chip and reloads its
+  firmware — because levels 1 and 2 send ioctls, and on a desynchronised bus an ioctl is what is
+  broken. Fifteen minutes of ping afterwards: 1797/1800, no stall.
+
+  That bug also produced the most misleading symptom of the release. While the radio was wedged,
+  **I2C reads started failing too** — three `sensor` reads in eight — which is exactly the
+  radio/I2C timing contention the plan had listed in advance as a risk, and was nothing of the
+  kind. The measurement that separates them is a ping flood against a *healthy* radio: 10/10 reads,
+  0.8% loss. A predicted-and-plausible wrong answer is the one that sticks, so it is written down
+  in the plan next to the risk it impersonated.
+
+  Also here: `IDSTORE_FIELD_MQTT`, so the broker lives beside the address and WLAN credentials and
+  a stored broker is the intent to publish; an `rp2350-sensor` persona that is mostly subtraction;
+  `I2C_OP_XFER`, one generic transfer that makes the *next* I2C part cost no kernel-surface change
+  at all; and `tests/mqttbroker.py`, a broker that can misbehave on purpose — refuse a CONNECT,
+  split a header, or die and be replaced on the same port — because a peer that can only behave
+  correctly cannot test a client. 359 QEMU tests.
 
 - **2026-09-05: Release 0.14.0 — Practical multi-core: both cores of an RP2350, running one
   scheduler.** Two Hazard3 cores now pull from one ready queue, and two real workloads use the

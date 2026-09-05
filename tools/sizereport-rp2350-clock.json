@@ -7,8 +7,8 @@
     "arch/riscv/common/trap.c": 2694,
     "arch/riscv/rv32_nommu/vmm.c": 4,
     "drivers/at24c32.c": 1,
-    "drivers/bme280.c": 44,
-    "drivers/cyw43_rp2350.c": 11951,
+    "drivers/bme280.c": 81,
+    "drivers/cyw43_rp2350.c": 11953,
     "drivers/dcf77_p0log.c": 596,
     "drivers/dcf77_rp2350.c": 298,
     "drivers/dcf77_service.c": 863,
@@ -44,13 +44,14 @@
     "kernel/printk.c": 20,
     "kernel/random.c": 8,
     "kernel/sched.c": 1369,
-    "kernel/shell.c": 374,
+    "kernel/shell.c": 635,
     "kernel/smp.c": 8,
     "kernel/ticker.c": 37,
     "kernel/time.c": 33,
     "kernel/timezone.c": 4,
     "net/arp.c": 196,
-    "net/mqtt.c": 216,
+    "net/mqtt.c": 244,
+    "net/mqttd.c": 644,
     "net/netif.c": 12,
     "net/ntp.c": 64,
     "net/ntp_server.c": 18,
@@ -66,5 +67,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 144088
+  "total": 145060
 }
