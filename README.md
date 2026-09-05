@@ -1472,6 +1472,59 @@ matched on the first attempt for the wrong reason.
 
 ## History
 
+- **2026-09-05: Release 0.14.0 — Practical multi-core: both cores of an RP2350, running one
+  scheduler.** Two Hazard3 cores now pull from one ready queue, and two real workloads use the
+  second one: `(perft 4 2)` splits move generation **1.96×** (10450 → 5322 ms, checked against the
+  *published* node counts, so a parallelisation bug shows up as a wrong number rather than a faster
+  wrong answer), and `(chess 2)` runs a Lazy SMP search over a lock-free transposition table for
+  **1.60×** to a fixed depth (9287 → 5924 ms).
+
+  **The locking came first, deliberately** (`plan/phase22_smp_locking_foundation.md`): per-hart
+  identity through `tp` and a `hart_t` record, a `spinlock_t` and a re-entrant yielding `ylock_t`
+  on real `amoswap` behind an arch seam, every hand-rolled lock converted and the rest audited, and
+  the scheduler lock held *across* `ctx_switch()` and released on the incoming stack. Every shared
+  structure a second hart could touch had to be protected before that hart was ever allowed to run
+  kernel code — waking it first converts a latent race into an active one on day one. Then
+  `plan/phase23_multicore_scheduling.md` woke the core: driver tasks pinned to core 0 with what that
+  does *not* cover written down, core 1 launched over the SIO FIFO, and the isolation suite re-run
+  with both harts demonstrably mid-task at the instant of each fault — so PMP domains are *enforced*
+  on a non-primary core, not merely believed to be. `smpstart join` performs the launch,
+  `/proc/cpuinfo` reports `harts_online`, and `ps` gains a `Hart` column.
+
+  **Three divergences only silicon showed**, which is the pattern this project keeps re-learning. A
+  tight test-and-set spin starves the other core when both share one bus, and deadlocks the machine.
+  Hazard3's per-core interrupt force array (`meifa`) is never cleared by this kernel — survivable for
+  core 0, which `boot_header.S` brings up from reset, and fatal for core 1, which arrives from the
+  bootrom. And a transposition table entry torn between two cores yields a move that is legal in the
+  current position but belongs to another one, which nothing in the engine rejects. Phase 23's own
+  premise that RP2350 boots both of its cores was falsified on hardware and corrected where it was
+  made. `CONFIG_ENABLE_SMP` is set by exactly two presets (`rv64-smp`, `rp2350-smp`); every other
+  persona boots on one hart with the second-core code compiled out. One cost is *not* opt-in and is
+  stated rather than hidden: core 1's 16 KB stack costs 4 pages on every RP2350 persona, because a
+  linker script cannot see the generated config header.
+
+  **Also in this release**, none of which had a release of its own since 0.13.1. **An IP stack we
+  wrote** — ARP, IPv4, ICMP, UDP and a server-side TCP, ~2,100 lines under `net/`, over two very
+  different wires through one `netif_t` seam: a wired **ENC28J60** and the **CYW43439** radio on a
+  Pico 2 W joining WPA2 and carrying 9P over the air. The phase began by *cancelling a W5500*, and
+  the reason decides the roadmap: what matters is not blob size but what is left to implement — a
+  part whose closed firmware ends at the MAC layer leaves the network to us, one that ends at TCP
+  does not. Above it, authenticated 9P over TCP on port 564, `host/fuse-p9` mounting a board's whole
+  namespace over either wire, and an SNTP client. **An identity that belongs to the silicon**
+  (`plan/phase21_identity_and_authentication.md`): the device UID from OTP `CHIPID` and a 4 KB record
+  in its own reserved flash sector, so a node's name, device key, peer grants, address and WLAN
+  credential all survive a reflash — `/flash0` became its own flashable segment for the same reason,
+  halving the OS image. **Grants** made authentication into authorization, where any peer holding
+  *some* configured key had previously received the entire exported namespace. And **the clock
+  started measuring itself** (`plan/phase24_dcf77_precision_and_ntp_server.md`, ongoing — parts
+  landed here, not the phase): the DCF-77 receiver's delay is measured against a GPS module's PPS
+  rather than fitted, the clock is disciplined between syncs instead of stepped once a night, and the
+  board can serve NTP and refuses to when it does not know the time.
+
+  Verified: QEMU **343/343** across `rv32-nommu`, `rv64-mmu` and the two-hart `rv64-smp` target; on
+  real RP2350 silicon the **24/24** core hardware suite on both personas, 15 more for the wired
+  gateway, 6 over the radio, and 3 against a GPS-disciplined reference.
+
 - **2026-08-24: Release 0.13.1 — The clock driver becomes a driver, and two bugs it took hardware to find.**
   A patch release with no new features: it is about the clock persona being *right* rather than
   bigger. Three days of living with the clock produced three complaints — the dark-room brightness
