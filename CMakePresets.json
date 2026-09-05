@@ -103,7 +103,7 @@
         },
         {
             "name": "rp2350-smp",
-            "displayName": "RP2350 (Pico 2) - chess persona, SMP (phase 23 X3)",
+            "displayName": "RP2350 (Pico 2) \u2014 chess persona, both cores",
             "description": "X3, plan/phase23_multicore_scheduling.md: the chess persona with CONFIG_ENABLE_SMP, which adds the SIO-FIFO launch for core 1 and the `smpstart` command. A separate preset rather than a flag on rp2350-chess so every shipping persona keeps booting single-core.",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/rp2350-smp",

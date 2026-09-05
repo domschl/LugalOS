@@ -17,10 +17,10 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 300 tests on QEMU RV32
-NOMMU and RV64 MMU) and by hardware-in-the-loop suites (`tests/hw/`, against real RP2350 silicon:
-24 core tests, 15 more for the wired gateway, 6 over the radio, 3 against a
-GPS-disciplined reference clock):
+**Working today**, verified by the automated test suite (`tests/runner.py`, 343 tests on QEMU RV32
+NOMMU, RV64 MMU and a two-hart RV64 SMP target) and by hardware-in-the-loop suites (`tests/hw/`,
+against real RP2350 silicon: 24 core tests, 15 more for the wired gateway, 6 over the radio, 3
+against a GPS-disciplined reference clock):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
   PMP regions on the M-mode targets, Sv39 page tables on RV64, behind one interface; a syscall
@@ -35,6 +35,20 @@ GPS-disciplined reference clock):
   (`heartbeatisotest`, `tm1638isotest`, `i2cisotest`, `st7735isotest`, `blkisotest`, `uartisotest`,
   `usbisotest`) that deliberately stores outside the driver's own grant and asserts the store faults
   and a canary in kernel memory stays untouched.
+- **Both cores of an RP2350, running one scheduler**: the second Hazard3 core is launched over the
+  SIO FIFO, joins the shared ready queue, and runs ordinary tasks — with the same PMP-enforced
+  per-task isolation on the secondary as on the primary, verified by a fault deliberately taken
+  *there* (`isolationtest 1`). Locking is real rather than assumed: `spinlock_t` and a re-entrant
+  yielding `ylock_t` built on RISC-V `amoswap`, with the scheduler lock handed *across*
+  `ctx_switch()` and released on the incoming stack. `smpstart join` performs the launch;
+  `cat /proc/cpuinfo` reports `harts_online`, and `ps` gains a `Hart` column showing what each task
+  is pinned to. Driver tasks stay pinned to core 0 deliberately — see
+  [`plan/phase23_multicore_scheduling.md`](plan/phase23_multicore_scheduling.md).
+- **Two cores doing visible work, measured on silicon**: `(perft 4 2)` splits the move-generation
+  suite across both cores — **1.96×**, and verified by the published node counts rather than by
+  itself, so a parallelisation bug shows up as a wrong number. `(chess 2)` runs a Lazy SMP search
+  sharing a lock-free transposition table — **1.60×** to a fixed depth. Both default to one core,
+  which is byte-for-byte the previous behaviour.
 - **`ps` reports which tasks that isolation actually covers**: an `Isol` column shows `PMP`, `Sv39`,
   or `-` per task, reading the same domain state the scheduler and PMP/Sv39 backend already track —
   so the isolation claims above are something you can point at in a running system, not just in the
@@ -88,12 +102,16 @@ GPS-disciplined reference clock):
   7-segment slots alike, and typing during an engine search is queued rather than discarded.
   Games are stored as **real PGN** (proper SAN, so any chess GUI opens them) under `/sd0/chess/`,
   auto-saved after every move and auto-restored when a session starts; `new` retires the previous
-  game to `chess/games/`, and `save <name>` / `load <name>` / `games` archive by name.
+  game to `chess/games/`, and `save <name>` / `load <name>` / `games` archive by name. `(chess 2)`
+  searches on both cores (Lazy SMP over a lock-free transposition table, 1.60x to a fixed depth on
+  real silicon); `(chess)` and `(chess 1)` are the single-core engine, unchanged.
 - **RAM budgeting as a first-class concern, with the tooling to keep it that way**: on RP2350 `.bss`
   and the heap are literally the same budget — the page allocator starts where the image ends — so a
   static buffer serving an idle subsystem is heap no *other* subsystem can have. Reclaiming that took
   the managed heap from 53 pages (212 KB) to **89 pages (356 KB)** and the chess persona's peak from
-  100% of the heap to 28 of 89 pages. Rare-but-large working memory (the compiler's pools, the chess
+  100% of the heap to well under a half of it (currently 38 of 83 pages — core 1's own 16 KB stack
+  costs 4 pages on every RP2350 persona since multi-core landed, SMP-enabled or not, because a
+  linker script cannot see the generated config header). Rare-but-large working memory (the compiler's pools, the chess
   engine's move-list pools and position scratch, Lisp's file buffers, the U-mode probe stacks) is
   taken from the heap on demand and given straight back via `kernel/scratch.h`; constant tables that
   were computed into RAM at boot now live in flash. Guarded going forward by a **link-time heap
@@ -129,13 +147,25 @@ GPS-disciplined reference clock):
 ## Key Features & Architecture
 
 * **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), which a U-mode program reaches through `SYS_CHAN_CALL`; the older register-based `sys_ipc_*` entry points were never more than stubs and have been deleted, their syscall numbers permanently retired.
+* **Symmetric multiprocessing on two harts**: one ready queue, one scheduler lock, and per-task hart
+  affinity. Locking is real rather than nominal — `spinlock_t` (irqsave, test-and-**test**-and-set,
+  because a plain test-and-set spin starves the other core on one bus) and a re-entrant yielding
+  `ylock_t`, both over an arch seam (`arch_lock_try_acquire`/`arch_lock_release`) shaped so a
+  hardware-spinlock backend could replace the RISC-V `amoswap` without touching a caller. The
+  scheduler lock is held *across* `ctx_switch()` and released on the incoming stack, because
+  releasing it before the switch would advertise a task as runnable while its parked stack pointer
+  was still stale. Per-hart identity lives in a `hart_t` reached through `tp`; a hart that owns no
+  task yet says so (`TASK_NO_PID`) instead of impersonating the boot task. On RP2350 the second
+  Hazard3 core is launched over the SIO FIFO and parks itself out of the XIP window across a flash
+  write, since turning XIP off stops instruction fetch for *both* cores.
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
   * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).
   * `/proc/` — Synthetic kernel metrics, generated on read and served as real byte streams (so a
     remote node can read them over 9P): `/proc/ps` (the live task table), `/proc/meminfo` (live page
     allocator counters), `/proc/version`, `/proc/df`, `/proc/kmsg` (the kernel log ring),
-    `/proc/devices` (the probed device registry), `/proc/buildid`.
+    `/proc/devices` (the probed device registry), `/proc/cpuinfo` (this hart's identity, how many
+    are online, and per-hart counts of restricted-domain activations), `/proc/buildid`.
   * `/dev/` — Hardware device nodes (`/dev/uart`, `/dev/null`, `/dev/zero`).
   * `/srv/` — Named service endpoints, reached by copy-always message passing: `/srv/console` (the
     console server — anything that can write here emits on the terminal, including a remote node
@@ -267,11 +297,29 @@ cmake --list-presets
 ```
 Available configure presets:
 
-  "rv32-nommu"   - QEMU RV32 (NOMMU)
-  "rv64-mmu"     - QEMU RV64 (Sv39 MMU)
-  "rp2350-chess" - RP2350 (Pico 2) — chess-computer persona
-  "rp2350-clock" - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
+  "rv32-nommu"     - QEMU RV32 (NOMMU)
+  "rv64-mmu"       - QEMU RV64 (Sv39 MMU)
+  "rp2350-chess"   - RP2350 (Pico 2) — chess-computer persona
+  "rp2350-clock"   - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
+  "rp2350-gateway" - RP2350 (Pico 2) — network gateway persona
+  "rp2350-wifi"    - RP2350W (Pico 2 W) — wireless netif persona
+  "rv64-smp"       - QEMU RV64 (Sv39 MMU) — SMP, two harts
+  "rp2350-smp"     - RP2350 (Pico 2) — chess persona, both cores
 ```
+
+The two SMP presets are the only ones that set `CONFIG_ENABLE_SMP`. Every other persona boots on a
+single hart exactly as it did before phase 23, and the second-core code compiles out entirely — so a
+regression in secondary bring-up cannot reach a board that never asked for it. Run the QEMU one under
+two harts:
+
+```bash
+cmake --preset rv64-smp && cmake --build --preset rv64-smp
+qemu-system-riscv64 -M virt -nographic -bios none -smp 2 -kernel build/rv64-smp/lugalos.elf
+```
+
+On an RP2350 the launch stays an explicit shell command rather than happening at boot — `smpstart
+join` — because a board that boots is a board that can be reflashed, which cost two BOOTSEL
+recoveries to learn.
 
 Configure + build any of them the same way:
 ```bash
