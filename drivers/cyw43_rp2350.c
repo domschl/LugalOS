@@ -413,6 +413,30 @@ static void cyw43_lock(void) {
 }
 static void cyw43_unlock(void) { g_bus_busy = false; }
 
+/* Set when a gSPI transfer gave up half-finished. That does not merely mean
+ * one transfer failed: the chip and this driver no longer agree on where a
+ * word boundary is, so every ioctl afterwards times out. An ioctl cannot be
+ * the fix when an ioctl is what is broken -- see cyw43_link_recover(3). */
+static volatile bool g_bus_wedged;
+
+/* Warn once about a caller that reached the bus without holding it.
+ *
+ * Not paranoia: this exact bug shipped on 2026-09-04 and cost a day. The
+ * supervisor's RSSI poll called an ioctl unlocked, so once a link came up it
+ * reached into pio_gspi_transfer() every 2 s -- and that function's *first*
+ * line disables the state machine. Interleaved with `netsrv` mid-transfer,
+ * that stops the SM underneath a transfer that is still spinning on its
+ * FIFOs, which is precisely the "pio transfer stuck (... ctrl=0x00000000 ...)"
+ * capture that named the fault. The lock was right and one caller did not
+ * take it, so the lock is no longer left to memory. */
+static void cyw43_assert_bus_held(const char *who) {
+    static bool warned;
+    if (g_bus_busy || warned) return;
+    warned = true;
+    printk("cyw43: BUG: %s reached the bus without cyw43_lock() -- transfers "
+           "can now be interleaved and the gSPI stream desynchronised.\n", who);
+}
+
 /* --- association, as the firmware actually reports it ------------------
  *
  * R5 inferred carrier from "the firmware will tell us a BSSID", with the
@@ -657,6 +681,7 @@ static void pio_gspi_init(void) {
 
 static bool pio_gspi_transfer(const uint8_t *tx, uint32_t tx_len,
                                uint8_t *rx, uint32_t rx_len) {
+    cyw43_assert_bus_held("pio_gspi_transfer");
     REG(PIO_CTRL) &= ~(1u << PIO_SM); /* SM_ENABLE[SM] = 0 */
 
     uint32_t wrap_top = rx ? (GSPI_OFFSET_END - 1u) : (GSPI_OFFSET_LP1_END - 1u);
@@ -764,6 +789,10 @@ static bool pio_gspi_transfer(const uint8_t *tx, uint32_t tx_len,
                    REG(PIO_FDEBUG), REG(PIO_SM_ADDR(PIO_SM)),
                    pc_trace[0], pc_trace[1], pc_trace[2], pc_trace[3],
                    pc_trace[4], pc_trace[5], pc_trace[6], pc_trace[7]);
+            /* The stream is desynchronised from here on, so say so once
+             * rather than letting the next hundred ioctls each discover it
+             * with a one-second timeout. The supervisor acts on this. */
+            g_bus_wedged = true;
             ok = false;
             break;
         }
@@ -2119,6 +2148,24 @@ bool cyw43_gspi_probe(void) {
  * insufficient, this is where it goes. */
 void cyw43_link_recover(unsigned level) {
     cyw43_lock();
+    /* Level 3 is not "levels 1 and 2, harder". It is the case where the bus
+     * itself is desynchronised, and there the ioctls levels 1 and 2 send are
+     * not merely useless -- they are a second of timeout each, spent proving
+     * something already known. The only thing that re-synchronises a gSPI
+     * stream is what brought it up: reset the chip, upload the firmware
+     * again. That is about a minute of bit-banged transfer, which is why it
+     * is the last resort and not the first. */
+    if (level >= 3) {
+        printk("cyw43: recovery: resetting the chip and reloading firmware\n");
+        if (cyw43_probe_locked()) {
+            g_bus_wedged = false;
+            printk("cyw43: recovery: the bus is back\n");
+        } else {
+            printk("cyw43: recovery: the chip did not come back\n");
+        }
+        cyw43_unlock();
+        return;
+    }
     if (level >= 1) {
         printk("cyw43: recovery: disassociating\n");
         cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DISASSOC, 0, NULL, 0, NULL);
@@ -2134,6 +2181,14 @@ void cyw43_link_recover(unsigned level) {
             printk("cyw43: recovery: could not re-arm the event mask\n");
     }
     cyw43_unlock();
+}
+
+/* Forces the supervisor down its rejoin path. Deliberately does NOT ask the
+ * firmware to disassociate first: the interesting case is the one where the
+ * AP went away without saying so, which is what carrier alone cannot see. */
+void cyw43_link_drop(void) {
+    g_link_up = false;
+    g_join_state = 0;
 }
 
 /* Issues the disassociate a DEAUTH_IND asked for, if one is pending. Called
@@ -2332,6 +2387,20 @@ static void cyw43_autostart_body(void *arg) {
             }
             attempt = 0;
 
+            /* A wedged bus presents as a link that is up and carries
+             * nothing, which the RX-silence check below would eventually
+             * catch -- in five minutes, having spent them issuing ioctls
+             * that cannot work. The driver knows the exact moment the stream
+             * desynchronised, so it acts on that instead. */
+            if (g_bus_wedged) {
+                printk("cyw43: the gSPI stream desynchronised -- full reset\n");
+                cyw43_link_recover(3);
+                g_link_up = false;
+                was_up = false;
+                last_rx_change_ms = 0;
+                continue;              /* into the rejoin path below */
+            }
+
             /* Carrier is not the same as reachability, and only one of them
              * has an event.
              *
@@ -2353,8 +2422,19 @@ static void cyw43_autostart_body(void *arg) {
             /* Refreshed on the supervisor's own 2 s cadence: it is already
              * awake, already knows the link is up, and an ioctl here costs one
              * gSPI round trip against a task that is otherwise asleep. */
+            /* **Under the bus lock**, like every other bus user. Without
+             * it this ran straight into pio_gspi_transfer() every 2 s, and
+             * that function begins by disabling the state machine -- so a
+             * `netsrv` transfer preempted mid-flight had its SM stopped
+             * underneath it and spun until PIO_POLL_LIMIT. The link then
+             * looked up (nothing clears g_link_up without a firmware event)
+             * while every ioctl timed out forever. Added unlocked on
+             * 2026-09-04, found on hardware 2026-09-05. */
             int32_t r;
-            if (cyw43_read_rssi(&r)) { g_rssi_dbm = r; g_rssi_valid = true; }
+            cyw43_lock();
+            bool got_rssi = cyw43_read_rssi(&r);
+            cyw43_unlock();
+            if (got_rssi) { g_rssi_dbm = r; g_rssi_valid = true; }
 
             netif_t *nif = netif_default();
             uint32_t rx = nif ? nif->rx_frames : 0;
@@ -2388,7 +2468,10 @@ static void cyw43_autostart_body(void *arg) {
          * repeating it forever is what turned a recoverable drop into a dead
          * board until someone power-cycled it. */
         if (attempt == 2u)      cyw43_link_recover(1);
-        else if (attempt >= 4u) cyw43_link_recover(2);
+        else if (attempt == 4u) cyw43_link_recover(2);
+        /* Beyond that, a re-join is not what is failing. Six attempts is
+         * roughly a minute of trying the cheap things first. */
+        else if (attempt >= 6u && (attempt % 6u) == 0u) cyw43_link_recover(3);
 
         if (cyw43_join_wpa2(ssid, psk)) continue;   /* the loop above reports it */
 

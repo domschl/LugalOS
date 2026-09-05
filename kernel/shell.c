@@ -2671,6 +2671,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         memset(psk, 0, sizeof(psk));
         cprintf(ok ? "wifi: joined\n" : "wifi: join failed\n");
         return;
+    } else if (strcmp(cmd_line, "wifi drop") == 0) {
+        cyw43_link_drop();
+        cprintf("wifi: carrier dropped -- the supervisor will rejoin\n");
+        return;
+    } else if (strncmp(cmd_line, "wifi recover", 12) == 0) {
+        unsigned level = shell_trailing_uint(&cmd_line[12]);
+        if (level == 0 || level > 3) level = 1;
+        cprintf("wifi: recovery level %u%s\n", level,
+                level == 3 ? " (reset + firmware reload, about a minute)" : "");
+        cyw43_link_recover(level);
+        return;
     } else if (strcmp(cmd_line, "wifi stats") == 0) {
         cprintf("wifi: rx ring high-water %u, %u frames dropped (ring full)\n",
                 cyw43_rx_high_water(), cyw43_rx_overruns());

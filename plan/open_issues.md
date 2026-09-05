@@ -15,58 +15,6 @@ phase doc and the commit carry the history.
 
 ---
 
-## The CYW43's PIO transfer wedges after association, and stays wedged
-
-**Trigger:** seen twice on 2026-09-05, on the `rp2350-sensor` board, within
-seconds of `cyw43: link up`. The kernel log reads:
-
-    cyw43: link up ("DOSC")
-    cyw43: pio transfer stuck (ti=1/1 ri=17/64 ctrl=0x00000000
-           fstat=0x0f000f00 fdebug=0x01000001 pc=0 pc_trace=0,0,0,0,0,0,0,0)
-    cyw43: ioctl cmd 127 timed out          <- then once a second, forever
-
-`pc=0` with an all-zero pc_trace says the PIO state machine is not executing,
-not that it is looping. From that point the radio's *control* path is dead:
-every ioctl times out. The interface still reports `link up`, because
-`g_link_up` is set by the firmware's join event and nothing clears it, and it
-still receives broadcast frames -- so `net` looks almost healthy while
-nothing outbound works. ARP requests go out (`arp 1/15`) and no reply ever
-arrives.
-
-**Why it is not phase 26's:** nothing in that phase touches PIO, the gSPI
-pins (GP23/24/25/29) or drivers/cyw43_rp2350.c. It reproduced on a board
-whose only new software below the IP stack is a sensor on a different
-peripheral entirely.
-
-**A secondary symptom worth knowing, because it points the wrong way.**
-While the radio is wedged, **I2C reads start failing too** -- `sensor` failed
-3 times in 8 on the same board, and every failure was inside
-`bme280_read()`'s status-poll loop. This looks exactly like radio/I2C
-interference and is not: with a healthy radio the same board read 8/8 idle
-and 10/10 under a 400-packet ping flood (0.8% loss, 8.9 ms average), which is
-the test that distinguishes them. The mechanism is presumably that a driver
-spinning on second-long ioctl timeouts starves the `i2c` task inside its own
-bounded register-poll loops. So: **a burst of I2C failures on a wireless
-board is a reason to look at the radio, not at the bus.**
-
-**Recovery that works:** `wifi probe` resets the chip and re-uploads the
-firmware; `wifiup`'s own retry then rejoins by itself, and everything is
-healthy afterwards. It costs about a minute (231 KB of bit-banged upload).
-
-**Why it is parked:** it is an R5 driver problem, in the part of the tree
-phase 19 built, and it needs the PIO program and the gSPI turnaround examined
-under a scope rather than a guess. The appliance's own answer -- a watchdog
-that notices the control path has stopped answering and calls
-`cyw43_link_recover()` without anyone typing anything -- belongs with Q5's
-`mqttd`, which is the first thing that will care.
-
-**Fix, when it is worth it:** find why the state machine stops (the capture
-above says it stopped mid-read, 17 of 64 words in), and give the post-join
-path the same recovery the join path already has -- `cyw43_link_recover()` is
-called on join attempts 2 and 4 and never again once the link is up.
-
----
-
 ## SD card removed while mounted hangs the board
 
 **Trigger:** physically pull the SD card out of a running board.
