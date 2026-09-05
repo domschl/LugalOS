@@ -157,6 +157,11 @@ int  mqttd_start(const mqttd_config_t *cfg);
  * broker does *not* publish the will: the node meant to go. */
 void mqttd_stop(void);
 
+/* Q6: starts the task if -- and only if -- a broker is on record. Returns the
+ * pid, or -1 when there is nothing stored, which is the normal state of every
+ * board that is not a sensor node. Called once at boot. */
+int  mqttd_autostart(void);
+
 bool mqttd_running(void);
 void mqttd_print_status(void);
 

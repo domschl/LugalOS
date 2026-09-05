@@ -36,6 +36,7 @@
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
 #include "net/ip.h"
+#include "net/mqttd.h"
 #include "kernel/identity.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
@@ -365,6 +366,14 @@ void kernel_main(void) {
         net_stack_attach(netif_default());
         net_task_start();
     }
+
+    /* Q6, plan/phase26_mqtt_and_environment_sensors.md: a stored broker is
+     * the intent to publish, exactly as stored WLAN credentials are the
+     * intent to join. Started here rather than after the network is up --
+     * mqttd retries forever with backoff, so a radio that is still uploading
+     * its firmware is the same case as a router that has not come back, and
+     * one code path handles both. */
+    mqttd_autostart();
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     /* P3b: the transfer standard. Brought up here, polled from the clock

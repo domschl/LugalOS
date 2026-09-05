@@ -6,6 +6,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include <string.h>
 
@@ -103,7 +104,53 @@ static struct {
 
     mqtt_counters_t ctr;
     bool           connected_once;
+
+    /* Q3 */
+    mqtt_message_fn handler;
+    void           *handler_ctx;
+    uint16_t        next_packet_id;
+    uint16_t        ack_wait_id;    /* the SUBACK/UNSUBACK we are waiting for, 0 = none */
+    bool            ack_seen;
+    uint8_t         ack_granted;    /* SUBACK's returned QoS, 0x80 = refused */
 } g;
+
+/* One task inside the client at a time.
+ *
+ * Not a theoretical concern once Q5 exists: `mqttd` pumps mqtt_service() in
+ * its own loop while the console can call `mqtt pub` or `mqtt sub` in the
+ * same breath, and both paths touch the one reassembly buffer, the one send
+ * buffer and the one packet-id counter. A ylock_t rather than a spinlock
+ * because these sections are held across waits by design -- mqtt_connect()
+ * holds it while waiting for the CONNACK -- and it is re-entrant for the
+ * owning task, which is what lets mqtt_connect() call mqtt_service() from
+ * inside its own critical section. */
+static ylock_t g_client_lock;
+
+/* --- Who services a connection ---
+ *
+ * Q1 left this to whoever happened to call mqtt_service(), which in practice
+ * meant "the shell, while a command is running". A session opened at the
+ * prompt was therefore dropped at the keepalive, and a subscription delivered
+ * nothing between commands -- seen on hardware as `state CONNECTED, pings 0`
+ * over a TCP connection that had gone to CLOSE_WAIT.
+ *
+ * A connection is now serviced for as long as it exists, by one small task
+ * started with it and exiting with it. That is the property worth having:
+ * it does not matter whether `mqttd`, the shell, or a Lisp script opened the
+ * connection -- the keepalive is answered and inbound messages arrive either
+ * way. Safe alongside mqttd's own service call because both go through
+ * g_client_lock, which is re-entrant for the owning task and yields rather
+ * than spinning. */
+static int g_pump_pid = -1;
+
+static void mqtt_pump_body(void *arg) {
+    (void)arg;
+    while (mqtt_state() != MQTT_CLOSED) {
+        mqtt_service();
+        task_sleep_ms(200);
+    }
+    g_pump_pid = -1;
+}
 
 /* One page, taken the first time anything actually dials a broker and never
  * freed -- net/tcp.c's ensure_bufs() rule, unchanged and for the same reason:
@@ -245,11 +292,25 @@ static int dispatch(const uint8_t *pkt, uint32_t hdr_len, uint32_t body_len) {
             g.ctr.received++;
             return 0;
         case MQTT_SUBACK:
+            /* packet id, then one granted-QoS byte per filter. We send one
+             * filter per SUBSCRIBE, so there is exactly one. */
+            if (body_len < 3u) return MQTT_ERR_PROTO;
+            if (((uint32_t)body[0] << 8 | body[1]) == g.ack_wait_id) {
+                g.ack_granted = body[2];
+                g.ack_seen = true;
+            }
+            return 0;
         case MQTT_UNSUBACK:
+            if (body_len < 2u) return MQTT_ERR_PROTO;
+            if (((uint32_t)body[0] << 8 | body[1]) == g.ack_wait_id) {
+                g.ack_granted = 0;
+                g.ack_seen = true;
+            }
+            return 0;
         case MQTT_PUBACK:
-            /* Q3/Q8 give these meaning. Accepted and ignored until then,
-             * which is better than closing a healthy connection over a packet
-             * we asked for and have not yet learned to read. */
+            /* Q8 gives this meaning. Accepted and ignored until then, which
+             * beats closing a healthy connection over a packet we asked for
+             * and have not yet learned to read. */
             return 0;
         default:
             /* Anything else is a broker speaking a protocol we did not agree
@@ -258,10 +319,37 @@ static int dispatch(const uint8_t *pkt, uint32_t hdr_len, uint32_t body_len) {
     }
 }
 
-/* Q1 has no subscriptions, so nothing can arrive here yet; Q3 gives this a
- * callback. Kept as its own function so Q3 is a body, not a restructure. */
+/* An inbound PUBLISH: topic, then payload, with the packet's own declared
+ * length as the only bound worth trusting. */
 static void handle_publish(const uint8_t *pkt, uint32_t len, uint8_t flags) {
-    (void)pkt; (void)len; (void)flags;
+    if (len < 2u) return;
+    uint32_t tlen = ((uint32_t)pkt[0] << 8) | pkt[1];
+    /* Checked against the *declared* remaining length before either the topic
+     * or the payload is read, not after. */
+    if (2u + tlen > len) return;
+
+    char topic[MQTT_TOPIC_MAX + 1];
+    uint32_t take = tlen > MQTT_TOPIC_MAX ? MQTT_TOPIC_MAX : tlen;
+    memcpy(topic, pkt + 2, take);
+    topic[take] = '\0';
+
+    uint32_t off = 2u + tlen;
+    /* QoS 1 and 2 carry a packet id here. We never subscribe above QoS 0, so
+     * a broker sending one is out of contract -- but skipping it costs two
+     * bytes and mis-parsing it would corrupt the payload. */
+    uint8_t qos = (uint8_t)((flags >> 1) & 0x03u);
+    if (qos) {
+        if (off + 2u > len) return;
+        off += 2u;
+    }
+
+    if (g.handler)
+        g.handler(topic, pkt + off, len - off, (flags & 0x01u) != 0, g.handler_ctx);
+}
+
+void mqtt_set_handler(mqtt_message_fn fn, void *ctx) {
+    g.handler = fn;
+    g.handler_ctx = ctx;
 }
 
 /* Feeds one chunk of freshly-arrived bytes through the incremental parser.
@@ -329,22 +417,25 @@ static void drop_connection(void) {
 
 void mqtt_service(void) {
     if (g.state == MQTT_CLOSED) return;
+    ylock_acquire(&g_client_lock);
 
     if (tcp_stream_ready(&g.stream) < 0) {
         drop_connection();
+        ylock_release(&g_client_lock);
         return;
     }
 
     uint8_t buf[256];
     for (;;) {
         int n = tcp_stream_read(&g.stream, buf, sizeof(buf));
-        if (n < 0) { drop_connection(); return; }
+        if (n < 0) { drop_connection(); ylock_release(&g_client_lock); return; }
         if (n == 0) break;
         int rc = feed(buf, (uint32_t)n);
         if (rc != 0) {
             g.ctr.proto_errors++;
             printk("[MQTT] %s -- closing the connection.\n", mqtt_err_str(rc));
             drop_connection();
+            ylock_release(&g_client_lock);
             return;
         }
     }
@@ -353,10 +444,11 @@ void mqtt_service(void) {
      * owner's next publish would otherwise be the thing that discovers it. */
     if (tcp_stream_peer_closed(&g.stream)) {
         drop_connection();
+        ylock_release(&g_client_lock);
         return;
     }
 
-    if (g.state != MQTT_CONNECTED) return;
+    if (g.state != MQTT_CONNECTED) { ylock_release(&g_client_lock); return; }
 
     uint64_t now = time_get_ms();
     uint32_t ka_ms = (uint32_t)g.keepalive_s * 1000u;
@@ -368,6 +460,7 @@ void mqtt_service(void) {
     if (g.ping_sent_ms && (now - g.ping_sent_ms) > ka_ms) {
         printk("[MQTT] No PINGRESP within the keepalive -- the connection is dead.\n");
         drop_connection();
+        ylock_release(&g_client_lock);
         return;
     }
 
@@ -380,13 +473,16 @@ void mqtt_service(void) {
             g.ctr.pings++;
         }
     }
+    ylock_release(&g_client_lock);
 }
 
-int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms) {
+static void mqtt_disconnect_locked(void);
+
+static int mqtt_connect_locked(const mqtt_config_t *cfg, uint32_t timeout_ms) {
     if (!cfg) return MQTT_ERR_BADARG;
     if (!net_configured()) return MQTT_ERR_NO_NET;
 
-    if (g.state != MQTT_CLOSED) mqtt_disconnect();
+    if (g.state != MQTT_CLOSED) mqtt_disconnect_locked();
     if (ensure_bufs() != 0) return MQTT_ERR_NO_NET;
 
     g.cfg = *cfg;
@@ -476,13 +572,19 @@ int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms) {
     }
 
     g.state = MQTT_CONNECTED;
+    if (g_pump_pid < 0) {
+        g_pump_pid = task_create("mqttsrv", mqtt_pump_body, NULL);
+        if (g_pump_pid < 0)
+            printk("[MQTT] No task slot for the connection pump; the session will "
+                   "only be serviced while a command is running.\n");
+    }
     g.ctr.connected_at_ms = time_get_ms();
     if (g.connected_once) g.ctr.reconnects++;
     g.connected_once = true;
     return 0;
 }
 
-int mqtt_publish(const char *topic, const void *payload, uint32_t len, bool retain) {
+static int mqtt_publish_locked(const char *topic, const void *payload, uint32_t len, bool retain) {
     if (!topic || !topic[0]) return MQTT_ERR_BADARG;
     if (g.state != MQTT_CONNECTED) return MQTT_ERR_STATE;
     if (strlen(topic) > MQTT_TOPIC_MAX) return MQTT_ERR_TOOBIG;
@@ -506,7 +608,73 @@ int mqtt_publish(const char *topic, const void *payload, uint32_t len, bool reta
     return 0;
 }
 
-void mqtt_disconnect(void) {
+/* Packet ids are 1..65535; zero is reserved and a broker will reject it. */
+static uint16_t next_packet_id(void) {
+    if (++g.next_packet_id == 0u) g.next_packet_id = 1u;
+    return g.next_packet_id;
+}
+
+/* SUBSCRIBE and UNSUBSCRIBE differ only in their packet type and in whether
+ * each filter carries a requested-QoS byte, so they share a body. */
+static int sub_common(uint8_t type, const char *filter, uint32_t timeout_ms, bool sub) {
+    if (!filter || !filter[0]) return MQTT_ERR_BADARG;
+    if (strlen(filter) > MQTT_TOPIC_MAX) return MQTT_ERR_TOOBIG;
+
+    ylock_acquire(&g_client_lock);
+    int rc;
+    if (g.state != MQTT_CONNECTED) { rc = MQTT_ERR_STATE; goto out; }
+
+    uint16_t id = next_packet_id();
+    uint32_t body = 2u + str_field_len(filter) + (sub ? 1u : 0u);
+    if (5u + body > MQTT_TX_MAX) { rc = MQTT_ERR_TOOBIG; goto out; }
+
+    uint32_t o = 5u;
+    g.tx[o++] = (uint8_t)(id >> 8);
+    g.tx[o++] = (uint8_t)id;
+    o = put_str(g.tx, o, filter);
+    if (sub) g.tx[o++] = 0x00;                 /* requested QoS 0 */
+
+    uint32_t pkt_len = 0;
+    /* Both carry the reserved flag bits 0010 in the header's low nibble; a
+     * broker is entitled to close the connection over anything else. */
+    uint32_t start = frame_packet((uint8_t)(type | 0x02u), o - 5u, &pkt_len);
+
+    g.ack_wait_id = id;
+    g.ack_seen = false;
+    g.ack_granted = 0;
+
+    rc = write_all(g.tx + start, pkt_len, 5000u);
+    if (rc != 0) goto out;
+
+    uint64_t deadline = time_get_ms() + (timeout_ms ? timeout_ms : 5000u);
+    while (!g.ack_seen) {
+        if (console_interrupt_requested()) { rc = MQTT_ERR_INTERRUPTED; goto out; }
+        if (time_get_ms() >= deadline)      { rc = MQTT_ERR_TIMEOUT; goto out; }
+        mqtt_service();
+        if (g.state != MQTT_CONNECTED) { rc = MQTT_ERR_TCP; goto out; }
+        sched_yield();
+    }
+
+    /* 0x80 is the broker declining this filter -- an ACL, nearly always --
+     * rather than anything having gone wrong on the wire. Worth its own
+     * error so a caller can say which. */
+    rc = (sub && g.ack_granted == 0x80u) ? MQTT_ERR_REFUSED : 0;
+
+out:
+    g.ack_wait_id = 0;
+    ylock_release(&g_client_lock);
+    return rc;
+}
+
+int mqtt_subscribe(const char *filter, uint32_t timeout_ms) {
+    return sub_common(MQTT_SUBSCRIBE, filter, timeout_ms, true);
+}
+
+int mqtt_unsubscribe(const char *filter, uint32_t timeout_ms) {
+    return sub_common(MQTT_UNSUBSCRIBE, filter, timeout_ms, false);
+}
+
+static void mqtt_disconnect_locked(void) {
     if (g.state == MQTT_CONNECTED) {
         /* A clean DISCONNECT tells the broker not to publish the will: the
          * node meant to go. That is the whole difference between this and
@@ -515,6 +683,32 @@ void mqtt_disconnect(void) {
         write_all(pkt, sizeof(pkt), 1000u);
     }
     drop_connection();
+}
+
+/* The public faces: one task inside the client at a time.
+ *
+ * Thin wrappers rather than a lock threaded through each function's several
+ * return paths -- the same shape drivers/i2c_rtc.c uses for its own facades,
+ * and it keeps the lock discipline visible in one place instead of spread
+ * across a dozen `goto out`s where a later edit could miss one. */
+int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms) {
+    ylock_acquire(&g_client_lock);
+    int rc = mqtt_connect_locked(cfg, timeout_ms);
+    ylock_release(&g_client_lock);
+    return rc;
+}
+
+int mqtt_publish(const char *topic, const void *payload, uint32_t len, bool retain) {
+    ylock_acquire(&g_client_lock);
+    int rc = mqtt_publish_locked(topic, payload, len, retain);
+    ylock_release(&g_client_lock);
+    return rc;
+}
+
+void mqtt_disconnect(void) {
+    ylock_acquire(&g_client_lock);
+    mqtt_disconnect_locked();
+    ylock_release(&g_client_lock);
 }
 
 void mqtt_print_status(void) {

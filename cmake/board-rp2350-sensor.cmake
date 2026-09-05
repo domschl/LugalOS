@@ -10,11 +10,17 @@
 # **Why a persona exists at all**, given the sensor itself needs no board-file
 # change (it sits on the I2C0 pins every RP2350 persona already declares for
 # the RTC probe, and drivers/bme280.c reaches them through the shared i2c
-# task): because **autostart is what a persona is for**. The rule set in
-# phase 11 and kept since is that a program starts by itself only on an
-# appliance persona, never in the general build. Everything Q0-Q6 builds works
-# on rp2350-wifi by hand, and that is how it is tested; this persona adds
-# unattendedness and subtracts a compiler.
+# task): because it is the board with nothing else on it.
+#
+# **This comment used to claim the persona was what made mqttd autostart, and
+# Q6 made that wrong.** The rule phase 11 set -- a program starts by itself
+# only on an appliance persona -- is about programs that own a display or a
+# keypad. Publishing follows the *other* rule this tree already had, R5's: a
+# stored credential is the intent to use it, so a board with a broker in its
+# identity record starts mqttd whatever persona it runs, exactly as a board
+# with stored WLAN credentials joins. What this persona actually contributes
+# is subtraction: no SD, no display, no keypad, no compiler, nothing to go
+# wrong that a sensor node does not need.
 #
 # Same RP2350 silicon, arch and linker script as every other RP2350 persona --
 # a board file, not a new LUGALOS_TARGET, selected via the rp2350-sensor

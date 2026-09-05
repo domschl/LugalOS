@@ -23,6 +23,21 @@
  *     simply not there must not fill /proc/kmsg.
  */
 
+/* Three pages, not task_create()'s default two, and this is not padding.
+ *
+ * node_mqtt() and node_record_readable() each declare an `idstore_t` -- the
+ * whole 4 KB record -- on the *caller's* stack, which is the convention every
+ * other reader of the record follows (node_ipv4() does the same, and `netsrv`,
+ * which calls it, is likewise created with three pages).
+ *
+ * On two pages this overflowed, and it did so in the most misleading way
+ * available: the record's own bytes landed on the return address, so the
+ * trap dump showed `ra=0x726f736e65730700` -- which is "\0\x07sensor", the
+ * length-prefixed username out of the MQTT field, and looks for all the world
+ * like a string-handling bug in the new code rather than a stack that was too
+ * small for an old convention. */
+#define MQTTD_STACK_PAGES 3u
+
 #define BACKOFF_MIN_MS   1000u
 #define BACKOFF_MAX_MS  30000u
 /* How often the loop wakes to service the connection. Short enough that a
@@ -260,6 +275,9 @@ static void sample_and_publish(void) {
     }
 }
 
+static void mqttd_body(void *arg);
+static void mqttd_configure(const mqttd_config_t *cfg);
+
 static void mqttd_body(void *arg) {
     (void)arg;
     uint32_t backoff_ms = BACKOFF_MIN_MS;
@@ -342,10 +360,9 @@ static void copy_opt(char *dst, uint32_t cap, const char *src) {
     dst[cap - 1u] = '\0';
 }
 
-int mqttd_start(const mqttd_config_t *cfg) {
-    if (!cfg) return -1;
-    if (g.running) mqttd_stop();
-
+/* Everything mqttd_start() does except create the task -- shared with the
+ * autostart path, which is already on the task it will run as. */
+static void mqttd_configure(const mqttd_config_t *cfg) {
     memset(&g.cfg, 0, sizeof(g.cfg));
     memcpy(g.cfg.broker, cfg->broker, IPV4_LEN);
     g.cfg.port = cfg->port;
@@ -360,8 +377,14 @@ int mqttd_start(const mqttd_config_t *cfg) {
     g.stop_requested = false;
     g.published = g.skipped = g.connect_fails = 0;
     g.last_sample_ms = 0;
+}
 
-    g.pid = task_create("mqttd", mqttd_body, NULL);
+int mqttd_start(const mqttd_config_t *cfg) {
+    if (!cfg) return -1;
+    if (g.running) mqttd_stop();
+    mqttd_configure(cfg);
+
+    g.pid = task_create_sized("mqttd", mqttd_body, NULL, MQTTD_STACK_PAGES);
     if (g.pid < 0) printk("[mqttd] Could not start the task.\n");
     return g.pid;
 }
@@ -373,6 +396,64 @@ void mqttd_stop(void) {
      * than killing it mid-publish. */
     for (uint32_t i = 0; i < 40u && g.running; i++) task_sleep_ms(50);
     if (g.running) printk("[mqttd] Did not stop within two seconds.\n");
+}
+
+/* Q6: a stored broker is the intent to publish.
+ *
+ * The rule R5 established for joining a network, applied to publishing on it:
+ * no separate enable flag, because a board that has been told where its
+ * broker is has been told to use it, and an enable flag is one more thing to
+ * forget. A board with nothing on record starts no task at all.
+ *
+ * Started before the network exists on purpose. mqttd's own loop retries with
+ * backoff forever, so "the radio is still uploading firmware" and "the router
+ * is not back yet" are the same case as any later outage, handled by the same
+ * code rather than by a special one that only runs at boot. */
+/* The record is read here, on the task, and not by the caller.
+ *
+ * kernel_main() is too early: the identity device is found at 0.003 s, but a
+ * read from the boot path at 0.022 s still comes back IDSTORE_CORRUPT -- the
+ * same code a device-level read failure produces -- while the identical read
+ * from a task a millisecond later succeeds. net_autoconfig_once() already
+ * reads the record from inside `netsrv` rather than from the boot path, for
+ * what turns out to be the same reason.
+ *
+ * So this task waits for the store to become readable before deciding. It
+ * waits only while the store is *unreadable*: a board whose record reads
+ * fine but holds no broker exits immediately, and a board with no identity
+ * device at all exits without waiting at all. */
+static void mqttd_autostart_body(void *arg) {
+    (void)arg;
+
+    for (uint32_t i = 0; i < 50u && !node_record_readable(); i++) {
+        if (!identity_store_device()) { g.pid = -1; return; }   /* no store, ever */
+        task_sleep_ms(100);
+    }
+
+    node_mqtt_t m;
+    if (!node_mqtt(&m)) { g.pid = -1; return; }   /* no broker: nothing to do */
+
+    mqttd_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    memcpy(cfg.broker, m.broker, IPV4_LEN);
+    cfg.port = m.port;
+    cfg.sample_s = m.sample_s;
+    cfg.keepalive_s = m.keepalive_s;
+    if (m.username[0]) cfg.username = m.username;
+    if (m.password[0]) cfg.password = m.password;
+    if (m.prefix[0])   cfg.prefix = m.prefix;
+
+    printk("[mqttd] A broker is on record (%u.%u.%u.%u) -- publishing to it.\n",
+           m.broker[0], m.broker[1], m.broker[2], m.broker[3]);
+    mqttd_configure(&cfg);
+    mqttd_body(NULL);
+}
+
+int mqttd_autostart(void) {
+    if (g.running) return g.pid;
+    g.pid = task_create_sized("mqttd", mqttd_autostart_body, NULL, MQTTD_STACK_PAGES);
+    if (g.pid < 0) printk("[mqttd] Could not start the autostart task.\n");
+    return g.pid;
 }
 
 void mqttd_print_status(void) {

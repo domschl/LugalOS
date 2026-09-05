@@ -4066,7 +4066,7 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
         # 2. A broker that accepts, and a publish that has to arrive intact.
         ok, log = session.send_and_expect(
             f"mqtt connect 10.0.2.2:{accepting.port}\n",
-            r"state CONNECTED|mqtt: ", timeout=25.0)
+            r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
         if not ok or "CONNECTED" not in log:
             return (name, False, f"the client did not connect:\n{log[-700:]}")
         if not accepting.wait_for_connect(timeout=5.0):
@@ -4210,6 +4210,233 @@ def test_mqttd_publish_rules(elf_path: Path, img_path: Path, arch_name: str) -> 
         return (name, True,
                 f"rate limit held a per-sample change to {len(fakes)} publishes, "
                 f"and a value that never moved enough still beat {len(beats)} times")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_mqtt_config_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q6, plan/phase26_mqtt_and_environment_sensors.md: the broker lives in
+    the identity record, and a stored broker is the intent to publish.
+
+    The same shape as test_wlan_credential_roundtrip, and for the same reason:
+    a field is only useful if the host writer and the on-device reader agree
+    about its bytes, and the cheapest way to be sure is to have one write it
+    and the other read it back. tools/provision.py's build_mqtt_blob() and
+    kernel/identity.c's mqtt_serialise() are two implementations of one
+    layout, so this is the test that stops them drifting.
+
+    Then the part that makes it a milestone rather than a field: **nothing is
+    typed**. The board is booted with a record and `mqttd` has to be running,
+    dialling the stored broker, because a stored broker is the intent to
+    publish -- exactly the rule stored WLAN credentials already follow for
+    joining. There is no enable flag to forget.
+    """
+    import shutil
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Config In The Identity Record, And An Autostart With Nothing Typed"
+    arch_img = img_path.with_name(f"test_{arch_name}_mqttcfg_sd.img")
+    shutil.copyfile(img_path, arch_img)
+
+    broker = MqttBroker()
+    # 10.0.2.2 is the host as slirp presents it, so the record points the
+    # guest at this very broker.
+    spec = f"10.0.2.2:{broker.port},sensors,hunter2"
+    id_img = img_path.with_name(f"test_{arch_name}_mqttcfg_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes(range(8))),
+        (provision.FIELD_NAME, b"sensor-node"),
+        (provision.FIELD_IPV4, bytes(int(o) for part in
+            ("10.0.2.15", "255.255.255.0", "10.0.2.2") for o in part.split("."))),
+        (provision.FIELD_MQTT, provision.build_mqtt_blob(spec, 2)),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=10.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. Nothing has been typed, and mqttd must already be dialling the
+        # stored broker with the record's credentials.
+        #
+        # Asserted *before* anything is typed, and not only because it is the
+        # milestone: mqttd logs its connection to the console, and typing into
+        # a line editor while the guest is printing interleaves the two and
+        # garbles the command. Let the noisy part finish first.
+        if not broker.wait_for_connect(timeout=40.0):
+            return (name, False,
+                    "mqttd did not autostart: a stored broker is meant to be the intent "
+                    "to publish, with no separate enable flag")
+        c = broker.connect
+        if c.username != "sensors" or c.password != "hunter2":
+            return (name, False, f"the record's credentials did not reach CONNECT: {c!r}")
+        if c.client_id != "sensor-node":
+            return (name, False,
+                    f"client id was {c.client_id!r}; it should be the record's node name")
+        time.sleep(1.0)
+
+        # 2. The device reads back what the host wrote.
+        ok, log = session.send_and_expect("mqttcfg\n", r"^broker :", timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqttcfg` did not answer: {log[-400:]}")
+        if not re.search(rf"^broker : 10\.0\.2\.2:{broker.port}\b", log, re.MULTILINE):
+            return (name, False, f"the stored broker did not read back:\n{log[-600:]}")
+        if not re.search(r"^user   : sensors\b", log, re.MULTILINE):
+            return (name, False, f"the stored username did not read back:\n{log[-600:]}")
+        if not re.search(r"^pass   : set\b", log, re.MULTILINE):
+            return (name, False, f"the password should read back as `set`:\n{log[-600:]}")
+        if "hunter2" in log:
+            return (name, False, "the password was printed back; it must only ever be named")
+
+        # 3. It is on /proc/node too, so a board can be asked over 9P what it
+        # will do before it is rebooted.
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^mqtt:", timeout=6.0)
+        if not ok:
+            return (name, False, f"/proc/node did not answer: {log[-400:]}")
+        if not re.search(rf"^mqtt: 10\.0\.2\.2:{broker.port} user sensors pass set",
+                         log, re.MULTILINE):
+            return (name, False, f"/proc/node does not report the broker:\n{log[-600:]}")
+        if "hunter2" in log:
+            return (name, False, "/proc/node printed the password")
+
+        # 4. And it can be withdrawn again, or a stale broker could only ever
+        # be overwritten, never removed.
+        ok, log = session.send_and_expect("mqttcfg clear\n", r"mqttcfg: cleared", timeout=8.0)
+        if not ok:
+            return (name, False, f"`mqttcfg clear` did not report: {log[-400:]}")
+        ok, log = session.send_and_expect("mqttcfg\n", r"broker : none stored", timeout=6.0)
+        if not ok:
+            return (name, False, f"the broker survived a clear:\n{log[-500:]}")
+
+        # 5. Clearing it must not have taken the address with it -- the record
+        # is rewritten whole on every write, and a field that is not carried
+        # forward is a field that is silently lost.
+        ok, log = session.send_and_expect("netcfg\n", r"^address:", timeout=6.0)
+        if not ok:
+            return (name, False, f"`netcfg` did not answer: {log[-400:]}")
+        if not re.search(r"^address: 10\.0\.2\.15\b", log, re.MULTILINE):
+            return (name, False,
+                    f"clearing the broker dropped the stored address:\n{log[-500:]}")
+
+        return (name, True,
+                "host-written record read back on the device, reported by /proc/node "
+                "without the password, autostarted with nothing typed, and cleared "
+                "without disturbing the address beside it")
+    finally:
+        session.close()
+        broker.close()
+
+
+def test_mqtt_subscribe(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Q3: the inbound half -- SUBSCRIBE, a delivered PUBLISH, and the two
+    ways a broker can desynchronise a small client.
+
+    The happy path is the least interesting third of this. What matters is
+    §3.5's bounds, because inbound PUBLISH is the only place this client
+    parses bytes a stranger chose:
+
+      * **an oversize packet must be consumed, not dropped.** A client that
+        drops the bytes it cannot hold is left mid-packet forever, and every
+        subsequent byte is read as a header. The check is not that the big one
+        is discarded -- it is that the *next small one still arrives*.
+      * **a malformed Remaining Length must close the connection.** There is
+        no resynchronising a stream whose framing is wrong, and carrying on is
+        how a parser starts executing whatever follows.
+
+    A broker that could only behave correctly could not test either.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker, encode_varint
+
+    name = "MQTT Subscribe: Delivery, An Oversize Packet, And Broken Framing"
+    broker = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        ok, log = session.send_and_expect(
+            f"mqtt connect 10.0.2.2:{broker.port}\n", r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
+        if not ok or "CONNECTED" not in log:
+            return (name, False, f"the client did not connect:\n{log[-600:]}")
+
+        # 1. SUBSCRIBE, and the broker's granted QoS.
+        ok, log = session.send_and_expect(
+            "mqtt sub lugalos/cmd/#\n", r"mqtt: subscribed|mqtt: ", timeout=15.0)
+        if not ok or "subscribed" not in log:
+            return (name, False, f"subscribe did not complete:\n{log[-600:]}")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not broker.subscriptions:
+            time.sleep(0.05)
+        if "lugalos/cmd/#" not in broker.subscriptions:
+            return (name, False, f"the broker saw {broker.subscriptions!r}, not the filter sent")
+
+        # 2. A delivered message. The client is pumped by whatever command is
+        # running, so a publish is issued alongside to give it a turn.
+        broker.publish("lugalos/cmd/hello", b"world")
+        ok, log = session.send_and_expect(
+            "mqtt pub lugalos/tick 1\n", r"lugalos/cmd/hello -> world", timeout=15.0)
+        if not ok:
+            return (name, False, f"the subscribed message was not delivered:\n{log[-700:]}")
+
+        # 3. An oversize PUBLISH -- four times the reassembly buffer. The
+        # client must swallow it whole and stay in frame, which is proved by
+        # the small one after it arriving normally.
+        broker.publish("lugalos/cmd/big", b"X" * 4096)
+        time.sleep(1.0)
+        broker.publish("lugalos/cmd/after", b"still-here")
+        ok, log = session.send_and_expect(
+            "mqtt pub lugalos/tick 2\n", r"lugalos/cmd/after -> still-here", timeout=20.0)
+        if not ok:
+            return (name, False,
+                    f"the stream did not survive an oversize packet -- the client is "
+                    f"desynchronised, which is what consuming the bytes exists to "
+                    f"prevent:\n{log[-700:]}")
+
+        # 4. Broken framing: a Remaining Length with a fifth continuation
+        # byte, which no valid packet contains. The connection must close
+        # rather than the parser carrying on into the payload.
+        broker._send(bytes([0x30, 0xff, 0xff, 0xff, 0xff, 0x7f]) + b"junk")
+        # The connection pump wakes every 200 ms, so the close is not instant.
+        # Poll the status rather than reading it once and racing it.
+        closed = False
+        deadline = time.time() + 20.0
+        while time.time() < deadline and not closed:
+            ok, log = session.send_and_expect("mqtt\n", r"state (CLOSED|CONNECTED)", timeout=10.0)
+            if not ok:
+                return (name, False,
+                        f"`mqtt` did not report after the malformed packet: {log[-400:]}")
+            closed = "CLOSED" in log
+            if not closed:
+                time.sleep(1.0)
+        if not closed:
+            return (name, False,
+                    f"a malformed Remaining Length left the connection open; there is no "
+                    f"resynchronising a stream whose framing is wrong:\n{log[-500:]}")
+
+        return (name, True,
+                "subscribed and delivered, survived a 4 KB packet with the next one "
+                "still arriving, and closed on a fifth continuation byte")
     finally:
         session.close()
         broker.close()
@@ -6483,6 +6710,8 @@ def main() -> int:
         _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqttd_appliance(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqttd_publish_rules(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_config_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_subscribe(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_over_own_tcp(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_uart_slip_link(rv64_elf, img_for("rv64"), "rv64"))
@@ -6526,6 +6755,8 @@ def main() -> int:
         _run_single(test_mqtt_client(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqttd_appliance(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_mqttd_publish_rules(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_config_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_mqtt_subscribe(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_tcp_under_impairment(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_over_own_tcp(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_uart_slip_link(rv32_elf, img_for("rv32"), "rv32"))

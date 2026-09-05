@@ -505,6 +505,37 @@ board prints the payload; the oversize path is exercised with a 4 KB payload
 and the *next* small publish still arrives, proving the stream stayed in sync;
 a malformed varint closes the connection rather than wedging it.
 
+*Done 2026-09-05.* SUBSCRIBE/SUBACK with the granted QoS checked (0x80 is
+the broker declining a filter, usually an ACL, and says so rather than
+reporting a transport failure), UNSUBSCRIBE/UNSUBACK, inbound PUBLISH to a
+registered handler, and `mqtt sub` / `mqtt unsub` at the console.
+
+`test_mqtt_subscribe` spends two of its three parts on §3.5's bounds, because
+inbound PUBLISH is the only place this client parses bytes a stranger chose:
+a 4 KB packet is consumed rather than dropped — **asserted by the next small
+message still arriving**, since a client that drops what it cannot hold is
+left mid-packet forever — and a Remaining Length with a fifth continuation
+byte closes the connection instead of letting the parser run on into the
+payload.
+
+On hardware, with `mqttd` publishing concurrently, the board received two
+messages sent from a laptop through `nalanda`.
+
+**It also forced a concurrency fix that Q5 had made necessary and left
+undone.** Once `mqttd` pumps the client in its own loop, the console can
+enter it in the same breath — `mqtt pub`, `mqtt sub` — and both paths touch
+one reassembly buffer, one send buffer and one packet-id counter. The client
+now serialises on a `ylock_t`: held across waits by design (the CONNACK wait
+is inside it) and re-entrant for the owning task, which is what lets
+`mqtt_connect()` call `mqtt_service()` from inside its own critical section.
+
+And a connection is now serviced **for as long as it exists**, by a small
+task started with it and exiting with it, rather than by whoever last called
+`mqtt_service()`. That is what closes the Q2 gap properly: a session opened
+at the prompt no longer dies at the keepalive, and a subscription delivers
+between commands, whoever opened it.
+
+
 ### Q4 — The sensors
 `I2C_OP_XFER` in the shared task; `drivers/bme280.c` with probe, calibration,
 forced-mode read and the datasheet compensation; `sensor` and
@@ -631,6 +662,40 @@ credentials are both stored.
 models — provision on the host, boot, read it back over 9P — extended to the
 MQTT field; a board with a stored broker publishes after a power cycle with
 nothing typed.
+
+*Done 2026-09-05.* `IDSTORE_FIELD_MQTT`, `mqttcfg` (+ `clear`),
+`tools/provision.py --mqtt`, `/proc/node`, and an autostart driven by the
+record alone. `test_mqtt_config_roundtrip` writes the record on the host,
+reads it back on the device, checks /proc/node reports it *without* the
+password, asserts mqttd dialled the broker with the record's credentials and
+the record's node name **with nothing typed**, and then clears it and
+confirms the stored address beside it survived — a field that is not carried
+forward through the whole-record rewrite is a field that is silently lost.
+
+On hardware: `mqttcfg 192.168.178.32 5` once, and after the reboot that an
+identity-sector write causes, the board came up, joined, read the record and
+published `online` plus all three measurements with nothing typed at all.
+
+**Two things this cost that the plan did not predict.**
+
+*The record is not readable from `kernel_main()`.* The identity device is
+found at 0.003 s, but a read from the boot path at 0.022 s still returns
+`IDSTORE_CORRUPT` — which is also how a device-level read failure is
+reported — while the same read from a task a millisecond later succeeds.
+`net_autoconfig_once()` already reads the record from inside `netsrv` rather
+than from the boot path, so the precedent was there to follow. The autostart
+therefore happens on its own task, which waits for the store to become
+readable; `node_record_readable()` exists so that "nothing stored" and "not
+readable yet" are not the same answer.
+
+*`idstore_t` is 4 KB, on the caller's stack.* Every reader of the record
+declares one as a local, and `task_create()`'s default stack is two pages.
+The overflow wrote the record's own bytes over the return address, so the
+trap dump read `ra=0x726f736e65730700` — "\0\x07sensor", the length-prefixed
+username out of the very field being read — which looks exactly like a
+string bug in new code and is nothing of the kind. mqttd is created with
+three pages, as `netsrv` (which calls the sibling `node_ipv4()`) already was.
+
 
 ### Q7 — The sensor persona, and hardware
 `cmake/board-rp2350-sensor.cmake`: a Pico 2 W with a BME280 and no SD card,

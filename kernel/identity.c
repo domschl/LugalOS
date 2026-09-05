@@ -286,6 +286,9 @@ typedef struct {
      * or a list could only ever grow. */
     const char    *grants;  uint32_t grants_len;
     bool           clear_grants;
+    /* Q6: the MQTT broker blob, same carry-forward/explicit-clear pair. */
+    const uint8_t *mqtt;    uint32_t mqtt_len;
+    bool           clear_mqtt;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -408,7 +411,23 @@ static int identity_store_write(const identity_patch_t *patch) {
         if (!final_grants) final_grants_len = 0;
     }
 
+    /* Carried forward like everything else, or storing a name would silently
+     * drop the broker -- the failure this whole function exists to prevent. */
+    uint8_t  final_mqtt[NODE_MQTT_BLOB_MAX];
+    uint32_t final_mqtt_len = 0;
+    if (patch->clear_mqtt) {
+        final_mqtt_len = 0;
+    } else if (patch->mqtt && patch->mqtt_len) {
+        final_mqtt_len = patch->mqtt_len > sizeof(final_mqtt) ? (uint32_t)sizeof(final_mqtt)
+                                                              : patch->mqtt_len;
+        memcpy(final_mqtt, patch->mqtt, final_mqtt_len);
+    } else if (old_valid) {
+        int n = idstore_get_field(oldp, IDSTORE_FIELD_MQTT, final_mqtt, sizeof(final_mqtt));
+        if (n > 0) final_mqtt_len = (uint32_t)n;
+    }
+
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (final_mqtt_len)      rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MQTT, final_mqtt, (uint16_t)final_mqtt_len);
     if (final_grants_len)    rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
@@ -595,6 +614,111 @@ node_id_result_t node_identity_set_grants(const char *text, uint32_t len) {
 
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
     return NODE_ID_OK;
+}
+
+/* --- Q6: the MQTT blob ---
+ *
+ * Serialised by hand rather than by memcpy of a struct: a struct's padding
+ * and endianness are compiler facts, and this blob is read by
+ * tools/provision.py on a host of a different word size. The layout is in
+ * kernel/idstore.h beside the field tag, and the two must agree.
+ */
+static uint32_t mqtt_put_str(uint8_t *out, uint32_t o, const char *s, uint32_t cap) {
+    uint32_t n = s ? (uint32_t)strlen(s) : 0;
+    if (n > cap) n = cap;
+    out[o++] = (uint8_t)n;
+    if (n) memcpy(out + o, s, n);
+    return o + n;
+}
+
+static uint32_t mqtt_get_str(const uint8_t *in, uint32_t len, uint32_t *o,
+                             char *out, uint32_t cap) {
+    out[0] = '\0';
+    if (*o >= len) return 0;
+    uint32_t n = in[(*o)++];
+    if (*o + n > len) { *o = len; return 0; }   /* truncated blob: field absent */
+    uint32_t take = n > cap ? cap : n;
+    memcpy(out, in + *o, take);
+    out[take] = '\0';
+    *o += n;
+    return take;
+}
+
+static uint32_t mqtt_serialise(const node_mqtt_t *cfg, uint8_t *out) {
+    uint32_t o = 0;
+    memcpy(out, cfg->broker, NODE_IPV4_LEN);
+    o = NODE_IPV4_LEN;
+    out[o++] = (uint8_t)(cfg->port >> 8);        out[o++] = (uint8_t)cfg->port;
+    out[o++] = (uint8_t)(cfg->sample_s >> 8);    out[o++] = (uint8_t)cfg->sample_s;
+    out[o++] = (uint8_t)(cfg->keepalive_s >> 8); out[o++] = (uint8_t)cfg->keepalive_s;
+    o = mqtt_put_str(out, o, cfg->username, NODE_MQTT_USER_MAX);
+    o = mqtt_put_str(out, o, cfg->password, NODE_MQTT_PASS_MAX);
+    o = mqtt_put_str(out, o, cfg->prefix,   NODE_MQTT_PREFIX_MAX);
+    return o;
+}
+
+/* Whether the store can be read *right now*.
+ *
+ * A boot-time caller must not confuse "nothing is stored" with "the store was
+ * not readable yet", and node_mqtt() alone cannot tell them apart. The
+ * distinction is not theoretical: the identity device is found at 0.003 s but
+ * a read from kernel_main at 0.022 s still returns IDSTORE_CORRUPT (which is
+ * also how a device-level read failure is reported), while the same read from
+ * a task a millisecond later succeeds. */
+bool node_record_readable(void) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    return idstore_read(dev, &rec) == IDSTORE_VALID;
+}
+
+bool node_mqtt(node_mqtt_t *out) {
+    if (!out) return false;
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+
+    uint8_t buf[NODE_MQTT_BLOB_MAX];
+    int n = idstore_get_field(&rec, IDSTORE_FIELD_MQTT, buf, sizeof(buf));
+    if (n < 10) return false;                    /* shorter than the fixed head */
+
+    memset(out, 0, sizeof(*out));
+    memcpy(out->broker, buf, NODE_IPV4_LEN);
+    if (ipv4_all_zero(out->broker)) return false;
+    uint32_t o = NODE_IPV4_LEN;
+    out->port        = (uint16_t)((uint16_t)buf[o] << 8 | buf[o + 1]); o += 2;
+    out->sample_s    = (uint16_t)((uint16_t)buf[o] << 8 | buf[o + 1]); o += 2;
+    out->keepalive_s = (uint16_t)((uint16_t)buf[o] << 8 | buf[o + 1]); o += 2;
+    mqtt_get_str(buf, (uint32_t)n, &o, out->username, NODE_MQTT_USER_MAX);
+    mqtt_get_str(buf, (uint32_t)n, &o, out->password, NODE_MQTT_PASS_MAX);
+    mqtt_get_str(buf, (uint32_t)n, &o, out->prefix,   NODE_MQTT_PREFIX_MAX);
+    return true;
+}
+
+node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg) {
+    if (!cfg) return NODE_ID_ERR_BAD_INPUT;
+    /* 0.0.0.0 is not an address, and a board that stored it would retry
+     * against nothing forever. */
+    if (ipv4_all_zero(cfg->broker)) return NODE_ID_ERR_BAD_INPUT;
+    /* MQTT 3.1.1 has no password without a username; refusing it here means
+     * the broker never gets the chance to reject it confusingly. */
+    if (cfg->password[0] && !cfg->username[0]) return NODE_ID_ERR_BAD_INPUT;
+
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+
+    uint8_t blob[NODE_MQTT_BLOB_MAX];
+    uint32_t len = mqtt_serialise(cfg, blob);
+    identity_patch_t patch = { .mqtt = blob, .mqtt_len = len };
+    int rc = identity_store_write(&patch);
+    memset(blob, 0, sizeof(blob));       /* it held a password */
+    return rc != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+node_id_result_t node_identity_clear_mqtt(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .clear_mqtt = true };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
 }
 
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],

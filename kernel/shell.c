@@ -142,9 +142,11 @@ static void cmd_help(void) {
     cprintf("  net echotest <ip> <port> [bytes] - Round-trip bytes through a TCP echo server\n");
     cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
     cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
-    cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>|disconnect]\n");
+    cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>\n");
+    cprintf("       |sub <filter>|unsub <filter>|disconnect]\n");
     cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
     cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>]\n");
+    cprintf("  mqttcfg [<ip>[:port] [sample_s] [user [pass]]|clear] - broker kept in the record\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
 #endif
@@ -609,6 +611,9 @@ static void cmd_net_echotest(const char *arg) {
     }
 }
 
+static void shell_mqtt_message(const char *topic, const uint8_t *payload,
+                               uint32_t len, bool retained, void *ctx);
+
 /* `mqtt ...` -- Q2, plan/phase26_mqtt_and_environment_sensors.md.
  *
  *   mqtt                              what the client is doing
@@ -693,6 +698,37 @@ static void cmd_mqtt(const char *arg) {
         return;
     }
 
+    if (strncmp(arg, "sub ", 4) == 0 || strncmp(arg, "unsub ", 6) == 0) {
+        bool sub = arg[0] == 's';
+        const char *a = arg + (sub ? 4 : 6);
+        while (*a == ' ') a++;
+        if (!*a) {
+            cprintf("usage: mqtt %s <topic-filter>\n", sub ? "sub" : "unsub");
+            return;
+        }
+        /* The filter is copied into a static: mqtt_subscribe() only needs it
+         * for the call, but the handler prints topics for the rest of the
+         * session and `cmd_line` is gone by then. */
+        static char filter[MQTT_TOPIC_MAX + 1];
+        strncpy(filter, a, sizeof(filter) - 1);
+        filter[sizeof(filter) - 1] = '\0';
+
+        console_interrupt_clear();
+        if (sub) mqtt_set_handler(shell_mqtt_message, NULL);
+        int rc = sub ? mqtt_subscribe(filter, 5000u) : mqtt_unsubscribe(filter, 5000u);
+        if (rc == MQTT_ERR_REFUSED) {
+            cprintf("mqtt: the broker declined \"%s\" -- usually an ACL\n", filter);
+            return;
+        }
+        if (rc != 0) { cprintf("mqtt: %s\n", mqtt_err_str(rc)); return; }
+        cprintf("mqtt: %ssubscribed %s \"%s\"\n", sub ? "" : "un",
+                sub ? "to" : "from", filter);
+        if (sub)
+            cprintf("      arrivals print as they come in, while something pumps the "
+                    "connection (`mqttd`, or another mqtt command)\n");
+        return;
+    }
+
     if (strncmp(arg, "pub ", 4) == 0) {
         const char *a = arg + 4;
         while (*a == ' ') a++;
@@ -713,7 +749,8 @@ static void cmd_mqtt(const char *arg) {
     }
 
     cprintf("usage: mqtt [selftest | connect <ip>[:port] [user [pass]] | "
-            "pub <topic> <payload> | disconnect]\n");
+            "pub <topic> <payload>\n");
+    cprintf("            | sub <filter> | unsub <filter> | disconnect]\n");
 }
 
 /* `sensor [selftest]` -- Q4, plan/phase26_mqtt_and_environment_sensors.md.
@@ -751,6 +788,24 @@ static void cmd_sensor(const char *arg) {
  * tested where there is no sensor -- which is every QEMU target, and is also
  * where a broker can be killed mid-run on purpose. It counts up from zero so
  * a test can tell one publish from the next. */
+/* Prints an inbound PUBLISH. Deliberately does nothing else: the client is
+ * inside its own lock when this runs, and the send buffer a reply would need
+ * is the one being drained. */
+static void shell_mqtt_message(const char *topic, const uint8_t *payload,
+                               uint32_t len, bool retained, void *ctx) {
+    (void)ctx;
+    cprintf("mqtt: %s%s -> ", topic, retained ? " (retained)" : "");
+    for (uint32_t i = 0; i < len && i < 200u; i++) {
+        char c = (char)payload[i];
+        /* A payload is arbitrary bytes from a stranger; printing a control
+         * character straight to a terminal is how a subscriber ends up
+         * repainting someone else's screen. */
+        cprintf("%c", (c >= 0x20 && c < 0x7f) ? c : '.');
+    }
+    if (len > 200u) cprintf("... (%lu bytes)", (unsigned long)len);
+    cprintf("\n");
+}
+
 static bool shell_fake_source(int32_t *out, void *ctx) {
     static int32_t n;
     (void)ctx;
@@ -1228,6 +1283,82 @@ static void cmd_netcfg(const char *arg) {
     if (rc != NODE_ID_OK) { cprintf("netcfg: %s\n", node_id_result_str(rc)); return; }
     cprintf("netcfg: stored -- applied at every boot, before the stack task starts\n");
     netcfg_print_report();
+}
+
+/* `mqttcfg` -- Q6: the broker this board publishes to, kept in the identity
+ * record, so a sensor node needs nothing typed after the first time.
+ *
+ *   mqttcfg                                  what is stored
+ *   mqttcfg <ip>[:port] [sample_s] [user [pass]]
+ *   mqttcfg clear
+ *
+ * Mirrors `netcfg` down to the shape of its report, because they answer the
+ * same kind of question about the same record. The password is printed as
+ * `set`, never as its value -- the same rule §6 of phase 21 applies to the
+ * device key. */
+static void mqttcfg_print_report(void) {
+    node_mqtt_t m;
+    if (!node_mqtt(&m)) {
+        cprintf("broker : none stored -- this board publishes nothing by itself\n");
+        cprintf("         set one with `mqttcfg <ip>[:port] [sample_s] [user [pass]]`\n");
+        return;
+    }
+    cprintf("broker : %u.%u.%u.%u:%u\n", m.broker[0], m.broker[1], m.broker[2],
+            m.broker[3], m.port ? m.port : (unsigned)MQTT_DEFAULT_PORT);
+    cprintf("sample : %us\n", m.sample_s ? m.sample_s : (unsigned)MQTTD_DEFAULT_SAMPLE_S);
+    cprintf("user   : %s\n", m.username[0] ? m.username : "(none)");
+    cprintf("pass   : %s\n", m.password[0] ? "set" : "(none)");
+    cprintf("prefix : %s\n", m.prefix[0] ? m.prefix : "lugalos");
+    cprintf("A stored broker is the intent to publish: mqttd starts at boot.\n");
+}
+
+static void cmd_mqttcfg(const char *arg) {
+    if (!arg || !*arg) { mqttcfg_print_report(); return; }
+
+    if (strcmp(arg, "clear") == 0) {
+        node_id_result_t rc = node_identity_clear_mqtt();
+        if (rc == NODE_ID_OK) cprintf("mqttcfg: cleared -- this board will publish nothing\n");
+        else                  cprintf("mqttcfg: %s\n", node_id_result_str(rc));
+        return;
+    }
+
+    char hostpart[32], sample[16], user[NODE_MQTT_USER_MAX + 1], pass[NODE_MQTT_PASS_MAX + 1];
+    const char *p = arg;
+    p = next_token(p, hostpart, sizeof(hostpart));
+    p = next_token(p, sample, sizeof(sample));
+    p = next_token(p, user, sizeof(user));
+    next_token(p, pass, sizeof(pass));
+
+    node_mqtt_t m;
+    memset(&m, 0, sizeof(m));
+
+    char *colon = NULL;
+    for (char *c = hostpart; *c; c++) if (*c == ':') { colon = c; break; }
+    if (colon) {
+        *colon = '\0';
+        unsigned port = 0;
+        for (const char *d = colon + 1; *d >= '0' && *d <= '9'; d++)
+            port = port * 10u + (unsigned)(*d - '0');
+        m.port = (uint16_t)port;
+    }
+    if (!ipv4_parse(hostpart, m.broker)) {
+        cprintf("usage: mqttcfg <ip>[:port] [sample_s] [user [pass]] | mqttcfg clear\n");
+        return;
+    }
+    for (const char *d = sample; *d >= '0' && *d <= '9'; d++)
+        m.sample_s = (uint16_t)(m.sample_s * 10u + (unsigned)(*d - '0'));
+    strncpy(m.username, user, sizeof(m.username) - 1);
+    strncpy(m.password, pass, sizeof(m.password) - 1);
+
+    if (m.password[0] && !m.username[0]) {
+        cprintf("mqttcfg: MQTT 3.1.1 has no password without a username\n");
+        return;
+    }
+
+    node_id_result_t rc = node_identity_set_mqtt(&m);
+    if (rc != NODE_ID_OK) { cprintf("mqttcfg: %s\n", node_id_result_str(rc)); return; }
+    cprintf("mqttcfg: stored -- mqttd starts at every boot from here on\n");
+    mqttcfg_print_report();
 }
 
 static void cmd_wlan(const char *arg) {
@@ -2710,6 +2841,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "mqttcfg") == 0) {
+        cmd_mqttcfg(NULL);
+        return;
+    } else if (strncmp(cmd_line, "mqttcfg ", 8) == 0) {
+        cmd_mqttcfg(&cmd_line[8]);
         return;
     } else if (strcmp(cmd_line, "mqttd") == 0) {
         cmd_mqttd("");

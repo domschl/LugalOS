@@ -52,6 +52,7 @@ FIELD_WLAN_SSID = 4
 FIELD_WLAN_PSK = 5
 FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
 FIELD_GRANTS = 7    # the peer grants list, as the text fs/9p.c parses
+FIELD_MQTT = 8      # where this node publishes; see build_mqtt_blob() below
 
 WLAN_PSK_LEN = 32  # WPA2's PSK is always 256 bits -- kernel/identity.h's NODE_WLAN_PSK_LEN
 
@@ -118,6 +119,60 @@ def _wpa2_selftest() -> int:
 
     print("WPA2_PSK_SELFTEST_OK" if failures == 0 else f"WPA2_PSK_SELFTEST_FAIL ({failures} failed)")
     return failures
+
+
+def build_mqtt_blob(spec: str, sample_s: int = 0) -> bytes:
+    """IP[:PORT][,USER[,PASS]] -> the FIELD_MQTT layout.
+
+    Must match kernel/identity.c's mqtt_serialise() exactly; the layout is
+    documented once, beside the field tag in kernel/include/kernel/idstore.h:
+
+        ip[4]  port_be16  sample_be16  keepalive_be16
+        u8 len + username
+        u8 len + password
+        u8 len + topic prefix
+
+    Written out byte by byte rather than with struct.pack of a whole record,
+    for the reason the kernel side spells out: this is read on a device of a
+    different word size, so padding and endianness are not allowed to be
+    anybody's compiler's opinion.
+    """
+    host, _, creds = spec.partition(",")
+    ip_str, _, port_str = host.partition(":")
+
+    try:
+        quads = bytes(int(o) for o in ip_str.split("."))
+    except ValueError:
+        sys.exit(f"--mqtt: {ip_str!r} is not a dotted quad")
+    if len(quads) != 4 or any(o > 255 for o in quads):
+        sys.exit(f"--mqtt: {ip_str!r} is not a dotted quad")
+    if quads == b"\0\0\0\0":
+        # The same refusal kernel/identity.c makes: a board that stored this
+        # would retry against nothing, forever.
+        sys.exit("--mqtt: 0.0.0.0 is not a broker address")
+
+    port = int(port_str) if port_str else 1883
+    if not (1 <= port <= 65535):
+        sys.exit(f"--mqtt: {port} is not a port")
+
+    user, _, password = creds.partition(",")
+    if password and not user:
+        # MQTT 3.1.1 has no password without a username, and a broker's
+        # rejection of one is far less clear than this line.
+        sys.exit("--mqtt: MQTT 3.1.1 has no password without a username")
+    for name, value, cap in (("username", user, 63), ("password", password, 63)):
+        if len(value.encode("utf-8")) > cap:
+            sys.exit(f"--mqtt: the {name} is longer than {cap} bytes")
+
+    def lp(text: str) -> bytes:
+        raw = text.encode("utf-8")
+        return bytes([len(raw)]) + raw
+
+    return (quads
+            + port.to_bytes(2, "big")
+            + int(sample_s).to_bytes(2, "big")
+            + (0).to_bytes(2, "big")        # keepalive: 0 means the client default
+            + lp(user) + lp(password) + lp(""))
 
 
 def build_record(fields: list[tuple[int, bytes]]) -> bytes:
@@ -188,6 +243,16 @@ def main() -> int:
                     help="the address this board comes up on, e.g. 192.168.1.50/255.255.255.0/192.168.1.1. "
                          "Stored in the record rather than in a boot script, so the filesystem image stays "
                          "identical on every board; applied when the network stack starts")
+    ap.add_argument("--mqtt", metavar="IP[:PORT][,USER[,PASS]]",
+                    help="the MQTT broker this board publishes to, e.g. "
+                         "192.168.1.10:1883,sensors,secret. A stored broker is the intent to "
+                         "publish: mqttd starts at every boot and needs nothing typed. "
+                         "The password is stored in the clear, like the WLAN PSK -- and it "
+                         "crosses the LAN in the clear too, so give each node its own and "
+                         "one that means nothing elsewhere.")
+    ap.add_argument("--mqtt-sample", metavar="SECONDS", type=int, default=0,
+                    help="how often each measurement is sampled (default 5). Publishing is "
+                         "governed by each measurement's own rule, not by this.")
     ap.add_argument("--key", metavar="HEX",
                     help="this node's device key, as hex (I4, §2). 16-64 bytes. "
                          "Never printed back -- only its fingerprint is.")
@@ -326,14 +391,29 @@ def main() -> int:
             sys.exit("--ipv4: a zero netmask puts every destination off-link")
         fields.append((FIELD_IPV4, quads))
 
+    if args.mqtt:
+        fields.append((FIELD_MQTT, build_mqtt_blob(args.mqtt, args.mqtt_sample)))
+
     record = build_record(fields)
     with open(args.output, "wb") as f:
         f.write(record)
 
+    if args.mqtt:
+        _host = args.mqtt.split(",")[0]
+        _user = (args.mqtt.split(",") + [""])[1]
+        mqtt_note = f" mqtt={_host}" + (f" user={_user!r}" if _user else "")
+    else:
+        mqtt_note = ""
+
     msg = f"wrote {args.output}: name={args.name!r} uid={uid.hex()}"
     if psk_hex:
         msg += f" wlan_ssid={args.wlan_ssid!r} wlan_psk={psk_hex}"
+    msg += mqtt_note
     print(msg)
+    if args.mqtt and len(args.mqtt.split(",")) > 2:
+        # Named, never shown -- the same rule the device key follows.
+        print("  mqtt password : stored (in the clear, as the record's own "
+              "documentation says)")
 
     if devkey is not None:
         # The fingerprint, never the key -- matching what the board's own

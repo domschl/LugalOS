@@ -100,6 +100,27 @@ typedef enum {
                                     * Secret-adjacent rather than secret: the keys in it are
                                     * bearer tokens for *other* nodes, so it is covered by the
                                     * same never-served guard as the rest of the record. */
+    IDSTORE_FIELD_MQTT      = 8,  /* instance scope, secret-bearing (Q6,
+                                    * plan/phase26_mqtt_and_environment_sensors.md): where this
+                                    * node publishes, and as whom.
+                                    *
+                                    *   ip[4]  port_be16  sample_be16  keepalive_be16
+                                    *   u8 len + username
+                                    *   u8 len + password
+                                    *   u8 len + topic prefix
+                                    *
+                                    * **One field, for IDSTORE_FIELD_IPV4's reason**: a broker
+                                    * address without its port and credentials is not a
+                                    * configuration, and separate fields would make a
+                                    * half-written one representable.
+                                    *
+                                    * It holds a password **in the clear**, like the WLAN PSK
+                                    * beside it. That is a property of an unencrypted store on
+                                    * a device someone can pick up, phase 21's "what it does
+                                    * not defend" already covers it, and net/mqtt.h says the
+                                    * same password crosses the LAN in the clear anyway -- so
+                                    * the record is not the weak link. `mqttcfg` and
+                                    * /proc/node print it as `set`, never as its value. */
 } idstore_field_type_t;
 
 typedef struct {

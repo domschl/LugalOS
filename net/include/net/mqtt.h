@@ -111,6 +111,39 @@ uint32_t mqtt_selftest(bool report);
  * 0, or a negative MQTT_ERR_* below. */
 int mqtt_connect(const mqtt_config_t *cfg, uint32_t timeout_ms);
 
+/* --- Q3: the inbound half ---
+ *
+ * A sensor node that only publishes is a node nobody can talk to. Subscribing
+ * is what lets one be asked a question -- and it is also the only place this
+ * client parses bytes a broker chose, which is why §3.5's bounds are part of
+ * the contract rather than an implementation detail:
+ *
+ *   * a packet larger than MQTT_RX_MAX is **counted and its bytes discarded**,
+ *     not dropped. Dropping without consuming leaves the stream
+ *     desynchronised at a packet boundary forever, which is the classic way a
+ *     small MQTT client wedges;
+ *   * a malformed Remaining Length closes the connection, because there is no
+ *     resynchronising a stream whose framing is wrong and pretending
+ *     otherwise is how a parser starts on whatever follows.
+ *
+ * QoS 0 only, in both directions. We never request more, so a broker has no
+ * reason to send PUBREC/PUBREL/PUBCOMP, and receiving one is a protocol
+ * error rather than something to implement. */
+
+/* Called on netsrv's... no: on whichever task is pumping mqtt_service() when
+ * a PUBLISH arrives. Keep it short and do not publish from inside it -- the
+ * client is already inside its own lock, and the send buffer it would need is
+ * the one being drained. Copy what you need and act later. */
+typedef void (*mqtt_message_fn)(const char *topic, const uint8_t *payload,
+                                uint32_t len, bool retained, void *ctx);
+void mqtt_set_handler(mqtt_message_fn fn, void *ctx);
+
+/* Subscribes at QoS 0 and waits for the SUBACK. Returns 0, or a negative
+ * MQTT_ERR_*; MQTT_ERR_REFUSED when the broker granted 0x80, which means it
+ * declined this filter (an ACL, usually) rather than that anything broke. */
+int mqtt_subscribe(const char *filter, uint32_t timeout_ms);
+int mqtt_unsubscribe(const char *filter, uint32_t timeout_ms);
+
 /* Publishes at QoS 0. `len` may be 0 (an empty payload is legal and is how a
  * retained message is cleared). Returns 0 or a negative MQTT_ERR_*. */
 int mqtt_publish(const char *topic, const void *payload, uint32_t len, bool retain);
