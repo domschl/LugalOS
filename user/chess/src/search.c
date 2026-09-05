@@ -95,6 +95,7 @@ typedef struct {
     MoveList   *pv;                  // per-ply, MAX_SEARCH_PLYS entries
     CaptureList *q;                  // per-ply, MAX_SEARCH_PLYS entries
     long        nodes;               // this hart's own node count
+    bool        is_helper;           // must not touch the console: see check_up_time()
     uint32_t    pool_pages;          // what pv/q were allocated as
     bool        heap_allocated;      // is this struct itself from palloc?
 } search_state_t;
@@ -506,8 +507,26 @@ static long get_time_ms(void) {
 
 static void check_up_time(void) {
     if ((SS->nodes & 2047) == 0) {
+        /* The UI belongs to the primary, and a helper polling it is both
+         * wrong and slow (X8b follow-up).
+         *
+         * search_poll_stop_callback() reaches console_interrupt_requested()
+         * -> console_pump(), and on the chess persona tm1638_get_key() as
+         * well -- single-slot chan endpoints owned by driver tasks pinned to
+         * hart 0. Every 2048 nodes, from both cores, that is the one place
+         * in this search where the two harts genuinely contend, and it is a
+         * message round trip rather than a lock.
+         *
+         * It is also incorrect. console_interrupt_clear() from the helper
+         * can swallow a Ctrl-C the primary needed to see, and
+         * tm1638_get_key()'s debounce loop would park the helper in
+         * time_delay_us(10000) waiting for a key release that is none of its
+         * business.
+         *
+         * The helper stops the same way it always did -- on stop_search,
+         * which the primary sets. */
         extern void search_poll_stop_callback(void);
-        search_poll_stop_callback();
+        if (!SS->is_helper) search_poll_stop_callback();
         if (max_search_time_ms != -1) {
             if (get_time_ms() - start_search_time_ms >= max_search_time_ms) {
                 stop_search = true;
@@ -832,6 +851,7 @@ long search_helper_nodes(void) { return g_helper_nodes; }
 
 static void search_helper_body(void *arg) {
     (void)arg;
+    SS->is_helper = true;
     SS->nodes = 0;
     for (int d = 3; d <= g_helper_depth && !stop_search; d++) {
         (void)pv_search(g_helper_pos, d, 0, -INFINITY_VALUE, INFINITY_VALUE, true);
@@ -939,6 +959,7 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
      * version of this reported the helper's node count as exactly the total,
      * which is the giveaway. nodes_searched is set from the primary's own
      * count at the end, and the helper's is reported separately. */
+    SS->is_helper = false;   /* whoever calls search_position() is the primary */
     SS->nodes = 0;
     nodes_searched = 0;
     g_helper_nodes = 0;

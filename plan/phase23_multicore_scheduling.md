@@ -848,6 +848,43 @@ pools. Net static RAM **+32 bytes**.
 chess persona. On two cores the helper is asserted to have run — a zero node
 count is what a silent fallback to one core looks like, and it fails.
 
+*Asked afterwards: would a reader-writer lock help the eval and score-cache
+paths? No, and the reason is that there is no lock there to improve.*
+`evaluation.c` has no mutable statics at all — it is a pure function of the
+position. The whole engine takes no `spin_lock`, no `ylock_acquire` and no
+`irq_save` anywhere. The score cache is the TT, and it is lock-free by
+construction: a probe is a load, an XOR and a compare. An RW lock would
+*add* an atomic read-modify-write per probe and make the lock word a
+contended line ping-ponging between the two cores — which is exactly the
+starvation mechanism X7 spent four hardware runs diagnosing. It would be a
+regression, not an optimisation.
+
+The one genuinely shared cost in the search turned out not to be a lock at
+all. `check_up_time()` runs every 2048 nodes and called
+`search_poll_stop_callback()` → `console_interrupt_requested()` →
+`console_pump()`, plus `tm1638_get_key()` on the chess persona — single-slot
+chan endpoints owned by driver tasks pinned to hart 0, hit from *both* cores.
+It was also incorrect: `console_interrupt_clear()` from the helper can
+swallow a Ctrl-C the primary needed, and `tm1638_get_key()`'s debounce loop
+would park the helper in `time_delay_us(10000)` waiting for a key release
+that is none of its business. The helper no longer polls the UI; it stops on
+`stop_search` as it always did.
+
+**Measured effect: none, within noise.** RP2350, depth 7: before 9871 →
+6173 ms (1.60x), after 9287 → 5924 ms (1.57x), each a median of three
+consistent runs. The change stays because it is correct, not because it is
+faster — and saying so is the point, since the tempting write-up is the one
+where the fix pays for itself.
+
+What actually bounds this is algorithmic and was already measured: Lazy SMP
+is redundant by design — both cores search the same tree and the only gain is
+TT reuse, which puts ~1.6-1.7x near the practical ceiling for two threads —
+and TT capacity, where 32 KB → 1 MB moved QEMU from 1.22x to 1.46x. An RW
+lock addresses neither. It would be the right tool for a read-mostly *kernel*
+structure (the device registry, the mount table), but nothing there has been
+measured as contended at two harts, and this project's own rule is to build
+the mechanism when there is a problem it solves.
+
 
 
 
