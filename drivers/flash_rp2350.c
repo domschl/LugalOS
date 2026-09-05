@@ -39,6 +39,7 @@
 #include "drivers/flash_rp2350.h"
 #include "arch/rp2350_bootrom.h"
 #include "kernel/printk.h"
+#include "kernel/hart.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 
@@ -129,6 +130,24 @@ int flash_rp2350_write_sector(uint32_t flash_offs, const void *data) {
         return -1;
     }
 
+    /* X7: get the *other* core out of the XIP window first.
+     *
+     * Masking interrupts below protects this core. It does nothing for core
+     * 1, which -- once it joins the scheduler (phase 23 X7) -- is executing
+     * flash-resident code at this instant, and would fetch into a window
+     * that is about to stop answering. The failure is a hung board with
+     * nothing left running to report it, which is why this is a handshake
+     * with an acknowledgement rather than a delay.
+     *
+     * Refused, not risked, on timeout. A write that does not happen is an
+     * error a caller can report; a write that proceeds into a live core 1
+     * is a board that stops mid-erase. No-ops when core 1 is not running,
+     * and on every non-RP2350 target. */
+    if (!smp_flash_park_request()) {
+        printk("[Flash] core 1 did not park; refusing to turn XIP off\n");
+        return -1;
+    }
+
     /* Interrupts off across the whole operation, restored exactly as found.
      * csrrci returns the previous mstatus, so a caller that already had them
      * disabled stays that way. */
@@ -140,6 +159,8 @@ int flash_rp2350_write_sector(uint32_t flash_offs, const void *data) {
     if (saved & 0x8) {
         __asm__ __volatile__("csrsi mstatus, 0x8");
     }
+
+    smp_flash_park_release();
     return 0;
 }
 

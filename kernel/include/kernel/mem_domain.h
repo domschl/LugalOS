@@ -77,6 +77,11 @@ typedef struct mem_domain {
 
 void mem_domain_init(mem_domain_t *d);
 
+/* How many times a *restricted* domain has been activated on `hart` (X2).
+ * Evidence, not a metric: it is what lets a test say that isolation was
+ * exercised on more than one hart rather than merely not broken on one. */
+uint32_t mem_domain_activations(unsigned hart);
+
 /* Returns 0, or -1 if the domain is full or the range is not a
  * power-of-two-sized, self-aligned block of at least 16 bytes. Ordering
  * matters: PMP resolves an address against the lowest-numbered matching

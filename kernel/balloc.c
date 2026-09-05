@@ -1,4 +1,5 @@
 #include "kernel/balloc.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include <string.h>
@@ -25,6 +26,15 @@ _Static_assert((NUM_LEAVES & (NUM_LEAVES - 1u)) == 0,
 static uint16_t  g_longest[NODE_COUNT];
 static uintptr_t g_arena_base;
 static bool      g_ready;
+
+/* Guards g_longest[] -- the buddy tree -- and nothing else (S5).
+ *
+ * Converted despite having no runtime caller today outside ballocdemo:
+ * that is exactly the moment to do it. This is a general allocator handing
+ * out self-aligned, PMP-usable blocks, so the next caller is a driver or a
+ * loader, and it will not think about locking any more than the three
+ * subsystems that already had to have it retrofitted did. */
+static spinlock_t g_balloc_lock;
 
 static inline uint32_t node_left(uint32_t i)   { return 2u * i + 1u; }
 static inline uint32_t node_right(uint32_t i)  { return 2u * i + 2u; }
@@ -92,7 +102,25 @@ void *balloc_alloc(uint32_t size) {
      * check above already rejected anything that could overflow here. */
     uint32_t leaves_needed = next_pow2(size) / BALLOC_MIN_BLOCK;
 
-    if (g_longest[0] < leaves_needed) return NULL; /* not enough space anywhere */
+    /* The lock starts here, not at the top of the function (S5,
+     * plan/phase22_smp_locking_foundation.md). Everything above it either
+     * touches nothing shared or is balloc_reserve(), which calls
+     * palloc_pages_aligned() -- itself lock-taking since S4 -- and printk(),
+     * which can block. A spinlock_t across either would be the deadlock
+     * kernel/lock.h warns about; across both it would be two.
+     *
+     * From here down is pure tree arithmetic over g_longest[] with no call
+     * out of it, which is the same shape that made palloc's own conversion
+     * straightforward. The check and the descent must be one indivisible
+     * step: g_longest[0] saying there is room, and the descent that acts on
+     * it, are exactly the read-then-act pair a second hart can invalidate
+     * between. */
+    uintptr_t bflags = spin_lock_irqsave(&g_balloc_lock);
+
+    if (g_longest[0] < leaves_needed) {
+        spin_unlock_irqrestore(&g_balloc_lock, bflags);
+        return NULL; /* not enough space anywhere */
+    }
 
     /* Descend from the root, always toward a child with enough room, until
      * the subtree size matches the request exactly -- that node IS the
@@ -114,7 +142,13 @@ void *balloc_alloc(uint32_t size) {
         g_longest[index] = (uint16_t)(l > r ? l : r);
     }
 
+    spin_unlock_irqrestore(&g_balloc_lock, bflags);
+
     void *ptr = (void *)(g_arena_base + (uintptr_t)offset_leaves * BALLOC_MIN_BLOCK);
+    /* Zeroed outside the lock, for palloc_pages()'s reason: the block is
+     * already claimed, so nobody else can be looking at it, and holding a
+     * spinlock across a memset of up to ARENA_BYTES would be the longest
+     * critical section in the kernel by a wide margin. */
     memset(ptr, 0, (size_t)node_size * BALLOC_MIN_BLOCK);
     return ptr;
 }
@@ -134,6 +168,12 @@ void balloc_free(void *ptr) {
      * so it still holds its original nonzero init value; that is what lets
      * this loop recognise "not yet at the allocated node" without being
      * told the block's size. */
+    /* The whole walk-up-and-merge is one critical section: the "find the
+     * zeroed node" search and the merge that acts on it read and write the
+     * same tree, and a concurrent alloc between them would be freeing
+     * against a shape that no longer exists. */
+    uintptr_t bflags = spin_lock_irqsave(&g_balloc_lock);
+
     uint32_t index = offset_leaves + NUM_LEAVES - 1u;
     uint32_t node_size;
     for (node_size = 1u; g_longest[index] != 0; index = node_parent(index)) {
@@ -141,7 +181,7 @@ void balloc_free(void *ptr) {
         /* Reached the root without ever finding a zero: this address was
          * never allocated (bad pointer, or a double free). Refuse rather
          * than wrap parent(0) into a huge index. */
-        if (index == 0) return;
+        if (index == 0) { spin_unlock_irqrestore(&g_balloc_lock, bflags); return; }
     }
     g_longest[index] = (uint16_t)node_size;
 
@@ -154,6 +194,7 @@ void balloc_free(void *ptr) {
         g_longest[index] = (uint16_t)((l + r == node_size) ? node_size
                                                             : (l > r ? l : r));
     }
+    spin_unlock_irqrestore(&g_balloc_lock, bflags);
 }
 
 void balloc_stats(uint32_t *arena_bytes, uint32_t *largest_free_bytes) {
@@ -169,6 +210,14 @@ void balloc_stats(uint32_t *arena_bytes, uint32_t *largest_free_bytes) {
          * reservation itself can still fail if the heap cannot place an
          * ARENA_BYTES-aligned run -- and balloc_alloc() says so on the spot
          * when that happens. */
+        /* Deliberately not under g_balloc_lock, and the distinction from
+         * palloc_stats() -- which S5 *did* lock -- is the point. That one
+         * walks the whole bitmap, so an unlocked read can compose a figure
+         * for a heap state that never existed. This reads one aligned
+         * 16-bit word, which cannot tear, so the only thing missing exclusion
+         * costs here is freshness: the answer was true when it was read.
+         * Locking it would trade a real (if small) cost on a diagnostic for
+         * no property anyone can name. */
         if (!g_ready) *largest_free_bytes = ARENA_BYTES;
         else *largest_free_bytes = (uint32_t)g_longest[0] * BALLOC_MIN_BLOCK;
     }

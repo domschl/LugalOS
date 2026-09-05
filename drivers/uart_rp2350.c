@@ -15,10 +15,12 @@
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
+#include "kernel/hart.h"
 #include "kernel/palloc.h"
 #include "kernel/time.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
 #include "kernel/mem_domain.h"
@@ -286,7 +288,7 @@ static void heartbeat_task_body(void *arg) {
  * loses its visual heartbeat, the same as if this milestone had not
  * landed yet. */
 int heartbeat_task_start(void) {
-    int pid = task_create_sized("heartbeat", heartbeat_task_body, NULL, 1);
+    int pid = task_create_driver("heartbeat", heartbeat_task_body, NULL, 1);
     if (pid < 0) return -1;
     task_set_priority(pid, TASK_PRIO_NORMAL);
     return pid;
@@ -554,7 +556,11 @@ static void uart_hw_putc(char c) {
 
     uintptr_t flags = irq_save();
     if (REG(UART0_FR) & UART0_FR_TXFF) {
-        if (g_tx_waiter < 0) {
+        /* sched_has_task(): a hart with no task cannot be the waiter --
+         * task_block() would have nothing to block, and the slot would
+         * hold -1, which reads as "free". It polls instead, which is
+         * the branch already here for the other-waiter case. */
+        if (g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
             REG(UART0_IMSC) |= UART0_IMSC_TXIM;
             task_block();
@@ -792,7 +798,7 @@ static void uart_task_body(void *arg) {
  * fatal if it fails: every facade function below falls back to direct
  * hardware access whenever uart_task_alive() is false. */
 int uart_task_start(void) {
-    int pid = task_create_sized("uart", uart_task_body, NULL, 1);
+    int pid = task_create_driver("uart", uart_task_body, NULL, 1);
     if (pid < 0) {
         printk("[UART] Could not start the uart task; console stays on direct hardware access.\n");
         return -1;
@@ -904,18 +910,53 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * it, a task that finds the batch full, releases the lock to flush, and
  * gets preempted before re-appending would let a second task refill the
  * just-flushed batch in the gap). */
-static char     g_tx_batch[UART_TX_BATCH_CAP];
-static uint32_t g_tx_batch_len;
+/* One batch per hart (phase 23 X7).
+ *
+ * It was a single shared buffer, and on two cores that spliced messages
+ * together character by character: printk_unlock() releases the printk lock
+ * and then flushes, so the other core acquires the lock and starts appending
+ * into the same buffer in between, and this core's flush picks up both.
+ * Observed on RP2350 as core 0 and core 1 interleaving mid-word.
+ *
+ * The obvious fix -- flush while still holding the printk lock -- trades one
+ * bug for a worse one: the flush blocks in chan_call() waiting for the uart
+ * task, so printk ownership would be held across that wait, and anything the
+ * uart task itself needs printk for would deadlock against it. Splitting the
+ * buffer removes the sharing instead of serialising it, and no lock is held
+ * across a block. Costs MAX_HARTS x 256 bytes.
+ *
+ * The lock stays: it still guards each hart's own buffer against preemption
+ * on that hart, which is what it was added for. */
+static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
+static uint32_t g_tx_batch_len[MAX_HARTS];
+/* Guards g_tx_batch/g_tx_batch_len (X2,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * X2 pins every driver task to hart 0, and phase 22's S5 left the UART
+ * paths unconverted on the strength of that. Checking the claim rather than
+ * inheriting it -- which is what X2 is for -- shows it covers less than S5
+ * assumed. It is true of the *waiter* path below: uart_hw_putc_blocking()
+ * is reached only from the driver task itself, except on the fallback taken
+ * when that task is absent or the p9share demux owns the wire.
+ *
+ * It is NOT true of this batch. uart_flush() and uart_putc() run in the
+ * context of whoever is printing -- printk_unlock() calls the first, every
+ * console write the second -- so on two harts two printing tasks touch this
+ * buffer at once, and irq_save() never covered that. Same shape as
+ * usb_cdc_putc(), and found the same way: by asking who actually calls it
+ * rather than which file it lives in. */
+static spinlock_t g_tx_batch_lock;
 
 void uart_flush(void) {
     char local[UART_TX_BATCH_CAP];
-    uintptr_t flags = irq_save();
-    uint32_t len = g_tx_batch_len;
+    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    unsigned h = hart_id();
+    uint32_t len = g_tx_batch_len[h];
     if (len > 0) {
-        memcpy(local, g_tx_batch, len);
-        g_tx_batch_len = 0;
+        memcpy(local, g_tx_batch[h], len);
+        g_tx_batch_len[h] = 0;
     }
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
     if (len == 0) return;
 
     if (uart_demux_is_enabled() || !uart_task_alive()) {
@@ -964,14 +1005,18 @@ void uart_flush(void) {
 }
 
 void uart_putc(char c) {
-    uintptr_t flags = irq_save();
-    while (g_tx_batch_len >= UART_TX_BATCH_CAP) {
-        irq_restore(flags);
+    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    while (g_tx_batch_len[hart_id()] >= UART_TX_BATCH_CAP) {
+        /* Released around uart_flush(), which takes this same lock --
+         * spinlock_t is not re-entrant, and the re-check on re-acquire is
+         * what makes dropping it safe (the existing comment above the batch
+         * explains why the re-check was already required). */
+        spin_unlock_irqrestore(&g_tx_batch_lock, flags);
         uart_flush();
-        flags = irq_save();
+        flags = spin_lock_irqsave(&g_tx_batch_lock);
     }
-    g_tx_batch[g_tx_batch_len++] = c;
-    irq_restore(flags);
+    g_tx_batch[hart_id()][g_tx_batch_len[hart_id()]++] = c;
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
 }
 
 void uart_debug_putc(char c) {

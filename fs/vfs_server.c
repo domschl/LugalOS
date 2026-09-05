@@ -21,6 +21,7 @@
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
 #include "kernel/chan.h"
+#include "kernel/hart.h"
 #include "kernel/palloc.h"
 #include "kernel/meminfo.h"
 #include "arch/elf.h"
@@ -452,7 +453,7 @@ static uint32_t append_col(char *buf, uint32_t used, uint32_t cap,
     return used;
 }
 
-static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
+static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t cap) {
     if (!rel || !buf || cap == 0) return -1;
     uint32_t used = 0;
 
@@ -479,8 +480,8 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
          * such pattern hunted down and loosened. Found the hard way (a
          * QEMU rv64 run that looked like a hang was actually 3 full
          * retries failing the same two now-broken regexes). */
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol  Stack\n");
-        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----  ---------\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "PID  State    Name          Exit   Isol  Hart  Stack\n");
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "---  -------  ------------  ----   ----  ----  ---------\n");
         int pid, state;
         const char *tname;
         long status;
@@ -507,6 +508,17 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
             used = append_col(buf, used, cap, exitbuf, 7);
             used = append_col(buf, used, cap,
                               has_domain ? mem_domain_backend_name() : "-", 6);
+            /* X2: which hart this task may run on. "any" is the default and
+             * the common case; a number means it is pinned, which for a
+             * driver task is load-bearing rather than decorative -- several
+             * of phase 22's S5 dispositions rest on it. */
+            {
+                char hbuf[8];
+                int aff = task_affinity(pid);
+                if (aff < 0) ksnprintf(hbuf, sizeof(hbuf), "any");
+                else         ksnprintf(hbuf, sizeof(hbuf), "%d", aff);
+                used = append_col(buf, used, cap, hbuf, 6);
+            }
             /* Stack high-water against the size it was given (§6,
              * plan/phase15_memory_reclamation.md). "-" for the boot task,
              * whose stack is the linker's and is reported by the Boot Stack
@@ -926,6 +938,77 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
         return (int)used;
+    } else if (strcmp(rel, "cpuinfo") == 0) {
+        /* S0, plan/phase22_smp_locking_foundation.md §6.2: which hart is
+         * executing, read back from the record `tp` points at.
+         *
+         * This exists because the claim it reports is not one the rest of
+         * the suite can make. Every other test here passes just as well with
+         * a kernel that cannot identify its own hart at all -- that was true
+         * of every build before S0. The specific thing worth showing is that
+         * the answer is available *in S-mode*, where the obvious
+         * implementation (`csrr mhartid`) traps as an illegal instruction
+         * because arch/riscv/common/entry.S performs the M->S transition
+         * itself and leaves no machine-mode CSR reachable. If this file
+         * renders on the RV64 build, that problem is solved; if S0 were
+         * wrong in that particular way, the build would not get this far
+         * without a fault.
+         *
+         * `consistent` is the assertion rather than the decoration. It walks
+         * back from the id in the record to the array slot that id names and
+         * checks the pointer `tp` actually holds is that slot -- so a `tp`
+         * pointing at the right kind of thing but the wrong entry, which is
+         * exactly the failure mode a second hart would introduce, shows as
+         * `no` rather than as a plausible-looking id. */
+        const hart_t *self = hart_self();
+        unsigned id = hart_id();
+        bool consistent = (id < MAX_HARTS) && (&g_harts[id] == self);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "hart:        %u\n", id);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "harts_max:   %d\n", MAX_HARTS);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "harts_online: %u\n", smp_harts_online());
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "record:      0x%lx\n", (unsigned long)(uintptr_t)self);
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "consistent:  %s\n", consistent ? "yes" : "no");
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "priv:        %s\n",
+#if defined(CONFIG_MODE_S)
+            "S"
+#else
+            "M"
+#endif
+            );
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "xlen:        %d\n", (int)(__riscv_xlen));
+        /* X2: restricted-domain activations per hart. Zero for hart 1 on a
+         * single-hart build, and the point of reporting it is that a test
+         * can tell "isolation was never exercised elsewhere" apart from
+         * "isolation held elsewhere". */
+        for (unsigned h = 0; h < MAX_HARTS; h++) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "domains_hart%u: %u\n", h, mem_domain_activations(h));
+        }
+#if defined(CONFIG_BOARD_RP2350)
+        /* X3 probe: did a secondary core execute this image? See
+         * linker/rp2350.ld's .smpmark. 0x51C0DE01 means core 1 reached
+         * _reset_handler; anything else means it never ran our code -- it is
+         * still parked in the bootrom, and waking it needs the SIO-FIFO
+         * launch sequence rather than a stack. */
+        {
+            extern uint32_t _smp_mark;
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "core1_probe: 0x%lx\n", (unsigned long)_smp_mark);
+        {
+            extern uint32_t _smp_mark0;
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "core0_probe: 0x%lx\n", (unsigned long)_smp_mark0);
+        }
+        }
+#endif
+        return (int)used;
     } else if (strcmp(rel, "config") == 0) {
         /* Board config (K3, plan/phase7_kernel_config.md): the generated
          * platform-default and pin-map values actually baked into this
@@ -1268,9 +1351,38 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
     return -1;
 }
 
+/* Says so when the answer did not fit, instead of handing back a plausible
+ * prefix (X5, plan/phase23_multicore_scheduling.md).
+ *
+ * proc_buf is a fixed 896 bytes and several of these files are generated
+ * from tables that grow: /proc/ps runs out at about thirteen tasks against
+ * a MAX_TASKS of 24, and /proc/config has already come within 105 bytes of
+ * the limit once (see proc_buf's own comment). Every producer above stops
+ * cleanly at `cap`, which is safe and completely silent -- the reader gets a
+ * table that simply ends, with no way to tell a short system from a clipped
+ * one. Enlarging the buffer is the wrong trade at 8 handles on a 264 KB
+ * part; being honest about the edge costs 18 bytes of text.
+ *
+ * Stamped over the tail rather than appended, because by definition there is
+ * no room left to append into. */
+static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
+    int n = vfs_generate_proc_content_raw(rel, buf, cap);
+    if (n < 0) return n;
+
+    static const char mark[] = "\n-- truncated --\n";
+    const uint32_t mlen = (uint32_t)sizeof(mark) - 1;
+    if ((uint32_t)n >= cap - 1 && cap > mlen + 1) {
+        uint32_t at = cap - 1 - mlen;
+        for (uint32_t i = 0; i < mlen; i++) buf[at + i] = mark[i];
+        buf[cap - 1] = '\0';
+        n = (int)(cap - 1);
+    }
+    return n;
+}
+
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif

@@ -1,4 +1,5 @@
 #include "kernel/ticker.h"
+#include "kernel/hart.h"
 #include "kernel/printk.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
@@ -9,12 +10,29 @@
 static bool     g_enabled;
 static uint32_t g_hz;
 static uint64_t g_measured_hz;   /* 0 = the nominal TICK_HZ was used */
-static uint64_t g_ticks;
+/* Per-hart, not global (X1/X4, plan/phase23_multicore_scheduling.md).
+ *
+ * Every reader asks the same question -- "how many times was *I* preempted"
+ * -- and none of them wants a system-wide total: kernel/shell.c's priostress
+ * and preemption measurements, and kernel/lock.c's check that an irqsave-held
+ * spinlock really masks interrupts.
+ *
+ * That last one is what forced the decision. It holds a spinlock with
+ * interrupts off on this hart and asserts the tick counter is frozen; with a
+ * single global counter the *other* hart's timer keeps incrementing it, so
+ * the check failed on a kernel whose masking was perfectly correct. S5
+ * (plan/phase22 §S5) recorded g_ticks as racy-on-two-harts and handed the
+ * choice between "one atomic counter" and "one per hart" to X4. X1 answered
+ * it by needing the answer: per hart, because that is what the question
+ * means. A global count of ticks across all harts is a number nothing in
+ * this tree has ever wanted. */
+static uint64_t g_ticks[MAX_HARTS];
 static uint64_t g_interval;   /* in whatever unit the target's clock counts */
 
 bool     ticker_enabled(void) { return g_enabled; }
-uint64_t ticker_ticks(void)   { return g_ticks; }
-void     ticker_count_tick(void) { g_ticks++; }
+
+uint64_t ticker_ticks(void)   { return g_ticks[hart_id()]; }
+void     ticker_count_tick(void) { g_ticks[hart_id()]++; }
 
 /* --- RP2350: SIO mtime/mtimecmp -------------------------------------- */
 #if defined(CONFIG_BOARD_RP2350)
@@ -169,6 +187,30 @@ static bool arch_ticker_init(void) {
 void ticker_next(void) {
     if (!g_enabled) return;
     set_deadline(now() + g_interval);
+}
+
+/* Arms the calling hart's own preemption deadline (X1,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * Split out of ticker_init() because those two do different kinds of work.
+ * ticker_init() programs shared hardware and *measures* the tick rate -- on
+ * RP2350 it enables a chip-wide tick generator and calibrates it against a
+ * busy loop, which a second hart must never re-run (S5's disposition,
+ * plan/phase22 §S5). What is genuinely per-hart is only the comparator and
+ * the interrupt-enable bit, which is all this does, reusing the interval the
+ * primary already established.
+ *
+ * X4 owns the RP2350 half of this: whether each Hazard3 core has its own
+ * mtimecmp is a datasheet question, and until it is answered this is
+ * QEMU-only. */
+void ticker_arm_this_hart(void) {
+    if (!g_enabled) return;
+    set_deadline(now() + g_interval);
+#if defined(CONFIG_MODE_S)
+    set_csr(sie, 1UL << 5);   /* STIE */
+#else
+    set_csr(mie, 1UL << 7);   /* MTIE */
+#endif
 }
 
 bool ticker_init(uint32_t hz) {

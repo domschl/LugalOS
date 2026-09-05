@@ -1,5 +1,6 @@
 #include "drivers/usb_cdc.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 #include "arch/rp2350_bootrom.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
@@ -16,6 +17,14 @@
 static bool g_usb_cdc_connected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
+
+/* Guards usb_cdc_putc()'s producer-side ring update. Ordinary kernel .bss,
+ * not g_usb -- see that function for why the distinction matters.
+ *
+ * Inside the RP2350 guard with the code that uses it: the QEMU targets
+ * compile this file down to stubs, and a lock defined there would be an
+ * unused-variable warning and four bytes of .bss on a board with no USB. */
+static spinlock_t g_usb_tx_lock;
 
 #define USB_BASE              0x50110000UL
 #define USB_DPRAM_BASE        0x50100000UL
@@ -973,7 +982,29 @@ void usb_cdc_putc(char c) {
     // a user program whose output simply never appeared while the kernel's
     // did. printk() now masks around a whole message (kernel/printk.c), but
     // this is the lower-level guarantee and other callers reach it directly.
-    uintptr_t flags = irq_save();
+    /* S5, plan/phase22_smp_locking_foundation.md: a kernel-side spinlock_t,
+     * and where it lives is the interesting part.
+     *
+     * The hazard this closes is *multiple producers*: usb_cdc_putc() is
+     * kernel code (no USB_UATTR) reached from the printk path by whichever
+     * task is printing, plus drivers/uart_rp2350.c's fallback -- so "the USB
+     * driver task owns this" was never true, and phase 23's plan to pin
+     * driver tasks to core 0 would not have covered it.
+     *
+     * The lock is deliberately NOT inside g_usb. That struct lives in
+     * .ustacks16384, the region PMP-granted to the U-mode USB driver task,
+     * and a lock word there could be corrupted by a driver bug into a word
+     * that never reads as free -- turning "a broken driver corrupts its own
+     * ring", which phase 12's isolation contains, into "a broken driver
+     * hangs the kernel in a spin", which it does not. Ordinary kernel .bss
+     * keeps the escalation off the table.
+     *
+     * The kernel-to-U-mode side of the ring is untouched and needs no lock:
+     * this side only ever writes head and reads tail, the consumer only
+     * writes tail and reads head, and both are aligned words. That is a
+     * single-producer/single-consumer ring, which is safe by construction --
+     * it was never what the irq_save() here was for. */
+    uintptr_t flags = spin_lock_irqsave(&g_usb_tx_lock);
     /* Both indices masked, not just the incremented one. The write used to
      * use g_usb.ep2_tx_head raw, which is safe only if that field is known to
      * be in range -- and it was not: this whole struct lives in
@@ -989,7 +1020,7 @@ void usb_cdc_putc(char c) {
         g_usb.ep2_tx_ring[head] = (uint8_t)c;
         g_usb.ep2_tx_head = next;
     }
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_usb_tx_lock, flags);
 }
 
 bool usb_cdc_has_char(void) {
@@ -1756,7 +1787,7 @@ static void usb_cdc_task_body(void *arg) {
  * usb_cdc_task_alive() reports so, and kernel/time.c's time_delay_us()
  * falls back to pumping directly, same as before this task existed. */
 int usb_cdc_task_start(void) {
-    int pid = task_create_sized("usbcdc", usb_cdc_task_body, NULL, 1);
+    int pid = task_create_driver("usbcdc", usb_cdc_task_body, NULL, 1);
     if (pid < 0) {
         printk("[USB] Could not start the usbcdc background task; servicing stays opportunistic.\n");
         return -1;

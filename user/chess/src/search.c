@@ -55,6 +55,9 @@
 #include "tt.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"
+#include "kernel/hart.h"
+#include "kernel/sched.h"
+#include <string.h>
 
 // Global search variables
 int max_search_depth = 64;
@@ -64,8 +67,44 @@ bool stop_search = false;
 long nodes_searched = 0;
 
 // Move ordering heuristic tables
-static int history_table[6][64]; // [moved_piece][destination]
-static Move killer_moves[2][MAX_PLYS]; // [killer_index][ply]
+/* --- Per-hart search state (X8b, plan/phase23_multicore_scheduling.md) ---
+ *
+ * Everything a search mutates as it runs, gathered so a second core can have
+ * its own copy: the move-ordering heuristics, the insertion-sort scratch, and
+ * the per-ply move-list pools. The pools are the correctness-critical ones --
+ * they are indexed by ply, so two cores sharing them would hand each other's
+ * still-in-progress lists back and forth. The heuristics are "merely" shared
+ * mutable state, which would make ordering nondeterministic and search
+ * results irreproducible.
+ *
+ * Selected by hart_id() rather than by a context pointer threaded through
+ * every function. That is a deliberate trade: it keeps the diff to the
+ * hottest code in the engine down to the name of an array, and it is correct
+ * ONLY because search workers are pinned (task_create_pinned) and never
+ * migrate mid-search. That pinning is load-bearing, not tidiness -- a
+ * migrating search would silently swap heuristics and pools underneath
+ * itself. Stated here because the invariant lives in another file.
+ *
+ * Hart 0's copy stays a plain static, exactly as it was before X8b, so a
+ * single-core build pays nothing. Any other hart's is allocated from the
+ * heap on demand and released with the pools. */
+typedef struct {
+    int         history[6][64];      // [moved_piece][destination]
+    Move        killers[2][MAX_PLYS]; // [killer_index][ply]
+    int         sort_scores[MAX_MOVES];
+    MoveList   *pv;                  // per-ply, MAX_SEARCH_PLYS entries
+    CaptureList *q;                  // per-ply, MAX_SEARCH_PLYS entries
+    long        nodes;               // this hart's own node count
+    bool        is_helper;           // must not touch the console: see check_up_time()
+    uint32_t    pool_pages;          // what pv/q were allocated as
+    bool        heap_allocated;      // is this struct itself from palloc?
+} search_state_t;
+
+static search_state_t  g_search0;                 /* hart 0: as before X8b */
+static search_state_t *g_search[MAX_HARTS] = { &g_search0 };
+
+/* This hart's state. See the note above for why hart_id() is a safe index. */
+#define SS (g_search[hart_id()])
 
 // Approximate piece values for MVV-LVA sorting
 static const int sorting_values[6] = { 100, 300, 300, 500, 900, 10000 };
@@ -169,13 +208,30 @@ static const BookEntry book_entries[] = {
  * called search_pools_init() successfully (chess_ui.c's chess_ensure_init()
  * does, before any search can run), so no per-access NULL check is added to
  * the hot recursive path below. */
-static MoveList *search_pv_movelists = NULL;
-static CaptureList *search_q_movelists = NULL;
-static uint32_t search_pools_pages = 0;
-static int sort_scores[MAX_MOVES];
-
 bool search_pools_init(void) {
-    if (search_pv_movelists != NULL) {
+    return search_state_init(hart_id());
+}
+
+/* Equips one hart with its own state and pools. Hart 0 uses the static
+ * g_search0; any other hart's struct comes from the heap, which is why this
+ * takes a hart id rather than reading hart_id() -- the primary sets a helper
+ * up before that helper exists. */
+bool search_state_init(unsigned hart) {
+    if (hart >= MAX_HARTS) return false;
+
+    if (g_search[hart] == NULL) {
+        uint32_t pages = ((uint32_t)sizeof(search_state_t) + (uint32_t)PAGE_SIZE - 1)
+                       / (uint32_t)PAGE_SIZE;
+        search_state_t *st = (search_state_t *)palloc_pages(pages);
+        if (st == NULL) return false;
+        memset(st, 0, sizeof(*st));
+        st->pool_pages = 0;
+        st->heap_allocated = true;
+        g_search[hart] = st;
+    }
+
+    search_state_t *st = g_search[hart];
+    if (st->pv != NULL) {
         return true; /* already allocated -- idempotent, like init_tt(). */
     }
 
@@ -192,18 +248,18 @@ bool search_pools_init(void) {
     uint32_t pv_bytes = (uint32_t)(MAX_SEARCH_PLYS * sizeof(MoveList));
     uint32_t q_bytes  = (uint32_t)(MAX_SEARCH_PLYS * sizeof(CaptureList));
     uint32_t bytes = pv_bytes + q_bytes;
-    search_pools_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    uint8_t *block = (uint8_t *)palloc_pages(search_pools_pages);
+    st->pool_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
+    uint8_t *block = (uint8_t *)palloc_pages(st->pool_pages);
     if (block == NULL) {
-        search_pools_pages = 0;
+        st->pool_pages = 0;
         return false;
     }
 
     /* One allocation, not two -- halves the page-rounding waste a pair of
      * palloc_pages() calls would each pay separately (chibicc's pools.c
      * arena makes the same call for the same reason). */
-    search_pv_movelists = (MoveList *)block;
-    search_q_movelists = (CaptureList *)(block + pv_bytes);
+    st->pv = (MoveList *)block;
+    st->q  = (CaptureList *)(block + pv_bytes);
     return true;
 }
 
@@ -215,14 +271,31 @@ bool search_pools_init(void) {
  * recomputed at free time -- same reason tt.c stores `tt_pages` instead of
  * recomputing it -- so init and free can never compute a different page
  * count even if MAX_SEARCH_PLYS or sizeof(MoveList) ever change. */
+static void search_helper_release(void);   /* above */
+
 void search_pools_free(void) {
-    if (search_pv_movelists == NULL) {
-        return;
+    search_helper_release();
+
+    /* Every hart's, not just the caller's: a session ends once, on the
+     * primary, and a helper's pools would otherwise leak for the lifetime of
+     * the system -- the exact failure the heap-stateless rule this project
+     * already follows exists to prevent. */
+    for (unsigned h = 0; h < MAX_HARTS; h++) {
+        search_state_t *st = g_search[h];
+        if (st == NULL) continue;
+        if (st->pv != NULL) {
+            palloc_free(st->pv, st->pool_pages);
+            st->pv = NULL;
+            st->q  = NULL;
+            st->pool_pages = 0;
+        }
+        if (st->heap_allocated) {
+            uint32_t pages = ((uint32_t)sizeof(search_state_t) + (uint32_t)PAGE_SIZE - 1)
+                           / (uint32_t)PAGE_SIZE;
+            palloc_free(st, pages);
+            g_search[h] = NULL;
+        }
     }
-    palloc_free(search_pv_movelists, search_pools_pages);
-    search_pv_movelists = NULL;
-    search_q_movelists = NULL;
-    search_pools_pages = 0;
 }
 
 __attribute__((noinline))
@@ -393,7 +466,7 @@ static Move get_book_move(Position *pos) {
         }
     }
 
-    MoveList *list = &search_pv_movelists[0];
+    MoveList *list = &SS->pv[0];
     generate_moves(pos, list);
     for (int i = 0; i < list->count; i++) {
         Move m = list->moves[i];
@@ -433,9 +506,27 @@ static long get_time_ms(void) {
 #endif
 
 static void check_up_time(void) {
-    if ((nodes_searched & 2047) == 0) {
+    if ((SS->nodes & 2047) == 0) {
+        /* The UI belongs to the primary, and a helper polling it is both
+         * wrong and slow (X8b follow-up).
+         *
+         * search_poll_stop_callback() reaches console_interrupt_requested()
+         * -> console_pump(), and on the chess persona tm1638_get_key() as
+         * well -- single-slot chan endpoints owned by driver tasks pinned to
+         * hart 0. Every 2048 nodes, from both cores, that is the one place
+         * in this search where the two harts genuinely contend, and it is a
+         * message round trip rather than a lock.
+         *
+         * It is also incorrect. console_interrupt_clear() from the helper
+         * can swallow a Ctrl-C the primary needed to see, and
+         * tm1638_get_key()'s debounce loop would park the helper in
+         * time_delay_us(10000) waiting for a key release that is none of its
+         * business.
+         *
+         * The helper stops the same way it always did -- on stop_search,
+         * which the primary sets. */
         extern void search_poll_stop_callback(void);
-        search_poll_stop_callback();
+        if (!SS->is_helper) search_poll_stop_callback();
         if (max_search_time_ms != -1) {
             if (get_time_ms() - start_search_time_ms >= max_search_time_ms) {
                 stop_search = true;
@@ -478,13 +569,13 @@ static int score_move(const Position *pos, Move move, Move tt_move, int ply) {
     }
 
     // Killer moves
-    if (killer_moves[0][ply] == move) return 800000;
-    if (killer_moves[1][ply] == move) return 700000;
+    if (SS->killers[0][ply] == move) return 800000;
+    if (SS->killers[1][ply] == move) return 700000;
 
     // History heuristic
     int piece = pos->board[MOVE_FROM(move)];
     int to = MOVE_TO(move);
-    return history_table[piece][to];
+    return SS->history[piece][to];
 }
 
 /* Insertion sort for move list (fast for small arrays).
@@ -500,26 +591,26 @@ static void sort_moves(const Position *pos, Move *moves, int count,
 
     int safe_ply = (ply >= 0 && ply < MAX_PLYS) ? ply : 0;
     for (int i = 0; i < count; i++) {
-        sort_scores[i] = score_move(pos, moves[i], tt_move, safe_ply);
+        SS->sort_scores[i] = score_move(pos, moves[i], tt_move, safe_ply);
     }
 
     for (int i = 1; i < count; i++) {
         Move temp_m = moves[i];
-        int temp_s = sort_scores[i];
+        int temp_s = SS->sort_scores[i];
         int j = i - 1;
-        while (j >= 0 && sort_scores[j] < temp_s) {
+        while (j >= 0 && SS->sort_scores[j] < temp_s) {
             moves[j + 1] = moves[j];
-            sort_scores[j + 1] = sort_scores[j];
+            SS->sort_scores[j + 1] = SS->sort_scores[j];
             j--;
         }
         moves[j + 1] = temp_m;
-        sort_scores[j + 1] = temp_s;
+        SS->sort_scores[j + 1] = temp_s;
     }
 }
 
 // Quiescence Search (tactical search only)
 int quiescence(Position *pos, int ply, int alpha, int beta) {
-    nodes_searched++;
+    SS->nodes++;
     check_up_time();
     if (stop_search) return 0;
 
@@ -538,7 +629,7 @@ int quiescence(Position *pos, int ply, int alpha, int beta) {
     }
 
     int safe_ply = ply % MAX_SEARCH_PLYS;
-    CaptureList *list = &search_q_movelists[safe_ply];
+    CaptureList *list = &SS->q[safe_ply];
     generate_captures(pos, list);
     sort_moves(pos, list->moves, list->count, 0, safe_ply);
 
@@ -564,7 +655,7 @@ int quiescence(Position *pos, int ply, int alpha, int beta) {
 
 // Principal Variation Search (PVS) with Pruning
 int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_move_allowed) {
-    nodes_searched++;
+    SS->nodes++;
     check_up_time();
     if (stop_search) return 0;
 
@@ -630,7 +721,7 @@ int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_
 
     // Move generation
     int safe_ply = ply % MAX_SEARCH_PLYS;
-    MoveList *list = &search_pv_movelists[safe_ply];
+    MoveList *list = &SS->pv[safe_ply];
     generate_moves(pos, list);
     sort_moves(pos, list->moves, list->count, tt_move, safe_ply);
 
@@ -685,17 +776,17 @@ int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_
         if (score >= beta) {
             // Store killer moves and history heuristic for quiet moves
             if (!move_is_capture(move) && !move_is_promo(move)) {
-                killer_moves[1][ply] = killer_moves[0][ply];
-                killer_moves[0][ply] = move;
+                SS->killers[1][ply] = SS->killers[0][ply];
+                SS->killers[0][ply] = move;
 
                 int piece = pos->board[MOVE_FROM(move)];
                 int to = MOVE_TO(move);
-                history_table[piece][to] += depth * depth;
-                if (history_table[piece][to] > 400000) {
+                SS->history[piece][to] += depth * depth;
+                if (SS->history[piece][to] > 400000) {
                     // Scale down to prevent overflow
                     for (int p = 0; p < 6; p++) {
                         for (int sq = 0; sq < 64; sq++) {
-                            history_table[p][sq] /= 2;
+                            SS->history[p][sq] /= 2;
                         }
                     }
                 }
@@ -724,6 +815,100 @@ int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_
 }
 
 // Iterative deepening entry point
+/* How many cores search_position() may use. 1 is the pre-X8b behaviour and
+ * the default; anything more is opt-in, per session, from the shell. */
+int g_search_cores = 1;
+
+/* --- Lazy SMP (X8b) ------------------------------------------------------
+ *
+ * The helper searches the same root, to its own schedule, sharing only the
+ * transposition table. It does not report a move and its result is discarded:
+ * the primary's answer is the answer. What it contributes is TT entries the
+ * primary then finds already filled -- which is the entire mechanism, and the
+ * reason the gain here is modest and was expected to be. tt.c fixes this
+ * table at 32 KB / 2048 entries on an embedded build, and two searchers
+ * saturate that quickly.
+ *
+ * It starts two plies deeper than the primary so it is not repeating work
+ * already in flight, and stops on the same `stop_search` the timer sets.
+ *
+ * Pinned to its hart, and that is load-bearing rather than tidy: the search
+ * state above is selected by hart_id(), so a helper that migrated mid-search
+ * would swap its heuristics and its per-ply pools underneath itself.
+ */
+static volatile int  g_helper_active;
+static volatile int  g_helper_done;
+static volatile long g_helper_nodes;
+/* From the heap, not static RAM. A Position carries MAX_PLYS of undo state
+ * and is ~8 KB, which sizereport duly charged to every RP2350 persona --
+ * including the ones that never start a helper. It lives exactly as long as
+ * the helper does. */
+static Position     *g_helper_pos;
+static uint32_t      g_helper_pos_pages;
+static int           g_helper_depth;
+
+long search_helper_nodes(void) { return g_helper_nodes; }
+
+static void search_helper_body(void *arg) {
+    (void)arg;
+    SS->is_helper = true;
+    SS->nodes = 0;
+    for (int d = 3; d <= g_helper_depth && !stop_search; d++) {
+        (void)pv_search(g_helper_pos, d, 0, -INFINITY_VALUE, INFINITY_VALUE, true);
+    }
+    g_helper_nodes = SS->nodes;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    g_helper_done = 1;
+}
+
+/* Starts a helper on hart 1 if one can be had. Returns true if it did, so the
+ * caller reports what actually happened rather than what it asked for. */
+static bool search_helper_start(const Position *pos, int depth) {
+    if (smp_harts_online() < 2) return false;
+    if (!search_state_init(1)) return false;
+
+    if (g_helper_pos == NULL) {
+        g_helper_pos_pages = ((uint32_t)sizeof(Position) + (uint32_t)PAGE_SIZE - 1)
+                           / (uint32_t)PAGE_SIZE;
+        g_helper_pos = (Position *)palloc_pages(g_helper_pos_pages);
+        if (g_helper_pos == NULL) { g_helper_pos_pages = 0; return false; }
+    }
+
+    *g_helper_pos   = *pos;
+    g_helper_depth  = depth;
+    g_helper_nodes  = 0;
+    g_helper_done   = 0;
+    g_helper_active = 1;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+
+    if (task_create_pinned("chesshelp", search_helper_body, NULL, 1) < 0) {
+        g_helper_active = 0;
+        return false;
+    }
+    return true;
+}
+
+static void search_helper_join(void) {
+    if (!g_helper_active) return;
+    /* The timer has already set stop_search by the time the primary finishes;
+     * bounded anyway, so a helper that somehow does not notice cannot hang
+     * the game. */
+    for (int guard = 0; guard < 20000000 && !g_helper_done; guard++) {
+        sched_yield();
+    }
+    g_helper_active = 0;
+}
+
+/* Called from search_pools_free(), so a session returns the heap to exactly
+ * where it found it -- the rule this project already holds every user
+ * program to. */
+static void search_helper_release(void) {
+    if (g_helper_pos == NULL) return;
+    palloc_free(g_helper_pos, g_helper_pos_pages);
+    g_helper_pos = NULL;
+    g_helper_pos_pages = 0;
+}
+
 void search_position(Position *pos, int depth, int time_limit_ms) {
     if (!is_position_valid(pos)) {
         printf("info string Error: Invalid position\n");
@@ -767,11 +952,25 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
     srand((unsigned int)start_search_time_ms);
     max_search_time_ms = time_limit_ms;
     stop_search = false;
+    /* Per-hart now (X8b): one shared counter would have every increment from
+     * two cores racing, and -- worse for anyone reading the result -- would
+     * make "how many nodes did the helper search" unanswerable, because the
+     * helper's own arithmetic would include the primary's work. The first
+     * version of this reported the helper's node count as exactly the total,
+     * which is the giveaway. nodes_searched is set from the primary's own
+     * count at the end, and the helper's is reported separately. */
+    SS->is_helper = false;   /* whoever calls search_position() is the primary */
+    SS->nodes = 0;
     nodes_searched = 0;
+    g_helper_nodes = 0;
     increment_tt_age();
 
     // Reset move ordering heuristics
-    memset(killer_moves, 0, sizeof(killer_moves));
+    memset(SS->killers, 0, sizeof(SS->killers));
+
+    /* X8b: a second searcher, if one was asked for and can be had. Started
+     * after stop_search/max_search_time_ms are set, because it reads both. */
+    bool helper = (g_search_cores >= 2) && search_helper_start(pos, depth);
 
     static MoveList root_list;
     generate_moves(pos, &root_list);
@@ -830,22 +1029,22 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
          * within a couple of iterative-deepening iterations, and did, with
          * UBSAN_PANIC halting the system. The 64-bit intermediate avoids it;
          * the result narrows back to `long` for the unchanged `%ld` below. */
-        long nps = time_spent > 0 ? (long)(((int64_t)nodes_searched * 1000) / time_spent) : 0;
+        long nps = time_spent > 0 ? (long)(((int64_t)SS->nodes * 1000) / time_spent) : 0;
 
         // Print UCI info block with proper mate score formatting
         if (completed_best_score >= MATE_VALUE - 1000) {
             int mate_plies = INFINITY_VALUE - completed_best_score;
             int mate_moves = (mate_plies + 1) / 2;
             printf("info depth %d score mate %d nodes %ld nps %ld time %ld pv ",
-                   d, mate_moves, nodes_searched, nps, time_spent);
+                   d, mate_moves, SS->nodes, nps, time_spent);
         } else if (completed_best_score <= -MATE_VALUE + 1000) {
             int mate_plies = INFINITY_VALUE + completed_best_score;
             int mate_moves = (mate_plies + 1) / 2;
             printf("info depth %d score mate -%d nodes %ld nps %ld time %ld pv ",
-                   d, mate_moves, nodes_searched, nps, time_spent);
+                   d, mate_moves, SS->nodes, nps, time_spent);
         } else {
             printf("info depth %d score cp %d nodes %ld nps %ld time %ld pv ",
-                   d, completed_best_score, nodes_searched, nps, time_spent);
+                   d, completed_best_score, SS->nodes, nps, time_spent);
         }
 
         // Print Principal Variation (PV) path
@@ -936,6 +1135,16 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
             }
         }
     }
+
+    /* X8b: the helper stops on the same stop_search the timer sets; make
+     * that true even when the loop above exited for its own reasons, then
+     * wait for it. Nothing of its result is used -- it contributed through
+     * the shared TT or not at all. */
+    if (helper) {
+        stop_search = true;
+        search_helper_join();
+    }
+    nodes_searched = SS->nodes;   /* the primary's own work, not the sum */
 
     // Output UCI bestmove from last fully completed depth
     int from = MOVE_FROM(completed_best_move);

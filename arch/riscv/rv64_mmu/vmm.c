@@ -193,6 +193,30 @@ void vmm_init(void) {
            (unsigned long)kernel_page_table);
 }
 
+/* Brings a secondary hart into the address space the primary built (X1,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * satp and sstatus are per-hart CSRs, so a hart that never executes this
+ * runs in bare mode -- physical addressing -- while every other hart is
+ * translating. That is not a subtle degradation: it cost a debugging session
+ * here. A secondary would start, print, and enter the scheduler, because
+ * enough of the kernel is reachable either way; it then resumed a task whose
+ * saved context held high-half virtual addresses and jumped to a return
+ * address it could not translate. The dumps showed the same symbol as both
+ * 0x80235c90 and 0xffffffff80235c90, which is what gave it away.
+ *
+ * §1 of the plan listed "PMP/Sv39 activation is already hart-local" under
+ * what does not need to change, and that was right about mem_domain_activate()
+ * and wrong by omission about this: a second caller of the per-task domain
+ * switch is useless if the hart was never in the kernel's own space to begin
+ * with. */
+void vmm_secondary_init(void) {
+    if (!g_paging_on) return;   /* the primary never enabled it; nothing to join */
+    set_csr(sstatus, SSTATUS_SUM);
+    write_csr(satp, SATP_MODE_SV39 | ((uintptr_t)kernel_page_table >> 12));
+    __asm__ __volatile__("sfence.vma zero, zero");
+}
+
 bool vmm_paging_enabled(void) { return g_paging_on; }
 
 void *vmm_alloc_page(void) {

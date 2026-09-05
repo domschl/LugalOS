@@ -859,7 +859,7 @@ static void st7735_task_body(void *arg) {
  * every function below falls back to direct hardware access whenever the
  * task is not alive, same as every boot-time draw before this ever ran. */
 int st7735_task_start(void) {
-    int pid = task_create_sized("st7735", st7735_task_body, NULL, 1);
+    int pid = task_create_driver("st7735", st7735_task_body, NULL, 1);
     if (pid < 0) {
         printk("[ST7735] Could not start the st7735 task; canvas stays on direct hardware access.\n");
         return -1;

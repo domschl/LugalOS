@@ -61,6 +61,12 @@
  * as tasks. Cost is a static array: (24-8) * sizeof(task_t), well under 1 KB. */
 #define MAX_TASKS 24
 
+/* "No task" -- what sched_current_pid() answers on a hart that is executing
+ * kernel code but does not own a task slot yet. Distinct from every real pid
+ * and, deliberately, the same value locks use for "unowned", so a caller that
+ * forgets to check gets a refusal rather than a wrong task. */
+#define TASK_NO_PID (-1)
+
 /* Default kernel stack size per task, in pages, for task_create()'s callers
  * that don't ask for a specific size. 8 KB: the deepest paths here are the
  * Lisp evaluator (bounded at LISP_MAX_EVAL_DEPTH) and the 9P server's
@@ -100,6 +106,22 @@ typedef struct task {
      * is not sleeping. A BLOCKED task with this set is woken by the scheduler
      * itself rather than by another task calling task_unblock(). */
     uint64_t     wake_at_ms;
+    /* Which hart may run this task: -1 for any, otherwise a hart id (X1,
+     * plan/phase23_multicore_scheduling.md).
+     *
+     * X1 needs this for correctness, not tuning, which is why it arrives
+     * before X2's driver pinning rather than with it. Almost every task here
+     * is hart-agnostic -- its stack came from palloc and means the same thing
+     * on either hart. The exceptions are the boot contexts: task 0 runs on
+     * the linker's boot stack and each secondary's idle task runs on
+     * .stack_secondary. Let another hart pick one of those up and two harts
+     * are executing on one stack, which is precisely the failure S6's
+     * hand-off rule exists to prevent -- arriving by a different route.
+     *
+     * X2 extends this to the driver tasks. The field is deliberately general
+     * from the start so that doing so is a call to task_set_affinity() and
+     * not a second mechanism. */
+    int          hart_affinity;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -205,12 +227,53 @@ void task_block(void);
 void task_sleep_ms(uint32_t ms);
 int  task_unblock(int pid);
 
+/* The pid of the task this hart is running, or -1 if it is running none.
+ *
+ * The -1 case is real, and used to be silently answered as 0. A secondary
+ * hart executes kernel code from its reset vector until sched_secondary_init()
+ * gives it a slot, and before phase 23's identity fix this function reported
+ * that hart as task 0 -- the boot task, which is running on a *different*
+ * hart at the same instant. Anything that then acted on the answer acted on
+ * the wrong task: task_block() blocked the shell, and printk_lock()'s
+ * ownership test matched a lock hart 0 was holding and let both harts into
+ * the region at once. The same window exists on the primary before
+ * sched_init().
+ *
+ * So callers that index an array with this, or store it as an owner, must
+ * check for -1. Callers that only want a stable identity for the executing
+ * context -- a lock owner, a re-entrancy test -- want sched_context_id()
+ * instead, which is always valid. */
 int         sched_current_pid(void);
+
+/* Does this hart currently own a task slot? Equivalent to
+ * sched_current_pid() >= 0, spelled out for the code whose real question is
+ * "may I block?" rather than "who am I?". A hart with no task must not
+ * block: there is nothing to mark BLOCKED and nothing to resume. */
+bool        sched_has_task(void);
+
+/* A stable identity for whatever is executing on this hart, valid always --
+ * including before sched_init() and on a secondary hart during bring-up.
+ *
+ * It is the pid where there is one, and MAX_TASKS + hart_id() where there is
+ * not, so the two spaces cannot collide and neither can ever be -1. That
+ * matters because -1 is the "unowned" sentinel in every lock in this tree:
+ * a bring-up hart identifying as -1 would read as *nobody*, and a lock it
+ * held would look free to everyone including itself.
+ *
+ * Use this for lock ownership and re-entrancy. Use sched_current_pid() when
+ * the answer must name a task that can be blocked, woken, or indexed. */
+int         sched_context_id(void);
 
 /* True once there is a task table and a scheduler running. Code that may run
  * during boot must check this before blocking: before sched_init() there is
  * nothing to block and nothing to wake it. */
 bool        sched_is_active(void);
+
+/* Whether this hart has anything runnable, answered WITHOUT the scheduler
+ * lock and therefore only approximately. For an idle hart deciding whether
+ * to call sched_yield() at all -- see the definition for why asking cheaply
+ * matters more than asking exactly. */
+bool        sched_peek_runnable(void);
 
 /* The running task's domain, or NULL if unrestricted. The syscall boundary
  * validates user pointers against it. */
@@ -237,5 +300,62 @@ bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char 
  * runs both before and after scheduler bring-up (e.g. driver busy-waits)
  * call sched_yield() unconditionally. */
 bool sched_active(void);
+
+/* How many times a hart resumed from a context switch *without* holding the
+ * scheduler lock its predecessor should have handed it (S6,
+ * plan/phase22_smp_locking_foundation.md).
+ *
+ * Must be zero. It is the canary for the one rule this milestone turns on --
+ * that the lock is held across ctx_switch() and released on the incoming
+ * stack -- and it is deliberately the inverse of the check §3 originally
+ * specified, which would have fired on correct code. Checked by
+ * `lockselftest`. */
+uint32_t sched_handoff_faults(void);
+
+/* Pins `pid` to `hart` (-1 = any hart). Returns -1 for an out-of-range pid
+ * or an unused slot.
+ *
+ * For a task that is already running. To create one already pinned, use
+ * task_create_pinned() or task_create_driver() -- setting the affinity after
+ * creation leaves a window in which another hart can claim the task, which
+ * X5 observed happening. */
+int  task_set_affinity(int pid, int hart);
+
+/* Creates a task already pinned to `hart` (-1 = any), with the affinity in
+ * place before it is ever READY. The general form of task_create_driver()
+ * below, for callers that need a hart other than the primary -- X5's
+ * isolation probes, which have to fault on a chosen hart rather than
+ * whichever one the ready queue happens to offer them. */
+int  task_create_pinned(const char *name, void (*entry)(void *), void *arg,
+                        int hart);
+
+/* A task's hart pinning: -1 for any hart, otherwise the hart it is bound to.
+ * -1 for an out-of-range pid or an unused slot. Reported by `ps` so X2's
+ * pinning is a fact about the running system rather than a claim about the
+ * source -- the same argument phase 12's M6 made for the Isol column. */
+int  task_affinity(int pid);
+
+/* Turns the calling secondary hart's boot context into a task, so it has
+ * something to switch away from, and marks it pinned here. Returns its pid,
+ * or -1 if the table is full. */
+int  sched_secondary_init(void);
+
+/* Creates a task pinned to the boot hart (X2,
+ * plan/phase23_multicore_scheduling.md).
+ *
+ * For tasks that own a piece of hardware. A driver task's state is not just
+ * "shared data that happens to have one writer" -- it is device registers,
+ * a bus claim, an interrupt armed on a particular hart's controller context.
+ * Phase 22's S5 audit left several such sites unconverted *specifically*
+ * because this pinning exists (the UART wait paths, uart_net's demux,
+ * enc28j60's and cyw43's bus flags), so the pinning is load-bearing rather
+ * than tidy: relaxing it means going back and converting them first.
+ *
+ * A helper rather than "call task_set_affinity() after task_create()" so
+ * that the next driver cannot half-do it. Creating and pinning are one act;
+ * a window in which a driver task is briefly migratable is exactly the sort
+ * of thing that works until it doesn't. */
+int  task_create_driver(const char *name, void (*entry)(void *), void *arg,
+                        uint32_t stack_pages);
 
 #endif /* LUGALOS_KERNEL_SCHED_H */

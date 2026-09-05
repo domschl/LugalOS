@@ -6,6 +6,7 @@
 #include "kernel/sched.h"
 #include <stdint.h>
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 
 typedef void (*putc_fn)(char);
 typedef void (*puts_fn)(const char *);
@@ -73,48 +74,91 @@ static volatile int g_printk_owner   = -1;
 static volatile int g_printk_depth  = 0;
 static volatile int g_printk_waiter = -1;
 
+/* S5, plan/phase22_smp_locking_foundation.md: guards the owner/depth/waiter
+ * bookkeeping above, and nothing else.
+ *
+ * This lock is the *fourth* independent reinvention of the same idea the
+ * audit found -- after fs/p9_link.c, kernel/chan.c and kernel/palloc.c, and
+ * the most elaborate of them, because it grew a directed wakeup that the
+ * others did not need. It is kept rather than replaced by a ylock_t: the
+ * waiter hand-off below is a real property of the console path (M2's
+ * blocking uart_putc()) and swapping it for ylock_t's yield-and-retry would
+ * change the scheduling behaviour of every printk() in the system to fix a
+ * problem that a four-byte lock fixes without touching it.
+ *
+ * What it fixes is the same thing everywhere in this phase: the check-then-
+ * set of g_printk_owner was atomic only against a second access *from the
+ * same hart*, because irq_save() is all that stood behind it. Two harts
+ * both find g_printk_owner == -1 and both become the owner, and the console
+ * interleaving M2 spent a debugging session on comes back -- except now it
+ * cannot be reproduced by reasoning about one call stack.
+ *
+ * Held for a handful of instructions and never across the task_block()
+ * below, which is the spinlock_t contract (kernel/lock.h). */
+static spinlock_t g_printk_gate;
+
 void printk_lock(void) {
-    int me = sched_current_pid();
-    uintptr_t flags = irq_save();
+    /* The *context*, not the pid. A hart still in bring-up owns no task, and
+     * sched_current_pid() answers -1 there -- which is this lock's own
+     * "unowned" value, so using it would make an owned lock look free and let
+     * every hart straight in. sched_context_id() is never -1 and never
+     * collides with a pid, so the ownership and re-entrancy tests below are
+     * exactly as correct for a task-less hart as for a task.
+     *
+     * Until phase 23's identity fix that pid was reported as 0, which was
+     * worse than either: a bring-up hart matched `g_printk_owner == me`
+     * against a lock the boot task was holding on the *other* hart, took the
+     * re-entrant path, and both harts wrote the console at once. */
+    int me = sched_context_id();
+    bool blockable = sched_has_task();
+    uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
     if (g_printk_owner == me) {
         /* Reentrant: the ISR-during-our-own-printk() case above. Proceeds
          * without blocking -- blocking here would be waiting for ourselves
          * to release a lock we cannot release until we return. */
         g_printk_depth++;
-        irq_restore(flags);
+        spin_unlock_irqrestore(&g_printk_gate, flags);
         return;
     }
     while (g_printk_owner != -1) {
-        if (g_printk_waiter < 0) {
+        if (blockable && g_printk_waiter < 0) {
             g_printk_waiter = me;
-            irq_restore(flags);
+            /* Released before blocking, never held across it. */
+            spin_unlock_irqrestore(&g_printk_gate, flags);
             task_block();
-            flags = irq_save();
+            flags = spin_lock_irqsave(&g_printk_gate);
         } else {
-            /* Someone else is already the registered waiter. Fall back to
-             * polling rather than overwrite their slot and lose their
-             * wakeup -- same defensive shape as M2's UART waiters. */
-            irq_restore(flags);
+            /* Someone else is already the registered waiter -- or this hart
+             * owns no task and so cannot be one. Fall back to polling rather
+             * than overwrite their slot and lose their wakeup, which is the
+             * same defensive shape as M2's UART waiters. Polling terminates
+             * for a task-less hart because the owner is by definition a task
+             * running somewhere else, and sched_yield() from here is a plain
+             * spin. */
+            spin_unlock_irqrestore(&g_printk_gate, flags);
             sched_yield();
-            flags = irq_save();
+            flags = spin_lock_irqsave(&g_printk_gate);
         }
     }
     g_printk_owner = me;
     g_printk_depth = 1;
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_printk_gate, flags);
 }
 
 void printk_unlock(void) {
-    uintptr_t flags = irq_save();
-    if (--g_printk_depth > 0) {
-        irq_restore(flags);
+    uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
+    if (g_printk_depth > 1) {
+        g_printk_depth--;
+        spin_unlock_irqrestore(&g_printk_gate, flags);
         return;
     }
+    g_printk_depth = 0;
     g_printk_owner = -1;
     int waiter = g_printk_waiter;
     g_printk_waiter = -1;
-    irq_restore(flags);
+    spin_unlock_irqrestore(&g_printk_gate, flags);
     if (waiter >= 0) task_unblock(waiter);
+
     /* M4: send whatever this message batched into uart_putc()'s buffer
      * (drivers/uart.h) now that the message is complete -- the *outermost*
      * unlock only, matching "one message, one flush" rather than flushing
@@ -122,7 +166,25 @@ void printk_unlock(void) {
      * place this is called (uart_getc()/uart_has_char() also flush, for
      * output that never goes through printk_lock() at all -- line editor
      * redraws, raw console_putc() sequences), but the natural one for the
-     * printk/cprintf/printk_debug family specifically. */
+     * printk/cprintf/printk_debug family specifically.
+     *
+     * After the release, deliberately, and phase 23 X7 is why that is safe
+     * on two cores rather than merely traditional.
+     *
+     * On one shared batch buffer it was not safe: releasing here let the
+     * other core acquire the lock and start appending into the same buffer,
+     * and this core's flush then sent both messages spliced together --
+     * observed on RP2350 as core 0 and core 1 interleaving mid-word. That
+     * looked exactly like a failed lock and was not; `smpstart locktest`
+     * shows amoswap excluding the two cores correctly.
+     *
+     * The tempting fix was to flush while still holding ownership. It trades
+     * this bug for a worse one: uart_flush() blocks in chan_call() waiting
+     * for the uart task, so printk ownership would be held across that wait,
+     * and anything the uart task needs printk for deadlocks against it. The
+     * batch is per-hart instead (drivers/uart_*.c), which removes the
+     * sharing rather than serialising it, and nothing is held across a
+     * block. */
     uart_flush();
 }
 

@@ -10,6 +10,8 @@
  * one. The structure is identical, which is the point.
  */
 
+#include "kernel/hart.h"
+
 .section .text
 .global arch_enter_user
 
@@ -46,7 +48,7 @@
  *
  * Does not return. The task leaves U-mode only by trapping (an ecall, or a
  * fault), at which point the trap vector swaps back to the kernel stack this
- * function parked in CSR_SCRATCH.
+ * function parked in this hart's record.
  *
  * a2 exists because a compiled user program ends by *returning* from main,
  * not by calling exit -- so ra has to point somewhere meaningful before the
@@ -60,11 +62,17 @@ arch_enter_user:
     csrw CSR_EPC, a0
     mv ra, a2
 
-    /* Arm the trap path's invariant: CSR_SCRATCH holds this task's kernel
-     * stack pointer while U-mode runs. The value is the sp we are about to
-     * stop using -- every trap from user code returns onto exactly the stack
-     * that entered user code, so no separate bookkeeping is needed. */
-    csrw CSR_SCRATCH, sp
+    /* Arm the trap path's invariant: while U-mode runs, this task's kernel
+     * stack pointer sits in this hart's record and CSR_SCRATCH points at the
+     * record (S0, kernel/include/kernel/hart.h -- before S0 the sp went
+     * straight into the CSR). The value is the sp we are about to stop
+     * using: every trap from user code returns onto exactly the stack that
+     * entered user code, so no separate bookkeeping is needed.
+     *
+     * tp still holds the record here, because this is kernel code and the
+     * kernel never stops holding it. */
+    REG_S sp, HART_OFF_KERNEL_SP(tp)
+    csrw CSR_SCRATCH, tp
 
     /* Previous-privilege field := U (zero), so the trap return below drops
      * to user mode rather than resuming at the current level.
@@ -124,6 +132,18 @@ arch_enter_user:
     csrs CSR_STATUS, t0
 
     mv sp, a1
+
+    /* U-mode gets its own tp, not the kernel's.
+     *
+     * Not tidiness: since S0, tp holds a pointer to this hart's record, which
+     * is a kernel .bss address. Entering user code without clearing it would
+     * hand every user program a valid kernel pointer in a register, for no
+     * reason -- the trap vector re-installs the kernel's tp on the way back
+     * in and restores the user's on the way out, so nothing here needs it to
+     * survive. Zero is also what a program compiled by this tree's own
+     * toolchain expects: nothing uses thread-local storage, so tp is dead in
+     * user code and reads of it should not find something meaningful. */
+    mv tp, zero
 
     /* The program's own arguments, last so that a0/a1 can be reused as
      * scratch above (a0 held the entry point, a1 the stack pointer). A user

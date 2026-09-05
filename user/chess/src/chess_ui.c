@@ -48,6 +48,7 @@
 #endif
 
 #include "chess_ui.h"
+#include "kernel/hart.h"
 #include "pgn.h"
 #include "kernel/scratch.h"
 
@@ -564,6 +565,28 @@ static Move chess_think(Position *pos, int max_depth, int time_limit_ms) {
 }
 
 void chess_selftest(void) {
+    chess_selftest_cores(1);
+}
+
+/* X8b: the same fixed-position benchmark, with the search allowed `cores`.
+ * This is the measurement, not the game: one position, one time budget, and
+ * a node count -- which is what makes 1 against 2 a comparison rather than an
+ * impression. */
+void chess_selftest_cores(int cores) {
+    chess_selftest_bench(cores, 0);
+}
+
+/* `fixed_depth > 0` searches to exactly that depth with no time limit and
+ * reports how long it took; 0 keeps the original 2-second budget.
+ *
+ * Time-to-depth is the measurement Lazy SMP is judged on, and the reason is
+ * that the 2-second variant cannot see the thing being tested: at that budget
+ * this position bottoms out at depth 8 either way, so both core counts score
+ * the same and the number says nothing. A fixed depth turns "how deep in a
+ * fixed time" -- which saturates -- into "how long to a fixed depth", which
+ * does not. */
+void chess_selftest_bench(int cores, int fixed_depth) {
+    g_search_cores = (cores < 1) ? 1 : cores;
     if (!chess_ensure_init()) return;
     /* A midgame position, well outside the opening book, so this exercises
      * the real iterative-deepening search (pv_search/quiescence/evaluate/tt)
@@ -584,8 +607,17 @@ void chess_selftest(void) {
     parse_fen(&g_chess_pos, "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
     g_chess_pos.history_ply = 1;
 
-    cprintf("chess: searching a midgame position (2s)...\n");
-    Move best = chess_think(&g_chess_pos, 64, 2000);
+    uint64_t bench_start_ms = time_get_ms();
+    Move best;
+    if (fixed_depth > 0) {
+        cprintf("chess: searching a midgame position to depth %d, no time limit...\n",
+                fixed_depth);
+        best = chess_think(&g_chess_pos, fixed_depth, -1);
+    } else {
+        cprintf("chess: searching a midgame position (2s)...\n");
+        best = chess_think(&g_chess_pos, 64, 2000);
+    }
+    uint64_t bench_ms = time_get_ms() - bench_start_ms;
 
     if (best == 0) {
         cprintf("chess: no move found\n");
@@ -596,6 +628,10 @@ void chess_selftest(void) {
     format_move(best, buf);
     cprintf("chess: best move %s, score %d, depth %d, %ld nodes\n",
             buf, g_search_score, g_search_depth, nodes_searched);
+    cprintf("chess: cores requested %d, harts online %u, helper nodes %ld, %lu ms\n",
+            g_search_cores, smp_harts_online(), search_helper_nodes(),
+            (unsigned long)bench_ms);
+    g_search_cores = 1;   /* one session's setting must not leak into the next */
     /* One-shot benchmark, not an interactive session -- tears down like a
      * `quit` would (chess_console_run() below), so repeated
      * (chess-selftest) calls stay "stateless" rather than only the first
@@ -616,8 +652,15 @@ void chess_selftest(void) {
  * release pair, so a session-boundary bug fixed once for the others is
  * fixed here too rather than needing its own copy to get right. */
 void chess_perft(int max_depth) {
+    chess_perft_cores(max_depth, 1);
+}
+
+/* X8: the same suite, split across `cores`. The session bracket is unchanged
+ * -- workers share the bitboard/zobrist tables chess_ensure_init() builds,
+ * which are read-only once built, so one init still covers every core. */
+void chess_perft_cores(int max_depth, int cores) {
     if (!chess_ensure_init()) return;
-    run_perft_tests_depth(max_depth);
+    run_perft_tests_cores(max_depth, cores);
     chess_session_end();
 }
 

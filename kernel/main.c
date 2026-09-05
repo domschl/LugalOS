@@ -8,6 +8,7 @@
 #include "kernel/ticker.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
+#include "kernel/hart.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
@@ -254,6 +255,16 @@ void kernel_main(void) {
     if (ticker_init(100)) {
         irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
     }
+
+    /* X1, plan/phase23_multicore_scheduling.md: let any secondary harts into
+     * the kernel.
+     *
+     * Here and not earlier: a secondary's first act is to arm its own timer
+     * from the rate ticker_init() just measured, and to claim a task slot
+     * from a scheduler that sched_init() must already have brought up. A
+     * no-op unless CONFIG_ENABLE_SMP, in which case entry.S never let a
+     * secondary get this far in the first place. */
+    smp_release_secondaries();
 
 #if defined(CONFIG_BOARD_RP2350)
     /* M4.5, plan/phase12_microkernel_migration.md, Part B: usb_cdc.c's own
