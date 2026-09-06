@@ -70,6 +70,7 @@ void pmp_probe(pmp_info_t *out) {
     out->num_hardwired = 0;
     out->num_active = 0;
     out->addr_stuck_low_bits = 0;
+    out->addr_ones_readback = 0;
     out->granularity_log2 = 0;
     out->any_locked = false;
 
@@ -138,13 +139,48 @@ void pmp_probe(pmp_info_t *out) {
     uint32_t stuck = 0;
     while (stuck < sizeof(uintptr_t) * 8 && ((zero_readback >> stuck) & 1u)) stuck++;
     out->addr_stuck_low_bits = (int)stuck;
+    out->addr_ones_readback = readback;
     /* A NAPOT value with k trailing ones matches 8 << k bytes, so the
      * smallest region the hardware can decode is 8 << (fixed low bits).
      * RP2350: two fixed bits -> 32 bytes, which the datasheet states
      * directly (§3.8.3.1) and which this now agrees with. An earlier version
      * computed 2 + stuck and reported 16, off by one because it assumed the
      * NA4 floor of 4 bytes -- but NA4 is not implemented here. */
-    out->granularity_log2 = 3 + (int)stuck;
+    int from_zero = 3 + (int)stuck;
+
+    /* And the other direction, because low bits can be fixed at *either*
+     * value and the test above only sees one of them.
+     *
+     * The ESP32-P4 is the case that showed this up (phase 27 E5): writing all
+     * ones to pmpaddr0 reads back 0x3fffffe0, so bits [4:0] cannot be *set*,
+     * while the write-zero readback is plain 0 and the loop above counts no
+     * stuck bits at all. The probe then reported the 8-byte default -- not a
+     * measurement, a fallback, on the one board about to have isolation built
+     * on it.
+     *
+     * pmpaddr bit i covers address bit i+2, so a lowest-settable bit of 5
+     * means address bits [6:0] are not decoded: a 128-byte granularity. That
+     * is the privileged spec's own detection procedure (write ones, take the
+     * index of the least-significant set bit), which the write-zero method
+     * was written to work *around* on RP2350 rather than to replace -- there
+     * the low bits read as ones regardless, so this procedure reports 4 bytes
+     * and is the wrong one.
+     *
+     * Neither method is right on both parts, so take the coarser answer. A
+     * granularity reported too fine is the dangerous direction: it invites a
+     * region the hardware will silently round. Floored at the NAPOT minimum
+     * of 8 bytes for the same reason the branch above uses it -- NA4 is not
+     * in use here.
+     *
+     * Checks out on all three: QEMU reads back 0xffffffff (from_ones 3,
+     * unchanged at 8), RP2350 reads its low two bits as ones (from_ones 3,
+     * from_zero 5, unchanged at 32), ESP32-P4 gives from_ones 7 (128). */
+    int lsb = 0;
+    while (lsb < (int)(sizeof(uintptr_t) * 8) && ((readback >> lsb) & 1u) == 0) lsb++;
+    int from_ones = (readback == 0) ? 3 : (2 + lsb);
+    if (from_ones < 3) from_ones = 3;
+
+    out->granularity_log2 = from_zero > from_ones ? from_zero : from_ones;
 
     /* --- entry count --- */
 #define PROBE_STEP(n) do { readback = 0; faulted = false; writable = false;   \
@@ -260,7 +296,7 @@ void pmp_dump(void) {
 #endif
 
 void pmp_report(void) {
-    pmp_info_t info;
+    pmp_info_t info = {0};
     pmp_probe(&info);
 
     if (!info.mode_m) {
@@ -274,6 +310,13 @@ void pmp_report(void) {
            info.num_entries, info.num_active,
            (unsigned long)(1UL << info.granularity_log2),
            info.any_locked ? "yes" : "no");
+    /* The evidence the granularity was derived from, because the derivation
+     * has been wrong twice: once off by one on RP2350, once reporting the
+     * default on the ESP32-P4 because the low bits are fixed at zero there
+     * rather than at one. `pmpdump` shows the same words per entry; this puts
+     * entry 0's next to the conclusion drawn from them. */
+    printk("     pmpaddr0: ones-readback=0x%08lx zero-readback stuck bits=%d\n",
+           (unsigned long)info.addr_ones_readback, info.addr_stuck_low_bits);
 
     if (info.num_entries == 0) {
         printk("     No configurable PMP: B3 would have no enforcement mechanism on this core.\n");

@@ -118,6 +118,30 @@ SECTIONS
      * file. entry.S clears it after the jump, which it must do regardless --
      * this memory holds whatever the last program to run here left behind,
      * and after a load-ram that is partly the ROM's own working set. */
+    /* U-mode task stacks, E5.
+     *
+     * Separate from .bss because a PMP region is NAPOT: power-of-two size,
+     * naturally aligned. A 512-byte stack that happens to land wherever .bss
+     * put it cannot be expressed as one region at all, so the alignment is
+     * the section's job rather than each object's.
+     *
+     * 512 rather than something smaller because this chip's PMP granularity
+     * is **128 bytes** -- measured, not assumed: writing all ones to pmpaddr0
+     * reads back 0x3fffffe0, so bits [4:0] are hardwired zero and address
+     * bits [6:0] are not decoded. `pmpinfo` prints that readback next to the
+     * conclusion. Anything below 128 would be silently rounded up by the
+     * hardware into a region larger than intended, which is the direction
+     * that quietly grants more than was asked for.
+     *
+     * NOLOAD and in LOWRAM with .bss: nothing is loaded into it, so the
+     * ROM-buffer rule this script's header describes still holds. */
+    .ustacks512 (NOLOAD) : ALIGN(512) {
+        _ustacks_start = .;
+        *(.ustacks512)
+        . = ALIGN(512);
+        _ustacks_end = .;
+    } > LOWRAM
+
     .bss (NOLOAD) : {
         . = ALIGN(4);
         _bss_start = .;

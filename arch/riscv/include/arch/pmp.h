@@ -2,6 +2,7 @@
 #define LUGALOS_ARCH_PMP_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* RISC-V Physical Memory Protection discovery (B3 prep, D2 in
  * plan/phase5_distributed_design.md).
@@ -19,7 +20,11 @@ typedef struct {
     int  num_hardwired;    /* read-only entries fixed by the silicon (RP2350: 3) */
     int  granularity_log2; /* log2(bytes); 2 means 4-byte granularity */
     int  num_active;      /* entries with cfg.A != 0 right now */
-    int  addr_stuck_low_bits; /* pmpaddr low bits that survive a zero write */
+    int  addr_stuck_low_bits;
+    /* pmpaddr0 after writing all ones. Kept because the granularity is
+     * derived from it and from the zero readback together, and a derived
+     * number should be checkable against what it came from. */
+    uintptr_t addr_ones_readback; /* pmpaddr low bits that survive a zero write */
     bool any_locked;       /* an entry was already locked at boot */
 } pmp_info_t;
 

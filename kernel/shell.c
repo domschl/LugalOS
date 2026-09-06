@@ -55,6 +55,7 @@
 #include "arch/elf.h"
 #include "kernel/path.h"
 #include "arch/pmp.h"
+#include "kernel/umode_probe.h"
 #include "arch/umode.h"
 #include "arch/trap.h"
 #include "kernel/ipc.h"
@@ -366,6 +367,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+    cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
@@ -2800,6 +2802,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "hmacselftest") == 0) {
         sha256_selftest();
+        return;
+    } else if (strcmp(cmd_line, "umodetest") == 0) {
+        umode_probe_run();
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();

@@ -952,6 +952,37 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "preempttest", r"PREEMPTED \(a task ran without anyone yielding\)", timeout=30.0)
         results.append(("Timer Preempts A Task That Never Yields (B6)", ok, log if not ok else ""))
 
+        # B3/E5: does hardware isolation actually refuse something?
+        #
+        # Every other test of the U-mode machinery shows that an *allowed*
+        # access is allowed -- the driver tasks work, uisolate.elf runs. None
+        # of them would fail on a build where PMP was switched off entirely,
+        # which is the half the mechanism exists for. `umodetest` enters
+        # U-mode under a three-region domain, proves it can reach its own
+        # stack and its one granted block, then writes to an address the
+        # domain grants nobody, and passes only if that write was refused and
+        # the task killed.
+        #
+        # Written during phase 27's E5 for the ESP32-P4, where the answer was
+        # genuinely unknown; kept here because the claim is worth checking on
+        # every target on every run, and because a regression in mem_domain.c
+        # or the fault path would otherwise show up as drivers mysteriously
+        # working.
+        ok, log = session.send_and_expect(
+            "umodetest",
+            r"PASS: U-mode ran under its domain, and the access outside it was refused",
+            timeout=30.0)
+        results.append(("U-mode Isolation Refuses An Out-Of-Domain Write (B3)",
+                        ok, log if not ok else ""))
+
+        # And the same claim from the other side: /proc/ps must show the task
+        # as isolated by a named backend, not merely as having existed. "-"
+        # here would mean task_set_domain() never took effect.
+        ok, log = session.send_and_expect(
+            "cat /proc/ps", r"uprobe\s+killed\s+(PMP|Sv39)", timeout=10.0)
+        results.append(("U-mode Probe Is Reported As Isolated In ps (M6)",
+                        ok, log if not ok else ""))
+
         # M3 (plan/phase12_microkernel_migration.md): next_runnable() picks by
         # priority tier, not ring position. priotest creates four
         # never-yielding NORMAL-tier hogs (each long enough to still be READY,

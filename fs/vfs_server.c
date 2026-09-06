@@ -634,9 +634,17 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * every byte of them is a heap byte nothing else can have. */
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "    .data %u B, .bss %u KB", map.data_bytes, map.bss_bytes / 1024);
+        /* Bytes below a kilobyte, not a rounded-down "0 KB". The RP2350
+         * personas carry 22 KB of U-mode stacks and read fine either way; the
+         * ESP32-P4 has one 512-byte probe stack (E5), which "0 KB" reports as
+         * absent when it is present. A field that exists to make this memory
+         * visible should not round it out of existence. */
         if (map.ustacks_bytes) {
             used += (uint32_t)ksnprintf(buf + used, cap - used,
-                ", ustacks %u KB", map.ustacks_bytes / 1024);
+                ", ustacks %u %s",
+                map.ustacks_bytes >= 1024 ? map.ustacks_bytes / 1024
+                                          : map.ustacks_bytes,
+                map.ustacks_bytes >= 1024 ? "KB" : "B");
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
         used += (uint32_t)ksnprintf(buf + used, cap - used,

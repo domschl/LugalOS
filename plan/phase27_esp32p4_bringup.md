@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0-E4 done; E5 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
+**Status: in progress, 2026-09-06. E0-E5 done; E6 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1739,6 +1739,125 @@ checklist walked before this milestone is called done.
 
 Done when: `ps` shows per-task PMP isolation on the P4, and the deliberate
 fault is caught and reported rather than hanging the board.
+
+**DONE, 2026-09-06.** Verified on hardware.
+
+```
+lsh> pmpinfo
+PMP: writable=16 active=0 min_region=128 bytes locked=no
+     pmpaddr0: ones-readback=0x3fffffe0 zero-readback stuck bits=0
+     Free for B3: 16 (+0 reclaimable, already granting U-mode access)
+
+lsh> umodetest
+[Trap] User task faulted: cause 7, epc=0x4ff6a0a4, addr=0x4ff00200 -- terminating the task
+[UProbe] entered=1 own_stack=1 granted_block=1 attempted=1 survived=0 killed=1
+[UProbe] PASS: U-mode ran under its domain, and the access outside it was refused
+         and the task killed.
+
+lsh> cat /proc/ps
+PID  State    Name          Exit   Isol  Hart  Stack
+  4  DEAD     uprobe        killed PMP   any   -
+```
+
+`epc=0x4ff6a0a4` is exactly the `sb a4,0(a5)` in `uprobe_umode_body`'s
+disassembly — the deliberate write, refused.
+
+#### The finding: the granularity was a default, not a measurement
+
+`pmp_probe()` reported **8 bytes** on this chip, and 8 bytes is what it
+reports when it has learned nothing.
+
+The probe derived granularity from the *write-zero* readback, counting low
+bits that come back set. That method exists because of RP2350, whose pmpaddr
+low bits read as **ones** regardless of what is written, and where the
+privileged spec's own procedure (write all ones, take the index of the
+least-significant set bit) therefore reports 4 bytes and is wrong.
+
+The ESP32-P4 does the opposite: its low bits are fixed at **zero**. Writing
+all ones to `pmpaddr0` reads back `0x3fffffe0` — bits [4:0] cannot be set —
+while the write-zero readback is plain `0` and the existing loop counts no
+stuck bits at all. So the probe fell through to its default and reported the
+finest granularity of the three boards on the coarsest hardware.
+
+`pmpaddr` bit *i* covers address bit *i+2*, so a lowest-settable bit of 5
+means address bits [6:0] are not decoded: **128 bytes**. The fix takes the
+coarser of the two methods, which leaves the two boards that were already
+right unchanged (QEMU 8, RP2350 32) and corrects the one that was not. Both
+readbacks are now printed next to the conclusion drawn from them, because
+this derivation has been wrong twice — once off by one on RP2350, once
+defaulting here.
+
+**Why it mattered rather than being tidy:** a granularity reported too fine
+invites a region the hardware will silently round *up*. That is the direction
+that grants more than was asked for, on the mechanism whose entire purpose is
+granting exactly what was asked for. `kernel/umode_probe.c`'s 128-byte shared
+block and `linker/esp32p4.ld`'s 512-byte stack alignment are both sized
+against the measured number.
+
+#### What E5 built
+
+* **`pmp_probe()` measures granularity from both directions** and reports the
+  evidence (above).
+* **`linker/esp32p4.ld` gains `.ustacks512`**, NOLOAD in LOWRAM beside `.bss`,
+  512-byte aligned because a PMP region is NAPOT and a stack that lands
+  wherever `.bss` put it cannot be expressed as one region at all.
+  `/proc/meminfo` reports it — in bytes below a kilobyte, since "0 KB" would
+  report a present 512-byte section as absent.
+* **`kernel/umode_probe.c`** and the `umodetest` command: one task, a
+  three-region domain (own stack R/W, the shared `.utext` page R/X, one
+  128-byte data grant R/W), and both halves of the question.
+* **Four new tests in the QEMU suite** (two per target): the refusal itself,
+  and that `/proc/ps` names the backend.
+
+#### Why the probe tests the refusal, not just the grant
+
+Every existing check of this machinery shows that an **allowed** access is
+allowed: the seven RP2350 driver tasks work, `uisolate.elf` runs. None of them
+would fail on a build with PMP switched off entirely — which is the half the
+mechanism exists for. So the probe writes to its own stack and its granted
+block, records that both worked, and *then* writes to an address the domain
+grants nobody. It reports PASS only if that write was refused **and** the task
+was killed **and** the kernel kept running.
+
+The forbidden address is chosen in the kernel half and handed over through the
+granted block, and it is deliberately ordinary RAM (`_bss_start`, checked
+against the domain with `mem_domain_permits()` rather than assumed). Not NULL,
+which faults for want of any mapping, and not an MMIO register, which can
+fault as a bus error — either would let a board with no enforcement at all
+pass this test.
+
+The kernel half refuses to enter U-mode if `task_set_domain()` cannot enforce
+the domain, for the same reason: an unenforced "U-mode" task would sail
+through the illegal access and report a pass.
+
+#### The `umode_code_hazards` checklist, walked
+
+Not optional, per this milestone's own text, and it caught one thing.
+
+* **`-fno-jump-tables`** on `kernel/umode_probe.c`, added to the same
+  `set_source_files_properties()` list the seven RP2350 drivers are in. This
+  is phase 12 M5's sixth bug: GCC compiles a switch into a table in ordinary
+  `.rodata`, outside every granted region, and a `jal`-grep disassembly check
+  misses it because the jump goes through a loaded pointer.
+* **Verified rather than assumed**: `uprobe_umode_body` links at `0x4ff6a000`,
+  which is exactly `_utext_start`, and its disassembly contains **zero**
+  `jr`/`jalr`. Every memory access in it is `sp`-relative or a PC-relative
+  `auipc` into the granted block — no literal pool, no `.rodata`.
+* **No string literals** in U-mode code; nothing in the body needs text.
+* **`.utext` headroom checked** before adding to it, because the RP2350
+  personas share that page and it has overflowed before: 2934 of 4096 bytes
+  used there, the body is ~180.
+
+#### The other backend, found by running it
+
+The probe failed on RV64 the first time with `cause 15` at its very first
+store, before recording anything. Sv39 grants **pages**; a 512-byte stack and
+a 128-byte block are not pages, so nothing was mapped.
+
+**This is the first kernel-side U-mode task on the MMU backend** — every
+earlier one is a PMP-only driver, and `uisolate.elf` gets page-aligned memory
+from the ELF loader, so the gap had never been exercised. The region sizes are
+now per backend: 512/128 under `CONFIG_NOMMU`, 4096/4096 under Sv39. Both pass.
 
 ### E6 — `/flash0`
 

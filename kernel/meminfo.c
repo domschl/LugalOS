@@ -77,7 +77,11 @@ void meminfo_ram_map(mem_ram_map_t *out) {
 
     out->data_bytes = (uint32_t)((uintptr_t)_data_end - (uintptr_t)_data_start);
     out->bss_bytes  = (uint32_t)((uintptr_t)_bss_end - (uintptr_t)_bss_start);
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+    /* Both boards carry U-mode task stacks in their own NAPOT-aligned
+     * sections, which are neither .data nor .bss and were invisible in the
+     * image figure until they were reported here. The ESP32-P4 gained one in
+     * E5 (plan/phase27_esp32p4_bringup.md). */
     {
         extern char _ustacks_start[];
         extern char _ustacks_end[];
