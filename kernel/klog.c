@@ -40,6 +40,20 @@ static bool g_in_fanout[MAX_HARTS];
  * recursion rather than concurrency. */
 static spinlock_t g_klog_lock;
 
+/* The ring, and nothing else. See kernel/printk.h's printk_critical().
+ *
+ * klog_putc() below fans out to every attached sink, and the console sink's
+ * putc is uart_putc(), which batches and blocks once the batch fills. That
+ * is correct for ordinary logging and unusable from a context that must not
+ * block -- so a critical message records here and reaches the terminal by a
+ * separate, bounded route, instead of going through a sink that can wait. */
+void klog_record(char c) {
+    uintptr_t flags = spin_lock_irqsave(&g_klog_lock);
+    g_ring[(uint32_t)(g_total % KLOG_RING_SIZE)] = c;
+    g_total++;
+    spin_unlock_irqrestore(&g_klog_lock, flags);
+}
+
 void klog_putc(char c) {
     uintptr_t flags = spin_lock_irqsave(&g_klog_lock);
     g_ring[(uint32_t)(g_total % KLOG_RING_SIZE)] = c;

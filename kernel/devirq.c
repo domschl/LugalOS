@@ -44,6 +44,11 @@ int devirq_dispatch(uint32_t irq_num) {
             return 0;
         }
     }
-    printk("[DevIRQ] Unhandled external interrupt: IRQ %u\n", irq_num);
+    /* printk_critical(): this runs in interrupt context, where printk()'s
+     * task_block() has nothing to wake it. The two reports in
+     * devirq_attach() above are ordinary printk() on purpose -- they run at
+     * init, in task context, and losing one to a wedged console would hide a
+     * real configuration error. */
+    printk_critical("[DevIRQ] Unhandled external interrupt: IRQ %u\n", irq_num);
     return -1;
 }

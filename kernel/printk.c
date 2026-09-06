@@ -6,6 +6,7 @@
 #include "kernel/sched.h"
 #include <stdint.h>
 #include "kernel/irq.h"
+#include <string.h>
 #include "kernel/lock.h"
 
 typedef void (*putc_fn)(char);
@@ -404,6 +405,85 @@ int printk_debug(const char *fmt, ...) {
     printk_lock();
     int ret = vprintk_to(uart_debug_putc, uart_debug_puts, fmt, args);
     printk_unlock();
+    va_end(args);
+    return ret;
+}
+
+/* Output from a context that must not block, yield, or switch.
+ *
+ * printk() has two blocking points and both are load-bearing for everything
+ * else. printk_lock() calls task_block() when another task owns the lock and
+ * sched_yield() when it cannot block; printk_unlock() then calls
+ * uart_flush(), which reaches the console through chan_call() and blocks
+ * again. That is exactly right for ordinary kernel logging and exactly wrong
+ * in three places:
+ *
+ *   - **Scheduler teardown.** task_exit()'s first act used to be a printk(),
+ *     so a task announcing its own death switched away in the middle of
+ *     dying -- BLOCKED, still owning its stack, with none of its exit
+ *     bookkeeping done -- and a second task could enter task_exit() behind
+ *     it. That is a deterministic crash, found on the ESP32-P4 the day
+ *     preemption started working there (phase 27 E4).
+ *   - **Interrupt context.** kernel/devirq.c's unhandled-IRQ report and the
+ *     trap handler's own diagnostics run from the interrupt path, where
+ *     task_block() has nothing to be woken by. Moving task_exit()'s message
+ *     into sched_reap() looked like the obvious fix and hung the board,
+ *     because sched_reap() is called from sched_yield(), which the timer
+ *     interrupt calls.
+ *   - **Fatal handlers, and anything holding the scheduler lock.** A dump
+ *     that blocks is a dump that never prints, and a printk() under
+ *     g_sched_lock deadlocks against the task it is waiting for.
+ *
+ * So this takes no lock and does not flush. It writes straight at the
+ * hardware through uart_critical_putc(), which spins on the transmit FIFO
+ * for a bounded count and then drops the byte.
+ *
+ * Two consequences, both deliberate:
+ *
+ *   - **Output can interleave** with a concurrent printk() from another
+ *     hart or from the task this interrupted. Taking the ownership lock is
+ *     what would prevent that, and taking it is the thing that deadlocks.
+ *     Garbled diagnostics beat absent ones.
+ *   - **Output can be dropped** if the console is wedged or absent. A
+ *     console must not be able to stop the kernel.
+ *
+ * It does still record into the klog ring (klog_record(), ring only, no sink
+ * fan-out) and it does still honour whether the terminal sink is attached --
+ * so `/proc/kmsg` keeps the message and `klog detach console` still silences
+ * it. What it skips is the fan-out itself, because the console sink's putc is
+ * uart_putc(), which batches and blocks once the batch fills. */
+static void critical_putc_ring(char c) { klog_record(c); }
+static void critical_putc_both(char c) { klog_record(c); uart_critical_putc(c); }
+static void critical_puts_ring(const char *s) { while (*s) critical_putc_ring(*s++); }
+static void critical_puts_both(const char *s) { while (*s) critical_putc_both(*s++); }
+
+/* Is the terminal sink currently attached?
+ *
+ * printk_critical() cannot fan out through klog's sinks -- see klog_record()
+ * -- but it must still obey the policy those sinks express, or `klog detach
+ * console` stops meaning anything. It is the same question klog_putc() asks
+ * implicitly by iterating `attached` sinks, asked once per message instead of
+ * once per character. An unknown answer errs toward printing: a diagnostic
+ * from a fatal path is worth more than a tidy terminal. */
+static bool critical_terminal_attached(void) {
+    for (uint32_t i = 0; i < 8; i++) {
+        const char *name = NULL;
+        bool attached = false;
+        if (!klog_sink_info(i, &name, &attached)) break;
+        if (name && name[0] == 'c' && strcmp(name, "console") == 0) return attached;
+    }
+    return true;
+}
+
+int printk_critical(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    bool tty = critical_terminal_attached();
+    /* Anything already batched goes out first, so this message cannot
+     * overtake output that was produced before it. See uart_flush_critical(). */
+    if (tty) uart_flush_critical();
+    int ret = tty ? vprintk_to(critical_putc_both, critical_puts_both, fmt, args)
+                  : vprintk_to(critical_putc_ring, critical_puts_ring, fmt, args);
     va_end(args);
     return ret;
 }

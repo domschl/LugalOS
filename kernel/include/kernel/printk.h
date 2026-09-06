@@ -23,6 +23,13 @@ void printk_unlock(void);
 // messages.
 int printk_debug(const char *fmt, ...);
 
+/* Non-blocking, unlocked, drops rather than waits. For scheduler teardown,
+ * interrupt handlers, and fatal paths -- the contexts where printk()'s
+ * task_block() is a hang rather than a wait. See kernel/printk.c for the
+ * full argument and for what it costs (interleaving, and dropped bytes on a
+ * wedged console). Use printk() everywhere else. */
+int printk_critical(const char *fmt, ...);
+
 // Formats into a caller-owned buffer instead of a UART, using the same
 // format-string engine as printk() (%s/%d/%u/%x/%c/%%, width, zero-pad,
 // precision). Always NUL-terminates within `cap` and returns the number of

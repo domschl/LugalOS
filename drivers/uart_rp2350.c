@@ -1025,6 +1025,39 @@ void uart_putc(char c) {
     spin_unlock_irqrestore(&g_tx_batch_lock, flags);
 }
 
+/* See drivers/uart.h. Bounded spin on the PL011 TX-full flag, then drop.
+ * Deliberately not mirrored to USB CDC: that path has a task behind it. */
+void uart_critical_putc(char c) {
+    for (unsigned i = 0; i < 200000u; i++) {
+        if (!(REG(UART0_FR) & UART0_FR_TXFF)) {
+            REG(UART0_BASE + 0x00) = (uint8_t)c;
+            return;
+        }
+    }
+}
+
+void uart_critical_puts(const char *s) {
+    if (!s) return;
+    while (*s) {
+        if (*s == '\n') uart_critical_putc('\r');
+        uart_critical_putc(*s++);
+    }
+}
+
+/* See drivers/uart.h. Same batch as uart_flush(), written the bounded way. */
+void uart_flush_critical(void) {
+    char local[UART_TX_BATCH_CAP];
+    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    unsigned h = hart_id();
+    uint32_t len = g_tx_batch_len[h];
+    if (len > 0) {
+        memcpy(local, g_tx_batch[h], len);
+        g_tx_batch_len[h] = 0;
+    }
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+    for (uint32_t i = 0; i < len; i++) uart_critical_putc(local[i]);
+}
+
 void uart_debug_putc(char c) {
     uart_hw_putc(c); // kernel debug log: physical UART only, no USB mirror, no batching
 }

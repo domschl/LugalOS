@@ -408,6 +408,13 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (slot < 0) {
+        /* Ordinary printk() here, and in the three other creation/boot
+         * messages in this file, deliberately: they run in the *caller's*
+         * task context, outside every lock, with nothing half-torn-down.
+         * Blocking there is a wait, not a hang. The rule this file follows is
+         * not "the scheduler never printk()s" but "nothing printk()s while it
+         * is mid-switch, mid-exit, holding g_sched_lock, or in interrupt
+         * context". */
         printk("[Sched] Task table full; '%s' not created\n", name ? name : "?");
         return -1;
     }
@@ -614,6 +621,9 @@ static uint32_t g_reap_pages;
  * neither, and jumping to it produces a fatal trap with every scheduler
  * register already destroyed. Halting here instead keeps the table intact
  * and says who was switching to whom. */
+/* Runs with g_sched_lock HELD, which is why every line below is
+ * printk_critical(): a printk() here would block while holding the lock the
+ * task it waits for needs, which is a deadlock rather than a slow dump. */
 static void sched_check_incoming(int prev, int next) {
     uintptr_t sp = g_tasks[next].sp;
     uintptr_t ra = sp ? *(const uintptr_t *)sp : 0;
@@ -624,40 +634,40 @@ static void sched_check_incoming(int prev, int next) {
      * effect of a debug guard. */
     if (ra != 0) return;
 
-    printk("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx has ra=0x%lx\n",
+    printk_critical("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx has ra=0x%lx\n",
            prev, g_tasks[prev].name, next, g_tasks[next].name,
            (unsigned long)sp, (unsigned long)ra);
-    printk("[Sched BUG] next: state=%s stack=0x%lx pages=%u prio=%d aff=%d\n",
+    printk_critical("[Sched BUG] next: state=%s stack=0x%lx pages=%u prio=%d aff=%d\n",
            sched_state_name(g_tasks[next].state),
            (unsigned long)(uintptr_t)g_tasks[next].stack_base,
            (unsigned)g_tasks[next].stack_pages,
            g_tasks[next].priority, g_tasks[next].hart_affinity);
-    printk("[Sched BUG] prev: state=%s stack=0x%lx pages=%u   reap=0x%lx pages=%u\n",
+    printk_critical("[Sched BUG] prev: state=%s stack=0x%lx pages=%u   reap=0x%lx pages=%u\n",
            sched_state_name(g_tasks[prev].state),
            (unsigned long)(uintptr_t)g_tasks[prev].stack_base,
            (unsigned)g_tasks[prev].stack_pages,
            (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) continue;
-        printk("[Sched BUG]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP\n",
+        printk_critical("[Sched BUG]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP\n",
                g_tasks[i].pid, g_tasks[i].name, sched_state_name(g_tasks[i].state),
                (unsigned long)g_tasks[i].sp,
                (unsigned long)(uintptr_t)g_tasks[i].stack_base,
                (unsigned)g_tasks[i].stack_pages);
     }
-    printk("[Sched BUG] halting with the table intact.\n");
+    printk_critical("[Sched BUG] halting with the table intact.\n");
     for (;;) { __asm__ __volatile__("wfi"); }
 }
 
 /* The whole table, for a fatal path that has already lost the registers.
  * Phase 27 E4 debug aid; see sched_check_incoming() above. */
 void sched_dump_table(void) {
-    printk("[Sched Table] reap=0x%lx pages=%u handoff_faults=%u\n",
+    printk_critical("[Sched Table] reap=0x%lx pages=%u handoff_faults=%u\n",
            (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages,
            (unsigned)g_handoff_faults);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) continue;
-        printk("[Sched Table]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP prio=%d\n",
+        printk_critical("[Sched Table]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP prio=%d\n",
                g_tasks[i].pid, g_tasks[i].name, sched_state_name(g_tasks[i].state),
                (unsigned long)g_tasks[i].sp,
                (unsigned long)(uintptr_t)g_tasks[i].stack_base,
@@ -864,13 +874,13 @@ static void sched_reap(void) {
             uintptr_t tlo = (uintptr_t)g_tasks[i].stack_base;
             uintptr_t thi = tlo + (uintptr_t)g_tasks[i].stack_pages * PAGE_SIZE;
             if (lo < thi && tlo < hi) {
-                printk("\n[Sched BUG] reaping 0x%lx..0x%lx overlaps live #%d '%s' "
+                printk_critical("\n[Sched BUG] reaping 0x%lx..0x%lx overlaps live #%d '%s' "
                        "stack 0x%lx..0x%lx (state=%s)\n",
                        (unsigned long)lo, (unsigned long)hi,
                        g_tasks[i].pid, g_tasks[i].name,
                        (unsigned long)tlo, (unsigned long)thi,
                        sched_state_name(g_tasks[i].state));
-                printk("[Sched BUG] halting before the free.\n");
+                printk_critical("[Sched BUG] halting before the free.\n");
                 for (;;) { __asm__ __volatile__("wfi"); }
             }
         }
@@ -885,13 +895,23 @@ void task_exit(void) {
     if (!g_active || !sched_has_task()) { for (;;) { } }
 
     task_t *t = &g_tasks[cur()];
-    printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
+
+    /* printk_critical(), not printk(). This line is why: printk() reaches the
+     * console through uart_flush() -> chan_call() -> task_block(), so a task
+     * announcing its own death switched away in the middle of dying and a
+     * second task could enter task_exit() behind it -- breaking the one-slot
+     * reaper's stated assumption two comments below, and faulting. Found on
+     * the ESP32-P4 the day preemption started working there (phase 27 E4);
+     * kernel/printk.c has the full account. Nothing here may block until the
+     * switch below has happened. */
+    printk_critical("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
     /* Taken here and never released on this path: this task switches away
      * and nothing ever switches back to it, so the successor picked below
      * inherits the lock and does the releasing. That is the hand-off in its
-     * starkest form -- see g_sched_lock's comment. The printk() above is
-     * deliberately outside it, because printk() can block. */
+     * starkest form -- see g_sched_lock's comment. The announcement above is
+     * outside it because it is not allowed to block at all, which is a
+     * stronger requirement than "not while holding this". */
     uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
 
     /* M5 Phase 2: if this task owned a chan endpoint with a request
@@ -910,7 +930,8 @@ void task_exit(void) {
          * normal path below: there is no successor to hand it to, and
          * parking forever while holding it would wedge every other hart. */
         spin_unlock_irqrestore(&g_sched_lock, flags);
-        printk("[Sched] No runnable task remains after #%d exited; halting task\n", t->pid);
+        /* Still mid-exit, and about to park forever: must not block. */
+        printk_critical("[Sched] No runnable task remains after #%d exited; halting task\n", t->pid);
         for (;;) { }
     }
 

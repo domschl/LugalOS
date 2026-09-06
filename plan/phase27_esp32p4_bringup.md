@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0-E3 done. E4's timer works and is measured; the `priostress` crash it exposed is root-caused (a blocking printk in `task_exit()`, kernel/sched.c, not P4 code) and the fix is not yet written.** This is the first of three
+**Status: in progress, 2026-09-06. E0-E4 done; E5 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1337,11 +1337,17 @@ Done when: `uspin.elf` is preempted, and the tick rate measured against a
 host stopwatch over ten minutes is within the same tolerance the RP2350 build
 holds.
 
-**NOT DONE, 2026-09-06 — the mechanism works and one test does not.**
-Preemption is real and measured on this board, and `priostress` crashes it
-deterministically. That second fact is recorded here rather than deferred,
-because a preemption timer with a reproducible crash under two busy tasks is
-not a finished milestone.
+**DONE, 2026-09-06**, with one half of the done-condition deferred for a
+reason that is not about time: `uspin.elf` cannot run here until E6 gives this
+board a filesystem, so the U-mode half of "a timer interrupt reaches user
+code" is E6's to demonstrate. The kernel-task half (`preempttest`), the
+fairness test (`priostress`) and the ten-minute rate measurement are all
+verified on hardware below.
+
+Getting there took finding a deterministic crash that preemption exposed in
+`kernel/sched.c` -- not in ESP32-P4 code -- and fixing it properly. That
+account is kept in full, because the first fix attempt was wrong in a way
+worth writing down.
 
 ```
 lsh> clicdump
@@ -1538,8 +1544,9 @@ below is correct and measured; this is a scheduler-lifetime bug that
 preemption on slow silicon has exposed, and it may well not be P4-specific
 code at all.
 
-**Root cause found, 2026-09-06. The fix is not written yet, and the reason is
-in "what the first fix attempt taught" below.**
+**Root cause found and fixed, 2026-09-06.** The account below is kept in the
+order it happened, because the first fix attempt was wrong in an instructive
+way; the fix itself is at the end.
 
 **`task_exit()` makes a blocking IPC call before it has begun exiting.** Its
 first act is
@@ -1640,6 +1647,72 @@ they cost:
   until the pages are handed out again, and this makes it loud instead.
 
 Three of the five exist to say "not this", and they did.
+
+#### Fixed, 2026-09-06: `printk_critical()`, and the rule it enforces
+
+The one-line fix (delete the message) was never acceptable and the obvious
+relocation hung the board, so the fix is a second output path with different
+guarantees.
+
+**`printk_critical()`** (`kernel/printk.c`) takes no lock, does not flush, and
+writes straight at the hardware through a new **`uart_critical_putc()`** in
+each of the three console drivers, which spins on the transmit FIFO for a
+bounded count and then **drops the byte**. Both costs are deliberate and
+stated where they are paid: output can interleave with a concurrent `printk()`
+from another hart, and output can be lost if the console is wedged. Garbled
+diagnostics beat absent ones, and a console must not be able to stop the
+kernel.
+
+It exists because `printk()` has **two** blocking points, not one:
+`printk_lock()` calls `task_block()` when another task owns the lock and
+`sched_yield()` when it cannot, and `printk_unlock()` then calls
+`uart_flush()`, which reaches the console through `chan_call()` and blocks
+again. `uart_debug_putc()` is no help despite its name — it ends in
+`uart_hw_putc_blocking()`, which blocks too. Before this there was no way to
+print from these contexts at all.
+
+**The rule, now written into `kernel/sched.c`:** not "the scheduler never
+printk()s", but
+
+> nothing printk()s while it is mid-switch, mid-exit, holding `g_sched_lock`,
+> or in interrupt context.
+
+Converted to `printk_critical()`:
+
+| site | why |
+|---|---|
+| `task_exit()`'s exit announcement | the confirmed crash |
+| `task_exit()`'s "no runnable task remains" | mid-exit, about to park forever |
+| `sched_check_incoming()` (4 lines) | **runs holding `g_sched_lock`** |
+| `sched_dump_table()` (2 lines) | fatal path |
+| `sched_reap()`'s overlap report (2 lines) | reachable from the timer interrupt |
+| `devirq_dispatch()`'s unhandled-IRQ report | interrupt context |
+| `trap.c`: masked-interrupt, unknown-interrupt | interrupt context |
+| `trap.c`: the user-fault and fatal dumps (6 lines) | a dump that blocks never prints |
+
+Left as ordinary `printk()`, deliberately: `sched_init()`'s banner and
+`task_create_full()`'s three failure/creation messages. They run in the
+*caller's* task context, outside every lock, with nothing half-torn-down —
+blocking there is a wait, not a hang, and losing one to a wedged console would
+hide a real configuration error. `kernel/ticker.c` and `kernel/chan.c` were
+audited the same way and need no change: their messages are all boot-time,
+and no driver ISR in this tree printk()s at all.
+
+Verified on hardware:
+
+```
+lsh> priostress
+[  110.810] [Sched] Task #4 'stressA' exited
+[  110.822] [Sched] Task #5 'stressB' exited
+[  110.822] [PrioStress] done=1,1 total_ticks=2252,2253 -- FAIR (both same-tier tasks shared the CPU)
+
+lsh> preempttest
+[Preempt] ticks=12 flag=1 -- PREEMPTED (a task ran without anyone yielding)
+```
+
+Both exit announcements still appear, which is the part worth checking rather
+than assuming: the message was preserved, not sacrificed to make the crash go
+away.
 
 #### What E4 deliberately did not do
 

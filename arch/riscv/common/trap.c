@@ -681,7 +681,7 @@ void trap_handler(trap_frame_t *frame) {
         if (code >= ESP32P4_CLIC_IRQ_MIN && code <= ESP32P4_CLIC_IRQ_MAX) {
             if (devirq_dispatch((uint32_t)code) != 0) {
                 *p4_clic_byte(P4_CLIC_IE(code)) = 0;
-                printk("[CLIC] Masked interrupt %u: no handler, and a level-"
+                printk_critical("[CLIC] Masked interrupt %u: no handler, and a level-"
                        "triggered source would re-enter forever\n", (unsigned)code);
             }
             return;
@@ -696,7 +696,7 @@ void trap_handler(trap_frame_t *frame) {
             return;
         }
 #endif
-        printk("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
+        printk_critical("\n[Trap] Interrupt received: code 0x%lx\n", (unsigned long)code);
     } else {
         /* If ecall (Environment Call from U-mode, S-mode, or M-mode) */
         if (code == 8 || code == 9 || code == 11) {
@@ -1021,7 +1021,7 @@ void trap_handler(trap_frame_t *frame) {
              * running (kernel/smp.c), so it costs an ordinary fault nothing
              * but a predictable branch. */
             smp_load_note_fault();
-            printk("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
+            printk_critical("\n[Trap] User task faulted: cause %lu, epc=0x%lx, addr=0x%lx -- "
                    "terminating the task\n",
                    (unsigned long)code, (unsigned long)frame->epc,
                    (unsigned long)frame->tval);
@@ -1038,6 +1038,12 @@ void trap_handler(trap_frame_t *frame) {
         }
 
         /* Fatal exception hang.
+         *
+         * Everything printed from here down uses printk_critical(): a dump
+         * that blocks is a dump that never appears, and this path is reached
+         * precisely when the machinery printk() depends on may be what is
+         * broken. It cannot block, cannot yield, and drops bytes rather than
+         * wait -- see kernel/printk.c.
          *
          * The faulting instruction is read back and printed, but only from
          * an address that is known to be readable: a fault whose epc is
@@ -1068,9 +1074,9 @@ void trap_handler(trap_frame_t *frame) {
             const uint8_t *p = (const uint8_t *)frame->epc;
             inst_val = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
         }
-        printk("\n[Trap Exception] Cause: 0x%lx, epc=0x%lx, tval=0x%lx, inst=0x%08x\n",
+        printk_critical("\n[Trap Exception] Cause: 0x%lx, epc=0x%lx, tval=0x%lx, inst=0x%08x\n",
                (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval, (unsigned int)inst_val);
-        printk("[Trap Register Dump] a0=0x%lx, a1=0x%lx, sp=0x%lx, ra=0x%lx\n",
+        printk_critical("[Trap Register Dump] a0=0x%lx, a1=0x%lx, sp=0x%lx, ra=0x%lx\n",
                (unsigned long)frame->a0, (unsigned long)frame->a1, (unsigned long)frame->sp, (unsigned long)frame->ra);
 
         /* Which task, and what it was standing on.
@@ -1093,14 +1099,14 @@ void trap_handler(trap_frame_t *frame) {
                     fname = n2 ? n2 : "?"; fstate = s2; break;
                 }
             }
-            printk("[Trap Context] pid=%d '%s' state=%s\n",
+            printk_critical("[Trap Context] pid=%d '%s' state=%s\n",
                    fpid, fname, sched_state_name(fstate));
 
             uintptr_t base = frame->sp - 16 * sizeof(uintptr_t);
             if (base >= inst_lo && base + 16 * sizeof(uintptr_t) < inst_hi) {
                 const uintptr_t *w = (const uintptr_t *)base;
                 for (int r = 0; r < 4; r++) {
-                    printk("[Trap Frame] 0x%lx: %08lx %08lx %08lx %08lx\n",
+                    printk_critical("[Trap Frame] 0x%lx: %08lx %08lx %08lx %08lx\n",
                            (unsigned long)(base + (uintptr_t)r * 4 * sizeof(uintptr_t)),
                            (unsigned long)w[r*4+0], (unsigned long)w[r*4+1],
                            (unsigned long)w[r*4+2], (unsigned long)w[r*4+3]);
@@ -1108,7 +1114,7 @@ void trap_handler(trap_frame_t *frame) {
             }
         }
         { extern void sched_dump_table(void); sched_dump_table(); }
-        printk("[Fatal] System halted due to unhandled exception.\n");
+        printk_critical("[Fatal] System halted due to unhandled exception.\n");
         while (1) {
             __asm__ __volatile__("wfi");
         }

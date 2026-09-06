@@ -74,6 +74,37 @@ uint32_t uart_irq_rx_wakes(void);
 // batch filling up. A no-op wherever nothing is pending.
 void uart_flush(void);
 
+// Console output from a context that must not block, yield, or switch:
+// scheduler teardown, interrupt handlers, and fatal paths.
+//
+// Everything else in this header can block. uart_putc() batches and
+// uart_flush() reaches the console through chan_call() -> task_block();
+// uart_debug_putc(), despite the name, still ends in a blocking primitive
+// that calls task_block() when a task exists and sched_yield() when one
+// does not. Either is fatal in the three contexts above: a task blocking in
+// the middle of task_exit() switches away with its bookkeeping half done, a
+// blocking call from the timer interrupt is a deadlock, and a fatal handler
+// that blocks never prints the dump that would explain it.
+//
+// This spins on the transmit FIFO for a bounded number of iterations and
+// then **drops the byte**. Dropping is the point: output is worth less than
+// forward progress on these paths, and a console that is wedged or absent
+// must not be able to stop the kernel. See kernel/printk.h's
+// printk_critical(), which is the only intended caller.
+void uart_critical_putc(char c);
+void uart_critical_puts(const char *s);
+
+// Drain whatever uart_putc() has batched, using the same bounded, never
+// blocking writes as uart_critical_putc().
+//
+// Ordering, not throughput, is why this exists. Ordinary output sits in a
+// per-hart batch until uart_flush() sends it; critical output goes straight
+// at the hardware. Without draining first, a critical line overtakes text
+// that was printed before it -- which is not merely untidy, it makes the
+// console a misleading record of what happened, and it broke four tests that
+// wait for output in the order it was produced.
+void uart_flush_critical(void);
+
 // Kernel debug log output (used by printk()) only: physical UART, never
 // mirrored to a USB CDC console. Keeps kernel/driver diagnostics off the
 // interactive shell's USB data channel, which uart_putc()/uart_puts() do

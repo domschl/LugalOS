@@ -38,6 +38,10 @@ typedef void (*klog_putc_fn)(char);
 void klog_write(const char *s, uint32_t len);
 void klog_putc(char c);
 
+/* Ring only, no sink fan-out. For printk_critical(), which may not reach a
+ * sink whose putc can block. See kernel/klog.c. */
+void klog_record(char c);
+
 /* --- Sink registry --- */
 
 /* Attaches `putc` under `name`. Re-registering an existing name replaces its

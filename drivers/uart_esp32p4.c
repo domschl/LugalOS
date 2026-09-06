@@ -769,6 +769,41 @@ void uart_puts(const char *s) {
 /* Low-level driver diagnostics only: never routed through the task or the
  * batch above, so tracing that might be used to debug either mechanism does
  * not depend on them. */
+/* See drivers/uart.h. Bounded spin on TX FIFO room, then drop. No yield, no
+ * block -- in particular this never touches g_tx_waiter or INT_ENA, so it is
+ * safe to call from inside the ISR that owns them. */
+void uart_critical_putc(char c) {
+    if (!g_uart_base) return;
+    for (unsigned i = 0; i < 200000u; i++) {
+        if (hw_uart_tx_room()) {
+            REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
+            return;
+        }
+    }
+}
+
+void uart_critical_puts(const char *s) {
+    if (!s) return;
+    while (*s) {
+        if (*s == '\n') uart_critical_putc('\r');
+        uart_critical_putc(*s++);
+    }
+}
+
+/* See drivers/uart.h. Same batch as uart_flush(), written the bounded way. */
+void uart_flush_critical(void) {
+    char local[UART_TX_BATCH_CAP];
+    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    unsigned h = hart_id();
+    uint32_t len = g_tx_batch_len[h];
+    if (len > 0) {
+        memcpy(local, g_tx_batch[h], len);
+        g_tx_batch_len[h] = 0;
+    }
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+    for (uint32_t i = 0; i < len; i++) uart_critical_putc(local[i]);
+}
+
 void uart_debug_putc(char c) {
     uart_hw_putc_blocking(c);
 }
