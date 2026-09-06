@@ -37,12 +37,13 @@ int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx) {
     return 0;
 }
 
-void devirq_dispatch(uint32_t irq_num) {
+int devirq_dispatch(uint32_t irq_num) {
     for (uint32_t i = 0; i < g_count; i++) {
         if (g_table[i].in_use && g_table[i].irq_num == irq_num) {
             g_table[i].handler(g_table[i].ctx);
-            return;
+            return 0;
         }
     }
     printk("[DevIRQ] Unhandled external interrupt: IRQ %u\n", irq_num);
+    return -1;
 }

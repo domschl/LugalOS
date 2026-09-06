@@ -98,6 +98,65 @@ void shell_init(void) {
     printk("[Shell] Interactive Lugal Shell (lsh) initialized with Plan 9 Universal Namespace.\n");
 }
 
+/* Executes something the CPU must refuse.
+ *
+ * 0xC0001073 is `csrrw x0, cycle, x0` -- a write to a read-only CSR, which
+ * every RISC-V implementation must take as an illegal instruction. It is
+ * also exactly what the assembler's `unimp` expands to when the compressed
+ * extension is off, and it is written as a word rather than as `unimp`
+ * because with C enabled that mnemonic assembles to the 2-byte c.unimp, and
+ * the recovery below steps over 4. */
+static inline void execute_illegal_instruction(void) {
+    __asm__ __volatile__(".4byte 0xc0001073");
+}
+
+/* Two halves of one question: does an exception reach the trap vector?
+ *
+ * Written for phase 27's E3, where the answer was genuinely unknown -- the
+ * ESP32-P4 runs its trap vector in CLIC mode, where mtvec's low bits are the
+ * mode field rather than address bits and a misaligned vector base points
+ * into the middle of the handler. But nothing in it is board-specific, and
+ * the recoverable half is worth having everywhere: it is the only command in
+ * this shell that proves the fault path works without also using it up.
+ *
+ * The recoverable half runs the illegal instruction under
+ * arch_probe_begin()/arch_probe_faulted(), the same mechanism
+ * arch/riscv/common/pmp_probe.c uses to ask whether a CSR exists. A pass
+ * means the vector was entered, the frame was saved, trap_handler() decoded
+ * cause 2, and execution resumed at the following instruction -- with the
+ * shell still running to say so, which is itself part of the evidence.
+ *
+ * The fatal half deliberately does not recover, and halts the machine. It
+ * exists because "the same diagnostic dump the other builds produce" is a
+ * thing you have to look at, and the recoverable path prints nothing. It
+ * takes an explicit argument for the same reason `format` does. */
+static void cmd_trapselftest(bool fatal) {
+    if (fatal) {
+        cprintf("[Trap Selftest] Executing an illegal instruction with no probe active.\n");
+        cprintf("[Trap Selftest] The next output is the fatal dump; the system will halt.\n");
+        uart_flush();
+        execute_illegal_instruction();
+        /* Not reached: trap_handler()'s fatal path never returns. If this
+         * line ever prints, the exception was not delivered at all -- which
+         * is a far more interesting result than the dump. */
+        cprintf("[Trap Selftest] FAIL: the illegal instruction did not trap.\n");
+        return;
+    }
+
+    cprintf("[Trap Selftest] Executing an illegal instruction under a probe...\n");
+    arch_probe_begin();
+    execute_illegal_instruction();
+    bool faulted = arch_probe_faulted();
+    if (faulted) {
+        cprintf("[Trap Selftest] PASS: the exception reached the trap vector and "
+                "execution resumed.\n");
+    } else {
+        cprintf("[Trap Selftest] FAIL: no illegal-instruction exception was recorded.\n");
+    }
+    cprintf("[Trap Selftest] Run 'trapselftest fatal' for the unrecovered dump "
+            "(halts the system).\n");
+}
+
 static void cmd_help(void) {
     cprintf("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
     cprintf("  help            - Display command manual\n");
@@ -198,6 +257,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+    cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
     cprintf("  smpstart [join|locktest|stage1|stage2|stage3]\n");
@@ -2632,6 +2692,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
+    } else if (strcmp(cmd_line, "trapselftest") == 0 ||
+               strcmp(cmd_line, "trapselftest fatal") == 0) {
+        cmd_trapselftest(strcmp(cmd_line, "trapselftest fatal") == 0);
+        return;
     } else if (strcmp(cmd_line, "flashpark") == 0) {
         /* X7 step 6: exercise the park handshake without turning XIP off.
          *
@@ -3106,7 +3170,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * generates chan_call() traffic on the order of messages/lines,
          * not characters -- the property the batching redesign exists to
          * guarantee. */
-        printk("[UartStats] write_calls=%u\n", uart_write_call_count());
+        printk("[UartStats] write_calls=%u irqs=%u rx_wakes=%u\n",
+               uart_write_call_count(), uart_irq_count(), uart_irq_rx_wakes());
         return;
 #if !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "blkstats") == 0) {

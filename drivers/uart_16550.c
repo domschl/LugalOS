@@ -47,12 +47,16 @@ static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU vir
  * chan_call() itself uses for the same reason. */
 static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
+static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
+static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
 
 static void uart_isr(void *ctx) {
     (void)ctx;
+    g_uart_irq_count++;
     uint8_t lsr = uart_base[UART_LSR];
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
+        g_uart_irq_rx_wakes++;
         int pid = g_rx_waiter;
         g_rx_waiter = -1;
         task_unblock(pid);
@@ -186,6 +190,8 @@ static int              g_uart_task_pid = -1;
 static uint32_t g_uart_write_calls;
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
+uint32_t uart_irq_count(void) { return g_uart_irq_count; }
+uint32_t uart_irq_rx_wakes(void) { return g_uart_irq_rx_wakes; }
 
 /* M4.5, found while bringing up drivers/uart_rp2350.c's own uart task on
  * real hardware -- see that file's own comment on this same flag for the

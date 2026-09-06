@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0, E1 and E2 done; E3 is next.** This is the first of three
+**Status: in progress, 2026-09-06. E0, E1, E2 and E3 done; E4 is next.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1136,6 +1136,159 @@ decision.
 through `mtvt`, so `mtvec` — set by `entry.S`, 64-byte aligned there since E2
 — already catches a fault. What E3 adds is the interrupt half.)*
 
+**DONE, 2026-09-06.** Both halves verified on hardware.
+
+```
+lsh> uartstats
+[UartStats] write_calls=21 irqs=6 rx_wakes=2
+lsh> uartstats
+[UartStats] write_calls=32 irqs=8 rx_wakes=3
+lsh> cat /proc/meminfo
+  ... twelve lines of output ...
+lsh> uartstats
+[UartStats] write_calls=65 irqs=17 rx_wakes=5
+
+lsh> trapselftest
+[Trap Selftest] Executing an illegal instruction under a probe...
+[Trap Selftest] PASS: the exception reached the trap vector and execution resumed.
+
+lsh> trapselftest fatal
+[Trap Exception] Cause: 0x2, epc=0x4ff4a356, tval=0xc0001073, inst=0xc0001073
+[Trap Register Dump] a0=0x8, a1=0x8, sp=0x4ff3f980, ra=0x4ff4a356
+[Fatal] System halted due to unhandled exception.
+```
+
+`rx_wakes` is the number that answers the done-condition, and it is a new
+counter (`uart_irq_rx_wakes()`, on all three console drivers) added because
+the obvious evidence is not evidence. A console that answers keystrokes
+proves nothing about *how* it noticed them: every one of these drivers keeps
+a `sched_yield()` polling fallback underneath its ISR, for the paths that
+cannot block, and the two are indistinguishable from the far end of the
+cable. A count of interrupts that *woke a blocked reader* is the difference.
+`uart_irq_count()` came first and was not enough on its own — a driver whose
+TX blocks on an interrupt and whose RX polls produces a healthy total and
+still spins on every key.
+
+#### What E3 built
+
+* **`arch/riscv/common/trap.c` gains a CLIC arm** beside the Hazard3 and PLIC
+  ones, as §3.4 asked: `mcliccfg`, the memory-mapped threshold, the
+  per-interrupt `clicintattr`/`clicintctl`/`clicintie` bytes, and `mtvt`.
+* **`arch/esp32p4_intr.h`** — the two things that cannot live inside
+  `trap.c`: `esp32p4_intmtx_route()`, because only a driver knows its
+  peripheral is matrix source 31, and the CLIC line allocation itself,
+  because a line is a shared resource and two drivers picking the same number
+  would each get the other's interrupts with no evidence in either file.
+* **`drivers/uart_esp32p4.c` gains its ISR**, RX and TX, in the shape
+  `uart_16550.c` already had: one waiter slot per direction, the peripheral's
+  interrupt-enable bit set only for the duration of a wait.
+* **`trapselftest`** in the shell, on every target. The recoverable form runs
+  an illegal instruction under `arch_probe_begin()`; `trapselftest fatal`
+  does not recover, and exists because "the same dump the other builds
+  produce" is something a person has to look at.
+* **`devirq_dispatch()` returns a value now.** Unhandled means something
+  different here than elsewhere — see below.
+
+#### The four things this milestone found
+
+**1. `mcause` is not a cause code on this chip.** In CLIC mode `mcause`
+carries the state `mret` restores: `MPP` in [29:28], `MPIE` at 27, and the
+previous interrupt level `MPIL` in [23:16]. The code itself is `EXCCODE`,
+[11:0] — widened from the base ISA's [30:0] precisely to make room. So
+`trap_handler()`'s "everything except the top bit" mask is wrong here, and
+wrong in the way that costs an afternoon: the first UART interrupt this
+kernel ever took on the P4 arrived as `0x38000010`, which is `MPP=3`,
+`MPIE=1`, `MPIL=0`, and in the low twelve bits **interrupt 16** — the
+console, correctly routed, correctly delivered, and matching nothing. It fell
+through to the "Interrupt received" diagnostic, returned without touching the
+peripheral, and a level-triggered source re-entered immediately. *An
+interrupt controller that works perfectly and a console that prints one line
+forever look identical from the other end of the cable.* This also matters to
+**E4**: `code == 7` would never have matched either, so a timer arm written
+against the old mask would have produced a comparator that fires and a tick
+that never counts.
+
+**2. An unhandled interrupt is a wedged board here, not a lost event.** Every
+external interrupt on the P4 is level-triggered off the peripheral, so a
+source with no handler is still asserted when the handler returns.
+`devirq_dispatch()` therefore returns 0/-1 now, and the CLIC arm masks the
+line on a miss. The PLIC and Hazard3 arms ignore the result, because
+claim/complete and pending-bit semantics already drop an unclaimed interrupt
+— this is the one controller where "unhandled" needs an action.
+
+**3. `mcliccfg.MNLBITS` decides whether an enabled interrupt fires at all.**
+With `MNLBITS` at IDF's value of 3, an interrupt's level comes from
+`clicintctl[7:5]`, whose reset value is 0; the TRM's rule is that levels
+"less than or equal to the effective threshold are not allowed to preempt",
+so at threshold 0 a routed, enabled, pending, unmasked interrupt still never
+fires until its `clicintctl` is written. `p4_clic_init()` sets `MNLBITS` to 0
+— the row of Table 2.9-2 where every interrupt is level 255 and the failure
+cannot happen — *and* `arch_irq_enable()` writes `clicintctl` to `0xff`
+anyway, which is the maximum under either encoding. Correct under both, and
+deliberately not dependent on which.
+
+**4. The fatal dump's `inst=` field had a hardcoded address window.**
+`0x10000000`–`0x20082000` covers RP2350's XIP flash and QEMU virt's RAM. The
+P4 links at `0x4FF00000` and fell outside it, so every fault on this board
+would have printed `inst=0x00000000` — indistinguishable from a genuine zero
+word. Found by reading the line while writing the demonstration, not by
+seeing the zero, which is the only way that one gets found.
+
+#### What E3 deliberately did not do
+
+* **No hardware vectoring.** Every line is enabled with `clicintattr.SHV = 0`,
+  which the TRM defines as "the CPU will jump to the address configured in
+  `mtvec`" — the vector `entry.S` already installs, which saves a frame and
+  calls `trap_handler()`, which reads `mcause`. One entry point for
+  exceptions and interrupts, as on the other three targets. `mtvt` is still
+  set, to a 48-entry table of pointers to that same vector: not the
+  mechanism, but insurance, on the same principle that makes
+  `drivers/uart_esp32p4.c` configure a UART the ROM already configured.
+  Leaving a CSR the core can jump through as whatever the loader left in it
+  is the thing this phase keeps arguing against.
+* **No interrupt levels or nesting.** One flat priority, matching what the
+  PLIC and Hazard3 arms already do. `mstatus.MIE` stays clear inside a
+  handler and `mintstatus.MIL` reaching 255 means nothing could preempt one
+  anyway.
+* **No timer.** The CLIC half of the tick exists — `trap_handler()`
+  dispatches cause 7 the way every other target does — but the CLINT
+  comparator, its `MTIME_EN` and its `MTIME_SAM` are E4. `kernel/ticker.c`
+  still refuses, and its message now names E4 instead of E3.
+* **`mstatus.MIE` is set in `trap_init()`, not left to `main.c`.** `main.c`
+  only enables interrupts if `ticker_init()` succeeded, which on this board
+  it does not. Waiting for the ticker would have meant an interrupt that is
+  routed, enabled, pending and unmasked at the controller and still never
+  delivered — this board's speciality, since `mstatus.MIE` is the one
+  interrupt CSR here that does still work. Same shape the RP2350 arm already
+  used.
+
+#### The debt E3 was asked to decide about
+
+The three copies of the uart task/batching machinery now genuinely do have
+the same shape, which is what E3 was supposed to establish. **The decision is
+to extract the task body and wire protocol, not the facade, and not in this
+milestone.**
+
+The reasoning, since "leave them" was an allowed answer and this is not it:
+
+* The **hardware halves have converged** and should stay separate — they are
+  three different peripherals and nothing about them wants sharing.
+* The **task body and wire protocol** (`'H'`/`'R'`/`'W'`, `chan_serve_wait`,
+  `chan_register_task`, `uart_task_alive`) are now the same in all three,
+  ~60 lines, reaching the hardware only through two function pointers. That
+  is a clean extraction with no board-specific residue.
+* The **facade is not**. `uart_rp2350.c`'s `uart_putc()`/`uart_flush()` have
+  the USB CDC mirror woven through them, so extracting the batching would
+  mean either a hook in shared code that exactly one board uses, or a
+  two-of-three extraction — which is the shape that was already defensible
+  before E2 added a third file.
+
+Not in this milestone because it is a refactor of two working drivers on two
+boards, and this commit is an interrupt controller; those do not belong in
+the same change. It belongs in its own commit, verified by the QEMU suite for
+`uart_16550.c` and by an RP2350 board for the other, and it is not a
+prerequisite for E4.
+
 ### E4 — Time
 
 *(Was E3.)*
@@ -1149,6 +1302,23 @@ Three specifics from E0 §2, so they are not rediscovered at the bench:
 copy of that bit does anything; the timer interrupt is CLIC interrupt 7; and
 `mtimectl.MTIME_SAM` gives an atomic 64-bit read, so the P4 arm should use it
 rather than copying the RP2350 path's re-read loop.
+
+Three more from E3, now that the controller underneath exists:
+
+* **The CLIC half is already done.** `trap_handler()` dispatches cause 7 to
+  `ticker_count_tick()`/`ticker_next()` on this board exactly as on every
+  other one, and `arch_irq_enable()` refuses IDs outside 16–47 on purpose —
+  arming interrupt 7 is E4's business and needs its own call, not a device
+  driver's. What is missing is only the CLINT end.
+* **`mcause` masking is already fixed, and was not obvious.** E3's finding 1:
+  the code is `EXCCODE`, bits [11:0], because CLIC mode puts `MPP`, `MPIE`
+  and `MPIL` in the same register. Written against the old mask, `code == 7`
+  would never have matched, and the result would have been a comparator that
+  fires and a tick that never counts.
+* **Two time bases, still.** `kernel/time.c` reads the system timer
+  (XTAL/2.5) while the tick would run off the CLINT's `mtime`, whose source
+  the TRM does not state. E4 owns reconciling them, or deciding they need not
+  be reconciled, but it should not discover the question at measurement time.
 
 Done when: `uspin.elf` is preempted, and the tick rate measured against a
 host stopwatch over ten minutes is within the same tolerance the RP2350 build

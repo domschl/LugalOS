@@ -255,10 +255,31 @@ tools/p4run.py --cmd 'ls /proc' --cmd 'cat /proc/meminfo'
 tools/p4run.py --interactive
 ```
 
-**What the E2 kernel does not have**, so that a quiet answer is not mistaken
-for a fault: no preemption (the timer interrupt is a CLIC source, E3/E4), no
-`/flash0` or `/sd0` (E6), no network, and no U-mode isolation (E5). `df`
-reports the filesystems as unmounted because they are.
+**What this kernel does not have yet**, so that a quiet answer is not
+mistaken for a fault: no preemption (the CLIC is up since E3, but the CLINT
+comparator behind the tick is E4), no `/flash0` or `/sd0` (E6), no network,
+and no U-mode isolation (E5). `df` reports the filesystems as unmounted
+because they are.
+
+**Checking the interrupt path**, which E3 added and which the console cannot
+demonstrate by working:
+
+```sh
+tools/p4run.py --cmd 'uartstats' --cmd 'cat /proc/meminfo' --cmd 'uartstats'
+```
+
+`rx_wakes` is the count that matters. It is the number of interrupts that
+woke a task blocked on a read, so it has to grow between those two calls; if
+it does not, the console is falling back to the `sched_yield()` polling path
+underneath the ISR and looking exactly the same from here. `irqs` alone does
+not answer this — a driver whose TX blocks on an interrupt and whose RX polls
+reports a healthy total.
+
+**Checking the exception path**: `trapselftest` executes an illegal
+instruction under a probe and reports whether the trap vector caught it and
+execution resumed. `trapselftest fatal` runs the same instruction with no
+probe, which prints the full register dump and halts the board — reload to
+recover, nothing is written to flash.
 
 ### The two ports, and why names are not enough
 

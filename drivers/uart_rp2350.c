@@ -418,6 +418,7 @@ static uint8_t hw_uart_getc(void);
  * fallback below, not a load-bearing path, the same shape as
  * drivers/uart_16550.c's equivalent. */
 static volatile int g_tx_waiter = -1;
+static volatile uint32_t g_uart_irq_count; /* see uart_irq_count() */
 
 #define UART0_FR    (UART0_BASE + 0x18)
 #define UART0_IMSC  (UART0_BASE + 0x38)
@@ -426,6 +427,7 @@ static volatile int g_tx_waiter = -1;
 
 static void uart_isr(void *ctx) {
     (void)ctx;
+    g_uart_irq_count++;
     if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
         REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
         int pid = g_tx_waiter;
@@ -641,6 +643,10 @@ static int              g_uart_task_pid = -1;
 static uint32_t g_uart_write_calls;
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
+uint32_t uart_irq_count(void) { return g_uart_irq_count; }
+/* Structurally zero, not unimplemented: uart_isr() above serves TX only. See
+ * drivers/include/drivers/uart.h. */
+uint32_t uart_irq_rx_wakes(void) { return 0; }
 
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;

@@ -139,9 +139,16 @@ static bool arch_ticker_init(void) {
  * and kernel/time.c reads it for wall-clock and monotonic time. It is that
  * on this chip the timer *interrupt* arrives through the CLIC as
  * clicintie[7] rather than as a plain mie.MTIE, so there is no route from
- * the comparator to a handler until E3 brings the controller up. E4 then
- * arms the comparator through it. The plan puts the two milestones in that
- * order for exactly this reason.
+ * the comparator to a handler until the controller is up. The plan puts the
+ * two milestones in that order for exactly this reason.
+ *
+ * E3 has since brought the CLIC up, and trap_handler() already dispatches
+ * cause 7 to ticker_next() the way every other target does -- so the half
+ * this arm was waiting for exists now. What is still missing is the CLINT
+ * end: the comparator at 0x20004000, its MTIME_EN (the counter does not run
+ * until told to, and only core 0 may say so) and MTIME_SAM (an atomic
+ * 64-bit read, better than the do/while this file uses elsewhere). That is
+ * E4, and it is the only thing between this refusal and a tick.
  *
  * And the CSR half of this file would not work either. TRM section 2.9.2.1:
  * "Only the CLIC mode of operation is supported by the HP core, i.e.
@@ -171,7 +178,7 @@ static uint64_t now(void) { return 0; }
 static void set_deadline(uint64_t t) { (void)t; }
 
 static bool arch_ticker_init(void) {
-    printk("[Ticker] ESP32-P4: the timer interrupt is a CLIC source (E3); preemption stays off\n");
+    printk("[Ticker] ESP32-P4: the CLIC is up, the CLINT comparator is not (E4); preemption stays off\n");
     return false;
 }
 

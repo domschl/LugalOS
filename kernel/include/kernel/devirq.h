@@ -31,9 +31,17 @@ typedef void (*devirq_handler_fn)(void *ctx);
 int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx);
 
 /* Called only from arch/riscv/common/trap.c, once it has identified which
- * IRQ number fired. A lookup miss is reported once via printk and otherwise
- * ignored -- the same "unhandled interrupt" outcome this replaces, not a
- * new failure mode. */
-void devirq_dispatch(uint32_t irq_num);
+ * IRQ number fired. Returns 0 if a handler ran and -1 if none was
+ * registered; a miss is also reported via printk, the same "unhandled
+ * interrupt" outcome this replaces.
+ *
+ * The return value exists for one caller. On the ESP32-P4 every external
+ * interrupt is level-triggered, so a source with no handler is still
+ * asserted when the handler returns and the core re-enters immediately and
+ * forever -- an unhandled interrupt there is a wedged board, not a lost
+ * event, and the CLIC arm masks the line rather than printing in a loop.
+ * The PLIC and Hazard3 arms ignore the result: their claim/complete and
+ * pending-bit semantics already drop an unclaimed interrupt. */
+int devirq_dispatch(uint32_t irq_num);
 
 #endif /* LUGALOS_KERNEL_DEVIRQ_H */

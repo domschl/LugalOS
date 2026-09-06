@@ -30,21 +30,20 @@
  * from 0.00% to 0.008%: about 1/10000th of a bit period across a 10-bit
  * frame, which is four orders of magnitude inside what a UART tolerates.
  *
- * ## Polled, deliberately
+ * ## Interrupt-driven since E3, with the polling still underneath
  *
- * No interrupts anywhere in this file. The P4's interrupt controller is a
- * non-standard CLIC (E0 section 5) and E3 is the milestone that brings it
- * up; until then there is no route from a peripheral to a handler, and a
- * driver that pretended otherwise would be untestable code sitting in the
- * boot path. So both blocking primitives spin with sched_yield(), which is
- * what drivers/uart_16550.c already falls back to when its own ISR slots are
- * taken. E3 adds the ISR here beside them, and the two paths will then have
- * the same shape as that file's.
+ * E2 shipped this file entirely polled, because there was no route from a
+ * peripheral to a handler until the CLIC came up. E3 built that route, and
+ * this file is its first user: RX and TX both block on an interrupt now, and
+ * the sched_yield() spins survive as the fallback for the cases that cannot
+ * block -- before sched_init(), or when the single waiter slot in a
+ * direction is already taken. Same two-path shape as
+ * drivers/uart_16550.c, which is now literally true rather than aspirational.
  *
- * The consequence to know about: with no preemption timer either (E4), a
- * task that blocks on a keystroke yields to whatever else is READY, and if
- * nothing else is, it spins. That is the cooperative behaviour E2 asks for,
- * not an oversight.
+ * The consequence to know about: there is still no preemption timer (E4), so
+ * a task that blocks on a keystroke really does sleep until the key arrives
+ * -- but nothing periodically re-examines a task that got stuck some other
+ * way. Interrupts fixed the console's idle behaviour, not the scheduler's.
  *
  * ## Register provenance
  *
@@ -58,11 +57,15 @@
 
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
+#include "kernel/devirq.h"
+#include "kernel/irq.h"
 #include "kernel/sched.h"
 #include "kernel/hart.h"
 #include "kernel/lock.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "arch/trap.h"
+#include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
 #include <string.h>
 
@@ -73,6 +76,10 @@
 static uintptr_t g_uart_base = CONFIG_UART0_BASE;
 
 #define UART_FIFO(base)         ((base) + 0x00)  /* RO/WO FIFO data port     */
+#define UART_INT_RAW(base)      ((base) + 0x04)  /* raw interrupt status     */
+#define UART_INT_ST(base)       ((base) + 0x08)  /* masked interrupt status  */
+#define UART_INT_ENA(base)      ((base) + 0x0c)  /* interrupt enable         */
+#define UART_INT_CLR(base)      ((base) + 0x10)  /* write 1 to clear         */
 #define UART_CLKDIV_SYNC(base)  ((base) + 0x14)  /* baud divisor, int + frac */
 #define UART_STATUS(base)       ((base) + 0x1c)  /* RXFIFO_CNT / TXFIFO_CNT  */
 #define UART_CONF0_SYNC(base)   ((base) + 0x20)  /* frame format, FIFO reset */
@@ -107,6 +114,48 @@ static uintptr_t g_uart_base = CONFIG_UART0_BASE;
 #define UART_TX_FLOW_EN         (1u << 13)
 #define UART_RXFIFO_RST         (1u << 22)
 #define UART_TXFIFO_RST         (1u << 23)
+
+/* The interrupt bits, identical across INT_RAW / INT_ST / INT_ENA / INT_CLR
+ * (TRM Registers 45.2-45.5). Only three of the twenty are used here.
+ *
+ * INT_ST is INT_RAW masked by INT_ENA, which is the property the ISR relies
+ * on: clearing a bit in INT_ENA takes the line down at the source even while
+ * the underlying condition persists. Since RXFIFO_FULL and TXFIFO_EMPTY are
+ * both *conditions* rather than events -- they re-assert as soon as they are
+ * cleared, for as long as the FIFO stays that way -- INT_ENA is the only
+ * thing standing between an enabled console interrupt and an interrupt
+ * storm. Every path below therefore disables before it clears, never the
+ * other way round.
+ *
+ * RXFIFO_TOUT is enabled alongside RXFIFO_FULL and not instead of it. The
+ * TRM says only "Configures the threshold for RX FIFO being full"; IDF's
+ * generated header is the one that says "when receiver receives more data
+ * than this register value", i.e. strictly greater, which would make a
+ * threshold of 1 need two bytes to fire and lose the first keystroke of
+ * every line. The timeout closes that: it fires when the receiver has been
+ * idle for RX_TOUT_THRHD byte-times with anything at all in the FIFO. IDF's
+ * own driver enables the pair together for the same reason
+ * (esp_driver_uart/src/uart.c), which is the corroboration for reading the
+ * threshold as exclusive rather than assuming the friendlier one. */
+#define UART_RXFIFO_FULL_INT    (1u << 0)
+#define UART_TXFIFO_EMPTY_INT   (1u << 1)
+#define UART_RXFIFO_TOUT_INT    (1u << 8)
+#define UART_RX_INTS            (UART_RXFIFO_FULL_INT | UART_RXFIFO_TOUT_INT)
+
+/* UART_CONF1_REG (TRM Register 45.10). Not a _SYNC register -- it takes
+ * effect without the UART_REG_UPDATE handshake, which IDF's uart_ll.h
+ * confirms by writing it directly. */
+#define UART_RXFIFO_FULL_THRHD_SHIFT   0
+#define UART_RXFIFO_FULL_THRHD_MASK    (0xffu << UART_RXFIFO_FULL_THRHD_SHIFT)
+#define UART_TXFIFO_EMPTY_THRHD_SHIFT  8
+#define UART_TXFIFO_EMPTY_THRHD_MASK   (0xffu << UART_TXFIFO_EMPTY_THRHD_SHIFT)
+
+/* UART_TOUT_CONF_SYNC_REG (TRM Register 45.17) -- this one *is* _SYNC and
+ * needs the commit. RX_TOUT_THRHD is in byte-times, [11:2]. */
+#define UART_TOUT_CONF_SYNC(base) ((base) + 0x64)
+#define UART_RX_TOUT_EN         (1u << 0)
+#define UART_RX_TOUT_THRHD_SHIFT 2
+#define UART_RX_TOUT_THRHD_MASK  (0x3ffu << UART_RX_TOUT_THRHD_SHIFT)
 
 /* UART_CLKDIV_SYNC_REG (TRM Register 45.7): a 12-bit integer part and a
  * 4-bit fraction in sixteenths, i.e. the divisor is CLKDIV + FRAG/16. */
@@ -225,22 +274,127 @@ static bool hw_uart_tx_room(void) {
     return used < UART_FIFO_DEPTH;
 }
 
+/* --- the ISR, E3 --------------------------------------------------------
+ *
+ * One waiter slot per direction, held by whichever task is about to block,
+ * and the corresponding INT_ENA bit is set only for the duration of that
+ * wait. Structurally the same as drivers/uart_16550.c's, and for the same
+ * reason: the conditions are level, so a source left enabled with nobody
+ * waiting on it fires on every return from interrupt for as long as the
+ * condition holds. A second concurrent waiter in the same direction falls
+ * back to polling rather than being queued -- the single-slot, busy-refuses
+ * shape chan_call() itself uses.
+ *
+ * A note on what this is *not*: the ISR does not touch the FIFO. It wakes
+ * the task that was waiting and lets that task do the read or the write.
+ * Draining the FIFO here would put console bytes somewhere the demux
+ * (drivers/uart_net.c) cannot see them. */
+static volatile int g_rx_waiter = -1;
+static volatile int g_tx_waiter = -1;
+static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
+static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
+
+static void uart_isr(void *ctx) {
+    (void)ctx;
+    g_uart_irq_count++;
+    uintptr_t base = g_uart_base;
+    uint32_t st = REG(UART_INT_ST(base));
+
+    /* Everything that fired gets disabled, whether or not there was a waiter
+     * for it. That is deliberate belt-and-braces: only a task about to block
+     * ever re-enables a bit, so masking unconditionally here means no
+     * sequence of events -- a race with the fast path, a spurious source
+     * sharing this line, an ISR that ran twice -- can leave a level
+     * condition enabled with nothing to serve it. The cost of being wrong in
+     * this direction is one interrupt not taken; the cost of being wrong in
+     * the other is a board that only prints. */
+    uint32_t served = st & (UART_RX_INTS | UART_TXFIFO_EMPTY_INT);
+    if (served) REG(UART_INT_ENA(base)) &= ~served;
+
+    if ((st & UART_RX_INTS) && g_rx_waiter >= 0) {
+        g_uart_irq_rx_wakes++;
+        int pid = g_rx_waiter;
+        g_rx_waiter = -1;
+        task_unblock(pid);
+    }
+    if ((st & UART_TXFIFO_EMPTY_INT) && g_tx_waiter >= 0) {
+        int pid = g_tx_waiter;
+        g_tx_waiter = -1;
+        task_unblock(pid);
+    }
+
+    /* Acknowledge last. This is also what takes the CLIC's pending bit down:
+     * the line is configured level-triggered (arch/riscv/common/trap.c), so
+     * clicintip follows the peripheral and "cleared from source" means
+     * exactly this store. */
+    REG(UART_INT_CLR(base)) = st;
+}
+
 /* The blocking primitives. Whoever calls these owns the hardware -- normally
  * the uart task, exclusively, once it is up.
  *
- * sched_yield() rather than a bare spin: it is a no-op when nothing else is
- * runnable (and before sched_init(), when there is no task table at all), so
- * the same code serves the boot path and the running system. Same structure
- * as drivers/uart_16550.c's polling fallback, minus the ISR fast path that
- * has no controller to attach to until E3. */
+ * Two paths, in this order: block on the interrupt if there is a task to
+ * block and the slot is free, otherwise spin with sched_yield(). The spin is
+ * not a leftover -- it is the only thing that works before sched_init(), and
+ * every line of boot output before the uart task exists goes through it. */
 static void uart_hw_putc_blocking(char c) {
     if (!g_uart_base) return;
-    while (!hw_uart_tx_room()) sched_yield();
+    if (hw_uart_tx_room()) {
+        REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
+        return;
+    }
+    /* Nothing between the fast-path miss and task_block() may restore
+     * interrupts early: a TX interrupt landing in that gap would find this
+     * task still RUNNING rather than BLOCKED, task_unblock() would no-op,
+     * and the ISR would have "served" a wakeup nobody was asleep for -- a
+     * silent, permanent lost wakeup. So the whole decision runs under one
+     * irq_save(). Copied in shape from drivers/uart_16550.c, where the same
+     * comment is the record of having got it wrong first. */
+    uintptr_t flags = irq_save();
+    /* Acknowledge before re-testing, not after. Both orderings look right;
+     * only this one is. INT_CLR takes down a raw bit that may be left over
+     * from an earlier condition -- without it the enable below would deliver
+     * an immediate stale interrupt and this function would return having
+     * written to a full FIFO. But clearing it *after* the test would instead
+     * discard the notification for a condition that became true in between,
+     * and the task would sleep on an event that had already happened. Clear
+     * first, test second: hardware re-asserts the raw bit for as long as the
+     * condition holds, so anything that arrives from here on is either seen
+     * by the test or delivered by the enable. */
+    REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
+    if (!hw_uart_tx_room()) {
+        if (g_tx_waiter < 0 && sched_has_task()) {
+            g_tx_waiter = sched_current_pid();
+            REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
+            task_block();
+        } else {
+            irq_restore(flags);
+            while (!hw_uart_tx_room()) sched_yield();
+            flags = irq_save();
+        }
+    }
+    irq_restore(flags);
     REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
 }
 
 static uint8_t uart_hw_getc_blocking(void) {
-    while (!hw_uart_has_char()) sched_yield();
+    if (hw_uart_has_char()) return hw_uart_getc();
+    uintptr_t flags = irq_save();
+    /* Clear first, test second -- see uart_hw_putc_blocking() above for why
+     * the other order loses a keystroke rather than merely being untidy. */
+    REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
+    if (!hw_uart_has_char()) {
+        if (g_rx_waiter < 0 && sched_has_task()) {
+            g_rx_waiter = sched_current_pid();
+            REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
+            task_block();
+        } else {
+            irq_restore(flags);
+            while (!hw_uart_has_char()) sched_yield();
+            flags = irq_save();
+        }
+    }
+    irq_restore(flags);
     return hw_uart_getc();
 }
 
@@ -276,6 +430,8 @@ static uint32_t         g_uart_write_calls;
 static volatile bool    g_uart_write_in_flight;
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
+uint32_t uart_irq_count(void) { return g_uart_irq_count; }
+uint32_t uart_irq_rx_wakes(void) { return g_uart_irq_rx_wakes; }
 
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;
@@ -319,6 +475,12 @@ static void uart_task_body(void *arg) {
 }
 
 int uart_task_start(void) {
+    /* Unmask the console's interrupt line here rather than in uart_init(),
+     * for the ordering reason that function's step 8 sets out: trap_init()
+     * masks every CLIC line as its first act, and it runs in between. From
+     * this point a task blocking on the console really sleeps. */
+    arch_irq_enable(ESP32P4_CLIC_IRQ_UART0);
+
     int pid = task_create_driver("uart", uart_task_body, NULL, 1);
     if (pid < 0) {
         printk("[UART] Could not start the uart task; console stays on direct hardware access.\n");
@@ -441,14 +603,65 @@ void uart_init(uintptr_t base_addr) {
     REG(IOMUX_PAD(CONFIG_UART0_RX_GPIO)) = pad | IOMUX_FUN_UART0 |
                                            IOMUX_FUN_IE | IOMUX_FUN_PU;
 
+    /* 7. Interrupts (E3).
+     *
+     * Everything masked and acknowledged first. INT_ENA has no reset value
+     * this code can rely on -- the ROM's own download loader uses this UART
+     * -- and TXFIFO_EMPTY_INT_RAW is *set at reset* (TRM Register 45.2's
+     * reset row has bit 1 high, because an empty TX FIFO is what the
+     * condition means), so an enable without a preceding clear would take an
+     * interrupt for a condition that was true before the kernel existed. */
+    REG(UART_INT_ENA(base)) = 0;
+    REG(UART_INT_CLR(base)) = 0xffffffffu;
+
+    /* Thresholds. RX: 1, the lowest useful value -- one byte in the FIFO
+     * should wake a reader, and the timeout below covers the reading of that
+     * threshold as exclusive. TX: 64, half the 128-byte FIFO, so a writer
+     * that filled the FIFO is woken with room for a useful batch rather than
+     * for a single byte. */
+    uint32_t conf1 = REG(UART_CONF1(base));
+    conf1 &= ~(UART_RXFIFO_FULL_THRHD_MASK | UART_TXFIFO_EMPTY_THRHD_MASK);
+    conf1 |= (1u << UART_RXFIFO_FULL_THRHD_SHIFT) |
+             (64u << UART_TXFIFO_EMPTY_THRHD_SHIFT);
+    REG(UART_CONF1(base)) = conf1;
+
+    /* RX idle timeout: 2 byte-times. Short enough that a keystroke is not
+     * perceptibly delayed (at 115200 a byte-time is 87 us), long enough not
+     * to fire in the middle of a paste. */
+    uint32_t tout = REG(UART_TOUT_CONF_SYNC(base));
+    tout &= ~UART_RX_TOUT_THRHD_MASK;
+    tout |= (2u << UART_RX_TOUT_THRHD_SHIFT) | UART_RX_TOUT_EN;
+    REG(UART_TOUT_CONF_SYNC(base)) = tout;
+    uart_commit(base);
+
     /* The A3b demux (drivers/uart_net.c) gets the raw accessors, same as on
      * every other target: when `p9share` is on, some of what is waiting in
      * the FIFO is 9P frame bytes and the console may not read the register
      * directly. */
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
 
-    /* No devirq_attach()/arch_irq_enable() here, and no mie bit. E3 is where
-     * this file learns about the CLIC; see the header comment. */
+    /* 8. Route the peripheral to a CPU interrupt line, and attach the
+     * handler to it.
+     *
+     * UART0's interrupt signal is source 31 in the interrupt matrix (TRM
+     * Table 13.4-1 -- and its mapping register's offset 0x7C is 4*31, which
+     * is the same fact stated twice). Nothing reaches the CPU until it has
+     * been routed to one of the 32 lines this core has. *Which* line is an
+     * allocation rather than a hardware fact, so it is written down in
+     * arch/esp32p4_intr.h, where a second driver picking the same number
+     * would be a visible edit instead of a coincidence.
+     *
+     * Handler before enable, as arch/trap.h asks. The enable itself is not
+     * here: main.c calls uart_init() long before trap_init(), and
+     * trap_init()'s CLIC bring-up begins by masking every line -- including
+     * one enabled from here, which would then never be re-enabled. So
+     * arch_irq_enable() lives in uart_task_start() instead, which runs after
+     * both. Nothing is lost by waiting: until sched_init() there is no task
+     * for the ISR to wake, and every blocking primitive above already falls
+     * back to polling in exactly that case. */
+    if (esp32p4_intmtx_route(31u, ESP32P4_CLIC_IRQ_UART0) == 0) {
+        devirq_attach(ESP32P4_CLIC_IRQ_UART0, uart_isr, NULL);
+    }
 }
 
 /* --- the facade (identical in shape to drivers/uart_16550.c's) ----------- */

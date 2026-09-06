@@ -16,7 +16,15 @@
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
 #include "arch/rp2350_bootrom.h"
-#define REG(addr) (*(volatile uint32_t *)(addr))
+#endif
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "arch/esp32p4_intr.h"
+#endif
+
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+/* Both boards reach memory-mapped controller registers from this file; the
+ * QEMU targets use their own casts inline in the PLIC helpers below. */
+#define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 #endif
 
 /* M5 Phase 5, plan/phase12_microkernel_migration.md: SYS_CHAN_SERVE_WAIT/
@@ -71,27 +79,169 @@ static inline uint32_t meinext_irq(bool *valid) {
     return (uint32_t)((v >> 2) & 0x1ffu);
 }
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* ESP32-P4: no external-interrupt controller here yet, on purpose.
+/* ESP32-P4: the CLIC, E3 (plan/phase27_esp32p4_bringup.md).
  *
- * This board's is a CLIC at 0x20800000, and it is *not* the standard one:
- * the interrupt threshold is a memory-mapped register rather than a CSR, and
- * mintstatus sits at 0x346 (E0 section 5, plan/phase27_esp32p4_bringup.md).
- * Bringing it up is E3, which the plan puts before Time precisely because
- * mtvec.MODE is read-only at CLIC mode and the timer interrupt itself
- * arrives as clicintie[7] -- there is no tick without an interrupt
- * controller on this chip.
+ * Not the standard one. IDF gates on CONFIG_ESP32P4_SELECTS_REV_LESS_V3 and
+ * this board is v1.3, so: the interrupt threshold is a memory-mapped
+ * register rather than the mintthresh CSR, and mintstatus sits at 0x346
+ * instead of 0xFB1 (components/soc/esp32p4/include/soc/interrupt_reg.h says
+ * both, in those words). Neither CSR is read here -- this kernel has one
+ * flat interrupt priority and never asks what level it is running at -- but
+ * they are why "write it against the CLIC specification" would have been
+ * the wrong instruction to follow.
  *
- * So E2 runs with mstatus.MIE clear from _start onwards and nothing enabled
- * behind it. What still works, and is worth having: mtvec is set (entry.S),
- * and in CLIC mode *exceptions* still vector to it -- only interrupts go
- * through mtvt. A misaligned load or a bad instruction therefore lands in
- * trap_handler() and produces the same register dump every other target
- * produces, which is the difference between a bug and a board that stopped.
+ * Layout from TRM section 2.9.2.6's register summary, cross-checked against
+ * IDF's soc/clic_reg.h, which describes the same registers through a
+ * word-wide view (CLIC_INT_CTRL_REG(i): IP bit 0, IE bit 8, SHV bit 16,
+ * TRIG [18:17], MODE [23:22], CTL [31:24]). Two independent descriptions
+ * that agree, which is section 3.2's rule about not inferring register
+ * layouts satisfied twice over.
  *
- * The absent arm is deliberately not written as a silent fall-through to the
- * PLIC branch below. 0x0c000000 is not a PLIC on this chip; it is not
- * anything, and writing to it during boot would fail as a bus error inside
- * trap_init() with no console yet to say so. */
+ * The per-interrupt registers are byte-sized and the TRM says so explicitly
+ * ("clicintip[i], clicintie[i], clicintattr[i] and clicintctl[i] registers
+ * are all byte sized"), so they are accessed as bytes here. */
+#define P4_CLIC_BASE        0x20800000UL
+#define P4_CLIC_CFG         (P4_CLIC_BASE + 0x0000UL)  /* mcliccfg          */
+#define P4_CLIC_INFO        (P4_CLIC_BASE + 0x0004UL)  /* clicinfo (RO)     */
+#define P4_CLIC_THRESH      (P4_CLIC_BASE + 0x0008UL)  /* mintthresh, TH<<24 */
+#define P4_CLIC_CTRL_BASE   (P4_CLIC_BASE + 0x1000UL)
+#define P4_CLIC_IP(i)       (P4_CLIC_CTRL_BASE + 4UL * (i) + 0UL)
+#define P4_CLIC_IE(i)       (P4_CLIC_CTRL_BASE + 4UL * (i) + 1UL)
+#define P4_CLIC_ATTR(i)     (P4_CLIC_CTRL_BASE + 4UL * (i) + 2UL)
+#define P4_CLIC_CTL(i)      (P4_CLIC_CTRL_BASE + 4UL * (i) + 3UL)
+
+/* mcliccfg, legacy (pre-v3) field positions: NVBITS bit 0 (RO, reads 1),
+ * MNLBITS [4:1], NMBITS [6:5] (RO, 0 = machine mode only). The v3 silicon
+ * moves MNLBITS to [3:0] and adds S/U-mode copies at [19:16] and [27:24] --
+ * which is precisely why this is written out rather than borrowed from a
+ * header that defines both sets and lets sdkconfig choose. */
+#define P4_CLIC_CFG_MNLBITS_SHIFT 1
+#define P4_CLIC_CFG_MNLBITS_MASK  (0xfu << P4_CLIC_CFG_MNLBITS_SHIFT)
+
+/* clicintattr[i]: SHV bit 0, TRIG [2:1], MODE [7:6]. */
+#define P4_CLIC_ATTR_SHV          (1u << 0)
+#define P4_CLIC_ATTR_TRIG_LEVEL   (0u << 1)
+#define P4_CLIC_ATTR_MODE_M       (3u << 6)
+
+/* CLICINTCTLBITS is 3 on this implementation, so only clicintctl[7:5] are
+ * writable and the low five bits read back as 1 whatever is written. 0xff is
+ * therefore the maximum: level 255 under mcliccfg.MNLBITS = 0, and level 7
+ * (encoded 255) under any other value of MNLBITS. That the same constant is
+ * right under every encoding is the point -- see clic_init(). */
+#define P4_CLIC_CTL_MAX           0xffu
+
+#define P4_CLIC_IRQ_TIMER   7u
+#define P4_CLIC_IRQ_COUNT   48u
+
+/* The interrupt matrix (TRM chapter 13), per core: CPU0's window at
+ * 0x500D6000 and CPU1's 0x800 above it (IDF reg_base.h,
+ * DR_REG_INTERRUPT_CORE0_BASE = DR_REG_HPPERIPH1_BASE + 0x16000, and TRM
+ * Table 9.3-2 gives INTMTX as 0x500D_6000..0x500D_6FFF).
+ *
+ * Unlike the CLIC, this block is *not* self-relative: there is no window
+ * that means "my core". A core writing CORE0's registers routes interrupts
+ * to core 0 no matter which core executed the write, so the base has to be
+ * chosen from hart_id() rather than assumed -- the same mistake phase 23's
+ * X1 found in the PLIC path here, avoided in advance this time. */
+#define P4_INTMTX_CORE0     0x500D6000UL
+#define P4_INTMTX_CORE_STEP 0x800UL
+
+static inline uintptr_t p4_intmtx_base(void) {
+    return P4_INTMTX_CORE0 + (uintptr_t)hart_id() * P4_INTMTX_CORE_STEP;
+}
+
+static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
+    return (volatile uint8_t *)addr;
+}
+
+/* See arch/esp32p4_intr.h. */
+int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id) {
+    if (clic_id < ESP32P4_CLIC_IRQ_MIN || clic_id > ESP32P4_CLIC_IRQ_MAX) {
+        printk("[CLIC] Refusing to route source %u to line %u: "
+               "only %u..%u are external interrupts\n",
+               (unsigned)src, (unsigned)clic_id,
+               (unsigned)ESP32P4_CLIC_IRQ_MIN, (unsigned)ESP32P4_CLIC_IRQ_MAX);
+        return -1;
+    }
+    /* Sources 0..127 have their mapping register at offset 4*src. The chip
+     * has three more (128..130) but they do not continue the run: offsets
+     * 0x200..0x210 are the interrupt-status registers and the block's clock
+     * gate, and the last three mapping registers resume at 0x214. So the
+     * bound here is where the arithmetic stops being true, not where the
+     * source list stops -- computing 4*130 would write the clock gate. If a
+     * later milestone needs one of those three, it needs the offset table,
+     * not a bigger constant. */
+    if (src > 127u) {
+        printk("[CLIC] Refusing to route source %u: only 0..127 are at "
+               "offset 4*src\n", (unsigned)src);
+        return -1;
+    }
+    /* The CLIC ID goes in bits [5:0]. The two bits above it
+     * (SRC_PASS_IN_SEC, SRC_IN_SEC_FLAG) are the U-mode interrupt-remapping
+     * controls this kernel does not use, so a whole-word store of the ID is
+     * also the correct way to leave them clear. */
+    REG(p4_intmtx_base() + 4UL * src) = clic_id;
+    return 0;
+}
+
+/* Bring the CLIC up. Called from trap_init() only.
+ *
+ * Order matters in one place and not in the others: everything is masked
+ * before anything is unmasked. */
+static void p4_clic_init(void) {
+    /* 1. Every line off, before anything else.
+     *
+     * The ROM ran with interrupts of its own, and unlike the CLIC's *pending*
+     * bits its enables have no reset this code arrives after. An enable left
+     * set on a level-triggered source nobody clears is not a stray interrupt,
+     * it is a permanent one: the handler returns, the condition is still
+     * asserted, and the core re-enters immediately and forever. This is the
+     * same hazard the RP2350 arm's meifa clearing addresses, and it is worth
+     * the 45 byte writes for the same reason -- "has always been zero" is not
+     * a property this boot path inherits.
+     *
+     * From 3 rather than 0: 0..2 are not implemented (the CLIC's first real
+     * source is the software interrupt at 3). */
+    for (unsigned i = 3; i < P4_CLIC_IRQ_COUNT; i++) {
+        *p4_clic_byte(P4_CLIC_IE(i)) = 0;
+    }
+
+    /* 2. mcliccfg.MNLBITS = 0.
+     *
+     * With MNLBITS 0 the whole of clicintctl[i] encodes priority and every
+     * interrupt has level 255 (TRM Table 2.9-2, first row). That is exactly
+     * the shape this kernel wants: one flat level, no preemption of a
+     * handler by another interrupt, and no way for an unwritten clicintctl
+     * to leave a line masked.
+     *
+     * That last part is not hypothetical. IDF runs MNLBITS = 3, where the
+     * level comes from clicintctl[7:5] -- whose reset value is 0. Level 0
+     * against a threshold of 0 is masked, because the TRM's rule is "less
+     * than or equal to the effective threshold are not allowed to preempt".
+     * So under IDF's configuration an interrupt that is enabled, routed,
+     * pending and unmasked still never fires until its clicintctl is
+     * written. arch_irq_enable() writes it anyway (0xff is the maximum under
+     * either encoding), so this kernel is correct whichever value MNLBITS
+     * ends up holding -- but it sets the one where the failure cannot happen.
+     *
+     * Read-modify-write: bits 0 and [6:5] are read-only and writing back
+     * what was read is the only way to leave them alone. */
+    uint32_t cfg = REG(P4_CLIC_CFG);
+    cfg &= ~P4_CLIC_CFG_MNLBITS_MASK;
+    REG(P4_CLIC_CFG) = cfg;
+
+    /* 3. Threshold 0: accept every level above 0, which after step 2 is
+     * every interrupt there is.
+     *
+     * TH lives in the top 8 bits. The read-back is not a check, it is the
+     * commit: IDF's rv_utils_restore_intlevel_regval() notes that "after
+     * writing the threshold register, the new threshold is not directly
+     * taken into account by the CPU" and forces the store with a load before
+     * re-enabling MIE. Same store, same reason, same place in the order. */
+    REG(P4_CLIC_THRESH) = 0;
+    (void)REG(P4_CLIC_THRESH);
+}
+
 #else
 /* QEMU virt's PLIC -- shared by both QEMU targets, which differ only in
  * which context and cause code they see: standard PLIC convention numbers
@@ -186,10 +336,62 @@ void trap_init(void) {
     mstatus_val |= (1u << 3);
     __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* Nothing to arm. mtvec was set by entry.S and mstatus.MIE is clear;
-     * enabling a source with no controller configured behind it is how a
-     * board takes an interrupt into a vector that has never been set up. E3
-     * fills this in -- see the CLIC note above. */
+    /* mtvt (CSR 0x307): the hardware-vectored jump table.
+     *
+     * This kernel does not use hardware vectoring. Every line it enables is
+     * given clicintattr[i].SHV = 0, and the TRM is unambiguous about what
+     * that means: "upon taking this interrupt, the CPU will jump to the
+     * address configured in mtvec" -- the one vector entry.S already
+     * installed, which saves a full frame and calls trap_handler(), and
+     * which mcause then tells which interrupt it was. One entry point for
+     * exceptions and interrupts alike, exactly as on the other three
+     * targets.
+     *
+     * mtvt is set anyway, and the reason is the argument
+     * drivers/uart_esp32p4.c makes about the console: "it works because of
+     * what the loader left behind" is a property of one boot path. If
+     * anything ever takes an interrupt with SHV set -- a line this file did
+     * not enable, an SHV bit this file did not write, a second-stage
+     * bootloader in E6 that leaves the CLIC configured differently -- the
+     * core loads a word from mtvt and jumps through it. Leaving that word as
+     * whatever the ROM left in the CSR turns a stray interrupt into a jump
+     * to an arbitrary address. 192 bytes of table make it a jump to the trap
+     * vector instead, where it is reported rather than executed.
+     *
+     * Aligned to 256: the CLIC specification requires the table to be
+     * aligned to a power of two at least as large as itself, and 4 * 48
+     * entries is 192. */
+    {
+        extern void trap_vector_entry(void);
+        /* Filled at run time rather than with a 48-entry initializer list:
+         * the list would be 48 chances to miscount, and this way the table's
+         * length and the loop's bound are the same constant. It is written
+         * in full before mtvt is pointed at it, so there is no window in
+         * which the CSR names a table of zeroes. */
+        static void (*p4_mtvt[P4_CLIC_IRQ_COUNT])(void) __attribute__((aligned(256)));
+        for (unsigned i = 0; i < P4_CLIC_IRQ_COUNT; i++) {
+            p4_mtvt[i] = trap_vector_entry;
+        }
+        __asm__ __volatile__("csrw 0x307, %0" :: "r"((uintptr_t)p4_mtvt));
+    }
+
+    p4_clic_init();
+
+    /* Global interrupt enable, here rather than in main.c.
+     *
+     * main.c turns interrupts on with irq_restore(IRQ_ENABLE_BIT) only if
+     * ticker_init() succeeded, which on this board it does not: the tick
+     * runs off the CLINT and that is E4. Waiting for the ticker would mean a
+     * UART interrupt that is routed, enabled, pending and unmasked at the
+     * controller, and still never delivered -- the exact failure mode this
+     * board specialises in, since mstatus.MIE is the one interrupt CSR here
+     * that does still work.
+     *
+     * Same csrs-in-trap_init() shape the RP2350 arm above uses, and safe for
+     * the same reason: nothing is enabled behind it yet. Every source is
+     * masked by the loop in p4_clic_init(), and the only driver that unmasks
+     * one does so from its own init. */
+    set_csr(mstatus, 1UL << 3); /* MIE */
 #else
     /* M2, plan/phase12_microkernel_migration.md: the arch-global gate for
      * QEMU's PLIC path (both targets -- see the CONFIG_MODE_S/M split above
@@ -230,13 +432,42 @@ void arch_irq_enable(uint32_t irq_num) {
     uintptr_t v = index | ((uintptr_t)mask << 16);
     __asm__ __volatile__("csrrs zero, 0xbe0, %0" :: "r"(v)); /* RVCSR_MEIEA */
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* No controller yet (E3). Refusing loudly rather than silently: a driver
-     * that reaches here has attached a handler that will never be called,
-     * and a console line at boot is much cheaper than working that out from
-     * a device that is simply quiet. Only drivers/uart_esp32p4.c exists on
-     * this board in E2, and it deliberately does not call this. */
-    printk("[Trap] arch_irq_enable(%u) ignored: the ESP32-P4 CLIC is not up yet (E3)\n",
-           (unsigned)irq_num);
+    /* CLIC: describe the line, then enable it -- attributes and level first,
+     * so the line is never briefly enabled while still carrying whatever the
+     * ROM configured.
+     *
+     * The caller's number IS the CLIC interrupt ID (arch/esp32p4_intr.h),
+     * which for an external interrupt is 16..47. A number outside that range
+     * is refused rather than clamped: writing clicintie[3] or [7] here would
+     * arm the software or timer interrupt from a call that meant to arm a
+     * device, and those are E4's to arm. */
+    if (irq_num < ESP32P4_CLIC_IRQ_MIN || irq_num > ESP32P4_CLIC_IRQ_MAX) {
+        printk("[CLIC] arch_irq_enable(%u) refused: not an external interrupt "
+               "(%u..%u)\n", (unsigned)irq_num,
+               (unsigned)ESP32P4_CLIC_IRQ_MIN, (unsigned)ESP32P4_CLIC_IRQ_MAX);
+        return;
+    }
+
+    /* Positive level-triggered, machine mode, not hardware vectored.
+     *
+     * Level, not edge, because that is what comes out of the interrupt
+     * matrix: a peripheral asserts its signal and holds it until its own
+     * interrupt-clear register is written. The CLIC follows -- with TRIG = 0
+     * the TRM makes clicintip read-only and says "to clear it the interrupt
+     * must be cleared from source", which is the correct relationship
+     * between this register and a driver's ISR. Choosing edge here would
+     * make the pending bit software-clearable and let a handler that forgot
+     * to touch the peripheral appear to work. */
+    *p4_clic_byte(P4_CLIC_ATTR(irq_num)) =
+        (uint8_t)(P4_CLIC_ATTR_MODE_M | P4_CLIC_ATTR_TRIG_LEVEL);
+
+    /* Maximum level/priority. One flat interrupt level, the same choice the
+     * two branches either side of this make for their own controllers.
+     * p4_clic_init() explains why this write is what makes the kernel
+     * independent of mcliccfg.MNLBITS. */
+    *p4_clic_byte(P4_CLIC_CTL(irq_num)) = P4_CLIC_CTL_MAX;
+
+    *p4_clic_byte(P4_CLIC_IE(irq_num)) = 1;
 #else
     /* PLIC: give the IRQ a nonzero priority (0 permanently masks it,
      * independent of any enable bit -- the PLIC spec's own "never
@@ -286,7 +517,31 @@ uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
     uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* In CLIC mode mcause is not just a cause code with an interrupt bit on
+     * top. It also carries the state that mret restores: MPP in [29:28],
+     * MPIE at 27, and the previous interrupt level MPIL in [23:16]. The code
+     * itself is EXCCODE, [11:0] -- widened from the base ISA's [30:0]
+     * precisely to make room for those fields.
+     *
+     * So "everything except the top bit" is the wrong mask here, and wrong
+     * in a way that reads as hardware trouble rather than arithmetic: the
+     * first UART interrupt this kernel ever took on the P4 arrived as
+     * 0x38000010, which is MPP=3, MPIE=1, MPIL=0 and, in the low twelve
+     * bits, interrupt 16 -- the console, correctly routed, correctly
+     * delivered, and unrecognisable to every comparison below. It fell
+     * through to the "Interrupt received" line, returned without touching
+     * the peripheral, and a level-triggered source re-entered immediately.
+     * An interrupt controller that works perfectly and a console that
+     * prints one line forever look identical from the other end of the
+     * cable.
+     *
+     * Masking applies to exceptions too, not only interrupts: MPP and MPIE
+     * are in mcause whatever kind of trap it was. */
+    uintptr_t code = cause & 0xfffu;
+#else
     uintptr_t code = cause & ~((uintptr_t)1 << (__riscv_xlen - 1));
+#endif
 
     if (is_interrupt) {
         /* Timer: 7 is machine-mode, 5 is supervisor-mode. This is the
@@ -325,10 +580,27 @@ void trap_handler(trap_frame_t *frame) {
             return;
         }
 #elif defined(CONFIG_BOARD_ESP32P4)
-        /* Unreachable in E2 -- nothing is enabled to deliver one -- so an
-         * external interrupt arriving here is evidence, not an event to
-         * service. It falls through to the "Interrupt received" line below,
-         * which names the cause code. */
+        /* CLIC (E3). There is no claim register and nothing to acknowledge:
+         * mcause already holds the interrupt ID, and for a level-triggered
+         * line the pending bit follows the peripheral, so the *driver's* ISR
+         * writing its own interrupt-clear register is the whole acknowledge
+         * path. That is why the ID is passed straight through -- the number
+         * a driver attached with (arch/esp32p4_intr.h) is the number the
+         * hardware reports, with no offset in between to get backwards.
+         *
+         * An ID with no handler is not merely unserviced here, it is fatal
+         * if left alone: level-triggered means the source is still asserted
+         * on return, so the core re-enters immediately, forever, printing as
+         * it goes. So the line is masked on the way out. Losing an interrupt
+         * nobody claimed is the strictly better failure. */
+        if (code >= ESP32P4_CLIC_IRQ_MIN && code <= ESP32P4_CLIC_IRQ_MAX) {
+            if (devirq_dispatch((uint32_t)code) != 0) {
+                *p4_clic_byte(P4_CLIC_IE(code)) = 0;
+                printk("[CLIC] Masked interrupt %u: no handler, and a level-"
+                       "triggered source would re-enter forever\n", (unsigned)code);
+            }
+            return;
+        }
 #else
         if (code == QEMU_EXT_CAUSE) {
             uint32_t irq_num = plic_claim();
@@ -680,9 +952,34 @@ void trap_handler(trap_frame_t *frame) {
             return;
         }
 
-        /* Fatal exception hang */
+        /* Fatal exception hang.
+         *
+         * The faulting instruction is read back and printed, but only from
+         * an address that is known to be readable: a fault whose epc is
+         * garbage would otherwise take a second fault inside the handler
+         * that is reporting the first, and the register dump -- the whole
+         * point of getting here -- would never be printed.
+         *
+         * The window is per board because it is a fact about a board.
+         * 0x10000000..0x20082000 covers RP2350's XIP flash and SRAM and
+         * QEMU virt's RAM; the ESP32-P4 links at 0x4FF00000 and would have
+         * fallen outside it, printing inst=0x00000000 for every fault on the
+         * one target E3 has to demonstrate a fault dump on. Found by reading
+         * this line while writing that demonstration, not by seeing the
+         * zero -- a zero here is indistinguishable from a genuine zero word,
+         * which is what makes it worth stating rather than leaving to be
+         * noticed. */
+#if defined(CONFIG_BOARD_ESP32P4)
+        extern char _ram_start[];
+        extern char _ram_end[];
+        const uintptr_t inst_lo = (uintptr_t)_ram_start;
+        const uintptr_t inst_hi = (uintptr_t)_ram_end;
+#else
+        const uintptr_t inst_lo = 0x10000000;
+        const uintptr_t inst_hi = 0x20082000;
+#endif
         uint32_t inst_val = 0;
-        if (frame->epc >= 0x10000000 && frame->epc < 0x20082000) {
+        if (frame->epc >= inst_lo && frame->epc < inst_hi - 4u) {
             const uint8_t *p = (const uint8_t *)frame->epc;
             inst_val = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
         }

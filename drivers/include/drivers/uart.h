@@ -36,6 +36,35 @@ void uart_puts(const char *s);
 // comment.
 uint32_t uart_write_call_count(void);
 
+// How many times this driver's interrupt handler has run since boot.
+//
+// The counterpart to uart_write_call_count(), and added for the same kind of
+// reason: a console that answers keystrokes proves nothing about *how* it
+// noticed them, because every one of these drivers keeps a sched_yield()
+// polling fallback underneath the ISR for the paths that cannot block. The
+// two are indistinguishable from the far end of the cable. A count that
+// grows is the evidence.
+//
+// Written on ESP32-P4 bringup (E3, plan/phase27_esp32p4_bringup.md), where
+// the question was live -- the interrupt controller was new that day -- and
+// implemented on all three console drivers so `uartstats` means the same
+// thing on every target rather than one.
+uint32_t uart_irq_count(void);
+
+// Of those, how many woke a task that was blocked waiting to *read*.
+//
+// The number that actually answers "is the console interrupt-driven?", which
+// the total does not: a driver whose TX path blocks on an interrupt and whose
+// RX path polls produces a healthy-looking irq count and still spins on every
+// keystroke. Splitting them is what makes E3's done-condition -- "a UART RX
+// interrupt reaches a handler" -- checkable rather than plausible.
+//
+// drivers/uart_rp2350.c returns 0 and always will: its ISR serves TX only,
+// because that board's RX arrives through two paths (the PL011 and the USB
+// CDC mirror) and the console pump polls both. That is a real difference
+// between the drivers, so it is reported rather than smoothed over.
+uint32_t uart_irq_rx_wakes(void);
+
 // Sends whatever uart_putc() has batched but not yet transmitted. See
 // drivers/uart_16550.c's uart_putc()/uart_flush() for why writes are
 // batched at all (one chan_call() per line of output, not one per
