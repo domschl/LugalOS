@@ -77,6 +77,17 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     set(ARCH_MABI "ilp32")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_ESP32P4=1)
+
+    # E6: the flash map, on the same principle as RP2350's above -- one
+    # definition, reaching the driver as compile definitions and the flashing
+    # step below as generated arguments, so drivers/flash_esp32p4.c and the
+    # esptool invocation cannot disagree about where the segment is.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32p4.cmake)
+    add_compile_definitions(
+        LUGALOS_P4_FLASH_SIZE=${LUGALOS_P4_FLASH_SIZE}
+        LUGALOS_P4_FLASHFS_BASE=${LUGALOS_P4_FLASHFS_BASE}
+        LUGALOS_P4_FLASHFS_SIZE=${LUGALOS_P4_FLASHFS_SIZE}
+        LUGALOS_P4_FLASH_WRITABLE_FLOOR=${LUGALOS_P4_FLASH_WRITABLE_FLOOR})
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -720,7 +731,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # QEMU drivers/virtio_blk_id.c does; this board has neither yet, so the
     # weak default answers and the node's name and MAC come from the derived
     # CONFIG_NODE_SEED. E6 is where the flash gives it something better.
-    list(APPEND SOURCES drivers/uart_esp32p4.c)
+    list(APPEND SOURCES drivers/uart_esp32p4.c drivers/flash_esp32p4.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -890,12 +901,24 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
     target_link_options(lugalos.elf PRIVATE -Wl,--no-warn-rwx-segments)
 
     # Same reason as the RP2350 line above -- flashfs.bin is not a source
-    # file here either, so without this nothing builds it. It is not flashed
-    # by anything yet (E6 owns that); it is built so the artifact and the
-    # code that will read it come into existence together rather than the
-    # filesystem being discovered to be missing on the day it is first
-    # wanted.
+    # file here either, so without this nothing builds it.
     add_dependencies(lugalos.elf flashfs_image)
+
+    # E6: the flash address the image belongs at, written into the build
+    # directory rather than typed into a command.
+    #
+    # This is the same discipline cmake/flash_layout.cmake exists for on
+    # RP2350 -- one definition of where a segment lives -- carried across a
+    # boundary CMake cannot reach: the flashing step is a separate program run
+    # by a person, minutes or days later. A number retyped there is a number
+    # that can disagree with the one the kernel was compiled against, and the
+    # symptom would be a filesystem that mounts as garbage.
+    #
+    # tools/p4flash.py reads this file rather than taking an address argument,
+    # so the only way to flash to the wrong place is to edit the layout and
+    # rebuild -- which also rebuilds the kernel that reads it.
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.addr
+         CONTENT "${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE}\n")
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

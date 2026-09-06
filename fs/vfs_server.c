@@ -197,8 +197,25 @@ static void mount_table_init(void) {
 
     mount_entry_t *e;
     e = mount_alloc("flash0");
-    e->kind = MOUNT_FAT32; e->fs = &g_fat32_flash; e->mounted_ptr = &g_flash_mounted; e->read_only = true;
+    e->kind = MOUNT_FAT32; e->fs = &g_fat32_flash; e->mounted_ptr = &g_flash_mounted;
+    /* Read-only everywhere the backing store cannot be written, which until
+     * E6 was everywhere. The QEMU targets back /flash0 with a C array in the
+     * kernel image; RP2350 reads it out of the XIP window and
+     * drivers/flashdisk.c's write path there prints "read-only" and returns
+     * -1. Marking the mount read-only is what turns that into a clean refusal
+     * at the VFS instead of a failed write three layers down.
+     *
+     * The ESP32-P4 is the first target where it is genuinely writable: E6
+     * (plan/phase27_esp32p4_bringup.md) puts the segment in real flash and
+     * gives flashdisk a read-modify-erase-write path through the boot ROM. So
+     * the flag follows the hardware rather than the filename. */
+#if defined(CONFIG_BOARD_ESP32P4)
+    e->read_only = false;
+    strncpy(e->label, "FAT32 SPI Flash", sizeof(e->label) - 1);
+#else
+    e->read_only = true;
     strncpy(e->label, "FAT32 Embedded Flash ROM", sizeof(e->label) - 1);
+#endif
 
     e = mount_alloc("sd0");
     e->kind = MOUNT_FAT32; e->fs = &g_fat32_sd; e->mounted_ptr = &g_sd_mounted;
@@ -1905,7 +1922,7 @@ int vfs_format(const char *path) {
         if (!dev || fat32_format(dev) != 0) return -1;
         g_ram_mounted = (fat32_init(&g_fat32_ram, dev) == 0);
         return g_ram_mounted ? 0 : -1;
-    } else if (m && strcmp(m->name, "flash0") == 0) {
+    } else if (m && strcmp(m->name, "flash0") == 0 && m->read_only) {
         printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) cannot be formatted (read-only)\n");
         return -1;
     }

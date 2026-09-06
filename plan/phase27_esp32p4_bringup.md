@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0-E5 done; E6 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
+**Status: in progress, 2026-09-06. E0-E6 done; E7 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1871,6 +1871,142 @@ first new code in a while to hold buffers whose lifetime the compiler does
 not check.
 
 Done when: a file written from the shell survives a power cycle.
+
+**DONE, 2026-09-06.** Verified across a real power cycle, both USB cables
+disconnected, by the user.
+
+```
+lsh> write /flash0/E6PROOF.TXT phase27-e6-persisted
+=> #t
+    ... board unplugged, replugged, kernel reloaded into RAM ...
+lsh> cat /flash0/E6PROOF.TXT
+phase27-e6-persisted
+lsh> df
+/flash0/              1024        149        875      14% /flash0/
+```
+
+**`/flash0` is writable here, and it is the first target where it is.** Until
+E6 `flashdisk_write_blocks()` printed "read-only" and returned -1 on *every*
+target, RP2350 included, and the mount was flagged read-only to match. So this
+milestone is not a port of an existing capability; the capability did not
+exist.
+
+#### The flash is reached through the boot ROM
+
+The P4's ROM exports the whole SPI flash API at fixed addresses, and
+`drivers/flash_esp32p4.c` calls it. Same choice RP2350 makes with its bootrom,
+for the same reasons: those routines are what Espressif's own bootloader and
+esptool stub use, they already know this chip's command set and timing, and
+the alternative — a fresh MSPI driver — is a large amount of new code whose
+failure mode is a corrupted flash rather than a wrong number on a console.
+
+There is **no XIP window** in this configuration. RP2350 reads its filesystem
+by dereferencing into flash-mapped address space; here the kernel is loaded
+into L2MEM and flash is not mapped at all, so every access is a transfer.
+`drivers/flashdisk.c` gained an arm for exactly that — a read *function* where
+the other targets have a pointer.
+
+#### The finding: we had painted over the ROM's own function table
+
+The first call into ROM flash code faulted *inside the ROM*, dereferencing
+`0xa5a5a5a5`. That is `STACK_POISON`, from this kernel.
+
+`rom_spiflash_legacy_data` and `_funcs` — the pointers every ROM flash routine
+dereferences — live at `0x4ff3ffe8` and `0x4ff3ffec` on this chip revision,
+which is inside the boot stack `entry.S` paints.
+
+E2 had already read IDF's `bootloader.memory.ld.in` and recorded
+`0x4ff3fba4`-`0x4ff40000` as "ROM .bss/.data", then placed the stack across it
+anyway on the reasoning that NOLOAD sections are safe in the ROM's area
+because the ROM's buffers only matter while the loader is writing. That is
+true of the *download buffers* — region 1 of that appendix — and false of
+regions 4 and 5, which it labels "shared memory used in startup code **and
+when IDF runs**" and "the 'interface' data with constant addresses". It cost
+nothing for four milestones, because nothing had called a ROM routine.
+
+`linker/esp32p4.ld` now declares LOWRAM as 252K rather than 256K, so nothing
+the linker can place is *able* to reach those bytes, with an ASSERT that says
+so if someone lengthens it again. Structural, not remembered.
+
+**And a trap inside the trap, worth writing down.** IDF ships two ROM symbol
+files and this chip (v1.3) uses the `eco0_4` one. The flash *function*
+addresses are **identical** in both files — which was checked first, and
+looked like evidence that ROM addresses do not move between revisions. The
+*data* addresses differ by 0x80000: `0x4ff3ffe8` here against `0x4ffbffe8` for
+r > ECO4. Checking the functions and generalising to the data would have given
+the wrong answer with every appearance of having been verified.
+
+#### The factory image cannot be damaged, and this was derived rather than assumed
+
+This board shipped with a Waveshare demo that is not obtainable again once
+overwritten. Rather than trust a guess about where it ends, the partition
+table was parsed out of the verified backup:
+
+```
+nvs       data 0x02  0x00009000  0x00006000
+phy_init  data 0x01  0x0000f000  0x00001000
+factory   app  0x00  0x00010000  0x00900000
+storage   data 0x82  0x00910000  0x00400000
+```
+
+The highest byte any factory partition claims is `0x00D10000` (13.06 MB), and
+every one of the 3,080,192 bytes above it reads `0xFF`. The segment starts at
+`0x00E00000`, ~0.9 MB higher.
+
+Two things enforce that rather than relying on it. `drivers/flash_esp32p4.c`
+refuses every erase and program below the floor, in the one place that touches
+the hardware — `flashtest` proves both refusals before it writes anything, and
+stops if either fails. And `tools/p4flash.py` carries its own copy of the
+floor, because it is the one path that can write flash without the kernel's
+guard in front of it.
+
+Checked afterwards: the factory partition table read back from the board is
+byte-for-byte identical to the backup.
+
+#### Two images, flashed independently — with the split in a different place
+
+`README.md`'s RP2350 story is two UF2 files. The same split holds here and for
+the same reason (the filesystem changes almost never, the kernel constantly),
+but the mechanism differs: **the kernel is not flashed at all.** It is
+delivered into L2MEM by `esptool load-ram` on every run, so there is exactly
+one thing in flash and it is the filesystem.
+
+`tools/p4flash.py` takes **no address argument**. The base comes from
+`build/esp32p4/flashfs.addr`, generated by CMake from
+`cmake/flash_layout_esp32p4.cmake` — the same single definition the kernel was
+compiled against. This is `cmake/flash_layout.cmake`'s discipline carried
+across a boundary CMake cannot reach, since the flashing step is a separate
+program run by a person minutes or days later. A retyped address is one that
+can disagree with the kernel's, and the symptom would be a filesystem that
+mounts as garbage rather than an error.
+
+It also resets the board into download mode first. Without that, esptool meets
+a running kernel writing to UART0 and reports *"Invalid head of packet (0x1B):
+Possible serial noise or corruption"* — which reads like a cabling fault and
+is a program doing its job.
+
+#### `sizeof(pointer) after a heap move`, as this milestone was asked to review
+
+In scope per the milestone text, and the answer is that the new code holds no
+heap pointers at all. `flash_p4_read()`/`_write()` use callers' buffers within
+the call. The read-modify-erase-write staging buffer is a 4 KB **static**, not
+a heap allocation and not a local: a 4 KB local would overflow the 4 KB task
+stacks this board's drivers run on, and an allocation that can fail in the
+block layer turns a slow write into a lost one. It costs 4 KB of `.bss`
+against a 276 KB heap.
+
+#### What E6 did not do
+
+* **No XIP, and no boot from flash.** The kernel still arrives by `load-ram`.
+  E2's note that flash boot would return the 227 KB of RAM-resident `.text`
+  stands, and is still not done — it needs a second-stage bootloader and buys
+  nothing any current milestone wants.
+* **No identity sector.** RP2350 keeps its node identity in a dedicated flash
+  sector (phase 21 I7). There is room reserved above the filesystem and no
+  reason yet.
+* **No erase-suspend or wear levelling.** A 512-byte block write costs a 4 KB
+  read-modify-erase-write, minus a `memcmp` fast path for the common case of
+  a filesystem rewriting an unchanged block.
 
 ### E7 — The sensor persona on the P4
 

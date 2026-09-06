@@ -309,6 +309,43 @@ that precedes them*, so three commands at `--cmd-wait 200` need 800 seconds,
 not 600. Getting that wrong kills the run under `timeout` and prints nothing
 at all, which looks exactly like a dead board.
 
+### Flashing the filesystem (E6)
+
+```sh
+tools/p4flash.py --verify
+```
+
+That is the whole command. It takes **no address**: the base comes from
+`build/esp32p4/flashfs.addr`, which CMake generates from
+`cmake/flash_layout_esp32p4.cmake` — the same definition the kernel was
+compiled against. An address typed here is one that can disagree with the
+kernel's, and the symptom is a filesystem that mounts as garbage rather than
+an error.
+
+**The kernel is not flashed.** Unlike the RP2350's two UF2 files, only the
+filesystem lives in flash on this board; `tools/p4run.py` delivers the kernel
+into RAM on every run. So the split is still "two images, flashed
+independently", with one of the two never touching flash at all.
+
+`--verify` re-checks with esptool's on-chip digest afterwards, which is not
+the same as re-reading the file: a re-read can reproduce its own transfer bug
+and look like agreement.
+
+**The factory image is out of reach**, by construction rather than by care.
+The Waveshare demo occupies the low 13.06 MB (read out of the verified backup
+at `~/gith/esp/p4nano-factory-flash/`, not guessed); the segment starts at
+14 MB. `drivers/flash_esp32p4.c` refuses every erase and program below that
+floor, and `p4flash.py` carries its own copy of it because it is the one path
+that can write flash without the kernel's guard in front of it. `flashtest`
+on the board proves both refusals before it writes anything.
+
+**Checking the flash path** without touching it: `flashinfo` dumps 32 bytes
+from three places, one of which is the factory partition table at `0x8000`. It
+must begin `aa 50` and name `nvs` — the same bytes the backup contains, so a
+correct read is provable rather than plausible. `flashtest` then does an
+erase/program/read-back in the last sector of the writable region, and reports
+the guard result first.
+
 ### The two ports, and why names are not enough
 
 The script needs two things from the wiring, and they are not always the

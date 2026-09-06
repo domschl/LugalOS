@@ -56,6 +56,9 @@
 #include "kernel/path.h"
 #include "arch/pmp.h"
 #include "kernel/umode_probe.h"
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "drivers/flash_esp32p4.h"
+#endif
 #include "arch/umode.h"
 #include "arch/trap.h"
 #include "kernel/ipc.h"
@@ -159,6 +162,103 @@ static void cmd_trapselftest(bool fatal) {
 }
 
 #if defined(CONFIG_BOARD_ESP32P4)
+/* E6: read flash, and show enough of it to be checkable against something
+ * that is not this code.
+ *
+ * The addresses are not arbitrary. 0x8000 is where an ESP-IDF partition table
+ * lives, and this board still carries the Waveshare factory one -- whose
+ * exact bytes are known independently, from the verified backup at
+ * ~/gith/esp/p4nano-factory-flash/. So a correct read is provable rather than
+ * plausible: the first entry must begin `aa 50` (the partition magic) and
+ * name `nvs`. A driver that returned zeroes, or the same buffer twice, or
+ * bytes off by an offset, all look identical to "it printed something". */
+static void cmd_flashinfo(void) {
+    if (!flash_p4_init()) {
+        cprintf("[Flash] not available\n");
+        return;
+    }
+    static const uint32_t spots[] = { 0x000000u, 0x008000u,
+                                      (uint32_t)LUGALOS_P4_FLASHFS_BASE };
+    for (unsigned i = 0; i < sizeof(spots) / sizeof(spots[0]); i++) {
+        uint8_t b[32];
+        if (flash_p4_read(spots[i], b, sizeof(b)) != 0) {
+            cprintf("[Flash] read at 0x%06x failed\n", (unsigned)spots[i]);
+            continue;
+        }
+        cprintf("0x%06x:", (unsigned)spots[i]);
+        for (unsigned j = 0; j < sizeof(b); j++) cprintf(" %02x", b[j]);
+        cprintf("\n");
+    }
+}
+
+/* E6: erase, program, read back -- and prove the guard refuses.
+ *
+ * The second half matters as much as the first. This board's factory image is
+ * not obtainable again once overwritten, and the only thing standing between
+ * it and a bug is the floor check in drivers/flash_esp32p4.c. A test that only
+ * showed writing works would pass just as well with that check deleted.
+ *
+ * The sector used is the last one in the writable region, not the first: the
+ * first is where the filesystem image goes, and a self-test should not sit on
+ * top of the thing it will later be asked not to disturb. */
+static void cmd_flashtest(void) {
+    if (!flash_p4_init()) { cprintf("[FlashTest] flash not available\n"); return; }
+
+    /* 1. The guard. Two addresses that must both be refused: one inside the
+     * factory image, one just below the floor. Neither is written -- if the
+     * refusal fails, this test has already done the damage it exists to
+     * prevent, so it checks the return value and stops rather than reading
+     * back to see what happened. */
+    static const uint8_t pattern[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    bool guard_ok = true;
+    if (flash_p4_erase_sector(0x00010000u) == 0) guard_ok = false;  /* factory app */
+    if (flash_p4_write((uint32_t)LUGALOS_P4_FLASH_WRITABLE_FLOOR - 4u,
+                       pattern, sizeof(pattern)) == 0) guard_ok = false;
+    cprintf("[FlashTest] guard refuses writes below 0x%06x: %s\n",
+            (unsigned)LUGALOS_P4_FLASH_WRITABLE_FLOOR, guard_ok ? "yes" : "NO");
+    if (!guard_ok) {
+        cprintf("[FlashTest] STOPPING: the write guard is not holding.\n");
+        return;
+    }
+
+    /* 2. Erase, program, read back. */
+    uint32_t addr = (uint32_t)LUGALOS_P4_FLASHFS_BASE +
+                    (uint32_t)LUGALOS_P4_FLASHFS_SIZE - FLASH_P4_SECTOR_SIZE;
+    if (flash_p4_erase_sector(addr) != 0) {
+        cprintf("[FlashTest] erase of 0x%06x failed\n", (unsigned)addr);
+        return;
+    }
+    uint8_t after_erase[8];
+    if (flash_p4_read(addr, after_erase, sizeof(after_erase)) != 0) {
+        cprintf("[FlashTest] read-back after erase failed\n"); return;
+    }
+    bool erased = true;
+    for (unsigned i = 0; i < sizeof(after_erase); i++)
+        if (after_erase[i] != 0xFF) erased = false;
+
+    /* A value that cannot be confused with erased flash, with a bit pattern
+     * in every byte -- 0xFF..0xFF would "verify" against an erase that
+     * happened and a program that did not. */
+    uint8_t out[16];
+    for (unsigned i = 0; i < sizeof(out); i++) out[i] = (uint8_t)(0x5A ^ (i * 7u));
+    if (flash_p4_write(addr, out, sizeof(out)) != 0) {
+        cprintf("[FlashTest] program failed\n"); return;
+    }
+    uint8_t back[16];
+    if (flash_p4_read(addr, back, sizeof(back)) != 0) {
+        cprintf("[FlashTest] read-back after program failed\n"); return;
+    }
+    bool same = true;
+    for (unsigned i = 0; i < sizeof(out); i++) if (back[i] != out[i]) same = false;
+
+    cprintf("[FlashTest] sector 0x%06x: erased=%s programmed=%s\n",
+            (unsigned)addr, erased ? "yes" : "no", same ? "yes" : "no");
+    cprintf("[FlashTest] %s\n",
+            (guard_ok && erased && same)
+                ? "PASS: the guard holds, and erase/program/read-back agree."
+                : "FAIL: see the flags above.");
+}
+
 /* E4: the state of the tick, read straight out of the hardware, plus the two
  * measurements that a register dump cannot make.
  *
@@ -2812,6 +2912,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
+        return;
+    } else if (strcmp(cmd_line, "flashinfo") == 0) {
+        cmd_flashinfo();
+        return;
+    } else if (strcmp(cmd_line, "flashtest") == 0) {
+        cmd_flashtest();
         return;
 #endif
     } else if (strcmp(cmd_line, "trapselftest") == 0 ||

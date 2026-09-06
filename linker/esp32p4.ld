@@ -49,8 +49,38 @@ MEMORY
     /* NOLOAD SECTIONS ONLY. See the header comment: this range overlaps the
      * ROM's download-mode buffers, so anything the loader has to write into
      * it would corrupt the loader that is doing the writing. ld enforces the
-     * *size*; the ASSERTs at the bottom enforce the rule. */
-    LOWRAM (rw)  : ORIGIN = 0x4ff00000, LENGTH = 256K
+     * *size*; the ASSERTs at the bottom enforce the rule.
+     *
+     * 252K, not 256K, and the missing 4 KB is the whole point (E6).
+     *
+     * E2 read the ROM's map out of IDF's own bootloader.memory.ld.in and
+     * recorded `0x4ff3fba4`-`0x4ff40000` as "ROM .bss/.data", then placed the
+     * boot stack across it anyway, reasoning that NOLOAD sections are safe in
+     * the ROM's area because the ROM's buffers only matter while the loader
+     * is writing. That is true of the *download buffers* -- region 1 of that
+     * appendix -- and false of regions 4 and 5, which it labels "shared
+     * memory used in startup code **and when IDF runs**" and "the 'interface'
+     * data with constant addresses".
+     *
+     * It cost nothing until E6 called a ROM routine. `rom_spiflash_legacy_data`
+     * and `_funcs` -- the pointers every ROM flash function dereferences --
+     * live at 0x4ff3ffe8 and 0x4ff3ffec on this chip revision, inside the
+     * boot stack, which entry.S paints with 0xA5A5A5A5. The first call into
+     * ROM flash code faulted at `epc` inside the ROM, dereferencing
+     * 0xa5a5a5a5: we had painted over the ROM's own function table.
+     *
+     * Note the revision dependency, because it is a trap. IDF ships two ROM
+     * symbol files and this project uses the `eco0_4` one (chip v1.3). The
+     * flash *function* addresses are identical in both; the *data* addresses
+     * differ by 0x80000 -- 0x4ff3ffe8 here against 0x4ffbffe8 for r > ECO4.
+     * Checking the functions and generalising would have given the wrong
+     * answer with every appearance of having been verified.
+     *
+     * Shortening the region is what makes this structural: nothing the linker
+     * can place is able to reach the reserved bytes, rather than nothing
+     * happening to. 4 KB rather than the 1116 bytes strictly needed, because
+     * a page is a rounder thing to reason about and LOWRAM has room. */
+    LOWRAM (rw)  : ORIGIN = 0x4ff00000, LENGTH = 252K
 
     /* Everything loadable, and the heap after it. */
     RAM    (rwx) : ORIGIN = 0x4ff40000, LENGTH = 512K
@@ -179,6 +209,12 @@ SECTIONS
     }
 
     /* --- what has to stay true ------------------------------------------ */
+
+    /* Nothing may reach the ROM's constant-address data at the top of L2MEM.
+     * LOWRAM's length already makes this unreachable; the ASSERT is what says
+     * so if someone lengthens it again. */
+    ASSERT(ORIGIN(LOWRAM) + LENGTH(LOWRAM) <= 0x4ff3f000,
+           "linker/esp32p4.ld: LOWRAM reaches the ROM's reserved data at 0x4ff3fba4-0x4ff40000; the ROM flash routines dereference pointers there")
 
     /* The rule from the header comment, as a link error rather than as a
      * corrupt load. Every loadable section is assigned `> RAM` above, so
