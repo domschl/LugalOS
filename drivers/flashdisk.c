@@ -5,6 +5,7 @@
 
 #include "drivers/flashdisk.h"
 #include "kernel/printk.h"
+#include "lugalos_config.h"
 #include <string.h>
 
 /* Where the FAT32 image lives, and it is not the same answer on every target.
@@ -27,6 +28,21 @@
 #if defined(LUGALOS_FLASHFS_BASE)
 static const uint8_t *const g_flash_fs_start = (const uint8_t *)(uintptr_t)LUGALOS_FLASHFS_BASE;
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* E2, plan/phase27_esp32p4_bringup.md: this board has a filesystem image
+ * built (build/esp32p4/flashfs.bin) and nowhere yet to put it.
+ *
+ * It cannot take the embedded-array form the QEMU targets use: that array is
+ * 512 KB and this kernel is loaded into 512 KB of L2MEM in total
+ * (linker/esp32p4.ld). It cannot take the RP2350 form either, which needs a
+ * flash map, and E6 is the milestone that establishes one.
+ *
+ * So the size is zero and flashdisk_get_device() below declines. /flash0
+ * stays unmounted and `df` says so, which is the accurate report; the
+ * alternative -- pointing this at flash that has not been written -- would
+ * mount whatever the factory image left there and call it ours. */
+static const uint8_t *const g_flash_fs_start = NULL;
+static const uint32_t g_flash_fs_size = 0;
 #else
 extern const uint8_t g_flash_fs_start[];
 extern const uint32_t g_flash_fs_size;
@@ -57,6 +73,11 @@ static block_dev_t g_flashdisk_dev = {
 };
 
 block_dev_t *flashdisk_get_device(void) {
+    /* An image of zero length is not a device. Returning one anyway would
+     * hand fat32_init() a block device with num_blocks == 0, and the mount
+     * failure it reports names the filesystem rather than the absence. */
+    if (g_flash_fs_size == 0) return NULL;
+
     g_flashdisk_dev.num_blocks = g_flash_fs_size / FLASH_BLOCK_SIZE;
 
 #if defined(LUGALOS_FLASHFS_BASE)

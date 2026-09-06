@@ -55,6 +55,13 @@ endforeach()
 # devices have no pins to describe.
 set(_optional_keys
     CONFIG_UART0_TX_GPIO CONFIG_UART0_RX_GPIO
+    # E2, plan/phase27_esp32p4_bringup.md: the console UART's source clock
+    # and baud rate. Optional like the pin maps -- a board whose UART is a
+    # 16550 at a fixed emulated rate has neither to state -- and separate
+    # from CONFIG_XTAL_HZ below, which is the crystal rather than the clock
+    # this kernel chooses to drive the UART from.
+    CONFIG_UART0_SCLK_HZ CONFIG_UART0_BAUD
+    CONFIG_XTAL_HZ
     CONFIG_SPI1_BASE CONFIG_SPI1_SCK_GPIO CONFIG_SPI1_MOSI_GPIO
     CONFIG_SPI1_MISO_GPIO CONFIG_SPI1_CS_GPIO
     CONFIG_LED_ONBOARD_GPIO CONFIG_LED_EXT_GPIO

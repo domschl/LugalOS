@@ -1798,13 +1798,27 @@ int usb_cdc_task_start(void) {
     return pid;
 }
 
+bool usb_cdc_present(void) { return true; }
+
 #else
+
+bool usb_cdc_present(void) { return false; }
 
 void usb_cdc_task(void) {}
 
 void usb_cdc_init(void) {
     g_usb_cdc_connected = false;
-    printk_debug("[USB CDC] Host Pass-Through Gateway Online (/dev/ttyUSB0 / /dev/ttyACM1).\n");
+    /* Says what this is, which the line it replaces did not.
+     *
+     * It used to announce a "Host Pass-Through Gateway Online" and name
+     * /dev/ttyUSB0 and /dev/ttyACM1 -- from a build with no USB controller
+     * compiled into it at all. Harmless-looking on QEMU, where nothing else
+     * is real either. Not harmless on the ESP32-P4, where those two device
+     * names are the actual cables carrying the console and the reset lines,
+     * so the kernel appeared to be claiming the port its operator was
+     * reading it on. Found on the first boot of that board (E2,
+     * plan/phase27_esp32p4_bringup.md). */
+    printk_debug("[USB CDC] Not built for this target; the ACM console and 9P link are absent.\n");
 }
 
 bool usb_cdc_is_connected(void) {

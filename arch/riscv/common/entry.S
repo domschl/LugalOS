@@ -156,9 +156,13 @@ s_mode_start:
      * cannot clobber live data no matter what precedes it.
      *
      * Deliberately last, after .bss is cleared: .bss and .stack are adjacent
-     * in every linker script here, and clearing .bss with a length that ran
-     * past _bss_end would silently erase the paint rather than corrupt
-     * anything, making the bug look like "the stack is never used".
+     * in most of the linker scripts here, and clearing .bss with a length
+     * that ran past _bss_end would silently erase the paint rather than
+     * corrupt anything, making the bug look like "the stack is never used".
+     * (linker/esp32p4.ld is the exception -- it puts the stack at the top of
+     * its region with the unused remainder between, so an overflow there has
+     * somewhere harmless to go first. The ordering below is right either
+     * way, and this comment is the reason it is not merely accidental.)
      *
      * t0-t2 are all dead at this point (the copy and clear loops are done).
      *
@@ -266,7 +270,26 @@ s_mode_start:
  * frame's tp slot is written in the two paths separately rather than in the
  * common save block: on the way in from U-mode the slot has to receive the
  * *user's* tp, taken before the kernel's is installed over it. */
+/* 16-byte aligned everywhere, 64 on the ESP32-P4.
+ *
+ * mtvec's low bits are not address bits, and on this chip they are not ours
+ * to choose either: the P4's CLIC hardwires MODE to 3 (E0 section 8, and E1
+ * read `MTVEC : 0x4ff00003` off the factory app's own crash dump before we
+ * had written a line). The RISC-V CLIC specification makes mtvec[5:2]
+ * reserved in that mode, so a base that is not 64-byte aligned can come back
+ * truncated -- and a truncated vector base points into the middle of this
+ * function, which presents as an unexplained hang on the first exception
+ * rather than as anything to do with alignment.
+ *
+ * 64 bytes costs at most 48 bytes of padding once, in a section that is
+ * already page-aligned around it. The other targets keep 16 because their
+ * mtvec is in direct or vectored mode, where only bits [1:0] are the mode
+ * field. */
+#if defined(CONFIG_BOARD_ESP32P4)
+.align 6
+#else
 .align 4
+#endif
 trap_vector_entry:
     csrrw sp, CSR_SCRATCH, sp
     bnez sp, .Ltrap_from_user

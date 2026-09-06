@@ -70,6 +70,28 @@ static inline uint32_t meinext_irq(bool *valid) {
     *valid = (v & 0x80000000u) == 0;
     return (uint32_t)((v >> 2) & 0x1ffu);
 }
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* ESP32-P4: no external-interrupt controller here yet, on purpose.
+ *
+ * This board's is a CLIC at 0x20800000, and it is *not* the standard one:
+ * the interrupt threshold is a memory-mapped register rather than a CSR, and
+ * mintstatus sits at 0x346 (E0 section 5, plan/phase27_esp32p4_bringup.md).
+ * Bringing it up is E3, which the plan puts before Time precisely because
+ * mtvec.MODE is read-only at CLIC mode and the timer interrupt itself
+ * arrives as clicintie[7] -- there is no tick without an interrupt
+ * controller on this chip.
+ *
+ * So E2 runs with mstatus.MIE clear from _start onwards and nothing enabled
+ * behind it. What still works, and is worth having: mtvec is set (entry.S),
+ * and in CLIC mode *exceptions* still vector to it -- only interrupts go
+ * through mtvt. A misaligned load or a bad instruction therefore lands in
+ * trap_handler() and produces the same register dump every other target
+ * produces, which is the difference between a bug and a board that stopped.
+ *
+ * The absent arm is deliberately not written as a silent fall-through to the
+ * PLIC branch below. 0x0c000000 is not a PLIC on this chip; it is not
+ * anything, and writing to it during boot would fail as a bus error inside
+ * trap_init() with no console yet to say so. */
 #else
 /* QEMU virt's PLIC -- shared by both QEMU targets, which differ only in
  * which context and cause code they see: standard PLIC convention numbers
@@ -163,6 +185,11 @@ void trap_init(void) {
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus_val));
     mstatus_val |= (1u << 3);
     __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* Nothing to arm. mtvec was set by entry.S and mstatus.MIE is clear;
+     * enabling a source with no controller configured behind it is how a
+     * board takes an interrupt into a vector that has never been set up. E3
+     * fills this in -- see the CLIC note above. */
 #else
     /* M2, plan/phase12_microkernel_migration.md: the arch-global gate for
      * QEMU's PLIC path (both targets -- see the CONFIG_MODE_S/M split above
@@ -202,6 +229,14 @@ void arch_irq_enable(uint32_t irq_num) {
     uint32_t mask  = 1u << (irq_num % 16u);
     uintptr_t v = index | ((uintptr_t)mask << 16);
     __asm__ __volatile__("csrrs zero, 0xbe0, %0" :: "r"(v)); /* RVCSR_MEIEA */
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* No controller yet (E3). Refusing loudly rather than silently: a driver
+     * that reaches here has attached a handler that will never be called,
+     * and a console line at boot is much cheaper than working that out from
+     * a device that is simply quiet. Only drivers/uart_esp32p4.c exists on
+     * this board in E2, and it deliberately does not call this. */
+    printk("[Trap] arch_irq_enable(%u) ignored: the ESP32-P4 CLIC is not up yet (E3)\n",
+           (unsigned)irq_num);
 #else
     /* PLIC: give the IRQ a nonzero priority (0 permanently masks it,
      * independent of any enable bit -- the PLIC spec's own "never
@@ -289,6 +324,11 @@ void trap_handler(trap_frame_t *frame) {
             if (valid) devirq_dispatch(irq_num);
             return;
         }
+#elif defined(CONFIG_BOARD_ESP32P4)
+        /* Unreachable in E2 -- nothing is enabled to deliver one -- so an
+         * external interrupt arriving here is evidence, not an event to
+         * service. It falls through to the "Interrupt received" line below,
+         * which names the cause code. */
 #else
         if (code == QEMU_EXT_CAUSE) {
             uint32_t irq_num = plic_claim();

@@ -299,7 +299,7 @@ def esptool(*args, timeout=180):
     )
 
 
-def load(port, img, reset, rport=None, driver=None):
+def load(port, img, reset, rport=None, driver=None, baud=None):
     """Get the chip into download mode and deliver the image.
 
     Download mode is entered by driving the reset lines here rather than by
@@ -334,7 +334,9 @@ def load(port, img, reset, rport=None, driver=None):
             print(">>> Put the board in download mode: hold BOOT, tap RESET, "
                   "release BOOT.\n>>> Polling for up to 3 minutes...")
             told = True
-        r = esptool("--port", port, "--before", "no-reset", "--after", "no-reset",
+        baud_args = ("--baud", str(baud)) if baud else ()
+        r = esptool("--port", port, *baud_args,
+                    "--before", "no-reset", "--after", "no-reset",
                     "--connect-attempts", "1", "--no-stub", "load-ram", img)
         if r.returncode == 0:
             print("loaded (attempt %d, reset %s via %s)" % (attempt, reset, rport))
@@ -436,6 +438,71 @@ def cmd_probe(port):
     return 1
 
 
+def run_cmds(port, lines, wait):
+    """Type lines at the board's console and print what comes back.
+
+    The point is to make a shell testable without a human. tests/hw/ can call
+    this; so can anyone checking a milestone's own done-condition, which for
+    E2 is literally "a shell prompt, `ls /proc`, and `cat /proc/meminfo`".
+
+    CR, not LF: kernel/line_editor.c takes carriage return as the end of a
+    line, which is what a terminal sends when Return is pressed. Sending LF
+    instead gets a prompt back and no command run, which looks exactly like a
+    board that is ignoring you."""
+    out = []
+    with Watcher(port) as w:
+        # A bare Return first: it costs one prompt and proves the console is
+        # answering before any command's output has to be interpreted. A
+        # missing prompt here and a wrong answer below are very different
+        # problems, and telling them apart afterwards is much harder.
+        w.s.write(b"\r")
+        time.sleep(wait)
+        for line in lines:
+            mark = len(w.buf)
+            w.s.write(line.encode() + b"\r")
+            time.sleep(wait)
+            out.append((line, bytes(w.buf[mark:]).decode("utf-8", "replace")))
+    for line, text in out:
+        print("--- $ %s" % line)
+        print(text)
+    return 0
+
+
+def interactive(port):
+    """Relay this terminal to the board until Ctrl-] .
+
+    Deliberately not a dependency on picocom or screen: this script already
+    owns the port-identification problem (see the module docstring), and
+    telling someone to run picocom on a port whose name is not stable across
+    hosts undoes exactly the thing --ports exists to fix."""
+    import termios
+    import tty
+    import select as _select
+
+    s = open_console(port)
+    print("--- interactive on %s @ %d; Ctrl-] to exit ---" % (port, BAUD))
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            r, _, _ = _select.select([fd, s.fileno()], [], [], 0.1)
+            if fd in r:
+                ch = os.read(fd, 1)
+                if ch == b"\x1d":          # Ctrl-]
+                    break
+                s.write(ch)
+            if s.fileno() in r:
+                data = s.read(4096)
+                if data:
+                    os.write(1, data)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        s.close()
+        print("\n--- closed ---")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("image", nargs="?",
@@ -445,6 +512,24 @@ def main():
                     help="port whose DTR/RTS reach ESP_EN and GPIO35 "
                          "(default: the CH34x bridge, else the console port)")
     ap.add_argument("--reset", choices=["auto", "none"], default="auto")
+    ap.add_argument("--baud", type=int,
+                    help="baud rate for the load transfer only, e.g. 921600. "
+                         "The console stays at %d, because the program being "
+                         "loaded sets its own rate and the ROM's is only in "
+                         "force until it does. Worth using from E2 onward: a "
+                         "kernel image is ~227 KB against E1's 1.2 KB, which "
+                         "is about 40 s at the default rate." % BAUD)
+    ap.add_argument("--cmd", action="append", default=[], metavar="LINE",
+                    help="after loading (or with --listen), send LINE to the "
+                         "console and print what comes back. Repeatable, in "
+                         "order. This is what lets a shell be exercised "
+                         "without a human at the keyboard -- see --interactive "
+                         "for the human case.")
+    ap.add_argument("--cmd-wait", type=float, default=2.0,
+                    help="seconds to collect output after each --cmd (default 2)")
+    ap.add_argument("--interactive", action="store_true",
+                    help="after loading, relay the terminal to the console "
+                         "port until Ctrl-] is pressed")
     ap.add_argument("--listen-secs", type=float, default=8.0)
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
     ap.add_argument("--probe", action="store_true", help="echo test")
@@ -469,6 +554,10 @@ def main():
         return 0
     if a.probe:
         return cmd_probe(port)
+    if not a.image and a.interactive:
+        return interactive(port)
+    if not a.image and a.cmd:
+        return run_cmds(port, a.cmd, a.cmd_wait)
     if a.listen or not a.image:
         with Watcher(port) as w:
             time.sleep(a.listen_secs)
@@ -490,14 +579,22 @@ def main():
     # observational point of E1.
     if rport != port:
         with Watcher(rport) as w:
-            if not load(port, img, a.reset, rport, driver=w):
+            if not load(port, img, a.reset, rport, driver=w, baud=a.baud):
                 return 1
             time.sleep(a.listen_secs)
         print("=== %d bytes on %s, across the load ===" % (len(w.buf), rport))
         print(w.text())
+        # The watcher above reads the reset port, which on this wiring is
+        # receive-only. Anything that has to *type* has to do it on the
+        # console port, and only after the watcher has let go of nothing --
+        # the two are different cables, so there is no handover to get wrong.
+        if a.cmd:
+            run_cmds(port, a.cmd, a.cmd_wait)
+        if a.interactive:
+            return interactive(port)
         return 0
 
-    if not load(port, img, a.reset, rport):
+    if not load(port, img, a.reset, rport, baud=a.baud):
         return 1
     # Single cable: listen only after the loader has released the port. The
     # banner is emitted into that gap and is normally lost.

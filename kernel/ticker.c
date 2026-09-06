@@ -130,6 +130,51 @@ static bool arch_ticker_init(void) {
     return true;
 }
 
+/* --- ESP32-P4: no preemption timer yet -------------------------------- */
+#elif defined(CONFIG_BOARD_ESP32P4)
+
+/* E2, plan/phase27_esp32p4_bringup.md: this board takes no tick.
+ *
+ * It is not that the P4 has no timer -- the system timer is up and counting,
+ * and kernel/time.c reads it for wall-clock and monotonic time. It is that
+ * on this chip the timer *interrupt* arrives through the CLIC as
+ * clicintie[7] rather than as a plain mie.MTIE, so there is no route from
+ * the comparator to a handler until E3 brings the controller up. E4 then
+ * arms the comparator through it. The plan puts the two milestones in that
+ * order for exactly this reason.
+ *
+ * And the CSR half of this file would not work either. TRM section 2.9.2.1:
+ * "Only the CLIC mode of operation is supported by the HP core, i.e.
+ * mtvec.MODE is hardwired to 0x3. Hence, the basic RISC-V interrupt handling
+ * scheme and the associated CSRs (such as mie, mip, mideleg, uie, and uip)
+ * are unavailable." So the set_csr(mie, MTIE) every other branch below ends
+ * with is not merely insufficient here -- it is a write to a CSR that does
+ * not exist, which does nothing and reports nothing. A version of this arm
+ * that armed the comparator and set that bit would look exactly like working
+ * code and would never take a tick.
+ *
+ * The refusal is what makes that honest. ticker_init() returning false
+ * leaves g_enabled clear, kernel_main() never calls
+ * irq_restore(IRQ_ENABLE_BIT), and the system runs cooperatively --
+ * everything yields, nothing is preempted, and /proc says so. The
+ * alternative -- arming a comparator whose interrupt cannot be delivered --
+ * would report preemption as enabled on a system that never switches, which
+ * is the kind of number this tree treats as worse than no number.
+ *
+ * TICK_HZ still has to exist for ticker_init()'s arithmetic above it. The
+ * system timer's 16 MHz (TRM 16.4) is the right value for when E4 arrives,
+ * and stating it here rather than a placeholder means the only change then
+ * is the arming, not the rate. */
+#define TICK_HZ 16000000UL
+
+static uint64_t now(void) { return 0; }
+static void set_deadline(uint64_t t) { (void)t; }
+
+static bool arch_ticker_init(void) {
+    printk("[Ticker] ESP32-P4: the timer interrupt is a CLIC source (E3); preemption stays off\n");
+    return false;
+}
+
 /* --- QEMU RV32: CLINT, M-mode ---------------------------------------- */
 #elif !defined(CONFIG_MODE_S)
 

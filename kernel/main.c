@@ -47,9 +47,12 @@
 #include "fs/9p.h"
 #include "lisp.h"
 
-#if !defined(CONFIG_BOARD_RP2350)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* E2, plan/phase27_esp32p4_bringup.md: neither set of headers. This board has
+ * no virtio (it is not QEMU) and none of the RP2350 drivers below. */
 #else
 #include "drivers/spisd.h"
 #include "drivers/dcf77_p0log.h"
@@ -309,6 +312,11 @@ void kernel_main(void) {
      * for everything else. */
 #if defined(CONFIG_BOARD_RP2350)
     spisd_task_start();
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* No block device on this board yet (E6). Deliberately not a
+     * fall-through to virtio_blk_task_start(): that driver is not built
+     * here, and if it were it would be probing addresses that mean something
+     * else on this chip. */
 #else
     virtio_blk_task_start();
 #endif

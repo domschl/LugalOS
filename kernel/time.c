@@ -66,6 +66,56 @@ static bool g_clock_set = false;
  * arch/riscv/rp2350/boot_header.S) made the whole system run at 43% speed and
  * was invisible for months because nothing ever said what the divisor was. */
 #define TICKS_TIMER0_CYCLES (*(volatile uint32_t *)0x4010801CUL)
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* ESP32-P4: the system timer (TRM chapter 16), UNIT0.
+ *
+ * A 52-bit free-running counter, and this reads it -- it does not use the
+ * comparators, take an interrupt, or program an alarm. That is why a time
+ * source exists at all in E2 when "Time" is E4: what E4 owes is a *tick*,
+ * which on this chip needs the CLIC (E3) to deliver clicintie[7]. Reading a
+ * counter needs none of that, and everything above this function -- boot
+ * timestamps, time_delay_us(), the shell's uptime -- would otherwise be
+ * counting its own calls, which is precisely the defect the QEMU RV32 branch
+ * below records having shipped once.
+ *
+ * The rate is a stated fact, not a measurement: TRM 16.2 and 16.4 say
+ * CNT_CLK is XTAL_CLK scaled by 2.5, giving an average 16 MHz, and "the
+ * timer counter is incremented by 1/16 us on each CNT_CLK cycle". So the
+ * divisor is CONFIG_XTAL_HZ / 2.5 / 1e6 = 16 ticks per microsecond, derived
+ * from the board's crystal rather than written down as a bare 16 -- a board
+ * with a different crystal would change the answer and should not be able to
+ * do so silently.
+ *
+ * "Average" is the word to note. XTAL/2.5 is not an integer ratio, so the
+ * hardware alternates between dividing by 2 and by 3 -- TRM 16.2 says the
+ * average holds "in two counting cycles". Any single reading can therefore
+ * be off by one tick, i.e. 62.5 ns, which is below this clock's stated 1 us
+ * resolution and irrelevant to every caller here. It will matter to E4 and
+ * to phase 29's PTP, and it is written down now so that it is a known
+ * property rather than a surprise then. */
+#define SYSTIMER_BASE           0x500E2000UL
+#define SYSTIMER_CONF           (SYSTIMER_BASE + 0x00)
+#define SYSTIMER_UNIT0_OP       (SYSTIMER_BASE + 0x04)
+#define SYSTIMER_UNIT0_VALUE_HI (SYSTIMER_BASE + 0x40)
+#define SYSTIMER_UNIT0_VALUE_LO (SYSTIMER_BASE + 0x44)
+
+#define SYSTIMER_UNIT0_WORK_EN  (1u << 30)   /* CONF, TRM Register 16.1  */
+#define SYSTIMER_REGFILE_CLK_EN (1u << 31)   /* CONF: register clock gate */
+#define SYSTIMER_UNIT0_UPDATE   (1u << 30)   /* UNIT0_OP, TRM Reg 16.2   */
+#define SYSTIMER_UNIT0_VALID    (1u << 29)   /* UNIT0_OP, TRM Reg 16.2   */
+
+/* HP_SYS_CLKRST, same block drivers/uart_esp32p4.c documents. */
+#define P4_CLKRST_BASE          0x500E6000UL
+#define P4_SOC_CLK_CTRL2        (P4_CLKRST_BASE + 0x1c)
+#define P4_PERI_CLK_CTRL21      (P4_CLKRST_BASE + 0x98)
+#define P4_SYSTIMER_APB_CLK_EN  (1u << 23)   /* SOC_CLK_CTRL2, TRM Reg 11.8  */
+#define P4_SYSTIMER_CLK_SRC_SEL (1u << 29)   /* PERI_CLK_CTRL21, 0 = XTAL    */
+#define P4_SYSTIMER_CLK_EN      (1u << 30)   /* PERI_CLK_CTRL21, TRM Reg 11.39 */
+
+#define P4_REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
+
+#define SYSTIMER_TICKS_PER_US   ((uint64_t)CONFIG_XTAL_HZ / 2500000ULL)
+
 #elif !defined(CONFIG_MODE_S)
 /* QEMU RV32 (M-mode): the same CLINT kernel/ticker.c already reads for its
  * preemption deadline, at the same documented 10 MHz virt-machine rate
@@ -91,6 +141,24 @@ static inline uint64_t read_hardware_counter_us(void) {
         lo = TIMER0_TIMELR;
     } while (hi != TIMER0_TIMEHR);
     return ((uint64_t)hi << 32) | lo;
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* The counter cannot be read directly: writing UNIT0_UPDATE latches it
+     * into the two VALUE registers, which is what makes a 52-bit read atomic
+     * without the retry loop the RP2350 branch above needs. VALUE_VALID
+     * says the latch has happened.
+     *
+     * Bounded, and it returns the stale latch rather than spinning forever if
+     * the bound is hit: this is called from printk()'s own timestamping path
+     * among other places, so a hang here would take the console with it and
+     * leave nothing to report the hang. A stopped clock is visible in the
+     * output; a stopped kernel is not. */
+    P4_REG(SYSTIMER_UNIT0_OP) = SYSTIMER_UNIT0_UPDATE;
+    for (unsigned i = 0; i < 10000u; i++) {
+        if (P4_REG(SYSTIMER_UNIT0_OP) & SYSTIMER_UNIT0_VALID) break;
+    }
+    uint32_t hi = P4_REG(SYSTIMER_UNIT0_VALUE_HI) & 0xfffffu;  /* 52 bits total */
+    uint32_t lo = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    return (((uint64_t)hi << 32) | lo) / SYSTIMER_TICKS_PER_US;
 #elif !defined(CONFIG_MODE_S)
     return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */
 #else
@@ -107,12 +175,39 @@ static inline uint64_t read_hardware_counter_us(void) {
 }
 
 void time_init(void) {
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* Bring the system timer up before the first reading, rather than
+     * assuming the ROM left it running.
+     *
+     * Every bit written here resets to the value being written except
+     * SYSTIMER_REGFILE_CLK_EN, which resets to 0 -- so on a cold part the
+     * register file's own clock is gated and the CONF write that follows
+     * would go nowhere. Ordered accordingly: bus clock, module clock, source,
+     * then the register file, then the counter.
+     *
+     * Read-modify-write on CONF, not a store: bits 25..28 are the
+     * stall-on-CPU-halt controls, and their reset values are the ones this
+     * kernel wants (UNIT0 keeps counting while a core is halted for
+     * debugging, UNIT1 does not). Zeroing them would make the clock stop
+     * whenever a debugger did. */
+    P4_REG(P4_SOC_CLK_CTRL2)   |= P4_SYSTIMER_APB_CLK_EN;
+    P4_REG(P4_PERI_CLK_CTRL21) = (P4_REG(P4_PERI_CLK_CTRL21) &
+                                  ~P4_SYSTIMER_CLK_SRC_SEL) | P4_SYSTIMER_CLK_EN;
+    P4_REG(SYSTIMER_CONF) |= SYSTIMER_REGFILE_CLK_EN;
+    P4_REG(SYSTIMER_CONF) |= SYSTIMER_UNIT0_WORK_EN;
+#endif
     g_boot_us_offset = read_hardware_counter_us();
     g_base_mono_us = time_get_us();
     tz_set(CONFIG_TIMEZONE);
 #if defined(CONFIG_BOARD_RP2350)
     printk("[Timer] System Hardware Clock Initialized (clk_ref/%u = 1 us tick).\n",
            (unsigned)(TICKS_TIMER0_CYCLES & 0x1ffu));
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* Says the divisor out loud for the same reason the RP2350 line does: a
+     * wrong divider there made the whole system run at 43% speed and stayed
+     * invisible for months because nothing ever printed what it was. */
+    printk("[Timer] System timer up: XTAL/2.5 = %u ticks/us (1 us resolution).\n",
+           (unsigned)SYSTIMER_TICKS_PER_US);
 #else
     printk("[Timer] System Hardware Clock Initialized (Resolution: 1 us).\n");
 #endif

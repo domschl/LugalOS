@@ -217,10 +217,48 @@ flash starts at E6, and E6 is gated on the backup below.
 ```sh
 tools/p4run.py --ports              # which cable is which
 tools/p4run.py --reset-test         # can this host reset the board?
-tools/build_minimal_esp32p4.sh run  # build, image, load into RAM, listen
+tools/build_minimal_esp32p4.sh run  # E1: build, image, load into RAM, listen
 tools/p4run.py --probe              # is our program still running?
 tools/p4run.py --run                # reset back into whatever is in flash
 ```
+
+### Running the kernel (E2 onward)
+
+```sh
+cmake --preset esp32p4
+cmake --build --preset esp32p4
+tools/p4run.py build/esp32p4/lugalos.elf --baud 921600 --interactive
+```
+
+Three things about that last line are not obvious.
+
+**`--baud` is the load transfer only.** The console stays at 115200
+throughout, because the kernel configures UART0 itself the moment it starts
+and the ROM's rate is only in force until then
+(`drivers/uart_esp32p4.c`). Use it because the arithmetic is unkind
+otherwise: the kernel image is ~227 KB against E1's 1.2 KB, which is about
+40 seconds at 115200.
+
+**Pass the `.elf`, never an image.** `p4run.py` runs `elf2image` itself on
+every load. That is not a convenience — E1 lost most of an afternoon to
+scripts that took an image path while only the build regenerated images, so
+every load after the first re-delivered a stale binary and two confident
+diagnoses were written down before anyone checked a timestamp.
+
+**`--interactive` relays this terminal until Ctrl-]**; `--cmd 'ls /proc'`
+(repeatable) types a line and prints what comes back instead, which is how
+the shell gets exercised with nobody at the keyboard. Both work on their own
+too, against a board that is already running:
+
+```sh
+tools/p4run.py --cmd 'ls /proc' --cmd 'cat /proc/meminfo'
+tools/p4run.py --interactive
+```
+
+**What the E2 kernel does not have**, so that a quiet answer is not mistaken
+for a fault: no preemption (the timer interrupt is a CLIC source, E3/E4), no
+`/flash0` or `/sd0` (E6), no network, and no U-mode isolation (E5). `df`
+reports the filesystems as unmounted because they are.
 
 ### The two ports, and why names are not enough
 

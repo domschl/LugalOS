@@ -52,7 +52,27 @@ void meminfo_ram_map(mem_ram_map_t *out) {
     out->ram_start    = (uintptr_t)_ram_start;
     out->ram_end      = (uintptr_t)_ram_end;
     out->total_bytes  = (uint32_t)((uintptr_t)_ram_end - (uintptr_t)_ram_start);
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* This image is not one contiguous run from the bottom of RAM, which is
+     * what `_bss_end - _ram_start` assumes everywhere else.
+     *
+     * linker/esp32p4.ld splits it: .bss and the boot stack sit in the low
+     * 256 KB of L2MEM (safe there only because they are NOLOAD -- the ROM's
+     * download-mode buffers overlap that range), while .text, .rodata and
+     * .data are loaded into the 512 KB above them. So the two halves are
+     * measured separately and added. Without this /proc/meminfo would report
+     * the .bss half alone and silently omit ~227 KB of resident kernel text,
+     * on the one target where the text IS resident -- and reporting a third
+     * of an image as the whole of it is exactly the sort of number this file
+     * exists to avoid. */
+    {
+        extern char _text_start[];
+        out->image_bytes = (uint32_t)(((uintptr_t)_bss_end - (uintptr_t)_ram_start) +
+                                      ((uintptr_t)_kernel_end - (uintptr_t)_text_start));
+    }
+#else
     out->image_bytes  = (uint32_t)((uintptr_t)_bss_end - (uintptr_t)_ram_start);
+#endif
     out->stack_bytes  = stack_size_bytes();
 
     out->data_bytes = (uint32_t)((uintptr_t)_data_end - (uintptr_t)_data_start);

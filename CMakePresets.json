@@ -109,6 +109,25 @@
       }
     },
     {
+      "name": "esp32p4",
+      "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO)",
+      "description": "E2, plan/phase27_esp32p4_bringup.md. The second silicon this project runs on, and deliberately the smallest persona in the tree: UART0 console, printk, the shell and /proc, and nothing else. No block device, no netif, no display, no radio -- the board has none of them wired to this kernel yet. Loaded into L2MEM with tools/p4run.py build/esp32p4/lugalos.elf, which never writes flash. Cooperative: there is no preemption tick until E4, because on this chip the timer interrupt arrives through the CLIC and that is E3.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32p4",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_ENABLE_CC": "OFF",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "OFF",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF"
+      }
+    },
+    {
       "name": "rv64-smp",
       "displayName": "QEMU RV64 (Sv39 MMU) - SMP, two harts",
       "description": "X1, plan/phase23_multicore_scheduling.md: the rv64-mmu build with CONFIG_ENABLE_SMP. Run it with qemu-system-riscv64 -M virt -smp 2. A separate preset rather than a flag on rv64-mmu so the single-hart build every other test uses stays exactly what it was.",
@@ -159,6 +178,10 @@
     {
       "name": "rp2350-sensor",
       "configurePreset": "rp2350-sensor"
+    },
+    {
+      "name": "esp32p4",
+      "configurePreset": "esp32p4"
     },
     {
       "name": "rv64-smp",

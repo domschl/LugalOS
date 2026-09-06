@@ -79,6 +79,28 @@
  * own on-demand move-list pools (user/chess/src/search.c) needed to
  * allocate, quietly eaten enough of the heap that they no longer fit. */
 #define NODE_POOL_SIZE 1024
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* E2, plan/phase27_esp32p4_bringup.md: the RP2350 figure, for the RP2350
+ * reason, on a board with the same shape of budget.
+ *
+ * The QEMU 4096 below is free against 128 MB. Here it is not: measured on
+ * the first link of this target, user/lisp/lisp.c alone carried 181,468
+ * bytes of .bss -- and this kernel is loaded into 512 KB of L2MEM
+ * (linker/esp32p4.ld), so the image overflowed its region by 2352 bytes and
+ * would not link at all. The comment above already states the mechanism:
+ * node_pool is .bss, _heap_end is a fixed address, so growing this array
+ * shrinks the managed heap page for page. On a 512 KB board that is the
+ * whole budget.
+ *
+ * E2's plan text asked for this differently -- build with LUGALOS_ENABLE_LISP
+ * off. Board-scoping the pool is what it actually got, and the reasoning is
+ * in the plan under E2: there is no ENABLE_LISP flag in this tree, inventing
+ * one would put a gate no other target exercises across a dozen call sites
+ * in common code, and the size problem is a *pool sizing* problem that this
+ * file already has the mechanism for. The 1024 figure is not new either --
+ * it is the one phase 13's S4 arrived at empirically on hardware, on a board
+ * with 520 KB. */
+#define NODE_POOL_SIZE 1024
 #else
 #define NODE_POOL_SIZE 4096
 #endif
@@ -205,7 +227,10 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
  * search.c) need room in too. 384 is what this constant was already
  * proven sufficient at, so it stays fixed at that regardless of how much
  * further NODE_POOL_SIZE grows for its own, separately-justified reasons. */
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+/* Fixed at 384 on both real boards, and deliberately not the NODE_POOL_SIZE/2
+ * ratio -- see the paragraph above for why that ratio was the bug rather than
+ * the rule. */
 #define STRING_POOL_SIZE 384
 #else
 #define STRING_POOL_SIZE (NODE_POOL_SIZE / 2)

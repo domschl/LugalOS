@@ -297,6 +297,11 @@ void vfs_server_init(void) {
             printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: SPI1 MicroSD Card Reader)\n");
         }
     }
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* E2, plan/phase27_esp32p4_bringup.md: no block device on this board
+     * yet, so /sd0 stays unmounted and `df` reports it as such. Not a
+     * fall-through to the virtio branch below -- that driver is not built
+     * for this target. */
 #else
     /* VirtIO block device is available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
@@ -1879,6 +1884,8 @@ int vfs_format(const char *path) {
     if (m && strcmp(m->name, "sd0") == 0) {
 #if defined(CONFIG_BOARD_RP2350)
         block_dev_t *dev = spisd_get_device();
+#elif defined(CONFIG_BOARD_ESP32P4)
+        block_dev_t *dev = NULL;   /* no block device yet -- E6 */
 #else
         block_dev_t *dev = virtio_blk_get_device();
 #endif

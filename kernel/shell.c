@@ -30,7 +30,7 @@
 #include "drivers/cyw43.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/spisd.h"
-#else
+#elif !defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/virtio_blk.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -3108,14 +3108,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * guarantee. */
         printk("[UartStats] write_calls=%u\n", uart_write_call_count());
         return;
+#if !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "blkstats") == 0) {
         /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
          * exposes blk_task_call_count() so a test can confirm the sdblk/blk
          * task is genuinely serving requests (a nonzero, growing count)
          * rather than every caller silently using the direct-hardware
-         * fallback the whole time. */
+         * fallback the whole time.
+         *
+         * Absent on ESP32-P4, which has no block device until E6 -- the
+         * counter is defined by whichever block driver the target builds
+         * (drivers/spisd_rp2350.c or drivers/virtio_blk.c) and that board
+         * builds neither. */
         printk("[BlkStats] calls=%u\n", blk_task_call_count());
         return;
+#endif
     } else if (strcmp(cmd_line, "i2cstats") == 0) {
         /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
          * exposes i2c_task_call_count() so a test can confirm the shared

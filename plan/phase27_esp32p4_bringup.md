@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-05. E0 and E1 done; E2 is next.** This is the first of three
+**Status: in progress, 2026-09-06. E0, E1 and E2 done; E3 is next.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -86,12 +86,28 @@ The honest good news, established by reading rather than hoping:
   only as *reference source* and, much later, if the C6 firmware ever gets
   built. *Equally true of the distribution `riscv64-elf-gcc` on Arch: the
   same 695-byte binary, byte-for-byte the same size, built on both hosts.*
+  *E2 took it the rest of the way, 2026-09-06: `cmake/toolchain-esp32p4.cmake`
+  is `cmake/toolchain-rp2350.cmake` with one string changed, and it builds a
+  226 KB kernel that boots. This has stopped being a claim about a test
+  compile.*
 * **`mtime` is a real memory-mapped CLINT**, at `0x20000000` with the
   standard `mtimecmp`/`mtime` register set (E0 §2) — against RP2350's SIO
   block at `SIO_BASE + 0x1a4`. *Half-true as originally written, and corrected
   2026-09-05: the counter is ordinary and slightly better than RP2350's (it
   has an atomic-read sampling mode), but its **interrupt** is not — it arrives
   through the CLIC as interrupt 7, so it is not free of §3.4's work.*
+  *E2 did not use it, and E4 should decide deliberately rather than inherit
+  that. `kernel/time.c` reads the **system timer** (TRM ch. 16) instead, for
+  two reasons the TRM is explicit about: its rate is stated (XTAL/2.5, 16
+  MHz average, "the timer counter is incremented by 1/16 µs on each CNT_CLK
+  cycle") whereas the CLINT chapter never says what clocks `mtime`; and the
+  CLINT's counter is **core-local** — one per HP core — which is the wrong
+  instrument for a wall clock on a chip where §7's two-core question is live.
+  The risk to avoid in E4 is running the tick off `mtimecmp` while the clock
+  runs off the system timer: two independent time bases in one kernel is how
+  drift becomes unexplainable. Either arm the tick from a counter this kernel
+  already reads, or measure the two against each other and write the ratio
+  down.*
 * **PMP budget roughly quadruples.** "Up to 32 PMP regions and 16 PMA
   regions", against RP2350's 8 — of which `arch/riscv/common/pmp_probe.c`
   already records that entries 8/9/10 ship preconfigured (`pmpcfg2 =
@@ -102,6 +118,16 @@ The honest good news, established by reading rather than hoping:
   `components/soc/esp32p4/include/soc/soc.h`) against RP2350's 520 KB, before
   PSRAM is even considered. The `rp2350-sensor` build's static footprint is
   173,544 bytes; it fits with room to spare.
+  *Too comfortable, and E2 corrected it on 2026-09-06 — twice over. The 768 KB
+  is not one usable region while `load-ram` is delivering the image: the ROM's
+  own download-mode buffers occupy `0x4ff296b8`-`0x4ff40000` and split it. And
+  the comparison with `rp2350-sensor` was not like for like, because on RP2350
+  the kernel's 227 KB of `.text` lives in flash and costs no RAM at all, while
+  a RAM-loaded image pays for it. The first link overflowed; the second, with
+  `.bss` and the stack moved into the low half (NOLOAD only, so the loader
+  never writes there), left 284 KB of heap. Both constraints are E6's to
+  remove — a flash-booted image executes in place and is not sharing memory
+  with a loader. See E2.*
 * **Two HP cores.** Phases 22 and 23 are live rather than inert — but see
   §7: not in this phase.
 
@@ -775,6 +801,295 @@ easier every one of these milestones is to debug.
 Done when: a shell prompt over UART0, `ls /proc`, and `cat /proc/meminfo`
 reporting a plausible 768 KB.
 
+**DONE, 2026-09-06.** Booted to a shell on the first load, on hardware.
+
+```
+[    0.000] [Timer] System timer up: XTAL/2.5 = 16 ticks/us (1 us resolution).
+       LugalOS Lisp Machine v0.15.0 (build 490.61b8ab1f+)
+[    0.020] [Priv] Execution Mode: Machine Mode (M-mode)
+[    0.055] [Dev] Registry: rtc(absent), sensor(absent), eeprom, usb(absent),
+                             uart, uartslip, uartdemux
+[    0.064] [PAlloc] Page allocator: 71 pages of 4096 bytes at 0x4ff79000 (284 KB)
+[    0.142] [Ticker] ESP32-P4: the timer interrupt is a CLIC source (E3);
+                     preemption stays off
+[    0.157] [UART] Driver running as task #1, reachable via chan_call("uart", ...)
+LugalOS Interactive Console Shell (`lsh`)
+lsh> cat /proc/meminfo
+RAM: 768 KB total at 0x4ff00000
+  Image (text+data+bss): 362 KB
+    .data 340 B, .bss 134 KB
+  Boot Stack: 16 KB, peak 6692 bytes
+  Heap: 284 KB managed of 284 KB
+  Storage: /flash0/ (not mounted), /sd0/ (not mounted), /ram0/ (not mounted)
+```
+
+`ls /proc` lists all fourteen files, `lisp` gives a REPL that evaluates, and
+`uartstats` reports `write_calls=185` — which is the part worth checking
+rather than assuming: it says the console is going through
+`chan_call("uart", ...)` to a driver task, not silently falling back to
+direct hardware access the whole time.
+
+**The clock was measured, not trusted.** Two `date` calls 60 seconds apart by
+the host's clock came back 60 seconds apart on the board (12:02:11 →
+12:03:11), and every `[timestamp]` in the log above tracks the interval the
+host actually waited. `date` has one-second resolution, so this bounds the
+error at under ~1.7% — nowhere near a precision claim, and not meant to be
+one, but it rules out the gross divisor mistake that is the thing worth
+ruling out here. Phase 24's `TICKS_TIMER0_CYCLES` bug ran a whole system at
+43% speed and hid for months because nothing ever checked; E4 owns the
+precise version.
+
+The boot log also shows the two lies this milestone found, already fixed —
+see "What the new board caught in the old code" below.
+
+#### What E2 built, and the three places the specification was wrong
+
+Files: `cmake/toolchain-esp32p4.cmake`, `cmake/board-esp32p4-nano.cmake`,
+`linker/esp32p4.ld`, `drivers/uart_esp32p4.c`, an `esp32p4` preset, and
+`CONFIG_BOARD_ESP32P4` arms in `CMakeLists.txt`, `arch/riscv/common/trap.c`,
+`kernel/ticker.c`, `kernel/time.c`, `kernel/board.c`, `kernel/main.c`,
+`kernel/shell.c`, `kernel/meminfo.c`, `fs/vfs_server.c`,
+`drivers/flashdisk.c` and `user/lisp/lisp.c`. 226,692 bytes of text, 154,448
+of `.bss`, and a 290,816-byte heap.
+
+**The toolchain file is a copy of the RP2350 one with a different
+`LUGALOS_TARGET`, and that is the result rather than the shortcut.** The
+same generic RISC-V cross-compiler this tree has always used builds for the
+P4 with no new tool, no ESP-IDF, and no vendor GCC. §2 predicted it; E1
+proved it on silicon; E2 is where it stopped being a prediction about a
+standalone program and became a property of the build system.
+
+**Everything except the UART was a subtraction.** The arms added to the seven
+shared files are, with one exception, statements that this board has nothing
+there — no block device, no netif, no interrupt controller yet, no identity
+backend. Each is an explicit `#elif defined(CONFIG_BOARD_ESP32P4)` rather
+than a fall-through, and that is the whole point: every one of those `#else`
+branches was written meaning "QEMU", and a third target reaching them would
+have probed virtio-mmio addresses, written a PLIC that is not there, and read
+a CLINT that is not there either. The absence of a controller is now a
+statement in `trap.c`, not a gap.
+
+##### 1. Where the kernel goes — the specification said 768 KB and the ROM says otherwise
+
+L2MEM is 768 KB, and it is not one region. This image is delivered by
+`esptool load-ram`, so while it is being written the boot ROM's own
+download-mode code is live in the same memory — `0x4ff296b8`–`0x4ff40000`,
+which E1 already recorded. The first working layout put everything above
+that and got **136 KB of heap**, under the 256 KB floor
+`plan/phase15_memory_reclamation.md` §6 asks every real board to hold. The
+floor fired, which is what it is for.
+
+The rule that fixes it is about *when*, not *where*: once load-ram jumps to
+`_start` the ROM's loader is finished and its buffers are dead memory. So a
+NOLOAD section — one with no bytes in the image file, written for the first
+time by `entry.S` — is perfectly safe down there, while a section carrying
+bytes is not. `linker/esp32p4.ld` therefore splits:
+
+| Region | Range | Contents |
+|---|---|---|
+| `LOWRAM` | `0x4ff00000`–`0x4ff40000` (256 KB) | `.bss`, boot stack. **NOLOAD only.** |
+| `RAM` | `0x4ff40000`–`0x4ffc0000` (512 KB) | `.text`, `.rodata`, `.data`, then the heap |
+
+That is 290,816 bytes of heap and a `/proc/meminfo` that can honestly say
+768 KB. Two `ASSERT`s keep the rule true, and a third checks the floor.
+
+**The boot stack sits at the top of `LOWRAM`, not immediately above `.bss`,**
+and this is the one place the layout is doing something the other scripts do
+not. A stack destroys whatever is below `_stack_bottom`; below `.bss` that is
+live kernel state, which is the exact failure `linker/rp2350.ld` documents
+twice. Putting it at the top leaves ~106 KB of unused region as the thing an
+overflow reaches first. It is not a guard page — nothing faults — but it is
+free.
+
+Two consequences worth knowing. `AT()` was the first attempt and it moves the
+*load* address, not the placement, so the stack stayed where it was and grew
+a spurious LMA; an explicit address expression is what actually moves a
+section, and it costs `ld`'s own region overflow check, which is now an
+`ASSERT` instead. And `kernel/meminfo.c` needed a P4 arm: `image_bytes` is
+computed everywhere else as `_bss_end - _ram_start`, which assumes the image
+is one contiguous run from the bottom of RAM. Here it is two runs, and
+without the fix `/proc/meminfo` would have reported the `.bss` half and
+silently omitted 227 KB of resident kernel text — on the one target where the
+text *is* resident.
+
+**The 227 KB is temporary and is E6's to reclaim.** On RP2350 the kernel's
+text lives in flash and costs no RAM at all; here it is RAM-resident because
+the image is RAM-*loaded*, which is E2's entire boot story. Booting the same
+image from flash puts it back into XIP.
+
+##### 2. `LUGALOS_ENABLE_LISP` does not exist, and inventing it was the wrong fix
+
+E2 asked for the image to be built with `_CC`, `_ED` and `_LISP` off. The
+first two are real flags and are off. The third is not a flag at all, and the
+measurement that forced the question also answered it: on the first link,
+`user/lisp/lisp.c` alone carried **181,468 bytes of `.bss`** and the image
+overflowed its region by 2352 bytes.
+
+Adding an `ENABLE_LISP` flag would have put a new gate across a dozen call
+sites in common code — `kernel_main`, the shell, `vfs_server` — that no other
+target ever exercises, which is a gate that rots. And it would have been
+solving a *pool sizing* problem with a *feature* switch. `user/lisp/lisp.c`
+already has the mechanism: `NODE_POOL_SIZE` is board-scoped, 1024 on RP2350
+against 4096 on QEMU, and the RP2350 figure is not a guess — it is what phase
+13's S4 arrived at empirically on hardware, on a board with 520 KB. This
+board has 768 KB and the same shape of budget, so it gets the same number.
+`.bss` fell from 181 KB to 30 KB and the Lisp machine is still a Lisp machine
+on the new silicon, which seemed worth more than five fewer kilobytes.
+
+##### 3. The UART is the only thing here that is really new
+
+`drivers/uart_esp32p4.c`, and it configures hardware the boot ROM has
+already configured. That is deliberate. E1 established that the ROM hands
+over a working UART0 and `minimal_esp32p4.c` therefore wrote bytes and
+nothing else — correct for a program proving the chip was alive, and
+unacceptable for a kernel. "It works because of what the loader left behind"
+is a property of one boot path, and this image is meant to acquire more of
+them.
+
+**The source clock is the crystal, not the PLL**, and that turned out to
+matter more than expected. XTAL_CLK is 40 MHz on this board and does not move
+when the CPU clock does, so the console's baud rate does not depend on the
+clock tree at all: E2 gets a shell without bringing the PLL up, and nothing
+later can take the console away by changing a CPU frequency. The cost is
+0.008% baud error against 0.00% — four orders of magnitude inside what a UART
+tolerates.
+
+**Three registers had to be transcribed and two of them were nearly wrong.**
+`UART0_SYS_CLK_EN` is bit 18 of `SOC_CLK_CTRL1` and `UART0_APB_CLK_EN` is bit
+7 of `SOC_CLK_CTRL2`. The first draft of this file had them at 24 and 25,
+reasoned from where UART0 sits in the peripheral list — and the two registers
+order their fields differently from each other, so there is no position to
+infer. They were caught by rendering the TRM's own bit diagrams (Registers
+11.7 and 11.8, pages 1108 and 1113) and counting field labels down from bit
+31, then checking against IDF's generated header. This is §3.2's rule paying
+for itself inside one afternoon, on the first file written under it.
+
+Two more facts from the same reading, both of which would have cost a session
+each:
+
+* **The `_SYNC` registers need a commit.** `CLKDIV_SYNC` and `CONF0_SYNC`
+  live in the UART core's clock domain, and a write does nothing until
+  `UART_REG_UPDATE_REG` bit 0 is written and self-clears. It does not fail
+  loudly — the readback shows what you wrote and the hardware keeps using the
+  old value.
+* **`TXFIFO_CNT` is now verified.** TRM Register 45.21, bits [23:16], against
+  a 128-byte FIFO. E1 left it as an open suspect for a garbled-output report
+  it could not explain; it is a real count against a real capacity and cannot
+  silently overrun. (The TRM's prose for that field says "the number of valid
+  data bytes in RX FIFO" — a copy-paste slip in the manual, not a second RX
+  counter.)
+
+The driver is **polled**, with no interrupt path at all, because there is no
+route from a peripheral to a handler until E3 brings the CLIC up. Both
+blocking primitives spin with `sched_yield()`, which is the fallback
+`drivers/uart_16550.c` already takes when its ISR slots are busy. E3 adds the
+ISR beside them.
+
+**It is also the third copy of the uart task/batching machinery in this
+tree**, and that is recorded rather than fixed. Two copies were defensible —
+the RP2350 one carries a USB CDC mirror and a demux bypass the QEMU one does
+not. A third makes the shared part worth factoring, but E2 is the wrong
+moment: extracting it now would change two drivers that work, on two boards,
+to make room for a third that has never run. **E3 is where that debt comes
+due**, because that is when all three have the same shape and the comparison
+is real.
+
+##### What E2 deliberately did not do
+
+* **No preemption.** `ticker_init()` refuses on this board and says why. The
+  P4's timer interrupt arrives through the CLIC as `clicintie[7]`, so there
+  is no tick until E3, and E4 arms the comparator through it. `g_enabled`
+  stays false, `kernel_main()` never calls `irq_restore(IRQ_ENABLE_BIT)`, and
+  the system runs cooperatively — which is what E2 asked for. Arming a
+  comparator whose interrupt cannot be delivered would report preemption as
+  enabled on a system that never switches.
+* **But there *is* a clock.** `kernel/time.c` reads the system timer's UNIT0
+  (TRM ch. 16) — a free-running 52-bit counter, no comparator, no interrupt.
+  Reading a counter needs none of E3, and the alternative is what the QEMU
+  RV32 branch of that same file records having shipped once: a "clock" that
+  counted its own calls, so every caller measuring a time budget was really
+  measuring how often it was polled. The rate is XTAL/2.5 = 16 ticks/µs (TRM
+  16.4), derived from `CONFIG_XTAL_HZ` rather than written as a bare 16.
+  Worth noting for E4 and for phase 29: XTAL/2.5 is not an integer ratio, so
+  the hardware alternates ÷2 and ÷3 and any single reading can be one tick
+  (62.5 ns) out.
+* **No `/flash0`.** `flashfs.bin` is built and goes nowhere: the QEMU form is
+  a 512 KB embedded C array, which will not fit in a RAM-loaded image, and
+  the RP2350 form needs a flash map, which is E6. `flashdisk_get_device()`
+  returns NULL, `/flash0` stays unmounted, and `df` says so.
+* **No `lugalos.uf2`.** The QEMU builds emit one that nobody flashes, which
+  is harmless there because nothing on those targets is flashed at all. This
+  board has real flash and a real image format coming in E6, so a file
+  carrying an RP2350 family id would be an artifact that looks flashable and
+  is not. There is no build-time ESP image either: `tools/p4run.py`
+  regenerates it from the ELF on every load, because E1's worst afternoon was
+  spent re-delivering a stale one.
+
+##### The trap vector, and 48 bytes of insurance
+
+`arch/riscv/common/entry.S` now aligns `trap_vector_entry` to 64 bytes on
+this board and keeps 16 everywhere else. In CLIC mode `mtvec[5:2]` are
+reserved, so a base that is not 64-byte aligned can come back truncated — and
+a truncated vector base points into the middle of the trap handler, which
+presents as an unexplained hang on the first exception rather than as
+anything to do with alignment. Nothing observed this; it costs 48 bytes of
+padding once, and the failure it prevents is one of the expensive kind.
+
+Interrupts stay off, but exceptions do not: in CLIC mode only *interrupts* go
+through `mtvt`, so a bad instruction or a misaligned load still vectors to
+`mtvec` and produces the same register dump every other target produces. That
+is the difference between a bug and a board that stopped.
+
+##### What the new board caught in the old code
+
+A third target is a falsification device, which is §0's whole argument for
+this phase. It took two boots to produce two findings, and neither is about
+the P4:
+
+* **`[AT24C32] 4KB I2C EEPROM detected at 0x57!`** — from a board with no I2C
+  controller configured at all. The non-RP2350 backing for that driver is a
+  synthetic 4 KB RAM buffer, which cannot fail a probe, so the detection test
+  always succeeded and the "No EEPROM detected (Using synthetic 4KB RAM
+  buffer)" branch was unreachable. It has been printing a chip that is not
+  there on every QEMU boot for as long as the driver has existed. `detected`
+  stays true — `/dev/eeprom`, `eeprom-read`/`eeprom-write` and the identity
+  store all work against that buffer, so the device *is* present — but it now
+  says what it is.
+* **`[USB CDC] Host Pass-Through Gateway Online (/dev/ttyUSB0 / /dev/ttyACM1)`**
+  — from a build that compiles `drivers/usb_cdc.c` down to stubs, and it named
+  the two device paths that on this board are the actual cables carrying the
+  console and the reset lines. So the kernel appeared to be claiming the port
+  its operator was reading it on. Worse, `probe_usb_cdc()` returned 0
+  unconditionally, so the registry listed `usb` as **present** — and `usb` is
+  a bindable console (`console-bind "usb"`, `init.lisp`). Binding the terminal
+  to a device that discards every byte is the one way to lose a console with
+  no message to say what happened. There is now a `usb_cdc_present()`, and the
+  probe reports what it says.
+
+Both are exactly the class `kernel/board.c`'s own probe comments were written
+about — "the registry said present, the kernel log said nothing had been
+detected, and both were telling the truth about different things" — and both
+survived on two targets for months because on QEMU nothing else is real
+either, so a fictional device does not stand out. On a board where
+`/dev/ttyUSB0` is a cable you are looking at, it does. The registry now reads
+`rtc(absent), sensor(absent), eeprom, usb(absent), uart, uartslip,
+uartdemux`, and the QEMU suite is 359/359 either way.
+
+##### The workflow
+
+```
+cmake --preset esp32p4 && cmake --build --preset esp32p4
+tools/p4run.py build/esp32p4/lugalos.elf --baud 921600 --interactive
+```
+
+`--baud` applies to the load transfer only, and it is new in E2 for an
+arithmetic reason: the image is ~227 KB against E1's 1.2 KB, which is about
+40 seconds at 115200. The console stays at 115200 throughout, because the
+kernel sets its own rate the moment it starts and the ROM's is only in force
+until then. `--cmd` (repeatable) types a line at the shell and prints what
+comes back, which is what lets this milestone's own done-condition be checked
+without a human at the keyboard — and what `tests/hw/` will use in E8.
+
 ### E3 — Traps and the CLIC
 
 *(Was E4. E0 §8 established that this must come first: `mtvec.MODE` is
@@ -787,13 +1102,39 @@ CLIC setup at `0x20800000`, `mtvt`, and the P4 arm in
 natural first, since the console already wants it.
 
 **Written against the non-standard CLIC** (E0 §5): interrupt threshold in a
-memory-mapped register rather than a CSR, and `mintstatus` at `0x346`. The
+memory-mapped register rather than a CSR, and `mintstatus` at `0x346`.
+
+*Read TRM §2.9.2.1 before starting. It says the thing that makes this
+milestone unavoidable rather than merely due:* "Only the CLIC mode of
+operation is supported by the HP core, i.e. `mtvec.MODE` is hardwired to
+0x3. Hence, **the basic RISC-V interrupt handling scheme and the associated
+CSRs (such as `mie`, `mip`, `mideleg`, `uie`, and `uip`) are unavailable.**"
+*So every `set_csr(mie, ...)` in this tree is a no-op on this silicon — it
+does not fail, it simply does nothing, which is the failure mode that looks
+like a dead peripheral. `kernel/ticker.c`'s E2 arm refuses for exactly this
+reason rather than arming a comparator and hoping.* The
 standard variant belongs to v3 silicon we do not have; if a v3 board ever
 arrives, this is the file that learns about it, behind the revision check
 §3.3 asks for.
 
 Done when: a UART RX interrupt reaches a handler; a deliberate illegal
 instruction produces the same diagnostic dump the RP2350 build produces.
+
+**E3 also inherits a debt E2 deliberately did not pay.** `drivers/uart_esp32p4.c`
+is the third copy of the uart task/batching machinery in this tree
+(`uart_16550.c`, `uart_rp2350.c`, and now this one). Two copies were
+defensible — the RP2350 one carries a USB CDC mirror and an A3b demux bypass
+the QEMU one does not. Three is where the shared part is worth factoring,
+and E2 was the wrong moment to do it: extracting a common core then would
+have meant changing two drivers that work, on two boards, to make room for a
+third that had never run. It has run now. Once E3 gives this file its ISR,
+all three have the same shape and the comparison is real — that is when to
+decide, and the decision may still be "leave them", but it should be a
+decision.
+
+*(Exceptions already work, incidentally: in CLIC mode only interrupts go
+through `mtvt`, so `mtvec` — set by `entry.S`, 64-byte aligned there since E2
+— already catches a fault. What E3 adds is the interrupt half.)*
 
 ### E4 — Time
 

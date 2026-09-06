@@ -160,6 +160,7 @@ static bool i2c_read_at24(uint16_t mem_addr, uint8_t *dst, size_t len) {
 #endif
 
 void at24c32_init(void) {
+#if defined(CONFIG_BOARD_RP2350)
     uint8_t dummy = 0;
     g_at24c32_detected = false;
 
@@ -169,6 +170,22 @@ void at24c32_init(void) {
     } else {
         printk("[AT24C32] No EEPROM detected at 0x57 (Using synthetic 4KB RAM buffer).\n");
     }
+#else
+    /* The synthetic buffer above is not on a bus and cannot fail a probe, so
+     * the detection test would always have succeeded here -- and did, which
+     * is how a board with no I2C controller of any kind came to announce "4KB
+     * I2C EEPROM detected at 0x57!" on its first boot (E2,
+     * plan/phase27_esp32p4_bringup.md).
+     *
+     * `detected` stays true, and that is not a compromise: /dev/eeprom, the
+     * `eeprom-read`/`eeprom-write` primitives and the identity store all work
+     * against this buffer, so the device really is present and usable. It is
+     * simply not a chip, and only the message was ever claiming otherwise --
+     * the same distinction kernel/board.c's probe comments draw between "a
+     * part answered" and "the probe ran". */
+    g_at24c32_detected = true;
+    printk("[AT24C32] Synthetic 4 KB RAM EEPROM (no I2C bus on this target).\n");
+#endif
 }
 
 bool at24c32_is_detected(void) {

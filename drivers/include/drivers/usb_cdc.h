@@ -7,6 +7,19 @@
 #include "fs/p9_link.h"
 
 void usb_cdc_init(void);
+
+/* Whether this build has a USB controller behind it at all.
+ *
+ * True only on the targets that compile the real driver. Everywhere else
+ * this file is a set of stubs, and kernel/board.c's probe uses this to
+ * register the `usb` console as *absent* rather than as present-and-silent
+ * -- which matters because `usb` is bindable (`console-bind "usb"` from
+ * Lisp, tools/sd_root/system/etc/init.lisp), and binding the terminal to a
+ * device that discards every byte loses the terminal with no way to say so.
+ *
+ * Same shape and same reasoning as i2c_rtc_is_detected(): report whether a
+ * thing answered, not whether the probe ran. See kernel/board.c. */
+bool usb_cdc_present(void);
 void usb_cdc_task(void);
 void usb_cdc_debug_dump(void);
 bool usb_cdc_is_connected(void);

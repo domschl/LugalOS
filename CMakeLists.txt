@@ -61,6 +61,22 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
         LUGALOS_FLASHFS_SIZE=${LUGALOS_FLASHFS_SIZE}
         LUGALOS_IDENTITY_BASE=${LUGALOS_IDENTITY_BASE}
         LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE})
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+    # E2, plan/phase27_esp32p4_bringup.md. The P4's HP cores are RV32IMAFC
+    # (datasheet section 4.1.1.1), and we compile the IMAC subset: no float,
+    # because nothing in this kernel uses one and a soft-float ABI keeps the
+    # image and the trap frame the size they are on every other RV32 target;
+    # no Zb, because revision <v3 silicon does not have it (E0 section 5) and
+    # this board is v1.3. Same -march string tools/build_minimal_esp32p4.sh
+    # proved on this exact chip in E1.
+    #
+    # CONFIG_MODE_M and CONFIG_NOMMU, like RP2350: the P4 implements M and U
+    # with no S-mode, which E1 confirmed on silicon (misa = 0x40901125 -- U
+    # set, S clear).
+    set(ARCH_MARCH "rv32imac_zicsr_zifencei")
+    set(ARCH_MABI "ilp32")
+    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4.ld")
+    add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_ESP32P4=1)
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -97,7 +113,7 @@ include_directories(
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
-if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "K210")
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "K210")
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" OFF)
 else()
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
@@ -266,6 +282,22 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+    # E2, plan/phase27_esp32p4_bringup.md: built as a raw image, and linked
+    # into nothing, because there is nowhere to put it yet.
+    #
+    # The QEMU form below is a 512 KB C array. This kernel is delivered by
+    # `esptool load-ram` into 512 KB of L2MEM (linker/esp32p4.ld), so
+    # embedding it is not a size trade-off here -- the image would not fit at
+    # all, and could not be loaded. The RP2350 form needs a flash map, which
+    # is E6's work.
+    #
+    # So the file is produced and left on disk: drivers/flashdisk.c reports a
+    # zero-length image, /flash0 stays unmounted, and E6 has the artifact
+    # ready the moment it has an address to write it to.
+    set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
+    set(FLASH_FS_SOURCE "")
+    set(FLASH_FS_COMMENT "Generating flashfs.bin (nowhere to put it until E6; not linked in)")
 else()
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c)
     set(FLASH_FS_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/flash_fs.c)
@@ -284,7 +316,7 @@ add_custom_command(
 
 # On RP2350 the image is not a source file, so nothing would build it without
 # a target that depends on it. lugalos.elf is made to depend on this below.
-if(LUGALOS_TARGET STREQUAL "RP2350")
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4")
     add_custom_target(flashfs_image DEPENDS ${FLASH_FS_OUTPUT})
 endif()
 
@@ -368,6 +400,8 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
     elseif(LUGALOS_TARGET STREQUAL "RP2350")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
     endif()
 endif()
 
@@ -673,6 +707,19 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # is ever built, which is what lets both define identity_store_device()
     # strongly over kernel/identity.c's weak default.
     list(APPEND SOURCES drivers/flash_rp2350.c drivers/idstore_rp2350.c)
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+    # E2, plan/phase27_esp32p4_bringup.md. One driver, and the shortness of
+    # this list is the milestone: no block device, no netif, no identity
+    # backend, no display. A board with none of those registers none of them,
+    # and /proc/devices then says "no block device" rather than the kernel
+    # having to know.
+    #
+    # kernel/identity.c's weak identity_store_device() is what is left
+    # standing here. On RP2350 drivers/idstore_rp2350.c overrides it and on
+    # QEMU drivers/virtio_blk_id.c does; this board has neither yet, so the
+    # weak default answers and the node's name and MAC come from the derived
+    # CONFIG_NODE_SEED. E6 is where the flash gives it something better.
+    list(APPEND SOURCES drivers/uart_esp32p4.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -687,7 +734,7 @@ else()
 endif()
 
 # Architecture-specific memory management source
-if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350")
+if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4")
     list(APPEND SOURCES arch/riscv/rv32_nommu/vmm.c)
 else()
     list(APPEND SOURCES arch/riscv/rv64_mmu/vmm.c)
@@ -829,8 +876,29 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     add_dependencies(lugalos.elf flashfs_image)
 endif()
 
+if(LUGALOS_TARGET STREQUAL "ESP32P4")
+    # The image is loaded into RAM and executed from RAM, so its one loadable
+    # segment carries .text, .rodata and .data together and is genuinely RWX.
+    # ld says so, correctly, and there is nothing to fix: linker/esp32p4.ld's
+    # RAM region is declared `rwx` because that is what L2MEM is, and this
+    # kernel has no MMU and no second region to split code away into. Same
+    # situation and same disposition as the RP2350 block above -- and the same
+    # stated cost: a *future* accidental RWX segment on this target will not be
+    # reported, which is why the flag is scoped to this one link.
+    target_link_options(lugalos.elf PRIVATE -Wl,--no-warn-rwx-segments)
+
+    # Same reason as the RP2350 line above -- flashfs.bin is not a source
+    # file here either, so without this nothing builds it. It is not flashed
+    # by anything yet (E6 owns that); it is built so the artifact and the
+    # code that will read it come into existence together rather than the
+    # filesystem being discovered to be missing on the day it is first
+    # wanted.
+    add_dependencies(lugalos.elf flashfs_image)
+endif()
+
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
 set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)
+
 
 # The POST_BUILD block below is not RP2350-only -- the QEMU targets run it too
 # and emit a lugalos.uf2 nobody flashes -- so the flash map, which only exists
@@ -839,6 +907,25 @@ set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)
 # POST_BUILD cannot carry an if() inside itself.
 if(NOT DEFINED LUGALOS_FLASH_BASE)
     set(LUGALOS_FLASH_BASE 0x10000000)
+endif()
+
+# ...and the one target that must not run the converter at all. The QEMU
+# builds emit a lugalos.uf2 nobody flashes, which is harmless because nothing
+# on those targets is flashed. The ESP32-P4 is different: it has real flash
+# and a real image format coming in E6, so a file called lugalos.uf2 carrying
+# an RP2350 family id would be an artifact that looks flashable and is not.
+#
+# There is deliberately no ESP32-P4 image artifact in its place either.
+# tools/p4run.py takes the ELF and regenerates the load image every time,
+# because E1's worst afternoon was spent re-delivering a stale one -- leaving
+# a build-time image lying around is exactly what made that possible.
+#
+# A command list rather than an if(): POST_BUILD cannot carry one, the same
+# constraint SD_STAGE_COMMANDS above works around.
+if(LUGALOS_TARGET STREQUAL "ESP32P4")
+    set(UF2_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
+else()
+    set(UF2_COMMANDS COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2)
 endif()
 # flashfs.uf2 gets its own producer rule rather than riding lugalos.elf's
 # POST_BUILD, and the difference is not cosmetic: a POST_BUILD only runs when
@@ -873,7 +960,7 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     # simple program survives being the wrong ISA; uargs, which dereferences
     # pointers, does not, and faults on a 32-bit address sign-extended to 64.
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py ${CMAKE_CURRENT_BINARY_DIR}/lugalos_sd.img ${SD_STAGE} --if-stale
-    COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2
+    ${UF2_COMMANDS}
     # flashfs.uf2 is deliberately NOT built here -- see its own rule above.
     # And note what no build emits at all: any UF2 covering
     # LUGALOS_IDENTITY_BASE. A device's identity is minted by the device, and

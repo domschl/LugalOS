@@ -16,7 +16,7 @@
 #include "drivers/enc28j60.h"
 #endif
 
-#if !defined(CONFIG_BOARD_RP2350)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
@@ -118,7 +118,12 @@ static int probe_bme280(void)   {
     bme280_register_sources();
     return 0;
 }
-static int probe_usb_cdc(void)  { usb_cdc_init();  return 0; }
+/* Like probe_i2c_rtc() above: reports whether there is a device, not whether
+ * the probe ran. The QEMU targets and the ESP32-P4 compile drivers/usb_cdc.c
+ * down to stubs, and this used to register `usb` as present on all of them --
+ * a bindable console (`console-bind "usb"`) that discards every byte, which
+ * is the one way to lose a terminal with no message to say what happened. */
+static int probe_usb_cdc(void)  { usb_cdc_init();  return usb_cdc_present() ? 0 : -1; }
 
 /* Console devices, exposed so the console stream can be bound to one by name
  * at runtime (B4). `uart` is the boot console: already initialised during
@@ -157,6 +162,9 @@ static void *get_spisd(void) { return spisd_get_device(); }
 static int   probe_enc28j60(void) { return enc28j60_init(); }
 static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
 #endif
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* No probe/get adapters: this board has nothing here to adapt. See the
+ * driver-table note further down. */
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -261,6 +269,19 @@ static const dev_driver_t dev_enc28j60 = {
     .probe = probe_enc28j60, .get = get_enc28j60,
 };
 #endif
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* E2, plan/phase27_esp32p4_bringup.md: nothing to add.
+ *
+ * This board's whole device table is the four entries board_register_devices()
+ * registers unconditionally below -- the RTC, sensor and EEPROM probes (which
+ * find nothing, since no I2C controller is configured yet), the USB CDC stub,
+ * and UART0 with its two 9P links. There is no block device, no netif, and no
+ * second console.
+ *
+ * The arm exists so this is a stated absence rather than a fall-through. The
+ * #else below is the QEMU one, and it registers virtio devices; a P4 build
+ * reaching it would probe virtio-mmio addresses that are not virtio-mmio on
+ * this chip. */
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -302,6 +323,9 @@ void board_register_devices(void) {
 #if defined(CONFIG_ETH_CS_GPIO)
     dev_register(&dev_enc28j60);
 #endif
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* Nothing board-specific -- see the note above the (absent) driver
+     * table. */
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);
