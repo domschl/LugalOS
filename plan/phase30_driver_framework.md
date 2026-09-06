@@ -1,7 +1,17 @@
 # Phase 30 — The layer above the registers
 
-**Status: planned, not started, 2026-09-06. Sequenced before phase 28.** The
-reason for the ordering is in §0.4: phase 28's Ethernet driver is the next
+**Status: planned, not started, 2026-09-06. Sequenced after phase 31 and
+before phase 28.**
+
+*(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this
+one and goes first. Its argument applies directly here: this phase moves code
+**between contexts** — driver task bodies and U-mode domain construction into
+shared code — and that is exactly the operation that silently creates a lock
+or channel cycle. Phase 31 builds the checker that makes these migrations
+verified rather than hopeful. It also owns an open lock-ordering violation
+that should not wait behind a refactor.)*
+
+The reason for this phase's own ordering ahead of 28 is in §0.4: phase 28's Ethernet driver is the next
 large new driver this project will write, and it should be written against
 this once rather than written twice.
 

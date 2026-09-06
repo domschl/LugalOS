@@ -1936,6 +1936,17 @@ temperature into the same namespace, and nobody has to think about it.
 Sketches, not plans. Written now so phase 27's ordering is legible; each gets
 its own document when it is reached.
 
+*(2026-09-06, second addition: `plan/phase31_concurrency_hierarchy.md`, and
+it carries a **standing rule that can interrupt this phase**. E4 hit the same
+class of concurrency bug three times in one session -- a blocking `printk()`
+in `task_exit()`, the same in `sched_reap()` where the timer interrupt reaches
+it, and the diagnostic written to investigate the first, which blocked while
+holding `g_sched_lock`. The agreement is: **if phase 27 gets stuck again on a
+deadlock, hang, or corruption traced to a lock held across a block, a blocking
+call from interrupt context, or a cycle spanning locks and channels, phase 27
+stops and phase 31 runs first.** Three instances is enough; working around a
+fourth would be the wrong call. Order is now 31 -> 30 -> 28.)*
+
 *(2026-09-06: one document exists already, and it is not one of these.
 `plan/phase30_driver_framework.md` was written after E3, out of the question
 E3's uart debt forced — whether a second silicon family means this tree needs
@@ -1945,8 +1956,10 @@ stated there.)*
 
 ### Phase 28 — Ethernet on the P4
 
-**Phase 30 comes first.** `plan/phase30_driver_framework.md`, written after
-E3 and sequenced ahead of this one. Phase 28's MAC/PHY driver is the largest
+**Phases 31 and 30 come first, in that order.**
+`plan/phase31_concurrency_hierarchy.md` (the wait-for graph and its checker)
+then `plan/phase30_driver_framework.md` (the driver-task framework), both
+sequenced ahead of this one. Phase 28's MAC/PHY driver is the largest
 new driver on the roadmap and it will be a task like every other driver here
 — so it is either written against the extracted driver-task framework once,
 or written the long way and migrated afterwards. Phase 30 §0.4 makes the
