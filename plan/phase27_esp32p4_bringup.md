@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0-E3 done. E4's timer works and is measured; its `priostress` crash is open.** This is the first of three
+**Status: in progress, 2026-09-06. E0-E3 done. E4's timer works and is measured; the `priostress` crash it exposed is root-caused (a blocking printk in `task_exit()`, kernel/sched.c, not P4 code) and the fix is not yet written.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1537,6 +1537,109 @@ enough for the window to be wide.
 below is correct and measured; this is a scheduler-lifetime bug that
 preemption on slow silicon has exposed, and it may well not be P4-specific
 code at all.
+
+**Root cause found, 2026-09-06. The fix is not written yet, and the reason is
+in "what the first fix attempt taught" below.**
+
+**`task_exit()` makes a blocking IPC call before it has begun exiting.** Its
+first act is
+
+```c
+printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
+```
+
+which reaches the console through `uart_flush()` → `chan_call()` →
+`task_block()`. So a task announcing its own death **switches away in the
+middle of dying**: it sits BLOCKED, still owning its stack, with none of its
+exit bookkeeping done, and a second task can walk into `task_exit()` behind
+it. The comment above that line already knew half of this — *"deliberately
+outside it, because printk() can block"* — and treated blocking as the reason
+to move the call, rather than as the hazard.
+
+The reap slot immediately below states the assumption that breaks:
+
+> One slot suffices because a task can only exit while running, and the next
+> task reaps before anything else can exit.
+
+Confirmed by controlled experiment rather than by reading: **deleting that one
+`printk()` makes `priostress` pass**, repeatably —
+`done=1,1 total_ticks=2252,2252 -- FAIR`.
+
+The diagnostic run that showed it:
+
+```
+[  140.802] [Sched] Task #5 'stressB' exited
+[Trap Exception] Cause: 0x1, epc=0x0, tval=0x0, inst=0x00000000
+[  140.804] [Sched] Task #4 'stressA<-- truncated: still printing
+[  140.811] [Trap Context] pid=5 'stressB' state=RUNNING
+[  140.884] [Sched Table]   #4 'stressA' BLOCKED  stack=0x4ff7e000+2P prio=3
+[  140.892] [Sched Table]   #5 'stressB' RUNNING  stack=0x4ff80000+2P prio=3
+```
+
+Both stress tasks inside `task_exit()` at once, one BLOCKED in its own exit
+message, the other returning to address zero.
+
+**This is not ESP32-P4 code.** It is `kernel/sched.c`, and it is reachable on
+every target that preempts. The P4 is simply the first board slow enough to
+hold the window open every time: `priostress` runs two equal-length,
+same-tier, never-yielding tasks that finish within milliseconds of each other,
+and without a PLL this CPU spends long enough inside the exit path for the
+second task to arrive. On RP2350 the same test passes — which is evidence
+about timing, not about correctness.
+
+#### What the first fix attempt taught
+
+Moving the announcement into `sched_reap()` — where the task is already dead,
+the stack already freed, and the printing task an ordinary healthy one — is
+the obvious fix, reads well, and **hangs the board**.
+
+`sched_reap()` is called from the top of `sched_yield()`, and `sched_yield()`
+is called by the timer interrupt. A blocking `printk()` there is a blocking
+IPC call from interrupt context, which is strictly worse than the bug it
+replaces. Reverted.
+
+So the constraint is sharper than "move it somewhere else":
+
+* not in the dying task, before its bookkeeping — that is the bug;
+* not in `sched_reap()` — reachable from the tick;
+* not through `printk()` at all on any of those paths, because every route to
+  the console on this board can block: even `uart_debug_puts()` reaches
+  `uart_hw_putc_blocking()`, which calls `task_block()` when a task exists and
+  the waiter slot is free, and `sched_yield()` otherwise.
+
+A correct fix therefore needs either a genuinely non-blocking console write
+for kernel-critical paths, or a deferred announcement drained from a context
+that is guaranteed to be an ordinary task. Both are changes to shared code on
+four targets and belong in their own commit with a full suite run behind them
+— which is the same argument `plan/phase30_driver_framework.md` makes about
+not folding refactors into bring-up milestones.
+
+#### What is committed meanwhile
+
+The diagnostics that found it, because they are worth more than the afternoon
+they cost:
+
+* **`[Trap Context]`** in the fatal trap dump — which task, by pid, name and
+  state. The dump used to be registers only, and "whose stack is `0x4ff81f50`?"
+  took a reproduction run to answer by arithmetic.
+* **`[Trap Frame]`** — the sixteen words below `sp`. `ctx_switch()` restores
+  `ra` from the word at the incoming sp, so those words are the frame that was
+  just restored; printing them turns "the frame was corrupt" from an inference
+  into a reading.
+* **`[Sched Table]`** — every task's state, parked sp, stack and priority at
+  the moment of the fault. This is the one that solved it: it showed two tasks
+  inside `task_exit()` simultaneously.
+* **`sched_check_incoming()`** — refuses to switch into a task whose parked sp
+  has a zero return address, halting with the table intact instead of jumping
+  to zero. It never fired here, and that was itself the decisive negative
+  result: it ruled out a corrupt parked sp and pointed at corruption of a
+  *running* task.
+* **An overlap check in `sched_reap()`** — refuses to hand a range back to the
+  allocator while a live task's stack overlaps it. Also never fired, also
+  informative: `palloc_free()` does not zero memory, so a wrong free is silent
+  until the pages are handed out again, and this makes it loud instead.
+
+Three of the five exist to say "not this", and they did.
 
 #### What E4 deliberately did not do
 

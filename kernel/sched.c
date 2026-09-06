@@ -602,6 +602,69 @@ uint32_t sched_stack_size(int pid) {
     return t->stack_pages * (uint32_t)PAGE_SIZE;
 }
 
+static void    *g_reap_stack;   /* declared early for sched_check_incoming() */
+static uint32_t g_reap_pages;
+
+/* Debug guard for phase 27 E4's priostress fault: does the task we are about
+ * to resume have a parked sp that could possibly be a context frame?
+ *
+ * ctx_switch() restores ra from the first word at the incoming sp. A task
+ * that has ever been switched away from has a return address into this
+ * file's .text there; a task that has never run has task_trampoline. Zero is
+ * neither, and jumping to it produces a fatal trap with every scheduler
+ * register already destroyed. Halting here instead keeps the table intact
+ * and says who was switching to whom. */
+static void sched_check_incoming(int prev, int next) {
+    uintptr_t sp = g_tasks[next].sp;
+    uintptr_t ra = sp ? *(const uintptr_t *)sp : 0;
+    /* Zero specifically, rather than a full text-range test: `_text_start` is
+     * only defined by linker/esp32p4.ld, and the failure this exists to catch
+     * is a return to address zero. A tighter check would need a symbol all
+     * four linker scripts define -- worth doing on its own, not as a side
+     * effect of a debug guard. */
+    if (ra != 0) return;
+
+    printk("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx has ra=0x%lx\n",
+           prev, g_tasks[prev].name, next, g_tasks[next].name,
+           (unsigned long)sp, (unsigned long)ra);
+    printk("[Sched BUG] next: state=%s stack=0x%lx pages=%u prio=%d aff=%d\n",
+           sched_state_name(g_tasks[next].state),
+           (unsigned long)(uintptr_t)g_tasks[next].stack_base,
+           (unsigned)g_tasks[next].stack_pages,
+           g_tasks[next].priority, g_tasks[next].hart_affinity);
+    printk("[Sched BUG] prev: state=%s stack=0x%lx pages=%u   reap=0x%lx pages=%u\n",
+           sched_state_name(g_tasks[prev].state),
+           (unsigned long)(uintptr_t)g_tasks[prev].stack_base,
+           (unsigned)g_tasks[prev].stack_pages,
+           (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages);
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED) continue;
+        printk("[Sched BUG]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP\n",
+               g_tasks[i].pid, g_tasks[i].name, sched_state_name(g_tasks[i].state),
+               (unsigned long)g_tasks[i].sp,
+               (unsigned long)(uintptr_t)g_tasks[i].stack_base,
+               (unsigned)g_tasks[i].stack_pages);
+    }
+    printk("[Sched BUG] halting with the table intact.\n");
+    for (;;) { __asm__ __volatile__("wfi"); }
+}
+
+/* The whole table, for a fatal path that has already lost the registers.
+ * Phase 27 E4 debug aid; see sched_check_incoming() above. */
+void sched_dump_table(void) {
+    printk("[Sched Table] reap=0x%lx pages=%u handoff_faults=%u\n",
+           (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages,
+           (unsigned)g_handoff_faults);
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED) continue;
+        printk("[Sched Table]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP prio=%d\n",
+               g_tasks[i].pid, g_tasks[i].name, sched_state_name(g_tasks[i].state),
+               (unsigned long)g_tasks[i].sp,
+               (unsigned long)(uintptr_t)g_tasks[i].stack_base,
+               (unsigned)g_tasks[i].stack_pages, g_tasks[i].priority);
+    }
+}
+
 void sched_yield(void) {
     if (!g_active) return;
 
@@ -675,6 +738,7 @@ void sched_yield(void) {
      * switch to releases it once it is on its own stack, and whoever
      * eventually resumes *us* has handed it back. That is what keeps `prev`
      * unclaimable until ctx_switch() has finished parking its sp. */
+    sched_check_incoming(prev, next);
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
 
     /* Resumed. We are on our own stack again and should have been handed the
@@ -765,8 +829,6 @@ void task_sleep_ms(uint32_t ms) {
  *
  * One slot suffices because a task can only exit while running, and the next
  * task reaps before anything else can exit. */
-static void    *g_reap_stack;
-static uint32_t g_reap_pages;
 
 static void sched_reap(void) {
     /* The slot is claimed under the scheduler lock and freed outside it.
@@ -781,7 +843,40 @@ static void sched_reap(void) {
     g_reap_pages = 0;
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
-    if (stack) palloc_free(stack, pages);
+    if (!stack) return;
+
+    /* Does the range about to be handed back to the allocator overlap a stack
+     * some live task is standing on? Phase 27 E4 debug guard.
+     *
+     * A free of the wrong range is invisible at the moment it happens --
+     * palloc_free() only clears bitmap bits, it does not touch the memory --
+     * and only becomes a fault later, when palloc_pages() hands those pages
+     * to someone else and zeroes them under a running task's feet. By then
+     * the evidence is a return to address zero with no trace of who freed
+     * what. Checking here costs one pass over a 24-entry table on a path that
+     * runs once per task exit. */
+    {
+        uintptr_t lo = (uintptr_t)stack;
+        uintptr_t hi = lo + (uintptr_t)pages * PAGE_SIZE;
+        for (uint32_t i = 0; i < MAX_TASKS; i++) {
+            if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) continue;
+            if (!g_tasks[i].stack_base) continue;
+            uintptr_t tlo = (uintptr_t)g_tasks[i].stack_base;
+            uintptr_t thi = tlo + (uintptr_t)g_tasks[i].stack_pages * PAGE_SIZE;
+            if (lo < thi && tlo < hi) {
+                printk("\n[Sched BUG] reaping 0x%lx..0x%lx overlaps live #%d '%s' "
+                       "stack 0x%lx..0x%lx (state=%s)\n",
+                       (unsigned long)lo, (unsigned long)hi,
+                       g_tasks[i].pid, g_tasks[i].name,
+                       (unsigned long)tlo, (unsigned long)thi,
+                       sched_state_name(g_tasks[i].state));
+                printk("[Sched BUG] halting before the free.\n");
+                for (;;) { __asm__ __volatile__("wfi"); }
+            }
+        }
+    }
+
+    palloc_free(stack, pages);
 }
 
 void task_exit(void) {
@@ -847,6 +942,7 @@ void task_exit(void) {
 
     /* Parks the dead task's sp into a slot nobody will read again. The
      * incoming task reaps as soon as it resumes, off this stack. */
+    sched_check_incoming(prev, next);
     ctx_switch(&g_tasks[prev].sp, g_tasks[next].sp);
 
     for (;;) { } /* unreachable: nothing ever switches back to a DEAD task */

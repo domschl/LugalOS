@@ -1072,6 +1072,42 @@ void trap_handler(trap_frame_t *frame) {
                (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval, (unsigned int)inst_val);
         printk("[Trap Register Dump] a0=0x%lx, a1=0x%lx, sp=0x%lx, ra=0x%lx\n",
                (unsigned long)frame->a0, (unsigned long)frame->a1, (unsigned long)frame->sp, (unsigned long)frame->ra);
+
+        /* Which task, and what it was standing on.
+         *
+         * Added while chasing phase 27's E4 priostress fault, where the whole
+         * dump was "ra=0, epc=0, sp=<an address>" and the first question --
+         * whose stack is that? -- took a reproduction run to answer by
+         * arithmetic. ctx_switch() restores ra from the word at the incoming
+         * sp and then adds the frame size, so the sixteen words below sp are
+         * the frame it just restored: printing them turns "the frame was
+         * corrupt" from an inference into a reading. Only ever runs once, on
+         * the way to a halt. */
+        {
+            int fpid = sched_current_pid();
+            const char *fname = "?";
+            int fstate = 0;
+            for (uint32_t i = 0; i < MAX_TASKS; i++) {
+                int p2; int s2; const char *n2;
+                if (sched_task_info(i, &p2, &s2, &n2) && p2 == fpid) {
+                    fname = n2 ? n2 : "?"; fstate = s2; break;
+                }
+            }
+            printk("[Trap Context] pid=%d '%s' state=%s\n",
+                   fpid, fname, sched_state_name(fstate));
+
+            uintptr_t base = frame->sp - 16 * sizeof(uintptr_t);
+            if (base >= inst_lo && base + 16 * sizeof(uintptr_t) < inst_hi) {
+                const uintptr_t *w = (const uintptr_t *)base;
+                for (int r = 0; r < 4; r++) {
+                    printk("[Trap Frame] 0x%lx: %08lx %08lx %08lx %08lx\n",
+                           (unsigned long)(base + (uintptr_t)r * 4 * sizeof(uintptr_t)),
+                           (unsigned long)w[r*4+0], (unsigned long)w[r*4+1],
+                           (unsigned long)w[r*4+2], (unsigned long)w[r*4+3]);
+                }
+            }
+        }
+        { extern void sched_dump_table(void); sched_dump_table(); }
         printk("[Fatal] System halted due to unhandled exception.\n");
         while (1) {
             __asm__ __volatile__("wfi");
