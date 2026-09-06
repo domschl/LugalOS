@@ -68,6 +68,76 @@ from fuse import FuseOSError, Operations
 import p9lib
 
 
+class _Link:
+    """The Session, plus the fact that the link underneath it can die.
+
+    Every 9P call in this file goes through here, and the reason is a bug
+    that made the mount unusable in practice: `cat ~/lugal/proc/gps` worked
+    exactly once, and the *second* read found no mount at all -- the FUSE
+    process itself was gone.
+
+    Two separate defects lined up to produce that.
+
+      * p9lib raises P9Error for anything the *server* refuses, and every
+        handler below catches it. But a link that stops answering does not
+        raise P9Error: `socket.recv()` raises `socket.timeout`, and a
+        dropped TCP connection raises ConnectionResetError. Neither is a
+        P9Error, so both escaped every handler in this file.
+
+      * fusepy's own wrapper catches OSError and returns `-e.errno` -- but
+        it first tests `if e.errno > 0`, and `socket.timeout` carries
+        **errno None**. `None > 0` is a TypeError, raised inside the
+        except clause, so it lands in fusepy's outer `except BaseException`
+        instead: that sets __critical_exception, which aborts fuse_main and
+        unmounts. One unanswered request killed the whole mount.
+
+    An idle 9P connection over WiFi is exactly the thing that gets dropped
+    without a FIN, so this was reachable by doing nothing at all: mount,
+    read a file, read the same file a minute later, and the mount is gone.
+
+    So a transport failure is contained here rather than left to escape:
+    reconnect once and retry, because a dropped idle connection is the
+    common case and a fresh one usually works; and if that fails, raise
+    FuseOSError(EIO), which is an OSError with a real positive errno and so
+    goes down fusepy's *working* path. The mount stays up and the next read
+    can succeed -- which is the whole difference between a link that
+    hiccuped and a mount that has to be torn down and redone.
+
+    P9Error is deliberately passed through untouched: "the server said no"
+    is not a transport failure, and the handlers below already map it."""
+
+    def __init__(self, session: p9lib.Session, reconnect=None) -> None:
+        self._session = session
+        self._reconnect = reconnect
+
+    def __getattr__(self, name):
+        attr = getattr(self._session, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            try:
+                return getattr(self._session, name)(*args, **kwargs)
+            except p9lib.P9Error:
+                raise
+            except OSError as first:
+                if self._reconnect is None:
+                    raise FuseOSError(errno.EIO) from first
+                try:
+                    self._session.close()
+                except Exception:
+                    pass          # it is already broken; that is the point
+                try:
+                    self._session = self._reconnect()
+                    return getattr(self._session, name)(*args, **kwargs)
+                except p9lib.P9Error:
+                    raise         # the link is back; the server refused
+                except Exception as second:
+                    raise FuseOSError(errno.EIO) from second
+
+        return call
+
+
 class P9FS(Operations):
     # fs/vfs_server.c's vfs_pread() services /dev/uart with a bare
     # uart_getc(), which blocks on the real physical UART line until a
@@ -124,8 +194,12 @@ class P9FS(Operations):
     _PROC_DF_PATH = "/proc/df"
     _PROC_DF_CACHE_TTL = 30.0  # seconds
 
-    def __init__(self, session: p9lib.Session) -> None:
-        self.sess = session
+    def __init__(self, session: p9lib.Session, reconnect=None) -> None:
+        # Wrapped, never used bare: see _Link for the mount-killing bug that
+        # a raw Session leaves open. `reconnect` is a zero-argument callable
+        # returning a fresh, attached Session (cli.py knows the transport
+        # arguments; this file deliberately does not).
+        self.sess = _Link(session, reconnect)
         self._lock = threading.Lock()
         self._uid = os.getuid()
         self._gid = os.getgid()

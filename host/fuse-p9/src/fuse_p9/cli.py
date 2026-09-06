@@ -77,18 +77,34 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.serial:
-        client = connect_serial(args.serial, baudrate=args.baud, framing=args.framing,
-                                 timeout=args.timeout)
+        def connect():
+            return connect_serial(args.serial, baudrate=args.baud, framing=args.framing,
+                                  timeout=args.timeout)
     elif args.unix:
-        client = connect_unix(args.unix, framing=args.framing)
+        def connect():
+            return connect_unix(args.unix, framing=args.framing)
     elif args.tcp:
         host, port = _split_hostport(args.tcp)
-        client = connect_tcp(host, port, timeout=args.timeout)
+
+        def connect():
+            return connect_tcp(host, port, timeout=args.timeout)
     else:
         print("error: one of --serial, --unix or --tcp is required", file=sys.stderr)
         return 2
 
-    session = Session(client, aname=args.aname, uname=args.uname, key=_auth_key(args))
+    key = _auth_key(args)
+
+    # Dialling is a closure rather than a one-off because the mount has to
+    # outlive the connection under it. An idle 9P link over WiFi gets
+    # dropped without a FIN, and before this the first unanswered request
+    # took the whole FUSE process down with it -- see _Link in
+    # operations.py for the two-defect chain that turned "one packet lost"
+    # into "the mount is gone". P9FS calls this to redial, so the knowledge
+    # of *how* to dial stays here with the arguments that describe it.
+    def reconnect():
+        return Session(connect(), aname=args.aname, uname=args.uname, key=key)
+
+    session = reconnect()
     # Multi-threaded (fusepy's default -- no nothreads=True): P9FS's own
     # lock is what keeps the single Session safe now, not single-threaded
     # dispatch. See operations.py's docstring for why nothreads=True was
@@ -99,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     fuse_kwargs = {"foreground": True}
     if args.allow_other:
         fuse_kwargs["allow_other"] = True
-    FUSE(P9FS(session), args.mountpoint, **fuse_kwargs)
+    FUSE(P9FS(session, reconnect), args.mountpoint, **fuse_kwargs)
     return 0
 
 
