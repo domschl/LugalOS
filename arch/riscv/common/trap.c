@@ -184,6 +184,83 @@ int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id) {
     return 0;
 }
 
+/* See arch/esp32p4_intr.h. Same three writes arch_irq_enable() makes for a
+ * device line, on the one ID it refuses -- level-triggered because the
+ * CLINT asserts the timer interrupt for as long as mtime >= mtimecmp and
+ * the TRM's own de-assert instruction is to move the comparator (section
+ * 2.9.3.4), which is exactly what ticker_next() does on the way out of the
+ * handler. */
+void esp32p4_clic_timer_enable(void) {
+    *p4_clic_byte(P4_CLIC_ATTR(P4_CLIC_IRQ_TIMER)) =
+        (uint8_t)(P4_CLIC_ATTR_MODE_M | P4_CLIC_ATTR_TRIG_LEVEL);
+    *p4_clic_byte(P4_CLIC_CTL(P4_CLIC_IRQ_TIMER)) = P4_CLIC_CTL_MAX;
+    *p4_clic_byte(P4_CLIC_IE(P4_CLIC_IRQ_TIMER)) = 1;
+}
+
+/* Drop this core's active interrupt level back to zero, without leaving the
+ * handler.
+ *
+ * E4, and the hazard that milestone existed to find. In CLIC mode taking an
+ * interrupt sets mintstatus.MIL to that interrupt's level, and the effective
+ * threshold is max(mintthresh.TH, mintstatus.MIL) -- so while a handler runs,
+ * every interrupt at or below its level is masked. Exactly one thing lowers
+ * MIL again: mret, which restores it from mcause.MPIL.
+ *
+ * That is fine for a handler that returns. This kernel's timer handler does
+ * not: preemption works by calling sched_yield() *inside* the handler, so
+ * control leaves through ctx_switch() and the mret that would restore MIL
+ * stays stranded in a stack frame, unwound only when that task is resumed.
+ * Every interrupt at level 255 -- which is all of them here -- stays masked
+ * for as long as the switched-to task runs. The tick that would preempt it
+ * is masked too, so nothing brings it back; only a cooperative yield
+ * eventually unwinds the chain.
+ *
+ * Measured, not deduced. `clicdump` samples mintstatus from inside a loop
+ * that never yields:
+ *
+ *     spin0 (nothing else READY):   ticks +200 over 2 s, MIL seen=0
+ *     spin1 (a READY task waiting): ticks   +0 over 2 s, MIL seen=255
+ *
+ * 100 Hz exactly when the tick has nobody to switch to, and a dead timer the
+ * moment it has. mstatus.MIE reads 1 throughout both, which is why no
+ * existing test on any other target could have caught this: on RP2350 and on
+ * QEMU, MIE is the whole story.
+ *
+ * So the level is dropped deliberately, by performing an mret that returns
+ * to the next instruction:
+ *
+ *   - mcause.MPIL is cleared first, because that is what mret loads into MIL.
+ *     Clobbering mcause is safe here: trap_handler() has already copied the
+ *     cause it needs into a local, and the trap vector restores mepc and
+ *     mstatus from the frame rather than from the live CSRs.
+ *   - mstatus.MPIE is cleared, because mret also loads MIE from it and the
+ *     rest of the handler must stay masked. The frame still holds the real
+ *     MPIE, so the vector's own mret at the end restores it properly.
+ *   - MPP is forced to M so the mret does not change privilege.
+ *
+ * The cost is one mret per interrupt on this board. The alternative designs
+ * -- a trampoline that mrets into a stub which then yields, or the CLIC's own
+ * mnxti -- are both larger, and neither is needed while the kernel has one
+ * flat interrupt level. */
+static inline void p4_drop_intlevel(void) {
+    uintptr_t cause, status;
+    __asm__ __volatile__("csrr %0, mcause" : "=r"(cause));
+    cause &= ~((uintptr_t)0xff << 16);        /* MPIL = 0 */
+    __asm__ __volatile__("csrw mcause, %0" :: "r"(cause));
+
+    __asm__ __volatile__("csrr %0, mstatus" : "=r"(status));
+    status &= ~((uintptr_t)1 << 7);           /* MPIE = 0: stay masked */
+    status |= ((uintptr_t)3 << 11);           /* MPP  = M: no privilege change */
+    __asm__ __volatile__("csrw mstatus, %0" :: "r"(status));
+
+    __asm__ __volatile__(
+        "la   t0, 1f\n\t"
+        "csrw mepc, t0\n\t"
+        "mret\n\t"
+        "1:"
+        ::: "t0", "memory");
+}
+
 /* Bring the CLIC up. Called from trap_init() only.
  *
  * Order matters in one place and not in the others: everything is masked
@@ -544,6 +621,14 @@ void trap_handler(trap_frame_t *frame) {
 #endif
 
     if (is_interrupt) {
+#if defined(CONFIG_BOARD_ESP32P4)
+        /* Before anything that could context-switch -- which is the timer
+         * path below, and any device handler that unblocks a task. See
+         * p4_drop_intlevel(): on this chip the handler's own interrupt level
+         * outlives the handler if control leaves by a switch rather than by
+         * mret, and takes every other interrupt with it. */
+        p4_drop_intlevel();
+#endif
         /* Timer: 7 is machine-mode, 5 is supervisor-mode. This is the
          * preemption tick. */
         if (code == 7 || code == 5) {

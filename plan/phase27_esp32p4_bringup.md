@@ -1,6 +1,6 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0, E1, E2 and E3 done; E4 is next.** This is the first of three
+**Status: in progress, 2026-09-06. E0-E3 done. E4's timer works and is measured; its `priostress` crash is open.** This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -1337,6 +1337,218 @@ Done when: `uspin.elf` is preempted, and the tick rate measured against a
 host stopwatch over ten minutes is within the same tolerance the RP2350 build
 holds.
 
+**NOT DONE, 2026-09-06 — the mechanism works and one test does not.**
+Preemption is real and measured on this board, and `priostress` crashes it
+deterministically. That second fact is recorded here rather than deferred,
+because a preemption timer with a reproducible crash under two busy tasks is
+not a finished milestone.
+
+```
+lsh> clicdump
+[CLIC] mtime      = 0x000000003f36e39c
+[CLIC] mtimecmp   = 0x000000003f38fa00
+[CLIC] mtimectl   = 0x00000001
+[CLIC] mcliccfg   = 0x00000001  clicinfo = 0x00600030  mintthresh = 0x00000000
+[CLIC] irq7  ip=0 ie=1 attr=0xc0 ctl=0xff  (timer)
+[CLIC] spin0 (nothing else READY): ticks +200 over 2 s, MIL seen=0, MIE now=1
+[CLIC] spin1 (a READY task waiting): ticks +200 over 2 s, MIL seen=0, MIE now=1
+
+lsh> preempttest
+[Preempt] ticks=11 flag=1 -- PREEMPTED (a task ran without anyone yielding)
+```
+
+`preempttest` returns in 104 ms. Before the fix below it ran for 150 seconds
+and reported `ticks=1 flag=0`.
+
+#### The ten-minute measurement, and what it says
+
+Two `clicdump` samples 616.265 s apart by the *host's* clock, which is the
+only reference here independent of the board:
+
+| | measured | vs host |
+|---|---|---|
+| board timestamps (systimer, `kernel/time.c`) | 616.239 s | **−42.7 ppm** |
+| preemption ticks counted | 61549 in 616.265 s = 99.8742 Hz | **−1258 ppm** |
+
+**The wall clock is good and the tick is slow, and the gap between them is
+not a defect in either.** `ticker_next()` rearms *relatively* --
+`set_deadline(now() + interval)` -- and `now()` is read inside the handler,
+some microseconds after the deadline actually expired. Every period is
+therefore the interval plus one interrupt latency. The arithmetic closes:
+61549 ticks over 616.265 s is 10.0126 ms per tick against a programmed
+10.0000 ms, so the latency is **12.6 µs**, or about 500 cycles of a 40 MHz
+core -- which is what a 32-register trap frame, `trap_handler()`,
+`p4_drop_intlevel()`'s `mret`, `ticker_next()` and `sched_yield()` cost when
+the CPU is running at a tenth of its rated speed because nothing has brought
+the PLL up (see "deliberately did not do").
+
+So the figure is dominated by this board's clock speed, not by its timer. The
+same code on a 400 MHz core would show roughly 126 ppm, and the RP2350 build
+has always had the same relative-rearm behaviour with a faster CPU under it.
+**This is a scheduling timer, not a clock**: nothing in this tree reads
+`ticker_ticks()` for elapsed time, `kernel/time.c` is what tells the time,
+and that is the number measured at −42.7 ppm.
+
+Making the tick itself drift-free means rearming *absolutely* (`mtimecmp +=
+interval` rather than `now() + interval`), which is a change to the shared
+`ticker_next()` and brings a catch-up hazard: after any long masked stretch
+an absolute comparator fires repeatedly until it has made up the lost ticks.
+That is a decision about all four targets, not an ESP32-P4 bring-up detail,
+and E4 leaves it alone deliberately.
+
+#### The finding this milestone exists for
+
+**In CLIC mode, `mstatus.MIE` is not the interrupt gate.** Taking an interrupt
+sets `mintstatus.MIL` to that interrupt's level, and the effective threshold is
+`max(mintthresh.TH, mintstatus.MIL)`. Exactly one instruction lowers `MIL`
+again: `mret`, which restores it from `mcause.MPIL`.
+
+That is fine for a handler that returns. This kernel's timer handler does not
+— preemption works by calling `sched_yield()` *inside* the handler, so control
+leaves through `ctx_switch()` and the `mret` that would restore `MIL` stays
+stranded in a stack frame, unwound only when that task is resumed. Every
+interrupt at level 255, which is all of them here, stays masked for as long as
+the switched-to task runs. The tick that would preempt it is masked too, so
+nothing brings it back; only a cooperative yield eventually unwinds the chain.
+
+The symptom was a preemption timer that ran at exactly 100 Hz and preempted
+nothing:
+
+```
+spin0 (nothing else READY):   ticks +200 over 2 s, MIL seen=0
+spin1 (a READY task waiting): ticks   +0 over 2 s, MIL seen=255
+```
+
+`mstatus.MIE` reads 1 in both. **That is why no existing test on any other
+target could have caught this**: on RP2350 and on QEMU, `MIE` is the whole
+story, and there is no `MIL` to leave behind.
+
+The fix is `p4_drop_intlevel()` in `arch/riscv/common/trap.c`: an `mret` that
+returns to the next instruction, with `mcause.MPIL` cleared first so the level
+drops to zero, `mstatus.MPIE` cleared so the rest of the handler stays masked,
+and `MPP` forced to M so privilege does not change. One `mret` per interrupt on
+this board. The larger alternatives — a trampoline that returns into a stub
+which then yields, or the CLIC's own `mnxti` — are not needed while this
+kernel has one flat interrupt level.
+
+#### Three more things the milestone found
+
+**1. `mtime` runs at 40 MHz, and that had to be measured.** The TRM documents
+every register of the CLINT block and never names its clock source, and
+ESP-IDF is no help: **it does not use the CLINT on this chip at all**, ticking
+FreeRTOS off the systimer instead, and its own `CLINT_BASE` constant
+(`0x02000000`) is the generic RISC-V one, unrelated to this window. So the P4
+arm measures the rate against `kernel/time.c` at init, exactly as the RP2350
+arm already does, and reports `40005494 Hz, measured` — the 40 MHz crystal,
+within this measurement's own resolution.
+
+**That also answers the two-time-bases warning E3 left for this milestone.**
+`mtime` and the systimer are two dividers off one crystal (the systimer takes
+XTAL/2.5), not two oscillators — and the tick interval is *derived from*
+`time.c` at init, so if the systimer is wrong the tick is wrong in the same
+proportion. One discrepancy, not two.
+
+**2. `MTIME_EN` resets to 1.** E0 §2 said "the counter does not run until told
+to ... structurally the same surprise RP2350 had". It is not: the RP2350's tick
+generator really does reset disabled, this one resets running. Written
+explicitly anyway, for the reason `drivers/uart_esp32p4.c` gives about the
+console.
+
+**3. `MTIME_SAM` is a trap, not a feature, and E0 recommended it.** The plan
+said this arm "should use it rather than copying the RP2350 path's re-read
+loop". Read the wording again: *"Sample the other half of the system count on
+reading MTIMELO **or** MTIMEHI"*. Either read latches the other, so a pair of
+reads gets one live value and one latched value, and the *next* call reads a
+half latched during the previous call — the two halves of a returned value no
+longer come from the same instant. Invisible for the first 107 seconds of
+uptime, because until the low half wraps the high half is 0 and a stale 0 is
+indistinguishable from a fresh one. The P4 arm uses the ordinary re-read loop.
+
+*(Recorded because it was also a wrong diagnosis for a while: `MTIME_SAM` was
+removed as the suspected cause of the preemption failure, the fixed build
+behaved identically, and the real cause was `MIL`. The removal was right on its
+own merits and wrong as an explanation.)*
+
+#### What E4 built
+
+* **`kernel/ticker.c` gains a P4 arm** on the core-local CLINT at
+  `0x20000000`: `mtimecmplo`/`hi` at `0x4000`/`0x4004`, `mtimelo`/`hi` at
+  `0xBFF8`/`0xBFFC`, `mtimectl` at `0x4010`, the rate measured rather than
+  assumed, and the comparator written high-half-first so it can never briefly
+  hold a value in the past.
+* **`esp32p4_clic_timer_enable()`**, because `mie` does not exist here and
+  `arch_irq_enable()` refuses IDs below 16 on purpose — 3 and 7 arrive from the
+  CLINT rather than the interrupt matrix, and a driver reaching them by
+  arithmetic on its own line number is a bug that would present as a tick
+  nobody armed.
+* **`p4_drop_intlevel()`**, above.
+* **`clicdump`** in the shell, P4-only. It reads the CLINT and CLIC state, and
+  then samples `mintstatus` from *inside* two non-yielding loops — one with
+  nothing else READY and one with a READY task waiting. That second phase is
+  the regression test for this milestone's bug: it is the only state in which
+  the fault is visible, and no dump taken at the prompt can reach it.
+
+#### The open failure: `priostress` faults, deterministically
+
+```
+lsh> priostress
+[  118.266] [Sched] Created task #4 'stressA' (stack 4ff7e000, 8 KB)
+[  118.288] [Sched] Created task #5 'stressB' (stack 4ff80000, 8 KB)
+[  140.817] [Sched] Task #4 'stressA' exited
+
+[Trap Exception] Cause: 0x1, epc=0x0, tval=0x0, inst=0x00000000
+[  140.826] [Trap Register Dump] a0=0x0, a1=0x0, sp=0x4ff81f50, ra=0x0
+[  140.832] [Fatal] System halted due to unhandled exception.
+```
+
+Reproduced twice, identical to the byte. Cause 1 is an instruction access
+fault; `epc` and `ra` are both zero, so a kernel task executed `ret` with
+`ra = 0`. The reported `sp`, `0x4ff81f50`, is inside **stressB's** stack
+(`0x4ff80000` + 8 KB) and is exactly 64 bytes — one `ctx_switch` frame — above
+`0x4ff81f10`. So `ctx_switch()` restored a frame whose `ra` slot held zero and
+returned into it, nine milliseconds after stressA exited.
+
+**This is not a broken test.** `priostress` runs on RP2350 silicon in
+`tests/hw/test_rp2350.py` and in the QEMU suite, and passes in both; it takes
+2.5–3 s there against 22 s here, purely because this board has no PLL.
+
+What is known, and what is not:
+
+* `palloc_free()` does **not** zero pages — it only clears bitmap bits — so
+  the zeroed frame cannot come from a free. `palloc_pages()` does zero, and
+  `task_create_full()` then paints `STACK_POISON_WORD`, so a fresh task stack
+  is poison rather than zeros either.
+* The one place this tree *does* leave zeros in a 16-word context frame is
+  `task_create_full()`'s priming: it zeroes all sixteen slots and then writes
+  only `[0]` (ra), `[1]` (s0) and `[2]` (s1). A restore starting four words
+  into that frame reads `ra = 0`. That is a lead, not a diagnosis.
+* `task_exit()` calls `palloc_free()` **while holding `g_sched_lock`**, which
+  `sched_reap()`'s own comment says must not happen: *"palloc_free() takes
+  palloc's own lock (S4), and nesting the two would create a lock ordering
+  this kernel has no reason to have."* Found while reading this path. Whether
+  it is related to the fault is unproven — it is a real defect regardless.
+
+The trigger is specific: a task exiting while another same-tier,
+never-yielding task is mid-preemption. That combination is newly reachable
+here because this is the first target where preemption runs on a CPU slow
+enough for the window to be wide.
+
+**E4 is not signed off until this is understood.** The preemption mechanism
+below is correct and measured; this is a scheduler-lifetime bug that
+preemption on slow silicon has exposed, and it may well not be P4-specific
+code at all.
+
+#### What E4 deliberately did not do
+
+* **No PLL.** The CPU still runs off the crystal, so this board is slow — a
+  volatile 64-bit loop of 400 M iterations takes about 150 seconds, which is
+  what made `preempttest` look like a hang for most of an afternoon. Bringing
+  the PLL up is not needed by any milestone here and would change every timing
+  measurement in this phase; it belongs with E6 or later.
+* **No interrupt nesting.** One flat level, as on every other target. Now that
+  `MIL` is understood, levels would be implementable — and are still not wanted.
+* **No use of `mnxti`.** See the fix note above.
+
 ### E5 — PMP, U-mode, and the isolation model
 
 `pmp_probe()` reporting the P4's real entry count. `mem_domain.c` and
@@ -1366,6 +1578,56 @@ not check.
 Done when: a file written from the shell survives a power cycle.
 
 ### E7 — The sensor persona on the P4
+
+**The board's real-time clock, if it is ever done, is done here — not in
+E4.** Asked during E4 whether the NANO's on-board RTC was in scope, and the
+schematic answers a different question than the one asked
+(`ESP32-P4-NANO-schematic.pdf`, read 2026-09-06):
+
+* **There is no RTC chip.** Nothing on I2C, nothing like the DS3231 the
+  RP2350 boards carry. What the board has is the **P4's own LP/RTC domain**,
+  and two parts feeding it.
+* **Y2, a 32.768 kHz crystal**, on GPIO0/GPIO1 through 0 Ω links R32/R36,
+  with 22 pF loading caps and a 10 MΩ feedback resistor. Those two pins are
+  `XTAL_32K_N` and `XTAL_32K_P` (datasheet pin table), so this is
+  `XTAL32K_CLK` — a real crystal source for `RTC_SLOW_CLK`, not the internal
+  150 kHz RC. **Populated, and never selected by any software this project
+  has run.**
+* **H3, a two-pin battery header** — a header, not a cell holder, and empty
+  as shipped. Pin 1 is `ESP_VBAT` (the chip's `VDD_BAT`, pin 102), pin 2 is
+  GND, with 1 µF across it. `ESP_3V3` feeds `ESP_VBAT` through **D2, a
+  B5819WS Schottky, anode at 3V3** — so the rail powers the LP domain while
+  the board is on, and blocks back-feed so a cell on H3 holds it when the
+  board is off.
+
+**Which means the headline benefit does not exist on this board as it
+stands.** With H3 empty, `VDD_BAT` dies with `ESP_3V3` and the LP domain
+retains nothing across a power cycle. A cell has to be fitted before any of
+this is worth writing, and that is a hardware decision, not a scheduling one.
+
+And even fitted, it is not a drop-in for the `rtc` device slot. The LP block
+is a **counter with two alarm comparators** (LP Timer, `0x50112000`), not a
+calendar chip: keeping wall-clock time across a reset means holding an epoch
+offset somewhere in the retained domain and reading the count against it.
+That is a real design and a small one, but it is a *different* design from
+`drivers/i2c_rtc.c`, which owns the `rtc` registry name and the `date`
+persistence path — so it is either a second implementation behind one
+registry name (`plan/phase30_driver_framework.md` §1 category C, exactly the
+duplication that phase just catalogued) or a new device class.
+
+E7 is the right home because E7 is the milestone with a persona that wants a
+timestamp at boot, and it comes after E6's flash and after phase 30's
+framework. **Not E4**, for the reason §0 of this document gives about doing
+one thing at a time: E4's done-condition is a tick rate measured against a
+host stopwatch over ten minutes, E4 already carries the two-time-bases
+warning (systimer vs CLINT), and a third oscillator in a fourth clock domain
+in the same milestone gives every anomaly another candidate cause.
+
+*(Found on the way: `drivers/i2c_rtc.c` printed "No DS1307/DS3231 RTC module
+found at 0x68" on every target without an I2C controller — a probe that never
+happened, the same class of claim as the two E2 caught, and on this board the
+wrong conclusion drawn from a true sentence. Fixed to say there is no
+controller.)*
 
 The first *appliance*: BME280 on I2C, and `p9share`/SLIP-framed 9P over UART
 uplink to the existing RP2350 gateway persona — the same three wires

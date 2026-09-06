@@ -4,6 +4,9 @@
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "kernel/time.h"
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "arch/esp32p4_intr.h"
+#endif
 
 /* See kernel/include/kernel/ticker.h for why this has three backends. */
 
@@ -130,56 +133,170 @@ static bool arch_ticker_init(void) {
     return true;
 }
 
-/* --- ESP32-P4: no preemption timer yet -------------------------------- */
+/* --- ESP32-P4: the core-local CLINT, behind the CLIC ------------------ */
 #elif defined(CONFIG_BOARD_ESP32P4)
 
-/* E2, plan/phase27_esp32p4_bringup.md: this board takes no tick.
+/* E4, plan/phase27_esp32p4_bringup.md.
  *
- * It is not that the P4 has no timer -- the system timer is up and counting,
- * and kernel/time.c reads it for wall-clock and monotonic time. It is that
- * on this chip the timer *interrupt* arrives through the CLIC as
- * clicintie[7] rather than as a plain mie.MTIE, so there is no route from
- * the comparator to a handler until the controller is up. The plan puts the
- * two milestones in that order for exactly this reason.
+ * Registers from TRM section 2.9.3.5's summary; the layout below is the
+ * *core-local* window, "CLINT (self)", so hart 0 and hart 1 each address
+ * their own comparator through the same constant (section 2.8.3, Table
+ * 2.8-2). The other core's block is at 0x20010000 and this file never wants
+ * it -- except for one bit, noted at MTIME_EN.
  *
- * E3 has since brought the CLIC up, and trap_handler() already dispatches
- * cause 7 to ticker_next() the way every other target does -- so the half
- * this arm was waiting for exists now. What is still missing is the CLINT
- * end: the comparator at 0x20004000, its MTIME_EN (the counter does not run
- * until told to, and only core 0 may say so) and MTIME_SAM (an atomic
- * 64-bit read, better than the do/while this file uses elsewhere). That is
- * E4, and it is the only thing between this refusal and a tick.
+ * mtimelo/mtimehi are at 0xBFF8/0xBFFC, which look like the standard CLINT
+ * offsets and are; mtimecmp is *not* -- it is at 0x4000/0x4004 rather than
+ * the usual 0x4000 + 8*hart, because this block is per-core rather than
+ * one block indexed by hart. Reading them as a single 64-bit access would
+ * also be wrong: they are documented as two 32-bit registers, and the
+ * sampling mode below exists precisely because the pair cannot be read
+ * atomically. */
+#define P4_CLINT_BASE   0x20000000UL
+#define P4_MTIMECMPLO   (*(volatile uint32_t *)(P4_CLINT_BASE + 0x4000))
+#define P4_MTIMECMPHI   (*(volatile uint32_t *)(P4_CLINT_BASE + 0x4004))
+#define P4_MTIMECTL     (*(volatile uint32_t *)(P4_CLINT_BASE + 0x4010))
+#define P4_MTIMELO      (*(volatile uint32_t *)(P4_CLINT_BASE + 0xBFF8))
+#define P4_MTIMEHI      (*(volatile uint32_t *)(P4_CLINT_BASE + 0xBFFC))
+
+/* mtimectl (TRM Register 2.105), read off the rendered bit diagram rather
+ * than the text: MTIME_EN bit 0, MTIME_OVF bit 1, MTIME_SAM bits [3:2].
  *
- * And the CSR half of this file would not work either. TRM section 2.9.2.1:
- * "Only the CLIC mode of operation is supported by the HP core, i.e.
- * mtvec.MODE is hardwired to 0x3. Hence, the basic RISC-V interrupt handling
- * scheme and the associated CSRs (such as mie, mip, mideleg, uie, and uip)
- * are unavailable." So the set_csr(mie, MTIE) every other branch below ends
- * with is not merely insufficient here -- it is a write to a CSR that does
- * not exist, which does nothing and reports nothing. A version of this arm
- * that armed the comparator and set that bit would look exactly like working
- * code and would never take a tick.
+ * MTIME_EN's reset value is 1, not 0. Worth stating because E0's note in the
+ * phase plan said "the counter does not run until told to ... structurally
+ * the same surprise RP2350 had", and it is not: the RP2350's tick generator
+ * really does reset disabled, this one resets running. It is still written
+ * explicitly, for the reason drivers/uart_esp32p4.c gives about the console
+ * -- inheriting a state because the ROM happened to leave it is not a
+ * property this image gets to keep when E6 boots it a different way.
  *
- * The refusal is what makes that honest. ticker_init() returning false
- * leaves g_enabled clear, kernel_main() never calls
- * irq_restore(IRQ_ENABLE_BIT), and the system runs cooperatively --
- * everything yields, nothing is preempted, and /proc says so. The
- * alternative -- arming a comparator whose interrupt cannot be delivered --
- * would report preemption as enabled on a system that never switches, which
- * is the kind of number this tree treats as worse than no number.
+ * MTIME_SAM stays at 0, and that is a reversal worth recording: E0's reading
+ * of the plan said this arm "should use it rather than copying the RP2350
+ * path's re-read loop". It should not, and finding out cost this milestone
+ * an afternoon -- see the block comment on now() below. */
+#define P4_MTIME_EN         (1u << 0)
+#define P4_MTIME_OVF        (1u << 1)
+#define P4_MTIME_SAM_SHIFT  2
+#define P4_MTIME_SAM_MASK   (3u << P4_MTIME_SAM_SHIFT)
+
+/* Nominal only. Nothing states what clocks this counter -- the TRM documents
+ * every register of the block and never names its source, and ESP-IDF is no
+ * help because it does not use the CLINT on this chip at all (it ticks
+ * FreeRTOS off the systimer; its own CLINT_BASE constant, 0x02000000, is the
+ * generic RISC-V one and unrelated to this window).
  *
- * TICK_HZ still has to exist for ticker_init()'s arithmetic above it. The
- * system timer's 16 MHz (TRM 16.4) is the right value for when E4 arrives,
- * and stating it here rather than a placeholder means the only change then
- * is the arming, not the rate. */
+ * So the rate is measured, in arch_ticker_init() below, exactly as the
+ * RP2350 arm measures its own. This value is only what ticker_init()
+ * divides by before the measurement replaces it, and the systimer's 16 MHz
+ * is as good a starting guess as any. */
 #define TICK_HZ 16000000UL
 
-static uint64_t now(void) { return 0; }
-static void set_deadline(uint64_t t) { (void)t; }
+/* The 64-bit counter, read the same way every other target here reads its
+ * own: sample, re-read the high half, retry if it moved.
+ *
+ * The first version of this used the hardware's own sampling mode instead,
+ * MTIME_SAM = 3, because TRM Register 2.105 offers exactly that and E0's
+ * survey recommended it. Read the wording again, though: "Sample the other
+ * half of the system count on reading MTIMELO **or** MTIMEHI". Either read
+ * latches the other half. So a pair of reads gets one live value and one
+ * latched value, and the *next* call reads a half that was latched during
+ * the previous call -- the two halves of one returned value no longer come
+ * from the same instant.
+ *
+ * That is invisible for the first 107 seconds of uptime, and only then. At
+ * 40 MHz the low half wraps at 2^32 ticks, and until it does the high half
+ * is 0 and a stale 0 is indistinguishable from a fresh one. After the wrap a
+ * mixed read can return a value 2^32 ticks -- 107 seconds -- away from the
+ * truth, and ticker_next()'s set_deadline(now() + interval) then arms the
+ * comparator a minute and a half into the future.
+ *
+ * Which is exactly what the board did: preemption worked, `lockselftest`
+ * passed at t = 18 s, and `preempttest` at t = 208 s reported **ticks=1** --
+ * one tick, the one already armed, and then nothing. A preemption timer that
+ * works for the first hundred seconds of every boot and then quietly stops
+ * is a considerably worse bug than one that never works, because every quick
+ * test passes.
+ *
+ * The loop costs one extra load in the case where the high half moved, which
+ * is once every 107 seconds. There is no version of this where the hardware
+ * mode was worth it. */
+static uint64_t now(void) {
+    uint32_t hi, lo;
+    do { hi = P4_MTIMEHI; lo = P4_MTIMELO; } while (hi != P4_MTIMEHI);
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static void set_deadline(uint64_t t) {
+    /* High half to all-ones first, so the 64-bit comparator can never
+     * momentarily hold a value in the past while half-updated and fire a
+     * spurious interrupt. Same three writes, same order, and the same reason
+     * as the RP2350 arm above -- this comparator is two 32-bit registers
+     * too. */
+    P4_MTIMECMPHI = 0xffffffffu;
+    P4_MTIMECMPLO = (uint32_t)t;
+    P4_MTIMECMPHI = (uint32_t)(t >> 32);
+}
 
 static bool arch_ticker_init(void) {
-    printk("[Ticker] ESP32-P4: the CLIC is up, the CLINT comparator is not (E4); preemption stays off\n");
-    return false;
+    /* Sampling off, counter on, overflow flag cleared, in one write.
+     *
+     * MTIME_SAM is written to 0 rather than left alone: now() above depends
+     * on the counter halves being live, and "the ROM probably left it at its
+     * reset value" is the kind of assumption this port has already been
+     * burned by. MTIME_OVF is write-0-to-clear and writing 1 has no effect,
+     * so clearing it costs nothing and means a counter that wrapped before
+     * this boot does not carry a stale flag into it. */
+    uint32_t ctl = P4_MTIMECTL;
+    ctl &= ~(P4_MTIME_SAM_MASK | P4_MTIME_OVF);
+    P4_MTIMECTL = ctl | P4_MTIME_EN;
+
+    /* Measure the rate rather than assume it, against the microsecond clock
+     * kernel/time.c already provides -- the systimer, whose own divisor E2
+     * checked against a host wall clock over sixty seconds.
+     *
+     * This is also the answer to the two-time-bases warning this milestone
+     * was handed. The concern was that the tick would run off mtime while
+     * the clock ran off the systimer, giving any timing anomaly two
+     * independent suspects. Measuring the interval *against* time.c removes
+     * the independence: the tick is expressed in whatever mtime's unit turns
+     * out to be, but its length is derived from the clock this system
+     * already tells the time with. If the systimer is wrong, the tick is
+     * wrong in exactly the same proportion, which is the failure mode that
+     * shows up as one discrepancy rather than two.
+     *
+     * 2 ms because that is long enough to divide by and short enough not to
+     * be noticed at boot; the RP2350 arm uses the same window for the same
+     * reason. */
+    uint64_t t0 = now();
+    uint64_t us0 = time_get_us();
+    while (time_get_us() - us0 < 2000) { /* spin */ }
+    uint64_t elapsed_ticks = now() - t0;
+    uint64_t elapsed_us = time_get_us() - us0;
+
+    if (elapsed_ticks == 0 || elapsed_us == 0) {
+        /* MTIME_EN resets to 1 and was just written again, so a frozen
+         * counter here is not a forgotten enable -- it is this core's CLINT
+         * not being clocked, which is a finding rather than a bug to work
+         * around. Refuse, and say which of the two it is. */
+        printk("[Ticker] ESP32-P4: mtime is not advancing (mtimectl=0x%lx); "
+               "preemption stays off\n", (unsigned long)P4_MTIMECTL);
+        return false;
+    }
+
+    uint64_t measured_hz = (elapsed_ticks * 1000000UL) / elapsed_us;
+    g_measured_hz = measured_hz;
+    g_interval = measured_hz / g_hz;
+    if (g_interval == 0) g_interval = 1;
+
+    set_deadline(now() + g_interval);
+
+    /* And the CLIC, because mie does not exist here. TRM section 2.9.2.1:
+     * "the basic RISC-V interrupt handling scheme and the associated CSRs
+     * (such as mie, mip, mideleg, uie, and uip) are unavailable". The
+     * set_csr(mie, 1 << 7) that every other branch of this file ends with
+     * would assemble, execute, and do nothing -- which is why this arm
+     * refused to arm anything at all until the controller existed. */
+    esp32p4_clic_timer_enable();
+    return true;
 }
 
 /* --- QEMU RV32: CLINT, M-mode ---------------------------------------- */
@@ -258,7 +375,14 @@ void ticker_next(void) {
 void ticker_arm_this_hart(void) {
     if (!g_enabled) return;
     set_deadline(now() + g_interval);
-#if defined(CONFIG_MODE_S)
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* Not set_csr(mie, MTIE): that CSR does not exist on this core, and the
+     * write would assemble and do nothing. Each core has its own CLIC, so
+     * this enables the caller's -- which is the whole point of this function
+     * being per-hart. Unreachable today (CONFIG_ENABLE_SMP is off on this
+     * board) and correct when it is not. */
+    esp32p4_clic_timer_enable();
+#elif defined(CONFIG_MODE_S)
     set_csr(sie, 1UL << 5);   /* STIE */
 #else
     set_csr(mie, 1UL << 7);   /* MTIE */

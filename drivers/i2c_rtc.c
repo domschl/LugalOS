@@ -435,7 +435,29 @@ void i2c_rtc_init(void) {
         }
     }
 
+#if defined(CONFIG_BOARD_RP2350)
     printk("[I2C RTC] No DS1307/DS3231 RTC module found at 0x68 (Using system software clock).\n");
+#else
+    /* "Not found at 0x68" would claim a probe that never happened: on every
+     * target but RP2350 the i2c_probe_addr()/i2c_rtc_hw_read_time() pair
+     * above are the stubs a few hundred lines up, which return false without
+     * touching a wire, because there is no I2C controller compiled in at all.
+     *
+     * The same class of line as the two the ESP32-P4's first boot caught in
+     * E2 (plan/phase27_esp32p4_bringup.md): drivers/at24c32.c announcing a
+     * "4KB I2C EEPROM detected at 0x57!" from a build with no bus, and
+     * drivers/usb_cdc.c naming two host device nodes from a stub. This one is
+     * milder -- g_rtc_detected stays false, the registry reports
+     * rtc(absent), and the software clock is correctly used either way -- so
+     * it misdescribes the reason rather than the outcome. It still had to go,
+     * and on the P4 it was actively misleading: that board does have a
+     * battery-backed real-time clock, in the LP domain with its own 32.768
+     * kHz crystal, and it is nothing this driver has ever heard of. Reading
+     * "no RTC module found" there is the wrong conclusion drawn from a true
+     * sentence. */
+    printk("[I2C RTC] No I2C controller on this target; the kernel clock is "
+           "software-only until something sets it.\n");
+#endif
 }
 
 bool i2c_rtc_is_detected(void) {

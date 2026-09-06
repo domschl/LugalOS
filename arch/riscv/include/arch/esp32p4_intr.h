@@ -53,4 +53,17 @@
  * still the driver's business. */
 int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id);
 
+/* Unmasks the core-local timer interrupt, CLIC ID 7 (E4).
+ *
+ * Separate from arch_irq_enable() on purpose, and that function refuses
+ * IDs below 16 rather than passing them through: 3 and 7 are the software
+ * and timer interrupts, they arrive from the CLINT rather than from the
+ * interrupt matrix, and a device driver reaching them by arithmetic on its
+ * own line number is a bug that would present as a tick nobody armed.
+ *
+ * The `mie` CSR does not exist on this core (TRM section 2.9.2.1), so this
+ * is what `set_csr(mie, 1 << 7)` means here -- and unlike that write, it
+ * either works or is visibly absent, rather than silently doing nothing. */
+void esp32p4_clic_timer_enable(void);
+
 #endif /* LUGALOS_ARCH_ESP32P4_INTR_H */

@@ -157,6 +157,115 @@ static void cmd_trapselftest(bool fatal) {
             "(halts the system).\n");
 }
 
+#if defined(CONFIG_BOARD_ESP32P4)
+/* E4: the state of the tick, read straight out of the hardware, plus the two
+ * measurements that a register dump cannot make.
+ *
+ * The register block is the easy half and rarely the interesting one. On this
+ * chip everything above reads correct at the prompt even when preemption is
+ * completely broken -- comparator armed, irq7 enabled, mintthresh 0,
+ * mintstatus.MIL 0, mstatus.MIE 1 -- because the fault only exists while a
+ * task is running that the tick has switched to, and the prompt is by
+ * definition not that. A dump taken here proves the configuration and nothing
+ * about the behaviour.
+ *
+ * So the two spin phases below are the actual probe, and the difference
+ * between them is the whole experiment. Both loops run for two seconds and
+ * never yield; the only difference is whether another task is READY, which
+ * decides whether the timer's sched_yield() has anywhere to switch. Expect
+ * +200 ticks and MIL=0 from both. What this milestone actually found was:
+ *
+ *     spin0 (nothing else READY):   ticks +200 over 2 s, MIL seen=0
+ *     spin1 (a READY task waiting): ticks   +0 over 2 s, MIL seen=255
+ *
+ * -- a 100 Hz timer that preempted nothing, because preemption leaves the
+ * handler through ctx_switch() rather than mret, and on a CLIC it is mret
+ * that lowers mintstatus.MIL. See p4_drop_intlevel() in
+ * arch/riscv/common/trap.c for the mechanism and the fix.
+ *
+ * Kept as the regression test for that bug. It is P4-specific because MIL is:
+ * on RP2350 and QEMU, mstatus.MIE is the entire interrupt gate, and MIE reads
+ * 1 throughout both phases here even when every interrupt on the chip is
+ * masked. Nothing on those targets could fail this test, and nothing on them
+ * could have caught the bug. */
+
+/* Long enough to still be READY when the sampling loop below finishes, so
+ * phase 1 really does have somewhere to switch to. Never yields. */
+static void clic_probe_spinner(void *arg) {
+    (void)arg;
+    for (volatile uint32_t i = 0; i < 40000000u; i++) { }
+}
+
+static void cmd_clicdump(void) {
+    volatile uint32_t *clint  = (volatile uint32_t *)(uintptr_t)0x20000000UL;
+    volatile uint8_t  *clicb  = (volatile uint8_t  *)(uintptr_t)0x20801000UL;
+    volatile uint32_t *clicw  = (volatile uint32_t *)(uintptr_t)0x20800000UL;
+
+    uint32_t hi, lo;
+    do { hi = clint[0xBFFC/4]; lo = clint[0xBFF8/4]; } while (hi != clint[0xBFFC/4]);
+
+    uintptr_t mintstatus = 0, mstatus = 0;
+    __asm__ __volatile__("csrr %0, 0x346" : "=r"(mintstatus));
+    __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus));
+
+    cprintf("[CLIC] mtime      = 0x%08x%08x\n", (unsigned)hi, (unsigned)lo);
+    cprintf("[CLIC] mtimecmp   = 0x%08x%08x\n",
+            (unsigned)clint[0x4004/4], (unsigned)clint[0x4000/4]);
+    cprintf("[CLIC] mtimectl   = 0x%08x\n", (unsigned)clint[0x4010/4]);
+    cprintf("[CLIC] mcliccfg   = 0x%08x  clicinfo = 0x%08x  mintthresh = 0x%08x\n",
+            (unsigned)clicw[0], (unsigned)clicw[1], (unsigned)clicw[2]);
+    cprintf("[CLIC] irq7  ip=%u ie=%u attr=0x%02x ctl=0x%02x  (timer)\n",
+            (unsigned)clicb[7*4 + 0], (unsigned)clicb[7*4 + 1],
+            (unsigned)clicb[7*4 + 2], (unsigned)clicb[7*4 + 3]);
+    cprintf("[CLIC] irq16 ip=%u ie=%u attr=0x%02x ctl=0x%02x  (uart0)\n",
+            (unsigned)clicb[16*4 + 0], (unsigned)clicb[16*4 + 1],
+            (unsigned)clicb[16*4 + 2], (unsigned)clicb[16*4 + 3]);
+    cprintf("[CLIC] mintstatus = 0x%08x (MIL=%u)  mstatus.MIE=%u\n",
+            (unsigned)mintstatus, (unsigned)((mintstatus >> 24) & 0xff),
+            (unsigned)((mstatus >> 3) & 1u));
+    cprintf("[CLIC] ticks      = %lu  enabled=%u\n",
+            (unsigned long)ticker_ticks(), (unsigned)ticker_enabled());
+
+    /* Phase 2: the same three registers, sampled from *inside* a loop that
+     * never yields -- which is the one state the dump above cannot reach,
+     * and the only state in which the tick is known to stop.
+     *
+     * Two spins, and the difference between them is the whole experiment.
+     * The first runs with nothing else READY, so the tick's sched_yield()
+     * has nobody to switch to and must return through mret. The second runs
+     * with a READY task available, so the tick switches away. If ticks
+     * advance in the first and not the second, the fault is in what a
+     * context switch out of an interrupt handler leaves behind -- on this
+     * chip that means mintstatus.MIL, which mret restores and a switch does
+     * not. */
+    for (int phase = 0; phase < 2; phase++) {
+        if (phase == 1) {
+            if (task_create("clicspin", clic_probe_spinner, NULL) < 0) {
+                cprintf("[CLIC] could not create the second-phase task\n");
+                break;
+            }
+        }
+        uint64_t t0 = ticker_ticks();
+        uint64_t us0 = time_get_us();
+        uintptr_t mil_seen = 0;
+        /* Deliberately no sched_yield(): a yield is exactly what makes the
+         * tick work, so a loop that yields would measure nothing. */
+        while (time_get_us() - us0 < 2000000ULL) {
+            uintptr_t m;
+            __asm__ __volatile__("csrr %0, 0x346" : "=r"(m));
+            mil_seen |= (m >> 24) & 0xff;
+        }
+        uintptr_t mst = 0;
+        __asm__ __volatile__("csrr %0, mstatus" : "=r"(mst));
+        cprintf("[CLIC] spin%d (%s): ticks +%lu over 2 s, MIL seen=%u, "
+                "MIE now=%u\n", phase,
+                phase == 0 ? "nothing else READY" : "a READY task waiting",
+                (unsigned long)(ticker_ticks() - t0),
+                (unsigned)mil_seen, (unsigned)((mst >> 3) & 1u));
+    }
+}
+#endif
+
 static void cmd_help(void) {
     cprintf("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
     cprintf("  help            - Display command manual\n");
@@ -258,6 +367,9 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
+#if defined(CONFIG_BOARD_ESP32P4)
+    cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
+#endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
     cprintf("  smpstart [join|locktest|stage1|stage2|stage3]\n");
@@ -2692,6 +2804,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
+#if defined(CONFIG_BOARD_ESP32P4)
+    } else if (strcmp(cmd_line, "clicdump") == 0) {
+        cmd_clicdump();
+        return;
+#endif
     } else if (strcmp(cmd_line, "trapselftest") == 0 ||
                strcmp(cmd_line, "trapselftest fatal") == 0) {
         cmd_trapselftest(strcmp(cmd_line, "trapselftest fatal") == 0);

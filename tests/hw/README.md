@@ -281,6 +281,34 @@ execution resumed. `trapselftest fatal` runs the same instruction with no
 probe, which prints the full register dump and halts the board — reload to
 recover, nothing is written to flash.
 
+**Checking the tick** (E4): `clicdump`. The register block at the top is the
+easy half; the two lines at the bottom are the ones that matter.
+
+```
+[CLIC] spin0 (nothing else READY): ticks +200 over 2 s, MIL seen=0, MIE now=1
+[CLIC] spin1 (a READY task waiting): ticks +200 over 2 s, MIL seen=0, MIE now=1
+```
+
+Both must read `+200` (2 s at 100 Hz) with `MIL seen=0`. `spin1` reading `+0`
+with `MIL seen=255` is this board's signature failure: preemption switched
+tasks out of the interrupt handler, so the `mret` that lowers
+`mintstatus.MIL` never ran and every interrupt on the chip is masked — with
+`mstatus.MIE` still reading 1. **A dump taken at the prompt cannot see it**;
+only sampling from inside a loop that never yields can, which is why those
+two phases exist.
+
+**Two things about timing on this board.** There is no PLL yet, so the CPU
+runs off the 40 MHz crystal and is roughly ten times slower than the part's
+400 MHz rating. `preempttest` bounds its wait at 400 M iterations of a
+volatile 64-bit loop, which is about **150 seconds** here when preemption is
+broken and about 100 ms when it works — so a "hang" that lasts under three
+minutes is not yet evidence of anything.
+
+And `--cmd-wait` is slept once per command *plus once for the bare Return
+that precedes them*, so three commands at `--cmd-wait 200` need 800 seconds,
+not 600. Getting that wrong kills the run under `timeout` and prints nothing
+at all, which looks exactly like a dead board.
+
 ### The two ports, and why names are not enough
 
 The script needs two things from the wiring, and they are not always the
