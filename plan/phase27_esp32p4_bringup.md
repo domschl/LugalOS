@@ -1289,6 +1289,19 @@ the same change. It belongs in its own commit, verified by the QEMU suite for
 `uart_16550.c` and by an RP2350 board for the other, and it is not a
 prerequisite for E4.
 
+*(2026-09-06, after this milestone: it has one.
+`plan/phase30_driver_framework.md` §G4 owns this extraction, and the question
+it grew out of turned out to be larger than the UART. Asked whether a second
+silicon family means this tree needs a HAL, the answer is no — the seams
+`devirq.h`, `arch/trap.h`, `ticker.c` and `arch/vmm.h` took a whole new chip
+with **no client changes at all**, which is what E2 and E3 were the test of.
+What is duplicated is one layer up: nine copies of the driver-as-task
+lifecycle and seven of the U-mode domain construction, none of which contain
+a register. Phase 30 §1 has the general form — four categories of
+hardware-facing code, opposite treatment for each — and the rule that would
+have fired here on its own: extract at the third implementation, never the
+second. Phase 30 is sequenced before phase 28.)*
+
 ### E4 — Time
 
 *(Was E3.)*
@@ -1485,7 +1498,28 @@ temperature into the same namespace, and nobody has to think about it.
 Sketches, not plans. Written now so phase 27's ordering is legible; each gets
 its own document when it is reached.
 
+*(2026-09-06: one document exists already, and it is not one of these.
+`plan/phase30_driver_framework.md` was written after E3, out of the question
+E3's uart debt forced — whether a second silicon family means this tree needs
+a HAL. It does not; it needs the layer above the registers, which is a
+different thing. **Phase 30 is sequenced before phase 28**, for the reason
+stated there.)*
+
 ### Phase 28 — Ethernet on the P4
+
+**Phase 30 comes first.** `plan/phase30_driver_framework.md`, written after
+E3 and sequenced ahead of this one. Phase 28's MAC/PHY driver is the largest
+new driver on the roadmap and it will be a task like every other driver here
+— so it is either written against the extracted driver-task framework once,
+or written the long way and migrated afterwards. Phase 30 §0.4 makes the
+argument; the short form is that this driver is the reason the ordering is
+worth anything.
+
+That phase also answers the question E3 raised and did not settle — whether a
+second platform means a HAL — and the answer shapes how phase 28's driver
+gets written: the EMAC's registers stay per-chip and unshared (phase 30 §1,
+category A, the same rule §3.2 of this document already states), while
+everything above them comes from the framework.
 
 The IP101GRI over RMII, through `netif_register()` (`net/include/net/netif.h`),
 which has already taken ENC28J60 and CYW43 and is the seam this plugs into.
