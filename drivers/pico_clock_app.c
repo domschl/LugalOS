@@ -245,6 +245,7 @@ void clock_app_run(void) {
     bool led_on = false;
     bool was_in_sync_item = false;
 #endif
+    uint64_t next_temp_ms = 0;
 #if CONFIG_ENABLE_GPS
     uint64_t next_pps_led_ms = 0;
     bool     pps_led_on = false;
@@ -365,6 +366,20 @@ void clock_app_run(void) {
                 int t;
                 in.have_temp = i2c_rtc_read_temperature_c(&t);
                 if (in.have_temp) in.temp_c = t;
+            } else if (now >= next_temp_ms) {
+                /* A slow background refresh, so the cached reading is fresh
+                 * for anyone correlating against it even when nobody is
+                 * looking at the temperature screen (P5). This loop already
+                 * owns the I2C bus; /proc, served by the 9P task, must not
+                 * touch it and reads the cache instead.
+                 *
+                 * A minute, matching the discipline loop's own sample rate:
+                 * faster would be bus traffic for a quantity that moves in
+                 * tens of minutes, and the DS3231 only converts every 64 s
+                 * anyway, so anything quicker re-reads the same value. */
+                int t;
+                (void)i2c_rtc_read_temperature_c(&t);
+                next_temp_ms = now + 60000u;
             }
 
             clock_ui_screen(&st, &in, now, &scr);

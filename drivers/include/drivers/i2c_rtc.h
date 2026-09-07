@@ -25,6 +25,12 @@ void i2c_scan_bus(void);
  * than pushed onto every caller. */
 bool i2c_rtc_read_temperature_c(int *temp_c);
 
+/* The last reading this driver took, without touching the bus, plus how long
+ * ago it was taken. For callers that must not do I2C -- /proc is served by the
+ * 9P task -- and for correlating something against temperature, where a value
+ * without its age is worse than no value. False until one has been taken. */
+bool i2c_rtc_cached_temperature_c(int *temp_c, uint32_t *age_s);
+
 /* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC and EEPROM share
  * one physical I2C bus (both on I2C0 in the default persona -- see
  * drivers/at24c32.c's own comment on why its bit-banging is not literally

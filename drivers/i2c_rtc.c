@@ -292,6 +292,338 @@ static bool i2c_probe_addr(uint8_t addr) {
     }
     return false;
 }
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* ESP32-P4 I2C0 -- E7, plan/phase27_esp32p4_bringup.md.
+ *
+ * A different peripheral from RP2350's above, not a variant of it: that is a
+ * Synopsys DW_apb_i2c driven by writing bytes into IC_DATA_CMD, this is
+ * Espressif's own controller, where a transfer is assembled as a short
+ * *command list* (up to 8 opcodes) and then started in one go. Nothing was
+ * shared between the two beyond the five functions at this seam.
+ *
+ * Registers from TRM chapter 22 and IDF's generated i2c_reg.h (hw_ver1 --
+ * this board is v1.3), and the timing/opcode constants from IDF's own
+ * esp_hal_i2c/esp32p4 layer. That last part is not decoration: **the command
+ * opcodes are not the same as on older ESP32 parts.** Here READ is 3 and STOP
+ * is 2; on ESP32/S3 they are 2 and 3. Transcribing from an older chip's
+ * driver would produce a controller that issues a STOP where a READ belongs
+ * and reports a timeout, which is exactly the class of bug section 3.2 of the
+ * phase plan exists to prevent.
+ *
+ * Pins are GPIO7 (SDA) and GPIO8 (SCL), which is what the board's own header
+ * exposes and what the factory demo used. They reach the controller through
+ * the **GPIO matrix**, not IO_MUX: I2C0 has no direct pad function on these
+ * pins, so the signal indices (68 SCL, 69 SDA) are routed both ways.
+ */
+/* The RP2350 arm above defines its own REG() inside its register block, so
+ * this arm needs one too -- and a cast through uintptr_t, since these bases
+ * are unsigned long constants rather than pointers. */
+#define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
+
+#define P4_I2C_BASE        0x500C4000UL
+#define P4_I2C_SCL_LOW     (P4_I2C_BASE + 0x00)
+#define P4_I2C_CTR         (P4_I2C_BASE + 0x04)
+#define P4_I2C_SR          (P4_I2C_BASE + 0x08)
+#define P4_I2C_TO          (P4_I2C_BASE + 0x0c)
+#define P4_I2C_FIFO_ST     (P4_I2C_BASE + 0x14)
+#define P4_I2C_FIFO_CONF   (P4_I2C_BASE + 0x18)
+#define P4_I2C_DATA        (P4_I2C_BASE + 0x1c)
+#define P4_I2C_INT_RAW     (P4_I2C_BASE + 0x20)
+#define P4_I2C_INT_CLR     (P4_I2C_BASE + 0x24)
+#define P4_I2C_SDA_HOLD    (P4_I2C_BASE + 0x30)
+#define P4_I2C_SDA_SAMPLE  (P4_I2C_BASE + 0x34)
+#define P4_I2C_SCL_HIGH    (P4_I2C_BASE + 0x38)
+#define P4_I2C_SCL_START_HOLD   (P4_I2C_BASE + 0x40)
+#define P4_I2C_SCL_RSTART_SETUP (P4_I2C_BASE + 0x44)
+#define P4_I2C_SCL_STOP_HOLD    (P4_I2C_BASE + 0x48)
+#define P4_I2C_SCL_STOP_SETUP   (P4_I2C_BASE + 0x4c)
+#define P4_I2C_FILTER_CFG  (P4_I2C_BASE + 0x50)
+#define P4_I2C_COMD(n)     (P4_I2C_BASE + 0x58 + 4u * (n))
+#define P4_I2C_SCL_ST_TO        (P4_I2C_BASE + 0x78)
+#define P4_I2C_SCL_MAIN_ST_TO   (P4_I2C_BASE + 0x7c)
+
+#define P4_I2C_SDA_FORCE_OUT  (1u << 0)
+#define P4_I2C_SCL_FORCE_OUT  (1u << 1)
+#define P4_I2C_MS_MODE        (1u << 4)
+#define P4_I2C_TRANS_START    (1u << 5)
+#define P4_I2C_CLK_EN         (1u << 8)
+#define P4_I2C_FSM_RST        (1u << 10)
+#define P4_I2C_CONF_UPGATE    (1u << 11)
+#define P4_I2C_RX_FIFO_RST    (1u << 12)
+#define P4_I2C_TX_FIFO_RST    (1u << 13)
+#define P4_I2C_FIFO_PRT_EN    (1u << 14)
+
+#define P4_I2C_INT_END_DETECT      (1u << 3)
+#define P4_I2C_INT_ARB_LOST        (1u << 5)
+#define P4_I2C_INT_TRANS_COMPLETE  (1u << 7)
+#define P4_I2C_INT_TIME_OUT        (1u << 8)
+#define P4_I2C_INT_NACK            (1u << 10)
+
+/* Opcodes. See the header comment: these are the P4's, not ESP32's. */
+#define P4_CMD_RSTART 6u
+#define P4_CMD_WRITE  1u
+#define P4_CMD_STOP   2u
+#define P4_CMD_READ   3u
+#define P4_CMD_END    4u
+
+/* op<<11 | ack_check_en<<8 | ack_value<<10 | byte_num */
+#define P4_CMD(op, ack_check, ack_val, n) \
+    (((uint32_t)(op) << 11) | ((uint32_t)(ack_check) << 8) | \
+     ((uint32_t)(ack_val) << 10) | (uint32_t)(n))
+
+#define P4_CLKRST_BASE      0x500E6000UL
+#define P4_SOC_CLK_CTRL2    (P4_CLKRST_BASE + 0x1c)   /* bit 12: I2C0 APB gate */
+#define P4_PERI_CLK_CTRL10  (P4_CLKRST_BASE + 0x40)   /* b0 src sel, b1 clk en */
+#define P4_HP_RST_EN1       (P4_CLKRST_BASE + 0xc4)   /* bit 22: I2C0 reset    */
+
+#define P4_GPIO_BASE        0x500E0000UL
+#define P4_GPIO_ENABLE_W1TS (P4_GPIO_BASE + 0x24)
+#define P4_GPIO_PIN(n)      (P4_GPIO_BASE + 0x74 + 4u * (n))
+#define P4_GPIO_IN_SEL(sig) (P4_GPIO_BASE + 0x158 + 4u * (sig))
+#define P4_GPIO_OUT_SEL(n)  (P4_GPIO_BASE + 0x558 + 4u * (n))
+#define P4_GPIO_PAD_DRIVER  (1u << 2)                 /* open drain           */
+#define P4_IOMUX_PAD(n)     (0x500E1000UL + 0x4 + 4u * (n))
+#define P4_IOMUX_FUN_GPIO   (1u << 12)                /* MCU_SEL = 1          */
+#define P4_IOMUX_FUN_IE     (1u << 9)
+#define P4_IOMUX_FUN_PU     (1u << 8)
+
+#define P4_I2C_SDA_GPIO 7u
+#define P4_I2C_SCL_GPIO 8u
+#define P4_I2C_SDA_SIG  69u
+#define P4_I2C_SCL_SIG  68u
+
+static bool g_p4_i2c_ready;
+static void i2c_p4_bringup_timing(void);
+
+static void p4_pad_for_i2c(uint32_t gpio, uint32_t sig) {
+    /* Open drain, input enabled, weak pull-up. The pull-up matters even with
+     * a module that has its own: without it an absent module leaves the line
+     * floating, and a floating SDA reads as a permanent ACK from every
+     * address, which is a bus scan that finds 128 devices. */
+    uint32_t pad = REG(P4_IOMUX_PAD(gpio));
+    pad &= ~(7u << 12);
+    REG(P4_IOMUX_PAD(gpio)) = pad | P4_IOMUX_FUN_GPIO | P4_IOMUX_FUN_IE | P4_IOMUX_FUN_PU;
+    REG(P4_GPIO_PIN(gpio)) |= P4_GPIO_PAD_DRIVER;
+    REG(P4_GPIO_ENABLE_W1TS) = (1u << gpio);
+    /* Both directions: the controller drives the line and also samples it, so
+     * a one-way route gives a bus that transmits and never sees an ACK. */
+    REG(P4_GPIO_OUT_SEL(gpio)) = sig;
+    REG(P4_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
+}
+
+/* Deferred on purpose while E7 is being brought up.
+ *
+ * Doing this at boot wedged the board mid-console-line: the machine reached
+ * the shell and then stopped inside a printk. Somewhere in the sequence below
+ * is a write that takes the console down with it, and the only way to find
+ * which is to run the steps one at a time with the console flushed between
+ * them -- which cannot be done from a boot path that has already died.
+ * i2c_p4_bringup() below is that, and i2cdiag calls it. */
+static void i2c_hw_init(void) { }
+
+static void i2c_p4_bringup_timing(void) {
+    const uint32_t half = 200u;
+    REG(P4_I2C_SCL_LOW)          = half;
+    REG(P4_I2C_SCL_HIGH)         = half - 10u;   /* the extra 10 is SCL wait  */
+    REG(P4_I2C_SCL_START_HOLD)   = half / 2u;
+    REG(P4_I2C_SCL_RSTART_SETUP) = half / 2u;
+    REG(P4_I2C_SCL_STOP_HOLD)    = half / 2u;
+    REG(P4_I2C_SCL_STOP_SETUP)   = half / 2u;
+    REG(P4_I2C_SDA_HOLD)         = half / 4u;
+    REG(P4_I2C_SDA_SAMPLE)       = half / 4u;
+    REG(P4_I2C_FILTER_CFG)       = (7u << 4) | 7u | (1u << 3) | (1u << 8);
+    REG(P4_I2C_TO)               = 16u;
+    REG(P4_I2C_SCL_ST_TO)        = 0x10u;
+    REG(P4_I2C_SCL_MAIN_ST_TO)   = 0x10u;
+
+    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+    g_p4_i2c_ready = true;
+}
+
+/* The same sequence, one step at a time, saying what it is about to do before
+ * it does it. The last line printed names the write that killed the console. */
+void i2c_p4_bringup(void) {
+    if (g_p4_i2c_ready) { printk_critical("[I2Cdiag] already up\n"); return; }
+
+    printk_critical("[I2Cdiag] 1: APB gate\n");
+    REG(P4_SOC_CLK_CTRL2) |= (1u << 12);
+
+    printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
+    REG(P4_PERI_CLK_CTRL10) &= ~(1u << 0);
+    REG(P4_PERI_CLK_CTRL10) |= (1u << 1);
+
+    printk_critical("[I2Cdiag] 3: reset pulse\n");
+    REG(P4_HP_RST_EN1) |=  (1u << 22);
+    REG(P4_HP_RST_EN1) &= ~(1u << 22);
+
+    printk_critical("[I2Cdiag] 4: pad GPIO7 (SDA)\n");
+    p4_pad_for_i2c(P4_I2C_SDA_GPIO, P4_I2C_SDA_SIG);
+
+    printk_critical("[I2Cdiag] 5: pad GPIO8 (SCL)\n");
+    p4_pad_for_i2c(P4_I2C_SCL_GPIO, P4_I2C_SCL_SIG);
+
+    printk_critical("[I2Cdiag] 6: CTR\n");
+    REG(P4_I2C_CTR) = P4_I2C_MS_MODE | P4_I2C_CLK_EN |
+                      P4_I2C_SDA_FORCE_OUT | P4_I2C_SCL_FORCE_OUT;
+
+    printk_critical("[I2Cdiag] 7: timing\n");
+    i2c_p4_bringup_timing();
+
+    printk_critical("[I2Cdiag] 8: fifo + commit\n");
+    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+    g_p4_i2c_ready = true;
+    printk_critical("[I2Cdiag] bringup complete\n");
+}
+
+static void p4_i2c_reset_fifo(void) {
+    REG(P4_I2C_FIFO_CONF) |= P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST;
+    REG(P4_I2C_FIFO_CONF) &= ~(P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST);
+    REG(P4_I2C_INT_CLR) = 0xffffffffu;
+}
+
+/* Runs a command list that has already been written, and reports what the
+ * bus said. Bounded: a stuck bus must not become a stuck kernel. */
+static uint32_t g_p4_i2c_last_int;   /* what the last transaction ended on */
+static uint32_t g_p4_i2c_last_sr;
+
+static bool p4_i2c_run(void) {
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+    REG(P4_I2C_CTR) |= P4_I2C_TRANS_START;
+
+    /* Bounded in *wall time*, not in iterations.
+     *
+     * The first version counted loop passes, which is a bound on a fast core
+     * and effectively none on this one: without a PLL the P4 runs at 40 MHz,
+     * and 200000 MMIO reads at that speed took long enough that a 128-address
+     * bus scan looked exactly like a hung board. A transaction of a few bytes
+     * at 100 kHz is under a millisecond; 10 ms is generous and still leaves a
+     * full scan of an empty bus well under two seconds. */
+    uint64_t deadline = time_get_us() + 10000u;
+    uint32_t st = 0;
+    do {
+        st = REG(P4_I2C_INT_RAW);
+        if (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) break;
+        if (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) break;
+    } while (time_get_us() < deadline);
+
+    g_p4_i2c_last_int = st;
+    g_p4_i2c_last_sr  = REG(P4_I2C_SR);
+    return (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) != 0 &&
+           (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) == 0;
+}
+
+/* Step-by-step through printk_critical(), because the failure
+ * being chased is a machine that stops rather than a wrong answer, and the
+ * ordinary console is part of what stops: printk() batches and reaches the
+ * wire through the uart *task*, so a step that takes the scheduler or the
+ * peripheral bus down takes the evidence with it. printk_critical() writes
+ * straight at the UART FIFO with a bounded spin and no task involvement
+ * (kernel/printk.c) -- which is exactly the case it was written for. Called
+ * from the shell task directly rather than through the i2c endpoint, so the
+ * i2c task is not in the picture either. */
+void i2c_p4_diag(void) {
+    i2c_p4_bringup();
+    printk_critical("[I2Cdiag] ready=%d\n", (int)g_p4_i2c_ready);
+   
+    printk_critical("[I2Cdiag] CTR=0x%08x\n", (unsigned)REG(P4_I2C_CTR));
+   
+    printk_critical("[I2Cdiag] SR=0x%08x FIFO_ST=0x%08x\n",
+           (unsigned)REG(P4_I2C_SR), (unsigned)REG(P4_I2C_FIFO_ST));
+   
+    printk_critical("[I2Cdiag] clkrst: CTRL2=0x%08x CTRL10=0x%08x RST1=0x%08x\n",
+           (unsigned)REG(P4_SOC_CLK_CTRL2), (unsigned)REG(P4_PERI_CLK_CTRL10),
+           (unsigned)REG(P4_HP_RST_EN1));
+   
+    printk_critical("[I2Cdiag] pads: io7=0x%08x io8=0x%08x out7=0x%08x in69=0x%08x\n",
+           (unsigned)REG(P4_IOMUX_PAD(7)), (unsigned)REG(P4_IOMUX_PAD(8)),
+           (unsigned)REG(P4_GPIO_OUT_SEL(7)), (unsigned)REG(P4_GPIO_IN_SEL(69)));
+   
+    printk_critical("[I2Cdiag] fifo reset...\n");
+    p4_i2c_reset_fifo();
+    printk_critical("[I2Cdiag] queueing one probe of 0x76...\n");
+    REG(P4_I2C_DATA) = (uint32_t)(0x76u << 1);
+    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
+    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
+    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
+    printk_critical("[I2Cdiag] starting...\n");
+    bool ok = p4_i2c_run();
+    printk_critical("[I2Cdiag] probe 0x76 -> %d  INT_RAW=0x%08x SR=0x%08x\n",
+           (int)ok, (unsigned)g_p4_i2c_last_int, (unsigned)g_p4_i2c_last_sr);
+   
+}
+
+/* What the last transaction ended on, for i2cdiag. Exposed rather than
+ * printed here: this runs inside the i2c task, which may not printk(). */
+void i2c_p4_last_status(uint32_t *int_raw, uint32_t *sr) {
+    if (int_raw) *int_raw = g_p4_i2c_last_int;
+    if (sr) *sr = g_p4_i2c_last_sr;
+}
+
+static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
+    if (!g_p4_i2c_ready || len < 0 || len > 30) return false;
+    p4_i2c_reset_fifo();
+    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);          /* address + write     */
+    for (int i = 0; i < len; i++) REG(P4_I2C_DATA) = src[i];
+    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
+    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1 + len);
+    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
+    return p4_i2c_run();
+}
+/* Write-then-read with a repeated start, which is the shape every register
+ * read on this bus takes: address+W, the register number, RESTART,
+ * address+R, then the data. Building it as one command list is what makes it
+ * a repeated start rather than two transfers with a STOP between -- and a
+ * STOP there is what lets another master, or a device with an internal
+ * pointer, lose the register selection. */
+static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+                         uint8_t *r, int rlen) {
+    if (!g_p4_i2c_ready) return false;
+    if (wlen < 0 || rlen < 0 || wlen > 30 || rlen > 30) return false;
+    if (rlen == 0) return i2c_write_bytes(addr, w, wlen);
+
+    p4_i2c_reset_fifo();
+    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
+    for (int i = 0; i < wlen; i++) REG(P4_I2C_DATA) = w[i];
+    REG(P4_I2C_DATA) = (uint32_t)((addr << 1) | 1u);
+
+    unsigned c = 0;
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1 + wlen);
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
+    if (rlen > 1) {
+        /* All but the last byte are ACKed; the last is NACKed, which is how a
+         * master tells the device the read is over. Sending ACK for the final
+         * byte leaves the device driving the bus into the STOP. */
+        REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_READ, 0, 0, rlen - 1);
+    }
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_READ, 0, 1, 1);
+    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
+
+    if (!p4_i2c_run()) return false;
+    for (int i = 0; i < rlen; i++) r[i] = (uint8_t)(REG(P4_I2C_DATA) & 0xffu);
+    return true;
+}
+
+static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
+    return i2c_xfer_raw(addr, &reg, 1, dst, len);
+}
+
+/* Address-only transaction: a START, the address byte with ACK checking on,
+ * and a STOP. Nothing is read, so the only thing that distinguishes a present
+ * device from an absent one is whether the address was acknowledged -- which
+ * is precisely what p4_i2c_run() returns false for. */
+static bool i2c_probe_addr(uint8_t addr) {
+    if (!g_p4_i2c_ready) return false;
+    p4_i2c_reset_fifo();
+    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
+    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
+    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
+    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
+    return p4_i2c_run();
+}
 #else
 static void i2c_hw_init(void) {}
 static bool i2c_probe_addr(uint8_t addr) { (void)addr; return false; }
@@ -1419,6 +1751,35 @@ bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
     return i2c_xfer_raw(addr, w, (int)wlen, r, (int)rlen);
 }
 
+/* The last successful temperature reading, and when it was taken.
+ *
+ * A cache rather than a second reader, because the interesting consumer is
+ * /proc/clock and that is served by the 9P task -- which has no business
+ * touching the I2C bus. Whoever already owns the bus refreshes this; readers
+ * get a value and its age and can judge for themselves whether it is stale.
+ *
+ * The age matters as much as the value: a temperature from an hour ago is
+ * evidence about an hour ago, and correlating a crystal's rate against a stale
+ * reading is how a spurious tempco gets published. */
+static int      g_temp_cached_c;
+static bool     g_temp_cached_ok;
+static uint64_t g_temp_cached_ms;
+
+bool i2c_rtc_cached_temperature_c(int *temp_c, uint32_t *age_s) {
+    if (!g_temp_cached_ok) return false;
+    if (temp_c) *temp_c = g_temp_cached_c;
+    if (age_s) {
+        uint64_t now = time_get_ms();
+        *age_s = (uint32_t)((now > g_temp_cached_ms ? now - g_temp_cached_ms : 0) / 1000u);
+    }
+    return true;
+}
+
+static bool temp_cache(bool ok, int v) {
+    if (ok) { g_temp_cached_c = v; g_temp_cached_ok = true; g_temp_cached_ms = time_get_ms(); }
+    return ok;
+}
+
 bool i2c_rtc_read_temperature_c(int *temp_c) {
     if (!temp_c) return false;
     if (i2c_task_alive()) {
@@ -1431,10 +1792,10 @@ bool i2c_rtc_read_temperature_c(int *temp_c) {
                 int32_t v;
                 memcpy(&v, &resp[1], sizeof(v));
                 *temp_c = (int)v;
-                return true;
+                return temp_cache(true, *temp_c);
             }
         }
         /* IPC failed -- fall through to direct access. */
     }
-    return i2c_rtc_hw_read_temperature_c(temp_c);
+    return temp_cache(i2c_rtc_hw_read_temperature_c(temp_c), *temp_c);
 }

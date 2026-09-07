@@ -14,14 +14,14 @@
     "drivers/dcf77_service.c": 863,
     "drivers/edgecap.c": 21,
     "drivers/gps_pps_rp2350.c": 1018,
-    "drivers/i2c_rtc.c": 856,
+    "drivers/i2c_rtc.c": 869,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_app.c": 196,
     "drivers/pico_clock_green_rp2350.c": 2176,
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 8,
     "drivers/uart_net.c": 10540,
-    "drivers/uart_rp2350.c": 1697,
+    "drivers/uart_rp2350.c": 1701,
     "drivers/usb_cdc.c": 16716,
     "fs/9p.c": 5837,
     "fs/p9_chan.c": 6152,
@@ -32,7 +32,7 @@
     "kernel/console.c": 405,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
-    "kernel/discipline.c": 113,
+    "kernel/discipline.c": 65,
     "kernel/hart.c": 32,
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
@@ -49,6 +49,7 @@
     "kernel/ticker.c": 37,
     "kernel/time.c": 33,
     "kernel/timezone.c": 4,
+    "kernel/umode_probe.c": 708,
     "net/arp.c": 196,
     "net/mqtt.c": 244,
     "net/mqttd.c": 644,
@@ -67,5 +68,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 145060
+  "total": 145737
 }

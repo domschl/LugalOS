@@ -11,6 +11,7 @@
 #include "drivers/uart_net.h"
 #include "kernel/discipline.h"
 #include "drivers/cyw43.h"
+#include "drivers/i2c_rtc.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -1188,6 +1189,27 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             (long)d.mean_offset_us, (unsigned long)d.sd_offset_us,
             (unsigned long)d.age_s, (unsigned long)d.dispersion_us,
             (int)CONFIG_DCF77_DELAY_US);
+        /* freq_updates against the loop's time constant, so "still walking in"
+         * can be told from "settled on the wrong value" -- the two need
+         * opposite fixes and looked identical during the first holdover. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "freq_updates=%lu\n", (unsigned long)d.freq_updates);
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+        /* The DS3231's thermometer, cached: a crystal's rate is a function of
+         * temperature, and the first holdover drifted 672 -> 485 ppb across a
+         * warming morning without anything recording how warm. The age is
+         * reported beside it because correlating a rate against a stale
+         * reading is how a spurious tempco gets published. */
+        {
+            int tc = 0; uint32_t tage = 0;
+            if (i2c_rtc_cached_temperature_c(&tc, &tage))
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "temp_c=%d\ntemp_age_s=%lu\n", tc, (unsigned long)tage);
+            else
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "temp_c=none\n");
+        }
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
         /* The independent check: this clock against the satellite pulse,
          * once a second. Reported here beside what the loop believes about

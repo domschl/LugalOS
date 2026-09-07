@@ -285,6 +285,7 @@ void discipline_status(disc_status_t *out) {
     out->accepted = g_accepted;
     out->rejected = g_rejected;
     out->freq_ppb = g_freq_ppb;
+    out->freq_updates = g_freq_updates;
     out->last_offset_us = g_last_offset_us;
     out->age_s = (uint32_t)(age_us / 1000000ull);
 

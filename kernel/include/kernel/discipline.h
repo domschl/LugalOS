@@ -50,6 +50,16 @@ typedef struct {
      * than an absence: a clock that has lost its source is still useful, but
      * only if it says how much less useful it is getting. */
     uint32_t dispersion_us;
+
+    /* How many times the rate integrator has actually been updated.
+     *
+     * Reported because without it "the loop never converged" and "it converged
+     * to the wrong value" are indistinguishable from outside, and they need
+     * opposite fixes. It also resets to zero on a step, silently, so a low
+     * count long after boot is itself the diagnosis. Compare against the
+     * loop's time constant, which is FREQ_INT_DIV*1000 / (SLEW_S*PHASE_DIV)
+     * samples -- 533 as tuned. */
+    uint32_t freq_updates;
 } disc_status_t;
 
 /* Feeds one phase measurement: `offset_us` is how far the wall clock was
