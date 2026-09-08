@@ -128,6 +128,41 @@ static uint32_t g_n;
  * dominant error -- see freq_uncertainty_ppb(). */
 static uint32_t g_freq_updates;
 
+/* What the rate estimate is *observed* to do, as opposed to what a noise model
+ * says it should do.
+ *
+ * The model term below computes the integrator's random-walk wander and is
+ * correct as far as it goes. It went nowhere near far enough: over 20 hours on
+ * the bench the estimate swung by about 350 ppb -- excursions of hundreds of
+ * ppb over hours, centred on dawn -- while the model reported 157, and a
+ * holdover consequently drifted 3.7x further than the dispersion it advertised
+ * (2026-09-07/08).
+ *
+ * Whether that swing is DCF-77's diurnal propagation shift being integrated as
+ * a rate, or the loop hunting, is unresolved and needs several days to settle.
+ * It does not need resolving to be *reported*: whatever its cause, the spread
+ * the estimate actually exhibits is a lower bound on how well the rate is
+ * known, and a clock can measure that about itself without understanding it.
+ *
+ * An exponentially-weighted variance rather than a stored window, so it costs
+ * two accumulators instead of a kilobyte of history, and it self-calibrates --
+ * if the loop is ever stabilised the reported dispersion shrinks on its own,
+ * with no constant to re-tune. Scaled by 256 throughout because an integer
+ * EWMA whose increment rounds to zero stops moving and reports a confident
+ * nothing, which is the failure this whole field exists to prevent. */
+#define FREQ_VAR_N 512
+static int64_t  g_fmean_x256;
+static int64_t  g_fvar_x256;
+static bool     g_fvar_primed;
+
+static void freq_observe(int32_t ppb) {
+    int64_t x256 = (int64_t)ppb * 256;
+    if (!g_fvar_primed) { g_fmean_x256 = x256; g_fvar_primed = true; return; }
+    g_fmean_x256 += (x256 - g_fmean_x256) / FREQ_VAR_N;
+    int64_t dev = (int64_t)ppb - g_fmean_x256 / 256;
+    g_fvar_x256 += (dev * dev * 256 - g_fvar_x256) / FREQ_VAR_N;
+}
+
 static uint32_t isqrt64(uint64_t v) {
     uint64_t r = 0;
     while ((r + 1ull) * (r + 1ull) <= v) r++;
@@ -191,6 +226,16 @@ static uint32_t freq_uncertainty_ppb(uint32_t sd_us) {
         ppb += (uint32_t)((uint64_t)(UNKNOWN_PPB_ERR - ppb) * left / FREQ_LOOP_TAU_N);
     }
 
+    /* Never less than the spread the estimate has actually shown. The model
+     * above describes one contribution -- integrator wander -- and the bench
+     * proved it is not the dominant one. Taking the larger of measurement and
+     * model keeps whichever is bigger honest, and cannot report *less*
+     * confidence than either alone would. */
+    if (g_fvar_primed && g_freq_updates > FREQ_VAR_N / 4u) {
+        uint32_t observed = isqrt64((uint64_t)(g_fvar_x256 > 0 ? g_fvar_x256 : 0) / 256);
+        if (observed > ppb) ppb = observed;
+    }
+
     if (ppb < 10) ppb = 10;
     if (ppb > UNKNOWN_PPB_ERR) ppb = UNKNOWN_PPB_ERR;
     return ppb;
@@ -211,6 +256,7 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
         /* The accumulated slope described the clock as it was before the step
          * and says nothing about the one that exists now. */
         g_freq_updates = 0;
+        g_fmean_x256 = 0; g_fvar_x256 = 0; g_fvar_primed = false;
         g_consec_rejects = 0;
         g_last_offset_us = 0;
         g_last_at_mono = at_mono_us;
@@ -251,6 +297,7 @@ bool discipline_feed(int64_t offset_us, uint64_t at_mono_us) {
             int32_t step = (int32_t)(offset_us / FREQ_INT_DIV);
             g_freq_ppb -= step;
             time_set_freq_ppb(g_freq_ppb);
+            freq_observe(g_freq_ppb);
 
             g_freq_updates++;
         }
@@ -320,6 +367,12 @@ void discipline_reset(void) {
     g_sumsq = 0;
     g_n = 0;
     g_freq_updates = 0;
+    /* The observed-spread accumulators too. Forgetting these left a reset
+     * loop reporting the *previous* loop's variability, which is exactly the
+     * stale-confidence failure the measurement was added to prevent -- and
+     * the selftest caught it by reading 374 ppb where a motionless estimate
+     * must read 132. */
+    g_fmean_x256 = 0; g_fvar_x256 = 0; g_fvar_primed = false;
 }
 
 void discipline_selftest(void) {
@@ -409,11 +462,40 @@ void discipline_selftest(void) {
      *    the bench figure -- must yield 2077 * 16.32 / 256 = 132 ppb, which
      *    is the number the hardware showed wandering by (199 measured over
      *    1.4 time constants, at the divisor of 64 that predicts 265). */
-    CHECK("rate uncertainty follows the radio noise",
+    /*    Two contracts now, because the uncertainty is the larger of a model
+     *    term and a measured one, and each can be wrong on its own.
+     *
+     *    First the model alone: 600 samples of a *zero* offset leave the rate
+     *    estimate motionless, so the observed spread is zero and the model
+     *    governs. sqrt(TAU/2) = sqrt(533/2) = 16.32, so 2077 us of DCF-77
+     *    scatter -- the bench figure -- must yield 2077 * 16.32 / 256 = 132
+     *    ppb. Asserted exactly; "it moved the right way" is the assertion
+     *    that let a useless estimator ship twice. */
+    discipline_reset();
+    time_set_freq_ppb(0);
+    for (int i = 0; i < 600; i++)
+        discipline_feed(0, t + (uint64_t)i * 60000000ull);
+    CHECK("rate uncertainty follows the radio noise when the rate is steady",
           freq_uncertainty_ppb(2077) == 132 && freq_uncertainty_ppb(8000) == 510);
-    printk("  rate uncertainty: sd 2077 us -> %lu ppb, sd 8000 us -> %lu ppb\n",
+    printk("  steady: sd 2077 us -> %lu ppb, sd 8000 us -> %lu ppb\n",
            (unsigned long)freq_uncertainty_ppb(2077),
            (unsigned long)freq_uncertainty_ppb(8000));
+
+    /*    Then the measured term: an estimate that is actually moving must not
+     *    be reported as well known, whatever the model says. This is the case
+     *    the hardware produced and the model missed entirely -- 20 hours in
+     *    which the rate swung some 350 ppb while the model claimed 157, and a
+     *    holdover then drifted 3.7x past the dispersion it advertised. The
+     *    model cannot see that, because the swing is not integrator wander;
+     *    only watching the estimate can. */
+    uint32_t steady = freq_uncertainty_ppb(2077);
+    for (int i = 0; i < 400; i++)
+        discipline_feed((i & 1) ? 20000 : -20000,
+                        t + (uint64_t)(600 + i) * 60000000ull);
+    uint32_t wandering = freq_uncertainty_ppb(2077);
+    CHECK("a wandering rate is not reported as a known one", wandering > steady);
+    printk("  steady %lu ppb -> wandering %lu ppb\n",
+           (unsigned long)steady, (unsigned long)wandering);
 
     /* 6b. And a clock that has not yet run for a time constant says so, by
      *     fading out the uncorrected-crystal assumption rather than holding

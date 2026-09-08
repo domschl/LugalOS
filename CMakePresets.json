@@ -51,7 +51,7 @@
         "LUGALOS_ENABLE_CHESS": "OFF",
         "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON",
         "LUGALOS_ENABLE_DCF77": "ON",
-        "LUGALOS_ENABLE_GPS": "ON"
+        "LUGALOS_ENABLE_GPS": "OFF"
       }
     },
     {

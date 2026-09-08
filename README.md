@@ -835,8 +835,66 @@ rather than a resolution limit.
 This is a client, and only a client: one query, applied as a step, no poll loop and no frequency
 discipline. The thing worth knowing before relying on it is not the query's accuracy but what
 happens between queries — the board's oscillator is a ±30 ppm crystal, so it drifts up to ~2.6 s/day.
-A single sync at boot is not the same as a disciplined clock, and closing that gap is
-`plan/phase24_dcf77_precision_and_ntp_server.md`. `tests/hw/test_ntp.py` is the repeatable check.
+A single sync at boot is not the same as a disciplined clock; closing that gap is what the section
+below does. `tests/hw/test_ntp.py` is the repeatable check.
+
+### Serving time: a DCF-77 stratum-1 for when the internet is not there
+
+The `rp2350-clock` persona also *serves* time, on UDP 123, disciplined by the DCF-77 longwave
+signal from Mainflingen. The point is the case where nothing else works: no internet, no GPS, no
+upstream server. A radio receiver and a crystal are enough to keep a segment's clocks right.
+
+```
+$ chronyd -Q -t 12 'server 192.168.178.22 iburst maxsamples 4'
+System clock wrong by 0.003545 seconds (ignored)
+```
+
+`chronyc` cannot be used for this — it talks to a *local* `chronyd` over that daemon's own control
+protocol, and pointed at a bare NTP server it reports `506 Cannot talk to daemon`, which says
+something about the asking machine and nothing about the board. `chronyd -Q` is a one-shot query
+that needs no daemon and does not touch the system clock. Its verdict is the useful part: an
+offset means chrony *selected* the board; "No suitable source for synchronisation" means it
+refused, which is the correct answer when the board is not disciplined.
+
+`cat /proc/clock` is the board's own account of itself:
+
+```
+state=track          accepted=1415   rejected=5
+freq_ppb=46          dispersion_us=2483
+mean_offset_us=-16   sd_offset_us=2467
+delay_const_us=37886
+```
+
+**What it is good for, measured rather than claimed.** Against a GPS reference on the same board,
+over 18 hours of tracking: median error **37 µs**, with 10–90% inside **±0.6 ms**. 1415 frames
+accepted and 5 rejected. That is the number to plan around — a segment served by this board has
+its clocks right to about a millisecond, from a radio signal and nothing else.
+
+**What it is not good for.** Holdover. When the radio goes away — antenna disconnected, or a day
+of poor reception — the clock coasts on its learned rate, and that rate is not learned nearly as
+well as the tracking figures suggest. Measured over a five-hour holdover: **7.7 ms of drift**,
+against **5.4 ms** of dispersion reported at the time. The rate estimate itself swings by some
+350 ppb over hours, for reasons not yet separated between DCF-77's diurnal propagation shift and
+the loop's own dynamics (`plan/phase24_dcf77_precision_and_ntp_server.md` §P5).
+
+That limitation is *reported* rather than hidden, which is the part that matters: root dispersion
+now grows at the rate the estimate is observed to wander, not at a modelled noise floor, so a
+client weighting our answers is told how much to discount them. A board that has been without its
+radio for eight hours advertises roughly 14 ms of uncertainty and is still a perfectly usable
+source — chrony's own `maxdistance` default is three seconds. What it must never do is claim
+5 ms while being 20 ms out, and that is the failure this arrangement exists to prevent.
+
+Stratum 1 with reference id `DCF` while tracking; `LI 3` / stratum 16 once dispersion passes a
+second, at which point the honest answer is that we do not know. The leap-second warning comes
+from the transmitted frame's own A2 bit, which is the one respect in which a DCF-disciplined
+server beats a GPS-fed one: the announcement arrives in band.
+
+The receiver's own delay — propagation from Mainflingen, filters, AGC, demodulation — is a board
+constant, `CONFIG_DCF77_DELAY_US` in `cmake/board-rp2350-clock.cmake`, measured at **+37886 µs
+± 62** against a GPS pulse over 1073 frames. It belongs to one module and one antenna; a second
+receiver will have its own. The GPS was a *transfer standard* for that measurement and is not part
+of the running system — `LUGALOS_ENABLE_GPS` is `OFF` for this persona, and turning it back on is
+how you would re-calibrate.
 
 ## Wireless: joining a WiFi network (RP2350W / Pico 2 W)
 

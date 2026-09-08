@@ -1,10 +1,19 @@
 /* The DCF-77 service. See drivers/include/drivers/dcf77_service.h for what it
  * is for and why it is not the state machine the plan originally described. */
 
+/* First, and explicitly: the guards below are #if on CONFIG_ENABLE_GPS, and
+ * an #if on a macro that is not yet defined is silently false. Without this
+ * line the GPS header was skipped while the code using it, further down and
+ * past a header that pulls the config in transitively, was compiled -- which
+ * is an implicit-declaration error at best and a wrong ABI at worst. */
+#include "lugalos_config.h"
+
 #include "drivers/dcf77_service.h"
 #include "drivers/dcf77.h"
 #include "drivers/edgecap.h"
+#if CONFIG_ENABLE_GPS
 #include "drivers/gps_pps.h"
+#endif
 #include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
 #include "kernel/printk.h"
@@ -251,28 +260,8 @@ void dcf77_service_feed(uint64_t now_ms) {
             if (best) { g_radio_at_us = best; g_radio_at_us_ok = true; }
         }
 
-        /* P4. Only from an edge-snapped mark: the millisecond fallback is
-         * quantised at 25-35 ms by the debounce, which is larger than the
-         * whole quantity being measured and would poison the mean rather than
-         * merely widen it. No PPS, or no edge, simply means no sample -- the
-         * calibration is a thing that happens while the GPS is attached, and
-         * the service works exactly as before without it. */
         if (g_radio_at_us_ok) {
-            int64_t off;
-            if (gps_pps_offset_us(g_radio_at_us, &off)) {
-                if (g_pps_n == 0) { g_pps_min_us = g_pps_max_us = off; }
-                else {
-                    if (off < g_pps_min_us) g_pps_min_us = off;
-                    if (off > g_pps_max_us) g_pps_max_us = off;
-                }
-                g_pps_sum_us += off;
-                g_pps_sumsq  += (uint64_t)(off * off);
-                g_pps_n++;
-                g_pps_last_us = off;
-                g_pps_have = true;
-            }
-
-            /* P5: the same frame, as a phase measurement for the clock.
+            /* P5: this frame, as a phase measurement for the clock.
              *
              * This is what turns the radio from a thing that sets the clock
              * once a night into a reference the clock tracks continuously.
@@ -281,10 +270,18 @@ void dcf77_service_feed(uint64_t now_ms) {
              * delay P4 measured, because the mark arrives that much after the
              * second it labels.
              *
-             * Only from an edge-snapped mark, for the same reason P4 is: the
-             * millisecond fallback is quantised at 25-35 ms by the debounce,
-             * which is larger than the offsets being disciplined and would
-             * feed the loop noise it cannot distinguish from real error. */
+             * Only from an edge-snapped mark: the millisecond fallback is
+             * quantised at 25-35 ms by the debounce, which is larger than the
+             * offsets being disciplined and would feed the loop noise it
+             * cannot distinguish from real error.
+             *
+             * **Outside the GPS guard below, and that is the point.** This is
+             * the loop the clock runs on, driven by the radio alone; the GPS
+             * blocks are calibration instruments that were attached for P4 and
+             * are gone in the shipping configuration. Putting this inside the
+             * guard -- which a first attempt at building without GPS did --
+             * silently disables the entire discipline loop on exactly the
+             * build that ships. */
             int64_t true_us = time_to_epoch(&got) * 1000000LL
                             + (int64_t)CONFIG_DCF77_DELAY_US;
             int64_t ours_us = time_epoch_us_at(g_radio_at_us);
@@ -300,7 +297,25 @@ void dcf77_service_feed(uint64_t now_ms) {
                 }
             }
 
-            /* The whole claim, against the local reference. */
+#if CONFIG_ENABLE_GPS
+            /* P4's measurement of the receiver delay, and P5's independent
+             * check of the disciplined clock. Both are calibration only --
+             * nothing here feeds the loop above, and the service behaves
+             * identically without them, which is what the shipping build is. */
+            int64_t off;
+            if (gps_pps_offset_us(g_radio_at_us, &off)) {
+                if (g_pps_n == 0) { g_pps_min_us = g_pps_max_us = off; }
+                else {
+                    if (off < g_pps_min_us) g_pps_min_us = off;
+                    if (off > g_pps_max_us) g_pps_max_us = off;
+                }
+                g_pps_sum_us += off;
+                g_pps_sumsq  += (uint64_t)(off * off);
+                g_pps_n++;
+                g_pps_last_us = off;
+                g_pps_have = true;
+            }
+
             int64_t gnow;
             if (gps_epoch_us(g_radio_at_us, &gnow)) {
                 int64_t claimed = time_to_epoch(&got) * 1000000LL
@@ -318,6 +333,7 @@ void dcf77_service_feed(uint64_t now_ms) {
                     g_gerr_last_us = err;
                 }
             }
+#endif /* CONFIG_ENABLE_GPS */
         }
         /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
          * own mark, not this call's `now`.

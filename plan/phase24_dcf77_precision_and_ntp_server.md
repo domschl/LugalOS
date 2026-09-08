@@ -1023,6 +1023,84 @@ exactly that.
 
 Only the DCF antenna comes off in step 6. GPS is the referee.
 
+### P5/P6 as run, 2026-09-07/08 — what passed, what did not, and what is left
+
+The run in the table above was executed. Steps 1-5 and 8 passed, step 6 failed,
+and step 7 turned out to be mis-specified.
+
+| step | result |
+|------|--------|
+| 1-2 sources, logging | pass |
+| 3 lock-in | pass -- `mean_offset_us` -16 us over 1415 frames, 5 rejected |
+| 4 chrony accepts, stratum 1, refid `DCF` | pass |
+| 5 free run | pass -- median error **+37 us**, 10-90 pct **+/-0.6 ms** |
+| 6 holdover | **fail** -- 7.7 ms true error against 5.4 ms advertised, crossing at 3.14 h |
+| 7 unsynchronised transition | **not reachable** -- see below |
+| 8 recovery | pass -- 7.7 ms slewed out in 17 min, no step, no rejections |
+
+**Step 7 was wrong as written.** It expected the server to declare itself
+unsynchronised during an 8-hour holdover. At the observed dispersion growth
+that would take about 74 days, and on reflection that is correct behaviour
+rather than a bug: NTP conveys staleness through *dispersion*, not stratum,
+and a GPS-disciplined server in holdover behaves the same way. Chrony rejects a
+source on its own `maxdistance` long before we would need to declare ourselves
+useless. The step should have asked for honest dispersion, which is what §4
+actually specifies.
+
+**Step 6 is the real failure and it is instructive.** The tracking figures are
+excellent and hide it completely: the phase slew holds the clock to within a
+millisecond of truth while the *rate* estimate underneath wanders freely.
+Only removing the radio exposes which of the two was doing the work.
+
+Three candidate causes were considered and two were eliminated by measurement:
+
+* **Not temperature.** The DS3231's thermometer was exposed for this. Binned
+  by temperature, `freq_ppb` spread 365 ppb *within* a constant 26 C -- far
+  more than anything between bins. The +0.748 correlation that first suggested
+  a tempco was time-of-day confounding: the loop was converging while the room
+  was cooling, and both trend with the clock.
+* **Not a failure to converge.** `freq_updates` was exposed for this, precisely
+  so "still walking in" could be told from "settled on the wrong value". Past
+  two time constants the estimate was still swinging by hundreds of ppb, which
+  is not what settling looks like.
+* **Unresolved: DCF-77's diurnal propagation shift, or the loop's own
+  dynamics.** The largest excursion is centred on dawn, and a step in the
+  received delay would be integrated as a rate -- but one diurnal cycle cannot
+  separate that from a loop hunting with a multi-hour period. Several days
+  would.
+
+**What was done about it, and what deliberately was not.** The cause is left
+unfixed: chasing it needs multi-day data, and holding the phase open for it
+buys nothing, because the clock already does its job. What ships instead is an
+honest *report* of the problem. Root dispersion now grows at the rate the
+estimate is **observed** to wander -- an exponentially-weighted variance of
+`freq_ppb`, taking the larger of that and the old noise model -- rather than at
+a modelled floor the hardware exceeded by 3.7x. It self-calibrates: if the
+swing is ever cured, the reported dispersion shrinks with no constant to
+re-tune.
+
+That deliberately makes the clock advertise *less* confidence than before. A
+board eight hours without its radio now claims roughly 14 ms rather than 5, and
+is still a perfectly usable source; chrony's `maxdistance` default is three
+seconds. §4's principle is that admitting ignorance beats advertising
+confidence that cannot be justified, and this is that principle applied to a
+defect rather than to an absence.
+
+**A note on how nearly this shipped broken.** The finalisation checklist
+included "verify it builds and runs with GPS removed", on the grounds that
+every measurement had been taken with the transfer standard attached and the
+shipping configuration had never been compiled. It had not: `dcf77_service.c`
+called `gps_pps_offset_us()` and `gps_epoch_us()` unconditionally, so the build
+did not link -- and the first fix put the *entire discipline loop* inside the
+GPS guard, which would have produced a clock that ran, served time, and never
+disciplined itself at all. `LUGALOS_ENABLE_GPS` is now `OFF` by default for
+this persona so the configuration that ships is the one that gets built.
+
+**Left for a later phase:** the rate swing itself, and whether it is
+propagation or loop dynamics. `plan/phase25_gps_ntp_server.md` is the natural
+home if that board is built, since a GPS-referenced server would make the
+question answerable in hours rather than days.
+
 **P7 — documentation.** README's networking section gains a "serving time"
 part with the *measured* accuracy, not an aspirational one; §3.3 in short form
 so the phase-modulation question is answered in the place people will ask it;

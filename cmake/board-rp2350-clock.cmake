@@ -191,6 +191,17 @@ set(CONFIG_DCF77_WARMUP_MS     5000)
 # The GPS's TX goes to GP21 -- the board's RX. That is the one that gets wired
 # backwards. TX is reserved but unused: reading NMEA needs no transmit path.
 #
+# LUGALOS_ENABLE_GPS is OFF in CMakePresets.json for this persona, and that is
+# the shipping configuration: the GPS was a transfer standard, attached to
+# calibrate CONFIG_DCF77_DELAY_US against and removed afterwards (phase 24
+# §3.4). The clock serves time from the radio alone.
+#
+# Turn it back ON to re-calibrate, or to re-run P4/P5's independent check of
+# the disciplined clock. Building it OFF is worth doing even when it is on,
+# because it is the configuration that ships and it had never once been
+# compiled until 2026-09-08 -- when it turned out not to link, and to have the
+# entire discipline loop inside a GPS guard.
+#
 # LUGALOS_ENABLE_GPS lives in CMakePresets.json beside LUGALOS_ENABLE_DCF77,
 # because the *_ENABLE_* flags gate which sources are compiled and are checked
 # before this file is read.
@@ -255,7 +266,11 @@ set(CONFIG_ENABLE_NTP_SERVER 1)
 #
 # Results are read from /proc/dcf77log over 9P -- the board is on WiFi and
 # already answers on tcp/564, so nothing new is broadcast or stored.
-set(CONFIG_DCF77_P0_LOG        1)
+# 0 now that P0 and P4 are finished. It broadcasts a sample a minute to the
+# segment, which was the instrument those milestones were built on and is
+# noise on a network the clock is otherwise only serving time to. Set it to 1
+# to re-run either measurement; nothing else depends on it.
+set(CONFIG_DCF77_P0_LOG        0)
 set(CONFIG_DCF77_P0_NTP        "192.168.178.23")
 set(CONFIG_DCF77_P0_PERIOD_S  60)
 

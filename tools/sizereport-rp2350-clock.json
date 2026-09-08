@@ -9,11 +9,9 @@
     "drivers/at24c32.c": 1,
     "drivers/bme280.c": 81,
     "drivers/cyw43_rp2350.c": 11953,
-    "drivers/dcf77_p0log.c": 596,
     "drivers/dcf77_rp2350.c": 298,
-    "drivers/dcf77_service.c": 863,
+    "drivers/dcf77_service.c": 786,
     "drivers/edgecap.c": 21,
-    "drivers/gps_pps_rp2350.c": 1018,
     "drivers/i2c_rtc.c": 869,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_app.c": 196,
@@ -32,7 +30,7 @@
     "kernel/console.c": 405,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
-    "kernel/discipline.c": 65,
+    "kernel/discipline.c": 82,
     "kernel/hart.c": 32,
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
@@ -68,5 +66,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 145737
+  "total": 144063
 }
