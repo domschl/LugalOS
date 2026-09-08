@@ -419,6 +419,9 @@ static uint8_t hw_uart_getc(void);
  * drivers/uart_16550.c's equivalent. */
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count; /* see uart_irq_count() */
+static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
+static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
+static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
 
 #define UART0_FR    (UART0_BASE + 0x18)
 #define UART0_IMSC  (UART0_BASE + 0x38)
@@ -428,8 +431,10 @@ static volatile uint32_t g_uart_irq_count; /* see uart_irq_count() */
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    if (!(REG(UART0_FR) & UART0_FR_TXFF)) g_uart_irq_tx_seen++;
     if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
         REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+        g_uart_irq_tx_wakes++;
         int pid = g_tx_waiter;
         g_tx_waiter = -1;
         task_unblock(pid);
@@ -564,6 +569,7 @@ static void uart_hw_putc(char c) {
          * the branch already here for the other-waiter case. */
         if (g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
+            g_uart_irq_tx_arms++;
             REG(UART0_IMSC) |= UART0_IMSC_TXIM;
             task_block();
         } else {
@@ -647,6 +653,9 @@ uint32_t uart_irq_count(void) { return g_uart_irq_count; }
 /* Structurally zero, not unimplemented: uart_isr() above serves TX only. See
  * drivers/include/drivers/uart.h. */
 uint32_t uart_irq_rx_wakes(void) { return 0; }
+uint32_t uart_irq_tx_arms(void) { return g_uart_irq_tx_arms; }
+uint32_t uart_irq_tx_wakes(void) { return g_uart_irq_tx_wakes; }
+uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
 
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;

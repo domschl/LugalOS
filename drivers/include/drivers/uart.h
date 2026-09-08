@@ -65,6 +65,31 @@ uint32_t uart_irq_count(void);
 // between the drivers, so it is reported rather than smoothed over.
 uint32_t uart_irq_rx_wakes(void);
 
+// The TX half of the same question: how many times a task blocked waiting for
+// room in the transmit FIFO (uart_irq_tx_arms) and how many times an interrupt
+// actually woke one of them again (uart_irq_tx_wakes).
+//
+// These exist because uart_irq_rx_wakes()'s own comment above describes the
+// exact bug it cannot catch, only mirrored: a driver whose RX path is
+// interrupt-driven and whose TX path arms an interrupt that never arrives
+// looks perfectly healthy on `uartstats` and from the far end of the cable,
+// right up to the first write that finds a full FIFO -- which then blocks
+// forever. E3 verified rx_wakes and inferred the rest; E7 paid for it.
+//
+// Read them as a pair, because only the pair is diagnostic: arms == wakes is
+// a working TX interrupt, arms > wakes by a steady one is a waiter asleep
+// right now, and arms > 0 with wakes == 0 is the lost-wakeup bug.
+uint32_t uart_irq_tx_arms(void);
+uint32_t uart_irq_tx_wakes(void);
+
+// And how many ISR entries saw the transmit-ready condition at all, whether
+// or not there was a waiter to serve. This is the counter that tells the two
+// failure modes apart, which arms/wakes alone cannot: tx_seen == 0 alongside
+// arms > 0 means the interrupt is not being delivered (routing, enable, or
+// threshold), while tx_seen > 0 with wakes == 0 means it is delivered and
+// something is losing the waiter between arming and service.
+uint32_t uart_irq_tx_seen(void);
+
 // Sends whatever uart_putc() has batched but not yet transmitted. See
 // drivers/uart_16550.c's uart_putc()/uart_flush() for why writes are
 // batched at all (one chan_call() per line of output, not one per

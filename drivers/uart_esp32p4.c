@@ -293,6 +293,9 @@ static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
 static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
+static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
+static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
+static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
 
 static void uart_isr(void *ctx) {
     (void)ctx;
@@ -317,7 +320,9 @@ static void uart_isr(void *ctx) {
         g_rx_waiter = -1;
         task_unblock(pid);
     }
+    if (st & UART_TXFIFO_EMPTY_INT) g_uart_irq_tx_seen++;
     if ((st & UART_TXFIFO_EMPTY_INT) && g_tx_waiter >= 0) {
+        g_uart_irq_tx_wakes++;
         int pid = g_tx_waiter;
         g_tx_waiter = -1;
         task_unblock(pid);
@@ -337,7 +342,7 @@ static void uart_isr(void *ctx) {
  * block and the slot is free, otherwise spin with sched_yield(). The spin is
  * not a leftover -- it is the only thing that works before sched_init(), and
  * every line of boot output before the uart task exists goes through it. */
-static void uart_hw_putc_blocking(char c) {
+static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     if (!g_uart_base) return;
     if (hw_uart_tx_room()) {
         REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
@@ -350,6 +355,37 @@ static void uart_hw_putc_blocking(char c) {
      * silent, permanent lost wakeup. So the whole decision runs under one
      * irq_save(). Copied in shape from drivers/uart_16550.c, where the same
      * comment is the record of having got it wrong first. */
+    /* The caller decides whether blocking is even allowed here.
+     *
+     * uart_flush() reaches this function by two very different routes. Through
+     * the uart *task*, blocking is right: the task exists to sleep until the
+     * FIFO drains. Through the **fallback** -- taken when the endpoint is busy
+     * or the task is not running -- blocking is wrong, and not subtly so. That
+     * path exists precisely because the task machinery is unavailable, and
+     * task_block()ing there re-introduces the dependency the fallback was
+     * written to escape: the caller sleeps waiting for a TX interrupt while
+     * holding whatever it was in the middle of, and on this board that is a
+     * printk() that never returns.
+     *
+     * Kept on its own merits, and the record of how it was arrived at is worth
+     * preserving because the reasoning was right and the diagnosis was wrong.
+     * E7 saw a boot that stopped mid-console-line once E6's /flash0 added
+     * output after the shell starts reading the console, and this looked like
+     * the cause: the shell's pending blocking read occupies the single-slot
+     * uart endpoint, every later printk falls back to direct hardware, and the
+     * first one to find a full FIFO would block for good. The TX interrupt was
+     * blamed for never arriving.
+     *
+     * It arrives. uart_irq_tx_arms() and uart_irq_tx_wakes() are equal on this
+     * board, and enabling the source with a drained FIFO delivers an interrupt
+     * immediately -- both measured. The hang was the L2-cache memory
+     * corruption (esp32p4_l2_cache_shrink(), arch/riscv/common/trap.c) eating
+     * task context frames, and it presented as a lost wakeup because the task
+     * that should have been woken no longer had a frame to return to.
+     *
+     * The split stays regardless: a fallback whose whole reason for existing is
+     * that the task machinery is unavailable must not call task_block(). That
+     * argument never depended on the bug. */
     uintptr_t flags = irq_save();
     /* Acknowledge before re-testing, not after. Both orderings look right;
      * only this one is. INT_CLR takes down a raw bit that may be left over
@@ -363,8 +399,9 @@ static void uart_hw_putc_blocking(char c) {
      * by the test or delivered by the enable. */
     REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
     if (!hw_uart_tx_room()) {
-        if (g_tx_waiter < 0 && sched_has_task()) {
+        if (may_block && g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
+            g_uart_irq_tx_arms++;
             REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
             task_block();
         } else {
@@ -376,6 +413,11 @@ static void uart_hw_putc_blocking(char c) {
     irq_restore(flags);
     REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
 }
+
+/* The two entry points, so the choice is made by name at each call site
+ * rather than by a flag someone has to remember to pass. */
+static void uart_hw_putc_blocking(char c) { uart_hw_putc_blocking_ex(c, true); }
+static void uart_hw_putc_polling(char c)  { uart_hw_putc_blocking_ex(c, false); }
 
 static uint8_t uart_hw_getc_blocking(void) {
     if (hw_uart_has_char()) return hw_uart_getc();
@@ -432,6 +474,10 @@ static volatile bool    g_uart_write_in_flight;
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
 uint32_t uart_irq_rx_wakes(void) { return g_uart_irq_rx_wakes; }
+uint32_t uart_irq_tx_arms(void) { return g_uart_irq_tx_arms; }
+uint32_t uart_irq_tx_wakes(void) { return g_uart_irq_tx_wakes; }
+uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
+
 
 static bool uart_task_alive(void) {
     if (g_uart_task_pid < 0) return false;
@@ -693,7 +739,7 @@ void uart_flush(void) {
     if (len == 0) return;
 
     if (uart_demux_is_enabled() || !uart_task_alive()) {
-        for (uint32_t i = 0; i < len; i++) uart_hw_putc_blocking(local[i]);
+        for (uint32_t i = 0; i < len; i++) uart_hw_putc_polling(local[i]);
         return;
     }
     uint8_t req[1 + UART_TX_BATCH_CAP];
@@ -712,7 +758,7 @@ void uart_flush(void) {
         if (!g_uart_write_in_flight) break;
         sched_yield();
     }
-    for (uint32_t i = 0; i < len; i++) uart_hw_putc_blocking(local[i]);
+    for (uint32_t i = 0; i < len; i++) uart_hw_putc_polling(local[i]);
 }
 
 void uart_putc(char c) {

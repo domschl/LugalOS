@@ -3403,6 +3403,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * guarantee. */
         printk("[UartStats] write_calls=%u irqs=%u rx_wakes=%u\n",
                uart_write_call_count(), uart_irq_count(), uart_irq_rx_wakes());
+        /* The TX half, split onto its own line so the existing tests' exact
+         * matches on the line above keep working. See uart_irq_tx_arms() in
+         * drivers/include/drivers/uart.h for how to read the three together. */
+        printk("[UartStats] tx_arms=%u tx_wakes=%u tx_seen=%u\n",
+               uart_irq_tx_arms(), uart_irq_tx_wakes(), uart_irq_tx_seen());
         return;
 #if !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "blkstats") == 0) {

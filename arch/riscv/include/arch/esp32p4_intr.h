@@ -53,6 +53,18 @@
  * still the driver's business. */
 int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id);
 
+/* Arm hardware watchpoint 0 on stores to the 4 bytes at addr. Phase 27 E7
+ * debug aid; see arch/riscv/common/trap.c for the encoding and its source. */
+/* Shrink the L2 cache to 128 KB, which is what makes the memory above
+ * 0x4ff80000 real RAM. Must run before the heap is used; see the long comment
+ * in arch/riscv/common/trap.c. */
+void esp32p4_l2_cache_shrink(void);
+
+void esp32p4_watch_store(uintptr_t addr);
+void esp32p4_watch_store_quiet(uintptr_t addr);
+void esp32p4_watch_clear(void);
+void esp32p4_watch_reenable(void);
+
 /* Unmasks the core-local timer interrupt, CLIC ID 7 (E4).
  *
  * Separate from arch_irq_enable() on purpose, and that function refuses

@@ -655,6 +655,38 @@ static void sched_check_incoming(int prev, int next) {
                (unsigned long)(uintptr_t)g_tasks[i].stack_base,
                (unsigned)g_tasks[i].stack_pages);
     }
+    /* The frame ctx_switch() was about to restore from. Sixteen words at the
+     * parked sp: slot 0 is ra, 1..12 are s0..s11. Zeros here mean the frame
+     * was overwritten after it was parked; plausible-looking garbage means
+     * the sp itself is wrong. */
+    if (sp) {
+        const uintptr_t *w = (const uintptr_t *)sp;
+        for (int r = 0; r < 4; r++) {
+            printk_critical("[Sched BUG]   frame 0x%lx: %08lx %08lx %08lx %08lx\n",
+                            (unsigned long)(sp + (uintptr_t)r * 4 * sizeof(uintptr_t)),
+                            (unsigned long)w[r*4+0], (unsigned long)w[r*4+1],
+                            (unsigned long)w[r*4+2], (unsigned long)w[r*4+3]);
+        }
+    }
+    /* And how much stack each task has actually used, because "the frame is
+     * gone" and "the stack was too small" produce the same dump otherwise.
+     * sched_stack_full() had existed since phase 15 with no callers at all,
+     * while its own comment recorded that an overflowing stack had once
+     * "presented as broken hardware" -- exactly the shape of E7's hunt, which
+     * is why it is wired up here now.
+     *
+     * Read FULL with care, which E7 learned the hard way: it only means the
+     * deepest word is no longer poison, and a word that was *zeroed* satisfies
+     * that as well as one that was pushed. It reported the console task as
+     * having filled 4096 of 4096 bytes when the task was 460 bytes deep and
+     * the rest was corruption. */
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED || !g_tasks[i].stack_base) continue;
+        printk_critical("[Sched BUG]   #%d '%s' used %u of %u%s\n",
+                        g_tasks[i].pid, g_tasks[i].name,
+                        sched_stack_used(g_tasks[i].pid), sched_stack_size(g_tasks[i].pid),
+                        sched_stack_full(g_tasks[i].pid) ? "  <-- FULL" : "");
+    }
     printk_critical("[Sched BUG] halting with the table intact.\n");
     for (;;) { __asm__ __volatile__("wfi"); }
 }
@@ -840,6 +872,77 @@ void task_sleep_ms(uint32_t ms) {
  * One slot suffices because a task can only exit while running, and the next
  * task reaps before anything else can exit. */
 
+/* Does a range about to be handed back to the allocator overlap a stack some
+ * live task is standing on? Phase 27 E4/E7 guard.
+ *
+ * A free of the wrong range is invisible at the moment it happens --
+ * palloc_free() only clears bitmap bits, it does not touch the memory -- and
+ * only becomes a fault later, when palloc_pages() hands those pages to
+ * someone else and **zeroes them** under a running task's feet. By then the
+ * evidence is a context frame full of zeros and no trace of who freed what.
+ *
+ * Both free sites call this, which is the point: E4 put the check only in
+ * sched_reap() and left task_exit()'s own inline free unguarded, so exactly
+ * half the ways a stack can be freed were covered. */
+static void sched_check_free_range(void *stack, uint32_t pages, const char *who) {
+    if (!stack) return;
+    uintptr_t lo = (uintptr_t)stack;
+    uintptr_t hi = lo + (uintptr_t)pages * PAGE_SIZE;
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) continue;
+        if (!g_tasks[i].stack_base) continue;
+        uintptr_t tlo = (uintptr_t)g_tasks[i].stack_base;
+        uintptr_t thi = tlo + (uintptr_t)g_tasks[i].stack_pages * PAGE_SIZE;
+        if (lo < thi && tlo < hi) {
+            printk_critical("\n[Sched BUG] %s: freeing 0x%lx..0x%lx overlaps live "
+                            "#%d '%s' stack 0x%lx..0x%lx (state=%s)\n",
+                            who, (unsigned long)lo, (unsigned long)hi,
+                            g_tasks[i].pid, g_tasks[i].name,
+                            (unsigned long)tlo, (unsigned long)thi,
+                            sched_state_name(g_tasks[i].state));
+            printk_critical("[Sched BUG] halting before the free.\n");
+            for (;;) { __asm__ __volatile__("wfi"); }
+        }
+    }
+}
+
+/* The allocation-side counterpart, declared in kernel/include/kernel/palloc.h
+ * (which carries the reasoning). Called by palloc_pages() with the range it is
+ * about to zero, before it zeroes it.
+ *
+ * Not static, and not under the scheduler lock: palloc_pages() calls this
+ * having already dropped its own lock, and taking g_sched_lock here would
+ * create exactly the palloc->sched ordering sched_reap() goes out of its way
+ * to avoid. The read is a scan of fields that only the scheduler writes, and
+ * this path ends in a halt rather than a recovery, so a torn read costs
+ * nothing that matters. */
+void palloc_report_alloc(void *p, uint32_t pages, void *caller_ra) {
+    if (!p) return;
+    uintptr_t lo = (uintptr_t)p;
+    uintptr_t hi = lo + (uintptr_t)pages * PAGE_SIZE;
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) continue;
+        if (!g_tasks[i].stack_base) continue;
+        uintptr_t tlo = (uintptr_t)g_tasks[i].stack_base;
+        uintptr_t thi = tlo + (uintptr_t)g_tasks[i].stack_pages * PAGE_SIZE;
+        if (lo < thi && tlo < hi) {
+            printk_critical("\n[PAlloc BUG] handing out 0x%lx..0x%lx (%u pages) "
+                            "which overlaps live #%d '%s' stack 0x%lx..0x%lx "
+                            "(state=%s sp=0x%lx)\n",
+                            (unsigned long)lo, (unsigned long)hi, pages,
+                            g_tasks[i].pid, g_tasks[i].name,
+                            (unsigned long)tlo, (unsigned long)thi,
+                            sched_state_name(g_tasks[i].state),
+                            (unsigned long)g_tasks[i].sp);
+            printk_critical("[PAlloc BUG] requested from ra=0x%lx\n",
+                            (unsigned long)(uintptr_t)caller_ra);
+            sched_dump_table();
+            printk_critical("[PAlloc BUG] halting before the zeroing.\n");
+            for (;;) { __asm__ __volatile__("wfi"); }
+        }
+    }
+}
+
 static void sched_reap(void) {
     /* The slot is claimed under the scheduler lock and freed outside it.
      * That split is not stylistic: palloc_free() takes palloc's own lock
@@ -854,37 +957,7 @@ static void sched_reap(void) {
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (!stack) return;
-
-    /* Does the range about to be handed back to the allocator overlap a stack
-     * some live task is standing on? Phase 27 E4 debug guard.
-     *
-     * A free of the wrong range is invisible at the moment it happens --
-     * palloc_free() only clears bitmap bits, it does not touch the memory --
-     * and only becomes a fault later, when palloc_pages() hands those pages
-     * to someone else and zeroes them under a running task's feet. By then
-     * the evidence is a return to address zero with no trace of who freed
-     * what. Checking here costs one pass over a 24-entry table on a path that
-     * runs once per task exit. */
-    {
-        uintptr_t lo = (uintptr_t)stack;
-        uintptr_t hi = lo + (uintptr_t)pages * PAGE_SIZE;
-        for (uint32_t i = 0; i < MAX_TASKS; i++) {
-            if (g_tasks[i].state == TASK_UNUSED || g_tasks[i].state == TASK_DEAD) continue;
-            if (!g_tasks[i].stack_base) continue;
-            uintptr_t tlo = (uintptr_t)g_tasks[i].stack_base;
-            uintptr_t thi = tlo + (uintptr_t)g_tasks[i].stack_pages * PAGE_SIZE;
-            if (lo < thi && tlo < hi) {
-                printk_critical("\n[Sched BUG] reaping 0x%lx..0x%lx overlaps live #%d '%s' "
-                       "stack 0x%lx..0x%lx (state=%s)\n",
-                       (unsigned long)lo, (unsigned long)hi,
-                       g_tasks[i].pid, g_tasks[i].name,
-                       (unsigned long)tlo, (unsigned long)thi,
-                       sched_state_name(g_tasks[i].state));
-                printk_critical("[Sched BUG] halting before the free.\n");
-                for (;;) { __asm__ __volatile__("wfi"); }
-            }
-        }
-    }
+    sched_check_free_range(stack, pages, "reap");
 
     palloc_free(stack, pages);
 }
@@ -947,6 +1020,7 @@ void task_exit(void) {
      * free it now -- we are provably not running on it, only on our own --
      * instead of silently overwriting the only reference to it. */
     if (g_reap_stack) {
+        sched_check_free_range(g_reap_stack, g_reap_pages, "task_exit");
         palloc_free(g_reap_stack, g_reap_pages);
     }
     g_reap_stack = t->stack_base;

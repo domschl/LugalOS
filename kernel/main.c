@@ -59,6 +59,10 @@
 #include "drivers/gps_pps.h"
 #endif
 
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "arch/esp32p4_intr.h"   /* esp32p4_l2_cache_shrink() */
+#endif
+
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
 
@@ -107,6 +111,13 @@ static void klog_terminal_sink(char c) {
 }
 
 void kernel_main(void) {
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* Before anything else, and before the first printk: the top of L2MEM is
+     * the L2 cache's own storage until this shrinks it, and linker/esp32p4.ld
+     * hands out memory that only becomes real once it has run. See
+     * arch/riscv/common/trap.c for what this is and why E7 needed it. */
+    esp32p4_l2_cache_shrink();
+#endif
     /* Boot bootstrap: the console UART and the kernel log sink must both
      * exist before anything can printk(), which the device registry itself
      * does -- so these two cannot go through it, and stay explicit here. */

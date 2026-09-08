@@ -155,6 +155,141 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
 }
 
 /* See arch/esp32p4_intr.h. */
+/* A hardware store watchpoint, for the phase 27 E7 hunt.
+ *
+ * The RISC-V debug triggers, used from M-mode rather than from a debugger.
+ * The ESP32-P4's HP core implements three (SOC_CPU_WATCHPOINTS_NUM in
+ * ESP-IDF's soc_caps.h), and tcontrol.MTE is what makes them fire while the
+ * hart is in M-mode -- without it a trigger configured for machine mode still
+ * never hits, which is the one detail that makes this look unsupported when
+ * it is merely disabled.
+ *
+ * Encoding follows rv_utils_set_watchpoint() in ESP-IDF's
+ * components/riscv/include/riscv/rv_utils.h rather than being derived from
+ * the debug spec: same silicon, and the project rule is to confirm register
+ * layouts against a reference instead of inferring them. tdata2 holds a NAPOT
+ * match pattern, not an address -- for a 4-byte region that is
+ * (addr & ~3) | 1.
+ *
+ * tdata2 is written before tdata1 so the trigger is fully described before it
+ * is armed; arming first would leave one instruction's worth of window in
+ * which a stale pattern could fire.
+ *
+ * A hit raises a breakpoint exception (cause 3) with mepc pointing at the
+ * storing instruction, which lands in the fatal dump at the bottom of this
+ * file -- so the answer to "who wrote here?" arrives as an epc and a register
+ * dump rather than as a deduction. */
+/* Shrink the L2 cache so the top of L2MEM becomes usable RAM.
+ *
+ * This is the fix for the memory corruption chased through E7, and the bug was
+ * not a memory-safety fault at all -- it was the linker script claiming memory
+ * the hardware had already spoken for.
+ *
+ * The ESP32-P4 has 768 KB of L2MEM at 0x4ff00000, and the "L2 cache" is not a
+ * separate array: it is carved out of that same L2MEM, at the top. Whatever is
+ * reserved for cache duty is therefore not RAM, and writing to it looks like it
+ * works -- the store completes, an immediate read returns the value -- right up
+ * until the cache controller uses those bytes for what they are actually for.
+ * The result is memory whose contents decay to zero with no store to blame,
+ * which is exactly what the hunt saw: a hardware store watchpoint armed on the
+ * word that changed never fired, and the page allocator never handed the page
+ * out.
+ *
+ * The boot ROM leaves the cache at 256 KB, so RAM ended at 0x4ff80000 while
+ * linker/esp32p4.ld handed out everything up to 0x4ffc0000. ESP-IDF's own
+ * default is 128 KB (CACHE_L2_CACHE_SIZE in
+ * components/esp_system/port/soc/esp32p4/Kconfig.cache), and its memory layout
+ * makes the relationship explicit -- for a chip below v3, which this v1.3 part
+ * is, components/esp_system/ld/esp32p4/memory.ld.in has:
+ *
+ *     #define SRAM_HIGH_START  0x4FF40000
+ *     #define SRAM_HIGH_SIZE   0x80000 - CONFIG_CACHE_L2_CACHE_SIZE
+ *
+ * So asking for 128 KB moves the boundary from 0x4ff80000 to 0x4ffa0000 and
+ * gives back the 128 KB that linker/esp32p4.ld now stops at.
+ *
+ * Safe here, and the reason is worth stating: the L2 cache caches *external*
+ * memory. Internal SRAM is reached through L1 (ESP-IDF's
+ * SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE), and this kernel executes entirely from
+ * SRAM and reaches flash through the ROM's SPI routines rather than through a
+ * memory-mapped window. So nothing we are running on or reading from moves.
+ * The writeback before and the invalidate after are still done in that order,
+ * because changing the geometry underneath dirty lines is not something to be
+ * clever about.
+ *
+ * Entry points and enum values come from ESP-IDF's ROM description for this
+ * revision -- components/esp_rom/esp32p4/ld/esp32p4.rom.eco0_4.ld for the
+ * addresses and esp32p4/rom/cache.h for the constants -- not from inference,
+ * and this must run before anything uses the heap. */
+#define P4_ROM_CACHE_SET_L2_MODE   0x4fc003d4u
+#define P4_ROM_CACHE_WRITEBACK_ALL 0x4fc00414u
+#define P4_ROM_CACHE_INVALIDATE_ALL 0x4fc00404u
+#define P4_CACHE_SIZE_128K   9      /* cache_size_t      */
+#define P4_CACHE_8WAYS_ASSOC 2      /* cache_ways_t      */
+#define P4_CACHE_LINE_64B    3      /* cache_line_size_t */
+#define P4_CACHE_MAP_L2      (1u << 5)  /* CACHE_MAP_L2_CACHE */
+
+void esp32p4_l2_cache_shrink(void) {
+    void (*set_mode)(int, int, int)   = (void (*)(int, int, int))P4_ROM_CACHE_SET_L2_MODE;
+    void (*writeback_all)(uint32_t)   = (void (*)(uint32_t))P4_ROM_CACHE_WRITEBACK_ALL;
+    void (*invalidate_all)(uint32_t)  = (void (*)(uint32_t))P4_ROM_CACHE_INVALIDATE_ALL;
+
+    writeback_all(P4_CACHE_MAP_L2);
+    set_mode(P4_CACHE_SIZE_128K, P4_CACHE_8WAYS_ASSOC, P4_CACHE_LINE_64B);
+    invalidate_all(P4_CACHE_MAP_L2);
+}
+
+static void p4_watch_arm(uintptr_t addr, bool verbose) {
+    uintptr_t pattern = (addr & ~(uintptr_t)3) | 1u;   /* 4-byte NAPOT */
+    uintptr_t tdata1  = (1u << 6)    /* MACHINE: fire in M-mode        */
+                      | (1u << 3)    /* USER:    and in U-mode         */
+                      | (1u << 7)    /* MATCH = NAPOT                  */
+                      | (1u << 1);   /* STORE                          */
+    __asm__ __volatile__("csrw 0x7a0, %0" :: "r"((uintptr_t)0));            /* tselect  */
+    __asm__ __volatile__("csrw 0x7a5, %0" :: "r"((uintptr_t)((1u<<3)|(1u<<7)))); /* tcontrol */
+    __asm__ __volatile__("csrw 0x7a2, %0" :: "r"(pattern));                 /* tdata2   */
+    __asm__ __volatile__("csrw 0x7a1, %0" :: "r"(tdata1));                  /* tdata1   */
+
+    uintptr_t rb1 = 0, rb2 = 0, rbc = 0;
+    __asm__ __volatile__("csrr %0, 0x7a1" : "=r"(rb1));
+    __asm__ __volatile__("csrr %0, 0x7a2" : "=r"(rb2));
+    __asm__ __volatile__("csrr %0, 0x7a5" : "=r"(rbc));
+    if (verbose) {
+        printk_critical("[Watch] store watch on 0x%lx: tdata1=0x%lx tdata2=0x%lx tcontrol=0x%lx\n",
+                        (unsigned long)addr, (unsigned long)rb1,
+                        (unsigned long)rb2, (unsigned long)rbc);
+        if (rb1 == 0)
+            printk_critical("[Watch] tdata1 reads back zero: triggers not usable here.\n");
+    }
+}
+
+void esp32p4_watch_store(uintptr_t addr) { p4_watch_arm(addr, true); }
+
+/* Re-assert tcontrol.MTE.
+ *
+ * The debug spec has trap entry do tcontrol.MPTE = MTE; MTE = 0, and mret undo
+ * it -- so M-mode triggers are silent for the duration of any handler. On a
+ * preemptive kernel that is not a short window: the timer ISR switches tasks
+ * from inside the trap, so the mret that would restore MTE happens on a
+ * different task at a different time, and MTE can stay clear across long
+ * stretches of ordinary execution. A watchpoint that is armed but never fires
+ * looks exactly like a store that never happened, which is the wrong
+ * conclusion to draw. Cheap enough (one csrw) to redo on every switch. */
+void esp32p4_watch_reenable(void) {
+    __asm__ __volatile__("csrw 0x7a5, %0" :: "r"((uintptr_t)((1u<<3)|(1u<<7))));
+}
+void esp32p4_watch_store_quiet(uintptr_t addr) { p4_watch_arm(addr, false); }
+
+/* Disarm. tdata1 is WARL, so zero is always a legal write, and zeroing it is
+ * how ESP-IDF's rv_utils_clear_breakpoint() releases a trigger. Needed because
+ * a watchpoint on a *parked* frame has to come down before its owner runs
+ * again: the owner pushing a new frame at that same sp is a legitimate store,
+ * and leaving the trigger armed across it reports the victim as the culprit. */
+void esp32p4_watch_clear(void) {
+    __asm__ __volatile__("csrw 0x7a0, %0" :: "r"((uintptr_t)0));  /* tselect */
+    __asm__ __volatile__("csrw 0x7a1, %0" :: "r"((uintptr_t)0));  /* tdata1  */
+}
+
 int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id) {
     if (clic_id < ESP32P4_CLIC_IRQ_MIN || clic_id > ESP32P4_CLIC_IRQ_MAX) {
         printk("[CLIC] Refusing to route source %u to line %u: "

@@ -82,8 +82,27 @@ MEMORY
      * a page is a rounder thing to reason about and LOWRAM has room. */
     LOWRAM (rw)  : ORIGIN = 0x4ff00000, LENGTH = 252K
 
-    /* Everything loadable, and the heap after it. */
-    RAM    (rwx) : ORIGIN = 0x4ff40000, LENGTH = 512K
+    /* Everything loadable, and the heap after it.
+     *
+     * 384K, not the 512K that reaches L2MEM's end at 0x4ffc0000, and the
+     * difference is the whole of E7's memory corruption.
+     *
+     * The L2 cache on this part is carved out of L2MEM itself, at the top, so
+     * whatever is reserved for it is not RAM. The boot ROM leaves it at 256 KB
+     * -- measured, by painting the heap and watching where the paint stopped
+     * surviving: everything from 0x4ff80000 up decayed to zero, with no store
+     * to blame and the page allocator provably innocent. ESP-IDF's own layout
+     * states the relationship, for a chip below v3 as this v1.3 part is
+     * (components/esp_system/ld/esp32p4/memory.ld.in):
+     *
+     *     #define SRAM_HIGH_START  0x4FF40000
+     *     #define SRAM_HIGH_SIZE   0x80000 - CONFIG_CACHE_L2_CACHE_SIZE
+     *
+     * kernel_main() calls esp32p4_l2_cache_shrink() before touching the heap,
+     * which asks the ROM for a 128 KB cache -- IDF's own default -- moving the
+     * boundary to 0x4ffa0000. This length and that call are one change: the
+     * ASSERT below is what keeps them from drifting apart. */
+    RAM    (rwx) : ORIGIN = 0x4ff40000, LENGTH = 384K
 }
 
 ENTRY(_start)
@@ -221,6 +240,13 @@ SECTIONS
      * this is really a check that RAM itself has not been moved down; if a
      * future section is added to LOWRAM without NOLOAD, ld's own "section
      * .foo will not fit / LMA overlaps" is the second net. */
+    /* RAM must stop where the L2 cache's storage begins. 0x4ffa0000 is the
+     * boundary for the 128 KB cache esp32p4_l2_cache_shrink() configures; if
+     * that call is removed or the size changed, this is the line that has to
+     * change with it, and the ASSERT is here so it cannot be forgotten. Memory
+     * past this point accepts stores and then loses them. */
+    ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x4ffa0000,
+           "linker/esp32p4.ld: RAM reaches into the L2 cache's own storage at the top of L2MEM; see esp32p4_l2_cache_shrink()")
     ASSERT(ORIGIN(RAM) >= 0x4ff40000,
            "loadable sections would overlap the ROM's download-mode buffers (0x4ff296b8..0x4ff40000) -- see the header comment")
     ASSERT(ADDR(.text) >= 0x4ff40000,
@@ -256,9 +282,24 @@ SECTIONS
      * -- which E7 will have the persona to do. It has already fired once,
      * usefully: it is what said that putting .bss above 0x4ff40000 with
      * everything else left 136 KB, and the two-region split above is the
-     * answer it forced. */
-    ASSERT(_heap_end - _kernel_end >= 256K,
-           "ESP32-P4 heap has fallen below its 256 KB floor -- something grew .text or .data; see plan/phase15_memory_reclamation.md")
+     * answer it forced.
+     *
+     * E7 lowered it to 128 KB, and this is the one case the paragraph above
+     * did not cover: neither of the two figures was invalidated by a change of
+     * ours. The silicon simply has less memory than this script was claiming.
+     * The old 256 KB was met only by counting the 128 KB at the top of L2MEM
+     * that the L2 cache owns -- so the floor was being satisfied with memory
+     * that does not exist, which is why it never fired while the heap was
+     * quietly handing out cache storage. See the RAM region above.
+     *
+     * What that costs, stated rather than discovered later: the real figure is
+     * 144 KB (0x4ff7c000..0x4ffa0000 as things stand), which clears the 128 KB
+     * contiguous run for the largest placeable user image but is *below*
+     * RP2350's 38-page (152 KB) whole-system peak with two U-mode programs
+     * resident. So this board cannot host that peak, and the way to buy room
+     * back is .text: 171 KB of it, against 63 KB of .rodata. */
+    ASSERT(_heap_end - _kernel_end >= 128K,
+           "ESP32-P4 heap has fallen below its 128 KB floor -- something grew .text or .data; see plan/phase15_memory_reclamation.md")
 
     /* The whole writable region, so /proc/meminfo reports the heap and the
      * stack as fractions of something real, taken from the MEMORY block

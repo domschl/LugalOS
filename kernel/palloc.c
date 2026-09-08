@@ -123,6 +123,9 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
         if (g_used_pages > g_peak_used) g_peak_used = g_used_pages;
         spin_unlock_irqrestore(&g_palloc_lock, irqf);
         void *p = (void *)(g_base + (uintptr_t)i * PAGE_SIZE);
+        /* Before the memset, not after: the whole value of the check is that
+         * it fires while the victim's data is still there to be looked at. */
+        palloc_report_alloc(p, n, __builtin_return_address(0));
         memset(p, 0, (size_t)n * PAGE_SIZE); /* outside the critical section */
         return p;
     }

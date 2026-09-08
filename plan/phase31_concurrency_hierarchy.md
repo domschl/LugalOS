@@ -140,6 +140,25 @@ would be the wrong call. "This class" means: a deadlock, a hang, or a
 corruption traced to a lock held across a block, a blocking call from
 interrupt context, or a cycle spanning locks and channels.
 
+**The rule was tested on 2026-09-08, and correctly did not fire.** Phase 27's
+E7 hit exactly the presentation this phase exists to catch — task context
+frames zeroed under a live task, a console write that blocked forever, a
+scheduler halting mid-switch — and it was on its way here as a work item. It
+does not belong here. The cause was `linker/esp32p4.ld` handing out the top
+256 KB of L2MEM as heap when the hardware had reserved it as the L2 cache's own
+storage (see phase 27 §E7): memory that accepts a store, returns it on an
+immediate read, and decays to zero afterwards. Nothing raced, no lock was held
+across a block, and no channel was involved.
+
+Recorded because the near-miss is the useful part. The scoping clause above —
+*traced to* one of three named mechanisms, rather than "looks like a
+concurrency bug" — is what kept a memory-map bug out of this phase's backlog,
+and the discipline that satisfied it was refusing to accept a plausible cause
+without a measurement that excluded the others. Two of the instruments built to
+do that excluding are worth keeping in mind here, because a real cycle would
+need the same treatment: an allocation-side overlap guard that stayed silent,
+and a hardware store watchpoint that proved no store was happening at all.
+
 ## 1. What this phase defines
 
 ### 1.1 One graph, not two

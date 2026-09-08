@@ -96,4 +96,23 @@ void palloc_stats(uint32_t *total_pages, uint32_t *free_pages);
  * Either pointer may be NULL. */
 void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run);
 
+/* The allocation-side half of the live-stack invariant: "no page belonging to
+ * a live task's stack is ever handed out". Phase 27 E7 / phase 31.
+ *
+ * The free side (kernel/sched.c's sched_check_free_range) catches a bad free
+ * at the moment it happens, but only if the free is the thing that is wrong.
+ * It cannot catch a page that leaves the bitmap by some other route -- a
+ * double free, a bitmap index computed from a stale base, a range never
+ * marked allocated in the first place. Those are invisible until
+ * palloc_pages() zeroes the pages under a running task, and by then the only
+ * evidence left is a context frame full of zeros.
+ *
+ * So the check also runs at the point of the crime. palloc_pages() calls this
+ * with the range it is about to zero and the return address of its caller;
+ * kernel/sched.c implements it, because the task table is what the range has
+ * to be checked against. It is a no-op before the scheduler exists (every
+ * slot reads UNUSED), which is exactly the right behaviour for boot-time
+ * allocations. */
+void palloc_report_alloc(void *p, uint32_t pages, void *caller_ra);
+
 #endif /* LUGALOS_KERNEL_PALLOC_H */

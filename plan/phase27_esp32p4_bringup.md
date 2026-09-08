@@ -2010,6 +2010,76 @@ against a 276 KB heap.
 
 ### E7 — The sensor persona on the P4
 
+> **E7 first had to fix the memory map.** I2C came up on the first attempt and
+> then everything downstream misbehaved, so before any of the below made sense
+> the following had to be found. It is recorded here rather than in phase 31,
+> which is where it was originally sent, because it is not a concurrency bug at
+> all — nothing raced, and no lock or channel was involved.
+>
+> **The L2 cache is carved out of L2MEM, at the top.** The P4 has 768 KB of
+> L2MEM at `0x4ff00000`; the boot ROM reserves the top 256 KB of it as the L2
+> cache's own storage, so RAM ends at `0x4ff80000`. `linker/esp32p4.ld` was
+> handing out everything up to `0x4ffc0000`, which meant the page allocator was
+> serving 256 KB of cache storage as heap. Memory there accepts a store and
+> returns it on an immediate read, then decays to zero when the cache
+> controller uses those bytes for what they are for.
+>
+> **What it looked like, and why it took so long.** Task context frames turning
+> to zero at random — `ra=0x0` at a parked `sp`, a task with no valid frame
+> anywhere in its stack, a console task reporting a full stack that was really
+> only 460 bytes deep. Each of those pointed somewhere plausible and wrong.
+> What finally closed it was eliminating the plausible answers by measurement
+> rather than argument:
+>
+> * an **allocation-side overlap guard** (`palloc_report_alloc()`), which never
+>   fired — so the allocator never handed out a live task's page;
+> * an **allocator trace ring**, which showed why: every allocation and free was
+>   correct and accounted for;
+> * a **hardware store watchpoint** (`esp32p4_watch_store()`, using the RISC-V
+>   debug triggers from M-mode) armed on the exact word that changed, which
+>   never fired either. A store-address trigger cannot miss a real store, so
+>   **no store was happening** — which is the fact that reframed the whole
+>   search from memory safety to memory itself;
+> * a **painted, reserved region** owned by nobody, which came back wiped from
+>   `0x4ff80000` upward with the paint intact immediately below. That gave the
+>   boundary as a number instead of a theory.
+>
+> ESP-IDF states the relationship for a chip below v3, which this v1.3 part is
+> (`components/esp_system/ld/esp32p4/memory.ld.in`):
+>
+>     #define SRAM_HIGH_START  0x4FF40000
+>     #define SRAM_HIGH_SIZE   0x80000 - CONFIG_CACHE_L2_CACHE_SIZE
+>
+> **The fix** is `esp32p4_l2_cache_shrink()`, called from `kernel_main()` before
+> anything touches the heap: ask the ROM for a 128 KB cache — IDF's own default
+> — which moves the boundary to `0x4ffa0000`. Safe because the L2 cache serves
+> *external* memory, while internal SRAM is reached through L1, and this kernel
+> runs from SRAM and reaches flash through the ROM's SPI routines rather than a
+> memory-mapped window. `linker/esp32p4.ld` now stops at `0x4ffa0000` and
+> asserts it, so the length and that call cannot drift apart.
+>
+> **What it costs, stated rather than discovered later.** The heap is 144 KB,
+> not the 256 KB the old floor claimed — that floor was inherited from RP2350
+> and was only ever met by counting memory that did not exist, which is why it
+> never fired. 144 KB clears the 128 KB contiguous run for the largest
+> placeable user image but is below RP2350's 152 KB whole-system peak with two
+> U-mode programs resident. Room comes from `.text` (171 KB) before anywhere
+> else.
+>
+> **And a diagnosis that was wrong, recorded because the reasoning was not.**
+> This was chased as two bugs, the first being "the P4's `TXFIFO_EMPTY`
+> interrupt never wakes the blocked writer", introduced in E3 and never
+> verified because E3 checked only `rx_wakes`. It arrives:
+> `uart_irq_tx_arms()` and `uart_irq_tx_wakes()` are equal on this board, and
+> enabling the source with a drained FIFO delivers an interrupt immediately.
+> The hang was this same corruption eating the frame of the task that was
+> supposed to be woken. The TX counters stayed, because the reason they were
+> added — that only `rx_wakes` had ever been checked — was a real gap; and
+> `uart_flush()`'s fallback still uses the polling writer, because a fallback
+> whose reason for existing is that the task machinery is unavailable must not
+> call `task_block()`, and that argument never depended on the bug.
+
+
 **The board's real-time clock, if it is ever done, is done here — not in
 E4.** Asked during E4 whether the NANO's on-board RTC was in scope, and the
 schematic answers a different question than the one asked

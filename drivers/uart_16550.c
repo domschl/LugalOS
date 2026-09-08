@@ -49,11 +49,15 @@ static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
 static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
+static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
+static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
+static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
 
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
     uint8_t lsr = uart_base[UART_LSR];
+    if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
         g_uart_irq_rx_wakes++;
@@ -63,6 +67,7 @@ static void uart_isr(void *ctx) {
     }
     if ((lsr & UART_LSR_THRE) && g_tx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
+        g_uart_irq_tx_wakes++;
         int pid = g_tx_waiter;
         g_tx_waiter = -1;
         task_unblock(pid);
@@ -109,6 +114,7 @@ static void uart_hw_putc_blocking(char c) {
          * the branch already here for the other-waiter case. */
         if (g_tx_waiter < 0 && sched_has_task()) {
             g_tx_waiter = sched_current_pid();
+            g_uart_irq_tx_arms++;
             uart_base[UART_IER] |= UART_IER_ETBEI;
             task_block();
         } else {
@@ -192,6 +198,9 @@ static uint32_t g_uart_write_calls;
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
 uint32_t uart_irq_rx_wakes(void) { return g_uart_irq_rx_wakes; }
+uint32_t uart_irq_tx_arms(void) { return g_uart_irq_tx_arms; }
+uint32_t uart_irq_tx_wakes(void) { return g_uart_irq_tx_wakes; }
+uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
 
 /* M4.5, found while bringing up drivers/uart_rp2350.c's own uart task on
  * real hardware -- see that file's own comment on this same flag for the
