@@ -97,7 +97,9 @@ const char *clock_ui_item_full(ui_item_t item);
  * runtime value costs a preference, never a correct clock.
  */
 typedef struct {
-    int8_t brightness;     /* -1 = automatic (LDR), else 1..7 fixed */
+    /* The *minimum* automatic brightness, 1..7. Brightness is always
+     * automatic; this is how dim the LDR is allowed to take it. */
+    int8_t brightness;
     int8_t temp_offset;    /* -9..+9 degrees C, display path only */
     bool   hour12;         /* 12-hour clock, driving the AM/PM indicators */
     bool   click;          /* a click on every accepted keypress */

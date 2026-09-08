@@ -173,7 +173,7 @@ void clock_app_run(void) {
     console_interrupt_clear();
 
     const ui_settings_t defaults = {
-        .brightness   = -1,                             /* the LDR decides */
+        .brightness   = 1,     /* always automatic; 1 = may dim all the way */
         .temp_offset  = CONFIG_CLOCK_TEMP_OFFSET_C,
         .hour12       = false,
         .click        = false,                          /* see the plan: off */

@@ -18,7 +18,7 @@
 static const struct { const char *shortname, *fullname; } ITEM[UI_ITEM_COUNT] = {
     [UI_ITEM_TEMP]    = { "TEMP", "TEMPERATURE" },
     [UI_ITEM_DATE]    = { "DATE", "DATE" },
-    [UI_ITEM_BRIGHT]  = { "BRT",  "BRIGHTNESS" },
+    [UI_ITEM_BRIGHT]  = { "BMIN", "MIN BRIGHTNESS" },
     [UI_ITEM_TIMESET] = { "TSET", "SET TIME" },
     [UI_ITEM_OFFSET]  = { "OFFS", "TEMP OFFSET" },
     [UI_ITEM_SIG]     = { "SIG",  "DCF SIGNAL" },
@@ -233,14 +233,14 @@ unsigned clock_ui_key(ui_state_t *st, const ui_inputs_t *in,
             go_idle(st, now);
             return act | UI_ACT_CONFIRM | UI_ACT_APPLY_BRIGHT;
         }
-        /* -1 is "automatic", and it sits below 1 in the same cycle so one
-         * button reaches it: ... 6, 7, AUTO, 1, 2 ... */
+        /* 1..7, wrapping, with no "automatic" entry: brightness is *always*
+         * automatic now and this chooses how dim it may get. A fixed level was
+         * almost never the right answer -- unreadable in daylight at 1,
+         * dazzling at night at 7 -- which is what the LDR exists to solve. */
         if (key == CLOCK_KEY_UP) {
-            st->edit_scalar = (int8_t)(st->edit_scalar < 0 ? 7 :
-                                       (st->edit_scalar <= 1 ? -1 : st->edit_scalar - 1));
+            st->edit_scalar = (int8_t)(st->edit_scalar <= 1 ? 7 : st->edit_scalar - 1);
         } else {
-            st->edit_scalar = (int8_t)(st->edit_scalar < 0 ? 1 :
-                                       (st->edit_scalar >= 7 ? -1 : st->edit_scalar + 1));
+            st->edit_scalar = (int8_t)(st->edit_scalar >= 7 ? 1 : st->edit_scalar + 1);
         }
         /* Applied live, so the panel shows the brightness being chosen rather
          * than describing it. */
@@ -389,9 +389,11 @@ void clock_ui_screen(const ui_state_t *st, const ui_inputs_t *in,
             return;
         case UI_ITEM_BRIGHT:
             out->kind = UI_SCR_TEXT;
-            if (st->edit_scalar < 0) put_str(out->text, "BR A");
-            else { put_str(out->text, "BR "); out->text[3] = (char)('0' + st->edit_scalar);
-                   out->text[4] = '\0'; }
+            /* The number is the floor; the item's own name says so when it
+             * scrolls past. */
+            put_str(out->text, "BR ");
+            out->text[3] = (char)('0' + st->edit_scalar);
+            out->text[4] = '\0';
             return;
         case UI_ITEM_OFFSET:
             out->kind = UI_SCR_TEXT;
@@ -527,7 +529,7 @@ static uint64_t    T_now;
 static unsigned    T_act;
 
 static void t_reset(void) {
-    ui_settings_t def = { .brightness = -1, .temp_offset = -2, .hour12 = false,
+    ui_settings_t def = { .brightness = 1, .temp_offset = -2, .hour12 = false,
                           .click = false, .confirm_beep = true,
                           .auto_sync = true };
     T_now = 1000;
@@ -641,9 +643,9 @@ int clock_ui_selftest(void) {
     t_reset();
     check(t_goto(UI_ITEM_BRIGHT), "reach BRIGHTNESS");
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_SHORT);
-    check(strcmp(t_text(), "BR A") == 0, "brightness starts on automatic");
+    check(strcmp(t_text(), "BR 1") == 0, "minimum brightness starts at 1");
     t_key(CLOCK_KEY_DOWN, CLOCK_PRESS_SHORT);
-    check(strcmp(t_text(), "BR 1") == 0 && (T_act & UI_ACT_APPLY_BRIGHT),
+    check(strcmp(t_text(), "BR 2") == 0 && (T_act & UI_ACT_APPLY_BRIGHT),
           "DOWN leaves automatic for level 1, applied live");
     t_key(CLOCK_KEY_UP, CLOCK_PRESS_SHORT);
     check(strcmp(t_text(), "BR A") == 0, "UP from level 1 returns to automatic");

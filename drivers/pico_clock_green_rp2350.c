@@ -93,6 +93,7 @@
 #define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c)  /* GPIO 0-31, no password */
 #define ACCESSCTRL_ADC           (ACCESSCTRL_BASE + 0x7c)
 #define ACCESSCTRL_TIMER0        (ACCESSCTRL_BASE + 0x98)
+#define ACCESSCTRL_PWM           (ACCESSCTRL_BASE + 0x8c)
 #define ACCESSCTRL_NSP           (1u << 1)
 #define ACCESSCTRL_NSU           (1u << 0)
 #define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
@@ -162,6 +163,67 @@
  *
  * TIMERAWL, not the TIMEHR/TIMELR pair kernel/time.c reads: the latching pair
  * exists to make a coherent 64-bit read, and 32 raw bits is all this needs. */
+/* PWM slice 6 channel B -- the output enable's brightness pulse (2026-09-08).
+ *
+ * OE was timed in software: oe_open(), spin_us(n), oe_close(). Anything that
+ * preempted inside that window left the row lit for the whole interruption,
+ * and at the dimmest level the window is 8 us in a 1000 us row -- 0.8% duty,
+ * against a 100 Hz preemption tick, which predicts about 0.8 fully-lit lines
+ * per second. That is exactly the artefact reported from the bench: a scan
+ * line flashing roughly once a second, only when dimmed. At the bright levels
+ * the same interruptions happen far more often and are invisible, because
+ * stretching 450 us to 470 us is nothing while stretching 8 us to 500 us is
+ * a solid line.
+ *
+ * Hardware cannot be preempted. The pulse is now a PWM compare, so its width
+ * is a property of the peripheral rather than of whether this task kept the
+ * CPU. The failure mode inverts usefully too: an interruption before the
+ * pulse starts makes a row slightly *darker*, which nobody can see.
+ *
+ * GPIO13 is PWM_B_6 at FUNCSEL 4, and the slice stride is 0x14 -- both from
+ * the SDK's own register headers rather than inferred, per the lesson of the
+ * edge-capture mask. */
+#define PWM_BASE         0x400A8000UL
+#define PWM_SLICE        6u
+#define PWM_SLICE_BASE   (PWM_BASE + PWM_SLICE * 0x14u)
+#define PWM_CSR          (PWM_SLICE_BASE + 0x00u)
+#define PWM_DIV          (PWM_SLICE_BASE + 0x04u)
+#define PWM_CTR          (PWM_SLICE_BASE + 0x08u)
+#define PWM_CC           (PWM_SLICE_BASE + 0x0Cu)
+#define PWM_TOP          (PWM_SLICE_BASE + 0x10u)
+#define PWM_CSR_EN       0x1u
+#define PWM_CSR_B_INV    0x8u
+#define PWM_FUNCSEL      4u
+#define RESETS_RESET_PWM_BIT 0x00010000UL
+
+/* A duty cycle at 100 kHz, not one timed pulse per row.
+ *
+ * Two attempts pulsed once per row and reset CTR to place it. Both flickered,
+ * and the way they flickered is what identified the fault: the *frequency*
+ * changed with brightness. That can only happen if the counter is free-running
+ * and beating against the row loop -- the LED then lights where the drifting
+ * pulse overlaps the window in which CC is set, and that window is exactly
+ * dim_on_us wide. Wide window, frequent shallow modulation; narrow window,
+ * rare deep modulation. The CTR write was not placing the phase at all.
+ *
+ * So stop depending on phase. At 100 kHz each 1000 us row contains a hundred
+ * PWM cycles and the eye integrates their duty cycle; where the cycles fall
+ * inside the row does not matter, which means nothing has to be reset,
+ * synchronised, or protected from preemption. That was the original goal --
+ * a brightness that cannot be stretched by an interrupt -- and it is reached
+ * more simply by not caring about timing than by controlling it.
+ *
+ * 100 kHz, and the count is chosen for duty resolution rather than for
+ * frequency: 1500 steps means the dimmest level is 12 counts wide instead of
+ * 1, so the levels stay distinguishable at the bottom of the range.
+ *
+ * Tested at 1 MHz as well, to see whether a fractional-PWM-cycle beat at the
+ * row boundary was responsible for the faint flicker that remained. It was
+ * not -- ten times the frequency changed nothing -- which is what identified
+ * the frame rate as the cause instead. A negative result, and the one that
+ * pointed at the right thing. */
+#define PWM_TOP_COUNT    1500u     /* 150 MHz / 1500 = 100 kHz */
+
 #define TIMER0_BASE      0x400B0000UL
 #define TIMER0_TIMERAWL  (*(volatile uint32_t *)(TIMER0_BASE + 0x28))
 
@@ -228,7 +290,21 @@ CLOCK_UDATA static const uint16_t AUTO_DARKER_AT[LEVEL_MAX - 1] = {
 /* One row of the eight, and the number the whole scan hangs off: 8 rows at
  * 1 ms is a 125 Hz frame, above flicker fusion, and it is the denominator
  * every LEVEL_ON_US[] entry above is a numerator of. */
-#define CLOCK_ROW_PERIOD_US   1000u
+/* 500 us, so eight rows refresh the panel at 250 Hz.
+ *
+ * It was 1000 us -- a 125 Hz frame rate, which is low enough to see. That
+ * showed as a faint, fast, brightness-independent flicker which survived
+ * every change to the OE pulse, including a tenfold increase in PWM
+ * frequency; the refresh rate is the one thing no amount of PWM work can
+ * alter.
+ *
+ * Halving it costs nothing in brightness *now*, and would have cost a
+ * rescaling of every level before: brightness is a duty fraction of the
+ * counter rather than an absolute on-time in microseconds, so the row period
+ * and the brightness table are finally independent of each other. The cost is
+ * that the per-row work -- shifting four bytes, latch, row address -- happens
+ * twice as often, which is tens of microseconds against a 500 us budget. */
+#define CLOCK_ROW_PERIOD_US   500u
 
 /* ======================================= the server's memory ============
  *
@@ -297,6 +373,9 @@ typedef struct {
     uint16_t dim_on_us;      /* 0 = full brightness (no PWM pulse needed) */
     /* -1 = the LDR decides, as phase 11 shipped it; 1..7 = a fixed level from
      * the menu, which suspends the LDR entirely (clock_hw_set_brightness). */
+    /* The *floor* the automatic brightness may not go below, 1..LEVEL_MAX.
+     * Brightness is always automatic now; this bounds it rather than
+     * replacing it (user, 2026-09-08). */
     int      brightness_level;
     /* Automatic brightness only: the smoothed reading and the level it holds.
      * The level is state, not a pure function of the reading -- that is what
@@ -346,7 +425,7 @@ static clock_region_t g_clock_region __attribute__((aligned(CLOCK_REGION_SIZE)))
 #define g_weekday          S.weekday
 #define g_row              S.row
 #define g_dim_on_us        S.dim_on_us
-#define g_brightness_level S.brightness_level
+#define g_min_level        S.brightness_level
 #define g_light_ema        S.light_ema
 #define g_auto_level       S.auto_level
 #define g_srv_last_us      S.srv_last_us
@@ -416,8 +495,23 @@ static void gpio_out_init(unsigned pin) {
     REG(SIO_GPIO_OE_SET) = (1u << pin);
 }
 
-CLOCK_UATTR static inline void oe_open(void)  { REG(SIO_GPIO_OUT_CLR) = OE_MASK; } /* active low */
-CLOCK_UATTR static inline void oe_close(void) { REG(SIO_GPIO_OUT_SET) = OE_MASK; }
+/* OE is active low and the channel is inverted, so the panel is lit while the
+ * counter is below the compare: a compare of `us` lights the row for exactly
+ * that many microseconds, in hardware. 0 is dark, 0xFFFF is always-on.
+ *
+ * Channel B occupies the upper half of CC; channel A's half is left at zero
+ * because nothing on this board uses it. */
+CLOCK_UATTR static inline void oe_set_duty_us(uint32_t us) {
+    /* `us` is the on-time per 1000 us row the brightness table asks for, which
+     * is a *fraction*; this scales it to the counter's range so the brightness
+     * levels stay put whatever PWM_TOP_COUNT is set to. Rounded rather than
+     * truncated because at a coarse count the dimmest levels are only one or
+     * two counts wide, and truncation there is a visible brightness step. */
+    uint32_t cc = (us * PWM_TOP_COUNT + 500u) / 1000u;
+    REG(PWM_CC) = (cc & 0xFFFFu) << 16;
+}
+CLOCK_UATTR static inline void oe_open(void)  { REG(PWM_CC) = PWM_TOP_COUNT << 16; }
+CLOCK_UATTR static inline void oe_close(void) { REG(PWM_CC) = 0; }
 
 CLOCK_UATTR static void shift_byte(uint8_t data) {
     /* LSB-first, matching the vendor's send_data(): CLK low, drive SDI,
@@ -586,8 +680,35 @@ CLOCK_UATTR static void draw_text(const char *s) {
 CLOCK_UATTR static void pico_clock_green_clear(void);
 static void buttons_init(void);
 
+/* The OE slice: a 1 us tick, wrapping just past the row period, output
+ * inverted because OE is active low.
+ *
+ * clk_sys is 150 MHz and fixed by arch/riscv/rp2350/boot_header.S, so the
+ * divider is a literal here for the same reason the UART's is: nothing in
+ * this tree can ask the clock tree what it was set to. DIV's integer part
+ * lives in bits 4..11.
+ *
+ * Done before the pin is routed, so the peripheral is already producing a
+ * blanked output when GPIO13 stops being SIO -- otherwise the panel would
+ * show whatever the slice happened to contain for a few microseconds. */
+static void oe_pwm_init(void) {
+    REG(RESETS_RESET_CLR) = RESETS_RESET_PWM_BIT;
+    int timeout = 10000;
+    while (!(REG(RESETS_RESET_DONE) & RESETS_RESET_PWM_BIT) && --timeout > 0);
+
+    REG(PWM_CSR) = 0;                          /* stopped while configured  */
+    REG(PWM_DIV) = 1u << 4;                    /* undivided: 150 MHz        */
+    REG(PWM_TOP) = PWM_TOP_COUNT - 1u;         /* 150 MHz / 1500 = 100 kHz  */
+    REG(PWM_CC)  = 0;                          /* blanked                   */
+    REG(PWM_CTR) = 0;
+    REG(PWM_CSR) = PWM_CSR_EN | PWM_CSR_B_INV;
+
+    REG(PADS_BANK0_PAD(OE_PIN)) = 0x5A;
+    REG(IO_BANK0_CTRL(OE_PIN)) = PWM_FUNCSEL;
+}
+
 void pico_clock_green_init(void) {
-    gpio_out_init(OE_PIN);
+    oe_pwm_init();
     gpio_out_init(SDI_PIN);
     gpio_out_init(CLK_PIN);
     gpio_out_init(LE_PIN);
@@ -622,7 +743,15 @@ void pico_clock_green_init(void) {
      * analog input; the ADC reads it through its own peripheral, which is the
      * next line) and not the DCF-77 pin (its decoder runs in the caller's
      * task, in kernel mode, and is not confined at all). */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (OE_MASK | SDI_MASK | CLK_MASK | LE_MASK
+    /* OE is deliberately absent: it is driven by the PWM peripheral now, not
+     * by the server's own SIO writes, and marking a pin non-secure hands it to
+     * the non-secure side *and takes it from the secure one*. The peripheral
+     * would then drive into a pad no longer connected to it -- silently, with
+     * the panel simply dark, which is precisely what happened
+     * (2026-09-08). drivers/uart1_link_rp2350.c learned the same thing about
+     * the same register: a pin driven by a peripheral must not be in this
+     * mask. */
+    REG(ACCESSCTRL_GPIO_NSMASK0) |= (SDI_MASK | CLK_MASK | LE_MASK
                                      | A0_MASK | A1_MASK | A2_MASK
                                      | (1u << BTN_SET_PIN)
                                      | (1u << BTN_UP_PIN)
@@ -632,6 +761,15 @@ void pico_clock_green_init(void) {
 #endif
                                      );
     REG(ACCESSCTRL_ADC) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_ADC)
+                          | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
+    /* PWM, for the same reason and in the same shape as ADC and TIMER0: the
+     * U-mode half writes the OE compare on every row, and a peripheral whose
+     * ACCESSCTRL still reads its reset value (Secure only) faults loudly on
+     * the first such write. Granting PMP access is necessary and not
+     * sufficient -- the two mechanisms are independent, and forgetting this
+     * one turned the panel black and took the console with it, which is
+     * exactly the failure the comment above already describes for ADC. */
+    REG(ACCESSCTRL_PWM) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_PWM)
                           | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
     REG(ACCESSCTRL_TIMER0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_TIMER0)
                              | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
@@ -649,7 +787,7 @@ void pico_clock_green_init(void) {
         for (unsigned i = 0; i < sizeof(S); i++) p[i] = 0;
     }
     /* The two fields whose zero is not their default. */
-    g_brightness_level = -1;          /* automatic: the LDR decides */
+    g_min_level = LEVEL_MIN;          /* automatic, floored at the dimmest */
     g_auto_level = LEVEL_MAX;
 
     srv_time_advance();               /* seed the server clock from TIMERAWL */
@@ -930,21 +1068,15 @@ CLOCK_UATTR static void auto_brightness_update(void) {
     else g_light_ema = (uint16_t)(g_light_ema
                                   + ((int32_t)raw - (int32_t)g_light_ema) / (1 << AUTO_EMA_SHIFT));
 
+    /* g_auto_level stays the level the light alone implies -- the floor is
+     * applied to the *output* and deliberately not fed back in. Clamping the
+     * stored value instead would poison auto_level_for()'s hysteresis, which
+     * takes the current level as its input: a floor of 4 would make the
+     * comparison behave as though the room were already that bright, and the
+     * panel would stop tracking the light at all above the floor. */
     g_auto_level = auto_level_for(g_light_ema, g_auto_level);
-    g_dim_on_us = LEVEL_ON_US[g_auto_level - 1];
-}
-
-/* The row's own waits, and deliberately not time_delay_us(): that one
- * services USB between polls of the clock, and a single usb_cdc_task() call
- * is longer than the whole 8 us bottom brightness level. A row whose pulse
- * overran would simply be brighter than its neighbours, which is exactly the
- * shimmer the short levels exist to avoid. From S2 it is also unreachable:
- * this half runs in U-mode, where the only clock is the granted TIMER0.
- *
- * Nothing else may happen inside these windows. */
-CLOCK_UATTR static inline void spin_us(uint32_t us) {
-    uint32_t start = srv_raw_us();
-    while ((uint32_t)(srv_raw_us() - start) < us) { /* spin */ }
+    int lvl = g_auto_level < g_min_level ? g_min_level : g_auto_level;
+    g_dim_on_us = LEVEL_ON_US[lvl - 1];
 }
 
 CLOCK_UATTR static void pico_clock_green_scan_step(void) {
@@ -959,17 +1091,16 @@ CLOCK_UATTR static void pico_clock_green_scan_step(void) {
     /* Only sample the LDR while brightness is automatic. A fixed level is a
      * deliberate choice and must not be overridden a millisecond later by a
      * passing shadow. */
-    if (g_row == 0 && g_brightness_level < 0) {
+    if (g_row == 0) {
         auto_brightness_update();
     }
 
-    if (g_dim_on_us == 0) {
-        oe_open(); /* left on until the next scan_step() call overwrites it */
-    } else {
-        oe_open();
-        spin_us(g_dim_on_us);
-        oe_close();
-    }
+    /* One hardware pulse, started here and timed by the peripheral. No spin,
+     * and therefore nothing for a preemption to stretch: this is the whole
+     * point of the change. Full brightness is still "on until the next row
+     * overwrites it", which is what oe_open() now means. */
+    if (g_dim_on_us == 0) oe_open();
+    else                  oe_set_duty_us(g_dim_on_us);
 
     g_row = (g_row + 1) & 7;
 }
@@ -1163,14 +1294,22 @@ CLOCK_UATTR static uint8_t pico_clock_green_hw_pin_levels(void) {
  * here, and the LDR stops being read at all until brightness goes back to
  * automatic -- at which point the next frame re-seeds the average from the
  * room as it is now, rather than resuming from whatever it was before. */
+/* Sets the floor, not a fixed level.
+ *
+ * The menu used to choose between "automatic" and one of seven fixed levels,
+ * and a fixed level is almost never what anyone wants: the panel is unreadable
+ * in daylight at level 1 and dazzling at night at level 7, which is the whole
+ * reason the LDR is there. What people actually want to control is how dim it
+ * is allowed to get in the dark. So brightness is always automatic and this
+ * bounds it from below (user, 2026-09-08).
+ *
+ * Out-of-range values clamp rather than meaning "automatic", because there is
+ * no longer anything else for them to mean. */
 CLOCK_UATTR static void pico_clock_green_hw_set_brightness(int level) {
-    if (level >= LEVEL_MIN && level <= LEVEL_MAX) {
-        g_brightness_level = level;
-        g_dim_on_us = LEVEL_ON_US[level - 1];
-    } else {
-        g_brightness_level = -1;   /* back to the LDR */
-        g_light_ema = 0;
-    }
+    if (level < LEVEL_MIN) level = LEVEL_MIN;
+    if (level > LEVEL_MAX) level = LEVEL_MAX;
+    g_min_level = level;
+    if (g_auto_level < level) g_dim_on_us = LEVEL_ON_US[level - 1];
 }
 
 /* Held for `ms` with the row scan still running, so a beep never blanks the
@@ -1462,7 +1601,16 @@ static void clock_task_body(void *arg) {
     mem_domain_add(&g_clock_domain, tbase, tsize, MEM_R | MEM_X);
 
     mem_domain_add(&g_clock_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_clock_domain, ADC_BASE, 4096, MEM_R | MEM_W);
+    /* 64 KB from ADC_BASE, not 4 KB: that block holds the ADC *and* the PWM
+     * slice driving OE, and nothing else (checked against the SDK address
+     * map -- 0x400a0000 and 0x400a8000 are its only two entries). The wider
+     * window costs no PMP entry, which matters because there are exactly five
+     * and all five are spoken for: RP2350 spends three of its eight on the
+     * deny-shadows that revoke Hazard3's hardwired U-mode RWX. Granting PWM
+     * its own region was not an option; merging it into a naturally aligned
+     * block that contains only what is already granted plus what is needed
+     * is. */
+    mem_domain_add(&g_clock_domain, ADC_BASE, 65536, MEM_R | MEM_W);
     mem_domain_add(&g_clock_domain, TIMER0_BASE, 4096, MEM_R);
 
     if (task_set_domain(sched_current_pid(), &g_clock_domain) != 0) {
@@ -1505,7 +1653,7 @@ static void clock_intruder_task_body(void *arg) {
     /* The exact grants the real clock server runs under -- this is what's on
      * trial, TIMER0's read-only-ness included. */
     mem_domain_add(&dom, SIO_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&dom, ADC_BASE, 4096, MEM_R | MEM_W);
+    mem_domain_add(&dom, ADC_BASE, 65536, MEM_R | MEM_W);   /* ADC + PWM, see above */
     mem_domain_add(&dom, TIMER0_BASE, 4096, MEM_R);
 
     if (task_set_domain(sched_current_pid(), &dom) != 0) {
