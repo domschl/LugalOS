@@ -2916,6 +2916,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "flashinfo") == 0) {
         cmd_flashinfo();
         return;
+    } else if (strcmp(cmd_line, "i2cdiag") == 0) {
+        { extern void i2c_p4_diag(void); i2c_p4_diag(); }
+        return;
     } else if (strcmp(cmd_line, "flashtest") == 0) {
         cmd_flashtest();
         return;
