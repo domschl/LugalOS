@@ -1,7 +1,8 @@
 # Phase 31 — One wait-for graph, and no cycles in it
 
-**Status: planned, not started, 2026-09-06. Runs before phase 30, which runs
-before phase 28.** The ordering is in §0.4, and there is a standing rule in
+**Status: Y0 done 2026-09-10 — the inventory, plus five findings including a
+reproduced whole-kernel hang (F1). Y1-Y4 not started. Runs before phase 30,
+which runs before phase 28.** The ordering is in §0.4, and there is a standing rule in
 §0.5 that can pull this phase forward on its own.
 
 **Milestone letter: `Y`.** A–G, H–N and P–T, V–X are spoken for across
@@ -221,6 +222,139 @@ header comment is the natural home, since it already argues about
 
 Done when: every lock in §0.2 has a level, and every level is justified by
 what would break if two were swapped.
+
+#### Y0 done — the inventory, and what reading it found — 2026-09-10
+
+**The count in §0.2 is wrong: there are 18 kinds of lock, not 16, and up to
+33 instances.** Missing were `drivers/flash_esp32p4.c`'s `g_flash_ylock`
+(arrived with phase 27 E6, after §0.2 was written) and — more interesting —
+`chan_endpoint_t::lock`, a `spinlock_t` **per endpoint**, sixteen of them
+(`CHAN_MAX_ENDPOINTS`). The channel layer was counted as "the enforced one"
+and its own locks were not counted at all.
+
+##### The actual hierarchy, from the code rather than from intuition
+
+The evidence is that **every `spinlock_t` in this tree is a leaf**. Each
+critical section calls only pure helpers — `bit_get`/`bit_set`, `hart_id`,
+`memcpy`, `node_parent` — and the two exceptions are both in `task_exit()`
+and are both bugs (below). Where a section looked like it called something
+blocking, it turned out to release and re-take around it, with a comment
+saying why: `uart_putc()` around `uart_flush()`, `printk_lock()` around
+`task_block()`. That discipline is real and it holds everywhere.
+
+`ylock_t` is the opposite by design, and the header says so: *"sections that
+can be held across a wait (a 9P round trip waits for a peer's reply)"*. So:
+
+| level | what | may acquire |
+|---|---|---|
+| 1 | `ylock_t`: `g_pump_lock`, `g_client_lock` (p9), `g_client_lock` (mqtt), `g_flash_ylock` | anything above |
+| 2 | printk ownership (`g_printk_owner`/`g_printk_depth`) | level 3 only |
+| 3 | every `spinlock_t`: `g_palloc_lock`, `g_balloc_lock`, `g_klog_lock`, `g_printk_gate`, `g_sched_lock`, `g_smp_lock`, `g_load_lock`, `g_smptest_lock`, `g_tx_batch_lock` ×3, `g_usb_tx_lock`, `ep->lock` ×16 | **nothing** |
+
+Read with §1.2's rule (*a holder of level n may only acquire strictly greater
+than n*) this says one thing: **a `spinlock_t` is a leaf, full stop.** That is
+a stronger and simpler invariant than a graduated ordering, it is what the
+code already does, and it is checkable with one comparison.
+
+**§1.2's provisional table is inverted and should be replaced by the above.**
+It put the allocators at level 1 and `g_sched_lock` at 3, which permits a
+holder of `g_palloc_lock` to acquire `g_sched_lock` — the direction that must
+never happen. It rejects `task_exit()`'s violation as claimed, but by
+accident: 3 → 1 is rejected because 1 is not greater than 3, not because the
+allocator is a leaf.
+
+##### F1 — `task_exit()` deadlocks the whole kernel, and the deadlock is the recovery path
+
+**Confirmed by reproduction, rv32 QEMU, one hart, 2026-09-10.**
+
+`task_exit()` takes `g_sched_lock` (`kernel/sched.c:988`) and then calls
+`chan_owner_exited()` (`:996`) — which calls `task_unblock()`, which takes
+`g_sched_lock` again (`:827`). `spinlock_t` is not re-entrant and interrupts
+are already off, so the hart spins forever on a lock only it holds.
+
+It fires whenever a task that owns a channel endpoint dies **with a request
+pending** — which is precisely the case `chan_owner_exited()` was written for
+(M5 Phase 2, commit f36ceaa, "real U-mode isolation for a driver with an IPC
+endpoint"). Its own comment: *"its caller would otherwise block forever
+waiting for a reply nothing will ever send."* The caller no longer blocks
+forever; the whole board does.
+
+Reachable in production, not only in theory: `arch/riscv/common/trap.c:1163`
+calls `task_exit()` for **any U-mode task that faults**, and on RP2350 the
+i2c, uart, tm1638, st7735 and spisd driver tasks are U-mode tasks that own
+endpoints. A driver faulting mid-request hangs the machine instead of
+returning `-1` to its caller.
+
+The reproducer is twenty lines: register an endpoint to a task, have that
+task return from `chan_serve_wait()` without replying, and `chan_call()` it
+from the shell. Observed: `[Sched] Task #4 'dxowner' exited` prints, and then
+nothing at all — no return from `chan_call()`, no later command, no `halt`.
+
+The QEMU suite does not catch it because the isolation tests fault an
+*intruder* task, never the endpoint's owner while a request is in flight.
+
+##### F2 — `palloc_free()` under `g_sched_lock` is real, and is latent rather than live
+
+The violation §0.4 names is still there (`kernel/sched.c:1024`), and it is
+worth being precise about its severity: **it is not a deadlock today.**
+`g_palloc_lock`'s critical sections call only `bit_get`/`bit_set`/`bit_clear`,
+so no path takes `g_palloc_lock` and then `g_sched_lock`; the reverse edge
+that would close the cycle does not exist.
+
+What makes it worth fixing anyway is that `sched_reap()` — sixty lines
+earlier in the same file — deliberately releases `g_sched_lock` *before*
+calling `palloc_free()`, and says why. Two paths to the same allocator, one
+correct and one not, is how the reverse edge eventually gets added by someone
+reading the wrong one.
+
+##### F3 — `g_sched_lock` is handed off, not released, and that defeats analysis
+
+On `task_exit()`'s normal path the lock is taken and **never released**: the
+successor inherits it and releases it in `task_start()` or on return from
+`ctx_switch()`. So its critical section is not a lexical region, and any tool
+that pairs an acquire with the next release in the same function — which is
+the obvious way to write one — sees no section at all. That is exactly why a
+first pass over this tree missed both F1 and F2 while reporting several
+correct drop-and-retake idioms as violations.
+
+**Y2's checker must model the hand-off explicitly**, not infer scope from
+brace structure. `handoff_check()` already exists and is the hook.
+
+##### F4 — §1.3's third bullet is too strong and must be per-type
+
+> *"Holding any lock, no `chan_call()` and no `task_block()`."*
+
+That forbids what `ylock_t` was built for. `fs/p9_link.c`'s `p9_link_pump()`
+holds `g_pump_lock` across `link->poll()`, `recv_frame()` and a whole
+`p9_route_frame()` — which includes `printk()` and can include blocking IPC —
+and `net/mqtt.c` holds `g_client_lock` across `write_all()` and
+`mqtt_service()`. Both are the documented intent, not oversights.
+
+The rule has to split:
+
+* **`spinlock_t`** — never held across anything that can block. Already the
+  header's contract; F1 and F2 are its only violations.
+* **`ylock_t`** — *may* be held across a block. It therefore needs
+  **ordering**, not prohibition: every ylock sits above everything it can
+  wait on, and no task holding one may be waited on by a task it waits for.
+
+##### F5 — the one enforced invariant is enforced with an unsynchronised read
+
+`would_cycle()` walks `g_wait_for[]` (`kernel/chan.c:65`) **before**
+`chan_call_task()`'s `irq_save()` and under no lock at all, while another
+hart can be writing `g_wait_for[me]` at `:193`. The consequence is a missed
+refusal — a cycle that should have been rejected is admitted — rather than
+corruption, and the window is a few instructions. It is worth recording that
+the one place this tree does check a wait-for graph is the one place the
+check is not itself synchronised on a two-hart kernel.
+
+##### What Y1 now has to decide
+
+F1 is a kernel hang and should be fixed before F2, which is latent. The
+obvious shape — have `task_exit()` do its `chan_owner_exited()` work before
+taking `g_sched_lock`, or give `task_unblock()` a lock-already-held variant —
+is a real design choice with a race to argue about either way, and belongs in
+Y1 rather than being picked here.
 
 ### Y1 — The open violation
 
