@@ -59,6 +59,23 @@ static struct {
     const char    *last_fail;
     uint32_t       fail_count;
     uint32_t       poll_count;
+
+    /* The last successful measurement, and when it was taken.
+     *
+     * Kept for the same reason drivers/i2c_rtc.c keeps a cached temperature,
+     * and stated there: /proc is served by the 9P task, and that task has no
+     * business on the I2C bus. A reader that must not do a bus transfer gets
+     * a value and its age and can judge staleness for itself -- which is the
+     * only honest thing to hand it, since a measurement with no age is
+     * evidence about an unknown moment.
+     *
+     * Written by whoever already owns the bus: the sampler below, `sensor`,
+     * or an mqttd source. Every one of them goes through bme280_read(), so
+     * there is one place that updates it. */
+    bme280_reading_t last;
+    uint64_t         last_ms;
+    bool             have_last;
+    uint32_t         read_count;
 } g;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
@@ -277,8 +294,35 @@ bool bme280_read(bme280_reading_t *out) {
     int32_t raw_hum   = (want == 8u) ? (int32_t)(((uint32_t)d[6] << 8) | d[7]) : 0;
 
     bme280_compensate(&g.cal, raw_temp, raw_press, raw_hum, out);
+
+    /* Ordering, not locking: `have_last` is set after the value and the
+     * timestamp, so a reader never sees a cache marked valid before it is.
+     * A reader preempted mid-copy can still pair one sample's numbers with
+     * another's -- adjacent samples a minute apart, from a part whose whole
+     * job is to change slowly -- and that is the same trade
+     * drivers/i2c_rtc.c's cached temperature already makes. Taking a lock
+     * here would put the 9P task behind the bus, which is the one thing this
+     * cache exists to prevent. */
+    g.last = *out;
+    g.last_ms = time_get_ms();
+    g.have_last = true;
+    g.read_count++;
     return true;
 }
+
+bool bme280_cached(bme280_reading_t *out, uint32_t *age_s) {
+    if (!g.have_last) return false;
+    if (out) *out = g.last;
+    if (age_s) {
+        uint64_t now = time_get_ms();
+        *age_s = (uint32_t)((now > g.last_ms ? now - g.last_ms : 0) / 1000u);
+    }
+    return true;
+}
+
+uint32_t bme280_read_count(void) { return g.read_count; }
+uint32_t bme280_fail_count(void) { return g.fail_count; }
+const char *bme280_last_failure(void) { return g.last_fail; }
 
 /* --- The vector ---
  *
@@ -427,6 +471,65 @@ void bme280_register_sources(void) {
         mqttd_add_source("humidity", src_humidity, NULL, 2, &hum_rule);
 }
 
+/* --- The sampler (E7, plan/phase27_esp32p4_bringup.md) ---
+ *
+ * One task, whose only job is to keep the cache above from going stale.
+ *
+ * It exists because of what the ESP32-P4 persona is: a node with a sensor, a
+ * filesystem and a 9P server, and *no network stack of its own*. The reading
+ * leaves the board because something on the other end of a wire reads
+ * /proc/sensors -- so the file has to be worth reading at a moment nobody on
+ * this board chose. On the RP2350 sensor persona that job falls out of mqttd,
+ * which samples on its own schedule; here mqttd has no broker to connect to
+ * and exits at boot, and a reading nobody ever takes is not a measurement.
+ *
+ * Started only where a part was actually found, so a board without one pays
+ * neither a task slot nor a stack. Deliberately not a driver task in the M4.5
+ * sense: it owns no hardware and serves no endpoint -- it is a *client* of the
+ * "i2c" task, like any other caller of bme280_read(). */
+
+static uint32_t g_sample_period_s = BME280_DEFAULT_SAMPLE_S;
+
+static void bme280_sampler_body(void *arg) {
+    (void)arg;
+    for (;;) {
+        bme280_reading_t r;
+        /* The result is deliberately discarded: bme280_read() has already
+         * updated the cache and the failure counters, which is everything a
+         * reader of /proc/sensors gets to see. A failed sample leaves the
+         * previous one in place with a growing age, which is the truthful
+         * outcome -- the alternative is dropping a good reading because a
+         * later one did not arrive. */
+        (void)bme280_read(&r);
+        task_sleep_ms(g_sample_period_s * 1000u);
+    }
+}
+
+int bme280_sampler_start(uint32_t period_s) {
+    if (g.part == BME280_PART_NONE) return -1;
+    if (period_s) g_sample_period_s = period_s;
+
+    /* One page. task_create_sized() counts *pages*, not bytes -- 4 KB here,
+     * the same figure every driver task in this tree takes -- and passing a
+     * byte count asks for 8 MB of stack, which on the P4's 144 KB heap fails
+     * loudly and on a larger board would succeed and be absurd.
+     *
+     * One page is generous for what this runs: bme280_read()'s deepest chain
+     * is rd() -> i2c_xfer(), whose frame is a 4+16 byte request and a 1+64
+     * byte response, plus the compensation arithmetic's locals. */
+    int pid = task_create_sized("sensor", bme280_sampler_body, NULL, 1);
+    if (pid < 0) {
+        printk("[BME280] No task slot for the sampler; /proc/sensors will only "
+               "be as fresh as the last `sensor` command.\n");
+        return -1;
+    }
+    printk("[BME280] Sampling every %lu s as task #%d.\n",
+           (unsigned long)g_sample_period_s, pid);
+    return pid;
+}
+
+uint32_t bme280_sample_period_s(void) { return g_sample_period_s; }
+
 void bme280_print_status(void) {
     if (g.part == BME280_PART_NONE) {
         cprintf("sensor: none found at 0x76 or 0x77 on the shared I2C bus\n");
@@ -463,4 +566,15 @@ void bme280_print_status(void) {
     }
     cprintf("  (forced mode, x1 oversampling, %lu status poll%s)\n",
             (unsigned long)polls, polls == 1u ? "" : "s");
+
+    /* What a *remote* reader sees, said next to what the console just took.
+     * `sensor` reads the bus; /proc/sensors cannot, and is only as fresh as
+     * the sampler. Printing both together is what makes "the file is stale"
+     * a visible condition rather than a puzzle on the other end of a wire. */
+    cprintf("  /proc/sensors: sampler every %lu s, %lu read%s, %lu failure%s",
+            (unsigned long)g_sample_period_s,
+            (unsigned long)g.read_count, g.read_count == 1u ? "" : "s",
+            (unsigned long)g.fail_count, g.fail_count == 1u ? "" : "s");
+    if (g.last_fail) cprintf(" (last: %s)", g.last_fail);
+    cprintf("\n");
 }

@@ -94,6 +94,40 @@ uint32_t bme280_selftest(bool report);
  * only if a part was actually found. Called after bme280_init(). */
 void bme280_register_sources(void);
 
+/* --- The cache, and the task that fills it (E7,
+ * plan/phase27_esp32p4_bringup.md) ---
+ *
+ * bme280_read() blocks on the bus for the length of a conversion, so the 9P
+ * task -- which serves /proc -- must not call it. The rule and its reasoning
+ * are drivers/i2c_rtc.h's, on i2c_rtc_cached_temperature_c(); this is the
+ * same shape for the same reason.
+ *
+ * bme280_cached() hands back the last successful measurement and how many
+ * seconds ago it was taken, touching no hardware. False until one has been
+ * taken. The age is not decoration: a reading without one is evidence about
+ * an unknown moment, and a consumer deciding whether to publish needs to be
+ * able to tell a fresh value from a frozen one. */
+bool bme280_cached(bme280_reading_t *out, uint32_t *age_s);
+
+/* How many measurements have succeeded and failed since boot, and what the
+ * last failure was (NULL if there has not been one). For /proc/sensors, which
+ * has to be readable by something that cannot ask the bus anything. */
+uint32_t    bme280_read_count(void);
+uint32_t    bme280_fail_count(void);
+const char *bme280_last_failure(void);
+
+/* One minute. Slow on purpose: forced-mode conversions are what keep the
+ * part from self-heating (see the header note above), and an environment
+ * this sensor can resolve does not change faster than this. */
+#define BME280_DEFAULT_SAMPLE_S 60u
+
+/* Starts the task that keeps the cache fresh, at `period_s` seconds (0 keeps
+ * the default). Returns its pid, or -1 -- including when no part is fitted,
+ * which is not an error but a board without a sensor. Must follow
+ * sched_init() and bme280_init(). */
+int      bme280_sampler_start(uint32_t period_s);
+uint32_t bme280_sample_period_s(void);
+
 /* The human-readable report behind `sensor` and /proc/sensors. */
 void bme280_print_status(void);
 

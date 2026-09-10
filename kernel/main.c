@@ -36,6 +36,7 @@
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
 #include "net/ip.h"
+#include "drivers/bme280.h"
 #include "net/mqttd.h"
 #include "kernel/identity.h"
 #include "arch/csr.h"
@@ -356,6 +357,18 @@ void kernel_main(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
     pico_clock_green_task_start();
 #endif
+
+    /* E7, plan/phase27_esp32p4_bringup.md: keep /proc/sensors worth reading.
+     *
+     * A no-op on every board where dev_probe_all() found no part, so it is
+     * unconditional rather than guarded by a persona -- the same argument the
+     * netif calls below make. Must follow both sched_init() and the probe.
+     *
+     * It matters most where there is no mqttd to do the sampling: the P4 has
+     * a sensor and no network stack, so the only thing that ever reads the
+     * part is something on the far end of a 9P link, and that something
+     * cannot reach across the wire and start a conversion. */
+    bme280_sampler_start(0);
 
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */

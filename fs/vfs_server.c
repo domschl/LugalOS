@@ -12,6 +12,7 @@
 #include "kernel/discipline.h"
 #include "drivers/cyw43.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/bme280.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -1165,6 +1166,60 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #endif
         return (int)used;
     }
+    else if (strcmp(rel, "sensors") == 0) {
+        /* E7, plan/phase27_esp32p4_bringup.md: the environment sensor, for a
+         * reader that is not on this board.
+         *
+         * Served entirely from drivers/bme280.c's cache. This function runs on
+         * the 9P task, and that task must not take the I2C bus -- the rule and
+         * its reason are in drivers/i2c_rtc.h. What keeps the cache worth
+         * reading is bme280_sampler_start()'s task, not this read.
+         *
+         * `age_s` is therefore part of the answer, not a diagnostic: a
+         * consumer deciding whether to publish a value needs to tell a fresh
+         * reading from a frozen one, and over a 9P link it has no other way
+         * to know. reads/failures give it the same judgement about the bus.
+         *
+         * key=value, one per line, integers in the units the driver already
+         * uses, because the parser on the other end may be a shell script.
+         * Scaling here would put a decimal point in two places. */
+        uint32_t used = 0;
+        if (!bme280_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
+            return (int)used;
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+            bme280_part_name(), bme280_address(),
+            (unsigned long)bme280_sample_period_s());
+
+        bme280_reading_t r;
+        uint32_t age_s = 0;
+        if (!bme280_cached(&r, &age_s)) {
+            /* Detected but never read: distinguishable from a stale reading,
+             * and from no part at all, which are three different situations
+             * with three different fixes. */
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+        } else {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\n",
+                (unsigned long)age_s, (long)r.temperature_c100,
+                (unsigned long)(r.pressure_pa256 >> 8));
+            if (r.have_humidity)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "humidity_rh1000=%lu\n",
+                    (unsigned long)((r.humidity_rh1024 * 1000u) >> 10));
+        }
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "reads=%lu\nfailures=%lu\n",
+            (unsigned long)bme280_read_count(),
+            (unsigned long)bme280_fail_count());
+        const char *lf = bme280_last_failure();
+        if (lf)
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "last_failure=%s\n", lf);
+        return (int)used;
+    }
     else if (strcmp(rel, "clock") == 0) {
         /* The discipline loop's own account of itself (P5). Everywhere else
          * this tree reports what a device did; this reports what the clock
@@ -1462,7 +1517,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors",
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif

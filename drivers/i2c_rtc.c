@@ -341,6 +341,13 @@ static bool i2c_probe_addr(uint8_t addr) {
 #define P4_I2C_COMD(n)     (P4_I2C_BASE + 0x58 + 4u * (n))
 #define P4_I2C_SCL_ST_TO        (P4_I2C_BASE + 0x78)
 #define P4_I2C_SCL_MAIN_ST_TO   (P4_I2C_BASE + 0x7c)
+#define P4_I2C_SCL_SP_CONF      (P4_I2C_BASE + 0x80)
+
+#define P4_I2C_TIME_OUT_EN     (1u << 5)    /* TO: above the 5-bit value    */
+#define P4_I2C_SCL_FILTER_EN   (1u << 8)    /* FILTER_CFG, one per line     */
+#define P4_I2C_SDA_FILTER_EN   (1u << 9)
+#define P4_I2C_SCL_RST_SLV_EN  (1u << 0)    /* SCL_SP_CONF: clear the bus   */
+#define P4_I2C_SCL_RST_SLV_NUM(n) ((uint32_t)(n) << 1)
 
 #define P4_I2C_SDA_FORCE_OUT  (1u << 0)
 #define P4_I2C_SCL_FORCE_OUT  (1u << 1)
@@ -394,6 +401,12 @@ static bool i2c_probe_addr(uint8_t addr) {
 
 static bool g_p4_i2c_ready;
 static void i2c_p4_bringup_timing(void);
+static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+                         uint8_t *r, int rlen);
+static bool i2c_probe_addr(uint8_t addr);
+static void p4_i2c_bus_clear(void);
+static uint32_t g_p4_i2c_last_int;
+static uint32_t g_p4_i2c_last_sr;
 
 static void p4_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     /* Open drain, input enabled, weak pull-up. The pull-up matters even with
@@ -411,28 +424,128 @@ static void p4_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     REG(P4_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
 }
 
-/* Deferred on purpose while E7 is being brought up.
+/* The controller's own bringup: clocks, reset, pads, master mode, timing.
  *
- * Doing this at boot wedged the board mid-console-line: the machine reached
- * the shell and then stopped inside a printk. Somewhere in the sequence below
- * is a write that takes the console down with it, and the only way to find
- * which is to run the steps one at a time with the console flushed between
- * them -- which cannot be done from a boot path that has already died.
- * i2c_p4_bringup() below is that, and i2cdiag calls it. */
-static void i2c_hw_init(void) { }
+ * This ran from `i2cdiag` alone for most of E7, because doing it at boot
+ * wedged the board mid-console-line -- the machine reached the shell and then
+ * stopped inside a printk. That was never this sequence: it was the L2-cache
+ * corruption at the top of E7 eating the frame of the task the UART interrupt
+ * was trying to wake. With the memory map fixed the sequence runs at boot,
+ * which is where a bus that the RTC and sensor probes need has to come up.
+ *
+ * `verbose` narrates each step through printk_critical() -- the diagnostic
+ * shape kept from that hunt, because it costs one branch and it is the only
+ * console path that survives a step which takes the peripheral bus down.
+ * Idempotent: the second caller finds g_p4_i2c_ready and returns. */
+static void i2c_p4_hw_bringup(bool verbose) {
+    if (g_p4_i2c_ready) {
+        if (verbose) printk_critical("[I2Cdiag] already up\n");
+        return;
+    }
 
+    if (verbose) printk_critical("[I2Cdiag] 1: APB gate\n");
+    REG(P4_SOC_CLK_CTRL2) |= (1u << 12);
+
+    if (verbose) printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
+    REG(P4_PERI_CLK_CTRL10) &= ~(1u << 0);
+    REG(P4_PERI_CLK_CTRL10) |= (1u << 1);
+
+    if (verbose) printk_critical("[I2Cdiag] 3: reset pulse\n");
+    REG(P4_HP_RST_EN1) |=  (1u << 22);
+    REG(P4_HP_RST_EN1) &= ~(1u << 22);
+
+    if (verbose) printk_critical("[I2Cdiag] 4: pad GPIO7 (SDA)\n");
+    p4_pad_for_i2c(P4_I2C_SDA_GPIO, P4_I2C_SDA_SIG);
+
+    if (verbose) printk_critical("[I2Cdiag] 5: pad GPIO8 (SCL)\n");
+    p4_pad_for_i2c(P4_I2C_SCL_GPIO, P4_I2C_SCL_SIG);
+
+    if (verbose) printk_critical("[I2Cdiag] 6: CTR\n");
+    REG(P4_I2C_CTR) = P4_I2C_MS_MODE | P4_I2C_CLK_EN |
+                      P4_I2C_SDA_FORCE_OUT | P4_I2C_SCL_FORCE_OUT;
+
+    if (verbose) printk_critical("[I2Cdiag] 7: timing\n");
+    i2c_p4_bringup_timing();
+
+    if (verbose) printk_critical("[I2Cdiag] 8: fifo + commit\n");
+    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+    g_p4_i2c_ready = true;
+
+    /* The controller is fresh; the bus is not.
+     *
+     * Resetting this chip does not reset what is wired to it. A part left
+     * mid-byte by the previous run -- or by the ROM, or by the factory image
+     * -- is still holding SDA when we arrive, and the first transaction after
+     * bringup then comes back wrong: E7 saw both halves of that, an address
+     * scan reporting a phantom device at the first address it tried, and a
+     * BME280 that is present NACKing its first read of the boot. Which of the
+     * two it was depended only on which transaction happened to be first,
+     * which is why it looked intermittent.
+     *
+     * Nine clocks here cost 90 microseconds once and make the first
+     * transaction as trustworthy as the rest. */
+    if (verbose) printk_critical("[I2Cdiag] 9: bus clear\n");
+    p4_i2c_bus_clear();
+    if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
+}
+
+static void i2c_hw_init(void) { i2c_p4_hw_bringup(false); }
+
+/* Every period below is in cycles of the controller's source clock, which
+ * step 2 above selects as XTAL_CLK: 40 MHz on this board, undivided
+ * (PERI_CLK_CTRL10's div_num field is 0, which is a divide by one). A half
+ * cycle of 200 is therefore 100 kHz -- standard mode, which is what a BME280
+ * on flying leads wants over the board's own pull-ups. Those are 2.2 kOhm to
+ * 3V3 on both lines, fitted on the NANO itself (ESP32-P4-NANO-schematic.pdf,
+ * the ESP_I2C_SDA/ESP_I2C_SCL nets) -- so the pads' internal pull-ups that
+ * p4_pad_for_i2c() also enables are a backstop for a bare chip, not what is
+ * holding this bus up.
+ *
+ * The numbers are IDF's own i2c_ll_master_cal_bus_clk() evaluated for that
+ * pair, not a plausible-looking set: this file's first version halved four of
+ * them and left two register fields unwritten, and what that produced was a
+ * bus that answered one scan and then nothing. Three of those matter enough
+ * to name:
+ *
+ *  * **SCL_WAIT_HIGH lives in the same register as SCL_HIGH**, bits [15:9]
+ *    over bits [8:0]. Writing one number wrote SCL_HIGH and left the FSM's
+ *    wait period at zero -- and the hardware's own documented assumption is
+ *    scl_wait_high < sda_sample < scl_high.
+ *  * **TIME_OUT_EN is bit 5 of the TO register**, above the 5-bit value.
+ *    Writing the value alone leaves the SCL timeout *disabled*, so a slave
+ *    that stretches forever wedges the FSM instead of ending the transaction
+ *    with TIME_OUT set. That is the difference between an error this driver
+ *    can recover from and one it cannot see.
+ *  * **The SDA glitch filter has its own enable**, bit 9. Only bit 8 was set,
+ *    so SCL was filtered and SDA was not, and the threshold that was meant
+ *    for both was 15 on SCL and 7 on SDA.
+ *
+ * IDF subtracts one from the periods the TRM specifies that way, and
+ * deliberately does not subtract it from SCL_HIGH/SCL_WAIT_HIGH; that
+ * asymmetry is copied rather than tidied, because it is a measurement
+ * ("according to practical measurement and some hardware behaviour") and not
+ * an oversight. */
 static void i2c_p4_bringup_timing(void) {
-    const uint32_t half = 200u;
-    REG(P4_I2C_SCL_LOW)          = half;
-    REG(P4_I2C_SCL_HIGH)         = half - 10u;   /* the extra 10 is SCL wait  */
-    REG(P4_I2C_SCL_START_HOLD)   = half / 2u;
-    REG(P4_I2C_SCL_RSTART_SETUP) = half / 2u;
-    REG(P4_I2C_SCL_STOP_HOLD)    = half / 2u;
-    REG(P4_I2C_SCL_STOP_SETUP)   = half / 2u;
-    REG(P4_I2C_SDA_HOLD)         = half / 4u;
-    REG(P4_I2C_SDA_SAMPLE)       = half / 4u;
-    REG(P4_I2C_FILTER_CFG)       = (7u << 4) | 7u | (1u << 3) | (1u << 8);
-    REG(P4_I2C_TO)               = 16u;
+    const uint32_t half = 200u;                   /* 40 MHz / 100 kHz / 2 */
+    const uint32_t wait_high = half / 2u - 2u;    /* 98, for >= 80 kHz    */
+    const uint32_t high      = half - wait_high;  /* 102                  */
+    const uint32_t sample    = half / 2u;         /* 100                  */
+
+    REG(P4_I2C_SCL_LOW)          = half - 1u;
+    REG(P4_I2C_SCL_HIGH)         = high | (wait_high << 9);
+    REG(P4_I2C_SCL_START_HOLD)   = half - 1u;
+    REG(P4_I2C_SCL_RSTART_SETUP) = half - 1u;
+    REG(P4_I2C_SCL_STOP_HOLD)    = half - 1u;
+    REG(P4_I2C_SCL_STOP_SETUP)   = half - 1u;
+    REG(P4_I2C_SDA_HOLD)         = half / 4u - 1u;
+    REG(P4_I2C_SDA_SAMPLE)       = sample - 1u;
+    /* threshold 7 on each line, both filters enabled */
+    REG(P4_I2C_FILTER_CFG)       = 7u | (7u << 4) | P4_I2C_SCL_FILTER_EN |
+                                   P4_I2C_SDA_FILTER_EN;
+    /* 2^12 source cycles, about 10 bus cycles, and the enable that makes it
+     * mean anything. IDF's formula: ceil(log2(5 * half_cycle)) + 2. */
+    REG(P4_I2C_TO)               = 12u | P4_I2C_TIME_OUT_EN;
     REG(P4_I2C_SCL_ST_TO)        = 0x10u;
     REG(P4_I2C_SCL_MAIN_ST_TO)   = 0x10u;
 
@@ -441,52 +554,105 @@ static void i2c_p4_bringup_timing(void) {
     g_p4_i2c_ready = true;
 }
 
-/* The same sequence, one step at a time, saying what it is about to do before
- * it does it. The last line printed names the write that killed the console. */
-void i2c_p4_bringup(void) {
-    if (g_p4_i2c_ready) { printk_critical("[I2Cdiag] already up\n"); return; }
-
-    printk_critical("[I2Cdiag] 1: APB gate\n");
-    REG(P4_SOC_CLK_CTRL2) |= (1u << 12);
-
-    printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
-    REG(P4_PERI_CLK_CTRL10) &= ~(1u << 0);
-    REG(P4_PERI_CLK_CTRL10) |= (1u << 1);
-
-    printk_critical("[I2Cdiag] 3: reset pulse\n");
-    REG(P4_HP_RST_EN1) |=  (1u << 22);
-    REG(P4_HP_RST_EN1) &= ~(1u << 22);
-
-    printk_critical("[I2Cdiag] 4: pad GPIO7 (SDA)\n");
-    p4_pad_for_i2c(P4_I2C_SDA_GPIO, P4_I2C_SDA_SIG);
-
-    printk_critical("[I2Cdiag] 5: pad GPIO8 (SCL)\n");
-    p4_pad_for_i2c(P4_I2C_SCL_GPIO, P4_I2C_SCL_SIG);
-
-    printk_critical("[I2Cdiag] 6: CTR\n");
-    REG(P4_I2C_CTR) = P4_I2C_MS_MODE | P4_I2C_CLK_EN |
-                      P4_I2C_SDA_FORCE_OUT | P4_I2C_SCL_FORCE_OUT;
-
-    printk_critical("[I2Cdiag] 7: timing\n");
-    i2c_p4_bringup_timing();
-
-    printk_critical("[I2Cdiag] 8: fifo + commit\n");
-    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
-    g_p4_i2c_ready = true;
-    printk_critical("[I2Cdiag] bringup complete\n");
-}
-
 static void p4_i2c_reset_fifo(void) {
     REG(P4_I2C_FIFO_CONF) |= P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST;
     REG(P4_I2C_FIFO_CONF) &= ~(P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST);
     REG(P4_I2C_INT_CLR) = 0xffffffffu;
 }
 
+/* Every transaction starts here, and it starts by throwing away whatever the
+ * last one left.
+ *
+ * The FIFO reset alone is not enough, and the board says so: with only that,
+ * exactly one transaction after a NACKed one comes back wrong -- a false NACK
+ * from a part that is present, or a false ACK from an address that is empty.
+ * Three probes of the BME280 in a row read 0, 1, 1, and an address scan found
+ * a phantom device at the first address it tried. The FIFO was clean each
+ * time (FIFO_ST reads back zero); what was not clean was the master FSM,
+ * which SR reports as having stopped mid-transfer.
+ *
+ * IDF's driver can leave this out because it owns the controller and tracks
+ * its own state across calls. This one cannot: the same peripheral is entered
+ * from an address scan, the RTC probe, the EEPROM and the sensor, in an order
+ * nobody here decides, and "what did the previous caller leave behind" is not
+ * a question any of them should have to answer. Two register writes at the
+ * top of each transaction removes it. */
+static void p4_i2c_begin(void) {
+    REG(P4_I2C_CTR) |= P4_I2C_FSM_RST;
+    p4_i2c_reset_fifo();
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+}
+
+/* What a failed transaction leaves behind, and why nothing works afterwards
+ * until it is cleared.
+ *
+ * A NACK, a timeout or a lost arbitration stops the command list where it
+ * stands: the master FSM is mid-transfer, SCL is wherever the abort left it,
+ * and a slave that was clocking out a byte may still be holding SDA low
+ * waiting for the ninth clock it never got. Starting the next command list
+ * into that state does not begin a new transfer -- it inherits a broken one.
+ *
+ * This is precisely what an address scan looks like when it is missing: the
+ * first NACKed address wedges the controller and every later address reports
+ * absent, so a bus with one device on it scans as a bus with one device, then
+ * as an empty bus, depending on where the wedge happened to land. On this
+ * board the ES8311 codec at 0x18 made that visible -- a part that is soldered
+ * down and cannot come and go.
+ *
+ * Two steps, in the order IDF's own recovery uses. FSM_RST (self-clearing)
+ * returns the master to idle without disturbing timing or filter config.
+ * SCL_RST_SLV_EN then clocks out up to nine SCL pulses and a STOP, which is
+ * the standard way to walk a slave off a byte it is still transmitting; the
+ * hardware clears the enable when it is done, so waiting on that bit is
+ * waiting for the bus, not for a fixed delay. */
+/* Nine SCL pulses and a STOP: the standard way to walk a slave off a byte it
+ * is still transmitting. A device that was mid-transfer when the master went
+ * away holds SDA low waiting for a clock that never comes, and no START the
+ * master issues afterwards is seen -- the bus reads as busy and the first
+ * address of the next transaction is NACKed, or worse, ACKed by the stuck
+ * device.
+ *
+ * The hardware clears the enable when it has sent the pulses, so waiting on
+ * that bit waits for the bus rather than for a guessed delay. */
+static void p4_i2c_bus_clear(void) {
+    REG(P4_I2C_SCL_SP_CONF) = P4_I2C_SCL_RST_SLV_NUM(9) | P4_I2C_SCL_RST_SLV_EN;
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+
+    /* Bounded in wall time for the reason p4_i2c_run() is: nine pulses at
+     * 100 kHz is 90 us, and a bus that has not finished them in 5 ms is not
+     * going to. Give up rather than spin -- the enable is then cleared by
+     * hand so the next transaction does not start into a pending clear. */
+    uint64_t deadline = time_get_us() + 5000u;
+    while ((REG(P4_I2C_SCL_SP_CONF) & P4_I2C_SCL_RST_SLV_EN) != 0) {
+        if (time_get_us() >= deadline) {
+            REG(P4_I2C_SCL_SP_CONF) = 0;
+            break;
+        }
+    }
+    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+    REG(P4_I2C_INT_CLR) = 0xffffffffu;
+}
+
+/* After a failure: the ordinary preparation, plus the bus clear.
+ *
+ * The clear is *here* and in bringup, and deliberately not in p4_i2c_begin().
+ * Putting it before every transaction was tried and made things worse rather
+ * than better -- a clear ends in a STOP, and a START issued straight after it
+ * does not leave the bus-free time a slave needs (t_BUF, 4.7 us at 100 kHz),
+ * so the first transfer of a burst started NACKing a part that was there. The
+ * two places it belongs are the two where the bus may genuinely be held by
+ * someone else: at bringup, when this kernel has just arrived and has no idea
+ * what the previous firmware left mid-byte, and after an error, when the
+ * transfer we just abandoned may have stopped a slave mid-byte ourselves. */
+static void p4_i2c_recover(void) {
+    p4_i2c_begin();
+    p4_i2c_bus_clear();
+}
+
 /* Runs a command list that has already been written, and reports what the
  * bus said. Bounded: a stuck bus must not become a stuck kernel. */
-static uint32_t g_p4_i2c_last_int;   /* what the last transaction ended on */
-static uint32_t g_p4_i2c_last_sr;
+/* g_p4_i2c_last_int / _sr (declared above): what the last transaction
+ * ended on. */
 
 static bool p4_i2c_run(void) {
     REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
@@ -510,8 +676,15 @@ static bool p4_i2c_run(void) {
 
     g_p4_i2c_last_int = st;
     g_p4_i2c_last_sr  = REG(P4_I2C_SR);
-    return (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) != 0 &&
-           (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) == 0;
+
+    bool ok = (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) != 0 &&
+              (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) == 0;
+    /* Every failure, including the deadline expiring with no bit set at all,
+     * leaves the FSM somewhere this driver did not put it. See
+     * p4_i2c_recover(): without this, one absent address makes the whole bus
+     * absent. */
+    if (!ok) p4_i2c_recover();
+    return ok;
 }
 
 /* Step-by-step through printk_critical(), because the failure
@@ -524,7 +697,7 @@ static bool p4_i2c_run(void) {
  * from the shell task directly rather than through the i2c endpoint, so the
  * i2c task is not in the picture either. */
 void i2c_p4_diag(void) {
-    i2c_p4_bringup();
+    i2c_p4_hw_bringup(true);
     printk_critical("[I2Cdiag] ready=%d\n", (int)g_p4_i2c_ready);
    
     printk_critical("[I2Cdiag] CTR=0x%08x\n", (unsigned)REG(P4_I2C_CTR));
@@ -540,18 +713,34 @@ void i2c_p4_diag(void) {
            (unsigned)REG(P4_IOMUX_PAD(7)), (unsigned)REG(P4_IOMUX_PAD(8)),
            (unsigned)REG(P4_GPIO_OUT_SEL(7)), (unsigned)REG(P4_GPIO_IN_SEL(69)));
    
-    printk_critical("[I2Cdiag] fifo reset...\n");
-    p4_i2c_reset_fifo();
-    printk_critical("[I2Cdiag] queueing one probe of 0x76...\n");
-    REG(P4_I2C_DATA) = (uint32_t)(0x76u << 1);
-    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
-    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
-    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
-    printk_critical("[I2Cdiag] starting...\n");
-    bool ok = p4_i2c_run();
-    printk_critical("[I2Cdiag] probe 0x76 -> %d  INT_RAW=0x%08x SR=0x%08x\n",
-           (int)ok, (unsigned)g_p4_i2c_last_int, (unsigned)g_p4_i2c_last_sr);
-   
+    /* Both shapes, three times each, and the repetition is the measurement.
+     *
+     * One probe cannot tell "the part is there" from "the last transaction
+     * left the controller somewhere". Three in a row can, and the reading is
+     * mechanical: 1,1,1 is a part; 0,0,0 is an empty address; **0,1,1 is a
+     * stale controller** -- the first transaction paying for what the
+     * previous one left behind. That last pattern is what found
+     * p4_i2c_begin() and the bringup bus clear, so the diagnostic keeps the
+     * shape that found it rather than reporting a single verdict.
+     *
+     * The read is reported separately from the probe because they are
+     * different command lists and it is possible for one to work while the
+     * other does not -- E7 saw exactly that, an address-only probe NACKing
+     * while a register read of the same part returned its chip id. Every
+     * register access this driver makes is the read shape, so that is the one
+     * that matters; the probe is what an address scan uses. */
+    for (int i = 0; i < 3; i++) {
+        bool pok = i2c_probe_addr(0x76u);
+        printk_critical("[I2Cdiag] probe#%d 0x76 -> %d  INT_RAW=0x%08x SR=0x%08x\n",
+               i, (int)pok, (unsigned)g_p4_i2c_last_int, (unsigned)g_p4_i2c_last_sr);
+    }
+    for (int i = 0; i < 3; i++) {
+        uint8_t reg = 0xd0u, id = 0;
+        bool rok = i2c_xfer_raw(0x76u, &reg, 1, &id, 1);
+        printk_critical("[I2Cdiag] read#%d 0x76 reg 0xd0 -> %d id=0x%02x  INT_RAW=0x%08x SR=0x%08x\n",
+               i, (int)rok, (unsigned)id, (unsigned)g_p4_i2c_last_int,
+               (unsigned)g_p4_i2c_last_sr);
+    }
 }
 
 /* What the last transaction ended on, for i2cdiag. Exposed rather than
@@ -563,7 +752,7 @@ void i2c_p4_last_status(uint32_t *int_raw, uint32_t *sr) {
 
 static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
     if (!g_p4_i2c_ready || len < 0 || len > 30) return false;
-    p4_i2c_reset_fifo();
+    p4_i2c_begin();
     REG(P4_I2C_DATA) = (uint32_t)(addr << 1);          /* address + write     */
     for (int i = 0; i < len; i++) REG(P4_I2C_DATA) = src[i];
     REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
@@ -583,7 +772,7 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
     if (wlen < 0 || rlen < 0 || wlen > 30 || rlen > 30) return false;
     if (rlen == 0) return i2c_write_bytes(addr, w, wlen);
 
-    p4_i2c_reset_fifo();
+    p4_i2c_begin();
     REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
     for (int i = 0; i < wlen; i++) REG(P4_I2C_DATA) = w[i];
     REG(P4_I2C_DATA) = (uint32_t)((addr << 1) | 1u);
@@ -617,7 +806,7 @@ static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
  * is precisely what p4_i2c_run() returns false for. */
 static bool i2c_probe_addr(uint8_t addr) {
     if (!g_p4_i2c_ready) return false;
-    p4_i2c_reset_fifo();
+    p4_i2c_begin();
     REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
     REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
     REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
@@ -767,29 +956,42 @@ void i2c_rtc_init(void) {
         }
     }
 
-#if defined(CONFIG_BOARD_RP2350)
-    printk("[I2C RTC] No DS1307/DS3231 RTC module found at 0x68 (Using system software clock).\n");
-#else
-    /* "Not found at 0x68" would claim a probe that never happened: on every
-     * target but RP2350 the i2c_probe_addr()/i2c_rtc_hw_read_time() pair
-     * above are the stubs a few hundred lines up, which return false without
-     * touching a wire, because there is no I2C controller compiled in at all.
+    /* Two different absences, and saying which is the whole point.
      *
-     * The same class of line as the two the ESP32-P4's first boot caught in
-     * E2 (plan/phase27_esp32p4_bringup.md): drivers/at24c32.c announcing a
-     * "4KB I2C EEPROM detected at 0x57!" from a build with no bus, and
-     * drivers/usb_cdc.c naming two host device nodes from a stub. This one is
-     * milder -- g_rtc_detected stays false, the registry reports
-     * rtc(absent), and the software clock is correctly used either way -- so
-     * it misdescribes the reason rather than the outcome. It still had to go,
-     * and on the P4 it was actively misleading: that board does have a
-     * battery-backed real-time clock, in the LP domain with its own 32.768
-     * kHz crystal, and it is nothing this driver has ever heard of. Reading
-     * "no RTC module found" there is the wrong conclusion drawn from a true
-     * sentence. */
-    printk("[I2C RTC] No I2C controller on this target; the kernel clock is "
-           "software-only until something sets it.\n");
+     * "Not found at 0x68" claims a probe. Where there is no controller
+     * compiled in, i2c_probe_addr() and i2c_rtc_hw_read_time() are the stubs a
+     * few hundred lines up, which return false without touching a wire, and
+     * the sentence describes something that did not happen -- the same class
+     * of line as the two the ESP32-P4's first boot caught in E2
+     * (plan/phase27_esp32p4_bringup.md): drivers/at24c32.c announcing a "4KB
+     * I2C EEPROM detected at 0x57!" from a build with no bus, and
+     * drivers/usb_cdc.c naming two host device nodes from a stub.
+     *
+     * The gate was `#if defined(CONFIG_BOARD_RP2350)`, which was the same
+     * thing as "has a controller" right up until E7 gave the P4 one -- after
+     * which that board answered a full bus scan while printing "No I2C
+     * controller on this target". Both sentences were true when written and
+     * one of them stopped being true without changing. I2C_HAVE_CONTROLLER
+     * (drivers/i2c_rtc.h) is the fact each site actually wanted.
+     *
+     * On the P4 the honest line still is "nothing at 0x68": that board has no
+     * RTC chip at all. What it has is the LP domain's own counter and a
+     * 32.768 kHz crystal, which is a real clock and nothing this driver has
+     * ever heard of -- see E7 in the phase plan for why that is a different
+     * device class rather than a second implementation of this one. */
+    if (I2C_HAVE_CONTROLLER) {
+#if defined(CONFIG_BOARD_RP2350)
+        printk("[I2C RTC] No DS1307/DS3231 RTC module found at 0x68 (GP%d/GP%d); "
+               "using the system software clock.\n",
+               CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
+#else
+        printk("[I2C RTC] No DS1307/DS3231 RTC module answered at 0x68; "
+               "using the system software clock.\n");
 #endif
+    } else {
+        printk("[I2C RTC] No I2C controller on this target; the kernel clock is "
+               "software-only until something sets it.\n");
+    }
 }
 
 bool i2c_rtc_is_detected(void) {

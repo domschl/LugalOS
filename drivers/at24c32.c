@@ -184,7 +184,9 @@ void at24c32_init(void) {
      * the same distinction kernel/board.c's probe comments draw between "a
      * part answered" and "the probe ran". */
     g_at24c32_detected = true;
-    printk("[AT24C32] Synthetic 4 KB RAM EEPROM (no I2C bus on this target).\n");
+    printk("[AT24C32] Synthetic 4 KB RAM EEPROM (%s).\n",
+           I2C_HAVE_CONTROLLER ? "no EEPROM part on this board"
+                               : "no I2C bus on this target");
 #endif
 }
 

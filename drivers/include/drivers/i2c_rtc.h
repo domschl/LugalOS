@@ -1,9 +1,24 @@
 #ifndef DRIVERS_I2C_RTC_H
 #define DRIVERS_I2C_RTC_H
 
+#include "lugalos_config.h"
 #include "kernel/time.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Whether this build has a real I2C controller behind the functions below.
+ *
+ * Named as a capability rather than spelled `#if defined(CONFIG_BOARD_RP2350)`
+ * at each site, because that is what those sites meant and it stopped being
+ * what it said the moment a second board grew a controller: the ESP32-P4
+ * spent E7 announcing "No I2C controller on this target" while answering a
+ * bus scan (plan/phase27_esp32p4_bringup.md E7). A board that gains one adds
+ * itself here, once. */
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+#define I2C_HAVE_CONTROLLER 1
+#else
+#define I2C_HAVE_CONTROLLER 0
+#endif
 
 void i2c_rtc_init(void);
 bool i2c_rtc_read_time(rtc_time_t *tm);

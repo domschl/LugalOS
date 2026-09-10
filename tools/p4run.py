@@ -299,6 +299,47 @@ def esptool(*args, timeout=180):
     )
 
 
+# How many times to deliver the image before giving up.
+#
+# esptool reporting success is not the same thing as the image running: with
+# `--no-stub load-ram` on this board, roughly one delivery in three returns 0
+# and then nothing ever executes -- the capture holds the ROM's own banner and
+# not one byte more. That was a real cost during E7
+# (plan/phase27_esp32p4_bringup.md), where a "the sensor was not detected at
+# boot" result and "the board never booted" look identical from a grep.
+#
+# So the success condition is the program's own first words, not the loader's
+# exit code, and a load that does not produce them is retried.
+LOAD_TRIES = 3
+
+# What this kernel prints before anything else can go wrong. Absent from a
+# board that did not start; absent, too, from an image that is not this
+# kernel -- which is why looks_dead() below has to be consulted as well,
+# rather than treating a missing marker as a failed load.
+RUNNING_MARKER = "LugalOS"
+
+# And what it prints when it is ready to be typed at. Proof of life and
+# readiness are eight seconds and a whole boot apart, and conflating them
+# types the first command into a line editor that does not exist yet -- which
+# comes back as a command that ran and printed nothing, the most misleading
+# result this script can produce.
+READY_MARKER = "lsh>"
+
+
+def looks_dead(text):
+    """True when the capture holds the boot ROM's output and nothing after it.
+
+    The distinction that matters is between "the image ran and said something
+    we do not recognise" (a bare test image: leave it alone) and "the image
+    never ran" (retry). The ROM always announces itself and then reports
+    waiting for the download; anything printed *after* that came from the
+    program, whatever it is."""
+    tail = text.rsplit("waiting for download", 1)[-1]
+    # The download itself echoes binary noise onto this receive-only port, so
+    # count only what could plausibly be a program talking.
+    return sum(c.isalpha() for c in tail) < 16
+
+
 def load(port, img, reset, rport=None, driver=None, baud=None):
     """Get the chip into download mode and deliver the image.
 
@@ -578,10 +619,28 @@ def main():
     # heartbeat. Here they are not lost, and the CSR dump is the whole
     # observational point of E1.
     if rport != port:
-        with Watcher(rport) as w:
-            if not load(port, img, a.reset, rport, driver=w, baud=a.baud):
-                return 1
-            time.sleep(a.listen_secs)
+        for tries_left in range(LOAD_TRIES - 1, -1, -1):
+            with Watcher(rport) as w:
+                if not load(port, img, a.reset, rport, driver=w, baud=a.baud):
+                    return 1
+                t0 = time.time()
+                started = w.wait_for(RUNNING_MARKER, a.listen_secs)
+                if started:
+                    # Started is not ready: wait out the rest of the window
+                    # for the prompt, and if it never comes, still give the
+                    # board the time the caller asked for.
+                    left = a.listen_secs - (time.time() - t0)
+                    if left > 0 and not w.wait_for(READY_MARKER, left):
+                        time.sleep(max(0.0, a.listen_secs - (time.time() - t0)))
+                else:
+                    # Give a program with no marker of ours (a bare test
+                    # image) the full listen window it was going to get.
+                    time.sleep(max(0.0, a.listen_secs - (time.time() - t0)))
+            if started or not looks_dead(w.text()) or tries_left == 0:
+                break
+            print("loaded, but the image never started (%d bytes, ROM output "
+                  "only) -- reloading, %d attempt(s) left."
+                  % (len(w.buf), tries_left))
         print("=== %d bytes on %s, across the load ===" % (len(w.buf), rport))
         print(w.text())
         # The watcher above reads the reset port, which on this wiring is

@@ -1,6 +1,7 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-06. E0-E6 done; E7 is next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
+**Status: in progress, 2026-09-10. E0-E6 done; E7's sensor half done and
+measured on hardware, its gateway hop blocked on wiring (see E7); E8 next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -2144,6 +2145,115 @@ The `heap_stateless_user_programs` rule applies to anything new that runs.
 
 Done when: the P4's BME280 readings appear in the gateway's namespace and
 reach the broker, with the P4 having no network stack of its own.
+
+#### What E7 built, and the four register bugs underneath it — 2026-09-10
+
+The sensor half is done and measured on hardware: a BME280 answering at 0x76,
+detected on three consecutive boots, reading 25.05 °C / 957.75 hPa / 36.8 %RH,
+served as `/proc/sensors` and read **from the laptop over SLIP-framed 9P** on
+the console wire — `p9share` on the board, `lugal9p --serial /dev/ttyUSB0
+--framing slip cat /proc/sensors` on the host. Watched across three reads a
+minute apart, `age_s` climbs and then resets as `reads` goes 1 → 2, which is
+the sampler doing its job across the wire rather than a snapshot that happened
+to be fresh.
+
+**I2C came up on the first attempt and was wrong in four ways at once.** The
+controller was brought up only from `i2cdiag`, because doing it at boot had
+wedged the board — that turned out to be this milestone's L2-cache corruption
+eating the woken task's frame, not the I2C sequence, so `i2c_hw_init()` now
+does it at boot where the RTC and sensor probes need it. What the bus then did
+was answer one address scan and then nothing, and find parts that were not
+there. Each of the four was found by reading IDF's own
+`esp_hal_i2c/esp32p4/include/hal/i2c_ll.h` against this file rather than by
+reasoning about symptoms:
+
+* **`SCL_WAIT_HIGH` shares a register with `SCL_HIGH`** — bits [15:9] over
+  bits [8:0]. Writing one number set the high period and left the FSM's wait
+  period at zero, violating the hardware's own documented assumption
+  (`HAL_ASSERT(scl_wait_high < sda_sample && sda_sample < scl_high)`).
+* **`TIME_OUT_EN` is bit 5 of the `TO` register**, above its 5-bit value.
+  Writing the value alone left the SCL timeout *disabled* — so a stretching
+  slave wedged the FSM instead of ending the transfer with `TIME_OUT` set,
+  which is the difference between an error the driver can recover from and one
+  it cannot see.
+* **The SDA glitch filter has its own enable**, bit 9. Only bit 8 was set, so
+  SCL was filtered and SDA was not, at a threshold of 15 rather than 7.
+* **Nothing reset the FSM after a failed transfer.** One NACKed address left
+  the master mid-transaction, and every later address in the scan reported
+  absent — which is why a bus with two devices on it scanned as one device,
+  then as none. `p4_i2c_begin()` now starts every transaction from a known
+  FSM instead of inheriting the last one's.
+
+**And a fifth thing that was not a bug in any register.** With all four fixed,
+exactly one transaction after a period of quiet still came back wrong — a
+phantom device at the first address a scan tried, or a NACK from a BME280 that
+was there. The diagnostic that settled it is three identical probes in a row:
+**0,1,1 is a stale controller**, where 0,0,0 is an empty address and 1,1,1 is
+a part. The cause is that resetting this chip does not reset what is wired to
+it: a part left mid-byte by the previous run, the ROM, or the factory image is
+still holding SDA when we arrive. Nine SCL pulses and a STOP at bringup —
+`p4_i2c_bus_clear()` — cost 90 µs once and make the first transaction as
+trustworthy as the rest.
+
+That clear is called at **bringup and after an error, and deliberately not
+before every transaction**. Doing it before every transaction was tried and
+made things *worse*: a clear ends in a STOP, and a START issued immediately
+after does not leave the bus-free time a slave needs (t_BUF, 4.7 µs at 100
+kHz), so the first transfer of a burst began NACKing a part that was present.
+
+**`/proc/sensors` serves a cache, and says how old it is.** `bme280_read()`
+blocks on the bus for a conversion, and `/proc` is served by the 9P task,
+which must not take the bus — the rule and its reasoning are already in
+`drivers/i2c_rtc.h` for the cached temperature. So a one-page `sensor` task
+samples every 60 s into a cache and the file reports `age_s` alongside the
+values. The age is part of the answer rather than a diagnostic: a reader on
+the far end of a wire has no other way to tell a fresh reading from a frozen
+one. On the RP2350 sensor persona that sampling falls out of `mqttd`; here
+`mqttd` has no broker to reach and exits at boot, and a reading nobody ever
+takes is not a measurement.
+
+**Two sentences that had stopped being true.** `#if defined(CONFIG_BOARD_RP2350)`
+meant "has an I2C controller" right up until this milestone gave the P4 one,
+after which the board answered a full bus scan while printing *"No I2C
+controller on this target"*, and `drivers/at24c32.c` said *"no I2C bus on this
+target"* about a board that has one and simply has no EEPROM part on it. Both
+now go through `I2C_HAVE_CONTROLLER` (`drivers/i2c_rtc.h`), so the next board
+to grow a controller says so in one place instead of misdescribing itself in
+two.
+
+**`tools/p4run.py` now checks that the image ran.** Roughly one delivery in
+three, `esptool --no-stub load-ram` returns 0 and nothing ever executes: the
+capture holds the ROM's banner and not one byte more. That cost real time
+here, because "the sensor was not detected at boot" and "the board never
+booted" are indistinguishable from a grep. The success condition is now the
+program's own first words, and a load that does not produce them is retried —
+with `started` (proof of life) kept separate from `ready` (the shell prompt),
+since typing into a line editor that does not exist yet comes back as a
+command that ran and printed nothing.
+
+#### What E7 has not done: the gateway hop
+
+The second half of the done-condition — *reaching the broker* — is not met,
+and the obstacle is wiring rather than code. **The P4-NANO presents one ACM
+device and it is the CH343P bridge, not the P4.** The RP2350's two ACMs come
+from `drivers/usb_cdc.c`, its own USB device stack: ACM0 the console, ACM1 the
+out-of-band 9P wire that `hw_out_of_band_9p_channel` depends on. The P4 has no
+equivalent built, so console and 9P share UART0 through `p9share`'s SLIP
+demux, and there is no second wire for a gateway without either a P4 USB
+device stack (phase-sized) or a second UART on the P4 (a `uart1_link` mirror,
+untestable until a gateway is physically attached).
+
+A QEMU guest as the gateway was considered and is viable —
+`scripts/run-qemu-hw-bridge.sh` already points a guest's 16550 chardev at a
+host serial device. Two facts shape it: the RISC-V `virt` machine has **one**
+16550, so aiming it at the P4 consumes the guest's only console and the guest
+must be driven from `init.lisp`; and the `virtio-serial` alternative does not
+fit as it stands, because `drivers/virtio_console.c` frames 9P **raw
+length-prefixed** while the P4's UART link is **SLIP**. Whichever gateway is
+used, the same gap remains: `mqttd_add_source()` takes a *function*, and
+nothing in the tree reads a value out of a mounted namespace to publish it.
+That file-backed source is the next piece of work, and it is the same piece
+whether the gateway is QEMU or an RP2350.
 
 ### E8 — The hardware suite, and the documents
 
