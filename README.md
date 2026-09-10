@@ -89,8 +89,9 @@ against a GPS-disciplined reference clock):
   hands out, and runs as a U-mode task confined to three of them — text (R|X), data (R|W), stack
   (R|W). `exec` is that path, so a program compiled on the machine by `cc` runs confined too. The
   loader validates every header offset against the file size before using it.
-- Boots to an interactive shell (`lsh`) on all supported targets, including two distinct RP2350
-  board personas (`rp2350-chess`, `rp2350-clock` — see [Build presets](#build-presets)).
+- Boots to an interactive shell (`lsh`) on all supported targets — QEMU RV32/RV64, several distinct
+  RP2350 board personas (`rp2350-chess`, `rp2350-clock`, ...), and a second silicon entirely, the
+  ESP32-P4 (see [Build presets](#build-presets)).
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
 - The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the
@@ -313,9 +314,30 @@ Available configure presets:
   "rp2350-gateway" - RP2350 (Pico 2) — network gateway persona
   "rp2350-wifi"    - RP2350W (Pico 2 W) — wireless netif persona
   "rp2350-sensor"  - RP2350W (Pico 2 W) — environment sensor persona
+  "esp32p4"        - ESP32-P4 (Waveshare ESP32-P4-NANO)
   "rv64-smp"       - QEMU RV64 (Sv39 MMU) — SMP, two harts
   "rp2350-smp"     - RP2350 (Pico 2) — chess persona, both cores
 ```
+
+`esp32p4` is the **second silicon** this kernel runs on, and the reason the
+`arch/riscv/` seams are a portability claim rather than an untested
+assumption wearing the costume of one
+([`plan/phase27_esp32p4_bringup.md`](plan/phase27_esp32p4_bringup.md)). It
+boots to `lsh`, keeps time off the CLINT, takes interrupts through the CLIC,
+confines U-mode tasks with PMP, mounts a writable `/flash0` through the boot
+ROM's own SPI routines, and reads a BME280 over I2C which it serves as
+`/proc/sensors` to any 9P client on its console wire. It is loaded, run and
+tested without touching a button:
+
+```bash
+cmake --preset esp32p4 && cmake --build --preset esp32p4
+tools/p4run.py build/esp32p4/lugalos.elf --interactive   # load into RAM and talk to it
+cd tests/hw && uv run test_esp32p4.py                    # load, then twelve checks
+```
+
+That board needs **two** USB cables doing different jobs, and neither can do
+the other's — see [`tests/hw/README.md`](tests/hw/README.md)'s ESP32-P4
+section, which is also where the flashing procedure lives.
 
 The two SMP presets are the only ones that set `CONFIG_ENABLE_SMP`. Every other persona boots on a
 single hart exactly as it did before phase 23, and the second-core code compiles out entirely — so a

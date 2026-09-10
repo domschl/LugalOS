@@ -537,3 +537,58 @@ can still be excluded deliberately rather than by accident. Until then the
 convention is: on RP2350, prefer zero-initialised statics, and treat any
 size *drop* on a change that added state as a measurement bug until proven
 otherwise.
+
+---
+
+## The P4's console is its only 9P wire, so it cannot reach a gateway
+
+**Trigger:** try to give the ESP32-P4 a downlink to a gateway board the way
+`drivers/uart1_link_rp2350.c` describes for a chess or clock board. There is
+no second wire to use.
+
+**Why it is parked:** the RP2350's two ACM ports come from
+`drivers/usb_cdc.c`, its own USB device stack -- ACM0 the console, ACM1 the
+out-of-band 9P link. The P4 has no equivalent built, so the single
+`/dev/ttyACM*` this board presents is the CH343P bridge chip, not the P4
+talking, and console and 9P share UART0 through `p9share`'s SLIP demux.
+
+This was E7's remaining half (`plan/phase27_esp32p4_bringup.md`), and it is
+parked because both ways out are larger than the milestone: a USB device
+stack for the P4 (phase-sized, and the P4 has both a USB-Serial-JTAG and a
+full OTG controller to choose between), or a `uart1_link_esp32p4.c` mirroring
+the RP2350's, which needs the P4's UART1 clock/reset bits and GPIO-matrix
+routing and cannot be tested until a gateway board is physically wired to it.
+
+**What it does not block:** the readings themselves. `p9share` plus
+`lugal9p --serial <port> --framing slip` reads `/proc/sensors` over the
+console wire today, and `tests/hw/test_esp32p4.py` checks exactly that.
+
+**Fix, when it is worth it:** phase 28 brings up Ethernet on this board, at
+which point the P4 has a netif and the whole question changes shape -- a node
+on the LAN needs no downlink cable. That is the reason to wait rather than to
+pick one of the two now.
+
+---
+
+## `mqttd` has no file-backed source, so a gateway cannot publish a mounted namespace
+
+**Trigger:** mount a sensor node's namespace on a gateway
+(`(mount-remote "p4" "uart1")`) and try to publish a value out of it.
+Nothing does.
+
+**Why it is parked:** `mqttd_add_source()` (net/mqttd.h) takes a *function*.
+Every source in the tree is compiled in beside the driver that produces it --
+`drivers/bme280.c`'s three, and `mqttd fake`'s synthetic one. A gateway
+republishing another node's readings needs a source that opens a path on a
+mount, reads a `key=value` block and returns one field, and nothing in the
+tree does that yet.
+
+Found in phase 27's E7, where it is the last piece between a P4 that measures
+and a broker that hears about it. Independent of the wiring issue above: it is
+the same missing piece whether the gateway is an RP2350 or a QEMU guest.
+
+**Fix, when it is worth it:** a `mqttd_add_file_source(name, path, field,
+rule)` whose sample function does a 9P read through the VFS like any other
+file. The rate limiting, the will and the reconnect machinery above it all
+work unchanged -- Q5 built them against a source that is just a function
+returning a number, which is exactly what this would be.

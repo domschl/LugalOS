@@ -1,4 +1,17 @@
-# RP2350 Hardware-in-the-Loop Tests
+# Hardware-in-the-Loop Tests
+
+Three suites, one per attached target:
+
+| Suite | Target | Wants |
+|---|---|---|
+| `test_rp2350.py` | RP2350 (Pico 2 / Pico 2 W) | USB, both ACM ports; a UART adapter for `p9share` |
+| `test_gateway.py` | RP2350 gateway persona | an IP address and a 9P key |
+| `test_esp32p4.py` | ESP32-P4 (Waveshare ESP32-P4-NANO) | both cables — see below |
+
+Every one of them **skips rather than fails** when its board is not attached,
+so all three are safe to run speculatively and safe to leave out of CI.
+
+## RP2350
 
 Exercises real RP2350 silicon: `link_usb_cdc` (ACM1/EP4) and `p9share` (the
 UART demux), plus the actual T3 milestone from
@@ -202,11 +215,52 @@ many times the driver's own MAC/PHY recovery has fired since boot -- see
 the wiring section above for what a nonzero, climbing reinit count means
 and why it is expected rather than a fault.
 
-## ESP32-P4 (Waveshare ESP32-P4-NANO) — loading and reset
+## ESP32-P4 (Waveshare ESP32-P4-NANO)
 
-Phase 27's second silicon. Nothing here is a test yet: E1 is a standalone
-bare-metal program, and the hardware suite is E8's work. This is the
-procedure for getting code onto the board, written down because the port
+Phase 27's second silicon.
+
+```bash
+cd tests/hw
+uv sync
+uv run test_esp32p4.py              # loads the kernel itself, then tests it
+uv run test_esp32p4.py --no-load    # test whatever is already running
+```
+
+`uv run test_esp32p4.py` needs no hands: it resets the board over the
+CH343P's modem lines, delivers `build/esp32p4/lugalos.elf` with
+`esptool load-ram`, waits for the shell and runs twelve checks. Nothing it
+does writes flash. With no board attached it prints what it looked for and
+exits 0.
+
+### What the P4 suite proves
+
+Almost none of it can be checked anywhere else — QEMU has no ESP32-P4 machine
+at all, so the CLIC, the PMP granularity, the boot ROM's flash routines and
+the I2C controller are exercised here or nowhere.
+
+| Test | The failure it exists to catch |
+|---|---|
+| boots to a shell | the load returned 0 and nothing ran (about one in three) |
+| `/proc` answers | — |
+| `/flash0` is mounted (E6) | the boot ROM's SPI routines, reached from a RAM-loaded kernel |
+| the tick preempts under a READY task (E4) | **`mstatus.MIE` is not the interrupt gate in CLIC mode.** Reads `clicdump`'s two spin phases; the bug showed spin0 +200 ticks and spin1 **+0**, with `MIE` reading 1 throughout. Nothing on RP2350 or QEMU can fail this — neither has `MIL` |
+| U-mode isolation refuses (E5) | tests the *refusal*; every other check of this machinery passes with PMP off |
+| I2C scan finds the codec and the sensor (E7) | a bus that answers nothing. The ES8311 at 0x18 is soldered to this board, so it is the control: found-0x76-but-not-0x18 is a test that got lucky |
+| I2C is stable on the first transaction (E7) | three probes in a row, because **`0,1,1` is a stale controller** and no single probe can tell that from an absent part |
+| BME280 compensation selftest | a mistyped datasheet coefficient |
+| BME280 reads a plausible measurement (E7) | range-checked against the part's own limits, which is what a corrupted `t_fine` breaks |
+| `/proc/sensors` carries a fresh reading (E7) | `age_s` against `sample_period_s` — a file that is valid but hours old is a frozen sensor reported as a working one |
+| the sampler advances unattended (E7) | watches `reads` increase with nobody asking for a measurement |
+| readings leave the board over 9P (E7) | `p9share` plus a real 9P client on the same wire — the persona's whole point, tested the way it is used |
+
+### If the P4 suite all skips
+
+`tools/p4run.py --ports` shows what is actually attached. Detection is by USB
+VID:PID, never by device name, for the reason the next section gives.
+
+### Loading and reset, by hand
+
+The procedure for getting code onto the board, written down because the port
 arrangement is the part that costs an afternoon if guessed at.
 
 **Nothing in this section writes flash.** `esptool load-ram` delivers an

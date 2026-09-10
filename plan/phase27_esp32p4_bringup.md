@@ -1,7 +1,11 @@
 # Phase 27 — A second silicon, and nothing clever on it yet
 
-**Status: in progress, 2026-09-10. E0-E6 done; E7's sensor half done and
-measured on hardware, its gateway hop blocked on wiring (see E7); E8 next.** E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
+**Status: COMPLETE, 2026-09-10. E0-E8 done.** The P4 boots, keeps time,
+takes interrupts through the CLIC, confines U-mode tasks, has a writable
+`/flash0`, reads a BME280 over I2C and serves it to any 9P client on its
+console wire; `tests/hw/test_esp32p4.py` checks all of that on demand, 12/12.
+E7's *gateway* hop is deliberately not done — the board has no second wire
+for it — and is parked in `plan/open_issues.md` rather than left implied. E4 also fixed a scheduler bug it exposed: `printk()` from teardown, interrupt context, or under `g_sched_lock` can block, and now has a non-blocking counterpart (`printk_critical()`). This is the first of three
 phases on the ESP32-P4 (Waveshare ESP32-P4-NANO); phases 28 and 29 are
 sketched in the addendum and deliberately not designed here.
 
@@ -2276,6 +2280,55 @@ five ELF tests once failed and blamed everything except storage.
 
 Done when: `uv run test_esp32p4.py` passes with a board attached and skips
 cleanly without one.
+
+#### What E8 built — 2026-09-10, and the phase closes here
+
+`tests/hw/test_esp32p4.py`, twelve checks, **12/12 with the board attached**
+and a clean exit 0 without one. It loads the kernel itself — reset over the
+CH343P's modem lines, `esptool load-ram`, wait for the prompt — so it needs
+nobody in the room, which was this milestone's one real precondition.
+
+`tools/p4run.py` is imported rather than re-implemented: it already owns the
+VID:PID detection, the reset sequences, the image regeneration and the
+did-it-actually-run check, and a second copy of any of those is a second copy
+that drifts.
+
+**Three of the twelve are worth naming, because they are the phase's own
+findings turned into regressions:**
+
+* **The tick preempts under a READY task (E4).** Reads `clicdump`'s two spin
+  phases rather than any register, because a dump taken at the prompt shows
+  `MIL=0` and proves nothing. The bug gave spin0 +200 ticks and spin1 **+0**
+  with `mstatus.MIE` reading 1 throughout; the fixed board gives +200 and
+  +200. Nothing on RP2350 or QEMU could fail this — neither has `MIL`.
+* **I2C is stable on the first transaction (E7).** Three identical probes,
+  because `0,1,1` is a stale controller and no single probe can tell that
+  from an absent part.
+* **The ES8311 audio codec at 0x18 is the control in every bus test.** It is
+  soldered to this board, so it cannot be forgotten, unplugged or miswired: a
+  scan that finds 0x76 and not 0x18 is a sensor test that got lucky, and one
+  that finds neither is a broken bus rather than a missing sensor.
+
+**One trap found while writing it, and it is the reason the console waits for
+a prompt rather than for silence.** `clicdump` spins for two seconds per
+phase and prints nothing while it does, so a quiet-window read ended
+mid-command — and the cost was not a truncated result but that *every later
+test* then read the tail of an earlier one, turning one mistimed read into a
+suite reporting nonsense. `Console.cmd()` reads to the next `lsh>`.
+
+**Documents:** `README.md` gains `esp32p4` in the preset list, which it had
+been missing entirely, plus what the board does and how to load it;
+`tests/hw/README.md` gains a three-suite table, the P4 suite's own section
+and a table of what each check exists to catch. `plan/open_issues.md`
+receives the two things E7 parked — the single-ACM wiring that leaves the
+console as the P4's only 9P wire, and `mqttd`'s missing file-backed source.
+
+**Phase 27 is complete.** The success condition §0 set was a P4 that is
+"trusted and boring": it boots, keeps time, takes interrupts, isolates U-mode
+tasks, has a filesystem, and runs a persona this project already proved
+elsewhere. It does all six, and a suite says so on demand. Phase 28 (Ethernet
+on this board) is the next thing, and it inherits a board whose faults are
+written down rather than remembered.
 
 ## 5. Risks, and what each looks like
 
