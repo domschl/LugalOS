@@ -367,6 +367,118 @@ concurrent exits possible, so the slot's stated assumption may hold again —
 Done when: no lock is held across `palloc_free()` anywhere, and the reap
 slot's comment states an invariant that is true rather than one that was.
 
+#### Y1 analysis — the options for F1, and what settles it — 2026-09-10
+
+**What `g_sched_lock` was actually doing at that call, which decides the
+fix.** `kernel/chan.c` never takes `g_sched_lock` — endpoint state is
+protected by `ep->lock`, and only for the `busy` flag. So holding the
+scheduler lock across `chan_owner_exited()` provided **no mutual exclusion
+whatsoever**. Its only purpose is the one its own comment gives: the caller
+must be READY *before* `next_runnable()` runs, so it is eligible to be picked
+as the successor.
+
+That is an ordering requirement, not an atomicity one, and it is satisfied by
+doing the work *earlier* just as well as by doing it *inside*.
+
+##### Option A — move `chan_owner_exited()` above the lock (recommended)
+
+```c
+chan_owner_exited(t->pid);                              /* unblocks the caller */
+uintptr_t flags = spin_lock_irqsave(&g_sched_lock);     /* then claim the table */
+int next = next_runnable(cur());
+```
+
+Two lines moved. `task_unblock()` keeps its own locking, `chan.c` learns
+nothing about the scheduler's internals, and the ordering the comment asks
+for still holds: the caller is READY before `next_runnable()` looks.
+
+*Verified*: with this applied the F1 reproducer prints `chan_call returned -1`
+and the shell keeps answering, where before the board stopped dead. The QEMU
+suite is 363/363, six presets build clean.
+
+*The window it opens, and why it is acceptable.* `chan_owner_exited()` now
+runs with interrupts enabled, so a tick can preempt mid-exit between it and
+the lock. That window already exists and is already longer — `printk_critical()`
+sits in it and is a bounded spin on the UART FIFO, milliseconds at 115200 —
+and the code below already defends against what it allows (see the reap slot,
+next). What the exiting task must not do in that window is *block*, which is
+E4's rule and which neither call does.
+
+##### Option B — a lock-already-held variant of `task_unblock()`
+
+Add `task_unblock_locked()` and a `chan_owner_exited_locked()`, keeping the
+unblock and `next_runnable()` under one continuous lock.
+
+Strictly more atomic, and rejected: it buys atomicity nothing needs. The
+transition it would make atomic is `caller → READY` *plus* `pick successor`,
+and no invariant depends on those two being indivisible — a caller woken a
+moment early simply returns `-1` from `chan_call()` and carries on, which is
+the correct outcome by any timing. The cost is real: `chan.c` would have to
+know that it is called with a lock it never takes, which is precisely the
+kind of implicit contract this phase exists to remove.
+
+##### Option C — handle owner death in `sched_reap()` instead
+
+Rejected outright. `sched_reap()` is called from `sched_yield()`, which the
+timer interrupt calls — E4's finding #2, the fix that hung the board. Moving
+work there is moving it into interrupt context.
+
+##### Option D — make `g_sched_lock` re-entrant
+
+Rejected. §4 rules out new primitives, and it would be the wrong answer
+anyway: re-entrancy would hide the ordering question rather than answer it,
+and every other user of that lock would pay for it.
+
+##### The second half of Y1: the reap slot's invariant is false, and the code already knows
+
+> *"One slot suffices because a task can only exit while running, and the
+> next task reaps before anything else can exit."*
+
+The second clause is not true. `task_exit()` runs with interrupts **enabled**
+from entry until `spin_lock_irqsave()`, and `printk_critical()` sits in that
+window — a bounded spin on the UART FIFO, which at 115200 baud is milliseconds
+for one line, far longer than a 10 ms tick needs to land. A second task can
+and does reach its own `task_exit()` while the first is mid-exit.
+
+The code does not rely on the false clause: it frees any stack it finds in the
+slot before claiming it, and says so. **The recommendation is to keep one slot
+and fix the sentence**, because the slot is sufficient for a reason that is
+maintained rather than assumed:
+
+> At most one stack is ever pending, because `task_exit()` frees whatever it
+> finds before claiming the slot. Two tasks mid-exit serialise on
+> `g_sched_lock`, and the one that arrives second is provably not running on
+> the first's stack — the first reached `ctx_switch()` before releasing, so
+> the successor that released is not it.
+
+##### What this hands to F2, and why the order matters
+
+F2 wants `palloc_free()` out from under `g_sched_lock`. In `task_exit()`
+there is no "after the lock" to move it to — the lock is handed off, never
+released — so the free must move *before* the acquire, and reading and
+clearing `g_reap_stack` outside the lock is a double-free on two harts.
+
+Two shapes are worth weighing when F2 is taken up, and both are cleaner than
+moving the call:
+
+* **Call `sched_reap()` at the top of `task_exit()`.** It already claims under
+  the lock and frees outside it, correctly, so the slot is empty on arrival
+  and the defensive branch becomes unreachable rather than merely unused. The
+  residual is that another hart can refill the slot between that call and the
+  acquire.
+* **Make the slot as deep as the hart count.** Then "occupied" is bounded by
+  the number of tasks that can be mid-exit at once, the reaper drains all
+  entries, and nothing ever needs to free under the lock. This removes the
+  residual above rather than shrinking it.
+
+There is also a third position that should be argued rather than assumed:
+`g_palloc_lock` is a leaf, so `g_sched_lock → g_palloc_lock` **cannot cycle**,
+and F2 could legitimately be closed by declaring leaf-only nesting legal and
+correcting `sched_reap()`'s comment instead of the code. Y0's table would then
+read "a spinlock holder may acquire only a leaf spinlock" rather than
+"nothing". That is a weaker invariant and a cheaper one; whether the extra
+freedom is worth giving up the one-comparison check is F2's call.
+
 ### Y2 — The checker
 
 A per-context held-lock level, asserted on acquire. `spin_lock_irqsave()` and
