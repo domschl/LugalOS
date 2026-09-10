@@ -641,16 +641,16 @@ int clock_ui_selftest(void) {
 
     /* --- brightness ---------------------------------------------------- */
     t_reset();
-    check(t_goto(UI_ITEM_BRIGHT), "reach BRIGHTNESS");
+    check(t_goto(UI_ITEM_BRIGHT), "reach MIN BRIGHTNESS");
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_SHORT);
     check(strcmp(t_text(), "BR 1") == 0, "minimum brightness starts at 1");
     t_key(CLOCK_KEY_DOWN, CLOCK_PRESS_SHORT);
     check(strcmp(t_text(), "BR 2") == 0 && (T_act & UI_ACT_APPLY_BRIGHT),
-          "DOWN leaves automatic for level 1, applied live");
+          "DOWN raises the floor to 2, applied live");
     t_key(CLOCK_KEY_UP, CLOCK_PRESS_SHORT);
-    check(strcmp(t_text(), "BR A") == 0, "UP from level 1 returns to automatic");
+    check(strcmp(t_text(), "BR 1") == 0, "UP lowers it back to 1");
     t_key(CLOCK_KEY_UP, CLOCK_PRESS_SHORT);
-    check(strcmp(t_text(), "BR 7") == 0, "...and UP again wraps to the brightest");
+    check(strcmp(t_text(), "BR 7") == 0, "...and UP past 1 wraps to the brightest");
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_SHORT);
     check(T_st.set.brightness == 7 && (T_act & UI_ACT_CONFIRM) &&
           T_st.mode == UI_MODE_IDLE,
@@ -661,7 +661,7 @@ int clock_ui_selftest(void) {
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_SHORT);
     t_key(CLOCK_KEY_DOWN, CLOCK_PRESS_SHORT);
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_LONG);
-    check(T_st.set.brightness == -1 && T_st.mode == UI_MODE_MENU,
+    check(T_st.set.brightness == 1 && T_st.mode == UI_MODE_MENU,
           "SET long abandons the change");
 
     /* --- temperature offset -------------------------------------------- */
@@ -791,7 +791,7 @@ int clock_ui_selftest(void) {
     t_key(CLOCK_KEY_DOWN, CLOCK_PRESS_SHORT);
     t_key(CLOCK_KEY_SET, CLOCK_PRESS_LONG);
     check(T_st.mode == UI_MODE_MENU && T_st.item == UI_ITEM_BRIGHT &&
-          T_st.set.brightness == -1,
+          T_st.set.brightness == 1,
           "abandoning stops at the menu instead, so another item is one step away");
 
     t_reset();
