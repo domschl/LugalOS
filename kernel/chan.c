@@ -40,32 +40,19 @@ struct chan_endpoint {
 static chan_endpoint_t g_endpoints[CHAN_MAX_ENDPOINTS];
 static uint32_t        g_num_endpoints;
 
-/* Anti-cycle guard: a wait-for graph over task-owned endpoint calls.
- * g_wait_for[pid] is the owner_pid that task `pid` is currently blocked
- * inside chan_call_task() waiting on, or -1 if it is not calling anyone.
- * chan_call_task() adds the edge caller->target for the duration of the
- * block; a call is refused before the edge is added if target can already
- * (transitively) reach caller, which is exactly "task A can call B, or be
- * called by B, never both -- and no longer chains either" (the rule this
- * exists to enforce structurally, not just by convention, before any
- * further driver gets converted into a task). */
-static int  g_wait_for[MAX_TASKS];
-static bool g_wait_for_ready;
-
-static void wait_for_init(void) {
-    if (g_wait_for_ready) return;
-    for (int i = 0; i < MAX_TASKS; i++) g_wait_for[i] = -1;
-    g_wait_for_ready = true;
-}
-
-static bool would_cycle(int caller_pid, int target_pid) {
-    int cur = target_pid;
-    for (int guard = 0; cur >= 0 && cur < MAX_TASKS && guard < MAX_TASKS; guard++) {
-        if (cur == caller_pid) return true;
-        cur = g_wait_for[cur];
-    }
-    return false;
-}
+/* The anti-cycle guard lives in kernel/lock.c now (Y3,
+ * plan/phase31_concurrency_hierarchy.md): one wait-for graph fed by every
+ * blocking primitive, rather than a channel-only one here.
+ *
+ * This file kept its own array and walked it with no lock, which made
+ * §0.3's cycle -- a task holding a lock, calling a task that wants that lock
+ * -- invisible, because the other half of it was a lock edge and this graph
+ * had never heard of locks. The rule it enforces is unchanged and is still
+ * the one stated when it was written: task A can call B, or be called by B,
+ * never both, and no chains either. What changed is what counts as a wait.
+ *
+ * See waitfor_enter() in kernel/lock.h, including why testing and adding are
+ * one call. */
 
 int chan_register(const char *name, chan_handler_fn handler, void *ctx,
                   uint8_t *req_buf, uint32_t req_cap,
@@ -163,7 +150,6 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
         return -1;
     }
 
-    wait_for_init();
     int me = sched_current_pid();
 
     /* A hart with no task cannot make this call: it would index g_wait_for[]
@@ -179,7 +165,10 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
      * wait-for graph -- see g_wait_for's comment above. Caught here, before
      * anything is written to the endpoint, so a rejected call leaves no
      * state for the next attempt to trip over. */
-    if (would_cycle(me, ep->owner_pid)) {
+    /* Tested and recorded in one step, so the answer cannot go stale between
+     * the two -- see waitfor_enter(). A refusal leaves no edge behind, which
+     * is why there is no waitfor_leave() on this path. */
+    if (!waitfor_enter(me, ep->owner_pid)) {
         printk("[Chan] Refusing '%s': task %d -> %d would close a circular wait\n",
               ep->name, me, ep->owner_pid);
         return -1;
@@ -190,11 +179,10 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
     ep->caller_pid = me;
     ep->reply_len = -1;
     ep->request_pending = true;
-    g_wait_for[me] = ep->owner_pid;
     task_unblock(ep->owner_pid); /* no-op if the owner is not yet waiting; it will see the request when it next asks */
     task_block();
-    g_wait_for[me] = -1;
     irq_restore(flags);
+    waitfor_leave(me);
 
     return ep->reply_len;
 }

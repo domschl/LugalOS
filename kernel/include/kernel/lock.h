@@ -209,6 +209,52 @@ void      ylock_acquire_at(ylock_t *l, const char *name, const char *site);
 #define spin_unlock_irqrestore(l, f)     spin_unlock_irqrestore_at((l), (f))
 #define ylock_acquire(l)                 ylock_acquire_at((l), #l, __func__)
 
+/* --- One wait-for graph (Y3, plan/phase31_concurrency_hierarchy.md) -------
+ *
+ * `waitfor[pid]` is the task `pid` is currently blocked waiting for, or -1.
+ * **Every blocking primitive that waits on a task contributes an edge**, so a
+ * cycle is visible however it is assembled:
+ *
+ *   * `chan_call()` -- the caller waits for the endpoint's owner task.
+ *   * `ylock_acquire()` -- the acquirer waits for the task holding the ylock.
+ *
+ * Those used to be two unrelated mechanisms. `kernel/chan.c` owned a graph
+ * that saw only channel edges, which is why §0.3's cycle -- *A holds lock L,
+ * calls B, B tries to take L* -- was invisible to it: the B→A edge was a lock
+ * edge and the graph had no idea locks existed. One array, fed by both, and
+ * the cycle is an ordinary lookup.
+ *
+ * Spinlocks are deliberately **not** edges here. A spinlock may not be held
+ * across a block at all, which the leaf check above enforces outright, so it
+ * can never be half of a cycle -- a stronger guarantee than being counted in
+ * a graph, and free.
+ *
+ * It lives here rather than in chan.c because both contributors need it and
+ * neither should depend on the other; this header already carries the rest of
+ * the concurrency rules.
+ *
+ * ## Why entering is one call and not two
+ *
+ * `waitfor_enter()` tests for a cycle **and** adds the edge under one lock.
+ * Splitting them is what the previous version did -- `would_cycle()` walked
+ * the array with no lock at all, before the caller went on to write its own
+ * edge -- so on two harts the answer could be stale by the time it was acted
+ * on, and the one invariant this tree actually enforced was enforced with an
+ * unsynchronised read. Test-and-set together, or not at all.
+ */
+
+/* Adds the edge `me` -> `target` unless it would close a cycle. False means
+ * refused and **no edge was added**, so a caller that is refused must not
+ * call waitfor_leave(). `me` and `target` outside 0..MAX_TASKS-1 are ignored
+ * and report success: a hart with no task is not in the graph. */
+bool waitfor_enter(int me, int target);
+
+/* Removes `me`'s edge. Safe to call when none was added. */
+void waitfor_leave(int me);
+
+/* Which task `pid` is waiting for, or -1. Diagnostics. */
+int  waitfor_target(int pid);
+
 /* Prints the checks and a LOCK_SELFTEST_OK / _FAIL marker; returns the number
  * of failures. */
 int lock_selftest(void);

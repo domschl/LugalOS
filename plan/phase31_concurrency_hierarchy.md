@@ -619,6 +619,56 @@ about lock ownership, or express both through the same structure.
 Done when: the cycle in §0.3 — lock held → `chan_call` → same lock — is
 refused, and there is a test that constructs it deliberately.
 
+#### Y3 done — one graph, and §0.3's cycle refused — 2026-09-11
+
+**Expressed through one structure rather than two mechanisms**, which was the
+second of the options this milestone offered and the one that leaves nothing
+to keep in sync. `g_wait_for[]` moved out of `kernel/chan.c` into
+`kernel/lock.c`, and **every blocking primitive that waits on a task now
+contributes an edge**:
+
+* `chan_call()` — the caller waits for the endpoint's owner (as before);
+* `ylock_acquire()` — the acquirer waits for the task holding the ylock (new,
+  and the half that was missing).
+
+That is the whole of why §0.3's cycle used to be invisible: the B→A half of it
+was a *lock* edge, and the graph had never heard of locks.
+
+**Spinlocks are deliberately not edges.** A `spinlock_t` may not be held
+across a block at all — Y2 enforces that outright — so it can never be half of
+a cycle. A stronger guarantee than being counted in a graph, and free.
+
+**F5 is closed as part of it.** `waitfor_enter()` tests for a cycle *and* adds
+the edge under one lock. The previous shape walked the array with no lock at
+all and then wrote the edge separately, so on two harts the answer could be
+stale before it was acted on — the one invariant this tree actually enforced
+was enforced with an unsynchronised read.
+
+##### The test builds §0.3 in the order that lets it be refused
+
+Both halves of the cycle can detect it, but only one half can *do* anything:
+`chan_call()` has a refusal in its contract and every caller handles `-1`,
+while `ylock_acquire()` has no failure to return. So the test assembles it as
+*the lock holder calls the lock waiter*:
+
+1. the selftest task takes a ylock;
+2. a second task tries to take it, and yields — recording the edge;
+3. the selftest registers an endpoint to that task and calls it.
+
+```
+[Chan] Refusing 'lockcycle': task 0 -> 4 would close a circular wait
+```
+
+A working checker never blocks here, and the precondition — that the edge was
+actually recorded — is asserted before the call is made, so a regression fails
+the assertion instead of hanging a 363-test suite on a task that is not
+serving. Where the cycle closes at `ylock_acquire()` instead, it is reported
+and the wait continues: a livelock anyone can diagnose rather than one nobody
+can.
+
+Verified: `lockselftest` 12/12 on QEMU **and on ESP32-P4 silicon**, 363/363
+QEMU (184.1 s, within the band measured in Y2), ten presets warning-clean.
+
 ### Y4 — The audit
 
 Walk the ~20 existing hazard comments. Each one is either (a) now enforced by

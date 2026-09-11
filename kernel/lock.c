@@ -94,6 +94,12 @@ const char *lock_spin_held(void) { return g_spin_name[hart_id()]; }
 const char *lock_spin_site(void) { return g_spin_site[hart_id()]; }
 uint32_t    lock_faults(void)    { return g_lock_faults; }
 
+/* Report unconditionally -- for a violation the leaf check does not cover,
+ * such as a wait-for cycle, where there is no held spinlock to name. */
+static void lock_fault_named(const char *what, const char *name, const char *site) {
+    lock_fault(what, name, site);
+}
+
 bool lock_check_may_block_named(const char *what, const char *name,
                                 const char *site) {
     uint32_t h = hart_id();
@@ -163,6 +169,60 @@ void spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags) {
 
 bool spin_is_locked(const spinlock_t *l) { return l && l->word != 0; }
 
+/* --- The wait-for graph (Y3) -------------------------------------------
+ *
+ * See kernel/lock.h for what is in it and why spinlocks are not. Moved here
+ * from kernel/chan.c, which owned a channel-only version.
+ *
+ * Its own lock, and a leaf like every other spinlock_t: the critical sections
+ * below walk a fixed array and call nothing. That is what lets waitfor_enter()
+ * be called from chan_call_task() and from ylock_acquire() without either
+ * needing to know the other exists. */
+static spinlock_t g_waitfor_lock;
+static int        g_waitfor[MAX_TASKS];
+static bool       g_waitfor_ready;
+
+static void waitfor_init_once(void) {
+    if (g_waitfor_ready) return;
+    for (int i = 0; i < MAX_TASKS; i++) g_waitfor[i] = -1;
+    g_waitfor_ready = true;
+}
+
+/* Caller holds g_waitfor_lock. Walks from `target` and reports whether it can
+ * reach `me`; the guard bounds it at the table size, so a graph corrupted into
+ * a loop that does not contain `me` terminates rather than spinning. */
+static bool waitfor_reaches(int me, int target) {
+    int cur = target;
+    for (int guard = 0; cur >= 0 && cur < MAX_TASKS && guard < MAX_TASKS; guard++) {
+        if (cur == me) return true;
+        cur = g_waitfor[cur];
+    }
+    return false;
+}
+
+bool waitfor_enter(int me, int target) {
+    if (me < 0 || me >= MAX_TASKS || target < 0 || target >= MAX_TASKS) return true;
+
+    uintptr_t f = spin_lock_irqsave(&g_waitfor_lock);
+    waitfor_init_once();
+    bool cycle = waitfor_reaches(me, target);
+    if (!cycle) g_waitfor[me] = target;
+    spin_unlock_irqrestore(&g_waitfor_lock, f);
+    return !cycle;
+}
+
+void waitfor_leave(int me) {
+    if (me < 0 || me >= MAX_TASKS) return;
+    uintptr_t f = spin_lock_irqsave(&g_waitfor_lock);
+    g_waitfor[me] = -1;
+    spin_unlock_irqrestore(&g_waitfor_lock, f);
+}
+
+int waitfor_target(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return -1;
+    return g_waitfor[pid];
+}
+
 void ylock_init(ylock_t *l) {
     if (!l) return;
     l->word = 0;
@@ -196,6 +256,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
         if (l->depth > 0 && l->owner == me) {
             l->depth++;
             irq_restore(f);
+            waitfor_leave(me);
             return;
         }
 
@@ -203,15 +264,33 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
             l->owner = me;
             l->depth = 1;
             irq_restore(f);
+            waitfor_leave(me);
             return;
         }
 
-        /* Held by someone else. Drop interrupts back and let them run --
-         * outside the masked region, because sched_yield() switching away
-         * with interrupts still off would carry that state into whatever
-         * runs next. */
+        /* Held by someone else. Record the edge before yielding (Y3): this
+         * task is now waiting for whoever holds the lock, and that is a
+         * wait-for edge exactly like a chan_call()'s. Recording it is what
+         * lets §0.3's cycle be seen -- a task holding this ylock and calling
+         * a task that wants it is refused *at the chan_call*, because that
+         * call can see the edge this line just added.
+         *
+         * Reported and not refused when the cycle closes here instead:
+         * ylock_acquire() has no failure to return, and a caller given one
+         * would have nothing useful to do with it. The report names it at the
+         * moment it happens, which is the difference between a livelock
+         * anyone can diagnose and one nobody can.
+         *
+         * Edge dropped on every exit from the loop, including the acquiring
+         * ones, so a lock that is obtained leaves nothing behind. */
+        int holder = l->owner;
         irq_restore(f);
+
+        if (me >= 0 && me < MAX_TASKS && !waitfor_enter(me, holder)) {
+            lock_fault_named("would close a wait-for cycle taking", name, site);
+        }
         sched_yield();
+        waitfor_leave(me);
     }
 }
 
@@ -255,6 +334,25 @@ static int g_fail;
  * used to print stopped being true the moment Y2 added two checks, and a
  * count that can drift from what ran is a count nobody should trust. */
 static int g_checks;
+
+/* --- Y3's deliberate cycle -------------------------------------------------
+ *
+ * The §0.3 cycle in its exact shape: a task holds a lock, another task waits
+ * for that lock, and the holder then calls the waiter. Built so that a
+ * *working* checker never blocks -- the call is refused before it can -- and
+ * so the precondition is asserted first, which keeps a regression from
+ * turning into a silent hang in a 363-test suite. */
+static ylock_t g_cycle_lock;
+static volatile bool g_cycle_waiting;
+static volatile bool g_cycle_done;
+
+static void cycle_waiter_task(void *arg) {
+    (void)arg;
+    g_cycle_waiting = true;
+    ylock_acquire(&g_cycle_lock);   /* held by the selftest: records the edge */
+    ylock_release(&g_cycle_lock);
+    g_cycle_done = true;
+}
 
 static void check(const char *what, bool ok) {
     cprintf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
@@ -514,6 +612,54 @@ int lock_selftest(void) {
             check("leaf check: chan_call() with a spinlock held is refused",
                   n == -1 && lock_faults() == before_call + 1);
         }
+    }
+
+    /* --- 6. one graph: a lock edge and a channel edge close a cycle ---- */
+    {
+        /* §0.3, which the old channel-only graph could not see: task A holds
+         * lock L, calls task B, and B tries to take L. Here the halves are
+         * assembled in the order that lets the *call* be the one refused,
+         * which is the half that can refuse. */
+        ylock_init(&g_cycle_lock);
+        g_cycle_waiting = false;
+        g_cycle_done = false;
+
+        int me = sched_current_pid();
+        ylock_acquire(&g_cycle_lock);
+
+        int wpid = task_create("cyclewait", cycle_waiter_task, NULL);
+        bool spawned = (wpid >= 0);
+
+        /* Let the waiter reach ylock_acquire() and record its edge. */
+        for (int i = 0; i < 200 && spawned && waitfor_target(wpid) != me; i++)
+            sched_yield();
+        bool edge_recorded = spawned && (waitfor_target(wpid) == me);
+        check("wait-for graph: a ylock wait is an edge, like a channel call",
+              edge_recorded);
+
+        /* The cycle itself. Guarded by the precondition above: without the
+         * edge there is nothing to detect, and calling anyway would block on
+         * a task that is not serving. */
+        if (edge_recorded) {
+            static uint8_t creq[8], cresp[8];
+            if (chan_register_task("lockcycle", wpid, creq, sizeof(creq),
+                                   cresp, sizeof(cresp)) == 0) {
+                chan_endpoint_t *cep = chan_lookup("lockcycle");
+                uint8_t req[1] = { 1 }, resp[1];
+                int n = cep ? chan_call(cep, req, 1, resp, sizeof(resp)) : 0;
+                check("one graph: calling a task that waits for our lock is refused",
+                      n == -1);
+            } else {
+                cprintf("  [skip] cycle call: endpoint table full\n");
+            }
+        }
+
+        /* Let the waiter through and out, so nothing is left holding or
+         * waiting when the selftest returns. */
+        ylock_release(&g_cycle_lock);
+        for (int i = 0; i < 400 && spawned && !g_cycle_done; i++) sched_yield();
+        check("wait-for graph: the edge clears and the waiter completes",
+              spawned && g_cycle_done && waitfor_target(wpid) == -1);
     }
 
     /* The fault total includes the two this selftest caused on purpose, which
