@@ -479,6 +479,52 @@ read "a spinlock holder may acquire only a leaf spinlock" rather than
 "nothing". That is a weaker invariant and a cheaper one; whether the extra
 freedom is worth giving up the one-comparison check is F2's call.
 
+#### F2 done — the slot went per-hart, and the free stopped being needed — 2026-09-10
+
+**The third position above was rejected, and the reason is worth keeping.**
+Blessing `g_sched_lock → g_palloc_lock` would permanently forbid the reverse,
+and the tree already shows pressure in that direction:
+`palloc_report_alloc()` scans the scheduler's task table and **wants** the
+scheduler lock — its own comment says it may not take it precisely because
+sched → palloc exists, and settles for admitting the read can tear. Keeping
+the nesting would have made that concession permanent.
+
+**The fix was not to move the free but to remove the need for it.** The
+defensive `palloc_free()` under the lock existed to handle a slot that was
+already occupied, and a *global* slot could be occupied for one reason only:
+a task exiting on one hart finding another hart's hand-off still pending.
+`g_reap_stack` and `g_reap_pages` are now arrays indexed by hart.
+
+That makes the slot's invariant structural rather than defended. A dead task's
+successor always runs on the hart the task died on, and **every path that
+starts running a task on a hart reaps first** — `sched_yield()` calls
+`sched_reap()` before it picks anything *and* again after `ctx_switch()`
+returns, and `task_start()` calls it on a first run. So a task can only reach
+`task_exit()` after its own hart's slot has been drained. Per-hart slots
+cannot collide; there is nothing left to free.
+
+An occupied slot now means that property has been broken, so `task_exit()`
+halts and says which hart and which stack, the same treatment
+`sched_check_free_range()` already gives its own impossible case. Overwriting
+would leak a stack silently and freeing would put back the nesting this
+milestone removed.
+
+**Y1's done-condition is now met in full**: no lock is held across
+`palloc_free()` anywhere — the only call left in `kernel/sched.c` is
+`sched_reap()`'s, after the lock is released — and the reap slot's comment
+states the invariant the code maintains rather than one it assumed.
+
+Verified: 363/363 QEMU including the whole SMP arm, which is where a per-hart
+slot is the change that matters; six presets warning-clean; 12/12 on the
+ESP32-P4 hardware suite.
+
+**What this unblocks, recorded rather than taken.** With no `sched → palloc`
+ordering left anywhere, `palloc_report_alloc()` *could* now take
+`g_sched_lock` and scan the table exactly instead of racily. That is a change
+to a guard that is working, and the argument for it belongs where lock levels
+are decided — Y2 — rather than beside this fix. `kernel/sched.c` carries the
+note so the option is not lost.
+
 ### Y2 — The checker
 
 A per-context held-lock level, asserted on acquire. `spin_lock_irqsave()` and

@@ -609,8 +609,19 @@ uint32_t sched_stack_size(int pid) {
     return t->stack_pages * (uint32_t)PAGE_SIZE;
 }
 
-static void    *g_reap_stack;   /* declared early for sched_check_incoming() */
-static uint32_t g_reap_pages;
+/* One slot **per hart**, declared early for sched_check_incoming().
+ *
+ * Per-hart rather than global, and that is what makes the slot's invariant
+ * structural instead of defended (phase 31 Y1/F2 -- see the fuller argument
+ * at task_exit()'s claim). A dead task's successor always runs on the same
+ * hart the task died on, and every path that starts running a task on a hart
+ * reaps first: sched_yield() calls sched_reap() before it picks anything, and
+ * again after ctx_switch() returns, and task_start() calls it on a first run.
+ * So this hart's slot is always empty by the time a task running on this hart
+ * can reach task_exit(). A single global slot had no such property -- a task
+ * exiting on hart 1 could find hart 0's hand-off still pending. */
+static void    *g_reap_stack[MAX_HARTS];
+static uint32_t g_reap_pages[MAX_HARTS];
 
 /* Debug guard for phase 27 E4's priostress fault: does the task we are about
  * to resume have a parked sp that could possibly be a context frame?
@@ -646,7 +657,8 @@ static void sched_check_incoming(int prev, int next) {
            sched_state_name(g_tasks[prev].state),
            (unsigned long)(uintptr_t)g_tasks[prev].stack_base,
            (unsigned)g_tasks[prev].stack_pages,
-           (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages);
+           (unsigned long)(uintptr_t)g_reap_stack[hart_id()],
+           (unsigned)g_reap_pages[hart_id()]);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) continue;
         printk_critical("[Sched BUG]   #%d '%s' %s sp=0x%lx stack=0x%lx+%uP\n",
@@ -694,8 +706,10 @@ static void sched_check_incoming(int prev, int next) {
 /* The whole table, for a fatal path that has already lost the registers.
  * Phase 27 E4 debug aid; see sched_check_incoming() above. */
 void sched_dump_table(void) {
-    printk_critical("[Sched Table] reap=0x%lx pages=%u handoff_faults=%u\n",
-           (unsigned long)(uintptr_t)g_reap_stack, (unsigned)g_reap_pages,
+    printk_critical("[Sched Table] reap[hart %u]=0x%lx pages=%u handoff_faults=%u\n",
+           (unsigned)hart_id(),
+           (unsigned long)(uintptr_t)g_reap_stack[hart_id()],
+           (unsigned)g_reap_pages[hart_id()],
            (unsigned)g_handoff_faults);
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) continue;
@@ -922,12 +936,22 @@ static void sched_check_free_range(void *stack, uint32_t pages, const char *who)
  * (which carries the reasoning). Called by palloc_pages() with the range it is
  * about to zero, before it zeroes it.
  *
- * Not static, and not under the scheduler lock: palloc_pages() calls this
- * having already dropped its own lock, and taking g_sched_lock here would
- * create exactly the palloc->sched ordering sched_reap() goes out of its way
- * to avoid. The read is a scan of fields that only the scheduler writes, and
- * this path ends in a halt rather than a recovery, so a torn read costs
- * nothing that matters. */
+ * Not static, and not under the scheduler lock. The read is a scan of fields
+ * that only the scheduler writes, and this path ends in a halt rather than a
+ * recovery, so a torn read costs nothing that matters.
+ *
+ * It used to say something stronger -- that taking g_sched_lock here would
+ * create the palloc->sched ordering sched_reap() avoids -- and that stopped
+ * being true with phase 31's F2. There is no sched->palloc ordering left
+ * anywhere: task_exit() no longer frees under the lock, and task_create()
+ * calls palloc_pages() having already released it. So this *could* now take
+ * g_sched_lock and scan the table properly, which would make a diagnostic
+ * that currently admits to racing exact instead.
+ *
+ * Deliberately not done here. It is a change to a guard that is working, it
+ * belongs with whatever else wants that ordering settled, and the argument
+ * for it should be made where lock levels are decided rather than smuggled in
+ * beside an unrelated fix. Recorded so the option is not lost. */
 void palloc_report_alloc(void *p, uint32_t pages, void *caller_ra) {
     if (!p) return;
     uintptr_t lo = (uintptr_t)p;
@@ -962,10 +986,11 @@ static void sched_reap(void) {
      * has no reason to have. Taking the pointer out first makes the free a
      * purely local operation. */
     uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
-    void *stack = g_reap_stack;
-    uint32_t pages = g_reap_pages;
-    g_reap_stack = NULL;
-    g_reap_pages = 0;
+    uint32_t h = hart_id();
+    void *stack = g_reap_stack[h];
+    uint32_t pages = g_reap_pages[h];
+    g_reap_stack[h] = NULL;
+    g_reap_pages[h] = 0;
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (!stack) return;
@@ -1041,20 +1066,41 @@ void task_exit(void) {
     /* Hand the stack to the reaper rather than freeing it here: this code is
      * still executing on it.
      *
-     * The slot is one deep and this is what keeps it sufficient: a second
-     * task *can* reach its own task_exit() while this one is mid-exit (see
-     * g_reap_stack's comment for why the old claim that it could not was
-     * wrong), so if a previous dead task's stack is still sitting here
-     * unreaped, free it now -- we are provably not running on it, only on
-     * our own -- instead of silently overwriting the only reference to it.
+     * **This hart's slot is empty, and that is a property of the code rather
+     * than a hope** (phase 31 Y1/F2). The successor of a dead task runs on
+     * the hart the task died on, and every path that starts running a task on
+     * a hart reaps first -- sched_yield() calls sched_reap() before it picks
+     * anything and again after ctx_switch() returns, and task_start() calls
+     * it on a first run. So a task can only reach here after its own hart's
+     * slot has been drained.
      *
-     * Not a defensive maybe: it is the invariant. */
-    if (g_reap_stack) {
-        sched_check_free_range(g_reap_stack, g_reap_pages, "task_exit");
-        palloc_free(g_reap_stack, g_reap_pages);
+     * That is why there is no free here any more. This code used to free
+     * whatever it found in a single global slot, which was a real
+     * g_sched_lock -> g_palloc_lock nesting: sched_reap() forty lines up goes
+     * out of its way to avoid exactly that, taking the pointer out under the
+     * lock and freeing it outside. Making the slot per-hart removed the need
+     * for the free rather than relocating it -- the global slot's only
+     * problem was that a task exiting on one hart could find another hart's
+     * hand-off still pending, and per-hart slots cannot collide.
+     *
+     * An occupied slot now means the reap-before-run property has been
+     * broken. Halting says so at the moment it happens; overwriting would
+     * leak a stack silently, and freeing would put back the nesting this
+     * milestone removed. Same argument, and same treatment, as
+     * sched_check_free_range() above. */
+    uint32_t h = hart_id();
+    if (g_reap_stack[h]) {
+        printk_critical("\n[Sched BUG] hart %u reap slot still holds 0x%lx (%u pages) "
+                        "as #%d '%s' exits -- a task ran on this hart without "
+                        "reaping first.\n", (unsigned)h,
+                        (unsigned long)(uintptr_t)g_reap_stack[h],
+                        (unsigned)g_reap_pages[h], t->pid, t->name);
+        sched_dump_table();
+        printk_critical("[Sched BUG] halting rather than leaking it.\n");
+        for (;;) { __asm__ __volatile__("wfi"); }
     }
-    g_reap_stack = t->stack_base;
-    g_reap_pages = t->stack_pages;
+    g_reap_stack[h] = t->stack_base;
+    g_reap_pages[h] = t->stack_pages;
 
     t->state = TASK_DEAD;
     t->stack_base = NULL;
