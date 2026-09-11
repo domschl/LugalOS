@@ -92,4 +92,22 @@ SECTIONS
      * away from it. */
     _ram_start = ORIGIN(RAM);
     _ram_end   = ORIGIN(RAM) + LENGTH(RAM);
+
+    /* G1, plan/phase30_driver_framework.md: two facts kernel/meminfo.c and
+       arch/riscv/common/trap.c used to hold as per-board #if arms.
+
+       _image_bytes -- how much RAM the resident image occupies. Computed by
+       the script because only the script knows the layout; here the image is
+       one contiguous run from the bottom of RAM.
+
+       _inst_lo/_inst_hi -- the window the fatal-trap handler may read an
+       instruction back from without risking a second fault inside the
+       handler reporting the first. Code runs from RAM on this target.
+
+       Below the memory map rather than next to _kernel_end, because these
+       read it: a linker script assignment sees only symbols already
+       assigned above it. */
+    _image_bytes = _bss_end - _ram_start;
+    _inst_lo     = _ram_start;
+    _inst_hi     = _ram_end;
 }

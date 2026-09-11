@@ -1,6 +1,7 @@
 # Phase 30 — The layer above the registers
 
-**Status: planned, not started, 2026-09-06. Sequenced after phase 31 and
+**Status: in progress, 2026-09-11. Category E (the I2C bus split) and G1
+(the three leaks) are done; G0, G2-G5 remain. Sequenced after phase 31 and
 before phase 28.**
 
 *(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this

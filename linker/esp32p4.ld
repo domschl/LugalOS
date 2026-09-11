@@ -314,4 +314,20 @@ SECTIONS
     _ram_start  = ORIGIN(LOWRAM);
     _ram_end    = ORIGIN(RAM) + LENGTH(RAM);
     _text_start = ADDR(.text);
+
+    /* G1, plan/phase30_driver_framework.md. Below the memory map because
+       they are derived from it: a linker script assignment sees only symbols
+       already assigned above it.
+
+       _image_bytes -- this image is NOT one contiguous run from the bottom of
+       RAM, which is what every other target's expression assumes. .bss and
+       the boot stack sit in the low 256 KB of L2MEM (safe only because they
+       are NOLOAD, under the ROM's download-mode buffers) while .text,
+       .rodata and .data load above them, so the two halves are added. Getting
+       this wrong reported a third of the image as the whole of it.
+
+       _inst_lo/_inst_hi -- all code is RAM-resident here. */
+    _image_bytes = (_bss_end - _ram_start) + (_kernel_end - _text_start);
+    _inst_lo     = _ram_start;
+    _inst_hi     = _ram_end;
 }

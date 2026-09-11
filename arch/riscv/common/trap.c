@@ -542,11 +542,13 @@ void trap_init(void) {
      * bootrom left in mie on a secondary. */
     __asm__ __volatile__("csrw mie, %0" :: "r"((uintptr_t)(1u << 11)));
 
-    /* Enable M-mode Global Interrupts (MIE bit 3 in mstatus) */
-    uintptr_t mstatus_val;
-    __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus_val));
-    mstatus_val |= (1u << 3);
-    __asm__ __volatile__("csrw mstatus, %0" :: "r"(mstatus_val));
+    /* The global interrupt enable is NOT here (G1,
+     * plan/phase30_driver_framework.md). This arm used to set mstatus.MIE
+     * itself, because main.c turned interrupts on only if ticker_init()
+     * succeeded and that coupling was not this file's to argue with.
+     * kernel/main.c now enables them unconditionally, once, after the
+     * controller is up -- so there is one place that decides, and it is not
+     * two of four arch arms. */
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* mtvt (CSR 0x307): the hardware-vectored jump table.
      *
@@ -589,21 +591,13 @@ void trap_init(void) {
 
     p4_clic_init();
 
-    /* Global interrupt enable, here rather than in main.c.
+    /* No global interrupt enable here either -- see the RP2350 arm above.
      *
-     * main.c turns interrupts on with irq_restore(IRQ_ENABLE_BIT) only if
-     * ticker_init() succeeded, which on this board it does not: the tick
-     * runs off the CLINT and that is E4. Waiting for the ticker would mean a
-     * UART interrupt that is routed, enabled, pending and unmasked at the
-     * controller, and still never delivered -- the exact failure mode this
-     * board specialises in, since mstatus.MIE is the one interrupt CSR here
-     * that does still work.
-     *
-     * Same csrs-in-trap_init() shape the RP2350 arm above uses, and safe for
-     * the same reason: nothing is enabled behind it yet. Every source is
-     * masked by the loop in p4_clic_init(), and the only driver that unmasks
-     * one does so from its own init. */
-    set_csr(mstatus, 1UL << 3); /* MIE */
+     * This arm set mstatus.MIE for a concrete reason: main.c enabled
+     * interrupts only if ticker_init() succeeded, and on this board it did
+     * not until E4 gave it a CLINT tick, so a UART interrupt that was routed,
+     * enabled, pending and unmasked was still never delivered. The workaround
+     * was right and its cause was in main.c, which G1 fixed there. */
 #else
     /* M2, plan/phase12_microkernel_migration.md: the arch-global gate for
      * QEMU's PLIC path (both targets -- see the CONFIG_MODE_S/M split above
@@ -1186,24 +1180,22 @@ void trap_handler(trap_frame_t *frame) {
          * that is reporting the first, and the register dump -- the whole
          * point of getting here -- would never be printed.
          *
-         * The window is per board because it is a fact about a board.
-         * 0x10000000..0x20082000 covers RP2350's XIP flash and SRAM and
-         * QEMU virt's RAM; the ESP32-P4 links at 0x4FF00000 and would have
-         * fallen outside it, printing inst=0x00000000 for every fault on the
-         * one target E3 has to demonstrate a fault dump on. Found by reading
-         * this line while writing that demonstration, not by seeing the
-         * zero -- a zero here is indistinguishable from a genuine zero word,
-         * which is what makes it worth stating rather than leaving to be
-         * noticed. */
-#if defined(CONFIG_BOARD_ESP32P4)
-        extern char _ram_start[];
-        extern char _ram_end[];
-        const uintptr_t inst_lo = (uintptr_t)_ram_start;
-        const uintptr_t inst_hi = (uintptr_t)_ram_end;
-#else
-        const uintptr_t inst_lo = 0x10000000;
-        const uintptr_t inst_hi = 0x20082000;
-#endif
+         * The window comes from the board's own linker script (G1,
+         * plan/phase30_driver_framework.md). It used to be a hardcoded
+         * 0x10000000..0x20082000 -- RP2350's XIP flash through its SRAM, and
+         * QEMU virt's RAM -- with a CONFIG_BOARD_ESP32P4 arm bolted on when
+         * that board turned out to link at 0x4FF00000 and would otherwise
+         * have printed inst=0x00000000 for every fault, indistinguishable
+         * from a genuine zero word.
+         *
+         * It is still a fact about a board; it is now stated where board
+         * facts belong. _inst_lo/_inst_hi span whatever that target executes
+         * from -- RAM on three of them, flash and RAM together on RP2350,
+         * which runs .text in place and .ramfunc from SRAM. */
+        extern char _inst_lo[];
+        extern char _inst_hi[];
+        const uintptr_t inst_lo = (uintptr_t)_inst_lo;
+        const uintptr_t inst_hi = (uintptr_t)_inst_hi;
         uint32_t inst_val = 0;
         if (frame->epc >= inst_lo && frame->epc < inst_hi - 4u) {
             const uint8_t *p = (const uint8_t *)frame->epc;

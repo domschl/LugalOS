@@ -123,4 +123,10 @@ SECTIONS
      * away from it. */
     _ram_start = ORIGIN(RAM);
     _ram_end   = ORIGIN(RAM) + LENGTH(RAM);
+
+    /* G1: see linker/qemu-rv32.ld for what these three are, including why
+       they sit below the memory map. Same layout. */
+    _image_bytes = _bss_end - _ram_start;
+    _inst_lo     = _ram_start;
+    _inst_hi     = _ram_end;
 }

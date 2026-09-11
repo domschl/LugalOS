@@ -8,6 +8,7 @@
  * against, or they are just a comment that compiles. */
 
 extern char _ram_start[];
+extern char _image_bytes[];   /* a size, not an address -- see below */
 extern char _ram_end[];
 extern char _bss_end[];
 extern char _stack_bottom[];
@@ -52,27 +53,19 @@ void meminfo_ram_map(mem_ram_map_t *out) {
     out->ram_start    = (uintptr_t)_ram_start;
     out->ram_end      = (uintptr_t)_ram_end;
     out->total_bytes  = (uint32_t)((uintptr_t)_ram_end - (uintptr_t)_ram_start);
-#if defined(CONFIG_BOARD_ESP32P4)
-    /* This image is not one contiguous run from the bottom of RAM, which is
-     * what `_bss_end - _ram_start` assumes everywhere else.
+    /* How much RAM the image occupies, stated by the linker script rather
+     * than recomputed here (G1, plan/phase30_driver_framework.md).
      *
-     * linker/esp32p4.ld splits it: .bss and the boot stack sit in the low
-     * 256 KB of L2MEM (safe there only because they are NOLOAD -- the ROM's
-     * download-mode buffers overlap that range), while .text, .rodata and
-     * .data are loaded into the 512 KB above them. So the two halves are
-     * measured separately and added. Without this /proc/meminfo would report
-     * the .bss half alone and silently omit ~227 KB of resident kernel text,
-     * on the one target where the text IS resident -- and reporting a third
-     * of an image as the whole of it is exactly the sort of number this file
-     * exists to avoid. */
-    {
-        extern char _text_start[];
-        out->image_bytes = (uint32_t)(((uintptr_t)_bss_end - (uintptr_t)_ram_start) +
-                                      ((uintptr_t)_kernel_end - (uintptr_t)_text_start));
-    }
-#else
-    out->image_bytes  = (uint32_t)((uintptr_t)_bss_end - (uintptr_t)_ram_start);
-#endif
+     * This was `_bss_end - _ram_start` plus a CONFIG_BOARD_ESP32P4 arm, because
+     * that expression assumes the image is one contiguous run from the bottom
+     * of RAM and the P4's is not -- its .bss and boot stack sit below its
+     * loadable sections. The arm was correct and the shape was wrong: layout
+     * is precisely what a linker script knows and this file does not, and a
+     * file whose whole purpose is that its numbers come from the same memory
+     * map the image was linked against should not be re-deriving them. Every
+     * script now provides _image_bytes; a new board satisfies the contract or
+     * fails to link. */
+    out->image_bytes  = (uint32_t)(uintptr_t)_image_bytes;
     out->stack_bytes  = stack_size_bytes();
 
     out->data_bytes = (uint32_t)((uintptr_t)_data_end - (uintptr_t)_data_start);

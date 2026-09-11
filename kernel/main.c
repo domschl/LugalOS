@@ -268,9 +268,27 @@ void kernel_main(void) {
      * the tick is what lets a busy node keep answering. 100 Hz: frequent
      * enough that a spinning task cannot monopolise the console, rare enough
      * that the switch cost is irrelevant. */
-    if (ticker_init(100)) {
-        irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
-    }
+    (void)ticker_init(100);
+
+    /* Two facts, separated (G1, plan/phase30_driver_framework.md).
+     *
+     * "The interrupt controller is up" and "there is a preemption tick" are
+     * different things, and this line used to be inside `if (ticker_init())`
+     * -- so a board that wanted interrupts without preemption could not have
+     * them. That is not hypothetical: it is the ESP32-P4 before E4, whose
+     * tick runs off the CLINT, and it meant a UART interrupt that was routed,
+     * enabled, pending and unmasked at the controller was still never
+     * delivered.
+     *
+     * Both the RP2350 and the P4 arms of trap_init() worked around it by
+     * setting mstatus.MIE themselves, which put the decision in two of four
+     * arch arms while the coupling stayed here. Enabling unconditionally puts
+     * it back in one place and lets those arms stop.
+     *
+     * Still after ticker_init(), which is ordering rather than coupling: that
+     * call measures the tick rate against kernel/time.c, and a tick arriving
+     * mid-measurement would be measuring the measurement. */
+    irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
 
     /* X1, plan/phase23_multicore_scheduling.md: let any secondary harts into
      * the kernel.

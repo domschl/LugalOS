@@ -289,7 +289,6 @@ SECTIONS
 
     . = ALIGN(4096);
     _kernel_end = .;
-
     .scratch_x : {
         . = ALIGN(4);
         __scratch_x_start = .;
@@ -460,4 +459,21 @@ SECTIONS
     _ram_end     = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     _flash_start = ORIGIN(FLASH);
     _flash_end   = ORIGIN(FLASH) + LENGTH(FLASH);
+
+    /* G1, plan/phase30_driver_framework.md. Below the memory map because
+       they are derived from it: a linker script assignment sees only symbols
+       already assigned above it.
+
+       _image_bytes -- the resident image is .data + .bss in RAM; .text is
+       executed in place from flash and costs no RAM.
+
+       _inst_lo/_inst_hi -- code runs from flash (XIP) *and* from RAM
+       (.ramfunc), so the window spans both. That it also spans the unmapped
+       gap between them is the same bargain the hardcoded
+       0x10000000..0x20082000 made before this was a symbol; what changes is
+       that the number is now stated by the board's own script rather than by
+       an #if in shared code. */
+    _image_bytes = _bss_end - _ram_start;
+    _inst_lo     = _flash_start;
+    _inst_hi     = _ram_end;
 }
