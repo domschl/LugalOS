@@ -342,7 +342,7 @@ void vfs_server_init(void) {
     uart_net_init();
     vfs_register_service("uart_9p", 10);
 
-    printk("[VFS Server] Universal Namespace Resolver (Plan 9 Model) initialized (PID %d).\n", VFS_PID);
+    printk("[VFS Server] Namespace resolver online (PID %d).\n", VFS_PID);
 }
 
 bool vfs_volume_writable(const char *name) {
@@ -400,9 +400,21 @@ int vfs_mount_ramdisk(int size_kb) {
                    size_kb);
             return -1;
         }
-        if (fat32_init(&g_fat32_ram, ram_dev) != 0 || g_fat32_ram.bpb.tot_sec32 != ram_dev->num_blocks) {
-            fat32_format(ram_dev);
-            fat32_init(&g_fat32_ram, ram_dev);
+        /* Quiet, because a blank RAM disk is the expected state on every
+         * boot, not a fault (Y5a, plan/phase31_concurrency_hierarchy.md).
+         * This used to narrate one expected event in four lines; the
+         * "Mounted ... on /ram0/" line below is the one that is news.
+         *
+         * The failure path is now checked, which it was not before: a format
+         * that does not take used to leave g_ram_mounted true and a
+         * filesystem that answers every write with an error. */
+        if (fat32_init_quiet(&g_fat32_ram, ram_dev, true) != 0 ||
+            g_fat32_ram.bpb.tot_sec32 != ram_dev->num_blocks) {
+            fat32_format_quiet(ram_dev, true);
+            if (fat32_init_quiet(&g_fat32_ram, ram_dev, true) != 0) {
+                printk("[VFS Server] /ram0/ not mounted: the RAM disk would not format.\n");
+                return -1;
+            }
         }
 
         g_ram_mounted = true;

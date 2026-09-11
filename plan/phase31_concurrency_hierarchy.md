@@ -942,13 +942,51 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   *Done when:* the RP2350's `/proc/kmsg` still contains its own boot banner at
   the shell prompt — the measurement in §5.3, inverted.
 
+  **Y5a done — 2026-09-11.** `KLOG_RING_SIZE` 8192, and rv32's boot cut from
+  3916 to 2645 bytes (-32%): the banner from three lines to one (102 of its
+  170 bytes were `=`), `[Arch]`/`[Mode]`/`[Priv]` from three lines to one,
+  eleven verbose subsystem lines shortened, six "device absent" lines that the
+  `[Dev] Registry:` line already summarises, the stack *address* off the
+  `[Sched] Created task` line, and `/ram0`'s four-line "probe failed,
+  formatted, mounted, mounted" narration down to the one line that is news
+  (`fat32_init_quiet()`/`fat32_format_quiet()`, used only by
+  `vfs_mount_ramdisk()`, where a blank volume is the expected state — on a
+  real SD card the message stays).
+
+  Headroom against the ring went from 1.05x to 3.1x. On the board:
+  `/proc/kmsg` now begins at `[    0.000]` with its own banner, where it
+  previously began mid-word at `[    0.461]`, and still holds the banner after
+  2.5 minutes of uptime including the CYW43 join and the mqttd retry ladder.
+
+  One test changed, and deliberately: the M0 check read the stack size out of
+  the creation line as `stack \w+, 4 KB`. The size is load-bearing — it proves
+  `task_create_sized()` honoured a non-default page count, and `sized1` has
+  exited before `/proc/ps` could be asked — so the size stayed and only the
+  address went. The regex now reads `'sized1' \(4 KB\)`, asserting the same
+  claim. Found by the suite, which is what it is for: the first grep for
+  affected test strings missed this one because it matches no literal the
+  source contains.
+
+  Stopped here rather than continuing, per §5.9: with tokenisation on the
+  roadmap, literal length stops being a storage cost.
+
 * **Y5b — Record append.** `vprintk_to()` formats into a bounded stack buffer;
   `klog_append(buf, len)` writes the whole record under `g_klog_lock`.
   `printk()` stops taking `printk_lock()`. **No consumer yet** — the producer
   still drains inline, so output is byte-identical and this step is verifiable
   on its own.
-  *Done when:* QEMU 363/363 with no test changed, and two harts printing
-  concurrently produce no interleaved record (the X7 splice, asserted).
+
+  **The record header carries the timestamp as 4 binary bytes**, rendered at
+  drain rather than at emit. This step introduces the framing anyway, and the
+  rendered `[    0.010] ` prefix is 12 bytes on every line — 456 of rv32's
+  2645-byte boot, 17% of the ring, spent on a number that fits in four. No
+  call site changes and `/proc/kmsg` looks identical. It is also the first
+  piece of §5.9's tokenisation, taken early because it is free here and
+  awkward later.
+
+  *Done when:* QEMU 363/363 with no test changed, two harts printing
+  concurrently produce no interleaved record (the X7 splice, asserted), and
+  the boot burst is ~300 bytes smaller with output byte-identical.
 
 * **Y5c — The consumer.** A drain task with a cursor in `klog_total()`'s
   coordinate space, taking the console ylock, writing whole records. The
@@ -974,6 +1012,13 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   *Done when:* no comment in the tree tells a reader that `printk()` from a
   driver task can deadlock, because it no longer can.
 
+* **Y5f — Tokenised records.** §5.9, gated on the `format(printf, ...)`
+  attributes. Last, and separable: everything above is finished and useful
+  without it.
+  *Done when:* the boot burst is ~6x smaller with `cat /proc/kmsg` output
+  unchanged character for character, and a format/argument mismatch is a
+  compile error rather than a corrupt record.
+
 #### 5.8 Done, for Y5 as a whole
 
 The kernel log is deadlock-free by construction rather than by checking:
@@ -984,6 +1029,74 @@ log itself. `printk_critical()` still reaches the wire before a halt, and
 application output is still never dropped. Ten presets clean, QEMU
 363/363, and both hardware suites at their documented baselines.
 
+#### 5.9 Tokenised records — Y5f, and why it is last
+
+Proposed by the user, 2026-09-11:
+
+> *"We could make the kernel logging use symbols and parameters which get
+> expanded into text within the logging code? A bit less user-friendly, but
+> would dramatically reduce ring-buffer storage."*
+
+**The measurement says yes, and by more than the question assumed.** rv32's
+boot log after Y5a's trim, classified:
+
+| | today | tokenised |
+|---|---|---|
+| timestamps rendered as `[    0.010] ` | 456 B | 152 B |
+| literal message text | 1696 B | 76 B |
+| substituted arguments (paths, names, numbers) | 217 B | 217 B |
+| **boot total** | **2645 B** | **~445 B — 5.9x** |
+| boots held by the 8 KB ring | 3 | ~18 |
+
+**89% of the log is literal text**, which is exactly the part a format-string
+id removes. Modelled as `2-byte id + 4-byte timestamp + inline %s args`.
+
+**It needs no call-site churn.** A format string's `.rodata` address is
+already a unique, stable, immortal id, so a macro wrapper captures `&fmt` plus
+the arguments and every existing `printk("...", x)` compiles unchanged. Same
+technique as Zephyr's dictionary logging.
+
+**Expansion happens in the kernel at drain, not on a host.** The strings are
+in the image regardless, so `cat /proc/kmsg` stays readable and the
+out-of-band 9P route to it survives — which matters here, because reading
+`/proc/kmsg` over the *other* ACM port is this project's standing answer to a
+dead console. A host-side dictionary would additionally free the strings from
+flash, and costs both of those; not worth it.
+
+##### The prerequisite, which is worth doing on its own
+
+`kernel/include/kernel/printk.h:7` declares `int printk(const char *fmt, ...)`
+with **no `__attribute__((format(printf, 1, 2)))`**, so `-Wall -Wextra` checks
+no call site in the tree. And `kernel/printk.c:320` is literally:
+
+```c
+if (*p == 'l') p++; // Handle %ld / %lx / %lu
+```
+
+— the length modifier is parsed and discarded, so `%ld` on an `int64_t` reads
+32 bits and misaligns every argument after it. That is the standing "never
+`%ld` an int64" rule, and today it costs one garbled line. Under argument
+capture the same mistake corrupts the whole record's decode.
+
+So Y5f is gated on adding the format attributes to `printk`, `cprintf`,
+`printk_critical`, `printk_debug` and `ksnprintf`, and fixing what they flag.
+All nine specifiers this engine supports are standard (`c s d i u x X p %`),
+so the attribute fits without false positives. **This is worth its own commit
+whenever, independent of Y5** — it converts a class of bug this project keeps
+a note about into a compile error.
+
+##### Why it is last
+
+Y5b rewrites the exact emit path Y5f would rewrite again, and landing a 6x
+storage change together with "logging no longer blocks" leaves two hypotheses
+when something breaks. Y5f also changes what `/proc/kmsg` *is* internally,
+which is easier to reason about once the consumer that reads it exists.
+
+**Consequence, accepted at the time (user, 2026-09-11): stop hunting boot
+string bytes.** Y5a's trim stands — it earns its keep on the human-readable
+console, and the console is not going away. But with tokenisation on the
+roadmap, literal length stops being a storage cost, so further terseness
+passes would buy nothing. Y5a ends where it is.
 ## 3. How it is tested
 
 * **The QEMU suite is the regression net**, exactly as it was for phase 22's

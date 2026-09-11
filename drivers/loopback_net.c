@@ -10,7 +10,7 @@
 void loopback_net_init(void) {
     p9_init();
     p9_chan_init();
-    printk("[Loopback 9P] In-Memory Transport Gateway Online.\n");
+    printk("[Loopback 9P] In-memory transport online.\n");
 }
 
 /* B1: goes through the "p9" channel endpoint rather than calling

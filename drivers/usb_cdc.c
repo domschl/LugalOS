@@ -1794,7 +1794,7 @@ int usb_cdc_task_start(void) {
     }
     task_set_priority(pid, TASK_PRIO_NORMAL);
     g_usb_cdc_task_pid = pid;
-    printk("[USB] Background servicing task #%d running.\n", pid);
+    printk("[USB] Servicing as task #%d.\n", pid);
     return pid;
 }
 
@@ -1818,7 +1818,7 @@ void usb_cdc_init(void) {
      * so the kernel appeared to be claiming the port its operator was
      * reading it on. Found on the first boot of that board (E2,
      * plan/phase27_esp32p4_bringup.md). */
-    printk_debug("[USB CDC] Not built for this target; the ACM console and 9P link are absent.\n");
+    printk_debug("[USB CDC] Not built for this target.\n");
 }
 
 bool usb_cdc_is_connected(void) {

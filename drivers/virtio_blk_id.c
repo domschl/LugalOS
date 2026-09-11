@@ -188,7 +188,7 @@ int virtio_blk_id_init(void) {
          * lookup rather than exactly once. */
         if (!g_id_probe_logged) {
             g_id_probe_logged = 1;
-            printk("[VirtIO-Blk-Id] No second VirtIO MMIO block device detected; running unprovisioned.\n");
+            printk("[VirtIO-Blk-Id] Absent; running unprovisioned.\n");
         }
         return -1;
     }

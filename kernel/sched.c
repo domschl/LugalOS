@@ -133,7 +133,7 @@ void sched_init(void) {
     spinlock_init(&g_sched_lock);
     g_active = true;
 
-    printk("[Sched] Cooperative round-robin scheduler online (max %d tasks)\n", MAX_TASKS);
+    printk("[Sched] Round-robin scheduler online (max %d tasks).\n", MAX_TASKS);
 }
 
 bool sched_active(void) { return g_active; }
@@ -484,8 +484,19 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->state = TASK_READY;
     spin_unlock_irqrestore(&g_sched_lock, pub);
 
-    printk("[Sched] Created task #%d '%s' (stack %p, %u KB)\n",
-           slot, t->name, stack, (stack_pages * (uint32_t)PAGE_SIZE) / 1024);
+    /* Y5a, plan/phase31_concurrency_hierarchy.md: the stack *address* used to
+     * ride along here too, ten times over on a full RP2350 persona. It is
+     * derivable and better placed -- /proc/meminfo reports the heap base
+     * these are allocated from, in order -- so it goes.
+     *
+     * The size stays. It is not decoration: tests/runner.py's M0 check reads
+     * it to prove task_create_sized() honoured a non-default page count, and
+     * the task in question has already exited by the time /proc/ps could be
+     * asked. What cannot be recovered afterwards is the *sequence*, so the
+     * line itself stays too: if boot stops, the last one of these names the
+     * task that was being created. */
+    printk("[Sched] Created task #%d '%s' (%u KB)\n",
+           slot, t->name, (stack_pages * (uint32_t)PAGE_SIZE) / 1024);
     return slot;
 }
 

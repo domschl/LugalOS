@@ -19,5 +19,5 @@
  * the natural place for a real IPC subsystem to reappear. */
 
 void ipc_init(void) {
-    printk("[IPC] Message passing: copy-always channels (kernel/chan.h)\n");
+    printk("[IPC] Copy-always channels ready.\n");
 }

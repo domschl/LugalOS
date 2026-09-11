@@ -1748,7 +1748,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # than TASK_STACK_PAGES -- the latter is the more dangerous failure,
         # since it would either leak a page per run or free one page too many
         # into a neighboring allocation's territory.
-        ok, log = session.send_and_expect("sizedtaskdemo", r"stack \w+, 4 KB", timeout=8.0)
+        # Reads the size out of the creation line, which Y5a shortened: the
+        # stack address left it (derivable from /proc/meminfo's heap base),
+        # the size did not, precisely because this assertion needs it and
+        # 'sized1' has exited before /proc/ps could be asked.
+        ok, log = session.send_and_expect("sizedtaskdemo", r"'sized1' \(4 KB\)", timeout=8.0)
         results.append(("task_create_sized() Honors A Non-Default Page Count (M0)",
                         ok, log if not ok else ""))
         ok, log = session.send_and_expect("sizedtaskdemo", r"free before=(\d+) after=\1", timeout=8.0)

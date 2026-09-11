@@ -91,7 +91,7 @@ void at24c32_init(void) {
      * against this buffer, so the device really is present and usable. It is
      * simply not a chip, and only the message was ever claiming otherwise. */
     g_at24c32_detected = true;
-    printk("[AT24C32] Synthetic 4 KB RAM EEPROM (no I2C bus on this target).\n");
+    printk("[AT24C32] Synthetic 4 KB RAM EEPROM (no I2C bus).\n");
 #endif
 }
 

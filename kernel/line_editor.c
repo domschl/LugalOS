@@ -54,7 +54,7 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
 
 void line_editor_init(void) {
     history_count = 0;
-    printk("[LineEditor] History Engine Initialized.\n");
+    printk("[LineEditor] Online.\n");
 }
 
 

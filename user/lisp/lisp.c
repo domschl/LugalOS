@@ -3221,7 +3221,7 @@ void lisp_init(void) {
     env_set(&global_env, "usb-status", make_prim(prim_usb_status));
     env_set(&global_env, "help", make_prim(prim_help));
 
-    printk("[Lisp Engine] Initialized as Core Microkernel Execution Engine.\n");
+    printk("[Lisp Engine] Online.\n");
 
 
     /* Automatically load system boot scripts if present.

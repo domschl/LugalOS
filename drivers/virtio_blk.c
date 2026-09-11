@@ -286,7 +286,7 @@ int virtio_blk_init(void) {
     }
 
     if (!g_mmio_base) {
-        printk("[VirtIO-Blk] No VirtIO MMIO block device detected.\n");
+        printk("[VirtIO-Blk] Absent.\n");
         return -1;
     }
 

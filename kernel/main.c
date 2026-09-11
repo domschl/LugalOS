@@ -151,27 +151,36 @@ void kernel_main(void) {
 
     time_init();
 
-    printk("\n==================================================\n");
-    printk("       LugalOS Lisp Machine v%s\n", LUGALOS_VERSION_FULL);
-    printk("==================================================\n");
+    /* Y5a, plan/phase31_concurrency_hierarchy.md: one line, not three, and no
+     * 50-character rules around it. The banner was 170 bytes of which 102
+     * were '=' -- affordable while the log ring was only history, not while
+     * it is the transport and the boot burst is the one guaranteed to have no
+     * consumer draining it yet. Still says "LugalOS", which tools/p4run.py
+     * waits for as its proof of life. */
+    printk("\n=== LugalOS Lisp Machine v%s ===\n", LUGALOS_VERSION_FULL);
 
+    /* Three compile-time constants describing one machine, so one line.
+     * Nothing is lost: the same three facts, 45 bytes instead of 135. */
 #if defined(CONFIG_TARGET_RV32)
-    printk("[Arch] Target: RISC-V 32-bit (RV32IMAC)\n");
+#  define BOOT_ARCH "RV32IMAC"
 #elif defined(CONFIG_TARGET_RV64)
-    printk("[Arch] Target: RISC-V 64-bit (RV64GC)\n");
-#endif
-
-#if defined(CONFIG_NOMMU)
-    printk("[Mode] Memory: NOMMU Physical Direct Execution\n");
-#elif defined(CONFIG_MMU)
-    printk("[Mode] Memory: Sv39 MMU Virtual Memory Paging Enabled\n");
-#endif
-
-#if defined(CONFIG_MODE_S)
-    printk("[Priv] Execution Mode: Supervisor Mode (S-mode)\n");
+#  define BOOT_ARCH "RV64GC"
 #else
-    printk("[Priv] Execution Mode: Machine Mode (M-mode)\n");
+#  define BOOT_ARCH "RISC-V"
 #endif
+#if defined(CONFIG_NOMMU)
+#  define BOOT_MM "NOMMU"
+#elif defined(CONFIG_MMU)
+#  define BOOT_MM "Sv39"
+#else
+#  define BOOT_MM "?"
+#endif
+#if defined(CONFIG_MODE_S)
+#  define BOOT_PRIV "S-mode"
+#else
+#  define BOOT_PRIV "M-mode"
+#endif
+    printk("[Arch] " BOOT_ARCH ", " BOOT_MM ", " BOOT_PRIV "\n");
 
     /* Hardware: what exists is a per-board table (kernel/board.c), not a
      * sequence of #ifs here. */

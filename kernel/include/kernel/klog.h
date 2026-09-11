@@ -29,7 +29,25 @@
  * section the moment two tasks can printk() concurrently.
  */
 
-#define KLOG_RING_SIZE 4096
+/* 8 KB since Y5a (plan/phase31_concurrency_hierarchy.md §5.3), and the size
+ * is a measurement rather than a round number.
+ *
+ * At 4096 this ring had already wrapped *before the board finished booting*:
+ * the live RP2350's /proc/kmsg began mid-word, its earliest surviving
+ * timestamp was 0.461s, and its own boot banner was gone. rv32's minimal boot
+ * to a shell prompt is 3916 bytes against the same 4096 -- 0.96x, which is to
+ * say the history was full the moment it existed.
+ *
+ * That was tolerable while the ring was only history. Y5 makes it the
+ * transport: a consumer drains it and the producer never blocks, so bytes
+ * evicted before the consumer reaches them are bytes nobody ever sees. 8192
+ * is ~2x the measured boot volume, which leaves room for the burst that is
+ * guaranteed to happen on every power-up and has no consumer running for the
+ * first part of it.
+ *
+ * One page on the RP2350, whose heap is 87 of them. Y5a's other half is the
+ * terser boot output, which is worth more than any size here. */
+#define KLOG_RING_SIZE 8192
 #define KLOG_MAX_SINKS 4
 
 typedef void (*klog_putc_fn)(char);

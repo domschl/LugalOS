@@ -262,7 +262,7 @@ int virtio_console_init(void) {
     }
 
     if (!g_mmio_base) {
-        printk("[VirtIO-Console] No VirtIO MMIO console device detected (no -device virtconsole?).\n");
+        printk("[VirtIO-Console] Absent (no -device virtconsole?).\n");
         return -1;
     }
 

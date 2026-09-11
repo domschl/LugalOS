@@ -23,8 +23,9 @@ void vmm_init(void) {
     if (current_heap & (PAGE_SIZE - 1)) {
         current_heap = (current_heap + PAGE_SIZE) & ~(PAGE_SIZE - 1);
     }
-    printk("[VMM] NOMMU Memory Manager initialized. Free heap starting at 0x%lx\n",
-           (unsigned long)current_heap);
+    /* Y5a: the heap base is on the [PAlloc] line directly above this one --
+     * printing it twice was 45 bytes of the boot burst for no second fact. */
+    printk("[VMM] NOMMU manager online.\n");
 }
 
 int vmm_map_page(vmm_space_t *space, uintptr_t vaddr, uintptr_t paddr, uint32_t flags) {

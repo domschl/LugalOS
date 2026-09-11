@@ -1416,7 +1416,7 @@ static void p9_handle_tremove(const p9_msg_t *req, p9_msg_t *resp) {
 
 void p9_init(void) {
     p9_fid_reset_all();
-    printk("[9P2000] Protocol Serialization Engine Initialized.\n");
+    printk("[9P2000] Serialization ready.\n");
 }
 
 int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {

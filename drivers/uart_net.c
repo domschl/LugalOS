@@ -7,7 +7,7 @@
 #include <string.h>
 
 void uart_net_init(void) {
-    printk("[UART 9P] Universal Serial Network Transport Engine (SLIP RFC 1055) Online.\n");
+    printk("[UART 9P] SLIP transport online (RFC 1055).\n");
 }
 
 /* --- link_uart_slip (A3) ---

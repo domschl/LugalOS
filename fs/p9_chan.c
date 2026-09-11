@@ -95,7 +95,7 @@ int p9_chan_init(void) {
         return -1;
     }
     g_ep = chan_lookup("p9");
-    printk("[9P Chan] Local 9P server endpoint '/srv/p9' online (copy-always IPC).\n");
+    printk("[9P Chan] '/srv/p9' online.\n");
     return 0;
 }
 

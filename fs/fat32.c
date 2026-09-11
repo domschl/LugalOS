@@ -308,6 +308,10 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
 }
 
 int fat32_format(block_dev_t *dev) {
+    return fat32_format_quiet(dev, false);
+}
+
+int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     if (!dev || !dev->write_blocks) return -1;
     fat32_sector_t sector;
     memset(&sector, 0, sizeof(sector));
@@ -341,11 +345,17 @@ int fat32_format(block_dev_t *dev) {
     memset(&sector, 0, sizeof(sector));
     dev->write_blocks(dev, sector.raw, 48, 1);
 
-    printk("[FAT32] Device '%s': Volume formatted cleanly as FAT32.\n", dev->name ? dev->name : "unknown");
+    if (!quiet) {
+        printk("[FAT32] Device '%s': Volume formatted cleanly as FAT32.\n", dev->name ? dev->name : "unknown");
+    }
     return 0;
 }
 
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
+    return fat32_init_quiet(fs, dev, false);
+}
+
+int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
     if (!fs || !dev || !dev->read_blocks) return -1;
     fs->dev = dev;
 
@@ -380,9 +390,11 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
          * only ever invoked explicitly (via the `format` Lisp primitive,
          * or vfs_mount_ramdisk()'s own deliberate fallback for the RAM
          * disk, which is expected to start blank every boot). */
-        printk("[FAT32] Device '%s': No valid FAT32 volume found (not mounted). "
-               "Use (format \"<path>\") to initialize it.\n",
-               dev->name ? dev->name : "unknown");
+        if (!quiet) {
+            printk("[FAT32] Device '%s': No valid FAT32 volume found (not mounted). "
+                   "Use (format \"<path>\") to initialize it.\n",
+                   dev->name ? dev->name : "unknown");
+        }
         return -1;
     }
 
@@ -391,8 +403,10 @@ int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
     fs->root_dir_cluster = fs->bpb.root_clus;
     fs->bytes_per_cluster = fs->bpb.sec_per_clus * fs->bpb.bytes_per_sec;
 
-    printk("[FAT32] Device '%s': Volume Mounted. Label: '%.11s', Data LBA: %u\n",
-           dev->name ? dev->name : "unknown", fs->bpb.vol_lab, (unsigned int)fs->data_start_sector);
+    if (!quiet) {
+        printk("[FAT32] Device '%s': Volume Mounted. Label: '%.11s', Data LBA: %u\n",
+               dev->name ? dev->name : "unknown", fs->bpb.vol_lab, (unsigned int)fs->data_start_sector);
+    }
     return 0;
 }
 

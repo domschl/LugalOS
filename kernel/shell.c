@@ -100,7 +100,7 @@ static void sb_putc(sexpr_buf_t *sb, char c) {
 }
 
 void shell_init(void) {
-    printk("[Shell] Interactive Lugal Shell (lsh) initialized with Plan 9 Universal Namespace.\n");
+    printk("[Shell] lsh online.\n");
 }
 
 /* Executes something the CPU must refuse.

@@ -83,7 +83,22 @@ typedef struct {
 } fat32_fs_t;
 
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev);
+
+/* Same, without the "no valid volume" line on failure (Y5a,
+ * plan/phase31_concurrency_hierarchy.md).
+ *
+ * For the one caller where a blank volume is the *expected* state rather than
+ * a problem: vfs_mount_ramdisk(), whose RAM disk starts empty on every boot
+ * and is formatted immediately after. That narrated one expected event in
+ * four boot lines -- probe failed, formatted, mounted, mounted on /ram0 --
+ * of which only the last is news. On a real disk the message stays: a blank
+ * or foreign-formatted SD card is exactly what a reader needs told. */
+int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet);
 int fat32_format(block_dev_t *dev);
+
+/* Same, without the "formatted cleanly" line -- same caller and same reason
+ * as fat32_init_quiet(). An explicit (format ...) still says so. */
+int fat32_format_quiet(block_dev_t *dev, bool quiet);
 int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry);
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size);
 int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size);

@@ -185,8 +185,7 @@ void i2c_rtc_init(void) {
                "using the system software clock.\n");
 #endif
     } else {
-        printk("[I2C RTC] No I2C controller on this target; the kernel clock is "
-               "software-only until something sets it.\n");
+        printk("[I2C RTC] No controller; kernel clock is software-only.\n");
     }
 }
 
