@@ -1032,15 +1032,26 @@ void task_exit(void) {
 
     task_t *t = &g_tasks[cur()];
 
-    /* printk_critical(), not printk(). This line is why: printk() reaches the
+    /* printk(), and this line is a small monument to Y5c
+     * (plan/phase31_concurrency_hierarchy.md).
+     *
+     * It was printk_critical() for a concrete reason: printk() reached the
      * console through uart_flush() -> chan_call() -> task_block(), so a task
-     * announcing its own death switched away in the middle of dying and a
+     * announcing its own death switched away in the middle of dying, and a
      * second task could enter task_exit() behind it -- breaking the one-slot
-     * reaper's stated assumption two comments below, and faulting. Found on
-     * the ESP32-P4 the day preemption started working there (phase 27 E4);
-     * kernel/printk.c has the full account. Nothing here may block until the
-     * switch below has happened. */
-    printk_critical("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
+     * reaper's assumption two comments below, and faulting. Found on the
+     * ESP32-P4 the day preemption started working there (phase 27 E4).
+     * Nothing here may block until the switch below has happened, and that
+     * has not changed.
+     *
+     * What changed is printk(). It appends a record to the log ring under a
+     * leaf spinlock and returns; it reaches no blocking primitive from any
+     * context. So the workaround is no longer needed, and dropping it fixes
+     * something in its own right: printk_critical() writes the UART directly,
+     * outside every ordering the console has, and this message spliced itself
+     * into the middle of a U-mode program's output. The QEMU suite's C3 check
+     * caught exactly that. */
+    printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
     /* M5 Phase 2: if this task owned a chan endpoint with a request
      * pending, its caller would otherwise block forever waiting for a

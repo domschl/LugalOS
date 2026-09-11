@@ -234,6 +234,29 @@ const char *lock_noprintk_what(void);
 /* The real entry points. The macros below capture the lock's name and the
  * calling function at the call site, which costs .rodata (flash on RP2350)
  * rather than a field in every spinlock_t. */
+/* The bottom of the lock order (Y5c, plan/phase31_concurrency_hierarchy.md).
+ *
+ * A spinlock_t is a leaf: taking a second one is reported, because the second
+ * take is where an ordering bug becomes a deadlock. There is exactly one lock
+ * in this kernel for which that is wrong, and it is the log ring's.
+ *
+ * Logging has to be callable from every context, *including* one that already
+ * holds a lock -- that is the whole of Y5. So the ring's lock is nested inside
+ * other spinlocks by design, hundreds of times a second, and reporting each
+ * one would drown the checker in the one case it was built to make safe.
+ *
+ * Nesting it is safe for a reason, not by exemption: the critical section is a
+ * bounded memcpy that calls nothing, takes no other lock, and cannot block, so
+ * no ordering cycle can pass through it. It is *below* every other lock in the
+ * hierarchy, which is what "bottom" means.
+ *
+ * The asymmetry is deliberate and self-enforcing: this variant does not report
+ * being taken while another lock is held, but taking any *other* lock while
+ * this one is held still goes through the ordinary entry point and is still
+ * reported. Bottom means nothing may be below it. */
+uintptr_t spin_lock_irqsave_bottom_at(spinlock_t *l, const char *name, const char *site);
+#define spin_lock_irqsave_bottom(l)      spin_lock_irqsave_bottom_at((l), #l, __func__)
+
 uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site);
 void      spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags);
 void      ylock_acquire_at(ylock_t *l, const char *name, const char *site);

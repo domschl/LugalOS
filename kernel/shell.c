@@ -1729,6 +1729,19 @@ static void cmd_klog(const char *arg) {
                    (unsigned long)klog_truncations(), (unsigned long)klog_drops());
         }
         cprintf("\n");
+        /* Y5c: who is draining it, and what that cost. A consumer is what
+         * makes printk() non-blocking; no consumer means the producer is
+         * still fanning out inline, which is worth saying plainly. */
+        if (klog_has_consumer()) {
+            cprintf("  Consumer: klogd (printk does not block)");
+            if (klog_gaps()) {
+                cprintf("; %lu bytes lost in %lu overruns",
+                       (unsigned long)klog_gap_bytes(), (unsigned long)klog_gaps());
+            }
+            cprintf("\n");
+        } else {
+            cprintf("  Consumer: none -- printk fans out inline and can block\n");
+        }
         cprintf("  Usage: klog [attach|detach] <sink>   (read it with: cat /proc/kmsg)\n\n");
         return;
     }
@@ -3709,6 +3722,26 @@ void shell_run(void) {
     line_editor_init();
     cprintf("\nLugalOS Interactive Console Shell (`lsh`)\n");
     cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
+
+    /* Y5c, plan/phase31_concurrency_hierarchy.md: hand the console to the log
+     * consumer, and with it printk()'s ability to block.
+     *
+     * Here rather than in kernel_main() for two reasons. The first is that
+     * kernel_main()'s tail is unreachable -- init.lisp's (shell) enters this
+     * function from inside lisp_eval() and never returns. The second is that
+     * this is the last line of boot: everything above went out through
+     * klog_emit()'s synchronous inline fan-out, so the whole power-up burst
+     * is *delivered* rather than merely stored, and nothing is left to
+     * deliver late.
+     *
+     * That ordering matters more than it sounds. klogd is woken with
+     * task_unblock(), which makes it READY, not running -- and the boot task
+     * never yields between its printk()s. Handing over any earlier put the
+     * rest of boot behind the shell prompt: nothing lost, order wrong.
+     *
+     * Idempotent, so the second entry to shell_run() (a nested shell) is a
+     * no-op. */
+    klogd_start();
 
     while (1) {
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));

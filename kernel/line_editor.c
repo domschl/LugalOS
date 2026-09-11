@@ -1,4 +1,5 @@
 #include "kernel/line_editor.h"
+#include "kernel/klog.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/scratch.h"
@@ -782,6 +783,13 @@ done:
 }
 
 int readline_interactive(const char *prompt, char *out_buf, int max_len) {
+    /* Before the prompt is drawn (Y5c). The prompt reaches the console
+     * through console_putc(), which no longer drains -- see kernel/console.c
+     * -- so without this the tail of a command's diagnostics lands after the
+     * next prompt, or in front of the next command's output where it reads as
+     * that command's. */
+    klog_drain();
+
     line_state_t st;
     line_begin(&st, prompt, out_buf);
 

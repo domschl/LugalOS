@@ -474,6 +474,7 @@ set(SOURCES
     kernel/smp.c
     kernel/printk.c
     kernel/klog.c
+    kernel/klogd.c
     kernel/console.c
     kernel/device.c
     kernel/board.c

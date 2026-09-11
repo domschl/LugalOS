@@ -453,7 +453,16 @@ void kernel_main(void) {
     shell_init();
     lisp_init();
 
-    /* Launch Interactive Console Shell (lsh) */
+    /* Launch Interactive Console Shell (lsh).
+     *
+     * Y5c note, because it cost an hour: **this call is normally never
+     * reached.** lisp_init() above runs /flash0/system/etc/init.lisp, which
+     * calls (shell), which enters shell_run() from inside lisp_eval() and
+     * never comes back -- user/lisp/lisp.c:2991, and the comment at its
+     * line 4050 says as much. Anything placed between lisp_init() and here
+     * is dead code on every persona that boots a normal init.lisp, which is
+     * all of them. klogd_start() was put here first and simply never ran;
+     * it lives at the top of shell_run() instead. */
     shell_run();
 
     /* Hang if system exits */

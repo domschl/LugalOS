@@ -1045,6 +1045,64 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   nor faults, and its message appears; a forced burst larger than the ring
   produces a gap record naming a byte count, and no hang.
 
+  **Y5c done — 2026-09-11.** `kernel/klogd.c`, and `printk()` takes no lock at
+  all: it formats into a stack buffer, appends a record under the ring's leaf
+  spinlock, and returns. The wake is `task_unblock()` -- a non-blocking signal,
+  §4's own example -- skipped when a spinlock is held, because that call takes
+  `g_sched_lock` and nesting it is what Y2 refuses; klogd's bounded sleep is
+  what gets those records out instead.
+
+  The ring lock became `spin_lock_irqsave_bottom()`, a declared bottom of the
+  lock order. Without it every `printk()` under a lock reported `took
+  &g_klog_lock`, drowning the checker in the one case Y5 exists to make safe.
+  The asymmetry is self-enforcing: nesting the ring lock inside another is not
+  reported, taking any other lock while holding it still is.
+
+  **This milestone was mostly a hunt for things that had been leaning on
+  `printk()` being synchronous**, and each was a real defect rather than a
+  test to adjust:
+
+  * `printk_debug()` writes the UART registers directly and still took
+    `printk_lock()`; once `printk()` did not, boot output spliced mid-word.
+    The inline pre-consumer fan-out keeps that lock.
+  * `printk_critical()` writes the console live *and* stores to the ring, so a
+    consumer replayed every fatal line twice. The record now carries an
+    "already on console" bit in its length word.
+  * Two drainers -- klogd, and the console's own sync point -- straddled each
+    other and emitted records twice. `klog_take()` now renders and advances the
+    cursor in one critical section.
+  * klogd at `TASK_PRIO_INTERRUPT` ran on every `sched_yield()` and stopped
+    `taskdemo`'s tasks interleaving. A logger that perturbs what it observes is
+    worse than a late one; it runs at `TASK_PRIO_NORMAL`.
+  * The drain point belongs at whole-write granularity, not per character.
+    Per character it inserted the backlog between the `O` and the `K` of
+    `UMODE_OK`; gating on a line boundary fixed the splice and left the worse
+    half, which is that draining can *block* -- and a task that blocks
+    mid-string may resume on the other hart, stranding half its output in the
+    first hart's TX batch.
+  * **The one that cost the most: `printk_unlock()` was the only thing that
+    ever flushed the UART's per-hart TX batch.** Taking `printk()` off that
+    lock left the console path with no flush at all, so a U-mode program
+    writing character by character through `SYS_PUTCHAR` had its output sit in
+    hart 1's batch indefinitely -- while on hart 0 the shell's next
+    `cprintf()` happened to flush it. That asymmetry made it look like a
+    second-hart bug for several rounds. `SYS_PUTCHAR`/`SYS_PUTNUM` and
+    `console_puts()` now flush at their own boundary.
+  * `SYS_PRINT` moved to the console stream, the argument `SYS_PUTNUM` already
+    made. Measured rather than argued: on `printk()` the suite scores 353/363,
+    on `console_puts()` 361/363.
+
+  And one thing became *possible* rather than broken: `task_exit()` is back on
+  plain `printk()`. It used `printk_critical()` because printk reached the
+  console through `chan_call()` and a task could switch away mid-death (phase
+  27 E4). That reason is gone, and dropping the workaround also stopped the
+  message splicing itself into a U-mode program's output.
+
+  Verified: ten presets clean, QEMU **363/363**, `lockselftest` 16/16 with two
+  new checks -- `printk()` from a serve callback is silent where `cprintf()`
+  from one still reports, and a 400-record burst issued with a spinlock held
+  drops the oldest and says so (`26533 bytes of log were dropped`).
+
 * **Y5d — Delete the primitive.** `cprintf()` and `printk_debug()` move to the
   console `ylock_t`; `printk_lock()`/`printk_unlock()` and the Y4 graph edge
   are removed; G2's check is retargeted per §5.6.

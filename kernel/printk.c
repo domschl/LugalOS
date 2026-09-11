@@ -479,7 +479,17 @@ int printk(const char *fmt, ...) {
      * consumer; Y5d is what deletes this lock. Doing it here instead would
      * mean printk() and cprintf() interleaving mid-line, with no consumer yet
      * built to keep them apart. */
-    printk_lock();
+    /* No printk_lock() (Y5c, plan/phase31_concurrency_hierarchy.md).
+     *
+     * There is nothing left for it to protect. Formatting happens in `buf` on
+     * this stack, the append is atomic under the ring's own leaf spinlock,
+     * and the fan-out -- the part that could block, and the reason a lock had
+     * to be held across the whole message -- belongs to klogd now.
+     *
+     * This is the line that makes printk() callable from anywhere: from a
+     * driver task mid-serve, from an interrupt handler, with a spinlock held.
+     * None of them can block here, because there is no longer anything here
+     * to block on. */
     int ret = vprintk_ctx_buffered(&d, fmt, args);
 
     /* Truncation is marked in the output and counted, never silent: the tail
@@ -498,7 +508,6 @@ int printk(const char *fmt, ...) {
     }
 
     klog_emit(ms, buf, d.len);
-    printk_unlock();
     va_end(args);
     return ret;
 }
@@ -619,7 +628,7 @@ int printk_critical(const char *fmt, ...) {
      * is KLOG_NO_TS because vprintk_to() rendered one into the text above --
      * this path prints as it formats, so it cannot defer the stamp the way
      * printk() does. */
-    if (g_crit_len > 0) klog_record_text(KLOG_NO_TS, g_crit_buf, g_crit_len);
+    if (g_crit_len > 0) klog_record_text(KLOG_NO_TS, g_crit_buf, g_crit_len, tty);
     return ret;
 }
 
@@ -628,6 +637,10 @@ int printk_critical(const char *fmt, ...) {
  * kernel-log sink changes. Splitting the two is what makes
  * `klog detach console` silence diagnostics without silencing the shell. */
 int cprintf(const char *fmt, ...) {
+    /* Once, before any of this call's output -- see kernel/console.c for why
+     * the sync point is per write and not per character. */
+    klog_drain();
+
     va_list args;
     va_start(args, fmt);
     printk_lock();

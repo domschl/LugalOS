@@ -3,6 +3,7 @@
 #include "kernel/printk.h"
 #include "kernel/hart.h"
 #include "kernel/console.h"
+#include "drivers/uart.h"
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
 #include "kernel/sched.h"
@@ -897,7 +898,23 @@ void trap_handler(trap_frame_t *frame) {
                         ret = -1;
                         break;
                     }
-                    printk("%s", kbuf);
+                    /* console_puts(), not printk() (Y5c,
+                     * plan/phase31_concurrency_hierarchy.md).
+                     *
+                     * The same argument SYS_PUTNUM below already makes -- a
+                     * user program's output is not kernel diagnostics and does
+                     * not belong in the log ring -- applied to the syscall
+                     * that was left behind when PUTNUM and PUTCHAR moved.
+                     *
+                     * Invisible while both streams were synchronous; not once
+                     * printk() became asynchronous. A program printing
+                     * "UARGS_ARG " then a number then ":name" had its strings
+                     * drained from the log while its numbers went straight to
+                     * the console, so they arrived separated: every number in
+                     * one clump, then all the text. Measured, not guessed --
+                     * with this on printk() the suite scores 353/363, with it
+                     * here 361/363. */
+                    console_puts(kbuf);
                     ret = 0;
                     break;
                 }
@@ -919,6 +936,7 @@ void trap_handler(trap_frame_t *frame) {
                         do { digits[n++] = (char)('0' + (val % 10)); val /= 10; } while (val > 0);
                         while (n > 0) console_putc(digits[--n]);
                     }
+                    uart_flush();   /* same reason as SYS_PUTCHAR below */
                     ret = 0;
                     break;
                 case 12: /* SYS_PUTCHAR */
@@ -935,6 +953,20 @@ void trap_handler(trap_frame_t *frame) {
                      * the kernel log ring inconsistently with SYS_PUTNUM
                      * above. */
                     console_putc((char)frame->a1);
+                    /* And flush, because nothing else will (Y5c,
+                     * plan/phase31_concurrency_hierarchy.md).
+                     *
+                     * The UART's TX batch is per hart, and printk_unlock()
+                     * used to be the only thing that emptied it. printk() no
+                     * longer takes that lock, so a U-mode program writing
+                     * character by character on hart 1 had its output sit in
+                     * hart 1's batch indefinitely -- on hart 0 the shell's
+                     * next cprintf() happened to flush it, which is why this
+                     * looked like a second-hart bug rather than a missing
+                     * flush. One syscall is one unit of user output and the
+                     * natural place to end a batch; the syscall's own cost
+                     * dwarfs the flush. */
+                    uart_flush();
                     ret = 0;
                     break;
                 case 21: /* SYS_TICKS: the preemption tick counter */

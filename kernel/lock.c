@@ -152,11 +152,11 @@ bool lock_check_may_printk(void) {
     if (g_lock_faults > LOCK_FAULT_REPORT_MAX) return true;
 
     g_check_busy[h] = true;
-    printk_critical("\n[Lock BUG] task %d: printk() from inside the '%s' "
+    printk_critical("\n[Lock BUG] task %d: console output from inside the '%s' "
                     "serve callback.\n"
-                    "[Lock BUG]   A caller can be blocked on this endpoint "
-                    "while holding printk_lock() -- see kernel/lock.h. "
-                    "Fault %u.\n",
+                    "[Lock BUG]   cprintf() reaches the uart task through "
+                    "chan_call(); a caller blocked on this endpoint closes the "
+                    "cycle -- see kernel/lock.h. Fault %u.\n",
                     me, what, (unsigned)g_lock_faults);
     g_check_busy[h] = false;
     return true;
@@ -178,7 +178,23 @@ bool lock_check_may_block(const char *what) {
     return lock_check_may_block_named(what, NULL, NULL);
 }
 
+/* Shared body. `bottom` suppresses only the nested-take report -- everything
+ * else, including the depth that makes blocking inside the section a
+ * violation, is identical. See kernel/lock.h for why exactly one lock in this
+ * kernel gets to pass true. */
+static uintptr_t spin_lock_common(spinlock_t *l, const char *name,
+                                  const char *site, bool bottom);
+
+uintptr_t spin_lock_irqsave_bottom_at(spinlock_t *l, const char *name, const char *site) {
+    return spin_lock_common(l, name, site, true);
+}
+
 uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site) {
+    return spin_lock_common(l, name, site, false);
+}
+
+static uintptr_t spin_lock_common(spinlock_t *l, const char *name,
+                                  const char *site, bool bottom) {
     uintptr_t flags = irq_save();
     uint32_t h = hart_id();
 
@@ -187,7 +203,7 @@ uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site
      * why instead of simply stopping. That is the difference between phase
      * 31's F1 as it was found -- a dead machine after one printk -- and what
      * finding it should have cost. */
-    if (g_spin_depth[h]) lock_fault("took", name, site);
+    if (g_spin_depth[h] && !bottom) lock_fault("took", name, site);
 
     for (;;) {
         if (arch_lock_try_acquire(&l->word)) {
@@ -753,21 +769,30 @@ int lock_selftest(void) {
          * prints, so it is called after the mark is cleared -- otherwise the
          * report would be the thing being reported on, which is the mistake
          * Y2's fault counter made and this file exists to remember. */
-        uint32_t before = lock_faults();
+        /* Y5c narrowed what this rule covers, and the two halves are now
+         * opposite. printk() from inside a serve callback is *safe*: it
+         * appends to the log ring and returns, reaching no blocking
+         * primitive at all. cprintf() is not: it still goes to the uart task
+         * through chan_call(), and a caller blocked on this endpoint closes
+         * the cycle. Asserting both directions is the point -- a checker that
+         * still fired on printk() would be reporting a rule that no longer
+         * exists. */
+        uint32_t before_printk = lock_faults();
         lock_noprintk_enter("selftest");
         bool marked = (lock_noprintk_what() != NULL);
-        printk("  (deliberate: printk from inside a serve callback)\n");
+        printk("[KlogTest] printk from inside a serve callback is fine now\n");
         lock_noprintk_leave();
-        bool caught = (lock_faults() == before + 1);
+        bool printk_is_quiet = (lock_faults() == before_printk);
 
-        /* And that it goes quiet once the callback returns -- a checker that
-         * reported unconditionally would pass the line above too. */
-        uint32_t before_clean = lock_faults();
-        printk("  (clean: printk outside any serve callback)\n");
-        bool clean_is_quiet = (lock_faults() == before_clean);
+        uint32_t before_cprintf = lock_faults();
+        lock_noprintk_enter("selftest");
+        cprintf("  (deliberate: console output from inside a serve callback)\n");
+        lock_noprintk_leave();
+        bool cprintf_caught = (lock_faults() == before_cprintf + 1);
 
-        check("serve callback: printk() from inside one is reported, outside is not",
-              marked && caught && clean_is_quiet && lock_noprintk_what() == NULL);
+        check("serve callback: printk() is safe, cprintf() is still reported",
+              marked && printk_is_quiet && cprintf_caught &&
+              lock_noprintk_what() == NULL);
     }
 
     /* --- 8. Y5b: the log record is the atomic unit ---------------------- */
@@ -816,6 +841,41 @@ int lock_selftest(void) {
         printk("[KlogTest] %s\n", toolong);
         check("log record: an over-long message is truncated and counted",
               klog_truncations() == trunc_before + 1);
+    }
+
+    /* --- 9. Y5c: the producer never blocks, and says what it lost -------- */
+    {
+        /* A burst nobody can drain, forced rather than hoped for.
+         *
+         * spin_lock_irqsave() masks interrupts on this hart, so klogd cannot
+         * be scheduled for the duration -- and klog_emit() skips the wake
+         * anyway while a spinlock is held, because task_unblock() would take
+         * g_sched_lock and nesting that is what Y2 refuses. So the ring fills,
+         * evicts, and the consumer finds a hole where its cursor used to be.
+         *
+         * This is also the assertion that printk() is callable from a context
+         * that could not possibly block: with a spinlock held, 400 times. */
+        static spinlock_t burst;
+        spinlock_init(&burst);
+
+        uint32_t gaps_before = klog_gaps();
+        uintptr_t bf = spin_lock_irqsave(&burst);
+        for (int i = 0; i < 400; i++) {
+            printk("[KlogBurst] record %d of 400, filling the ring with no consumer running\n", i);
+        }
+        spin_unlock_irqrestore(&burst, bf);
+
+        /* One ordinary printk to send the wake the burst could not: every
+         * emit inside the loop above skipped it, because a spinlock was held
+         * and task_unblock() takes g_sched_lock. Without this, klogd sleeps
+         * out its full idle period first -- which is correct behaviour and
+         * was the first version of this test's bug, since sched_yield() does
+         * not advance a sleeping task's deadline. */
+        printk("[KlogBurst] burst over\n");
+        for (int i = 0; i < 40 && klog_gaps() == gaps_before; i++) task_sleep_ms(5);
+
+        check("log burst: the producer never blocked, and the loss is reported",
+              klog_gaps() == gaps_before + 1 && klog_gap_bytes() > 0);
     }
 
     /* The fault total includes the three this selftest caused on purpose,

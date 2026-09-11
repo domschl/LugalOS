@@ -92,8 +92,20 @@ typedef void (*klog_putc_fn)(char);
 void klog_emit(uint32_t ms, const char *text, uint32_t len);
 
 /* Ring only, no sink fan-out. For printk_critical(), which may not reach a
- * sink whose putc can block. See kernel/klog.c. */
-void klog_record_text(uint32_t ms, const char *text, uint32_t len);
+ * sink whose putc can block. See kernel/klog.c.
+ *
+ * `already_on_console` marks a record whose text printk_critical() has
+ * *already* written to the UART itself, character by character, as it
+ * formatted. The consumer must not write it a second time.
+ *
+ * Before Y5c that could not happen: the ring was history, nothing replayed
+ * it, and a critical message appeared exactly once. With a consumer draining
+ * the ring to the same console, every `[Sched] Task #N exited` printed twice
+ * -- once live from the fault path, once again from the drain. The record
+ * still has to be *stored*, because /proc/kmsg is where a fatal message is
+ * read afterwards; it just must not be echoed. */
+void klog_record_text(uint32_t ms, const char *text, uint32_t len,
+                      bool already_on_console);
 
 /* Counts one truncation. Called by the producer, because that is where the
  * loss actually happens: printk() formats into a KLOG_REC_MAX buffer, so a
@@ -108,6 +120,42 @@ uint32_t klog_truncations(void);
 /* Records dropped because a single message exceeded what the ring itself
  * could hold. Distinct from eviction, which is normal and silent. */
 uint32_t klog_drops(void);
+
+/* --- The consumer (Y5c, plan/phase31_concurrency_hierarchy.md §5.4) -------
+ *
+ * Registering one changes what klog_emit() does: instead of fanning the
+ * record out to the sinks on the producer's own stack -- which ends in a
+ * UART write that can block -- it appends, wakes the consumer, and returns.
+ * From that point printk() cannot block, from any context.
+ *
+ * Before a consumer is registered the producer still drains inline, and that
+ * is safe rather than merely tolerated: it happens during boot, before
+ * sched_init(), when there are no tasks, so uart_putc() takes its direct
+ * hardware path and there is nothing for a deadlock to form between.
+ *
+ * If the consumer dies the log goes quiet rather than blocking -- the ring
+ * keeps everything, /proc/kmsg still reads it, and printk_critical() still
+ * reaches the wire. A silent console with an intact log beats a deadlocked
+ * kernel, which is the trade this whole milestone is. */
+void klog_set_consumer(int pid);
+bool klog_has_consumer(void);
+
+/* Starts the consumer task and registers it. Called from kernel/main.c after
+ * the uart task, so as much of boot as possible has already gone out through
+ * the guaranteed-delivery inline path. Returns the pid, or -1 -- in which
+ * case logging simply stays synchronous, which is what it was before Y5c. */
+int klogd_start(void);
+
+/* Writes everything from the consumer's cursor to the current end, and
+ * reports any bytes evicted before it got there. Called only by the consumer
+ * task: it blocks, and that is the point. */
+void klog_drain(void);
+
+/* Bytes lost because the ring wrapped past the consumer's cursor, and how
+ * many times that has happened. Reported in the output stream as it occurs
+ * and by `klog` afterwards. */
+uint64_t klog_gap_bytes(void);
+uint32_t klog_gaps(void);
 
 /* Bytes the ring actually holds, and records in it (Y5b).
  *

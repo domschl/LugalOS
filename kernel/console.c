@@ -1,4 +1,5 @@
 #include "kernel/console.h"
+#include "kernel/klog.h"
 #include "kernel/chan.h"
 #include "kernel/device.h"
 #include "kernel/printk.h"
@@ -23,13 +24,43 @@ void console_emit(console_putc_fn out, char c) {
     out(c);
 }
 
+/* Y5c, plan/phase31_concurrency_hierarchy.md: the console stream flushes the
+ * kernel log before writing -- but only at the start of a whole write, never
+ * between two characters of one.
+ *
+ * printk() is asynchronous now, so the log and the console are two streams
+ * with different latencies and they need a sync point. Putting it in
+ * console_putc() looked more thorough and was wrong twice over. It inserted
+ * the backlog between the 'O' and the 'K' of a U-mode program's "UMODE_OK";
+ * gating that on a line boundary fixed the splice and left the worse half,
+ * which is that klog_drain() can *block*. A task that blocks mid-string may
+ * resume on the other hart, and the TX batch is per hart -- so half the
+ * string sat in hart 1's batch and half in hart 0's, and the flush at the end
+ * emptied only one. That is why this is here and not one level down.
+ *
+ * klog_drain() is a cheap no-op when the log is already drained, and refuses
+ * outright in any context that must not block -- see kernel/klog.c. It does
+ * not recurse: the drain writes to klog's *sinks* (console_emit(uart_putc,
+ * ...)), not back through here. */
 void console_putc(char c) {
     console_emit(g_console_putc, c);
 }
 
 void console_puts(const char *s) {
     if (!s) return;
+    klog_drain();
     while (*s) console_putc(*s++);
+
+    /* Flush the UART's TX batch at the end of a whole string (Y5c).
+     *
+     * The batch is per hart, and printk_unlock() used to be the only thing
+     * that emptied it -- printk() does not take that lock any more, and the
+     * console path never had an equivalent. Without this a U-mode program's
+     * output sat in hart 1's batch until something else on hart 1 happened to
+     * flush it. A whole string is the natural boundary; single characters
+     * still batch, as they should. */
+    uart_flush();
+
 }
 
 /* --- The console as a channel endpoint --- */
