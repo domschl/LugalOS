@@ -869,8 +869,20 @@ void task_sleep_ms(uint32_t ms) {
  * real: a timer interrupt would push a trap frame onto a stack that has
  * already been handed back to the allocator.
  *
- * One slot suffices because a task can only exit while running, and the next
- * task reaps before anything else can exit. */
+ * One slot suffices, but not for the reason this comment used to give.
+ *
+ * It said "a task can only exit while running, and the next task reaps before
+ * anything else can exit". The second clause is false (phase 31 Y1):
+ * task_exit() runs with interrupts *enabled* until it takes g_sched_lock, and
+ * printk_critical() sits in that window -- a bounded spin on the UART FIFO,
+ * which at 115200 baud is milliseconds for one line, far longer than a 10 ms
+ * tick needs to land. Two tasks really can be mid-exit at once.
+ *
+ * What actually makes one slot enough is maintained rather than assumed:
+ * task_exit() frees whatever it finds here before claiming the slot. Two
+ * exiting tasks serialise on g_sched_lock, and the one that arrives second is
+ * provably not running on the first's stack -- the first reached ctx_switch()
+ * before the lock was released, so whoever released it is not the first. */
 
 /* Does a range about to be handed back to the allocator overlap a stack some
  * live task is standing on? Phase 27 E4/E7 guard.
@@ -979,21 +991,39 @@ void task_exit(void) {
      * switch below has happened. */
     printk_critical("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
-    /* Taken here and never released on this path: this task switches away
-     * and nothing ever switches back to it, so the successor picked below
-     * inherits the lock and does the releasing. That is the hand-off in its
-     * starkest form -- see g_sched_lock's comment. The announcement above is
-     * outside it because it is not allowed to block at all, which is a
-     * stronger requirement than "not while holding this". */
-    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
-
     /* M5 Phase 2: if this task owned a chan endpoint with a request
      * pending, its caller would otherwise block forever waiting for a
      * reply nothing will ever send -- see chan_owner_exited()'s own
      * comment for why this stopped being a theoretical gap. Before
      * next_runnable() below, so an unblocked caller is eligible to be
-     * picked as the very next task to run. */
+     * picked as the very next task to run.
+     *
+     * **Outside the lock, and that is the whole point** (phase 31 Y1). This
+     * call used to sit under g_sched_lock, where it deadlocked the kernel:
+     * chan_owner_exited() calls task_unblock(), task_unblock() takes
+     * g_sched_lock, and spinlock_t is not re-entrant -- so the hart spun
+     * forever on a lock only it held, with interrupts already off. The path
+     * written to stop a caller hanging hung the whole machine instead.
+     *
+     * Moving it out loses nothing, because the lock was never protecting it:
+     * kernel/chan.c does not take g_sched_lock at all, and endpoint state is
+     * guarded by ep->lock. What the placement is for is *ordering* -- the
+     * caller has to be READY before next_runnable() looks -- and doing the
+     * work earlier satisfies that exactly as well as doing it inside.
+     *
+     * A tick can now land between here and the acquire below. That window
+     * already existed and was already longer (printk_critical() above spins
+     * on the UART FIFO), and what must not happen in it is *blocking*, which
+     * neither of these two calls does. */
     chan_owner_exited(t->pid);
+
+    /* Taken here and never released on this path: this task switches away
+     * and nothing ever switches back to it, so the successor picked below
+     * inherits the lock and does the releasing. That is the hand-off in its
+     * starkest form -- see g_sched_lock's comment. The two calls above are
+     * outside it because neither may block, which is a stronger requirement
+     * than "not while holding this". */
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
 
     int next = next_runnable(cur());
     if (next < 0) {
@@ -1011,14 +1041,14 @@ void task_exit(void) {
     /* Hand the stack to the reaper rather than freeing it here: this code is
      * still executing on it.
      *
-     * "The next task reaps before anything else can exit" (see g_reap_stack's
-     * comment) holds under cooperative scheduling and ordinary preemption,
-     * since the printk() above is too fast for a second task to reach its
-     * own task_exit() in the gap. This slot is still only one deep, but it
-     * does not trust the handoff to land before it's needed again: if a
-     * previous dead task's stack is somehow still sitting here unreaped,
-     * free it now -- we are provably not running on it, only on our own --
-     * instead of silently overwriting the only reference to it. */
+     * The slot is one deep and this is what keeps it sufficient: a second
+     * task *can* reach its own task_exit() while this one is mid-exit (see
+     * g_reap_stack's comment for why the old claim that it could not was
+     * wrong), so if a previous dead task's stack is still sitting here
+     * unreaped, free it now -- we are provably not running on it, only on
+     * our own -- instead of silently overwriting the only reference to it.
+     *
+     * Not a defensive maybe: it is the invariant. */
     if (g_reap_stack) {
         sched_check_free_range(g_reap_stack, g_reap_pages, "task_exit");
         palloc_free(g_reap_stack, g_reap_pages);
