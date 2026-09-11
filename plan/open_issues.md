@@ -618,3 +618,8 @@ flags: a `ylock_t` is re-entrant for its owner, which is precisely the failure
 above, and it joins the graph for free. Not done in phase 31 Y4 because it
 changes two drivers on a board that was not attached at the time, and
 `plan/phase30_driver_framework.md` opens both files anyway.
+
+*(2026-09-11: phase 31 Y5 does not touch this. Y5 removes printk ownership
+from the graph; these two are the opposite problem — blocking resources that
+were never in it. If anything Y5 raises their relative weight, since after it
+they are the only blocking resources in the tree that contribute no edge.)*

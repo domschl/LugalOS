@@ -1,13 +1,20 @@
 # Phase 31 — One wait-for graph, and no cycles in it
 
-**Status: COMPLETE, 2026-09-11. Y0-Y4 done.** One wait-for graph fed by
-channels, ylocks and printk ownership; a leaf rule for `spinlock_t` checked at
-every acquire; two real bugs found and fixed (a reproduced whole-kernel hang in
-`task_exit()`, and a lock-ordering inversion beside it). Two exceptions are
-listed under Y4 rather than closed: interrupt context is still convention, and
-two hand-rolled yielding locks in the RP2350 drivers are outside the graph.
-Phase 30 is next, then phase 28. The ordering is in §0.4, and there is a standing rule in
-§0.5 that can pull this phase forward on its own.
+**Status: Y0-Y4 done 2026-09-11; REOPENED the same day for Y5.** One wait-for
+graph fed by channels, ylocks and printk ownership; a leaf rule for
+`spinlock_t` checked at every acquire; two real bugs found and fixed (a
+reproduced whole-kernel hang in `task_exit()`, and a lock-ordering inversion
+beside it). Two exceptions are listed under Y4 rather than closed: interrupt
+context is still convention, and two hand-rolled yielding locks in the RP2350
+drivers are outside the graph.
+
+**Y5 asks the better question about the third of those resources: why is
+printk ownership an edge at all?** Kernel logging becomes append-to-a-ring and
+return — deadlock-free by construction rather than by checking — and the graph
+drops to two contributors. It slices in ahead of phase 30's G3, because G3 and
+G4 would otherwise migrate fourteen drivers under a constraint Y5 deletes.
+Phase 30 is paused at G2; phase 28 still follows. The ordering is in §0.4, and
+there is a standing rule in §0.5 that can pull this phase forward on its own.
 
 **Milestone letter: `Y`.** A–G, H–N and P–T, V–X are spoken for across
 `plan/`; `O`, `U` and `Z` remain free after this.
@@ -767,6 +774,216 @@ bug — every rule in that set is either checked, or listed above as not.
 
 Verified: 363/363 QEMU, `lockselftest` 12/12, ten presets warning-clean.
 
+### Y5 — Kernel logging that cannot block
+
+Reopened 2026-09-11, after Y0–Y4 had closed. Proposed by the user, in these
+terms:
+
+> *"All kernel-logs are guaranteed async and go into a pre-defined finite
+> ring-buffer. This ring-buffer is the lowest level in the task hierarchy. In
+> case of ring-buffer overflow, there is no blocking, but logging information
+> is discarded (but the fact that overflow happened will be part of the
+> kernel-log). Different consumers (e.g. UART driver) can empty the
+> kernel-log-ringbuffer for output, and their operation will never block the
+> actual print."*
+
+Y4 folded printk ownership into the graph, which made a cycle through it
+*named* instead of silent. Y5 is the next question, and the better one: why is
+it an edge at all?
+
+#### 5.1 What is already built, and where the blocking actually enters
+
+`kernel/klog.c` is three-quarters of the proposal already:
+
+* a 4096-byte ring that retains **every** byte `printk()` emits, whether or
+  not any sink is attached;
+* an absolute, monotonic byte coordinate space — `klog_total()`,
+  `klog_oldest()`, `klog_read(abs_offset, ...)`;
+* a sink registry, with the console sink registered at `kernel/main.c:144`;
+* a drop policy that is already the right one: the ring **overwrites the
+  oldest** byte, so a producer never has to decide whether to wait.
+
+The ring is guarded by `g_klog_lock`, a leaf `spinlock_t` held across a single
+byte store. It does not block and cannot.
+
+**The blocking is entirely in the fan-out.** `klog_putc()` appends to the ring
+and then, *on the producer's own stack*, calls every attached sink — and the
+console sink ends in `uart_putc()`, which batches and `chan_call()`s the uart
+task once the batch fills. `kernel/klog.c:33` already names this as the reason
+the two halves of that function are protected by different things.
+
+So Y5 is not "write a logging framework". It is **cut the producer's call to
+the sinks, and give the consumer a read cursor** — which the coordinate space
+above already supports, with no new state. A consumer whose cursor has fallen
+below `klog_oldest()` knows exactly how many bytes it lost, which is the
+user's "the fact that overflow happened will be part of the kernel-log",
+computable rather than recorded.
+
+#### 5.2 The prize: one fewer blocking resource, not one more mechanism
+
+`printk_lock()` exists for one reason: `vprintk_to()` emits character by
+character, and the fan-out underneath it can block, so a whole message needs a
+lock held across the whole emission or two tasks interleave mid-word.
+
+Format into a bounded stack buffer instead, and append the finished record to
+the ring in one `g_klog_lock` critical section, and **message atomicity comes
+from the single append**. `printk_lock()` then has nothing left to protect,
+and with it go `g_printk_owner`, `g_printk_depth`, `g_printk_waiter`, the
+polling fallback for task-less harts, and Y4's graph edge.
+
+The wait-for graph goes from three blocking resources to two: channels and
+ylocks. §4's test — *can the existing primitives express it cleanly?* — is
+satisfied by **removing** a hand-rolled one, which is the strongest form of
+the preference stated there.
+
+It also retires machinery added one commit earlier, and that is worth saying
+plainly rather than defending: phase 30's G2 added
+`lock_noprintk_enter()/leave()` so that a `printk()` from inside a driver
+serve callback is reported. Under Y5 that call is safe, because it appends to
+a ring and returns. See §5.6 — the check is **narrowed**, not deleted, because
+`cprintf()` from a serve callback stays a genuine cycle.
+
+#### 5.3 The measured constraint: the ring is too small to be a transport
+
+As history, 4 KB is adequate. As the transport, it is not, and this is
+measured rather than estimated.
+
+On the live RP2350, right now:
+
+```
+cat /proc/kmsg  →  4109 bytes, beginning mid-word: ", usbnet, usbcon"
+                   earliest surviving timestamp 0.461s; the boot banner is gone
+```
+
+The ring has **already wrapped before the board finishes booting**. rv32's
+minimal boot to a shell prompt is 3916 bytes against the same 4096. With a
+consumer that cannot start until after `sched_init()`, the default outcome of
+a naive async switch is that the boot log — the part you need most — is
+precisely the part discarded.
+
+Two fixes, both agreed, and both are needed:
+
+* **`KLOG_RING_SIZE` 4096 → 8192.** One extra page. The RP2350 heap is 87
+  pages of 4096 (348 KB), so the cost is 1 of 87, and the sizing is then
+  ~2× the measured boot volume rather than 0.96× of it.
+* **Terser boot output**, as its own pass. Reducing what boot prints is worth
+  more than any ring size, because it is the one burst that is guaranteed to
+  happen on every power-up and is guaranteed to have no consumer running for
+  the first part of it.
+
+#### 5.4 The rule that makes early boot safe without an exception
+
+A producer may drain inline **only while no scheduler exists**.
+
+This is not a compromise, it is a proof about when the hazard exists at all.
+Before `sched_init()` there are no tasks, so `uart_putc()`'s
+`driver_task_alive()` test is false and it writes the hardware directly — the
+`chan_call()` path is not reachable, and there is nothing for a deadlock to
+form between. The moment tasks can run, the producer stops draining, forever.
+
+So the transition is a single predicate, not a mode flag anyone has to
+maintain: *is there a registered consumer?* Before there is one, print goes
+out inline exactly as it does today. After, the producer only ever appends.
+
+And if the consumer **dies or is starved**, the system goes quiet rather than
+blocking. That is the user's instruction applied literally — *prevent blocking
+at all cost, even at the cost of losing older messages* — and the loss is
+recoverable: `/proc/kmsg` still holds the ring, and `printk_critical()` still
+reaches the wire synchronously. A silent console with an intact log is a
+better failure than a deadlocked kernel.
+
+#### 5.5 What stays synchronous, and why each one is a different answer
+
+* **`printk_critical()` stays synchronous.** *"The ship is already sinking in
+  that case anyway"* (user). It is the instrument this phase exists because of
+  — F1 was a dead machine after one `printk()` — and its guarantee is that the
+  line reached the wire *before* the halt. It already bypasses the sinks
+  (`critical_putc_both()` → `klog_record()` + `uart_critical_putc()`); Y5
+  leaves that path alone and adds a synchronous ring flush to the fatal path,
+  so a panic empties what the consumer had not yet drained.
+* **`cprintf()` stays synchronous.** Application output is a different stream
+  with a different contract: dropping bytes from `ls` is a bug, not a
+  trade-off, and a shell that outruns its console *should* be made to wait.
+  What changes is only the primitive underneath it — from the bespoke printk
+  ownership to a plain `ylock_t`, which is an existing primitive already in
+  the graph and is exactly the shape it needs (a lock held across a block).
+* **`printk_debug()` stays direct.** It writes the physical UART register and
+  spins on THR-empty. That is bounded, not a lock, and its whole purpose is to
+  bypass the machinery.
+
+#### 5.6 The two consequences worth designing for, not discovering
+
+**Interleaving.** Today `printk()` and `cprintf()` share `printk_lock()`, and
+that shared lock is the only thing stopping a kernel log line landing in the
+middle of a shell line. Split the streams and that protection is gone.
+
+The resolution needs no new mechanism, and it follows from the one asymmetry
+Y5 is built on: **the consumer may block; the producer may not.** The drain
+task takes the same console `ylock_t` that `cprintf()` takes, and writes whole
+records under it. Two writers, one lock, line-granular output — and the drain
+task blocking on that lock is harmless precisely because nothing is waiting on
+the drain task.
+
+**The G2 check is narrowed, not removed.** *"Never `printk()` from a serve
+callback"* stops being a rule. *"Never `cprintf()` from a serve callback"*
+remains one: `cprintf()` → console ylock → `console_putc()` → `uart_putc()` →
+`chan_call("uart")`, which from inside another driver's callback can close a
+cycle. So `lock_noprintk_enter()` is retargeted from `printk_lock()` to the
+console path and renamed for what it actually guards.
+
+#### 5.7 Sequencing
+
+Five steps, each independently testable, in this order. Phase 30 pauses at G2
+— G3 migrates seven U-mode drivers and G4 the UART console family, all under a
+constraint Y5 deletes, and migrating them twice is the avoidable mistake.
+
+* **Y5a — Size and volume.** `KLOG_RING_SIZE` to 8192; the terser-boot pass.
+  No behaviour change, so the suite is a pure regression check.
+  *Done when:* the RP2350's `/proc/kmsg` still contains its own boot banner at
+  the shell prompt — the measurement in §5.3, inverted.
+
+* **Y5b — Record append.** `vprintk_to()` formats into a bounded stack buffer;
+  `klog_append(buf, len)` writes the whole record under `g_klog_lock`.
+  `printk()` stops taking `printk_lock()`. **No consumer yet** — the producer
+  still drains inline, so output is byte-identical and this step is verifiable
+  on its own.
+  *Done when:* QEMU 363/363 with no test changed, and two harts printing
+  concurrently produce no interleaved record (the X7 splice, asserted).
+
+* **Y5c — The consumer.** A drain task with a cursor in `klog_total()`'s
+  coordinate space, taking the console ylock, writing whole records. The
+  producer's inline drain becomes conditional on *no consumer registered*
+  (§5.4). Overflow is reported as a synthesized record naming the byte count
+  from `klog_oldest() - cursor`.
+  *Done when:* `printk()` from inside a driver serve callback neither blocks
+  nor faults, and its message appears; a forced burst larger than the ring
+  produces a gap record naming a byte count, and no hang.
+
+* **Y5d — Delete the primitive.** `cprintf()` and `printk_debug()` move to the
+  console `ylock_t`; `printk_lock()`/`printk_unlock()` and the Y4 graph edge
+  are removed; G2's check is retargeted per §5.6.
+  *Done when:* `kernel/printk.c` has no ownership state, the wait-for graph
+  has two contributors instead of three, and `lockselftest` asserts a
+  `printk()` from a serve callback is *not* a fault while a `cprintf()` from
+  one still is.
+
+* **Y5e — The documentation that was load-bearing.** `drivers/README.md`'s
+  "things that will bite you" printk entry, `kernel/lock.h`'s invariant
+  section, `driver_task.h`'s invariant 1, and the four driver task-body
+  comments Y4 rewrote. All of them currently state a rule Y5 changes.
+  *Done when:* no comment in the tree tells a reader that `printk()` from a
+  driver task can deadlock, because it no longer can.
+
+#### 5.8 Done, for Y5 as a whole
+
+The kernel log is deadlock-free by construction rather than by checking:
+`printk()` from any context — a driver task mid-serve, an ISR, under any
+lock — appends to a ring and returns, and no path from it reaches a blocking
+primitive. Output loss is possible, bounded by the ring, and reported in the
+log itself. `printk_critical()` still reaches the wire before a halt, and
+application output is still never dropped. Ten presets clean, QEMU
+363/363, and both hardware suites at their documented baselines.
+
 ## 3. How it is tested
 
 * **The QEMU suite is the regression net**, exactly as it was for phase 22's
@@ -778,6 +995,12 @@ Verified: 363/363 QEMU, `lockselftest` 12/12, ten presets warning-clean.
 * **Hardware**, for the RP2350 personas and the ESP32-P4, because interrupt
   context is where the rule matters most and QEMU's timing hides it — phase 27
   E4's bug passed every QEMU test.
+* **For Y5 specifically, two assertions QEMU can make that it could not
+  before**: that a `printk()` from inside a driver serve callback returns and
+  its message appears, and that a burst larger than the ring produces a gap
+  record naming a byte count rather than a hang. Both are deterministic once
+  logging cannot block, which is the point — the hazard stops being one that
+  only reproduces on hardware.
 
 ## 4. Explicitly not in this phase
 
@@ -827,12 +1050,33 @@ Verified: 363/363 QEMU, `lockselftest` 12/12, ten presets warning-clean.
 * **False confidence.** A passing checker proves no cycle was *taken*, not
   that none exists. Static ordering is what makes the absence structural; the
   runtime check is how the ordering is kept honest.
+* **Y5 trades a deadlock for a silence.** The failure mode moves from "the
+  board stops with no clue" to "the board runs but says nothing", and the
+  second is quieter in every sense. Three things keep it findable:
+  `printk_critical()` still reaches the wire, `/proc/kmsg` still holds the
+  ring whatever the consumer did, and the drain task is visible in `ps` like
+  any other. A board that has gone quiet is one `cat /proc/kmsg` from telling
+  you why — over 9P on the other ACM port if the console itself is the thing
+  that died.
+* **Y5's stack buffer is a new fixed limit.** Formatting a record before
+  appending it means a maximum record length, where today a `printk()` of any
+  length simply streams. Pick it from the longest format string in the tree,
+  measured rather than guessed, and truncate with a visible marker rather than
+  silently.
 
 ## 6. Budget
 
 Small, and front-loaded onto thinking rather than typing. Y0 is reading and a
 table. Y1 is a bug fix. Y2 is the bulk — a counter, two assertions, and the
 argument about where to put them. Y3 and Y4 are consolidation.
+
+Y5 is larger than any of them and still not large, because three-quarters of
+it is already in `kernel/klog.c` (§5.1). Y5a is a constant and a pruning pass;
+Y5b and Y5d are each a contained change to one file plus its callers; Y5c is
+the only new code, and it is one task of the shape phase 30's `driver_task.c`
+now provides. Y5e is writing. The hardware suites gate it, not because the
+mechanism is board-specific but because the failure it prevents only ever
+showed up on real silicon.
 
 The measure of success is that the twenty comments become redundant, and that
 the next instance of §0.4's failure class is a named refusal at the moment of

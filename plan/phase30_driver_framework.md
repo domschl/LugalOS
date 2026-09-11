@@ -1,8 +1,15 @@
 # Phase 30 — The layer above the registers
 
-**Status: in progress, 2026-09-11. Category E (the I2C bus split), G1 (the
+**Status: PAUSED at G2, 2026-09-11. Category E (the I2C bus split), G1 (the
 three leaks), G0 (the inventory and the rule) and G2 (the serve loop) are
 done; G3-G5 remain. Sequenced after phase 31 and before phase 28.**
+
+*(2026-09-11: paused for `plan/phase31_concurrency_hierarchy.md`'s **Y5**,
+which makes kernel logging non-blocking by construction. G3 migrates seven
+U-mode drivers and G4 the UART console family — fourteen files, all written
+under the "never `printk()` from a driver task" rule that Y5 deletes. Doing
+them first would mean touching all fourteen twice. G2's
+`lock_noprintk_enter()` check is the machinery Y5 narrows; see §5.6 there.)*
 
 *(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this
 one and goes first. Its argument applies directly here: this phase moves code
