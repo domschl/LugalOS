@@ -1,8 +1,8 @@
 # Phase 30 — The layer above the registers
 
-**Status: in progress, 2026-09-11. Category E (the I2C bus split) and G1
-(the three leaks) are done; G0, G2-G5 remain. Sequenced after phase 31 and
-before phase 28.**
+**Status: in progress, 2026-09-11. Category E (the I2C bus split), G1 (the
+three leaks) and G0 (the inventory and the rule) are done; G2-G5 remain.
+Sequenced after phase 31 and before phase 28.**
 
 *(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this
 one and goes first. Its argument applies directly here: this phase moves code
@@ -479,6 +479,33 @@ in a plan document.
 Done when: every row of the inventory names a file that exists, and the rule
 is stated where a person about to write a second copy of something would meet
 it.
+
+#### G0 done — 2026-09-11
+
+Two documents, because the two audiences are different and a reader who needs
+one does not need the other:
+
+* **`plan/hardware_seams.md`** — the inventory, for someone adding a *board*.
+  §1 controller seams (six rows, each with what the P4 cost it), §2
+  device-class contracts, §3 the linker-symbol contract G1 created, §4 bus
+  arbitration, §5 what is deliberately not a seam, §6 the standing conclusion
+  that the arch seams passed their test. Every path in it was checked against
+  the tree mechanically, not by eye.
+* **`drivers/README.md`** — the rule, for someone adding a *driver*, in the
+  directory they are about to add a file to. Extract-at-the-third and its
+  corollary first, then the five categories with the right treatment for
+  each, then the traps that have actually cost a session here:
+  `-fno-jump-tables` per translation unit for U-mode code, `printk()` blocks,
+  blocking under a `spinlock_t` is now a detected bug, the zero-warning
+  policy, and the linker-symbol contract a new board must satisfy.
+
+Both are linked from `README.md`'s directory-structure section, which is
+where someone who does not yet know these documents exist would be looking.
+
+There was no `CLAUDE.md` to put the rule in, and inventing one to hold a
+single rule would have buried it as surely as the plan document did. The
+precedent this tree already had is `tests/hw/README.md`: a directory README
+with real content, read by the person working in that directory.
 
 ### G1 — The three leaks
 

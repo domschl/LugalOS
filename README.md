@@ -272,6 +272,17 @@ lugalos/
     └── lisp/                  # Scheme REPL & RISC-V S-expression ELF compiler
 ```
 
+Two documents are worth reading before extending the hardware support rather
+than after:
+
+* **`drivers/README.md`** — what kind of thing you are writing (registers, a
+  controller seam, a driver task, a device-class contract, a bus), the rule
+  for when shared code is justified, and the traps that have actually cost a
+  hardware session here.
+* **`plan/hardware_seams.md`** — the maintained inventory of every seam: what
+  declares it, what implements it, and what a second silicon platform cost
+  each one.
+
 ---
 
 ## Building and Running in QEMU
