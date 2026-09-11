@@ -10,6 +10,7 @@
  */
 
 #include "drivers/spisd.h"
+#include "drivers/driver_task.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
@@ -667,8 +668,6 @@ BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
  * comment and .ustacks2048's in linker/rp2350.ld. */
 static uint8_t      g_blk_ustack[2048] __attribute__((aligned(2048)))
                                         __attribute__((section(".ustacks2048")));
-static mem_domain_t g_blk_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Same "SIO + one hardware controller"
@@ -678,30 +677,26 @@ static void blk_task_body(void *arg) {
     (void)arg;
     while (!g_blk_ep) sched_yield();
 
-    mem_domain_init(&g_blk_domain);
-    mem_domain_add(&g_blk_domain, (uintptr_t)g_blk_ustack, sizeof(g_blk_ustack),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_blk_text_region(&tbase, &tsize);
-    mem_domain_add(&g_blk_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_blk_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_blk_domain, SPI1_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_blk_domain) != 0) {
-        printk("[SPI SD] Refusing to enter U-mode: memory domain not enforceable; storage stays on direct hardware access.\n");
-        return;
-    }
-    /* blk_umode_body() takes is_sdhc as a real parameter (see its own
-     * comment) rather than the `void (*)(void)` every other driver's
-     * umode body uses -- the ABI lands argc in a0 regardless of the
-     * pointed-to prototype (arch/riscv/common/umode.S: `mv a0, a3` right
-     * before the mode switch), so this cast changes nothing at the call
-     * site, only what the compiler is told to expect. */
-    arch_enter_user((void (*)(void))blk_umode_body,
-                    (uintptr_t)g_blk_ustack + sizeof(g_blk_ustack), 0,
-                    g_sd_is_sdhc ? 1u : 0u, 0);
+    /* G3, plan/phase30_driver_framework.md. The only one of the seven that
+     * passes an argument: blk_umode_body() takes is_sdhc as a real parameter
+     * rather than the `void (*)(void)` the others use, because its U-mode
+     * half cannot read the kernel-side flag. The ABI lands `arg` in a0
+     * regardless of the pointed-to prototype (arch/riscv/common/umode.S:
+     * `mv a0, a3` right before the mode switch), so the cast changes nothing
+     * at the call site -- only what the compiler is told to expect. */
+    const driver_umode_spec_t spec = {
+        .name         = "SPI SD",
+        .fallback     = "storage stays on direct hardware access.",
+        .body         = (void (*)(void))blk_umode_body,
+        .text_region  = board_blk_text_region,
+        .stack_base   = (uintptr_t)g_blk_ustack,
+        .stack_size   = sizeof(g_blk_ustack),
+        .regions      = { { SIO_BASE,  4096, MEM_R | MEM_W },
+                          { SPI1_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 2,
+        .arg          = g_sd_is_sdhc ? 1u : 0u,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:

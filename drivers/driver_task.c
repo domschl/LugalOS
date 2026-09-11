@@ -8,6 +8,9 @@
 #include "kernel/chan.h"
 #include "kernel/printk.h"
 #include "kernel/lock.h"
+#include "kernel/mem_domain.h"
+#include "kernel/device.h"
+#include "arch/umode.h"
 #include <stddef.h>
 
 /* The task body every driver task now runs. `arg` is the driver_task_t, which
@@ -119,4 +122,61 @@ int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
         sched_yield();
     }
     return -1;
+}
+
+
+/* --- The U-mode domain (G3, plan/phase30_driver_framework.md §2.2) -------- */
+
+/* One per driver that enters U-mode, and they are not concurrent: a task
+ * builds its domain once, on its own first pass through its body, and never
+ * again. Static rather than on the task's stack because task_set_domain()
+ * keeps a pointer to it -- a domain that lived on the stack would be
+ * describing memory that had since become something else. */
+static mem_domain_t g_umode_domains[DRIVER_UMODE_MAX_DOMAINS];
+static uint32_t     g_umode_domain_count;
+
+int driver_umode_enter(const driver_umode_spec_t *spec) {
+    if (!spec || !spec->body || !spec->stack_base) return -1;
+
+    if (g_umode_domain_count >= DRIVER_UMODE_MAX_DOMAINS) {
+        printk("[%s] Refusing to enter U-mode: no domain slot left; %s\n",
+               spec->name ? spec->name : "driver",
+               spec->fallback ? spec->fallback : "falling back to direct hardware access.");
+        return -1;
+    }
+    mem_domain_t *dom = &g_umode_domains[g_umode_domain_count++];
+
+    mem_domain_init(dom);
+    mem_domain_add(dom, spec->stack_base, spec->stack_size, MEM_R | MEM_W);
+
+    /* The shared .utext page, always. U-mode can execute nothing else, so a
+     * driver that omitted this would fault on its first instruction -- which
+     * is exactly the kind of thing that should not be each driver's to
+     * remember. */
+    uintptr_t tbase, tsize;
+    if (spec->text_region) spec->text_region(&tbase, &tsize);
+    else                   board_text_region(&tbase, &tsize);
+    mem_domain_add(dom, tbase, tsize, MEM_R | MEM_X);
+
+    for (uint32_t i = 0; i < spec->region_count && i < DRIVER_UMODE_MAX_REGIONS; i++) {
+        mem_domain_add(dom, spec->regions[i].base, spec->regions[i].size,
+                       spec->regions[i].perms);
+    }
+
+    /* Refuse rather than claim unverified isolation. The driver keeps working
+     * -- every facade function falls back to direct hardware access when its
+     * task is not serving -- it simply keeps working without the confinement,
+     * and says so rather than pretending. */
+    if (task_set_domain(sched_current_pid(), dom) != 0) {
+        printk("[%s] Refusing to enter U-mode: memory domain not enforceable; %s\n",
+               spec->name ? spec->name : "driver",
+               spec->fallback ? spec->fallback : "falling back to direct hardware access.");
+        g_umode_domain_count--;   /* the slot was never used */
+        return -1;
+    }
+
+    uintptr_t top = spec->stack_top ? spec->stack_top
+                                    : (spec->stack_base + spec->stack_size);
+    arch_enter_user(spec->body, top, 0, spec->arg, 0);
+    return -1;   /* not reached: arch_enter_user() does not return */
 }

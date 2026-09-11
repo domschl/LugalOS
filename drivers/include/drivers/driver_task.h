@@ -161,4 +161,81 @@ static inline chan_endpoint_t *driver_task_endpoint(const driver_task_t *dt) {
     return dt ? dt->ep : NULL;
 }
 
+/* --- The U-mode domain (G3, plan/phase30_driver_framework.md §2.2) ---------
+ *
+ * Seven drivers built a mem_domain_t by hand and the shape never varied: the
+ * task's own U-mode stack (R/W), the shared `.utext` page from
+ * board_text_region() (R/X), one to four MMIO windows, then
+ * task_set_domain(), then either arch_enter_user() or a refusal.
+ *
+ * The refusal is the part most worth sharing. It is a safety property --
+ * *refuse rather than claim unverified isolation* -- and it was seven separate
+ * implementations of one policy, each with its own wording. A driver that got
+ * it subtly wrong would report isolation it did not have, which is the one
+ * failure mode this whole mechanism exists to prevent.
+ *
+ * `.utext` is added by the framework rather than by the caller: every one of
+ * the seven needs it, none of them may omit it (U-mode cannot execute
+ * anything else), and a driver that forgot would fault on its first
+ * instruction. */
+
+typedef struct {
+    uintptr_t base;
+    uint32_t  size;
+    uint32_t  perms;   /* MEM_R | MEM_W | MEM_X, kernel/mem_domain.h */
+} driver_region_t;
+
+/* Four is what the widest of the seven needs (usb_cdc: two MMIO windows plus
+ * a shared data region, on top of stack and .utext). */
+#define DRIVER_UMODE_MAX_REGIONS 4
+
+/* Drivers that enter U-mode, across every persona. Seven today; the clock
+ * persona builds the most at once. */
+#define DRIVER_UMODE_MAX_DOMAINS 8
+
+typedef struct {
+    /* Named in the refusal, so it reads as the driver's own message. */
+    const char *name;
+
+    /* What the caller falls back to, e.g. "keypad/display stay on direct
+     * hardware access" -- the second half of the refusal line. */
+    const char *fallback;
+
+    void (*body)(void);          /* the U-mode entry point */
+
+    /* Which `.utext` region to grant R/X, or NULL for board_text_region().
+     *
+     * There are five: the shared one, plus a dedicated region each for
+     * st7735, spisd, usb_cdc and pico_clock_green -- kernel/board.c, and
+     * §D of plan/hardware_seams.md for why they are separate (the shared page
+     * ran out of room). The framework always grants one, because U-mode can
+     * execute nothing else; *which* one is the driver's to say. */
+    void (*text_region)(uintptr_t *base, uintptr_t *size);
+
+    /* The task's U-mode stack, granted R/W. `stack_top` is where execution
+     * starts; 0 means base + size, which is what six of the seven want.
+     * tm1638 passes a lower top because the last bytes of its page are its
+     * own scratch RAM rather than stack. */
+    uintptr_t stack_base;
+    uint32_t  stack_size;
+    uintptr_t stack_top;
+
+    driver_region_t regions[DRIVER_UMODE_MAX_REGIONS];
+    uint32_t        region_count;
+
+    /* arch_enter_user()'s `argc`, which the ABI lands in a0 -- so a body
+     * declared to take one parameter receives this. Six of the seven pass
+     * nothing; spisd passes whether the card is SDHC, because its U-mode half
+     * cannot read the kernel-side flag. */
+    uintptr_t arg;
+} driver_umode_spec_t;
+
+/* Builds the domain, attaches it, and drops to U-mode.
+ *
+ * **Does not return on success** -- arch_enter_user() does not come back.
+ * Returns -1 when the domain could not be enforced, having said so, and the
+ * caller should then return from its task body so the driver keeps working
+ * through the direct-access path its facade functions already have. */
+int driver_umode_enter(const driver_umode_spec_t *spec);
+
 #endif /* LUGALOS_DRIVERS_DRIVER_TASK_H */

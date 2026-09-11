@@ -19,6 +19,7 @@
  */
 
 #include "drivers/st7735.h"
+#include "drivers/driver_task.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
@@ -825,8 +826,6 @@ ST7735_UATTR static void st7735_umode_body(void) {
  * in linker/rp2350.ld. */
 static uint8_t      g_st7735_ustack[2048] __attribute__((aligned(2048)))
                                            __attribute__((section(".ustacks2048")));
-static mem_domain_t g_st7735_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Mirrors drivers/i2c_rtc.c's
@@ -837,22 +836,20 @@ static void st7735_task_body(void *arg) {
     (void)arg;
     while (!g_st7735_ep) sched_yield();
 
-    mem_domain_init(&g_st7735_domain);
-    mem_domain_add(&g_st7735_domain, (uintptr_t)g_st7735_ustack, sizeof(g_st7735_ustack),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_st7735_text_region(&tbase, &tsize);
-    mem_domain_add(&g_st7735_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_st7735_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_st7735_domain, SPI0_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_st7735_domain) != 0) {
-        printk("[ST7735] Refusing to enter U-mode: memory domain not enforceable; canvas stays on direct hardware access.\n");
-        return;
-    }
-    arch_enter_user(st7735_umode_body, (uintptr_t)g_st7735_ustack + sizeof(g_st7735_ustack), 0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md. Its own .utext region, not the
+     * shared one -- see board_st7735_text_region() in kernel/board.c. */
+    const driver_umode_spec_t spec = {
+        .name         = "ST7735",
+        .fallback     = "canvas stays on direct hardware access.",
+        .body         = st7735_umode_body,
+        .text_region  = board_st7735_text_region,
+        .stack_base   = (uintptr_t)g_st7735_ustack,
+        .stack_size   = sizeof(g_st7735_ustack),
+        .regions      = { { SIO_BASE,  4096, MEM_R | MEM_W },
+                          { SPI0_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 2,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:

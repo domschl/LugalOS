@@ -1,4 +1,5 @@
 #include "drivers/i2c_bus.h"
+#include "drivers/driver_task.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -1292,8 +1293,6 @@ I2C_UATTR static void i2c_umode_body(void) {
  * g_heartbeat_ustack comment and .ustacks512's in linker/rp2350.ld. */
 static uint8_t      g_i2c_ustack[512] __attribute__((aligned(512)))
                                        __attribute__((section(".ustacks512")));
-static mem_domain_t g_i2c_domain;
-
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
@@ -1306,21 +1305,17 @@ static void i2c_task_body(void *arg) {
     (void)arg;
     while (!g_i2c_ep) sched_yield();
 
-    mem_domain_init(&g_i2c_domain);
-    mem_domain_add(&g_i2c_domain, (uintptr_t)g_i2c_ustack, sizeof(g_i2c_ustack),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_text_region(&tbase, &tsize);
-    mem_domain_add(&g_i2c_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_i2c_domain, I2C_RTC_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_i2c_domain) != 0) {
-        printk("[I2C] Refusing to enter U-mode: memory domain not enforceable; RTC/EEPROM stay on direct hardware access.\n");
-        return;
-    }
-    arch_enter_user(i2c_umode_body, (uintptr_t)g_i2c_ustack + sizeof(g_i2c_ustack), 0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md. One window: the I2C controller. */
+    const driver_umode_spec_t spec = {
+        .name         = "I2C",
+        .fallback     = "RTC/EEPROM stay on direct hardware access.",
+        .body         = i2c_umode_body,
+        .stack_base   = (uintptr_t)g_i2c_ustack,
+        .stack_size   = sizeof(g_i2c_ustack),
+        .regions      = { { I2C_RTC_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 1,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 #else /* !CONFIG_BOARD_RP2350: plain kernel-mode server, as every M4.5

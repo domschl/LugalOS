@@ -14,6 +14,7 @@
  */
 
 #include "drivers/tm1638.h"
+#include "drivers/driver_task.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
@@ -576,8 +577,6 @@ TM1638_UATTR static void tm1638_umode_body(void) {
     }
 }
 
-static mem_domain_t g_tm1638_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Mirrors drivers/uart_rp2350.c's
@@ -588,26 +587,24 @@ static void tm1638_task_body(void *arg) {
     (void)arg;
     while (!g_tm1638_ep) sched_yield();
 
-    mem_domain_init(&g_tm1638_domain);
-    mem_domain_add(&g_tm1638_domain, (uintptr_t)g_tm1638_ustack,
-                   sizeof(g_tm1638_ustack), MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_text_region(&tbase, &tsize);
-    mem_domain_add(&g_tm1638_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_tm1638_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_tm1638_domain) != 0) {
-        printk("[TM1638] Refusing to enter U-mode: memory domain not enforceable; keypad/display stay on direct hardware access.\n");
-        return;
-    }
-    /* The stack top handed to arch_enter_user() stops short of the full
-     * page -- the last TM1638_URAM_SIZE bytes are tm1638_usys_ram's own
-     * storage (see its comment above), not usable stack. */
-    arch_enter_user(tm1638_umode_body,
-                    (uintptr_t)g_tm1638_ustack + TM1638_USTACK_SIZE - TM1638_URAM_SIZE,
-                    0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md: the domain, the refusal and the
+     * drop to U-mode are driver_umode_enter()'s. What is left here is the
+     * part that is actually this driver's -- which window it needs, and the
+     * fact that its stack top is not where its stack region ends. */
+    const driver_umode_spec_t spec = {
+        .name       = "TM1638",
+        .fallback   = "keypad/display stay on direct hardware access.",
+        .body       = tm1638_umode_body,
+        .stack_base = (uintptr_t)g_tm1638_ustack,
+        .stack_size = sizeof(g_tm1638_ustack),
+        /* Stops short of the full page: the last TM1638_URAM_SIZE bytes are
+         * tm1638_usys_ram's own storage (see its comment above), granted as
+         * part of the same R/W region but not usable as stack. */
+        .stack_top  = (uintptr_t)g_tm1638_ustack + TM1638_USTACK_SIZE - TM1638_URAM_SIZE,
+        .regions    = { { SIO_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 1,
+    };
+    (void)driver_umode_enter(&spec);   /* returns only if it refused */
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
