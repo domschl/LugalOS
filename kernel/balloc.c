@@ -107,7 +107,10 @@ void *balloc_alloc(uint32_t size) {
      * touches nothing shared or is balloc_reserve(), which calls
      * palloc_pages_aligned() -- itself lock-taking since S4 -- and printk(),
      * which can block. A spinlock_t across either would be the deadlock
-     * kernel/lock.h warns about; across both it would be two.
+     * kernel/lock.h warns about; across both it would be two. Since phase 31
+     * Y2 that header does more than warn: a spinlock_t is a leaf, and taking
+     * one across a block is refused and named rather than left to this
+     * comment.
      *
      * From here down is pure tree arithmetic over g_longest[] with no call
      * out of it, which is the same shape that made palloc's own conversion

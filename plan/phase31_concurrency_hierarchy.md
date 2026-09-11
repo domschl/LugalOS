@@ -1,8 +1,12 @@
 # Phase 31 — One wait-for graph, and no cycles in it
 
-**Status: Y0 done 2026-09-10 — the inventory, plus five findings including a
-reproduced whole-kernel hang (F1). Y1-Y4 not started. Runs before phase 30,
-which runs before phase 28.** The ordering is in §0.4, and there is a standing rule in
+**Status: COMPLETE, 2026-09-11. Y0-Y4 done.** One wait-for graph fed by
+channels, ylocks and printk ownership; a leaf rule for `spinlock_t` checked at
+every acquire; two real bugs found and fixed (a reproduced whole-kernel hang in
+`task_exit()`, and a lock-ordering inversion beside it). Two exceptions are
+listed under Y4 rather than closed: interrupt context is still convention, and
+two hand-rolled yielding locks in the RP2350 drivers are outside the graph.
+Phase 30 is next, then phase 28. The ordering is in §0.4, and there is a standing rule in
 §0.5 that can pull this phase forward on its own.
 
 **Milestone letter: `Y`.** A–G, H–N and P–T, V–X are spoken for across
@@ -677,6 +681,91 @@ or (b) not covered, which means the rule has a gap and the gap is the finding.
 
 Done when: every comment in that set is in category (a), or the exceptions are
 listed here with reasons.
+
+#### Y4 done — the audit, one more gap closed, and two real exceptions — 2026-09-11
+
+33 hazard comments across `kernel/`, `drivers/`, `fs/` and `net/`. Most are
+now category (a) and say so, pointing at the check rather than restating the
+rule. Two classes are not, and they are the finding.
+
+##### The gap the audit itself closed: printk ownership
+
+`drivers/uart_16550.c`'s task body carried the sharpest statement of it:
+
+> *"chan.c's wait-for cycle guard covers `chan_call()` itself, but
+> `printk_lock()` is a **different** blocking resource it cannot see."*
+
+That was still true after Y3. §0.2 had flagged it — *"a lock without being
+either type"* — and Y3 folded in ylocks and left it. **printk ownership is now
+an edge in the same graph**, which buys two different things depending on
+which half of the cycle closes last: a `chan_call()` that would close it is
+*refused outright*, and a cycle closing inside `printk_lock()` is *named*
+instead of hanging in silence.
+
+Named rather than prevented, deliberately: `printk_unlock()` clears ownership
+unconditionally, so "proceed without owning it" is not representable without
+adding state to the most safety-critical path in the kernel, for a case that
+should never happen. The same bargain Y2 struck for spinlocks.
+
+That one change moved four comments from (b) to (a) — the three UART drivers'
+task bodies and `drivers/i2c_rtc.c`'s.
+
+##### Exception 1: interrupt context, mid-switch and mid-exit are still convention
+
+§1.3 names three contexts that may not block. Only *"while holding a lock"* is
+machine-checked. `drivers/include/drivers/uart.h` states the other two and now
+says explicitly that they are unchecked.
+
+The reason is structural rather than an omission: **this kernel has no
+in-interrupt flag and cannot trivially grow one.** Preemption works by calling
+`sched_yield()` *inside* the timer handler, so a naive depth counter would
+mark every legitimate preemptive context switch as interrupt context and
+refuse the scheduling it exists to perform. A correct flag has to distinguish
+"in a handler" from "in a handler, having deliberately entered the scheduler",
+and that is a design, not a counter.
+
+`printk_critical()` already exists as the sanctioned escape for these
+contexts, and E4's three failures were all fixed by using it — so the cost of
+the gap today is that the rule is documented rather than enforced, not that it
+is unmet.
+
+##### Exception 2: two hand-rolled yielding locks are outside the graph
+
+`drivers/cyw43_rp2350.c`'s `g_bus_busy` and `drivers/enc28j60_rp2350.c`'s
+`g_busy` are `ylock_t` in everything but type: a flag, and a `sched_yield()`
+loop waiting for it. They record no owner, so they contribute no edge, so a
+cycle through one is invisible exactly as the channel-only graph made lock
+cycles invisible.
+
+This is not theoretical. `net/stack.c`'s comment records what it already cost:
+a re-entrant call through `net_set_address()`'s gratuitous ARP took the bus
+lock a frame below already held it, and *"the board deadlocked on `wifi probe`
+with the console gone. It cost a physical BOOTSEL to recover."*
+
+**The fix is to make them `ylock_t`, not to widen the graph.** A `ylock_t` is
+re-entrant for its owner, which is precisely the failure above, and it is in
+the graph for free. Not done here: it changes two drivers on a board that is
+not currently attached, and phase 30 is the milestone that opens those files
+anyway. Recorded in `plan/open_issues.md`.
+
+##### Left alone, and why
+
+A comment that explains a *choice* is not a rule waiting to be enforced.
+`net/ntp.c`'s "blocking here would deadlock against the task that has to run"
+justifies polling instead of blocking; `drivers/usb_cdc.c`'s re-entrancy note
+justifies dropping instead of blocking. Both describe code that cannot be half
+of a wait-for cycle because it never waits on a task. Rewriting them to
+mention a checker would make them longer and less true.
+
+##### The measure of success, honestly
+
+§6 said the measure was that the twenty comments become redundant. They have
+not become redundant, and on reflection they should not: each still says *what
+the rule is*, which a diagnostic printed at 3 a.m. does not. What changed is
+that none of them is now the only thing standing between the tree and the
+bug — every rule in that set is either checked, or listed above as not.
+
+Verified: 363/363 QEMU, `lockselftest` 12/12, ten presets warning-clean.
 
 ## 3. How it is tested
 

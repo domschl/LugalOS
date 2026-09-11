@@ -33,7 +33,8 @@ static bool g_in_fanout[MAX_HARTS];
  *
  * Not the fanout below: a sink's putc() is a UART write that can block
  * (M2), and a spinlock_t held across a block is the deadlock its own header
- * warns about. So the two halves of this function are protected by
+ * warns about -- and, since phase 31 Y2, refuses: the blocking primitives
+ * check for a held spinlock and say so. So the two halves of this function are protected by
  * different things for different reasons -- the ring by a lock because two
  * harts writing g_ring[g_total % SIZE] would interleave characters and tear
  * the counter, the fanout by a per-hart flag because its hazard is

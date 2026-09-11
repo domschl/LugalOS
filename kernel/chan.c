@@ -218,7 +218,8 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
      *
      *   - `busy` is held across chan_call_task(), which calls task_block().
      *     A spinlock_t held across a block is the deadlock its own header
-     *     warns about: the holder cannot run to release it.
+     *     warns about -- and now refuses (phase 31 Y2): the holder cannot run
+     *     to release it, and this function checks for one before it blocks.
      *   - Contention here must *refuse*, not wait. A caller that finds the
      *     endpoint busy gets -1 and decides for itself; spinning or
      *     yielding until it frees would change chan_call()'s contract, and

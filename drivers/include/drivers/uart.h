@@ -111,6 +111,14 @@ void uart_flush(void);
 // blocking call from the timer interrupt is a deadlock, and a fatal handler
 // that blocks never prints the dump that would explain it.
 //
+// Of those three, only "while holding a lock" is machine-checked (phase 31
+// Y2). **Interrupt context, mid-switch and mid-exit are still convention**,
+// because this kernel has no in-interrupt flag to check and cannot trivially
+// grow one: preemption works by calling sched_yield() *inside* the timer
+// handler, so a naive flag would mark every legitimate preemptive switch as
+// interrupt context. That gap is recorded in
+// plan/phase31_concurrency_hierarchy.md's Y4, not forgotten.
+//
 // This spins on the transmit FIFO for a bounded number of iterations and
 // then **drops the byte**. Dropping is the point: output is worth less than
 // forward progress on these paths, and a console that is wedged or absent

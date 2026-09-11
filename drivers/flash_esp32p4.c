@@ -91,7 +91,8 @@ static bool       g_ready;
  * milliseconds. A ylock_t rather than a spinlock_t: the wait can be long
  * enough that spinning through it would deny the CPU to everything else, and
  * kernel/lock.h is explicit that "a spinlock_t taken where a ylock_t was
- * needed deadlocks on one hart". */
+ * needed deadlocks on one hart" -- and since phase 31 Y2 it also refuses the
+ * mistake at run time rather than only describing it. */
 static ylock_t g_flash_ylock;
 
 static inline bool writable(uint32_t addr, uint32_t len) {

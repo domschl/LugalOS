@@ -634,7 +634,14 @@ static uint32_t g_reap_pages[MAX_HARTS];
  * and says who was switching to whom. */
 /* Runs with g_sched_lock HELD, which is why every line below is
  * printk_critical(): a printk() here would block while holding the lock the
- * task it waits for needs, which is a deadlock rather than a slow dump. */
+ * task it waits for needs, which is a deadlock rather than a slow dump.
+ *
+ * Since phase 31 Y2 a printk() here would also be *caught* -- it reaches the
+ * console through chan_call(), which refuses outright when a spinlock is
+ * held. That turns this from a rule someone has to have read into one the
+ * kernel states at the moment it is broken, which matters here more than
+ * most: this function exists to explain a crash, and the version of it that
+ * deadlocks explains nothing. */
 static void sched_check_incoming(int prev, int next) {
     uintptr_t sp = g_tasks[next].sp;
     uintptr_t ra = sp ? *(const uintptr_t *)sp : 0;

@@ -255,6 +255,17 @@ void waitfor_leave(int me);
 /* Which task `pid` is waiting for, or -1. Diagnostics. */
 int  waitfor_target(int pid);
 
+/* Names a cycle that a primitive with no refusal to offer has just walked
+ * into, and counts it with the hierarchy faults. For `ylock_acquire()` and
+ * `printk_lock()`: both wait on a task, both can therefore close a cycle, and
+ * neither has a failure its caller could act on. The wait still happens and
+ * still hangs -- what changes is that the board says which two tasks and
+ * which resource, instead of simply stopping.
+ *
+ * Writes through printk_critical(), so it is safe from inside printk's own
+ * ownership protocol: that path takes no printk lock at all. */
+void waitfor_report_cycle(const char *what, int me, int target);
+
 /* Prints the checks and a LOCK_SELFTEST_OK / _FAIL marker; returns the number
  * of failures. */
 int lock_selftest(void);

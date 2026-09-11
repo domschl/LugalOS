@@ -1654,7 +1654,11 @@ static void i2c_task_body(void *arg) {
 /* This task, and only this task, may call the *_hw_* functions in this file
  * and drivers/at24c32.c while alive -- see uart_16550.c's uart_task_body()
  * for the fuller reasoning (never call back into anything that could
- * chan_call() this same endpoint; never take printk_lock() from here). */
+ * chan_call() this same endpoint; never take printk_lock() from here).
+ *
+ * Both of those are checked since phase 31: chan_call() refuses a call that
+ * would close a wait-for cycle, and printk ownership became an edge in that
+ * same graph in Y4. See kernel/lock.h. */
 static void i2c_task_body(void *arg) {
     (void)arg;
     while (!g_i2c_ep) sched_yield();

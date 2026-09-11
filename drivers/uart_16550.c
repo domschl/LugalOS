@@ -237,13 +237,21 @@ static bool uart_task_alive(void) {
  * correctly refuses rather than deadlocks, but there is no reason to rely
  * on that -- it should simply never happen. */
 /* Must never call printk()/printk_debug()/cprintf() (or anything that takes
- * printk_lock()) from within this loop -- chan.c's wait-for cycle guard
- * covers chan_call() itself, but printk_lock() is a *different* blocking
- * resource it cannot see. A caller can legitimately be blocked here on this
- * very endpoint while holding printk_lock(); this task taking that same
- * lock to log would deadlock against it. uart_debug_putc()/uart_debug_puts()
- * exist precisely so a driver can still get bytes out under that
- * constraint. */
+ * printk_lock()) from within this loop. A caller can legitimately be blocked
+ * here on this very endpoint while holding printk_lock(); this task taking
+ * that same lock to log would deadlock against it.
+ * uart_debug_putc()/uart_debug_puts() exist precisely so a driver can still
+ * get bytes out under that constraint.
+ *
+ * **Checked now, not merely remembered** (Y4,
+ * plan/phase31_concurrency_hierarchy.md). This comment used to end "chan.c's
+ * wait-for cycle guard covers chan_call() itself, but printk_lock() is a
+ * *different* blocking resource it cannot see", and that was the gap: printk
+ * ownership is an edge in the one wait-for graph now (kernel/lock.h), so a
+ * chan_call() closing this cycle from the other side is refused, and one that
+ * closes inside printk_lock() names both tasks instead of hanging silently.
+ * The rule still holds -- it is simply no longer the only thing keeping the
+ * board alive. */
 static void uart_task_body(void *arg) {
     (void)arg;
     /* uart_task_start() creates this task before the endpoint it serves

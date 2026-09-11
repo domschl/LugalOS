@@ -592,3 +592,29 @@ rule)` whose sample function does a 9P read through the VFS like any other
 file. The rate limiting, the will and the reconnect machinery above it all
 work unchanged -- Q5 built them against a source that is just a function
 returning a number, which is exactly what this would be.
+
+---
+
+## Two hand-rolled yielding locks are outside the wait-for graph
+
+**Trigger:** a cycle or a re-entrant call through `drivers/cyw43_rp2350.c`'s
+`g_bus_busy` or `drivers/enc28j60_rp2350.c`'s `g_busy`. Nothing detects it;
+the board stops.
+
+**Why it is parked:** both are `ylock_t` in everything but type — a flag and a
+`sched_yield()` loop waiting for it. Because they record no owning task they
+contribute no edge to phase 31's wait-for graph, so a cycle through one is
+invisible in exactly the way lock cycles were invisible to the channel-only
+graph before Y3.
+
+It has already cost something: `net/stack.c`'s comment records a re-entrant
+call through `net_set_address()`'s gratuitous ARP taking the bus lock a frame
+below already held, and "the board deadlocked on `wifi probe` with the console
+gone. It cost a physical BOOTSEL to recover."
+
+**Fix, when it is worth it:** make them `ylock_t`. That is smaller than it
+sounds and strictly better than widening the graph to understand bespoke
+flags: a `ylock_t` is re-entrant for its owner, which is precisely the failure
+above, and it joins the graph for free. Not done in phase 31 Y4 because it
+changes two drivers on a board that was not attached at the time, and
+`plan/phase30_driver_framework.md` opens both files anyway.

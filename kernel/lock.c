@@ -94,12 +94,6 @@ const char *lock_spin_held(void) { return g_spin_name[hart_id()]; }
 const char *lock_spin_site(void) { return g_spin_site[hart_id()]; }
 uint32_t    lock_faults(void)    { return g_lock_faults; }
 
-/* Report unconditionally -- for a violation the leaf check does not cover,
- * such as a wait-for cycle, where there is no held spinlock to name. */
-static void lock_fault_named(const char *what, const char *name, const char *site) {
-    lock_fault(what, name, site);
-}
-
 bool lock_check_may_block_named(const char *what, const char *name,
                                 const char *site) {
     uint32_t h = hart_id();
@@ -218,6 +212,20 @@ void waitfor_leave(int me) {
     spin_unlock_irqrestore(&g_waitfor_lock, f);
 }
 
+void waitfor_report_cycle(const char *what, int me, int target) {
+    uint32_t h = hart_id();
+    if (g_check_busy[h]) return;
+    g_lock_faults++;
+    if (g_lock_faults > LOCK_FAULT_REPORT_MAX) return;
+    g_check_busy[h] = true;
+    printk_critical("\n[Lock BUG] hart %u: %s -- task %d waiting for task %d "
+                    "closes a wait-for cycle.\n"
+                    "[Lock BUG]   Nothing can refuse this one; it will hang. "
+                    "See kernel/lock.h. Fault %u.\n",
+                    (unsigned)h, what, me, target, (unsigned)g_lock_faults);
+    g_check_busy[h] = false;
+}
+
 int waitfor_target(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return -1;
     return g_waitfor[pid];
@@ -287,7 +295,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
         irq_restore(f);
 
         if (me >= 0 && me < MAX_TASKS && !waitfor_enter(me, holder)) {
-            lock_fault_named("would close a wait-for cycle taking", name, site);
+            waitfor_report_cycle("ylock_acquire()", me, holder);
         }
         sched_yield();
         waitfor_leave(me);

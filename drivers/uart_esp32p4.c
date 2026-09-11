@@ -487,7 +487,13 @@ static bool uart_task_alive(void) {
 
 /* Must never printk() from inside this loop -- a caller can be blocked on
  * this very endpoint while holding printk_lock(), and taking that lock here
- * would deadlock against it. uart_debug_putc() exists for that case. */
+ * would deadlock against it. uart_debug_putc() exists for that case.
+ *
+ * Enforced rather than remembered since Y4
+ * (plan/phase31_concurrency_hierarchy.md): printk ownership is an edge in the
+ * one wait-for graph (kernel/lock.h), so this cycle is refused when the
+ * chan_call() half comes second and named when the printk_lock() half does.
+ * The rule is still the rule; it is no longer the only thing enforcing it. */
 static void uart_task_body(void *arg) {
     (void)arg;
     while (!g_uart_ep) sched_yield();

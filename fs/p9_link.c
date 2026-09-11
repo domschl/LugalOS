@@ -341,7 +341,14 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
         }
         /* Pumping from inside the wait is what lets a reply arrive at all when
          * the server task has not been scheduled yet. It takes the *pump* lock,
-         * not this one, so the two never deadlock against each other. */
+         * not this one, so the two never deadlock against each other.
+         *
+         * That claim is checked rather than asserted since phase 31 Y3: a
+         * contended ylock_acquire() records a wait-for edge, so a task holding
+         * one of these two and waiting for the other is visible in the same
+         * graph as a channel call, and a cycle between them is named at the
+         * moment it closes. Ordering the pair correctly is still this
+         * function's job; noticing when it has not been is no longer. */
         if (p9_link_pump(link) < 0) { waiter_end(w); ylock_release(&g_client_lock); return -1; }
         if (time_get_ms() > deadline) {
             printk("[9P Link] No reply on '%s' within %d ms (tag %d) -- peer not "

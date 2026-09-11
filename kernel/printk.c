@@ -123,10 +123,38 @@ void printk_lock(void) {
     }
     while (g_printk_owner != -1) {
         if (blockable && g_printk_waiter < 0) {
+            int owner = g_printk_owner;
             g_printk_waiter = me;
             /* Released before blocking, never held across it. */
             spin_unlock_irqrestore(&g_printk_gate, flags);
+
+            /* Y4, plan/phase31_concurrency_hierarchy.md: printk ownership is
+             * the *third* blocking resource, after channels and ylocks, and
+             * until now the only one outside the wait-for graph. §0.2 noted
+             * it -- "a lock without being either type" -- and the uart
+             * drivers each carry a comment saying the cycle through it must
+             * be avoided by hand, because "chan.c's wait-for cycle guard
+             * covers chan_call() itself, but printk_lock() is a different
+             * blocking resource it cannot see".
+             *
+             * It can see it now. The edge is this task waiting for the owner,
+             * exactly like the other two, which buys two things: a chan_call()
+             * that would close the cycle from the other side is *refused*
+             * outright, and a cycle that closes here is named rather than
+             * silent.
+             *
+             * Named, not prevented: printk_unlock() clears ownership
+             * unconditionally, so "proceed without owning it" is not
+             * representable without adding state to the most safety-critical
+             * path in the kernel for a case that should never happen. The
+             * same bargain Y2 struck for spinlocks -- report before the wait
+             * that hangs, so the board says which two tasks rather than
+             * simply stopping. */
+            bool edge = waitfor_enter(me, owner);
+            if (!edge) waitfor_report_cycle("printk_lock()", me, owner);
+
             task_block();
+            if (edge) waitfor_leave(me);
             flags = spin_lock_irqsave(&g_printk_gate);
         } else {
             /* Someone else is already the registered waiter -- or this hart
