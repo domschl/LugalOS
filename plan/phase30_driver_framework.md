@@ -642,6 +642,60 @@ Done when: the three drivers share their task half, ten presets build clean,
 QEMU is 359/359, and both boards' consoles work — the P4's checked with
 `uartstats`'s `rx_wakes`, the RP2350's on both its console paths.
 
+#### G4 done — 2026-09-11, and the milestone's premise was wrong
+
+**"The three drivers share their task half" is not available, and the reason
+is structural rather than a matter of effort.**
+
+Two of them share it. `uart_16550.c` moved to `driver_task.c`'s serve loop in
+G2 and `uart_esp32p4.c` joins it here — same spec, same three opcodes, same
+`TASK_PRIO_INTERRUPT`, same bounded retry. Between them the duplication is
+gone.
+
+`uart_rp2350.c` cannot join, because **its serve loop runs in U-mode**, and
+three consequences follow that a kernel-mode loop does not have:
+
+* **It cannot block.** U-mode has no `task_block()` and no `irq_save()`. So
+  its `'R'` is not the same operation: the kernel-mode servers block until a
+  character arrives and reply with one byte, while this one reads *if ready*
+  and replies with two — a status, and a character valid only when the status
+  is 1. Waiting moved into the client's loop. A shared serve loop would have
+  to offer both, which is two protocols wearing one name.
+* **No string literals.** They land in ordinary `.rodata`, outside every
+  region the task's domain grants — the endpoint name is built character by
+  character into a `volatile char[]` for exactly this reason.
+* **No switch.** Its jump table lands in `.rodata` too, hence an if/else
+  chain and `-fno-jump-tables` on the file.
+
+So what G4 actually extracted is the wire protocol
+(`drivers/include/drivers/uart_proto.h`, three private copies of the opcodes
+before) and one of the two remaining serve loops. The header documents where
+the protocol genuinely differs rather than describing a uniformity that is not
+there — a protocol that looked the same and was not would be worse than one
+that says where it diverges.
+
+This is §1's category test answering a question it was not asked: the RP2350
+UART's task half is in a *different execution context*, and that changes the
+contract, not just the code. Worth recording because the same is true of the
+other five U-mode drivers — `i2c_bus`, `st7735`, `tm1638`, `spisd` and
+`pico_clock_green` all run the same shape of U-mode serve loop, six copies of
+it, which is a real extraction and a different one from G2's. **Noted, not
+done**: it needs a shared body reachable from every U-mode domain's granted
+`.utext`, and that is a phase of its own.
+
+Verified: ten presets clean, QEMU 363/363, ESP32-P4 hardware 12/12 with
+`rx_wakes=16` (interrupt-driven RX still works through the shared loop), and
+RP2350 hardware 25/25 including both console paths (`link_usb_cdc` on ACM1 and
+`p9share` on the physical UART).
+
+*(Two intervening RP2350 runs scored 23/25 and 8/25 and were not regressions:
+the board's USB CDC endpoint stalled and then re-enumerated — the console
+moved from ttyACM2 to ttyACM1 mid-session. Checked per the standing rule
+before concluding anything, the console was alive and answering `uname`, and
+the next full run was 25/25. The standalone probes agreed throughout:
+`write_calls` grew by 118 for one `help` against a threshold of 200, and
+`i2cstats` reported `calls=93`.)*
+
 ### G5 — The framework's own documentation
 
 `drivers/include/drivers/driver_task.h` is the file a future driver author

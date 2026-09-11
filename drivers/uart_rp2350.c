@@ -12,6 +12,7 @@
  */
 
 #include "drivers/uart.h"
+#include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
@@ -605,15 +606,11 @@ static uint8_t hw_uart_getc(void) {
  * case, same as uart_16550.c, since the demux needs unmediated register
  * access to split 9P frame bytes from console bytes and is not itself
  * IPC-aware. */
-#define UART_REQ_HASCHAR ((uint8_t)'H')
-#define UART_REQ_READ    ((uint8_t)'R')
-#define UART_REQ_WRITE   ((uint8_t)'W')
 
 /* Must match (or exceed) uart_putc()'s UART_TX_BATCH_CAP, plus the opcode
  * byte -- the largest single 'W' request the endpoint can accept. */
 #define UART_TX_BATCH_CAP 256
 #define UART_REQ_CAP (UART_TX_BATCH_CAP + 1)
-#define UART_RESP_CAP 2 /* 'R''s (status, char) -- the widest reply */
 
 static uint8_t         g_uart_req[UART_REQ_CAP];
 static uint8_t         g_uart_resp[UART_RESP_CAP];

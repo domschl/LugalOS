@@ -1,4 +1,5 @@
 #include "drivers/uart.h"
+#include "drivers/uart_proto.h"
 #include "drivers/uart_net.h"
 #include "drivers/driver_task.h"
 #include "kernel/devirq.h"
@@ -177,9 +178,6 @@ static uint8_t uart_hw_getc_blocking(void) {
  * straight into them, so the task reads its own request out of the same
  * static array it registered, no accessor function needed even though
  * chan_endpoint_t itself is opaque outside kernel/chan.c. */
-#define UART_REQ_HASCHAR ((uint8_t)'H')
-#define UART_REQ_READ    ((uint8_t)'R')
-#define UART_REQ_WRITE   ((uint8_t)'W')
 
 /* Must match (or exceed) uart_putc()'s UART_TX_BATCH_CAP, plus the opcode
  * byte -- this is the largest single 'W' request the endpoint can accept. */

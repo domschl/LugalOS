@@ -56,6 +56,8 @@
  */
 
 #include "drivers/uart.h"
+#include "drivers/uart_proto.h"
+#include "drivers/driver_task.h"
 #include "drivers/uart_net.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
@@ -457,17 +459,13 @@ static uint8_t uart_hw_getc_blocking(void) {
  * third that has never run. E3 adds this file's interrupt path, at which
  * point all three have the same shape and the comparison is real; the debt
  * is recorded there rather than paid here on speculation. */
-#define UART_REQ_HASCHAR ((uint8_t)'H')
-#define UART_REQ_READ    ((uint8_t)'R')
-#define UART_REQ_WRITE   ((uint8_t)'W')
 
 #define UART_TX_BATCH_CAP 256
 #define UART_REQ_CAP (UART_TX_BATCH_CAP + 1)
 
 static uint8_t          g_uart_req[UART_REQ_CAP];
 static uint8_t          g_uart_resp[1];
-static chan_endpoint_t *g_uart_ep;
-static int              g_uart_task_pid = -1;
+static driver_task_t g_uart_task;
 static uint32_t         g_uart_write_calls;
 static volatile bool    g_uart_write_in_flight;
 
@@ -479,11 +477,7 @@ uint32_t uart_irq_tx_wakes(void) { return g_uart_irq_tx_wakes; }
 uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
 
 
-static bool uart_task_alive(void) {
-    if (g_uart_task_pid < 0) return false;
-    int st = sched_task_state(g_uart_task_pid);
-    return st != TASK_UNUSED && st != TASK_DEAD;
-}
+static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
 
 /* printk() from inside this loop is fine; cprintf()/printk_debug() are not.
  *
@@ -495,35 +489,29 @@ static bool uart_task_alive(void) {
  * stream still ends at the wire, so the other half stands, and
  * drivers/driver_task.c's bracket plus console_lock() check it rather than
  * leaving it to this comment. uart_debug_putc() remains the escape hatch. */
-static void uart_task_body(void *arg) {
-    (void)arg;
-    while (!g_uart_ep) sched_yield();
-
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_uart_ep);
-        if (req_len == 0) { chan_serve_reply(g_uart_ep, 0); continue; }
-        switch (g_uart_req[0]) {
-            case UART_REQ_HASCHAR:
-                g_uart_resp[0] = hw_uart_has_char() ? 1 : 0;
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_READ:
-                g_uart_resp[0] = uart_hw_getc_blocking();
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_WRITE:
-                g_uart_write_calls++;
-                g_uart_write_in_flight = true;
-                for (uint32_t i = 1; i < req_len; i++) {
-                    uart_hw_putc_blocking((char)g_uart_req[i]);
-                }
-                g_uart_write_in_flight = false;
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-            default:
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-        }
+static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_cap) {
+    (void)ctx; (void)resp_cap;
+    switch (req[0]) {
+        case UART_REQ_HASCHAR:
+            resp[0] = hw_uart_has_char() ? 1 : 0;
+            return 1;
+        case UART_REQ_READ:
+            /* Blocking, and it may be: this server runs in kernel mode.
+             * drivers/uart_proto.h has the contrast with the RP2350's U-mode
+             * server, which cannot block and so answers a different 'R'. */
+            resp[0] = uart_hw_getc_blocking();
+            return 1;
+        case UART_REQ_WRITE:
+            g_uart_write_calls++;
+            g_uart_write_in_flight = true;
+            for (uint32_t i = 1; i < req_len; i++) {
+                uart_hw_putc_blocking((char)req[i]);
+            }
+            g_uart_write_in_flight = false;
+            return 0;
+        default:
+            return 0;
     }
 }
 
@@ -534,21 +522,21 @@ int uart_task_start(void) {
      * this point a task blocking on the console really sleeps. */
     arch_irq_enable(ESP32P4_CLIC_IRQ_UART0);
 
-    int pid = task_create_driver("uart", uart_task_body, NULL, 1);
-    if (pid < 0) {
-        printk("[UART] Could not start the uart task; console stays on direct hardware access.\n");
-        return -1;
-    }
-    task_set_priority(pid, TASK_PRIO_INTERRUPT);
-    if (chan_register_task("uart", pid, g_uart_req, sizeof(g_uart_req),
-                           g_uart_resp, sizeof(g_uart_resp)) != 0) {
-        printk("[UART] Could not register the uart channel endpoint; falling back to direct hardware access.\n");
-        return -1;
-    }
-    g_uart_ep = chan_lookup("uart");
-    g_uart_task_pid = pid;
-    printk("[UART] Driver running as task #%d, reachable via chan_call(\"uart\", ...)\n", pid);
-    return pid;
+    /* G4, plan/phase30_driver_framework.md: the same spec uart_16550.c uses,
+     * because these two are the same driver in every respect the framework
+     * cares about -- a kernel-mode task, serving the same three opcodes, at
+     * the same priority, for the same reason. */
+    const driver_task_spec_t spec = {
+        .name        = "uart",
+        .serve       = uart_serve,
+        .ctx         = NULL,
+        .req         = g_uart_req,  .req_cap  = sizeof(g_uart_req),
+        .resp        = g_uart_resp, .resp_cap = sizeof(g_uart_resp),
+        .min_req_len = 1,
+        .stack_pages = 1,
+        .priority    = TASK_PRIO_INTERRUPT,
+    };
+    return driver_task_start(&g_uart_task, &spec);
 }
 
 /* --- bring-up ----------------------------------------------------------- */
@@ -723,15 +711,10 @@ static char       g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t   g_tx_batch_len[MAX_HARTS];
 static spinlock_t g_tx_batch_lock;
 
-static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
-                                uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_uart_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
-}
+/* The bounded retry is driver_task_call()'s (G2), shared with every other
+ * driver task. uart_flush() below still does not use it -- see its own
+ * comment for the one policy that is this driver's rather than the
+ * framework's. */
 
 void uart_flush(void) {
     char local[UART_TX_BATCH_CAP];
@@ -760,7 +743,7 @@ void uart_flush(void) {
      * run for as long as a human takes to press a key and must not be waited
      * out; g_uart_write_in_flight is what tells the two apart. */
     for (;;) {
-        int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
+        int n = chan_call(driver_task_endpoint(&g_uart_task), req, 1 + len, resp, sizeof(resp));
         if (n >= 0) return;
         if (!g_uart_write_in_flight) break;
         sched_yield();
@@ -792,7 +775,7 @@ bool uart_has_char(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return resp[0] != 0;
     }
     return hw_uart_has_char();
 }
@@ -806,7 +789,7 @@ char uart_getc(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return (char)resp[0];
+        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return (char)resp[0];
     }
     return (char)uart_hw_getc_blocking();
 }
