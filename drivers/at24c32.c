@@ -1,5 +1,5 @@
 #include "drivers/at24c32.h"
-#include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "lugalos_config.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"

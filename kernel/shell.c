@@ -16,6 +16,7 @@
 #include "kernel/time.h"
 #include "kernel/discipline.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"

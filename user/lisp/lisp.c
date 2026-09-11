@@ -6,6 +6,7 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/at24c32.h"
 #include "drivers/loopback_net.h"
 #include "drivers/uart_net.h"

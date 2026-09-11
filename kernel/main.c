@@ -13,7 +13,7 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "kernel/version.h"
-#include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/at24c32.h"
 #include "drivers/usb_cdc.h"
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735

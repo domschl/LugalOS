@@ -1,5 +1,5 @@
 #include "drivers/bme280.h"
-#include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/sched.h"
@@ -11,7 +11,7 @@
  * this runs in forced mode. This file is registers and arithmetic.
  *
  * It touches no GPIO and no I2C controller: every access goes through
- * i2c_xfer() (drivers/i2c_rtc.h), which routes to the shared "i2c" task when
+ * i2c_xfer() (drivers/i2c_bus.h), which routes to the shared "i2c" task when
  * that is running. So this is ordinary M-mode code with no U-mode fragment in
  * it, and -- unlike every driver in CMakeLists.txt's -fno-jump-tables list --
  * a switch here cannot land a jump table outside a granted region.

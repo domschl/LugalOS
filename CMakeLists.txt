@@ -535,6 +535,12 @@ set(SOURCES
     # so it builds and self-tests on targets with neither buttons nor a panel.
     drivers/pico_clock_ui.c
     drivers/flashdisk.c
+    # The I2C bus: the controller, the task that owns it and the one generic
+    # transfer every device on it uses (category E,
+    # plan/phase30_driver_framework.md). Separate from i2c_rtc.c since phase
+    # 30 -- it used to be part of the RTC driver, which is why a pressure
+    # sensor had to include a clock's header to reach the bus.
+    drivers/i2c_bus.c
     drivers/i2c_rtc.c
     drivers/at24c32.c
     drivers/loopback_net.c
@@ -772,7 +778,9 @@ endif()
 set_source_files_properties(
     drivers/uart_rp2350.c
     drivers/tm1638_rp2350.c
-    drivers/i2c_rtc.c
+    # i2c_bus.c, not i2c_rtc.c: the U-mode half moved there with the bus in
+    # phase 30, and the RTC driver has no UATTR code left at all.
+    drivers/i2c_bus.c
     drivers/st7735_rp2350.c
     drivers/spisd_rp2350.c
     drivers/usb_cdc.c

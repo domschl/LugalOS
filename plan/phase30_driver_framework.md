@@ -247,6 +247,52 @@ split along the seam that already exists in the code:
 client like `bme280.c`; `at24c32.c`'s duplicate register block is deleted in
 favour of the same call.
 
+#### Category E done — 2026-09-11
+
+Two commits. **The dual dispatch first**, because the bus and the devices were
+entangled through it: both dispatchers served seven opcodes, six of them
+device-specific, so the U-mode half had to understand a DS3231 and an AT24C32
+and therefore carried a second copy of each register map in `.utext`. Making
+every device an `i2c_xfer()` client took both dispatchers to **one opcode**
+and deleted 565 lines net.
+
+**Then the move**, which was then almost mechanical: `drivers/i2c_bus.c` takes
+the three controller arms, the owning task and `i2c_xfer()`;
+`drivers/i2c_rtc.c` keeps the DS3231 and drops from **1796 lines to 385**.
+
+Three things the split found, each of which had been invisible while the two
+lived in one file:
+
+* **The bus's own initialisation hard-coded a device address.** RP2350's
+  `i2c_bus_init()` set `IC_TAR` to the DS3231's 0x68 before enabling the
+  controller. Nothing depended on the value -- every transfer sets its own --
+  but it read as though the bus belonged to one device, which for this file's
+  whole history it had. The compiler reported it the moment the files were
+  separated.
+* **`-fno-jump-tables` had to move with the U-mode code**, and would have
+  been silently left behind by a careless move: the property is per
+  translation unit, and a jump table in ordinary `.rodata` is outside the
+  domain the bus task's U-mode half is granted. `i2cisotest` still reports
+  ISOLATED, which is what checks it.
+* **The EEPROM was never used on the P4.** Its probe was `#if
+  defined(CONFIG_BOARD_RP2350)`, so a board with a controller and a part
+  fitted announced a synthetic RAM buffer regardless. It now reads and writes
+  the real chip.
+
+Includes were corrected rather than left working: `bme280.c`, `at24c32.c` and
+`kernel/main.c` include the bus header and no longer an RTC's, and
+`i2c_rtc.h` deliberately does **not** re-export `i2c_bus.h` -- a header that
+forwards everything would have made the separation cosmetic.
+
+Verified on both boards, each carrying BME280 + DS3231 + AT24C32 on one bus:
+363/363 QEMU, 12/12 the P4 suite, 21/24 the RP2350 suite (the same three
+pre-existing USB-CDC truncation failures, with `i2c task ... calls before=655
+after=668` passing), ten presets warning-clean.
+
+**Still open:** the RP2350 transfer shape (`plan/open_issues.md`) -- a STOP
+where a repeated START belongs. It now exists in one place instead of three,
+which was the point of doing this first.
+
 **Note that `dev_wire_t` does not already cover this.** `kernel/device.h`
 models a wire whose sharers are *mutually exclusive* — "devices sharing a wire
 are mutually exclusive", with `DEV_F_SHARES_WIRE` as the demux exception. An

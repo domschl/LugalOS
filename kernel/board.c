@@ -4,6 +4,7 @@
 #include "drivers/uart_net.h"
 #include "drivers/usb_cdc.h"
 #include "drivers/i2c_rtc.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
