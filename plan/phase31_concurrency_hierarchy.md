@@ -531,8 +531,28 @@ listed here with reasons.
 
 ## 4. Explicitly not in this phase
 
-* **No new locking primitives.** `spinlock_t` and `ylock_t` are sufficient;
-  this is about how the existing ones compose.
+* **No new locking primitives — unless one is genuinely the cleanest answer**
+  (user, 2026-09-11). The original wording ruled them out flatly, and that is
+  the wrong rule. The preference is real and it is strong — a solution that
+  composes the existing `spinlock_t` and `ylock_t` is preferred, and simpler
+  is always better — but it is a preference, not a prohibition. Where a
+  scenario has no clean resolution with what exists, inventing the right
+  mechanism beats contorting the code around the wrong one.
+
+  The example that makes the distinction concrete: **a non-blocking signal.**
+  Every edge this phase models is a *blocking* one, which is why cycles are
+  deadlocks and why §1.1 can treat "acyclic" as the whole invariant. A
+  send-and-continue notification is not an edge in that graph at all, so it
+  lets two parties notify each other — circular by construction — without any
+  possibility of the deadlock a synchronous `chan_call()` in both directions
+  would guarantee. That is not a way of dodging the ordering question; it is a
+  different relationship between the two tasks, and for some pairs it is the
+  honest one.
+
+  The test to apply, in this order: can the existing primitives express it
+  cleanly? If not, can the *structure* be changed so they can? Only then, a
+  new mechanism — and it arrives with its own place in §1.1's graph, or an
+  argument for why it is not in the graph at all.
 * **No lock-free rewrites.** Removing a lock to avoid ordering it is a way of
   not answering the question.
 * **No change to `chan_call()`'s semantics.** Synchronous, copy-always, refuse
