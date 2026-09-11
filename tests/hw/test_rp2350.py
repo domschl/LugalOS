@@ -37,6 +37,62 @@ import p9lib  # via rp2350.py's sys.path insert
 REPO_ROOT = rp2350.REPO_ROOT
 
 
+def test_i2c_repeated_start(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """A register read must be ONE transaction, not two with a STOP between.
+
+    This cannot be checked functionally. Every part on these boards keeps its
+    internal address pointer across a STOP, so a split transfer reads the
+    right byte and looks perfect -- which is why the defect lived in the tree
+    through three copies of the driver without anything noticing
+    (plan/open_issues.md, closed by phase 30).
+
+    The controller can tell, and `i2cdiag` asks it: STOP_DET must be clear
+    after the register write (the transfer is still open) and set after the
+    read (it ended, once). Both sides matter -- either alone passes for the
+    wrong reason.
+
+    Skipped, not failed, when no device answers: a board with nothing on the
+    bus has no register to read."""
+    name = "i2c: a register read is one transaction with a repeated START, on real silicon"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"i2cdiag\n")
+            ser.flush()
+            # `i2cdiag` is chatty -- seven lines, each a full console round
+            # trip, with bounded hardware waits between them. A short drain
+            # returns mid-report and leaves the rest in the buffer for
+            # whichever test runs next, which is how an early version of this
+            # turned one skipped check into ten cascading failures.
+            out = rp2350.drain(ser, quiet=1.2, deadline=20.0).decode("utf-8", "replace")
+            # Resync before handing the console on: a bare Return, drained.
+            ser.write(b"\n")
+            ser.flush()
+            rp2350.drain(ser, quiet=0.6, deadline=5.0)
+    except Exception as e:
+        return (name, False, f"console error: {e}")
+
+    if "Unknown command" in out or "Unbound symbol: i2cdiag" in out:
+        return (name, True, "SKIPPED (board firmware predates `i2cdiag`)")
+    m = re.search(r"repeated-start: write=(\d) open_after_write=(\d) read=(\d) "
+                  r"val=0x([0-9a-f]{2}) stop_after_read=(\d) -> (\w[\w ]*)", out)
+    if not m:
+        return (name, True, "SKIPPED (no repeated-start line -- nothing answered at 0x76)")
+    write_ok, open_after, read_ok, val, stopped, verdict = m.groups()
+    if write_ok != "1" or read_ok != "1":
+        return (name, True, f"SKIPPED (no device at 0x76: write={write_ok} read={read_ok})")
+    if open_after != "1":
+        return (name, False,
+                "a STOP was emitted between the register write and the read -- the transfer "
+                "was split in two. See i2c_write_bytes_stop() in drivers/i2c_bus.c.")
+    if stopped != "1":
+        return (name, False, "no STOP after the read half -- the transaction never ended")
+    return (name, True, f"one transaction, chip id 0x{val} ({verdict.strip()})")
+
+
+
 def test_umode_isolation(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """B3 on real silicon: U-mode, PMP-enforced isolation, and the syscall
     boundary.
@@ -1745,7 +1801,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire]
+    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

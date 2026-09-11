@@ -289,9 +289,37 @@ Verified on both boards, each carrying BME280 + DS3231 + AT24C32 on one bus:
 pre-existing USB-CDC truncation failures, with `i2c task ... calls before=655
 after=668` passing), ten presets warning-clean.
 
-**Still open:** the RP2350 transfer shape (`plan/open_issues.md`) -- a STOP
-where a repeated START belongs. It now exists in one place instead of three,
-which was the point of doing this first.
+**And then the defect the split existed to make fixable.** The RP2350 put a
+STOP where a repeated START belongs: `i2c_write_bytes()` set the STOP bit on
+the register number and `i2c_read_phase()` then disabled the controller --
+which aborts anything in flight on a DW_apb_i2c -- and started afresh. A
+register read was two transactions instead of one.
+
+Fixed in both halves, which is as few as it can be: the M-mode path takes a
+`stop` flag and the read continues the open transfer, and the U-mode path
+already passed `stop=false` and then threw it away by calling
+`i2c_usys_target()` again between the halves. Before the split this lived in
+three copies; `at24c32.c`'s went with its register block.
+
+**It needed a new kind of test, because no functional one can see it.** Every
+part on these boards keeps its address pointer across a STOP, so a split
+transfer reads the right byte and looks perfect -- which is exactly why it
+survived so long. The controller can tell: `STOP_DET` must be **clear** after
+the register write, and **set** after the read. Both sides, since either alone
+passes for the wrong reason. `i2cdiag` reports it and
+`tests/hw/test_rp2350.py` asserts it:
+
+```
+repeated-start: write=1 open_after_write=1 read=1 val=0x60 stop_after_read=1 -> ONE TRANSACTION
+```
+
+Two things that test taught on the way in. `STOP_DET` has to be *waited* for
+rather than sampled -- a read returns as soon as the byte is in the RX FIFO,
+which is before the STOP it queued reaches the wire, so the obvious check
+reads zero on a perfectly correct transaction. And a chatty diagnostic in a
+serial test suite must drain fully and resync before handing the console on:
+a short drain left the rest of the report in the buffer and turned one
+skipped check into ten cascading failures.
 
 **Note that `dev_wire_t` does not already cover this.** `kernel/device.h`
 models a wire whose sharers are *mutually exclusive* — "devices sharing a wire

@@ -104,6 +104,11 @@
 #define IC_INTR_STAT           (I2C_RTC_BASE + 0x2C)
 #define IC_RAW_INTR_STAT       (I2C_RTC_BASE + 0x34)
 #define IC_CLR_TX_ABRT         (I2C_RTC_BASE + 0x54)
+/* Offsets and masks from the Pico SDK's own hardware/regs/i2c.h, not
+ * inferred: I2C_IC_CLR_STOP_DET_OFFSET 0x60, and STOP_DET is bit 9 of
+ * IC_RAW_INTR_STAT (I2C_IC_RAW_INTR_STAT_STOP_DET_BITS 0x200). */
+#define IC_CLR_STOP_DET        (I2C_RTC_BASE + 0x60)
+#define IC_RAW_STOP_DET        (1u << 9)
 #define IC_ENABLE              (I2C_RTC_BASE + 0x6C)
 #define IC_STATUS              (I2C_RTC_BASE + 0x70)
 #define IC_TXFLR               (I2C_RTC_BASE + 0x74)
@@ -176,7 +181,20 @@ void i2c_bus_init(void) {
     REG(IC_ENABLE) = 1;
 }
 
-static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
+/* `stop` false leaves the transfer open, so a read phase can continue it with
+ * a repeated START -- the controller emits one by itself when the direction
+ * changes, because IC_CON's RESTART_EN is set in i2c_bus_init().
+ *
+ * A register read is **one** transaction: address+W, the register number,
+ * RESTART, address+R, the data. This driver used to make it two, with a STOP
+ * between them and the controller disabled across the gap. The parts on these
+ * boards tolerate that because their internal address pointer survives a
+ * STOP; a part that does not, or a second master arriving in the gap, would
+ * not. The ESP32-P4 arm has always built it as one command list and says so
+ * in its own comment -- this is the same shape on the other controller.
+ *
+ * plan/open_issues.md carried this while it existed in three copies. */
+static bool i2c_write_bytes_stop(uint8_t addr, const uint8_t *src, int len, bool stop) {
     REG(IC_ENABLE) = 0;
     REG(IC_TAR) = addr;
     REG(IC_ENABLE) = 1;
@@ -186,7 +204,7 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
     for (int i = 0; i < len; i++) {
         bool last = (i == len - 1);
         uint32_t cmd = src[i];
-        if (last) cmd |= (1u << 9); // STOP bit
+        if (last && stop) cmd |= (1u << 9); // STOP bit
 
         int timeout = 10000;
         while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0); // Wait TX Not Full
@@ -212,11 +230,18 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
  * (I2C_OP_XFER, Q4) can reuse it byte for byte rather than growing a second
  * copy of the same controller sequence. No behaviour change: the RTC path
  * still reaches it through i2c_read_bytes() exactly as before. */
-static bool i2c_read_phase(uint8_t addr, uint8_t *dst, int len) {
-    REG(IC_ENABLE) = 0;
-    REG(IC_TAR) = addr;
-    REG(IC_ENABLE) = 1;
-    (void)REG(IC_CLR_TX_ABRT);
+/* `continuing` means a write phase has just left a transfer open for us, so
+ * the controller must not be touched: IC_ENABLE = 0 aborts whatever is in
+ * flight on a DW_apb_i2c, which drops the bus without a STOP and takes the
+ * repeated START with it. The target address is already right -- it is the
+ * same device -- so there is nothing to set. */
+static bool i2c_read_phase_cont(uint8_t addr, uint8_t *dst, int len, bool continuing) {
+    if (!continuing) {
+        REG(IC_ENABLE) = 0;
+        REG(IC_TAR) = addr;
+        REG(IC_ENABLE) = 1;
+        (void)REG(IC_CLR_TX_ABRT);
+    }
 
     bool abort = false;
     for (int i = 0; i < len; i++) {
@@ -247,8 +272,8 @@ static bool i2c_read_phase(uint8_t addr, uint8_t *dst, int len) {
 }
 
 static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
-    if (!i2c_write_bytes(addr, &reg, 1)) return false;
-    return i2c_read_phase(addr, dst, len);
+    if (!i2c_write_bytes_stop(addr, &reg, 1, false)) return false;
+    return i2c_read_phase_cont(addr, dst, len, true);
 }
 
 /* Q4, plan/phase26_mqtt_and_environment_sensors.md: write `wlen` bytes, then
@@ -267,8 +292,10 @@ static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
  * I2C_RESP_CAP exactly as it is for every other op. */
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen) {
-    if (wlen > 0 && !i2c_write_bytes(addr, w, wlen)) return false;
-    if (rlen > 0 && !i2c_read_phase(addr, r, rlen)) return false;
+    /* The write half ends in a STOP only when no read follows it; otherwise
+     * the transfer stays open and the read continues it. */
+    if (wlen > 0 && !i2c_write_bytes_stop(addr, w, wlen, rlen == 0)) return false;
+    if (rlen > 0 && !i2c_read_phase_cont(addr, r, rlen, wlen > 0)) return false;
     return true;
 }
 
@@ -322,6 +349,40 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
                 (unsigned)REG(IC_TX_ABRT_SOURCE), (unsigned)REG(IC_STATUS));
         (void)REG(IC_CLR_TX_ABRT);
     }
+
+    /* Is a register read one transaction or two? Asserted, not assumed.
+     *
+     * Every part on these boards tolerates a STOP between the register write
+     * and the read -- their address pointer survives it -- so no functional
+     * test can tell the two shapes apart, and the defect sat in the tree
+     * unnoticed for exactly that reason. The controller can tell: STOP_DET
+     * says whether a STOP reached the wire.
+     *
+     * Two sides, because either alone can pass for the wrong reason. No STOP
+     * after the write half means the transfer is still open; a STOP after the
+     * read half means it ended, once, where it should. */
+    (void)REG(IC_CLR_TX_ABRT);
+    (void)REG(IC_CLR_STOP_DET);
+    uint8_t rv = 0xff;
+    bool wok = i2c_write_bytes_stop(addr, &reg, 1, false);
+    bool open_after_write = (REG(IC_RAW_INTR_STAT) & IC_RAW_STOP_DET) == 0;
+    bool rok = i2c_read_phase_cont(addr, &rv, 1, true);
+    /* Waited for, not sampled. The read returns as soon as a byte is in the
+     * RX FIFO, which is before the STOP it queued has reached the wire -- so
+     * the obvious check reads zero on a perfectly correct transaction, which
+     * is what the first version of this line did. One byte at 100 kHz is
+     * ~90 us; a millisecond is generous and still bounded. */
+    bool stopped_after_read = false;
+    for (uint64_t end = time_get_us() + 1000u; time_get_us() < end; ) {
+        if (REG(IC_RAW_INTR_STAT) & IC_RAW_STOP_DET) { stopped_after_read = true; break; }
+    }
+    (void)REG(IC_CLR_STOP_DET);
+    cprintf("[I2Cdiag] repeated-start: write=%d open_after_write=%d read=%d "
+            "val=0x%02x stop_after_read=%d -> %s\n",
+            (int)wok, (int)open_after_write, (int)rok, (unsigned)rv,
+            (int)stopped_after_read,
+            (wok && open_after_write && rok && stopped_after_read)
+                ? "ONE TRANSACTION" : "SPLIT");
 }
 
 static bool i2c_probe_addr(uint8_t addr) {
@@ -1133,7 +1194,14 @@ I2C_UATTR static bool i2c_usys_read_reg(uint8_t addr, const uint8_t *reg, int re
     i2c_usys_target(addr);
     if (!i2c_usys_write_raw(reg, reg_len, false)) return false;
 
-    i2c_usys_target(addr);
+    /* No second i2c_usys_target() here, and that removal is the fix.
+     *
+     * The write above deliberately ends without a STOP so this read can
+     * continue it with a repeated START -- write_raw()'s own comment says as
+     * much. Re-targeting threw that away: i2c_usys_target() does
+     * IC_ENABLE = 0, which aborts the in-flight transfer and leaves the bus
+     * without a STOP. The address has not changed, so the call bought nothing
+     * and cost the transaction its repeated START. */
     for (int i = 0; i < len; i++) {
         bool last = (i == len - 1);
         uint32_t cmd = (1u << 8);
