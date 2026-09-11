@@ -253,6 +253,28 @@ the I2C controller are exercised here or nowhere.
 | the sampler advances unattended (E7) | watches `reads` increase with nobody asking for a measurement |
 | readings leave the board over 9P (E7) | `p9share` plus a real 9P client on the same wire — the persona's whole point, tested the way it is used |
 
+### When `i2c scan` works and every register read fails
+
+**Check the ground before reading any driver code.** That split — the scan
+finding every device while `devices` reports them absent and `sensor`/`date`
+fail — is the signature of a marginal ground on the I2C modules, and it cost a
+day of software theories on 2026-09-11 before the jumper was found.
+
+The reason the scan survives it is worth knowing, because it is what makes the
+symptom so misleading: `i2c_scan_bus()` emits a `cprintf()` between probes, so
+its transactions are milliseconds apart and a floating reference recovers in
+the gaps. Everything else — the boot probes, `i2cdiag` — runs back-to-back and
+does not.
+
+`i2cdiag [addr [reg]]` on RP2350 (`i2cdiag` on the P4) is the instrument, and
+it reads three ways:
+
+| result | meaning |
+|---|---|
+| `1,1,1` | the part is there and answering |
+| `0,0,0` with `abrt` bit 0 set | nothing at that address — a real NACK |
+| `0,0,0` with `abrt == 0` and `status` showing MST_ACTIVITY | **no device NACKed and the transaction never finished** — the bus is not being driven the way the controller thinks. Wiring, not software |
+
 ### If the P4 suite all skips
 
 `tools/p4run.py --ports` shows what is actually attached. Detection is by USB

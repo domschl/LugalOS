@@ -618,3 +618,40 @@ flags: a `ylock_t` is re-entrant for its owner, which is precisely the failure
 above, and it joins the graph for free. Not done in phase 31 Y4 because it
 changes two drivers on a board that was not attached at the time, and
 `plan/phase30_driver_framework.md` opens both files anyway.
+
+---
+
+## RP2350's I2C register read puts a STOP where a repeated START belongs
+
+**Trigger:** none observed. This is a latent defect found by reading, during
+phase 30's bus work, and it is recorded rather than fixed because nothing in
+the tree currently fails because of it.
+
+`drivers/i2c_rtc.c`'s RP2350 arm implements a register read as **two
+transactions with a STOP between them**: `i2c_write_bytes()` sets the STOP bit
+on the register number's last byte, and `i2c_read_phase()` then disables the
+controller (`IC_ENABLE = 0`, which aborts anything in flight on a DW_apb_i2c),
+re-targets, and starts afresh.
+
+A register read is properly *one* transaction — address+W, the register, a
+repeated START, address+R, the data. The parts on these boards tolerate the
+split because their internal address pointer survives a STOP; a part that does
+not, or a second master interleaving in the gap, would not.
+
+The ESP32-P4 arm already does it correctly and says why in its own comment:
+*"Building it as one command list is what makes it a repeated start rather
+than two transfers with a STOP between -- and a STOP there is what lets
+another master, or a device with an internal pointer, lose the register
+selection."*
+
+**Why it is parked:** a fix was written and tested during phase 30 and then
+reverted, because it was written while chasing a fault that turned out to be a
+loose ground jumper. With the wiring fixed the original code passes everything
+on both boards, so the change was unvalidated work on code that works. The
+honest state is "known wrong in principle, not observed wrong in practice".
+
+**Fix, when it is worth it:** with the `i2c_bus.c` split
+(`plan/phase30_driver_framework.md` category E), where the RP2350's transfer
+shape exists in *one* place rather than three — `i2c_rtc.c`'s M-mode copy, its
+U-mode copy, and `at24c32.c`'s — and can be fixed once with a test that
+actually exercises it.

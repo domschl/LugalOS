@@ -3424,6 +3424,23 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         printk("[BlkStats] calls=%u\n", blk_task_call_count());
         return;
 #endif
+#if defined(CONFIG_BOARD_RP2350)
+    } else if (strncmp(cmd_line, "i2cdiag", 7) == 0) {
+        {
+            extern void i2c_rp2350_diag(uint8_t addr, uint8_t reg);
+            /* `i2cdiag [addr [reg]]`, both hex. Defaults probe the BME280's
+             * chip-id register, which is the read that phase 30 found
+             * failing while a bare address probe succeeded. */
+            unsigned a = 0x76, r = 0xd0;
+            const char *p = cmd_line + 7;
+            while (*p == ' ') p++;
+            if (*p) { a = 0; while (*p && *p != ' ') { a = a * 16u + (unsigned)((*p <= '9') ? *p - '0' : (*p | 32) - 'a' + 10); p++; } }
+            while (*p == ' ') p++;
+            if (*p) { r = 0; while (*p && *p != ' ') { r = r * 16u + (unsigned)((*p <= '9') ? *p - '0' : (*p | 32) - 'a' + 10); p++; } }
+            i2c_rp2350_diag((uint8_t)a, (uint8_t)r);
+        }
+        return;
+#endif
     } else if (strcmp(cmd_line, "i2cstats") == 0) {
         /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
          * exposes i2c_task_call_count() so a test can confirm the shared

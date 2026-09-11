@@ -266,6 +266,58 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
     return true;
 }
 
+static bool i2c_probe_addr(uint8_t addr);
+static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len);
+
+/* --- The instrument (phase 30) -----------------------------------------
+ *
+ * Three address probes and three register reads of one part, each followed by
+ * IC_TX_ABRT_SOURCE and IC_STATUS. Kept because it is what turned a day of
+ * plausible theories into an answer in one line, and because the answer was
+ * not in the software at all.
+ *
+ * **How to read it.** Three in a row, because one tells you nothing: 1,1,1 is
+ * a working part, 0,0,0 with `abrt` bit 0 set is nothing at that address, and
+ * 0,0,0 with `abrt == 0` is neither -- no device NACKed, so the transaction
+ * simply never finished. That last pattern, with `status` showing
+ * MST_ACTIVITY set and both FIFOs empty, means the bus is not being driven
+ * the way the controller thinks it is.
+ *
+ * **What that turned out to be, 2026-09-11.** A marginal ground. Three parts
+ * daisy-chained off a Pico 2 W read as present to `i2c scan` and failed every
+ * register read; four software hypotheses were written, tested and discarded
+ * against it. The fault was the GND jumper, and moving it fixed everything
+ * with the driver untouched.
+ *
+ * The tell was there the whole time and is worth naming: **`i2c scan` worked
+ * while everything else failed.** The scan emits a cprintf() between probes,
+ * so its transactions are milliseconds apart, and a bus whose reference is
+ * floating recovers in the gaps. Anything back-to-back -- the boot probes,
+ * this diagnostic -- does not. If you see that split again, check the wiring
+ * before reading any more of this file. */
+void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
+    cprintf("[I2Cdiag] CON=0x%08x TAR=0x%08x ENABLE=0x%08x STATUS=0x%08x RAW=0x%08x\n",
+            (unsigned)REG(IC_CON), (unsigned)REG(IC_TAR),
+            (unsigned)REG(IC_ENABLE), (unsigned)REG(IC_STATUS),
+            (unsigned)REG(IC_RAW_INTR_STAT));
+    for (int i = 0; i < 3; i++) {
+        bool ok = i2c_probe_addr(addr);
+        cprintf("[I2Cdiag] probe#%d 0x%02x -> %d  abrt=0x%08x status=0x%08x\n",
+                i, addr, (int)ok, (unsigned)REG(IC_TX_ABRT_SOURCE),
+                (unsigned)REG(IC_STATUS));
+        (void)REG(IC_CLR_TX_ABRT);
+    }
+    for (int i = 0; i < 3; i++) {
+        uint8_t v = 0xff;
+        bool ok = i2c_read_bytes(addr, reg, &v, 1);
+        cprintf("[I2Cdiag] read#%d 0x%02x reg 0x%02x -> %d val=0x%02x  "
+                "abrt=0x%08x status=0x%08x\n",
+                i, addr, reg, (int)ok, (unsigned)v,
+                (unsigned)REG(IC_TX_ABRT_SOURCE), (unsigned)REG(IC_STATUS));
+        (void)REG(IC_CLR_TX_ABRT);
+    }
+}
+
 static bool i2c_probe_addr(uint8_t addr) {
     REG(IC_ENABLE) = 0;
     REG(IC_TAR) = addr;
