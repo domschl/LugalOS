@@ -408,13 +408,21 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     spin_unlock_irqrestore(&g_sched_lock, flags);
 
     if (slot < 0) {
-        /* Ordinary printk() here, and in the three other creation/boot
-         * messages in this file, deliberately: they run in the *caller's*
-         * task context, outside every lock, with nothing half-torn-down.
-         * Blocking there is a wait, not a hang. The rule this file follows is
-         * not "the scheduler never printk()s" but "nothing printk()s while it
-         * is mid-switch, mid-exit, holding g_sched_lock, or in interrupt
-         * context". */
+        /* Ordinary printk(), here and everywhere else in this file that is
+         * not a fatal dump.
+         *
+         * This used to be a careful exception -- these messages run in the
+         * caller's task context, outside every lock, so blocking there is a
+         * wait rather than a hang -- against a rule that read "nothing
+         * printk()s while it is mid-switch, mid-exit, holding g_sched_lock,
+         * or in interrupt context".
+         *
+         * That rule is retired (Y5c, plan/phase31_concurrency_hierarchy.md).
+         * printk() appends a record and returns from any context, so no
+         * exception is needed and none of these is special. What survives is
+         * about *delivery*: the fatal paths below still use printk_critical()
+         * because they are followed by a halt, and a record nobody drains is
+         * a record nobody reads. */
         printk("[Sched] Task table full; '%s' not created\n", name ? name : "?");
         return -1;
     }
@@ -644,10 +652,17 @@ static uint32_t g_reap_pages[MAX_HARTS];
  * register already destroyed. Halting here instead keeps the table intact
  * and says who was switching to whom. */
 /* Runs with g_sched_lock HELD, which is why every line below is
- * printk_critical(): a printk() here would block while holding the lock the
- * task it waits for needs, which is a deadlock rather than a slow dump.
+ * printk_critical() -- though the reason changed under it (Y5c,
+ * plan/phase31_concurrency_hierarchy.md).
  *
- * Since phase 31 Y2 a printk() here would also be *caught* -- it reaches the
+ * It used to be that printk() here would block while holding the lock the
+ * task it waits for needs: a deadlock rather than a slow dump. printk() no
+ * longer blocks anywhere, so that is gone. What remains is delivery: this is
+ * a fatal dump, the next thing that happens is a halt, and a record in the
+ * log ring is read by klogd on a board that is not going to run klogd again.
+ * printk_critical() is on the wire before the halt; printk() is not.
+ *
+ * Since phase 31 Y2 a *cprintf()* here would also be caught -- it reaches the
  * console through chan_call(), which refuses outright when a spinlock is
  * held. That turns this from a rule someone has to have read into one the
  * kernel states at the moment it is broken, which matters here more than

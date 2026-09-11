@@ -102,14 +102,21 @@ void uart_flush(void);
 // Console output from a context that must not block, yield, or switch:
 // scheduler teardown, interrupt handlers, and fatal paths.
 //
-// Everything else in this header can block. uart_putc() batches and
-// uart_flush() reaches the console through chan_call() -> task_block();
-// uart_debug_putc(), despite the name, still ends in a blocking primitive
-// that calls task_block() when a task exists and sched_yield() when one
-// does not. Either is fatal in the three contexts above: a task blocking in
-// the middle of task_exit() switches away with its bookkeeping half done, a
-// blocking call from the timer interrupt is a deadlock, and a fatal handler
-// that blocks never prints the dump that would explain it.
+// Everything else in this header can block, and that has not changed --
+// uart_putc() batches and uart_flush() reaches the console through
+// chan_call() -> task_block(); uart_debug_putc(), despite the name, still
+// ends in a blocking primitive. Either is fatal in the three contexts above:
+// a task blocking in the middle of task_exit() switches away with its
+// bookkeeping half done, a blocking call from the timer interrupt is a
+// deadlock, and a fatal handler that blocks never prints the dump that would
+// explain it.
+//
+// What *did* change is who reaches these. printk() no longer does: since Y5c
+// (plan/phase31_concurrency_hierarchy.md) it appends a record to the log ring
+// and returns, and klogd is the task that carries it down here. So the three
+// contexts above may printk() freely; they may not cprintf(), and they use
+// printk_critical() when the line has to be on the wire before the machine
+// stops.
 //
 // Of those three, only "while holding a lock" is machine-checked (phase 31
 // Y2). **Interrupt context, mid-switch and mid-exit are still convention**,

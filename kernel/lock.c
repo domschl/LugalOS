@@ -91,8 +91,7 @@ static void lock_fault(const char *what, const char *name, const char *site) {
     g_check_busy[h] = false;
 }
 
-/* --- No printk() from inside a driver serve callback (G2,
- * plan/phase30_driver_framework.md) ---------------------------------------
+/* --- No console output from inside a driver serve callback ---------------
  *
  * Per task, not per hart: a serve callback may block (uart's READ waits for a
  * keypress), and a task that blocks may resume on another hart. See
@@ -112,27 +111,27 @@ static void lock_fault(const char *what, const char *name, const char *site) {
  * and the consequence of the false positive is one wrong line of diagnostic,
  * not a wrong behaviour. Clearing it from the exit path would mean a
  * scheduler hook for a case that cannot currently happen. */
-static const char *g_noprintk[MAX_TASKS];
+static const char *g_serving[MAX_TASKS];
 
-void lock_noprintk_enter(const char *what) {
+void lock_serve_enter(const char *what) {
     int me = sched_current_pid();
     if (me < 0 || me >= MAX_TASKS) return;
-    g_noprintk[me] = what;
+    g_serving[me] = what;
 }
 
-void lock_noprintk_leave(void) {
+void lock_serve_leave(void) {
     int me = sched_current_pid();
     if (me < 0 || me >= MAX_TASKS) return;
-    g_noprintk[me] = NULL;
+    g_serving[me] = NULL;
 }
 
-const char *lock_noprintk_what(void) {
+const char *lock_serve_what(void) {
     int me = sched_current_pid();
     if (me < 0 || me >= MAX_TASKS) return NULL;
-    return g_noprintk[me];
+    return g_serving[me];
 }
 
-bool lock_check_may_printk(void) {
+bool lock_check_may_console(void) {
     uint32_t h = hart_id();
 
     /* Before the counter and before anything else, for the reason
@@ -145,7 +144,7 @@ bool lock_check_may_printk(void) {
 
     int me = sched_current_pid();
     if (me < 0 || me >= MAX_TASKS) return false;
-    const char *what = g_noprintk[me];
+    const char *what = g_serving[me];
     if (!what) return false;
 
     g_lock_faults++;
@@ -772,7 +771,7 @@ int lock_selftest(void) {
               spawned && g_cycle_done && waitfor_target(wpid) == -1);
     }
 
-    /* --- 7. no printk() from inside a driver serve callback (G2) ------ */
+    /* --- 7. no console output from inside a driver serve callback ----- */
     {
         /* The mark driver_task.c sets around every serve callback. Set it by
          * hand here rather than going through a real driver task: the claim
@@ -792,21 +791,21 @@ int lock_selftest(void) {
          * still fired on printk() would be reporting a rule that no longer
          * exists. */
         uint32_t before_printk = lock_faults();
-        lock_noprintk_enter("selftest");
-        bool marked = (lock_noprintk_what() != NULL);
+        lock_serve_enter("selftest");
+        bool marked = (lock_serve_what() != NULL);
         printk("[KlogTest] printk from inside a serve callback is fine now\n");
-        lock_noprintk_leave();
+        lock_serve_leave();
         bool printk_is_quiet = (lock_faults() == before_printk);
 
         uint32_t before_cprintf = lock_faults();
-        lock_noprintk_enter("selftest");
+        lock_serve_enter("selftest");
         cprintf("  (deliberate: console output from inside a serve callback)\n");
-        lock_noprintk_leave();
+        lock_serve_leave();
         bool cprintf_caught = (lock_faults() == before_cprintf + 1);
 
         check("serve callback: printk() is safe, cprintf() is still reported",
               marked && printk_is_quiet && cprintf_caught &&
-              lock_noprintk_what() == NULL);
+              lock_serve_what() == NULL);
     }
 
     /* --- 8. Y5b: the log record is the atomic unit ---------------------- */

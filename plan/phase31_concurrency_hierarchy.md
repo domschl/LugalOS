@@ -1,6 +1,7 @@
 # Phase 31 — One wait-for graph, and no cycles in it
 
-**Status: Y0-Y4 done 2026-09-11; REOPENED the same day for Y5.** One wait-for
+**Status: Y0-Y5e done 2026-09-11. Y5f (tokenised records, §5.9) is planned
+and separable.** One wait-for
 graph fed by channels, ylocks and printk ownership; a leaf rule for
 `spinlock_t` checked at every acquire; two real bugs found and fixed (a
 reproduced whole-kernel hang in `task_exit()`, and a lock-ordering inversion
@@ -1183,6 +1184,42 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   comments Y4 rewrote. All of them currently state a rule Y5 changes.
   *Done when:* no comment in the tree tells a reader that `printk()` from a
   driver task can deadlock, because it no longer can.
+
+  **Y5e done — 2026-09-11.** Verified with a script rather than by eye: a
+  regex for "printk … blocks/deadlocks/hangs", "never printk", "no printk",
+  swept over every `.c`, `.h` and `.md` in `kernel/`, `drivers/`, `fs/`,
+  `net/`, `arch/` and `user/`, with a second pass that clears a hit whose
+  surrounding lines explain the change. It went from 6 unexplained claims to
+  0; the remainder are history, correctly dated.
+
+  **The check's own names were the worst of it.** `lock_noprintk_enter()`,
+  `lock_check_may_printk()` and `lock_noprintk_what()` all said *printk*, and
+  the rule they enforce is about the *console*. They are `lock_serve_enter()`,
+  `lock_check_may_console()` and `lock_serve_what()` now, which separates the
+  state (this task is inside a serve callback) from the rule (it may not write
+  the console). A name that documents the wrong invariant is worse than a
+  comment that does, because nobody reads past it.
+
+  Rewritten rather than deleted, because the inversion is the interesting
+  part and a reader who meets only the new rule learns less than one who meets
+  both: `kernel/lock.h`'s invariant block, `drivers/include/drivers/
+  driver_task.h`'s invariant 1, `drivers/README.md`'s two entries,
+  `kernel/include/kernel/printk.h`'s `printk_critical()` contract,
+  `drivers/include/drivers/uart.h`'s, the four driver task-body comments Y4
+  wrote (`uart_16550.c`, `uart_esp32p4.c`, `i2c_bus.c`, `driver_task.c`), and
+  `kernel/sched.c`'s rule statement -- which said *"not 'the scheduler never
+  printk()s' but 'nothing printk()s while it is mid-switch, mid-exit, holding
+  `g_sched_lock`, or in interrupt context'"*, and is now retired outright.
+
+  Two were left as accurate history with a dated note: `kernel/smp.c`'s
+  account of why X3 gave core 1 no printk at all, and the core-1 probe's own
+  "no printk", which is now a choice (nothing has run it that way on silicon)
+  rather than a requirement. Two more were never about blocking at all and
+  stay: `flash_rp2350.c` (printk lives in flash, and XIP is off) and
+  `pico_clock_green_rp2350.c` (U-mode isolation).
+
+  The `printk-critical-rule` memory was inverted too, since it stated the old
+  rule as guidance.
 
 * **Y5f — Tokenised records.** §5.9, gated on the `format(printf, ...)`
   attributes. Last, and separable: everything above is finished and useful

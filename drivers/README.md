@@ -97,10 +97,22 @@ right width.
   the indirect jump through it takes a load access fault. Add your file to the
   `set_source_files_properties(... -fno-jump-tables)` list in `CMakeLists.txt`.
   Found on real hardware, not in review.
-* **`printk()` blocks.** Never call it mid-context-switch, mid-exit, under
-  `g_sched_lock`, or in an ISR. `printk_critical()` exists for those.
+* **`printk()` does not block — `cprintf()` does.** This inverted in phase 31
+  (Y5), and stale comments elsewhere in the tree may still say otherwise.
+  `printk()` formats into your stack and appends a record to the log ring
+  under a leaf spinlock; it reaches no blocking primitive, so it is safe
+  mid-context-switch, mid-exit, under `g_sched_lock`, in an ISR, and from
+  inside a driver serve callback. The console stream is the one that still
+  reaches the uart task through `chan_call()`, so **never `cprintf()` or
+  `printk_debug()` from a serve callback** — that closes a cycle against your
+  own caller, and `console_lock()` reports it.
+* **`printk_critical()` is for delivery, not for blocking.** A `printk()`
+  record reaches the console when klogd next runs; if the next thing that
+  happens is a halt or a hang, it never does. Use `printk_critical()` where
+  the value is that the line arrived *before* the machine stopped.
 * **A blocking call under a `spinlock_t` is a kernel bug, and now a detected
-  one.** Spinlocks are checked leaves: `kernel/lock.c` faults if you block
+  one.** (`printk()` is not one of them, per the entry above.) Spinlocks are
+  checked leaves: `kernel/lock.c` faults if you block
   while holding one. If you need a lock you can hold across a block, that is
   `ylock_t`, and it participates in the wait-for graph. See
   `plan/phase31_concurrency_hierarchy.md`.

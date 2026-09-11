@@ -21,11 +21,17 @@ int printk(const char *fmt, ...);
 // messages.
 int printk_debug(const char *fmt, ...);
 
-/* Non-blocking, unlocked, drops rather than waits. For scheduler teardown,
- * interrupt handlers, and fatal paths -- the contexts where printk()'s
- * task_block() is a hang rather than a wait. See kernel/printk.c for the
- * full argument and for what it costs (interleaving, and dropped bytes on a
- * wedged console). Use printk() everywhere else. */
+/* Synchronous: on the wire before the next instruction runs. Unlocked, and
+ * drops rather than waits.
+ *
+ * Not "for contexts where printk() would block" any more -- printk() does not
+ * block anywhere (Y5c, plan/phase31_concurrency_hierarchy.md). The remaining
+ * distinction is delivery: a printk() record reaches the console when klogd
+ * next runs, and if the next thing that happens is a halt, a fault dump or a
+ * hang, klogd never runs. Use this where the value is that the line arrived
+ * *before* the machine stopped; use printk() everywhere else, which is almost
+ * everywhere. See kernel/printk.c for the full argument and what it costs
+ * (interleaving, and dropped bytes on a wedged console). */
 int printk_critical(const char *fmt, ...);
 
 // Formats into a caller-owned buffer instead of a UART, using the same

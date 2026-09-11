@@ -122,9 +122,14 @@ volatile uint32_t g_core1_ticks;
  * the counter; `smpstart join` is the new thing. */
 volatile uint32_t g_core1_mode = CORE1_MODE_PROBE;
 
-/* Core 1's entire program. No printk (the console path blocks and would
- * reach core 0's pinned uart task), no scheduler (core 1 has no task yet),
- * no interrupts (mstatus is zeroed in core1_entry). Just proof of life. */
+/* Core 1's entire program. No printk, no scheduler (core 1 has no task yet),
+ * no interrupts (mstatus is zeroed in core1_entry). Just proof of life.
+ *
+ * The printk half is now a choice rather than a requirement: since Y5c
+ * (plan/phase31_concurrency_hierarchy.md) printk() appends a record and
+ * returns instead of reaching core 0's pinned uart task, so it would not
+ * block here. It stays out because this probe's whole claim is that it
+ * touches nothing -- and because nobody has run it that way on the silicon. */
 static void core1_probe_main(void) {
     for (;;) {
         g_core1_ticks++;
@@ -739,6 +744,11 @@ void secondary_main(void) {
      * was holding, and its task_block() on contention would have blocked the
      * shell. So bring-up was undebuggable exactly where debugging matters:
      * X3 got its second core running only by giving it no printk at all.
+     *
+     * (History, since Y5c: printk() no longer takes any lock, so this window
+     * is printable now. The account stays because the *identity* fix below is
+     * what the comment is about, and because it explains why X3 looks the way
+     * it does.)
      *
      * The pid is printed rather than assumed. -1 is the fix working; 0 is the
      * bug, and the two are distinguishable in the boot log without having to

@@ -198,38 +198,48 @@ bool lock_check_may_block(const char *what);
 bool lock_check_may_block_named(const char *what, const char *name,
                                 const char *site);
 
-/* --- No printk() from inside a driver serve callback (G2,
- * plan/phase30_driver_framework.md) -----------------------------------------
+/* --- No console output from inside a driver serve callback -----------------
  *
- * A driver task serving a request must never call printk(): a caller can be
- * blocked on that very endpoint while holding the console lock, and the serve
- * callback taking the same lock closes the cycle.
+ * Added by G2 (plan/phase30_driver_framework.md) as a rule about printk(),
+ * narrowed by Y5 (plan/phase31_concurrency_hierarchy.md §5.6) to what it was
+ * always really about. The history is worth one paragraph, because the rule
+ * inverted:
  *
- * Y4 made such a cycle *named* instead of silent -- printk ownership is an
- * edge in the wait-for graph, so the hang says which two tasks. This is the
- * step before that: the rule is violated the moment the call is made,
- * whether or not a caller happens to be holding the lock at that instant.
+ *   **printk() from a serve callback is now safe.** It formats into the
+ *   caller's stack and appends a record to the log ring under a leaf
+ *   spinlock. It reaches no blocking primitive, from any context. Y5c is what
+ *   made that true; before it, printk() went to the console synchronously and
+ *   a driver task doing it could deadlock against its own caller.
+ *
+ *   **cprintf() from a serve callback is not.** The console stream still
+ *   reaches the uart task through chan_call(), so a driver task writing the
+ *   console while a caller is blocked on that driver's own endpoint closes a
+ *   cycle -- the original hazard, in the one place it survives.
+ *
+ * So this marks *being inside a serve callback*, and console_lock() is what
+ * asks. drivers/driver_task.c brackets every callback, so no driver has to
+ * remember.
+ *
+ * The state is per *task*, not per hart: a serve callback may legitimately
+ * block (uart's READ waits for a keypress for as long as a human takes), and
+ * a task that blocks may resume on another hart.
+ *
+ * It fires on the violation rather than on the collision -- the moment the
+ * call is made, whether or not a caller happens to be blocked at that instant.
  * On QEMU it essentially never would be; on hardware it is the failure that
- * costs an afternoon. Reporting on the violation rather than on the
- * collision makes it deterministic and reproducible in the test suite.
- *
- * `drivers/driver_task.c` brackets every serve callback with these, so no
- * driver has to remember. The state is per *task*, not per hart: a serve
- * callback may legitimately block (uart's READ waits for a keypress for as
- * long as a human takes), and a task that blocks may resume on another hart.
- *
- * Report-and-continue, like every other check in this file. */
-void lock_noprintk_enter(const char *what);
-void lock_noprintk_leave(void);
+ * costs an afternoon. Report-and-continue, like every other check here. */
+void lock_serve_enter(const char *what);
+void lock_serve_leave(void);
 
-/* Reports if the current task is inside a serve callback. Called from
+/* Reports if the current task is inside a serve callback -- i.e. whether
+ * writing the console from here would be the cycle above. Called from
  * console_lock(); returns true if a violation was found. Inert when there is
  * no current task, and transparent inside the checker's own diagnostic. */
-bool lock_check_may_printk(void);
+bool lock_check_may_console(void);
 
 /* The serve callback the current task is inside, or NULL. Diagnostics and
  * the selftest. */
-const char *lock_noprintk_what(void);
+const char *lock_serve_what(void);
 
 /* The real entry points. The macros below capture the lock's name and the
  * calling function at the call site, which costs .rodata (flash on RP2350)

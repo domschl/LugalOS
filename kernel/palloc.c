@@ -101,7 +101,11 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages) {
      *
      * A spinlock_t rather than a ylock_t, and here that is the easy call:
      * this region is a bounded scan over a bitmap with no call out of it at
-     * all -- no printk, no yield, nothing that can block. The one expensive
+     * all -- no yield, nothing that can block. (printk() would in fact be
+     * safe here since Y5c: it appends a record under a leaf spinlock and
+     * returns. The rule stays because "no call out of it at all" is the
+     * property that makes the spinlock defensible, not because printk is
+     * still dangerous.) The one expensive
      * thing an allocation does, zeroing the pages, is deliberately outside
      * (see below). S3 had to split its claim in two precisely because it
      * could not say that; this one can. */

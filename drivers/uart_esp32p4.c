@@ -485,15 +485,16 @@ static bool uart_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-/* Must never printk() from inside this loop -- a caller can be blocked on
- * this very endpoint while holding printk_lock(), and taking that lock here
- * would deadlock against it. uart_debug_putc() exists for that case.
+/* printk() from inside this loop is fine; cprintf()/printk_debug() are not.
  *
- * Enforced rather than remembered since Y4
- * (plan/phase31_concurrency_hierarchy.md): printk ownership is an edge in the
- * one wait-for graph (kernel/lock.h), so this cycle is refused when the
- * chan_call() half comes second and named when the printk_lock() half does.
- * The rule is still the rule; it is no longer the only thing enforcing it. */
+ * The rule used to cover printk() too, because printk() reached the console
+ * through this very endpoint: a caller blocked here while holding the output
+ * lock, and this task taking the same lock to log, deadlocks against itself.
+ * Y5c (plan/phase31_concurrency_hierarchy.md) made printk() a ring append
+ * that reaches no blocking primitive, so that half is gone. The console
+ * stream still ends at the wire, so the other half stands, and
+ * drivers/driver_task.c's bracket plus console_lock() check it rather than
+ * leaving it to this comment. uart_debug_putc() remains the escape hatch. */
 static void uart_task_body(void *arg) {
     (void)arg;
     while (!g_uart_ep) sched_yield();

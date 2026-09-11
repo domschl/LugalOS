@@ -27,14 +27,20 @@
  * They were a comment repeated in every driver. Here is what each one is
  * now:
  *
- * 1. **Never printk() from inside the serve callback.** A caller can be
- *    blocked on this endpoint while holding printk_lock(); the callback
- *    taking that same lock closes the cycle. **Checked**, not remembered:
- *    driver_task.c brackets every callback with lock_noprintk_enter()/
- *    leave(), and printk_lock() reports a named lock fault if it is reached
- *    from inside one (kernel/lock.h). It fires on the violation, not on the
- *    collision, so it is deterministic on QEMU instead of being the bug that
- *    only ever reproduces on hardware.
+ * 1. **printk() freely; never cprintf() from inside the serve callback.**
+ *    This inverted, and the half that inverted is worth knowing. printk() is
+ *    a ring append that reaches no blocking primitive from any context, so a
+ *    serve callback may log as freely as anything else (Y5c,
+ *    plan/phase31_concurrency_hierarchy.md). The *console* stream still
+ *    reaches the uart task through chan_call(), so a callback writing it
+ *    while a caller is blocked on this endpoint closes the cycle -- the
+ *    original hazard, in the one place it survives.
+ *
+ *    **Checked**, not remembered: driver_task.c brackets every callback with
+ *    lock_serve_enter()/leave(), and console_lock() reports a named fault if
+ *    it is reached from inside one (kernel/lock.h). It fires on the
+ *    violation, not on the collision, so it is deterministic on QEMU instead
+ *    of being the bug that only ever reproduces on hardware.
  *
  * 2. **Never call back into anything that could chan_call() this same
  *    endpoint.** Refused since Y3: chan_call() will not close a cycle in the

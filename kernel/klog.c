@@ -306,7 +306,7 @@ void klog_drain(void) {
      *
      * A spinlock held, or no task: this call can block, and neither context
      * may. The records stay in the ring and klogd writes them out. */
-    if (lock_noprintk_what() != NULL) return;
+    if (lock_serve_what() != NULL) return;
     if (lock_spin_held() != NULL) return;
     if (!sched_has_task()) return;
 

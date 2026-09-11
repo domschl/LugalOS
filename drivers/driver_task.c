@@ -36,14 +36,18 @@ static void driver_task_body(void *arg) {
 
         dt->calls++;
 
-        /* Invariant 1, checked rather than remembered. The bracket is here
-         * and not in each driver precisely because "remember not to printk"
-         * is what nine separate comments were already saying. */
-        lock_noprintk_enter(dt->spec.name);
+        /* Invariant 1, checked rather than remembered. The bracket marks the
+         * callback as serving; console_lock() is what asks (kernel/lock.h).
+         *
+         * It guarded printk() when G2 added it and guards cprintf() now --
+         * printk() stopped being able to block in Y5c. The bracket is here
+         * and not in each driver for the reason it always was: "remember not
+         * to do this" is what nine separate comments were already saying. */
+        lock_serve_enter(dt->spec.name);
         uint32_t resp_len = dt->spec.serve(dt->spec.ctx,
                                            dt->spec.req, req_len,
                                            dt->spec.resp, dt->spec.resp_cap);
-        lock_noprintk_leave();
+        lock_serve_leave();
 
         /* Clamped rather than trusted: a callback that miscounts would
          * otherwise have the endpoint copy past the response buffer into the

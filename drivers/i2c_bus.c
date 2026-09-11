@@ -1330,11 +1330,12 @@ static void i2c_task_body(void *arg) {
 /* This task, and only this task, may call the *_hw_* functions in this file
  * and drivers/at24c32.c while alive -- see uart_16550.c's uart_task_body()
  * for the fuller reasoning (never call back into anything that could
- * chan_call() this same endpoint; never take printk_lock() from here).
+ * chan_call() this same endpoint; never write the console from here --
+ * printk() is safe, cprintf() is not, see kernel/lock.h).
  *
- * Both of those are checked since phase 31: chan_call() refuses a call that
- * would close a wait-for cycle, and printk ownership became an edge in that
- * same graph in Y4. See kernel/lock.h. */
+ * Both are checked: chan_call() refuses a call that would close a wait-for
+ * cycle (Y3), and console_lock() reports a console write from inside a serve
+ * callback (Y5). See kernel/lock.h. */
 static void i2c_task_body(void *arg) {
     (void)arg;
     while (!g_i2c_ep) sched_yield();

@@ -23,7 +23,7 @@ void console_lock(void) {
      * ends in chan_call() to the uart task and a caller blocked on that
      * callback's own endpoint closes the cycle. printk() is safe there and no
      * longer comes through here. */
-    (void)lock_check_may_printk();
+    (void)lock_check_may_console();
     ylock_acquire(&g_console_lock);
 }
 

@@ -232,22 +232,24 @@ static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
  * would chan_call() into its own endpoint, which chan_call()'s busy flag
  * correctly refuses rather than deadlocks, but there is no reason to rely
  * on that -- it should simply never happen. */
-/* Must never call printk()/printk_debug()/cprintf() (or anything that takes
- * console_lock()) from within this loop. A caller can legitimately be blocked
- * here on this very endpoint while holding printk_lock(); this task taking
- * that same lock to log would deadlock against it.
- * uart_debug_putc()/uart_debug_puts() exist precisely so a driver can still
- * get bytes out under that constraint.
+/* printk() here is fine. cprintf()/printk_debug() are not.
  *
- * **Checked now, not merely remembered** (Y4,
- * plan/phase31_concurrency_hierarchy.md). This comment used to end "chan.c's
- * wait-for cycle guard covers chan_call() itself, but printk_lock() is a
- * *different* blocking resource it cannot see", and that was the gap: printk
- * ownership is an edge in the one wait-for graph now (kernel/lock.h), so a
- * chan_call() closing this cycle from the other side is refused, and one that
- * closes inside printk_lock() names both tasks instead of hanging silently.
- * The rule still holds -- it is simply no longer the only thing keeping the
- * board alive. */
+ * This comment has been rewritten twice and the change is the point. It used
+ * to forbid printk() outright, because printk() reached the console through
+ * this very endpoint -- a caller blocked here while holding the output lock,
+ * and this task taking that same lock to log, is a deadlock against itself.
+ * Y4 (plan/phase31_concurrency_hierarchy.md) made that cycle *named* rather
+ * than silent; Y5c removed it. printk() is a ring append that reaches no
+ * blocking primitive from any context, so this loop may log freely.
+ *
+ * What survives is the console stream: cprintf() and printk_debug() take
+ * console_lock() and end at the wire, so calling either from here is the
+ * original hazard in the one place it still exists. **Checked**, not merely
+ * remembered -- drivers/driver_task.c brackets this callback and
+ * console_lock() reports it (kernel/lock.h).
+ *
+ * uart_debug_putc()/uart_debug_puts() remain the escape hatch for getting
+ * bytes out of a context that may not take the lock at all. */
 static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
                           uint8_t *resp, uint32_t resp_cap) {
     (void)ctx; (void)resp_cap;
@@ -359,10 +361,10 @@ void uart_init(uintptr_t base_addr) {
  * into the same buffer in between, and this core's flush picks up both.
  * Observed on RP2350 as core 0 and core 1 interleaving mid-word.
  *
- * The obvious fix -- flush while still holding the printk lock -- trades one
+ * The obvious fix -- flush while still holding the output lock -- trades one
  * bug for a worse one: the flush blocks in chan_call() waiting for the uart
- * task, so printk ownership would be held across that wait, and anything the
- * uart task itself needs printk for would deadlock against it. Splitting the
+ * task, so the lock would be held across that wait, and anything the uart
+ * task itself needs the console for would deadlock against it. Splitting the
  * buffer removes the sharing instead of serialising it, and no lock is held
  * across a block. Costs MAX_HARTS x 256 bytes.
  *
