@@ -545,6 +545,71 @@ Done when: the checker is on in every build, the QEMU suite is 359/359 with it
 armed, and deliberately taking two locks out of order produces a named
 diagnostic rather than a hang.
 
+#### Y2 done — the leaf check, and two bugs in the checker itself — 2026-09-11
+
+**One comparison, not a level table.** Y0 found that every `spinlock_t` in the
+tree is a leaf, so the rule the checker enforces is *"while a `spinlock_t` is
+held, nothing may be acquired and nothing may block"* — stronger than §1.2's
+graduated levels, true of the code as it stands, and needing no table that has
+to be kept right. §1.2's provisional table is superseded; the argument now
+lives in `kernel/include/kernel/lock.h`, which is where Y0 said it belonged.
+
+**Per-hart state, which is what makes the hand-off a non-problem.** F3 warned
+that `g_sched_lock` is acquired by `task_exit()` and released by a different
+task, so its section is not lexical. Per-hart counting does not care: a
+hand-off crosses `ctx_switch()`, which stays on one hart, so the increment and
+the decrement land on the same counter whoever performs them. It also cannot
+be per-*task*, because a task may migrate harts — but only across a block, and
+a spinlock is never held across one.
+
+**The name comes from the call site, not from the lock.** `spin_lock_irqsave`
+and `ylock_acquire` are now macros that capture `#l` and `__func__`, so a
+diagnostic reads `took &inner (in lock_selftest()) while holding &outer, taken
+in lock_selftest()` without adding a field to every `spinlock_t`. The cost is
+`.rodata`, which on RP2350 is flash rather than the heap `.bss` competes with.
+
+**Reports, does not halt, and reports *before* the acquisition that would
+hang** — so F1's failure mode (a board that stops dead after one line) becomes
+a named diagnostic followed by the same hang. `chan_call()` is the exception
+that refuses outright, because refusal is already its contract and every
+caller handles `-1` by falling back to direct access.
+
+##### The two bugs were both in the checker, and both were the same mistake
+
+Nothing in the tree tripped the checker — zero violations across the whole
+QEMU suite. What it caught immediately was itself, twice, and the pattern is
+worth recording because any future instrumentation here will meet it:
+
+* **It counted its own diagnostic.** `printk_critical()` reaches the console
+  through the UART driver's spinlock, so every acquire the *report* makes
+  arrives back in the checker with a lock held. The recursion guard
+  suppressed the message but sat *below* `g_lock_faults++`, so one deliberate
+  violation reported "fault 55".
+* **It destroyed the state it was about to print.** The held lock's name was
+  read from the globals inline, on the third line of a message whose first two
+  lines had already taken and released the console's lock and overwritten it.
+  Every violation reported as `while holding &g_klog_lock` — wrong, and
+  plausible enough to be believed. Both were found by the deliberate-violation
+  test in the first run.
+
+**The instrument must be inert in its own measurement.** That is the general
+form, and it applies to Y3's work as much as to this.
+
+##### Cost, measured rather than assumed
+
+§5 warned the checker might cost too much on a path `sched_yield()` takes on
+every switch. Measured like-for-like, same machine, minutes apart: **182.8 s
+without, 185.6 s with** — about 1.5%, against a four-run baseline whose own
+spread is 3.4 s (179.4–182.8). An earlier run at 203.1 s was machine
+contention, not the checker, and is recorded because reporting only the
+convenient number would be the same error as the two above. The honest
+statement is that this measurement cannot resolve a cost much below 2%; the
+per-preset compile-out §5 allows remains available and unused.
+
+Verified: 363/363 QEMU with it armed, ten presets warning-clean, `lockselftest`
+9/9 on QEMU **and on ESP32-P4 silicon**, with exactly the two deliberate
+faults and no others.
+
 ### Y3 — Fold the channel graph in
 
 `would_cycle()` becomes one case of the general check rather than a separate

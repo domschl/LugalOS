@@ -204,6 +204,18 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
     if (!ep || !ep->in_use || !req || req_len == 0) return -1;
     if (req_len > ep->req_cap) return -1;
 
+    /* Y2, plan/phase31_concurrency_hierarchy.md: this call blocks until the
+     * owner replies, so a spinlock_t held across it is the cycle §0.3
+     * describes -- the owner may need the very lock the caller is holding.
+     *
+     * **Refused**, where task_block() only reports, and the difference is
+     * that refusal is already this function's contract: every caller in the
+     * tree handles -1 by falling back to direct hardware access, which is
+     * exactly the right thing to do from a context that should not have been
+     * here. A ylock held across this is legal and is not checked -- see
+     * kernel/lock.h. */
+    if (lock_check_may_block("called chan_call()")) return -1;
+
     /* Re-entrancy: the endpoint's buffers are single-slot, so an inner call
      * would overwrite the outer call's request mid-flight. See the header --
      * a recursive local 9P mount is the concrete way to reach this.

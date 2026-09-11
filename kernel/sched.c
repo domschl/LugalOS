@@ -818,6 +818,14 @@ void task_block(void) {
      * this tree that can reach here from bring-up polls when it cannot
      * block. */
     if (!sched_has_task()) return;
+
+    /* Y2: a spinlock_t held here is the cross-mechanism deadlock phase 31
+     * exists to catch -- the holder cannot run to release it, and on one hart
+     * that is fatal immediately. Reported, not refused: a caller that wanted
+     * to wait has nothing useful to do with a refusal, and the diagnostic is
+     * what turns the hang into a named one. */
+    (void)lock_check_may_block("blocked in task_block()");
+
     /* Marked BLOCKED under the lock, then released before yielding --
      * sched_yield() takes it again, and spinlock_t is not re-entrant.
      *

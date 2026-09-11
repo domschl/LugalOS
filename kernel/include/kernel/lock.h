@@ -75,8 +75,8 @@ void spinlock_init(spinlock_t *l);
  * Never call this while already holding `l`. spinlock_t is NOT re-entrant --
  * a second acquire from the same hart spins forever on a lock only that hart
  * could release. Use ylock_t where re-entry is possible. */
-uintptr_t spin_lock_irqsave(spinlock_t *l);
-void spin_unlock_irqrestore(spinlock_t *l, uintptr_t flags);
+/* Declared as macros further down, so the call site's own text becomes the
+ * lock's name in a diagnostic. */
 
 /* True if held by anyone. For assertions and diagnostics only: by the time a
  * caller acts on the answer it may be stale, which is exactly why this is not
@@ -120,7 +120,7 @@ void ylock_init(ylock_t *l);
  * Safe to hold across a blocking wait, which is the other half of why it
  * yields: masking interrupts across a wait would stop the very timer that
  * lets the awaited event be processed. */
-void ylock_acquire(ylock_t *l);
+/* ylock_acquire() is a macro further down, for the same reason. */
 void ylock_release(ylock_t *l);
 
 /* The pid holding `l`, or -1 when it is free -- which is decided by depth,
@@ -129,6 +129,85 @@ void ylock_release(ylock_t *l);
  * gate an acquisition on it. */
 int  ylock_owner(const ylock_t *l);
 int  ylock_depth(const ylock_t *l);
+
+/* --- The hierarchy, and the check that keeps it honest (Y2,
+ * plan/phase31_concurrency_hierarchy.md) -----------------------------------
+ *
+ * ## The rule, in one line
+ *
+ * **A `spinlock_t` is a leaf: while one is held, nothing may be acquired and
+ * nothing may block.**
+ *
+ * That is stronger than the graduated level system phase 31 first proposed,
+ * and it is what the tree already does. Y0 walked every critical section in
+ * `kernel/`, `drivers/`, `fs/` and `net/`: each one calls only pure helpers --
+ * `bit_get`/`bit_set`, `hart_id`, `memcpy`, `node_parent` -- and where a
+ * section appeared to call something blocking it turned out to release and
+ * re-take around it, with a comment saying why (`uart_putc()` around
+ * `uart_flush()`, `printk_lock()` around `task_block()`). The only two
+ * exceptions were bugs, both in `task_exit()`, and both are fixed.
+ *
+ * A leaf rule needs one comparison, where levels need a table that has to be
+ * kept right. Simpler, and it happens to be true.
+ *
+ * ## `ylock_t` is deliberately not covered by it
+ *
+ * A ylock exists *to* be held across a wait -- see its own comment above --
+ * so "no blocking while held" would forbid the thing it is for.
+ * `fs/p9_link.c` holds `g_pump_lock` across a whole 9P transaction and
+ * `net/mqtt.c` holds `g_client_lock` across `write_all()`, both by design.
+ * What a ylock may not do is sit *under* a spinlock, because then the
+ * spinlock is held across the ylock's yield -- so `ylock_acquire()` is
+ * checked, and holding a ylock is not.
+ *
+ * ## Why per-hart state is the right shape, and survives the hand-off
+ *
+ * `g_sched_lock` is acquired by `task_exit()` and released by a *different
+ * task* -- the successor inherits it. Its critical section is therefore not
+ * lexical, which defeats any checker that pairs an acquire with a release in
+ * the same function. Per-hart counting does not care: a hand-off happens
+ * across `ctx_switch()`, which stays on one hart, so the increment and the
+ * decrement land on the same counter regardless of which task performs them.
+ *
+ * That is also why the state cannot be per-task. A task may migrate harts,
+ * but only across a block -- and a spinlock is never held across one.
+ *
+ * ## What a violation does
+ *
+ * Reports and continues, like `handoff_check()`'s fault counter and unlike
+ * `sched_check_free_range()`'s halt. The report is emitted *before* the
+ * acquisition that would hang, so the failure phase 31 exists to prevent --
+ * a board that stops dead with no clue -- becomes a named diagnostic followed
+ * by the same hang. Halting instead would turn a latent ordering bug into a
+ * dead board on the strength of a check that has not yet earned that trust.
+ */
+
+/* The spinlock this hart is holding, or NULL. Diagnostics only. */
+const char *lock_spin_held(void);
+const char *lock_spin_site(void);
+
+/* Violations counted since boot, and the last one described. `lockcheck` and
+ * the selftest read these; nothing changes behaviour on them. */
+uint32_t    lock_faults(void);
+
+/* Reports if this hart holds a spinlock, naming it and the site. For the
+ * blocking primitives -- task_block(), chan_call(), ylock_acquire() -- which
+ * must not be reached with one held. Returns true if a violation was found,
+ * so a caller that can refuse may. */
+bool lock_check_may_block(const char *what);
+bool lock_check_may_block_named(const char *what, const char *name,
+                                const char *site);
+
+/* The real entry points. The macros below capture the lock's name and the
+ * calling function at the call site, which costs .rodata (flash on RP2350)
+ * rather than a field in every spinlock_t. */
+uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site);
+void      spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags);
+void      ylock_acquire_at(ylock_t *l, const char *name, const char *site);
+
+#define spin_lock_irqsave(l)             spin_lock_irqsave_at((l), #l, __func__)
+#define spin_unlock_irqrestore(l, f)     spin_unlock_irqrestore_at((l), (f))
+#define ylock_acquire(l)                 ylock_acquire_at((l), #l, __func__)
 
 /* Prints the checks and a LOCK_SELFTEST_OK / _FAIL marker; returns the number
  * of failures. */
