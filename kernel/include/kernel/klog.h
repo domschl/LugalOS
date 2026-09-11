@@ -91,6 +91,32 @@ typedef void (*klog_putc_fn)(char);
  * its timestamp; `ms` is rendered in front of it on the way out. */
 void klog_emit(uint32_t ms, const char *text, uint32_t len);
 
+/* The largest captured-argument blob a record can carry. Beyond it printk()
+ * stores rendered text instead, which is always correct and merely larger. */
+#define KLOG_BLOB_MAX 64u
+
+/* The smallest a record can be: its header alone, with an empty payload.
+ * Public so a test can size a burst from the ring rather than from a number
+ * that happened to overflow it once -- see kernel/lock.c's burst check, which
+ * stopped overflowing when Y5f made records denser. */
+#define KLOG_REC_MIN 6u
+
+/* Appends a *tokenised* record (Y5f, plan/phase31_concurrency_hierarchy.md
+ * §5.9): the format string's address and the arguments printk() captured,
+ * instead of the text they render to.
+ *
+ * `render_len` is the length that text would have, which the ring needs
+ * because its read coordinates are in rendered bytes. `rendered` is that same
+ * text, used only for the inline fan-out before a consumer exists -- after
+ * that nobody renders until the log is read.
+ *
+ * The boot log is 89% literal characters, so storing an address and a handful
+ * of argument bytes in their place is where the ring's capacity actually
+ * comes from. */
+void klog_emit_tok(uint32_t ms, const char *fmt,
+                   const uint8_t *blob, uint32_t blob_len,
+                   uint32_t render_len, const char *rendered);
+
 /* Ring only, no sink fan-out. For printk_critical(), which may not reach a
  * sink whose putc can block. See kernel/klog.c.
  *

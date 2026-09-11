@@ -112,6 +112,77 @@ typedef struct { raw_putc_fn pc; raw_puts_fn ps; } plain_dest_t;
 static void plain_putc(void *ctx, char c)          { ((plain_dest_t *)ctx)->pc(c); }
 static void plain_puts(void *ctx, const char *str) { ((plain_dest_t *)ctx)->ps(str); }
 
+/* --- Where a conversion's argument comes from (Y5f) ------------------------
+ *
+ * The engine below used to call va_arg() directly. It now asks an argsrc_t,
+ * which is either a live va_list -- printk()'s original path, unchanged in
+ * behaviour -- or a *captured blob*: the arguments a printk() recorded at the
+ * time, replayed when the log is rendered.
+ *
+ * That is the whole of tokenised logging. The ring stores the format string's
+ * address and this blob instead of the rendered text, and the text is
+ * produced only when someone reads the log.
+ *
+ * Every integer conversion in this engine reads `long` (the `l` modifier is
+ * parsed and discarded, see below), so the blob needs exactly two shapes: a
+ * long, and a NUL-terminated string copied inline. Strings must be copied
+ * rather than pointed at -- a `%s` argument is often a stack buffer or a
+ * caller's scratch, and by the time the log is read it may be anything. */
+typedef struct {
+    va_list       *ap;     /* NULL when replaying a blob */
+    const uint8_t *blob;
+    uint32_t       pos;
+    uint32_t       cap;
+} argsrc_t;
+
+static long argsrc_long(argsrc_t *a) {
+    if (a->ap) return va_arg(*a->ap, long);
+    long v = 0;
+    if (a->pos + sizeof(long) <= a->cap) {
+        memcpy(&v, a->blob + a->pos, sizeof(long));
+        a->pos += (uint32_t)sizeof(long);
+    }
+    return v;
+}
+
+/* %c is promoted to int in a varargs call, so the live path must read an int
+ * and not a long -- on rv64 that is the difference between 4 bytes passed and
+ * 8 read. The blob stores it long-sized for uniformity. */
+static long argsrc_char(argsrc_t *a) {
+    if (a->ap) return (long)va_arg(*a->ap, int);
+    return argsrc_long(a);
+}
+
+static const char *argsrc_str(argsrc_t *a) {
+    if (a->ap) return va_arg(*a->ap, const char *);
+    if (a->pos >= a->cap) return "(truncated)";
+    const char *s = (const char *)(a->blob + a->pos);
+    while (a->pos < a->cap && a->blob[a->pos] != 0) a->pos++;
+    if (a->pos < a->cap) a->pos++;            /* step past the NUL */
+    return s;
+}
+
+/* Advances `*pp` past one conversion's flags, width, precision and length
+ * modifier, and returns the conversion character (`*pp` left on it).
+ *
+ * Shared by the engine and by the capture pass on purpose: the two must agree
+ * about where each argument begins, and the only way to be sure of that is
+ * for them to be the same code. A capture that parsed `%-4s` differently from
+ * the renderer would put the blob out of step and corrupt every argument
+ * after it. */
+static char fmt_scan(const char **pp) {
+    const char *p = *pp;
+    for (;;) {
+        if (*p == '-' || *p == '0') p++;
+        else break;
+    }
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }
+    if (*p == 'l') p++;
+    *pp = p;
+    return *p;
+}
+
 static void print_num(putc_fn pc, void *ctx, unsigned long num, int base) {
     char buf[64];
     const char digits[] = "0123456789abcdef";
@@ -151,8 +222,70 @@ static void print_timestamp(putc_fn pc, puts_fn ps, void *ctx) {
     ps(ctx, "] ");
 }
 
+static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
+                       const char *fmt, argsrc_t *src, bool with_ts);
+
+/* The live-va_list form, which is what every caller outside the log ring
+ * uses and what printk() itself used before Y5f. */
 static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
                       const char *fmt, va_list args, bool with_ts) {
+    argsrc_t src = { &args, NULL, 0, 0 };
+    return vprintk_src(pc, ps, ctx, fmt, &src, with_ts);
+}
+
+/* Captures this call's arguments into `blob`, by walking `fmt` with the same
+ * scanner the renderer uses. Returns the bytes written, or -1 if the
+ * arguments do not fit -- in which case printk() stores rendered text
+ * instead, exactly as it did before Y5f. Refusing beats truncating: a blob
+ * cut short renders as garbage from that argument on. */
+static int fmt_capture(const char *fmt, va_list args, uint8_t *blob, uint32_t cap) {
+    uint32_t n = 0;
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') continue;
+        p++;
+        if (*p == '%') continue;
+        char conv = fmt_scan(&p);
+        switch (conv) {
+            case 'c': {
+                long v = (long)va_arg(args, int);
+                if (n + sizeof(long) > cap) return -1;
+                memcpy(blob + n, &v, sizeof(long)); n += (uint32_t)sizeof(long);
+                break;
+            }
+            case 'd': case 'i': case 'u': case 'x': case 'X': case 'p': {
+                long v = va_arg(args, long);
+                if (n + sizeof(long) > cap) return -1;
+                memcpy(blob + n, &v, sizeof(long)); n += (uint32_t)sizeof(long);
+                break;
+            }
+            case 's': {
+                const char *sv = va_arg(args, const char *);
+                if (!sv) sv = "(null)";
+                uint32_t len = 0;
+                while (sv[len]) len++;
+                if (n + len + 1 > cap) return -1;
+                memcpy(blob + n, sv, len); n += len;
+                blob[n++] = 0;
+                break;
+            }
+            case '\0': return (int)n;
+            default:    return -1;   /* a conversion capture does not know */
+        }
+    }
+    return (int)n;
+}
+
+/* Renders a stored record back into text: the format string it was given and
+ * the arguments it captured. kernel/klog.c calls this when the log is drained
+ * or read. */
+int printk_render(const char *fmt, const uint8_t *blob, uint32_t blob_len,
+                  void (*out)(void *, char), void *ctx) {
+    argsrc_t src = { NULL, blob, 0, blob_len };
+    return vprintk_src(out, NULL, ctx, fmt, &src, false);
+}
+
+static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
+                       const char *fmt, argsrc_t *src, bool with_ts) {
     if (!fmt) return -1;
 
     if (with_ts && fmt[0] == '[' && fmt[1] != '\0') {
@@ -209,14 +342,14 @@ static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
 
         switch (*p) {
             case 'c': {
-                char c = (char)va_arg(args, int);
+                char c = (char)argsrc_char(src);
                 if (!left_pad) { for (int w = 1; w < width; w++) pc(ctx, ' '); }
                 pc(ctx, c);
                 if (left_pad)  { for (int w = 1; w < width; w++) pc(ctx, ' '); }
                 break;
             }
             case 's': {
-                const char *s = va_arg(args, const char *);
+                const char *s = argsrc_str(src);
                 if (!s) s = "(null)";
                 int len = 0;
                 while (s[len] != '\0' && (max_len < 0 || len < max_len)) len++;
@@ -227,7 +360,7 @@ static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
             }
             case 'd':
             case 'i': {
-                long val = va_arg(args, long);
+                long val = argsrc_long(src);
                 long temp = (val < 0) ? -val : val;
                 int digits = (val <= 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
@@ -246,7 +379,7 @@ static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
                 break;
             }
             case 'u': {
-                unsigned long val = va_arg(args, unsigned long);
+                unsigned long val = (unsigned long)argsrc_long(src);
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
@@ -263,7 +396,7 @@ static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
             case 'x':
             case 'X':
             case 'p': {
-                unsigned long val = va_arg(args, unsigned long);
+                unsigned long val = (unsigned long)argsrc_long(src);
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 16; }
@@ -334,6 +467,21 @@ int printk(const char *fmt, ...) {
         ms = (uint32_t)time_get_ms();
     }
 
+    /* Capture first, format second (Y5f).
+     *
+     * The blob is what gets stored; the formatted text is what gets measured,
+     * because the ring's coordinate space is in *rendered* bytes and a reader
+     * asks for byte ranges. Two passes over the arguments, where there used
+     * to be one -- the second is a walk of the format string and a handful of
+     * memcpys, against a storage saving of roughly three to one. If capture
+     * refuses (an argument that does not fit, or a conversion it does not
+     * know), the text is stored instead and nothing else changes. */
+    uint8_t  blob[KLOG_BLOB_MAX];
+    va_list  cap_args;
+    va_start(cap_args, fmt);
+    int blob_len = fmt ? fmt_capture(fmt, cap_args, blob, sizeof(blob)) : -1;
+    va_end(cap_args);
+
     va_list args;
     va_start(args, fmt);
     /* No lock at all (Y5c, plan/phase31_concurrency_hierarchy.md).
@@ -364,7 +512,11 @@ int printk(const char *fmt, ...) {
         klog_truncated();
     }
 
-    klog_emit(ms, buf, d.len);
+    if (blob_len >= 0 && !d.overflowed) {
+        klog_emit_tok(ms, fmt, blob, (uint32_t)blob_len, d.len, buf);
+    } else {
+        klog_emit(ms, buf, d.len);
+    }
     va_end(args);
     return ret;
 }

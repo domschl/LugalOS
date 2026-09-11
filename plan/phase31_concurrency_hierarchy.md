@@ -1228,6 +1228,49 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   unchanged character for character, and a format/argument mismatch is a
   compile error rather than a corrupt record.
 
+  **Y5f done — 2026-09-11. The measured figure is 2.4x, not 6x, and the
+  model's error is worth more than the number.** rv32's boot renders to 2542
+  bytes and now stores 1068 in 51 records. §5.9 predicted ~445 by counting a
+  2-byte id and nothing else per record; the real record carries a 6-byte
+  header, a 2-byte rendered length and a 4-byte format-string *pointer*, which
+  is 12 bytes before a single argument -- and every numeric argument occupies
+  a whole `long` regardless of magnitude. 89% of the log being literal text
+  was right; what it saves is bounded by what the framing costs.
+
+  2.4x is still the ring holding **512 records where it held 104**, which is
+  the number that matters: the burst check in `lockselftest` had to be
+  resized, because 400 records no longer overflow 8 KB. A test failing
+  because the thing it tests got better is a good failure.
+
+  **How it works.** A format string's address is its identity -- immortal
+  `.rodata`, unique, and needing no enum anyone maintains. `printk()` captures
+  the arguments into a 64-byte blob and stores `{render_len, fmt, blob}`;
+  `printk_render()` replays them through the same engine when the log is
+  drained or read. The engine gained an `argsrc_t` -- a live `va_list` or a
+  captured blob -- so there is one formatter, not two, which matters because
+  the half that would have been duplicated is width/padding/precision.
+  Capture and render share `fmt_scan()` for the same reason: two parsers that
+  disagreed about where an argument begins would corrupt every argument after
+  it. `%s` is copied inline, because those are usually stack buffers that are
+  gone by the time the log is read.
+
+  It refuses rather than truncates: a blob that does not fit, or a conversion
+  capture does not recognise, stores rendered text exactly as before.
+
+  **The prerequisite went differently than planned.** `format(printf, ...)` on
+  the printk family produced **0 warnings on rv64 and 107-170 on every 32-bit
+  target**, all one class -- `%u` passed a `uint32_t`, which this toolchain
+  types as `unsigned long` on rv32. Those are correct at run time and wrong
+  only by the letter of the standard, so fixing them is ~170 mechanical casts
+  that buy nothing. The attribute is therefore enabled on 64-bit targets only,
+  which is where it can tell the difference: the bugs worth catching are width
+  mismatches (`%d` handed an int64), those warn on rv64, and every target
+  compiles the same sources -- so a format bug anywhere is caught by the rv64
+  build. Zero churn, real checking, and the zero-warning policy intact.
+
+  Verified: ten presets clean, QEMU 363/363, `lockselftest` 16/16,
+  `/proc/kmsg` renders character for character.
+
 #### 5.8 Done, for Y5 as a whole
 
 The kernel log is deadlock-free by construction rather than by checking:

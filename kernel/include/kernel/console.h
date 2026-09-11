@@ -2,6 +2,7 @@
 #define LUGALOS_KERNEL_CONSOLE_H
 
 #include <stdint.h>
+#include "kernel/printk.h"
 #include <stdbool.h>
 
 /* The console stream (B4, plan/phase5_distributed_design.md §5.4).
@@ -104,7 +105,7 @@ void console_emit(console_putc_fn out, char c);
 
 /* Formatted user-facing output. Same format engine as printk(); the
  * difference is only which stream it lands on. */
-int cprintf(const char *fmt, ...);
+int cprintf(const char *fmt, ...) LUGALOS_PRINTF(1, 2);
 
 /* --- The console as a server (B4) ---
  *

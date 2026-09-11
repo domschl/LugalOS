@@ -36,13 +36,16 @@ static uint64_t g_render_oldest;   /* rendered position of that same record */
 static uint32_t g_truncations;
 static uint32_t g_drops;
 
-#define KLOG_HDR_LEN 6u
+#define KLOG_HDR_LEN KLOG_REC_MIN
 
 /* Bit 15 of the stored length word: this record's text already went to the
  * console, live, from printk_critical(). KLOG_REC_MAX is 320, so the top bits
  * of a 16-bit length are free and no separate flag byte is needed. */
 #define KLOG_F_ON_CONSOLE 0x8000u
-#define KLOG_LEN_MASK     0x7FFFu
+/* Y5f: the payload is {uint16 render_len}{const char *fmt}{arg blob} rather
+ * than rendered text. Rendered only when the log is drained or read. */
+#define KLOG_F_TOKENISED  0x4000u
+#define KLOG_LEN_MASK     0x3FFFu
 
 typedef struct {
     const char   *name;
@@ -142,6 +145,34 @@ static void rec_header(uint64_t pos, uint32_t *ms_out, uint32_t *len_out) {
 
 static inline uint32_t rec_len_of(uint32_t raw)  { return raw & KLOG_LEN_MASK; }
 static inline bool     rec_on_console(uint32_t raw) { return (raw & KLOG_F_ON_CONSOLE) != 0; }
+static inline bool     rec_tokenised(uint32_t raw)  { return (raw & KLOG_F_TOKENISED) != 0; }
+
+/* A tokenised payload's three parts, read out of the ring a byte at a time
+ * because a record straddles the wrap. */
+#define TOK_HDR (2u + sizeof(const char *))
+
+static uint32_t tok_render_len(uint64_t payload_pos) {
+    return (uint32_t)(uint8_t)ring_at(payload_pos)
+         | ((uint32_t)(uint8_t)ring_at(payload_pos + 1) << 8);
+}
+
+static const char *tok_fmt(uint64_t payload_pos) {
+    uintptr_t v = 0;
+    for (unsigned i = 0; i < sizeof(const char *); i++) {
+        v |= (uintptr_t)(uint8_t)ring_at(payload_pos + 2 + i) << (8 * i);
+    }
+    return (const char *)v;
+}
+
+/* Same, for a record whose header has already been read: a tokenised payload
+ * renders to the length it recorded, not to its stored size. */
+static uint32_t rec_render_len_at(uint32_t ms, uint32_t raw, uint64_t payload_pos) {
+    char scratch[16];
+    uint32_t body = rec_tokenised(raw) ? tok_render_len(payload_pos)
+                                       : rec_len_of(raw);
+    return ts_render(ms, scratch) + body;
+}
+
 
 /* Evicts whole records from the back until `need` stored bytes are free.
  * Called with g_klog_lock held.
@@ -154,15 +185,17 @@ static void ring_make_room(uint32_t need) {
     while ((g_stored_total + need) - g_stored_oldest > KLOG_RING_SIZE) {
         uint32_t ms, len;
         rec_header(g_stored_oldest, &ms, &len);
+        g_render_oldest += rec_render_len_at(ms, len, g_stored_oldest + KLOG_HDR_LEN);
         g_stored_oldest += KLOG_HDR_LEN + rec_len_of(len);
-        g_render_oldest += rec_render_len(ms, rec_len_of(len));
     }
 }
 
 /* The ring half: append one record, under the lock, and nothing else.
  * Returns false if the message could not be stored at all. */
-static bool ring_append(uint32_t ms, const char *text, uint32_t len, bool on_console) {
-    uint32_t stored_len = len | (on_console ? KLOG_F_ON_CONSOLE : 0u);
+static bool ring_append(uint32_t ms, const char *text, uint32_t len,
+                        bool on_console, bool tokenised, uint32_t render_len) {
+    uint32_t stored_len = len | (on_console ? KLOG_F_ON_CONSOLE : 0u)
+                              | (tokenised  ? KLOG_F_TOKENISED  : 0u);
     if (KLOG_HDR_LEN + len > KLOG_RING_SIZE) {
         g_drops++;
         return false;
@@ -183,7 +216,7 @@ static bool ring_append(uint32_t ms, const char *text, uint32_t len, bool on_con
     }
 
     g_stored_total = pos;
-    g_render_total += rec_render_len(ms, len);
+    g_render_total += rec_render_len(ms, render_len);
     spin_unlock_irqrestore(&g_klog_lock, flags);
     return true;
 }
@@ -192,7 +225,7 @@ void klog_record_text(uint32_t ms, const char *text, uint32_t len,
                       bool already_on_console) {
     if (!text) return;
     if (len > KLOG_REC_MAX) { len = KLOG_REC_MAX; g_truncations++; }
-    (void)ring_append(ms, text, len, already_on_console);
+    (void)ring_append(ms, text, len, already_on_console, false, len);
 }
 
 /* --- The consumer (Y5c) -------------------------------------------------- */
@@ -234,6 +267,39 @@ static void sinks_write(const char *s, uint32_t len) {
     }
 }
 
+/* Renders one record's body into `out`, whatever shape it is stored in: a
+ * tokenised record is replayed through printk_render(), a text one is copied.
+ * Returns the bytes produced, clamped to `cap`. */
+typedef struct { char *buf; uint32_t cap; uint32_t len; } render_sink_t;
+
+static void render_put(void *ctx, char c) {
+    render_sink_t *d = (render_sink_t *)ctx;
+    if (d->len < d->cap) d->buf[d->len++] = c;
+}
+
+static uint32_t rec_body_render(uint64_t payload_pos, uint32_t raw,
+                                char *out, uint32_t cap) {
+    uint32_t stored = rec_len_of(raw);
+    if (!rec_tokenised(raw)) {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < stored && n < cap; i++) out[n++] = ring_at(payload_pos + i);
+        return n;
+    }
+
+    /* The blob may straddle the ring's wrap, and printk_render() needs it
+     * contiguous, so copy it out first. Bounded by KLOG_BLOB_MAX. */
+    uint8_t blob[KLOG_BLOB_MAX];
+    uint32_t blob_len = (stored > TOK_HDR) ? (stored - (uint32_t)TOK_HDR) : 0u;
+    if (blob_len > KLOG_BLOB_MAX) blob_len = KLOG_BLOB_MAX;
+    for (uint32_t i = 0; i < blob_len; i++) {
+        blob[i] = (uint8_t)ring_at(payload_pos + TOK_HDR + i);
+    }
+
+    render_sink_t d = { out, cap, 0 };
+    (void)printk_render(tok_fmt(payload_pos), blob, blob_len, render_put, &d);
+    return d.len;
+}
+
 static uint32_t klog_read_locked(uint64_t abs_offset, char *buf, uint32_t count);
 
 /* Renders the next *record* for the consumer and advances past it, both under
@@ -271,20 +337,26 @@ static uint32_t klog_take(char *buf, uint32_t cap) {
         char ts[16];
         uint32_t ts_len = ts_render(ms, ts);
 
+        /* The rendered length is what the cursor advances by, and for a
+         * tokenised record that is recorded in its payload rather than being
+         * its stored size -- computed once here so both exits agree. */
+        uint32_t body_len = rec_tokenised(raw) ? tok_render_len(g_cursor_spos + KLOG_HDR_LEN)
+                                               : len;
+
         if (rec_on_console(raw)) {
             /* Already on the wire, live, from the fault path. Step over it. */
             g_cursor_spos += KLOG_HDR_LEN + len;
-            g_cursor      += ts_len + len;
+            g_cursor      += ts_len + body_len;
             continue;
         }
 
         uint32_t n = 0;
         for (uint32_t i = 0; i < ts_len && n < cap; i++) buf[n++] = ts[i];
-        for (uint32_t i = 0; i < len    && n < cap; i++) {
-            buf[n++] = ring_at(g_cursor_spos + KLOG_HDR_LEN + i);
-        }
+        uint32_t body = rec_body_render(g_cursor_spos + KLOG_HDR_LEN, raw,
+                                        buf + n, (n < cap) ? (cap - n) : 0u);
+        n += body;
         g_cursor_spos += KLOG_HDR_LEN + len;
-        g_cursor      += ts_len + len;
+        g_cursor      += ts_len + body_len;
         spin_unlock_irqrestore(&g_klog_lock, flags);
         return n;
     }
@@ -359,10 +431,57 @@ void klog_drain(void) {
     console_flush();
 }
 
+void klog_emit_tok(uint32_t ms, const char *fmt,
+                   const uint8_t *blob, uint32_t blob_len,
+                   uint32_t render_len, const char *rendered) {
+    if (!fmt || !rendered) return;
+
+    /* Assemble the payload on the stack, then hand it to the same appender
+     * the text path uses -- {uint16 render_len}{const char *fmt}{blob}. */
+    uint8_t payload[TOK_HDR + KLOG_BLOB_MAX];
+    if (blob_len > KLOG_BLOB_MAX || render_len > KLOG_LEN_MASK) {
+        klog_emit(ms, rendered, render_len);   /* too big to tokenise */
+        return;
+    }
+    payload[0] = (uint8_t)(render_len & 0xFFu);
+    payload[1] = (uint8_t)((render_len >> 8) & 0xFFu);
+    uintptr_t f = (uintptr_t)fmt;
+    for (unsigned i = 0; i < sizeof(const char *); i++) {
+        payload[2 + i] = (uint8_t)((f >> (8 * i)) & 0xFFu);
+    }
+    for (uint32_t i = 0; i < blob_len; i++) payload[TOK_HDR + i] = blob[i];
+
+    (void)ring_append(ms, (const char *)payload, TOK_HDR + blob_len,
+                      false, true, render_len);
+
+    if (consumer_live()) {
+        if (lock_spin_held() == NULL) (void)task_unblock(g_consumer_pid);
+        return;
+    }
+
+    /* No consumer yet: the text was rendered by the caller anyway, so the
+     * inline fan-out writes that rather than rendering the record again. */
+    unsigned h = hart_id();
+    if (g_in_fanout[h]) return;
+    g_in_fanout[h] = true;
+
+    console_lock();
+    char ts[16];
+    uint32_t ts_len = ts_render(ms, ts);
+    sinks_write(ts, ts_len);
+    sinks_write(rendered, render_len);
+    g_cursor      = g_render_total;
+    g_cursor_spos = g_stored_total;
+    console_unlock();
+    console_flush();
+
+    g_in_fanout[h] = false;
+}
+
 void klog_emit(uint32_t ms, const char *text, uint32_t len) {
     if (!text) return;
     if (len > KLOG_REC_MAX) { len = KLOG_REC_MAX; g_truncations++; }
-    (void)ring_append(ms, text, len, false);
+    (void)ring_append(ms, text, len, false, false, len);
 
     if (consumer_live()) {
         /* The producer's whole remaining job: a non-blocking signal.
@@ -549,24 +668,33 @@ static uint32_t klog_read_locked(uint64_t abs_offset, char *buf, uint32_t count)
     while (spos < g_stored_total && written < count) {
         uint32_t ms, raw;
         rec_header(spos, &ms, &raw);
-        uint32_t len = rec_len_of(raw);
+        uint32_t stored = rec_len_of(raw);
 
         char ts[16];
         uint32_t ts_len = ts_render(ms, ts);
-        uint64_t rec_len = ts_len + len;
+        uint32_t body_len = rec_tokenised(raw) ? tok_render_len(spos + KLOG_HDR_LEN)
+                                               : stored;
+        uint64_t rec_len = ts_len + body_len;
 
         if (rpos + rec_len <= abs_offset) {      /* entirely before the window */
-            spos += KLOG_HDR_LEN + len;
+            spos += KLOG_HDR_LEN + stored;
             rpos += rec_len;
             continue;
         }
 
+        /* Rendered once into a scratch line rather than byte by byte out of
+         * the ring: a tokenised record has no bytes in the ring to copy --
+         * they are produced by replaying its format string (Y5f). */
+        char body[KLOG_REC_MAX];
+        uint32_t have = rec_body_render(spos + KLOG_HDR_LEN, raw, body, sizeof(body));
+
         for (uint64_t i = 0; i < rec_len && written < count; i++) {
             if (rpos + i < abs_offset) continue;  /* partial record at the front */
-            buf[written++] = (i < ts_len) ? ts[i]
-                                          : ring_at(spos + KLOG_HDR_LEN + (i - ts_len));
+            if (i < ts_len)                 buf[written++] = ts[i];
+            else if ((i - ts_len) < have)   buf[written++] = body[i - ts_len];
+            else                            buf[written++] = ' ';
         }
-        spos += KLOG_HDR_LEN + len;
+        spos += KLOG_HDR_LEN + stored;
         rpos += rec_len;
     }
 

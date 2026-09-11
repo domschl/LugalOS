@@ -871,10 +871,19 @@ int lock_selftest(void) {
         static spinlock_t burst;
         spinlock_init(&burst);
 
+        /* Sized from the ring, not from a number that happened to work.
+         *
+         * It was a flat 400, which overflowed an 8 KB ring while a record
+         * cost ~51 bytes. Y5f made records ~2.4x denser and 400 stopped
+         * being enough -- the test failed because the thing it tests got
+         * better. KLOG_HDR_LEN is the floor on a record's size, so this many
+         * cannot fit however small records become. */
+        const int burst_n = (int)(KLOG_RING_SIZE / KLOG_REC_MIN) + 100;
+
         uint32_t gaps_before = klog_gaps();
         uintptr_t bf = spin_lock_irqsave(&burst);
-        for (int i = 0; i < 400; i++) {
-            printk("[KlogBurst] record %d of 400, filling the ring with no consumer running\n", i);
+        for (int i = 0; i < burst_n; i++) {
+            printk("[KlogBurst] record %d, filling the ring with no consumer running\n", i);
         }
         spin_unlock_irqrestore(&burst, bf);
 

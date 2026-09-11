@@ -623,3 +623,39 @@ changes two drivers on a board that was not attached at the time, and
 from the graph; these two are the opposite problem — blocking resources that
 were never in it. If anything Y5 raises their relative weight, since after it
 they are the only blocking resources in the tree that contribute no edge.)*
+
+
+---
+
+## An intermittent suite failure, ~1 run in 5, since logging went asynchronous
+
+**Trigger:** run `tests/runner.py` repeatedly. Roughly one run in five fails a
+single test, and it is a *different* test each time -- `Network Autoconfig`,
+`Identity Toolset`, `MQTT Subscribe` have all been seen. The failure shape is
+always the same: the command's output is *truncated* in the captured log, so
+the test's expect times out with the first lines present and the rest missing.
+
+**Measured** 2026-09-11 across five consecutive runs after Y5f: 362, 363, 363,
+363, 363.
+
+**Why it is parked rather than fixed:** it is not specific to any one
+milestone. It appeared during Y5c/Y5d as the async console ordering was being
+worked out, got much rarer when the drain moved inside `console_lock()`
+(Y5d) -- which removed the window where a writer could interpose between a
+drain and a write -- and did not go away entirely. A *different single test
+each run* is the signature of a race in something shared, and the shared thing
+here is the console.
+
+**Where to look first:** the remaining asymmetry is that `printk()` is
+asynchronous while `cprintf()` is synchronous, and they meet at two sync
+points (`cprintf()` and the prompt). A log line produced between them can
+still land inside a command's output, and a test reading that output sees its
+expected text split. Candidates: a drain that starts after the test's command
+has begun printing; the per-hart TX batch flushing at a different moment than
+the drain; or klogd's 50 ms idle wake landing mid-command.
+
+**What would settle it:** capture a failing run's raw console bytes (the
+runner keeps them) and compare the interleaving against the ring's own order
+via `/proc/kmsg`, which is authoritative. If the ring order is right and the
+console order is not, it is a sync-point gap; if the ring order is wrong, it
+is something else entirely.
