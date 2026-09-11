@@ -76,6 +76,16 @@ uint32_t i2c_task_call_count(void);
  *
  * Bounded at 16 bytes written and 64 read, which is the shape a register map
  * needs -- a bulk device wants its own op, not a bigger one of these. */
+/* The bounds i2c_xfer() enforces, public because its callers size buffers
+ * against them. Sized by the largest single transaction any device on this
+ * bus performs, which is an AT24C32 page write: two address bytes plus a
+ * 32-byte page. The write bound was 16 while the EEPROM had its own opcode
+ * carrying up to 128 bytes; with every device a plain i2c_xfer() client
+ * (plan/phase30_driver_framework.md category E) this is the bound that
+ * matters, and the endpoint's buffers get smaller rather than larger. */
+#define I2C_XFER_WMAX 40u
+#define I2C_XFER_RMAX 64u
+
 bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
               uint8_t *r, uint32_t rlen);
 

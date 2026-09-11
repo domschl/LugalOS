@@ -848,10 +848,6 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
     return true;
 }
 
-static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
-    return i2c_xfer_raw(addr, &reg, 1, dst, len);
-}
-
 /* Address-only transaction: a START, the address byte with ACK checking on,
  * and a STOP. Nothing is read, so the only thing that distinguishes a present
  * device from an absent one is whether the address was acknowledged -- which
@@ -868,12 +864,6 @@ static bool i2c_probe_addr(uint8_t addr) {
 #else
 static void i2c_hw_init(void) {}
 static bool i2c_probe_addr(uint8_t addr) { (void)addr; return false; }
-static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
-    (void)addr; (void)src; (void)len; return false;
-}
-static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
-    (void)addr; (void)reg; (void)dst; (void)len; return false;
-}
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen) {
     (void)addr; (void)w; (void)wlen; (void)r; (void)rlen; return false;
@@ -893,6 +883,8 @@ static inline uint8_t dec2bcd(uint8_t val) {
  * i2c_task_body() (below) may call these -- every other caller goes through
  * the public i2c_rtc_read_time()/write_time()/read_temperature_c() facades,
  * which route via the shared "i2c" task when it is alive. */
+static bool rtc_rd(uint8_t reg, uint8_t *dst, uint32_t len);
+static bool rtc_wr(const uint8_t *buf, uint32_t len);
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm);
 static bool i2c_rtc_hw_write_time(const rtc_time_t *tm);
 static bool i2c_rtc_hw_read_temperature_c(int *temp_c);
@@ -948,8 +940,8 @@ static bool g_is_ds3231;
 static void i2c_rtc_identify_part(void) {
     g_is_ds3231 = false;
     uint8_t st, temp[2];
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return;
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_TEMP, temp, 2)) return;
+    if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return;
+    if (!rtc_rd(DS3231_REG_TEMP, temp, 2)) return;
     if (st & 0x70) return;          /* reserved in the DS3231's status */
     if (temp[1] & 0x3F) return;     /* only bits 7:6 of the fraction exist */
     g_is_ds3231 = true;
@@ -1052,10 +1044,31 @@ bool i2c_rtc_is_detected(void) {
 
 
 
+/* --- The DS3231/DS1307 as an ordinary bus client (phase 30 category E) ---
+ *
+ * Every register access below goes through i2c_xfer(), exactly as
+ * drivers/bme280.c's does. That is the whole of what "the RTC is a device on
+ * the bus" means, and it is what lets the bus's own dispatcher stop knowing
+ * what a DS3231 is.
+ *
+ * These used to call i2c_read_bytes()/i2c_write_bytes() -- the bus's *direct
+ * hardware* helpers -- which meant the RTC reached the controller behind the
+ * i2c task's back whenever it was not itself running inside that task, and
+ * needed a second, U-mode implementation of its whole register map to work
+ * when it was. i2c_xfer() routes to the task when one is alive and goes
+ * direct before it exists, so one implementation covers both. */
+static bool rtc_rd(uint8_t reg, uint8_t *dst, uint32_t len) {
+    return i2c_xfer(DS1307_DS3231_I2C_ADDR, &reg, 1u, dst, len);
+}
+
+static bool rtc_wr(const uint8_t *buf, uint32_t len) {
+    return i2c_xfer(DS1307_DS3231_I2C_ADDR, buf, len, NULL, 0u);
+}
+
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
     if (!tm) return false;
     uint8_t buf[7];
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x00, buf, 7)) {
+    if (!rtc_rd(0x00, buf, 7)) {
         return false;
     }
 
@@ -1101,7 +1114,7 @@ static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
     reg_buf[7] = dec2bcd((uint8_t)(tm->year >= 2000 ? (tm->year - 2000) : tm->year));
 
     if (!g_rtc_detected) return false;
-    if (!i2c_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8)) return false;
+    if (!rtc_wr(reg_buf, 8)) return false;
 
     /* Clear OSF now that the registers hold a real time again.
      *
@@ -1114,11 +1127,11 @@ static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
      * and the time is still set, which is the outcome that matters. */
     uint8_t st;
     if (g_is_ds3231 &&
-        i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1) &&
+        rtc_rd(DS3231_REG_STATUS, &st, 1) &&
         (st & DS3231_STATUS_OSF)) {
         uint8_t clear_buf[2] = { DS3231_REG_STATUS,
                                  (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
-        i2c_write_bytes(DS1307_DS3231_I2C_ADDR, clear_buf, 2);
+        rtc_wr(clear_buf, 2);
     }
     return true;
 }
@@ -1130,7 +1143,7 @@ static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {
     if (!g_is_ds3231) return false;
 
     uint8_t buf[2];
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, 0x11, buf, 2)) {
+    if (!rtc_rd(0x11, buf, 2)) {
         return false;
     }
 
@@ -1199,15 +1212,9 @@ void i2c_scan_bus(void) {
  * drivers/at24c32.c's at24c32_read()/at24c32_write() loop internally in
  * chunks this size for anything larger, so this is invisible to every
  * existing caller. */
-#define I2C_OP_RTC_READ_TIME  ((uint8_t)'T')
-#define I2C_OP_RTC_WRITE_TIME ((uint8_t)'S')
-#define I2C_OP_RTC_READ_TEMP  ((uint8_t)'C')
 /* The DS3231's status register, for OSF. Its own op rather than a field
  * bolted onto the time read: the face reads the time once a second and only
  * consults the flag when deciding whether to trust it. */
-#define I2C_OP_RTC_STATUS     ((uint8_t)'O')
-#define I2C_OP_EE_READ        ((uint8_t)'R')
-#define I2C_OP_EE_WRITE       ((uint8_t)'X')
 /* Q4: the generic transfer -- write then read, for any address on this bus.
  * The last device-specific opcode this task should need: a new part
  * (drivers/bme280.c is the first) is M-mode code that builds requests, not
@@ -1217,11 +1224,15 @@ void i2c_scan_bus(void) {
  *   response: ok, r[rlen]
  */
 #define I2C_OP_XFER           ((uint8_t)'F')
-#define I2C_XFER_WMAX 16u
-#define I2C_XFER_RMAX 64u
 
-#define I2C_REQ_CAP  (5u + AT24C32_CHUNK_MAX)
-#define I2C_RESP_CAP (4u + AT24C32_CHUNK_MAX)
+
+/* Sized by the only operation there is. They used to be sized by the EEPROM's
+ * dedicated opcode (5 + 128 bytes), which is where most of the U-mode task's
+ * 512-byte stack went: a request and a response buffer, both local to its
+ * serve loop. One generic op sized to a page write costs less than half
+ * that. */
+#define I2C_REQ_CAP  (4u + I2C_XFER_WMAX)
+#define I2C_RESP_CAP (1u + I2C_XFER_RMAX)
 
 static uint8_t         g_i2c_req[I2C_REQ_CAP];
 static uint8_t         g_i2c_resp[I2C_RESP_CAP];
@@ -1272,28 +1283,6 @@ bool i2c_task_alive(void) {
  * other direction: a wire format is a format, not a struct.
  */
 #define RTC_WIRE_LEN 9u
-
-static void rtc_to_wire(const rtc_time_t *tm, uint8_t *w) {
-    w[0] = (uint8_t)(tm->year >> 8);
-    w[1] = (uint8_t)tm->year;
-    w[2] = tm->month;
-    w[3] = tm->day;
-    w[4] = tm->hour;
-    w[5] = tm->min;
-    w[6] = tm->sec;
-    w[7] = (uint8_t)(tm->ms >> 8);
-    w[8] = (uint8_t)tm->ms;
-}
-
-static void rtc_from_wire(const uint8_t *w, rtc_time_t *tm) {
-    tm->year  = (uint16_t)(((uint16_t)w[0] << 8) | w[1]);
-    tm->month = w[2];
-    tm->day   = w[3];
-    tm->hour  = w[4];
-    tm->min   = w[5];
-    tm->sec   = w[6];
-    tm->ms    = (uint16_t)(((uint16_t)w[7] << 8) | w[8]);
-}
 
 /* Only RP2350 has real I2C hardware to isolate -- the #else branch below
  * (QEMU rv64/rv32) keeps the plain kernel-mode server every M4.5 driver
@@ -1453,37 +1442,6 @@ I2C_UATTR static bool i2c_usys_read_reg(uint8_t addr, const uint8_t *reg, int re
     return true;
 }
 
-/* EEPROM writes cross AT24C32_PAGE_SIZE (32-byte) boundaries in separate
- * transactions with a real ~10ms page-write cycle between them -- the
- * same chunking drivers/at24c32.c's at24c32_hw_write() already does, via
- * SYS_DELAY_US instead of time_delay_us() (which touches hardware no
- * U-mode domain has ever needed to be granted, and, on this build,
- * services usb_cdc_task() inline inside its own busy loop -- see
- * arch/riscv/common/trap.c's own SYS_DELAY_US comment). AT24C32_CHUNK_MAX
- * (drivers/at24c32.h) already bounds len to well under one stack frame's
- * worth of scratch space. */
-I2C_UATTR static int i2c_usys_ee_write(uint16_t addr, const uint8_t *buf, int len) {
-    int written = 0;
-    while (written < len) {
-        uint16_t curr_addr = (uint16_t)(addr + written);
-        int page_offset = curr_addr % AT24C32_PAGE_SIZE;
-        int chunk = AT24C32_PAGE_SIZE - page_offset;
-        if (chunk > (len - written)) chunk = len - written;
-
-        uint8_t wbuf[2 + AT24C32_PAGE_SIZE];
-        wbuf[0] = (uint8_t)(curr_addr >> 8);
-        wbuf[1] = (uint8_t)curr_addr;
-        for (int i = 0; i < chunk; i++) wbuf[2 + i] = buf[written + i];
-
-        if (!i2c_usys_write_bytes(AT24C32_I2C_ADDR, wbuf, 2 + chunk)) {
-            return written > 0 ? written : -1;
-        }
-        written += chunk;
-        i2c_usys_delay_us(10000);
-    }
-    return written;
-}
-
 I2C_UATTR static void i2c_umode_body(void) {
     /* Not a string literal: a literal lands in ordinary .rodata, outside
      * every region this task's domain grants -- the bug that hung the
@@ -1507,128 +1465,6 @@ I2C_UATTR static void i2c_umode_body(void) {
         uint8_t resp[I2C_RESP_CAP];
         uint32_t resp_len = 0;
         switch (op) {
-        case I2C_OP_RTC_READ_TIME: {
-            uint8_t buf[7];
-            uint8_t reg = 0x00;
-            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &reg, 1, buf, 7);
-            resp[0] = ok ? 1 : 0;
-            if (ok) {
-                /* Same field layout rtc_time_t's own decode uses
-                 * (i2c_rtc_hw_read_time() above) -- written out field by
-                 * field into the wire buffer rather than building a
-                 * local rtc_time_t and copying it, so there is no
-                 * struct-sized copy for the compiler to consider
-                 * lowering into a call outside .utext. */
-                uint8_t sec  = i2c_usys_bcd2dec(buf[0] & 0x7F);
-                uint8_t min  = i2c_usys_bcd2dec(buf[1] & 0x7F);
-                uint8_t hour = i2c_usys_bcd2dec(buf[2] & 0x3F);
-                uint8_t day   = i2c_usys_bcd2dec(buf[4] & 0x3F);
-                uint8_t month = i2c_usys_bcd2dec(buf[5] & 0x1F);
-                uint16_t year = (uint16_t)(2000 + i2c_usys_bcd2dec(buf[6]));
-                i2c_usys_put_u16(&resp[1], year);
-                resp[3] = month; resp[4] = day; resp[5] = hour;
-                resp[6] = min; resp[7] = sec;
-                resp[8] = 0; resp[9] = 0; /* ms: always 0, see i2c_rtc_hw_read_time() */
-                resp_len = 10;
-            } else {
-                resp_len = 1;
-            }
-            break;
-        }
-        case I2C_OP_RTC_WRITE_TIME: {
-            bool ok = false;
-            if (req_len >= 10) {
-                uint16_t year = i2c_usys_get_u16(&req[1]);
-                uint8_t reg_buf[8];
-                reg_buf[0] = 0x00;
-                reg_buf[1] = i2c_usys_dec2bcd(req[7]); /* sec */
-                reg_buf[2] = i2c_usys_dec2bcd(req[6]); /* min */
-                reg_buf[3] = i2c_usys_dec2bcd(req[5]); /* hour */
-                reg_buf[4] = 1; /* day of week default */
-                reg_buf[5] = i2c_usys_dec2bcd(req[4]); /* day */
-                reg_buf[6] = i2c_usys_dec2bcd(req[3]); /* month */
-                reg_buf[7] = i2c_usys_dec2bcd((uint8_t)(year >= 2000 ? (year - 2000) : year));
-                ok = i2c_usys_write_bytes(DS1307_DS3231_I2C_ADDR, reg_buf, 8);
-
-                /* Clear OSF, exactly as i2c_rtc_hw_write_time() does on the
-                 * kernel-mode path. This handler writes the time registers
-                 * itself rather than calling that function, so the clear had
-                 * to be duplicated -- and was not, which meant that on every
-                 * persona whose I2C driver runs U-mode (all the RP2350 ones)
-                 * the flag was never cleared by anything. The panel's warning
-                 * lamp therefore stayed lit for the life of the board, and no
-                 * amount of setting the clock put it out.
-                 *
-                 * Only when the caller says this is a DS3231: on a DS1307
-                 * 0x0F is user NVRAM. The facade knows which part is present
-                 * and says so in the request, because this task cannot read
-                 * the driver's globals from inside its own domain. */
-                if (ok && req_len >= (long)(1 + RTC_WIRE_LEN + 1) && req[1 + RTC_WIRE_LEN]) {
-                    uint8_t st = 0, sreg = DS3231_REG_STATUS;
-                    if (i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &sreg, 1, &st, 1) &&
-                        (st & DS3231_STATUS_OSF)) {
-                        uint8_t clr[2] = { DS3231_REG_STATUS,
-                                           (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
-                        i2c_usys_write_bytes(DS1307_DS3231_I2C_ADDR, clr, 2);
-                    }
-                }
-            }
-            resp[0] = ok ? 1 : 0;
-            resp_len = 1;
-            break;
-        }
-        case I2C_OP_RTC_STATUS: {
-            uint8_t st = 0, sreg = DS3231_REG_STATUS;
-            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &sreg, 1, &st, 1);
-            resp[0] = ok ? 1 : 0;
-            resp[1] = st;
-            resp_len = 2;
-            break;
-        }
-        case I2C_OP_RTC_READ_TEMP: {
-            uint8_t buf[2];
-            uint8_t reg = 0x11;
-            bool ok = i2c_usys_read_reg(DS1307_DS3231_I2C_ADDR, &reg, 1, buf, 2);
-            resp[0] = ok ? 1 : 0;
-            if (ok) {
-                int temp_x4 = (int)(int8_t)buf[0] * 4 + (buf[1] >> 6);
-                int temp_c = (temp_x4 >= 0) ? (temp_x4 + 2) / 4 : (temp_x4 - 2) / 4;
-                i2c_usys_put_i32(&resp[1], (int32_t)temp_c);
-                resp_len = 5;
-            } else {
-                resp_len = 1;
-            }
-            break;
-        }
-        case I2C_OP_EE_READ: {
-            int32_t result = -1;
-            if (req_len >= 5) {
-                uint16_t addr = i2c_usys_get_u16(&req[1]);
-                uint16_t len  = i2c_usys_get_u16(&req[3]);
-                if (len <= AT24C32_CHUNK_MAX) {
-                    uint8_t reg[2] = { (uint8_t)(addr >> 8), (uint8_t)addr };
-                    if (i2c_usys_read_reg(AT24C32_I2C_ADDR, reg, 2, &resp[4], len)) {
-                        result = (int32_t)len;
-                    }
-                }
-            }
-            i2c_usys_put_i32(&resp[0], result);
-            resp_len = (result > 0) ? 4u + (uint32_t)result : 4u;
-            break;
-        }
-        case I2C_OP_EE_WRITE: {
-            int32_t result = -1;
-            if (req_len >= 5) {
-                uint16_t addr = i2c_usys_get_u16(&req[1]);
-                uint16_t len  = i2c_usys_get_u16(&req[3]);
-                if (len <= AT24C32_CHUNK_MAX && (uint32_t)req_len >= 5u + (uint32_t)len) {
-                    result = (int32_t)i2c_usys_ee_write(addr, &req[5], (int)len);
-                }
-            }
-            i2c_usys_put_i32(&resp[0], result);
-            resp_len = 4;
-            break;
-        }
         case I2C_OP_XFER: {
             /* i2c_usys_read_reg() already takes a write length, so the
              * generic op maps straight onto it with nothing new in U-mode. */
@@ -1721,44 +1557,6 @@ static void i2c_task_body(void *arg) {
 
         uint8_t op = g_i2c_req[0];
         switch (op) {
-        case I2C_OP_RTC_READ_TIME: {
-            rtc_time_t tm;
-            bool ok = i2c_rtc_hw_read_time(&tm);
-            g_i2c_resp[0] = ok ? 1 : 0;
-            if (ok) rtc_to_wire(&tm, &g_i2c_resp[1]);
-            chan_serve_reply(g_i2c_ep, ok ? 1u + RTC_WIRE_LEN : 1u);
-            break;
-        }
-        case I2C_OP_RTC_WRITE_TIME: {
-            bool ok = false;
-            if (req_len >= 1 + RTC_WIRE_LEN) {
-                rtc_time_t tm;
-                rtc_from_wire(&g_i2c_req[1], &tm);
-                ok = i2c_rtc_hw_write_time(&tm);
-            }
-            g_i2c_resp[0] = ok ? 1 : 0;
-            chan_serve_reply(g_i2c_ep, 1);
-            break;
-        }
-        case I2C_OP_RTC_STATUS: {
-            uint8_t st = 0;
-            bool ok = i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1);
-            g_i2c_resp[0] = ok ? 1 : 0;
-            g_i2c_resp[1] = st;
-            chan_serve_reply(g_i2c_ep, 2);
-            break;
-        }
-        case I2C_OP_RTC_READ_TEMP: {
-            int temp_c = 0;
-            bool ok = i2c_rtc_hw_read_temperature_c(&temp_c);
-            g_i2c_resp[0] = ok ? 1 : 0;
-            {
-                int32_t v = (int32_t)temp_c;
-                memcpy(&g_i2c_resp[1], &v, sizeof(v)); /* native byte order -- matches get_i32() */
-            }
-            chan_serve_reply(g_i2c_ep, ok ? 5u : 1u);
-            break;
-        }
         case I2C_OP_XFER: {
             bool ok = false;
             uint32_t rlen = 0;
@@ -1775,32 +1573,6 @@ static void i2c_task_body(void *arg) {
             if (!ok) rlen = 0;
             g_i2c_resp[0] = ok ? 1 : 0;
             chan_serve_reply(g_i2c_ep, 1 + rlen);
-            break;
-        }
-        case I2C_OP_EE_READ: {
-            int32_t result = -1;
-            if (req_len >= 5) {
-                uint16_t addr = ((uint16_t)g_i2c_req[1] << 8) | g_i2c_req[2];
-                uint16_t len  = ((uint16_t)g_i2c_req[3] << 8) | g_i2c_req[4];
-                if (len <= AT24C32_CHUNK_MAX) {
-                    result = (int32_t)at24c32_hw_read(addr, &g_i2c_resp[4], len);
-                }
-            }
-            memcpy(&g_i2c_resp[0], &result, sizeof(result)); /* native byte order -- matches get_i32() */
-            chan_serve_reply(g_i2c_ep, (result > 0) ? 4u + (uint32_t)result : 4u);
-            break;
-        }
-        case I2C_OP_EE_WRITE: {
-            int32_t result = -1;
-            if (req_len >= 5) {
-                uint16_t addr = ((uint16_t)g_i2c_req[1] << 8) | g_i2c_req[2];
-                uint16_t len  = ((uint16_t)g_i2c_req[3] << 8) | g_i2c_req[4];
-                if (len <= AT24C32_CHUNK_MAX && req_len >= 5u + len) {
-                    result = (int32_t)at24c32_hw_write(addr, &g_i2c_req[5], len);
-                }
-            }
-            memcpy(&g_i2c_resp[0], &result, sizeof(result)); /* native byte order -- matches get_i32() */
-            chan_serve_reply(g_i2c_ep, 4);
             break;
         }
         default:
@@ -1919,21 +1691,22 @@ bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 }
 #endif /* CONFIG_BOARD_RP2350 */
 
+/* --- The public accessors ---------------------------------------------
+ *
+ * Each is now the device helper and nothing else. They used to open with an
+ * `if (i2c_task_alive())` block marshalling a dedicated opcode -- one per
+ * operation, each with a wire format, each implemented twice in the two
+ * dispatchers -- and fall back to the direct helper when the task was not
+ * running. All of that was the *bus's* job, and i2c_xfer() already does it:
+ * routed through the task when one is alive, direct before it exists
+ * (phase 30 category E).
+ *
+ * What that deletes is the reason this file had two copies of the DS3231's
+ * register map, one of them in .utext for U-mode. The rule those comments
+ * kept restating -- only i2c_rtc_init() and the task itself may touch the
+ * bus -- is now structural: nothing here can touch it except through
+ * i2c_xfer(). */
 bool i2c_rtc_read_time(rtc_time_t *tm) {
-    if (!tm) return false;
-    if (i2c_task_alive()) {
-        uint8_t req[1] = { I2C_OP_RTC_READ_TIME };
-        uint8_t resp[1 + RTC_WIRE_LEN];
-        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1) {
-            if (resp[0] == 0) return false;
-            if ((uint32_t)n >= 1 + RTC_WIRE_LEN) {
-                rtc_from_wire(&resp[1], tm);
-                return true;
-            }
-        }
-        /* IPC failed -- fall through to direct access. */
-    }
     return i2c_rtc_hw_read_time(tm);
 }
 
@@ -1950,33 +1723,12 @@ bool i2c_rtc_lost_power(void) {
      * and the task itself may do that. Called from the clock application's
      * own task it raced the driver for the bus. A rule only some callers
      * follow is not a rule. */
-    if (i2c_task_alive()) {
-        uint8_t req[1] = { I2C_OP_RTC_STATUS };
-        uint8_t resp[2];
-        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 2) return resp[0] && (resp[1] & DS3231_STATUS_OSF);
-        /* IPC failed -- fall through, as every other accessor here does. */
-    }
     uint8_t st;
-    if (!i2c_read_bytes(DS1307_DS3231_I2C_ADDR, DS3231_REG_STATUS, &st, 1)) return false;
+    if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return false;
     return (st & DS3231_STATUS_OSF) != 0;
 }
 
 bool i2c_rtc_write_time(const rtc_time_t *tm) {
-    if (!tm) return false;
-    if (i2c_task_alive()) {
-        uint8_t req[1 + RTC_WIRE_LEN + 1];
-        req[0] = I2C_OP_RTC_WRITE_TIME;
-        rtc_to_wire(tm, &req[1]);
-        /* Whether the task may touch 0x0F to clear OSF. Decided here because
-         * the driver's globals are readable on this side and not inside the
-         * task's domain. */
-        req[1 + RTC_WIRE_LEN] = g_is_ds3231 ? 1u : 0u;
-        uint8_t resp[1];
-        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1) return resp[0] != 0;
-        /* IPC failed -- fall through to direct access. */
-    }
     return i2c_rtc_hw_write_time(tm);
 }
 
@@ -2040,20 +1792,5 @@ static bool temp_cache(bool ok, int v) {
 
 bool i2c_rtc_read_temperature_c(int *temp_c) {
     if (!temp_c) return false;
-    if (i2c_task_alive()) {
-        uint8_t req[1] = { I2C_OP_RTC_READ_TEMP };
-        uint8_t resp[5];
-        int n = i2c_task_call(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1) {
-            if (resp[0] == 0) return false;
-            if ((uint32_t)n >= 5) {
-                int32_t v;
-                memcpy(&v, &resp[1], sizeof(v));
-                *temp_c = (int)v;
-                return temp_cache(true, *temp_c);
-            }
-        }
-        /* IPC failed -- fall through to direct access. */
-    }
     return temp_cache(i2c_rtc_hw_read_temperature_c(temp_c), *temp_c);
 }

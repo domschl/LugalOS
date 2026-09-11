@@ -1074,16 +1074,23 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                         "" if (ok and ok2 and ok3 and blk_used) else
                         f"before={before_blk} after={after_blk}\n{log2[-300:]}"))
 
-        # M4.5 Part B: the shared "i2c" driver task (RTC + EEPROM, one task
-        # since both sit on the same physical bus -- drivers/i2c_rtc.h).
-        # Same "is it actually serving requests" shape as blkstats above;
-        # the EEPROM read/write itself is already covered functionally by
-        # the AT24C32 test below (which now transparently exercises this
-        # same task, since at24c32_read()/write() kept their original names).
+        # M4.5 Part B: the shared "i2c" driver task -- one task for every
+        # device on the bus, since they share one controller
+        # (drivers/i2c_rtc.h). Same "is it actually serving requests" shape
+        # as blkstats above.
+        #
+        # Driven by `sensor init`, not by an EEPROM write. The EEPROM used to
+        # be the probe, and stopped being a valid one when phase 30 made each
+        # device an ordinary i2c_xfer() client: on a target with no I2C
+        # controller the AT24C32 is a synthetic RAM buffer, and routing a
+        # memcpy through IPC to reach it was the only thing that had been
+        # giving this task work here. `sensor init` is a real bus transaction
+        # -- bme280_init() reading a chip id -- so it reaches the task and
+        # fails at the stub, which is exactly what wants counting: that the
+        # request was *served*, not that the bus answered.
         ok, log = session.send_and_expect("i2cstats", r"calls=(\d+)", timeout=3.0)
         before_i2c = int(re.search(r"calls=(\d+)", log).group(1)) if ok else None
-        ok2, log2 = session.send_and_expect(
-            "(eeprom-write 100 \"i2c_task_probe\")", r".", timeout=4.0)
+        ok2, log2 = session.send_and_expect("sensor init", r".", timeout=4.0)
         ok3, log3 = session.send_and_expect("i2cstats", r"calls=(\d+)", timeout=3.0)
         after_i2c = int(re.search(r"calls=(\d+)", log3).group(1)) if ok3 else None
         i2c_used = (before_i2c is not None and after_i2c is not None
