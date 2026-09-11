@@ -37,6 +37,7 @@
  */
 
 #include "drivers/pico_clock_green.h"
+#include "drivers/driver_task.h"
 #include "pico_clock_font.h"
 #include "drivers/pico_clock_internal.h"
 #include "drivers/i2c_rtc.h"
@@ -1577,8 +1578,6 @@ CLOCK_UATTR static void clock_umode_body(void) {
  * clock_umode_body -> draw_text -> clock_font_render, and the two 34-byte
  * buffers in the dispatch frame are the largest thing on it. Measured from
  * the disassembly the way g_st7735_ustack's 1392 bytes were, not guessed. */
-static mem_domain_t g_clock_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make the
  * one-way jump into U-mode. Five regions, which is exactly
@@ -1592,34 +1591,35 @@ static void clock_task_body(void *arg) {
     (void)arg;
     while (!g_clock_ep) sched_yield();
 
-    mem_domain_init(&g_clock_domain);
-    mem_domain_add(&g_clock_domain, (uintptr_t)&g_clock_region, sizeof(g_clock_region),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_clock_text_region(&tbase, &tsize);
-    mem_domain_add(&g_clock_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_clock_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-    /* 64 KB from ADC_BASE, not 4 KB: that block holds the ADC *and* the PWM
-     * slice driving OE, and nothing else (checked against the SDK address
-     * map -- 0x400a0000 and 0x400a8000 are its only two entries). The wider
-     * window costs no PMP entry, which matters because there are exactly five
-     * and all five are spoken for: RP2350 spends three of its eight on the
-     * deny-shadows that revoke Hazard3's hardwired U-mode RWX. Granting PWM
-     * its own region was not an option; merging it into a naturally aligned
-     * block that contains only what is already granted plus what is needed
-     * is. */
-    mem_domain_add(&g_clock_domain, ADC_BASE, 65536, MEM_R | MEM_W);
-    mem_domain_add(&g_clock_domain, TIMER0_BASE, 4096, MEM_R);
-
-    if (task_set_domain(sched_current_pid(), &g_clock_domain) != 0) {
-        printk("[Clock] Refusing to enter U-mode: memory domain not enforceable; "
-               "the panel stays on direct hardware access.\n");
-        return;
-    }
-    arch_enter_user(clock_umode_body,
-                    (uintptr_t)g_clock_region.f.stack + CLOCK_USTACK_SIZE, 0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md. The one whose granted region is
+     * not a bare stack: g_clock_region is stack *and* state, so the R/W grant
+     * covers the struct and execution starts inside its stack member. */
+    const driver_umode_spec_t spec = {
+        .name         = "Clock",
+        .fallback     = "the panel stays on direct hardware access.",
+        .body         = clock_umode_body,
+        .text_region  = board_clock_text_region,
+        .stack_base   = (uintptr_t)&g_clock_region,
+        .stack_size   = sizeof(g_clock_region),
+        .stack_top    = (uintptr_t)g_clock_region.f.stack + CLOCK_USTACK_SIZE,
+        .regions      = { { SIO_BASE, 4096, MEM_R | MEM_W },
+                          /* 64 KB from ADC_BASE, not 4 KB: that block holds
+                           * the ADC *and* the PWM slice driving OE, and
+                           * nothing else (checked against the SDK address map
+                           * -- 0x400a0000 and 0x400a8000 are its only two
+                           * entries). The wider window costs no PMP entry,
+                           * which matters because there are exactly five and
+                           * all five are spoken for: RP2350 spends three of
+                           * its eight on the deny-shadows that revoke
+                           * Hazard3's hardwired U-mode RWX. Granting PWM its
+                           * own region was not an option; merging it into a
+                           * naturally aligned block containing only what is
+                           * already granted plus what is needed is. */
+                          { ADC_BASE,    65536, MEM_R | MEM_W },
+                          { TIMER0_BASE,  4096, MEM_R } },
+        .region_count = 3,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 /* Phase 17b's own "Verify" deliverable, and the thing phase 17's C7 asked for

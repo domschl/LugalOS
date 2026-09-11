@@ -588,6 +588,50 @@ clock display drawing, and the USB CDC console answering on `/dev/ttyACM1`.
 Done when: all seven use `driver_umode_enter()`, the refusal path is one
 implementation, and each persona has been booted on its board.
 
+#### G3 done — 2026-09-11
+
+All seven, and `arch_enter_user()` now appears in the driver tree only inside
+`driver_task.c` and in the per-driver *intruder* probes, which are isolation
+tests rather than drivers and deliberately build their own domains.
+
+Two commits rather than seven. The plan asked for one per driver in
+increasing order of consequence, and the split that earned its keep was
+between *the four that do not own the console* (tm1638, i2c_bus, st7735,
+spisd) and *the three that do* (usb_cdc, pico_clock_green, uart_rp2350) --
+because if the console driver's domain is wrong, the refusal message is the
+only way anyone finds out.
+
+**Three things the seven disagreed about**, now spec fields rather than
+assumptions baked into the framework:
+
+* **Which `.utext` region.** Five of them: the shared one, plus a dedicated
+  region each for st7735, spisd, usb_cdc and pico_clock_green, because the
+  shared page ran out of room. The framework always grants one -- U-mode can
+  execute nothing else, so a driver that forgot would fault on its first
+  instruction -- but which one is the driver's to name.
+* **An argument.** spisd's U-mode half takes `is_sdhc` as a real parameter,
+  since it cannot read the kernel-side flag. The other six pass none.
+* **A stack top that is not where the stack region ends.** tm1638 reserves
+  the last bytes of its page for scratch RAM, granted R/W but not usable as
+  stack; pico_clock_green's granted region is a *struct* of stack plus state,
+  with execution starting inside its stack member.
+
+**What deliberately did not move: the refusal action.** The message is one
+implementation; what a driver does afterwards is not. Six return and fall
+back to direct hardware access. usb_cdc does not return at all -- it keeps
+servicing USB from kernel mode, because a console on `/dev/ttyACM1` without
+confinement beats no console. That is the distinction the API draws, and it
+is why `driver_umode_enter()` returns a value rather than handling the
+failure itself.
+
+Verified: ten presets clean, QEMU 363/363, RP2350 hardware 25/25 on the
+sensor persona, and all three personas booted on the board with every
+migrated driver entering U-mode and *no* refusal line -- sensor (uart,
+usb_cdc, i2c, heartbeat), chess (uart, usb_cdc, spisd, st7735, tm1638) and
+clock (uart, usb_cdc, i2c, pico_clock_green). The chess and clock personas
+have no TM1638/ST7735/SD/panel wired to this board, so what those two runs
+prove is the domain path, not the devices.
+
 ### G4 — The UART console family
 
 The debt phase 27's E3 named and did not pay. Extract the task body and wire

@@ -12,6 +12,7 @@
  */
 
 #include "drivers/uart.h"
+#include "drivers/driver_task.h"
 #include "drivers/uart_net.h"
 #include "fs/p9_link.h"
 #include "kernel/sched.h"
@@ -224,8 +225,6 @@ HEARTBEAT_UATTR static void heartbeat_umode_body(void) {
  * .ustacks256's own comment in linker/rp2350.ld for the grouping. */
 static uint8_t g_heartbeat_ustack[256] __attribute__((aligned(256)))
                                         __attribute__((section(".ustacks256")));
-static mem_domain_t g_heartbeat_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Mirrors kernel/shell.c's
@@ -233,53 +232,34 @@ static mem_domain_t g_heartbeat_domain;
 static void heartbeat_task_body(void *arg) {
     (void)arg;
 
-    mem_domain_init(&g_heartbeat_domain);
-
-    /* Order matters: PMP resolves against the lowest-numbered matching
-     * region, so narrower grants must precede broader ones that might
-     * overlap them (none do here, but the ordering convention is kept for
-     * consistency with every other domain construction in this tree). */
-    mem_domain_add(&g_heartbeat_domain, (uintptr_t)g_heartbeat_ustack,
-                   sizeof(g_heartbeat_ustack), MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_text_region(&tbase, &tsize);
-    mem_domain_add(&g_heartbeat_domain, tbase, tsize, MEM_R | MEM_X);
-
-    /* The device window: SIO_GPIO_OUT_SET (+0x18) and _CLR (+0x20) both
-     * have to land in one region (mem_domain_permits()/PMP both require a
-     * single access to resolve against exactly one region). Found on real
-     * hardware, not predicted: an initial 64-byte region (the minimum that
-     * spans both registers) read back from pmpaddr2 with its low bits
-     * *not* matching what was written (0x...04 read back where 0x...07 was
-     * written) -- every other NAPOT region in this tree is page-sized or
-     * larger, so a region this small was untested territory. That
-     * mismatch turned out to be a red herring (mem_domain_activate()'s own
-     * success check already masks those low bits out, and widening to a
-     * full page reproduced the identical masked-benign pattern); the
-     * actual reason the GPIO writes had no effect despite no fault was
-     * ACCESSCTRL_GPIO_NSMASK0 (see uart_init()'s comment on it), a filter
-     * entirely upstream of and independent from PMP. Left at a full page
-     * anyway: the same size class every other region in this codebase
-     * (stacks, .utext, user program segments) already uses successfully,
-     * "coarse but honest" rather than maximally narrow but unverified --
-     * board_text_region() already grants a whole page for far less code
-     * than it covers, for the same reason. */
-    mem_domain_add(&g_heartbeat_domain, SIO_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_heartbeat_domain) != 0) {
-        /* Same honesty rule kernel/shell.c's user_task_common() follows:
-         * a region the hardware did not install exactly as asked is not a
-         * smaller grant, it is an unverified one, so refuse rather than
-         * enter U-mode claiming isolation nothing confirmed. */
-        printk("[Heartbeat] Refusing to enter U-mode: memory domain not enforceable\n");
-        return;
-    }
-    /* ra = 0: heartbeat_umode_body() never returns (see its own comment) --
-     * only the ELF loader's one-shot programs need a real return address. */
-    arch_enter_user(heartbeat_umode_body,
-                    (uintptr_t)g_heartbeat_ustack + sizeof(g_heartbeat_ustack),
-                    0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md.
+     *
+     * The device window is a full page, and the reason is worth keeping.
+     * SIO_GPIO_OUT_SET (+0x18) and _CLR (+0x20) must land in one region --
+     * mem_domain_permits() and PMP both require an access to resolve against
+     * exactly one. An initial 64-byte region (the minimum spanning both) read
+     * back from pmpaddr2 with its low bits not matching what was written, and
+     * every other NAPOT region in this tree is page-sized or larger, so that
+     * was untested territory. The mismatch turned out to be a red herring
+     * (mem_domain_activate()'s own success check already masks those bits,
+     * and a full page reproduces the identical benign pattern); the GPIO
+     * writes were actually being filtered by ACCESSCTRL_GPIO_NSMASK0, which
+     * is upstream of PMP entirely. Left at a page anyway: the size class
+     * every other region here already uses successfully, coarse but honest
+     * rather than maximally narrow and unverified.
+     *
+     * ra = 0 (the framework's default): heartbeat_umode_body() never returns
+     * -- only the ELF loader's one-shot programs need a real return address. */
+    const driver_umode_spec_t spec = {
+        .name         = "Heartbeat",
+        .fallback     = "the LED stays on direct hardware access.",
+        .body         = heartbeat_umode_body,
+        .stack_base   = (uintptr_t)g_heartbeat_ustack,
+        .stack_size   = sizeof(g_heartbeat_ustack),
+        .regions      = { { SIO_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 1,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 /* Called from kernel/main.c, after sched_init() -- unlike uart_init(),
@@ -778,8 +758,6 @@ UART_UATTR static void uart_umode_body(void) {
  * above and .ustacks512's in linker/rp2350.ld. */
 static uint8_t      g_uart_ustack[512] __attribute__((aligned(512)))
                                         __attribute__((section(".ustacks512")));
-static mem_domain_t g_uart_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Simpler than st7735/blk's 4-region shape
@@ -791,21 +769,20 @@ static void uart_task_body(void *arg) {
     (void)arg;
     while (!g_uart_ep) sched_yield();
 
-    mem_domain_init(&g_uart_domain);
-    mem_domain_add(&g_uart_domain, (uintptr_t)g_uart_ustack, sizeof(g_uart_ustack),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_text_region(&tbase, &tsize);
-    mem_domain_add(&g_uart_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_uart_domain, UART0_BASE, 4096, MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_uart_domain) != 0) {
-        printk("[UART] Refusing to enter U-mode: memory domain not enforceable; console stays on direct hardware access.\n");
-        return;
-    }
-    arch_enter_user(uart_umode_body, (uintptr_t)g_uart_ustack + sizeof(g_uart_ustack), 0, 0, 0);
+    /* G3, plan/phase30_driver_framework.md. Last of the seven, and the one
+     * that owns the console: if this refuses, the message it prints is the
+     * only way anyone finds out, which is why the refusal path is shared
+     * rather than retyped. */
+    const driver_umode_spec_t spec = {
+        .name         = "UART",
+        .fallback     = "console stays on direct hardware access.",
+        .body         = uart_umode_body,
+        .stack_base   = (uintptr_t)g_uart_ustack,
+        .stack_size   = sizeof(g_uart_ustack),
+        .regions      = { { UART0_BASE, 4096, MEM_R | MEM_W } },
+        .region_count = 1,
+    };
+    (void)driver_umode_enter(&spec);
 }
 
 /* Called from kernel/main.c, after sched_init() -- unlike uart_init(),

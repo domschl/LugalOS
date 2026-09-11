@@ -1,4 +1,5 @@
 #include "drivers/usb_cdc.h"
+#include "drivers/driver_task.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "arch/rp2350_bootrom.h"
@@ -1742,8 +1743,6 @@ bool usb_cdc_task_alive(void) {
  * rather than just shrunk in place. */
 static uint8_t      g_usb_ustack[256] __attribute__((aligned(256)))
                                        __attribute__((section(".ustacks256")));
-static mem_domain_t g_usb_domain;
-
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * to build the domain and make the one-way jump into U-mode. Five
  * regions -- the MEM_DOMAIN_MAX_REGIONS cap, with zero headroom left (see
@@ -1760,27 +1759,33 @@ static mem_domain_t g_usb_domain;
 static void usb_cdc_task_body(void *arg) {
     (void)arg;
 
-    mem_domain_init(&g_usb_domain);
-    mem_domain_add(&g_usb_domain, (uintptr_t)g_usb_ustack, sizeof(g_usb_ustack),
-                   MEM_R | MEM_W);
-
-    uintptr_t tbase, tsize;
-    board_usb_text_region(&tbase, &tsize);
-    mem_domain_add(&g_usb_domain, tbase, tsize, MEM_R | MEM_X);
-
-    mem_domain_add(&g_usb_domain, USB_DPRAM_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_usb_domain, USB_BASE, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_usb_domain, (uintptr_t)&g_usb_region, sizeof(g_usb_region),
-                   MEM_R | MEM_W);
-
-    if (task_set_domain(sched_current_pid(), &g_usb_domain) != 0) {
-        printk("[USB] Refusing to enter U-mode: memory domain not enforceable; falling back to direct hardware access.\n");
+    /* G3, plan/phase30_driver_framework.md. The widest of the seven: two MMIO
+     * windows plus the shared data region its kernel half also touches.
+     *
+     * The refusal *action* stays here rather than moving into the framework,
+     * and that is the distinction the API draws: the message is one
+     * implementation, what to do afterwards is not. This driver does not
+     * return -- it keeps servicing USB from kernel mode, because a console on
+     * /dev/ttyACM1 that works without confinement beats no console. */
+    const driver_umode_spec_t spec = {
+        .name         = "USB",
+        .fallback     = "falling back to direct hardware access.",
+        .body         = usb_cdc_umode_body,
+        .text_region  = board_usb_text_region,
+        .stack_base   = (uintptr_t)g_usb_ustack,
+        .stack_size   = sizeof(g_usb_ustack),
+        .regions      = { { USB_DPRAM_BASE, 4096, MEM_R | MEM_W },
+                          { USB_BASE,       4096, MEM_R | MEM_W },
+                          { (uintptr_t)&g_usb_region, sizeof(g_usb_region),
+                            MEM_R | MEM_W } },
+        .region_count = 3,
+    };
+    if (driver_umode_enter(&spec) != 0) {
         for (;;) {
             usb_cdc_task();
             sched_yield();
         }
     }
-    arch_enter_user(usb_cdc_umode_body, (uintptr_t)g_usb_ustack + sizeof(g_usb_ustack), 0, 0, 0);
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
