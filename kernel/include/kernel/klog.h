@@ -50,15 +50,74 @@
 #define KLOG_RING_SIZE 8192
 #define KLOG_MAX_SINKS 4
 
+/* The largest message a single record can carry, in payload bytes (Y5b).
+ *
+ * Formatting into a buffer before storing it means a fixed maximum, where
+ * the old char-at-a-time path had none. 320 comes from measurement, not
+ * taste: the longest kernel log line observed across the QEMU and hardware
+ * suites is 185 bytes, and the longest printk format literal in the tree is
+ * 230 (drivers/enc28j60_rp2350.c's SRAM loopback failure) before its
+ * arguments are substituted.
+ *
+ * A message longer than this is truncated with a visible marker and counted
+ * -- see klog_truncations(). Silently losing the tail of exactly the longest,
+ * most detailed diagnostic in the tree is the one outcome worth ruling out. */
+#define KLOG_REC_MAX 320
+
+/* A record's timestamp, in milliseconds since boot, or KLOG_NO_TS.
+ *
+ * Stored as four binary bytes and rendered only when the log is read (Y5b,
+ * plan/phase31_concurrency_hierarchy.md §5.7). The rendered form
+ * "[    0.010] " is twelve bytes on every line -- 456 of rv32's 2645-byte
+ * boot, 17% of the ring -- spent on a number that fits in four.
+ *
+ * uint32 milliseconds wraps at 49.7 days. The ring holds minutes, so a
+ * wrapped timestamp misleads only for the one record either side of the
+ * wrap; ordering within the ring is unaffected. Said here rather than
+ * discovered on a node that has been up for seven weeks.
+ *
+ * KLOG_NO_TS means the message carries no timestamp -- the convention is
+ * vprintk_to()'s, which prefixes one only when the format string starts with
+ * a bracketed tag, so the banner and continuation lines have none. */
+#define KLOG_NO_TS ((uint32_t)0xFFFFFFFFu)
+
 typedef void (*klog_putc_fn)(char);
 
-/* Appends to the ring and fans out to every attached sink. */
-void klog_write(const char *s, uint32_t len);
-void klog_putc(char c);
+/* Appends one whole record and fans it out to every attached sink.
+ *
+ * One call, one record, one critical section: the atomicity that
+ * printk_lock() used to provide by being held across a char-at-a-time
+ * emission now comes from the append itself. `text` is the message without
+ * its timestamp; `ms` is rendered in front of it on the way out. */
+void klog_emit(uint32_t ms, const char *text, uint32_t len);
 
 /* Ring only, no sink fan-out. For printk_critical(), which may not reach a
  * sink whose putc can block. See kernel/klog.c. */
-void klog_record(char c);
+void klog_record_text(uint32_t ms, const char *text, uint32_t len);
+
+/* Counts one truncation. Called by the producer, because that is where the
+ * loss actually happens: printk() formats into a KLOG_REC_MAX buffer, so a
+ * message too long to fit is already cut by the time klog sees it, and klog
+ * would otherwise record a perfectly ordinary full-length record. */
+void klog_truncated(void);
+
+/* Messages truncated at KLOG_REC_MAX since boot. `klog` reports it; a
+ * nonzero value means some diagnostic lost its tail. */
+uint32_t klog_truncations(void);
+
+/* Records dropped because a single message exceeded what the ring itself
+ * could hold. Distinct from eviction, which is normal and silent. */
+uint32_t klog_drops(void);
+
+/* Bytes the ring actually holds, and records in it (Y5b).
+ *
+ * Distinct from klog_total()/klog_oldest(), which count *rendered* bytes --
+ * what a reader receives. The difference between the two is what the binary
+ * timestamp buys: twelve rendered characters per stamped record stored as
+ * four, minus the six-byte header. `klog` prints both, because "the ring
+ * holds more than it appears to" is otherwise invisible. */
+uint64_t klog_stored_bytes(void);
+uint32_t klog_records(void);
 
 /* --- Sink registry --- */
 

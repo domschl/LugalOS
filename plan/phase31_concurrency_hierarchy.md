@@ -988,6 +988,54 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   concurrently produce no interleaved record (the X7 splice, asserted), and
   the boot burst is ~300 bytes smaller with output byte-identical.
 
+  **Y5b done — 2026-09-11.** The ring stores records: a 6-byte header (4 bytes
+  of milliseconds or `KLOG_NO_TS`, 2 of length) followed by the payload.
+  `printk()` formats into a `KLOG_REC_MAX`-byte buffer on its own stack and
+  appends one record under the existing leaf spinlock; the timestamp is
+  rendered only on the way out. `klog_total()`/`klog_oldest()`/`klog_read()`
+  keep their meaning on the **rendered** stream, which is why `/proc/kmsg`
+  needed no change at all.
+
+  **The storage estimate above was wrong and the measured figure is 138 bytes,
+  not ~300.** 49 boot records read back as 2411 bytes and store as 2273: the
+  binary timestamp saves 8 bytes on each of the 36 stamped records, and the
+  6-byte header costs 6 on all 49. I wrote the estimate counting only the
+  first half. The framing is still worth having — it is what Y5d and Y5f are
+  built on — but it is a prerequisite, not the optimisation, and Y5f is where
+  the 6x actually lives.
+
+  **An unlooked-for improvement:** the log can no longer begin mid-word. Under
+  eviction the readback now starts at `[    0.009] [PAlloc] ...`, a whole
+  line, because `ring_make_room()` evicts whole records — where the
+  byte-stream ring produced §5.3's `, usbnet, usbcon`. A half-overwritten
+  record cannot be rendered at all, so framing forced the fix that the old
+  ring merely tolerated the absence of.
+
+  `vprintk_to()` gained a context parameter, which is what makes formatting
+  into a caller-owned buffer safe: `printk()` is genuinely re-entered (an ISR
+  printing inside an outer `printk()`), and a preempted task may resume on the
+  other hart, so neither a static buffer nor a per-hart one is correct. This
+  also retires `ksnprintf()`'s documented non-reentrancy.
+
+  `printk_critical()` keeps writing the UART character by character as it
+  formats and stores its ring copy at the end — buffering it first would mean
+  a fault partway through emits nothing, and that path's whole guarantee is
+  that what you read reached the wire before the halt.
+
+  **`printk_lock()` is still taken**, and the plan text above was wrong to say
+  otherwise. Its scope shrank — formatting is out from under it and the append
+  is atomic on its own — but the fan-out is still synchronous and still has to
+  be serialised against the other hart's and against `cprintf()`. Removing it
+  belongs with Y5c (which gives the fan-out to a consumer) and Y5d (which
+  moves `cprintf()` to a `ylock_t`), not here.
+
+  Verified: ten presets clean, QEMU 363/363 with no test changed, console
+  output byte-identical against the Y5a build, `/proc/kmsg` renders
+  identically, eviction leaves 8145 of 8192 bytes in 225 whole records, and
+  `lockselftest` is 15/15 with two new checks — a record stored and read back
+  whole with its timestamp rebuilt, and an over-long message truncated with a
+  visible `...` and counted.
+
 * **Y5c — The consumer.** A drain task with a cursor in `klog_total()`'s
   coordinate space, taking the console ylock, writing whole records. The
   producer's inline drain becomes conditional on *no consumer registered*

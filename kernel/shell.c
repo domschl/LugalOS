@@ -1718,6 +1718,17 @@ static void cmd_klog(const char *arg) {
         cprintf("\n  Ring: %lu bytes buffered (%lu total written)\n",
                (unsigned long)(klog_total() - klog_oldest()),
                (unsigned long)klog_total());
+        /* Y5b: what it costs to hold that, which is less than what it reads
+         * back as -- the timestamp is four stored bytes and twelve rendered
+         * ones. */
+        cprintf("  Stored: %lu of %u bytes in %lu records",
+               (unsigned long)klog_stored_bytes(), (unsigned)KLOG_RING_SIZE,
+               (unsigned long)klog_records());
+        if (klog_truncations() || klog_drops()) {
+            cprintf(" (%lu truncated, %lu dropped)",
+                   (unsigned long)klog_truncations(), (unsigned long)klog_drops());
+        }
+        cprintf("\n");
         cprintf("  Usage: klog [attach|detach] <sink>   (read it with: cat /proc/kmsg)\n\n");
         return;
     }

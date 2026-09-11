@@ -9,8 +9,20 @@
 #include <string.h>
 #include "kernel/lock.h"
 
-typedef void (*putc_fn)(char);
-typedef void (*puts_fn)(const char *);
+/* Y5b, plan/phase31_concurrency_hierarchy.md: the destination carries a
+ * context pointer.
+ *
+ * This is what lets printk() format into a buffer on its *own stack* before
+ * storing the result as one log record. ksnprintf()'s comment below records
+ * why the context-free form could not: it reached its buffer through "a
+ * single shared pointer -- not reentrant". printk() is re-entered for real --
+ * an interrupt handler that prints lands inside an outer printk(), and a
+ * preempted task may resume on the other hart -- so neither a static pointer
+ * nor a per-hart one is safe. A parameter threaded down the call chain is.
+ *
+ * Callers that write straight out pass NULL and ignore it. */
+typedef void (*putc_fn)(void *ctx, char);
+typedef void (*puts_fn)(void *ctx, const char *);
 
 /* One printk/cprintf/printk_debug call -- and, since M4, one console_putc()/
  * console_puts() call -- emits as one uninterrupted run (B6, revised M2.5,
@@ -225,13 +237,24 @@ void printk_unlock(void) {
     uart_flush();
 }
 
-static void print_num(putc_fn pc, unsigned long num, int base) {
+/* Adapter for the destinations that were already plain function pointers
+ * and have no state to carry -- the UART, the console, the debug port. The
+ * struct lives on the caller's stack, so this costs nothing static. */
+typedef void (*raw_putc_fn)(char);
+typedef void (*raw_puts_fn)(const char *);
+
+typedef struct { raw_putc_fn pc; raw_puts_fn ps; } plain_dest_t;
+
+static void plain_putc(void *ctx, char c)          { ((plain_dest_t *)ctx)->pc(c); }
+static void plain_puts(void *ctx, const char *str) { ((plain_dest_t *)ctx)->ps(str); }
+
+static void print_num(putc_fn pc, void *ctx, unsigned long num, int base) {
     char buf[64];
     const char digits[] = "0123456789abcdef";
     int i = 0;
 
     if (num == 0) {
-        pc('0');
+        pc(ctx, '0');
         return;
     }
 
@@ -241,34 +264,35 @@ static void print_num(putc_fn pc, unsigned long num, int base) {
     }
 
     while (i > 0) {
-        pc(buf[--i]);
+        pc(ctx, buf[--i]);
     }
 }
 
-static void print_timestamp(putc_fn pc, puts_fn ps) {
+static void print_timestamp(putc_fn pc, puts_fn ps, void *ctx) {
     uint64_t ms = time_get_ms();
     unsigned int sec = (unsigned int)(ms / 1000);
     unsigned int msec = (unsigned int)(ms % 1000);
 
-    ps("[");
-    if (sec < 10) ps("    ");
-    else if (sec < 100) ps("   ");
-    else if (sec < 1000) ps("  ");
-    else if (sec < 10000) ps(" ");
+    ps(ctx, "[");
+    if (sec < 10) ps(ctx, "    ");
+    else if (sec < 100) ps(ctx, "   ");
+    else if (sec < 1000) ps(ctx, "  ");
+    else if (sec < 10000) ps(ctx, " ");
 
-    print_num(pc, sec, 10);
-    pc('.');
-    pc('0' + ((msec / 100) % 10));
-    pc('0' + ((msec / 10) % 10));
-    pc('0' + (msec % 10));
-    ps("] ");
+    print_num(pc, ctx, sec, 10);
+    pc(ctx, '.');
+    pc(ctx, '0' + ((msec / 100) % 10));
+    pc(ctx, '0' + ((msec / 10) % 10));
+    pc(ctx, '0' + (msec % 10));
+    ps(ctx, "] ");
 }
 
-static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
+static int vprintk_to(putc_fn pc, puts_fn ps, void *ctx,
+                      const char *fmt, va_list args, bool with_ts) {
     if (!fmt) return -1;
 
-    if (fmt[0] == '[' && fmt[1] != '\0') {
-        print_timestamp(pc, ps);
+    if (with_ts && fmt[0] == '[' && fmt[1] != '\0') {
+        print_timestamp(pc, ps, ctx);
     }
 
     for (const char *p = fmt; *p != '\0'; p++) {
@@ -280,7 +304,7 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
              * printed a staircase. The convention now belongs to the console
              * stream (kernel/console.h's console_emit), which sees every byte
              * regardless of how it got here. */
-            pc(*p);
+            pc(ctx, *p);
             continue;
         }
 
@@ -322,9 +346,9 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
         switch (*p) {
             case 'c': {
                 char c = (char)va_arg(args, int);
-                if (!left_pad) { for (int w = 1; w < width; w++) pc(' '); }
-                pc(c);
-                if (left_pad)  { for (int w = 1; w < width; w++) pc(' '); }
+                if (!left_pad) { for (int w = 1; w < width; w++) pc(ctx, ' '); }
+                pc(ctx, c);
+                if (left_pad)  { for (int w = 1; w < width; w++) pc(ctx, ' '); }
                 break;
             }
             case 's': {
@@ -332,9 +356,9 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 if (!s) s = "(null)";
                 int len = 0;
                 while (s[len] != '\0' && (max_len < 0 || len < max_len)) len++;
-                if (!left_pad) { for (int w = len; w < width; w++) pc(' '); }
-                for (int i = 0; i < len; i++) pc(s[i]);
-                if (left_pad)  { for (int w = len; w < width; w++) pc(' '); }
+                if (!left_pad) { for (int w = len; w < width; w++) pc(ctx, ' '); }
+                for (int i = 0; i < len; i++) pc(ctx, s[i]);
+                if (left_pad)  { for (int w = len; w < width; w++) pc(ctx, ' '); }
                 break;
             }
             case 'd':
@@ -345,15 +369,15 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 while (temp != 0) { digits++; temp /= 10; }
                 if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) pc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
                 if (val < 0) {
-                    pc('-');
+                    pc(ctx, '-');
                     val = -val;
                 }
-                print_num(pc, (unsigned long)val, 10);
+                print_num(pc, ctx, (unsigned long)val, 10);
                 if (width > digits && left_pad) {
-                    for (int w = 0; w < width - digits; w++) pc(' ');
+                    for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
                 break;
             }
@@ -364,11 +388,11 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 while (temp != 0) { digits++; temp /= 10; }
                 if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) pc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
-                print_num(pc, val, 10);
+                print_num(pc, ctx, val, 10);
                 if (width > digits && left_pad) {
-                    for (int w = 0; w < width - digits; w++) pc(' ');
+                    for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
                 break;
             }
@@ -381,20 +405,20 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
                 while (temp != 0) { digits++; temp /= 16; }
                 if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
-                    for (int w = 0; w < width - digits; w++) pc(pad);
+                    for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
-                print_num(pc, val, 16);
+                print_num(pc, ctx, val, 16);
                 if (width > digits && left_pad) {
-                    for (int w = 0; w < width - digits; w++) pc(' ');
+                    for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
                 break;
             }
             case '%':
-                pc('%');
+                pc(ctx, '%');
                 break;
             default:
-                pc('%');
-                pc(*p);
+                pc(ctx, '%');
+                pc(ctx, *p);
                 break;
         }
     }
@@ -409,16 +433,71 @@ static int vprintk_to(putc_fn pc, puts_fn ps, const char *fmt, va_list args) {
 // kernel/klog.h). Boot attaches the "console" sink, whose putc is uart_putc,
 // so the default destination is byte-identical to the pre-B0 behavior: the
 // physical UART plus the USB CDC console it already mirrored to.
-static void klog_puts_shim(const char *s) {
+/* The destination printk() formats into: a buffer on its own stack (Y5b). */
+typedef struct {
+    char    *buf;
+    uint32_t cap;
+    uint32_t len;
+    bool     overflowed;
+} rec_dest_t;
+
+static void rec_putc(void *ctx, char c) {
+    rec_dest_t *d = (rec_dest_t *)ctx;
+    if (d->len < d->cap) d->buf[d->len++] = c;
+    else                 d->overflowed = true;
+}
+
+static void rec_puts(void *ctx, const char *s) {
     if (!s) return;
-    while (*s) klog_putc(*s++);
+    while (*s) rec_putc(ctx, *s++);
+}
+
+static int vprintk_ctx_buffered(rec_dest_t *d, const char *fmt, va_list args) {
+    return vprintk_to(rec_putc, rec_puts, d, fmt, args, false);
 }
 
 int printk(const char *fmt, ...) {
+    char buf[KLOG_REC_MAX];
+    rec_dest_t d = { buf, sizeof(buf), 0, false };
+
+    /* The timestamp travels as four binary bytes in the record header rather
+     * than twelve rendered characters in the payload, so it is taken here and
+     * the formatter is told to leave it out. Same condition vprintk_to() has
+     * always applied: a message prefixed with a bracketed tag is stamped, a
+     * continuation line or a banner is not. */
+    uint32_t ms = KLOG_NO_TS;
+    if (fmt && fmt[0] == '[' && fmt[1] != '\0') {
+        ms = (uint32_t)time_get_ms();
+    }
+
     va_list args;
     va_start(args, fmt);
+    /* Still under printk_lock(). The lock's *scope* has shrunk to the fan-out
+     * -- formatting is out from under it, and the record append is atomic on
+     * its own -- but the fan-out is still synchronous and still has to be
+     * serialised against the other hart's. Y5c is what gives the fan-out to a
+     * consumer; Y5d is what deletes this lock. Doing it here instead would
+     * mean printk() and cprintf() interleaving mid-line, with no consumer yet
+     * built to keep them apart. */
     printk_lock();
-    int ret = vprintk_to(klog_putc, klog_puts_shim, fmt, args);
+    int ret = vprintk_ctx_buffered(&d, fmt, args);
+
+    /* Truncation is marked in the output and counted, never silent: the tail
+     * of the longest, most detailed diagnostic in the tree is exactly what
+     * must not disappear without saying so. The marker replaces the last four
+     * bytes rather than extending the record, since the record is full by
+     * definition at this point. */
+    if (d.overflowed) {
+        if (d.len >= 4) {
+            d.buf[d.len - 4] = '.';
+            d.buf[d.len - 3] = '.';
+            d.buf[d.len - 2] = '.';
+            d.buf[d.len - 1] = '\n';
+        }
+        klog_truncated();
+    }
+
+    klog_emit(ms, buf, d.len);
     printk_unlock();
     va_end(args);
     return ret;
@@ -439,7 +518,7 @@ int printk_debug(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     printk_lock();
-    int ret = vprintk_to(uart_debug_putc, uart_debug_puts, fmt, args);
+    int ret = vprintk_to(plain_putc, plain_puts, &(plain_dest_t){ uart_debug_putc, uart_debug_puts }, fmt, args, true);
     printk_unlock();
     va_end(args);
     return ret;
@@ -488,10 +567,23 @@ int printk_debug(const char *fmt, ...) {
  * so `/proc/kmsg` keeps the message and `klog detach console` still silences
  * it. What it skips is the fan-out itself, because the console sink's putc is
  * uart_putc(), which batches and blocks once the batch fills. */
-static void critical_putc_ring(char c) { klog_record(c); }
-static void critical_putc_both(char c) { klog_record(c); uart_critical_putc(c); }
-static void critical_puts_ring(const char *s) { while (*s) critical_putc_ring(*s++); }
-static void critical_puts_both(const char *s) { while (*s) critical_putc_both(*s++); }
+/* printk_critical() keeps writing the UART character by character as it
+ * formats, deliberately (Y5b). Buffering it first would mean a fault partway
+ * through formatting emits nothing at all, and this is the one path whose
+ * whole guarantee is that what you read reached the wire before the halt.
+ *
+ * The ring copy is accumulated alongside and stored as one record at the end;
+ * if the machine dies mid-message the UART already has it and the ring does
+ * not, which is the right way round. */
+static char     g_crit_buf[KLOG_REC_MAX];
+static uint32_t g_crit_len;
+
+static void crit_stash(char c) { if (g_crit_len < sizeof(g_crit_buf)) g_crit_buf[g_crit_len++] = c; }
+
+static void critical_putc_ring(void *ctx, char c) { (void)ctx; crit_stash(c); }
+static void critical_putc_both(void *ctx, char c) { (void)ctx; crit_stash(c); uart_critical_putc(c); }
+static void critical_puts_ring(void *ctx, const char *s) { while (*s) critical_putc_ring(ctx, *s++); }
+static void critical_puts_both(void *ctx, const char *s) { while (*s) critical_putc_both(ctx, *s++); }
 
 /* Is the terminal sink currently attached?
  *
@@ -518,9 +610,16 @@ int printk_critical(const char *fmt, ...) {
     /* Anything already batched goes out first, so this message cannot
      * overtake output that was produced before it. See uart_flush_critical(). */
     if (tty) uart_flush_critical();
-    int ret = tty ? vprintk_to(critical_putc_both, critical_puts_both, fmt, args)
-                  : vprintk_to(critical_putc_ring, critical_puts_ring, fmt, args);
+    g_crit_len = 0;
+    int ret = tty ? vprintk_to(critical_putc_both, critical_puts_both, NULL, fmt, args, true)
+                  : vprintk_to(critical_putc_ring, critical_puts_ring, NULL, fmt, args, true);
     va_end(args);
+
+    /* The record goes in whole, after the wire already has it. The timestamp
+     * is KLOG_NO_TS because vprintk_to() rendered one into the text above --
+     * this path prints as it formats, so it cannot defer the stamp the way
+     * printk() does. */
+    if (g_crit_len > 0) klog_record_text(KLOG_NO_TS, g_crit_buf, g_crit_len);
     return ret;
 }
 
@@ -532,7 +631,7 @@ int cprintf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     printk_lock();
-    int ret = vprintk_to(console_putc, console_puts, fmt, args);
+    int ret = vprintk_to(plain_putc, plain_puts, &(plain_dest_t){ console_putc, console_puts }, fmt, args, true);
     printk_unlock();
     va_end(args);
     return ret;
@@ -551,15 +650,16 @@ static struct {
     uint32_t cap; /* buf[cap - 1] is reserved for the terminating NUL */
 } g_snprintf_ctx;
 
-static void snprintf_putc(char c) {
+static void snprintf_putc(void *ctx, char c) {
+    (void)ctx;
     if (g_snprintf_ctx.idx < g_snprintf_ctx.cap - 1) {
         g_snprintf_ctx.buf[g_snprintf_ctx.idx++] = c;
     }
 }
 
-static void snprintf_puts(const char *s) {
+static void snprintf_puts(void *ctx, const char *s) {
     if (!s) return;
-    while (*s) snprintf_putc(*s++);
+    while (*s) snprintf_putc(ctx, *s++);
 }
 
 int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
@@ -571,7 +671,7 @@ int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
 
     va_list args;
     va_start(args, fmt);
-    vprintk_to(snprintf_putc, snprintf_puts, fmt, args);
+    vprintk_to(snprintf_putc, snprintf_puts, NULL, fmt, args, true);
     va_end(args);
 
     buf[g_snprintf_ctx.idx] = '\0';

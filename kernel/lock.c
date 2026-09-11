@@ -7,6 +7,7 @@
 #include "kernel/printk.h"
 #include "kernel/hart.h"
 #include "kernel/chan.h"
+#include "kernel/klog.h"
 #include "arch/atomic.h"
 #include <stddef.h>
 
@@ -767,6 +768,54 @@ int lock_selftest(void) {
 
         check("serve callback: printk() from inside one is reported, outside is not",
               marked && caught && clean_is_quiet && lock_noprintk_what() == NULL);
+    }
+
+    /* --- 8. Y5b: the log record is the atomic unit ---------------------- */
+    {
+        /* printk() no longer emits character by character under a lock held
+         * across the whole message; it formats into a buffer on its own stack
+         * and appends one record under g_klog_lock. The property that buys is
+         * that a message is stored whole and comes back whole -- asserted end
+         * to end here rather than inferred from the spinlock, because the
+         * store and the readback are new code and the spinlock is not. */
+        char back[300];
+        uint64_t before = klog_total();
+        printk("[KlogTest] %s\n",
+               "0123456789abcdef0123456789abcdef0123456789abcdef"
+               "0123456789abcdef0123456789abcdef0123456789abcdef");
+        uint32_t n = klog_read(before, back, sizeof(back) - 1);
+        back[n] = '\0';
+
+        /* Contiguous: the marker, then 96 filler characters with nothing
+         * spliced into them. A torn record would put another task's text or a
+         * header's bytes in the middle. */
+        bool whole = false;
+        for (uint32_t i = 0; i + 10 < n; i++) {
+            if (back[i] != '[' || back[i+1] != 'K') continue;
+            uint32_t j = i + 11;                 /* past "[KlogTest] " */
+            uint32_t run = 0;
+            while (j + run < n && run < 96 &&
+                   ((back[j+run] >= '0' && back[j+run] <= '9') ||
+                    (back[j+run] >= 'a' && back[j+run] <= 'f'))) run++;
+            if (run == 96) { whole = true; break; }
+        }
+
+        /* And that the timestamp survived the round trip through four binary
+         * bytes: the record was emitted with a bracketed tag, so it renders
+         * with one. */
+        bool stamped = (n > 0 && back[0] == '[' && back[6] == '.');
+
+        check("log record: stored whole, read back whole, timestamp rebuilt",
+              whole && stamped);
+
+        /* Truncation is visible and counted, not silent. */
+        uint32_t trunc_before = klog_truncations();
+        static char toolong[KLOG_REC_MAX + 64];
+        for (uint32_t i = 0; i < sizeof(toolong) - 1; i++) toolong[i] = 'x';
+        toolong[sizeof(toolong) - 1] = '\0';
+        printk("[KlogTest] %s\n", toolong);
+        check("log record: an over-long message is truncated and counted",
+              klog_truncations() == trunc_before + 1);
     }
 
     /* The fault total includes the three this selftest caused on purpose,
