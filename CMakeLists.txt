@@ -535,6 +535,11 @@ set(SOURCES
     # so it builds and self-tests on targets with neither buttons nor a panel.
     drivers/pico_clock_ui.c
     drivers/flashdisk.c
+    # The driver-as-task serve loop, shared by every driver that runs as a
+    # task (category C, plan/phase30_driver_framework.md). Built for every
+    # target: the pattern has no board-specific content, which is the whole
+    # reason it could be extracted.
+    drivers/driver_task.c
     # The I2C bus: the controller, the task that owns it and the one generic
     # transfer every device on it uses (category E,
     # plan/phase30_driver_framework.md). Separate from i2c_rtc.c since phase

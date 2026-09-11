@@ -198,6 +198,39 @@ bool lock_check_may_block(const char *what);
 bool lock_check_may_block_named(const char *what, const char *name,
                                 const char *site);
 
+/* --- No printk() from inside a driver serve callback (G2,
+ * plan/phase30_driver_framework.md) -----------------------------------------
+ *
+ * A driver task serving a request must never call printk(): a caller can be
+ * blocked on that very endpoint while holding printk_lock(), and the serve
+ * callback taking the same lock closes the cycle.
+ *
+ * Y4 made such a cycle *named* instead of silent -- printk ownership is an
+ * edge in the wait-for graph, so the hang says which two tasks. This is the
+ * step before that: the rule is violated the moment the call is made,
+ * whether or not a caller happens to be holding the lock at that instant.
+ * On QEMU it essentially never would be; on hardware it is the failure that
+ * costs an afternoon. Reporting on the violation rather than on the
+ * collision makes it deterministic and reproducible in the test suite.
+ *
+ * `drivers/driver_task.c` brackets every serve callback with these, so no
+ * driver has to remember. The state is per *task*, not per hart: a serve
+ * callback may legitimately block (uart's READ waits for a keypress for as
+ * long as a human takes), and a task that blocks may resume on another hart.
+ *
+ * Report-and-continue, like every other check in this file. */
+void lock_noprintk_enter(const char *what);
+void lock_noprintk_leave(void);
+
+/* Reports if the current task is inside a serve callback. Called from
+ * printk_lock(); returns true if a violation was found. Inert when there is
+ * no current task, and transparent inside the checker's own diagnostic. */
+bool lock_check_may_printk(void);
+
+/* The serve callback the current task is inside, or NULL. Diagnostics and
+ * the selftest. */
+const char *lock_noprintk_what(void);
+
 /* The real entry points. The macros below capture the lock's name and the
  * calling function at the call site, which costs .rodata (flash on RP2350)
  * rather than a field in every spinlock_t. */

@@ -1,8 +1,8 @@
 # Phase 30 — The layer above the registers
 
 **Status: in progress, 2026-09-11. Category E (the I2C bus split), G1 (the
-three leaks) and G0 (the inventory and the rule) are done; G2-G5 remain.
-Sequenced after phase 31 and before phase 28.**
+three leaks), G0 (the inventory and the rule) and G2 (the serve loop) are
+done; G3-G5 remain. Sequenced after phase 31 and before phase 28.**
 
 *(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this
 one and goes first. Its argument applies directly here: this phase moves code
@@ -528,6 +528,43 @@ verification and no hardware is needed to trust the result.
 Done when: those two drivers have no `chan_serve_wait()` loop of their own,
 `driver_task.h` documents the three invariants as properties rather than
 comments, and QEMU is 359/359 with no test changed.
+
+#### G2 done — 2026-09-11
+
+`drivers/driver_task.{c,h}`. The spec is §2.1's, with three fields the nine
+copies turned out to disagree on: `min_req_len` (every driver's own first
+line was `if (req_len < N) { reply(0); continue; }`), `stack_pages`, and
+`priority` — `DRIVER_PRIO_DEFAULT` for six of the nine, `TASK_PRIO_INTERRUPT`
+for the three UARTs.
+
+**Invariant 1 is checked, not documented.** That was the stated reason this
+milestone is worth more than the lines it saves, so it is the part to be
+concrete about. `driver_task.c` brackets every serve callback with
+`lock_noprintk_enter()`/`leave()` (kernel/lock.c), and `printk_lock()`
+reports a named fault if it is reached from inside one. The distinction from
+Y4 matters: Y4 names a cycle *when it closes*, which on QEMU essentially
+never happens; this fires on the rule violation itself, so the bug that only
+reproduces on hardware becomes deterministic in the test suite. Selftest
+check 13 proves both halves — the violation is reported, and a printk outside
+a callback is not.
+
+Costs 128 bytes of `.bss` for the per-task table. Both the old and new
+`_bss_end` land in the same page, so the RP2350 heap is unchanged at 87
+pages.
+
+**What stayed behind, deliberately.** `uart_flush()` keeps its own retry
+loop: it must never give up while another WRITE is in flight (interleaved
+bytes on the wire — the defect that was reproducible on real RP2350
+hardware), but must fall back promptly when the endpoint is busy with a READ
+waiting on a human. That distinction is `g_uart_write_in_flight`'s, a driver
+fact, so the framework exposes `driver_task_endpoint()` rather than taking an
+opinion about UARTs. `uart_write_call_count()` also stays in the driver: it
+counts WRITEs specifically, where `driver_task_call_count()` counts every
+request served.
+
+Verified: ten presets clean, QEMU 363/363 with no test changed, and on a live
+rv32 session the counters still grow through the framework — blk 171→279,
+uart `write_calls=189` — with no false positive from the new checker.
 
 ### G3 — `driver_task.c`: the U-mode domain
 

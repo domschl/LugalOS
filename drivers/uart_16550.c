@@ -1,5 +1,6 @@
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
+#include "drivers/driver_task.h"
 #include "kernel/devirq.h"
 #include "kernel/sched.h"
 #include "kernel/hart.h"
@@ -184,10 +185,9 @@ static uint8_t uart_hw_getc_blocking(void) {
  * byte -- this is the largest single 'W' request the endpoint can accept. */
 #define UART_REQ_CAP (256 + 1)
 
-static uint8_t         g_uart_req[UART_REQ_CAP];
-static uint8_t         g_uart_resp[1];
-static chan_endpoint_t *g_uart_ep;
-static int              g_uart_task_pid = -1;
+static uint8_t       g_uart_req[UART_REQ_CAP];
+static uint8_t       g_uart_resp[1];
+static driver_task_t g_uart_task;
 
 /* M4 verify: counts UART_REQ_WRITE calls actually served -- one per
  * uart_flush() that reached the task (not per character, and not per
@@ -223,11 +223,7 @@ uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
  * rather than left as a latent, harder-to-trigger version of the same bug. */
 static volatile bool g_uart_write_in_flight;
 
-static bool uart_task_alive(void) {
-    if (g_uart_task_pid < 0) return false;
-    int st = sched_task_state(g_uart_task_pid);
-    return st != TASK_UNUSED && st != TASK_DEAD;
-}
+static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
 
 /* This task, and only this task, may call uart_hw_putc_blocking()/
  * uart_hw_getc_blocking() while alive -- everything else reaches the
@@ -252,39 +248,30 @@ static bool uart_task_alive(void) {
  * closes inside printk_lock() names both tasks instead of hanging silently.
  * The rule still holds -- it is simply no longer the only thing keeping the
  * board alive. */
-static void uart_task_body(void *arg) {
-    (void)arg;
-    /* uart_task_start() creates this task before the endpoint it serves
-     * exists (chan_register_task() needs the pid first) -- wait for
-     * registration to finish rather than risk running before g_uart_ep is
-     * set, which a preemption landing in that narrow window could do. */
-    while (!g_uart_ep) sched_yield();
-
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_uart_ep);
-        if (req_len == 0) { chan_serve_reply(g_uart_ep, 0); continue; }
-        switch (g_uart_req[0]) {
-            case UART_REQ_HASCHAR:
-                g_uart_resp[0] = hw_uart_has_char() ? 1 : 0;
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_READ:
-                g_uart_resp[0] = uart_hw_getc_blocking();
-                chan_serve_reply(g_uart_ep, 1);
-                break;
-            case UART_REQ_WRITE:
-                g_uart_write_calls++;
-                g_uart_write_in_flight = true;
-                for (uint32_t i = 1; i < req_len; i++) {
-                    uart_hw_putc_blocking((char)g_uart_req[i]);
-                }
-                g_uart_write_in_flight = false;
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-            default:
-                chan_serve_reply(g_uart_ep, 0);
-                break;
-        }
+static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_cap) {
+    (void)ctx; (void)resp_cap;
+    switch (req[0]) {
+        case UART_REQ_HASCHAR:
+            resp[0] = hw_uart_has_char() ? 1 : 0;
+            return 1;
+        case UART_REQ_READ:
+            resp[0] = uart_hw_getc_blocking();
+            return 1;
+        case UART_REQ_WRITE:
+            /* This driver's own counter, not the framework's: it counts
+             * WRITE calls specifically, which is what makes "IPC volume
+             * tracks lines, not characters" a checkable claim.
+             * driver_task_call_count() counts every request served. */
+            g_uart_write_calls++;
+            g_uart_write_in_flight = true;
+            for (uint32_t i = 1; i < req_len; i++) {
+                uart_hw_putc_blocking((char)req[i]);
+            }
+            g_uart_write_in_flight = false;
+            return 0;
+        default:
+            return 0;
     }
 }
 
@@ -296,27 +283,26 @@ static void uart_task_body(void *arg) {
  * start this task for some reason keeps working exactly as it did before
  * M4, just without the isolation the task provides. */
 int uart_task_start(void) {
-    int pid = task_create_driver("uart", uart_task_body, NULL, 1); /* M0: shallow call depth, 1 page is generous */
-    if (pid < 0) {
-        printk("[UART] Could not start the uart task; console stays on direct hardware access.\n");
-        return -1;
-    }
-    /* TASK_PRIO_INTERRUPT: a caller that chan_call()s "uart" unblocks this
-     * task, then blocks itself (kernel/chan.c's chan_call_task()) -- at
-     * TASK_PRIO_NORMAL like everything else, next_runnable() could pick any
-     * other ready task first, sitting the caller behind an arbitrary queue
-     * for what is meant to be a near-instant hardware handoff. sched.h
-     * reserved this tier for exactly this role. */
-    task_set_priority(pid, TASK_PRIO_INTERRUPT);
-    if (chan_register_task("uart", pid, g_uart_req, sizeof(g_uart_req),
-                           g_uart_resp, sizeof(g_uart_resp)) != 0) {
-        printk("[UART] Could not register the uart channel endpoint; falling back to direct hardware access.\n");
-        return -1;
-    }
-    g_uart_ep = chan_lookup("uart");
-    g_uart_task_pid = pid;
-    printk("[UART] Driver running as task #%d, reachable via chan_call(\"uart\", ...)\n", pid);
-    return pid;
+    const driver_task_spec_t spec = {
+        .name        = "uart",
+        .serve       = uart_serve,
+        .ctx         = NULL,
+        .req         = g_uart_req,  .req_cap  = sizeof(g_uart_req),
+        .resp        = g_uart_resp, .resp_cap = sizeof(g_uart_resp),
+        /* An empty request is answered, not served: it reaches no hardware
+         * and is not a call. */
+        .min_req_len = 1,
+        /* M0: shallow call depth, 1 page is generous. */
+        .stack_pages = 1,
+        /* TASK_PRIO_INTERRUPT: a caller that chan_call()s "uart" unblocks
+         * this task, then blocks itself (kernel/chan.c's chan_call_task())
+         * -- at TASK_PRIO_NORMAL like everything else, next_runnable() could
+         * pick any other ready task first, sitting the caller behind an
+         * arbitrary queue for what is meant to be a near-instant hardware
+         * handoff. sched.h reserved this tier for exactly this role. */
+        .priority    = TASK_PRIO_INTERRUPT,
+    };
+    return driver_task_start(&g_uart_task, &spec);
 }
 
 void uart_init(uintptr_t base_addr) {
@@ -331,24 +317,15 @@ void uart_init(uintptr_t base_addr) {
     arch_irq_enable(UART0_IRQ);
 }
 
-/* Retries a bounded number of times on a transient "busy" (the endpoint's
- * single in-flight slot occupied by someone else) rather than either
- * blocking indefinitely or falling straight back to a hardware access that
- * would race the request already in flight. Busy is expected to be rare:
- * this driver's writers are already serialized by uart_putc()'s own batch
- * lock (see below), and it has exactly one reader in practice. Exhausting
- * the retries is the only case that falls through to direct access --
- * unlike a dead or not-yet-started task, this is a real, if unlikely,
- * degradation, not the common path. */
-static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
-                                uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_uart_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
-}
+/* The bounded retry moved to driver_task_call() (G2,
+ * plan/phase30_driver_framework.md), which every driver task shares. Why
+ * bounded and yielding rather than blocking or falling straight back to a
+ * hardware access that would race the request already in flight is written
+ * there. What was specific to this driver was only the reason busy is rare
+ * here: its writers are already serialized by uart_putc()'s own batch lock
+ * below, and it has exactly one reader in practice.
+ *
+ * uart_flush() below does NOT use it -- see its own comment. */
 
 /* M4: batches characters into a chunk and sends one chan_call() per chunk
  * (or per uart_flush()) instead of one per character. This -- not the
@@ -431,14 +408,14 @@ void uart_flush(void) {
     req[0] = UART_REQ_WRITE;
     memcpy(&req[1], local, len);
     uint8_t resp[1];
-    /* Not uart_call_with_retry()'s plain bounded retry: see
+    /* Not driver_task_call()'s plain bounded retry: see
      * g_uart_write_in_flight's own comment for why a WRITE specifically
      * must never give up and fall back to direct access while another
      * WRITE is actually in flight, while still falling back promptly --
      * not waiting out a human's keystroke -- when the endpoint is merely
      * busy with a pending READ instead. */
     for (;;) {
-        int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
+        int n = chan_call(driver_task_endpoint(&g_uart_task), req, 1 + len, resp, sizeof(resp));
         if (n >= 0) return;
         if (!g_uart_write_in_flight) break;
         sched_yield();
@@ -483,7 +460,7 @@ bool uart_has_char(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return resp[0] != 0;
     }
     return hw_uart_has_char();
 }
@@ -497,7 +474,7 @@ char uart_getc(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1) return (char)resp[0];
+        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return (char)resp[0];
     }
     return (char)uart_hw_getc_blocking();
 }

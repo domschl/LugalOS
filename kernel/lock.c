@@ -90,6 +90,77 @@ static void lock_fault(const char *what, const char *name, const char *site) {
     g_check_busy[h] = false;
 }
 
+/* --- No printk() from inside a driver serve callback (G2,
+ * plan/phase30_driver_framework.md) ---------------------------------------
+ *
+ * Per task, not per hart: a serve callback may block (uart's READ waits for a
+ * keypress), and a task that blocks may resume on another hart. See
+ * kernel/lock.h for why the rule exists and why it is checked here rather
+ * than left to the wait-for graph, which only fires when a cycle actually
+ * closes.
+ *
+ * Written only by the task itself, read by that task and by the diagnostic
+ * below, one word at a time -- no lock. The failure mode of a torn read is a
+ * pointer that is either the old name or the new one, and both are names of
+ * this same driver.
+ *
+ * Known limitation, stated rather than papered over: the slot is indexed by
+ * pid, so a driver task killed *inside* a serve callback leaves its slot set,
+ * and a later task reusing that pid would be reported for a rule it is not
+ * breaking. Driver tasks do not exit -- their bodies are infinite loops --
+ * and the consequence of the false positive is one wrong line of diagnostic,
+ * not a wrong behaviour. Clearing it from the exit path would mean a
+ * scheduler hook for a case that cannot currently happen. */
+static const char *g_noprintk[MAX_TASKS];
+
+void lock_noprintk_enter(const char *what) {
+    int me = sched_current_pid();
+    if (me < 0 || me >= MAX_TASKS) return;
+    g_noprintk[me] = what;
+}
+
+void lock_noprintk_leave(void) {
+    int me = sched_current_pid();
+    if (me < 0 || me >= MAX_TASKS) return;
+    g_noprintk[me] = NULL;
+}
+
+const char *lock_noprintk_what(void) {
+    int me = sched_current_pid();
+    if (me < 0 || me >= MAX_TASKS) return NULL;
+    return g_noprintk[me];
+}
+
+bool lock_check_may_printk(void) {
+    uint32_t h = hart_id();
+
+    /* Before the counter and before anything else, for the reason
+     * lock_fault() spells out at length: reporting this violation goes
+     * through printk_critical(), which arrives back here. Guard first, count
+     * second -- the other order made the first version of the spinlock
+     * checker report "fault 55" for one violation. */
+    if (g_check_busy[h]) return false;
+    if (!sched_has_task()) return false;
+
+    int me = sched_current_pid();
+    if (me < 0 || me >= MAX_TASKS) return false;
+    const char *what = g_noprintk[me];
+    if (!what) return false;
+
+    g_lock_faults++;
+    if (g_lock_faults > LOCK_FAULT_REPORT_MAX) return true;
+
+    g_check_busy[h] = true;
+    printk_critical("\n[Lock BUG] task %d: printk() from inside the '%s' "
+                    "serve callback.\n"
+                    "[Lock BUG]   A caller can be blocked on this endpoint "
+                    "while holding printk_lock() -- see kernel/lock.h. "
+                    "Fault %u.\n",
+                    me, what, (unsigned)g_lock_faults);
+    g_check_busy[h] = false;
+    return true;
+}
+
 const char *lock_spin_held(void) { return g_spin_name[hart_id()]; }
 const char *lock_spin_site(void) { return g_spin_site[hart_id()]; }
 uint32_t    lock_faults(void)    { return g_lock_faults; }
@@ -670,10 +741,39 @@ int lock_selftest(void) {
               spawned && g_cycle_done && waitfor_target(wpid) == -1);
     }
 
-    /* The fault total includes the two this selftest caused on purpose, which
-     * is why it is printed rather than asserted to be zero: a reader wants to
-     * know whether anything *else* has tripped the checker since boot. */
-    cprintf("  lock-hierarchy faults since boot: %u (2 of them deliberate, above)\n",
+    /* --- 7. no printk() from inside a driver serve callback (G2) ------ */
+    {
+        /* The mark driver_task.c sets around every serve callback. Set it by
+         * hand here rather than going through a real driver task: the claim
+         * under test is the checker's, and a test that needed a driver to
+         * demonstrate it would be testing two things at once.
+         *
+         * printk() *inside* the bracket is the violation; check() itself
+         * prints, so it is called after the mark is cleared -- otherwise the
+         * report would be the thing being reported on, which is the mistake
+         * Y2's fault counter made and this file exists to remember. */
+        uint32_t before = lock_faults();
+        lock_noprintk_enter("selftest");
+        bool marked = (lock_noprintk_what() != NULL);
+        printk("  (deliberate: printk from inside a serve callback)\n");
+        lock_noprintk_leave();
+        bool caught = (lock_faults() == before + 1);
+
+        /* And that it goes quiet once the callback returns -- a checker that
+         * reported unconditionally would pass the line above too. */
+        uint32_t before_clean = lock_faults();
+        printk("  (clean: printk outside any serve callback)\n");
+        bool clean_is_quiet = (lock_faults() == before_clean);
+
+        check("serve callback: printk() from inside one is reported, outside is not",
+              marked && caught && clean_is_quiet && lock_noprintk_what() == NULL);
+    }
+
+    /* The fault total includes the three this selftest caused on purpose,
+     * which is why it is printed rather than asserted to be zero: a reader
+     * wants to know whether anything *else* has tripped the checker since
+     * boot. */
+    cprintf("  lock-hierarchy faults since boot: %u (3 of them deliberate, above)\n",
             (unsigned)lock_faults());
     if (g_fail == 0) cprintf("LOCK_SELFTEST_OK (%d/%d)\n", g_checks, g_checks);
     else             cprintf("LOCK_SELFTEST_FAIL (%d of %d failed)\n", g_fail, g_checks);

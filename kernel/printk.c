@@ -110,6 +110,14 @@ void printk_lock(void) {
      * worse than either: a bring-up hart matched `g_printk_owner == me`
      * against a lock the boot task was holding on the *other* hart, took the
      * re-entrant path, and both harts wrote the console at once. */
+    /* G2, plan/phase30_driver_framework.md: a driver task inside a serve
+     * callback must not be here at all. Checked before the lock is taken, so
+     * the report names the rule that was broken rather than waiting for a
+     * caller to be holding this lock at the same instant -- which on QEMU
+     * essentially never happens and on hardware is the afternoon it costs.
+     * Reports and continues; the call proceeds exactly as it did. */
+    (void)lock_check_may_printk();
+
     int me = sched_context_id();
     bool blockable = sched_has_task();
     uintptr_t flags = spin_lock_irqsave(&g_printk_gate);

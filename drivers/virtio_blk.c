@@ -1,4 +1,5 @@
 #include "drivers/virtio_blk.h"
+#include "drivers/driver_task.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
@@ -158,25 +159,20 @@ static int virtio_blk_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t 
 #define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
 #define BLK_RESP_CAP  (1u + BLK_MAX_COUNT * 512u)
 
-static uint8_t         g_blk_req[BLK_REQ_CAP];
-static uint8_t         g_blk_resp[BLK_RESP_CAP];
-static chan_endpoint_t *g_blk_ep;
-static int              g_blk_task_pid = -1;
+static uint8_t       g_blk_req[BLK_REQ_CAP];
+static uint8_t       g_blk_resp[BLK_RESP_CAP];
+static driver_task_t g_blk_task;
 
 /* M4.5 verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning
  * (a nonzero, growing count is what distinguishes "the task is genuinely
  * serving requests" from "every caller silently fell back to direct
- * access the whole time"). */
-static uint32_t g_blk_calls;
+ * access the whole time"). The framework keeps the count now; the meaning
+ * is unchanged, including that a request too short to be a header is not a
+ * call served. */
+uint32_t blk_task_call_count(void) { return driver_task_call_count(&g_blk_task); }
 
-uint32_t blk_task_call_count(void) { return g_blk_calls; }
-
-static bool blk_task_alive(void) {
-    if (g_blk_task_pid < 0) return false;
-    int st = sched_task_state(g_blk_task_pid);
-    return st != TASK_UNUSED && st != TASK_DEAD;
-}
+static bool blk_task_alive(void) { return driver_task_alive(&g_blk_task); }
 
 static uint32_t be32_load(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -187,37 +183,34 @@ static void be32_store(uint8_t *p, uint32_t v) {
     p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
 }
 
-/* This task, and only this task, may call virtio_blk_transfer() while
- * alive -- see uart_16550.c's uart_task_body() for the fuller reasoning
- * (never call back into anything that could chan_call() this same
- * endpoint; never take printk_lock() from here). */
-static void blk_task_body(void *arg) {
-    (void)arg;
-    while (!g_blk_ep) sched_yield();
+/* This callback, and only this callback, calls virtio_blk_transfer() while
+ * the task is alive. The three invariants it runs under are
+ * drivers/driver_task.h's, and the first of them is checked rather than
+ * remembered since G2.
+ *
+ * The framework owns the loop; what is left here is the wire protocol, which
+ * is this driver's and stays in this driver. */
+static uint32_t blk_serve(void *ctx, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_cap) {
+    (void)ctx; (void)resp_cap;
 
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_blk_ep);
-        if (req_len < BLK_HDR_LEN) { chan_serve_reply(g_blk_ep, 0); continue; }
-        g_blk_calls++;
+    uint8_t  op    = req[0];
+    uint32_t lba   = be32_load(&req[1]);
+    uint32_t count = be32_load(&req[5]);
 
-        uint8_t  op    = g_blk_req[0];
-        uint32_t lba   = be32_load(&g_blk_req[1]);
-        uint32_t count = be32_load(&g_blk_req[5]);
-
-        if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
-            int rc = virtio_blk_transfer(VIRTIO_BLK_T_IN, &g_blk_resp[1], lba, count);
-            g_blk_resp[0] = (rc == 0) ? 0 : 1;
-            chan_serve_reply(g_blk_ep, (rc == 0) ? (1u + count * 512u) : 1u);
-        } else if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
-                  req_len >= BLK_HDR_LEN + count * 512u) {
-            int rc = virtio_blk_transfer(VIRTIO_BLK_T_OUT, &g_blk_req[BLK_HDR_LEN], lba, count);
-            g_blk_resp[0] = (rc == 0) ? 0 : 1;
-            chan_serve_reply(g_blk_ep, 1);
-        } else {
-            g_blk_resp[0] = 1;
-            chan_serve_reply(g_blk_ep, 1);
-        }
+    if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
+        int rc = virtio_blk_transfer(VIRTIO_BLK_T_IN, &resp[1], lba, count);
+        resp[0] = (rc == 0) ? 0 : 1;
+        return (rc == 0) ? (1u + count * 512u) : 1u;
     }
+    if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
+        req_len >= BLK_HDR_LEN + count * 512u) {
+        int rc = virtio_blk_transfer(VIRTIO_BLK_T_OUT, (void *)&req[BLK_HDR_LEN], lba, count);
+        resp[0] = (rc == 0) ? 0 : 1;
+        return 1;
+    }
+    resp[0] = 1;
+    return 1;
 }
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
@@ -226,30 +219,17 @@ static void blk_task_body(void *arg) {
  * before this ever runs. */
 int virtio_blk_task_start(void) {
     if (!g_mmio_base) return -1; /* no device to serve */
-    int pid = task_create_driver("blk", blk_task_body, NULL, 1);
-    if (pid < 0) {
-        printk("[VirtIO-Blk] Could not start the blk task; storage stays on direct MMIO access.\n");
-        return -1;
-    }
-    if (chan_register_task("blk", pid, g_blk_req, sizeof(g_blk_req),
-                           g_blk_resp, sizeof(g_blk_resp)) != 0) {
-        printk("[VirtIO-Blk] Could not register the blk channel endpoint; falling back to direct MMIO access.\n");
-        return -1;
-    }
-    g_blk_ep = chan_lookup("blk");
-    g_blk_task_pid = pid;
-    printk("[VirtIO-Blk] Driver running as task #%d, reachable via chan_call(\"blk\", ...)\n", pid);
-    return pid;
-}
-
-static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
-                               uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
+    const driver_task_spec_t spec = {
+        .name        = "blk",
+        .serve       = blk_serve,
+        .ctx         = NULL,
+        .req         = g_blk_req,  .req_cap  = sizeof(g_blk_req),
+        .resp        = g_blk_resp, .resp_cap = sizeof(g_blk_resp),
+        .min_req_len = BLK_HDR_LEN,
+        .stack_pages = 1,
+        .priority    = DRIVER_PRIO_DEFAULT,
+    };
+    return driver_task_start(&g_blk_task, &spec);
 }
 
 static int virtio_blk_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
@@ -262,7 +242,7 @@ static int virtio_blk_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t c
         be32_store(&req[1], lba);
         be32_store(&req[5], count);
         uint8_t resp[BLK_RESP_CAP];
-        int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
+        int n = driver_task_call(&g_blk_task, req, sizeof(req), resp, sizeof(resp));
         if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
             memcpy(buf, &resp[1], count * 512u);
             return 0;
@@ -285,7 +265,7 @@ static int virtio_blk_write(block_dev_t *dev, const void *buf, uint32_t lba, uin
         be32_store(&req[5], count);
         memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
         uint8_t resp[1];
-        int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+        int n = driver_task_call(&g_blk_task, req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
         if (n >= 1 && resp[0] == 0) return 0;
     }
     return virtio_blk_transfer(VIRTIO_BLK_T_OUT, (void *)buf, lba, count);
