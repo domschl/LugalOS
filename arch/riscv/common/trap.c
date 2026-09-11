@@ -915,6 +915,7 @@ void trap_handler(trap_frame_t *frame) {
                      * with this on printk() the suite scores 353/363, with it
                      * here 361/363. */
                     console_puts(kbuf);
+                    console_flush();   /* one syscall, one whole string */
                     ret = 0;
                     break;
                 }
@@ -936,7 +937,6 @@ void trap_handler(trap_frame_t *frame) {
                         do { digits[n++] = (char)('0' + (val % 10)); val /= 10; } while (val > 0);
                         while (n > 0) console_putc(digits[--n]);
                     }
-                    uart_flush();   /* same reason as SYS_PUTCHAR below */
                     ret = 0;
                     break;
                 case 12: /* SYS_PUTCHAR */
@@ -953,7 +953,7 @@ void trap_handler(trap_frame_t *frame) {
                      * the kernel log ring inconsistently with SYS_PUTNUM
                      * above. */
                     console_putc((char)frame->a1);
-                    /* And flush, because nothing else will (Y5c,
+                    /* Flush at the end of a line, not of a character (Y5d,
                      * plan/phase31_concurrency_hierarchy.md).
                      *
                      * The UART's TX batch is per hart, and printk_unlock()
@@ -963,10 +963,15 @@ void trap_handler(trap_frame_t *frame) {
                      * hart 1's batch indefinitely -- on hart 0 the shell's
                      * next cprintf() happened to flush it, which is why this
                      * looked like a second-hart bug rather than a missing
-                     * flush. One syscall is one unit of user output and the
-                     * natural place to end a batch; the syscall's own cost
-                     * dwarfs the flush. */
-                    uart_flush();
+                     * flush.
+                     *
+                     * Per *syscall* was the first version and it undid M4: a
+                     * program printing character by character made one
+                     * chan_call() per character, which is the defect batching
+                     * exists to prevent. The line is the unit. A program that
+                     * ends without a newline is covered by SYS_UEXIT below,
+                     * which flushes before the task goes away. */
+                    if ((char)frame->a1 == '\n') console_flush();
                     ret = 0;
                     break;
                 case 21: /* SYS_TICKS: the preemption tick counter */
@@ -1089,6 +1094,17 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 }
                 case SYS_UEXIT:
+                    /* Y5d: push whatever this task batched before it goes.
+                     *
+                     * Here rather than in task_exit(), and the distinction is
+                     * load-bearing: this is still an ordinary task context
+                     * where blocking is allowed, and console_flush() ends in
+                     * chan_call() to the uart task. Inside task_exit() the
+                     * same call is what phase 27 E4 proved fatal. A U-mode
+                     * program whose last output has no newline -- the
+                     * `user_probe` in kernel/shell.c prints "UMODE_OK" and
+                     * exits -- reaches the wire because of this line. */
+                    console_flush();
                     /* A U-mode task asking to end. task_exit() switches away
                      * and never returns, so this call does not come back here
                      * and the trap frame on this kernel stack is simply

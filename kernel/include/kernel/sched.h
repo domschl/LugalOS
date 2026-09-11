@@ -234,7 +234,7 @@ int  task_unblock(int pid);
  * gives it a slot, and before phase 23's identity fix this function reported
  * that hart as task 0 -- the boot task, which is running on a *different*
  * hart at the same instant. Anything that then acted on the answer acted on
- * the wrong task: task_block() blocked the shell, and printk_lock()'s
+ * the wrong task: task_block() blocked the shell, and the output lock's
  * ownership test matched a lock hart 0 was holding and let both harts into
  * the region at once. The same window exists on the primary before
  * sched_init().

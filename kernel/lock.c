@@ -333,7 +333,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
      * happen with that spinlock held. Reported, not refused: the caller has
      * no alternative to offer and refusing would break it worse. */
     lock_check_may_block_named("took ylock", name, site);
-    /* The context, not the pid -- for the same reason printk_lock() uses it:
+    /* The context, not the pid -- for the same reason the console lock needs it:
      * -1 is this lock's "free" marker (see ylock_owner()), so a hart with no
      * task must not identify as -1 or it would read its own held lock as
      * unowned. sched_context_id() is never -1. Contention from such a hart
@@ -726,10 +726,24 @@ int lock_selftest(void) {
         int wpid = task_create("cyclewait", cycle_waiter_task, NULL);
         bool spawned = (wpid >= 0);
 
-        /* Let the waiter reach ylock_acquire() and record its edge. */
-        for (int i = 0; i < 200 && spawned && waitfor_target(wpid) != me; i++)
-            sched_yield();
-        bool edge_recorded = spawned && (waitfor_target(wpid) == me);
+        /* Let the waiter reach ylock_acquire() and record its edge.
+         *
+         * The edge exists only while the waiter is inside its yield, so this
+         * samples a window rather than a state, and the sampling has to be
+         * generous enough not to depend on the shape of the run queue. It was
+         * 200 bare sched_yield()s, which was enough until Y5c put klogd in
+         * the rotation and then failed about one run in three on two harts --
+         * a fragile measurement of a property that had not changed.
+         *
+         * task_sleep_ms() rather than more yields: a yield hands off within
+         * this hart's ready set, and what is needed is for the *waiter* to be
+         * scheduled, which on the other hart may mean waiting for real time
+         * to pass. Bounded at ~250 ms, which is invisible in a suite run. */
+        bool edge_recorded = false;
+        for (int i = 0; i < 500 && spawned && !edge_recorded; i++) {
+            edge_recorded = (waitfor_target(wpid) == me);
+            if (!edge_recorded) { sched_yield(); if ((i % 20) == 19) task_sleep_ms(10); }
+        }
         check("wait-for graph: a ylock wait is an edge, like a channel call",
               edge_recorded);
 

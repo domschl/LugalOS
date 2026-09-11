@@ -5,12 +5,35 @@
 #include "kernel/printk.h"
 #include "drivers/uart.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
  * kernel/printk.c and is shared; only the destination differs. */
 
 static console_putc_fn g_console_putc;
+
+/* See kernel/console.h. A ylock, because it is held across the block that a
+ * console write ends in. */
+static ylock_t g_console_lock;
+
+void console_lock(void) {
+    /* The rule G2 added, now pointing at what it actually guards (§5.6): a
+     * driver serve callback must not write the console, because this path
+     * ends in chan_call() to the uart task and a caller blocked on that
+     * callback's own endpoint closes the cycle. printk() is safe there and no
+     * longer comes through here. */
+    (void)lock_check_may_printk();
+    ylock_acquire(&g_console_lock);
+}
+
+void console_unlock(void) {
+    ylock_release(&g_console_lock);
+}
+
+void console_flush(void) {
+    uart_flush();
+}
 
 void console_bind(console_putc_fn putc) {
     g_console_putc = putc;
@@ -48,18 +71,19 @@ void console_putc(char c) {
 
 void console_puts(const char *s) {
     if (!s) return;
+    /* Drains, but does not lock (Y5d).
+     *
+     * Taking console_lock() here as well looked symmetric with cprintf() and
+     * broke the two-hart boot outright -- deterministically, both runs, the
+     * SMP target never reaching a shell. This function is reached from inside
+     * cprintf()'s format engine, which already holds the lock, and from
+     * SYS_PRINT; the first needs no second acquire and the second is a whole
+     * syscall. Locking a function that is mostly called under its own lock,
+     * during bring-up, on a hart that may not have a task yet, is a good way
+     * to find out which of those assumptions is wrong. */
     klog_drain();
     while (*s) console_putc(*s++);
 
-    /* Flush the UART's TX batch at the end of a whole string (Y5c).
-     *
-     * The batch is per hart, and printk_unlock() used to be the only thing
-     * that emptied it -- printk() does not take that lock any more, and the
-     * console path never had an equivalent. Without this a U-mode program's
-     * output sat in hart 1's batch until something else on hart 1 happened to
-     * flush it. A whole string is the natural boundary; single characters
-     * still batch, as they should. */
-    uart_flush();
 
 }
 

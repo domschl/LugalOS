@@ -144,7 +144,7 @@ int  ylock_depth(const ylock_t *l);
  * `bit_get`/`bit_set`, `hart_id`, `memcpy`, `node_parent` -- and where a
  * section appeared to call something blocking it turned out to release and
  * re-take around it, with a comment saying why (`uart_putc()` around
- * `uart_flush()`, `printk_lock()` around `task_block()`). The only two
+ * `uart_flush()`, `console_lock()` around `task_block()`). The only two
  * exceptions were bugs, both in `task_exit()`, and both are fixed.
  *
  * A leaf rule needs one comparison, where levels need a table that has to be
@@ -202,7 +202,7 @@ bool lock_check_may_block_named(const char *what, const char *name,
  * plan/phase30_driver_framework.md) -----------------------------------------
  *
  * A driver task serving a request must never call printk(): a caller can be
- * blocked on that very endpoint while holding printk_lock(), and the serve
+ * blocked on that very endpoint while holding the console lock, and the serve
  * callback taking the same lock closes the cycle.
  *
  * Y4 made such a cycle *named* instead of silent -- printk ownership is an
@@ -223,7 +223,7 @@ void lock_noprintk_enter(const char *what);
 void lock_noprintk_leave(void);
 
 /* Reports if the current task is inside a serve callback. Called from
- * printk_lock(); returns true if a violation was found. Inert when there is
+ * console_lock(); returns true if a violation was found. Inert when there is
  * no current task, and transparent inside the checker's own diagnostic. */
 bool lock_check_may_printk(void);
 
@@ -312,14 +312,19 @@ void waitfor_leave(int me);
 int  waitfor_target(int pid);
 
 /* Names a cycle that a primitive with no refusal to offer has just walked
- * into, and counts it with the hierarchy faults. For `ylock_acquire()` and
- * `printk_lock()`: both wait on a task, both can therefore close a cycle, and
- * neither has a failure its caller could act on. The wait still happens and
- * still hangs -- what changes is that the board says which two tasks and
- * which resource, instead of simply stopping.
+ * into, and counts it with the hierarchy faults. For `ylock_acquire()`: it
+ * waits on a task, can therefore close a cycle, and has no failure its caller
+ * could act on. The wait still happens and still hangs -- what changes is that
+ * the board says which two tasks and which resource, instead of simply
+ * stopping.
  *
- * Writes through printk_critical(), so it is safe from inside printk's own
- * ownership protocol: that path takes no printk lock at all. */
+ * It used to be for `printk_lock()` too. Y5d deleted that primitive: the
+ * console's lock is an ordinary `ylock_t` now, so it reaches this through the
+ * line above rather than maintaining a parallel edge by hand, and the graph is
+ * fed by exactly two things again -- channels and ylocks.
+ *
+ * Writes through printk_critical(), which takes no lock at all, so this is
+ * safe from inside the lock protocol it reports on. */
 void waitfor_report_cycle(const char *what, int me, int target);
 
 /* Prints the checks and a LOCK_SELFTEST_OK / _FAIL marker; returns the number

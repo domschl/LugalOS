@@ -1111,6 +1111,72 @@ constraint Y5 deletes, and migrating them twice is the avoidable mistake.
   `printk()` from a serve callback is *not* a fault while a `cprintf()` from
   one still is.
 
+  **Y5d done — 2026-09-11.** All three, and the milestone is mostly deletion:
+  `printk_lock()`/`printk_unlock()` are gone, with `g_printk_owner`,
+  `g_printk_depth`, `g_printk_waiter`, `g_printk_gate`, the polling fallback
+  for a task-less hart and Y4's hand-maintained graph edge. The console's lock
+  is `console_lock()` -- a plain `ylock_t` -- and `waitfor_enter()` is now
+  called from exactly two places in the tree: `kernel/chan.c` and
+  `ylock_acquire()`. Channels and ylocks. Two.
+
+  Nothing clever made that possible; Y5b and Y5c did. The lock existed to hold
+  a whole message together across a char-at-a-time emission that could block.
+  A message is one record appended under a leaf spinlock now, and the part
+  that blocks belongs to klogd. What was left to serialise is *the wire* --
+  `cprintf()`, `printk_debug()` and the drain all reach the same UART -- and
+  that is `console.c`'s business, not `printk.c`'s.
+
+  `console_flush()` came with it, the other half of Y5c's most expensive bug:
+  `printk_unlock()` was the only thing in the kernel that flushed the UART's
+  per-hart TX batch, so the console stream had been borrowing printk's flush
+  without anyone noticing until printk stopped taking that path.
+
+  **`printk_critical()`'s rationale was rewritten rather than kept.** It listed
+  three reasons -- scheduler teardown, interrupt context, anything holding
+  `g_sched_lock` -- and `printk()` is safe in all three now. One reason
+  survives and it is the whole reason: *printk() is delivered eventually, by
+  klogd; this is delivered now.* Anything whose value is that it arrived
+  before the machine stopped belongs there.
+
+  One test was made robust rather than adjusted: Y3's "a ylock wait is an
+  edge" check sampled a window -- the edge exists only while the waiter is
+  inside its yield -- with 200 bare `sched_yield()`s. That was enough until
+  klogd joined the rotation, then failed about one run in three on two harts.
+  It now polls with `task_sleep_ms()`, because a yield hands off within one
+  hart's ready set and what is needed is for the waiter on the *other* hart to
+  be scheduled. The property under test did not change.
+
+  **Three things the suites caught, all mine, all worth recording:**
+
+  * **Flushing per write undid M4.** `console_flush()` went into
+    `console_puts()`, which looked like "the end of a string" and is in fact
+    called once per *literal run* inside `cprintf()`'s format engine. One
+    `help` became 260 `chan_call()`s -- the per-character IPC batching exists
+    to prevent. The flush belongs at real boundaries: a whole `cprintf()`, a
+    newline from `SYS_PUTCHAR`, and `SYS_UEXIT` (before `task_exit()`, where
+    blocking is still allowed) for a program like `user_probe` that prints
+    "UMODE_OK" and exits without a newline. Back to 140 calls for a `help`,
+    against a historical 142.
+  * **Drain outside the lock is a race.** `cprintf()` drained *before*
+    acquiring, so another writer could interpose between the drain and the
+    write -- and a log line from seconds earlier landed inside a command's
+    output. It showed as a *different single test* failing on each run, which
+    is what a race looks like when what it corrupts is whatever happened to be
+    printing. Draining inside the lock makes the pair atomic.
+  * **Locking `console_puts()` too broke the two-hart boot**, deterministically
+    and in both runs. It is reached from inside `cprintf()`'s engine, which
+    already holds the lock, during bring-up, on a hart that may have no task.
+    It drains and does not lock.
+
+  Verified: ten presets clean, QEMU **363/363 twice consecutively**,
+  `lockselftest` 16/16 on rv32 and five consecutive clean runs on rv64-smp,
+  ESP32-P4 hardware 12/12, and RP2350 hardware **25/25** -- which is better
+  than the documented 22/25 baseline, since B3/B6/C2 passed too on this run.
+
+  (One suite run hung and was not a regression: I had left manual QEMU
+  instances racing it, which `plan/`'s own standing note warns about. Clean
+  re-run: 363/363 in 185 s.)
+
 * **Y5e — The documentation that was load-bearing.** `drivers/README.md`'s
   "things that will bite you" printk entry, `kernel/lock.h`'s invariant
   section, `driver_task.h`'s invariant 1, and the four driver task-body

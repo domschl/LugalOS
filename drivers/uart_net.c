@@ -84,7 +84,7 @@ static int uart_slip_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t le
      * complete frame sitting in that batch is not actually on the wire
      * until something flushes it. Nothing else in this call path ever
      * would -- this function *is* the natural per-message boundary for a
-     * SLIP frame, the same role printk_unlock() plays for a printk() call. */
+     * SLIP frame, the same role console_flush() plays for a console write. */
     uart_flush();
     return (int)len;
 }

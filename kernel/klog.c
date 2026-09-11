@@ -3,6 +3,7 @@
 #include "kernel/hart.h"
 #include "kernel/sched.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include <string.h>
 
 /* See kernel/include/kernel/klog.h for the rationale. */
@@ -318,7 +319,7 @@ void klog_drain(void) {
      * may -- see kernel/klogd.c. */
     if (klog_total() == g_cursor && g_gap_bytes == 0) return;
 
-    printk_lock();
+    console_lock();
 
     /* Bytes that were evicted before we reached them. Reported in the stream,
      * at the position where they were lost, rather than stored as a record --
@@ -354,7 +355,8 @@ void klog_drain(void) {
         sinks_write(chunk, n);
     }
 
-    printk_unlock();
+    console_unlock();
+    console_flush();
 }
 
 void klog_emit(uint32_t ms, const char *text, uint32_t len) {
@@ -378,7 +380,7 @@ void klog_emit(uint32_t ms, const char *text, uint32_t len) {
     /* No consumer yet: drain inline, exactly as before Y5c -- including the
      * lock, which this path must keep.
      *
-     * printk() itself no longer takes printk_lock(), and dropping it here too
+     * printk() itself no longer takes the output lock, and dropping it here too
      * spliced boot output mid-word:
      *
      *     [    0.005] [No[    0.007] [USB CDC] Not built for this target.
@@ -386,7 +388,7 @@ void klog_emit(uint32_t ms, const char *text, uint32_t len) {
      *
      * The second writer is printk_debug(), which goes straight to the UART
      * registers by design -- "physical UART, always, no exceptions" -- and
-     * bypasses klog entirely. It still takes printk_lock(); printk() no
+     * bypasses klog entirely. It still takes the output lock; printk() no
      * longer did; so the two stopped excluding each other. §5.6 predicted
      * this hazard and named cprintf() as the other writer, and missed this
      * one. The ring was correct throughout: only the console was spliced.
@@ -398,20 +400,21 @@ void klog_emit(uint32_t ms, const char *text, uint32_t len) {
      * consumer does not is the two lines between uart_task_start() and
      * klogd_start(), and it behaves exactly as every release before this one.
      *
-     * printk_unlock() also flushes the UART's TX batch, which is why boot
+     * console_flush() also empties the UART's TX batch, which is why boot
      * output appears as it is produced rather than in 256-byte lumps. */
     unsigned h = hart_id();
     if (g_in_fanout[h]) return;
     g_in_fanout[h] = true;
 
-    printk_lock();
+    console_lock();
     char ts[16];
     uint32_t ts_len = ts_render(ms, ts);
     sinks_write(ts, ts_len);
     sinks_write(text, len);
     g_cursor      = g_render_total;   /* stays caught up while we are the drain */
     g_cursor_spos = g_stored_total;
-    printk_unlock();
+    console_unlock();
+    console_flush();
 
     g_in_fanout[h] = false;
 }

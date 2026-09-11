@@ -8,7 +8,7 @@
  * ## The one asymmetry the whole design rests on
  *
  * **The consumer may block; the producer may not.** This task takes
- * printk_lock() around its fan-out and will happily wait behind cprintf();
+ * console_lock() around its fan-out and will happily wait behind cprintf();
  * that is harmless precisely because nothing is waiting on this task. A
  * producer that waited would be a cycle, which is what phase 31 exists to
  * prevent and what §0.4 measured the cost of.
@@ -51,7 +51,7 @@ static void klogd_body(void *arg) {
     (void)arg;
     for (;;) {
         /* Drains to the current end and reports any bytes that were evicted
-         * before we reached them. Takes printk_lock() itself, once per pass
+         * before we reached them. Takes console_lock() itself, once per pass
          * rather than once per record, so a burst leaves the console in one
          * run instead of interleaved with whatever else is printing. */
         klog_drain();

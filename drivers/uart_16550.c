@@ -233,7 +233,7 @@ static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
  * correctly refuses rather than deadlocks, but there is no reason to rely
  * on that -- it should simply never happen. */
 /* Must never call printk()/printk_debug()/cprintf() (or anything that takes
- * printk_lock()) from within this loop. A caller can legitimately be blocked
+ * console_lock()) from within this loop. A caller can legitimately be blocked
  * here on this very endpoint while holding printk_lock(); this task taking
  * that same lock to log would deadlock against it.
  * uart_debug_putc()/uart_debug_puts() exist precisely so a driver can still
@@ -338,7 +338,7 @@ void uart_init(uintptr_t base_addr) {
  *
  * g_tx_batch is shared, mutable state now reachable from any task that
  * prints -- console_putc()/console_puts() (line_editor.c's redraws,
- * SYS_PUTCHAR) call this directly, without going through printk_lock(), so
+ * SYS_PUTCHAR) call this directly, without going through console_lock(), so
  * that lock cannot be assumed to already serialize access here. Protected
  * with irq_save() instead: short, bounded, never itself blocks (the actual
  * I/O -- chan_call() or the hardware loop -- always happens after
@@ -354,7 +354,7 @@ void uart_init(uintptr_t base_addr) {
 /* One batch per hart (phase 23 X7).
  *
  * It was a single shared buffer, and on two cores that spliced messages
- * together character by character: printk_unlock() releases the printk lock
+ * together character by character: console_unlock() releases the output lock
  * and then flushes, so the other core acquires the lock and starts appending
  * into the same buffer in between, and this core's flush picks up both.
  * Observed on RP2350 as core 0 and core 1 interleaving mid-word.
@@ -381,7 +381,7 @@ static uint32_t g_tx_batch_len[MAX_HARTS];
  * when that task is absent or the p9share demux owns the wire.
  *
  * It is NOT true of this batch. uart_flush() and uart_putc() run in the
- * context of whoever is printing -- printk_unlock() calls the first, every
+ * context of whoever is printing -- console_flush() calls the first, every
  * console write the second -- so on two harts two printing tasks touch this
  * buffer at once, and irq_save() never covered that. Same shape as
  * usb_cdc_putc(), and found the same way: by asking who actually calls it

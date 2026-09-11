@@ -396,7 +396,7 @@ static uint8_t hw_uart_getc(void);
  * own IRQ line (RP2350 datasheet §2.1 IRQ table, confirmed against the Pico
  * SDK's hardware/regs/intctrl.h). Wired up in M2, unwired the same
  * milestone after hardware testing showed it corrupting console output, and
- * back now that kernel/printk.c's printk_lock()/printk_unlock() make a
+ * back now that kernel/console.c's console_lock()/console_unlock() make a
  * whole message atomic across a block rather than just across a spin -- see
  * that file's comment for the full story.
  *
@@ -412,7 +412,7 @@ static uint8_t hw_uart_getc(void);
  * task instead, so it is no longer part of this reasoning.) */
 #define UART0_IRQ 33u
 
-/* At most one TX waiter: every caller now arrives through printk_lock()
+/* At most one TX waiter: every caller now arrives through console_lock()
  * (kernel/printk.c) already serialized to a single writer, so a second,
  * concurrent blocker here should not happen -- kept as a defensive
  * fallback below, not a load-bearing path, the same shape as
@@ -515,7 +515,7 @@ void uart_init(uintptr_t base_addr) {
 }
 
 /* M2.5, plan/phase12_microkernel_migration.md: safe now that every caller
- * arrives through printk_lock() (kernel/printk.c) or is otherwise the sole
+ * arrives through console_lock() (kernel/console.c) or is otherwise the sole
  * writer -- see that file's comment for the full story of what M2's first
  * attempt at this got wrong (real hardware caught `[Sche5d]` where `[Sched]`
  * should have been -- interleaved output, not a PMP failure, despite the
@@ -928,7 +928,7 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 /* One batch per hart (phase 23 X7).
  *
  * It was a single shared buffer, and on two cores that spliced messages
- * together character by character: printk_unlock() releases the printk lock
+ * together character by character: console_unlock() releases the output lock
  * and then flushes, so the other core acquires the lock and starts appending
  * into the same buffer in between, and this core's flush picks up both.
  * Observed on RP2350 as core 0 and core 1 interleaving mid-word.
@@ -955,7 +955,7 @@ static uint32_t g_tx_batch_len[MAX_HARTS];
  * when that task is absent or the p9share demux owns the wire.
  *
  * It is NOT true of this batch. uart_flush() and uart_putc() run in the
- * context of whoever is printing -- printk_unlock() calls the first, every
+ * context of whoever is printing -- console_flush() calls the first, every
  * console write the second -- so on two harts two printing tasks touch this
  * buffer at once, and irq_save() never covered that. Same shape as
  * usb_cdc_putc(), and found the same way: by asking who actually calls it

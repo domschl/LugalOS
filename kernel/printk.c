@@ -60,7 +60,7 @@ typedef void (*puts_fn)(void *ctx, const char *);
  * preemption could never fire *during* a masked printk() before M2, because
  * nothing inside it yielded.
  *
- * printk_lock()/printk_unlock() below replace the mask with what the B6
+ * console_lock()/console_unlock() (kernel/console.h) replace the mask with what the B6
  * comment said a lock would need to not be: one that can be held across a
  * real block. It works from the trap handler for the same reason ordinary
  * timer preemption already does -- an ISR runs on the interrupted task's own
@@ -77,165 +77,29 @@ typedef void (*puts_fn)(void *ctx, const char *);
  * ring-buffer append (RP2350's USB CDC) or a QEMU MMIO store, so the window
  * is already short and the extra buffer would cost stack in the trap path. */
 
-/* Single owner, single waiter slot -- the same "one slot, busy refuses or
- * falls back to polling" shape as kernel/chan.c's endpoints and M2's UART
- * TX/RX waiters, not a general wait queue. Console output in this tree
- * realistically has at most a couple of concurrent producers (the active
- * shell/task plus a background server), so a queue would be machinery this
- * kernel does not need yet. */
-static volatile int g_printk_owner   = -1;
-static volatile int g_printk_depth  = 0;
-static volatile int g_printk_waiter = -1;
-
-/* S5, plan/phase22_smp_locking_foundation.md: guards the owner/depth/waiter
- * bookkeeping above, and nothing else.
+/* printk_lock()/printk_unlock() are gone (Y5d,
+ * plan/phase31_concurrency_hierarchy.md).
  *
- * This lock is the *fourth* independent reinvention of the same idea the
- * audit found -- after fs/p9_link.c, kernel/chan.c and kernel/palloc.c, and
- * the most elaborate of them, because it grew a directed wakeup that the
- * others did not need. It is kept rather than replaced by a ylock_t: the
- * waiter hand-off below is a real property of the console path (M2's
- * blocking uart_putc()) and swapping it for ylock_t's yield-and-retry would
- * change the scheduling behaviour of every printk() in the system to fix a
- * problem that a four-byte lock fixes without touching it.
+ * They were a third blocking primitive, hand-rolled: a single owner, a single
+ * waiter slot, a re-entrancy depth, a polling fallback for a hart with no
+ * task, a spinlock guarding all of it, and -- since Y4 -- an edge in the
+ * wait-for graph maintained by hand. `ylock_t` already had every one of those
+ * and had them checked, so the console's lock is one (kernel/console.h's
+ * console_lock()), and the graph is back to two contributors: channels and
+ * ylocks.
  *
- * What it fixes is the same thing everywhere in this phase: the check-then-
- * set of g_printk_owner was atomic only against a second access *from the
- * same hart*, because irq_save() is all that stood behind it. Two harts
- * both find g_printk_owner == -1 and both become the owner, and the console
- * interleaving M2 spent a debugging session on comes back -- except now it
- * cannot be reproduced by reasoning about one call stack.
+ * What made the deletion possible was Y5b and Y5c rather than anything here.
+ * The lock existed to hold a whole message together across a char-at-a-time
+ * emission that could block; a message is one record appended under a leaf
+ * spinlock now, and the part that blocks belongs to klogd. printk() takes no
+ * lock at all -- what is left to serialise is the console *stream*, whose
+ * writers are cprintf(), printk_debug() and the drain, and that is console.c's
+ * business rather than printk.c's.
  *
- * Held for a handful of instructions and never across the task_block()
- * below, which is the spinlock_t contract (kernel/lock.h). */
-static spinlock_t g_printk_gate;
-
-void printk_lock(void) {
-    /* The *context*, not the pid. A hart still in bring-up owns no task, and
-     * sched_current_pid() answers -1 there -- which is this lock's own
-     * "unowned" value, so using it would make an owned lock look free and let
-     * every hart straight in. sched_context_id() is never -1 and never
-     * collides with a pid, so the ownership and re-entrancy tests below are
-     * exactly as correct for a task-less hart as for a task.
-     *
-     * Until phase 23's identity fix that pid was reported as 0, which was
-     * worse than either: a bring-up hart matched `g_printk_owner == me`
-     * against a lock the boot task was holding on the *other* hart, took the
-     * re-entrant path, and both harts wrote the console at once. */
-    /* G2, plan/phase30_driver_framework.md: a driver task inside a serve
-     * callback must not be here at all. Checked before the lock is taken, so
-     * the report names the rule that was broken rather than waiting for a
-     * caller to be holding this lock at the same instant -- which on QEMU
-     * essentially never happens and on hardware is the afternoon it costs.
-     * Reports and continues; the call proceeds exactly as it did. */
-    (void)lock_check_may_printk();
-
-    int me = sched_context_id();
-    bool blockable = sched_has_task();
-    uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
-    if (g_printk_owner == me) {
-        /* Reentrant: the ISR-during-our-own-printk() case above. Proceeds
-         * without blocking -- blocking here would be waiting for ourselves
-         * to release a lock we cannot release until we return. */
-        g_printk_depth++;
-        spin_unlock_irqrestore(&g_printk_gate, flags);
-        return;
-    }
-    while (g_printk_owner != -1) {
-        if (blockable && g_printk_waiter < 0) {
-            int owner = g_printk_owner;
-            g_printk_waiter = me;
-            /* Released before blocking, never held across it. */
-            spin_unlock_irqrestore(&g_printk_gate, flags);
-
-            /* Y4, plan/phase31_concurrency_hierarchy.md: printk ownership is
-             * the *third* blocking resource, after channels and ylocks, and
-             * until now the only one outside the wait-for graph. §0.2 noted
-             * it -- "a lock without being either type" -- and the uart
-             * drivers each carry a comment saying the cycle through it must
-             * be avoided by hand, because "chan.c's wait-for cycle guard
-             * covers chan_call() itself, but printk_lock() is a different
-             * blocking resource it cannot see".
-             *
-             * It can see it now. The edge is this task waiting for the owner,
-             * exactly like the other two, which buys two things: a chan_call()
-             * that would close the cycle from the other side is *refused*
-             * outright, and a cycle that closes here is named rather than
-             * silent.
-             *
-             * Named, not prevented: printk_unlock() clears ownership
-             * unconditionally, so "proceed without owning it" is not
-             * representable without adding state to the most safety-critical
-             * path in the kernel for a case that should never happen. The
-             * same bargain Y2 struck for spinlocks -- report before the wait
-             * that hangs, so the board says which two tasks rather than
-             * simply stopping. */
-            bool edge = waitfor_enter(me, owner);
-            if (!edge) waitfor_report_cycle("printk_lock()", me, owner);
-
-            task_block();
-            if (edge) waitfor_leave(me);
-            flags = spin_lock_irqsave(&g_printk_gate);
-        } else {
-            /* Someone else is already the registered waiter -- or this hart
-             * owns no task and so cannot be one. Fall back to polling rather
-             * than overwrite their slot and lose their wakeup, which is the
-             * same defensive shape as M2's UART waiters. Polling terminates
-             * for a task-less hart because the owner is by definition a task
-             * running somewhere else, and sched_yield() from here is a plain
-             * spin. */
-            spin_unlock_irqrestore(&g_printk_gate, flags);
-            sched_yield();
-            flags = spin_lock_irqsave(&g_printk_gate);
-        }
-    }
-    g_printk_owner = me;
-    g_printk_depth = 1;
-    spin_unlock_irqrestore(&g_printk_gate, flags);
-}
-
-void printk_unlock(void) {
-    uintptr_t flags = spin_lock_irqsave(&g_printk_gate);
-    if (g_printk_depth > 1) {
-        g_printk_depth--;
-        spin_unlock_irqrestore(&g_printk_gate, flags);
-        return;
-    }
-    g_printk_depth = 0;
-    g_printk_owner = -1;
-    int waiter = g_printk_waiter;
-    g_printk_waiter = -1;
-    spin_unlock_irqrestore(&g_printk_gate, flags);
-    if (waiter >= 0) task_unblock(waiter);
-
-    /* M4: send whatever this message batched into uart_putc()'s buffer
-     * (drivers/uart.h) now that the message is complete -- the *outermost*
-     * unlock only, matching "one message, one flush" rather than flushing
-     * once per reentrant printk() nested inside another. Not the only
-     * place this is called (uart_getc()/uart_has_char() also flush, for
-     * output that never goes through printk_lock() at all -- line editor
-     * redraws, raw console_putc() sequences), but the natural one for the
-     * printk/cprintf/printk_debug family specifically.
-     *
-     * After the release, deliberately, and phase 23 X7 is why that is safe
-     * on two cores rather than merely traditional.
-     *
-     * On one shared batch buffer it was not safe: releasing here let the
-     * other core acquire the lock and start appending into the same buffer,
-     * and this core's flush then sent both messages spliced together --
-     * observed on RP2350 as core 0 and core 1 interleaving mid-word. That
-     * looked exactly like a failed lock and was not; `smpstart locktest`
-     * shows amoswap excluding the two cores correctly.
-     *
-     * The tempting fix was to flush while still holding ownership. It trades
-     * this bug for a worse one: uart_flush() blocks in chan_call() waiting
-     * for the uart task, so printk ownership would be held across that wait,
-     * and anything the uart task needs printk for deadlocks against it. The
-     * batch is per-hart instead (drivers/uart_*.c), which removes the
-     * sharing rather than serialising it, and nothing is held across a
-     * block. */
-    uart_flush();
-}
+ * The hard-won comment that used to sit on printk_unlock()'s flush is kept
+ * where the flush went, in console_flush(): the batch is per hart precisely
+ * so that nothing is held across the block inside uart_flush().
+ */
 
 /* Adapter for the destinations that were already plain function pointers
  * and have no state to carry -- the UART, the console, the debug port. The
@@ -472,14 +336,7 @@ int printk(const char *fmt, ...) {
 
     va_list args;
     va_start(args, fmt);
-    /* Still under printk_lock(). The lock's *scope* has shrunk to the fan-out
-     * -- formatting is out from under it, and the record append is atomic on
-     * its own -- but the fan-out is still synchronous and still has to be
-     * serialised against the other hart's. Y5c is what gives the fan-out to a
-     * consumer; Y5d is what deletes this lock. Doing it here instead would
-     * mean printk() and cprintf() interleaving mid-line, with no consumer yet
-     * built to keep them apart. */
-    /* No printk_lock() (Y5c, plan/phase31_concurrency_hierarchy.md).
+    /* No lock at all (Y5c, plan/phase31_concurrency_hierarchy.md).
      *
      * There is nothing left for it to protect. Formatting happens in `buf` on
      * this stack, the append is atomic under the ring's own leaf spinlock,
@@ -526,37 +383,35 @@ int printk(const char *fmt, ...) {
 int printk_debug(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    printk_lock();
+    console_lock();
     int ret = vprintk_to(plain_putc, plain_puts, &(plain_dest_t){ uart_debug_putc, uart_debug_puts }, fmt, args, true);
-    printk_unlock();
+    console_unlock();
+    console_flush();
     va_end(args);
     return ret;
 }
 
-/* Output from a context that must not block, yield, or switch.
+/* Output that has reached the wire before the next instruction runs.
  *
- * printk() has two blocking points and both are load-bearing for everything
- * else. printk_lock() calls task_block() when another task owns the lock and
- * sched_yield() when it cannot block; printk_unlock() then calls
- * uart_flush(), which reaches the console through chan_call() and blocks
- * again. That is exactly right for ordinary kernel logging and exactly wrong
- * in three places:
+ * **This comment was rewritten by Y5d, and what it used to say is the
+ * interesting part.** printk() had two blocking points -- the ownership lock,
+ * and the uart_flush() underneath it -- so printk_critical() existed because
+ * printk() could not be called from scheduler teardown, from interrupt
+ * context, or under g_sched_lock. All three of those are now fine: printk()
+ * appends a record to the log ring and returns, from anywhere.
  *
- *   - **Scheduler teardown.** task_exit()'s first act used to be a printk(),
- *     so a task announcing its own death switched away in the middle of
- *     dying -- BLOCKED, still owning its stack, with none of its exit
- *     bookkeeping done -- and a second task could enter task_exit() behind
- *     it. That is a deterministic crash, found on the ESP32-P4 the day
- *     preemption started working there (phase 27 E4).
- *   - **Interrupt context.** kernel/devirq.c's unhandled-IRQ report and the
- *     trap handler's own diagnostics run from the interrupt path, where
- *     task_block() has nothing to be woken by. Moving task_exit()'s message
- *     into sched_reap() looked like the obvious fix and hung the board,
- *     because sched_reap() is called from sched_yield(), which the timer
- *     interrupt calls.
- *   - **Fatal handlers, and anything holding the scheduler lock.** A dump
- *     that blocks is a dump that never prints, and a printk() under
- *     g_sched_lock deadlocks against the task it is waiting for.
+ * One reason survives, and it is the whole reason:
+ *
+ *   **printk() is delivered, eventually, by klogd. This is delivered now.**
+ *
+ * A record in the ring reaches the console when the consumer next runs. If
+ * the next thing that happens is a halt, a fault dump, or a hang, the
+ * consumer never runs and the record is only readable afterwards from
+ * /proc/kmsg -- on a board that may not be answering. Anything whose value
+ * is that it arrived *before* the machine stopped belongs here: fault dumps,
+ * the lock checker's own reports, panic paths. "The ship is already sinking
+ * in that case anyway" (user, 2026-09-11), which is exactly why this path
+ * stays synchronous while everything else stopped being.
  *
  * So this takes no lock and does not flush. It writes straight at the
  * hardware through uart_critical_putc(), which spins on the transmit FIFO
@@ -564,10 +419,10 @@ int printk_debug(const char *fmt, ...) {
  *
  * Two consequences, both deliberate:
  *
- *   - **Output can interleave** with a concurrent printk() from another
- *     hart or from the task this interrupted. Taking the ownership lock is
- *     what would prevent that, and taking it is the thing that deadlocks.
- *     Garbled diagnostics beat absent ones.
+ *   - **Output can interleave** with a concurrent console write from another
+ *     hart or from the task this interrupted. Taking the output lock is what
+ *     would prevent that, and taking a lock is the thing this path must not
+ *     do. Garbled diagnostics beat absent ones.
  *   - **Output can be dropped** if the console is wedged or absent. A
  *     console must not be able to stop the kernel.
  *
@@ -637,15 +492,26 @@ int printk_critical(const char *fmt, ...) {
  * kernel-log sink changes. Splitting the two is what makes
  * `klog detach console` silence diagnostics without silencing the shell. */
 int cprintf(const char *fmt, ...) {
-    /* Once, before any of this call's output -- see kernel/console.c for why
-     * the sync point is per write and not per character. */
-    klog_drain();
-
     va_list args;
     va_start(args, fmt);
-    printk_lock();
+
+    /* Drain *inside* the lock, not before it (Y5d).
+     *
+     * Both orders flush the log before this call's text. Only this one makes
+     * the pair atomic: with the drain outside, another writer -- klogd, or a
+     * cprintf() on the other hart -- could interpose between the drain and the
+     * write, so a log line from seconds earlier landed in the middle of a
+     * command's output. The suite found it as a different single test failing
+     * on each run, which is what a race looks like when the thing it corrupts
+     * is whatever happened to be printing.
+     *
+     * Re-entrant: klog_drain() takes this same ylock, and a ylock is
+     * re-entrant for its owner. */
+    console_lock();
+    klog_drain();
     int ret = vprintk_to(plain_putc, plain_puts, &(plain_dest_t){ console_putc, console_puts }, fmt, args, true);
-    printk_unlock();
+    console_unlock();
+    console_flush();
     va_end(args);
     return ret;
 }

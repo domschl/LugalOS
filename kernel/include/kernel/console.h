@@ -43,6 +43,34 @@ typedef struct {
  * state (the device was handed to something else), not an error. */
 void console_bind(console_putc_fn putc);
 
+/* --- The output lock (Y5d, plan/phase31_concurrency_hierarchy.md) ---------
+ *
+ * One message, one uninterrupted run. This is what printk_lock() used to be,
+ * and it is a plain `ylock_t` now rather than a third hand-rolled blocking
+ * primitive with its own owner, depth, waiter slot and wait-for edge --
+ * kernel/lock.h's ylock already had every one of those, correctly, including
+ * re-entry by the owner and the task-less-hart case that bring-up needs.
+ *
+ * It guards *the wire*, not one stream. Three writers reach the same UART and
+ * all three take it: cprintf() and the console stream, printk_debug() (which
+ * writes the registers directly and bypasses everything else by design), and
+ * klogd's drain. Y5c's boot output spliced mid-word precisely because two of
+ * them stopped sharing a lock.
+ *
+ * It may be held across a block -- a console write ends in chan_call() to the
+ * uart task -- which is what makes it a ylock and not a spinlock. printk()
+ * does not take it at all any more; that is the whole of Y5. */
+void console_lock(void);
+void console_unlock(void);
+
+/* Ends a write: pushes whatever the UART driver has batched.
+ *
+ * The console stream's own, rather than borrowed from printk_unlock(), which
+ * is where this lived until Y5d and is why taking printk() off that lock left
+ * console output stranded in a per-hart batch (Y5c, §5.7). A whole write is
+ * the boundary; single characters still batch. */
+void console_flush(void);
+
 void console_putc(char c);
 void console_puts(const char *s);
 
