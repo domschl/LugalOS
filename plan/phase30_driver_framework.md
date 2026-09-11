@@ -191,6 +191,69 @@ nine near-identical copies of the serve loop and seven of the U-mode domain.
 **Already abstracted; held.** `netif_register()` has taken ENC28J60 and CYW43
 and phase 28 plugs the P4's EMAC into it unchanged. Nothing to do here.
 
+### E. Bus arbitration — who owns the wires when several devices share them
+
+Asked during scoping (user, 2026-09-11): *should bus systems like I2C or SPI
+be part of this?* They are a fifth category, they do not fit A–D, and the
+answer differs between the two buses for a reason the questioner named: **SPI
+here is 1:1, I2C is 1:n.**
+
+That is not an accident of this tree, it is a recorded board-design decision.
+`cmake/board-rp2350.cmake`, on SPI1: *"the SD card bus. Not a `dev_wire_t`
+entry -- nothing else ever"*; on SPI0: *"A second, independent PL022
+controller from SPI1 above -- no contention."* Every SPI controller on every
+persona drives exactly one device.
+
+**The rule: the number of devices on the bus decides the shape.**
+
+* **1:1 — nothing to build.** The device driver owns its controller, and that
+  is already category A (its registers) plus category C (its task). An SPI bus
+  abstraction would be arbitration for contention the board files go out of
+  their way to prevent, and the extract-at-the-third rule does not even apply:
+  there is no shared resource to extract, only a second controller that
+  happens to speak the same protocol. **SPI is out of scope for this phase.**
+* **1:n — exactly one owner, one generic transfer, and the bus does not live
+  inside any device's driver.** The first two this tree already has. The third
+  it does not, and that is the finding.
+
+#### The finding: the I2C bus lives inside the RTC driver
+
+`drivers/i2c_rtc.c` is three things at once, and is named after the third:
+
+1. the **I2C controller** driver — register-level, per-chip, two arms
+   (RP2350's Synopsys DW_apb_i2c, the P4's Espressif controller);
+2. the **bus arbiter** — the `i2c` task, the endpoint, `i2c_xfer()`;
+3. the **DS3231/DS1307 RTC device** driver.
+
+The consequences are visible rather than theoretical:
+
+* `drivers/bme280.c` — a *pressure sensor* — reaches the bus by including
+  `drivers/i2c_rtc.h`. Thirteen files include that header; it is the tree's
+  I2C bus header wearing an RTC's name.
+* `drivers/at24c32.c` has **its own second copy of the RP2350 controller
+  registers** — `IC_DATA_CMD`, `IC_TAR`, `IC_ENABLE`, `IC_STATUS` — for the
+  same chip `i2c_rtc.c` already drives. Not a near-miss of the
+  extract-at-the-third rule: two copies of one board's controller access,
+  which is ordinary duplication.
+* Phase 27's E7 paid for the confusion directly. The "no I2C controller on
+  this target" line that was false on a board answering a full bus scan was a
+  symptom of controller-presence being a property of the *RTC* file.
+
+**What it wants, and what it does not.** Not an SPI-style bus framework, and
+not a HAL — the two register arms stay exactly where §1.A puts them. Only a
+split along the seam that already exists in the code:
+`i2c_bus.c`/`i2c_bus.h` takes the controller arms, the task and `i2c_xfer()`;
+`i2c_rtc.c` keeps the DS3231/DS1307 and becomes an ordinary `i2c_xfer()`
+client like `bme280.c`; `at24c32.c`'s duplicate register block is deleted in
+favour of the same call.
+
+**Note that `dev_wire_t` does not already cover this.** `kernel/device.h`
+models a wire whose sharers are *mutually exclusive* — "devices sharing a wire
+are mutually exclusive", with `DEV_F_SHARES_WIRE` as the demux exception. An
+I2C bus is neither: its devices are all live at once and take turns per
+transaction. That is a third relationship, and the `i2c` task is what
+implements it.
+
 ### The rule that falls out
 
 **Extract at the third implementation, never at the second.**
