@@ -34,8 +34,19 @@
 #define ESP32P4_CLIC_IRQ_MIN    16u
 #define ESP32P4_CLIC_IRQ_MAX    47u
 
-/* The allocation table. One entry so far. */
+/* The allocation table. Every line here is a claim on a shared resource, so
+ * adding one is a visible edit rather than a coincidence -- that is the whole
+ * reason this table is in a header instead of in each driver.
+ *
+ * The matrix *source* numbers these are fed from are board facts and live in
+ * the board file (CONFIG_EMAC_INTR_SRC and friends); the CLIC *line* is a
+ * kernel allocation and lives here. The two are deliberately not the same
+ * number and must not be conflated. */
 #define ESP32P4_CLIC_IRQ_UART0  16u
+/* Z0, plan/phase28_esp32p4_ethernet.md. The EMAC raises four matrix sources
+ * (89 GMII_PHY, 90 LPI, 91 PMT, 92 ETH_MAC); only ETH_MAC carries frame and
+ * DMA events, so only it is routed, and one line is enough. */
+#define ESP32P4_CLIC_IRQ_EMAC   17u
 
 /* Routes peripheral interrupt source `src` (an interrupt-matrix source
  * number from TRM Table 13.4-1) to CLIC interrupt `clic_id` on the calling

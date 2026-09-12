@@ -79,6 +79,18 @@ set(_optional_keys
     # UART simply does not set them. (The W5500's own pins lived here too,
     # until phase 19's R0 removed the part.)
     CONFIG_UART1_BASE CONFIG_UART1_TX_GPIO CONFIG_UART1_RX_GPIO
+    # Z0, plan/phase28_esp32p4_ethernet.md: the P4's EMAC and the IP101GRI
+    # it drives over RMII. Optional like every pin map here -- the three
+    # boards in this tree that have no MAC simply do not set them, and
+    # drivers/emac_esp32p4.c compiles only for the one that does. The pin
+    # numbers are not interchangeable and not tidy-able; the board file says
+    # why at length.
+    CONFIG_EMAC_BASE CONFIG_EMAC_INTR_SRC
+    CONFIG_EMAC_MDC_GPIO CONFIG_EMAC_MDIO_GPIO CONFIG_EMAC_PHY_RST_GPIO
+    CONFIG_EMAC_RMII_CLK_GPIO
+    CONFIG_EMAC_TX_EN_GPIO CONFIG_EMAC_TXD0_GPIO CONFIG_EMAC_TXD1_GPIO
+    CONFIG_EMAC_CRS_DV_GPIO CONFIG_EMAC_RXD0_GPIO CONFIG_EMAC_RXD1_GPIO
+    CONFIG_EMAC_PHY_ADDR
     # R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on SPI0.
     CONFIG_ETH_SCK_GPIO CONFIG_ETH_MOSI_GPIO CONFIG_ETH_MISO_GPIO
     CONFIG_ETH_CS_GPIO CONFIG_ETH_RST_GPIO CONFIG_ETH_INT_GPIO
