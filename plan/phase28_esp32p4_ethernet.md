@@ -412,23 +412,77 @@ both directions: if carrier ever drops, that is the cable or the board and
 not the driver; and it means Z1's "the PHY answers MDIO" is expected to
 succeed rather than hoped for.
 
-**Precondition, checked at the start of each session and not assumed:** as of
-2026-09-12 the interface carries *no IP address* — the intended
-`192.168.77.1/24` is not currently applied, so `ip -br addr show enp0s31f6`
-prints `UP` with an empty address column. Nothing before Z5 needs it (Z1-Z4
-are on-board or raw-frame work, and `tcpdump` sees frames on an
-address-less interface). Z5 does, and its first step is therefore
+### 5.1 The far end has to be configured, and it has two traps of its own
 
-```sh
-sudo ip addr add 192.168.77.1/24 dev enp0s31f6
+Found on 2026-09-12, before any driver code existed, and both would have
+presented as driver bugs.
+
+**Trap one: the link flap on every P4 reset is normal, and is not the
+laptop's doing.** The kernel log shows
+
+```
+e1000e ... enp0s31f6: NIC Link is Up 10 Mbps Half Duplex, Flow Control: None
+e1000e ... enp0s31f6: NIC Link is Down                       (1.3 ms later)
+e1000e ... enp0s31f6: NIC Link is Up 100 Mbps Full Duplex    (2.7 s later)
 ```
 
-or the equivalent persistent configuration. A ping that fails because the
-host has no address on the segment looks exactly like a driver that does not
-transmit, which is the kind of two-candidate-cause situation §0 of phase 27
-exists to forbid — so the check comes first, every time.
+That is autonegotiation, not a policy decision: 10 Mbit/s half duplex is the
+**parallel-detect fallback** an Ethernet PHY reports when it establishes link
+before autoneg resolves, and 2.7 s is one negotiation cycle. The trigger is
+on the *P4* side — its IP101GRI resetting — which happens on every power
+cycle, every `esptool` reset and every assert of GPIO51. **So this sequence
+will appear on every reflash for the whole of this phase, and it is not a
+symptom.** It becomes one only if the final state is not 100 Mbit/s full
+duplex; Z3's done-condition is written against that final line, not against
+the absence of a flap.
 
-Instruments, in the order the milestones need them: `mdio`-level shell
+**Trap two: NetworkManager will not keep an address on this interface unless
+told to.** As found, `enp0s31f6` was managed by the auto-created profile
+"Wired connection 1" with `ipv4.method=auto` *and* `ipv4.addresses=192.168.77.1/24`
+— a static address configured but never applied, because NM sits in
+`connecting (getting IP configuration)` waiting for a DHCP lease that cannot
+arrive on a segment whose only other node is this board. Each PHY reset then
+drops carrier, NM deactivates the profile and flushes, and it restarts.
+
+The durable fix is on the laptop, once, and `ip addr add` is **not** it — a
+manually added address is flushed by the next reset:
+
+```sh
+sudo nmcli connection modify "Wired connection 1" ipv4.method manual ipv6.method disabled
+sudo nmcli connection up "Wired connection 1"
+```
+
+plus a drop-in at `/etc/NetworkManager/conf.d/10-p4-link.conf` so that trap
+one stops triggering trap two:
+
+```ini
+[device-p4]
+match-device=interface-name:enp0s31f6
+ignore-carrier=yes
+```
+
+`ignore-carrier` exists for exactly this case — a directly attached device
+that reboots — and keeps the address installed across a link flap.
+`ipv4.never-default=yes` is already set on that profile and must stay: wifi
+is the real uplink and this segment has no router (which is why Z5 passes a
+zero gateway, §4).
+
+**Precondition, checked at the start of each session and not assumed:**
+
+```sh
+ip -br addr show enp0s31f6     # expect UP and 192.168.77.1/24, not UP alone
+```
+
+Nothing before Z5 needs the address — Z1-Z4 are on-board or raw-frame work,
+and `tcpdump` sees frames on an address-less interface — but Z5 does. A ping
+that fails because the *host* has no address on the segment looks exactly
+like a driver that does not transmit, which is the two-candidate-cause
+situation §0 of phase 27 exists to forbid. So the check comes first, every
+time.
+
+### 5.2 Instruments
+
+In the order the milestones need them: `mdio`-level shell
 commands on the board (Z1), an on-board loopback selftest (Z2), `ip link`
 and `ethtool` on the laptop (Z3), `tcpdump` (Z4), `arping`, `ping` and the
 `fuse-p9` mount (Z5).
