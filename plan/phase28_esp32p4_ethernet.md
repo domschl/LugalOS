@@ -473,6 +473,20 @@ The flap in the host's log is the §5.1 sequence, and now settles straight to
   still down — once per recovery, an intermittent bug with a latency of
   exactly one poll. Read twice, trust the second.
 
+**Confirmed by a real cable pull**, not only by the PHY-powerdown proxy:
+unplugged, the board reports `link DOWN (no carrier)` and the host reports
+`NO-CARRIER` / `Link detected: no`; replugged, both return to 100 Mbit/s full
+duplex. The command returns promptly in both states rather than spinning.
+
+That pull also demonstrated §5.1's second trap live: carrier loss made
+NetworkManager deactivate the profile and **flush `192.168.77.1/24`**, leaving
+the device `unavailable`. It restored on replug (quickly, since `manual` has
+no DHCP wait), but **every P4 reset flaps carrier**, and Z4 pings while Z5
+mounts 9P over TCP. A reflash-then-ping would fail intermittently because the
+*host* momentarily had no address — which looks exactly like a driver that
+does not transmit. The `ignore-carrier` drop-in in §5.1 is what prevents it,
+and is now backed by an observation rather than a prediction.
+
 ### Z3a — The P4's heap margin is now zero, and that is a decision to make
 
 Not a milestone; a finding Z3 forced, recorded before Z4 trips over it.
