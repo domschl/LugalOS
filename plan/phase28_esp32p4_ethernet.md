@@ -282,6 +282,14 @@ budget as everything else. Z2 states the figure it costs.
 
 ### Z0 — The board file: every pin and every number, before any code
 
+**Done, 2026-09-12.** Ten presets build with zero warnings, QEMU suite
+363/363 in 182 s — no behaviour change, as expected of a milestone that adds
+only unused constants. One decision made while doing it: the PHY address is
+*not* pinned. `CONFIG_EMAC_PHY_ADDR` is `0xFF`, outside clause-22's 5-bit
+range, meaning "scan"; Z1 replaces it with the measured value. The schematic's
+strap nets and IDF's example default of 1 both suggest an answer, and neither
+is evidence.
+
 Add the pin table from §1.3 and the EMAC base, interrupt source and PHY
 address to `cmake/board-esp32p4-nano.cmake`, in that file's existing style —
 a flat list of numbers, each with the sentence saying where it came from.
