@@ -59,6 +59,7 @@
 #include "kernel/umode_probe.h"
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/flash_esp32p4.h"
+#include "drivers/emac_esp32p4.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -2935,6 +2936,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         lock_selftest();
         return;
 #if defined(CONFIG_BOARD_ESP32P4)
+    } else if (strcmp(cmd_line, "emac") == 0 || strcmp(cmd_line, "emac scan") == 0) {
+        /* Z1, plan/phase28_esp32p4_ethernet.md. Spelled like `i2c scan` and
+         * for the same reason: a table a human asked for about what is
+         * actually on a bus. */
+        emac_phy_scan();
+        return;
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
         return;

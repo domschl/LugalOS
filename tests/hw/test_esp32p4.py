@@ -465,6 +465,33 @@ def test_9p_over_the_wire(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{int(f['temperature_c100']) / 100.0} C over 9P"
 
 
+def test_emac_phy(b: Board) -> tuple[str, bool, str]:
+    """Z1's done-condition, plan/phase28_esp32p4_ethernet.md.
+
+    Two claims in one command, and the first is the load-bearing one.
+
+    `emac scan` runs the whole clock/pad/reset sequence and then the MAC's
+    software reset. That reset bit cannot clear until the PHY is supplying the
+    50 MHz RMII reference -- the DWC_EMAC register description says so
+    outright -- so reaching the scan at all proves the three clock
+    controllers, the seven IO_MUX pads and the PHY's reset line are right. A
+    probe failure prints why and never gets as far as the table.
+
+    The second claim is that exactly one PHY answers, at the address the board
+    file records, with the identity it records. That number was measured here
+    in Z1 rather than inferred from the schematic's strap nets, and re-reading
+    it on every run is what keeps it honest."""
+    name = "the EMAC's PHY answers over MDIO (Z1)"
+    out = b.console_session.cmd("emac scan", deadline=15.0)
+    if "probe failed" in out:
+        return name, False, "MAC software reset never completed -- no RMII reference clock?"
+    if "OUI 00-90-c3" not in out:
+        return name, False, f"no IP101G identity in the scan output: {out.strip()[-200:]}"
+    if "as the board file says" not in out:
+        return name, False, f"PHY found, but not where the board file expects: {out.strip()[-200:]}"
+    return name, True, "IP101G at MDIO address 1, RMII reference confirmed"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -478,6 +505,7 @@ TESTS = [
     test_proc_sensors,
     test_sampler_advances,
     test_9p_over_the_wire,
+    test_emac_phy,
 ]
 
 

@@ -304,6 +304,54 @@ warnings and no behaviour change.
 
 ### Z1 — Clocks, reset, pins, and MDIO reaching the PHY
 
+**Done, 2026-09-12, first hardware run.** `emac scan` on the board:
+
+```
+EMAC at 0x50098000, MDIO on MDC=GPIO31 MDIO=GPIO52. Scanning 0..31:
+   1: PHYIDR1=0x0243 PHYIDR2=0x0c54  OUI 00-90-c3 model 5 rev 4
+  1 PHY at 1, as the board file says. OK.
+```
+
+OUI `00-90-c3` is IC Plus and model 5 is the IP101G family, so the part is
+confirmed by its own silicon rather than by the silkscreen. The address is
+**1**; the strap nets resolve to the same value IDF's examples default to,
+and that agreement is a coincidence worth nothing — the board file records
+the measurement. `tests/hw/test_esp32p4.py` is 13/13 with the new case.
+
+Four things learned that the plan did not have:
+
+* **The MAC's software reset is the single best test of the whole clock and
+  pad configuration**, and it comes free. `EMAC_BUSMODE.SWR` cannot clear
+  until the PHY supplies the 50 MHz RMII reference — the register's own text
+  says *"it is essential that all PHY inputs clocks ... are present for the
+  software reset completion"*. So reaching the MDIO scan at all proves the
+  three clock controllers, the seven IO_MUX pads and the reset line are
+  right, and it fixes the ordering: **the PHY must come out of reset before
+  the MAC is reset**, not after.
+* **The gates are spread across three controllers, not two.** §1.4 said
+  `HP_SYS_CLKRST` and `LP_AONCLKRST`; the bus clock is in
+  `HP_SYS_CLKRST_SOC_CLK_CTRL1`, the RMII/RX/TX gates in
+  `PERI_CLK_CTRL00`/`01`, and both the pad's always-on gate *and the EMAC's
+  peripheral reset* are in `LP_CLKRST`. §1.4 also overstated the LP trap:
+  `HP_PAD_EMAC_TXRX_CLK_EN` resets to **1**, so it is on unless something
+  clears it. Written explicitly anyway, which is the cheap half of the
+  lesson.
+* **The P4 has 57 GPIOs, so every one-bit-per-pin register is two
+  registers.** This board puts four EMAC signals above the 0..31 split
+  (TX_EN 49, RMII_CLK 50, PHY reset 51, MDIO 52) and MDC at 31, exactly on
+  the boundary. The compiler caught one constant `1u << 51`; it could not
+  catch the same bug behind a runtime pin number, which would have written
+  bit 20 of the low word and failed silently. Hence accessors, not macros —
+  and note the shape of the trap: the naive version is correct for precisely
+  the pin a casual test tries first.
+* **The MDC divider is deliberately the most conservative one available.**
+  `EMAC_CR` divides the CSR clock, which on this chip is the system clock,
+  which this kernel has never configured and therefore does not know. The
+  asymmetry settles it without a measurement: IEEE 802.3 caps MDC at 25 MHz,
+  so too small a divider breaks the bus while too large only costs
+  microseconds. `CSR/124` it is, until something here knows the system
+  clock.
+
 The TRM §55.5.1 sequence from §1.4, with the bit positions read off the TRM's
 bit diagrams and cross-checked against `hp_sys_clkrst_reg.h`. Pad routing.
 PHY reset asserted and released with the datasheet's timing. Then the MDIO

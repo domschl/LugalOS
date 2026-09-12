@@ -130,12 +130,26 @@ set(CONFIG_EMAC_CRS_DV_GPIO    28)
 set(CONFIG_EMAC_RXD0_GPIO      29)
 set(CONFIG_EMAC_RXD1_GPIO      30)
 
-# The PHY's address on the MDIO bus -- NOT YET MEASURED.
+# The PHY's address on the MDIO bus -- MEASURED, Z1, 2026-09-12.
 #
-# 0xFF is out of clause-22's 5-bit address range (0..31) and means "scan":
-# the driver reads registers 2 and 3 at every address and reports which one
-# answers. The schematic has PHY_AD0/PHY_AD3 strap nets and IDF's examples
-# default to 1, but a strap resistor is not a number this project is willing
-# to infer -- phase 28's Z1 replaces this line with the address the hardware
-# actually reports, and with the identifier it reported alongside it.
-set(CONFIG_EMAC_PHY_ADDR       0xFF)
+# `emac scan` on this physical board read clause-22 registers 2 and 3 at every
+# address 0..31. Exactly one answered:
+#
+#     1: PHYIDR1=0x0243 PHYIDR2=0x0c54  (OUI 00-90-c3, model 5 rev 4)
+#
+# OUI 00-90-c3 is IC Plus Corp and model 5 is the IP101G family, which is what
+# the schematic says is fitted -- so the part is confirmed by its own silicon
+# and not only by the silkscreen. The strap nets PHY_AD0/PHY_AD3 evidently
+# resolve to 1, which happens to match IDF's example default; that agreement
+# is a coincidence worth nothing, and the measurement is what this line
+# records.
+#
+# `emac scan` re-checks this number on every run and says so if the hardware
+# disagrees, which makes it a claim rather than a comment.
+set(CONFIG_EMAC_PHY_ADDR       1)
+
+# What that PHY must identify as, so a swapped or dead part is caught rather
+# than silently tolerated. Checked by emac_phy_scan(); see the Z1 entry in
+# plan/phase28_esp32p4_ethernet.md.
+set(CONFIG_EMAC_PHY_ID1        0x0243)
+set(CONFIG_EMAC_PHY_ID2        0x0C54)

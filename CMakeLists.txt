@@ -744,6 +744,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # weak default answers and the node's name and MAC come from the derived
     # CONFIG_NODE_SEED. E6 is where the flash gives it something better.
     list(APPEND SOURCES drivers/uart_esp32p4.c drivers/flash_esp32p4.c)
+    # Z1, plan/phase28_esp32p4_ethernet.md: the EMAC. Built only for this
+    # board, because its registers are this chip's and nobody else's -- the
+    # category A rule in plan/hardware_seams.md §1. At Z1 it registers no
+    # netif and serves nothing; it exists so that `emac scan` can prove the
+    # PHY is there before Z2 builds descriptor rings against it.
+    list(APPEND SOURCES drivers/emac_esp32p4.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
