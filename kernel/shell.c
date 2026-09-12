@@ -2936,6 +2936,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         lock_selftest();
         return;
 #if defined(CONFIG_BOARD_ESP32P4)
+    } else if (strcmp(cmd_line, "emac linktest") == 0) {
+        /* Z3: proves link-down is noticed, not just link-up. */
+        emac_link_updown_test();
+        return;
+    } else if (strcmp(cmd_line, "emac link") == 0) {
+        /* Z3. Negotiates and reports what was agreed. */
+        emac_link_report();
+        return;
     } else if (strcmp(cmd_line, "emac loopback") == 0) {
         /* Z2. Proves the descriptor rings and the cache discipline with no
          * PHY and no cable in the picture. */

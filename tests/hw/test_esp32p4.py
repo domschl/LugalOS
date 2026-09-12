@@ -490,6 +490,36 @@ def test_emac_loopback(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{passed}/7 sizes byte-identical, 60 B to 1514 B"
 
 
+def test_emac_link(b: Board) -> tuple[str, bool, str]:
+    """Z3, plan/phase28_esp32p4_ethernet.md.
+
+    Auto-negotiation against whatever is on the other end of the cable, and
+    then the half a hardcoded `return true` would pass: the PHY is dropped
+    with BMCR's POWERDOWN bit -- indistinguishable from a pulled cable as far
+    as the MAC can see -- and the link must be noticed going down and coming
+    back.
+
+    Skips rather than fails with no cable, because "there is no network here"
+    is not a regression."""
+    name = "EMAC link negotiates, and notices going down (Z3)"
+    out = b.console_session.cmd("emac link", deadline=20.0)
+    if "link DOWN" in out:
+        return name, True, "SKIPPED (no carrier -- cable out?)"
+    m = re.search(r"link UP, (\d+) Mbit/s (\w+) duplex", out)
+    if not m:
+        return name, False, f"no link line: {out.strip()[-200:]}"
+    speed, duplex = m.group(1), m.group(2)
+
+    out = b.console_session.cmd("emac linktest", deadline=40.0)
+    if "SKIPPED" in out:
+        return name, True, f"link {speed} Mbit/s {duplex}; updown skipped"
+    if "PASSED" not in out:
+        return name, False, f"updown failed: {out.strip()[-200:]}"
+    d = re.search(r"down noticed in (\d+) ms, back up in (\d+) ms", out)
+    extra = f", down in {d.group(1)} ms / up in {d.group(2)} ms" if d else ""
+    return name, True, f"{speed} Mbit/s {duplex} duplex{extra}"
+
+
 def test_emac_phy(b: Board) -> tuple[str, bool, str]:
     """Z1's done-condition, plan/phase28_esp32p4_ethernet.md.
 
@@ -532,6 +562,7 @@ TESTS = [
     test_9p_over_the_wire,
     test_emac_phy,
     test_emac_loopback,
+    test_emac_link,
 ]
 
 

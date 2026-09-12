@@ -63,4 +63,38 @@ void emac_phy_scan(void);
  * around. Leaves loopback disabled. */
 void emac_loopback_test(void);
 
+/* --- Z3: link state ----------------------------------------------------- */
+
+typedef struct {
+    bool     up;            /* carrier present */
+    bool     an_complete;   /* auto-negotiation finished; false means parallel detect */
+    uint16_t speed_mbit;    /* 10 or 100; meaningless when !up */
+    bool     full_duplex;
+} emac_link_t;
+
+/* Advertises 10/100 half/full and restarts auto-negotiation. Returns 0, or -1
+ * if the PHY did not answer. */
+int emac_phy_autoneg_start(void);
+
+/* Reads link state and, when it has changed, applies the negotiated speed and
+ * duplex to *both* the MAC and the RMII clock divisors -- they live in
+ * different peripherals and setting one without the other corrupts rather
+ * than fails. Returns whether the link is up; fills `out` when non-NULL.
+ *
+ * Never blocks in the scheduler's sense (no task_block(), no lock), which is
+ * what netif_t's link_up() requires. Rate-limited internally to one MDIO
+ * exchange per 200 ms, so it is cheap to call from a polling loop. */
+bool emac_link_poll(emac_link_t *out);
+
+/* Z3's done-condition: brings the MAC up, negotiates, and reports what was
+ * agreed, or that there is no carrier. */
+void emac_link_report(void);
+
+/* Z3's other half, and the one a hardcoded `return true` would fail: drops
+ * the PHY with BMCR's POWERDOWN bit (indistinguishable from a pulled cable as
+ * far as the MAC can see), checks the link goes down, brings it back, and
+ * reports how long each direction took. Needs no human to unplug anything, so
+ * it can live in the hardware suite. */
+void emac_link_updown_test(void);
+
 #endif /* DRIVERS_EMAC_ESP32P4_H */

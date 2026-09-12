@@ -444,6 +444,71 @@ line size used for alignment is cited to its TRM page.
 
 ### Z3 — Link up
 
+**Done, 2026-09-12.**
+
+```
+EMAC: link UP, 100 Mbit/s full duplex, MACCONFIG 0x00c0c80c
+EMAC linktest: down noticed in 201 ms, back up in 2712 ms at 100 Mbit/s full duplex
+```
+
+The far end agrees, and says something stronger than "link up" —
+`ethtool enp0s31f6` reports **"Link partner advertised auto-negotiation:
+Yes"**, so the P4 is genuinely negotiating rather than being parallel-detected.
+The flap in the host's log is the §5.1 sequence, and now settles straight to
+100/Full with no 10/Half fallback.
+
+* **The divisors.** 50 MHz reference, so the MAC's RX/TX domain must be
+  25 MHz at 100 Mbit/s and 2.5 MHz at 10 Mbit/s; the field holds
+  (divider − 1), giving **1** and **19**. Reset value is 1 — so Z1's working
+  100 Mbit/s link was luck dressed as a decision until `emac_apply_link()`
+  existed. A 10 Mbit/s link with the 100 Mbit/s divisor does not fail
+  cleanly, it corrupts.
+* **Link-down is tested without a human.** "Reports the link is up" is the
+  half a hardcoded `return true` would pass. BMCR's POWERDOWN bit drops the
+  carrier indistinguishably from a pulled cable as far as the MAC can see, so
+  the suite proves both directions by itself. 201 ms is the 200 ms poll
+  rate-limit plus one exchange; 2712 ms is auto-negotiation, matching the
+  host's own 2.7 s.
+* **BMSR's link bit latches low**, so one read reports a recovered link as
+  still down — once per recovery, an intermittent bug with a latency of
+  exactly one poll. Read twice, trust the second.
+
+### Z3a — The P4's heap margin is now zero, and that is a decision to make
+
+Not a milestone; a finding Z3 forced, recorded before Z4 trips over it.
+
+`linker/esp32p4.ld` asserts a 128 KB heap floor. After Z3 the figure is
+**exactly 131072 bytes — margin +0**. The next line of code anywhere in this
+kernel fails that assert.
+
+The mechanism is worth stating because it is not the obvious one: `.bss` is
+NOLOAD in LOWRAM and costs the heap **nothing**, so the rings' 9600 bytes are
+not the problem. The heap is `_heap_end − _kernel_end`, and `_kernel_end`
+follows `.text`/`.rodata`/`.data` — all RAM-resident, because this image is
+`esptool load-ram`-loaded rather than executed from flash. So on this board
+**code costs heap and buffers do not**, which is the reverse of the intuition
+carried over from the RP2350.
+
+Z3 already took the cheap reclamation: the driver's runtime diagnostics were
+rewritten so the prose lives in comments (free) and the printed message
+carries only facts (1595 bytes of strings, down from 2019), and the two
+copying `emac_tx`/`emac_rx` forms were removed since they have no caller
+until Z4.
+
+The options, none of which should be taken silently:
+
+1. **Execute in place from flash.** This script's own header says E6 would
+   "get most of that 227 KB back", and the image is still RAM-loaded. This is
+   the real fix and it is a phase of its own.
+2. **Trim `.text` elsewhere** — the script's other suggestion (171 KB of
+   `.text` against 63 KB of `.rodata`).
+3. **Lower the floor deliberately**, accepting that this board can no longer
+   host the largest placeable user image. Legitimate, but it weakens a guard
+   that exists for a stated reason and is the user's call, not a way to get
+   past a failing build.
+
+**Z4 needs one of these decided first.**
+
 Clause-22 auto-negotiation: BMCR restart, BMSR link-status poll, ANAR/ANLPAR
 resolution to speed and duplex. Feed the result into the MAC's configuration
 **and into `EMAC_RX_CLK_DIV_NUM`/`EMAC_TX_CLK_DIV_NUM`** per §1.4 — this is

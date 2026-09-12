@@ -383,15 +383,15 @@ int emac_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t val) {
 void emac_phy_scan(void) {
     int rc = emac_probe();
     if (rc != 0) {
-        cprintf("[EMAC] probe failed (%d): the MAC's software reset never "
-                "completed.\n", rc);
-        cprintf("       That bit cannot clear until the PHY supplies the "
-                "50 MHz RMII reference,\n");
-        cprintf("       so suspect the reference clock (GPIO%d), the PHY's "
-                "reset (GPIO%d), or\n",
-                CONFIG_EMAC_RMII_CLK_GPIO, CONFIG_EMAC_PHY_RST_GPIO);
-        cprintf("       the clock gates -- not MDIO, which has not been tried "
-                "yet.\n");
+        /* The diagnosis, kept here rather than printed: SWR cannot clear
+         * until the PHY supplies the 50 MHz RMII reference, so this means the
+         * reference clock (CONFIG_EMAC_RMII_CLK_GPIO), the PHY's reset line
+         * (CONFIG_EMAC_PHY_RST_GPIO), or one of the clock gates -- and not
+         * MDIO, which has not been attempted yet. Every runtime string on
+         * this board is RAM-resident (linker/esp32p4.ld), so prose lives in
+         * the source and the message carries the facts. */
+        cprintf("[EMAC] probe failed (%d): MAC reset never completed; "
+                "no RMII reference clock?\n", rc);
         return;
     }
 
@@ -416,8 +416,7 @@ void emac_phy_scan(void) {
          * up. Printed raw as well as decoded, because the raw pair is what
          * compares against a datasheet. */
         uint32_t oui = ((uint32_t)id1 << 6) | (((uint32_t)id2 >> 10) & 0x3fu);
-        cprintf("  %2u: PHYIDR1=0x%04x PHYIDR2=0x%04x  "
-                "OUI %02x-%02x-%02x model %u rev %u\n",
+        cprintf("  %2u: ID 0x%04x/0x%04x OUI %02x-%02x-%02x model %u rev %u\n",
                 (unsigned)a, (unsigned)id1, (unsigned)id2,
                 (unsigned)((oui >> 16) & 0xffu), (unsigned)((oui >> 8) & 0xffu),
                 (unsigned)(oui & 0xffu),
@@ -426,8 +425,7 @@ void emac_phy_scan(void) {
         if (a == (uint8_t)CONFIG_EMAC_PHY_ADDR) {
             seen_expected = true;
             if (id1 != CONFIG_EMAC_PHY_ID1 || id2 != CONFIG_EMAC_PHY_ID2) {
-                cprintf("      ^ WRONG PART: the board file expects "
-                        "0x%04x/0x%04x here\n",
+                cprintf("      ^ WRONG PART: board file says 0x%04x/0x%04x\n",
                         (unsigned)CONFIG_EMAC_PHY_ID1,
                         (unsigned)CONFIG_EMAC_PHY_ID2);
             }
@@ -440,9 +438,9 @@ void emac_phy_scan(void) {
      * disagreement rather than as a mysterious failure three milestones
      * later. */
     if (found == 0) {
-        cprintf("  nothing answered. The MAC reset completed, so the clock is "
-                "arriving;\n");
-        cprintf("  suspect MDC/MDIO routing or the PHY's address straps.\n");
+        /* The MAC reset completed, so the reference clock is arriving; that
+         * leaves MDC/MDIO routing or the PHY's address straps. */
+        cprintf("  nothing answered (clock is fine; suspect MDC/MDIO or straps)\n");
     } else if (!seen_expected) {
         cprintf("  %u PHY%s responded, but NOT at %d where the board file "
                 "says it should be.\n",
@@ -451,9 +449,8 @@ void emac_phy_scan(void) {
         cprintf("  1 PHY at %d, as the board file says. OK.\n",
                 (int)CONFIG_EMAC_PHY_ADDR);
     } else {
-        cprintf("  %u PHYs responded, including the expected one at %d. "
-                "More than one is unexpected on this board.\n",
-                found, (int)CONFIG_EMAC_PHY_ADDR);
+        cprintf("  %u PHYs incl. the expected one at %d (more than one is "
+                "unexpected here)\n", found, (int)CONFIG_EMAC_PHY_ADDR);
     }
 }
 
@@ -731,14 +728,26 @@ static void emac_start(bool loopback) {
 
 /* --- one frame out ------------------------------------------------------ */
 
-static int emac_tx(const uint8_t *buf, uint32_t len) {
+/* Returns the buffer the next transmit will send from, or NULL if the DMA
+ * still owns that descriptor. Fill it, then call emac_tx_submit().
+ *
+ * Split out from emac_tx() so a caller that generates its payload (the
+ * loopback selftest) can write straight into the DMA buffer instead of
+ * building it somewhere else and having it copied. That removes 3 KB of .bss
+ * -- which on this board is 3 KB the heap gets to keep -- and it makes the
+ * selftest stronger, because a test with no second copy of the data cannot
+ * accidentally compare a buffer against itself. */
+static uint8_t *emac_tx_buffer(void) {
+    emac_desc_t *d = &g_tx_desc[g_tx_next];
+    desc_from_dma(d);
+    if (d->des0 & TDES0_OWN) return NULL;
+    return g_tx_buf[g_tx_next];
+}
+
+static int emac_tx_submit(uint32_t len) {
     if (len == 0 || len > EMAC_BUF_SIZE) return -1;
     emac_desc_t *d = &g_tx_desc[g_tx_next];
 
-    desc_from_dma(d);
-    if (d->des0 & TDES0_OWN) return -2;    /* the DMA still has it */
-
-    for (uint32_t i = 0; i < len; i++) g_tx_buf[g_tx_next][i] = buf[i];
     /* The CPU just wrote the buffer; push it to memory before the DMA reads
      * it. This is the half that is easy to forget and whose absence looks
      * like corrupted frames rather than like a cache bug. */
@@ -756,15 +765,22 @@ static int emac_tx(const uint8_t *buf, uint32_t len) {
     return 0;
 }
 
+
 /* --- one frame in ------------------------------------------------------- */
 
-static int emac_rx(uint8_t *out, uint32_t max) {
+/* Returns a pointer to the buffer holding the next received frame and its
+ * length in *len, or NULL if none is ready or it errored. The caller must
+ * call emac_rx_release() when done with the bytes; until then the descriptor
+ * is not handed back to the DMA.
+ *
+ * The zero-copy half of the same split as emac_tx_buffer(): the selftest
+ * verifies straight out of the DMA buffer. */
+static const uint8_t *emac_rx_peek(uint32_t *len_out) {
     emac_desc_t *d = &g_rx_desc[g_rx_next];
 
     desc_from_dma(d);
-    if (d->des0 & RDES0_OWN) return 0;     /* nothing yet */
+    if (d->des0 & RDES0_OWN) return NULL;  /* nothing yet */
 
-    int ret;
     uint32_t st = d->des0;
     uint32_t len = (st >> RDES0_FL_S) & RDES0_FL_M;
 
@@ -778,28 +794,31 @@ static int emac_rx(uint8_t *out, uint32_t max) {
     else st |= RDES0_ES;                   /* impossibly short; treat as error */
 
     if ((st & RDES0_ES) || !(st & RDES0_FS) || !(st & RDES0_LS)) {
-        ret = -1;                          /* errored or split across buffers */
-    } else if (len > max) {
-        ret = -2;
-    } else {
-        /* The DMA wrote this buffer behind the cache's back, so drop any
-         * cached copy before reading it. Without this the CPU can read a line
-         * that predates the frame -- which, because the previous frame's
-         * bytes are often still there, looks like the *last* frame arriving
-         * again rather than like nothing arriving. */
-        esp32p4_dcache_invalidate((uintptr_t)g_rx_buf[g_rx_next], EMAC_BUF_SIZE);
-        for (uint32_t i = 0; i < len; i++) out[i] = g_rx_buf[g_rx_next][i];
-        ret = (int)len;
+        return NULL;                       /* errored or split across buffers */
     }
 
-    /* Hand the descriptor back whatever happened. */
+    /* The DMA wrote this buffer behind the cache's back, so drop any cached
+     * copy before reading it. Without this the CPU can read a line that
+     * predates the frame -- which, because the previous frame's bytes are
+     * often still there, looks like the *last* frame arriving again rather
+     * than like nothing arriving. */
+    esp32p4_dcache_invalidate((uintptr_t)g_rx_buf[g_rx_next], EMAC_BUF_SIZE);
+    *len_out = len;
+    return g_rx_buf[g_rx_next];
+}
+
+/* Hands the current receive descriptor back to the DMA. Safe to call when
+ * emac_rx_peek() returned NULL for an errored frame; that is how the ring
+ * recovers. */
+static void emac_rx_release(void) {
+    emac_desc_t *d = &g_rx_desc[g_rx_next];
     esp32p4_dcache_invalidate((uintptr_t)g_rx_buf[g_rx_next], EMAC_BUF_SIZE);
     d->des0 = RDES0_OWN;
     desc_to_dma(d);
     g_rx_next = (g_rx_next + 1u) % EMAC_RX_DESC_COUNT;
     REG(EMAC_DMA_RXPOLL) = 1;
-    return ret;
 }
+
 
 /* --- the Z2 selftest ----------------------------------------------------
  *
@@ -821,6 +840,18 @@ static int emac_rx(uint8_t *out, uint32_t max) {
  */
 static const uint16_t g_loopback_sizes[] = { 60, 64, 65, 128, 512, 1500, 1514 };
 
+/* The expected byte at `off` in a frame of `len` bytes. A pure function, so
+ * the test needs no copy of what it sent: the first six bytes are a
+ * destination MAC, the next six a source MAC, then an EtherType, then a
+ * pattern that depends on the length as well as the offset. */
+static uint8_t loopback_byte(uint32_t off, uint32_t len) {
+    static const uint8_t head[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    if (off < 6u)  return head[off];
+    if (off == 12u) return 0x08;
+    if (off == 13u) return 0x00;
+    return (uint8_t)(off + len);
+}
+
 void emac_loopback_test(void) {
     if (emac_probe() != 0) {
         cprintf("[EMAC] probe failed -- see `emac scan`.\n");
@@ -836,23 +867,27 @@ void emac_loopback_test(void) {
                        sizeof(g_rx_buf) + sizeof(g_tx_buf)),
             (unsigned)ESP32P4_L1_CACHE_LINE);
 
-    static uint8_t tx[EMAC_BUF_SIZE];
-    static uint8_t rx[EMAC_BUF_SIZE];
     unsigned passed = 0, failed = 0;
 
     for (unsigned s = 0; s < sizeof(g_loopback_sizes) / sizeof(g_loopback_sizes[0]); s++) {
         uint32_t len = g_loopback_sizes[s];
 
-        /* A destination MAC, a source MAC, an EtherType, then a pattern that
-         * depends on both the offset and the length -- so a frame that comes
-         * back from the *previous* iteration (the classic stale-cache
-         * symptom) fails the comparison instead of passing it. */
-        for (uint32_t i = 0; i < len; i++) tx[i] = (uint8_t)(i + len);
-        tx[0] = 0x02; tx[1] = 0x00; tx[2] = 0x00;
-        tx[3] = 0x00; tx[4] = 0x00; tx[5] = 0x01;
-        tx[12] = 0x08; tx[13] = 0x00;
+        /* Written straight into the DMA's transmit buffer, and checked
+         * straight out of its receive buffer -- there is no second copy of
+         * this frame anywhere, so the comparison cannot be satisfied by
+         * comparing a buffer with itself. The expected bytes come from
+         * loopback_byte(), a pure function of offset and length: a frame that
+         * came back from the *previous* iteration (the classic stale-cache
+         * symptom) has the wrong length baked into every byte and fails. */
+        uint8_t *tx = emac_tx_buffer();
+        if (!tx) {
+            cprintf("  %4u B: no free transmit descriptor\n", (unsigned)len);
+            failed++;
+            continue;
+        }
+        for (uint32_t i = 0; i < len; i++) tx[i] = loopback_byte(i, len);
 
-        int rc = emac_tx(tx, len);
+        int rc = emac_tx_submit(len);
         if (rc != 0) {
             cprintf("  %4u B: send refused (%d)\n", (unsigned)len, rc);
             failed++;
@@ -861,25 +896,35 @@ void emac_loopback_test(void) {
 
         /* Bounded wait. Loopback is a few microseconds; anything that has not
          * arrived in a millisecond is not going to. */
-        int got = 0;
-        for (unsigned i = 0; i < 1000u && got == 0; i++) {
-            got = emac_rx(rx, sizeof(rx));
-            if (got == 0) time_delay_us(1);
+        const uint8_t *rx = NULL;
+        uint32_t got = 0;
+        for (unsigned i = 0; i < 1000u && rx == NULL; i++) {
+            desc_from_dma(&g_rx_desc[g_rx_next]);
+            if (!(g_rx_desc[g_rx_next].des0 & RDES0_OWN)) {
+                rx = emac_rx_peek(&got);
+                break;
+            }
+            time_delay_us(1);
         }
 
-        if (got <= 0) {
-            cprintf("  %4u B: nothing came back (%d), DMA status 0x%08lx\n",
-                    (unsigned)len, got, (unsigned long)REG(EMAC_DMA_STATUS));
+        if (!rx) {
+            cprintf("  %4u B: nothing came back, DMA status 0x%08lx\n",
+                    (unsigned)len, (unsigned long)REG(EMAC_DMA_STATUS));
+            emac_rx_release();
             failed++;
             continue;
         }
-        if ((uint32_t)got != len) {
-            cprintf("  %4u B: came back %d B\n", (unsigned)len, got);
+        if (got != len) {
+            cprintf("  %4u B: came back %u B\n", (unsigned)len, (unsigned)got);
+            emac_rx_release();
             failed++;
             continue;
         }
         uint32_t bad = 0;
-        for (uint32_t i = 0; i < len; i++) if (rx[i] != tx[i]) bad++;
+        for (uint32_t i = 0; i < len; i++) {
+            if (rx[i] != loopback_byte(i, len)) bad++;
+        }
+        emac_rx_release();
         if (bad) {
             cprintf("  %4u B: %u byte%s differ\n", (unsigned)len,
                     (unsigned)bad, bad == 1 ? "" : "s");
@@ -895,4 +940,278 @@ void emac_loopback_test(void) {
     reg_modify(EMAC_MACCONFIG, MACCFG_LM, 0);
 
     cprintf("EMAC loopback: %u passed, %u failed\n", passed, failed);
+}
+
+/* ======================================================================
+ * Z3 -- auto-negotiation and link state.
+ * ====================================================================== */
+
+/* Clause-22 registers. All standard, all in IEEE 802.3 clause 22.2.4 -- the
+ * reason this driver needs no IP101-specific code at all, and why ESP-IDF
+ * v6.1 no longer ships an esp_eth_phy_ip101.c. */
+#define PHY_BMCR            0u
+#define  BMCR_RESET             (1u << 15)
+#define  BMCR_LOOPBACK          (1u << 14)
+#define  BMCR_SPEED_100         (1u << 13)
+#define  BMCR_AN_ENABLE         (1u << 12)
+#define  BMCR_POWERDOWN         (1u << 11)
+#define  BMCR_ISOLATE           (1u << 10)
+#define  BMCR_AN_RESTART        (1u << 9)
+#define  BMCR_FULL_DUPLEX       (1u << 8)
+#define PHY_BMSR            1u
+#define  BMSR_AN_COMPLETE       (1u << 5)
+#define  BMSR_REMOTE_FAULT      (1u << 4)
+#define  BMSR_AN_ABILITY        (1u << 3)
+#define  BMSR_LINK_UP           (1u << 2)
+#define PHY_ANAR            4u
+#define PHY_ANLPAR          5u
+#define  AN_100BASE_TX_FD       (1u << 8)
+#define  AN_100BASE_TX_HD       (1u << 7)
+#define  AN_10BASE_T_FD         (1u << 6)
+#define  AN_10BASE_T_HD         (1u << 5)
+#define  AN_SELECTOR_802_3      0x0001u
+
+/* The RMII reference is always 50 MHz, and the MAC's RX/TX clock domain has
+ * to be 25 MHz at 100 Mbit/s and 2.5 MHz at 10 Mbit/s. The field holds
+ * (divider - 1), so:
+ *
+ *     100 Mbit/s   50/25  = 2   ->  DIV_NUM 1
+ *      10 Mbit/s   50/2.5 = 20  ->  DIV_NUM 19
+ *
+ * DIV_NUM's reset value is 1, which is why Z1 could leave the divisors alone
+ * and still have a working 100 Mbit/s link -- and why doing so was luck
+ * dressed as a decision until this function existed. A 10 Mbit/s link with
+ * the 100 Mbit/s divisor does not fail cleanly; it corrupts. */
+#define EMAC_CLK_DIV_100M   1u
+#define EMAC_CLK_DIV_10M    19u
+
+static emac_link_t g_link;          /* last resolved state */
+static uint64_t    g_link_checked_ms;
+static bool        g_link_valid;
+
+/* Applies a resolved speed and duplex to the MAC and to the RMII clock
+ * divisors. Both halves matter and they live in different peripherals: the
+ * MAC's own idea of the line rate is MACCONFIG.FES, and the clock that
+ * actually shifts the bits is HP_SYS_CLKRST's. Setting one without the other
+ * is the failure mode this function exists to make impossible. */
+static void emac_apply_link(const emac_link_t *l) {
+    uint32_t div = (l->speed_mbit == 10u) ? EMAC_CLK_DIV_10M : EMAC_CLK_DIV_100M;
+    reg_modify(PERI_CLK_CTRL01, EMAC_RX_CLK_DIV_NUM_M, div);
+    reg_modify(PERI_CLK_CTRL01, EMAC_TX_CLK_DIV_NUM_M,
+               (div << EMAC_TX_CLK_DIV_NUM_S) & EMAC_TX_CLK_DIV_NUM_M);
+
+    uint32_t cfg = REG(EMAC_MACCONFIG);
+    cfg &= ~(MACCFG_FES | MACCFG_DM);
+    if (l->speed_mbit == 100u) cfg |= MACCFG_FES;
+    if (l->full_duplex)        cfg |= MACCFG_DM;
+    REG(EMAC_MACCONFIG) = cfg;
+}
+
+/* Starts auto-negotiation. Advertises everything this MAC can actually do --
+ * 100 and 10, full and half -- rather than forcing a speed, because the
+ * far end is not ours to assume. */
+int emac_phy_autoneg_start(void) {
+    int bmcr = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_BMCR);
+    if (bmcr < 0) return -1;
+
+    /* Clear ISOLATE and POWERDOWN if a previous run or the straps left them
+     * set: an isolated PHY answers MDIO perfectly and passes no traffic,
+     * which is a memorably confusing state. */
+    if (emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_BMCR,
+                        (uint16_t)(bmcr & ~(BMCR_ISOLATE | BMCR_POWERDOWN |
+                                            BMCR_LOOPBACK))) != 0) return -1;
+
+    if (emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_ANAR,
+                        AN_SELECTOR_802_3 | AN_100BASE_TX_FD | AN_100BASE_TX_HD |
+                        AN_10BASE_T_FD | AN_10BASE_T_HD) != 0) return -1;
+
+    if (emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_BMCR,
+                        BMCR_AN_ENABLE | BMCR_AN_RESTART) != 0) return -1;
+    g_link_valid = false;
+    return 0;
+}
+
+/* Reads link state, resolves speed and duplex, and applies them if they
+ * changed.
+ *
+ * Never blocks in the scheduler's sense: no task_block(), no lock, no wait on
+ * another task. It does spin on the MDIO busy bit for a bounded few
+ * microseconds, which is the same bounded spin every register access in this
+ * kernel makes.
+ *
+ * Rate-limited, because netif_t's poll() is called in a tight loop and an
+ * MDIO transaction per call would be a slow bus transaction per frame for no
+ * information -- link state changes on human timescales. Between refreshes
+ * the cached answer is returned. */
+bool emac_link_poll(emac_link_t *out) {
+    uint64_t now = time_get_ms();
+    if (g_link_valid && (now - g_link_checked_ms) < 200u) {
+        if (out) *out = g_link;
+        return g_link.up;
+    }
+    g_link_checked_ms = now;
+
+    /* BMSR's link bit latches low: it reports 0 if the link has been down at
+     * any point since the last read, and the *current* state only on a second
+     * read. One read would therefore report a link that has recovered as
+     * still down, and would do so once per recovery -- an intermittent bug
+     * with a latency of exactly one poll. Read twice, trust the second. */
+    (void)emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_BMSR);
+    int bmsr = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_BMSR);
+
+    emac_link_t l = { 0 };
+    if (bmsr >= 0 && (bmsr & BMSR_LINK_UP)) {
+        l.up = true;
+        l.an_complete = (bmsr & BMSR_AN_COMPLETE) != 0;
+        int anar = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_ANAR);
+        int lpar = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_ANLPAR);
+        if (l.an_complete && anar >= 0 && lpar >= 0) {
+            /* The resolution is the intersection of what both ends
+             * advertised, taken in the priority order 802.3 clause 28.1.4.5
+             * defines: 100 full, 100 half, 10 full, 10 half. */
+            uint32_t common = (uint32_t)anar & (uint32_t)lpar;
+            if (common & AN_100BASE_TX_FD)      { l.speed_mbit = 100; l.full_duplex = true;  }
+            else if (common & AN_100BASE_TX_HD) { l.speed_mbit = 100; l.full_duplex = false; }
+            else if (common & AN_10BASE_T_FD)   { l.speed_mbit = 10;  l.full_duplex = true;  }
+            else if (common & AN_10BASE_T_HD)   { l.speed_mbit = 10;  l.full_duplex = false; }
+            else                                { l.speed_mbit = 10;  l.full_duplex = false; }
+        } else {
+            /* Link without a completed negotiation is parallel detect: the
+             * far end is not negotiating, so 802.3 says assume half duplex at
+             * whatever speed the PHY managed. Reported honestly rather than
+             * papered over -- it is also exactly what the laptop's e1000e
+             * prints for a moment each time this board resets. */
+            l.speed_mbit = 10;
+            l.full_duplex = false;
+        }
+    }
+
+    bool changed = !g_link_valid ||
+                   l.up != g_link.up ||
+                   l.speed_mbit != g_link.speed_mbit ||
+                   l.full_duplex != g_link.full_duplex;
+    g_link = l;
+    g_link_valid = true;
+    if (changed && l.up) emac_apply_link(&l);
+    if (out) *out = l;
+    return l.up;
+}
+
+void emac_link_report(void) {
+    if (emac_probe() != 0) {
+        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
+        return;
+    }
+    emac_start(false);
+    if (emac_phy_autoneg_start() != 0) {
+        cprintf("[EMAC] could not start auto-negotiation (PHY at %d not "
+                "answering?)\n", (int)CONFIG_EMAC_PHY_ADDR);
+        return;
+    }
+
+    cprintf("EMAC: negotiating...\n");
+    emac_link_t l = { 0 };
+    /* Auto-negotiation is a few hundred milliseconds when the far end is
+     * ready and forever when the cable is out, so this is bounded and the
+     * bound is part of the answer. */
+    for (unsigned i = 0; i < 40u; i++) {
+        g_link_valid = false;           /* defeat the rate limit while waiting */
+        if (emac_link_poll(&l) && l.an_complete) break;
+        time_delay_us(100000);
+    }
+
+    if (!l.up) {
+        cprintf("EMAC: link DOWN (no carrier)\n");
+        return;
+    }
+    cprintf("EMAC: link UP, %u Mbit/s %s duplex%s, MACCONFIG 0x%08lx\n",
+            (unsigned)l.speed_mbit, l.full_duplex ? "full" : "half",
+            l.an_complete ? "" : " (parallel detect)",
+            (unsigned long)REG(EMAC_MACCONFIG));
+}
+
+/* --- Z3's other half: does link-down actually get noticed? ---------------
+ *
+ * "It reports the link is up" is the easy half, and a driver that returned a
+ * hardcoded `true` would pass it. The half that matters for netif_t is that
+ * link_up() goes false when the carrier goes away, promptly, without
+ * spinning, and comes back when it returns.
+ *
+ * Testing that normally means a human unplugging a cable, which cannot live
+ * in a test suite. So it is done from the PHY's side instead: BMCR's
+ * POWERDOWN bit drops the link exactly as pulling the cable does -- BMSR's
+ * link bit clears either way, which is all the MAC and this driver can see.
+ * The cable stays in and the far end notices a real carrier loss, which is
+ * also a useful check that this board is visible to the switch it is plugged
+ * into.
+ *
+ * Latency is measured rather than assumed, because the rate limit in
+ * emac_link_poll() puts a floor under it and a floor that drifts is worth
+ * catching. */
+void emac_link_updown_test(void) {
+    if (emac_probe() != 0) {
+        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
+        return;
+    }
+    emac_start(false);
+    if (emac_phy_autoneg_start() != 0) {
+        cprintf("[EMAC] auto-negotiation would not start.\n");
+        return;
+    }
+
+    emac_link_t l;
+    for (unsigned i = 0; i < 40u && !(emac_link_poll(&l) && l.an_complete); i++) {
+        g_link_valid = false;
+        time_delay_us(100000);
+    }
+    if (!l.up) {
+        cprintf("EMAC linktest: SKIPPED -- no carrier to begin with.\n");
+        return;
+    }
+    cprintf("EMAC linktest: up at %u Mbit/s %s duplex; dropping the PHY...\n",
+            (unsigned)l.speed_mbit, l.full_duplex ? "full" : "half");
+
+    /* Down. */
+    int bmcr = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_BMCR);
+    emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_BMCR,
+                    (uint16_t)(bmcr | BMCR_POWERDOWN));
+
+    uint64_t t0 = time_get_ms();
+    bool went_down = false;
+    for (unsigned i = 0; i < 300u; i++) {
+        if (!emac_link_poll(&l)) { went_down = true; break; }
+        time_delay_us(10000);
+    }
+    uint64_t down_ms = time_get_ms() - t0;
+
+    /* Back up, whatever happened above -- leaving the PHY powered down would
+     * be a far worse failure than the one being tested for. */
+    emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_BMCR,
+                    (uint16_t)(bmcr & ~BMCR_POWERDOWN));
+    emac_phy_autoneg_start();
+
+    t0 = time_get_ms();
+    bool came_back = false;
+    for (unsigned i = 0; i < 100u; i++) {
+        g_link_valid = false;
+        if (emac_link_poll(&l) && l.an_complete) { came_back = true; break; }
+        time_delay_us(100000);
+    }
+    uint64_t up_ms = time_get_ms() - t0;
+
+    if (!went_down) {
+        cprintf("EMAC linktest: FAILED -- link never went down with the PHY "
+                "powered off.\n");
+        return;
+    }
+    if (!came_back) {
+        cprintf("EMAC linktest: FAILED -- link did not come back (down was "
+                "noticed in %u ms).\n", (unsigned)down_ms);
+        return;
+    }
+    cprintf("EMAC linktest: down noticed in %u ms, back up in %u ms "
+            "at %u Mbit/s %s duplex\n",
+            (unsigned)down_ms, (unsigned)up_ms, (unsigned)l.speed_mbit,
+            l.full_duplex ? "full" : "half");
+    cprintf("EMAC linktest: PASSED\n");
 }
