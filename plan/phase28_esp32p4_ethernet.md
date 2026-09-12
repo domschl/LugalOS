@@ -531,8 +531,9 @@ into flash-mapped address space frees **249 KB** and takes the heap from
 and enough that no foreseeable milestone has to think about it again.
 
 **Phase 28 resumes at Z4 after phase 32's U0–U3 and U5.** U4 (booting with no
-host attached) is not needed here — it is what phase 29 needs, since a
-stratum-1 server that requires a laptop to boot is not a server.
+host attached) is also in scope there, decided 2026-09-12: phase 28 does not
+need it, but phase 29 does — a stratum-1 server that requires a laptop to boot
+is not a server — and it is cheaper done while the boot path is open.
 
 Clause-22 auto-negotiation: BMCR restart, BMSR link-status poll, ANAR/ANLPAR
 resolution to speed and duplex. Feed the result into the MAC's configuration
@@ -640,42 +641,54 @@ symptom.** It becomes one only if the final state is not 100 Mbit/s full
 duplex; Z3's done-condition is written against that final line, not against
 the absence of a flap.
 
-**Trap two: NetworkManager will not keep an address on this interface unless
-told to.** As found, `enp0s31f6` was managed by the auto-created profile
-"Wired connection 1" with `ipv4.method=auto` *and* `ipv4.addresses=192.168.77.1/24`
-— a static address configured but never applied, because NM sits in
-`connecting (getting IP configuration)` waiting for a DHCP lease that cannot
-arrive on a segment whose only other node is this board. Each PHY reset then
-drops carrier, NM deactivates the profile and flushes, and it restarts.
+**Trap two: the far end resyncs when carrier returns, and that is the far
+end's business, not a thing to engineer around.**
 
-The durable fix is on the laptop, once, and `ip addr add` is **not** it — a
-manually added address is flushed by the next reset:
+Observed: when the cable came out, NetworkManager deactivated the profile and
+flushed `192.168.77.1/24`, leaving the device `unavailable`; when it went back
+in, the address returned. A PHY reset produces the same flap, and this board
+resets on every reflash.
 
-```sh
-sudo nmcli connection modify "Wired connection 1" ipv4.method manual ipv6.method disabled
-sudo nmcli connection up "Wired connection 1"
-```
+**The rule this phase adopts (2026-09-12, the user's call, and it is the right
+one): we cannot edit every host that will ever be plugged into this board, so
+resync time after a link flap is normal and the driver must work with it.**
+There is no host-side fix in this phase's requirements. A switch that takes
+30 seconds of spanning-tree before forwarding, a host that runs a DHCP client,
+a laptop that deactivates on carrier loss — all of these are the environment,
+not a misconfiguration, and a driver that only works on a cooperatively
+configured peer is not finished.
 
-plus a drop-in at `/etc/NetworkManager/conf.d/10-p4-link.conf` so that trap
-one stops triggering trap two:
+What that actually demands, and it is all on our side:
 
-```ini
-[device-p4]
-match-device=interface-name:enp0s31f6
-ignore-carrier=yes
-```
+* **The driver must recover unaided.** Z3 already does: link-down is noticed
+  in 201 ms and the link renegotiates in 2712 ms with no intervention. Nothing
+  latches, nothing needs a reset, and `net`'s address is ours and survives.
+* **The tests must wait rather than assume.** A reflash-then-ping that fires
+  immediately can fail because the *host* is still resyncing, which looks
+  exactly like a driver that does not transmit. Z4 and Z5's tests poll for
+  reachability with a generous deadline instead of sleeping a guessed
+  interval, and report "the far end never came back" distinctly from "the
+  frame was not answered".
 
-`ignore-carrier` exists for exactly this case — a directly attached device
-that reboots — and keeps the address installed across a link flap.
-`ipv4.never-default=yes` is already set on that profile and must stay: wifi
-is the real uplink and this segment has no router (which is why Z5 passes a
-zero gateway, §4).
+The one host-side change that *is* required is not about carrier at all: the
+profile must be `ipv4.method manual`, because with `method=auto` NM waits for
+a DHCP lease that cannot arrive on this segment and so never applies the
+static address it already has. That was done on 2026-09-12. `ignore-carrier`
+would shorten the resync window on this particular laptop and is deliberately
+**not** relied upon.
+
+`ipv4.never-default=yes` is set on that profile and must stay: wifi is the
+real uplink and this segment has no router, which is why Z5 passes a zero
+gateway (§4).
 
 **Precondition, checked at the start of each session and not assumed:**
 
 ```sh
 ip -br addr show enp0s31f6     # expect UP and 192.168.77.1/24, not UP alone
 ```
+
+and after any reflash, give the far end time to resync before concluding
+anything about the driver.
 
 Nothing before Z5 needs the address — Z1-Z4 are on-board or raw-frame work,
 and `tcpdump` sees frames on an address-less interface — but Z5 does. A ping

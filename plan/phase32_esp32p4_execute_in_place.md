@@ -115,12 +115,31 @@ a single PMP NAPOT entry (`kernel/board.c`'s `board_text_region()`). Whether
 PMP can grant a flash-mapped range is a question this phase does not need to
 answer, and 4 KB is not worth answering it for.
 
-`cmake/flash_layout_esp32p4.cmake` gains an OS-image segment. Its existing
-comment is explicit that there is deliberately none, and that adding one
-*"goes below 0x00D10000 only by first retiring the factory image on purpose"*
-— so U0 either fits the image into the ~0.9 MB of unallocated margin at
-`0x00D10000`, which 255 KB does comfortably, or it makes retiring the factory
-demo an explicit decision. **It fits; take the margin.**
+`cmake/flash_layout_esp32p4.cmake` gains an OS-image segment, and the shape of
+the map changes with it.
+
+**Decided 2026-09-12: LugalOS takes the whole 16 MB. The Waveshare factory
+demo is retired on purpose.** That file's existing comment requires exactly
+this to be a decision rather than a side effect — *"goes below 0x00D10000 only
+by first retiring the factory image on purpose"* — and it now is one. The
+backup at `~/gith/esp/p4nano-factory-flash/` stops being a safety net that
+constrains the layout and becomes what it should have been all along: an
+archive, restorable with `esptool write_flash` if anyone ever wants the demo
+back.
+
+What that buys is not space — 255 KB would have fitted in the old margin
+several times over — but *coherence*. A map laid out around an image nobody
+runs would have the OS image at `0x00E80000` for no reason a reader could
+reconstruct, with a 13 MB hole above address zero labelled NEVER TOUCHED. U0
+lays the map out as if the board were ours, because it is:
+
+    0x00000000  second-stage bootloader (U4)
+    ...         OS image (.text + .rodata)
+    ...         flash filesystem
+    ...         spare, contiguous and at the top where growth is cheap
+
+with the same 64 KB alignment rule and the same "these numbers are the only
+definition" property the file already has.
 
 **Done when:** the layout is in the board and flash-layout files with the
 arithmetic shown, and the predicted heap figure is written down so U5 can be
@@ -171,33 +190,43 @@ argument rather than trust the result.
 
 ### U4 — Boot with no host at all
 
-The ROM reads a second-stage image from flash and jumps to it. U2's stub
-becomes that image, so the board powers on into LugalOS with nothing
-attached.
+**In scope, 2026-09-12.** The ROM reads a second-stage image from flash and
+jumps to it. U2's stub becomes that image, so the board powers on into
+LugalOS with nothing attached.
 
-**This is the riskiest milestone and the least urgent.** Phase 28 needs U0–U3
-and U5; it does not need this. What needs it is **phase 29** — a stratum-1 NTP
-server that requires a laptop to boot is not a server. So U4 can slip to its
-own phase without blocking anything, and should if it proves awkward.
+Phase 28 does not strictly need this; **phase 29 does**, and that is the
+reason it is in rather than deferred. A stratum-1 NTP server that requires a
+laptop to boot is not a server, and every later appliance persona on this
+board inherits the same requirement. Doing it here, while the boot path is
+already open and freshly understood, is cheaper than reopening it later.
 
-Unknowns to settle first, honestly listed because they are not yet known: the
-ROM's expected second-stage offset on this part, its image format and
-checksum, and whether a non-IDF image is acceptable to it. Also: the factory
-demo currently boots, and U4 is the milestone that stops it — which is the
-"retiring the factory image on purpose" that `flash_layout_esp32p4.cmake`
-requires be a decision rather than a side effect.
+It remains the riskiest milestone, so it is sequenced last among the ones
+phase 28 waits on, and U0–U3 are independently useful if it stalls.
 
-**Done when:** power-on with no USB host reaches a shell on the console, and
-the documented recovery path back to the factory image (or to `load-ram`) is
-tested rather than assumed.
+Unknowns to settle first, listed because they are genuinely not yet known:
+the ROM's expected second-stage offset on this part, its image format and
+checksum, and whether a non-IDF image is acceptable to it. The answers are in
+the ROM's boot code and in IDF's bootloader image format; U4 starts by
+reading, not by writing.
+
+**The recovery path is the real safety requirement**, and it replaces the
+factory image as the thing that must not be lost. The board must remain
+recoverable by `esptool` download mode (the CH343P's DTR/RTS reach ESP_EN and
+the strapping pin — `tools/p4run.py` already drives them), so a bad
+second-stage image is a reflash and not a brick. **That path is tested before
+the first flash write that could need it**, not after.
+
+**Done when:** power-on with no USB host reaches a shell on the console; the
+download-mode recovery path has been exercised deliberately, from a
+deliberately broken image, and worked.
 
 ### U5 — Reclaim, and the L2 cache trade
 
 Raise the heap floor in `linker/esp32p4.ld` to reflect reality, and revisit
 `esp32p4_l2_cache_shrink()`: 128 KB of L2 against 186 KB of text is a working
 set that does not fit, and the RAM the shrink buys is no longer scarce. The
-right size is now an empirical question — measure something, do not reason
-about it.
+right size is now an empirical question — **measure it when we are there,
+do not reason about it now** (2026-09-12, agreed).
 
 **Done when:** the floor is raised with its new figure and the reason;
 a measurement (the existing chess or `perft` workload is the obvious
@@ -223,9 +252,12 @@ story.
   under an unusual condition — fails rarely and corrupts when it does. Phase
   31's work means `printk()` is a ring append and cannot block, which helps;
   it does not make the code RAM-resident.
-* **This board's factory image is not obtainable again.** U4 is the only
-  milestone that threatens it, which is another reason it is last and
-  separable.
+* **Recovery, not the factory image, is what must not be lost.** The factory
+  demo is being retired deliberately (U0), and the backup at
+  `~/gith/esp/p4nano-factory-flash/` is an archive. What would actually hurt
+  is a second-stage image that neither boots nor leaves the board in download
+  mode. Hence U4's ordering and its explicit "test the recovery path first"
+  requirement.
 
 ## 5. Explicitly not in this phase
 
