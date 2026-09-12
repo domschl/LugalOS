@@ -55,4 +55,12 @@ int emac_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t val);
  * i2c_scan_bus(), not kernel log output. */
 void emac_phy_scan(void);
 
+/* Z2's done-condition: sends frames of several sizes through the MAC's
+ * internal loopback and checks each comes back byte-identical. No PHY and no
+ * cable are involved, deliberately -- a failure here can only be the
+ * descriptor rings, the cache maintenance, or the buffer ownership protocol.
+ * Reports the .bss the rings cost and the cache line size they are built
+ * around. Leaves loopback disabled. */
+void emac_loopback_test(void);
+
 #endif /* DRIVERS_EMAC_ESP32P4_H */

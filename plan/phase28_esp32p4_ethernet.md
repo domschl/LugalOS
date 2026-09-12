@@ -368,6 +368,64 @@ identifier it reported are written into the board file as measured facts;
 
 ### Z2 — Descriptor rings and cache maintenance, proved without a cable
 
+**Done, 2026-09-12.** `emac loopback` on the board:
+
+```
+EMAC loopback: 4 RX + 2 TX descriptors of 64 B, buffers 1536 B
+  rings cost 9600 B of .bss; L1 line 64 B (TRM 9.3.3.2 p909)
+    60 B: ok      64 B: ok      65 B: ok     128 B: ok
+   512 B: ok    1500 B: ok    1514 B: ok
+EMAC loopback: 7 passed, 0 failed
+```
+
+Rings cost **9600 bytes of .bss** (4 RX + 2 TX descriptors at 64 B, six
+buffers at 1536 B), out of the 384 KB that .bss and the heap share. The L1
+line is **64 bytes**, TRM §9.3.3.2 p. 909: *"64 KB of data cache (dcache)
+with a 64 B block size, two-way set associative"*.
+
+**The cache maintenance is proven load-bearing, not defensive** — which was
+the open question §3 could only assert. Stubbing both primitives to no-ops
+and changing nothing else does not cost the occasional frame; it fails
+everything immediately:
+
+```
+    60 B: nothing came back (0), DMA status 0x00680084
+    65 B: send refused (-2)      <- and every size after it
+```
+
+`-2` is the transmit path finding `OWN` still set: the DMA had cleared it in
+memory and the CPU was reading a stale line. That is the entire hazard in one
+observation, and it is why this driver cannot be written the way the ENC28J60
+and CYW43 drivers are.
+
+Three findings the plan did not have, two of them bugs the first run caught:
+
+* **Store-and-forward is not available on this chip, and the symptom is
+  size-dependent.** Every frame of 512 B and up failed with receive overflow
+  (DMA status bit 4) because RSF holds a whole frame in the MTL FIFO and
+  **the P4's receive FIFO is 256 bytes**. IDF disables RSF for every target
+  except the original ESP32, commented only as *"Rx FIFO is only 256B"*.
+  Threshold mode (64 bytes) instead. Note the shape of this one: the four
+  smallest test sizes passed, so a test that only tried short frames would
+  have called this driver working.
+* **`ACS` (automatic pad/CRC stripping) is a trap that looks like the
+  solution.** `netif.h` wants frames with no FCS, and there is a MAC bit
+  named for exactly that — but the DWC_EMAC strips only when the length/type
+  field is **below 1536**, i.e. only for 802.3 length-framed packets. Every
+  Ethernet II frame is above it (IPv4 is type 0x0800 = 2048), so ACS does
+  nothing for real traffic while looking like it should. The FCS comes off in
+  software, unconditionally. First run showed it as every frame returning
+  exactly four bytes long.
+* **Chained mode, not ring mode.** Descriptors are padded to a full cache
+  line each so that invalidating one to read its status cannot discard a
+  neighbour's setup (IDF pads for the same reason, commented only as "due to
+  cache arrangement"). That padding makes the hardware's 32-byte stride
+  assumption wrong, so each descriptor names its successor explicitly and the
+  DMA never computes a stride. The alternative — ring mode with
+  `DESC_SKIP_LEN` — works too and is one more number to get wrong.
+
+`tests/hw/test_esp32p4.py` is 14/14.
+
 The DMA descriptor layout from `emac_dma_struct.h` and TRM §55, the ring
 setup, and the two cache primitives from §3. Proved in **MAC internal
 loopback** — the MAC's own loopback bit, no PHY, no wire — so that a frame

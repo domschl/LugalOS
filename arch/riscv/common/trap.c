@@ -240,6 +240,54 @@ void esp32p4_l2_cache_shrink(void) {
     invalidate_all(P4_CACHE_MAP_L2);
 }
 
+/* --- L1 data-cache maintenance (Z2, plan/phase28_esp32p4_ethernet.md) ----
+ *
+ * Through the boot ROM, like the flash routines in drivers/flash_esp32p4.c
+ * and the L2 mode change above, and for the same reason: these sequences are
+ * fiddly, already in mask ROM, and reimplementing them from the TRM would be
+ * new code to get wrong for no gain.
+ *
+ * Addresses transcribed from ESP-IDF's own ROM linker script,
+ * components/esp_rom/esp32p4/ld/esp32p4.rom.ld, and cross-checked against
+ * esp32p4.rom.eco0_4.ld where they are identical:
+ *
+ *     Cache_Invalidate_Addr = 0x4fc003e4
+ *     Cache_WriteBack_Addr  = 0x4fc003f4
+ *
+ * Both are `int f(uint32_t map, uint32_t addr, uint32_t size)` returning 0
+ * for success and 1 for an invalid argument. CACHE_MAP_L1_DCACHE is BIT(4)
+ * (esp32p4/rom/cache.h). */
+#define P4_ROM_CACHE_INVALIDATE_ADDR 0x4fc003e4u
+#define P4_ROM_CACHE_WRITEBACK_ADDR  0x4fc003f4u
+#define P4_CACHE_MAP_L1_DCACHE       (1u << 4)
+
+/* Rounds the range out to whole cache lines. The ROM refuses a misaligned
+ * range rather than fixing it up, and a caller that passed one would get a
+ * silent no-op -- which for a DMA buffer means stale data and a bug that
+ * looks like flaky hardware. Rounding here makes the primitive total.
+ *
+ * Rounding OUT is safe for writeback (flushing a neighbouring line costs
+ * nothing) and is the caller's responsibility to have earned for invalidate,
+ * where touching a neighbour's line would discard its writes. The EMAC's
+ * descriptors are padded to a full line each and its buffers are whole
+ * multiples of one precisely so that this rounding is a no-op there. */
+static void p4_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
+    int (*op)(uint32_t, uint32_t, uint32_t) =
+        (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
+    uintptr_t start = addr & ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
+    uintptr_t end   = (addr + size + ESP32P4_L1_CACHE_LINE - 1u) &
+                      ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
+    op(P4_CACHE_MAP_L1_DCACHE, (uint32_t)start, (uint32_t)(end - start));
+}
+
+void esp32p4_dcache_writeback(uintptr_t addr, uint32_t size) {
+    p4_cache_range(P4_ROM_CACHE_WRITEBACK_ADDR, addr, size);
+}
+
+void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size) {
+    p4_cache_range(P4_ROM_CACHE_INVALIDATE_ADDR, addr, size);
+}
+
 static void p4_watch_arm(uintptr_t addr, bool verbose) {
     uintptr_t pattern = (addr & ~(uintptr_t)3) | 1u;   /* 4-byte NAPOT */
     uintptr_t tdata1  = (1u << 6)    /* MACHINE: fire in M-mode        */

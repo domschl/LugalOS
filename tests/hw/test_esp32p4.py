@@ -465,6 +465,31 @@ def test_9p_over_the_wire(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{int(f['temperature_c100']) / 100.0} C over 9P"
 
 
+def test_emac_loopback(b: Board) -> tuple[str, bool, str]:
+    """Z2's done-condition, plan/phase28_esp32p4_ethernet.md.
+
+    Frames of seven sizes through the MAC's internal loopback, each compared
+    byte for byte. No PHY and no cable, so a failure has one candidate cause:
+    the descriptor rings, the cache maintenance, or the buffer ownership
+    protocol.
+
+    The sizes are the edges that matter -- 60 (smallest legal frame), 64 (one
+    whole cache line), 65 (one byte into a partial line), and 1514
+    (NETIF_FRAME_MAX). The cache line cases are the point: this is the first
+    driver in the tree whose device writes memory behind the CPU's cache."""
+    name = "EMAC loopback: rings and cache discipline (Z2)"
+    out = b.console_session.cmd("emac loopback", deadline=25.0)
+    m = re.search(r"EMAC loopback: (\d+) passed, (\d+) failed", out)
+    if not m:
+        return name, False, f"no result line: {out.strip()[-200:]}"
+    passed, failed = int(m.group(1)), int(m.group(2))
+    if failed or passed != 7:
+        bad = [ln.strip() for ln in out.splitlines() if ":" in ln and "ok" not in ln
+               and ("B:" in ln)]
+        return name, False, f"{passed} passed, {failed} failed: {'; '.join(bad[:3])}"
+    return name, True, f"{passed}/7 sizes byte-identical, 60 B to 1514 B"
+
+
 def test_emac_phy(b: Board) -> tuple[str, bool, str]:
     """Z1's done-condition, plan/phase28_esp32p4_ethernet.md.
 
@@ -506,6 +531,7 @@ TESTS = [
     test_sampler_advances,
     test_9p_over_the_wire,
     test_emac_phy,
+    test_emac_loopback,
 ]
 
 

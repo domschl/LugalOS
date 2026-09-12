@@ -89,4 +89,43 @@ void esp32p4_watch_reenable(void);
  * either works or is visibly absent, rather than silently doing nothing. */
 void esp32p4_clic_timer_enable(void);
 
+/* --- L1 data-cache maintenance for bus-master DMA -----------------------
+ *
+ * Z2, plan/phase28_esp32p4_ethernet.md. These live here rather than in the
+ * driver that needs them for the same reason esp32p4_l2_cache_shrink() does:
+ * this chip's caches are not what they look like, and everything this kernel
+ * knows about that belongs in one place.
+ *
+ * Why they are needed at all: the HP cores reach L2MEM *through* L1 data
+ * cache (IDF soc_caps.h, SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE) while a
+ * bus-master peripheral reaches it directly. So memory the CPU wrote may
+ * still be sitting in cache when the device reads it, and memory the device
+ * wrote may be stale in cache when the CPU reads it. Nothing in this tree
+ * needed that before phase 28 -- the ENC28J60 and CYW43 move bytes over SPI
+ * with the CPU touching every one, and QEMU's virtio has no cache in the
+ * path.
+ *
+ * Both take a byte range. The L1 line is 64 bytes (TRM §9.3.3.2, p. 909:
+ * "64 KB of data cache (dcache) with a 64 B block size, two-way set
+ * associative"), and the caller is responsible for the range being
+ * line-aligned and line-sized -- see the comment on the ring storage in
+ * drivers/emac_esp32p4.c for why sharing a line with anything else is a bug
+ * rather than an inefficiency.
+ *
+ * Only L1 and not L2: the L2 cache caches *external* memory (see
+ * esp32p4_l2_cache_shrink()), and these buffers are internal L2MEM. */
+#define ESP32P4_L1_CACHE_LINE 64u
+
+/* Pushes dirty lines covering [addr, addr+size) out to memory, so a device
+ * about to read that memory sees what the CPU wrote. */
+void esp32p4_dcache_writeback(uintptr_t addr, uint32_t size);
+
+/* Drops any cached copy of [addr, addr+size), so the CPU's next read comes
+ * from memory rather than from a line that predates the device's write.
+ *
+ * Discards, does not write back: calling this on a range the CPU has dirtied
+ * loses those writes. That is the intended behaviour for a receive buffer and
+ * a bug anywhere else. */
+void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size);
+
 #endif /* LUGALOS_ARCH_ESP32P4_INTR_H */
