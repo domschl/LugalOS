@@ -1,7 +1,8 @@
 # Phase 30 — The layer above the registers
 
 **Status: COMPLETE, 2026-09-12. Category E (the I2C bus split), G0-G5 all
-done. Phase 28 is next.**
+done. Phase 28 is next, and is planned in
+`plan/phase28_esp32p4_ethernet.md`.**
 
 *(2026-09-11: paused mid-phase for `plan/phase31_concurrency_hierarchy.md`'s
 **Y5**, which made kernel logging non-blocking by construction, and resumed

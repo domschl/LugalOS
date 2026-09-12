@@ -2444,6 +2444,12 @@ stated there.)*
 
 ### Phase 28 — Ethernet on the P4
 
+*(2026-09-12: both prerequisites are now done, and this sketch has become
+`plan/phase28_esp32p4_ethernet.md`, milestones Z0-Z7. The sketch below stands
+as written; what the plan adds is the rest of the pin table, the TRM's clock
+sequence, and the one hazard this section did not see -- the EMAC's DMA is
+not cache-coherent with the HP cores.)*
+
 **Phases 31 and 30 come first, in that order.**
 `plan/phase31_concurrency_hierarchy.md` (the wait-for graph and its checker)
 then `plan/phase30_driver_framework.md` (the driver-task framework), both

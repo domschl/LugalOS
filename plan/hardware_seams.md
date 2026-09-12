@@ -48,6 +48,9 @@ Already abstracted, and they held.
 
 `netif_register()` has taken ENC28J60, CYW43439 and virtio without changing,
 and phase 28 plugs the P4's EMAC into it unchanged. Nothing is owed here.
+(That is a prediction, and `plan/phase28_esp32p4_ethernet.md` Z5 is the
+test of it: if the EMAC forces a change to `netif.h`, this paragraph was
+wrong and gets rewritten with what it missed.)
 
 ## 3. The linker-symbol contract
 
