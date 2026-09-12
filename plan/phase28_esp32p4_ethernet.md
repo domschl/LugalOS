@@ -1,6 +1,8 @@
 # Phase 28 — Ethernet on the P4, which is why the P4 is here
 
-**Status: PLANNED, 2026-09-12.** Prerequisites all met: phase 27 (the
+**Status: IN PROGRESS. Z0–Z3 done, 2026-09-12. PAUSED at Z4** for
+`plan/phase32_esp32p4_execute_in_place.md` — the P4's heap reached its floor
+and the fix is a phase of its own; see §Z3a. Prerequisites all met: phase 27 (the
 platform) is COMPLETE, phase 30 (the driver framework) is COMPLETE, and
 phase 31 is complete through Y5f (kernel logging cannot deadlock). The
 ordering argument for putting both of those first is in
@@ -521,7 +523,16 @@ The options, none of which should be taken silently:
    that exists for a stated reason and is the user's call, not a way to get
    past a failing build.
 
-**Z4 needs one of these decided first.**
+**Decided, 2026-09-12: option 1.** Written up as
+`plan/phase32_esp32p4_execute_in_place.md`, milestones U0–U6. The measurement
+that settles it: `.text` is 186 200 bytes and `.rodata` 68 904, so moving both
+into flash-mapped address space frees **249 KB** and takes the heap from
+128 KB to roughly 375 KB — a change of category rather than an optimisation,
+and enough that no foreseeable milestone has to think about it again.
+
+**Phase 28 resumes at Z4 after phase 32's U0–U3 and U5.** U4 (booting with no
+host attached) is not needed here — it is what phase 29 needs, since a
+stratum-1 server that requires a laptop to boot is not a server.
 
 Clause-22 auto-negotiation: BMCR restart, BMSR link-status poll, ANAR/ANLPAR
 resolution to speed and duplex. Feed the result into the MAC's configuration
