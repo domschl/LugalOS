@@ -1,10 +1,95 @@
 #ifndef LUGALOS_DRIVERS_DRIVER_TASK_H
 #define LUGALOS_DRIVERS_DRIVER_TASK_H
 
-/* The driver-as-task pattern, once (G2, plan/phase30_driver_framework.md).
+/* What a driver is in this kernel, and how to write one (G5,
+ * plan/phase30_driver_framework.md).
  *
- * Nine drivers in this tree run as tasks serving a chan_call() endpoint, and
- * nine of them wrote the same loop:
+ * Read this file before writing a driver. It should answer the question
+ * without your having to read nine existing ones; if it does not, that is a
+ * bug in this comment. Two companions: drivers/README.md for *which kind of
+ * thing* you are writing and the rule about when to share code, and
+ * plan/hardware_seams.md for the inventory of what already exists.
+ *
+ * ## A driver here has up to four parts, and only one of them is shared
+ *
+ *   1. **The register half.** Which bits in which register on this exact
+ *      chip. Never shared, across chips or vendors -- see drivers/README.md
+ *      category A for why sharing it produces plausible wrong values rather
+ *      than merge conflicts.
+ *
+ *   2. **The task half.** A long-lived task owning the hardware, serving
+ *      requests over a chan_call() endpoint. **This is the part this file
+ *      is.** Zero board-specific content, which is exactly why it could be
+ *      extracted while part 1 could not.
+ *
+ *   3. **The facade.** The ordinary functions everyone else calls --
+ *      uart_putc(), blk_read(), i2c_xfer(). Each checks
+ *      driver_task_alive() and either calls the task or falls back to direct
+ *      hardware access. The fallback is not a nicety: it is how the system
+ *      boots before the task exists and keeps working if it never starts.
+ *
+ *   4. **A U-mode domain, on boards where that means something.** Optional,
+ *      and see the note further down before reaching for it.
+ *
+ * ## A worked example: the whole of a driver's task half
+ *
+ *     // 1. The buffers the endpoint owns, and the framework's handle.
+ *     static uint8_t       g_widget_req[8];
+ *     static uint8_t       g_widget_resp[4];
+ *     static driver_task_t g_widget_task;
+ *
+ *     // 2. The serve callback: your wire protocol, and nothing else.
+ *     //    Runs on the task, one request at a time. Return the number of
+ *     //    response bytes written.
+ *     static uint32_t widget_serve(void *ctx, const uint8_t *req,
+ *                                  uint32_t req_len,
+ *                                  uint8_t *resp, uint32_t resp_cap) {
+ *         (void)ctx; (void)resp_cap;
+ *         switch (req[0]) {
+ *             case WIDGET_REQ_READ:
+ *                 resp[0] = widget_hw_read();     // registers: part 1
+ *                 return 1;
+ *             case WIDGET_REQ_WRITE:
+ *                 for (uint32_t i = 1; i < req_len; i++)
+ *                     widget_hw_write(req[i]);
+ *                 return 0;
+ *             default:
+ *                 return 0;
+ *         }
+ *     }
+ *
+ *     // 3. Start it, from kernel/main.c after sched_init().
+ *     int widget_task_start(void) {
+ *         const driver_task_spec_t spec = {
+ *             .name        = "widget",      // task name AND endpoint name
+ *             .serve       = widget_serve,
+ *             .req         = g_widget_req,  .req_cap  = sizeof(g_widget_req),
+ *             .resp        = g_widget_resp, .resp_cap = sizeof(g_widget_resp),
+ *             .min_req_len = 1,             // shorter gets an empty reply
+ *             .stack_pages = 1,
+ *             .priority    = DRIVER_PRIO_DEFAULT,
+ *         };
+ *         return driver_task_start(&g_widget_task, &spec);
+ *     }
+ *
+ *     // 4. The facade, for everyone else. Falls back when the task is not
+ *     //    serving -- during boot, or if it never started.
+ *     uint8_t widget_read(void) {
+ *         if (driver_task_alive(&g_widget_task)) {
+ *             uint8_t req[1] = { WIDGET_REQ_READ }, resp[1];
+ *             if (driver_task_call(&g_widget_task, req, 1, resp, 1) == 1)
+ *                 return resp[0];
+ *         }
+ *         return widget_hw_read();
+ *     }
+ *
+ * That is a complete driver task. Failure is never fatal by construction:
+ * driver_task_start() returning -1 leaves every facade on its fallback path,
+ * which is what the system did before the driver was a task at all.
+ *
+ * ## What this replaced
+ *
+ * Nine drivers each wrote the same loop by hand:
  *
  *     static void X_task_body(void *arg) {
  *         while (!g_X_ep) sched_yield();
@@ -15,9 +100,9 @@
  *         }
  *     }
  *
- * The switch is the driver. Everything around it is not, and this is it:
- * the registration handshake, the serve loop, the reply, the liveness check,
- * the bounded retry a caller needs, and the three invariants below.
+ * The switch is the driver. Everything around it is not: the registration
+ * handshake, the serve loop, the reply, the liveness check, the bounded
+ * retry, and the three invariants below.
  *
  * Category C of plan/hardware_seams.md -- zero board-specific content, which
  * is exactly why it is shared and why the register halves are not.
@@ -162,6 +247,38 @@ static inline chan_endpoint_t *driver_task_endpoint(const driver_task_t *dt) {
 }
 
 /* --- The U-mode domain (G3, plan/phase30_driver_framework.md §2.2) ---------
+ *
+ * ## Read this before reaching for it
+ *
+ * U-mode is not a hardening option you sprinkle on. On this kernel it is the
+ * *only* place a memory domain means anything -- PMP restricts privilege
+ * levels below the one that programs it, and the RP2350 kernel runs in
+ * M-mode, so a domain attached to a kernel-mode task confines nothing and
+ * "activates" successfully while doing it (plan/phase12_microkernel_migration
+ * .md's M5 opens by retracting its own scope over exactly this).
+ *
+ * So the choice is real isolation or a kernel-mode task, and it is a choice,
+ * because U-mode takes things away that a serve loop may have been relying
+ * on:
+ *
+ *   - **It cannot block.** No task_block(), no irq_save(). A U-mode server
+ *     cannot offer a blocking read; uart_rp2350.c's 'R' is "read if ready"
+ *     with a two-byte reply for this reason, and the waiting moved into the
+ *     client. If your protocol has a blocking operation, U-mode changes your
+ *     protocol -- see drivers/uart_proto.h, which documents that divergence
+ *     rather than hiding it.
+ *   - **It cannot reach .rodata.** No string literals (build them into a
+ *     `volatile char[]`), and no `switch` (its jump table lands there too --
+ *     use if/else, and add the file to CMakeLists.txt's
+ *     -fno-jump-tables list).
+ *   - **It cannot call another driver's kernel .text.** Anything your task
+ *     did by calling into a different driver has to move to the facade,
+ *     which still runs in kernel mode. That is what M5 Phase 6 did to the
+ *     RP2350 UART's USB mirror.
+ *
+ * A U-mode driver therefore cannot use driver_task_start()'s serve loop; it
+ * writes its own, in .utext, over the usys_* syscalls. Six drivers do, and
+ * that duplication is noted in G4 as a separate extraction nobody has done.
  *
  * Seven drivers built a mem_domain_t by hand and the shape never varied: the
  * task's own U-mode stack (R/W), the shared `.utext` page from

@@ -1,15 +1,15 @@
 # Phase 30 — The layer above the registers
 
-**Status: PAUSED at G2, 2026-09-11. Category E (the I2C bus split), G1 (the
-three leaks), G0 (the inventory and the rule) and G2 (the serve loop) are
-done; G3-G5 remain. Sequenced after phase 31 and before phase 28.**
+**Status: COMPLETE, 2026-09-12. Category E (the I2C bus split), G0-G5 all
+done. Phase 28 is next.**
 
-*(2026-09-11: paused for `plan/phase31_concurrency_hierarchy.md`'s **Y5**,
-which makes kernel logging non-blocking by construction. G3 migrates seven
-U-mode drivers and G4 the UART console family — fourteen files, all written
-under the "never `printk()` from a driver task" rule that Y5 deletes. Doing
-them first would mean touching all fourteen twice. G2's
-`lock_noprintk_enter()` check is the machinery Y5 narrows; see §5.6 there.)*
+*(2026-09-11: paused mid-phase for `plan/phase31_concurrency_hierarchy.md`'s
+**Y5**, which made kernel logging non-blocking by construction, and resumed
+after it. The pause paid: G3 and G4 touch fourteen driver files that were all
+written under the "never `printk()` from a driver task" rule Y5 deleted, so
+doing them first would have meant editing all fourteen twice. G2's
+`lock_noprintk_enter()` check is the machinery Y5 narrowed — it guards
+`cprintf()` now, and is `lock_serve_enter()`; see §5.6 there.)*
 
 *(2026-09-06: `plan/phase31_concurrency_hierarchy.md` was written after this
 one and goes first. Its argument applies directly here: this phase moves code
@@ -705,6 +705,35 @@ without reading nine examples. One worked example in the header, and
 
 Done when: writing a new driver task requires reading one header, and phase
 28 can start from it.
+
+#### G5 done — 2026-09-12
+
+`drivers/include/drivers/driver_task.h` now opens with what a driver *is*
+here rather than with what was deduplicated: four parts -- the register half
+(never shared), the task half (this file), the facade with its fallback, and
+optionally a U-mode domain -- and a complete worked example of the task half,
+buffers through facade, that compiles in the reader's head without reference
+to any existing driver.
+
+Two additions beyond the milestone's text, both from findings later in the
+phase:
+
+* **A "read this before reaching for it" note on the U-mode domain.** G4
+  established that U-mode is not a hardening option but a trade: it is the
+  only place a domain is enforced (PMP restricts levels *below* the one that
+  programs it, and this kernel runs in M-mode), and in exchange it takes away
+  blocking, `.rodata` and calls into other drivers' kernel text. A driver
+  author who learns that after writing a blocking serve loop has written the
+  wrong thing. The note says it before the API does.
+* **The framework and the log ring are in `README.md`'s architecture
+  section**, which described neither. A reader arriving at the repository now
+  meets "drivers are tasks, and the pattern is one file" and "kernel logging
+  cannot deadlock" as properties of the system, with pointers rather than
+  restatements.
+
+Done-condition met on both halves: writing a driver task requires reading one
+header, and phase 28's EMAC starts from it -- a kernel-mode driver task with
+no domain, which is the example case exactly.
 
 ## 5. How it is tested
 

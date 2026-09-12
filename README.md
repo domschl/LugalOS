@@ -157,6 +157,22 @@ against a GPS-disciplined reference clock):
 ## Key Features & Architecture
 
 * **Microkernel Syscall Interface**: RISC-V `ecall`-routed syscall dispatch with validated copy-in/copy-out at the boundary — a user pointer is checked against the calling task's own memory domain and then copied, so the kernel never dereferences a caller-supplied address. Services are reached by *message passing* over copy-always channels (`kernel/chan.h`), which a U-mode program reaches through `SYS_CHAN_CALL`; the older register-based `sys_ipc_*` entry points were never more than stubs and have been deleted, their syscall numbers permanently retired.
+* **Drivers are tasks, and the pattern is one file**: a driver owns its
+  hardware from a long-lived task and serves everyone else over a
+  `chan_call()` endpoint, so a bug in a driver is a task that stops answering
+  rather than a kernel that stops. `drivers/driver_task.h` is that pattern --
+  the serve loop, the endpoint lifecycle, the bounded retry, and (on boards
+  where a memory domain is enforced) the U-mode domain builder. Writing a new
+  driver means reading one header; the worked example is in it. Every facade
+  falls back to direct hardware access when its task is not serving, which is
+  how the system boots before the tasks exist and keeps working if one never
+  starts.
+* **Kernel logging cannot deadlock**: `printk()` formats onto the caller's
+  stack and appends a record to a ring under a leaf spinlock, then returns --
+  from an interrupt handler, from inside a driver's serve callback, with a
+  lock held. A consumer task drains the ring to the console, so the thing
+  that can block is never the thing that is logging. Overflow drops the
+  oldest and says how much (`plan/phase31_concurrency_hierarchy.md`).
 * **Symmetric multiprocessing on two harts**: one ready queue, one scheduler lock, and per-task hart
   affinity. Locking is real rather than nominal — `spinlock_t` (irqsave, test-and-**test**-and-set,
   because a plain test-and-set spin starves the other core on one bus) and a re-entrant yielding
@@ -282,6 +298,10 @@ than after:
 * **`plan/hardware_seams.md`** — the maintained inventory of every seam: what
   declares it, what implements it, and what a second silicon platform cost
   each one.
+* **`drivers/include/drivers/driver_task.h`** — what a driver *is* here, in
+  four parts, with a complete worked example of the one part that is shared.
+  Read it before writing a driver task; read the note on U-mode in it before
+  reaching for a memory domain.
 
 ---
 
