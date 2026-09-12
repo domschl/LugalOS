@@ -28,11 +28,25 @@ filesystem that mounts as garbage rather than an error.
 ## What this will not do
 
 The write is bounded to the region the layout declares, and refuses anything
-below it. The board's Waveshare factory image occupies the low 13.06 MB and is
-not obtainable again once overwritten; the segment starts at 14 MB, and the
-~0.9 MB between them is deliberate margin. A verified backup lives at
-~/gith/esp/p4nano-factory-flash/ and the restore command is in its README --
-but nothing this script does should ever need it.
+below the writable floor.
+
+Until phase 32 that floor protected the Waveshare factory image, which
+occupied the low 13.06 MB and is not obtainable again once overwritten. U0
+retired that image on purpose -- LugalOS owns all 16 MB now, and the boot ROM
+reads its second-stage image from 0x2000, which is inside what the factory
+occupied. The verified backup at ~/gith/esp/p4nano-factory-flash/ remains, and
+its README has the restore command.
+
+So the floor now protects what actually must not be damaged by a filesystem
+write: **the second-stage bootloader and the OS image executed in place from
+flash**. Overwriting either leaves a board that does not boot -- recoverable
+through the ROM's download mode (`p4run.py --reset-test` proves that path
+works on this host), but a recovery rather than a mistake absorbed.
+
+The floor is duplicated here rather than read from the layout, on purpose:
+this script is the one thing that writes flash without the kernel's own guard
+in front of it, so it carries its own copy and a layout edit alone cannot
+widen what it will overwrite.
 """
 
 import argparse
@@ -41,10 +55,11 @@ import subprocess
 import sys
 
 DEFAULT_BUILD = pathlib.Path(__file__).resolve().parent.parent / "build" / "esp32p4"
-# The floor, duplicated here on purpose: this script is the one thing that can
-# write flash without the kernel's guard in front of it, so it carries its own
-# rather than trusting the file it just read.
-FACTORY_TOP = 0x00D10000
+# The floor, duplicated here on purpose -- see the module docstring. This must
+# match LUGALOS_P4_FLASH_WRITABLE_FLOOR in cmake/flash_layout_esp32p4.cmake;
+# they are deliberately two copies of one number, so that changing the layout
+# does not silently change what this script is willing to destroy.
+WRITABLE_FLOOR = 0x00110000
 
 
 def read_layout(build: pathlib.Path):
@@ -76,9 +91,10 @@ def main() -> int:
         sys.exit("flashfs.bin is %d bytes but the layout reserves %d; "
                  "they must match or the tail of the region is stale"
                  % (actual, size))
-    if base < FACTORY_TOP:
-        sys.exit("refusing: 0x%06x is inside the factory image (ends 0x%06x)"
-                 % (base, FACTORY_TOP))
+    if base < WRITABLE_FLOOR:
+        sys.exit("refusing: 0x%06x is below the writable floor (0x%06x) -- "
+                 "the bootloader and the OS image live there"
+                 % (base, WRITABLE_FLOOR))
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import p4run  # ports and reset live there; one implementation, not two

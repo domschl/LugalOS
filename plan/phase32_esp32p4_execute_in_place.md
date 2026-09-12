@@ -145,6 +145,79 @@ definition" property the file already has.
 arithmetic shown, and the predicted heap figure is written down so U5 can be
 checked against a number chosen in advance rather than one discovered after.
 
+---
+
+**DONE, 2026-09-12.**
+
+**Recovery first, before anything that could need it.** `p4run.py
+--reset-test` on this host:
+
+```
+run      (RTS pulse)          reset: True  rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+download (RTS + DTR strap)    reset: True  rst:0x1 (POWERON),boot:0x307 (DOWNLOAD(USB/UART0/SPI))
+```
+
+Download mode is reached through ESP_EN and the strapping pin, so it does not
+depend on flash contents: **whatever U4 writes, the board comes back.** The
+factory backup was re-verified against its SHA256SUMS at the same time
+(`p4nano-factory-16mb.bin: OK`), and it records the board's factory MAC
+`80:f1:b2:d2:f0:53` — which phase 28's Z5 can check its eFuse read against.
+
+**The ROM's offset is 0x2000**, not a choice:
+`esp_rom/esp32p4/esp_rom_caps.h` says `ESP_ROM_BOOTLOADER_OFFSET_FLASH
+(0x2000)` "determined by the ROM bootloader", and
+`bootloader/Kconfig.projbuild` adds "It's not configurable in ESP-IDF". The
+retired factory image agrees: its partition table sat at 0x8000 with nvs at
+0x9000, leaving exactly 0x2000..0x8000. **That offset is inside what the
+factory image occupied, which is why retiring it was not optional once U4 was
+in scope.**
+
+**The map**, now in `cmake/flash_layout_esp32p4.cmake` with the reasoning
+attached:
+
+```
+0x00000000  reserved, below the ROM's offset                     8 KB
+0x00002000  second-stage bootloader (U4)                        56 KB
+0x00010000  OS image: .text + .rodata, executed in place         1 MB   (4.1x present need)
+0x00110000  flash filesystem /flash0                           512 KB
+0x00190000  spare, contiguous                                 14.4 MB
+```
+
+64 KB alignment throughout is a *hardware* requirement here and not only the
+house style: `Cache_FLASH_MMU_Set` refuses a physical address not aligned to
+its 64 KB page size.
+
+**The filesystem moved and was reflashed**, so the tree is not left in a state
+where `/flash0` is broken: `uv run tools/p4flash.py` wrote it to 0x00110000,
+"Hash of data verified", and `ls /flash0` lists its contents from the new
+address.
+
+**`tools/p4flash.py`'s guard was rewritten rather than removed.** It refused
+the new address — correctly, it was protecting the factory image. Its floor is
+now `WRITABLE_FLOOR = 0x00110000` and protects what actually must not be
+damaged by a filesystem write: the bootloader and the XIP OS image. It stays a
+duplicated constant rather than reading the layout, for its original reason —
+this script writes flash with no kernel guard in front of it, so a layout edit
+alone must not be able to widen what it will destroy.
+
+**The prediction U5 is checked against:**
+
+| | bytes | |
+|---|---|---|
+| `.text` + `.rodata`, moving to flash | 255 104 | 249.1 KB |
+| `.utext` + `.data`, staying in RAM | 4 468 | `.utext` is PMP-granted, §U0 |
+| heap now | 131 072 | 128.0 KB, floor exactly |
+| **heap after, before the stub** | **385 024** | **376.0 KB** |
+
+So **U5 should find between 368 and 376 KB**, the gap being the stub and any
+rounding; a figure outside that range means something did not move and is a
+bug rather than a disappointment.
+
+`.bss` is 154 176 B (150.6 KB) and lives in LOWRAM's 252 KB throughout,
+unaffected either way. Worth noting for later: after U1 the binding constraint
+on `.bss` is LOWRAM, not the heap, and there is about 85 KB of headroom there
+once the 16 KB boot stack is counted.
+
 ### U1 — The linker script, and an image that has two halves
 
 `.text` and `.rodata` link at `0x40000000 + offset`; `.data`, `.bss`, the
