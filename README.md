@@ -354,16 +354,25 @@ Available configure presets:
 `arch/riscv/` seams are a portability claim rather than an untested
 assumption wearing the costume of one
 ([`plan/phase27_esp32p4_bringup.md`](plan/phase27_esp32p4_bringup.md)). It
-boots to `lsh`, keeps time off the CLINT, takes interrupts through the CLIC,
-confines U-mode tasks with PMP, mounts a writable `/flash0` through the boot
-ROM's own SPI routines, and reads a BME280 over I2C which it serves as
-`/proc/sensors` to any 9P client on its console wire. It is loaded, run and
-tested without touching a button:
+**boots from its own flash with nothing attached**, keeps time off the CLINT,
+takes interrupts through the CLIC, confines U-mode tasks with PMP, mounts a
+writable `/flash0` through the boot ROM's own SPI routines, reads a BME280
+over I2C which it serves as `/proc/sensors` to any 9P client, and drives an
+IP101G PHY over RMII at 100 Mbit/s.
+
+Its `.text` and `.rodata` execute in place from flash
+([`plan/phase32_esp32p4_execute_in_place.md`](plan/phase32_esp32p4_execute_in_place.md)):
+the ROM loads a small RAM half from `0x2000`, whose first act is to map the
+flash window. That moved 249 KB out of L2MEM and took the heap from 128 KB to
+372 KB — which is why this board now also carries the C compiler and the
+chess engine. `esptool load-ram` is no longer used, and `tools/p4run.py`
+refuses an image that expects it.
 
 ```bash
 cmake --preset esp32p4 && cmake --build --preset esp32p4
-tools/p4run.py build/esp32p4/lugalos.elf --interactive   # load into RAM and talk to it
-cd tests/hw && uv run test_esp32p4.py                    # load, then twelve checks
+uv run tools/p4flash.py                                  # bootloader, OS image, filesystem
+tools/p4run.py --run --interactive                       # reset and talk to it
+cd tests/hw && uv run test_esp32p4.py                    # flash, then sixteen checks
 ```
 
 That board needs **two** USB cables doing different jobs, and neither can do

@@ -2006,6 +2006,16 @@ against a 276 KB heap.
   E2's note that flash boot would return the 227 KB of RAM-resident `.text`
   stands, and is still not done — it needs a second-stage bootloader and buys
   nothing any current milestone wants.
+
+  *(2026-09-13: done, in `plan/phase32_esp32p4_execute_in_place.md`. The
+  prediction held and the prices were right: 249 KB came back and the heap
+  went from 128 KB to 372 KB. What made it happen was phase 28's Ethernet
+  driver taking the heap to **exactly** its 128 KB floor with zero margin —
+  so "buys nothing any current milestone wants" was true when written and
+  stopped being true two phases later. The second-stage bootloader turned out
+  to be smaller than feared: `entry.S` already was the boot path, so it
+  gained a first step rather than acquiring a companion, and `load-ram` was
+  retired outright.)*
 * **No identity sector.** RP2350 keeps its node identity in a dedicated flash
   sector (phase 21 I7). There is room reserved above the filesystem and no
   reason yet.

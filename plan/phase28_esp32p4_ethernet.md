@@ -535,6 +535,25 @@ host attached) is also in scope there, decided 2026-09-12: phase 28 does not
 need it, but phase 29 does — a stratum-1 server that requires a laptop to boot
 is not a server — and it is cheaper done while the boot path is open.
 
+**Outcome, 2026-09-13: phase 32 is done through U5 and this phase is
+unblocked.** The heap is **372 KB**, against the 128 KB that stopped Z4 — and
+against the prediction of 376, four short because the RAM-resident boot
+section costs a page. The floor that fired here has been raised to 360 KB and
+is now derived from what actually remains in RAM rather than inherited from
+the RP2350.
+
+Two things Z4 inherits that did not exist when this section was written:
+
+* **The board boots with nothing attached**, so a Z5 node on the LAN is a
+  node, not a thing a laptop has to start. `load-ram` is gone; flash with
+  `uv run tools/p4flash.py`.
+* **`.text` is fetched from flash**, which the EMAC driver never notices —
+  but its DMA rings are `.bss`, and `.bss` now lives in LOWRAM where it
+  competes with the boot stack rather than with the heap. Z2 sized the rings
+  at 4 RX + 2 TX partly because `.bss` was tight; that pressure moved rather
+  than vanished, and the figure to watch is `_bss_end` against
+  `_stack_bottom`.
+
 Clause-22 auto-negotiation: BMCR restart, BMSR link-status poll, ANAR/ANLPAR
 resolution to speed and duplex. Feed the result into the MAC's configuration
 **and into `EMAC_RX_CLK_DIV_NUM`/`EMAC_TX_CLK_DIV_NUM`** per §1.4 — this is

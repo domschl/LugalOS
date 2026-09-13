@@ -1,6 +1,6 @@
 # Phase 32 — The P4's code moves to flash, and stops costing RAM
 
-**Status: U0-U5 DONE, 2026-09-13. U6 (documents) remains.** The P4 boots
+**Status: COMPLETE, 2026-09-13. U0-U6 done.** The P4 boots
 from its own flash with nothing attached, and the heap is **372 KB** against
 the 128 KB that forced this phase. `plan/phase28_esp32p4_ethernet.md` is
 unblocked and resumes at Z4. Phase 28 is complete through Z3 and cannot continue: the P4's heap is at
@@ -569,6 +569,29 @@ is now a claim made from having broken the board on purpose and recovered it.
 That is the difference between a safety net and a belief about one.
 
 ### U6 — Documents
+
+**DONE, 2026-09-13.**
+
+* `plan/phase27_esp32p4_bringup.md`'s "What E6 did not do" has its outcome.
+  Worth keeping the shape of that entry: it said flash boot "buys nothing any
+  current milestone wants", which was true when written and stopped being
+  true two phases later, when phase 28's Ethernet took the heap to exactly
+  its floor. The prediction about *what* it would buy was right; the
+  prediction about *when* was the part that aged.
+* `plan/phase28_esp32p4_ethernet.md` §Z3a records the outcome and what Z4
+  inherits — including that the pressure `.bss` was under has moved rather
+  than vanished: it now competes with the boot stack in LOWRAM rather than
+  with the heap, so the figure to watch for the EMAC's rings is `_bss_end`
+  against `_stack_bottom`.
+* `linker/esp32p4.ld`'s header stopped predicting this and started
+  describing it, in U1.
+* `README.md`'s P4 section: boots from its own flash, carries the compiler
+  and the chess engine, and the commands are `p4flash.py` rather than
+  `load-ram`.
+* The `esp32p4-l2-cache-steals-ram` memory has its second half — the shrink
+  that used to be free is now a measured trade — and a new
+  `esp32p4-boots-from-flash` memory carries the workflow and the two
+  two-port-split traps.
 
 `plan/phase27_esp32p4_bringup.md` E6's "What E6 did not do" gets an
 outcome. `linker/esp32p4.ld`'s header stops predicting this and starts
