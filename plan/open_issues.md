@@ -627,6 +627,52 @@ they are the only blocking resources in the tree that contribute no edge.)*
 
 ---
 
+## An intermittent SMP deadlock in `rv64-smp`, caught by the wait-for graph
+
+**Observed** 2026-09-13, during phase 32 U2. `tests/runner.py` stopped making
+progress and sat for 624 s against a normal 183 s. The QEMU log said exactly
+what was wrong, which is phase 31's whole point:
+
+```
+[Lock BUG] hart 1: ylock_acquire() -- task 7 waiting for task 0 closes a wait-for cycle.
+[Lock BUG]   Nothing can refuse this one; it will hang. See kernel/lock.h. Fault 7.
+
+[Lock BUG] hart 0: ylock_acquire() -- task 7 waiting for task 0 closes a wait-for cycle.
+[Lock BUG]   Nothing can refuse this one; it will hang. See kernel/lock.h. Fault 8.
+```
+
+Both harts report it, so both are inside the cycle. The failing target was
+`rv64-smp` — two harts, real contention — and the immediately preceding and
+following runs were **363/363 in 183 s**, so it is intermittent rather than a
+regression.
+
+**Not phase 32.** Everything that phase changed is either P4-only
+(`linker/esp32p4.ld`, `xip_esp32p4.c`, `p4flash.py`, the P4 hardware suite) or
+guarded by `#if defined(CONFIG_BOARD_ESP32P4)` in the one shared file
+(`entry.S`); `nm build/rv64-smp/lugalos.elf` finds no P4 symbol. The same
+target also passed 363/363 twice on the same tree.
+
+**Relationship to the entry below is unknown and should not be assumed.**
+That one is a *truncated output* on a single test; this is a *hang* with a
+named cycle. They may share a cause — both appear under concurrency and both
+arrived after Y5 — or they may be unrelated. Do not fold them together
+without evidence.
+
+**Where to look first:** `ylock_acquire()` naming task 7 and task 0 gives two
+concrete tasks; `/proc/ps` at the moment of the hang would name them. The
+QEMU log is kept (`/tmp/lugalos_qemu_*.log`), and the two `Fault 7` / `Fault
+8` counters say how many times the checker had already fired in that run
+before the fatal one — worth reading, because a cycle that is refused several
+times and then closes is a different story from one that closes first time.
+
+**A note on diagnosing this, because it cost time twice:** a stalled runner
+looks like a leaked process from a previous run, and this project has a real
+history of that (`qemu_stray_processes`). Both hypotheses were wrong here.
+Check the *child* process and the QEMU log before concluding it is
+environmental — and note that `pgrep qemu-system-riscv64` misses the rv32
+tests entirely, which made one check report "zero QEMU processes" on a suite
+that was running perfectly.
+
 ## An intermittent suite failure, ~1 run in 5, since logging went asynchronous
 
 **Trigger:** run `tests/runner.py` repeatedly. Roughly one run in five fails a
