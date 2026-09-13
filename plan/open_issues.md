@@ -705,7 +705,25 @@ have now been seen on this tree -- a truncated single test, an SMP wait-for
 cycle, and this hang -- and they may or may not share a cause. Recording them
 separately keeps that an open question instead of an assumption.
 
-## `lock_selftest`'s cycle case hangs on two harts, about one run in four
+## `lock_selftest`'s cycle case hangs on two harts — **FIXED 2026-09-13**
+
+Root cause: the wait-for edge was a *sample*, not a state. A ylock waiter
+dropped its edge at the bottom of every loop iteration and re-added it at the
+top of the next, so it blinked — and `chan_call()`, which consults that graph
+to decide whether to refuse a call that would close a cycle, could sample in
+the gap, see nothing, and block. On one hart the gap only executes while the
+caller is descheduled, which is why it never appeared there.
+
+Fixed in `kernel/lock.c` by not dropping the edge across the yield. Verified
+with a negative control, 12 runs of `lockselftest` on two harts each way:
+**0 hangs with the fix, 2 without**. A following 12-run full-suite soak had
+**zero hangs** (the soak that found it had three).
+
+What it does *not* explain is the entry below, which is still open — and the
+same soak produced the first hard evidence of that one, so the two were never
+the same problem.
+
+
 
 **Measured** 2026-09-13, a 12-run soak of `tests/runner.py`: **3 of 12 runs
 hung**, and the three logs are **byte-identical** — 344 passes, then
@@ -778,11 +796,41 @@ drain and a write -- and did not go away entirely. A *different single test
 each run* is the signature of a race in something shared, and the shared thing
 here is the console.
 
-**Where to look first:** the remaining asymmetry is that `printk()` is
-asynchronous while `cprintf()` is synchronous, and they meet at two sync
-points (`cprintf()` and the prompt). A log line produced between them can
-still land inside a command's output, and a test reading that output sees its
-expected text split. Candidates: a drain that starts after the test's command
+**Caught in the act, 2026-09-13**, which the entry below had asked for. A
+12-run soak produced a failing run whose console shows a single `cprintf()`
+line cut in two with a klog record in the wound:
+
+```
+line 746:  LOCK_SELFTES] record 1463, filling the ring with no consumer running
+line 749:  T_OK (16/16)
+```
+
+That is `LOCK_SELFTEST_OK (16/16)` split across two flushes. Every check in
+that run passed **16/16**; the suite reported a failure purely because the
+token it greps for no longer existed as a contiguous string. So the failure
+mode is now known precisely: **not lost output, not a hung kernel — a spliced
+line.**
+
+**One hypothesis has been eliminated with evidence, which narrows it.** The
+obvious suspect was the per-hart TX batch in `drivers/uart_16550.c`: a task
+migrating harts mid-string would leave half its line in the batch of the hart
+it started on. A probe that counted exactly that — bytes found in another
+hart's batch belonging to the current context — **never fired once in six
+runs**, so tasks are not migrating mid-string and that is not the cause. The
+probe was backed out rather than shipped; a fix for a mechanism that does not
+occur is worse than no fix.
+
+**What that leaves.** `cprintf()` holds `console_lock` across the whole string
+and `klog_drain()` takes the same (re-entrant) ylock, so the two logical
+writers *are* serialised. Yet a klog record landed inside a locked string. So
+either a writer reaches `uart_putc()` without that lock, or the splice happens
+below the lock entirely. Note `cprintf()` calls `console_flush()` *after*
+`console_unlock()` (kernel/printk.c) — the window the per-hart batch split was
+introduced to close for two cores, still open for two tasks on one hart.
+
+**Where to look first:** enumerate every caller of `uart_putc()` and ask which
+of them holds `console_lock`. `printk_critical()` deliberately does not. That
+is the shape of the answer. Candidates: a drain that starts after the test's command
 has begun printing; the per-hart TX batch flushing at a different moment than
 the drain; or klogd's 50 ms idle wake landing mid-command.
 
