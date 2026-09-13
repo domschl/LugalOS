@@ -376,8 +376,34 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
          * moment it happens, which is the difference between a livelock
          * anyone can diagnose and one nobody can.
          *
-         * Edge dropped on every exit from the loop, including the acquiring
-         * ones, so a lock that is obtained leaves nothing behind. */
+         * **The edge stays up across the yield**, and that is the whole point
+         * of it. It used to be dropped at the bottom of every iteration and
+         * re-added at the top of the next, which made it blink: present while
+         * this task sat in sched_yield(), absent for the window between
+         * waking and re-entering. An edge that blinks is not a wait-for
+         * graph, it is a sample of one.
+         *
+         * What that cost, measured 2026-09-13 over a 12-run soak: three runs
+         * hung, always in lock_selftest()'s cycle case, always on two harts.
+         * The caller's chan_call() samples the graph to decide whether to
+         * refuse, and on two harts it can sample precisely in the gap --
+         * seeing no cycle, blocking, and *then* the waiter re-adds the edge,
+         * so the cycle becomes real with nothing left to break it. On one
+         * hart that gap only executes while the caller is descheduled, which
+         * is why it never appeared there. Worse, waitfor_enter() declines to
+         * record an edge that would close a cycle, so once the caller is
+         * stuck the graph stops showing the cycle at all.
+         *
+         * Re-entering an edge that is already present is harmless:
+         * waitfor_reaches() walks from the *target*, so it never consults
+         * this task's own slot unless it arrives there. Passing the current
+         * holder each time is also what re-points the edge if the lock
+         * changes hands while we wait.
+         *
+         * The edge is still dropped on every exit from the loop, including
+         * the acquiring ones, so a lock that is obtained leaves nothing
+         * behind -- that was always the intent, and the two `return`s above
+         * are where it belongs. */
         int holder = l->owner;
         irq_restore(f);
 
@@ -385,7 +411,6 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
             waitfor_report_cycle("ylock_acquire()", me, holder);
         }
         sched_yield();
-        waitfor_leave(me);
     }
 }
 
