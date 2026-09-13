@@ -662,7 +662,43 @@ logs), and 12 cycles of `lockselftest`-then-`exec` to recreate the klog-burst
 context the hung logs show immediately beforehand. All clean. It needs
 accumulated suite state that a tight loop does not have.
 
-**Where to look first:** why a created task never reaches `TASK_DEAD` and
+**Caught with a cause code, 2026-09-13.** A 16-run soak produced a guest log
+that names it:
+
+```
+lsh> exec /flash0/system/bin/uisolate.elf
+[Trap Exception] Cause: 0x2, epc=0x8007ecec, tval=0x7070615f, inst=0x7070615f
+[Trap Register Dump] a0=0x8023b050, a1=0x8023b058, sp=0x802d0fd0, ra=0x8007ece8
+```
+
+Cause 0x2 is **illegal instruction**, and the instruction word is ASCII:
+`0x7070615f` is the bytes `5f 61 70 70`, `_app`. The CPU was executing text.
+
+Where: `.text` in that build spans `0x80000000`–`0x8006a050` and `.rodata`
+runs to `0x801027d0`, so **`epc` is inside `.rodata`** — and the nearest
+symbol below it is `g_flash_fs_start`, the *embedded filesystem image*. The
+kernel jumped into the FAT32 blob and ran its bytes as code. `ra` is `epc-4`,
+so it was already executing there and simply stepped forward.
+
+So this is not "a task that never finishes". It is a **wild jump in kernel
+context**, and the spin loop merely reports the aftermath: the child never
+reaches `TASK_DEAD` because the kernel fell over while handling it.
+
+**Two things that look like clues and are not.** `entry 0x0` in the loader's
+line for `uisolate.elf` is normal -- that image has one segment with its entry
+at offset 0, confirmed against a healthy run. And the `exec` diagnostic added
+for this did not fire, correctly: the kernel faults long before the wait loop
+reaches its threshold.
+
+**Where to look first, narrowed:** `uisolate.elf` is the program whose entire
+purpose is to take a domain fault, and it is the binary in three of the four
+captured hangs. So the suspect path is **the kernel's handling of a U-mode
+fault**, not `exec` itself -- and the ESP32-P4's deterministic "terminated
+before it could exit" is very likely the same path reaching a different end.
+A jump into `.rodata` from that path means a corrupted return address or a
+function pointer built from something that is not a function.
+
+**Superseded question:** why a created task never reaches `TASK_DEAD` and
 never faults. Two of three hung guests were running `uisolate.elf`, whose
 whole purpose is to take a domain fault, so the fault path is the first
 suspect — and the P4's "terminated before it could exit" is the *same* path
