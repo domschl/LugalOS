@@ -231,6 +231,67 @@ being used, because U1 changes where things are linked and U2 is what makes
 the board actually fetch them. (If that is not separable, say so and merge the
 two — but try, because a failure that spans both is much harder to read.)
 
+---
+
+**DONE, 2026-09-13 — and the "still boots by load-ram" clause was wrong.**
+
+It is not separable in that direction, and the reason is worth keeping rather
+than quietly dropping: once `.text` links at `0x40000000`, `load-ram` has
+nowhere to put it. `esptool` writes segments to their link addresses and jumps
+to the entry point, and both are now in a window that is flash-mapped rather
+than RAM. So an image built by U1 *cannot* be started until U2's stub maps it.
+
+The milestones stayed separable in the way that actually mattered, though —
+**U1 is verified statically, U2 by booting**, so the two have different
+symptoms:
+
+| | |
+|---|---|
+| `.text` | `0x40000000`, 186 200 B |
+| `.rodata` | `0x4002d758`, 68 904 B — contiguous with `.text` |
+| `.utext` | `0x4ff40000`, 4 096 B — stays in RAM, §U0 |
+| `.data` | `0x4ff41000`, 372 B — stays, and `_sidata == _data_start` still holds |
+| `.bss` | `0x4ff00200`, LOWRAM, unchanged |
+| `_start` | `0x40000000` — the bottom of the window, so the stub's target is a fixed address |
+| `_xip_pages` | **4** — computed by the linker, not by the stub |
+
+**The heap is 385 024 B = 376.0 KB, against U0's prediction of 376.0 KB.**
+Exact, which is the point of having predicted it: a figure in that range means
+everything that should have moved did.
+
+Four things learned:
+
+* **`objcopy -O binary` produced a 267 MB file.** With sections 255 MB apart
+  it spans from the lowest to the highest and pads the gap. Not a size
+  annoyance but a wrong artifact, so the P4 now extracts the two halves by
+  section — `lugalos-xip.bin` (255 104 B, exactly `_xip_end − _xip_start`) and
+  `lugalos-ram.bin` (4 468 B, exactly `.utext` + `.data`). Both were checked
+  byte-for-byte against the ELF at the start of `.text` and across the
+  `.text`/`.rodata` boundary, and the flash offset is `vaddr − 0x40000000`
+  with no adjustment.
+* **We inherit no 0x20 offset from ESP-IDF.** Its linker script maps flash at
+  `0x40000020`, and the reason is its own image format: a 0x18 file header
+  plus an 0x08 segment header, offset so that the MMU's real constraint
+  (`paddr % 64KB == vaddr % 64KB`) holds. U2 maps a raw binary, so both ends
+  are 64 KB-aligned and the constraint holds trivially. Copying the 0x20
+  would have been a magic number with a false explanation.
+* **The ASSERTs were inverted, not deleted.** The old one checked `.text` was
+  *above* `0x4ff40000`; the useful check now is that it is *inside* the flash
+  window, because a `.text` that quietly fell back to RAM would boot perfectly
+  under `load-ram` and silently undo the entire phase. Two more were added:
+  the XIP origin must be 64 KB-aligned, and the flash half must fit
+  `LUGALOS_P4_OSIMAGE_SIZE`, which keeps the linker script and the flash map
+  agreeing across two files.
+* **The P4 hardware suite cannot run between U1 and U2**, and now says so
+  instead of failing obscurely: it stops at "refusing to load lugalos.elf:
+  its entry point is 0x40000000, which is not L2MEM". That is the expected
+  state of this milestone, not a regression, and U2 restores it.
+* **The un-loadable image hung with no output at all.** `elf2image` builds it
+  happily (entry `0x40000000`, six segments), `load-ram` writes into unmapped
+  space and jumps there. `tools/p4run.py` now refuses any ELF whose entry is
+  outside L2MEM and says why — a guard that stays correct after U2, since what
+  `load-ram` delivers from then on is the stub, whose entry *is* in L2MEM.
+
 ### U2 — The stub: map flash, jump, and prove code is coming from it
 
 A small RAM-resident loader that calls `Cache_FLASH_MMU_Set` for the OS

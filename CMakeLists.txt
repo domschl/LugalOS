@@ -992,9 +992,33 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     add_custom_target(flashfs_uf2 ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/flashfs.uf2)
 endif()
 
+# U1, plan/phase32_esp32p4_execute_in_place.md: on the P4 the image now has
+# two halves that live 255 MB apart in the address space -- .text/.rodata in
+# the flash XIP window at 0x40000000, .utext/.data in L2MEM at 0x4ff40000.
+#
+# A single `objcopy -O binary` spans from the lowest section to the highest and
+# pads the gap, which here produced a **267 MB** lugalos.bin of almost entirely
+# zeroes. That is not a size annoyance, it is a wrong artifact: nothing can
+# flash it and nothing should try.
+#
+# So the two halves are extracted separately, by section, and each goes where
+# it belongs -- lugalos-xip.bin to LUGALOS_P4_OSIMAGE_BASE in flash (U2), and
+# the RAM half delivered as it always was. `--gap-fill 0` keeps the extraction
+# honest about padding between the sections it does keep.
+if(LUGALOS_TARGET STREQUAL "ESP32P4")
+    set(RAW_BIN_COMMANDS
+        COMMAND ${CMAKE_OBJCOPY} -O binary -j .text -j .rodata --gap-fill 0
+                lugalos.elf lugalos-xip.bin
+        COMMAND ${CMAKE_OBJCOPY} -O binary -j .utext -j .data --gap-fill 0
+                lugalos.elf lugalos-ram.bin)
+else()
+    set(RAW_BIN_COMMANDS
+        COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)
+endif()
+
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
 add_custom_command(TARGET lugalos.elf POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin
+    ${RAW_BIN_COMMANDS}
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     # Per build directory, NOT shared across targets. The image carries the
@@ -1010,7 +1034,7 @@ add_custom_command(TARGET lugalos.elf POST_BUILD
     # And note what no build emits at all: any UF2 covering
     # LUGALOS_IDENTITY_BASE. A device's identity is minted by the device, and
     # the flash host must never need to hold it (§3.3).
-    COMMENT "Generated lugalos.bin, lugalos.asm, lugalos.uf2, and this target's lugalos_sd.img"
+    COMMENT "Generated the raw image(s), lugalos.asm, lugalos.uf2, and this target's lugalos_sd.img"
 )
 
 if(LUGALOS_TARGET STREQUAL "RP2350")

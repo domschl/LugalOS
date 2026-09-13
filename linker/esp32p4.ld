@@ -32,14 +32,26 @@
  * put everything above 0x4ff40000 and left 136 KB, under the floor asserted
  * at the bottom of this file.
  *
- * ## Why the kernel's own text is the expensive part here, and stops being
+ * ## Why the kernel's own text was the expensive part here, and stopped being
  *
- * On RP2350 the 227 KB of .text lives in flash and costs no RAM at all. Here
- * it is RAM-resident because the image is RAM-*loaded*, which is E2's whole
- * boot story. E6 boots this image from flash instead, at which point the
- * text goes back to being executed in place and this script gets most of
- * that 227 KB back. Until then the heap is smaller than the RP2350's for a
- * reason that is about the boot path rather than about the silicon.
+ * E2 wrote this section as a prediction: on RP2350 the .text lives in flash
+ * and costs no RAM at all, while here it was RAM-resident because the image
+ * is RAM-*loaded*, and booting from flash instead would give most of it back.
+ * Phase 28 is what forced the issue -- adding Ethernet took the heap to
+ * exactly its 128 KB floor -- and phase 32 is where it was done.
+ *
+ * So this is no longer a prediction. **.text and .rodata live in the XIP
+ * region below**, linked into the flash window at 0x40000000 and fetched
+ * through the cache; only .utext and .data remain RAM-resident of the
+ * loadable sections. That moved 249 KB out of L2MEM and took the heap from
+ * 128.0 KB to 376.0 KB.
+ *
+ * The consequence for anyone reading this script: an image it produces
+ * **cannot be started by `esptool load-ram` alone**. load-ram writes segments
+ * to their link addresses and jumps to the entry point, and both are now in
+ * a window that is flash-mapped rather than RAM. A stub maps it first; see
+ * plan/phase32_esp32p4_execute_in_place.md, and note that tools/p4run.py
+ * refuses such an image with an explanation rather than hanging.
  */
 
 OUTPUT_FORMAT(elf32-littleriscv)
@@ -103,18 +115,55 @@ MEMORY
      * boundary to 0x4ffa0000. This length and that call are one change: the
      * ASSERT below is what keeps them from drifting apart. */
     RAM    (rwx) : ORIGIN = 0x4ff40000, LENGTH = 384K
+
+    /* Flash, mapped into the CPU's address space and executed in place.
+     * U1, plan/phase32_esp32p4_execute_in_place.md.
+     *
+     * 0x40000000 is SOC_IROM_LOW *and* SOC_DROM_LOW (soc/soc.h) -- on this
+     * part instruction and data share one window, so .text and .rodata live
+     * in one region and there is no I/D split to keep consistent.
+     *
+     * Nothing maps this at link time. U2's stub calls the ROM's
+     * Cache_FLASH_MMU_Set() to point these addresses at flash offset
+     * LUGALOS_P4_OSIMAGE_BASE before any of it is fetched, which is why an
+     * image built by this script cannot be started by `load-ram` alone.
+     *
+     * The MMU's constraint is `paddr % 64KB == vaddr % 64KB`, and both ends
+     * of ours are 64 KB-aligned (0x00010000 and 0x40000000), so it holds
+     * trivially. ESP-IDF's own script offsets this origin by 0x20 and
+     * explains why: its .bin carries a 0x18 file header plus an 0x08 segment
+     * header, so the payload starts 0x20 into the flash page and the vaddr
+     * has to match. **We inherit neither the header nor the offset** -- U2
+     * maps a raw binary -- and copying the 0x20 without the format that
+     * needs it would be a magic number with a false explanation.
+     *
+     * 1 MB matches LUGALOS_P4_OSIMAGE_SIZE in
+     * cmake/flash_layout_esp32p4.cmake; the ASSERT at the bottom is what
+     * keeps the two from drifting. */
+    XIP    (rx)  : ORIGIN = 0x40000000, LENGTH = 1M
 }
 
 ENTRY(_start)
 
 SECTIONS
 {
+    /* --- the flash-resident half ----------------------------------------
+     *
+     * .text and .rodata are fetched from flash through the cache. They are
+     * the reason this phase exists: 249 KB that used to be RAM-resident
+     * because the image was RAM-*loaded*, on a board where the heap and the
+     * loadable image come out of the same 384 KB.
+     *
+     * `.text.entry` still leads, so _start is at the bottom of the mapped
+     * window and the stub's jump target is a fixed, inspectable address
+     * rather than whatever the linker happened to place first. */
     .text : {
         . = ALIGN(4);
+        _xip_start = .;
         *(.text.entry)
         *(.text .text.*)
         . = ALIGN(4);
-    } > RAM
+    } > XIP
 
     /* U-mode-executable code, one page, power-of-two-sized and self-aligned
      * so a single PMP NAPOT entry can grant it -- see the QEMU scripts for
@@ -123,7 +172,14 @@ SECTIONS
      *
      * Nothing enters U-mode until E5. The page is here from the start
      * anyway: it costs 4 KB, and the alternative is a memory map that
-     * changes shape in the middle of the phase. */
+     * changes shape in the middle of the phase.
+     *
+     * U1 left this in RAM while .text moved to flash. It is code, so it
+     * looks like it belongs in the XIP window, and it does not: PMP grants
+     * it to U-mode, and whether a PMP region can usefully cover
+     * flash-mapped addresses is a question this phase does not have to
+     * answer for the sake of 4 KB. It also means U-mode code keeps running
+     * when the cache is disabled for a flash write (U3). */
     .utext : ALIGN(4096) {
         _utext_start = .;
         *(.utext .utext.*)
@@ -135,13 +191,25 @@ SECTIONS
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         . = ALIGN(4);
-    } > RAM
+        _xip_end = .;
+    } > XIP
+
+    /* How many 64 KB MMU pages the stub has to map. Computed here rather
+     * than in the stub, because here is where the section sizes are known
+     * and a stale constant in C would map too few pages and fault in
+     * whatever landed past the end. */
+    _xip_pages = (_xip_end - _xip_start + 0xFFFF) >> 16;
 
     /* No AT> anywhere in this script, so LOADADDR(.data) == ADDR(.data) and
      * _sidata == _data_start. arch/riscv/common/entry.S tests exactly that
      * and skips its copy loop -- correct here, because load-ram places .data
      * at its final address itself. The symbol still has to exist: entry.S
-     * refers to it unconditionally. */
+     * refers to it unconditionally.
+     *
+     * U1 kept that true. .data could have been stored in the flash image and
+     * copied out at boot, which is what a conventional XIP layout does, but
+     * it is 372 bytes and the copy loop is a thing that can be wrong. It
+     * stays in the RAM-loaded half and arrives at its final address. */
     _sidata = LOADADDR(.data);
 
     .data : {
@@ -153,8 +221,12 @@ SECTIONS
         _data_end = .;
     } > RAM
 
-    /* Where the loadable image ends and the heap begins. Everything above
-     * this point is in the file; everything below is written at run time. */
+    /* Where the RAM-resident loadable image ends and the heap begins.
+     *
+     * After U1 this covers .utext and .data only -- and, from U2, the stub.
+     * .text and .rodata are above in the XIP window and no longer count
+     * against it, which is the whole point of the phase: this figure went
+     * from 253.5 KB to under 8 KB, and the heap from 128 KB to ~376 KB. */
     . = ALIGN(4096);
     _kernel_end = .;
     _heap_end = ORIGIN(RAM) + LENGTH(RAM);
@@ -249,8 +321,30 @@ SECTIONS
            "linker/esp32p4.ld: RAM reaches into the L2 cache's own storage at the top of L2MEM; see esp32p4_l2_cache_shrink()")
     ASSERT(ORIGIN(RAM) >= 0x4ff40000,
            "loadable sections would overlap the ROM's download-mode buffers (0x4ff296b8..0x4ff40000) -- see the header comment")
-    ASSERT(ADDR(.text) >= 0x4ff40000,
-           ".text has been placed below the ROM's download-mode buffers -- see the header comment")
+    /* .text used to be checked against that boundary too. After U1 it is not
+     * in RAM at all, so the check that matters is the opposite one: that it
+     * really did land in the flash window and did not quietly fall back into
+     * RAM if someone changes its region. A .text at 0x4ff4xxxx would boot
+     * perfectly under load-ram and silently undo the whole phase. */
+    ASSERT(ADDR(.text) >= 0x40000000 && ADDR(.text) < 0x44000000,
+           "linker/esp32p4.ld: .text is not in the flash XIP window -- execute-in-place has been undone; see plan/phase32_esp32p4_execute_in_place.md")
+    ASSERT(ADDR(.rodata) >= 0x40000000 && ADDR(.rodata) < 0x44000000,
+           "linker/esp32p4.ld: .rodata is not in the flash XIP window; see plan/phase32_esp32p4_execute_in_place.md")
+
+    /* The MMU maps whole 64 KB pages, so a window origin that is not
+     * 64 KB-aligned cannot be expressed: Cache_FLASH_MMU_Set() returns 2,
+     * "vaddr or paddr is not aligned". Checked rather than commented,
+     * because the failure is a stub that refuses at boot with no console. */
+    ASSERT(ORIGIN(XIP) % 0x10000 == 0,
+           "linker/esp32p4.ld: the XIP window must start on a 64 KB MMU page boundary")
+
+    /* The flash half must fit the segment reserved for it in
+     * cmake/flash_layout_esp32p4.cmake (LUGALOS_P4_OSIMAGE_SIZE, 1 MB). The
+     * two numbers are deliberately in two files -- one is a property of the
+     * link, the other of the flash map -- so this is what keeps them
+     * agreeing. Overflowing it would write the OS image over /flash0. */
+    ASSERT(_xip_end - _xip_start <= LENGTH(XIP),
+           "linker/esp32p4.ld: .text + .rodata overflow the 1 MB OS image segment; raise LUGALOS_P4_OSIMAGE_SIZE and this region together")
 
     /* .stack is given an explicit address rather than a region, because a
      * region-assigned section is packed against the previous one and there

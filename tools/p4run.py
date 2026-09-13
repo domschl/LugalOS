@@ -267,6 +267,47 @@ class Watcher:
         return bytes(self.buf).decode("utf-8", "replace")
 
 
+def _refuse_if_not_ram_loadable(elf):
+    """Refuse an ELF whose entry point is not in L2MEM.
+
+    `load-ram` writes segments to their link addresses and jumps to the entry
+    point. Both only work for addresses that are real RAM, and L2MEM is
+    0x4FF00000..0x4FFC0000 on this part.
+
+    Phase 32 (plan/phase32_esp32p4_execute_in_place.md) made this reachable:
+    U1 moved .text and .rodata into the flash XIP window at 0x40000000, so an
+    entry point there means the image expects the flash MMU to have been set
+    up first -- which is the stub's job, not load-ram's. Without this check
+    the failure is a silent hang with no output at all, because esptool
+    cheerfully writes into unmapped space and jumps into it.
+
+    The check stays correct after U2: what load-ram delivers from then on is
+    the stub, whose entry *is* in L2MEM. An entry outside it is always wrong
+    for this transport."""
+    try:
+        out = subprocess.run(["riscv64-elf-nm", elf], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return              # no toolchain here; not this script's business
+    entry = None
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) == 3 and f[2] == "_start":
+            entry = int(f[0], 16)
+    if entry is None:
+        return
+    if not (0x4FF00000 <= entry < 0x4FFC0000):
+        sys.exit(
+            "refusing to load %s: its entry point is 0x%08x, which is not "
+            "L2MEM.\n"
+            "`esptool load-ram` can only deliver an image that is entirely "
+            "RAM-resident.\n"
+            "An entry in the flash window (0x40000000+) means this image "
+            "executes in place and\n"
+            "needs its MMU mapped first -- flash it and boot the stub; see "
+            "plan/phase32_esp32p4_execute_in_place.md."
+            % (os.path.basename(elf), entry))
+
+
 def image_for(path):
     """Accept an .elf and produce the .img beside it; pass an .img through.
 
@@ -284,6 +325,7 @@ def image_for(path):
     path = os.path.abspath(path)
     if not path.endswith(".elf"):
         return path
+    _refuse_if_not_ram_loadable(path)
     img = path[:-4] + ".img"
     r = esptool("elf2image", "-o", img, path)
     if r.returncode != 0:
