@@ -70,6 +70,51 @@ def read_layout(build: pathlib.Path):
     return int(base_s, 0), int(size_s, 0)
 
 
+def read_segments(build: pathlib.Path):
+    """The whole flash map, as the build generated it.
+
+    U0/U2, plan/phase32_esp32p4_execute_in_place.md. Each line is
+    `name base reserved artifact fit|exact`:
+
+      boot  the ROM's second-stage image, at the offset the ROM insists on
+      os    .text + .rodata, mapped into the XIP window at run time
+      fs    the FAT32 filesystem
+
+    `exact` means the artifact must fill its region -- true of the filesystem,
+    whose tail would otherwise be whatever was there before. `fit` means it
+    only has to be no larger, which is what a code segment with growth room
+    needs."""
+    f = build / "flash_segments.txt"
+    if not f.exists():
+        sys.exit("%s not found -- build the esp32p4 preset first" % f)
+    segs = []
+    for line in f.read_text().split("\n"):
+        if not line.strip():
+            continue
+        name, base, size, artifact, mode = line.split()
+        segs.append((name, int(base, 0), int(size, 0), artifact, mode))
+    return segs
+
+
+def make_boot_image(build: pathlib.Path):
+    """Turn the RAM half into the image the ROM can boot.
+
+    The build emits lugalos-ram.elf -- the loadable sections that stay in
+    L2MEM, with the flash-resident ones removed -- and the ROM wants an ESP
+    image: segments with load addresses, a header and a checksum. `elf2image`
+    is what produces that, and it lives here rather than in CMake because
+    esptool is this script's dependency and not the build's."""
+    elf = build / "lugalos-ram.elf"
+    if not elf.exists():
+        sys.exit("%s not found -- build the esp32p4 preset first" % elf)
+    img = build / "lugalos-boot.img"
+    rc = subprocess.call(["esptool", "--chip", "esp32p4", "elf2image",
+                          "-o", str(img), str(elf)])
+    if rc != 0:
+        sys.exit("elf2image failed on %s" % elf.name)
+    return img
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -77,24 +122,49 @@ def main() -> int:
     ap.add_argument("--port", help="console port (esptool talks over this)")
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board's reset")
     ap.add_argument("--baud", type=int, default=921600)
+    ap.add_argument("--only", help="comma-separated segments to write "
+                    "(boot,os,fs); default all three")
     ap.add_argument("--verify", action="store_true",
                     help="re-verify with esptool's on-chip digest afterwards")
     a = ap.parse_args()
 
-    base, size = read_layout(a.build)
-    img = a.build / "flashfs.bin"
-    if not img.exists():
-        sys.exit("%s not found -- build the esp32p4 preset first" % img)
+    segs = read_segments(a.build)
+    wanted = set(a.only.split(",")) if a.only else {n for n, *_ in segs}
+    unknown = wanted - {n for n, *_ in segs}
+    if unknown:
+        sys.exit("no such segment: %s (have: %s)"
+                 % (", ".join(sorted(unknown)), ", ".join(n for n, *_ in segs)))
 
-    actual = img.stat().st_size
-    if actual != size:
-        sys.exit("flashfs.bin is %d bytes but the layout reserves %d; "
-                 "they must match or the tail of the region is stale"
-                 % (actual, size))
-    if base < WRITABLE_FLOOR:
-        sys.exit("refusing: 0x%06x is below the writable floor (0x%06x) -- "
-                 "the bootloader and the OS image live there"
-                 % (base, WRITABLE_FLOOR))
+    # The boot image is generated rather than built, so make it before any
+    # sizes are checked.
+    if "boot" in wanted:
+        make_boot_image(a.build)
+
+    plan = []
+    for name, base, size, artifact, mode in segs:
+        if name not in wanted:
+            continue
+        img = a.build / artifact
+        if not img.exists():
+            sys.exit("%s not found -- build the esp32p4 preset first" % img)
+        actual = img.stat().st_size
+        if mode == "exact" and actual != size:
+            sys.exit("%s is %d bytes but the layout reserves %d; they must "
+                     "match or the tail of the region is stale"
+                     % (artifact, actual, size))
+        if actual > size:
+            sys.exit("%s is %d bytes and does not fit the %d reserved for "
+                     "'%s'; raise it in cmake/flash_layout_esp32p4.cmake"
+                     % (artifact, actual, size, name))
+        # The floor protects the bootloader and the OS image from a
+        # *filesystem* write. Writing those segments deliberately is this
+        # script's job, so the check applies to what the kernel may touch at
+        # run time -- the filesystem -- and not to a deliberate reflash.
+        if name == "fs" and base < WRITABLE_FLOOR:
+            sys.exit("refusing: 0x%06x is below the writable floor (0x%06x) "
+                     "-- the bootloader and the OS image live there"
+                     % (base, WRITABLE_FLOOR))
+        plan.append((name, base, img, actual))
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import p4run  # ports and reset live there; one implementation, not two
@@ -110,9 +180,13 @@ def main() -> int:
     print("resetting %s into download mode via %s" % (port, rport))
     p4run.enter_download(rport)
 
-    print("flashing %s (%d bytes) to 0x%06x on %s" % (img.name, actual, base, port))
-    cmd = ["esptool", "--chip", "esp32p4", "--port", port, "--baud", str(a.baud),
-           "write-flash", hex(base), str(img)]
+    # One esptool invocation for every segment, so the board enters download
+    # mode once and the writes cannot be interleaved with a reset.
+    cmd = ["esptool", "--chip", "esp32p4", "--port", port, "--baud",
+           str(a.baud), "write-flash"]
+    for name, base, img, actual in plan:
+        print("  %-4s %8d bytes -> 0x%06x  (%s)" % (name, actual, base, img.name))
+        cmd += [hex(base), str(img)]
     rc = subprocess.call(cmd)
     if rc != 0:
         return rc
@@ -127,9 +201,11 @@ def main() -> int:
         # An on-chip digest, not a re-read: a re-read can reproduce its own
         # transfer bug and look like agreement. Same reasoning the factory
         # backup's README records for how that image was verified.
-        rc = subprocess.call(["esptool", "--chip", "esp32p4", "--port", port,
-                              "--baud", str(a.baud), "verify-flash",
-                              hex(base), str(img)])
+        vcmd = ["esptool", "--chip", "esp32p4", "--port", port, "--baud",
+                str(a.baud), "verify-flash"]
+        for name, base, img, actual in plan:
+            vcmd += [hex(base), str(img)]
+        rc = subprocess.call(vcmd)
     return rc
 
 

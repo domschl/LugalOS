@@ -87,7 +87,14 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         LUGALOS_P4_FLASH_SIZE=${LUGALOS_P4_FLASH_SIZE}
         LUGALOS_P4_FLASHFS_BASE=${LUGALOS_P4_FLASHFS_BASE}
         LUGALOS_P4_FLASHFS_SIZE=${LUGALOS_P4_FLASHFS_SIZE}
-        LUGALOS_P4_FLASH_WRITABLE_FLOOR=${LUGALOS_P4_FLASH_WRITABLE_FLOOR})
+        LUGALOS_P4_FLASH_WRITABLE_FLOOR=${LUGALOS_P4_FLASH_WRITABLE_FLOOR}
+        # U0/U2: where the execute-in-place OS image lives. The boot-time
+        # mapping in arch/riscv/common/xip_esp32p4.c points the flash window
+        # at this address, and tools/p4flash.py writes it there -- one
+        # definition reaching both, for the reason above.
+        LUGALOS_P4_OSIMAGE_BASE=${LUGALOS_P4_OSIMAGE_BASE}
+        LUGALOS_P4_OSIMAGE_SIZE=${LUGALOS_P4_OSIMAGE_SIZE}
+        LUGALOS_P4_BOOTLOADER_BASE=${LUGALOS_P4_BOOTLOADER_BASE})
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -744,6 +751,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # weak default answers and the node's name and MAC come from the derived
     # CONFIG_NODE_SEED. E6 is where the flash gives it something better.
     list(APPEND SOURCES drivers/uart_esp32p4.c drivers/flash_esp32p4.c)
+    # U2, plan/phase32_esp32p4_execute_in_place.md: the boot-time flash
+    # mapping. Lives in .boot.text (L2MEM) because it is what makes the flash
+    # window exist -- see the file's own header.
+    list(APPEND SOURCES arch/riscv/common/xip_esp32p4.c)
     # Z1, plan/phase28_esp32p4_ethernet.md: the EMAC. Built only for this
     # board, because its registers are this chip's and nobody else's -- the
     # category A rule in plan/hardware_seams.md §1. At Z1 it registers no
@@ -939,6 +950,22 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
     # rebuild -- which also rebuilds the kernel that reads it.
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.addr
          CONTENT "${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE}\n")
+
+    # U2: the whole map, as one manifest, for the same reason flashfs.addr
+    # existed -- tools/p4flash.py reads it rather than taking addresses on
+    # the command line, so the only way to flash to the wrong place is to
+    # edit the layout and rebuild, which also rebuilds the kernel that reads
+    # it.
+    #
+    # Columns: name, base, reserved size, artifact. `exact` says whether the
+    # artifact must fill its region (the filesystem image must, or the tail
+    # of the region is stale) or merely fit inside it (code segments).
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_segments.txt
+         CONTENT
+"boot ${LUGALOS_P4_BOOTLOADER_BASE} ${LUGALOS_P4_BOOTLOADER_SIZE} lugalos-boot.img fit
+os ${LUGALOS_P4_OSIMAGE_BASE} ${LUGALOS_P4_OSIMAGE_SIZE} lugalos-xip.bin fit
+fs ${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE} flashfs.bin exact
+")
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
@@ -1007,10 +1034,32 @@ endif()
 # honest about padding between the sections it does keep.
 if(LUGALOS_TARGET STREQUAL "ESP32P4")
     set(RAW_BIN_COMMANDS
+        # The flash half: raw, written at LUGALOS_P4_OSIMAGE_BASE and mapped
+        # 1:1 into the XIP window by arch/riscv/common/xip_esp32p4.c.
         COMMAND ${CMAKE_OBJCOPY} -O binary -j .text -j .rodata --gap-fill 0
                 lugalos.elf lugalos-xip.bin
-        COMMAND ${CMAKE_OBJCOPY} -O binary -j .utext -j .data --gap-fill 0
-                lugalos.elf lugalos-ram.bin)
+        # The RAM half, as an ELF rather than a raw binary, because the ROM's
+        # second-stage image has a format (segments with load addresses and a
+        # checksum) and `esptool elf2image` is what produces it. Removing the
+        # flash sections is what stops that image from also carrying 249 KB
+        # the ROM would try to write into a flash-mapped window.
+        #
+        # This step emits one warning, and it is the intended behaviour being
+        # reported rather than a problem:
+        #
+        #   objcopy: lugalos.elf: warning: empty loadable segment detected
+        #            at vaddr=0x40000000, is this intentional?
+        #
+        # Yes. Removing .text and .rodata empties the PT_LOAD that covered
+        # them, and objcopy drops it -- `readelf -l lugalos-ram.elf` shows no
+        # segment at 0x40000000, which is exactly what the ROM must not be
+        # given. There is no flag meaning "yes, intentional", and the
+        # alternatives are worse: `-j` keep-only warns about three segments
+        # instead of one, and filtering the message would hide the day it
+        # says a different address. So it stands, explained, as the one
+        # place this tree's zero-warning rule is knowingly bent.
+        COMMAND ${CMAKE_OBJCOPY} -R .text -R .rodata --strip-all
+                lugalos.elf lugalos-ram.elf)
 else()
     set(RAW_BIN_COMMANDS
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)

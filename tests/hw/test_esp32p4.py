@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -606,42 +607,77 @@ def discover(port: str | None, reset_port: str | None) -> Board | None:
     return Board(console=console, reset=reset, p4run=p4run)
 
 
-def load(b: Board, image: Path, listen_secs: float) -> bool:
-    """Deliver the image and wait for the shell, using p4run's own loader --
-    including its check that the image actually started, which is not the
-    same thing as esptool returning 0 (about one delivery in three on this
-    board returns 0 and never runs)."""
-    try:
-        img = b.p4run.image_for(str(image))
-    except Exception as e:
-        print(f"    (could not prepare an image from {image}: {e})")
+def flash_and_boot(b: Board, listen_secs: float) -> bool:
+    """Write the build to flash, then let the board boot itself.
+
+    U2/U4, plan/phase32_esp32p4_execute_in_place.md, replaced what this used
+    to do. The kernel is no longer delivered into RAM by `esptool load-ram`:
+    .text and .rodata execute in place from flash, the ROM loads a
+    second-stage image from 0x2000, and the board boots with nothing
+    attached. So the suite's job here is to make the flash match the build and
+    then get out of the way.
+
+    That also removes a wart. The old path retried because "about one delivery
+    in three on this board returns 0 and never runs" -- esptool reporting
+    success while nothing started. There is no such gap now: the write is
+    verified against an on-chip digest by p4flash.py, and what runs afterwards
+    is whatever is in flash."""
+    # Through `uv run`, because p4flash.py declares esptool as a PEP-723
+    # inline dependency rather than expecting it on PATH -- the same way it is
+    # invoked by hand. Falling back to a bare interpreter would find no
+    # esptool and fail with a FileNotFoundError that names the wrong thing.
+    script = REPO_ROOT / "tools" / "p4flash.py"
+    rc = subprocess.call(["uv", "run", str(script)], cwd=str(REPO_ROOT))
+    if rc != 0:
+        print("    (flashing failed)")
         return False
-    W = b.p4run.Watcher
-    for tries_left in range(b.p4run.LOAD_TRIES - 1, -1, -1):
+
+    # esptool says "Hard resetting via RTS pin" and on this board that does
+    # not reset anything: it drives RTS on the port it is *talking* over (the
+    # CP2102, /dev/ttyUSB0), while the lines that actually reach ESP_EN are on
+    # the CH343P. That is the two-port split phase 27 recorded, and the
+    # symptom here is a board still sitting in download mode with no banner --
+    # which reads exactly like an image that does not boot.
+    #
+    # So reset it ourselves, over the port that can.
+    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
+
+    # And reopen the console rather than reusing a handle: the reset takes the
+    # USB CDC down with it and the device re-enumerates, so an older
+    # descriptor comes back "device reports readiness to read but returned no
+    # data" -- a stale fd wearing the costume of a dead board.
+    deadline = time.time() + max(listen_secs, 10.0)
+    ser = None
+    while time.time() < deadline and ser is None:
         try:
-            with W(b.reset) as w:
-                if not b.p4run.load(b.console, img, "auto", b.reset, driver=w):
-                    return False
-                started = w.wait_for(b.p4run.RUNNING_MARKER, listen_secs)
-                if started:
-                    w.wait_for(b.p4run.READY_MARKER, 5.0)
-        except Exception as e:
-            # A board that goes away mid-load is a board that is not there,
-            # which is this directory's normal outcome and not a failure.
-            print(f"    (the board stopped answering during the load: {e})")
-            return False
-        if started or not b.p4run.looks_dead(w.text()) or tries_left == 0:
-            break
-        print(f"    (loaded, but nothing ran -- retrying, {tries_left} left)")
-    return True
+            ser = serial.Serial(b.console, BAUD, timeout=0.2)
+        except Exception:
+            time.sleep(0.3)
+    if ser is None:
+        print("    (the console port never came back after flashing)")
+        return False
+
+    try:
+        seen = ""
+        while time.time() < deadline:
+            seen += ser.read(4096).decode("utf-8", "replace")
+            if b.p4run.READY_MARKER in seen:
+                return True
+        # A banner without a prompt still means it booted; the shell may just
+        # have been quiet. Say which happened rather than folding them.
+        if b.p4run.RUNNING_MARKER in seen:
+            print("    (banner seen but no prompt within the deadline)")
+            return True
+        print("    (flashed, but the board did not reach a banner)")
+        return False
+    finally:
+        ser.close()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", help="console port (default: autodetect by VID:PID)")
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board")
-    ap.add_argument("--image", default=str(BUILD_DIR / "lugalos.elf"),
-                    help="the .elf to load (the image is regenerated from it)")
     ap.add_argument("--no-load", action="store_true",
                     help="test whatever is already running")
     ap.add_argument("--listen-secs", type=float, default=8.0)
@@ -664,15 +700,17 @@ def main() -> int:
                                       else f"   reset lines {b.reset}"))
 
     if not args.no_load:
-        image = Path(args.image)
-        if not image.exists():
-            print(f"\n[!] No image at {image}.")
+        need = [BUILD_DIR / "lugalos-xip.bin", BUILD_DIR / "lugalos-ram.elf",
+                BUILD_DIR / "flashfs.bin"]
+        missing = [p for p in need if not p.exists()]
+        if missing:
+            print(f"\n[!] Missing {', '.join(p.name for p in missing)}.")
             print("    Build it: cmake --preset esp32p4 && cmake --build --preset esp32p4")
             print("    Nothing to test -- not a failure.")
             return 0
-        print(f"loading {image.name} ...")
-        if not load(b, image, args.listen_secs):
-            print("\n[!] The board would not take the image.")
+        print("flashing and booting ...")
+        if not flash_and_boot(b, args.listen_secs):
+            print("\n[!] The board would not take the flash image.")
             print("    Nothing to test -- not a failure. Check the two cables:")
             print("    reset lines and console are different ports on this wiring.")
             return 0

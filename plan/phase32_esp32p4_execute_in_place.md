@@ -308,6 +308,79 @@ fetched over SPI; `riscv64-elf-nm` shows the kernel's symbols at
 `0x4000_0000`+; and the heap reports the figure U0 predicted. The P4 hardware
 suite passes unchanged — every test in it is now also a test that XIP works.
 
+---
+
+**DONE, 2026-09-13, and it swallowed U4.** `load-ram` is abandoned (the
+user's call): the ROM reads the second-stage image from flash, so there was
+no reason to keep a delivery path nobody would use. The board powers on into
+LugalOS with nothing attached.
+
+```
+rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+load:0x4ff40000,len:0x20c        <- .boot
+load:0x4ff41000,len:0x1174       <- .utext + .data
+entry 0x4ff40000
+[    0.056] [PAlloc] Page allocator: 93 pages of 4096 bytes at 0x4ff43000 (372 KB)
+```
+
+**372 KB of heap, from 128 KB.** Four short of U0's 376 because `.boot` costs
+a page, and inside the 368–376 range U0 said would mean everything moved.
+`tests/hw/test_esp32p4.py` is **15/15, entirely from flash**.
+
+**There is no stub.** The plan called for one with its own entry point that
+would map flash and jump to the kernel. `entry.S` already *is* the boot path,
+and everything it does before the insertion point touches only CSRs and
+linker symbols — no `.rodata`, no calls. So `.text.entry` moved into a
+RAM-resident `.boot` section and gained a first step. One boot path with a
+new beginning beats two boot paths that have to agree.
+
+**Three failures, each of which taught something the plan did not know:**
+
+* **Disabling the L1 caches is fatal here, and it is the obvious thing to
+  do.** ESP-IDF's sequence is "disable cache, remap, invalidate, enable", so
+  the first version disabled L1 icache, L1 dcache and L2. It printed its
+  first two trace characters and watchdog-reset in a loop. The reason is the
+  fact phase 28 Z2 is built on, applied to instruction fetch:
+  **internal memory is reached through the L1 cache**, so turning off the L1
+  icache stops the fetch of the code doing the turning off. IDF says the same
+  thing without saying it — `cache_hal_disable(CACHE_LL_LEVEL_EXT_MEM, ...)`,
+  and EXT_MEM is level 2. **Only L2 must stop.**
+* **Invalidating the L1 dcache throws away the stack.** With only L2 disabled
+  the mapping call returned 0 and the page count was right — and it still
+  died, in the invalidate. Invalidate discards; it does not write back. This
+  code's stack is in L2MEM behind the L1 dcache, so invalidating it discards
+  live frames including the return address. The mask is now L2 plus the L1
+  *instruction* cache, which is safe precisely because an icache holds
+  nothing dirty.
+* **The ROM arms three watchdogs for a second-stage image, and ours fed
+  none.** This was invisible under `load-ram`, which hands over by a path
+  that arms nothing. Two are "flashboot" watchdogs (RWDT and MWDT0) that the
+  second stage is expected to disarm; the third is a *super* watchdog that
+  cannot be disabled at all, only told to feed itself. The symptoms were
+  nested and each pointed away from the cause: with all three armed the
+  kernel booted **completely** — shell, `/flash0`, stdlib — and then reset,
+  which looks like a crash late in init. With the two flashboot ones disarmed
+  it stayed up through an eight-second look and still died inside the next
+  minute, which looks like whichever test was running at the time. A watchdog
+  with a period longer than your attention span is indistinguishable from
+  a flaky peripheral.
+
+**Two host-side traps, both from the two-port split.** `esptool`'s "Hard
+resetting via RTS pin" drives RTS on the port it is *talking* over — the
+CP2102 — while the lines that reach ESP_EN are on the CH343P, so after
+flashing the board sits in download mode with no banner, looking exactly like
+an image that does not boot. And the reset re-enumerates the USB CDC, so a
+console handle opened beforehand returns "device reports readiness to read
+but returned no data": a stale file descriptor wearing the costume of a dead
+board. The suite now resets over the right port and reopens the console.
+
+**How it is debugged, since nothing here can print.** `printk` needs a format
+string in `.rodata`, which is in the window being mapped. Writing single
+characters straight into UART0's FIFO at `0x500CA000` with immediate operands
+touches no `.rodata` and no kernel code, and the ROM has already configured
+that UART for its own banner. Both cache bugs were located in one run each.
+The markers are not left in; the technique is recorded in the file.
+
 ### U3 — Writing flash while running from it
 
 The hazard in §2. Identify the transitive closure of the flash-write path,
@@ -323,6 +396,19 @@ written down, not just asserted. A reviewer should be able to check the
 argument rather than trust the result.
 
 ### U4 — Boot with no host at all
+
+**DONE as part of U2, 2026-09-13.** Sequencing it separately assumed
+`load-ram` would be kept as the delivery path through U2 and retired later.
+Once that was dropped there was no intermediate state to protect: the first
+thing worth booting was the flash image, so U2's first successful boot *was*
+U4's done-condition. The risk that justified holding it back — a
+second-stage image that neither boots nor leaves the board recoverable —
+never materialised, and U0 had already proved the recovery path against
+exactly it.
+
+What remains genuinely open is the recovery *drill*: download mode has been
+exercised many times in this phase, but never from a deliberately corrupted
+second-stage image. That is a five-minute test and it belongs in U5.
 
 **In scope, 2026-09-12.** The ROM reads a second-stage image from flash and
 jumps to it. U2's stub becomes that image, so the board powers on into

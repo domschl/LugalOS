@@ -67,6 +67,33 @@ _start:
     la sp, _stack_top
 .Lhave_stack:
 
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* Map flash into the CPU's address space, before anything else.
+     * U2, plan/phase32_esp32p4_execute_in_place.md.
+     *
+     * On this board .text and .rodata are not in RAM -- they are fetched
+     * from the flash window at 0x40000000, which nothing has pointed at the
+     * OS image yet. So *every instruction after this point that is not in
+     * .boot* depends on this call having happened, including the .bss clear
+     * below and every `call` in the rest of this file.
+     *
+     * It goes here, immediately after the stack exists, because that is the
+     * earliest point a C function can be called at all and the latest point
+     * that is still safe. Everything above runs from .boot (this file) and
+     * touches only CSRs and linker symbols; nothing above dereferences
+     * .rodata or calls into the kernel.
+     *
+     * esp32p4_xip_map() is in .boot.text beside this code. It reports
+     * nothing: there is no console for several hundred milliseconds yet, and
+     * its own .rodata would be in the window it has not mapped. */
+    /* The ROM armed two watchdogs for the second-stage image it just
+     * loaded. Disarm them before anything slow happens -- a full boot takes
+     * longer than they allow, and the symptom is a kernel that reaches its
+     * shell and then resets. See xip_esp32p4.c. */
+    call esp32p4_boot_wdt_disable
+    call esp32p4_xip_map
+#endif
+
 #if defined(CONFIG_MODE_S)
     /* Configure PMP0 to grant S/U-mode full access to all memory */
     li t0, -1

@@ -147,6 +147,32 @@ ENTRY(_start)
 
 SECTIONS
 {
+    /* --- the RAM-resident boot code, and why it is not in flash ---------
+     *
+     * U2. Everything that runs before the flash MMU is mapped has to be in
+     * RAM, because until esp32p4_xip_map() returns there is nothing at
+     * 0x40000000 to fetch. That is exactly two things: entry.S, which the
+     * ROM jumps to, and the mapping function itself.
+     *
+     * Note what this replaces. The plan called for a separate "stub" with
+     * its own entry point that would map flash and then jump to the kernel.
+     * entry.S already *is* the boot path -- it sets mtvec, the stack, clears
+     * .bss and calls kernel_main -- and it happens to need nothing from
+     * flash before the point where the mapping can be inserted. So there is
+     * one boot path with a new first step, rather than two boot paths that
+     * have to agree with each other.
+     *
+     * First in the region, so _start is at ORIGIN(RAM) and the ROM's entry
+     * point is a fixed, inspectable address. */
+    .boot : {
+        . = ALIGN(4);
+        _boot_start = .;
+        *(.text.entry)
+        *(.boot.text .boot.text.*)
+        . = ALIGN(4);
+        _boot_end = .;
+    } > RAM
+
     /* --- the flash-resident half ----------------------------------------
      *
      * .text and .rodata are fetched from flash through the cache. They are
@@ -154,13 +180,12 @@ SECTIONS
      * because the image was RAM-*loaded*, on a board where the heap and the
      * loadable image come out of the same 384 KB.
      *
-     * `.text.entry` still leads, so _start is at the bottom of the mapped
-     * window and the stub's jump target is a fixed, inspectable address
-     * rather than whatever the linker happened to place first. */
+     * Note that `.text.entry` is NOT here any more -- it is in .boot above,
+     * which is what makes the kernel's entry point reachable before the
+     * mapping exists. */
     .text : {
         . = ALIGN(4);
         _xip_start = .;
-        *(.text.entry)
         *(.text .text.*)
         . = ALIGN(4);
     } > XIP
@@ -326,6 +351,14 @@ SECTIONS
      * really did land in the flash window and did not quietly fall back into
      * RAM if someone changes its region. A .text at 0x4ff4xxxx would boot
      * perfectly under load-ram and silently undo the whole phase. */
+    /* The boot code must be in RAM and must be where the ROM's image says
+     * the entry point is. A .boot that drifted into the flash window would
+     * mean jumping to an address that is not mapped yet -- the one failure
+     * this whole arrangement exists to avoid, and one with no console to
+     * report it. */
+    ASSERT(ADDR(.boot) >= 0x4ff40000 && ADDR(.boot) < 0x4ffc0000,
+           "linker/esp32p4.ld: .boot is not in L2MEM -- the code that maps flash cannot itself live in flash")
+
     ASSERT(ADDR(.text) >= 0x40000000 && ADDR(.text) < 0x44000000,
            "linker/esp32p4.ld: .text is not in the flash XIP window -- execute-in-place has been undone; see plan/phase32_esp32p4_execute_in_place.md")
     ASSERT(ADDR(.rodata) >= 0x40000000 && ADDR(.rodata) < 0x44000000,
