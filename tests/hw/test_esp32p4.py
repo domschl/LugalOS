@@ -563,6 +563,27 @@ def test_emac_link(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{speed} Mbit/s {duplex} duplex{extra}"
 
 
+def test_chibicc_compiles(b: Board) -> tuple[str, bool, str]:
+    """Phase 32: chibicc on the P4.
+
+    It was off on this board until the heap went from 128 KB to 372 KB, and
+    turning it on exposed a sizing bug rather than a memory shortage --
+    `parse.c` scoped its pools on `CONFIG_BOARD_RP2350` alone, so a second
+    microcontroller silently got QEMU's figures and asked for a 304 KB arena.
+
+    This checks the compile only. Running the result is a separate matter:
+    `exec` of a loaded ELF does not currently work on this board, and never
+    has been tested here -- see plan/open_issues.md."""
+    name = "chibicc compiles a C file on the P4 (phase 32)"
+    out = b.console_session.cmd("cc /flash0/hello.c /flash0/cctest.elf", deadline=30.0)
+    if "No memory for a" in out:
+        return name, False, "arena refused -- pool sizing regressed to the QEMU figures?"
+    if "Build clean" not in out:
+        return name, False, f"compile failed: {out.strip()[-200:]}"
+    m = re.search(r"generated (\d+)-byte", out)
+    return name, True, f"{m.group(1)}-byte ELF generated" if m else "compiled"
+
+
 def test_emac_phy(b: Board) -> tuple[str, bool, str]:
     """Z1's done-condition, plan/phase28_esp32p4_ethernet.md.
 
@@ -595,6 +616,7 @@ TESTS = [
     test_proc_readable,
     test_flash0_mounted,
     test_flash_write_while_executing,
+    test_chibicc_compiles,
     test_preemption,
     test_umode,
     test_i2c_bus,

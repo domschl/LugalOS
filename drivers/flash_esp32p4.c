@@ -139,33 +139,6 @@ bool flash_p4_init(void) {
  * the destination want 4-byte alignment. Rather than push that onto callers
  * -- a block device hands out whatever the filesystem asked for -- anything
  * unaligned is routed through a small bounce buffer here. */
-int flash_p4_read(uint32_t addr, void *buf, uint32_t len) {
-    if (!g_ready || !buf) return -1;
-    if (addr + len < addr) return -1;
-    if (addr + len > (uint32_t)LUGALOS_P4_FLASH_SIZE) return -1;
-
-    uint8_t *out = (uint8_t *)buf;
-    ylock_acquire(&g_flash_ylock);
-    int rc = 0;
-    while (len > 0) {
-        uint32_t chunk_addr = addr & ~3u;
-        uint32_t skew = addr - chunk_addr;
-        uint32_t want = len < (256u - skew) ? len : (256u - skew);
-        uint32_t words = (skew + want + 3u) & ~3u;
-        uint32_t tmp[64];
-        if (words > sizeof(tmp)) words = sizeof(tmp);
-        if (rom_read(chunk_addr, tmp, (int32_t)words) != ROM_OK) { rc = -1; break; }
-        uint32_t got = words - skew;
-        if (got > want) got = want;
-        memcpy(out, (const uint8_t *)tmp + skew, got);
-        out  += got;
-        addr += got;
-        len  -= got;
-    }
-    ylock_release(&g_flash_ylock);
-    return rc;
-}
-
 /* --- writing flash while executing from it (U3) --------------------------
  *
  * plan/phase32_esp32p4_execute_in_place.md §2. Before phase 32 this file had
@@ -231,6 +204,7 @@ typedef struct {
     rom_unlock_fn       unlock;
     rom_erase_sector_fn erase_sector;
     rom_write_fn        write;
+    rom_read_fn         read;
 } flash_rom_fns_t;
 
 /* Masks machine interrupts and returns the previous MIE bit, exactly as
@@ -270,10 +244,67 @@ static int flash_program_ram(const flash_rom_fns_t *f, uint32_t addr,
     return rc;
 }
 
+/* Reads need the same treatment as writes, and that was not obvious.
+ *
+ * An erase makes the flash unavailable for tens of milliseconds, which is
+ * loud. A *read* through the ROM's SPI routines holds the MSPI for only
+ * microseconds -- but it holds it exclusively, and an instruction fetched
+ * from the XIP window during those microseconds gets nothing. The window is
+ * small, so the failure is rare rather than absent, which is worse.
+ *
+ * Found the expensive way: with only the erase and program paths protected,
+ * `cat /flash0/small.txt` worked every time and `exec /flash0/.../uhello.elf`
+ * hung the board every time. The difference is how much reading each does --
+ * a few hundred bytes against 4.8 KB in many chunks, each chunk another
+ * chance for a fetch to land in the window. A short read that happens to run
+ * entirely out of cached instructions is indistinguishable from one that is
+ * safe.
+ *
+ * So every entry to the ROM's SPI code is masked, not just the destructive
+ * ones. */
 static void flash_rom_fns_init(flash_rom_fns_t *f) {
     f->unlock       = rom_unlock;
     f->erase_sector = rom_erase_sector;
     f->write        = rom_write;
+    f->read         = rom_read;
+}
+
+__attribute__((section(".ramfunc"), noinline))
+static int flash_read_ram(const flash_rom_fns_t *f, uint32_t addr,
+                          uint32_t *words, uint32_t nbytes) {
+    uint32_t prev = ram_irq_mask();
+    int rc = (f->read(addr, words, (int32_t)nbytes) == ROM_OK) ? 0 : -1;
+    ram_irq_restore(prev);
+    return rc;
+}
+
+int flash_p4_read(uint32_t addr, void *buf, uint32_t len) {
+    if (!g_ready || !buf) return -1;
+    if (addr + len < addr) return -1;
+    if (addr + len > (uint32_t)LUGALOS_P4_FLASH_SIZE) return -1;
+
+    uint8_t *out = (uint8_t *)buf;
+    flash_rom_fns_t f;
+    flash_rom_fns_init(&f);
+    ylock_acquire(&g_flash_ylock);
+    int rc = 0;
+    while (len > 0) {
+        uint32_t chunk_addr = addr & ~3u;
+        uint32_t skew = addr - chunk_addr;
+        uint32_t want = len < (256u - skew) ? len : (256u - skew);
+        uint32_t words = (skew + want + 3u) & ~3u;
+        uint32_t tmp[64];
+        if (words > sizeof(tmp)) words = sizeof(tmp);
+        if (flash_read_ram(&f, chunk_addr, tmp, words) != 0) { rc = -1; break; }
+        uint32_t got = words - skew;
+        if (got > want) got = want;
+        memcpy(out, (const uint8_t *)tmp + skew, got);
+        out  += got;
+        addr += got;
+        len  -= got;
+    }
+    ylock_release(&g_flash_ylock);
+    return rc;
 }
 
 int flash_p4_erase_sector(uint32_t addr) {

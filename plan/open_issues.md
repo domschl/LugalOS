@@ -627,6 +627,46 @@ they are the only blocking resources in the tree that contribute no edge.)*
 
 ---
 
+## `exec` of a loaded ELF does not work on the ESP32-P4
+
+**Observed** 2026-09-13, immediately after phase 32 enabled chibicc there.
+`cc` compiles cleanly; running the result does not:
+
+```
+lsh> exec /flash0/system/bin/uhello.elf
+[Sched] Created task #6 'uprog' (8 KB)
+[Sched] Task #6 'uprog' exited
+[ELF] '/flash0/system/bin/uhello.elf' was terminated before it could exit
+=> -1
+```
+
+The task is created and dies before printing anything. No fault is reported.
+The same happens for a chibicc-built binary and for the prebuilt `uhello.elf`,
+so it is not about which program.
+
+**This path has never been tested on this board**, which is why it is being
+recorded rather than attributed. `tests/hw/test_esp32p4.py`'s U-mode case runs
+`umodetest` -- the built-in `umode_probe`, which enters U-mode without loading
+anything -- and no test on this board has ever `exec`'d an ELF. So whether
+phase 32 broke it or it never worked here is **open**, and the honest answer
+is that nobody knows yet.
+
+**What has been ruled out:** `.utext` moved from `0x4ff40000` to `0x4ff41000`
+when `.boot` took the first page, which was the obvious phase-32 suspect.
+It is still 4 KB-aligned, which is what `board_text_region()`'s single PMP
+NAPOT entry needs, so that is not it.
+
+**Where to look first:** `sched_task_exited_cleanly()` is what reports the
+failure (arch/riscv/common/elf.c:833), so the question is what the task did
+instead of calling `SYS_UEXIT`. A U-mode fault should have printed something;
+that it did not is itself a clue. Compare against the RP2350, where the same
+`exec` path works, and against a QEMU target where it is covered by the suite.
+
+**Related but distinct:** the entry below is an `exec` hanging on
+`rv32-nommu` under QEMU. Same verb, different platform and different symptom
+(a spinning guest rather than a task that exits). They may share a cause;
+recording them apart keeps that a question.
+
 ## An intermittent hang in `rv32-nommu`, executing a chibicc-built binary
 
 **Observed** 2026-09-13, during phase 32 U5. The suite stopped progressing at
