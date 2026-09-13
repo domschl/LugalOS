@@ -705,51 +705,59 @@ have now been seen on this tree -- a truncated single test, an SMP wait-for
 cycle, and this hang -- and they may or may not share a cause. Recording them
 separately keeps that an open question instead of an assumption.
 
-## An intermittent SMP deadlock in `rv64-smp`, caught by the wait-for graph
+## `lock_selftest`'s cycle case hangs on two harts, about one run in four
 
-**Observed** 2026-09-13, during phase 32 U2. `tests/runner.py` stopped making
-progress and sat for 624 s against a normal 183 s. The QEMU log said exactly
-what was wrong, which is phase 31's whole point:
+**Measured** 2026-09-13, a 12-run soak of `tests/runner.py`: **3 of 12 runs
+hung**, and the three logs are **byte-identical** — 344 passes, then
+`[Target: RV64 SMP -- two harts]` and nothing more. The other nine were clean
+363/363 at 182–183 s. So the location is deterministic and only the
+occurrence is random.
+
+The first thing that target runs is `lockselftest`, and that is where it
+stops.
+
+**An earlier version of this entry got the diagnosis wrong, and the mistake is
+worth keeping.** It read the `[Lock BUG] … closes a wait-for cycle` output as
+phase 31's checker catching a real deadlock in ordinary kernel code. It is
+not: `lock_selftest` **provokes** those messages deliberately, and a task
+named `cyclewait` exists for exactly that purpose. Most of that output is the
+test passing. Reading a log without reading the test that produced it turned
+expected output into a false alarm.
+
+**What is actually wrong** is narrower and still real. The cycle case
+(kernel/lock.c §6) takes `g_cycle_lock`, spawns `cyclewait` to block on it,
+checks that a `chan_call()` into that task is *refused*, then releases and
+waits for the waiter to finish. On the failing runs the log fills instead with
 
 ```
-[Lock BUG] hart 1: ylock_acquire() -- task 7 waiting for task 0 closes a wait-for cycle.
-[Lock BUG]   Nothing can refuse this one; it will hang. See kernel/lock.h. Fault 7.
-
 [Lock BUG] hart 0: ylock_acquire() -- task 7 waiting for task 0 closes a wait-for cycle.
-[Lock BUG]   Nothing can refuse this one; it will hang. See kernel/lock.h. Fault 8.
+[Lock BUG]   Nothing can refuse this one; it will hang. Fault 3, 4, 5, 6, 7, 8 …
 ```
 
-Both harts report it, so both are inside the cycle. The failing target was
-`rv64-smp` — two harts, real contention — and the immediately preceding and
-following runs were **363/363 in 183 s**, so it is intermittent rather than a
-regression.
+repeating from **both** harts with the fault counter climbing. Note which
+primitive: `ylock_acquire()`, whose message says outright that it *cannot*
+refuse — unlike the `chan_call()` the test is checking, which can and does.
+So this is not the case under test firing; it is the waiter re-entering
+acquisition after the release and finding a cycle nothing can break.
 
-**Not phase 32.** Everything that phase changed is either P4-only
-(`linker/esp32p4.ld`, `xip_esp32p4.c`, `p4flash.py`, the P4 hardware suite) or
-guarded by `#if defined(CONFIG_BOARD_ESP32P4)` in the one shared file
-(`entry.S`); `nm build/rv64-smp/lugalos.elf` finds no P4 symbol. The same
-target also passed 363/363 twice on the same tree.
+**Why two harts and not one:** on a single hart the main task and the waiter
+interleave only at yields, and the release is observed before the waiter runs
+again. On two they are genuinely concurrent, and the window between
+`ylock_release()` and the waiter completing is real time rather than a
+scheduling point. That file already carries a comment about this exact
+fragility — the edge-sampling loop was widened from 200 bare yields to
+`task_sleep_ms()` because it "failed about one run in three on two harts"
+after Y5c. The same shape, one step later in the same test.
 
-**Relationship to the entry below is unknown and should not be assumed.**
-That one is a *truncated output* on a single test; this is a *hang* with a
-named cycle. They may share a cause — both appear under concurrency and both
-arrived after Y5 — or they may be unrelated. Do not fold them together
-without evidence.
+**Where to look first:** whether `g_cycle_done` and the waiter's exit are
+being observed in the right order, and whether the `for … 400 sched_yield()`
+after the release is the same kind of fragile sampling the loop above it was
+fixed for. A `sched_yield()` count is a measure of this hart's run queue, not
+of the other hart's progress.
 
-**Where to look first:** `ylock_acquire()` naming task 7 and task 0 gives two
-concrete tasks; `/proc/ps` at the moment of the hang would name them. The
-QEMU log is kept (`/tmp/lugalos_qemu_*.log`), and the two `Fault 7` / `Fault
-8` counters say how many times the checker had already fired in that run
-before the fatal one — worth reading, because a cycle that is refused several
-times and then closes is a different story from one that closes first time.
-
-**A note on diagnosing this, because it cost time twice:** a stalled runner
-looks like a leaked process from a previous run, and this project has a real
-history of that (`qemu_stray_processes`). Both hypotheses were wrong here.
-Check the *child* process and the QEMU log before concluding it is
-environmental — and note that `pgrep qemu-system-riscv64` misses the rv32
-tests entirely, which made one check report "zero QEMU processes" on a suite
-that was running perfectly.
+**Not phase 32**, checked rather than assumed: that phase's shared-file change
+is `#if defined(CONFIG_BOARD_ESP32P4)`-guarded, and `rv32-nommu` built from
+before it has a byte-identical `.text.entry`.
 
 ## An intermittent suite failure, ~1 run in 5, since logging went asynchronous
 
