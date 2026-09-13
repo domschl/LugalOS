@@ -627,6 +627,44 @@ they are the only blocking resources in the tree that contribute no edge.)*
 
 ---
 
+## An intermittent hang in `rv32-nommu`, executing a chibicc-built binary
+
+**Observed** 2026-09-13, during phase 32 U5. The suite stopped progressing at
+the RV32 target with 171 passes and no failures. One `qemu-system-riscv32` sat
+at 99.7% CPU for ten minutes; the guest's console showed the compile had
+succeeded and the *exec* had not returned:
+
+```
+cc /sd0/hello.c /sd0/hello.elf
+[    4.414] [chibicc] Build clean: generated 196-byte RISC-V ELF binary at '/sd0/hello.elf'
+=> #t
+lsh> exec /sd0/hello.elf            <- and nothing, ever
+```
+
+The runner's own per-test timeouts are 4-5 s, so it was not waiting on an
+expect; it was blocked on a guest that never stopped running. **It did not
+reproduce**: the next clean run was 363/363 in 181 s.
+
+**Not phase 32, and this was checked rather than argued.** That phase's only
+shared-file change is a `#if defined(CONFIG_BOARD_ESP32P4)` block in
+`entry.S`. Building `rv32-nommu` from the commit before the phase
+(`55dfdb8`) in a worktree and comparing gives a **byte-identical
+`.text.entry`** -- 448 bytes, same SHA-256 -- so the guard holds and the
+target's boot code is unchanged. (Comparing whole object files is misleading
+here: `-ggdb` embeds absolute source paths, so a worktree build differs for
+that reason alone. Compare sections.)
+
+**Where to look first:** `exec` on RV32 NOMMU loads an ELF that chibicc has
+just written through the VFS. Candidates are the loader reading a file whose
+last block has not reached the device, and the U-mode entry itself spinning
+on something that never arrives. A spinning guest rather than a faulting one
+means it is a loop, not a trap.
+
+**Relationship to the two entries below is unknown.** Three distinct shapes
+have now been seen on this tree -- a truncated single test, an SMP wait-for
+cycle, and this hang -- and they may or may not share a cause. Recording them
+separately keeps that an open question instead of an assumption.
+
 ## An intermittent SMP deadlock in `rv64-smp`, caught by the wait-for graph
 
 **Observed** 2026-09-13, during phase 32 U2. `tests/runner.py` stopped making

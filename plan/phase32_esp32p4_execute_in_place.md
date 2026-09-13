@@ -1,7 +1,9 @@
 # Phase 32 — The P4's code moves to flash, and stops costing RAM
 
-**Status: PLANNED, 2026-09-12. Blocks `plan/phase28_esp32p4_ethernet.md` at
-Z4.** Phase 28 is complete through Z3 and cannot continue: the P4's heap is at
+**Status: U0-U5 DONE, 2026-09-13. U6 (documents) remains.** The P4 boots
+from its own flash with nothing attached, and the heap is **372 KB** against
+the 128 KB that forced this phase. `plan/phase28_esp32p4_ethernet.md` is
+unblocked and resumes at Z4. Phase 28 is complete through Z3 and cannot continue: the P4's heap is at
 exactly its 128 KB floor, margin +0, and the next line of code anywhere in
 this kernel fails the assert in `linker/esp32p4.ld`. Phase 28 §Z3a records how
 that happened and lists the options; this is the one chosen, and it is the one
