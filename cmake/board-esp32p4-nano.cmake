@@ -153,3 +153,37 @@ set(CONFIG_EMAC_PHY_ADDR       1)
 # plan/phase28_esp32p4_ethernet.md.
 set(CONFIG_EMAC_PHY_ID1        0x0243)
 set(CONFIG_EMAC_PHY_ID2        0x0C54)
+
+# --- The L2 cache, which is carved out of L2MEM and is therefore not RAM ---
+#
+# U5, plan/phase32_esp32p4_execute_in_place.md. This number is paid twice and
+# in two languages: arch/riscv/common/trap.c asks the ROM for a cache of this
+# size, and linker/esp32p4.ld must stop the RAM region where that cache's
+# storage begins. Getting them out of step does not fail at link or at boot --
+# it gives a heap whose top bytes accept stores and lose them, which is the
+# whole of phase 27's E7. So cmake passes this one definition to both, and the
+# linker asserts on it.
+#
+# 128 KB rather than the ROM's 256 KB default, and **measured rather than
+# assumed** once .text began executing in place from flash:
+#
+#     XIP, L2 = 128 KB    boot 282 ms (x3)    heap 372 KB
+#     XIP, L2 = 256 KB    boot 282 ms (x3)    heap 244 KB
+#
+# Doubling it changed nothing measurable and cost 128 KB of heap.
+#
+# That first result only covered boot, which might not be L2-bound. Enabling
+# the chess engine on this board (also phase 32) provided the CPU-bound
+# instrument the measurement had been missing, and it agrees -- `(perft 3)`
+# node rates across six positions, 128 KB against 256 KB:
+#
+#     27825 / 27817     32276 / 32299     25408 / 25408
+#     32149 / 32172     17723 / 17734     17179 / 17179
+#
+# Within 0.1% on every position. So the answer holds for a workload that
+# sweeps far more code than boot does, and 128 KB stays.
+#
+# Legal values are 128, 256 and 512 (cache_size_t 9, 10, 11 in
+# esp32p4/rom/cache.h). Changing this is the only edit needed: the RAM region
+# follows from it.
+set(CONFIG_L2_CACHE_KB 128)

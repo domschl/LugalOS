@@ -95,6 +95,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         LUGALOS_P4_OSIMAGE_BASE=${LUGALOS_P4_OSIMAGE_BASE}
         LUGALOS_P4_OSIMAGE_SIZE=${LUGALOS_P4_OSIMAGE_SIZE}
         LUGALOS_P4_BOOTLOADER_BASE=${LUGALOS_P4_BOOTLOADER_BASE})
+
 elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MARCH "rv64gc_zicsr_zifencei")
     set(ARCH_MABI "lp64d")
@@ -421,6 +422,31 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
     elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
     endif()
+endif()
+
+# U5, plan/phase32_esp32p4_execute_in_place.md: the P4's L2 cache size has to
+# reach the linker as well as the C code.
+#
+# The board file is handed to cmake/gen_config.cmake as a *script*, not
+# include()d, so its CONFIG_* values do not exist in this scope -- they only
+# ever become the generated header. This one is needed at link time too,
+# because the cache is carved out of the top of L2MEM and the RAM region must
+# stop where it begins. So the board file is included here as well, purely to
+# read that number.
+#
+# What this buys: a MEMORY block cannot reference a symbol, so RAM's LENGTH in
+# linker/esp32p4.ld is still a literal -- but the ASSERT beside it can check
+# that literal against the configured cache size. A disagreement becomes a
+# link error instead of a heap whose top bytes accept stores and then lose
+# them, which is phase 27's E7 and cost a session to find.
+if(LUGALOS_TARGET STREQUAL "ESP32P4" AND DEFINED LUGALOS_BOARD_FILE)
+    include(${LUGALOS_BOARD_FILE})
+    if(NOT DEFINED CONFIG_L2_CACHE_KB)
+        message(FATAL_ERROR "${LUGALOS_BOARD_FILE} does not set CONFIG_L2_CACHE_KB; "
+                            "linker/esp32p4.ld needs it to place the RAM region")
+    endif()
+    math(EXPR LUGALOS_P4_L2_CACHE_BYTES "${CONFIG_L2_CACHE_KB} * 1024")
+    add_link_options(-Wl,--defsym=CONFIG_L2_CACHE_BYTES=${LUGALOS_P4_L2_CACHE_BYTES})
 endif()
 
 if(DEFINED LUGALOS_BOARD_FILE)

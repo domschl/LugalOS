@@ -91,6 +91,9 @@ set(_optional_keys
     CONFIG_EMAC_TX_EN_GPIO CONFIG_EMAC_TXD0_GPIO CONFIG_EMAC_TXD1_GPIO
     CONFIG_EMAC_CRS_DV_GPIO CONFIG_EMAC_RXD0_GPIO CONFIG_EMAC_RXD1_GPIO
     CONFIG_EMAC_PHY_ADDR CONFIG_EMAC_PHY_ID1 CONFIG_EMAC_PHY_ID2
+    # U5: the L2 cache size in KB. Read by arch/riscv/common/trap.c, and
+    # passed separately to the linker so the two cannot drift.
+    CONFIG_L2_CACHE_KB
     # R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on SPI0.
     CONFIG_ETH_SCK_GPIO CONFIG_ETH_MOSI_GPIO CONFIG_ETH_MISO_GPIO
     CONFIG_ETH_CS_GPIO CONFIG_ETH_RST_GPIO CONFIG_ETH_INT_GPIO

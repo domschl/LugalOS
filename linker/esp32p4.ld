@@ -337,13 +337,21 @@ SECTIONS
      * this is really a check that RAM itself has not been moved down; if a
      * future section is added to LOWRAM without NOLOAD, ld's own "section
      * .foo will not fit / LMA overlaps" is the second net. */
-    /* RAM must stop where the L2 cache's storage begins. 0x4ffa0000 is the
-     * boundary for the 128 KB cache esp32p4_l2_cache_shrink() configures; if
-     * that call is removed or the size changed, this is the line that has to
-     * change with it, and the ASSERT is here so it cannot be forgotten. Memory
-     * past this point accepts stores and then loses them. */
-    ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x4ffa0000,
-           "linker/esp32p4.ld: RAM reaches into the L2 cache's own storage at the top of L2MEM; see esp32p4_l2_cache_shrink()")
+    /* RAM must stop where the L2 cache's storage begins.
+     *
+     * The cache is carved out of the top of L2MEM, so whatever is reserved
+     * for it is not RAM -- memory past that point accepts stores and then
+     * loses them, which is the whole of phase 27's E7 and cost a session.
+     *
+     * U5 made the boundary derived instead of written twice.
+     * CONFIG_L2_CACHE_BYTES is passed in by cmake from CONFIG_L2_CACHE_KB in
+     * the board file -- the same value arch/riscv/common/trap.c asks the ROM
+     * for -- so changing the cache size is one edit and this check follows it.
+     * A MEMORY block cannot reference a symbol, so RAM's LENGTH above is
+     * still a literal; what this ASSERT does is make a disagreement between
+     * the two a link error rather than a corruption. */
+    ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x4ffc0000 - CONFIG_L2_CACHE_BYTES,
+           "linker/esp32p4.ld: RAM reaches into the L2 cache's own storage at the top of L2MEM -- RAM's LENGTH and CONFIG_L2_CACHE_KB disagree; see esp32p4_l2_cache_shrink()")
     ASSERT(ORIGIN(RAM) >= 0x4ff40000,
            "loadable sections would overlap the ROM's download-mode buffers (0x4ff296b8..0x4ff40000) -- see the header comment")
     /* .text used to be checked against that boundary too. After U1 it is not

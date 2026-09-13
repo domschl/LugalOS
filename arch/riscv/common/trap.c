@@ -20,6 +20,10 @@
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "arch/esp32p4_intr.h"
+/* U5: CONFIG_L2_CACHE_KB, the single statement of the L2 cache size. Without
+ * this include the #if below sees an undefined macro as 0 and rejects every
+ * legal value -- which is how it was caught. */
+#include "lugalos_config.h"
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
@@ -222,11 +226,16 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
  * heap from 372 KB to 244 KB) it was **282 ms again, three times**. Doubling
  * the cache bought nothing measurable and cost 128 KB of heap.
  *
- * The honest scope of that result: it says boot is not L2-bound, not that
- * nothing is. The 16 KB L1 instruction cache evidently holds the hot loops,
- * and what boot spends its time on is elsewhere. A workload that sweeps a
- * large code footprint repeatedly might answer differently, and phase 29 is
- * the first one likely to care.
+ * That result only covered boot, which might not be L2-bound -- so it was
+ * re-asked against the chess engine once phase 32 enabled it here, which is
+ * the CPU-bound instrument the first measurement lacked. `(perft 3)` node
+ * rates across six positions differ by under 0.1% between 128 KB and 256 KB
+ * (figures in cmake/board-esp32p4-nano.cmake). The 16 KB L1 instruction
+ * cache evidently holds the hot loops in both cases.
+ *
+ * So the answer holds for a workload sweeping far more code than boot does.
+ * What would still be worth re-asking it for is a *data*-heavy sweep, which
+ * neither instrument is.
  *
  * For reference, the cost of XIP itself is about 7%: the same boot was
  * ~264 ms with .text RAM-resident, against 282 ms from flash.
@@ -247,7 +256,20 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
 #define P4_ROM_CACHE_SET_L2_MODE   0x4fc003d4u
 #define P4_ROM_CACHE_WRITEBACK_ALL 0x4fc00414u
 #define P4_ROM_CACHE_INVALIDATE_ALL 0x4fc00404u
-#define P4_CACHE_SIZE_128K   9      /* cache_size_t      */
+/* cache_size_t from esp32p4/rom/cache.h: 128K is 9, 256K is 10, 512K is 11.
+ * Derived from CONFIG_L2_CACHE_KB so that the board file is the single place
+ * the size is stated -- the linker gets the same number and asserts the RAM
+ * region against it. An unsupported size is a compile error rather than a
+ * ROM call with a meaningless argument. */
+#if   CONFIG_L2_CACHE_KB == 128
+#define P4_CACHE_SIZE_SEL    9
+#elif CONFIG_L2_CACHE_KB == 256
+#define P4_CACHE_SIZE_SEL    10
+#elif CONFIG_L2_CACHE_KB == 512
+#define P4_CACHE_SIZE_SEL    11
+#else
+#error "CONFIG_L2_CACHE_KB must be 128, 256 or 512 (esp32p4/rom/cache.h cache_size_t)"
+#endif
 #define P4_CACHE_8WAYS_ASSOC 2      /* cache_ways_t      */
 #define P4_CACHE_LINE_64B    3      /* cache_line_size_t */
 #define P4_CACHE_MAP_L2      (1u << 5)  /* CACHE_MAP_L2_CACHE */
@@ -258,7 +280,7 @@ void esp32p4_l2_cache_shrink(void) {
     void (*invalidate_all)(uint32_t)  = (void (*)(uint32_t))P4_ROM_CACHE_INVALIDATE_ALL;
 
     writeback_all(P4_CACHE_MAP_L2);
-    set_mode(P4_CACHE_SIZE_128K, P4_CACHE_8WAYS_ASSOC, P4_CACHE_LINE_64B);
+    set_mode(P4_CACHE_SIZE_SEL, P4_CACHE_8WAYS_ASSOC, P4_CACHE_LINE_64B);
     invalidate_all(P4_CACHE_MAP_L2);
 }
 

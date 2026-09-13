@@ -100,8 +100,31 @@
  * in common code, and the size problem is a *pool sizing* problem that this
  * file already has the mechanism for. The 1024 figure is not new either --
  * it is the one phase 13's S4 arrived at empirically on hardware, on a board
- * with 520 KB. */
+ * with 520 KB.
+ *
+ * **Phase 32 raised it for the P4 and left the RP2350 alone**, because the
+ * constraint was memory and only one of the two boards lost it. That board's
+ * heap went from 128 KB to 372 KB when .text moved to flash, and 1024 nodes
+ * is visibly too few for it: `(fib 14)` -- 1,219 calls, each allocating
+ * several cells -- exhausts the pool. Note what does *not* explain that.
+ * `fib` has no tail calls, so tail-call elimination is irrelevant; and the
+ * collector cannot help, because there is no safe point inside a single
+ * still-executing top-level form to collect at (see gc_collect()). It is
+ * purely a pool that is smaller than one expression's garbage.
+ *
+ * 2048 and not more, and the ceiling is not the heap. node_pool is .bss, and
+ * after phase 32 split the image .bss lives in LOWRAM's 252 KB while the heap
+ * lives elsewhere entirely -- so on this board the pool competes with the
+ * boot stack, not with palloc. Measured headroom between _bss_end and
+ * _stack_bottom: 44 KB at 2048 nodes, 24 KB at 3072, and **3.6 KB at 4096**,
+ * which is close enough to the ASSERT that the next .bss growth anywhere in
+ * the tree would trip it. Doubling is the useful part; quadrupling spends a
+ * different budget than the one that was freed. */
+#if defined(CONFIG_BOARD_ESP32P4)
+#define NODE_POOL_SIZE 2048
+#else
 #define NODE_POOL_SIZE 1024
+#endif
 #else
 #define NODE_POOL_SIZE 4096
 #endif

@@ -111,17 +111,17 @@
     {
       "name": "esp32p4",
       "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO)",
-      "description": "E2, plan/phase27_esp32p4_bringup.md. The second silicon this project runs on, and deliberately the smallest persona in the tree: UART0 console, printk, the shell and /proc, and nothing else. No block device, no netif, no display, no radio -- the board has none of them wired to this kernel yet. Loaded into L2MEM with tools/p4run.py build/esp32p4/lugalos.elf, which never writes flash. Cooperative: there is no preemption tick until E4, because on this chip the timer interrupt arrives through the CLIC and that is E3.",
+      "description": "E2, plan/phase27_esp32p4_bringup.md, grown by phase 32. The second silicon this project runs on. It boots from its own flash: .text and .rodata execute in place from the XIP window and the ROM loads a small RAM half from 0x2000, so the board powers on into LugalOS with nothing attached -- flash it with `uv run tools/p4flash.py`, not `esptool load-ram`. UART0 console, printk, shell and /proc, a writable /flash0, I2C with a BME280, and an EMAC on RMII. chibicc and the chess engine are ON as of phase 32: they were off while this board had a 128 KB heap and RAM-resident .text, and U2 took the heap to 372 KB with 4x headroom in the flash segment, so the reason expired. No display, no radio.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32p4",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
-        "LUGALOS_ENABLE_CC": "OFF",
+        "LUGALOS_ENABLE_CC": "ON",
         "LUGALOS_ENABLE_ED": "OFF",
         "LUGALOS_ENABLE_SPISD": "OFF",
         "LUGALOS_ENABLE_ST7735": "OFF",
         "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
+        "LUGALOS_ENABLE_CHESS": "ON",
         "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
         "LUGALOS_ENABLE_DCF77": "OFF",
         "LUGALOS_ENABLE_GPS": "OFF"
