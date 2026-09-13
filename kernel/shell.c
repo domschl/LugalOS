@@ -3453,6 +3453,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * drivers/include/drivers/uart.h for how to read the three together. */
         printk("[UartStats] tx_arms=%u tx_wakes=%u tx_seen=%u\n",
                uart_irq_tx_arms(), uart_irq_tx_wakes(), uart_irq_tx_seen());
+        /* Received bytes the hardware dropped. Its own line for the same
+         * reason the TX half has one: the exact matches above keep working. */
+        printk("[UartStats] rx_overruns=%u\n", uart_rx_overruns());
         return;
 #if !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "blkstats") == 0) {

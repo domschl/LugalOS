@@ -20,6 +20,37 @@ static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU vir
 #define UART_IER 1 // Interrupt Enable Register
 #define UART_LSR 5 // Line Status Register
 #define UART_LSR_DR   0x01 // Data Ready
+/* Overrun Error: a character arrived before the previous one was read, and
+ * the previous one is gone. The 16550 latches this in LSR and clears it on
+ * read, so it is free to notice and invisible if nobody looks -- and nobody
+ * did until 2026-09-13, when a suite run sent `identity provision` and the
+ * shell never echoed it at all. A lost *echo* is not an output race; it means
+ * the input never arrived, and this is the bit that says so. */
+#define UART_LSR_OE   0x02 // Overrun Error -- a received byte was dropped
+
+/* Every received byte the hardware dropped because nothing read the previous
+ * one in time. See UART_LSR_OE. */
+static volatile uint32_t g_uart_rx_overruns;
+uint32_t uart_rx_overruns(void) { return g_uart_rx_overruns; }
+
+/* Says so the first time, rather than waiting to be asked.
+ *
+ * A dropped input byte is invisible by construction: the shell never sees the
+ * character, so it never echoes it and never acts on it, and the only trace is
+ * a command that appears not to have been sent. Polling a counter cannot catch
+ * that -- by the time a test thinks to look, the run it would explain is over.
+ *
+ * printk() and not printk_critical(): since Y5 the former is a ring append
+ * that reaches no blocking primitive, which is what makes it safe from the
+ * interrupt handler below. printk_critical() would reach
+ * uart_flush_critical() and the batch spinlock -- the mistake that hung three
+ * suite runs earlier in this investigation. */
+static void note_rx_overrun(void) {
+    if (g_uart_rx_overruns++ == 0) {
+        printk("[UART] RX OVERRUN: a received byte was dropped; input was "
+               "lost, not delayed\n");
+    }
+}
 #define UART_LSR_THRE 0x20 // Transmit Holding Register Empty
 #define UART_IER_ERBFI 0x01 // Enable Received Data Available interrupt
 #define UART_IER_ETBEI 0x02 // Enable Transmitter Holding Register Empty interrupt
@@ -59,6 +90,7 @@ static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
     uint8_t lsr = uart_base[UART_LSR];
+    if (lsr & UART_LSR_OE) note_rx_overrun();
     if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
@@ -83,7 +115,9 @@ static void uart_isr(void *ctx) {
 // is itself responsible for providing.
 static bool hw_uart_has_char(void) {
     if (!uart_base) return false;
-    return (uart_base[UART_LSR] & UART_LSR_DR) != 0;
+    uint8_t lsr = uart_base[UART_LSR];
+    if (lsr & UART_LSR_OE) note_rx_overrun();
+    return (lsr & UART_LSR_DR) != 0;
 }
 
 static uint8_t hw_uart_getc(void) {

@@ -65,6 +65,12 @@ uint32_t uart_irq_count(void);
 // between the drivers, so it is reported rather than smoothed over.
 uint32_t uart_irq_rx_wakes(void);
 
+// Received bytes the hardware dropped: a character arrived while the previous
+// one was still unread. Non-zero means input was *lost*, not delayed -- the
+// shell never saw it, so it never echoed it and never acted on it. A test
+// whose command vanishes without trace is this counter moving.
+uint32_t uart_rx_overruns(void);
+
 // The TX half of the same question: how many times a task blocked waiting for
 // room in the transmit FIFO (uart_irq_tx_arms) and how many times an interrupt
 // actually woke one of them again (uart_irq_tx_wakes).

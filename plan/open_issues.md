@@ -627,7 +627,50 @@ they are the only blocking resources in the tree that contribute no edge.)*
 
 ---
 
-## `exec` of a loaded ELF does not work on the ESP32-P4
+## `exec` of a loaded ELF hangs or fails — on **every** target, not one
+
+**Consolidated 2026-09-13 from three entries that were the same bug.** They
+were recorded separately because each was seen once, on a different platform,
+with a different-looking symptom. A 12-run soak caught three hung guests at
+once and the logs make the pattern plain:
+
+```
+lsh> exec /flash0/system/bin/uhello.elf              <- rv32, then nothing
+     exec .../uisolate.elf -> Created task #7 'uprog' <- rv64, then nothing
+lsh> exec .../uisolate.elf                            <- rv64, then nothing
+```
+
+and on the ESP32-P4 the same operation fails deterministically with
+`'…uhello.elf' was terminated before it could exit`.
+
+**It is not chibicc's code generation.** That was the natural suspicion, since
+the P4 failure appeared the moment chibicc was enabled there. Every binary
+above is **host-built** (`uhello.elf`, `uisolate.elf` from `tests/`), and a
+chibicc-built binary fails identically. Compilation is fine; running is not.
+
+**What the wait does.** `elf_load_and_run_argv()` spins
+`while (sched_task_state(pid) != TASK_DEAD && spins < 2000000) sched_yield();`
+so the shell is not permanently wedged — but two million yields is far past
+any test's timeout, and from outside it is indistinguishable from a hang. The
+child is created (`Created task #7 'uprog'`) and then never reaches
+`TASK_DEAD`, with no fault reported.
+
+**Not reproducible in isolation**, which is the main obstacle. Tried and
+failed to provoke it: 30 consecutive `exec`s of `uhello`, 25 of `uisolate`
+(the one that faults on purpose, and the binary in two of the three hung
+logs), and 12 cycles of `lockselftest`-then-`exec` to recreate the klog-burst
+context the hung logs show immediately beforehand. All clean. It needs
+accumulated suite state that a tight loop does not have.
+
+**Where to look first:** why a created task never reaches `TASK_DEAD` and
+never faults. Two of three hung guests were running `uisolate.elf`, whose
+whole purpose is to take a domain fault, so the fault path is the first
+suspect — and the P4's "terminated before it could exit" is the *same* path
+reaching a different end. A diagnostic in the spin loop that reports the
+child's actual `sched_task_state()` after N yields would say more than any
+amount of reading.
+
+## `exec` of a loaded ELF does not work on the ESP32-P4 (folded into the entry above)
 
 **Observed** 2026-09-13, immediately after phase 32 enabled chibicc there.
 `cc` compiles cleanly; running the result does not:

@@ -84,6 +84,27 @@ static uintptr_t g_uart_base = CONFIG_UART0_BASE;
 #define UART_INT_CLR(base)      ((base) + 0x10)  /* write 1 to clear         */
 #define UART_CLKDIV_SYNC(base)  ((base) + 0x14)  /* baud divisor, int + frac */
 #define UART_STATUS(base)       ((base) + 0x1c)  /* RXFIFO_CNT / TXFIFO_CNT  */
+
+/* RXFIFO_OVF: a byte arrived with the receive FIFO already full, so it was
+ * dropped. Bit 4 of the interrupt registers (TRM; IDF's uart_reg.h names it
+ * UART_RXFIFO_OVF_INT_RAW/_CLR). Raw rather than masked status, because this
+ * is worth counting whether or not the interrupt is enabled -- see
+ * drivers/uart.h's uart_rx_overruns() for why a dropped input byte is
+ * otherwise invisible. */
+#define UART_RXFIFO_OVF_INT     (1u << 4)
+
+static volatile uint32_t g_uart_rx_overruns;
+
+uint32_t uart_rx_overruns(void) {
+    if (g_uart_base && (REG(UART_INT_RAW(g_uart_base)) & UART_RXFIFO_OVF_INT)) {
+        REG(UART_INT_CLR(g_uart_base)) = UART_RXFIFO_OVF_INT;
+        if (g_uart_rx_overruns++ == 0) {
+            printk("[UART] RX OVERRUN: a received byte was dropped; input was "
+                   "lost, not delayed\n");
+        }
+    }
+    return g_uart_rx_overruns;
+}
 #define UART_CONF0_SYNC(base)   ((base) + 0x20)  /* frame format, FIFO reset */
 #define UART_CONF1(base)        ((base) + 0x24)
 #define UART_CLK_CONF(base)     ((base) + 0x88)  /* core clock enable/reset  */

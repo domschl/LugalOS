@@ -404,6 +404,31 @@ static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
 
+/* PL011 receive status/error clear. OE (bit 3) latches when a byte arrives
+ * before the previous one is read -- the previous byte is gone. Writing any
+ * value clears the sticky bits. See drivers/uart.h's uart_rx_overruns() for
+ * why this is worth counting: a dropped input byte is otherwise invisible,
+ * and presents as a command that was typed and never acted on. */
+#define UART0_RSR   (UART0_BASE + 0x04)
+#define UART0_RSR_OE (1u << 3)
+
+static volatile uint32_t g_uart_rx_overruns;
+
+static void note_rx_overrun(void) {
+    if (g_uart_rx_overruns++ == 0) {
+        printk("[UART] RX OVERRUN: a received byte was dropped; input was "
+               "lost, not delayed\n");
+    }
+}
+
+uint32_t uart_rx_overruns(void) {
+    /* Sampled here rather than in an interrupt: this driver's RX arrives
+     * through two paths (see the file header), and the sticky bit is equally
+     * visible from either. Cleared on read so the next one is a new event. */
+    if (REG(UART0_RSR) & UART0_RSR_OE) { REG(UART0_RSR) = 0; note_rx_overrun(); }
+    return g_uart_rx_overruns;
+}
+
 #define UART0_FR    (UART0_BASE + 0x18)
 #define UART0_IMSC  (UART0_BASE + 0x38)
 #define UART0_FR_TXFF (1u << 5)
