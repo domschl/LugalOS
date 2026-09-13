@@ -1086,6 +1086,8 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
         # place this tree's zero-warning rule is knowingly bent.
         COMMAND ${CMAKE_OBJCOPY} -R .text -R .rodata --strip-all
                 lugalos.elf lugalos-ram.elf)
+    # (.ramfunc is RAM-resident and therefore kept: removing only the two
+    #  flash sections is what makes that automatic. U3.)
 else()
     set(RAW_BIN_COMMANDS
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)

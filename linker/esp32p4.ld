@@ -173,6 +173,28 @@ SECTIONS
         _boot_end = .;
     } > RAM
 
+    /* --- code that must not be fetched from flash -----------------------
+     *
+     * U3, plan/phase32_esp32p4_execute_in_place.md. Distinct from .boot
+     * above, which runs once before the mapping exists; this is code that
+     * runs *after* everything is up and working, at moments when flash
+     * momentarily cannot answer.
+     *
+     * Writing this chip's flash means driving the MSPI directly, and while an
+     * erase or program is in progress the flash will not serve a read. Any
+     * instruction fetched from the XIP window during that window returns
+     * garbage -- so the code doing the writing, and anything that could run
+     * while it does, has to be here instead.
+     *
+     * The same section name as linker/rp2350.ld uses for the identical
+     * hazard, so a reader who has seen one recognises the other. */
+    .ramfunc : ALIGN(4) {
+        _ramfunc_start = .;
+        *(.ramfunc .ramfunc.*)
+        . = ALIGN(4);
+        _ramfunc_end = .;
+    } > RAM
+
     /* --- the flash-resident half ----------------------------------------
      *
      * .text and .rodata are fetched from flash through the cache. They are
@@ -366,6 +388,13 @@ SECTIONS
      * report it. */
     ASSERT(ADDR(.boot) >= 0x4ff40000 && ADDR(.boot) < 0x4ffc0000,
            "linker/esp32p4.ld: .boot is not in L2MEM -- the code that maps flash cannot itself live in flash")
+
+    /* U3: the same check for the write-while-executing code. A .ramfunc that
+     * drifted into the flash window would work perfectly until the first
+     * erase, and then fetch its own next instruction out of a flash chip that
+     * is busy erasing. */
+    ASSERT(ADDR(.ramfunc) >= 0x4ff40000 && ADDR(.ramfunc) < 0x4ffc0000,
+           "linker/esp32p4.ld: .ramfunc is not in L2MEM -- code that runs while flash is busy cannot live in flash")
 
     ASSERT(ADDR(.text) >= 0x40000000 && ADDR(.text) < 0x44000000,
            "linker/esp32p4.ld: .text is not in the flash XIP window -- execute-in-place has been undone; see plan/phase32_esp32p4_execute_in_place.md")

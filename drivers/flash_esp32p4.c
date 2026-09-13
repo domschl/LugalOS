@@ -166,6 +166,116 @@ int flash_p4_read(uint32_t addr, void *buf, uint32_t len) {
     return rc;
 }
 
+/* --- writing flash while executing from it (U3) --------------------------
+ *
+ * plan/phase32_esp32p4_execute_in_place.md §2. Before phase 32 this file had
+ * no such problem: the kernel was loaded into L2MEM and flash was only ever a
+ * transfer. Now `.text` and `.rodata` are fetched from the XIP window, and an
+ * erase or program makes the flash chip stop answering reads for as long as
+ * it takes -- tens of milliseconds for a sector erase.
+ *
+ * So during that window **no instruction may be fetched from flash**, and the
+ * failure if one is does not look like an error: the fetch returns whatever
+ * the busy chip drives, and the CPU executes it. A corrupted filesystem or a
+ * jump into nothing, not a return code.
+ *
+ * ESP-IDF solves this with two steps, in
+ * components/spi_flash/cache_utils.c's
+ * spi_flash_disable_interrupts_caches_and_other_cpu():
+ *
+ *   1. `esp_intr_noniram_disable()` -- disable the interrupts whose handlers
+ *      are *not* in IRAM, leaving IRAM-resident ones running.
+ *   2. `spi_flash_disable_cache()`.
+ *
+ * Both specialise here, and in opposite directions:
+ *
+ * **Step 1 becomes a blanket mask, because this kernel has no RAM-resident
+ * handler to spare.** IDF can be selective; we cannot. `trap_vector_entry` is
+ * in RAM (it rides in .boot with entry.S), but the `trap_handler` it calls is
+ * at 0x40010468 -- in flash -- so an interrupt arriving mid-erase gets three
+ * instructions into the vector and then jumps into a chip that is busy
+ * erasing. Masking mstatus.MIE is therefore the honest equivalent of IDF's
+ * selective disable, not a lazier version of it. It costs a few ticks of
+ * latency per erase.
+ *
+ * **Step 2 is not needed at all, and the reason is the writable floor.** A
+ * cache disable exists to stop stale lines answering for flash that has just
+ * changed underneath them. This kernel can only ever write at or above
+ * LUGALOS_P4_FLASH_WRITABLE_FLOOR (0x00110000), and the XIP window maps
+ * LUGALOS_P4_OSIMAGE_BASE..+SIZE (0x00010000..0x00110000) -- the floor is
+ * exactly the top of the mapped region. **No byte this driver can write is
+ * ever mapped**, so nothing cached can go stale, and the `writable()` check a
+ * few lines up is load-bearing for correctness rather than merely for safety.
+ * (The OS image is only ever rewritten by tools/p4flash.py, from download
+ * mode, with no kernel running to have cached anything.)
+ *
+ * Two things are enforced rather than remembered:
+ *
+ *   * The routines are in `.ramfunc`, which linker/esp32p4.ld places in
+ *     L2MEM and ASSERTs is not in the flash window. `noinline` matters as
+ *     much as the section: without it the compiler may inline the body back
+ *     into its flash-resident caller and silently undo the whole thing --
+ *     the same note drivers/flash_rp2350.c carries for the identical hazard.
+ *   * The ROM pointers are resolved before entry and passed in as data, so
+ *     nothing inside the window looks anything up. The ROM itself is at
+ *     0x4fc00000 and is unaffected by the flash being busy.
+ *
+ * The closure is checkable rather than asserted. `objdump -d --section=.ramfunc`
+ * shows every target inside it: direct jumps to 0x4ff4xxxx (L2MEM), and the
+ * ROM entered either by an immediate (0x4fc0015c) or by a pointer loaded from
+ * the caller's stack. Nothing at 0x4000_0000+. If that ever stops being true,
+ * the section moved or something got inlined.
+ */
+
+typedef struct {
+    rom_unlock_fn       unlock;
+    rom_erase_sector_fn erase_sector;
+    rom_write_fn        write;
+} flash_rom_fns_t;
+
+/* Masks machine interrupts and returns the previous MIE bit, exactly as
+ * drivers/flash_rp2350.c does: csrrci returns the prior mstatus, so a caller
+ * that already had them off is left that way. */
+__attribute__((section(".ramfunc"), noinline))
+static uint32_t ram_irq_mask(void) {
+    uint32_t saved;
+    __asm__ __volatile__("csrrci %0, mstatus, 0x8" : "=r"(saved));
+    return saved & 0x8u;
+}
+
+__attribute__((section(".ramfunc"), noinline))
+static void ram_irq_restore(uint32_t prev) {
+    if (prev) __asm__ __volatile__("csrsi mstatus, 0x8");
+}
+
+__attribute__((section(".ramfunc"), noinline))
+static int flash_erase_ram(const flash_rom_fns_t *f, uint32_t sector) {
+    uint32_t prev = ram_irq_mask();
+    int rc = (f->unlock() == ROM_OK &&
+              f->erase_sector(sector) == ROM_OK) ? 0 : -1;
+    ram_irq_restore(prev);
+    return rc;
+}
+
+/* One chunk per call, with the mask taken and dropped around each, so a
+ * multi-chunk write does not hold interrupts off for the whole transfer --
+ * between chunks the flash is idle again and the tick can be serviced. */
+__attribute__((section(".ramfunc"), noinline))
+static int flash_program_ram(const flash_rom_fns_t *f, uint32_t addr,
+                             const uint32_t *words, uint32_t nbytes) {
+    uint32_t prev = ram_irq_mask();
+    int rc = (f->unlock() == ROM_OK &&
+              f->write(addr, words, (int32_t)nbytes) == ROM_OK) ? 0 : -1;
+    ram_irq_restore(prev);
+    return rc;
+}
+
+static void flash_rom_fns_init(flash_rom_fns_t *f) {
+    f->unlock       = rom_unlock;
+    f->erase_sector = rom_erase_sector;
+    f->write        = rom_write;
+}
+
 int flash_p4_erase_sector(uint32_t addr) {
     if (!g_ready) return -1;
     if (!writable(addr, FLASH_P4_SECTOR_SIZE)) {
@@ -173,9 +283,10 @@ int flash_p4_erase_sector(uint32_t addr) {
                (unsigned)addr, (unsigned)LUGALOS_P4_FLASH_WRITABLE_FLOOR);
         return -1;
     }
+    flash_rom_fns_t f;
+    flash_rom_fns_init(&f);
     ylock_acquire(&g_flash_ylock);
-    int rc = (rom_unlock() == ROM_OK &&
-              rom_erase_sector(addr / FLASH_P4_SECTOR_SIZE) == ROM_OK) ? 0 : -1;
+    int rc = flash_erase_ram(&f, addr / FLASH_P4_SECTOR_SIZE);
     ylock_release(&g_flash_ylock);
     return rc;
 }
@@ -193,16 +304,22 @@ int flash_p4_write(uint32_t addr, const void *buf, uint32_t len) {
     if ((addr & 3u) != 0) return -1;
 
     const uint8_t *in = (const uint8_t *)buf;
+    flash_rom_fns_t f;
+    flash_rom_fns_init(&f);
     ylock_acquire(&g_flash_ylock);
     int rc = 0;
-    if (rom_unlock() != ROM_OK) rc = -1;
     while (rc == 0 && len > 0) {
         uint32_t chunk = len < 256u ? len : 256u;
         uint32_t tmp[64];
+        /* The bounce buffer is filled *outside* the masked window, on
+         * purpose: memset and memcpy are flash-resident, and there is no
+         * reason for them to run while the chip is busy. By the time
+         * flash_program_ram() is entered every byte it needs is on the
+         * stack, which is L2MEM. */
         memset(tmp, 0xFF, sizeof(tmp));
         memcpy(tmp, in, chunk);
         uint32_t words = (chunk + 3u) & ~3u;
-        if (rom_write(addr, tmp, (int32_t)words) != ROM_OK) { rc = -1; break; }
+        if (flash_program_ram(&f, addr, tmp, words) != 0) { rc = -1; break; }
         in   += chunk;
         addr += chunk;
         len  -= chunk;

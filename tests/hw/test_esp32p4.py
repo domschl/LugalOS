@@ -491,6 +491,48 @@ def test_emac_loopback(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{passed}/7 sizes byte-identical, 60 B to 1514 B"
 
 
+def test_flash_write_while_executing(b: Board) -> tuple[str, bool, str]:
+    """U3's done-condition, plan/phase32_esp32p4_execute_in_place.md.
+
+    Writing this chip's flash means driving the MSPI directly, and while an
+    erase or program runs the flash serves no reads. Since U2 the kernel's
+    .text is fetched from that same flash, so any instruction fetched during
+    the window returns whatever the busy chip drives -- and the failure is a
+    corrupted filesystem or a jump into nothing, not a return code.
+
+    The test writes several files (each one costing the filesystem a
+    read-modify-erase-write cycle), reads them back, then *reboots* and reads
+    again. The reboot is the part that matters: it proves the bytes reached
+    the chip rather than a cache or a buffer, and it proves the kernel
+    survived doing it."""
+    name = "flash writes while executing from flash (U3)"
+    c = b.console_session
+    payloads = {f"/flash0/u3w{i}.txt": f"u3-{i}-0123456789abcdef" for i in range(1, 4)}
+
+    for path, text in payloads.items():
+        out = c.cmd(f"write {path} {text}", deadline=20.0)
+        if "#t" not in out:
+            return name, False, f"write of {path} refused: {out.strip()[-120:]}"
+
+    for path, text in payloads.items():
+        out = c.cmd(f"cat {path}", deadline=15.0)
+        if text not in out:
+            return name, False, f"{path} read back wrong before reboot"
+
+    # Reboot and re-read: the bytes have to have reached the chip.
+    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
+    time.sleep(1.5)
+    b.console_session = Console(b.console)
+    c = b.console_session
+    c.cmd("", deadline=10.0)
+    for path, text in payloads.items():
+        out = c.cmd(f"cat {path}", deadline=15.0)
+        if text not in out:
+            return name, False, f"{path} did not survive the reboot"
+
+    return name, True, f"{len(payloads)} files written, read back, and survived a reboot"
+
+
 def test_emac_link(b: Board) -> tuple[str, bool, str]:
     """Z3, plan/phase28_esp32p4_ethernet.md.
 
@@ -552,6 +594,7 @@ TESTS = [
     test_boots,
     test_proc_readable,
     test_flash0_mounted,
+    test_flash_write_while_executing,
     test_preemption,
     test_umode,
     test_i2c_bus,

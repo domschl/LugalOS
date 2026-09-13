@@ -397,6 +397,59 @@ rewrites blocks — and the reasoning for *why* the closure is complete is
 written down, not just asserted. A reviewer should be able to check the
 argument rather than trust the result.
 
+---
+
+**DONE, 2026-09-13.** `tests/hw/test_esp32p4.py` is **16/16**, with a new case
+that writes three files, reads them back, **reboots**, and reads them again —
+the reboot being the part that matters, since it proves the bytes reached the
+chip rather than a cache or a buffer, and that the kernel survived doing it.
+
+**The procedure is ESP-IDF's, specialised in two opposite directions.**
+`spi_flash_disable_interrupts_caches_and_other_cpu()` in
+`components/spi_flash/cache_utils.c` does two things:
+`esp_intr_noniram_disable()` and `spi_flash_disable_cache()`.
+
+* **The interrupt step becomes a blanket mask, because this kernel has no
+  RAM-resident handler to spare.** IDF can be selective — it disables only
+  the interrupts whose handlers are outside IRAM. Here `trap_vector_entry` is
+  in RAM (it rides in `.boot` with `entry.S`) but the `trap_handler` it calls
+  is at `0x40010468`, in flash. An interrupt arriving mid-erase gets three
+  instructions into the vector and then jumps into a chip that is busy
+  erasing. So masking `mstatus.MIE` is the honest equivalent of IDF's step,
+  not a lazier version of it.
+* **The cache step is not needed at all, and the writable floor is why.** A
+  cache disable exists to stop stale lines answering for flash that changed
+  underneath them. This kernel can only write at or above
+  `LUGALOS_P4_FLASH_WRITABLE_FLOOR` (`0x00110000`), and the XIP window maps
+  `0x00010000..0x00110000` — **the floor is exactly the top of the mapped
+  region**. No byte this driver can write is ever mapped, so nothing cached
+  can go stale. That makes `writable()` load-bearing for *correctness*, not
+  just for safety, which is worth knowing before anyone relaxes it.
+
+**The closure is checkable rather than asserted**, which is what the
+done-condition asked for. `objdump -d --section=.ramfunc` shows every target
+inside the window: direct jumps to `0x4ff4xxxx` (L2MEM), and the ROM entered
+either by an immediate (`lui a5,0x4fc00; addi a5,a5,348` → `0x4fc0015c`) or
+by a pointer loaded from the caller's stack (`lw a5,8(s0)`), that struct
+having been filled *before* the mask was taken. Nothing at `0x4000_0000+`. If
+that stops being true, the section moved or something got inlined — hence
+`noinline` alongside the section attribute, the same pairing
+`drivers/flash_rp2350.c` carries for the identical hazard.
+
+The bounce buffer is filled outside the masked window on purpose: `memset`
+and `memcpy` are flash-resident, and by the time the window opens every byte
+needed is on the stack. Each 256-byte chunk takes and drops the mask
+separately, so a multi-chunk write does not hold interrupts off for the whole
+transfer.
+
+**A note on how this was nearly tested badly.** The first instinct was a
+negative control — build it wrong and watch it break, as Z2 did for the cache
+maintenance. That would have been weak evidence here and possibly misleading:
+the instructions around a flash write are *hot*, so they are likely already in
+L1 or L2 and a fetch during the busy window may never happen. **The hazard is
+intermittent precisely because caching hides it**, which is an argument for
+making it structural rather than for measuring it.
+
 ### U4 — Boot with no host at all
 
 **DONE as part of U2, 2026-09-13.** Sequencing it separately assumed
