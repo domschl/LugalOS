@@ -828,9 +828,47 @@ below the lock entirely. Note `cprintf()` calls `console_flush()` *after*
 `console_unlock()` (kernel/printk.c) — the window the per-hart batch split was
 introduced to close for two cores, still open for two tasks on one hart.
 
-**Where to look first:** enumerate every caller of `uart_putc()` and ask which
-of them holds `console_lock`. `printk_critical()` deliberately does not. That
-is the shape of the answer. Candidates: a drain that starts after the test's command
+**The `uart_putc()` enumeration was done, 2026-09-13, and the answer is not
+there.** Every writer that could produce klog text — `klog_drain()` and the
+boot fan-out — takes `console_lock`, which `cprintf()` holds across the whole
+string. The unlocked callers (`uart_net`'s SLIP framing, `/dev/uart` writes,
+`ed`, `lisp`) do not emit log records, and `printk_debug()` uses a different
+path entirely.
+
+**Three hypotheses have now been eliminated with evidence**, which is worth
+more than the guesses were:
+
+* *A task migrating harts mid-string, splitting its line across two per-hart
+  TX batches.* A probe counting exactly that — bytes found in another hart's
+  batch belonging to the current context — never fired in six runs. The
+  speculative fix built on it was backed out rather than shipped.
+* *One context appending into another's partially-written batch.* A second
+  probe, counting that, never fired either. **Note how this one nearly became
+  a false positive:** the first version of the probe called
+  `printk_critical()` while holding `g_tx_batch_lock`, and that reaches
+  `uart_flush_critical()`, which takes the same non-reentrant spinlock. Three
+  suite runs hung, and the hangs were read as "the probe fired and deadlocked
+  before reporting". They were the probe being wrong, not the condition being
+  present. A diagnostic that can hang is a diagnostic that lies.
+* *Racy expects in the suite.* Real, and fixed — see the commit for the eight
+  sites — but **not this**. They are a separate failure that was hiding in the
+  same statistic.
+
+**What is left, stated narrowly.** Two artifacts survive scrutiny:
+
+1. `LOCK_SELFTES] record 1463, …` then `T_OK (16/16)` — a `cprintf()` line cut
+   in two with a klog record in the wound, while `console_lock` was held.
+2. A run where `identity provision` was sent and **never echoed at all**, so
+   the shell either lost the input or stalled; the refusal it should have
+   printed appears nowhere in the log.
+
+Those may be one problem or two. The second is the more interesting, because
+a lost *echo* is not a console-output race at all — it points at the input
+path or at the shell not running, and nothing so far has looked there.
+
+**Rate, across soaks of twelve runs each** (small samples; the direction is
+worth more than the numbers): 9/12 clean before any fix, 10/12 after the
+`lock_selftest` fix, 11/12 after the expect fixes. Candidates: a drain that starts after the test's command
 has begun printing; the per-hart TX batch flushing at a different moment than
 the drain; or klogd's 50 ms idle wake landing mid-command.
 
