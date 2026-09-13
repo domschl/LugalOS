@@ -3,6 +3,7 @@
 #include "arch/vmm.h"
 #include "fs/vfs.h"
 #include "kernel/console.h"
+#include "kernel/lock.h"   /* waitfor_target(), for the stall report below */
 #include "kernel/mem_domain.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
@@ -798,6 +799,36 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
      * shell silently -- and reported honestly when the bound is hit, because
      * the slot really is still in use at that point. */
     const uint32_t max_yields = 2000000u;
+    /* Report once, long before the bound, what the child is actually doing.
+     *
+     * Without this the only evidence of a stuck program is silence: the loop
+     * below spins two million times, far past any test's timeout, so from
+     * outside it is indistinguishable from a hung kernel -- which is exactly
+     * how it has presented. Three hung guests were caught in a 12-run soak
+     * (plan/open_issues.md) showing `Created task #7 'uprog'` and then nothing
+     * at all: no output, no fault, no exit.
+     *
+     * The three facts below are chosen to separate the candidate causes on
+     * sight, because the failure is not reproducible in isolation and a report
+     * that needs a second run to interpret is worth little:
+     *
+     *   state    READY means runnable and not being run -- a scheduler
+     *            problem. BLOCKED means waiting for something, and `waitfor`
+     *            then says what. RUNNING means it is genuinely still
+     *            computing, on this hart or another.
+     *   waitfor  the task it is waiting for, or -1. A number here turns
+     *            "stuck" into a named edge, which is what phase 31's graph is
+     *            for.
+     *   stack    how much of its stack it has touched. Near zero means it was
+     *            created and never executed an instruction; anything
+     *            substantial means it ran and then stopped. Those are very
+     *            different bugs.
+     *
+     * 100000 yields rather than the full bound: unambiguously abnormal (a
+     * merely slow program finishes far sooner) and early enough that the
+     * report reaches the log while a test is still watching. */
+    const uint32_t report_after = 100000u;
+    bool reported = false;
     uint32_t spins = 0;
     while (sched_task_state(pid) != TASK_DEAD && spins < max_yields) {
         /* Used to also pump usb_cdc_task() here directly: on RP2350 a user
@@ -813,6 +844,19 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
          * everything else) to get serviced. */
         sched_yield();
         spins++;
+        if (spins == report_after && !reported) {
+            reported = true;
+            int st = sched_task_state(pid);
+            const char *sn = (st == TASK_READY)   ? "READY"
+                           : (st == TASK_RUNNING) ? "RUNNING"
+                           : (st == TASK_BLOCKED) ? "BLOCKED"
+                           : (st == TASK_DEAD)    ? "DEAD" : "?";
+            printk("[ELF] '%s' pid %d has not finished after %u yields: "
+                   "state=%s waitfor=%d stack=%u/%u\n",
+                   path, pid, spins, sn, waitfor_target(pid),
+                   (unsigned)sched_stack_used(pid),
+                   (unsigned)sched_stack_size(pid));
+        }
     }
 
     if (sched_task_state(pid) != TASK_DEAD) {
