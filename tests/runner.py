@@ -3113,7 +3113,7 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
 
         # `identity provision` on a fresh store: succeeds, uid/name become
         # 'record'-sourced.
-        ok, log = session.send_and_expect("identity provision\n", r"key fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect("identity provision\n", r"key fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok or "identity: provisioned" not in log:
             return (name, False, f"first provision did not succeed:\n{log[-500:]}")
 
@@ -3145,7 +3145,7 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
         # log exactly once -- the shell's echo of what was typed -- and
         # nowhere else, i.e. never in a response line.
         raw_key = "13579bdf02468ace13579bdf02468ace"
-        ok, log = session.send_and_expect(f"identity key {raw_key}\n", r"key fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect(f"identity key {raw_key}\n", r"key fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"key install did not report success:\n{log[-500:]}")
         if log.count(raw_key) != 1:
@@ -3155,7 +3155,7 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
             return (name, False, f"no fingerprint reported for the installed key:\n{log[-500:]}")
 
         # And the report command itself never prints the key either.
-        ok, log = session.send_and_expect("identity\n", r"key fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect("identity\n", r"key fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"report did not answer: {log[-400:]}")
         if raw_key in log:
@@ -3321,7 +3321,7 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
             return (name, False, f"guest did not reach the shell: {log[-400:]}")
 
         # 1. The provisioned credential, read back exactly as provision.py wrote it.
-        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"wlan report did not answer: {log[-400:]}")
         if not re.search(rf"^ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
@@ -3330,7 +3330,7 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
             return (name, False, f"the provisioned psk's fingerprint does not match "
                                  f"the host-computed one ({prov_fp}):\n{log[-500:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node\n", r"wlan psk fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"wlan psk fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
         if not re.search(rf"^wlan ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
@@ -3371,7 +3371,7 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
 
         # And the old ssid/psk are gone -- this is a replacement (§5.3: "one
         # network"), not an addition.
-        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint:", timeout=6.0)
+        ok, log = session.send_and_expect("wlan\n", r"psk fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"wlan report did not answer after install: {log[-400:]}")
         if new_psk_hex in log:
@@ -6135,7 +6135,7 @@ def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"Node B refused its address: {log[-400:]}")
 
-        ok, log = session_b.send_and_expect(f"identity key {key}", r"key fingerprint:", timeout=6.0)
+        ok, log = session_b.send_and_expect(f"identity key {key}", r"key fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"Node B's identity key install failed: {log[-400:]}")
 
@@ -6173,7 +6173,7 @@ def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"Node A refused its address: {log[-400:]}")
 
-        ok, log = session_a.send_and_expect(f"identity key {key}", r"key fingerprint:", timeout=6.0)
+        ok, log = session_a.send_and_expect(f"identity key {key}", r"key fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
         if not ok:
             return (name, False, f"Node A's identity key install failed: {log[-400:]}")
 
