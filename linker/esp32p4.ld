@@ -411,6 +411,19 @@ SECTIONS
      * everything else left 136 KB, and the two-region split above is the
      * answer it forced.
      *
+     * **Raised from 128 KB to 360 KB by phase 32 U5**, and the number is now
+     * derived rather than inherited. The heap is 372 KB: everything loadable
+     * that remains in RAM is .boot, .utext and .data -- 4 KB of U-mode page
+     * and a few hundred bytes -- because .text and .rodata execute in place
+     * from flash. 360 KB leaves 12 KB of headroom, which is three pages of
+     * growth in the RAM half and generous for sections that total under 8 KB.
+     *
+     * It fired a second time, also usefully: phase 28's Ethernet driver took
+     * the old figure to *exactly* 128 KB, margin zero, and that is what
+     * forced this whole phase. A floor that only ever fires when something is
+     * wrong would be worth less than one that fires when something is about
+     * to be.
+     *
      * E7 lowered it to 128 KB, and this is the one case the paragraph above
      * did not cover: neither of the two figures was invalidated by a change of
      * ours. The silicon simply has less memory than this script was claiming.
@@ -425,8 +438,8 @@ SECTIONS
      * RP2350's 38-page (152 KB) whole-system peak with two U-mode programs
      * resident. So this board cannot host that peak, and the way to buy room
      * back is .text: 171 KB of it, against 63 KB of .rodata. */
-    ASSERT(_heap_end - _kernel_end >= 128K,
-           "ESP32-P4 heap has fallen below its 128 KB floor -- something grew .text or .data; see plan/phase15_memory_reclamation.md")
+    ASSERT(_heap_end - _kernel_end >= 360K,
+           "ESP32-P4 heap has fallen below its 360 KB floor -- something grew .boot, .utext or .data; see plan/phase32_esp32p4_execute_in_place.md")
 
     /* The whole writable region, so /proc/meminfo reports the heap and the
      * stack as fractions of something real, taken from the MEMORY block

@@ -454,6 +454,65 @@ instrument, being CPU-bound and already calibrated on this board) says what
 the L2 size is worth; and E7's `esp32p4_l2_cache_shrink()` comment is updated
 so it no longer describes a cost-free change.
 
+---
+
+**DONE, 2026-09-13.**
+
+**The L2 stays at 128 KB, and that is now measured rather than assumed.**
+
+The instrument the plan suggested was not available: chess and chibicc are
+both off on this board, and the Lisp interpreter exhausts its node pool at
+`(fib 14)`, so it cannot run a benchmark long enough to time. What worked was
+already there — **boot time**. It sweeps the drivers, FAT32, 9P and the Lisp
+init exactly once, the kernel timestamps it, and it turned out to be dead
+stable to the millisecond.
+
+| | boot to klogd | heap |
+|---|---|---|
+| `.text` RAM-resident (pre-U2) | ~264 ms | 128 KB |
+| XIP, L2 = 128 KB | **282 ms** ×3 | **372 KB** |
+| XIP, L2 = 256 KB | **282 ms** ×3 | 244 KB |
+
+Doubling the cache changed nothing measurable and cost 128 KB of heap. XIP
+itself costs about **7%** on boot.
+
+The honest scope, recorded in the code as well: this says boot is not
+L2-bound, not that nothing is. The 16 KB L1 instruction cache evidently holds
+the hot loops. A workload that sweeps a large code footprint repeatedly might
+answer differently, and phase 29 is the first likely to care.
+
+**The floor is 360 KB**, derived rather than inherited: the heap is 372 KB,
+what remains RAM-resident is `.boot` + `.utext` + `.data` (under 8 KB, mostly
+the 4 KB U-mode page), and 360 leaves three pages of growth. The old 128 KB
+figure was inherited from the RP2350 and is now meaningless here.
+
+Worth noting what the old floor did before it was replaced: **it fired
+twice, and both times usefully.** Once in E2, when putting `.bss` above
+`0x4ff40000` left 136 KB. Once in phase 28, when the Ethernet driver took it
+to *exactly* 128 KB with zero margin — which is what forced this phase. A
+floor that only fires when something is already broken is worth less than one
+that fires when something is about to be.
+
+**The recovery drill was run, from a deliberately broken image** — the one
+safety claim this phase had asserted without testing. 5120 bytes of
+`/dev/urandom` written over the second stage at `0x2000`:
+
+```
+rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+invalid header: 0xa2d327c8      (repeating; the board does not boot)
+```
+
+and then, on the same board with that garbage still in flash:
+
+```
+download (RTS + DTR strap)   reset: True   rst:0x1 (POWERON),boot:0x307 (DOWNLOAD(USB/UART0/SPI))
+```
+
+Reflashing `--only boot` brought it straight back. So the claim U0 made from
+reading the wiring — that download mode does not depend on flash contents —
+is now a claim made from having broken the board on purpose and recovered it.
+That is the difference between a safety net and a belief about one.
+
 ### U6 — Documents
 
 `plan/phase27_esp32p4_bringup.md` E6's "What E6 did not do" gets an

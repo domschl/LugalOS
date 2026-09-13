@@ -209,6 +209,28 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
  * So asking for 128 KB moves the boundary from 0x4ff80000 to 0x4ffa0000 and
  * gives back the 128 KB that linker/esp32p4.ld now stops at.
  *
+ * **Measured, phase 32 U5, and the answer is "keep the 128 KB".** Once .text
+ * executes in place from flash (U2) the L2 cache stops being free -- it is
+ * what caches the code the CPU is now fetching over SPI -- so shrinking it
+ * became a trade rather than a gift, and the plan required a measurement
+ * rather than an argument.
+ *
+ * Boot time is the instrument: it sweeps the drivers, FAT32, 9P and the Lisp
+ * init exactly once, it is already timestamped, and it turned out to be
+ * dead stable -- 282 ms on three consecutive boots, to the millisecond. With
+ * the L2 raised to 256 KB (and RAM correspondingly cut to 256 KB, taking the
+ * heap from 372 KB to 244 KB) it was **282 ms again, three times**. Doubling
+ * the cache bought nothing measurable and cost 128 KB of heap.
+ *
+ * The honest scope of that result: it says boot is not L2-bound, not that
+ * nothing is. The 16 KB L1 instruction cache evidently holds the hot loops,
+ * and what boot spends its time on is elsewhere. A workload that sweeps a
+ * large code footprint repeatedly might answer differently, and phase 29 is
+ * the first one likely to care.
+ *
+ * For reference, the cost of XIP itself is about 7%: the same boot was
+ * ~264 ms with .text RAM-resident, against 282 ms from flash.
+ *
  * Safe here, and the reason is worth stating: the L2 cache caches *external*
  * memory. Internal SRAM is reached through L1 (ESP-IDF's
  * SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE), and this kernel executes entirely from
