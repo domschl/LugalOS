@@ -10,6 +10,13 @@
 #include "kernel/sched.h"
 #include <string.h>
 
+#if defined(CONFIG_BOARD_ESP32P4)
+/* arch/riscv/common/xip_esp32p4.c. Declared here rather than in a header
+ * because these P4 boot helpers have none -- entry.S calls its sibling
+ * esp32p4_xip_map() by name the same way. */
+void esp32p4_icache_sync(void);
+#endif
+
 /* Loading and running a user program (B6, plan/phase5_distributed_design.md §5.4).
  *
  * ## What changed, and why it is the point of the milestone
@@ -735,6 +742,20 @@ static user_proc_t *load_into_slot(const char *path, int argc,
     __asm__ __volatile__(
         "fence rw, rw; .option push; .option arch, +zifencei; fence.i; .option pop"
         ::: "memory");
+
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* And on this chip `fence.i` is not sufficient on its own.
+     *
+     * Internal memory is reached through L1, and L1 data is writeback, so the
+     * stores above can still be dirty in the D-cache when the fetch of those
+     * same addresses misses I-cache and reads L2/RAM instead. Measured on the
+     * board 2026-09-15: the same binary faulted two different ways on
+     * consecutive attempts -- cause 2 at entry+4 once, cause 7 at entry+0 the
+     * next -- which is stale memory, not a bad image or a wrong entry offset.
+     * See esp32p4_icache_sync() for why the writeback precedes the
+     * invalidate. */
+    esp32p4_icache_sync();
+#endif
 
     p->entry = (uintptr_t)p->image + entry_off;
 

@@ -15,6 +15,25 @@ phase doc and the commit carry the history.
 
 ---
 
+
+## Where the 2026-09-14/15 stability campaign is written up
+
+Phase 28 (ESP32-P4 Ethernet) paused after Z3 to clear the intermittents rather
+than carry them into work that needs a trustworthy suite.
+**`plan/phase33_stability_hunt.md`** is the account: seven defects fixed, with
+the evidence that identified each, what remains open and what it is bounded at,
+and the four confident diagnoses that turned out wrong and why.
+
+Several entries below were **rewritten or withdrawn** during it. Two are worth
+knowing about before reading them:
+
+* the `exec` wild jump was **not** in the embedded FAT32 image -- that came
+  from nearest-symbol arithmetic against a build that had since moved;
+* the console-splice fix has **no measured support**; the `I3` numbers once
+  credited to it belong to the identity-store bug, which is fixed separately.
+
+Phase 28 resumes at **Z4 -- frames on the wire**.
+
 ## Pressure is published as station pressure, not reduced to sea level
 
 **Trigger:** subscribe to a sensor node's `pressure` topic and compare it with
@@ -675,10 +694,149 @@ Cause 0x2 is **illegal instruction**, and the instruction word is ASCII:
 `0x7070615f` is the bytes `5f 61 70 70`, `_app`. The CPU was executing text.
 
 Where: `.text` in that build spans `0x80000000`–`0x8006a050` and `.rodata`
-runs to `0x801027d0`, so **`epc` is inside `.rodata`** — and the nearest
-symbol below it is `g_flash_fs_start`, the *embedded filesystem image*. The
-kernel jumped into the FAT32 blob and ran its bytes as code. `ra` is `epc-4`,
-so it was already executing there and simply stepped forward.
+runs to `0x801027d0`, so **`epc` is inside `.rodata`**. `ra` is `epc-4`, so it
+was already executing there and simply stepped forward.
+
+**Which object, corrected 2026-09-14.** This entry used to say the epc was
+inside `g_flash_fs_start`, the embedded FAT32 image, on the strength of
+`nm`'s nearest preceding symbol. That attribution does not hold up and should
+not be built on:
+
+* the byte sequence `5f 61 70 70` (`_app`) does **not occur anywhere** in the
+  512 KB blob — checked exhaustively — and the blob bytes around the offset
+  the epc would correspond to are all zero, which cannot decode to the
+  reported `inst`;
+* the only occurrence in the *loaded* image is inside the `.rodata` string
+  literal `"ring_append"`. String literals have no symbols, so `nm` reports
+  whatever global happens to sit below them — here the blob.
+
+The build has since shifted and the old address can no longer be resolved
+against it, so "a run of `.rodata` string literals" is the better reading but
+not proof. What is certain is unchanged and is the part that matters: the CPU
+was executing `.rodata` in kernel mode. **Rather than resolve addresses across
+builds again, the fatal handler now prints `[Trap Where]`,** classifying `epc`
+and `ra` as IN or OUTSIDE `.text` against symbols from the running build.
+
+**Why the captures are truncated -- answered 2026-09-15, and the previous
+answer here was wrong.** This entry said the truncation was
+`uart_flush_critical()` taking `g_tx_batch_lock` unconditionally, so a hart
+that died holding it silenced the other hart's dump. That deadlock is real and
+the fix for it stands, **but it is not what truncates these captures.**
+
+`soak14/run25` shows the actual mechanism. One line of the dump printed, the
+second did not, and QEMU's guest-error channel then logged
+
+```
+get_physical_address: reserved bits set in PTE: addr: 0x802ca000 pte: 0xffffffffffffffff
+```
+
+**2,820,123 times** -- one address, one bad entry, repeated identically. The
+first of those lines comes *after* the `[Trap Exception]` line, not before: so
+the PTE damage is not the cause of the fault being reported, it is what the
+**fatal handler itself** hits while reporting it. The handler faults, re-enters
+itself, faults again, forever. That run took 795 s against a 178 s norm.
+
+**(a) and (b) are NOT the same event -- an earlier revision of this entry said
+they were, on the strength of `run 23` in the same soak, and that was wrong.**
+Checked run by run afterwards:
+
+| run | section | trap? | PTE errors |
+|---|---|---|---|
+| soak14/run25 | RV64 SMP | **yes** | 2,820,123 |
+| soak14/run23 | RV64 MMU | no | 0 |
+| soak15/run34 | RV32 NOMMU | no | 0 |
+
+Only `run25` is the wild jump. The `NO RESULT` runs land in three *different*
+sections and carry no guest fault of any kind -- no trap, no PTE error, no
+sched marker. They are a separate problem and are tracked as one below.
+
+`trap.c` already warned about this shape -- "a second fault inside the handler
+reporting the first" -- and nothing enforced it. **Fixed** with a per-hart
+one-shot guard at the top of the fatal path: a re-entry halts immediately
+without printing, since printing is the thing being protected against. Per
+hart rather than global, so the other hart can still report its own unrelated
+fault. That keeps whatever reached the wire and keeps the run short enough to
+still be a test result. The same shape is recorded in
+`drivers/uart_16550.c`, where the RX-overrun notifier was moved off
+`printk_critical()` because it "hung three suite runs" — but the panic path
+cannot be moved off it. `uart_flush_critical()` now uses a bounded
+`spin_trylock_irqsave()` (kernel/lock.c) and drains its own per-hart slot
+regardless: interleaved characters in a panic beat a panic nobody sees.
+
+**The hand-off guard now actually guards — 2026-09-14.**
+`sched_check_incoming()` (kernel/sched.c) checks the `ra` that `ctx_switch()`
+is about to restore, and is called at both switch sites. It only ever tested
+for `ra == 0`, the phase 27 E4 failure; its own comment said a real text-range
+test "would need a symbol all four linker scripts define -- worth doing on its
+own". An `ra` pointing into `.rodata` is non-zero, so this exact bug walked
+straight through it. All four scripts now define `_ktext_lo`/`_ktext_hi` from
+the location counter inside `.text`, and ASSERT that `task_trampoline`,
+`sched_yield` and `task_exit` fall inside that window — so the guard's premise
+is checked by the linker rather than assumed. A corrupt hand-off now halts
+with the scheduler table intact instead of jumping and destroying the
+evidence.
+
+**Measured across 104 soak runs, 2026-09-14, and the entry above needs
+splitting.** Three soaks since the console-flush fix (24 + 40 + 40 runs) hit
+the `NO RESULT` symptom **once**, against 2 in the 42 runs before it: 1.0% vs
+4.8%, and P(<=1 in 104 | rate unchanged) = 3.7%. So the rate did fall. It is
+not gone.
+
+**The one occurrence carried no kernel fault at all** -- no `[Sched BUG]`, no
+`[Trap Exception]`, no `[Trap Where]`, no stall diagnostic, with every one of
+those instruments compiled in and armed. That matters, because it means this
+symptom and the captured wild jump are **two different failures** that this
+entry has been treating as one:
+
+* **(a) a kernel wild jump during `exec`** -- captured exactly once, with a
+  real trap dump and an `epc` in `.rodata`. Still unexplained, still not
+  reproduced since the instruments went in.
+* **(b) the RV64-SMP section going slow or silent** -- `NO RESULT`, no fault,
+  the log stopping at the section header. Both `soak6/run3` and
+  `soak10/run32` are this. A clean suite is **182 s**; run 32 hit the 600 s
+  wall, so that section alone took over 400 s against its usual ~40 s. That is
+  a cascade of sub-test timeouts, not a wedged machine -- which is exactly why
+  12 clean standalone runs of the same section proved nothing about it.
+
+**One hypothesis for (b) eliminated with evidence.** "A leaked QEMU from an
+earlier section spinning at 100% CPU would make the last section crawl, and no
+kernel instrument would ever see it." Leftover QEMU processes were counted
+before the sweep on all 40 runs of the next soak: **zero, every run**.
+
+**What the longer budget bought.** Raising the outer timeout from 600 s to
+1200 s lets a slow section finish and name its sub-test instead of dying
+anonymously. It immediately produced one: `SMP: restricted domains were
+actually activated on hart 1 (X2)` failing with `domains_hart0: 3` and
+**`domains_hart1: 0`** -- a counter read before the other hart had incremented
+it. Worth chasing on its own; it is the first named failure ever seen inside
+this section.
+
+**150 more runs, 2026-09-15: still not caught, and the rate is now bounded.**
+`soak16` ran 150 suites with every instrument armed: **0 traps, 0 NO RESULT**.
+With `soak15`'s 60 that is **0 in 210**.
+
+Stated carefully, because this arithmetic has been got wrong once already:
+there has been exactly **one** instrumented capture of this fault, ever
+(`soak14/run25`). `soak14/run23` was counted as a second when `soak16` was
+sized, and it is not one -- it carries no trap markers at all. The rate
+estimate was therefore 1/40, not 2/40, and the soak was sized against a number
+twice too large.
+
+0 in 210 puts the **95% upper bound at 1.4% per run**. It does **not** mean
+fixed: nothing changed since `soak14` that could plausibly cure it, because
+the only kernel change in between was the fatal-path recursion guard, and that
+is strictly *post*-fault -- it changes what happens after the trap, not whether
+the trap happens. With one observation in total, "fixed" and "rare" cannot be
+told apart, and asserting either would be a guess.
+
+**What did change and is worth keeping:** QEMU's own diagnostics now go to a
+file (`-D`) rather than into the guest's console stream, summarised per session
+and deduplicated with counts. That is what stops the next occurrence from
+burying its own evidence the way `run25` did under 2.8 million identical lines.
+
+**Earlier negative results, kept:** 120 `exec`s of `uisolate.elf` under
+`smpload` on two harts, and 12 consecutive runs of the whole RV64-SMP section,
+were all clean.
 
 So this is not "a task that never finishes". It is a **wild jump in kernel
 context**, and the spin loop merely reports the aftermath: the child never
@@ -706,7 +864,82 @@ reaching a different end. A diagnostic in the spin loop that reports the
 child's actual `sched_task_state()` after N yields would say more than any
 amount of reading.
 
-## `exec` of a loaded ELF does not work on the ESP32-P4 (folded into the entry above)
+## `exec` on the ESP32-P4 -- **FIXED 2026-09-15**: L1 is writeback, `fence.i` is not enough
+
+**Root cause.** The ELF loader writes a program through the data path and then
+jumps to it, closing the gap with `fence rw,rw; fence.i`. On this chip that is
+insufficient: internal memory is reached *through* L1
+(`SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE`) and **L1 data is writeback**, so the
+loader's stores can still be dirty in the D-cache when the fetch of those same
+addresses misses I-cache, goes to L2/RAM, and reads whatever was there before.
+`fence.i` invalidates instruction cache; it does not write back data cache.
+
+**What made it diagnosable at last.** Every earlier attempt saw only "the task
+died and printed nothing". Two fixes from the previous days changed that:
+`_inst_lo` was `_ram_start` while `.text` runs from flash, so the P4's fatal
+handler had been printing `inst=0x00000000` for essentially every fault; and
+the U-mode fault path now reports cause/epc/tval. The first run with both in
+place printed the answer immediately.
+
+**The evidence that settled it** -- two consecutive `exec`s of the *same*
+binary, from a fresh boot each time:
+
+```
+[Trap] User task faulted: cause 2, epc=0x4ff5c020, addr=0x269c790b
+[Trap] User task faulted: cause 7, epc=0x4ff5c01c, addr=0x1000
+```
+
+Same program, same load address, **different fault each time**. A wrong entry
+offset or a bad image fails identically; varying garbage at the entry is stale
+memory. That also corrects this entry's old "deterministic" label: it failed
+every time, but not in the same way.
+
+**Fix:** `esp32p4_icache_sync()` in `arch/riscv/common/xip_esp32p4.c`, called
+from the loader beside the existing `fence.i`. Writes back **first**
+(`Cache_WriteBack_All`, ROM 0x4fc00414) so the loader's bytes reach memory,
+then invalidates the **instruction** cache only
+(`Cache_Invalidate_All(CACHE_MAP_L1_ICACHE_0)`). Order is not symmetric:
+phase 32 U2 established that invalidating L1 D discards dirty lines rather
+than writing them back, which threw away the live stack. Both ROM addresses
+come from esp-idf's own `esp32p4.rom.ld`, and the invalidate address there
+matches the constant this file already used -- which is what makes the pair
+verified rather than inferred.
+
+**Verified on hardware:** `UPROG_TEXT_OK` and `UPROG_DATA_OK` both print, and
+`tests/hw/test_esp32p4.py` is **17/17**, EMAC tests included.
+
+**Consequence for the other entries:** this was *not* the QEMU wild jump.
+QEMU emulates no caches, so `fence.i` is sufficient there and this fix changes
+nothing for it. Folding the two together was wrong, and un-folding them was
+right; the QEMU wild jump remains open.
+
+### Original report (kept)
+
+**Un-folded 2026-09-15.** The heading used to say "folded into the entry
+above", which contradicted this entry's own closing paragraph ("Related but
+distinct ... recording them apart keeps that a question"). The body was right
+and the heading was wrong: a **deterministic** failure on one board is very
+unlikely to be the same defect as a 2%-per-run race on QEMU, and the same
+over-merging has now been caught twice elsewhere in this file.
+
+**It is also the easiest of the family to solve now, and was undiagnosable
+before.** Everything this entry says is missing -- "no fault is reported", "a
+U-mode fault should have printed something" -- was partly an artifact of the
+handler, and every piece has since been fixed:
+
+* `linker/esp32p4.ld`'s `_inst_lo` was `_ram_start` while `.text` executes from
+  flash, so the fatal handler printed `inst=0x00000000` for **every**
+  flash-resident `epc` -- which since phase 32 is nearly all of them. Fixed
+  2026-09-14; the P4 can now read back the faulting instruction at all.
+* `[Trap Where]` now says whether `epc` and `ra` are inside `.text`, decided
+  against the running build.
+* A per-hart guard stops the fatal handler faulting recursively and eating its
+  own report.
+* `sched_check_incoming()` now validates the incoming `sp` against RAM and the
+  parked `ra` against `.text`, instead of only testing `ra == 0`.
+
+So the single highest-value experiment available is one `exec` on the board:
+deterministic, one run, and the instrument that was missing is now present.
 
 **Observed** 2026-09-13, immediately after phase 32 enabled chibicc there.
 `cc` compiles cleanly; running the result does not:
@@ -951,8 +1184,397 @@ worth more than the numbers): 9/12 clean before any fix, 10/12 after the
 has begun printing; the per-hart TX batch flushing at a different moment than
 the drain; or klogd's 50 ms idle wake landing mid-command.
 
+**A mechanism found by reading, 2026-09-14 -- not yet confirmed on hardware,
+and deliberately labelled as such.** `console_puts()` (kernel/console.c) calls
+`klog_drain()` on every invocation. The Y5c comment above it explains the
+drain as a sync point "at the start of a whole write, never between two
+characters of one" -- and that is true of `console_putc()`, which is where the
+drain used to be and where it was splicing "UMODE_OK" between the O and the K.
+But `console_puts()` is not a message boundary. It is a string-emitting
+primitive, and its three callers call it mid-message:
+
+* **`kernel/line_editor.c` -- 30 call sites**, and a single prompt redraw runs
+  through a dozen of them (`"\033[?25l"`, `"\r"`, the prompt, `"\033[K"`,
+  cursor moves, `"\033[?25h"`). So a drain can fire, and *block*, between any
+  two escape sequences of one redraw. This is the path that **echoes typed
+  input**, which makes it the first place to look for both surviving
+  artifacts: a spliced echo, and an `identity provision` that was never echoed
+  at all.
+* **`cprintf()`'s format engine** uses `ps()` for exactly one thing -- the
+  timestamp prefix, emitted as `"["`, the width padding, then `"] "`. So a
+  whole klog record can be flushed **between the `[` and the `]` of a
+  timestamp**. That is the shape of artifact 1: `…] record 1463, …` appearing
+  inside another token, with the bracket that precedes it belonging to a
+  different message than the text that follows it.
+* **`SYS_PRINT`** (arch/riscv/common/trap.c) -- a whole syscall, and the one
+  caller for which the drain is in the right place.
+
+This is consistent with everything the eliminations left standing: the two
+logical writers *are* serialised by `console_lock`, and the splice still
+happens, because the drain is being invoked from **inside** the locked region
+by the very function that is emitting it. No writer reaches `uart_putc()`
+without the lock -- which is what the enumeration found, correctly. The lock
+was never the gap.
+
+**Fixed, and measured -- 2026-09-14.** The drain moved out of
+`console_puts()` into a named `console_sync()`, called at the boundaries that
+really are whole writes: `cprintf()` already drained right after
+`console_lock()` and so needed nothing, `SYS_PRINT` gained an explicit call
+(its own comment records that sync point being worth 353/363 -> 361/363), and
+both `redraw_line()` and `redraw_box()` now take `console_lock()` across the
+whole redraw -- never across `console_getc()`, which waits for a human.
+
+That last part is the substantive half. **kernel/line_editor.c never took
+`console_lock` at all**, for any of its thirty writes, while klogd's 50 ms
+drain does. Two writers, one of them unlocked, were never serialised against
+each other at any point in this file's history.
+
+It survived the way it could most obviously have failed: Y5d records that
+locking in this area broke the two-hart boot *deterministically*, and the
+verification run was 363/363 including that target.
+
+**The measurement that was claimed for this, and is withdrawn.** An earlier
+revision of this entry credited the fix with taking the `I3` test from 2/24 to
+0/80, P = 0.09%, on the grounds that `I3` checks `log.count(raw_key) != 1` and
+so is "literally a spliced-echo detector". **That attribution was wrong and
+should not be repeated.** `I3` has several checks, and the kept logs show it
+has never once failed on the raw-key count: every captured failure, before the
+fix and after, is the *rename* step -- "rename did not report success",
+"identity name: the device write failed", "/proc/node did not answer after
+rename". `soak8/run11`, from before the change, is byte-for-byte the same
+failure as `soak12/run7` from after it.
+
+Across four soaks `I3` runs 2/24, 0/40, 0/40, 3/40 -- 5 in 144, consistent
+with one unchanged rate of about 3.5%, and two zero-soaks in a row at that
+rate has probability ~6%, which is unremarkable. So there is **no measured
+support for this fix at all.** It rests on its mechanism: the drain did fire
+from inside a partially-emitted message, and kernel/line_editor.c did write
+the console thirty times without ever taking the lock klogd takes. Both are
+true independently of what the soaks show, and neither was measurable through
+`I3`, which was never affected by them.
+
+See the `I3` entry below for what that test is actually failing on.
+
+**What it did not fix, stated plainly.** The overall flake rate barely moved
+(12.5% -> 10%), because a *different* failure now dominates it: see the MQTT
+entry below. Lumping those in with the splice was a mistake of this entry's
+earlier revisions, and the numbers separate them cleanly -- MQTT flakes ran
+1/24, 3/40, 5/40 across the same three soaks, with no trend.
+
 **What would settle it:** capture a failing run's raw console bytes (the
 runner keeps them) and compare the interleaving against the ring's own order
 via `/proc/kmsg`, which is authoritative. If the ring order is right and the
 console order is not, it is a sync-point gap; if the ring order is wrong, it
 is something else entirely.
+
+## The P4's one objcopy warning is documented, not outstanding
+
+**Checked 2026-09-14 and closed the same day, recorded so it is not
+re-opened a third time.** Every `esp32p4` link ends with
+
+```
+riscv64-elf-objcopy: lugalos.elf: warning: empty loadable segment detected at
+vaddr=0x40000000, is this intentional?
+```
+
+It looks like the one violation of `memory/zero_warning_policy.md`, and it is
+not an oversight: **`CMakeLists.txt` already explains it in full**, at the
+`lugalos-ram.elf` step. Removing `.text` and `.rodata` empties the `PT_LOAD`
+that covered them and objcopy drops it, which is precisely the intent — the
+ROM must not be handed a segment in the flash-mapped window. There is no flag
+meaning "yes, intentional"; `-j` keep-only warns about three segments instead
+of one; and filtering the text would hide the day it names a different
+address. So it stands, explained, as the one place the rule is knowingly bent.
+
+Verified rather than taken on trust: `readelf -lW lugalos-ram.elf` lists four
+`PT_LOAD`s, all at `0x4ff…`, and **no segment at `0x40000000`** — the safety
+property the whole arrangement exists to produce.
+
+
+## The P4's fatal handler could not read back a faulting instruction — FIXED 2026-09-14
+
+`linker/esp32p4.ld` defined `_inst_lo/_inst_hi` — the window the fatal trap
+handler may safely read an instruction from — as `_ram_start.._ram_end`, over
+a comment reading "all code is RAM-resident here". Phase 32 moved `.text` and
+`.rodata` into the flash XIP window and made that false without anyone
+noticing. Every fault whose `epc` was in flash — which, since phase 32, is
+nearly all of them — failed the range test, so `inst=0x00000000` was printed
+for it: indistinguishable from a genuine zero word, and on the one target
+whose faults are hardest to reproduce.
+
+`_inst_lo` is now `_xip_start`, spanning flash and RAM together exactly as
+`linker/rp2350.ld` already did for the same reason.
+
+## MQTT tests flake ~8% of runs: the broker is a one-shot listener
+
+**Now the dominant intermittent**, once the echo splice was fixed: 9 failures
+across 104 soak runs on 2026-09-14 (1/24, 3/40, 5/40 -- no trend), spread over
+`MQTT Client: CONNECT…`, `MQTT Appliance: Announce…` and `MQTT Config In The
+Identity Record…`. A failing run's captured log is always the same shape:
+
+```
+mqtt connect 10.0.2.2:40607
+mqtt: connecting to 10.0.2.2:40607...
+mqtt: the broker refused the connection, or is unreachable
+```
+
+**This looks like a test-instrument limitation rather than a kernel bug**, and
+the code says why. `tests/mqttbroker.py` binds with `listen(1)` and its
+`_serve()` thread calls `accept()` **exactly once** -- there is no loop back to
+it, and `keep_listening` defaults to `False`. So the fixture can serve one
+connection, ever. If anything consumes that single accept before the CONNECT
+the test is waiting on -- a client-side retry, a torn-down probe connection --
+the real attempt lands in the backlog and is never accepted, and the guest
+waits out its timeout.
+
+Note the guest's own message cannot distinguish the two cases: "refused the
+connection, or is unreachable" is printed for a TCP RST *and* for a connection
+that opens but never produces a CONNACK. So the log above is consistent with
+both "nothing was listening" and "the listener was already used up", and the
+message is not evidence for either.
+
+**Confirmed and fixed, 2026-09-14 -- reproduced outside QEMU first.** A
+twelve-line harness against `MqttBroker` alone shows it exactly:
+
+```
+connection 1: CONNACK 20020000
+connection 2: NO CONNACK -> TimeoutError   <-- the flake
+accepted: 1
+```
+
+The second connection **opens** -- there is no reset -- and then waits forever
+for a CONNACK that no accept will ever produce. That is why the guest's
+"refused the connection, or is unreachable" was so misleading: the truthful
+half of that message is "unreachable", and nothing was refused.
+
+The fix is in `tests/mqttbroker.py`: `_serve()` now loops over `accept()`
+until stopped instead of calling it once, `keep_listening` is honoured (it was
+stored in `__init__` and read by nothing, so the parameter had never worked)
+and now defaults to `True`, the backlog went from 1 to 8, and `self.connections`
+counts accepted connections so a future failure can say whether the client
+reconnected at all. The same harness now reports `accepted: 3` for three
+successive connections.
+
+Nothing needed the old behaviour: `stall_after` and `split_headers` have no
+callers, and the tests that *want* a dead broker call `close()` and then build
+a fresh one on the same port.
+
+**Measured, and it did not eliminate the flake.** 1 failure in the 40 runs
+after, against 9 in the 104 before -- 2.5% vs 8.7%, but P(<=1 in 40 | rate
+unchanged) = 12.6%, so the soak on its own proves nothing. The *mechanism* is
+proven (reproduced and fixed outside QEMU, above); what is not proven is that
+it was the only mechanism, and the residual failure has the same shape. The
+failure message now reports `accepting.connections` / `refusing.connections`,
+which distinguishes the two halves of the guest's ambiguous message: non-zero
+means the broker accepted something and the fault is above the socket, zero
+means nothing ever arrived.
+
+**It cost 50 s a run, and the cause was not what it looked like.** Suite time
+went 182 s -> 232 s, and reverting *only* `tests/mqttbroker.py` put it back to
+182.46 s. The X2 retry added in the same batch was ruled out first: a probe
+showed `domains_hart1` non-zero after a single `exec` in 10 runs of 10, so that
+loop almost never takes a second pass.
+
+It was not guest work at all -- it was `close()`. Timed directly, with no QEMU
+involved:
+
+```
+keep_listening=True   close() took 5.000s  thread_alive=True
+```
+
+**Closing a socket from another thread does not wake a thread blocked in
+`accept()` on Linux**, and `close()` ends in `join(timeout=5.0)`. That cost was
+invisible while `_serve()` exited after one connection -- a served broker had
+no thread left to join -- and became five seconds per broker the moment the
+loop sent it back to `accept()`. With about fourteen broker instances in a
+suite run (7 creation sites, exercised by both the rv32 and rv64 sections),
+that is the whole 50 s.
+
+`recv()` has the same property, and that case mattered more: the suite closes
+its brokers in a `finally` while the guest is usually **still connected**, so
+the thread is parked in `_serve_conn()`'s recv rather than in accept. That path
+cost the full 5 s even before the accept loop existed.
+
+Fixed by giving both sockets a 0.25 s timeout, so the loops get to look at
+`self._stop` promptly; both already treat `socket.timeout` as "keep going".
+Measured after, across the four cases that matter:
+
+```
+idle             close() 0.201s  alive=False  connections=0
+served+closed    close() 0.201s  alive=False  connections=1
+live connection  close() 0.201s  alive=False  connections=1
+3 successive     close() 0.000s  alive=False  connections=3
+```
+
+Since the pre-existing 182 s baseline also paid the live-connection stall, the
+suite should now come in *below* it. Not yet confirmed end-to-end: the fix
+landed while a soak was mid-flight.
+
+## SMP X2 reads `domains_hart1: 0` about one run in forty
+
+**First seen 2026-09-14**, and only visible because the soak's outer timeout
+was raised from 600 s to 1200 s -- at 600 s this section was being killed
+before it could report anything (see the `exec` entry's (b)).
+
+```
+  [FAIL] SMP: restricted domains were actually activated on hart 1 (X2)
+    domains_hart0: 3
+    domains_hart1: 0
+```
+
+Hart 0 activated three restricted domains; hart 1 reported none.
+
+**It is not a missing synchronisation primitive**, checked rather than
+assumed:
+
+* `g_domain_activations[hart_id()]++` -- each hart increments **its own**
+  slot, so no update can be lost however the two interleave;
+* those increments happen inside context switches that take and release
+  `g_sched_lock`, so they are fenced, and the read happens seconds later;
+  stale visibility cannot turn a non-zero into a zero across that gap;
+* the counter only moves `if (d)` -- for a task that actually *has* a domain.
+  Driver tasks are pinned to hart 0 and most kernel tasks carry no domain, so
+  at this point in the test the only domain-carrying unpinned task is `uprog`.
+
+And the run that failed had **`SMP: an out-of-domain store still faults` PASS**
+immediately above it. The isolation worked; only the evidence that it happened
+*on hart 1* was missing. The test's own comment says `uprog` is "left unpinned
+on purpose -- this is the case where the scheduler chooses", so a run where the
+scheduler kept it on hart 0 leaves the counter at zero with nothing wrong.
+
+**Fixed in the test, 2026-09-14:** the check now retries, re-`exec`ing
+`uisolate.elf` up to six times and passing as soon as hart 1's count moves.
+That proves what §1 actually claims -- the secondary does install restricted
+domains -- where a single attempt only sampled whether it did so this time.
+
+`g_domain_activations` was also made `volatile`, because a word one hart
+writes and another reads is a data race in C's model even when every hart owns
+its index. That is hygiene and is documented at the declaration as **not** the
+cause of this failure, so it is not mistaken for one later.
+
+## `identity name` intermittently fails to persist a rename (I3, ~3.5%)
+
+**The real cause of the `I3` flake**, separated 2026-09-14 from the console
+splice it had been wrongly filed under. Rate across four soaks: 2/24, 0/40,
+0/40, 3/40 -- 5 in 144, no trend, and present on both `rv32-nommu` and
+`rv64-mmu`. It predates every console change made this session:
+`soak8/run11` and `soak12/run7` are the same failure.
+
+Three captured shapes, all of them the rename step:
+
+```
+rename did not report success:   identity name toolset-test        (no reply at all)
+identity name: the device write failed
+/proc/node did not answer after rename
+```
+
+The middle one names it: `node_identity_rename_persistent()` got non-zero from
+`identity_store_write()` (kernel/identity.c). That function has three ways to
+fail and one of them is already excluded:
+
+* `scratch_acquire()` of 8 KB -- **not this**, it prints "[Identity] not
+  enough free heap to rewrite the record" and no failing log contains it;
+* `rc != 0` from the `idstore_writer_add_field()` sequence -- the record is
+  small here (uid + name) and nowhere near the 4 KB limit, so unlikely;
+* `idstore_writer_commit()`, whose whole body is
+  `dev->write_blocks(dev, w->buf, 0, IDSTORE_BLOCKS)` -- **the remaining
+  suspect**, i.e. the write to the identity block device itself.
+
+**A correlation that looked strong and is an artifact**, recorded so it is not
+rediscovered: `[Sched] Task #5 'mqttd' exited` appears in the captured window
+of every failing run and in no passing run. That is not a signal -- the runner
+only prints guest output for tests that *fail*, so any guest line can only
+ever be seen in a failure.
+
+## ROOT CAUSE FOUND, 2026-09-14: the identity block device has no mutual exclusion
+
+The diagnostic above was added, and the first soak with it caught the failure
+on run 15:
+
+```
+[    0.122] [Identity] existing record on 'virtio_blk_id0' unreadable (corrupt,
+or the device read failed); rewriting from the patch alone -- any uid, key or
+grants it held are being dropped
+```
+
+No `write_blocks(...) returned` line anywhere in that run, so **the write was
+never the problem** -- the *read* was, which is why three soaks of staring at
+the write path found nothing.
+
+**What it actually breaks, and why the test message was misleading.** The
+failing step in run 15 is not the rename at all, it is the second `identity
+provision`, which is supposed to be refused:
+
+```c
+if (idstore_read(dev, &rec) == IDSTORE_VALID && !force) return NODE_ID_ERR_POPULATED;
+```
+
+A read that returns `IDSTORE_CORRUPT` walks straight through that guard and
+re-provisions a populated store. The same substitution explains the other two
+shapes: a rename whose `idstore_read()` fails rewrites the record *from the
+patch alone*, silently dropping the uid, the device key and the grants.
+
+**The mechanism, in `drivers/virtio_blk_id.c`.** Everything the transfer needs
+is a single shared static -- one request header, one status byte, one
+three-descriptor chain, one `last_used_idx` -- and the completion wait is
+
+```c
+while (g_id_vq_mem.used.idx == g_id_last_used_idx) { sched_yield(); }
+```
+
+There is **no lock in the file at all**. The yield does not merely permit a
+second caller, it invites one: the arriving caller overwrites the header, the
+descriptors and the status byte while the first is parked, both then observe a
+`used.idx` that moved once, and the first returns the second's status or
+reports success over a buffer nothing filled. The device is reached indirectly
+through `identity_store_device()` "from anything that touches the record" --
+the file's own comments say so twice -- and several of those callers run in the
+same early-boot moment: network autoconfig, the MQTT config read,
+`node_identity_init()`, and the shell. `t=0.122 s` is exactly that moment.
+
+**Fixed** by serialising `virtio_blk_id_transfer()` on a `ylock` -- a ylock and
+not a spinlock because the critical section contains a yield, which is
+precisely what a spinlock may not span. A compiler barrier was also added
+after the completion wait, before the status byte and the device-written
+buffer are read; the file already uses that idiom on the submit side.
+
+**Not yet re-measured against the 5-in-144 baseline** -- the fix was written
+while a soak was still running on the previous binaries, and rebuilding mid-run
+would have mixed provenance.
+
+## `NO RESULT` runs are a host-side stall, not a guest hang (the old "(b)")
+
+**Separated from the `exec` wild jump 2026-09-15**, after the recursion guard
+made it possible to tell the two apart. Four occurrences across ~250 soak runs,
+in **three different target sections** (RV64 SMP, RV64 MMU, RV32 NOMMU), and
+apart from `soak14/run25` -- which is the wild jump and belongs to the other
+entry -- none of them carries a guest fault: no `[Trap …]`, no `[Sched BUG]`,
+no PTE error, nothing.
+
+`soak15/run34` is the informative one, because the runner diagnosed itself:
+
+```
+[Retry] rv32: 1 failure(s) with no fault marker (possible QEMU host-stdio
+stall, not a guest crash) -- retrying the whole run from a fresh boot
+(attempt 2/3) before treating as real.
+```
+
+`tests/runner.py` already carries that mechanism and the reasoning behind it:
+QEMU's `-nographic` chardev sets `O_NONBLOCK` on its console fd and is
+documented not to always retry a `write()` returning `EAGAIN`. Its comment is
+careful to say this is "no longer the *known* cause of anything, kept in case
+it is ever the cause of something new" -- and it now looks like it is.
+
+**The harness turns a recoverable flake into a total loss.** The retry re-runs
+the *whole architecture* from a fresh boot, up to three attempts, and the outer
+soak timeout is 1200 s against a 178 s norm. `run34` spent the entire budget
+inside those attempts and reported nothing, so a mechanism built to absorb the
+stall produced a `NO RESULT` instead.
+
+**Open question, and it is the one that matters:** the retry only fires when
+*no* failing log mentions a fault marker, which is exactly what a genuine
+silent guest hang also looks like -- the runner's own comment says so. So
+"host-stdio stall" is the leading explanation, not a proven one. Worth doing:
+record per-attempt timings so a stalled attempt can be told from a slow one,
+and check whether the stall correlates with a particular test rather than a
+particular section.

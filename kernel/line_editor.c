@@ -36,7 +36,23 @@ static void safe_strncpy(char *dst, const char *src, int dst_size) {
 static char history_stack[MAX_HIST_ITEMS][MAX_LINE_LEN];
 static int history_count = 0;
 
+/* One redraw is one whole write, and is held as one (2026-09-14).
+ *
+ * This file reaches the console through thirty console_puts() calls and never
+ * took console_lock() for any of them, while klog_drain() -- klogd's, every
+ * 50 ms -- does take it. Two writers, one of them unlocked, so they were
+ * never serialised against each other: a log record could be emitted between
+ * two escape sequences of a single redraw. That is a spliced echo, and it is
+ * the path a typed command is echoed on, which is why the suite saw it as
+ * `identity provision` echoing wrong or not at all rather than as a console
+ * bug. See plan/open_issues.md.
+ *
+ * Held across the writes and nothing else -- never across console_getc(),
+ * which waits for a human. A ylock is the right primitive precisely because
+ * a console write ends in a block (kernel/console.c). */
 static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
+    console_lock();
+    console_sync();   /* backlog before the redraw, never inside it */
     console_puts("\033[?25l"); // Hide cursor during display redraw
     console_puts("\r");
     console_puts(prompt);
@@ -50,6 +66,7 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
         console_puts("\033[D");
     }
     console_puts("\033[?25h"); // Show cursor at final target position
+    console_unlock();
 }
 
 
@@ -101,7 +118,10 @@ static void add_history(const char *line) {
 
 static int g_prev_target_line = 1;
 
+/* Same whole-write rule as redraw_line() above, and for the same reason. */
 static void redraw_box(const char *filename, const char *buf, int len, int pos, const char *status_msg) {
+    console_lock();
+    console_sync();
     console_puts("\033[?25l"); // Hide cursor during box redraw
     if (g_prev_target_line > 0) {
         for (int m = 0; m < g_prev_target_line; m++) {
@@ -188,6 +208,7 @@ static void redraw_box(const char *filename, const char *buf, int len, int pos, 
 
     g_prev_target_line = target_line;
     console_puts("\033[?25h"); // Show cursor at final position
+    console_unlock();
 }
 
 static bool read_status_prompt(int total_lines, int target_line, const char *prompt, char *out_buf, int max_len) {

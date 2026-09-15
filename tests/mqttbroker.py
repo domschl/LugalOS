@@ -130,11 +130,14 @@ class MqttBroker:
     rather than racing the guest."""
 
     def __init__(self, connack_rc: int = 0, split_headers: bool = False,
-                 stall_after: int | None = None, keep_listening: bool = False,
+                 stall_after: int | None = None, keep_listening: bool = True,
                  port: int = 0):
         self.connack_rc = connack_rc
         self.split_headers = split_headers
         self.stall_after = stall_after
+        # Defaults to True since 2026-09-14. A test instrument that stops
+        # listening after one connection turns any client retry into a
+        # timeout the guest reports as "unreachable" -- see _serve().
         self.keep_listening = keep_listening
 
         self.packets: list[tuple[int, bytes]] = []     # (type|flags, body)
@@ -142,6 +145,7 @@ class MqttBroker:
         self.subscriptions: list[str] = []
         self.connect: Connect | None = None
         self.pings = 0
+        self.connections = 0       # accepted connections, for diagnosis
         self.disconnected_cleanly = False
         self.saw_eof = False
         self.error: str | None = None
@@ -152,8 +156,21 @@ class MqttBroker:
         # needs, since the client is already dialling the old one. SO_REUSEADDR
         # above is what makes re-binding it immediately possible.
         self._sock.bind(("127.0.0.1", port))
-        self._sock.listen(1)
-        self._sock.settimeout(60.0)
+        # Backlog of 8, not 1: with a one-deep queue a retry that arrives
+        # while the previous connection is still being accepted gets a reset.
+        self._sock.listen(8)
+        # A quarter second, not sixty. This is how often the accept loop gets
+        # to look at self._stop, and therefore how long close() waits before
+        # its join(timeout=5.0) gives up on a thread parked in accept().
+        #
+        # Closing a socket from another thread does not reliably wake a thread
+        # blocked in accept() on Linux, so with a 60 s timeout every broker
+        # that was still listening cost close() the full five-second join.
+        # That was invisible while _serve() exited after one connection --
+        # a served broker had no thread left to join -- and became ~50 s per
+        # suite run the moment the loop sent it back to accept(): measured as
+        # 182 s -> 232 s, with about fourteen broker instances in a run.
+        self._sock.settimeout(0.25)
         self.port: int = self._sock.getsockname()[1]
 
         self._conn: socket.socket | None = None
@@ -216,15 +233,51 @@ class MqttBroker:
             self.error = repr(exc)
 
     def _serve(self) -> None:
-        try:
-            conn, _ = self._sock.accept()
-        except (OSError, socket.timeout) as exc:
-            if not self._stop.is_set():
-                self.error = f"accept: {exc!r}"
-            return
+        """Accept connections until stopped, one at a time.
 
-        self._conn = conn
-        conn.settimeout(60.0)
+        This used to call accept() exactly once and then fall through to the
+        read loop forever, so the fixture could serve **one connection, ever**
+        -- and `keep_listening` was stored in __init__ and never read by
+        anything, so there was no way to ask for more. Any second connection
+        sat in the backlog unaccepted until the client gave up.
+
+        That is invisible from the guest, which is what made it expensive:
+        `mqtt: the broker refused the connection, or is unreachable` is printed
+        both for a TCP reset and for a connection that opens and never gets a
+        CONNACK, so the log looked like "nothing was listening" in a run where
+        something was. It was the largest remaining intermittent in the suite
+        at 9 failures in 104 runs (2026-09-14, plan/open_issues.md).
+
+        A test that wants connections to actually fail calls close(), which is
+        what the dead-broker tests already do -- they close and then build a
+        fresh broker on the same port. So nothing needs the old behaviour.
+        """
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._sock.accept()
+            except socket.timeout:
+                continue          # the 60 s accept timeout, not an error
+            except OSError as exc:
+                if not self._stop.is_set():
+                    self.error = f"accept: {exc!r}"
+                return
+            with self._lock:
+                self.connections += 1
+            self._conn = conn
+            self._serve_conn(conn)
+            if not self.keep_listening:
+                return
+
+    def _serve_conn(self, conn: socket.socket) -> None:
+        # Same reasoning as the listening socket's timeout, and the same 5 s
+        # per broker if it is wrong: closing a socket from another thread does
+        # not wake a thread blocked in recv() either, so this is how often the
+        # read loop gets to notice self._stop. The suite closes its brokers in
+        # a `finally` while the guest is usually still connected, which is
+        # exactly this path -- so a long timeout here costs the full join on
+        # nearly every broker in a run, whether or not the accept loop was
+        # fixed. Quarter-second wakeups on an idle connection are free.
+        conn.settimeout(0.25)
         buf = b""
         served = 0
         try:

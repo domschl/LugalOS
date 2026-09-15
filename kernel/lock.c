@@ -235,6 +235,53 @@ static uintptr_t spin_lock_common(spinlock_t *l, const char *name,
     }
 }
 
+/* Acquire, or give up and say so. Interrupts stay masked either way, so a
+ * caller that gets `false` is still in the same state it would have been in
+ * with the lock -- it simply has no exclusion.
+ *
+ * Exists for exactly one kind of caller: the ones that must not wait because
+ * the machine is already going down. uart_flush_critical() is the first, and
+ * the reason. The fatal trap handler prints through printk_critical(), every
+ * printk_critical() drains the TX batch, and draining takes the batch lock --
+ * so a hart that dies holding that lock takes the *other* hart's crash report
+ * with it. Three suite runs hung that way before the overrun notifier stopped
+ * calling printk_critical() (drivers/uart_16550.c), and that fix only moved
+ * the caller; the panic path cannot be moved.
+ *
+ * Bounded rather than a bare test-and-set because the normal case is a lock
+ * that is genuinely held for a few hundred cycles and worth waiting for.
+ * Failing instantly on any contention would garble ordinary output to defend
+ * against a case that only arises once the kernel has already lost.
+ *
+ * Deliberately does **not** report a nested take the way spin_lock_common()
+ * does. Its caller is the console, and the console is reached from inside
+ * other locks' critical sections by design -- that is what printk_critical()
+ * is for. Reporting here would fire on ordinary output and, worse, would
+ * report it *through* printk_critical(), straight back into this function. */
+bool spin_trylock_irqsave_at(spinlock_t *l, uintptr_t *out_flags, uint32_t budget,
+                             const char *name, const char *site) {
+    uintptr_t flags = irq_save();
+    uint32_t h = hart_id();
+
+    for (uint32_t tries = 0; tries < budget; tries++) {
+        if (arch_lock_try_acquire(&l->word)) {
+            g_spin_depth[h]++;
+            g_spin_name[h] = name;
+            g_spin_site[h] = site;
+            *out_flags = flags;
+            return true;
+        }
+        /* Same backoff as spin_lock_common(), and for the same reason: a
+         * waiter that hammers the atomic keeps the holder from releasing. */
+        while (!arch_lock_looks_free(&l->word)) {
+            for (volatile int spin = 0; spin < 16; spin++) { }
+            if (++tries >= budget) { *out_flags = flags; return false; }
+        }
+    }
+    *out_flags = flags;
+    return false;
+}
+
 void spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags) {
     uint32_t h = hart_id();
     /* Saturating rather than asserting: an unmatched release is a bug, but

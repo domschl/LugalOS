@@ -75,6 +75,12 @@ void console_flush(void);
 void console_putc(char c);
 void console_puts(const char *s);
 
+/* Flush the kernel log to the console before starting a new message, so the
+ * backlog appears *before* it rather than inside it. Call at a whole-write
+ * boundary only -- see the body in kernel/console.c for the two places that
+ * called it mid-message and the splices that produced. */
+void console_sync(void);
+
 /* --- Where the CRLF convention lives (C0, plan/phase6_memory_and_processes.md §6.1) ---
  *
  * A terminal needs CR before LF; a 9P frame must not have one inserted into

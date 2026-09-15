@@ -1,6 +1,7 @@
 #include "drivers/virtio_blk_id.h"
 #include "kernel/identity.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include <string.h>
 #include <stdint.h>
@@ -96,8 +97,41 @@ static int g_id_initialized = 0;
 static int g_id_probe_logged = 0;
 static uint16_t g_id_last_used_idx = 0;
 
+/* One transfer at a time. Everything below the descriptor table is a single
+ * shared static -- one request header, one status byte, one three-descriptor
+ * chain, one `last_used_idx` -- and the completion wait **yields**, so a
+ * second caller is not merely possible, it is invited.
+ *
+ * Two of them interleave into each other's transfer: the arriving caller
+ * overwrites the header, the descriptors and the status byte while the first
+ * is parked in sched_yield(), and then both read a `used.idx` that has moved
+ * once. The first returns the second's status, or returns success over a
+ * buffer nothing filled.
+ *
+ * That is not a theoretical window. This device is reached indirectly through
+ * identity_store_device() "from anything that touches the record" -- as the
+ * comments in virtio_blk_id_init() and virtio_blk_id_get_device() both say --
+ * and several of those callers run during the same early-boot moment: the
+ * network autoconfig, the MQTT config read, node_identity_init(), and the
+ * shell. A collided read returns bytes that fail the record CRC, idstore_read()
+ * folds that into IDSTORE_CORRUPT (kernel/idstore.h says a device-level read
+ * failure is reported the same way), and the callers above treat CORRUPT as
+ * "no valid record". So `identity provision` stops refusing a populated store,
+ * and a rename silently rewrites the record without its uid, key or grants.
+ *
+ * Caught 2026-09-14 by the diagnostic added to identity_store_write(): the I3
+ * flake, ~3.5% of suite runs for four soaks, at t=0.122 s. See
+ * plan/open_issues.md.
+ *
+ * A ylock rather than a spinlock because the section contains a yield, which
+ * is precisely what a spinlock may not span. Re-entrant for its owner, which
+ * costs nothing here -- this function never calls itself. */
+static ylock_t g_id_lock;
+
 static int virtio_blk_id_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t count) {
     if (!g_id_mmio_base || count == 0) return -1;
+
+    ylock_acquire(&g_id_lock);
 
     g_id_req_hdr.type = type;
     g_id_req_hdr.reserved = 0;
@@ -133,7 +167,14 @@ static int virtio_blk_id_transfer(uint32_t type, void *buf, uint32_t lba, uint32
     }
     g_id_last_used_idx = g_id_vq_mem.used.idx;
 
-    return (g_id_req_status == 0) ? 0 : -1;
+    /* Before reading the status byte and the buffer the device wrote: the
+     * same barrier idiom this file already uses around avail.idx, on the
+     * other side of the transfer. */
+    __asm__ __volatile__("" ::: "memory");
+
+    int rc = (g_id_req_status == 0) ? 0 : -1;
+    ylock_release(&g_id_lock);
+    return rc;
 }
 
 static int virtio_blk_id_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {

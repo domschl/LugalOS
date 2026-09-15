@@ -1006,6 +1006,13 @@ void trap_handler(trap_frame_t *frame) {
                      * one clump, then all the text. Measured, not guessed --
                      * with this on printk() the suite scores 353/363, with it
                      * here 361/363. */
+                    /* The whole-write boundary for this path. console_puts()
+                     * used to drain on every call and this relied on that;
+                     * since the drain moved to console_sync() (kernel/console.c)
+                     * the boundary has to be named rather than inherited. The
+                     * comment above measured what it is worth: 353/363 with
+                     * the sync on printk(), 361/363 with it here. */
+                    console_sync();
                     console_puts(kbuf);
                     console_flush();   /* one syscall, one whole string */
                     ret = 0;
@@ -1306,6 +1313,40 @@ void trap_handler(trap_frame_t *frame) {
             return;
         }
 
+        /* One shot per hart. A second fault while reporting the first means
+         * the reporting itself is what faulted, and re-entering here would
+         * report *that* -- forever.
+         *
+         * Not hypothetical, and not cheap: soak14/run25 caught it. The first
+         * line of the dump printed, the second never did, and QEMU's
+         * guest-error channel then logged
+         * `reserved bits set in PTE: addr: 0x802ca000 pte: 0xffffffffffffffff`
+         * **2,820,123 times** -- one address, one bad entry, a tight fault
+         * loop. That run took 795 s instead of 178 s; the next occurrence
+         * (run 23) ran into the 1200 s wall and reported nothing at all.
+         *
+         * So every truncated capture of this bug has been the handler dying
+         * mid-sentence, not the console. The whole point of this path is to
+         * explain a crash, and the version that faults explains less than
+         * nothing: it destroys the evidence and then buries it under three
+         * million lines. Halting on re-entry keeps whatever did reach the
+         * wire, and keeps the run short enough to still be a test result.
+         *
+         * Per hart, not global: the other hart taking its own unrelated fault
+         * should still get to report it. */
+        {
+            static volatile uint8_t in_fatal[MAX_HARTS];
+            uint32_t fh = hart_id();
+            if (fh < MAX_HARTS) {
+                if (in_fatal[fh]) {
+                    /* No printing: printing is what we are protecting against.
+                     * A bare halt, and the log already holds the first fault. */
+                    for (;;) { __asm__ __volatile__("wfi"); }
+                }
+                in_fatal[fh] = 1;
+            }
+        }
+
         /* Fatal exception hang.
          *
          * Everything printed from here down uses printk_critical(): a dump
@@ -1345,6 +1386,29 @@ void trap_handler(trap_frame_t *frame) {
                (unsigned long)code, (unsigned long)frame->epc, (unsigned long)frame->tval, (unsigned int)inst_val);
         printk_critical("[Trap Register Dump] a0=0x%lx, a1=0x%lx, sp=0x%lx, ra=0x%lx\n",
                (unsigned long)frame->a0, (unsigned long)frame->a1, (unsigned long)frame->sp, (unsigned long)frame->ra);
+
+        /* Say which side of .text epc and ra fall on, rather than printing
+         * two bare numbers and leaving the arithmetic to whoever reads the
+         * log.
+         *
+         * This is not a convenience. The `exec` wild jump (plan/open_issues.md)
+         * spent two sessions being attributed to the wrong object because the
+         * only way to place an epc was to subtract it from a symbol in a build
+         * that had since moved: nm's "nearest preceding symbol" lands on
+         * whatever global happens to sit below, and .rodata's string literals
+         * have no symbols at all, so a jump into a string is reported as a
+         * jump into the unrelated array in front of it. A log that says
+         * OUTSIDE-TEXT at the moment it happens cannot drift away from its
+         * build. */
+        {
+            extern char _ktext_lo[];
+            extern char _ktext_hi[];
+            const uintptr_t klo = (uintptr_t)_ktext_lo, khi = (uintptr_t)_ktext_hi;
+            printk_critical("[Trap Where] epc %s .text, ra %s .text  (.text 0x%lx..0x%lx)\n",
+                   (frame->epc >= klo && frame->epc < khi) ? "IN" : "OUTSIDE",
+                   (frame->ra  >= klo && frame->ra  < khi) ? "IN" : "OUTSIDE",
+                   (unsigned long)klo, (unsigned long)khi);
+        }
 
         /* Which task, and what it was standing on.
          *

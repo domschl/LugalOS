@@ -366,6 +366,9 @@ RUNNING_MARKER = "LugalOS"
 # comes back as a command that ran and printed nothing, the most misleading
 # result this script can produce.
 READY_MARKER = "lsh>"
+# Extra grace for --run --cmd when the boot window closed before the
+# prompt appeared. Boot is ~0.3 s, so this is generous on purpose.
+READY_EXTRA_SECS = 10.0
 
 
 def looks_dead(text):
@@ -603,7 +606,7 @@ def main():
                          "kernel image is ~227 KB against E1's 1.2 KB, which "
                          "is about 40 s at the default rate." % BAUD)
     ap.add_argument("--cmd", action="append", default=[], metavar="LINE",
-                    help="after loading (or with --listen), send LINE to the "
+                    help="after loading (or with --run / --listen), send LINE to the "
                          "console and print what comes back. Repeatable, in "
                          "order. This is what lets a shell be exercised "
                          "without a human at the keyboard -- see --interactive "
@@ -619,7 +622,8 @@ def main():
     ap.add_argument("--reset-test", action="store_true", help="can we reset from software?")
     ap.add_argument("--ports", action="store_true", help="list USB serial ports and exit")
     ap.add_argument("--run", action="store_true",
-                    help="reset the board into whatever is in flash, and listen")
+                    help="reset the board into whatever is in flash, listen, "
+                         "then run any --cmd / --interactive against it")
     a = ap.parse_args()
 
     if a.ports:
@@ -633,7 +637,40 @@ def main():
     if a.reset_test:
         return cmd_reset_test(port, rport)
     if a.run:
-        print(pulse(rport, SEQ_RUN, listen=a.listen_secs, watch=port))
+        banner = pulse(rport, SEQ_RUN, listen=a.listen_secs, watch=port)
+        print(banner)
+        # --run used to `return 0` here, which meant `--run --cmd "..."`
+        # reset the board and then **silently discarded every command** --
+        # no error, no warning, just a boot log and an exit code of zero.
+        # It reads as "the board ignored the command", which is a long way
+        # from the truth and cost a debugging session on 2026-09-15.
+        #
+        # The same two flags already work together on the image-loading path
+        # further down; only this branch returned early.
+        if (a.cmd or a.interactive) and READY_MARKER not in banner:
+            # The banner is read for a fixed window, so on a short
+            # --listen-secs it can close before the shell comes up. Make sure
+            # the shell is there before typing at it.
+            #
+            # *Actively*: press Return and wait for the prompt that comes
+            # back. Waiting passively does not work and looked like it did --
+            # if the prompt was printed in the gap between the banner window
+            # closing and this watcher opening, it is simply gone, and the
+            # wait then burns its whole timeout and warns about a board that
+            # was ready the entire time. Observed doing exactly that at
+            # --listen-secs 0.2. A live shell answers Return with a prompt on
+            # demand, which is the same trick run_cmds() opens with.
+            with Watcher(port) as w:
+                w.s.write(b"\r")
+                if not w.wait_for(READY_MARKER, READY_EXTRA_SECS):
+                    print("  [warn] no '%s' prompt %.0fs after a Return -- "
+                          "sending anyway; output may be missing or "
+                          "interleaved with boot."
+                          % (READY_MARKER, READY_EXTRA_SECS))
+        if a.cmd:
+            run_cmds(port, a.cmd, a.cmd_wait)
+        if a.interactive:
+            return interactive(port)
         return 0
     if a.probe:
         return cmd_probe(port)

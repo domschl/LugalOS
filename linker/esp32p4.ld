@@ -206,10 +206,12 @@ SECTIONS
      * which is what makes the kernel's entry point reachable before the
      * mapping exists. */
     .text : {
+        _ktext_lo = .;
         . = ALIGN(4);
         _xip_start = .;
         *(.text .text.*)
         . = ALIGN(4);
+        _ktext_hi = .;
     } > XIP
 
     /* U-mode-executable code, one page, power-of-two-sized and self-aligned
@@ -503,8 +505,38 @@ SECTIONS
        .rodata and .data load above them, so the two halves are added. Getting
        this wrong reported a third of the image as the whole of it.
 
-       _inst_lo/_inst_hi -- all code is RAM-resident here. */
+       _inst_lo/_inst_hi -- since phase 32 code runs from flash (XIP) *and*
+       from RAM (.ramfunc), so the window has to span both, exactly as
+       rp2350.ld's does. It used to read "all code is RAM-resident here" and
+       bound _ram_start.._ram_end, which phase 32 made false without anyone
+       noticing: every epc in the XIP window failed the range test, so the
+       fatal handler silently skipped the instruction readback on the one
+       target whose faults were hardest to reproduce. */
     _image_bytes = (_bss_end - _ram_start) + (_kernel_end - _text_start);
-    _inst_lo     = _ram_start;
+    _inst_lo     = _xip_start;
     _inst_hi     = _ram_end;
+
+    /* _ktext_lo/_ktext_hi -- the kernel's own .text, and nothing else. Narrow
+       where _inst_lo/_inst_hi are deliberately wide: that pair bounds what the
+       fatal handler may *read*, this pair bounds what a parked return address
+       may legitimately *be*. sched_check_incoming() tests the ra it is about
+       to restore against this window, so a hand-off to a corrupt frame halts
+       with the table intact instead of jumping into .rodata and destroying
+       the evidence. The ASSERTs below are the premise it rests on -- every
+       caller of ctx_switch(), and the first-run entry point, inside it. */
+    /* The same script also links minimal_rp2350.elf and friends -- standalone
+       probes with no scheduler in them at all -- where these three symbols do
+       not exist and a bare reference is a link error rather than a failed
+       assertion. PROVIDE defines them only when nothing else has, so the real
+       kernel asserts against the real addresses and a probe asserts against a
+       tautology. */
+    PROVIDE(task_trampoline = _ktext_lo);
+    PROVIDE(sched_yield     = _ktext_lo);
+    PROVIDE(task_exit       = _ktext_lo);
+    ASSERT(task_trampoline >= _ktext_lo && task_trampoline < _ktext_hi,
+           "task_trampoline outside .text: sched_check_incoming()'s ra window is wrong")
+    ASSERT(sched_yield >= _ktext_lo && sched_yield < _ktext_hi,
+           "sched_yield outside .text: sched_check_incoming()'s ra window is wrong")
+    ASSERT(task_exit >= _ktext_lo && task_exit < _ktext_hi,
+           "task_exit outside .text: sched_check_incoming()'s ra window is wrong")
 }

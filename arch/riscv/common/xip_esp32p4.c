@@ -38,6 +38,12 @@
 #define ROM_CACHE_DISABLE_L2_CACHE    0x4fc00500u
 #define ROM_CACHE_ENABLE_L2_CACHE     0x4fc00504u
 #define ROM_CACHE_INVALIDATE_ALL      0x4fc00404u
+/* Cache_WriteBack_All. Address taken from esp-idf's own ROM linker script
+ * (components/esp_rom/esp32p4/ld/esp32p4.rom.ld:198), which both the base and
+ * the eco0_4 variant agree on -- and the invalidate address above matches
+ * that file's Cache_Invalidate_All exactly, which is what makes the pair
+ * trustworthy rather than inferred. */
+#define ROM_CACHE_WRITEBACK_ALL       0x4fc00414u
 #define ROM_CACHE_FLASH_MMU_SET       0x4fc00518u
 
 /* CACHE_MAP_* from esp32p4/rom/cache.h: ICACHE_0 bit 0, ICACHE_1 bit 1,
@@ -221,6 +227,37 @@ BOOT_TEXT void esp32p4_xip_map(void) {
     inval(inval_map);
 
     en_l2();
+}
+
+
+/* Make instructions the kernel just *wrote* visible to instruction fetch.
+ *
+ * `fence.i` alone is not enough on this chip, and the ELF loader's comment
+ * ("the kernel just wrote instructions through the data path") describes a
+ * hazard that RISC-V's own instruction does not fully close here. Internal
+ * memory is reached *through* L1 (SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE), and
+ * L1 data is **writeback**: the loader's stores can still be sitting dirty in
+ * the D-cache while the fetch of those same addresses misses I-cache, goes to
+ * L2/RAM, and reads whatever was there before.
+ *
+ * Measured on the board, 2026-09-15: `exec` of the same binary faulted
+ * differently on consecutive attempts -- `cause 2, epc=entry+4,
+ * tval=0x269c790b` once and `cause 7, epc=entry+0, tval=0x1000` the next.
+ * Same program, same address, different garbage, which is stale memory rather
+ * than a bad image or a wrong entry offset.
+ *
+ * Order matters and is not symmetric. Write back **first**, so the loader's
+ * bytes actually reach memory, and only then invalidate -- and invalidate the
+ * *instruction* cache only. Phase 32 U2 established the other half of this
+ * the hard way: invalidating L1 D discards dirty lines rather than writing
+ * them back, which threw away the live stack and killed the board. After a
+ * writeback-all nothing is dirty, so this is safe either way; naming just the
+ * I-cache keeps it safe for the wrong reason as well as the right one. */
+void esp32p4_icache_sync(void) {
+    rom_cache_op_t     wb    = (rom_cache_op_t)(uintptr_t)ROM_CACHE_WRITEBACK_ALL;
+    rom_cache_map_op_t inval = (rom_cache_map_op_t)(uintptr_t)ROM_CACHE_INVALIDATE_ALL;
+    wb();
+    inval(CACHE_MAP_L1_ICACHE_0);
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */

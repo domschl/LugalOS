@@ -668,19 +668,65 @@ static uint32_t g_reap_pages[MAX_HARTS];
  * kernel states at the moment it is broken, which matters here more than
  * most: this function exists to explain a crash, and the version of it that
  * deadlocks explains nothing. */
-static void sched_check_incoming(int prev, int next) {
-    uintptr_t sp = g_tasks[next].sp;
-    uintptr_t ra = sp ? *(const uintptr_t *)sp : 0;
-    /* Zero specifically, rather than a full text-range test: `_text_start` is
-     * only defined by linker/esp32p4.ld, and the failure this exists to catch
-     * is a return to address zero. A tighter check would need a symbol all
-     * four linker scripts define -- worth doing on its own, not as a side
-     * effect of a debug guard. */
-    if (ra != 0) return;
+/* Defined below, and used by the guard above it. Not in a header on purpose:
+ * it is a fatal-path dump, and the two callers outside this file
+ * (arch/riscv/common/trap.c) already declare it locally for the same reason. */
+void sched_dump_table(void);
 
-    printk_critical("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx has ra=0x%lx\n",
+static void sched_check_incoming(int prev, int next) {
+    /* The kernel's own .text, and nothing else -- see the block that defines
+     * these in each of the four linker scripts. _ram_start/_ram_end bound
+     * where a stack can possibly live, on all four. */
+    extern char _ktext_lo[];
+    extern char _ktext_hi[];
+    extern char _ram_start[];
+    extern char _ram_end[];
+    uintptr_t sp = g_tasks[next].sp;
+
+    /* Validate the pointer before following it. A guard that faults while
+     * checking for a corrupt frame is worse than no guard: the second fault
+     * lands in the handler reporting the first, and the dump this exists to
+     * produce is what gets lost. The old code dereferenced any non-zero sp,
+     * which is safe only for the failure it was written for -- sp intact, ra
+     * zeroed -- and not for the one where sp itself is the garbage. */
+    if (sp < (uintptr_t)_ram_start || sp + sizeof(uintptr_t) > (uintptr_t)_ram_end) {
+        printk_critical("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx"
+                        " is not in RAM (0x%lx..0x%lx); not dereferencing it\n",
+               prev, g_tasks[prev].name, next, g_tasks[next].name, (unsigned long)sp,
+               (unsigned long)(uintptr_t)_ram_start, (unsigned long)(uintptr_t)_ram_end);
+        sched_dump_table();
+        printk_critical("[Sched BUG] halting with the table intact.\n");
+        for (;;) { __asm__ __volatile__("wfi"); }
+    }
+
+    uintptr_t ra = *(const uintptr_t *)sp;
+    /* A full text-range test, which this used to say was "worth doing on its
+     * own, not as a side effect of a debug guard". It has now been done on its
+     * own, because testing for zero specifically was not enough.
+     *
+     * Zero was the failure phase 27 E4 left behind, so zero was what this
+     * checked. The failure that outlived it is a parked ra pointing into
+     * .rodata: non-zero, so the guard waved it through, and the hart then ran
+     * .rodata as instructions until something decoded as illegal. What
+     * reached the log was a fatal trap whose epc was ASCII, several frames
+     * after the scheduler state that explained it -- and taken on the
+     * handed-off g_sched_lock, so the machine was wedged as well as
+     * confused. (Which object it landed in was never established; see
+     * plan/open_issues.md for why the obvious answer was the wrong one.)
+     *
+     * The window is exact rather than defensive: every caller of ctx_switch()
+     * is in this file, task_trampoline is in switch.S's .text, and the linker
+     * scripts ASSERT all three are inside it. So a parked ra outside .text is
+     * not "suspicious", it is impossible -- and if it happens anyway, the
+     * frame being restored is not a frame. Halting here costs a wild jump its
+     * one chance to destroy the evidence of where it came from. */
+    if (ra >= (uintptr_t)_ktext_lo && ra < (uintptr_t)_ktext_hi) return;
+
+    printk_critical("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx has ra=0x%lx"
+                    " (outside .text 0x%lx..0x%lx)\n",
            prev, g_tasks[prev].name, next, g_tasks[next].name,
-           (unsigned long)sp, (unsigned long)ra);
+           (unsigned long)sp, (unsigned long)ra,
+           (unsigned long)(uintptr_t)_ktext_lo, (unsigned long)(uintptr_t)_ktext_hi);
     printk_critical("[Sched BUG] next: state=%s stack=0x%lx pages=%u prio=%d aff=%d\n",
            sched_state_name(g_tasks[next].state),
            (unsigned long)(uintptr_t)g_tasks[next].stack_base,

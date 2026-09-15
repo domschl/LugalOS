@@ -70,12 +70,37 @@ class QemuSession:
     def start(self, extra_qemu_args: list[str] | None = None, identity_img_path: "Path | None" = None) -> None:
 
         qemu_bin = "qemu-system-riscv64" if "64" in self.arch else "qemu-system-riscv32"
+        # `-D`: QEMU's own diagnostics go to a file, not into the guest's
+        # console stream.
+        #
+        # Without it they are interleaved with the guest's output and are
+        # read as guest output by every expect in this file. That is not
+        # theoretical: one soak run took a page-table fault in a loop and
+        # QEMU logged `reserved bits set in PTE` **2,820,123 times** onto the
+        # console, which buried the kernel's own crash dump, turned a 178 s
+        # run into 795 s, and left a 22 MB log whose useful content was four
+        # lines. Same information, same flags -- just somewhere it cannot
+        # destroy the evidence it sits next to.
+        #
+        # Kept per session and per architecture so two concurrent sessions
+        # (the multi-node tests run two) cannot overwrite each other.
+        #
+        # Expect ~288 benign lines per rv32 session, all of them
+        # `ignoring pmpaddr read/write - out of bounds`. That is
+        # arch/riscv/common/pmp_probe.c doing its job: it discovers how many
+        # PMP entries the core implements by writing and reading *every*
+        # pmpaddrN until one stops answering, so QEMU logging the ones past
+        # the end is the probe working, not a fault. They were always there,
+        # interleaved into the console where nobody saw them.
+        self._qemu_log_path = Path(tempfile.gettempdir()) / (
+            "lugalos-qemu-%s-%d-%d.log" % (self.arch, os.getpid(), id(self)))
         cmd: list[str] = [
             qemu_bin,
             "-M", "virt",
             "-nographic",
             "-bios", "none",
             "-d", "guest_errors,unimp",
+            "-D", str(self._qemu_log_path),
         ]
         if identity_img_path is not None:
             # I2, plan/phase21_identity_and_authentication.md: the identity
@@ -286,6 +311,42 @@ class QemuSession:
 
         return False, accumulated.decode("utf-8", "replace")
 
+    def _report_qemu_log(self) -> None:
+        """Summarise QEMU's own diagnostics, if it produced any.
+
+        Bounded on purpose. The whole reason these moved to `-D` is that a
+        fault loop can emit millions of identical lines, so this prints each
+        *distinct* line once with a count rather than the stream: a storm
+        becomes one line saying it was a storm, and a single odd message is
+        still shown in full. Emitted to stdout so it lands in the run log
+        beside the test that produced it -- the diagnostics are worth having,
+        they were simply never worth having *in* the console stream.
+        """
+        path = getattr(self, "_qemu_log_path", None)
+        if path is None:
+            return
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return
+        counts: dict[str, int] = {}
+        for ln in lines:
+            counts[ln] = counts.get(ln, 0) + 1
+        print("  [qemu] %d diagnostic line(s), %d distinct, on %s:"
+              % (len(lines), len(counts), self.arch))
+        for ln, n in sorted(counts.items(), key=lambda kv: -kv[1])[:10]:
+            print("  [qemu]   %s%s" % (ln[:200], "   (x%d)" % n if n > 1 else ""))
+        if len(counts) > 10:
+            print("  [qemu]   ... and %d more distinct line(s)" % (len(counts) - 10))
+
     def close(self) -> None:
         if self.process:
             try:
@@ -299,6 +360,7 @@ class QemuSession:
                 except OSError:
                     pass
             self.process = None
+        self._report_qemu_log()
         if self._log_file is not None:
             try:
                 self._log_file.close()
@@ -4110,7 +4172,15 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
             f"mqtt connect 10.0.2.2:{accepting.port}\n",
             r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
         if not ok or "CONNECTED" not in log:
-            return (name, False, f"the client did not connect:\n{log[-700:]}")
+            # `connections` says which half of the guest's own message is true:
+            # it prints "refused the connection, or is unreachable" for a reset
+            # AND for a socket that opened and never got a CONNACK. A non-zero
+            # count here means the broker did accept something and the failure
+            # is above the socket; zero means nothing ever arrived.
+            return (name, False,
+                    f"the client did not connect "
+                    f"(accepting.connections={accepting.connections}, "
+                    f"refusing.connections={refusing.connections}):\n{log[-700:]}")
         if not accepting.wait_for_connect(timeout=5.0):
             return (name, False, "the accepting broker never saw a CONNECT")
         c = accepting.connect
@@ -6513,8 +6583,32 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
         out.append(("SMP: an out-of-domain store still faults, on a two-hart kernel (X2)",
                     ok, log if not ok else ""))
 
-        ok, log = session.send_and_expect("cat /proc/cpuinfo",
-                                          r"domains_hart1:\s*[1-9]", timeout=12.0)
+        # Retried, because one run of one unpinned task is a coin flip and
+        # this assertion is about the claim, not about the toss.
+        #
+        # `uprog` above is deliberately unpinned -- the loader has no pinning
+        # API and should not need one -- so whether it lands on hart 1 is the
+        # scheduler's choice. Driver tasks are pinned to hart 0 and most
+        # kernel tasks carry no domain at all, so the counter only moves when
+        # a *domain-carrying* task runs on the secondary. A run where it
+        # stayed on hart 0 leaves domains_hart1 at 0 with nothing wrong:
+        # observed 2026-09-14, in a run whose isolation checks all passed.
+        #
+        # So ask several times. What is being proved is that the secondary
+        # does install restricted domains, which repeated attempts establish
+        # and a single attempt only samples. Each attempt is a fresh exec, so
+        # each is a fresh opportunity for the scheduler to pick hart 1.
+        ok = False
+        log = ""
+        for _ in range(6):
+            ok, log = session.send_and_expect("cat /proc/cpuinfo",
+                                              r"domains_hart1:\s*[1-9]", timeout=12.0)
+            if ok:
+                break
+            ok2, _ = session.send_and_expect(
+                "exec /flash0/system/bin/uisolate.elf\nps", r"uprog\s+killed", timeout=30.0)
+            if not ok2:
+                break
         out.append(("SMP: restricted domains were actually activated on hart 1 (X2)",
                     ok, log if not ok else ""))
 

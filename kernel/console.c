@@ -69,22 +69,45 @@ void console_putc(char c) {
     console_emit(g_console_putc, c);
 }
 
+/* The sync point between the log stream and the console stream, for callers
+ * that are at a message boundary and know it.
+ *
+ * This used to live inside console_puts(), one level down, and that was the
+ * second wrong home for it (Y5c moved it out of console_putc(), where it was
+ * splicing "UMODE_OK" between the O and the K). console_puts() is not a
+ * message boundary -- it is a string-emitting primitive, and its callers use
+ * it *mid-message*:
+ *
+ *   - kernel/line_editor.c calls it from thirty sites, a dozen of them in one
+ *     prompt redraw ("\033[?25l", "\r", the prompt, "\033[K", cursor moves,
+ *     "\033[?25h"). A drain between two escape sequences of one redraw can
+ *     emit a whole klog record into the middle of an echoed line -- and can
+ *     block there, which is worse.
+ *   - cprintf()'s format engine calls it for exactly one thing, the timestamp
+ *     prefix, emitted as "[", the width padding, then "] ". A record flushed
+ *     between those lands between the bracket and its own closing bracket.
+ *
+ * So the drain moves up to the callers that really are whole writes. The
+ * property Y5c wanted -- the backlog appears before a new message, never
+ * inside one -- is what this name now means, and it is stated once here
+ * instead of being implied by where a call happened to sit. */
+void console_sync(void) {
+    klog_drain();
+}
+
 void console_puts(const char *s) {
     if (!s) return;
-    /* Drains, but does not lock (Y5d).
+    /* Neither drains nor locks.
      *
-     * Taking console_lock() here as well looked symmetric with cprintf() and
-     * broke the two-hart boot outright -- deterministically, both runs, the
-     * SMP target never reaching a shell. This function is reached from inside
-     * cprintf()'s format engine, which already holds the lock, and from
-     * SYS_PRINT; the first needs no second acquire and the second is a whole
-     * syscall. Locking a function that is mostly called under its own lock,
-     * during bring-up, on a hart that may not have a task yet, is a good way
-     * to find out which of those assumptions is wrong. */
-    klog_drain();
+     * Not locking is Y5d: taking console_lock() here looked symmetric with
+     * cprintf() and broke the two-hart boot outright -- deterministically,
+     * both runs, the SMP target never reaching a shell. This function is
+     * reached from inside cprintf()'s format engine, which already holds the
+     * lock, and from SYS_PRINT; the first needs no second acquire and the
+     * second is a whole syscall.
+     *
+     * Not draining is the correction above: see console_sync(). */
     while (*s) console_putc(*s++);
-
-
 }
 
 /* --- The console as a channel endpoint --- */

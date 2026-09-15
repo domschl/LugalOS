@@ -794,3 +794,30 @@ whole prerequisite for touching `EMAC_SYSTEMTIMESECONDS_REG` and
 timestamping *deletes* phase 25's hardest open question rather than merely
 hosting it on faster silicon, depends on this phase having left no doubt
 about whether a frame arrived when the driver says it did.
+
+## Verified against primary sources, 2026-09-15
+
+Re-checked before resuming at Z4, since both decisions below are load-bearing
+and were originally taken from reasoning rather than from the page.
+
+* **RSF off.** `esp-idf/components/esp_hal_emac/emac_hal.c:190-201` reads
+  `#if SOC_IS(ESP32)` enable / `#else` disable, with the comment *"Disable
+  Receive Store Forward (Rx FIFO is only 256B)"*. The driver's claim is
+  verbatim correct and still current in the checked-out IDF.
+* **ACS off.** The TRM's `EMACPADCRCSTRIP` description: *"the MAC strips the
+  Pad or FCS field on the incoming frames only if the value of the length
+  field is less than 1,536 bytes. All received frames with length field
+  greater than or equal to 1,536 bytes are passed to the application without
+  stripping"*, and the receive-path text repeats it against `0x600`. 1536 is
+  0x600 and IPv4's EtherType is 0x0800, so ACS would never strip an Ethernet
+  II frame. Leaving it off and accounting for the 4-byte FCS in RDES0's length
+  is right.
+* **XIP window.** The TRM gives external flash as `0x4000_0000 ~ 0x43FF_FFFF`
+  (64 MB), so `linker/esp32p4.ld`'s `ASSERT(ADDR(.text) >= 0x40000000 &&
+  ADDR(.text) < 0x44000000)` matches the map exactly.
+
+**One thing found that Z4 will need and no note recorded:** the receive
+watchdog is **enabled by default**, and cuts frames above **2048 bytes**
+(DA+SA+LT+data+pad+FCS). Disabling it via `EMACWATCHDOG` still leaves a hard
+16 KB cut-off. Standard 1518-byte Ethernet is unaffected, so this is not a bug
+today -- it is a limit to know about before anything larger is attempted.

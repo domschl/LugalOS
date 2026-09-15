@@ -1053,16 +1053,37 @@ void uart_critical_puts(const char *s) {
 }
 
 /* See drivers/uart.h. Same batch as uart_flush(), written the bounded way. */
+/* Never blocks, and that is the whole requirement.
+ *
+ * Every printk_critical() calls this first, and printk_critical() is what the
+ * fatal trap handler reports through. Taking the batch lock unconditionally
+ * meant a hart that died while holding it silenced the crash report of the
+ * hart still running -- the machine stopped mid-dump with no indication that
+ * anything further had been attempted. Each captured instance of the `exec`
+ * wild jump ends exactly this way: two lines of register dump, then nothing,
+ * with the lines that would have named the faulting task never printed. The
+ * bug being reported is not this one, but this one is why the reports were
+ * unreadable.
+ *
+ * On a failed acquire the drain still happens. The batch slot is indexed by
+ * hart and no hart touches another's, so reading our own is correct without
+ * the lock; what the lock buys is *ordering* between two harts draining at
+ * once, and interleaved characters in a panic beat a panic nobody sees. */
 void uart_flush_critical(void) {
     char local[UART_TX_BATCH_CAP];
-    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    uintptr_t flags;
+    bool locked = spin_trylock_irqsave(&g_tx_batch_lock, &flags, 1000000u);
     unsigned h = hart_id();
     uint32_t len = g_tx_batch_len[h];
     if (len > 0) {
         memcpy(local, g_tx_batch[h], len);
         g_tx_batch_len[h] = 0;
     }
-    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+    if (locked) {
+        spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+    } else {
+        irq_restore(flags);
+    }
     for (uint32_t i = 0; i < len; i++) uart_critical_putc(local[i]);
 }
 

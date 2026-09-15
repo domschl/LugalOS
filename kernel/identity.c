@@ -325,7 +325,23 @@ static int identity_store_write(const identity_patch_t *patch) {
     idstore_t        *oldp = (idstore_t *)sc.base;
     idstore_writer_t *wp   = (idstore_writer_t *)((uint8_t *)sc.base + sizeof(idstore_t));
 
-    bool old_valid = idstore_read(dev, oldp) == IDSTORE_VALID;
+    /* UNPROVISIONED here is ordinary -- it is what a first `identity
+     * provision` sees. CORRUPT is not, and it is worth saying out loud,
+     * because idstore_read() folds **a device-level read failure** into
+     * IDSTORE_CORRUPT (see its contract in kernel/idstore.h). Either way
+     * old_valid goes false and every existing field is silently dropped from
+     * the record being rewritten, so a transient read error during a rename
+     * costs the uid, the device key and the grants without a word. If the I3
+     * flake is a flaky *read* rather than a flaky write, this is the line
+     * that will say so. */
+    idstore_state_t old_state = idstore_read(dev, oldp);
+    bool old_valid = old_state == IDSTORE_VALID;
+    if (old_state == IDSTORE_CORRUPT) {
+        printk("[Identity] existing record on '%s' unreadable (corrupt, or the "
+               "device read failed); rewriting from the patch alone -- any uid, "
+               "key or grants it held are being dropped\n",
+               dev->name ? dev->name : "?");
+    }
 
     uint8_t final_uid[NODE_UID_LEN];
     bool    have_uid = false;
@@ -432,7 +448,32 @@ static int identity_store_write(const identity_patch_t *patch) {
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
 
-    int result = (rc != 0) ? -1 : idstore_writer_commit(wp, dev);
+    /* Say which of the three ways this can fail actually happened, and what
+     * the device returned.
+     *
+     * All three collapsed into NODE_ID_ERR_WRITE_FAILED and the shell printed
+     * "the device write failed" for every one of them, which is how the I3
+     * flake (plan/open_issues.md) stayed unexplained across four soaks: the
+     * one message could mean a full record, a short heap, or a device that
+     * refused the write, and nothing distinguished them. scratch_acquire()
+     * above already names its own failure; these two did not.
+     *
+     * printk() and not printk_critical(): this is a diagnostic on an error
+     * path in task context, and printk() is a non-blocking ring append since
+     * Y5. cprintf() drains the ring before it writes, so the shell's own
+     * "identity name: ..." reply pulls this line out in front of it. */
+    int result;
+    if (rc != 0) {
+        printk("[Identity] record encode failed: add_field rc=%d, %u bytes of fields\n",
+               rc, (unsigned)wp->fields_len);
+        result = -1;
+    } else {
+        result = idstore_writer_commit(wp, dev);
+        if (result != 0) {
+            printk("[Identity] write_blocks('%s') returned %d for %u block(s) at lba 0\n",
+                   dev->name ? dev->name : "?", result, (unsigned)IDSTORE_BLOCKS);
+        }
+    }
     scratch_release(&sc);
     return result;
 }

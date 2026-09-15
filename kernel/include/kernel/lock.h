@@ -269,6 +269,16 @@ uintptr_t spin_lock_irqsave_bottom_at(spinlock_t *l, const char *name, const cha
 
 uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site);
 void      spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags);
+
+/* Bounded acquire, for callers that must not wait because the machine is
+ * already going down -- see the body in kernel/lock.c for the panic-path
+ * argument. On `true` the lock is held and must be released with
+ * spin_unlock_irqrestore() exactly as usual; on `false` nothing is held, but
+ * interrupts are masked either way and `flags` must still be restored. */
+bool      spin_trylock_irqsave_at(spinlock_t *l, uintptr_t *out_flags, uint32_t budget,
+                                  const char *name, const char *site);
+#define spin_trylock_irqsave(l, f, budget) \
+    spin_trylock_irqsave_at((l), (f), (budget), #l, __func__)
 void      ylock_acquire_at(ylock_t *l, const char *name, const char *site);
 
 #define spin_lock_irqsave(l)             spin_lock_irqsave_at((l), #l, __func__)

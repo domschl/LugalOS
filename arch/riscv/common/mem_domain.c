@@ -11,7 +11,20 @@ void mem_domain_init(mem_domain_t *d) {
     if (d) memset(d, 0, sizeof(*d));
 }
 
-uint32_t g_domain_activations[MAX_HARTS];
+/* Written by each hart to its own slot, read by whichever hart serves
+ * /proc/cpuinfo. `volatile` because that is a cross-hart read of a word
+ * another hart writes, and a plain object read and written by two harts is a
+ * data race in C's model even when every hart owns its own index.
+ *
+ * **This is hygiene, not a bug fix, and specifically not the cause of the X2
+ * failure** it would be tempting to blame (plan/open_issues.md). Three things
+ * rule that out: each hart touches only its own slot, so no update can be
+ * lost; the increments happen inside context switches that take and release
+ * g_sched_lock, so they are fenced; and the read happens seconds later, so
+ * staleness cannot explain a zero. That failure is a scheduling outcome the
+ * test assumed -- the counter moves only for a task that *has* a domain, and
+ * the only unpinned one is deliberately left for the scheduler to place. */
+volatile uint32_t g_domain_activations[MAX_HARTS];
 
 uint32_t mem_domain_activations(unsigned hart) {
     return (hart < MAX_HARTS) ? g_domain_activations[hart] : 0;
