@@ -577,6 +577,105 @@ sent, and the P4's unclaimed-frame latch (`net_unclaimed_count()` /
 moment) shows the head of a frame the laptop sent, with the right source MAC
 and EtherType.
 
+#### Z4 — DONE, 2026-09-15
+
+`drivers/emac_esp32p4.c` grew a `netif_t` (`eth0`), registered from
+`kernel/board.c` as `DEV_KIND_NETIF` exactly like the ENC28J60, so
+`net_stack_attach()` and `net_task_start()` in `kernel/main.c` pick it up
+with no P4-specific code above the driver. The frame path is zero-copy:
+`poll()` peeks at the head descriptor and holds it, `recv_frame()` copies out
+and releases. The FCS needed no new work — `emac_rx_peek()` was already
+stripping it, and the MAC checks it.
+
+Destination filtering is the MAC's, not a `memcmp()`: `MACFRAMEFILTER` = 0 is
+precisely "perfect unicast match against Address0, plus broadcast", so a
+frame that is neither is dropped before it occupies a descriptor.
+
+**Evidence, on the bench against the laptop at 192.168.77.1:**
+
+| direction | witness | result |
+|---|---|---|
+| P4 → laptop | 5 ICMP echo replies accepted by the laptop's own stack | 5/5, 0.6–2.6 ms RTT |
+| P4 → laptop | `net txtest 25`, counted at `enp0s31f6`'s `rx_packets` | 25 sent, **25** arrived (control window: 0) |
+| laptop → P4 | `emac stats` last-rx latch | `dst 02:4c:47:87:a4:b9 src f8:75:a4:68:1d:85 type 0x0800` |
+
+`tcpdump` is not installed on this laptop and raw sockets need root here, so
+the literal done-condition was met a better way in both directions: the
+laptop's kernel *accepting and answering* our frames is strictly stronger
+evidence than a capture showing bytes, and the NIC's own counter with a quiet
+control window pins the count exactly. The unclaimed-frame latch specifically
+was not exercised — reaching it needs a frame that is neither IPv4 nor ARP,
+and generating one requires `CAP_NET_RAW`. `net rxtest` remains the way to do
+it the day that is available.
+
+Locked in by `test_emac_frames` in `tests/hw/test_esp32p4.py` (18 tests now).
+
+##### The bug this milestone actually found, which is worth the space
+
+The receive address filter lives in the **RMII receive clock's domain, and
+that clock does not run until the link is up**. The station address is
+therefore written during bring-up into a register that takes it — it reads
+back byte-perfect, forever — while the *filter* never sees it and goes on
+comparing against its all-ones reset value.
+
+What that produces is a uniquely misleading failure:
+
+- broadcast is accepted, because `ff:ff:ff:ff:ff:ff` is a perfect match
+  against a filter still holding all ones;
+- so **ARP works**, and the peer resolves us and caches our address;
+- the link reports up, at the right speed and duplex;
+- `emac stats` shows the correct address in the correct register;
+- and every unicast frame addressed to us is silently dropped. Not counted
+  as an error anywhere — `missed` stays 0, because a filter reject is not a
+  missed frame.
+
+It was found by turning the filter off (`emac promisc on`): ping went from
+0/4 to 4/4 with nothing else changed. It was then narrowed by writing each
+register separately while the link was up — rewriting `MACFRAMEFILTER` alone
+changed nothing, rewriting **Address0 alone fixed it**, with the register's
+before and after values byte-identical. The write itself, not the value, is
+what takes effect.
+
+The fix: `emac_link_poll()` rewrites the address on every poll that sees the
+link up, and `emac_netif_poll()` — the netif's own `poll()` — calls
+`emac_link_poll()`. Both halves are load-bearing, and each one replaced an
+attempt that looked right and failed on hardware:
+
+1. **In `emac_apply_link()`, on a link change.** Wrong: the nastiest version
+   of this bug involves no change at all. `emac link` re-probes, the probe
+   resets the MAC and wipes Address0, the cable never moved, so the next poll
+   sees the same speed and duplex, reports no change, and nothing is
+   rewritten. Caught by the first hardware run: 17/18, Z4 failing *because*
+   Z3 ran before it and reset the MAC.
+2. **Once per link-up, keyed on a flag `emac_start()` cleared.** Wrong: the
+   single write it makes happens on the first poll that sees the link up,
+   which is precisely when the receive clock has just started and has not
+   settled. The write does not latch, the flag records that it did, and it is
+   never retried. Also 17/18.
+3. **Unconditionally, in `emac_link_poll()`.** Right, and still 0/4 on ping —
+   because after the interface has come up once, *nothing calls that
+   function*. `net/stack.c`'s `net_autoconfig_once()` asks `netif_link_up()`
+   only until the first time it answers yes, then latches `done`. From then
+   on the only caller is a human typing `net` or `emac link`.
+
+Hence the last piece: `poll()` is the one call that keeps coming, so it is
+what drives the link poll. Retrying forever is immune to all three failures —
+a write that does not take is simply followed by another one 200 ms later —
+and it costs one MDIO exchange per 200 ms, which `emac_link_poll()` was
+already rate-limited to.
+
+Two notes for anyone touching this driver:
+
+- `emac_probe()` and `emac_start()` reset the MAC and reinitialise the rings.
+  Calling `emac link` on a board with a live `eth0` is disruptive, not
+  read-only; `emac_netif_restarted()` is what keeps it from being worse than
+  disruptive (it drops any held descriptor, which would otherwise be handed
+  up after the DMA had taken the buffer back).
+- `emac stats` and `emac promisc on|off` exist because of this bug and stay
+  because the question recurs: an interface that is up and silent has several
+  causes that look identical from outside, and those two commands separate
+  them in one step each.
+
 ### Z5 — A node on the LAN
 
 `netif_register()`, the eFuse MAC and `board_unique_id()` from §1.5, and

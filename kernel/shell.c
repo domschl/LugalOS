@@ -2944,6 +2944,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* Z3. Negotiates and reports what was agreed. */
         emac_link_report();
         return;
+    } else if (strcmp(cmd_line, "emac stats") == 0) {
+        /* Z4. What the netif is actually doing at the register level. */
+        emac_stats_report();
+        return;
+    } else if (strcmp(cmd_line, "emac promisc on") == 0) {
+        emac_set_promiscuous(true);
+        return;
+    } else if (strcmp(cmd_line, "emac promisc off") == 0) {
+        emac_set_promiscuous(false);
+        return;
     } else if (strcmp(cmd_line, "emac loopback") == 0) {
         /* Z2. Proves the descriptor rings and the cache discipline with no
          * PHY and no cable in the picture. */

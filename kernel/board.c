@@ -17,6 +17,10 @@
 #include "drivers/enc28j60.h"
 #endif
 
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "drivers/emac_esp32p4.h"
+#endif
+
 #if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
@@ -164,8 +168,12 @@ static int   probe_enc28j60(void) { return enc28j60_init(); }
 static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
 #endif
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* No probe/get adapters: this board has nothing here to adapt. See the
- * driver-table note further down. */
+/* Z4, plan/phase28_esp32p4_ethernet.md: the P4's own Ethernet MAC and the
+ * IP101GRI it drives over RMII. A netif exactly like the ENC28J60 above --
+ * the part is on the SoC rather than on a SPI bus, which changes the driver
+ * and nothing at this seam. */
+static int   probe_emac(void) { return emac_netif_init(); }
+static void *get_emac(void)   { return emac_get_netif(); }
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -271,18 +279,20 @@ static const dev_driver_t dev_enc28j60 = {
 };
 #endif
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* E2, plan/phase27_esp32p4_bringup.md: nothing to add.
+/* E2, plan/phase27_esp32p4_bringup.md, amended by phase 28's Z4: this board
+ * had no device table of its own at all until the EMAC arrived. The entries
+ * board_register_devices() registers unconditionally still cover the rest --
+ * the RTC, sensor and EEPROM probes, the USB CDC stub, and UART0 with its two
+ * 9P links. There is still no block device and no second console.
  *
- * This board's whole device table is the four entries board_register_devices()
- * registers unconditionally below -- the RTC, sensor and EEPROM probes (which
- * find nothing, since no I2C controller is configured yet), the USB CDC stub,
- * and UART0 with its two 9P links. There is no block device, no netif, and no
- * second console.
- *
- * The arm exists so this is a stated absence rather than a fall-through. The
+ * The arm exists so this is a stated content rather than a fall-through. The
  * #else below is the QEMU one, and it registers virtio devices; a P4 build
  * reaching it would probe virtio-mmio addresses that are not virtio-mmio on
  * this chip. */
+static const dev_driver_t dev_emac = {
+    .name = "eth0", .kind = DEV_KIND_NETIF,
+    .probe = probe_emac, .get = get_emac,
+};
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -325,8 +335,7 @@ void board_register_devices(void) {
     dev_register(&dev_enc28j60);
 #endif
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* Nothing board-specific -- see the note above the (absent) driver
-     * table. */
+    dev_register(&dev_emac);
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);

@@ -97,4 +97,36 @@ void emac_link_report(void);
  * it can live in the hardware suite. */
 void emac_link_updown_test(void);
 
+/* --- Z4: frames ---------------------------------------------------------
+ *
+ * Brings the MAC up on the real PHY and registers it as `eth0`, after which
+ * net/stack.c pumps it like any other interface and everything above --
+ * ARP, IP, TCP, the 9P server -- is unchanged from the ENC28J60 and virtio
+ * paths. Returns 0, or -1 if the probe failed or no interface slot was free.
+ *
+ * Idempotent, so a board probe and a hand-typed bring-up cannot double
+ * register.
+ *
+ * The station address comes from the node identity (netif_register() fills
+ * it), and is programmed into the MAC's own receive filter: after this call
+ * the hardware accepts frames addressed to that address and to broadcast,
+ * and drops everything else without occupying a descriptor. */
+int emac_netif_init(void);
+
+/* The registered interface, or NULL before emac_netif_init() has succeeded.
+ * Shaped for kernel/board.c's `.get` hook, exactly like
+ * enc28j60_get_netif(). */
+struct netif;
+struct netif *emac_get_netif(void);
+
+/* `emac stats`: the registers that distinguish the several different reasons
+ * an interface can be up and silent -- the address filter, the DMA's
+ * missed-frame counters, the MAC's speed/duplex, the descriptor state. */
+void emac_stats_report(void);
+
+/* `emac promisc on|off`: turns the receive address filter off, so every
+ * frame on the wire is accepted. The measurement that tells "nothing is
+ * being sent to us" apart from "we are rejecting it". */
+void emac_set_promiscuous(bool on);
+
 #endif /* DRIVERS_EMAC_ESP32P4_H */

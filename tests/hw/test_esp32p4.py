@@ -571,9 +571,12 @@ def test_chibicc_compiles(b: Board) -> tuple[str, bool, str]:
     `parse.c` scoped its pools on `CONFIG_BOARD_RP2350` alone, so a second
     microcontroller silently got QEMU's figures and asked for a 304 KB arena.
 
-    This checks the compile only. Running the result is a separate matter:
-    `exec` of a loaded ELF does not currently work on this board, and never
-    has been tested here -- see plan/open_issues.md."""
+    This checks the compile only. Running the result is a separate matter and
+    now works: `exec` of a loaded ELF was broken on this board until phase 33
+    found that `fence.i` alone is not enough here -- L1 data is writeback and
+    internal memory is reached through it, so freshly written code had to be
+    written back before the I-cache was invalidated. See
+    plan/phase33_stability_hunt.md."""
     name = "chibicc compiles a C file on the P4 (phase 32)"
     out = b.console_session.cmd("cc /flash0/hello.c /flash0/cctest.elf", deadline=30.0)
     if "No memory for a" in out:
@@ -611,6 +614,115 @@ def test_emac_phy(b: Board) -> tuple[str, bool, str]:
     return name, True, "IP101G at MDIO address 1, RMII reference confirmed"
 
 
+# The subnet this suite uses to talk to the board over Ethernet. The laptop
+# end is a static address on a directly-cabled interface; the board end is
+# handed to it by the test and never persisted. Both are outside any range a
+# home router hands out, so plugging the board into a real LAN instead does
+# not collide with anything.
+Z4_BOARD_IP = "192.168.77.2"
+Z4_HOST_IP = "192.168.77.1"
+Z4_NETMASK = "255.255.255.0"
+
+
+def _z4_host_interface() -> str | None:
+    """The local interface holding Z4_HOST_IP, or None.
+
+    None means "this machine is not cabled to the board", which is a skip and
+    not a failure -- the same convention test_emac_link() uses for a missing
+    cable."""
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if f"{Z4_HOST_IP}/" in line:
+            parts = line.split()
+            if len(parts) > 1:
+                return parts[1]
+    return None
+
+
+def _rx_packets(ifname: str) -> int | None:
+    try:
+        return int(Path(f"/sys/class/net/{ifname}/statistics/rx_packets").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def test_emac_frames(b: Board) -> tuple[str, bool, str]:
+    """Z4, plan/phase28_esp32p4_ethernet.md: frames on a real wire.
+
+    Two directions, checked with the laptop as the witness at both ends.
+
+    Inbound is the one that matters most, because it is where this board hides
+    a genuinely nasty fault. The MAC's receive filter lives in the RMII
+    receive clock's domain, and that clock does not run until the link is up
+    -- so a station address programmed during bring-up lands in the register
+    (it reads back perfectly) without ever reaching the filter, which goes on
+    comparing against its all-ones reset value. Broadcast then passes and
+    unicast does not: ARP works, the peer resolves us and caches our address,
+    the link reports up, and every packet addressed to us is dropped. A ping
+    is the cheapest thing that notices, so a ping is what this asserts.
+
+    Outbound is counted at the far end rather than trusted from the board's
+    own tx counter, using the host NIC's rx_packets. A control window with no
+    frames sent establishes the segment is quiet enough for that delta to
+    mean something."""
+    name = "EMAC carries frames on a real wire (Z4)"
+
+    host_if = _z4_host_interface()
+    if host_if is None:
+        return name, True, f"SKIPPED (no local interface on {Z4_HOST_IP})"
+    if "link DOWN" in b.console_session.cmd("emac link", deadline=20.0):
+        return name, True, "SKIPPED (no carrier -- cable out?)"
+
+    out = b.console_session.cmd(
+        f'(net-config "{Z4_BOARD_IP}" "{Z4_NETMASK}")', deadline=15.0)
+    if Z4_BOARD_IP not in out:
+        return name, False, f"net-config refused: {out.strip()[-200:]}"
+
+    # Inbound: unicast has to reach us through the hardware address filter.
+    replies = 0
+    for _ in range(3):
+        try:
+            r = subprocess.run(["ping", "-c", "3", "-W", "1", Z4_BOARD_IP],
+                               capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as e:
+            return name, False, f"could not run ping: {e}"
+        m = re.search(r"(\d+) received", r.stdout)
+        replies = int(m.group(1)) if m else 0
+        if replies:
+            break
+    if not replies:
+        stats = b.console_session.cmd("emac stats", deadline=15.0)
+        return name, False, ("no ping replies -- unicast is not reaching the "
+                             f"board. {stats.strip()[-300:]}")
+
+    # Outbound: counted by the host's NIC, against a quiet control window.
+    before = _rx_packets(host_if)
+    time.sleep(1.5)
+    control = _rx_packets(host_if)
+    if before is None or control is None:
+        return name, True, f"{replies} ping replies; host rx counter unreadable"
+    noise = control - before
+
+    sent_from = _rx_packets(host_if)
+    out = b.console_session.cmd("net txtest 25", deadline=30.0)
+    m = re.search(r"(\d+)/(\d+) test frames sent", out)
+    if not m:
+        return name, False, f"txtest said nothing usable: {out.strip()[-200:]}"
+    sent = int(m.group(1))
+    arrived = (_rx_packets(host_if) or 0) - (sent_from or 0)
+    if arrived < sent - 2:
+        return name, False, (f"{sent} frames sent, only {arrived} reached "
+                             f"{host_if} (background noise was {noise})")
+
+    return name, True, (f"{replies}/3 ping replies through the address filter; "
+                        f"{arrived}/{sent} test frames seen on {host_if} "
+                        f"(noise {noise})")
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -629,6 +741,7 @@ TESTS = [
     test_emac_phy,
     test_emac_loopback,
     test_emac_link,
+    test_emac_frames,
 ]
 
 

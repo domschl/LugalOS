@@ -18,10 +18,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
+#include "net/netif.h"
 #include "drivers/emac_esp32p4.h"
 #include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
@@ -572,7 +574,21 @@ static uint32_t g_tx_next;
 #define  MACCFG_JD              (1u << 22)  /* jabber disable */
 #define  MACCFG_WD              (1u << 23)  /* watchdog disable */
 #define EMAC_MACFRAMEFILTER (EMAC_BASE + 0x0004)
+#define  FILTER_PR              (1u << 0)   /* promiscuous */
+#define  FILTER_PM              (1u << 4)   /* pass all multicast */
+#define  FILTER_DBF             (1u << 5)   /* 1 = BLOCK broadcast; note the sense */
 #define  FILTER_RA              (1u << 31)  /* receive all, filter nothing */
+
+/* The station address the receive filter matches against (Z4). Offsets and
+ * byte order from IDF's emac_ll_set_addr() and the generated
+ * soc/emac_reg.h, not from inference -- getting the halves backwards would
+ * produce a filter that silently matches nothing.
+ *
+ * LOW holds bytes 0..3 little-endian; HIGH's low 16 bits hold bytes 4 and 5.
+ * HIGH bit 31 (AE, "address enable") is documented read-only and always 1 on
+ * this core, so address 0 cannot be disabled and nothing needs to set it. */
+#define EMAC_MACADDR0HIGH   (EMAC_BASE + 0x0040)
+#define EMAC_MACADDR0LOW    (EMAC_BASE + 0x0044)
 
 /* Note the order: RX base comes BEFORE TX base. Swapping them is an easy
  * mistake with a confusing symptom (the DMA walks the wrong list and nothing
@@ -582,6 +598,13 @@ static uint32_t g_tx_next;
 #define EMAC_DMA_RXBASE     (EMAC_BASE + 0x100c)
 #define EMAC_DMA_TXBASE     (EMAC_BASE + 0x1010)
 #define EMAC_DMA_STATUS     (EMAC_BASE + 0x1014)
+/* Frames the controller itself threw away: bits 15:0 count "no descriptor was
+ * free", bit 16 is that counter's overflow, bits 27:17 count frames lost to
+ * the receive FIFO overflowing. The distinction matters when frames go
+ * missing -- a DA-filter reject is invisible here, so a zero in this register
+ * alongside frames that never arrived means they were filtered out, not
+ * dropped for want of a buffer. */
+#define EMAC_DMA_MISSEDFRAME (EMAC_BASE + 0x1020)
 #define EMAC_DMA_OPMODE     (EMAC_BASE + 0x1018)
 #define  OPMODE_SR              (1u << 1)   /* start receive */
 #define  OPMODE_ST              (1u << 13)  /* start transmit */
@@ -665,6 +688,10 @@ static void emac_rings_init(void) {
     REG(EMAC_DMA_TXBASE) = (uint32_t)(uintptr_t)g_tx_desc;
 }
 
+/* Defined with the netif, further down: drops any half-received frame and
+ * held by the netif, whose descriptor the DMA has just taken back. */
+static void emac_netif_restarted(void);
+
 /* Brings the DMA and MAC up. `loopback` selects the MAC's internal loopback,
  * which is what lets Z2 prove the rings with no PHY and no cable in the
  * picture -- one candidate cause per failure, which is phase 27 §0's rule. */
@@ -717,13 +744,36 @@ static void emac_start(bool loopback) {
     if (loopback) cfg |= MACCFG_LM;
     REG(EMAC_MACCONFIG) = cfg;
 
-    /* Filter nothing. In loopback the destination address is whatever the
-     * test wrote, and Z4 will set a real address; refusing frames here would
-     * only mean debugging the filter instead of the rings. */
-    REG(EMAC_MACFRAMEFILTER) = FILTER_RA;
+    /* In loopback, filter nothing: the destination address is whatever the Z2
+     * test wrote, and refusing frames there would mean debugging the filter
+     * instead of the rings.
+     *
+     * On the wire (Z4), a filter register of **zero** is exactly what this
+     * driver wants, which is worth spelling out because "0" reads like "not
+     * configured yet":
+     *
+     *   PR  = 0  not promiscuous
+     *   HUC = 0  unicast destinations are matched *perfectly* against
+     *            Address0 -- the address emac_set_mac() programmed -- rather
+     *            than through the hash table
+     *   PM  = 0  and HMC = 0, so multicast is dropped
+     *   DBF = 0  broadcast passes. The sense is inverted: the bit *disables*
+     *            broadcast, so leaving it clear is what lets ARP work
+     *   PCF = 00 MAC control frames (pause) are handled by the MAC and never
+     *            reach us, which is what we want with flow control off
+     *
+     * That is precisely phase 28 Z4's requirement -- our unicast plus
+     * broadcast -- with the hardware doing the comparison instead of a
+     * memcmp() on every arriving frame. */
+    REG(EMAC_MACFRAMEFILTER) = loopback ? FILTER_RA : 0u;
 
     REG(EMAC_MACCONFIG) = cfg | MACCFG_TE | MACCFG_RE;
     REG(EMAC_DMA_OPMODE) |= OPMODE_ST | OPMODE_SR;
+
+    /* The rings were just reinitialised, so any descriptor the netif was
+     * holding is now owned by the DMA again -- forget it rather than hand its
+     * buffer up later. */
+    emac_netif_restarted();
 }
 
 /* --- one frame out ------------------------------------------------------ */
@@ -994,6 +1044,24 @@ static bool        g_link_valid;
  * MAC's own idea of the line rate is MACCONFIG.FES, and the clock that
  * actually shifts the bits is HP_SYS_CLKRST's. Setting one without the other
  * is the failure mode this function exists to make impossible. */
+/* The station address the receive filter matches against.
+ *
+ * Kept in a static as well as written to the register because it has to be
+ * written **again every time the link comes up** -- see the note in
+ * emac_apply_link(). */
+static uint8_t g_station_mac[NETIF_MAC_LEN];
+static bool    g_station_mac_valid;
+
+static void emac_set_mac(const uint8_t mac[NETIF_MAC_LEN]) {
+    if (mac != g_station_mac) {
+        memcpy(g_station_mac, mac, NETIF_MAC_LEN);
+        g_station_mac_valid = true;
+    }
+    REG(EMAC_MACADDR0LOW)  = ((uint32_t)mac[3] << 24) | ((uint32_t)mac[2] << 16) |
+                             ((uint32_t)mac[1] << 8)  |  (uint32_t)mac[0];
+    REG(EMAC_MACADDR0HIGH) = ((uint32_t)mac[5] << 8)  |  (uint32_t)mac[4];
+}
+
 static void emac_apply_link(const emac_link_t *l) {
     uint32_t div = (l->speed_mbit == 10u) ? EMAC_CLK_DIV_10M : EMAC_CLK_DIV_100M;
     reg_modify(PERI_CLK_CTRL01, EMAC_RX_CLK_DIV_NUM_M, div);
@@ -1005,6 +1073,33 @@ static void emac_apply_link(const emac_link_t *l) {
     if (l->speed_mbit == 100u) cfg |= MACCFG_FES;
     if (l->full_duplex)        cfg |= MACCFG_DM;
     REG(EMAC_MACCONFIG) = cfg;
+
+    /* (The station address is re-applied by emac_link_poll(), not here: this
+     * function only runs on a *change*, and the case that bit hardest was a
+     * MAC reset with the link never appearing to change. See the long note
+     * there.)
+     *
+     * Historical note kept because it explains the mechanism.
+     *
+     * Address0 is written once during bring-up, before auto-negotiation has
+     * finished. At that point there is no link, so the RMII receive clock is
+     * not running -- the divisors two lines above are what start it -- and
+     * the address filter, which lives in that clock domain, never picks the
+     * value up. The register itself takes the write: reading it back gives
+     * exactly what was written, which is what makes this so slow to find.
+     * The *filter* goes on comparing against its reset value, all ones.
+     *
+     * The symptom that produces is precise and misleading: broadcast frames
+     * are accepted (ff:ff:ff:ff:ff:ff is a perfect match against a filter
+     * still holding all ones), so ARP works, the link looks healthy, the peer
+     * resolves us and caches our address -- and then every unicast frame
+     * addressed to us is silently dropped. `emac stats` shows the right
+     * address in the right register while nothing arrives.
+     *
+     * Re-applying it here fixes it for every link-up, not just the first, so
+     * a replugged cable or a renegotiated speed cannot resurrect the problem.
+     * Measured on the bench 2026-09-15: before this, ping was 0/4 with the
+     * filter on and 4/4 with it off; after, 4/4 with the filter on. */
 }
 
 /* Starts auto-negotiation. Advertises everything this MAC can actually do --
@@ -1093,6 +1188,42 @@ bool emac_link_poll(emac_link_t *out) {
     g_link = l;
     g_link_valid = true;
     if (changed && l.up) emac_apply_link(&l);
+
+    /* Re-apply the station address to the receive filter on every poll that
+     * sees the link up. Two register writes per poll, and the poll above is
+     * rate-limited to one MDIO exchange per 200 ms, so the cost is nil.
+     *
+     * Unconditional, and that is the point. The filter only latches Address0
+     * while the RMII receive clock runs -- i.e. while the link is up -- so a
+     * write made at any other time reads back byte-perfect and never reaches
+     * the filter, which goes on comparing against its all-ones reset value.
+     * Broadcast then passes, ARP works, the peer caches our address, and
+     * every unicast frame to us is dropped: see the long note in
+     * emac_apply_link() for the full symptom.
+     *
+     * Three narrower versions were tried, and each one looked right and
+     * failed on hardware. They are listed because every one of them is the
+     * obvious thing to try again:
+     *
+     *   - in emac_apply_link(), i.e. on a link *change*. Wrong because the
+     *     worst case has no change at all -- `emac link` re-probes, the probe
+     *     resets the MAC and wipes Address0, the cable never moved, so the
+     *     next poll sees the same speed and duplex and nothing is rewritten.
+     *   - once per link-up, keyed on a flag emac_start() cleared. Wrong
+     *     because the one write it makes happens on the first poll that sees
+     *     the link up, which is exactly when the receive clock has just
+     *     started and has not settled. The write does not latch, the flag
+     *     says it did, and it is never retried.
+     *   - unconditionally, here, but left to whoever happened to call this
+     *     function. Wrong because after the interface has come up once, that
+     *     is nobody: net/stack.c asks netif_link_up() only until it first
+     *     answers yes. Which is why emac_netif_poll() now drives this --
+     *     poll() is the only callback the stack keeps calling.
+     *
+     * Retrying forever is immune to all three: a write that does not take is
+     * simply followed by another one 200 ms later. */
+    if (l.up && g_station_mac_valid) emac_set_mac(g_station_mac);
+
     if (out) *out = l;
     return l.up;
 }
@@ -1214,4 +1345,314 @@ void emac_link_updown_test(void) {
             (unsigned)down_ms, (unsigned)up_ms, (unsigned)l.speed_mbit,
             l.full_duplex ? "full" : "half");
     cprintf("EMAC linktest: PASSED\n");
+}
+
+/* --- Z4: the netif ------------------------------------------------------
+ *
+ * Everything below turns the three primitives Z2 proved -- emac_tx_buffer() /
+ * emac_tx_submit(), emac_rx_peek() / emac_rx_release() -- into the shape
+ * net/netif.h specifies, and points them at the real PHY instead of the MAC's
+ * internal loopback.
+ *
+ * The FCS is not handled here. emac_rx_peek() already strips it (and explains
+ * at length why ACS cannot), so what this layer hands up carries no FCS, as
+ * netif.h requires. The *check* is the MAC's: a frame whose CRC failed sets
+ * RDES0_ES and emac_rx_peek() never returns it.
+ *
+ * Destination filtering is likewise not a memcmp() here -- emac_start() puts
+ * it in the address filter, where the hardware compares every arriving frame
+ * against Address0 for free. A frame that is neither ours nor broadcast is
+ * dropped before it ever occupies a descriptor.
+ */
+
+static netif_t g_netif;
+static bool    g_netif_registered;
+
+/* The zero-copy hand-off between poll() and recv_frame().
+ *
+ * poll() peeks at the head descriptor and *holds* it -- the bytes stay in the
+ * DMA buffer, and nothing is copied until recv_frame() asks for them. The
+ * ENC28J60 driver latches into a private 1514-byte buffer instead; it has to,
+ * because its frame lives behind an SPI bus rather than in memory the CPU can
+ * address. Here the buffer already is memory, so the copy would be pure cost.
+ *
+ * The obligation that comes with holding a descriptor is that it has to be
+ * released on *every* path out, including the ones that are not a successful
+ * receive -- a frame too big for the caller's buffer, or a caller that polls
+ * and never receives. Miss one and the ring stops at that descriptor
+ * permanently, which presents as "the link is up and no traffic arrives".
+ * g_rx_held is what makes that auditable. */
+static const uint8_t *g_rx_held;
+static uint32_t       g_rx_held_len;
+
+/* Frames dropped with RDES0_ES set, or split across descriptors. Counted
+ * here and not in netif_t: net/netif.h reserves its counters for what the
+ * netif_send()/netif_recv() wrappers can see, precisely so two drivers cannot
+ * disagree about what they mean. A hardware-level error is this driver's own
+ * business, and its own number. */
+static uint32_t g_rx_hw_errors;
+
+/* The Ethernet header of the last frame the MAC accepted, so `emac stats` can
+ * answer "what is actually addressed to us on this wire" without a capture
+ * host. Fourteen bytes: destination, source, EtherType. */
+static uint8_t  g_last_hdr[14];
+static bool     g_last_hdr_valid;
+
+static int emac_netif_poll(netif_t *nif) {
+    (void)nif;
+    if (!g_netif_registered) return -1;
+
+    /* Pump the link, which also rewrites the station address into the receive
+     * filter (see emac_link_poll()). Rate-limited inside emac_link_poll() to
+     * one MDIO exchange per 200 ms, so calling it from this hot path costs
+     * nothing in the common case.
+     *
+     * It has to be driven from *here*, and that is the whole point. The
+     * obvious homes for it are all functions nobody calls often enough:
+     * net/stack.c asks netif_link_up() only until the first time it answers
+     * yes (net_autoconfig_once() latches `done`), so after the interface has
+     * come up once, the only thing that ever calls emac_link_poll() again is
+     * a human typing `net` or `emac link`. Anything that resets the MAC after
+     * that point -- `emac link` itself does, via emac_probe() -- would wipe
+     * Address0 out of the filter with nothing left running to put it back,
+     * and the board would answer ARP and drop every unicast frame until the
+     * next reboot. poll() is the one call that keeps coming. */
+    (void)emac_link_poll(NULL);
+
+    if (g_rx_held) return 1;            /* already holding one; idempotent */
+
+    /* Bounded, because a burst of errored frames must not turn a poll into an
+     * unbounded loop -- netif_t's poll() is called from tight loops and is
+     * required never to block. One pass over the ring is the natural bound:
+     * anything still queued is picked up by the next poll. */
+    for (unsigned i = 0; i < EMAC_RX_DESC_COUNT; i++) {
+        uint32_t len = 0;
+        const uint8_t *p = emac_rx_peek(&len);
+        if (p) {
+            if (len > NETIF_FRAME_MAX) {
+                /* Longer than anything this stack can carry. The receive
+                 * watchdog already cuts frames above 2048 bytes, so this is
+                 * the band between 1514 and that -- a jumbo frame from a
+                 * misconfigured peer, not a hardware fault. */
+                g_rx_hw_errors++;
+                emac_rx_release();
+                continue;
+            }
+            if (len >= sizeof(g_last_hdr)) {
+                memcpy(g_last_hdr, p, sizeof(g_last_hdr));
+                g_last_hdr_valid = true;
+            }
+            g_rx_held = p;
+            g_rx_held_len = len;
+            return 1;
+        }
+        /* NULL means either "nothing yet" or "an errored frame is sitting at
+         * the head". They are distinguished by ownership: if the DMA still
+         * owns the descriptor there is genuinely nothing there, and releasing
+         * it would hand the DMA a descriptor it already has. */
+        emac_desc_t *d = &g_rx_desc[g_rx_next];
+        desc_from_dma(d);
+        if (d->des0 & RDES0_OWN) return 0;      /* empty ring; done */
+        g_rx_hw_errors++;
+        emac_rx_release();                       /* drop it and look again */
+    }
+    return 0;
+}
+
+static int emac_netif_recv_frame(netif_t *nif, uint8_t *buf, uint32_t max_len) {
+    (void)nif;
+    if (!g_rx_held || !buf) return -1;
+    if (g_rx_held_len > max_len) {
+        /* Does not fit. Release anyway -- see g_rx_held's comment; a frame we
+         * refuse must not become a frame that stops the ring. */
+        g_rx_hw_errors++;
+        g_rx_held = NULL;
+        g_rx_held_len = 0;
+        emac_rx_release();
+        return -1;
+    }
+    uint32_t n = g_rx_held_len;
+    memcpy(buf, g_rx_held, n);
+    g_rx_held = NULL;
+    g_rx_held_len = 0;
+    emac_rx_release();
+    return (int)n;
+}
+
+static int emac_netif_send_frame(netif_t *nif, const uint8_t *buf, uint32_t len) {
+    (void)nif;
+    if (!g_netif_registered || !buf) return -1;
+    if (len == 0 || len > NETIF_FRAME_MAX) return -1;
+
+    /* Frames shorter than 60 bytes are NOT rejected and NOT padded here: the
+     * MAC pads to the 60-byte minimum itself and appends the FCS, which is
+     * the same division of labour the FCS has on the way in. Padding in
+     * software would send the wire a frame with our own zeros in it and hide
+     * whether the hardware was doing its job. */
+
+    /* Wait for the DMA to release the descriptor. Bounded, and the bound is
+     * generous by design: at 100 Mbit/s a full 1514-byte frame is ~121 us on
+     * the wire, so 10 ms is roughly eighty frame times -- long enough that
+     * hitting it means the DMA is wedged rather than busy. netif.h permits
+     * blocking "for as long as the hardware needs to accept the buffer", and
+     * this is that, with a ceiling. */
+    uint8_t *dst = NULL;
+    for (unsigned i = 0; i < 1000u; i++) {
+        dst = emac_tx_buffer();
+        if (dst) break;
+        time_delay_us(10);
+    }
+    if (!dst) return -1;
+
+    memcpy(dst, buf, len);
+    if (emac_tx_submit(len) != 0) return -1;
+    return (int)len;
+}
+
+static bool emac_netif_link_up(netif_t *nif) {
+    (void)nif;
+    if (!g_netif_registered) return false;
+    emac_link_t l = { 0 };
+    return emac_link_poll(&l);
+}
+
+int emac_netif_init(void) {
+    if (g_netif_registered) return 0;       /* idempotent, like emac_probe() */
+
+    int rc = emac_probe();
+    if (rc != 0) {
+        printk("[EMAC] probe failed (%d) -- no interface registered; try `emac scan`\n", rc);
+        return -1;
+    }
+
+    memset(&g_netif, 0, sizeof(g_netif));
+    g_netif.name       = "eth0";
+    g_netif.poll       = emac_netif_poll;
+    g_netif.send_frame = emac_netif_send_frame;
+    g_netif.recv_frame = emac_netif_recv_frame;
+    g_netif.link_up    = emac_netif_link_up;
+
+    /* .mac is left zeroed deliberately: this MAC has no address of its own
+     * (there is no EEPROM on the RMII side and the eFuse MAC belongs to the
+     * radio), so netif_register() fills it from the node identity -- exactly
+     * the case its comment describes. Same as the ENC28J60. */
+    if (netif_register(&g_netif) != 0) {
+        printk("[EMAC] netif_register() failed -- no free interface slot\n");
+        return -1;
+    }
+    g_netif_registered = true;
+
+    /* This write is not what makes the filter work -- emac_link_poll() is,
+     * on every poll that sees the link up, and the long comment there says
+     * why. It is done here anyway so g_station_mac is populated before
+     * anything can poll, and so the register holds the right value from the
+     * first instant rather than the all-ones the probe's reset left.
+     *
+     * Do not be tempted to "simplify" this by trusting it: a readback here
+     * succeeds whether or not the filter ever saw the address, which is
+     * precisely what made this bug take an afternoon. `emac stats` is the
+     * honest diagnostic, and a ping is the only real test. */
+    emac_set_mac(g_netif.mac);
+    emac_start(false);
+
+    if (emac_phy_autoneg_start() != 0) {
+        printk("[EMAC] auto-negotiation did not start (PHY at %d not answering)\n",
+               (int)CONFIG_EMAC_PHY_ADDR);
+        /* Not fatal: the interface stays registered and link_up() will keep
+         * reporting false, which is the honest answer and the one net/stack.c
+         * already knows how to wait on. */
+    }
+
+    char macstr[18];
+    netif_mac_str(g_netif.mac, macstr);
+    emac_link_t l = { 0 };
+    bool up = emac_link_poll(&l);
+    printk("[EMAC] eth0 registered, mac %s, link %s\n", macstr,
+           up ? "UP" : "negotiating");
+    return 0;
+}
+
+netif_t *emac_get_netif(void) {
+    return g_netif_registered ? &g_netif : NULL;
+}
+
+/* --- Z4 diagnostics ------------------------------------------------------
+ *
+ * `emac stats`. A netif that is up and silent has several possible causes
+ * that look identical from the outside -- the address filter rejecting
+ * everything, the DMA running out of descriptors, the FIFO overflowing, the
+ * PHY having renegotiated to something the MAC is not set to -- and this
+ * prints the register that distinguishes each. Written when unicast frames
+ * were not arriving while broadcast was, which is exactly the case where
+ * "the link is up" tells you nothing.
+ */
+void emac_stats_report(void) {
+    if (!g_netif_registered) {
+        cprintf("EMAC: no interface registered (`emac link` for the PHY).\n");
+        return;
+    }
+    uint32_t lo = REG(EMAC_MACADDR0LOW), hi = REG(EMAC_MACADDR0HIGH);
+    uint32_t missed = REG(EMAC_DMA_MISSEDFRAME);
+    char macstr[18];
+    netif_mac_str(g_netif.mac, macstr);
+
+    cprintf("EMAC %s: mac %s\n", g_netif.name, macstr);
+    cprintf("  filter   0x%08lx  %s\n", (unsigned long)REG(EMAC_MACFRAMEFILTER),
+            (REG(EMAC_MACFRAMEFILTER) & FILTER_RA) ? "PROMISCUOUS (receive all)"
+                                                   : "our unicast + broadcast");
+    cprintf("  addr0    hi 0x%08lx lo 0x%08lx -> %02x:%02x:%02x:%02x:%02x:%02x\n",
+            (unsigned long)hi, (unsigned long)lo,
+            (unsigned)(lo & 0xff), (unsigned)((lo >> 8) & 0xff),
+            (unsigned)((lo >> 16) & 0xff), (unsigned)((lo >> 24) & 0xff),
+            (unsigned)(hi & 0xff), (unsigned)((hi >> 8) & 0xff));
+    cprintf("  maccfg   0x%08lx   dma status 0x%08lx   opmode 0x%08lx\n",
+            (unsigned long)REG(EMAC_MACCONFIG), (unsigned long)REG(EMAC_DMA_STATUS),
+            (unsigned long)REG(EMAC_DMA_OPMODE));
+    cprintf("  missed   %lu no-descriptor, %lu fifo-overflow%s\n",
+            (unsigned long)(missed & 0xffffu), (unsigned long)((missed >> 17) & 0x7ffu),
+            (missed & (1u << 16)) ? " (counter wrapped)" : "");
+    cprintf("  rx       %lu frames, %lu bytes, %lu hardware errors/oversize\n",
+            (unsigned long)g_netif.rx_frames, (unsigned long)g_netif.rx_bytes,
+            (unsigned long)g_rx_hw_errors);
+    cprintf("  tx       %lu frames, %lu bytes, %lu errors\n",
+            (unsigned long)g_netif.tx_frames, (unsigned long)g_netif.tx_bytes,
+            (unsigned long)g_netif.tx_errors);
+    if (g_last_hdr_valid) {
+        cprintf("  last rx  dst %02x:%02x:%02x:%02x:%02x:%02x  src "
+                "%02x:%02x:%02x:%02x:%02x:%02x  type 0x%02x%02x\n",
+                g_last_hdr[0], g_last_hdr[1], g_last_hdr[2],
+                g_last_hdr[3], g_last_hdr[4], g_last_hdr[5],
+                g_last_hdr[6], g_last_hdr[7], g_last_hdr[8],
+                g_last_hdr[9], g_last_hdr[10], g_last_hdr[11],
+                g_last_hdr[12], g_last_hdr[13]);
+    } else {
+        cprintf("  last rx  (nothing received yet)\n");
+    }
+}
+
+/* `emac promisc on|off`. Turning the address filter off is the one
+ * measurement that separates "the wire is quiet" from "we are refusing what
+ * is on it": if traffic appears the moment filtering stops, the frames were
+ * always arriving and the filter was rejecting them. Left as a command
+ * rather than a build option because the question recurs on every new
+ * network this board is plugged into. */
+void emac_set_promiscuous(bool on) {
+    if (!g_netif_registered) {
+        cprintf("EMAC: no interface registered.\n");
+        return;
+    }
+    REG(EMAC_MACFRAMEFILTER) = on ? FILTER_RA : 0u;
+    cprintf("EMAC: receive filter %s (0x%08lx)\n",
+            on ? "OFF -- accepting every frame on the wire"
+               : "on -- our unicast and broadcast only",
+            (unsigned long)REG(EMAC_MACFRAMEFILTER));
+}
+
+/* Called from emac_start(), i.e. every time the rings are reinitialised.
+ * Separate from the statics it touches only because emac_start() is defined
+ * long before the netif is. The station address needs nothing here: it is
+ * rewritten by every link-up poll regardless. */
+static void emac_netif_restarted(void) {
+    g_rx_held = NULL;
+    g_rx_held_len = 0;
 }
