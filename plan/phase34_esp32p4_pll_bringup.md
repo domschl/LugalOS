@@ -1,7 +1,15 @@
-# Phase 34 — The P4 stops running at a tenth of its speed
+# Phase 34 — The P4 stops running at a tenth of its speed, on half its cores
 
 **Status: planned, not started. Written 2026-09-16**, from measurements taken
 the same day with both boards on the bench.
+
+**Two parts, sequenced, one phase.** The clock (34.1–34.7) and the second HP
+core (34.8–34.13). They are one phase because they share an instrument, a
+board and a failure mode: both are invisible except in a measurement, and
+`perft` is the measurement for both. They are sequenced because the clock is
+9× for less risk than the core's 2×, and because a second core brought up on a
+40 MHz board would have every timing conclusion re-taken the moment the clock
+moved anyway.
 
 **Milestone scheme: `34.1`, `34.2`, … — numbers, not a letter.**
 `plan/phase32_esp32p4_execute_in_place.md` predicted this: *"The letter pool is
@@ -42,13 +50,20 @@ the first one that makes the cost legible rather than theoretical.
 for a 150 MHz `clk_sys`, in assembly, before C exists. The P4 has no
 equivalent and never had one.
 
-**Why this comes before the second HP core.** `plan/phase27_esp32p4_bringup.md:2405`
-defers the second core, correctly. It is worth noting how much it defers: 9×
-from the clock against 2× from a second core, for less work and with no
-scheduler, no cache-coherence and no bring-up handshake involved. Perft on the
-P4 today prints `cores used: 1` and takes 557 s at depth 4 whether you ask for
-one core or two, because there is only one — and even a perfect second core
-would leave this board behind an RP2350.
+**Why the clock comes first and the core second.**
+`plan/phase27_esp32p4_bringup.md:2405` defers the second core, and its reason —
+*"bringing up SMP on a platform whose single-core behaviour is not yet trusted
+inverts the ordering this phase is built on"* — is the same reason it is the
+second half of this one rather than the first. The sizes settle the order: 9×
+from the clock, against at most 2× from the core, for less work and with no
+scheduler, no stall register and no bring-up handshake involved. A second core
+on a 40 MHz board would also mean re-taking every measurement it produced the
+moment the clock moved.
+
+Both halves are needed to get what this chip is. Perft on the P4 today prints
+`cores used: 1` and takes 557 s at depth 4 whether one core or two is asked
+for; the clock alone leaves it a fast single-core board with an idle core beside
+it.
 
 ## 1. What the chip actually offers
 
@@ -175,7 +190,73 @@ garbage instructions, which is indistinguishable from a corrupt image — the
 same diagnostic trap `arch/riscv/common/xip_esp32p4.c` documents. 34.5's
 done-condition therefore includes a filesystem read-back, not just a prompt.
 
-## 4. Milestones
+## 4. The second core: what this chip actually requires
+
+Established from IDF and the toolchain, 2026-09-16, and split into what is
+already true of this tree and what is missing.
+
+### 4.1 Three things that are already right
+
+* **`mhartid` is the core id.** IDF's `rv_utils_get_core_id()`
+  (`components/riscv/include/riscv/rv_utils.h:91`) reads `mhartid` on every
+  RISC-V target with more than one core, this chip included. So
+  `arch/riscv/common/entry.S`'s existing `csrr t0, mhartid` dispatch is correct
+  here, and the **QEMU-shaped** secondary path — `#if CONFIG_ENABLE_SMP &&
+  !defined(CONFIG_BOARD_RP2350)`, park in `.Lsecondary_wait` on
+  `g_smp_release` — is the structurally right one for this board. RP2350 needed
+  its own entry because its core 1 lives in a bootrom; this one does not.
+* **The atomics are real.** `-march=rv32imac_zicsr_zifencei`
+  (`CMakeLists.txt:76`) includes `A`, so phase 22's spinlocks compile to `lr`/
+  `sc` and `amo*` rather than to a library fallback. Nothing in
+  `kernel/lock.h` needs a P4 arm.
+* **The L1 data cache is shared between both cores.** `components/hal/esp32p4/
+  include/hal/cache_ll.h` has `CACHE_L1_ICACHE0_*` and `CACHE_L1_ICACHE1_*`
+  registers but exactly **one** `CACHE_L1_DCACHE_*`, and `soc_caps.h:174` sets
+  `SOC_SHARED_IDCACHE_SUPPORTED`. So two cores writing the same structure see
+  each other with no maintenance at all. **This is the single biggest reason
+  this bring-up is cheap here**, and it is the one fact on this list that must
+  be confirmed against the TRM before it is relied on — a wrong answer here is
+  not a slow board, it is silent data corruption.
+
+### 4.2 Five things that are missing
+
+* **The core is stalled and held in reset.** Starting it is four writes and a
+  ROM call, all in register blocks this tree already addresses:
+  `PMU.cpu_sw_stall.hpcore1_stall_code` from `0x86` to `0xFF`, then poll
+  `HP_SYSTEM_CPU_CORESTALLED_ST_REG`'s CORE1 bit; set
+  `HP_SYS_CLKRST_SOC_CLK_CTRL0`'s `CORE1_CPU_CLK_EN`; clear
+  `HP_SYS_CLKRST_HP_RST_EN0`'s `RST_EN_CORE1_GLOBAL`; and point it at an entry
+  with `ets_set_appcpu_boot_addr` (**ROM `0x4fc000a8`**, from
+  `esp32p4.rom.ld:57` — so unlike the clock half, the launch *does* get a ROM
+  call). IDF's interrupt-matrix helper for the app CPU is an empty function on
+  this chip, which is one fewer thing.
+* **There is no secondary stack.** `_stack_secondary_top` exists only in
+  `linker/qemu-rv64.ld`; `linker/esp32p4.ld` has none, so an SMP build of this
+  board does not link today. (The ROM reserves `0x4ff3afc0..0x4ff3fba4` as a
+  CPU1 stack — `linker/esp32p4.ld:16` already records it — but only while
+  download mode is live. Ours is ours to place.)
+* **Core 1 must configure its own CLIC.** `kernel/ticker.c:141` already knows
+  the shape: the CLINT window at `0x20000000` is *"CLINT (self)"*, the other
+  core's block is at `0x20010000`, and `kernel/ticker.c:380` notes each core
+  has its own CLIC and calls `esp32p4_clic_timer_enable()` per-hart —
+  *"unreachable today (`CONFIG_ENABLE_SMP` is off on this board) and correct
+  when it is not"*. That prediction gets tested here.
+* **Two per-core settings are pure performance and silent when wrong.** Core 1
+  has its **own L1 instruction cache** (`ICACHE1`) and its **own branch
+  predictor** (`soc_caps.h:185`, `SOC_BRANCH_PREDICTOR_SUPPORTED`; IDF enables
+  it explicitly in `call_start_cpu1()`). Neither produces an error when left
+  off. See §6 for what the first one does to a board executing from flash.
+* **The flash-park contract does not exist on this board.**
+  `drivers/flash_rp2350.c:146` calls `smp_flash_park_request()` before an erase,
+  because a core fetching XIP while the MSPI is unavailable jumps into nothing.
+  `drivers/flash_esp32p4.c` never asks — correct while there is one core — and
+  `kernel/smp.c:693` stubs the whole trio to `return true` *"for every other
+  target: there is no second core to park"*. Enabling SMP here turns that stub
+  into a false statement. Phase 32 §2 built the RAM-resident flash path for
+  exactly this hazard with one core; the second core reopens it from the other
+  side.
+
+## 5. Milestones
 
 ### 34.1 — The baseline and the instrument
 
@@ -202,7 +283,7 @@ a number rather than a memory. Measured 2026-09-16, already in hand:
 **These are the board's own in-guest figures, not host round-trips** --
 `run_perft_tests_cores()` prints its own elapsed millisecond count precisely
 because timing from the host is *"how the first X8 hardware run managed to
-report two cores as slower than one"* (`user/chess/src/perft.c:414`).
+report two cores as slower than one"* (`user/chess/src/perft.c:428`).
 
 Which is what makes perft a usable instrument for this phase. The two depth-4
 runs of the *same* command differ by **5 ms across 557 s**, and the one-core
@@ -335,7 +416,7 @@ honestly and is now measured at the wrong frequency:
 that moved has its source file's comment corrected rather than left describing
 a board that no longer exists.
 
-### 34.7 — Documents
+### 34.7 — Documents: the clock
 
 * `plan/phase27_esp32p4_bringup.md` §"What E4 deliberately did not do" gets a
   forward reference: the deferral was correct and has been paid.
@@ -351,7 +432,105 @@ a board that no longer exists.
   regulator sequence, because both are the sort of thing that is expensive to
   re-derive and invisible in the code.
 
-## 5. What could go wrong, stated in advance
+### 34.8 — What core 1 needs, established before it runs
+
+Read-only, and the answers decide 34.10's checklist rather than IDF deciding it.
+Extend 34.1's `clocks` command to print, from registers:
+
+1. **Is `ICACHE1` enabled**, at reset and after the ROM has handed over?
+2. **Is the branch predictor on**, for core 0 and for core 1?
+3. **Is `CORE1_CPU_CLK_EN` already set and `RST_EN_CORE1_GLOBAL` already
+   clear?** IDF checks both before writing, because a debugger may have done it
+   already; on a board with no debugger attached the answer is evidence about
+   what the ROM leaves.
+4. **Is the L1 D-cache shared**, confirmed on the TRM page rather than inferred
+   from IDF's register list (§4.1's one must-verify).
+
+**Done when:** the four answers are recorded here with their register evidence.
+
+### 34.9 — Core 1 executes one instruction
+
+Mirror RP2350 X3 exactly, and for the reason `kernel/smp.c:104` gives rather
+than out of symmetry:
+
+> The first attempt skipped this step and sent core 1 straight into
+> `secondary_main()` […] It wedged, and because everything downstream is
+> silent when it does, there was no way to say which half had failed.
+
+So: a counter in `.bss` that core 0 reads back, and nothing else. No scheduler,
+no trap handler, no `printk` on core 1. Launched by an explicit shell command,
+not at boot — the same decision `smp_release_secondaries()` made for RP2350,
+and for the same reason: a board that boots is a board that can be reflashed.
+
+**Done when:** the counter moves, proving the stall release, the clock and
+reset, the boot address, the stack and core 1's first instructions in one step
+that cannot be confused with a failure above it.
+
+### 34.10 — Core 1 in the kernel
+
+`_stack_secondary` in `linker/esp32p4.ld`; `CONFIG_ENABLE_SMP` on for the
+preset; entry.S's existing secondary path; per-hart CLIC and trap init; and the
+two silent settings from §4.2 — `ICACHE1` and the branch predictor — enabled by
+core 1 for itself, before it executes anything that is not already resident.
+
+**Done when:** `smp_harts_online()` returns 2, the boot log shows
+`[SMP] hart 1: in the kernel, no task yet (pid -1)` (the `-1` is
+`secondary_main()`'s identity fix working; a `0` there is the bug it was written
+for), and `tests/hw/test_esp32p4.py` is still green with the second core up.
+
+### 34.11 — The flash-park contract, before two cores meet an erase
+
+A gate, not a feature, and sequenced here for the same reason 34.3 precedes
+34.4: the dangerous half goes first, alone.
+
+Either give the P4 the parking protocol `drivers/flash_rp2350.c:146` already
+has, or establish that this board's flash path is safe with a second core
+executing XIP and say why. What is not acceptable is leaving
+`kernel/smp.c:693`'s `return true` in place on a board where it is false.
+
+**Done when:** a filesystem write soak — many writes under load with core 1
+running, not one erase — completes with `/flash0` intact.
+
+### 34.12 — perft on two cores: correctness first, then speed
+
+**This is the success criterion for the second half of the phase**, and perft is
+the instrument for the reason `user/chess/src/perft.c:118` gives:
+
+> Perft is the honest first use of a second core, and the reason is the test
+> table below: the node counts are exact and published, so a parallel run is
+> either right or wrong with no argument about it.
+
+In order, and the order matters:
+
+1. **Correct.** `(perft 4 2)` returns `96 passed depths, 0 errors` and
+   `cores used: 2`. A wrong node count means the split dropped or double-counted
+   root moves and nothing about timing is worth reading.
+2. **Faster.** Against 34.6's single-core-at-360 MHz figure, not against the
+   40 MHz baseline — otherwise the clock's 9× and the core's 2× are reported as
+   one number and neither is checkable.
+3. **Honestly.** Expect **less than 2×**. `perft.c:129` splits root moves
+   round-robin because *"root moves have wildly different subtree sizes"*, and
+   says of it: *"Interleaving does not balance it perfectly — nothing static
+   does — and the measured speedup is reported rather than claimed."* Report the
+   number that comes out.
+
+**A result below 1× is a diagnosis, not a disappointment.** It means core 1 is
+fetching XIP with a cold `ICACHE1` and starving core 0 at the MSPI — see §6 —
+and it is fixed in 34.10, not by tuning the split.
+
+### 34.13 — Documents: the second core
+
+* `plan/phase27_esp32p4_bringup.md` §7's *"The second HP core"* deferral gets
+  its forward reference, as E4's PLL deferral does in 34.7.
+* `kernel/ticker.c:380`'s *"unreachable today … and correct when it is not"*
+  becomes reachable; correct or not, say which.
+* `kernel/smp.c:690`'s *"there is no second core to park"* stops being true of
+  every non-RP2350 target and the comment must stop saying so.
+* A memory for the P4 core-1 launch sequence — the stall code, the two CLKRST
+  bits, the ROM boot-address call, and the two silent per-core settings. It is
+  five register writes that took a day to locate and would take a day again.
+
+## 6. What could go wrong, stated in advance
 
 * **The regulator is the risk and it is not observable directly.** A board that
   is slightly under-volted at 360 MHz passes every test on the bench and fails
@@ -371,13 +550,34 @@ a board that no longer exists.
   without it. The failure is timing-dependent and will not point at itself.
 * **The chip is v1.3 and 400 MHz is not on offer.** If a later measurement
   wants the last 11 %, it wants different silicon, not a better sequence.
+* **A core 1 with a cold instruction cache makes two cores slower than one.**
+  This is not hypothetical arithmetic: with `.text` in flash since phase 32, a
+  core fetching uncached does not merely run slowly, it saturates the MSPI that
+  core 0 is fetching through as well. The symptom is `(perft n 2)` slower than
+  `(perft n 1)` — which is precisely the report that started this phase, arriving
+  for real the second time. 34.8 asks the question and 34.10 closes it.
+* **`smp_flash_park_request()` returns `true` today and would be lying.**
+  Nothing fails at the call site; a filesystem does, later, once. 34.11 is a
+  gate for that reason.
+* **Less than 2× is the expected honest outcome**, because the root-move split
+  is static and the subtrees are not equal. A phase that reports 1.7× has
+  succeeded; one that reports 2.0× should be checked for a node count nobody
+  verified.
+* **This is where phases 22, 23 and 31 get tested on second silicon.** The
+  locking, the hart records and the concurrency hierarchy were all built and
+  reviewed against RP2350 — a different interrupt controller, no CLIC, no shared
+  L1 D-cache. `plan/phase31_concurrency_hierarchy.md` is the thing to re-read
+  before 34.10, not to re-derive after it.
 
-## 6. Explicitly not in this phase
+## 7. Explicitly not in this phase
 
-* **No second HP core.** Still `plan/phase27_esp32p4_bringup.md` §7's deferral,
-  and this phase makes it *less* urgent rather than more: 9× arrives first, and
-  the remaining 2× is the harder, riskier half. `CONFIG_ENABLE_SMP` stays off
-  on this board and `(perft n 2)` keeps honestly printing `cores used: 1`.
+* **No lazy-SMP chess search on the P4.** X8b did that for RP2350, and it is a
+  different kind of proof: a search sharing a transposition table has no exact
+  answer to check against. Perft is the criterion here precisely because it
+  does.
+* **No work stealing, no dynamic balancing, no migration tuning.** The
+  round-robin root split and pinned tasks of X8a, unchanged. If 34.12's measured
+  speedup makes a better split worth having, that is the next phase's evidence.
 * **No PSRAM.** Unchanged from phases 27 and 32.
 * **No dynamic frequency scaling, no sleep modes, no DVFS.** One frequency,
   chosen at build time, set once at boot. IDF's `esp_pm` exists and is a
@@ -385,6 +585,9 @@ a board that no longer exists.
 * **No MSPI timing tuning unless 34.5 proves it necessary.** If flash
   round-trips at 360 MHz, the ROM's configuration is adequate and porting
   `mspi_timing_tuning` buys nothing measurable.
-* **No change to the RP2350 or QEMU paths.** One board's clock tree.
-  `cmake/board-esp32p4-nano.cmake`, `kernel/time.c`'s P4 arm and one new source
-  file are the blast radius.
+* **No change to the RP2350 or QEMU paths.** One board's clock tree and one
+  board's second core. The blast radius is `cmake/board-esp32p4-nano.cmake`,
+  `linker/esp32p4.ld`, `kernel/time.c`'s and `kernel/smp.c`'s P4 arms, the
+  ESP32-P4 preset, and one new source file per half. `arch/riscv/common/entry.S`
+  is touched only if 34.10 finds its existing secondary path insufficient —
+  §4.1 expects it is not.
