@@ -41,16 +41,36 @@ Already abstracted, and they held.
 | Contract | Declared in | Implementations |
 |---|---|---|
 | Block device | `drivers/include/drivers/block.h` | `virtio_blk.c`, `spisd_rp2350.c`, `flashdisk.c`, `ramdisk.c`, `idstore_rp2350.c`, `virtio_blk_id.c` |
-| Network interface | `net/include/net/netif.h` (`net/netif.c`) | `virtio_net.c`, `enc28j60_rp2350.c`, `cyw43_rp2350.c`, `uart_net.c`, `loopback_net.c` |
+| Network interface | `net/include/net/netif.h` (`net/netif.c`) | `virtio_net.c`, `enc28j60_rp2350.c`, `cyw43_rp2350.c`, `uart_net.c`, `loopback_net.c`, `emac_esp32p4.c` |
 | Console | `kernel/include/kernel/console.h` | `uart_16550.c`, `uart_rp2350.c`, `uart_esp32p4.c`, `usb_cdc.c`, `virtio_console.c` |
 | Device registry (`/dev`) | `kernel/include/kernel/device.h` | one, `kernel/device.c` — the registry itself is the abstraction |
 | Channels / endpoints | `kernel/include/kernel/chan.h` | one, `kernel/chan.c` |
 
 `netif_register()` has taken ENC28J60, CYW43439 and virtio without changing,
 and phase 28 plugs the P4's EMAC into it unchanged. Nothing is owed here.
-(That is a prediction, and `plan/phase28_esp32p4_ethernet.md` Z5 is the
-test of it: if the EMAC forces a change to `netif.h`, this paragraph was
-wrong and gets rewritten with what it missed.)
+
+**The prediction held (2026-09-16, phase 28 Z5/Z7).** `net/include/net/netif.h`
+is byte-for-byte unmodified across the whole of phase 28, and the P4's EMAC --
+the first *on-die* MAC this tree has met, as against three parts on a bus --
+registered through it without an argument. `kernel/board.c` needed one
+`DEV_KIND_NETIF` entry shaped exactly like the ENC28J60's, and everything
+above the seam (ARP, IP, TCP, the 9P server) worked on the first wire without
+being told a new chip existed.
+
+Two details are worth keeping, because they are where the seam could
+plausibly have failed and did not:
+
+* **`netif_register()` filling `.mac` from the node identity when a driver
+  leaves it zeroed** is what let the EMAC start out on a derived address and
+  later switch to the eFuse one (Z5) with no change at this layer.
+* **The `poll()`-must-not-block rule** turned out to *determine the driver's
+  whole shape* -- it is why the EMAC has no ISR and is not a driver task
+  (phase 28 Z6). A contract that decides a driver's structure rather than
+  merely accepting it is doing more work than a header usually does, and that
+  is an argument for category D as a whole.
+
+The one thing phase 28 *did* need from this layer was nothing at all, which
+is the outcome this section predicted.
 
 ## 3. The linker-symbol contract
 

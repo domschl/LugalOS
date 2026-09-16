@@ -799,6 +799,31 @@ def test_lan_node(b: Board) -> tuple[str, bool, str]:
         return name, False, (f"{tx - rx}/{tx} echoes lost -- Z5 wants zero. "
                              f"{stats.strip()[-260:]}")
 
+    # The ARP round trip, asserted rather than assumed. The ping above proves
+    # it happened -- a unicast echo cannot be addressed without it -- but not
+    # that the address learned was the *factory* one, which is the half Z5
+    # actually cares about: before drivers/efuse_esp32p4.c this board answered
+    # with a locally-administered address derived from a build seed, and every
+    # P4 flashed from one build answered with the same one.
+    board_mac = ""
+    m = re.search(r"mac ([0-9a-f:]{17})", b.console_session.cmd("net", deadline=15.0))
+    if m:
+        board_mac = m.group(1)
+        try:
+            neigh = subprocess.run(["ip", "neigh", "show", Z4_BOARD_IP],
+                                   capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            neigh = ""
+        got = re.search(r"lladdr ([0-9a-f:]{17})", neigh)
+        if not got:
+            return name, False, f"no ARP entry for {Z4_BOARD_IP} after {rx} echoes"
+        if got.group(1) != board_mac:
+            return name, False, (f"ARP learned {got.group(1)}, but the board "
+                                 f"says its MAC is {board_mac}")
+        if int(board_mac.split(":")[0], 16) & 0x02:
+            return name, False, (f"ARP learned {got.group(1)}, which is locally "
+                                 "administered -- not the eFuse address")
+
     try:
         sess = p9lib.Session(connect_tcp(Z4_BOARD_IP, 564, timeout=20.0),
                              key=bytes.fromhex(Z5_P9_KEY))
@@ -815,8 +840,8 @@ def test_lan_node(b: Board) -> tuple[str, bool, str]:
     finally:
         sess.close()
 
-    return name, True, (f"{rx}/{tx} echoes, no loss; 9P over TCP read "
-                        f"/proc/kmsg ({len(kmsg)} B, {lines} lines)")
+    return name, True, (f"{rx}/{tx} echoes, no loss; ARP learned {board_mac}; "
+                        f"9P over TCP read /proc/kmsg ({len(kmsg)} B, {lines} lines)")
 
 
 TESTS = [

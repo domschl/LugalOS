@@ -1,5 +1,9 @@
 # Phase 28 — Ethernet on the P4, which is why the P4 is here
 
+**Status: COMPLETE, 2026-09-16 (Z0–Z7).** The board is a node on a LAN: it
+answers ARP and ping under the MAC burned into its own eFuse and serves 9P
+over TCP. `net/include/net/netif.h` was not modified to make that happen.
+
 **Status: IN PROGRESS. Z0–Z3 done, 2026-09-12. PAUSED at Z4** for
 `plan/phase32_esp32p4_execute_in_place.md` — the P4's heap reached its floor
 and the fix is a phase of its own; see §Z3a. Prerequisites all met: phase 27 (the
@@ -909,6 +913,72 @@ closed. `README.md` and the `esp32p4` preset description gain the interface.
 cable in; it *skips rather than fails* the wire tests with the cable out, and
 says which; the QEMU suite is unchanged at 363/363 and the RP2350 at 25/25.
 
+#### Z7 — DONE, 2026-09-16, and the phase with it
+
+**The tests.** `tests/hw/test_esp32p4.py` is **20 checks**, up from the twelve
+phase 27 left. The five Ethernet ones are the list this milestone asked for:
+the PHY over MDIO (Z1), the loopback selftest (Z2), link state including a
+negotiated drop and recovery (Z3), frames on a real wire (Z4), and a node on
+the LAN — ARP round trip, 100 echoes, 9P over TCP (Z5). The ARP round trip is
+asserted rather than inferred: a ping proves *an* address was learned, and the
+test checks the learned address is the board's own eFuse MAC and is not
+locally administered, which is the half that would have silently passed before
+`drivers/efuse_esp32p4.c` existed.
+
+**Skipping rather than failing, measured not assumed.** Pointing `Z4_HOST_IP`
+at an address no local interface holds makes both wire tests report
+`[SKIP] ... SKIPPED (no local interface on 192.168.199.222)` and the suite
+still totals 20/20. The other skip branch — `emac link` reporting `link DOWN`
+with the cable out — is the same shape Z3 has used since it was written and
+has been exercised with the cable out, but it was **not** re-exercised for Z4
+and Z5 here, because it needs a hand on the connector. Stated rather than
+implied.
+
+**The two documents.**
+
+* `plan/hardware_seams.md` §2 recorded its verdict: the prediction held,
+  `netif.h` is byte-for-byte unmodified across the phase, and the section now
+  says *why* it held rather than only that it did.
+* `plan/open_issues.md`'s single-ACM entry is **closed, and closed the way it
+  predicted** — "a node on the LAN needs no downlink cable". It is kept rather
+  than deleted, with a note on what is genuinely still missing (no USB device
+  stack, so a board whose console is wedged *and* whose link is down is still
+  a power cycle).
+
+`README.md` and the `esp32p4` preset now describe the board as a node that
+serves 9P over TCP, and the README's stale "sixteen checks" is twenty.
+
+**Suite status at the close — every done-condition met:** P4 hardware
+**20/20**, QEMU **363/363** in 179.44 s, RP2350 **25/25**, ten targets build
+clean.
+
+The RP2350 number took a reflash to get honestly, and the detour is worth
+recording because it will recur. The attached board was running build
+`533.461a0ec2+` against a tree at `568.bf31962e+` and reported **17/25**, the
+seven failures all core behaviour (uart task, i2c task, U-mode isolation,
+C3/C4/C8) that QEMU exercises green — the signature of stale firmware rather
+than regression, and the suite's own freshness check said so in as many
+words. After flashing, 25/25 with five persona-correct skips.
+
+**Which image to flash was not obvious, and getting it wrong would have been
+worse than not flashing.** `tests/hw/flash.py` defaults to
+`build/rp2350/lugalos.uf2`, which is the **chess** preset. The board's
+`/proc/config` reported `SPISD=0, ST7735=0, TM1638=0, CHESS=0,
+PICO_CLOCK_GREEN=0, DCF77=0` with an I2C RTC on GPIO 4/5 — which matches
+`rp2350-sensor` and no other preset. Flashing the default would have enabled
+SPISD, ST7735 and TM1638 on a board wired as a sensor node: a persona change
+dressed as an update, and exactly the hazard `board_config()`'s own docstring
+records for the clock baseboard, where GP10-13 are LED shift registers and
+not an SD bus. **Ask `/proc/config` which persona is on the board before
+choosing a UF2.**
+
+One more trap for a two-board bench: with the P4 attached as well, the
+RP2350's ACM numbers moved three times across resets (ACM1/2 → ACM2/3 →
+ACM1/2), and `rp2350.py`'s `_candidate_ports()` globs `/dev/ttyUSB*` and takes
+`[0]` — which is the **P4's console**, not an RP2350 dongle. Pin `--uart ""`
+to stop the p9share test driving the wrong board, and identify ports by their
+`LugalOS_Dual_CDC_ACM` USB descriptor rather than by number.
+
 ## 5. How it is tested
 
 The laptop is the far end. `enp0s31f6`, MAC `f8:75:a4:68:1d:85`, reports
@@ -1070,13 +1140,29 @@ extract, the reason belongs here.
 
 ## 8. What phase 29 inherits
 
-A P4 that is a node on a LAN, with a driver whose descriptor rings, cache
-discipline and interrupt path have been proved on traffic — which is the
-whole prerequisite for touching `EMAC_SYSTEMTIMESECONDS_REG` and
+A P4 that is a node on a LAN, with a driver whose descriptor rings and cache
+discipline have been proved on traffic — which is the whole prerequisite for
+touching `EMAC_SYSTEMTIMESECONDS_REG` and
 `EMAC_SYSTEMTIMENANOSECONDS_REG` at all. Phase 29's argument, that hardware
 timestamping *deletes* phase 25's hardest open question rather than merely
 hosting it on faster silicon, depends on this phase having left no doubt
 about whether a frame arrived when the driver says it did.
+
+**Corrected at Z6/Z7: there is no interrupt path.** This paragraph originally
+said the driver's "interrupt path" had been proved on traffic. It has not,
+because it does not exist — the EMAC is polled, since `netif_t` requires a
+non-blocking `poll()` and `netsrv` is the pump (Z6 argues this in full).
+Phase 29 should know that going in: hardware timestamping reads a counter the
+MAC latches per frame, which polling does not disturb, but anything phase 29
+wants to do *on an interrupt* starts from nothing, and `CONFIG_EMAC_INTR_SRC`
+is measured and recorded in the board file but not routed.
+
+**What phase 29 also inherits, which is not in the original list:** two
+loopback modes that bisect the physical path (`emac loopback` inside the MAC,
+`emac loopback phy` out through the RMII pins), `emac stats` for the register
+state behind an interface that is up and silent, and `emac promisc on|off`.
+Those exist because a 1% frame loss took a long time to localise, and they are
+what made it possible in the end — see `plan/open_issues.md`.
 
 ## Verified against primary sources, 2026-09-15
 

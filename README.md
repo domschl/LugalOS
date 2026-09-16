@@ -360,6 +360,16 @@ writable `/flash0` through the boot ROM's own SPI routines, reads a BME280
 over I2C which it serves as `/proc/sensors` to any 9P client, and drives an
 IP101G PHY over RMII at 100 Mbit/s.
 
+Since [`plan/phase28_esp32p4_ethernet.md`](plan/phase28_esp32p4_ethernet.md)
+that PHY carries traffic: the board registers `eth0` at boot under the MAC
+burned into its own eFuse, answers ARP and ping, and **serves 9P over TCP on
+port 564**, so a laptop can mount its namespace and read `/proc/kmsg` across
+the wire with no serial cable in the path. Everything above the driver — ARP,
+IP, TCP, the 9P server — is phase 19's code, unchanged: the EMAC is a
+`netif_t` like the ENC28J60 and the CYW43439 before it, and
+`net/include/net/netif.h` did not have to move to accept the first on-die MAC
+this tree has met.
+
 Its `.text` and `.rodata` execute in place from flash
 ([`plan/phase32_esp32p4_execute_in_place.md`](plan/phase32_esp32p4_execute_in_place.md)):
 the ROM loads a small RAM half from `0x2000`, whose first act is to map the
@@ -372,7 +382,7 @@ refuses an image that expects it.
 cmake --preset esp32p4 && cmake --build --preset esp32p4
 uv run tools/p4flash.py                                  # bootloader, OS image, filesystem
 tools/p4run.py --run --interactive                       # reset and talk to it
-cd tests/hw && uv run test_esp32p4.py                    # flash, then sixteen checks
+cd tests/hw && uv run test_esp32p4.py                    # flash, then twenty checks
 ```
 
 That board needs **two** USB cables doing different jobs, and neither can do

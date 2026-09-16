@@ -629,33 +629,42 @@ otherwise.
 
 ---
 
-## The P4's console is its only 9P wire, so it cannot reach a gateway
+## CLOSED: the P4's console was its only 9P wire — now it has Ethernet
 
-**Trigger:** try to give the ESP32-P4 a downlink to a gateway board the way
-`drivers/uart1_link_rp2350.c` describes for a chess or clock board. There is
-no second wire to use.
+**Closed 2026-09-16 by phase 28 (Z5/Z7), and closed the way this entry said
+it would be**, which is the reason it is kept rather than deleted.
 
-**Why it is parked:** the RP2350's two ACM ports come from
-`drivers/usb_cdc.c`, its own USB device stack -- ACM0 the console, ACM1 the
-out-of-band 9P link. The P4 has no equivalent built, so the single
-`/dev/ttyACM*` this board presents is the CH343P bridge chip, not the P4
-talking, and console and 9P share UART0 through `p9share`'s SLIP demux.
+**What it used to say.** The P4 has no USB device stack, so its single
+`/dev/ttyACM*` is the CH343P bridge rather than the P4 talking, and console
+and 9P shared UART0 through `p9share`'s SLIP demux. Giving the board a
+downlink to a gateway the way `drivers/uart1_link_rp2350.c` describes needed
+either a USB device stack (phase-sized) or a `uart1_link_esp32p4.c` that could
+not be tested without a gateway physically wired to it. It was parked with:
 
-This was E7's remaining half (`plan/phase27_esp32p4_bringup.md`), and it is
-parked because both ways out are larger than the milestone: a USB device
-stack for the P4 (phase-sized, and the P4 has both a USB-Serial-JTAG and a
-full OTG controller to choose between), or a `uart1_link_esp32p4.c` mirroring
-the RP2350's, which needs the P4's UART1 clock/reset bits and GPIO-matrix
-routing and cannot be tested until a gateway board is physically wired to it.
+> *"phase 28 brings up Ethernet on this board, at which point the P4 has a
+> netif and the whole question changes shape — a node on the LAN needs no
+> downlink cable. That is the reason to wait rather than to pick one of the
+> two now."*
 
-**What it does not block:** the readings themselves. `p9share` plus
-`lugal9p --serial <port> --framing slip` reads `/proc/sensors` over the
-console wire today, and `tests/hw/test_esp32p4.py` checks exactly that.
+**What happened.** Exactly that. `eth0` registers at boot from eFuse identity,
+and 9P runs over TCP on port 564: `tests/hw/test_esp32p4.py`'s `test_lan_node`
+attaches from the laptop, lists `/proc` and reads `/proc/kmsg` over the wire.
+The board is reachable as a node rather than as the far end of somebody's
+serial cable, so neither of the two expensive options is needed for the
+purpose that motivated them.
 
-**Fix, when it is worth it:** phase 28 brings up Ethernet on this board, at
-which point the P4 has a netif and the whole question changes shape -- a node
-on the LAN needs no downlink cable. That is the reason to wait rather than to
-pick one of the two now.
+**What is genuinely still absent**, stated so this does not read as more than
+it is: the P4 still has no USB device stack, so it still presents one ACM port
+and that port is still the bridge chip. Out-of-band console access of the kind
+[[hw_out_of_band_9p_channel]] describes for the RP2350 — `/proc/kmsg` when the
+console itself is wedged — now exists over Ethernet instead, which is better
+when the network is up and useless when it is not. A board whose console has
+hung *and* whose link is down is still only reachable by a power cycle.
+
+**The transferable part:** parking an issue with a named future event that
+changes its shape, rather than with a fix, worked here. The event arrived, the
+question dissolved instead of being answered, and no time went into either of
+the two designs that would have been obsolete on arrival.
 
 ---
 
