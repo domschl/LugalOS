@@ -80,6 +80,12 @@ set(CONFIG_EMAC_BASE       0x50098000)
 # and DMA events, so it is the only one routed. The CLIC line it is routed
 # *to* is not here: that is a kernel-side allocation and lives in
 # arch/riscv/include/arch/esp32p4_intr.h, where a collision is a visible edit.
+#
+# Measured and recorded, but NOT currently routed: the driver is polled, not
+# interrupt-driven, because net/netif.h's poll() may not block and netsrv is
+# already the pump (phase 28 Z6 argues this at length). The number stays here
+# because it is a board fact that took reading Table 13.4-1 to establish, and
+# an interrupt-driven receive path would need it on day one.
 set(CONFIG_EMAC_INTR_SRC   92)
 
 # --- The pins.

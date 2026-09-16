@@ -817,6 +817,84 @@ driver working, not before. **A decision either way is the done-condition.**
 to differ in X" are both successful outcomes; only leaving it unexamined is
 a failure.
 
+#### Z6 — DECIDED: not extracted, because the third instance is not an instance
+
+**2026-09-16. The done-condition is a decision, and the decision is no.**
+
+Phase 30 §2 held the waiter-slot/ISR pattern at two implementations and named
+this driver as the tiebreaker: *"Phase 28's Ethernet driver will be the third,
+and that is when to look again."* Looked. **The EMAC contains no instance of
+the pattern at all** — no ISR, no `task_block()`, no waiter slot. So the count
+is still two, exactly where phase 30 left it, and its rule applies unchanged.
+
+| driver | RX waiter | TX waiter |
+|---|---|---|
+| `uart_16550.c` | yes | yes |
+| `uart_esp32p4.c` | yes | yes, plus a `may_block` split |
+| `uart_rp2350.c` | no | yes |
+| **`drivers/emac_esp32p4.c`** | **no ISR at all** | **no** |
+
+**Why the EMAC is polled is a contract, not an omission.** `net/netif.h` says
+of `poll()`: *"Must never block: callers invoke it from polling loops."* An
+ISR-and-waiter-slot receive path is precisely a blocking receive path, so it
+is not available at this seam. `net/stack.c`'s `netsrv` task is already the
+pump, and the driver is a `netif_t` rather than a thread of control.
+
+Transmit is the one place the pattern *could* have gone: `netif.h` permits
+`send_frame()` to block "for as long as the hardware needs to accept the
+buffer", and `emac_netif_send_frame()` currently spins on
+`emac_tx_buffer()` with `time_delay_us(10)`. It never actually waits — the
+ring drains at line rate and `tx_errors` has stayed 0 across every soak,
+including 500-frame bursts at ~147000 frames/s. A TX-done interrupt would add
+an ISR, a waiter slot and the lost-wakeup invariant below to remove a spin
+that does not happen.
+
+**What the two real instances share is an invariant, not code.** The subtle
+part is one rule:
+
+> nothing between the fast-path miss and `task_block()` may restore
+> interrupts early, or an interrupt landing in that gap finds the task still
+> RUNNING rather than BLOCKED, `task_unblock()` no-ops, the ISR has "served" a
+> wakeup nobody was asleep for, and the wait never ends.
+
+That rule is identical in both files. Almost nothing around it is. The 16550
+arms and disarms level-triggered `IER` bits and needs no acknowledge, because
+reading `LSR`/`RBR` clears the condition; the P4 masks *everything that fired*
+unconditionally and must then write `UART_INT_CLR` to take the CLIC's pending
+bit down. The P4 additionally splits `_blocking` from `_polling`, because
+`uart_flush()` reaches it by two routes and blocking on the fallback route is
+the deadlock that route exists to escape — the 16550 has no analogue.
+
+Extracting today would therefore mean a two-instance extraction of roughly
+twenty lines, in which the differences *are* the parts that matter, and the
+shared residue is a rule rather than a routine. The cheap form of the
+extraction already exists and is the right one: `uart_esp32p4.c` says
+*"Copied in shape from drivers/uart_16550.c, where the same comment is the
+record of having got it wrong first."*
+
+**When to look again.** A genuine third instance needs all three of: an ISR,
+a task blocked on it, and both directions. The likely candidates are a DMA
+completion path (SPI or SD), or the EMAC itself if interrupt-driven receive
+is ever wanted — but that last one is not a driver decision, it is a change
+to `netif_t`, and it should be argued there rather than here.
+
+##### A second prediction reality declined
+
+§2 of this plan said the driver would be `driver_task.h`'s first real
+customer: *"a kernel-mode driver task with no domain, which is the example
+case exactly."* It is not a driver task either, and for the same underlying
+reason: `netif_t` plus `netsrv` already supply the thread of control, so a
+second one would be a task whose only job is to be polled by another task.
+
+Both predictions failed in the same direction, which is worth naming because
+it is a fact about the architecture rather than about this driver: **a device
+that already has a device-class contract (category D) does not usually need
+the driver-as-task pattern (category C).** The contract brings its own pump.
+`block_dev_t` is the same shape — `virtio_blk.c` and `flashdisk.c` are called,
+not scheduled. The drivers that *do* need C are the ones with no contract
+above them, which is why the nine that got it are consoles, sensors and
+buses.
+
 ### Z7 — Tests, and the two documents that owe an update
 
 `tests/hw/test_esp32p4.py` grows Ethernet tests — link state, the loopback

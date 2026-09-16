@@ -439,6 +439,16 @@ message.
   wait.** Phase 28's Ethernet driver will be the third, and that is when to
   look again.
 
+  **Looked, 2026-09-16 (phase 28 Z6): still two, and the answer is no.** The
+  EMAC turned out to contain no instance of the pattern — no ISR, no
+  `task_block()`, no waiter slot — because `netif_t` requires a non-blocking
+  `poll()` and `netsrv` is already the pump. It is not a `driver_task.h`
+  customer either, for the same reason. The full argument, including why the
+  two real instances share an *invariant* rather than code, is in
+  `plan/phase28_esp32p4_ethernet.md` under Z6. The generalisation worth
+  carrying back here: **a device with a category-D contract above it rarely
+  needs category C** — the contract brings its own thread of control.
+
 ## 3. Three defects phase 27 found in the seams that already exist
 
 Small, independent of the framework, and worth fixing on their own terms.
