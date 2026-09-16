@@ -480,25 +480,109 @@ frequency is selected. What remains open for 34.3 to decide is the DCDC —
 IDF enables it and programs `dcm_vset` in the same sequence, and nothing here
 has established whether that matters at 360 MHz or only for sleep modes.
 
-**Q3 — what clocks the MSPI? The crystal, directly, and not MEM_CLK.**
+**Q3 — what clocks the MSPI? The crystal, directly, at 40 MHz, and not
+MEM_CLK.**
 
-`FLASH_CLK_SRC_SEL` reads 0 = XTAL. The field selects between XTAL, CPLL and
-SPLL (`SOC_FLASH_CLKS`) — it is **not** downstream of the CPU/MEM/SYS/APB
-cascade at all. Nothing in ESP-IDF ever writes this field either; a grep of
-the whole tree finds it only in the register header. Whatever the ROM left is
-what runs, and the ROM's own banner agrees: `SPI mode:QIO, clock div:2`, i.e.
-40 MHz / 2 = 20 MHz.
+```
+[CLK] flash     = src 0 (XTAL) / 1 = 40 MHz  pll_en 1 core_en 1
+```
 
-Two consequences, pulling in opposite directions:
+`FLASH_CLK_SRC_SEL` reads 0 = XTAL and `FLASH_CORE_CLK_DIV_NUM` reads 0,
+which is divide-by-one — not the register's reset default of 3, so the ROM
+set it deliberately. **The flash already reads at 40 MHz, the fastest this
+source can give it.** Three independent things agree: that divider, the boot
+image header (`Flash freq: 40m`, esptool's default, which our `elf2image`
+call does not override), and the ROM's own banner.
+
+The field is **not** downstream of the CPU/MEM/SYS/APB cascade at all, and
+nothing in ESP-IDF ever writes it; a grep of the whole tree finds it only in
+the register header.
+
+**Two things this milestone got wrong first, both worth recording.**
+
+* **The ROM banner's `clock div:2` is not relative to the crystal.** Read
+  that way it says 20 MHz, and this document said 20 MHz. On these parts the
+  banner's divisor is against an 80 MHz reference, so `div:2` *is* 40 MHz.
+  The register settles it and the banner does not.
+* **The source encoding is the TRM's, not the order of an IDF array.**
+  `SOC_FLASH_CLKS {XTAL, CPLL, SPLL}` is a set, not a mapping. The field's
+  real values, from the TRM's own description, are `0: XTAL_CLK`,
+  `1: SPLL_CLK (480 MHz)`, `2: CPLL_CLK (360 MHz)`, `3: Invalid` — 1 and 2
+  the other way round. The printed table was wrong and read correctly only
+  because this board reads 0. Precisely the inference
+  `esp32p4-register-provenance` exists to prevent, made anyway.
+
+Three consequences:
 
 * **Good for 34.5.** Raising the CPU clock does not change the flash clock,
   so MSPI timing tuning drops out of that milestone's risk list entirely —
   the flash keeps running at exactly the speed it runs at now. §3's worry
   about "a wrong MSPI timing at the new MEM clock" does not apply.
-* **Bad for 34.6, and it sharpens the warning.** The flash stays at 20 MHz
-  while the CPU goes to 360. Every L2 miss that reaches the MSPI will cost
-  **nine times more CPU cycles than it does today**, and today is where the
-  measurement that justified `CONFIG_L2_CACHE_KB = 128` was taken.
+* **Still bad for 34.6, at half the magnitude first claimed.** The flash
+  stays at 40 MHz while the CPU goes to 360, so every L2 miss that reaches
+  the MSPI costs **nine times more CPU cycles than it does today** — and
+  today is where the measurement justifying `CONFIG_L2_CACHE_KB = 128` was
+  taken. The absolute latency is half what the 20 MHz error implied; the
+  ratio, which is what hurts, is unchanged.
+* **There is a second lever, and it is now identified rather than
+  hypothetical.** 40 MHz is the ceiling *from this source*. Pointing
+  `FLASH_CLK_SRC_SEL` at SPLL (480 MHz) or CPLL (360 MHz) with a divider
+  reaches higher — SPLL/6 is 80 MHz — and that is an independent knob from
+  anything else in this phase. **It is not scheduled here**: it changes flash
+  timing, which is the one hazard §3 named for the MSPI, and it should be
+  pulled only if 34.6 shows XIP actually dominating. Recorded so that the
+  option is known when that measurement exists.
+
+### 34.2a — The tick bias, fixed *(added 2026-09-16; 34.1 found it, 34.4 needs it gone)*
+
+Not planned. `plan/open_issues.md` carried it after 34.1 measured the
+preemption tick at 95.99 Hz against the 100 Hz asked for, and it is here
+because 34.4 plans to read the CLINT's clock source off a change in the
+ticker's measured figure — worthless while that figure carries a 4 %
+systematic term.
+
+**The diagnosis was a measurement, not a reading of the code.** The same 2 ms
+window, on the same silicon:
+
+| window | when | reads |
+|---|---|---|
+| 2 ms | at boot, from `arch_ticker_init()` | 41 118 086 Hz |
+| 1 s | from a shell command | 40 000 029 Hz |
+| **2 ms** | **from a shell command** | **39 999 500 Hz** |
+
+The third row is the whole answer: **the window length was never the
+problem.** A 2 ms window is accurate to 12 ppm when the code taking it is
+warm. What differs at boot is the instruction fetch — since phase 32 this
+code executes from flash, `t0 = now()` is sampled *before* the first
+`time_get_us()`, and that first call's cold fetch therefore lands inside the
+tick window and outside the microsecond window. The two windows stop being
+the same length and the ratio is the measurement. 4.07 % of 2 ms is 81 µs,
+which is what a cold XIP call costs on this board.
+
+**The fix is four calls.** Warming both paths before opening the window
+restores the symmetry the code was always written for. No longer window, no
+retry loop, no averaging — the systematic term is removed rather than
+diluted, which is what `open_issues` asked for.
+
+**Verified on the board:**
+
+| | before | after |
+|---|---|---|
+| boot measurement | 41 118 086 Hz | **39 996 508 Hz** |
+| preemption tick, 64.51 s | 95.9925 Hz | **99.8982 Hz** |
+
+And the second column lands on `plan/phase27_esp32p4_bringup.md:1384`'s
+**99.8742 Hz**, measured on this board before XIP existed. That closes the
+story: the residual 0.1 % is `ticker_next()`'s relative rearm, which phase 27
+already identified and quantified, and the 4 % was phase 32's move to flash
+acting on a measurement nobody re-checked afterwards.
+
+**RP2350 was checked and is not affected.** Its boot line reads
+`10000 ticks of a 1000000 Hz clock, measured` — exactly its 1 MHz source.
+It is accidentally warm (the RUNNING poll above the measurement already calls
+`time_get_us()`) and its `now()` is two SIO reads rather than a systimer
+handshake. The same warm-up was added there anyway, as insurance and so the
+two arms read alike, and the 1 000 000 Hz was re-checked afterwards.
 
 ### 34.3 — The regulator, before anything moves
 

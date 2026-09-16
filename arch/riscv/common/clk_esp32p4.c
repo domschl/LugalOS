@@ -310,8 +310,20 @@ static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
 #define MSPI_CAL_END_B          8u
 
 /* HP_SYS_CLKRST_PERI_CLK_CTRL00: FLASH_CLK_SRC_SEL [1:0],
- * FLASH_PLL_CLK_EN [2], FLASH_CORE_CLK_EN [3]. */
+ * FLASH_PLL_CLK_EN [2], FLASH_CORE_CLK_EN [3], FLASH_CORE_CLK_DIV_NUM [11:4]
+ * (reset default 3; the ROM does not leave it there).
+ *
+ * The source encoding is the TRM's, and it is **not** the order an IDF array
+ * initializer suggests. SOC_FLASH_CLKS lists {XTAL, CPLL, SPLL}, which is a
+ * set and not a mapping; the field's actual values, from the TRM's own
+ * description of FLASH_CLK_SRC_SEL, are
+ *
+ *     0: XTAL_CLK   1: SPLL_CLK (480 MHz)   2: CPLL_CLK (360 MHz)   3: Invalid
+ *
+ * -- 1 and 2 the other way round. This was inferred wrongly once and printed
+ * a table that happened to be right only because this board reads 0. */
 #define P4_PERI_CLK_CTRL00      (P4_CLKRST_BASE + 0x30)
+#define FLASH_CORE_CLK_DIV_S    4
 
 /* PMU: LPAON + 0x5000. HP_ACTIVE_HP_REGULATOR0 carries LP_DBIAS_VOL [8:4] and
  * HP_DBIAS_VOL [13:9], both **RO**, and DIG_REGULATOR0_DBIAS_SEL [14], R/W,
@@ -392,10 +404,17 @@ void esp32p4_clock_sources_report(void) {
 
     /* --- what the flash -- and therefore .text -- is clocked from */
     uint32_t pc0 = P4_REG(P4_PERI_CLK_CTRL00);
-    static const char *const flash_src[4] = { "XTAL", "CPLL", "SPLL", "(3)" };
-    cprintf("[CLK] flash     = src %u (%s)  pll_clk_en %u  core_clk_en %u  "
-            "[PERI_CLK_CTRL00 = 0x%08x]\n",
-            (unsigned)(pc0 & 3u), flash_src[pc0 & 3u],
+    static const char *const flash_src[4] = {
+        "XTAL", "SPLL 480M", "CPLL 360M", "INVALID"
+    };
+    static const uint32_t flash_src_hz[4] = {
+        (uint32_t)CONFIG_XTAL_HZ, 480000000u, 360000000u, 0u
+    };
+    uint32_t fdiv = ((pc0 >> FLASH_CORE_CLK_DIV_S) & DIV_FIELD_MASK) + 1u;
+    cprintf("[CLK] flash     = src %u (%s) / %u = %u MHz  "
+            "pll_en %u core_en %u  [PERI_CLK_CTRL00 = 0x%08x]\n",
+            (unsigned)(pc0 & 3u), flash_src[pc0 & 3u], (unsigned)fdiv,
+            (unsigned)(flash_src_hz[pc0 & 3u] / fdiv / 1000000u),
             (unsigned)((pc0 >> 2) & 1u), (unsigned)((pc0 >> 3) & 1u),
             (unsigned)pc0);
 
@@ -492,6 +511,13 @@ void esp32p4_clocks_report(void) {
     }
     cprintf("[CLK] CLINT     = %u Hz   (1 s window, now)\n",
             (unsigned)esp32p4_clint_measure_hz(1000000u));
+    /* The same 2 ms window the ticker uses, but taken from a shell command
+     * where every instruction on the path is already in cache. If this
+     * agrees with the 1 s figure while the boot figure does not, the window
+     * length is innocent and what differs is the state of the cache -- which
+     * is the whole diagnosis of the boot-time bias. */
+    cprintf("[CLK] CLINT     = %u Hz   (2 ms window, now -- warm)\n",
+            (unsigned)esp32p4_clint_measure_hz(2000u));
 
     esp32p4_clock_sources_report();   /* 34.2 */
 }

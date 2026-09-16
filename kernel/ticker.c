@@ -107,7 +107,18 @@ static bool arch_ticker_init(void) {
         }
     }
 
-    /* Measure the real tick rate instead of assuming it. */
+    /* Measure the real tick rate instead of assuming it.
+     *
+     * The same warm-up the ESP32-P4 arm below needs, and here it is
+     * insurance rather than a fix: this board measures its 1 MHz source as
+     * exactly 1 000 000 Hz, checked on hardware before and after adding
+     * these two lines. It is already accidentally warm -- the RUNNING poll
+     * above calls time_get_us() at least once -- and its `now()` is two SIO
+     * register reads rather than the P4's systimer handshake. Keeping the
+     * two arms the same shape means the next person to read one of them
+     * does not have to work out why the other differs. */
+    for (int i = 0; i < 4; i++) { (void)now(); (void)time_get_us(); }
+
     uint64_t t0 = now();
     uint64_t us0 = time_get_us();
     while (time_get_us() - us0 < 2000) { /* 2 ms is plenty to divide by */ }
@@ -271,6 +282,35 @@ static bool arch_ticker_init(void) {
      * 2 ms because that is long enough to divide by and short enough not to
      * be noticed at boot; the RP2350 arm uses the same window for the same
      * reason. */
+    /* Warm the measurement path before opening the window.
+     *
+     * Not a superstition and not padding: **measured on the board, 34.1 and
+     * the fix in 34.2a** (plan/phase34_esp32p4_pll_bringup.md). The same
+     * 2 ms window, on the same silicon, reads
+     *
+     *     41 118 086 Hz   from here, at boot
+     *     39 999 500 Hz   from a shell command, warm
+     *     40 000 029 Hz   over a full second, warm
+     *
+     * so the window length was never the problem. The bias is the *first*
+     * call's instruction fetch. Since phase 32 this code executes from flash
+     * over a 20 MHz MSPI, and `t0 = now()` is sampled before the first
+     * `time_get_us()` -- so the cold fetch of that first call lands *inside*
+     * the tick window and *outside* the microsecond window. The two windows
+     * stop being the same length, and the ratio is the measurement.
+     *
+     * 4.07% of 2 ms is 81 us, which is what a cold XIP call costs here. It
+     * made the preemption tick run at 95.99 Hz against the 100 Hz asked for,
+     * measured directly as 6192 ticks over 64.51 s -- and it was invisible
+     * for a phase because nothing printed two measurements of one clock side
+     * by side.
+     *
+     * A few calls through both paths puts their lines in cache, after which
+     * the symmetry the code was always written for actually holds. Both
+     * functions read volatile MMIO, so neither the calls nor the loop can be
+     * optimised away. */
+    for (int i = 0; i < 4; i++) { (void)now(); (void)time_get_us(); }
+
     uint64_t t0 = now();
     uint64_t us0 = time_get_us();
     while (time_get_us() - us0 < 2000) { /* spin */ }
