@@ -5,8 +5,12 @@ verification run was in progress, so that what that phase cost to learn is
 available to the next one rather than re-derived. Nothing here is committed
 to; the milestone breakdown comes later.
 
-**Superseded as a target, 2026-09-05 — kept as the source material.** The
-server described here is now **phase 29**, on an ESP32-P4 rather than on an
+**Superseded as a target, 2026-09-05 — kept as the source material.**
+**Phase 29 now exists as a plan of its own:
+[`phase29_hardware_timestamped_ntp.md`](phase29_hardware_timestamped_ntp.md)
+(2026-09-16), which carries §2, §5 and §6 of this note forward and quotes §3's
+ordering rule as its largest risk.** The server described here is now
+**phase 29**, on an ESP32-P4 rather than on an
 RP2350 with an ENC28J60, reached through
 [`plan/phase27_esp32p4_bringup.md`](phase27_esp32p4_bringup.md) (the platform)
 and phase 28 (Ethernet). See that document's addendum for the full argument.

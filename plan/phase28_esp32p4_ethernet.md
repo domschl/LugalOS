@@ -1140,6 +1140,14 @@ extract, the reason belongs here.
 
 ## 8. What phase 29 inherits
 
+**Phase 29 is now planned: [`plan/phase29_hardware_timestamped_ntp.md`]
+(phase29_hardware_timestamped_ntp.md)** (milestone letter `O`), written the
+day this phase closed. It carries the correction below forward, and records
+two board facts found while planning: the PTP register block is identical on
+`hw_ver1` and `hw_ver3` (so it works on this rev v1.3 board), and the MAC's
+**PTP pulse-per-second output pad does not exist below rev 3.0**, which denies
+that phase its cleanest verification method.
+
 A P4 that is a node on a LAN, with a driver whose descriptor rings and cache
 discipline have been proved on traffic — which is the whole prerequisite for
 touching `EMAC_SYSTEMTIMESECONDS_REG` and
