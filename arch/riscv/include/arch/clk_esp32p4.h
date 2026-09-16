@@ -52,6 +52,15 @@ uint32_t esp32p4_rom_cpu_freq_mhz(void);
  * divider, and therefore the independent check on everything above. */
 uint32_t esp32p4_clint_measure_hz(uint32_t window_us);
 
+/* 34.2: CPLL's configuration, what the flash is clocked from, and the state
+ * the boot ROM left the HP regulator in. Printed as part of `clocks`.
+ *
+ * Reads only, in the sense that matters -- no clock, divider or power state
+ * is changed. It does drive the analog I2C master to interrogate CPLL, which
+ * necessarily writes that master's own selector and command word; see the .c
+ * file for why that is not a write to the thing being measured. */
+void esp32p4_clock_sources_report(void);
+
 /* The `clocks` shell command's body. */
 void esp32p4_clocks_report(void);
 

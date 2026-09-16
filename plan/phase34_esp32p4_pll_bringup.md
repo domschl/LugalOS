@@ -376,6 +376,130 @@ Answer three questions in writing, in this document:
 **Done when:** the three answers are recorded with their register evidence, and
 34.3's scope is decided by them rather than assumed.
 
+#### Done, 2026-09-16
+
+**It is chapter 11, "Reset and Clock", not chapter 8.** Corrected here because
+the wrong pointer costs the next reader the same search.
+
+##### The TRM check, field by field
+
+Rendered and counted, against the register headers and against
+`clk_tree_ll.h`'s getters. Three sources, no disagreements:
+
+| TRM register | offset | field | bits | agrees with IDF |
+|---|---|---|---|---|
+| 11.2 `ROOT_CLK_CTRL0` | 0x0004 | `CPUICM_DELAY_NUM` | [3:0] | yes |
+| | | `SOC_CLK_DIV_UPDATE` (WT) | [4] | yes |
+| | | `CPU_CLK_DIV_NUM` | [12:5] | yes |
+| | | `CPU_CLK_DIV_NUMERATOR` | [20:13] | yes |
+| | | `CPU_CLK_DIV_DENOMINATOR` | [28:21] | yes |
+| 11.3 `ROOT_CLK_CTRL1` | 0x0008 | `MEM_CLK_DIV_NUM` | [7:0] | yes |
+| | | `SYS_CLK_DIV_NUM` | [31:24] | yes |
+| 11.4 `ROOT_CLK_CTRL2` | 0x000C | `APB_CLK_DIV_NUM` | [23:16] | yes |
+| 11.67 `LP_CLKRST_HP_CLK_CTRL` | 0x0040 | `HP_ROOT_CLK_SRC_SEL` | [1:0] | yes |
+| 11.47 `ANA_PLL_CTRL0` | 0x00BC | `CPU_PLL_CAL_END` (RO) | [2] | yes |
+
+Two things the TRM adds that IDF's accessors do not make visible:
+
+* **The dividers do not take effect when written.** TRM §11.2.4.1: *"Updates
+  to `HP_SYS_CLKRST_ROOT_CLK_CTRL0/1/2/3_REG` will take effect only after
+  `HP_SYS_CLKRST_SOC_CLK_DIV_UPDATE` is set."* That is what IDF's
+  `clk_ll_bus_update()` is, and §1's ordering requirement is unimplementable
+  without it. A divider written and not committed is the failure mode where
+  nothing appears to happen.
+* **`1: CPLL_CLK (360 MHz)`** — the TRM's own encoding for the source mux,
+  which settles §1's figure from the primary source rather than from IDF's
+  frequency table. Worth pinning because the surrounding nomenclature
+  disagrees: the register header comment says `2'd1: cpll_400m` and the
+  adjacent gate is named `HP_CPLL_400M_CLK_EN`. **The 400 is a name; 360 is
+  the documented frequency for this silicon.**
+
+**And what the TRM does not contain at all: CPLL's analog configuration.**
+Searching the whole 3701-page text for `REGI2C`, `I2C_CPLL` or `CPLL_CAL`
+returns nothing. The PLL's divider lives on an analog I2C bus that the TRM
+does not document, so for that one register ESP-IDF is not a cross-check --
+it is the only source. That asymmetry is why the answer to Q1 below is
+hedged where the others are not.
+
+##### The three questions, answered from the board
+
+`clocks` now prints the evidence for all three:
+
+```
+[CLK] CPLL raw  = 18 25 50 08 62 80   (regi2c 0x67, registers 0..5)
+[CLK] CPLL      = div 8  ref_div 0  -> 320 MHz (IDF programs 9 for 360, 10 for 400)
+[CLK] pll cal   = cpu 1  sys 1  sdio 0  plla 0  mspi 0   [ANA_PLL_CTRL0 = 0x00000044]
+[CLK] flash     = src 0 (XTAL)  pll_clk_en 1  core_clk_en 1  [PERI_CLK_CTRL00 = 0x2800c00c]
+[CLK] regulator = HP dbias 24 (RO)  dbias_sel 1  [HP_ACTIVE_HP_REGULATOR0 = 0xc6677180]
+[CLK] dbias cal = efuse 9 -> IDF would program 25; board has 24  (DIFFERENT)
+```
+
+**Q1 — is CPLL running, and at what frequency? Running, yes. At what
+frequency, unknown, and the register cannot tell us.**
+
+There is no readable CPLL power bit: `PMU_TIE_HIGH_XPD_CPLL` and every
+related bit is **WT**, write-triggered, so the register performs actions and
+reports no state. The answer therefore comes from `CPU_PLL_CAL_END`, which is
+RO, resets to 0, and reads **1** — a PLL that has been calibrated has been
+brought up, and nothing in this kernel calibrates anything, so **the boot ROM
+brought CPLL up before handing over.** `SYS_PLL_CAL_END` is 1 too.
+
+The frequency is the hedged part. The divider reads 8, which under IDF's
+`clk_ll_cpll_get_freq_mhz()` is 320 MHz — *a value IDF never programs*, since
+`clk_ll_cpll_set_config()` writes 9 for 360 and 10 for 400 on this revision.
+And that function carries the comment **"div7_0 bit2 & bit3 is swapped from
+ECO1"**: a field whose write encoding is documented to differ from its bit
+order is not one to read a megahertz figure out of. The raw dump
+(`18 25 50 08 62 80`, six distinct bytes from six addresses) establishes that
+the bus is answering truthfully; it does not establish what the answer means.
+
+**What follows for 34.4:** it must *program* the CPLL divider and recalibrate
+rather than adopt whatever the ROM left, and **it must verify the result by
+measurement, not by reading the field back.** 34.1's
+`esp32p4_clint_measure_hz()` is that measurement, and this is the second job
+it has now earned.
+
+**Q2 — what has the ROM left the regulator at? One step below what IDF would
+program, and control is already handed over.**
+
+`DIG_REGULATOR0_DBIAS_SEL` reads 1 — its reset default, and the same value
+IDF's `rtc_clk_init()` ends up setting, so that part of the sequence is
+already satisfied. `HP_DBIAS_VOL` reads **24**, which is exactly
+`HP_CALI_ACTIVE_DBIAS_DEFAULT`, IDF's *uncalibrated fallback*.
+
+But this part **is** calibrated: eFuse `active_hp_dbias` (BLK1 word 4,
+[19:16], the block `drivers/efuse_esp32p4.c` already reads the MAC from)
+reads **9**, and IDF's `get_act_hp_dbias()` computes `9 + 16 = 25`. So the
+ROM left the regulator at the generic default and never applied this chip's
+own calibration.
+
+**This makes 34.3 small, and that is the milestone's payoff.** It is not a
+port of IDF's REGI2C analog bring-up. It is one field: raise HP_ACTIVE dbias
+from 24 to 25, the value this chip's eFuse asks for, before any CPLL
+frequency is selected. What remains open for 34.3 to decide is the DCDC —
+IDF enables it and programs `dcm_vset` in the same sequence, and nothing here
+has established whether that matters at 360 MHz or only for sleep modes.
+
+**Q3 — what clocks the MSPI? The crystal, directly, and not MEM_CLK.**
+
+`FLASH_CLK_SRC_SEL` reads 0 = XTAL. The field selects between XTAL, CPLL and
+SPLL (`SOC_FLASH_CLKS`) — it is **not** downstream of the CPU/MEM/SYS/APB
+cascade at all. Nothing in ESP-IDF ever writes this field either; a grep of
+the whole tree finds it only in the register header. Whatever the ROM left is
+what runs, and the ROM's own banner agrees: `SPI mode:QIO, clock div:2`, i.e.
+40 MHz / 2 = 20 MHz.
+
+Two consequences, pulling in opposite directions:
+
+* **Good for 34.5.** Raising the CPU clock does not change the flash clock,
+  so MSPI timing tuning drops out of that milestone's risk list entirely —
+  the flash keeps running at exactly the speed it runs at now. §3's worry
+  about "a wrong MSPI timing at the new MEM clock" does not apply.
+* **Bad for 34.6, and it sharpens the warning.** The flash stays at 20 MHz
+  while the CPU goes to 360. Every L2 miss that reaches the MSPI will cost
+  **nine times more CPU cycles than it does today**, and today is where the
+  measurement that justified `CONFIG_L2_CACHE_KB = 128` was taken.
+
 ### 34.3 — The regulator, before anything moves
 
 Gated on 34.2's answer 2.

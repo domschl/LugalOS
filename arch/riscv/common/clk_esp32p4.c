@@ -108,7 +108,13 @@
 #define SRC_CPLL                1u
 #define SRC_RC_FAST             2u
 
-#define CPLL_NOMINAL_HZ         360000000u  /* rev < 3.0; see above */
+/* 360 MHz, and the TRM says so itself rather than this being IDF's table
+ * transcribed: Register 11.67's encoding for this very field reads
+ * "1: CPLL_CLK (360 MHz)". Worth pinning down because the surrounding
+ * nomenclature disagrees -- the register header comment says "2'd1:
+ * cpll_400m" and the adjacent gate is named HP_CPLL_400M_CLK_EN. The 400 is
+ * a name; 360 is the documented frequency for this silicon. */
+#define CPLL_NOMINAL_HZ         360000000u
 #define RC_FAST_NOMINAL_HZ      20000000u   /* "fosc_20m", untrimmed */
 
 #define P4_REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
@@ -197,6 +203,218 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
     return (uint32_t)((dt * 1000000ULL) / du);
 }
 
+/* --- 34.2: the sources, the regulator and the flash clock ---------------
+ *
+ * Three questions the phase plan asks before 34.3 can be scoped, and what it
+ * takes to answer each one *from the board* rather than from a datasheet.
+ *
+ * ## "No writes" and the one exception
+ *
+ * 34.2 is a read-only milestone and this code changes no clock, no divider
+ * and no power state. It does write two registers, and both are part of
+ * performing a read: the analog I2C master's block-select (ANA_CONF1/CONF2)
+ * and its command word. A REGI2C "read" is a bus transaction, so there is no
+ * version of it that only loads. What it cannot do is alter the thing being
+ * measured -- the selector routes the master at a block, and nothing else in
+ * this kernel uses the master at all, so there is no transaction to collide
+ * with and no lock to take. ESP-IDF serialises these because IDF has many
+ * callers; this has one, reached only from a shell command.
+ *
+ * ## CPLL's power state is not readable, and that is the finding
+ *
+ * Every bit that controls it -- PMU_TIE_HIGH_XPD_CPLL, _XPD_CPLL_I2C,
+ * _GLOBAL_CPLL_ICG and their TIE_LOW counterparts -- is **WT**,
+ * write-triggered, in PMU_IMM_HP_CK_POWER_REG. Writing one performs an
+ * action; reading the register does not report a state. So "is CPLL running"
+ * has no direct register answer and has to be assembled from two indirect
+ * ones, which is what the two reads below are:
+ *
+ *   * its analog configuration, over REGI2C -- a block that answers with a
+ *     plausible divider is a block with its power and its I2C alive, and the
+ *     divider gives the frequency; and
+ *   * what the flash is clocked from. This matters more than it looks:
+ *     since phase 32 the CPU fetches `.text` over the MSPI, so if
+ *     FLASH_CLK_SRC_SEL names a PLL then that PLL is demonstrably running --
+ *     the evidence is that this function's own instructions arrived.
+ *
+ * ## What the flash clock is *not*
+ *
+ * FLASH_CLK_SRC_SEL picks between XTAL, CPLL and SPLL directly
+ * (SOC_FLASH_CLKS in clk_tree_defs.h). It does **not** derive from MEM_CLK,
+ * which is the cascade 34.1 established for the four root clocks. That makes
+ * the flash clock independent of the CPU frequency, and it is the answer to
+ * the phase plan's third question -- see 34.2's write-up for what follows
+ * from it.
+ *
+ * Nothing in ESP-IDF ever programs this field; a grep of the whole tree finds
+ * it only in the register header. Whatever the ROM left is what runs.
+ */
+
+/* LP_I2C_ANA_MST: LPPERIPH (0x50120000) + 0x4000. */
+#define P4_ANA_MST_BASE         0x50124000UL
+#define P4_ANA_MST_I2C0_CTRL    (P4_ANA_MST_BASE + 0x00)
+#define P4_ANA_MST_ANA_CONF1    (P4_ANA_MST_BASE + 0x1c)
+#define P4_ANA_MST_ANA_CONF2    (P4_ANA_MST_BASE + 0x20)
+#define ANA_CONF_FIELD_M        0x00FFFFFFu   /* [23:0] in both */
+#define REGI2C_PLL_CPU_MST_SEL  (1u << 11)    /* in ANA_CONF2 */
+
+/* I2C0_CTRL layout: SLAVE_ID [7:0], ADDR [15:8], DATA [23:16],
+ * WR_CNTL [24] (0 = read), BUSY [25]. */
+#define REGI2C_BUSY             (1u << 25)
+#define REGI2C_DATA_S           16
+
+/* LPPERI_CLK_EN, LPPERIPH + 0x0. CK_EN_LP_I2CMST is bit 27 and its reset
+ * default is 1, so the master is clocked before anyone asks. Checked rather
+ * than set: turning it on would be a write this milestone does not get to
+ * make, and finding it off would itself be the answer. */
+#define P4_LPPERI_CLK_EN        0x50120000UL
+#define LPPERI_CK_EN_LP_I2CMST  (1u << 27)
+
+/* The CPLL analog block. Slave 0x67; register 2 holds OC_REF_DIV in [3:0]
+ * and register 3 holds OC_DIV_7_0 in [7:0] (soc/regi2c_cpll.h). */
+#define I2C_CPLL_SLAVE          0x67u
+#define I2C_CPLL_REG_REF_DIV    2u
+#define I2C_CPLL_REG_DIV_7_0    3u
+
+static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
+    if (!(P4_REG(P4_LPPERI_CLK_EN) & LPPERI_CK_EN_LP_I2CMST)) {
+        return false;   /* master is gated; say so rather than ungate it */
+    }
+    P4_REG(P4_ANA_MST_ANA_CONF1) &= ~ANA_CONF_FIELD_M;
+    P4_REG(P4_ANA_MST_ANA_CONF2) &= ~ANA_CONF_FIELD_M;
+    P4_REG(P4_ANA_MST_ANA_CONF2) |= REGI2C_PLL_CPU_MST_SEL;
+
+    while (P4_REG(P4_ANA_MST_I2C0_CTRL) & REGI2C_BUSY) { }
+    P4_REG(P4_ANA_MST_I2C0_CTRL) =
+        (uint32_t)I2C_CPLL_SLAVE | ((uint32_t)reg_addr << 8);
+    while (P4_REG(P4_ANA_MST_I2C0_CTRL) & REGI2C_BUSY) { }
+
+    *out = (uint8_t)((P4_REG(P4_ANA_MST_I2C0_CTRL) >> REGI2C_DATA_S) & 0xFFu);
+    return true;
+}
+
+/* HP_SYS_CLKRST_ANA_PLL_CTRL0 (0x00BC), TRM Register 11.47: five PLL
+ * calibration pairs, *_CAL_END at even bits (RO, "1: Calibration done") and
+ * *_CAL_STOP above each. All reset to 0.
+ *
+ * This is the closest thing to a readable "is that PLL up" on this chip, and
+ * it exists because a PLL that has never been calibrated has never been
+ * brought up. It is not the same as a power bit -- those are write-triggered
+ * and unreadable -- but it is evidence rather than inference, which is the
+ * whole difference this milestone is about. */
+#define P4_ANA_PLL_CTRL0        (P4_CLKRST_BASE + 0xbc)
+#define PLLA_CAL_END_B          0u
+#define CPU_PLL_CAL_END_B       2u
+#define SDIO_PLL_CAL_END_B      4u
+#define SYS_PLL_CAL_END_B       6u
+#define MSPI_CAL_END_B          8u
+
+/* HP_SYS_CLKRST_PERI_CLK_CTRL00: FLASH_CLK_SRC_SEL [1:0],
+ * FLASH_PLL_CLK_EN [2], FLASH_CORE_CLK_EN [3]. */
+#define P4_PERI_CLK_CTRL00      (P4_CLKRST_BASE + 0x30)
+
+/* PMU: LPAON + 0x5000. HP_ACTIVE_HP_REGULATOR0 carries LP_DBIAS_VOL [8:4] and
+ * HP_DBIAS_VOL [13:9], both **RO**, and DIG_REGULATOR0_DBIAS_SEL [14], R/W,
+ * reset default 1. */
+#define P4_PMU_BASE             0x50115000UL
+#define P4_PMU_HP_ACT_REGULATOR0 (P4_PMU_BASE + 0x28)
+#define PMU_HP_DBIAS_VOL_S      9
+#define PMU_DBIAS_VOL_M         0x1Fu
+#define PMU_DIG_REG0_DBIAS_SEL  (1u << 14)
+
+/* eFuse BLK1 word 4, the same block drivers/efuse_esp32p4.c reads the factory
+ * MAC out of: active_hp_dbias in [19:16]. IDF's get_act_hp_dbias() uses
+ * (efuse + 16), capped at 31, and falls back to HP_CALI_ACTIVE_DBIAS_DEFAULT
+ * = 24 when the field is zero -- which is also this register's reset value,
+ * so on an uncalibrated part IDF's sequence would write back what is already
+ * there. Whether that is true of *this* part is exactly what 34.3 needs. */
+#define P4_EFUSE_RD_MAC_SYS_4   0x5012D054UL
+#define EFUSE_ACT_HP_DBIAS_S    16
+#define EFUSE_ACT_HP_DBIAS_M    0xFu
+#define IDF_HP_DBIAS_DEFAULT    24u
+
+void esp32p4_clock_sources_report(void) {
+    /* --- CPLL, as configured (its power state is not readable; see above) */
+    uint8_t div = 0, ref = 0;
+    bool got = regi2c_read_cpll(I2C_CPLL_REG_DIV_7_0, &div) &&
+               regi2c_read_cpll(I2C_CPLL_REG_REF_DIV, &ref);
+    if (!got) {
+        cprintf("[CLK] CPLL      = unreadable (analog I2C master clock gated)\n");
+    } else {
+        /* Raw dump of the block's first six registers, because the *number*
+         * above is only worth reading if the bus is. CPLL's power state is
+         * not readable (see this section's header), so a block that is off
+         * cannot be distinguished from one that is on except by whether it
+         * answers: identical bytes at every address mean a dead transaction,
+         * and varied bytes mean the address field is being honoured. Six
+         * lines of evidence for a one-line conclusion is the right ratio
+         * when the conclusion is "this PLL is configured for N MHz". */
+        cprintf("[CLK] CPLL raw  =");
+        for (uint8_t r = 0; r < 6u; r++) {
+            uint8_t v = 0;
+            if (regi2c_read_cpll(r, &v)) cprintf(" %02x", (unsigned)v);
+        }
+        cprintf("   (regi2c 0x67, registers 0..5)\n");
+
+        uint32_t refdiv = (uint32_t)(ref & 0xFu) + 1u;
+        /* xtal*div/(ref_div+1), IDF's clk_ll_cpll_get_freq_mhz() above rev
+         * v0.1, which this v1.3 board is.
+         *
+         * **Treat the result as a hint, not a frequency**, and 34.2's
+         * write-up says why at length. Two reasons in short. IDF programs
+         * div = 9 for 360 MHz and 10 for 400 on this revision, so any other
+         * value is a configuration IDF never produces. And
+         * clk_ll_cpll_set_config() carries the comment "div7_0 bit2 & bit3
+         * is swapped from ECO1" -- a field whose write encoding is known to
+         * differ from its bit order is not one to read a megahertz figure
+         * out of and believe.
+         *
+         * The frequency this PLL actually runs at has to be *measured*,
+         * which esp32p4_clint_measure_hz() above is able to do once 34.4
+         * points HP_ROOT_CLK at it. */
+        uint32_t xtal_mhz = (uint32_t)CONFIG_XTAL_HZ / 1000000u;
+        cprintf("[CLK] CPLL      = div %u  ref_div %u  -> %u MHz "
+                "(IDF programs 9 for 360, 10 for 400)\n",
+                (unsigned)div, (unsigned)(ref & 0xFu),
+                (unsigned)(xtal_mhz * (uint32_t)div / refdiv));
+    }
+
+    /* --- which PLLs have ever been calibrated on this boot */
+    uint32_t ana = P4_REG(P4_ANA_PLL_CTRL0);
+    cprintf("[CLK] pll cal   = cpu %u  sys %u  sdio %u  plla %u  mspi %u   "
+            "[ANA_PLL_CTRL0 = 0x%08x]\n",
+            (unsigned)((ana >> CPU_PLL_CAL_END_B) & 1u),
+            (unsigned)((ana >> SYS_PLL_CAL_END_B) & 1u),
+            (unsigned)((ana >> SDIO_PLL_CAL_END_B) & 1u),
+            (unsigned)((ana >> PLLA_CAL_END_B) & 1u),
+            (unsigned)((ana >> MSPI_CAL_END_B) & 1u),
+            (unsigned)ana);
+
+    /* --- what the flash -- and therefore .text -- is clocked from */
+    uint32_t pc0 = P4_REG(P4_PERI_CLK_CTRL00);
+    static const char *const flash_src[4] = { "XTAL", "CPLL", "SPLL", "(3)" };
+    cprintf("[CLK] flash     = src %u (%s)  pll_clk_en %u  core_clk_en %u  "
+            "[PERI_CLK_CTRL00 = 0x%08x]\n",
+            (unsigned)(pc0 & 3u), flash_src[pc0 & 3u],
+            (unsigned)((pc0 >> 2) & 1u), (unsigned)((pc0 >> 3) & 1u),
+            (unsigned)pc0);
+
+    /* --- the regulator the ROM left behind */
+    uint32_t reg0 = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
+    uint32_t hp_dbias = (reg0 >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_VOL_M;
+    uint32_t efuse = (P4_REG(P4_EFUSE_RD_MAC_SYS_4) >> EFUSE_ACT_HP_DBIAS_S)
+                     & EFUSE_ACT_HP_DBIAS_M;
+    uint32_t idf_would = efuse ? (efuse + 16u > 31u ? 31u : efuse + 16u)
+                               : IDF_HP_DBIAS_DEFAULT;
+    cprintf("[CLK] regulator = HP dbias %u (RO)  dbias_sel %u  "
+            "[HP_ACTIVE_HP_REGULATOR0 = 0x%08x]\n",
+            (unsigned)hp_dbias, (unsigned)((reg0 & PMU_DIG_REG0_DBIAS_SEL) ? 1u : 0u),
+            (unsigned)reg0);
+    cprintf("[CLK] dbias cal = efuse %u -> IDF would program %u; board has %u%s\n",
+            (unsigned)efuse, (unsigned)idf_would, (unsigned)hp_dbias,
+            (idf_would == hp_dbias) ? "  (same)" : "  (DIFFERENT)");
+}
+
 /* ets_get_cpu_frequency(), ROM 0x4fc00040.
  *
  * **Deliberately not ets_clk_get_cpu_freq().** That one looked like the
@@ -274,6 +492,8 @@ void esp32p4_clocks_report(void) {
     }
     cprintf("[CLK] CLINT     = %u Hz   (1 s window, now)\n",
             (unsigned)esp32p4_clint_measure_hz(1000000u));
+
+    esp32p4_clock_sources_report();   /* 34.2 */
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */
