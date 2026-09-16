@@ -57,7 +57,7 @@ import serial
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 import p9lib  # noqa: E402
-from p9lib import connect_serial  # noqa: E402
+from p9lib import connect_serial, connect_tcp  # noqa: E402
 
 BUILD_DIR = REPO_ROOT / "build" / "esp32p4"
 BAUD = 115200
@@ -723,6 +723,102 @@ def test_emac_frames(b: Board) -> tuple[str, bool, str]:
                         f"(noise {noise})")
 
 
+Z5_P9_KEY = "000102030405060708090a0b0c0d0e0f"
+
+
+def test_node_identity_from_silicon(b: Board) -> tuple[str, bool, str]:
+    """Z5, plan/phase28_esp32p4_ethernet.md §1.5: the factory MAC.
+
+    Before drivers/efuse_esp32p4.c this board had no board_unique_id(), so
+    kernel/identity.c fell through to derive_mac() and it answered ARP with a
+    locally-administered address derived from a build seed -- which every P4
+    flashed from one build would share. The assertion that matters is not that
+    *a* MAC exists but that its source is the silicon."""
+    name = "node identity comes from eFuse, not a build seed (Z5)"
+    out = b.console_session.cmd("identity", deadline=15.0)
+    m = re.search(r"mac:\s+([0-9a-f:]{17})\s+\((\w+)\)", out)
+    if not m:
+        return name, False, f"no mac line: {out.strip()[-200:]}"
+    mac, source = m.group(1), m.group(2)
+    if source != "silicon":
+        return name, False, f"mac {mac} came from '{source}', not silicon"
+    first = int(mac.split(":")[0], 16)
+    if first & 0x02:
+        return name, False, f"{mac} is locally administered -- not a factory address"
+    if first & 0x01:
+        return name, False, f"{mac} is a multicast address -- byte order is wrong"
+    u = re.search(r"uid:\s+([0-9a-f]+)\s+\((\w+)\)", out)
+    uid = f", uid {u.group(1)} ({u.group(2)})" if u else ""
+    return name, True, f"mac {mac} (silicon){uid}"
+
+
+def test_lan_node(b: Board) -> tuple[str, bool, str]:
+    """Z5's done-condition: a node on the LAN.
+
+    100 echoes with **zero** loss, then a 9P session over TCP that lists
+    /proc and reads /proc/kmsg -- phase 19's path, over a wire this board
+    did not have until phase 28.
+
+    The packet count is not decoration. Z4 was reported as done on the
+    strength of three-to-five pings, and a ~1% frame loss survives that sample
+    about 95% of the time. One hundred is what makes the difference between
+    "it replied" and "it is reliable" visible.
+
+    **This test is expected to flake while the transmit loss in
+    plan/open_issues.md is open**, and that is deliberate. At ~1% loss a
+    hundred packets come through clean roughly half the time, so a green run
+    is not evidence the defect is gone -- only a thousand-packet run is. Do
+    not "stabilise" this by lowering the count or allowing a packet or two:
+    the flake is the bug being visible, and hiding it is how Z4 shipped a
+    3-15% receive race that five pings could not see."""
+    name = "a node on the LAN: 100 echoes and a 9P mount (Z5)"
+
+    host_if = _z4_host_interface()
+    if host_if is None:
+        return name, True, f"SKIPPED (no local interface on {Z4_HOST_IP})"
+    if "link DOWN" in b.console_session.cmd("emac link", deadline=20.0):
+        return name, True, "SKIPPED (no carrier -- cable out?)"
+
+    out = b.console_session.cmd(
+        f'(net-config "{Z4_BOARD_IP}" "{Z4_NETMASK}")', deadline=15.0)
+    if Z4_BOARD_IP not in out:
+        return name, False, f"net-config refused: {out.strip()[-200:]}"
+    b.console_session.cmd(f"p9key {Z5_P9_KEY}", deadline=15.0)
+
+    try:
+        r = subprocess.run(["ping", "-c", "100", "-i", "0.1", "-W", "1", Z4_BOARD_IP],
+                           capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError) as e:
+        return name, False, f"could not run ping: {e}"
+    m = re.search(r"(\d+) packets transmitted, (\d+) received", r.stdout)
+    if not m:
+        return name, False, f"unreadable ping output: {r.stdout[-200:]}"
+    tx, rx = int(m.group(1)), int(m.group(2))
+    if rx != tx:
+        stats = b.console_session.cmd("emac stats", deadline=15.0)
+        return name, False, (f"{tx - rx}/{tx} echoes lost -- Z5 wants zero. "
+                             f"{stats.strip()[-260:]}")
+
+    try:
+        sess = p9lib.Session(connect_tcp(Z4_BOARD_IP, 564, timeout=20.0),
+                             key=bytes.fromhex(Z5_P9_KEY))
+    except OSError as e:
+        return name, False, f"{tx}/{tx} echoes, but 9P would not connect: {e}"
+    try:
+        proc = [e.name for e in sess.listdir("/proc")]
+        if "kmsg" not in proc:
+            return name, False, f"/proc has no kmsg: {proc}"
+        kmsg = sess.read("/proc/kmsg").decode(errors="replace")
+        if "LugalOS" not in kmsg:
+            return name, False, f"/proc/kmsg looks wrong: {kmsg[:120]!r}"
+        lines = len([l for l in kmsg.splitlines() if l.strip()])
+    finally:
+        sess.close()
+
+    return name, True, (f"{rx}/{tx} echoes, no loss; 9P over TCP read "
+                        f"/proc/kmsg ({len(kmsg)} B, {lines} lines)")
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -742,6 +838,8 @@ TESTS = [
     test_emac_loopback,
     test_emac_link,
     test_emac_frames,
+    test_node_identity_from_silicon,
+    test_lan_node,
 ]
 
 

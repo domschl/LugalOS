@@ -34,6 +34,76 @@ knowing about before reading them:
 
 Phase 28 resumes at **Z4 -- frames on the wire**.
 
+## The P4's EMAC loses about 1% of transmitted frames on the wire
+
+**Status: open, cause not identified. Phase 28 Z5, 2026-09-16.** Receive is
+exact; this is transmit only, and it is why Z5's "100 packets, zero loss" is
+not met. `test_lan_node` in `tests/hw/test_esp32p4.py` asserts the zero and is
+red on purpose rather than being weakened to pass.
+
+**The rate, with sample sizes, because smaller runs cannot see it:**
+
+| measurement | result |
+|---|---|
+| echo replies, 10/s | 498/500 (0.4%), 494/500 (1.2%) |
+| echo replies, 20/s | 991/1000 (0.9%) |
+| `net txtest`, ~147000/s burst | 490/500, 496/500, 498/500 |
+
+Roughly **1%, and flat** — it does not grow with offered load. A 100-packet
+run therefore passes about 40% of the time, which is exactly why Z4 was
+reported done on three-to-five pings and shipped a 3-15% receive bug
+underneath.
+
+**The in-chip path is exonerated.** With the loopback diagnostics given
+exclusive use of the descriptor rings, MAC-internal loopback runs **2100 sent,
+2100 verified, 0 corrupt, 0 unaccounted**. The DMA, the descriptors and the
+cache maintenance lose nothing. Whatever does is downstream of the MAC: the
+RMII path, the PHY, the cable, or the far end.
+
+**Both ends report success.** The stack submits every frame and `tx_errors`
+stays 0; the MAC's write-back status (TDES0) shows no error on any frame -- no
+underflow, no carrier loss, no late collision, checked on every descriptor
+reuse; the peer's NIC reports **no CRC, length, fragment or drop errors of any
+kind**, only a lower `rx_packets`. Capturing by source MAC rather than
+EtherType shows the missing frames are **absent, not corrupted**, and losses
+are random and isolated with no duplicates.
+
+**Transmit store-and-forward and a deeper transmit ring do NOT help, despite
+an earlier entry in this file claiming they gave a tenfold improvement.** That
+claim came from 200-700 packet samples being used to separate 1.3% from 1.5%
+from 0.14% -- differences of two to nine packets, i.e. noise. Larger runs put
+IDF's own configuration (2 descriptors, threshold mode) at 0.4% and the
+"improved" one at 1.2%. The driver therefore ships IDF's configuration and
+carries no divergence. If anyone re-tests this, use **at least 1000 packets
+per configuration**.
+
+**Untried, and where to go next:** PHY-level loopback (BMCR bit 14), which
+unlike MAC-internal loopback includes the RMII path and would localise this
+much further; and a second peer or a switch, to rule out this particular NIC.
+
+**A warning about measuring it.** Every early attempt to localise this
+measured the measurement. Four versions of `emac loopback stress` each had a
+distinct defect -- releasing descriptors the DMA still owned, assuming strict
+one-in-one-out ordering, draining one frame per send -- and beneath all of
+them the **live netif was consuming the diagnostic's frames**, which is what
+`g_diag_owns_rings` now prevents. They produced authoritative-looking figures
+(`385 lost`, `1439 lost`, `750 unaccounted`) worth precisely nothing.
+
+**Two separate bugs were found and fixed while chasing this, and neither was
+the cause:**
+
+* the **Z4 receive race** -- `emac_rx_peek()` returns NULL for both "nothing
+  ready" and "errored", and the poll loop re-read the descriptor to tell them
+  apart, so a frame arriving in that window had OWN newly cleared, was scored
+  a hardware error and released without being handed up. 3-15% depending on
+  rate. Fixed by reading ownership first; receive is now exact.
+* a **regression of my own**: narrowing the station-address re-apply to
+  once-per-link-up (on the mistaken theory that the periodic write caused the
+  frame loss) reintroduced the stale-filter bug, because that single write
+  lands exactly as the receive clock starts. The hardware suite caught it in
+  one run -- 100 of 100 echoes lost, the board answering ARP and dropping
+  every unicast. The re-apply is unconditional again.
+
 ## Pressure is published as station pressure, not reduced to sea level
 
 **Trigger:** subscribe to a sensor node's `pressure` topic and compare it with

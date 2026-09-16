@@ -505,6 +505,17 @@ _Static_assert(sizeof(emac_desc_t) == ESP32P4_L1_CACHE_LINE,
 #define TDES0_FS            (1u << 28)  /* first segment */
 #define TDES0_TCH           (1u << 20)  /* second address chained */
 #define TDES0_ES            (1u << 15)  /* error summary */
+/* What ES summarises on the transmit side. UF is the one to suspect when
+ * frames go missing without the driver noticing: the MAC starts putting a
+ * frame on the wire once TTC bytes are buffered, so a DMA that falls behind
+ * aborts mid-frame and the far end sees nothing but a runt. */
+#define TDES0_UF            (1u << 1)   /* underflow: FIFO ran dry mid-frame */
+#define TDES0_ED            (1u << 2)   /* excessive deferral */
+#define TDES0_EC            (1u << 8)   /* excessive collisions */
+#define TDES0_LC            (1u << 9)   /* late collision */
+#define TDES0_NC            (1u << 10)  /* no carrier */
+#define TDES0_LOC           (1u << 11)  /* loss of carrier */
+#define TDES0_IHE           (1u << 16)  /* IP header error */
 /* TDES1 */
 #define TDES1_TBS1_M        0x1fffu     /* buffer 1 size, [12:0] */
 
@@ -515,6 +526,16 @@ _Static_assert(sizeof(emac_desc_t) == ESP32P4_L1_CACHE_LINE,
 #define RDES0_FL_M          0x3fffu
 #define RDES0_LS            (1u << 8)   /* last descriptor */
 #define RDES0_FS            (1u << 9)   /* first descriptor */
+/* The error bits ES summarises, named so a rejected frame can say *why*
+ * rather than just that it failed. */
+#define RDES0_CE            (1u << 1)   /* CRC error */
+#define RDES0_DBE           (1u << 2)   /* dribble bit error */
+#define RDES0_RE            (1u << 3)   /* receive error (RMII RX_ER) */
+#define RDES0_RWT           (1u << 4)   /* receive watchdog timeout */
+#define RDES0_OE            (1u << 11)  /* overflow: the RX FIFO overran */
+#define RDES0_LE            (1u << 12)  /* length error */
+#define RDES0_SAF           (1u << 13)  /* source address filter fail */
+#define RDES0_DE            (1u << 14)  /* descriptor error: ran out mid-frame */
 /* RDES1 */
 #define RDES1_RCH           (1u << 14)  /* second address chained */
 #define RDES1_RBS1_M        0x1fffu
@@ -692,6 +713,23 @@ static void emac_rings_init(void) {
  * held by the netif, whose descriptor the DMA has just taken back. */
 static void emac_netif_restarted(void);
 
+/* Set while a loopback diagnostic owns the descriptor rings.
+ *
+ * `emac loopback` and `emac loopback stress` drive the rings directly, and
+ * since Z4 registered eth0 they have been sharing them with a live netif:
+ * net/stack.c's `netsrv` task polls emac_netif_poll() forever, and every
+ * frame it takes is a frame the diagnostic sent and will never see come back.
+ *
+ * Measured rather than supposed -- during one 700-frame stress run the
+ * interface's own rx counter climbed by 65, and two identical runs scored
+ * 450/700 and 674/700, which is the signature of a race and not of hardware.
+ * The Z2 test survived this undetected because seven frames finish inside
+ * about one scheduler slice; a long run does not.
+ *
+ * The netif yields rather than locks: poll() simply reports "nothing" while
+ * this is set, which is always a legal answer for a non-blocking poll. */
+static volatile bool g_diag_owns_rings;
+
 /* Brings the DMA and MAC up. `loopback` selects the MAC's internal loopback,
  * which is what lets Z2 prove the rings with no PHY and no cable in the
  * picture -- one candidate cause per failure, which is phase 27 §0's rule. */
@@ -787,10 +825,28 @@ static void emac_start(bool loopback) {
  * -- which on this board is 3 KB the heap gets to keep -- and it makes the
  * selftest stronger, because a test with no second copy of the data cannot
  * accidentally compare a buffer against itself. */
+/* Transmit failures the MAC reported after the fact. A frame that fails on
+ * the wire is not refused by emac_tx_submit() -- that only hands the
+ * descriptor over -- so without looking at the status the DMA wrote back, a
+ * lost frame is invisible to everything above. */
+static uint32_t g_tx_hw_errors;
+static uint32_t g_tx_err_last_des0;
+static uint32_t g_tx_err_seen_bits;
+
 static uint8_t *emac_tx_buffer(void) {
     emac_desc_t *d = &g_tx_desc[g_tx_next];
     desc_from_dma(d);
     if (d->des0 & TDES0_OWN) return NULL;
+
+    /* The DMA has finished with this descriptor and written its status back.
+     * Read it before the buffer is refilled -- this is the only moment the
+     * outcome of the *previous* transmission through this slot is still
+     * legible. */
+    if (d->des0 & TDES0_ES) {
+        g_tx_err_last_des0 = d->des0;
+        g_tx_err_seen_bits |= d->des0;
+        g_tx_hw_errors++;
+    }
     return g_tx_buf[g_tx_next];
 }
 
@@ -902,11 +958,103 @@ static uint8_t loopback_byte(uint32_t off, uint32_t len) {
     return (uint8_t)(off + len);
 }
 
+/* `emac loopback stress N`: the same send-and-verify as the Z2 test, N times
+ * over, reporting only the totals.
+ *
+ * Written for a specific question that the seven-frame test cannot answer.
+ * Z5 found that roughly 1-2% of transmitted frames never reach the peer, with
+ * the MAC reporting no error and the peer's NIC reporting no error -- and the
+ * two candidate explanations (the DMA/descriptor path inside the chip, or the
+ * RMII/PHY path out of it) are indistinguishable from the wire. Internal
+ * loopback exercises the first and not the second: MAC-internal loopback
+ * never reaches the PHY. A loss rate here means the bug is ours; a clean run
+ * of thousands means it is downstream of the MAC. */
+void emac_loopback_stress(uint32_t rounds) {
+    if (emac_probe() != 0) {
+        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
+        return;
+    }
+    g_diag_owns_rings = true;
+    emac_start(true);
+    if (rounds == 0) rounds = 100;
+
+    /* Verification is by content, not by position, and that distinction is
+     * the whole reason this test works where two earlier versions did not.
+     *
+     * loopback_byte() is a pure function of offset *and length*, so a frame
+     * can be checked against its own received length without knowing which
+     * send it belongs to. Both earlier attempts instead assumed strict
+     * one-in-one-out -- send a frame, expect that frame -- and a single late
+     * or missing frame put the stream permanently one behind, after which
+     * every subsequent frame was compared against the previous one's
+     * expectation. They reported "1439 lost, 1376 wrong length" out of 3500,
+     * which was entirely the test eating itself and said nothing whatever
+     * about the hardware.
+     *
+     * Draining after every send also keeps at most one or two frames
+     * outstanding, so the four-deep receive ring cannot overflow and turn a
+     * test artifact into a "loss". */
+    uint32_t sent = 0, ok = 0, corrupt = 0, refused = 0;
+
+    for (uint32_t r = 0; r < rounds; r++) {
+        for (unsigned si = 0; si < sizeof(g_loopback_sizes) / sizeof(g_loopback_sizes[0]); si++) {
+            uint32_t len = g_loopback_sizes[si];
+
+            uint8_t *tx = NULL;
+            for (unsigned i = 0; i < 1000u && !tx; i++) {
+                tx = emac_tx_buffer();
+                if (!tx) time_delay_us(10);
+            }
+            if (!tx) { refused++; continue; }
+            for (uint32_t i = 0; i < len; i++) tx[i] = loopback_byte(i, len);
+            if (emac_tx_submit(len) != 0) { refused++; continue; }
+            sent++;
+
+            /* Drain the ring *empty*, not one frame per send. Waiting only
+             * on the first attempt and then taking whatever else is already
+             * there is what keeps a late frame from being left behind to be
+             * miscounted later: an earlier version drained exactly one and
+             * reported 750 of 3500 "unaccounted", which was its own pacing
+             * and not the hardware. */
+            for (unsigned guard = 0; guard < EMAC_RX_DESC_COUNT + 1u; guard++) {
+                bool owned = false;
+                unsigned patience = (guard == 0) ? 2000u : 1u;
+                for (unsigned i = 0; i < patience && !owned; i++) {
+                    desc_from_dma(&g_rx_desc[g_rx_next]);
+                    if (!(g_rx_desc[g_rx_next].des0 & RDES0_OWN)) { owned = true; break; }
+                    time_delay_us(1);
+                }
+                if (!owned) break;              /* ring is empty */
+
+                uint32_t got = 0;
+                const uint8_t *rx = emac_rx_peek(&got);
+                if (!rx) { corrupt++; emac_rx_release(); continue; }
+
+                uint32_t bad = 0;
+                for (uint32_t i = 0; i < got; i++) {
+                    if (rx[i] != loopback_byte(i, got)) { bad++; break; }
+                }
+                emac_rx_release();
+                if (bad) corrupt++; else ok++;
+            }
+        }
+    }
+
+    reg_modify(EMAC_MACCONFIG, MACCFG_LM, 0);
+    g_diag_owns_rings = false;
+    cprintf("EMAC loopback stress: %lu sent, %lu verified, %lu corrupt, "
+            "%lu refused, %lu unaccounted\n",
+            (unsigned long)sent, (unsigned long)ok, (unsigned long)corrupt,
+            (unsigned long)refused,
+            (unsigned long)(sent - ok - corrupt));
+}
+
 void emac_loopback_test(void) {
     if (emac_probe() != 0) {
         cprintf("[EMAC] probe failed -- see `emac scan`.\n");
         return;
     }
+    g_diag_owns_rings = true;
     emac_start(true);
 
     cprintf("EMAC loopback: %u RX + %u TX descriptors of %u B, buffers %u B\n",
@@ -948,18 +1096,28 @@ void emac_loopback_test(void) {
          * arrived in a millisecond is not going to. */
         const uint8_t *rx = NULL;
         uint32_t got = 0;
-        for (unsigned i = 0; i < 1000u && rx == NULL; i++) {
+        bool owned = false;
+        for (unsigned i = 0; i < 1000u && !owned; i++) {
             desc_from_dma(&g_rx_desc[g_rx_next]);
             if (!(g_rx_desc[g_rx_next].des0 & RDES0_OWN)) {
+                owned = true;
                 rx = emac_rx_peek(&got);
                 break;
             }
             time_delay_us(1);
         }
 
-        if (!rx) {
+        /* Only release what we own -- see emac_loopback_stress(). Releasing
+         * after a timeout steps the ring past a descriptor the DMA still
+         * holds, which desynchronises every frame after it. */
+        if (!owned) {
             cprintf("  %4u B: nothing came back, DMA status 0x%08lx\n",
                     (unsigned)len, (unsigned long)REG(EMAC_DMA_STATUS));
+            failed++;
+            continue;
+        }
+        if (!rx) {
+            cprintf("  %4u B: the frame came back with an error\n", (unsigned)len);
             emac_rx_release();
             failed++;
             continue;
@@ -988,6 +1146,7 @@ void emac_loopback_test(void) {
     /* Leave loopback off. A MAC left looped back would make Z3's link state
      * and Z4's first frame lie in a way that is very hard to see. */
     reg_modify(EMAC_MACCONFIG, MACCFG_LM, 0);
+    g_diag_owns_rings = false;
 
     cprintf("EMAC loopback: %u passed, %u failed\n", passed, failed);
 }
@@ -1057,9 +1216,28 @@ static void emac_set_mac(const uint8_t mac[NETIF_MAC_LEN]) {
         memcpy(g_station_mac, mac, NETIF_MAC_LEN);
         g_station_mac_valid = true;
     }
+
+    /* Drop the receiver across the write, and this is not caution -- it is
+     * measured. Writing Address0 with RE set corrupts whatever frame is in
+     * flight: it comes out of the ring with RDES0_ES and is thrown away.
+     * Rewriting the address every 200 ms (which an earlier version of this
+     * driver did) cost 9% of a 10-per-second ping, with the driver's own
+     * error counter matching the lost packets exactly -- 17 rejected frames
+     * for 17 missing replies.
+     *
+     * Bringing RE down for the two stores is also what makes the write
+     * actually reach the filter, which is why one write is now enough where
+     * the earlier "retry forever" version was reaching for a bigger hammer to
+     * solve the same problem. */
+    uint32_t cfg = REG(EMAC_MACCONFIG);
+    bool rx_live = (cfg & MACCFG_RE) != 0;
+    if (rx_live) REG(EMAC_MACCONFIG) = cfg & ~MACCFG_RE;
+
     REG(EMAC_MACADDR0LOW)  = ((uint32_t)mac[3] << 24) | ((uint32_t)mac[2] << 16) |
                              ((uint32_t)mac[1] << 8)  |  (uint32_t)mac[0];
     REG(EMAC_MACADDR0HIGH) = ((uint32_t)mac[5] << 8)  |  (uint32_t)mac[4];
+
+    if (rx_live) REG(EMAC_MACCONFIG) = cfg;
 }
 
 static void emac_apply_link(const emac_link_t *l) {
@@ -1213,7 +1391,13 @@ bool emac_link_poll(emac_link_t *out) {
      *     because the one write it makes happens on the first poll that sees
      *     the link up, which is exactly when the receive clock has just
      *     started and has not settled. The write does not latch, the flag
-     *     says it did, and it is never retried.
+     *     says it did, and it is never retried. This was tried twice: the
+     *     second time it was reintroduced as an "optimisation" after the
+     *     periodic write was wrongly blamed for frame loss (the real cause
+     *     was the receive race above), and the hardware suite caught it again
+     *     within one run -- `emac loopback` and `emac link` both reset the
+     *     MAC, and after them the board answered ARP and dropped every
+     *     unicast echo, 100 of 100.
      *   - unconditionally, here, but left to whoever happened to call this
      *     function. Wrong because after the interface has come up once, that
      *     is nobody: net/stack.c asks netif_link_up() only until it first
@@ -1391,6 +1575,10 @@ static uint32_t       g_rx_held_len;
  * disagree about what they mean. A hardware-level error is this driver's own
  * business, and its own number. */
 static uint32_t g_rx_hw_errors;
+/* RDES0 of the last rejected frame, and a running OR of every one of them, so
+ * a rate of rejections can be attributed to a cause instead of guessed at. */
+static uint32_t g_rx_err_last_des0;
+static uint32_t g_rx_err_seen_bits;
 
 /* The Ethernet header of the last frame the MAC accepted, so `emac stats` can
  * answer "what is actually addressed to us on this wire" without a capture
@@ -1401,6 +1589,7 @@ static bool     g_last_hdr_valid;
 static int emac_netif_poll(netif_t *nif) {
     (void)nif;
     if (!g_netif_registered) return -1;
+    if (g_diag_owns_rings) return 0;    /* a loopback diagnostic has the rings */
 
     /* Pump the link, which also rewrites the station address into the receive
      * filter (see emac_link_poll()). Rate-limited inside emac_link_poll() to
@@ -1426,6 +1615,30 @@ static int emac_netif_poll(netif_t *nif) {
      * required never to block. One pass over the ring is the natural bound:
      * anything still queued is picked up by the next poll. */
     for (unsigned i = 0; i < EMAC_RX_DESC_COUNT; i++) {
+        /* Ownership first, and the order is the whole correctness argument.
+         *
+         * emac_rx_peek() returns NULL for two unrelated reasons -- "the DMA
+         * still owns this descriptor, nothing has arrived" and "a frame
+         * arrived and it is broken" -- and the caller has to tell them apart
+         * to know whether releasing the descriptor is right. Asking peek
+         * first and re-reading the descriptor afterwards to find out is a
+         * race, because the DMA can complete a frame in between: the re-read
+         * then finds OWN clear, the code concludes "errored", and a perfectly
+         * good frame is counted as a hardware error and released without ever
+         * being handed up.
+         *
+         * That is not hypothetical -- it is what this loop did when Z4
+         * shipped, and it cost 3-15% of every ping depending on rate, with
+         * RDES0 reading 0x00660320 (FS | LS | frame-type, length 102, not one
+         * error bit set) on the frames it threw away. Small pings passed
+         * because five packets rarely hit the window.
+         *
+         * Reading OWN first removes the window: once the DMA has cleared it
+         * the descriptor belongs to us and nothing else writes it. */
+        emac_desc_t *d = &g_rx_desc[g_rx_next];
+        desc_from_dma(d);
+        if (d->des0 & RDES0_OWN) return 0;      /* genuinely nothing ready */
+
         uint32_t len = 0;
         const uint8_t *p = emac_rx_peek(&len);
         if (p) {
@@ -1446,13 +1659,11 @@ static int emac_netif_poll(netif_t *nif) {
             g_rx_held_len = len;
             return 1;
         }
-        /* NULL means either "nothing yet" or "an errored frame is sitting at
-         * the head". They are distinguished by ownership: if the DMA still
-         * owns the descriptor there is genuinely nothing there, and releasing
-         * it would hand the DMA a descriptor it already has. */
-        emac_desc_t *d = &g_rx_desc[g_rx_next];
-        desc_from_dma(d);
-        if (d->des0 & RDES0_OWN) return 0;      /* empty ring; done */
+        /* We own the descriptor and peek refused it, so it is genuinely a
+         * bad frame: errored, or split across descriptors. Drop it and look
+         * at the next one -- that is how the ring recovers. */
+        g_rx_err_last_des0 = d->des0;
+        g_rx_err_seen_bits |= d->des0;
         g_rx_hw_errors++;
         emac_rx_release();                       /* drop it and look again */
     }
@@ -1611,12 +1822,37 @@ void emac_stats_report(void) {
     cprintf("  missed   %lu no-descriptor, %lu fifo-overflow%s\n",
             (unsigned long)(missed & 0xffffu), (unsigned long)((missed >> 17) & 0x7ffu),
             (missed & (1u << 16)) ? " (counter wrapped)" : "");
+    if (g_rx_hw_errors) {
+        uint32_t b = g_rx_err_seen_bits;
+        cprintf("  rx errs  last RDES0 0x%08lx, bits seen:%s%s%s%s%s%s%s%s\n",
+                (unsigned long)g_rx_err_last_des0,
+                (b & RDES0_CE)  ? " CRC"        : "",
+                (b & RDES0_DBE) ? " dribble"    : "",
+                (b & RDES0_RE)  ? " rx-error"   : "",
+                (b & RDES0_RWT) ? " watchdog"   : "",
+                (b & RDES0_OE)  ? " overflow"   : "",
+                (b & RDES0_LE)  ? " length"     : "",
+                (b & RDES0_SAF) ? " sa-filter"  : "",
+                (b & RDES0_DE)  ? " descriptor" : "");
+    }
     cprintf("  rx       %lu frames, %lu bytes, %lu hardware errors/oversize\n",
             (unsigned long)g_netif.rx_frames, (unsigned long)g_netif.rx_bytes,
             (unsigned long)g_rx_hw_errors);
-    cprintf("  tx       %lu frames, %lu bytes, %lu errors\n",
+    cprintf("  tx       %lu frames, %lu bytes, %lu refused, %lu failed on the wire\n",
             (unsigned long)g_netif.tx_frames, (unsigned long)g_netif.tx_bytes,
-            (unsigned long)g_netif.tx_errors);
+            (unsigned long)g_netif.tx_errors, (unsigned long)g_tx_hw_errors);
+    if (g_tx_hw_errors) {
+        uint32_t b = g_tx_err_seen_bits;
+        cprintf("  tx errs  last TDES0 0x%08lx, bits seen:%s%s%s%s%s%s%s\n",
+                (unsigned long)g_tx_err_last_des0,
+                (b & TDES0_UF)  ? " underflow"      : "",
+                (b & TDES0_ED)  ? " exc-deferral"   : "",
+                (b & TDES0_EC)  ? " exc-collision"  : "",
+                (b & TDES0_LC)  ? " late-collision" : "",
+                (b & TDES0_NC)  ? " no-carrier"     : "",
+                (b & TDES0_LOC) ? " carrier-lost"   : "",
+                (b & TDES0_IHE) ? " ip-header"      : "");
+    }
     if (g_last_hdr_valid) {
         cprintf("  last rx  dst %02x:%02x:%02x:%02x:%02x:%02x  src "
                 "%02x:%02x:%02x:%02x:%02x:%02x  type 0x%02x%02x\n",

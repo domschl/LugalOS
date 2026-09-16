@@ -35,6 +35,21 @@ __attribute__((weak)) bool board_unique_id(uint8_t out[8]) {
  * that never gets one. */
 __attribute__((weak)) block_dev_t *identity_store_device(void) { return NULL; }
 
+/* Weak, so a board with a factory MAC in its silicon can supply it. The
+ * default is "this part has no address of its own", which is true of both
+ * QEMU targets and of the RP2350 (its OTP carries a chip id, not an IEEE
+ * address). The ESP32-P4 overrides it from eFuse BLK1 --
+ * drivers/efuse_esp32p4.c.
+ *
+ * This outranks derive_mac() and is outranked by CONFIG_NODE_MAC, which is
+ * the ladder net/netif.h already describes at netif_register(): "the platform
+ * saying 'you are this address' outranks anything we can derive", while an
+ * explicit board-file address is a human overriding both on purpose. */
+__attribute__((weak)) bool board_factory_mac(uint8_t out[6]) {
+    (void)out;
+    return false;
+}
+
 static char hex_digit(uint8_t v) { return (char)(v < 10 ? '0' + v : 'a' + (v - 10)); }
 
 /* SHA-256 over whatever this node can say about itself: the silicon's own id
@@ -177,7 +192,12 @@ void node_identity_init(void) {
         derive_mac();
     }
 #else
-    derive_mac();
+    if (board_factory_mac(g_mac)) {
+        g_mac_source = "silicon";
+        g_mac_is_derived = false;
+    } else {
+        derive_mac();
+    }
 #endif
 
     /* The UID (§2's device scope): silicon, when this board can identify

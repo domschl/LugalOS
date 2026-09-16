@@ -599,14 +599,27 @@ frame that is neither is dropped before it occupies a descriptor.
 | P4 → laptop | `net txtest 25`, counted at `enp0s31f6`'s `rx_packets` | 25 sent, **25** arrived (control window: 0) |
 | laptop → P4 | `emac stats` last-rx latch | `dst 02:4c:47:87:a4:b9 src f8:75:a4:68:1d:85 type 0x0800` |
 
-`tcpdump` is not installed on this laptop and raw sockets need root here, so
-the literal done-condition was met a better way in both directions: the
-laptop's kernel *accepting and answering* our frames is strictly stronger
-evidence than a capture showing bytes, and the NIC's own counter with a quiet
-control window pins the count exactly. The unclaimed-frame latch specifically
-was not exercised — reaching it needs a frame that is neither IPv4 nor ARP,
-and generating one requires `CAP_NET_RAW`. `net rxtest` remains the way to do
-it the day that is available.
+**The literal capture, once `tcpdump` was installed and given
+`cap_net_raw` (2026-09-16):**
+
+```
+10:09:31.808694 02:4c:47:87:a4:b9 > ff:ff:ff:ff:ff:ff, ethertype 0x88b5, length 60:
+        0x0000:  4c55 4741 4c4f 532d 4e45 5449 462d 5445  LUGALOS-NETIF-TE
+        0x0010:  5354 0000 0000 0000 0000 0000 0000 0000  ST..............
+```
+
+— six frames, sequence numbers incrementing, source MAC ours. That is the
+first half of the done-condition verbatim.
+
+The **unclaimed-frame latch is still not exercised**, and the reason is worth
+stating so nobody records this milestone as fully closed: reaching it needs a
+frame that is neither IPv4 nor ARP, so something has to *send* one, and
+`cap_net_raw` on `tcpdump` grants capture, not transmission. A raw socket for
+a sender (or an IPv6 address on the host interface) is all it needs.
+`net rxtest` is written and waiting. What stands in for it meanwhile is the
+driver's own last-rx latch, which showed a frame the laptop sent with the
+right source MAC and EtherType — one layer lower than net/stack.c's latch,
+because the frame was legitimately claimed.
 
 Locked in by `test_emac_frames` in `tests/hw/test_esp32p4.py` (18 tests now).
 
@@ -701,6 +714,86 @@ DHCP client (§6).
   never had;
 * **`net/include/net/netif.h` is unmodified.** If it is not, say so loudly
   and record what §2 of `plan/hardware_seams.md` got wrong.
+
+#### Z5 — four of five, 2026-09-16
+
+`drivers/efuse_esp32p4.c` reads the factory MAC from eFuse BLK1 and the
+128-bit `OPTIONAL_UNIQUE_ID` from BLK2, and `kernel/identity.c` gained a
+`board_factory_mac()` rung between `CONFIG_NODE_MAC` and `derive_mac()`.
+`node_mac_source()` now answers **`silicon`** on this board instead of
+`derived (build seed)`.
+
+Byte order was the risk worth guarding, because a reversed MAC is still a
+plausible-looking MAC. Two independent checks agree: the driver refuses any
+address whose first octet has the multicast or locally-administered bit set
+(the reverse of this chip's address starts `53:`, which is multicast and would
+have been caught), and the value it reports is **identical to esptool's own**
+reading of the same part — `80:f1:b2:d2:f0:53`.
+
+| done-condition | result |
+|---|---|
+| `net` reports the interface and the eFuse MAC with source `silicon` | ✅ `mac: 80:f1:b2:d2:f0:53 (silicon)`, `uid: eaad894f48809797 (silicon)` |
+| laptop's ARP table shows the factory OUI, not a local address | ✅ `192.168.77.2 lladdr 80:f1:b2:d2:f0:53 REACHABLE` |
+| `ping`, 100 packets, **zero loss** | ❌ **~1%, flat** (498/500 and 494/500 at 10/s; 991/1000 at 20/s) — cause not identified; see `plan/open_issues.md` |
+| 9P mount over TCP lists `/proc`, reads `/proc/kmsg` | ✅ 15 entries; 2735 B, 42 lines |
+| `net/include/net/netif.h` unmodified | ✅ untouched, so §2 of `plan/hardware_seams.md` stands |
+
+Locked in by `test_node_identity_from_silicon` and `test_lan_node` in
+`tests/hw/test_esp32p4.py`. The second asserts zero loss and is **red** until
+the transmit defect is fixed; it is left red on purpose.
+
+##### What the transmit loss turned out to be, so far
+
+Internal loopback is **clean — 2100 sent, 2100 verified, 0 corrupt** — once
+the diagnostics stop racing the live interface, so the DMA, the descriptors
+and the cache maintenance are exonerated. The loss is downstream of the MAC.
+
+The rate is **about 1% and flat** — it does not grow with offered load:
+498/500 and 494/500 at 10 frames/s, 991/1000 at 20/s. Both ends report
+success, and frames captured by source MAC show the missing ones are absent
+rather than corrupted.
+
+Transmit store-and-forward and a deeper transmit ring were believed for a
+while to give a tenfold improvement. **They do not**, and the belief is
+instructive: it rested on 200–700 packet samples used to separate 1.3% from
+1.5% from 0.14%, differences of a handful of packets. Larger runs put IDF's
+own configuration at 0.4% and the "improved" one at 1.2%. The driver ships
+IDF's configuration. Re-test with at least 1000 packets per configuration.
+
+##### Three testing lessons this milestone cost, which are the durable part
+
+**A sample too small to distinguish working from broken is not evidence.** Z4
+was reported done on three-to-five pings. A 1–2% loss survives that about 95%
+of the time, so those runs could not have detected it, and the interface
+shipped with a receive race discarding 3–15% of frames. `test_lan_node` uses
+one hundred packets for exactly this reason. The receive race itself is
+instructive: `emac_rx_peek()` returns NULL both for "nothing ready" and for
+"errored frame", and the poll loop re-read the descriptor afterwards to tell
+them apart — so a frame arriving in that window had `OWN` newly cleared, was
+scored a hardware error, and was released without being handed up. `RDES0`
+read `0x00660320`: FS, LS, length 102, not one error bit set.
+
+**A diagnostic can be defeated by the system it runs inside.** Underneath
+every one of those four broken stress tests, `netsrv` was consuming the
+frames the diagnostic had just sent: `net/stack.c` polls `emac_netif_poll()`
+forever, and since Z4 registered `eth0` the loopback path has been sharing
+its descriptor rings with a live interface. Measured, not supposed — the
+interface's own rx counter climbed by 65 during one 700-frame run, and two
+identical runs scored 450/700 and 674/700. The **shipped Z2 test** had been
+racing the same way since Z4 and passing on timing: seven frames finish
+inside about one scheduler slice. `g_diag_owns_rings` now makes the netif
+yield the rings to a diagnostic, and with it the same test reports 2100/2100.
+
+**A diagnostic is not trustworthy because it is elaborate.** Four successive
+versions of `emac loopback stress` each measured their own defect rather than
+the hardware — releasing descriptors the DMA still owned, assuming strict
+one-in-one-out ordering, draining a single frame per send — and each produced
+a confident number (`385 lost`, `1439 lost`, `750 unaccounted`) that was
+worth nothing. Two of those bugs also existed latently in the **shipped Z2
+test**, which released on timeout the same way; they are fixed there too. The
+current version verifies each frame against its own length through the pure
+`loopback_byte()`, so ordering cannot corrupt it, but until it agrees with a
+known-good path its output should be treated as unvalidated.
 
 ### Z6 — Look again at the waiter-slot/ISR pattern
 

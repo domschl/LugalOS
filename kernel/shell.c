@@ -2954,6 +2954,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "emac promisc off") == 0) {
         emac_set_promiscuous(false);
         return;
+    } else if (strncmp(cmd_line, "emac loopback stress", 20) == 0) {
+        emac_loopback_stress((uint32_t)shell_trailing_uint(&cmd_line[20]));
+        return;
     } else if (strcmp(cmd_line, "emac loopback") == 0) {
         /* Z2. Proves the descriptor rings and the cache discipline with no
          * PHY and no cable in the picture. */

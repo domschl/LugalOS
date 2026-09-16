@@ -787,6 +787,11 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # netif and serves nothing; it exists so that `emac scan` can prove the
     # PHY is there before Z2 builds descriptor rings against it.
     list(APPEND SOURCES drivers/emac_esp32p4.c)
+    # Z5, plan/phase28_esp32p4_ethernet.md §1.5: the factory MAC and a real
+    # board_unique_id(), read from eFuse. Without it this board derives a
+    # locally-administered MAC from a build seed, which two boards flashed
+    # from one build would share.
+    list(APPEND SOURCES drivers/efuse_esp32p4.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

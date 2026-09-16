@@ -68,6 +68,17 @@ int node_set_name(const char *name);
  * where it can be checked against two real boards rather than asserted. */
 bool board_unique_id(uint8_t out[8]);
 
+/* Board hook: true, and fills `out`, when this silicon carries a factory MAC
+ * address of its own -- an IEEE-registered one, not a chip id. The default
+ * answers false; the ESP32-P4 reads eFuse BLK1 (drivers/efuse_esp32p4.c).
+ *
+ * Where it sits in the ladder: CONFIG_NODE_MAC (a human's explicit choice)
+ * beats it, and it beats derive_mac(). node_mac_source() reports "silicon"
+ * when it wins, which is the difference between a board that is addressable
+ * as itself and a batch of boards that all derived the same locally
+ * administered address from one build seed. */
+bool board_factory_mac(uint8_t out[6]);
+
 /* The device-scope UID (I2/§2, plan/phase21_identity_and_authentication.md):
  * silicon (board_unique_id()) when this board has one, else the identity
  * store's provisioned UID field, else absent. Returns false and leaves `out`

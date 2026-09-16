@@ -63,6 +63,11 @@ void emac_phy_scan(void);
  * around. Leaves loopback disabled. */
 void emac_loopback_test(void);
 
+/* `emac loopback stress [N]`: the Z2 sweep N times over, totals only. Answers
+ * "is a frame loss ours or the PHY's" -- internal loopback never reaches the
+ * PHY, so a clean run of thousands puts the fault downstream of the MAC. */
+void emac_loopback_stress(uint32_t rounds);
+
 /* --- Z3: link state ----------------------------------------------------- */
 
 typedef struct {
