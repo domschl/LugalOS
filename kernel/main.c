@@ -62,6 +62,7 @@
 
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "arch/esp32p4_intr.h"   /* esp32p4_l2_cache_shrink() */
+#include "arch/clk_esp32p4.h"    /* 34.3: the regulator trim */
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -150,6 +151,31 @@ void kernel_main(void) {
     console_bind(uart_putc);
 
     time_init();
+
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* 34.3, plan/phase34_esp32p4_pll_bringup.md. The boot ROM leaves the
+     * HP_ACTIVE regulator at IDF's *uncalibrated* default of 24 without ever
+     * applying this chip's own eFuse trim, which asks for 25. That is free at
+     * 40 MHz and is precisely the margin phase 34 goes on to spend, so the
+     * trim is applied before any milestone raises a clock against it.
+     *
+     * Here rather than beside esp32p4_l2_cache_shrink() above because this
+     * one can *report*: the console exists by now, and a regulator that
+     * accepts the write without moving is a thing to find in a boot log
+     * rather than in a hang three milestones later. A few hundred
+     * milliseconds at the old setting costs nothing -- the board has booted
+     * that way since phase 27. */
+    {
+        uint32_t dbias_from = 0, dbias_to = 0, dbias_ind = 0;
+        if (esp32p4_regulator_apply_efuse_dbias(&dbias_from, &dbias_to,
+                                                &dbias_ind)) {
+            printk("[PMU] HP_ACTIVE dbias %u -> %u (this chip's eFuse trim; "
+                   "regulator indicates %u)\n",
+                   (unsigned)dbias_from, (unsigned)dbias_to,
+                   (unsigned)dbias_ind);
+        }
+    }
+#endif
 
     /* Y5a, plan/phase31_concurrency_hierarchy.md: one line, not three, and no
      * 50-character rules around it. The banner was 170 bytes of which 102

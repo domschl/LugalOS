@@ -61,6 +61,22 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us);
  * file for why that is not a write to the thing being measured. */
 void esp32p4_clock_sources_report(void);
 
+/* 34.3: apply this chip's own eFuse voltage trim to the HP_ACTIVE regulator,
+ * before any milestone raises a clock against it.
+ *
+ * Returns true if it changed anything. `from` and `to` receive the *control*
+ * field (HP_ACTIVE_HP_REGULATOR_DBIAS) before and after; `indicated` receives
+ * the separate RO field the regulator reports its current voltage in. Those
+ * two disagree on this board and the .c file says so at length -- both are
+ * reported rather than one being chosen.
+ *
+ * Never lowers the setting and never invents one: an unburnt eFuse leaves
+ * the register alone, because IDF's fallback for that case is the value
+ * already there. See the .c file for why the DCDC is deliberately untouched.
+ */
+bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
+                                         uint32_t *indicated);
+
 /* The `clocks` shell command's body. */
 void esp32p4_clocks_report(void);
 

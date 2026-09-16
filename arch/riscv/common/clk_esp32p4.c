@@ -340,6 +340,16 @@ static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
  * = 24 when the field is zero -- which is also this register's reset value,
  * so on an uncalibrated part IDF's sequence would write back what is already
  * there. Whether that is true of *this* part is exactly what 34.3 needs. */
+/* The *writable* twin of HP_DBIAS_VOL, and not the same field.
+ * PMU_HP_ACTIVE_HP_REGULATOR_DBIAS is R/W at [31:27] with reset default 24;
+ * HP_DBIAS_VOL at [13:9] is RO and reports what the regulator is actually
+ * at. Reading one and writing the other is what `pmu_ll_hp_set_regulator_
+ * dbias(hw, HP_ACTIVE, v)` does -- `hw->hp_sys[mode].regulator0.dbias`.
+ * Both read 24 on this board, so the readback is a real check and not an
+ * echo of the write. */
+#define PMU_HP_ACT_REG_DBIAS_S  27
+#define PMU_DBIAS_FIELD_M       0x1Fu
+
 #define P4_EFUSE_RD_MAC_SYS_4   0x5012D054UL
 #define EFUSE_ACT_HP_DBIAS_S    16
 #define EFUSE_ACT_HP_DBIAS_M    0xFu
@@ -425,13 +435,17 @@ void esp32p4_clock_sources_report(void) {
                      & EFUSE_ACT_HP_DBIAS_M;
     uint32_t idf_would = efuse ? (efuse + 16u > 31u ? 31u : efuse + 16u)
                                : IDF_HP_DBIAS_DEFAULT;
-    cprintf("[CLK] regulator = HP dbias %u (RO)  dbias_sel %u  "
-            "[HP_ACTIVE_HP_REGULATOR0 = 0x%08x]\n",
-            (unsigned)hp_dbias, (unsigned)((reg0 & PMU_DIG_REG0_DBIAS_SEL) ? 1u : 0u),
+    cprintf("[CLK] regulator = dbias ctrl %u (R/W)  indicated %u (RO)  "
+            "sel %u (%s)  [0x%08x]\n",
+            (unsigned)((reg0 >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M),
+            (unsigned)hp_dbias,
+            (unsigned)((reg0 & PMU_DIG_REG0_DBIAS_SEL) ? 1u : 0u),
+            (reg0 & PMU_DIG_REG0_DBIAS_SEL) ? "software" : "hardware",
             (unsigned)reg0);
-    cprintf("[CLK] dbias cal = efuse %u -> IDF would program %u; board has %u%s\n",
-            (unsigned)efuse, (unsigned)idf_would, (unsigned)hp_dbias,
-            (idf_would == hp_dbias) ? "  (same)" : "  (DIFFERENT)");
+    uint32_t ctrl = (reg0 >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
+    cprintf("[CLK] dbias cal = efuse %u -> trim %u; control %s (34.3)\n",
+            (unsigned)efuse, (unsigned)idf_would,
+            (idf_would == ctrl) ? "applied" : "NOT applied");
 }
 
 /* ets_get_cpu_frequency(), ROM 0x4fc00040.
@@ -520,6 +534,124 @@ void esp32p4_clocks_report(void) {
             (unsigned)esp32p4_clint_measure_hz(2000u));
 
     esp32p4_clock_sources_report();   /* 34.2 */
+}
+
+
+/* --- 34.3: the regulator, before anything moves ------------------------
+ *
+ * One field. That is the whole milestone, and 34.2 is why: the question
+ * "does IDF's PMU/REGI2C analog bring-up have to be ported" was answered by
+ * reading the board rather than by reading `rtc_clk_init()`, and most of
+ * that sequence turns out to be already satisfied.
+ *
+ *   * `DIG_REGULATOR0_DBIAS_SEL` reads 1 -- control is already the PMU's,
+ *     which is where IDF's sequence ends up.
+ *   * `HP_ACTIVE_HP_REGULATOR_XPD` reads 1 -- the regulator is already on.
+ *   * `HP_DBIAS_VOL` and the writable `..._REGULATOR_DBIAS` both read 24.
+ *
+ * 24 is `HP_CALI_ACTIVE_DBIAS_DEFAULT`, IDF's *uncalibrated fallback*. This
+ * part is not uncalibrated: its eFuse `active_hp_dbias` reads 9, and IDF's
+ * `get_act_hp_dbias()` turns that into 9 + 16 = 25. So the ROM left the
+ * generic default in place and never applied this chip's own trim.
+ *
+ * ## Why one step matters, when 40 MHz plainly works without it
+ *
+ * The eFuse value is not a performance setting; it is process compensation.
+ * IDF's own comment says what it is for -- *"hp_cali_dbias is read from
+ * efuse to ensure that the hp_active_voltage is close to 1.15V"* -- so a
+ * part whose trim says 25 is a part that needs 25 to reach the voltage the
+ * silicon is characterised at. Leaving it at 24 leaves this chip slightly
+ * *below* that, which is free at 40 MHz and is exactly the margin phase 34
+ * intends to spend.
+ *
+ * ## Why the DCDC is deliberately not touched
+ *
+ * `rtc_clk_init()` also enables the DCDC and programs `dcm_vset`, and this
+ * does neither. Three reasons, in order of weight:
+ *
+ *   1. **It is a hardware question this phase cannot answer from software.**
+ *      The P4's internal buck needs an external inductor. The NANO
+ *      schematic carries `EN_DCDC`, `FB_DCDC` and `VDDPST_DCDC` nets with a
+ *      470K 1% feedback divider -- which reads far more like an *external*
+ *      regulator IC than like the chip's own converter, and "reads like" is
+ *      not a basis for enabling a buck converter.
+ *   2. **The voltage this phase needs arrives without it.** The DCDC is an
+ *      efficiency path; the LDO delivers the same dbias-selected rail.
+ *   3. **The board is stable on the LDO path today**, at a known-good
+ *      setting, and 34.3's job is to change one thing and prove it changed
+ *      nothing else.
+ *
+ * If a later milestone measures a power or thermal problem at 360 MHz, this
+ * is the first thing to revisit -- with the board's inductor identified
+ * first.
+ *
+ * ## The two fields are not the same field, and they disagree
+ *
+ * TRM Register 11.x, verbatim:
+ *
+ *   * `HP_ACTIVE_HP_REGULATOR_DBIAS` [31:27], R/W -- *"Regulates the voltage
+ *     of the HP sys regulator in HP_ACTIVE state. The higher the value, the
+ *     higher the voltage."* This is the control, and it is what
+ *     `pmu_ll_hp_set_regulator_dbias()` writes.
+ *   * `HP_DBIAS_VOL` [13:9], RO -- *"Indicates the current voltage of the HP
+ *     system regulator."*
+ *   * `DIG_REGULATOR0_DBIAS_SEL` [14] -- *"0: Regulated by Hardware
+ *     automatically, 1: Regulated by Software."* This board reads 1.
+ *
+ * After writing 25 into the control, the register reads back 0xce677180 --
+ * the control field is 25 -- and **the indicator still reads 24**. That is
+ * recorded rather than explained: it is not a failed write, since the
+ * control holds the value, but it does mean the resulting voltage is not
+ * independently confirmed from software. Settling it needs a meter on the
+ * core rail, which is a question for the bench and not for this file.
+ *
+ * **`DIG_DBIAS_INIT` is not the missing commit, and was tried.** Bit 15 is
+ * WT and the TRM calls it *"Initializes the PVT voltage configurations"*,
+ * which reads like the trigger that would make the indicator follow. Setting
+ * it drove the indicator to **20** -- down, not up, and away from the trim
+ * this function exists to apply. Not used. Written down so the next reader
+ * does not spend the same reboot finding out.
+ *
+ * ## What this function does not do
+ *
+ * It does not lower anything, ever, and it does not write a value it made
+ * up. If the eFuse is unburnt (0) it leaves the register alone: IDF's
+ * fallback for that case is 24, which is what is already there.
+ */
+bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
+                                         uint32_t *indicated) {
+    uint32_t reg0 = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
+    uint32_t now_dbias = (reg0 >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
+    uint32_t efuse = (P4_REG(P4_EFUSE_RD_MAC_SYS_4) >> EFUSE_ACT_HP_DBIAS_S)
+                     & EFUSE_ACT_HP_DBIAS_M;
+
+    if (from) *from = now_dbias;
+    if (to)   *to   = now_dbias;
+    if (indicated) {
+        *indicated = (reg0 >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_FIELD_M;
+    }
+
+    if (efuse == 0u) {
+        return false;   /* unburnt: IDF's fallback is the reset value */
+    }
+    uint32_t want = efuse + 16u;
+    if (want > 31u) want = 31u;
+    if (want <= now_dbias) {
+        return false;   /* never step down; see the header */
+    }
+
+    reg0 &= ~(PMU_DBIAS_FIELD_M << PMU_HP_ACT_REG_DBIAS_S);
+    reg0 |= (want & PMU_DBIAS_FIELD_M) << PMU_HP_ACT_REG_DBIAS_S;
+    P4_REG(P4_PMU_HP_ACT_REGULATOR0) = reg0;
+
+
+    /* Both, because they disagree and hiding either would be the wrong kind
+     * of tidy: `to` is the control as it now reads, `indicated` is what the
+     * regulator says it is delivering. */
+    uint32_t after = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
+    *to = (after >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
+    if (indicated) *indicated = (after >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_FIELD_M;
+    return true;
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */

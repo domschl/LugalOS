@@ -606,6 +606,72 @@ its failures cannot be attributed to anything else.
 **Done when:** the regulator is in a state that is *known* (not inherited) and
 stated, and the board is unchanged at 40 MHz.
 
+#### Done, 2026-09-16 — one field, as 34.2 predicted
+
+Most of `rtc_clk_init()` turned out to be already satisfied, which is what
+34.2 bought:
+
+* `DIG_REGULATOR0_DBIAS_SEL` reads 1 — and the TRM's encoding is *"0:
+  Regulated by Hardware automatically, 1: Regulated by Software"*, so control
+  is already where IDF's sequence leaves it.
+* `HP_ACTIVE_HP_REGULATOR_XPD` reads 1 — the regulator is already on.
+* Both dbias fields read 24, IDF's *uncalibrated* fallback, on a part whose
+  eFuse trim asks for 25.
+
+So the milestone is one write: `HP_ACTIVE_HP_REGULATOR_DBIAS` 24 → 25, at
+boot, before any clock is raised against it. Applied in
+`esp32p4_regulator_apply_efuse_dbias()`, which never lowers the setting and
+leaves an unburnt eFuse alone.
+
+```
+[PMU] HP_ACTIVE dbias 24 -> 25 (this chip's eFuse trim; regulator indicates 24)
+[CLK] regulator = dbias ctrl 25 (R/W)  indicated 24 (RO)  sel 1 (software)  [0xce677180]
+```
+
+**The two fields disagree, and that is reported rather than resolved.** They
+are different fields, both in the same register, and the TRM distinguishes
+them: `[31:27]` R/W *"Regulates the voltage … the higher the value, the
+higher the voltage"*, `[13:9]` RO *"Indicates the current voltage of the HP
+system regulator"*. The control took the write — the register went
+`0xc6677180` → `0xce677180` — and the indicator did not move. **This is not a
+failed write**, but it does mean the resulting voltage is unconfirmed from
+software. Settling it needs a meter on the core rail.
+
+**`DIG_DBIAS_INIT` is not the missing commit, and trying it made things
+worse.** Bit 15 is WT and the TRM calls it *"Initializes the PVT voltage
+configurations"*, which reads exactly like the trigger that would make the
+indicator follow. Setting it drove the indicator to **20** — down, away from
+the trim being applied. Reverted in the same session; the effect does not
+survive a reset. Recorded so nobody spends the same reboot.
+
+**Verified at 40 MHz, which is the point of doing this alone:**
+
+* `tests/hw/test_esp32p4.py` — 20/20.
+* `(perft 3 1)` — 21 949 ms then 21 941 ms, 0 errors.
+
+**And that pair produced a methodological finding this phase needs.** 21 941
+against 21 949 is 0.04 % run-to-run — but both are **2.9 % slower than
+34.1's 21 333 ms**, measured on the same source at the same clock with the
+same voltage. The difference is the *image*: `.text` has grown ~1.7 KB across
+these milestones, and against a 128 KB L2 cache holding 186 KB of code, which
+lines collide depends on link-time addresses.
+
+> **Rule for 34.6, and for 34.12 after it: compare one image at two clocks,
+> never two builds.** Perft's run-to-run noise is under 0.05 %; its
+> build-to-build noise is ~3 %, which is large enough to swallow or invent a
+> result. The existing rule about in-guest timing is not sufficient on its
+> own.
+
+**Still open, deliberately: the DCDC.** `rtc_clk_init()` also enables it and
+programs `dcm_vset`; this does neither. The P4's internal buck needs an
+external inductor, and the NANO schematic's `EN_DCDC` / `FB_DCDC` /
+`VDDPST_DCDC` nets with a 470K 1 % feedback divider read far more like an
+*external* regulator IC than the chip's own converter — and "reads like" is
+not a basis for enabling a buck. The voltage this phase needs arrives via the
+LDO regardless, and the board is stable on that path today. If 360 MHz proves
+unstable or hot, this is the first thing to revisit, with the board's
+inductor identified first.
+
 ### 34.4 — 90 MHz: the smallest switch that proves the path
 
 The lowest CPLL-derived step, CPU divider 4 from the 360 MHz CPLL. 2.25×, which
