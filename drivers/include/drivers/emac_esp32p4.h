@@ -68,6 +68,13 @@ void emac_loopback_test(void);
  * PHY, so a clean run of thousands puts the fault downstream of the MAC. */
 void emac_loopback_stress(uint32_t rounds);
 
+/* `emac loopback phy [N]`: the same frames looped back inside the **PHY**,
+ * via BMCR's LOOPBACK bit, so they traverse the real transmit path and the
+ * RMII pins. MAC-internal loopback cannot see that wiring; this can, and it
+ * still excludes the cable and the far end. Loss here means the fault is on
+ * this board; a clean run puts it beyond the PHY. */
+void emac_loopback_phy(uint32_t rounds);
+
 /* --- Z3: link state ----------------------------------------------------- */
 
 typedef struct {

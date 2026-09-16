@@ -764,13 +764,13 @@ def test_lan_node(b: Board) -> tuple[str, bool, str]:
     about 95% of the time. One hundred is what makes the difference between
     "it replied" and "it is reliable" visible.
 
-    **This test is expected to flake while the transmit loss in
-    plan/open_issues.md is open**, and that is deliberate. At ~1% loss a
-    hundred packets come through clean roughly half the time, so a green run
-    is not evidence the defect is gone -- only a thousand-packet run is. Do
-    not "stabilise" this by lowering the count or allowing a packet or two:
-    the flake is the bug being visible, and hiding it is how Z4 shipped a
-    3-15% receive race that five pings could not see."""
+    It flaked for a while against a real ~1% transmit loss, which turned out
+    to be the driver forcing maximum drive strength on the RMII pads (see
+    plan/open_issues.md). Three thousand echoes now pass clean. If it starts
+    flaking again, that is a genuine regression -- do not "stabilise" it by
+    lowering the count or allowing a packet or two, because a hundred packets
+    barely see a 1% fault and five pings do not see it at all, which is
+    exactly how Z4 shipped a 3-15% receive race."""
     name = "a node on the LAN: 100 echoes and a 9P mount (Z5)"
 
     host_if = _z4_host_interface()

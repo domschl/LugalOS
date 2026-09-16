@@ -147,6 +147,11 @@
 #define  IOMUX_MCU_SEL_M        (7u << IOMUX_MCU_SEL_S)
 #define  IOMUX_FUN_IE           (1u << 9)
 #define  IOMUX_FUN_PU           (1u << 8)
+#define  IOMUX_FUN_PD           (1u << 7)
+/* "Pulse width shorter than 2 clock cycles will be filtered out" (IO_MUX pad
+ * register, bit 15). Harmless at MDIO speeds and emphatically not something
+ * to leave to chance on a 50 MHz RMII input. */
+#define  IOMUX_FILTER_EN        (1u << 15)
 #define  IOMUX_FUN_DRV_S        10           /* [11:10] */
 #define  IOMUX_FUN_DRV_M        (3u << IOMUX_FUN_DRV_S)
 #define  IOMUX_FUNC_GPIO        1u
@@ -205,11 +210,27 @@ static void reg_modify(uintptr_t addr, uint32_t clear, uint32_t set) {
 
 /* Puts a pad on an IO_MUX function directly (no matrix). `ie` requests the
  * input buffer, which every RMII receive signal and the RMII clock need. */
+/* Configures one pad: function select, input buffer, floating, no pin filter.
+ *
+ * **Drive strength is deliberately left alone**, which is a correction rather
+ * than an omission. This used to force FUN_DRV to 3 -- the maximum -- with
+ * the reasoning "RMII runs at 50 MHz", which sounds right and is an assumption
+ * nobody measured. ESP-IDF configures these same pads
+ * (emac_esp_iomux_init(), esp_eth_mac_esp_gpio.c) by setting the IOMUX
+ * function and the pull mode and **never touching drive strength at all**,
+ * leaving the pad default. On short unterminated board traces the maximum
+ * setting is if anything the wrong choice: it buys edge rate at the cost of
+ * overshoot and ringing, which is how a 50 MHz signal arrives corrupted.
+ *
+ * Pulls are cleared explicitly because IDF does the same
+ * (gpio_set_pull_mode(GPIO_FLOATING)): an RMII line is driven at both ends
+ * and a stray pull-up fights the driver. MDIO is the exception and sets its
+ * own pull-up afterwards, because it genuinely idles undriven. */
 static void pad_iomux(uint32_t gpio, uint32_t func, bool ie) {
     uint32_t v = REG(IOMUX_PAD(gpio));
-    v &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_IE | IOMUX_FUN_DRV_M);
+    v &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_IE | IOMUX_FUN_PU | IOMUX_FUN_PD |
+           IOMUX_FILTER_EN);
     v |= (func << IOMUX_MCU_SEL_S);
-    v |= (3u << IOMUX_FUN_DRV_S);   /* strongest drive; RMII runs at 50 MHz */
     if (ie) v |= IOMUX_FUN_IE;
     REG(IOMUX_PAD(gpio)) = v;
 }
@@ -969,14 +990,14 @@ static uint8_t loopback_byte(uint32_t off, uint32_t len) {
  * loopback exercises the first and not the second: MAC-internal loopback
  * never reaches the PHY. A loss rate here means the bug is ours; a clean run
  * of thousands means it is downstream of the MAC. */
-void emac_loopback_stress(uint32_t rounds) {
-    if (emac_probe() != 0) {
-        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
-        return;
-    }
-    g_diag_owns_rings = true;
-    emac_start(true);
-    if (rounds == 0) rounds = 100;
+/* The send-and-verify loop, shared by every loopback the driver offers.
+ *
+ * Factored out deliberately rather than copied: four separate rewrites of
+ * this loop each shipped a different defect, and a second copy for PHY
+ * loopback would have been a fifth chance to get it wrong. Whatever loops the
+ * frames back, the verification is identical. */
+static void loopback_run(uint32_t rounds, uint32_t *p_sent, uint32_t *p_ok,
+                         uint32_t *p_corrupt, uint32_t *p_refused) {
 
     /* Verification is by content, not by position, and that distinction is
      * the whole reason this test works where two earlier versions did not.
@@ -994,6 +1015,7 @@ void emac_loopback_stress(uint32_t rounds) {
      * Draining after every send also keeps at most one or two frames
      * outstanding, so the four-deep receive ring cannot overflow and turn a
      * test artifact into a "loss". */
+    if (rounds == 0) rounds = 100;
     uint32_t sent = 0, ok = 0, corrupt = 0, refused = 0;
 
     for (uint32_t r = 0; r < rounds; r++) {
@@ -1040,13 +1062,31 @@ void emac_loopback_stress(uint32_t rounds) {
         }
     }
 
+    *p_sent = sent; *p_ok = ok; *p_corrupt = corrupt; *p_refused = refused;
+}
+
+static void loopback_report(const char *what, uint32_t sent, uint32_t ok,
+                            uint32_t corrupt, uint32_t refused) {
+    cprintf("EMAC %s loopback: %lu sent, %lu verified, %lu corrupt, "
+            "%lu refused, %lu unaccounted\n", what,
+            (unsigned long)sent, (unsigned long)ok, (unsigned long)corrupt,
+            (unsigned long)refused, (unsigned long)(sent - ok - corrupt));
+}
+
+void emac_loopback_stress(uint32_t rounds) {
+    if (emac_probe() != 0) {
+        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
+        return;
+    }
+    g_diag_owns_rings = true;
+    emac_start(true);
+
+    uint32_t sent, ok, corrupt, refused;
+    loopback_run(rounds, &sent, &ok, &corrupt, &refused);
+
     reg_modify(EMAC_MACCONFIG, MACCFG_LM, 0);
     g_diag_owns_rings = false;
-    cprintf("EMAC loopback stress: %lu sent, %lu verified, %lu corrupt, "
-            "%lu refused, %lu unaccounted\n",
-            (unsigned long)sent, (unsigned long)ok, (unsigned long)corrupt,
-            (unsigned long)refused,
-            (unsigned long)(sent - ok - corrupt));
+    loopback_report("MAC-internal", sent, ok, corrupt, refused);
 }
 
 void emac_loopback_test(void) {
@@ -1531,6 +1571,70 @@ void emac_link_updown_test(void) {
     cprintf("EMAC linktest: PASSED\n");
 }
 
+/* `emac loopback phy [N]`: the same frames, looped back inside the **PHY**.
+ *
+ * This is the experiment MAC-internal loopback cannot perform. The internal
+ * path never leaves the MAC, so it exonerates the DMA, the descriptors and
+ * the cache maintenance -- and it did, at 2100 of 2100 -- while saying
+ * nothing about the RMII pins, their timing, or the PHY itself. Setting
+ * BMCR's LOOPBACK bit sends the frame all the way out through RMII into the
+ * PHY, which turns it around internally: everything our board owns, and
+ * nothing it does not. The cable, the magnetics and the far end are excluded.
+ *
+ * So: loss here means the fault is ours, in the RMII path or the PHY. A clean
+ * run of thousands means the ~1% the wire loses happens beyond the PHY --
+ * cable, or peer. See plan/open_issues.md.
+ *
+ * Two details that make the difference between measuring this and measuring
+ * nothing. The MAC runs in **normal** mode (emac_start(false)), because the
+ * point is to use the real transmit path -- MACCFG_LM would short-circuit
+ * exactly the wiring under test. And the receive filter goes to FILTER_RA,
+ * because the test frames are addressed to 02:00:00:00:00:01 rather than to
+ * us, so perfect filtering would drop every one of them and report a total
+ * loss that meant nothing at all. */
+void emac_loopback_phy(uint32_t rounds) {
+    if (emac_probe() != 0) {
+        cprintf("[EMAC] probe failed -- see `emac scan`.\n");
+        return;
+    }
+    g_diag_owns_rings = true;
+    emac_start(false);
+    REG(EMAC_MACFRAMEFILTER) = FILTER_RA;
+
+    /* Force the PHY to 100 Mbit/s full duplex and loop it back. Auto-
+     * negotiation is switched off with the same write: negotiating against
+     * one's own reflection is not meaningful, and leaving AN enabled makes
+     * the loopback bit's effect depend on what the far end happens to do. */
+    if (emac_mdio_write(CONFIG_EMAC_PHY_ADDR, PHY_BMCR,
+                        (uint16_t)(BMCR_LOOPBACK | BMCR_SPEED_100 |
+                                   BMCR_FULL_DUPLEX)) != 0) {
+        cprintf("[EMAC] PHY at %d did not accept the loopback write\n",
+                (int)CONFIG_EMAC_PHY_ADDR);
+        g_diag_owns_rings = false;
+        return;
+    }
+    time_delay_us(50000);          /* the PHY re-times its path; let it settle */
+
+    int bmcr = emac_mdio_read(CONFIG_EMAC_PHY_ADDR, PHY_BMCR);
+    if (bmcr < 0 || !((uint32_t)bmcr & BMCR_LOOPBACK)) {
+        cprintf("[EMAC] PHY loopback did not stick (BMCR 0x%04x) -- not "
+                "measuring, because a PHY that is not looped back would "
+                "simply report every frame lost\n", (unsigned)(bmcr & 0xffff));
+        emac_phy_autoneg_start();
+        g_diag_owns_rings = false;
+        return;
+    }
+
+    uint32_t sent, ok, corrupt, refused;
+    loopback_run(rounds, &sent, &ok, &corrupt, &refused);
+
+    /* Put the PHY back on the wire. */
+    emac_phy_autoneg_start();
+    g_link_valid = false;
+    g_diag_owns_rings = false;
+    loopback_report("PHY", sent, ok, corrupt, refused);
+}
+
 /* --- Z4: the netif ------------------------------------------------------
  *
  * Everything below turns the three primitives Z2 proved -- emac_tx_buffer() /
@@ -1816,6 +1920,15 @@ void emac_stats_report(void) {
             (unsigned)(lo & 0xff), (unsigned)((lo >> 8) & 0xff),
             (unsigned)((lo >> 16) & 0xff), (unsigned)((lo >> 24) & 0xff),
             (unsigned)(hi & 0xff), (unsigned)((hi >> 8) & 0xff));
+    cprintf("  pads     txen 0x%04lx txd0 0x%04lx txd1 0x%04lx | clk 0x%04lx "
+            "crsdv 0x%04lx rxd0 0x%04lx rxd1 0x%04lx (drv = bits 11:10)\n",
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_TX_EN_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_TXD0_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_TXD1_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_RMII_CLK_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_CRS_DV_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_RXD0_GPIO)) & 0xffffu),
+            (unsigned long)(REG(IOMUX_PAD(CONFIG_EMAC_RXD1_GPIO)) & 0xffffu));
     cprintf("  maccfg   0x%08lx   dma status 0x%08lx   opmode 0x%08lx\n",
             (unsigned long)REG(EMAC_MACCONFIG), (unsigned long)REG(EMAC_DMA_STATUS),
             (unsigned long)REG(EMAC_DMA_OPMODE));

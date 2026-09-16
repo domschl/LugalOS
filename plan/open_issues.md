@@ -34,75 +34,75 @@ knowing about before reading them:
 
 Phase 28 resumes at **Z4 -- frames on the wire**.
 
-## The P4's EMAC loses about 1% of transmitted frames on the wire
+## FIXED: the P4's EMAC lost ~1% of frames because we drove the RMII pads too hard
 
-**Status: open, cause not identified. Phase 28 Z5, 2026-09-16.** Receive is
-exact; this is transmit only, and it is why Z5's "100 packets, zero loss" is
-not met. `test_lan_node` in `tests/hw/test_esp32p4.py` asserts the zero and is
-red on purpose rather than being weakened to pass.
+**Closed 2026-09-16, phase 28 Z5.** Kept rather than deleted because the
+*shape* of this one is worth having on file: the bug was a single line with a
+confident comment, and it survived a long hunt through the descriptor path
+because the comment read like a justification.
 
-**The rate, with sample sizes, because smaller runs cannot see it:**
+**The cause.** `pad_iomux()` forced `FUN_DRV = 3` -- maximum drive -- on every
+RMII pad, explained in the code as "strongest drive; RMII runs at 50 MHz".
+That is an assumption, and it was never checked against anything. ESP-IDF
+configures the same pads (`emac_esp_iomux_init()`, `esp_eth_mac_esp_gpio.c`)
+by setting the IOMUX function and the pull mode and **never touching drive
+strength**, leaving the pad default of 2. Maximum drive into short
+unterminated board traces buys edge rate at the cost of overshoot and
+ringing, which at 50 MHz arrives as corrupted bits.
 
-| measurement | result |
-|---|---|
-| echo replies, 10/s | 498/500 (0.4%), 494/500 (1.2%) |
-| echo replies, 20/s | 991/1000 (0.9%) |
-| `net txtest`, ~147000/s burst | 490/500, 496/500, 498/500 |
+**The evidence, at matched sample sizes:**
 
-Roughly **1%, and flat** — it does not grow with offered load. A 100-packet
-run therefore passes about 40% of the time, which is exactly why Z4 was
-reported done on three-to-five pings and shipped a 3-15% receive bug
-underneath.
+| path | forced drv=3 | default drv=2 |
+|---|---|---|
+| MAC-internal loopback (never touches a pad) | 3500/3500 | 3500/3500 |
+| PHY loopback (RMII pins + IP101G) | 3494/3500, **1 corrupt** | **3500/3500** |
+| the wire, 1000 echoes @ 20/s | 991/1000, 983/1000 | **1000/1000** x2 |
+| the wire, 1000 echoes @ 10/s | ~494/500 equivalent | **1000/1000** |
 
-**The in-chip path is exonerated.** With the loopback diagnostics given
-exclusive use of the descriptor rings, MAC-internal loopback runs **2100 sent,
-2100 verified, 0 corrupt, 0 unaccounted**. The DMA, the descriptors and the
-cache maintenance lose nothing. Whatever does is downstream of the MAC: the
-RMII path, the PHY, the cable, or the far end.
+Three thousand echoes across three runs with no loss, against a bug that
+previously showed ~1% flat.
 
-**Both ends report success.** The stack submits every frame and `tx_errors`
-stays 0; the MAC's write-back status (TDES0) shows no error on any frame -- no
-underflow, no carrier loss, no late collision, checked on every descriptor
-reuse; the peer's NIC reports **no CRC, length, fragment or drop errors of any
-kind**, only a lower `rx_packets`. Capturing by source MAC rather than
-EtherType shows the missing frames are **absent, not corrupted**, and losses
-are random and isolated with no duplicates.
+**How it was localised, which is the reusable part.** Two loopback modes
+bisect the physical path: MAC-internal never leaves the MAC, PHY loopback
+(BMCR bit 14) goes out through the real transmit path and the RMII pins and
+is turned around inside the PHY. The first stayed perfect while the second
+lost *and corrupted* frames -- and corruption with every error counter clean
+(TDES0 no error, peer NIC no CRC/length/fragment errors) is a signal-integrity
+signature rather than a logic one. `emac loopback` / `emac loopback phy`
+remain in the driver for exactly this.
 
-**Transmit store-and-forward and a deeper transmit ring do NOT help, despite
-an earlier entry in this file claiming they gave a tenfold improvement.** That
-claim came from 200-700 packet samples being used to separate 1.3% from 1.5%
-from 0.14% -- differences of two to nine packets, i.e. noise. Larger runs put
-IDF's own configuration (2 descriptors, threshold mode) at 0.4% and the
-"improved" one at 1.2%. The driver therefore ships IDF's configuration and
-carries no divergence. If anyone re-tests this, use **at least 1000 packets
-per configuration**.
+**What was checked and found correct**, so nobody re-treads it: the RMII clock
+configuration matches IDF's `emac_ll_clock_enable_rmii_input` exactly (source
+selects, the three enables, `hp_pad_emac_txrx_clk_en`, `pad_emac_ref_clk_en=0`
+for a clock-input board); the divider values 1 and 19 match IDF's
+`50MHz/25MHz-1` and `50MHz/2.5MHz-1`; the field positions `[7:0]` and `[17:10]`
+match the generated header; `hw_ver1` and `hw_ver3` agree on every field this
+driver touches (this board is **rev v1.3**, i.e. hw_ver1); and the pin
+assignment is identical to IDF's own CI config for P4 + IP101
+(`MDC=31, MDIO=52, RST=51, addr=1`). `ESP32P4_SELECTS_REV_LESS_V3` changes
+nothing in the EMAC path but a PTP pin.
 
-**Untried, and where to go next:** PHY-level loopback (BMCR bit 14), which
-unlike MAC-internal loopback includes the RMII path and would localise this
-much further; and a second peer or a switch, to rule out this particular NIC.
+Two smaller alignments came with the fix: RMII pads are now explicitly
+floated (IDF's `GPIO_FLOATING`; an RMII line is driven at both ends and a
+stray pull fights the driver), and `FILTER_EN` -- a pin filter that discards
+pulses shorter than two clock cycles -- is cleared rather than left to
+whatever the bootloader left behind.
 
-**A warning about measuring it.** Every early attempt to localise this
-measured the measurement. Four versions of `emac loopback stress` each had a
-distinct defect -- releasing descriptors the DMA still owned, assuming strict
-one-in-one-out ordering, draining one frame per send -- and beneath all of
-them the **live netif was consuming the diagnostic's frames**, which is what
-`g_diag_owns_rings` now prevents. They produced authoritative-looking figures
-(`385 lost`, `1439 lost`, `750 unaccounted`) worth precisely nothing.
+**Three false trails, recorded so they are not re-run.** The periodic station-
+address write (removing it made loss *worse*); transmit store-and-forward plus
+a deeper transmit ring (an apparent tenfold improvement that was 200-700
+packet samples separating 1.3% from 1.5% -- noise, and larger runs reversed
+the ordering, so the driver ships IDF's configuration); and the descriptor
+path generally, which MAC-internal loopback had already exonerated at
+3500/3500 before any of that was tried.
 
-**Two separate bugs were found and fixed while chasing this, and neither was
-the cause:**
-
-* the **Z4 receive race** -- `emac_rx_peek()` returns NULL for both "nothing
-  ready" and "errored", and the poll loop re-read the descriptor to tell them
-  apart, so a frame arriving in that window had OWN newly cleared, was scored
-  a hardware error and released without being handed up. 3-15% depending on
-  rate. Fixed by reading ownership first; receive is now exact.
-* a **regression of my own**: narrowing the station-address re-apply to
-  once-per-link-up (on the mistaken theory that the periodic write caused the
-  frame loss) reintroduced the stale-filter bug, because that single write
-  lands exactly as the receive clock starts. The hardware suite caught it in
-  one run -- 100 of 100 echoes lost, the board answering ARP and dropping
-  every unicast. The re-apply is unconditional again.
+**Two real bugs found on the way, both fixed, neither the cause:** the Z4
+receive race (`emac_rx_peek()` returns NULL for both "nothing ready" and
+"errored", and the poll loop re-read the descriptor to tell them apart, so a
+frame arriving in that window was scored a hardware error and discarded --
+3-15% depending on rate), and the loopback diagnostics sharing descriptor
+rings with the live netif (`netsrv` consumed 65 of one 700-frame run;
+`g_diag_owns_rings` now makes the netif yield).
 
 ## Pressure is published as station pressure, not reduced to sea level
 

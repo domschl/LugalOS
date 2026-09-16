@@ -715,7 +715,7 @@ DHCP client (§6).
 * **`net/include/net/netif.h` is unmodified.** If it is not, say so loudly
   and record what §2 of `plan/hardware_seams.md` got wrong.
 
-#### Z5 — four of five, 2026-09-16
+#### Z5 — DONE, 2026-09-16
 
 `drivers/efuse_esp32p4.c` reads the factory MAC from eFuse BLK1 and the
 128-bit `OPTIONAL_UNIQUE_ID` from BLK2, and `kernel/identity.c` gained a
@@ -734,7 +734,7 @@ reading of the same part — `80:f1:b2:d2:f0:53`.
 |---|---|
 | `net` reports the interface and the eFuse MAC with source `silicon` | ✅ `mac: 80:f1:b2:d2:f0:53 (silicon)`, `uid: eaad894f48809797 (silicon)` |
 | laptop's ARP table shows the factory OUI, not a local address | ✅ `192.168.77.2 lladdr 80:f1:b2:d2:f0:53 REACHABLE` |
-| `ping`, 100 packets, **zero loss** | ❌ **~1%, flat** (498/500 and 494/500 at 10/s; 991/1000 at 20/s) — cause not identified; see `plan/open_issues.md` |
+| `ping`, 100 packets, **zero loss** | ✅ **3000 echoes, zero loss** across three 1000-packet runs — see below, the cause was ours |
 | 9P mount over TCP lists `/proc`, reads `/proc/kmsg` | ✅ 15 entries; 2735 B, 42 lines |
 | `net/include/net/netif.h` unmodified | ✅ untouched, so §2 of `plan/hardware_seams.md` stands |
 
@@ -742,23 +742,36 @@ Locked in by `test_node_identity_from_silicon` and `test_lan_node` in
 `tests/hw/test_esp32p4.py`. The second asserts zero loss and is **red** until
 the transmit defect is fixed; it is left red on purpose.
 
-##### What the transmit loss turned out to be, so far
+##### The transmit loss: we were driving the RMII pads too hard
 
-Internal loopback is **clean — 2100 sent, 2100 verified, 0 corrupt** — once
-the diagnostics stop racing the live interface, so the DMA, the descriptors
-and the cache maintenance are exonerated. The loss is downstream of the MAC.
+`pad_iomux()` forced `FUN_DRV = 3` — maximum drive — on every RMII pad,
+justified in the code by "strongest drive; RMII runs at 50 MHz". That is an
+assumption wearing the clothes of a reason, and it was wrong: ESP-IDF
+configures these same pads by setting the function and the pull mode and
+**never touching drive strength**, leaving the default of 2. Maximum drive
+into short unterminated traces buys edge rate and pays in overshoot and
+ringing, which at 50 MHz is corrupted bits at the far end.
 
-The rate is **about 1% and flat** — it does not grow with offered load:
-498/500 and 494/500 at 10 frames/s, 991/1000 at 20/s. Both ends report
-success, and frames captured by source MAC show the missing ones are absent
-rather than corrupted.
+| path | forced drv=3 | default drv=2 |
+|---|---|---|
+| MAC-internal loopback (no pads) | 3500/3500 | 3500/3500 |
+| PHY loopback (RMII pins + PHY) | 3494/3500, **1 corrupt** | **3500/3500** |
+| the wire, 1000 echoes | 991/1000, 983/1000 | **1000/1000** ×3 |
 
-Transmit store-and-forward and a deeper transmit ring were believed for a
-while to give a tenfold improvement. **They do not**, and the belief is
-instructive: it rested on 200–700 packet samples used to separate 1.3% from
-1.5% from 0.14%, differences of a handful of packets. Larger runs put IDF's
-own configuration at 0.4% and the "improved" one at 1.2%. The driver ships
-IDF's configuration. Re-test with at least 1000 packets per configuration.
+**How it was cornered, which is the transferable part.** Two loopback modes
+bisect the physical path: MAC-internal never leaves the chip, PHY loopback
+(BMCR bit 14) drives the real transmit path and the RMII pins and is turned
+around inside the IP101G. The first stayed perfect while the second lost *and
+corrupted* frames — and corruption while every error counter stays clean is a
+signal-integrity signature, not a logic one. That is what moved the search off
+the descriptor path, where it had been stuck for hours, and onto the pins.
+
+Everything else was checked against ESP-IDF and the TRM and found correct: the
+RMII clock configuration matches `emac_ll_clock_enable_rmii_input` exactly,
+the dividers match IDF's own arithmetic, `hw_ver1` and `hw_ver3` agree on
+every field this driver touches (the board is rev v1.3), and the pin
+assignment is identical to IDF's CI config for P4 + IP101. Drive strength was
+the single place we had overridden the vendor, and the override was the bug.
 
 ##### Three testing lessons this milestone cost, which are the durable part
 
