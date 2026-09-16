@@ -45,4 +45,15 @@ void     ticker_arm_this_hart(void);
 uint64_t ticker_ticks(void);
 void     ticker_count_tick(void);
 
+/* The source clock's rate in Hz, as *measured* at init against the
+ * microsecond timer -- 0 if the nominal TICK_HZ was used instead because no
+ * measurement was taken (34.1, plan/phase34_esp32p4_pll_bringup.md).
+ *
+ * Exposed because on the ESP32-P4 this is the only figure on the board that
+ * is measured rather than derived from a divider, which makes it the
+ * independent check on everything arch/riscv/common/clk_esp32p4.c computes.
+ * It is also, on that board, the standing answer to kernel/ticker.c's own
+ * open question about what clocks the CLINT. */
+uint64_t ticker_measured_hz(void);
+
 #endif /* LUGALOS_KERNEL_TICKER_H */

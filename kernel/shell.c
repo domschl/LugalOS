@@ -60,6 +60,7 @@
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/flash_esp32p4.h"
 #include "drivers/emac_esp32p4.h"
+#include "arch/clk_esp32p4.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -473,6 +474,7 @@ static void cmd_help(void) {
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
+    cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -2973,6 +2975,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
+        return;
+    } else if (strcmp(cmd_line, "clocks") == 0) {
+        /* 34.1, plan/phase34_esp32p4_pll_bringup.md. Read-only, and the
+         * instrument every later milestone of that phase is checked with. */
+        esp32p4_clocks_report();
         return;
     } else if (strcmp(cmd_line, "flashinfo") == 0) {
         cmd_flashinfo();

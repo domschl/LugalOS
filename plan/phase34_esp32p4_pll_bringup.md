@@ -296,6 +296,61 @@ are the same single-core code.
 **Done when:** `clocks` prints 40 / 20 / 20 / 10 MHz and those four numbers are
 read from registers, not printed from constants.
 
+#### Done, 2026-09-16 — and what it found immediately
+
+`clocks` on the board:
+
+```
+[CLK] root      = XTAL (40 MHz, CONFIG_XTAL_HZ)
+[CLK] CPU       = 40 MHz   (root / 1)
+[CLK] MEM       = 20 MHz   (CPU / 2)
+[CLK] SYS       = 20 MHz   (MEM / 1)
+[CLK] APB       = 10 MHz   (SYS / 2)
+[CLK] dividers  = cpu 1 (frac 0/0)  mem 2  sys 1  apb 2
+[CLK] ROM says  = 40 MHz   (bookkeeping: ets_get_cpu_frequency)
+[CLK] CLINT     = 41626307 Hz   (ticker's 2 ms window, at boot)
+[CLK] CLINT     = 40000029 Hz   (1 s window, now)
+```
+
+**The divider set is the check, not the frequencies.** (1, 2, 1, 2) is exactly
+what IDF's `rtc_clk_cpu_freq_to_xtal(to_default)` programs, and it is what
+makes §1's cascade reading verifiable rather than plausible: read as four
+parallel taps off HP_ROOT_CLK the same registers give 40-20-**40-20**, and the
+documented power-on default is 40-20-**20-10**. A wrong model would have
+printed a wrong answer here instead of agreeing with the one published figure
+this board has.
+
+**§1 needed two corrections, both found by writing the reads:**
+
+* **The dividers are a cascade, not four taps.** CPU = ROOT/cpu, MEM =
+  CPU/mem, SYS = MEM/sys, APB = SYS/apb. §1 said "separate dividers", which is
+  true and misleading.
+* **The source mux is not in HP_SYS_CLKRST.** It is `LP_CLKRST_HP_CLK_CTRL`
+  (LPAON + 0x1000 + 0x40), a different peripheral in a different power domain.
+
+**And one milestone instruction was wrong.** 34.1 as written named
+`ets_clk_get_cpu_freq` (ROM `0x4fc00554`). That symbol is the one of the four
+this phase needs whose **address moves between ROM revisions** — `0x4fc00554`
+in `esp32p4.rom.ld` against `0x4fc00560` in `esp32p4.rom.eco0_4.ld`. The code
+uses `ets_get_cpu_frequency` (`0x4fc00040`) instead, which is identical in
+both. `ets_update_cpu_frequency` and `ets_set_appcpu_boot_addr` are identical
+in both as well, so 34.4 and 34.9 are unaffected — but the check is now on
+record and should be made for any further ROM call this phase adds.
+
+#### The defect 34.1 found on its first run
+
+**The preemption tick is running at 95.99 Hz against the 100 Hz it is asked
+for**, because `kernel/ticker.c`'s 2 ms boot measurement of the CLINT is
+4.07 % high. Measured 6192 ticks over 64.51 s; predicted from the bias, 96.09
+Hz. Full evidence and the leading explanation are in `plan/open_issues.md`.
+
+Two things follow for this phase. **It must be fixed before 34.4**, which
+plans to read the CLINT's source off a change in the ticker's measured figure
+— a reading that is worthless while that figure carries a 4 % systematic
+term. And **it is the argument for this milestone existing at all**: the bias
+is at least four days old, survived a full phase, and was invisible until
+something printed two measurements of the same clock side by side.
+
 ### 34.2 — Read the clock tree; do not infer it
 
 No writes. Transcribe from the TRM

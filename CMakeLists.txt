@@ -781,6 +781,11 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # mapping. Lives in .boot.text (L2MEM) because it is what makes the flash
     # window exist -- see the file's own header.
     list(APPEND SOURCES arch/riscv/common/xip_esp32p4.c)
+    # 34.1, plan/phase34_esp32p4_pll_bringup.md: the clock tree, read back
+    # from its own registers. Read-only at 34.1 and the place the PLL switch
+    # lands in 34.3-34.5 -- the code that changes these clocks and the code
+    # that reports them belong in one file.
+    list(APPEND SOURCES arch/riscv/common/clk_esp32p4.c)
     # Z1, plan/phase28_esp32p4_ethernet.md: the EMAC. Built only for this
     # board, because its registers are this chip's and nobody else's -- the
     # category A rule in plan/hardware_seams.md §1. At Z1 it registers no

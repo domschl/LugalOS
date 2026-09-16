@@ -37,6 +37,11 @@ bool     ticker_enabled(void) { return g_enabled; }
 uint64_t ticker_ticks(void)   { return g_ticks[hart_id()]; }
 void     ticker_count_tick(void) { g_ticks[hart_id()]++; }
 
+/* 0 when no measurement was taken -- see the header. Not clamped to TICK_HZ
+ * here: a caller wants to know *whether* this was measured, and folding the
+ * nominal value in would take that away. */
+uint64_t ticker_measured_hz(void) { return g_measured_hz; }
+
 /* --- RP2350: SIO mtime/mtimecmp -------------------------------------- */
 #if defined(CONFIG_BOARD_RP2350)
 
