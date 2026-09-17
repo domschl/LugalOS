@@ -65,6 +65,7 @@
 #include "kernel/ticker.h"
 #include "kernel/time.h"
 #include "arch/csr.h"
+#include "kernel/printk.h"
 
 /* HP_SYS_CLKRST: HPPERIPH1 (0x500C0000) + 0x26000. The same base
  * drivers/uart_esp32p4.c:203 and drivers/emac_esp32p4.c:39 already use. */
@@ -298,6 +299,7 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
 #define I2C_CPLL_SLAVE          0x67u
 #define I2C_CPLL_REG_REF_DIV    2u
 #define I2C_CPLL_REG_DIV_7_0    3u
+#define I2C_CPLL_REG_DCUR       6u
 
 static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
     if (!(P4_REG(P4_LPPERI_CLK_EN) & LPPERI_CK_EN_LP_I2CMST)) {
@@ -323,6 +325,56 @@ static uint32_t cpll_hz(void) {
     return (uint32_t)CONFIG_XTAL_HZ * (uint32_t)div / ((uint32_t)(ref & 0xFu) + 1u);
 }
 
+/* REGI2C write. Same transaction as the read, plus WR_CNTL and the data
+ * byte -- this is the first thing in phase 34 to write the analog bus.
+ *
+ * Deliberately a whole-byte write rather than IDF's read-modify-write mask
+ * form: every field this file sets is one the CPLL configuration owns
+ * completely, and the values come from ESP-IDF's own table rather than being
+ * merged into whatever was there. Merging is how a 360 MHz divider ends up
+ * beside a 320 MHz loop filter. */
+#define REGI2C_WR_CNTL          (1u << 24)
+#define REGI2C_ADDR_S           8
+
+/* The analog master's own source clock. LP_I2C_ANA_MST_CLK160M bit 0,
+ * **reset default 0**, and ESP-IDF sets it before every PLL configuration
+ * (`regi2c_ctrl_ll_master_configure_clock()`, called from its
+ * ANALOG_CLOCK_ENABLE macro).
+ *
+ * Reads work without it -- 34.2's register dumps were taken with this bit at
+ * 0 and returned sensible, repeatable bytes. Calibration does not: the first
+ * attempt at 34.5 left this alone and the board hung in the CAL_END poll
+ * with the console silent after the PMU line. That is the whole reason the
+ * waits below are bounded. */
+#define P4_ANA_MST_CLK160M      (P4_ANA_MST_BASE + 0x34)
+#define ANA_MST_SEL_160M        (1u << 0)
+
+/* Bounded, because an unbounded poll on an analog block is a board that
+ * stops with no output -- which is exactly what the first attempt did. */
+#define REGI2C_SPIN_LIMIT       200000u
+
+static bool regi2c_wait_idle(void) {
+    for (uint32_t i = 0; i < REGI2C_SPIN_LIMIT; i++) {
+        if (!(P4_REG(P4_ANA_MST_I2C0_CTRL) & REGI2C_BUSY)) return true;
+    }
+    return false;
+}
+
+static bool regi2c_write_cpll(uint8_t reg_addr, uint8_t val) {
+    P4_REG(P4_ANA_MST_ANA_CONF1) &= ~ANA_CONF_FIELD_M;
+    P4_REG(P4_ANA_MST_ANA_CONF2) &= ~ANA_CONF_FIELD_M;
+    P4_REG(P4_ANA_MST_ANA_CONF2) |= REGI2C_PLL_CPU_MST_SEL;
+
+    if (!regi2c_wait_idle()) return false;
+    P4_REG(P4_ANA_MST_I2C0_CTRL) =
+        (uint32_t)I2C_CPLL_SLAVE
+        | ((uint32_t)reg_addr << REGI2C_ADDR_S)
+        | REGI2C_WR_CNTL
+        | ((uint32_t)val << REGI2C_DATA_S);
+    return regi2c_wait_idle();
+}
+
+
 /* HP_SYS_CLKRST_ANA_PLL_CTRL0 (0x00BC), TRM Register 11.47: five PLL
  * calibration pairs, *_CAL_END at even bits (RO, "1: Calibration done") and
  * *_CAL_STOP above each. All reset to 0.
@@ -338,6 +390,88 @@ static uint32_t cpll_hz(void) {
 #define SDIO_PLL_CAL_END_B      4u
 #define SYS_PLL_CAL_END_B       6u
 #define MSPI_CAL_END_B          8u
+
+/* --- 34.5: moving CPLL from the ROM's 320 MHz to 360 -------------------
+ *
+ * 34.4 measured what the ROM leaves: CPLL at 320 MHz, div 8. IDF's table for
+ * this silicon programs div 9 for 360 and div 10 for 400, and 400 is not
+ * available below revision v3.0. So 360 is the ceiling and div 9 is the way
+ * to it -- 12.5% over what 34.4 reached, for three analog-bus writes.
+ *
+ * ## The three bytes, and why all three
+ *
+ * ESP-IDF's `clk_ll_cpll_set_config(360, 40)` writes exactly these, and this
+ * writes the same three even though only one differs from what the ROM left:
+ *
+ *     reg 2  0x50   (ENB_FCAL 0, DCHGP 5, REF_DIV 0)  -- ROM already 0x50
+ *     reg 3  0x09   (OC_DIV_7_0)                      -- ROM has 0x08 = 320
+ *     reg 6  0x73   (DLREF_SEL 1, DHREF_SEL 3, DCUR 3) -- ROM has 0x63
+ *
+ * **Register 6 is the one worth pausing on.** It is charge-pump and
+ * reference-current settings for the PLL loop, and the ROM's 0x63 differs
+ * from IDF's 0x73 in DHREF_SEL alone (2 against 3). It would be tempting to
+ * change only the divider and leave the loop as found. That is exactly the
+ * mix-and-match IDF's table exists to prevent: 0x63 is the setting that goes
+ * with *the ROM's 320 MHz*, and a loop filter tuned for one frequency beside
+ * a divider for another is how a PLL locks badly rather than not at all.
+ * Vendor table, taken whole.
+ *
+ * ## Order, and the one hard precondition
+ *
+ * **The CPU must not be running from CPLL while this runs.** It is called
+ * from esp32p4_cpu_freq_set() before the source mux is touched, at a point
+ * in boot where HP_ROOT_CLK is still the crystal. Reprogramming the PLL the
+ * CPU is executing from would not produce a wrong number, it would stop the
+ * board.
+ *
+ * The sequence is IDF's `rtc_clk_cpll_configure()`: start calibration, write
+ * the three bytes, wait for CAL_END, settle 10 us, stop calibration. Note
+ * that CAL_END is the same RO bit 34.2 used to establish the ROM had brought
+ * CPLL up in the first place -- it is a status this code now both reads and
+ * causes.
+ *
+ * CPLL's power is not re-asserted: `clk_ll_cpll_enable()` exists for a PLL
+ * that is off, and 34.2 established this one is on (CAL_END was already 1 at
+ * hand-over). Writing TIE_HIGH bits to a PLL that is already powered would
+ * be harmless and is still a write this does not need to make.
+ */
+#define CPLL_REG_REF_DIV_BYTE   0x50u
+#define CPLL_REG_DIV_360        0x09u
+#define CPLL_REG_DCUR_BYTE      0x73u
+#define CPU_PLL_CAL_STOP_B      (1u << 3)
+
+/* 0 = configured, otherwise the step that failed. Reported rather than
+ * retried: a PLL that will not calibrate is a finding, and the board must
+ * stay on the crystal and keep its console rather than spin. */
+static int cpll_configure_360(void) {
+    /* The analog master's source clock, first. IDF does this before every
+     * PLL configuration and the first attempt here did not -- see the
+     * constant's comment for what that cost. */
+    P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
+
+    /* Calibration start: CAL_STOP = 0. */
+    P4_REG(P4_ANA_PLL_CTRL0) &= ~CPU_PLL_CAL_STOP_B;
+
+    if (!regi2c_write_cpll(I2C_CPLL_REG_REF_DIV, CPLL_REG_REF_DIV_BYTE)) return 1;
+    if (!regi2c_write_cpll(I2C_CPLL_REG_DIV_7_0, CPLL_REG_DIV_360))      return 2;
+    if (!regi2c_write_cpll(I2C_CPLL_REG_DCUR,    CPLL_REG_DCUR_BYTE))    return 3;
+
+    /* CAL_END, bounded. 10 ms is four orders of magnitude over the ~10 us
+     * IDF expects, so a timeout here means "never" and not "not yet". */
+    uint64_t t0 = time_get_us();
+    while (!(P4_REG(P4_ANA_PLL_CTRL0) & (1u << CPU_PLL_CAL_END_B))) {
+        if (time_get_us() - t0 > 10000u) return 4;
+    }
+
+    /* "wait for true stop" -- IDF's words and its 10 us. A local spin rather
+     * than time_delay_us(), which pumps the USB CDC task; this runs early in
+     * boot and should depend on nothing but the systimer. */
+    t0 = time_get_us();
+    while (time_get_us() - t0 < 10u) { }
+
+    P4_REG(P4_ANA_PLL_CTRL0) |= CPU_PLL_CAL_STOP_B;
+    return 0;
+}
 
 /* HP_SYS_CLKRST_PERI_CLK_CTRL00: FLASH_CLK_SRC_SEL [1:0],
  * FLASH_PLL_CLK_EN [2], FLASH_CORE_CLK_EN [3], FLASH_CORE_CLK_DIV_NUM [11:4]
@@ -402,11 +536,11 @@ void esp32p4_clock_sources_report(void) {
          * lines of evidence for a one-line conclusion is the right ratio
          * when the conclusion is "this PLL is configured for N MHz". */
         cprintf("[CLK] CPLL raw  =");
-        for (uint8_t r = 0; r < 6u; r++) {
+        for (uint8_t r = 0; r < 8u; r++) {
             uint8_t v = 0;
             if (regi2c_read_cpll(r, &v)) cprintf(" %02x", (unsigned)v);
         }
-        cprintf("   (regi2c 0x67, registers 0..5)\n");
+        cprintf("   (regi2c 0x67, registers 0..7)\n");
 
         uint32_t refdiv = (uint32_t)(ref & 0xFu) + 1u;
         /* xtal*div/(ref_div+1), IDF's clk_ll_cpll_get_freq_mhz() above rev
@@ -798,6 +932,37 @@ static void root_field_set(uintptr_t reg, unsigned shift, uint32_t div) {
 #define ROM_ETS_UPDATE_CPU_FREQUENCY  0x4fc00044u
 typedef void (*rom_update_cpu_freq_t)(uint32_t ticks_per_us);
 
+/* Draining the console before the mux moves, without the ROM's help.
+ *
+ * `uart_tx_wait_idle` is in the ROM at 0x4fc00078 and at the same address in
+ * both variants, and IDF calls its equivalent for exactly this purpose. It
+ * was tried here and **it hangs**: this kernel reconfigured UART0 -- source
+ * clock, baud, FIFO thresholds -- in drivers/uart_esp32p4.c, and the ROM
+ * routine polls for a condition that never arrives against that setup. The
+ * symptom was a board that printed "CPLL 320 -> 360" and then nothing at
+ * all, with the console dead to input as well; the mux was never reached.
+ *
+ * So: our own drain, against the register drivers/uart_esp32p4.c:295 already
+ * uses and has confirmed against TRM Register 45.21 -- TXFIFO_CNT in
+ * [23:16]. Bounded, for the reason every wait in this file is bounded.
+ *
+ * The FIFO going empty is necessary but not sufficient: the last character
+ * is still in the transmit shift register. One character at 115200 8N1 is
+ * 87 us, so 200 us of settle covers it with margin and costs nothing once at
+ * boot. */
+#define P4_UART0_STATUS   ((uintptr_t)CONFIG_UART0_BASE + 0x1c)
+#define UART_TXFIFO_CNT_S 16
+#define UART_TXFIFO_CNT_M 0xffu
+
+static void console_tx_drain(void) {
+    uint64_t t0 = time_get_us();
+    while (((P4_REG(P4_UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_M) != 0u) {
+        if (time_get_us() - t0 > 20000u) break;   /* 20 ms is "never" here */
+    }
+    t0 = time_get_us();
+    while (time_get_us() - t0 < 200u) { }         /* shift register */
+}
+
 bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
     uint32_t cpu_div, mem_div, sys_div = 1u, apb_div;
 
@@ -809,11 +974,49 @@ bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
     default:  return false;               /* refuse; see the header */
     }
 
+    /* CPLL first, while HP_ROOT_CLK is still the crystal and the PLL is not
+     * under anyone's feet. The ROM leaves it at 320 MHz (34.4 measured it),
+     * which would make every entry in the divider table 8/9 of its nominal;
+     * at 360 the table's names and the board's frequencies finally agree. */
+    if (cpll_hz() != 360000000u) {
+        uint32_t was = cpll_hz() / 1000000u;
+        int rc = cpll_configure_360();
+        printk("[CLK] CPLL %u -> %u MHz (rc=%d)\n", (unsigned)was,
+               (unsigned)(cpll_hz() / 1000000u), rc);
+        if (rc != 0) {
+            /* Stay on the crystal. A board at 40 MHz with a console is worth
+             * far more than one at 360 without, and the step number says
+             * which half failed: 1-3 are the analog bus, 4 is the PLL. */
+            printk("[CLK] CPLL would not take 360 MHz (step %d); staying on "
+                   "the crystal\n", rc);
+            return false;
+        }
+    }
+
     /* Upscaling order, slowest-moving first, each committed before the next. */
     root_field_set(P4_ROOT_CLK_CTRL2, APB_DIV_NUM_S, apb_div);
     root_field_set(P4_ROOT_CLK_CTRL1, SYS_DIV_NUM_S, sys_div);
     root_field_set(P4_ROOT_CLK_CTRL1, MEM_DIV_NUM_S, mem_div);
     root_field_set(P4_ROOT_CLK_CTRL0, CPU_DIV_NUM_S, cpu_div);
+
+    /* Drain the console before the mux moves.
+     *
+     * The UART's *baud* is immune -- it is clocked from the crystal, which is
+     * the whole reason phase 34 can debug itself (§2). Its APB-side register
+     * interface is not: APB goes 10 -> 90 MHz at this instant, and a
+     * character already in the transmit path comes out mangled.
+     *
+     * Measured, because it looked like something far worse. The first 360 MHz
+     * attempt printed the PMU line and then apparently nothing, which reads
+     * exactly like a board that died at the switch. It had not: it was
+     * running fine and its console output was garbage. Instrumenting the
+     * steps showed a clean "dividers committed", then
+     * `[CLK]<garbage>alive`, then clean lines again -- corruption confined to
+     * the bytes in flight.
+     *
+     * The ROM has a routine for this and it cannot be used here; see
+     * console_tx_drain() for what happened when it was tried. */
+    console_tx_drain();
 
     /* And the mux, last. Not covered by the update bit. */
     uint32_t sel = P4_REG(P4_LP_HP_CLK_CTRL);

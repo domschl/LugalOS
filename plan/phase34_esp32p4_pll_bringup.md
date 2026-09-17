@@ -778,6 +778,103 @@ Two things need re-verifying here that 34.4 does not stress:
 **Done when:** 360 MHz is live, `tests/hw/test_esp32p4.py` is green, `/flash0`
 round-trips, the EMAC passes traffic, and `(perft 4 1)` returns 0 errors.
 
+#### Partly done, 2026-09-17 — CPLL is at 360, the CPU is at 180, and 360 is blocked
+
+**CPLL reprogramming works.** 320 → 360 MHz, three REGI2C writes and a
+calibration cycle — the first analog-bus *writes* in this tree. `clocks` reads
+div 9 afterwards and the CPU frequency derived from it matches what `mcycle`
+measures, so the whole chain is consistent.
+
+Two things were needed that reading IDF did not make obvious, and both cost a
+reboot each to find:
+
+* **`LP_I2C_ANA_MST_CLK160M` bit 0 is 0 at reset**, and IDF sets it before any
+  PLL configuration (inside its `ANALOG_CLOCK_ENABLE()` macro). *Reads work
+  without it* — every register dump in 34.2 was taken with it at 0 and
+  returned repeatable, sensible bytes — but **calibration does not**. The
+  first attempt hung in the CAL_END poll with a silent console.
+* **The ROM's `uart_tx_wait_idle` (0x4fc00078) hangs this kernel.** It is the
+  obvious way to drain the console before the switch, it is what IDF calls,
+  and its address is identical in both ROM variants. It still hangs: this
+  kernel reconfigures UART0 in `drivers/uart_esp32p4.c`, and the ROM routine
+  polls for a condition that never arrives against that setup. Replaced with
+  a bounded drain on the TXFIFO_CNT field the driver already uses.
+
+**Every wait in this path is now bounded**, which is the only reason the
+first of those was diagnosable at all. A PLL that will not calibrate reports
+a step number and the board stays on the crystal with its console.
+
+**The console garbles at the switch, and that is expected rather than
+broken.** APB goes 10 → 90 MHz while a character is in the transmit path. The
+baud rate is immune — the UART is crystal-clocked, which is §2's whole point —
+but the bytes in flight are not. This looked far worse than it was: the first
+360 MHz attempt printed one line and then apparently nothing, which reads
+exactly like a board that died at the switch, and it had not. Hence the drain.
+
+##### 180 MHz: verified
+
+```
+[CLK] CPLL 320 -> 360 MHz (rc=0)
+[CLK] CPU at 180 MHz, measured
+CPU = 180  MEM = 180  SYS = 180  APB = 90 MHz     ROM says 180
+CPU meas = 180 001 310 Hz     ticker measured 179 997 001 Hz
+```
+
+* `tests/hw/test_esp32p4.py` — **20/20**.
+* `(perft 3 1)` — **4843 ms against 21 941, 0 errors: 4.53× on a 4.5× clock.**
+
+**Still linear, and that is the interesting part.** Perft has now scaled with
+the clock at 2× and at 4.5× while the flash stayed at 40 MHz. At a 4.5:1
+CPU-to-flash ratio the L2 is still absorbing the miss cost, so §3's XIP worry
+has not begun to bite. It is one more data point, not a prediction for 9×, and
+34.6 still settles it.
+
+For scale: the RP2350 does this suite in 6465 ms. **The P4 has overtaken the
+other board**, having started the phase 3.3× behind it.
+
+##### 360 MHz: blocked, and the diagnosis is voltage
+
+It dies a few instructions after the switch, **deterministically** — three
+resets, identical. Bisected with characters written straight into the UART
+FIFO (the technique `xip_esp32p4.c` documents for its own blind window):
+
+```
+ABCDEFG     A..E all four dividers committed
+            F   console drained
+            G   THE MUX SWITCH ITSELF SURVIVED
+            H   never reached
+```
+
+**The discriminator that matters: 180 MHz runs MEM at 180 too, and is fine.**
+So this is not the memory path, not the flash path, and not MSPI timing —
+those are identical between the working and failing cases. It is the core, at
+360, and nothing else.
+
+Which points straight back at what 34.3 could not close: **the dbias control
+field reads 25 and the regulator's indicator still reads 24.** The most likely
+reading is that the chip's own voltage trim never took effect and 360 MHz is
+being attempted at the uncalibrated voltage.
+
+**What reaching 360 would take.** The part of IDF's `rtc_clk_init()` that 34.3
+deliberately skipped: the `I2C_DIG_REG` analog writes (block 0x6D —
+`FORCE_RTC_DREG` reg 10 bit 0 and `FORCE_DIG_DREG` reg 10 bit 1 to 1,
+`XPD_RTC_REG` reg 13 bit 2 and `XPD_DIG_REG` reg 13 bit 3 to 0) that put the
+digital regulator under register control, and possibly the DCDC. The fields
+are identified and the REGI2C write path now exists, so it is perhaps thirty
+lines.
+
+**It is not done here, and that is a decision rather than an omission.** It is
+a core-voltage path on hardware, the TRM documents no part of REGI2C, and a
+wrong bit fails as brownout or overvolt rather than as a failed test — which
+is precisely why §3 called this the hazard that makes this a phase. What must
+**not** happen is raising dbias above the eFuse's 25 to brute-force a boot:
+that is overvolting past the vendor's calibration point, and it is the one
+move here that damages a part rather than merely failing.
+
+**Where this leaves the phase.** 180 MHz is a legitimate resting point at
+4.5×, fully verified, and the board is already faster than the RP2350. 360
+remains available at 2× more, behind one gated piece of analog work.
+
 ### 34.6 — Re-measure everything the clock invalidated
 
 A 9× CPU makes several recorded conclusions stale. Each of these was measured

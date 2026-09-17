@@ -189,9 +189,9 @@ void kernel_main(void) {
         uint32_t cpu_hz = 0;
         if (esp32p4_cpu_freq_set((uint32_t)CONFIG_CPU_FREQ_MHZ, &cpu_hz)) {
             unsigned got = (unsigned)((cpu_hz + 500000u) / 1000000u);
-            printk("[CLK] CPU at %u MHz, measured (table entry '%u MHz' "
-                   "assumes CPLL 360; this board's is 320)\n",
-                   got, (unsigned)CONFIG_CPU_FREQ_MHZ);
+            printk("[CLK] CPU at %u MHz, measured%s\n", got,
+                   (got == (unsigned)CONFIG_CPU_FREQ_MHZ)
+                       ? "" : "  -- DISAGREES with CONFIG_CPU_FREQ_MHZ");
         }
     }
 #endif

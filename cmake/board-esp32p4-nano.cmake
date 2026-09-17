@@ -75,7 +75,7 @@ set(CONFIG_XTAL_HZ        40000000)
 # It is a config precisely so that a bad step is one constant away from
 # bisecting, and so that 40 stays selectable as a control for every
 # measurement this phase makes.
-set(CONFIG_CPU_FREQ_MHZ   90)
+set(CONFIG_CPU_FREQ_MHZ   180)
 
 # --- Ethernet: the EMAC and the IP101GRI on RMII ------------------------
 #
