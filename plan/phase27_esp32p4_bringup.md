@@ -2411,6 +2411,15 @@ before anyone has run it would be planning around a hope.
 * **The second HP core.** Phases 22–23 make this tractable, which is exactly
   why it should wait: bringing up SMP on a platform whose single-core
   behaviour is not yet trusted inverts the ordering this phase is built on.
+
+  *Done by `plan/phase34_esp32p4_pll_bringup.md` 34.8–34.12, 2026-09-17, and
+  the deferral was right for the reason it gave. The bring-up itself was
+  small — core 1 is held by a reset bit, and `entry.S`'s existing secondary
+  path needed one guard — but it leaned on single-core behaviour this phase
+  had already made trustworthy, and on measurements (the instruction cache at
+  5.00 cycles/iteration, the branch predictor read back) that would have been
+  unavailable without E4's instruments. Two cores run perft's exact node
+  counts at 1.91×.*
 * **The LP core, MIPI CSI/DSI, H264, ISP, PPA, audio.** No persona wants
   them.
 * **USB Serial/JTAG as console.** `SOC_USB_SERIAL_JTAG_SUPPORTED` is set and

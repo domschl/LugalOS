@@ -1488,6 +1488,30 @@ all.
   bits, the ROM boot-address call, and the two silent per-core settings. It is
   five register writes that took a day to locate and would take a day again.
 
+#### Done, 2026-09-17
+
+* `plan/phase27_esp32p4_bringup.md` §7's *"The second HP core"* deferral
+  carries its forward reference, and the deferral was right for the reason it
+  gave. The bring-up itself was small — core 1 is held by a reset bit and
+  `entry.S` needed one guard — but it leaned on single-core behaviour this
+  phase had already made trustworthy, and on instruments (mcycle, `clocks`,
+  `smpinfo`) that did not exist when E4 wrote the deferral.
+* `kernel/ticker.c`'s *"Unreachable today (CONFIG_ENABLE_SMP is off on this
+  board) and correct when it is not"* is now reached, and says which: core 1
+  calls `esp32p4_clic_timer_enable()` through `ticker_arm_this_hart()`, and
+  what proves it works is not that the call returns but that preemption holds
+  on both harts — which 34.12's pinned worker depends on to be scheduled at
+  all.
+* `kernel/smp.c`'s *"there is no second core to park"* was corrected in 34.11,
+  where it stopped being true.
+* README says two cores.
+* Memory `esp32p4-second-core` records the launch sequence and, more
+  usefully, the three things that were **not** obvious: that core 1 is held by
+  reset rather than the stall, that it comes up with its instruction cache and
+  branch predictor already enabled (both established by measurement, not
+  assumption), and that `mstatus.MIE` being per-hart is why flash writes must
+  park it.
+
 ## 6. What could go wrong, stated in advance
 
 * **The regulator is the risk and it is not observable directly.** A board that

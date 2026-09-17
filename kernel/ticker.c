@@ -434,8 +434,15 @@ void ticker_arm_this_hart(void) {
     /* Not set_csr(mie, MTIE): that CSR does not exist on this core, and the
      * write would assemble and do nothing. Each core has its own CLIC, so
      * this enables the caller's -- which is the whole point of this function
-     * being per-hart. Unreachable today (CONFIG_ENABLE_SMP is off on this
-     * board) and correct when it is not. */
+     * being per-hart.
+     *
+     * Written when it was unreachable -- CONFIG_ENABLE_SMP was off on this
+     * board -- and **reached, and correct, since 34.10**
+     * (plan/phase34_esp32p4_pll_bringup.md). Core 1 calls this through
+     * ticker_arm_this_hart() on its way into the scheduler, and what proves
+     * it works is not that the call returns: it is that preemption holds on
+     * both harts afterwards, which 34.12's two-core perft depends on to
+     * schedule its pinned worker at all. */
     esp32p4_clic_timer_enable();
 #elif defined(CONFIG_MODE_S)
     set_csr(sie, 1UL << 5);   /* STIE */
