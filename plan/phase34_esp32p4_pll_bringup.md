@@ -696,6 +696,67 @@ Call `ets_update_cpu_frequency()` afterwards so ROM delay loops stay honest.
   first) and about 2.25× faster than 34.1's baseline;
 * `g_measured_hz` is recorded, answering §2's CLINT question.
 
+#### Done, 2026-09-17 — and it is 80 MHz, not 90
+
+```
+[CLK] CPU at 80 MHz, measured (table entry '90 MHz' assumes CPLL 360; this board's is 320)
+[CLK] root      = CPLL (320 MHz, from its own divider)
+[CLK] CPU = 80   MEM = 80   SYS = 80   APB = 80 MHz
+[CLK] ROM says  = 80 MHz
+[CLK] CPU meas   = 80000139 Hz   (mcycle, 100 ms window)
+```
+
+**The switch answered the two questions 34.2 could not.**
+
+**CPLL runs at 320 MHz, and the register was telling the truth all along.**
+34.2 hedged because the divider read 8 — a value ESP-IDF never programs, in a
+field IDF's own source says has two bits swapped from ECO1. Selecting CPLL
+with `cpu_div = 4` and measuring settled it: 80 MHz out means 320 MHz in,
+which is exactly `xtal × div / (ref_div + 1)` for div 8. **The formula is
+right, the field is truthful, and the boot ROM simply configures this PLL to
+a frequency IDF has no table entry for.** `clocks` now derives the root from
+that divider instead of printing a nominal, so every figure under it is
+correct rather than assumed.
+
+**The CLINT follows the CPU clock.** `kernel/ticker.c:181` has carried the
+question since E4 — *"Nothing states what clocks this counter"* — because at
+40 MHz the crystal and the CPU were the same number. They are not any more:
+the ticker measured `79 964 535 Hz` at boot. Two consequences worth
+recording. The self-measurement in `ticker_init()` is not a nicety on this
+board, it is what keeps preemption at 100 Hz across a clock change — and it
+did, unchanged, which is 34.2a's fix working under the first real test. And
+mtime's low half now wraps every 53 s rather than 107, so the `MTIME_SAM`
+hazard `kernel/ticker.c` documents arrives twice as often as it used to.
+
+**A bug caught by measuring rather than announcing.** The first version passed
+`CONFIG_CPU_FREQ_MHZ` to `ets_update_cpu_frequency()`, and `clocks` duly
+reported `ROM says = 90 MHz` against a CPU running at 80. Every ROM delay
+loop — flash, cache, PMU — would have been calibrated 12.5 % wrong. *Long*
+rather than short, so nothing would have broken and nothing would have shown
+it. `esp32p4_cpu_freq_set()` now measures first and hands the ROM the result;
+20 ms once at boot removes the class.
+
+**Speedup: 10 617 ms against 21 941 ms, 0 errors — 2.07× on a 2.00× clock
+change.** The 3.3 % excess is not super-linear scaling, it is the
+build-to-build term 34.3 measured independently at 2.9 %: this is a
+cross-build comparison, and 34.4's own deliverable is a config that changes
+at compile time. Two independent sightings of the same artefact now, which
+is the argument for 34.6 needing a **runtime** switch rather than a rebuild —
+noted there rather than built here.
+
+**What it says about XIP, early and provisionally.** Perft scaled linearly
+with the clock while the flash stayed at 40 MHz, so at this ratio the L2 is
+still absorbing the miss cost. That is one data point at 2×, not a prediction
+for 9×, and 34.6 is still where it gets settled.
+
+**Consequence for 34.5.** `CONFIG_CPU_FREQ_MHZ` names an IDF table entry
+whose nominal assumes CPLL is 360; this board's is 320, so the three entries
+actually yield 80, 160 and 320 MHz. Reaching 360 means **programming CPLL**
+(div 8 → 9) and recalibrating — which 34.2 said 34.4 might have to do and
+34.4 deliberately did not, to keep one change per milestone. 320 MHz is on
+the table as a legitimate stopping point if reprogramming the PLL proves
+unattractive: it is 8× rather than 9×.
+
 ### 34.5 — 360 MHz, and the dividers that come with it
 
 The full step, with MEM/SYS/APB chosen against the MEM ≤ 200 / APB ≤ 100

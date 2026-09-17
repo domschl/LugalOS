@@ -61,6 +61,22 @@ set(CONFIG_UART0_BAUD     115200)
 # rate from this one (TRM 16.4: CNT_CLK is XTAL_CLK scaled by 2.5).
 set(CONFIG_XTAL_HZ        40000000)
 
+# The CPU clock, 34.4 (plan/phase34_esp32p4_pll_bringup.md).
+#
+# One of **40, 90, 180, 360**, and nothing else: 40 keeps HP_ROOT_CLK on the
+# crystal exactly as every milestone before phase 34 ran, and the other three
+# are the only CPLL-derived steps ESP-IDF enumerates for silicon below
+# revision v3.0 -- which this board, at v1.3, is. The 100/200/400 ladder
+# belongs to rev >= 3.0 parts. arch/riscv/common/clk_esp32p4.c refuses
+# anything outside the table rather than computing dividers, because a
+# combination off it can be silently corrected by hardware without the
+# registers reflecting it.
+#
+# It is a config precisely so that a bad step is one constant away from
+# bisecting, and so that 40 stays selectable as a control for every
+# measurement this phase makes.
+set(CONFIG_CPU_FREQ_MHZ   90)
+
 # --- Ethernet: the EMAC and the IP101GRI on RMII ------------------------
 #
 # Z0, plan/phase28_esp32p4_ethernet.md. Every number below is read from the

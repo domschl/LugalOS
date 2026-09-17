@@ -175,6 +175,25 @@ void kernel_main(void) {
                    (unsigned)dbias_ind);
         }
     }
+
+    /* 34.4: and only now the clock, because raising a frequency against an
+     * untrimmed regulator is the one ordering this phase must not get wrong.
+     *
+     * The frequency is *measured* rather than announced. CPLL's own rate is
+     * not readable on this chip (34.2 -- the divider field has two bits
+     * swapped from ECO1 by IDF's own account), so CONFIG_CPU_FREQ_MHZ says
+     * which divider set to program and mcycle says what came out. If those
+     * two disagree, the log says so here rather than leaving it to be
+     * inferred from something running slowly later. */
+    {
+        uint32_t cpu_hz = 0;
+        if (esp32p4_cpu_freq_set((uint32_t)CONFIG_CPU_FREQ_MHZ, &cpu_hz)) {
+            unsigned got = (unsigned)((cpu_hz + 500000u) / 1000000u);
+            printk("[CLK] CPU at %u MHz, measured (table entry '%u MHz' "
+                   "assumes CPLL 360; this board's is 320)\n",
+                   got, (unsigned)CONFIG_CPU_FREQ_MHZ);
+        }
+    }
 #endif
 
     /* Y5a, plan/phase31_concurrency_hierarchy.md: one line, not three, and no

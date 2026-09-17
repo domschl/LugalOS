@@ -61,7 +61,7 @@ set(_optional_keys
     # from CONFIG_XTAL_HZ below, which is the crystal rather than the clock
     # this kernel chooses to drive the UART from.
     CONFIG_UART0_SCLK_HZ CONFIG_UART0_BAUD
-    CONFIG_XTAL_HZ
+    CONFIG_XTAL_HZ CONFIG_CPU_FREQ_MHZ
     CONFIG_SPI1_BASE CONFIG_SPI1_SCK_GPIO CONFIG_SPI1_MOSI_GPIO
     CONFIG_SPI1_MISO_GPIO CONFIG_SPI1_CS_GPIO
     CONFIG_LED_ONBOARD_GPIO CONFIG_LED_EXT_GPIO

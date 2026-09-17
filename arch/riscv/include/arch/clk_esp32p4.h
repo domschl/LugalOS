@@ -61,6 +61,12 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us);
  * file for why that is not a write to the thing being measured. */
 void esp32p4_clock_sources_report(void);
 
+/* The CPU clock rate, measured with `mcycle` against the crystal-referenced
+ * systimer over `window_us`. Direct: it counts the clock this phase changes,
+ * rather than deriving it from a divider whose encoding 34.2 found untrusted.
+ */
+uint32_t esp32p4_cpu_measure_hz(uint32_t window_us);
+
 /* 34.3: apply this chip's own eFuse voltage trim to the HP_ACTIVE regulator,
  * before any milestone raises a clock against it.
  *
@@ -76,6 +82,21 @@ void esp32p4_clock_sources_report(void);
  */
 bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
                                          uint32_t *indicated);
+
+/* 34.4: point HP_ROOT_CLK at CPLL and set the four dividers for `mhz`.
+ *
+ * Accepts only 40 (the crystal, a no-op) and the three CPLL-derived steps
+ * ESP-IDF enumerates for this silicon -- 90, 180, 360 -- and returns false
+ * for anything else rather than computing dividers, because a combination
+ * outside that table can be silently corrected by hardware without the
+ * registers reflecting it. Returns true if it switched.
+ *
+ * `mhz` names an entry in ESP-IDF's divider table, whose nominal assumes
+ * CPLL is 360 MHz. This board's ROM configures CPLL to 320, so the entry
+ * called "90" yields 80 -- which is why `measured_hz` exists and why the ROM
+ * is told the measured figure rather than the requested one.
+ */
+bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz);
 
 /* The `clocks` shell command's body. */
 void esp32p4_clocks_report(void);

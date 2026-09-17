@@ -64,6 +64,7 @@
 #include "kernel/console.h"
 #include "kernel/ticker.h"
 #include "kernel/time.h"
+#include "arch/csr.h"
 
 /* HP_SYS_CLKRST: HPPERIPH1 (0x500C0000) + 0x26000. The same base
  * drivers/uart_esp32p4.c:203 and drivers/emac_esp32p4.c:39 already use. */
@@ -119,6 +120,24 @@
 
 #define P4_REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
+static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out);   /* below */
+
+/* CPLL's configured rate, from its own analog divider.
+ *
+ * 34.2 could not trust this and said so: the divider read 8, which is a
+ * value ESP-IDF never programs, in a field IDF's source says has two bits
+ * swapped from ECO1. **34.4 settled it by measurement.** With the mux on
+ * CPLL and cpu_div = 4 the CPU measures 80 MHz, so CPLL is 320 -- exactly
+ * what `xtal * div / (ref_div + 1)` gives for div 8. The formula is right,
+ * the register is truthful, and the ROM simply configures this PLL to a
+ * frequency IDF has no table entry for.
+ *
+ * So this is now derived rather than hedged, and every figure below it
+ * (CPU, MEM, SYS, APB while the root is CPLL) is correct instead of being
+ * nominal. Returns 0 if the analog bus cannot be read, and callers fall
+ * back to the nominal 360 rather than printing zeroes. */
+static uint32_t cpll_hz(void);   /* defined with the REGI2C reader below */
+
 /* Divider fields are encoded as (divider - 1) -- clk_tree_ll.h's getters all
  * add 1 on the way out, which is the detail that makes a raw 0 mean "divide
  * by one" rather than a division by zero. */
@@ -135,7 +154,11 @@ void esp32p4_clocks_read(esp32p4_clocks_t *c) {
 
     switch (c->src) {
     case SRC_XTAL:    c->root_hz = (uint32_t)CONFIG_XTAL_HZ; break;
-    case SRC_CPLL:    c->root_hz = CPLL_NOMINAL_HZ;          break;
+    case SRC_CPLL: {
+        uint32_t hz = cpll_hz();
+        c->root_hz = hz ? hz : CPLL_NOMINAL_HZ;
+        break;
+    }
     case SRC_RC_FAST: c->root_hz = RC_FAST_NOMINAL_HZ;       break;
     default:          c->root_hz = 0u;                       break;
     }
@@ -293,6 +316,13 @@ static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
     return true;
 }
 
+static uint32_t cpll_hz(void) {
+    uint8_t div = 0, ref = 0;
+    if (!regi2c_read_cpll(I2C_CPLL_REG_DIV_7_0, &div)) return 0u;
+    if (!regi2c_read_cpll(I2C_CPLL_REG_REF_DIV, &ref)) return 0u;
+    return (uint32_t)CONFIG_XTAL_HZ * (uint32_t)div / ((uint32_t)(ref & 0xFu) + 1u);
+}
+
 /* HP_SYS_CLKRST_ANA_PLL_CTRL0 (0x00BC), TRM Register 11.47: five PLL
  * calibration pairs, *_CAL_END at even bits (RO, "1: Calibration done") and
  * *_CAL_STOP above each. All reset to 0.
@@ -396,7 +426,7 @@ void esp32p4_clock_sources_report(void) {
          * points HP_ROOT_CLK at it. */
         uint32_t xtal_mhz = (uint32_t)CONFIG_XTAL_HZ / 1000000u;
         cprintf("[CLK] CPLL      = div %u  ref_div %u  -> %u MHz "
-                "(IDF programs 9 for 360, 10 for 400)\n",
+                "(measurement-confirmed, 34.4; IDF programs 9/360, 10/400)\n",
                 (unsigned)div, (unsigned)(ref & 0xFu),
                 (unsigned)(xtal_mhz * (uint32_t)div / refdiv));
     }
@@ -448,6 +478,39 @@ void esp32p4_clock_sources_report(void) {
             (idf_would == ctrl) ? "applied" : "NOT applied");
 }
 
+/* The CPU's own clock rate, measured -- the instrument 34.4 onwards is
+ * checked against, and the only one that reports the thing this phase
+ * actually changes.
+ *
+ * `mcycle` counts CPU clock cycles, so timing a window of it against the
+ * systimer (which runs from the crystal and does not move when the CPU does,
+ * kernel/time.c) gives the CPU frequency directly. Nothing derived, nothing
+ * inferred from a divider.
+ *
+ * That matters more here than it looks. 34.2 established that CPLL's
+ * divider cannot be trusted to mean a frequency -- IDF's own comment says
+ * two bits of that field are swapped from ECO1 -- so the only way to learn
+ * what a CPLL-sourced CPU clock actually is, is to measure it. And the
+ * CLINT cannot stand in: whether *it* follows the CPU or the crystal is
+ * itself an open question (kernel/ticker.c:181), which this function is
+ * what finally answers.
+ *
+ * RV32, so `mcycle` is the low 32 bits and wraps every 2^32 cycles -- 11.9 s
+ * at 360 MHz, far longer than any window here. Unsigned subtraction is
+ * correct across a wrap, so the high half is not read and there is no
+ * two-register sampling race to get wrong. */
+uint32_t esp32p4_cpu_measure_hz(uint32_t window_us) {
+    uint32_t c0 = (uint32_t)read_csr(mcycle);
+    uint64_t u0 = time_get_us();
+    while (time_get_us() - u0 < window_us) { /* spin */ }
+    uint32_t c1 = (uint32_t)read_csr(mcycle);
+    uint64_t u1 = time_get_us();
+
+    uint64_t du = u1 - u0;
+    if (du == 0u) return 0u;
+    return (uint32_t)(((uint64_t)(c1 - c0) * 1000000ULL) / du);
+}
+
 /* ets_get_cpu_frequency(), ROM 0x4fc00040.
  *
  * **Deliberately not ets_clk_get_cpu_freq().** That one looked like the
@@ -492,13 +555,9 @@ void esp32p4_clocks_report(void) {
         "XTAL", "CPLL", "RC_FAST", "(reserved)"
     };
 
-    cprintf("[CLK] root      = %s", src_name[c.src & 3u]);
-    if (c.src == SRC_XTAL) {
-        cprintf(" (%u MHz, CONFIG_XTAL_HZ)\n", (unsigned)(c.root_hz / 1000000u));
-    } else {
-        cprintf(" (%u MHz nominal -- not read back, see 34.2)\n",
-                (unsigned)(c.root_hz / 1000000u));
-    }
+    cprintf("[CLK] root      = %s (%u MHz, %s)\n", src_name[c.src & 3u],
+            (unsigned)(c.root_hz / 1000000u),
+            (c.src == SRC_XTAL) ? "CONFIG_XTAL_HZ" : "from its own divider");
     cprintf("[CLK] CPU       = %u MHz   (root / %u)\n",
             (unsigned)(c.cpu_hz / 1000000u), (unsigned)c.cpu_div);
     cprintf("[CLK] MEM       = %u MHz   (CPU / %u)\n",
@@ -532,6 +591,10 @@ void esp32p4_clocks_report(void) {
      * is the whole diagnosis of the boot-time bias. */
     cprintf("[CLK] CLINT     = %u Hz   (2 ms window, now -- warm)\n",
             (unsigned)esp32p4_clint_measure_hz(2000u));
+    /* 34.4's instrument: mcycle against the crystal-referenced systimer.
+     * The one figure here that measures the clock this phase changes. */
+    cprintf("[CLK] CPU meas   = %u Hz   (mcycle, 100 ms window)\n",
+            (unsigned)esp32p4_cpu_measure_hz(100000u));
 
     esp32p4_clock_sources_report();   /* 34.2 */
 }
@@ -651,6 +714,128 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
     uint32_t after = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
     *to = (after >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
     if (indicated) *indicated = (after >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_FIELD_M;
+    return true;
+}
+
+
+/* --- 34.4: pointing HP_ROOT_CLK at the PLL -----------------------------
+ *
+ * The first thing in this phase that changes a clock.
+ *
+ * ## Why this does not touch CPLL, and measures instead
+ *
+ * 34.2 left CPLL's frequency genuinely unknown: the PLL is up and calibrated
+ * (CPU_PLL_CAL_END reads 1, and nothing in this kernel calibrates anything,
+ * so the ROM did it), but its divider reads 8 -- a value ESP-IDF never
+ * programs, and in a field IDF's own source says has two bits swapped from
+ * ECO1. So the register cannot be read for a megahertz figure.
+ *
+ * Rather than guess or reprogram, this milestone **selects the PLL and finds
+ * out**. CPU_CLK = CPLL / 4 either way, so the measured result names the
+ * PLL: 90 MHz means CPLL is 360, 80 MHz means it is 320. One change, one
+ * measurement, and an answer 34.2 could not get by reading.
+ *
+ * Reprogramming CPLL is 34.5's problem if the number comes out wrong, and
+ * keeping it out of here is the same discipline as everywhere else in this
+ * phase: move one thing.
+ *
+ * ## The divider table is not ours to invent
+ *
+ * MEM_CLK <= 200 MHz and APB_CLK <= 100 MHz, and the dividers cascade
+ * (34.1), so the combinations are constrained. ESP-IDF enumerates exactly
+ * three for revisions below v3.0 and **aborts on anything else**, with a
+ * reason worth repeating in full:
+ *
+ *     "This is dangerous to modify dividers. Hardware could automatically
+ *      correct the divider, and it won't be reflected to the registers.
+ *      Therefore, you won't even be able to calculate out the real mem_clk,
+ *      apb_clk freq."
+ *
+ * A silently corrected divider is a board whose clocks are not what any
+ * register says they are -- the one failure this phase has no instrument
+ * for. So this refuses unknown frequencies rather than computing dividers.
+ *
+ *     CPU   cpu_div  mem_div  sys_div  apb_div     MEM   SYS   APB
+ *     360      1        2        1        2        180   180    90
+ *     180      2        1        1        2        180   180    90
+ *      90      4        1        1        1         90    90    90
+ *
+ * ## Order, and the commit nobody can see
+ *
+ * TRM 11.2.4.1: "Updates to HP_SYS_CLKRST_ROOT_CLK_CTRL0/1/2/3_REG will take
+ * effect only after HP_SYS_CLKRST_SOC_CLK_DIV_UPDATE is set." A divider
+ * written without that is a divider that did nothing, and the symptom is
+ * simply that the board keeps running at its old speed.
+ *
+ * Upscaling goes APB, SYS, MEM, then CPU -- each committed -- and the source
+ * mux **last**, because the mux is not covered by the update bit and
+ * switching it first would run the old dividers against the new root. IDF's
+ * own comment: in the intermediate state "the frequency of APB/MEM does not
+ * meet the timing requirements ... some exception might occur".
+ */
+
+#define SOC_CLK_DIV_UPDATE_B    (1u << 4)   /* ROOT_CLK_CTRL0, WT */
+
+static void root_div_commit(void) {
+    P4_REG(P4_ROOT_CLK_CTRL0) |= SOC_CLK_DIV_UPDATE_B;
+    while (P4_REG(P4_ROOT_CLK_CTRL0) & SOC_CLK_DIV_UPDATE_B) { }
+}
+
+static void root_field_set(uintptr_t reg, unsigned shift, uint32_t div) {
+    uint32_t v = P4_REG(reg);
+    v &= ~(DIV_FIELD_MASK << shift);
+    v |= ((div - 1u) & DIV_FIELD_MASK) << shift;   /* encoded as div-1 */
+    P4_REG(reg) = v;
+    root_div_commit();
+}
+
+/* ets_update_cpu_frequency(), ROM 0x4fc00044 -- identical in both ROM
+ * variants (34.1 checked). Bookkeeping, and not optional: the ROM's own
+ * microsecond delay loops are calibrated from this number, and drivers/
+ * flash_esp32p4.c reaches ROM code that delays. Forgetting it leaves those
+ * delays short by exactly the ratio this function just changed, with a
+ * failure that is timing-dependent and does not point at itself. */
+#define ROM_ETS_UPDATE_CPU_FREQUENCY  0x4fc00044u
+typedef void (*rom_update_cpu_freq_t)(uint32_t ticks_per_us);
+
+bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
+    uint32_t cpu_div, mem_div, sys_div = 1u, apb_div;
+
+    switch (mhz) {
+    case 40:  return false;               /* the crystal: nothing to do */
+    case 90:  cpu_div = 4u; mem_div = 1u; apb_div = 1u; break;
+    case 180: cpu_div = 2u; mem_div = 1u; apb_div = 2u; break;
+    case 360: cpu_div = 1u; mem_div = 2u; apb_div = 2u; break;
+    default:  return false;               /* refuse; see the header */
+    }
+
+    /* Upscaling order, slowest-moving first, each committed before the next. */
+    root_field_set(P4_ROOT_CLK_CTRL2, APB_DIV_NUM_S, apb_div);
+    root_field_set(P4_ROOT_CLK_CTRL1, SYS_DIV_NUM_S, sys_div);
+    root_field_set(P4_ROOT_CLK_CTRL1, MEM_DIV_NUM_S, mem_div);
+    root_field_set(P4_ROOT_CLK_CTRL0, CPU_DIV_NUM_S, cpu_div);
+
+    /* And the mux, last. Not covered by the update bit. */
+    uint32_t sel = P4_REG(P4_LP_HP_CLK_CTRL);
+    sel = (sel & ~HP_ROOT_CLK_SRC_SEL_M) | SRC_CPLL;
+    P4_REG(P4_LP_HP_CLK_CTRL) = sel;
+
+    /* Tell the ROM what the CPU frequency *is*, not what was asked for.
+     *
+     * Those differ on this board and the difference is the whole of 34.4:
+     * CONFIG_CPU_FREQ_MHZ names an entry in IDF's divider table, whose
+     * nominal assumes CPLL is 360 MHz, and this board's ROM configures CPLL
+     * to 320. Asking for the "90" entry therefore yields 80.
+     *
+     * Handing the nominal to the ROM would leave every ROM delay loop --
+     * flash, cache, PMU -- calibrated 12.5% wrong. Long rather than short
+     * here, so it would not have broken anything and would not have shown
+     * up; measuring first costs 20 ms once at boot and removes the class. */
+    uint32_t hz = esp32p4_cpu_measure_hz(20000u);
+    if (measured_hz) *measured_hz = hz;
+    uint32_t got_mhz = (hz + 500000u) / 1000000u;   /* nearest MHz */
+    if (got_mhz == 0u) got_mhz = mhz;               /* measurement failed */
+    ((rom_update_cpu_freq_t)(uintptr_t)ROM_ETS_UPDATE_CPU_FREQUENCY)(got_mhz);
     return true;
 }
 
