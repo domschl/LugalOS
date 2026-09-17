@@ -475,6 +475,7 @@ static void cmd_help(void) {
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
     cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
+    cprintf("  cpufreq <mhz>   - Switch the CPU clock live (40/90/180/360); a measurement tool, not a feature\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -2975,6 +2976,27 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
+        return;
+    } else if (strncmp(cmd_line, "cpufreq ", 8) == 0) {
+        /* 34.6, plan/phase34_esp32p4_pll_bringup.md. The measurement tool the
+         * phase's own rule demands: "compare one image at two clocks, never
+         * two builds", because a rebuild moves perft by ~3% (34.3) and that
+         * is the same size as the effects 34.6 is trying to see.
+         *
+         * A diagnostic, not a feature. It changes APB under live drivers --
+         * the EMAC among them -- so anything measured across a call to this
+         * should be re-checked from a clean boot before it is believed. */
+        unsigned want = 0;
+        for (const char *d = &cmd_line[8]; *d >= '0' && *d <= '9'; d++) {
+            want = want * 10u + (unsigned)(*d - '0');
+        }
+        uint32_t got = 0;
+        if (esp32p4_cpu_freq_set(want, &got)) {
+            cprintf("[CLK] CPU now %u MHz (measured %u Hz)\n",
+                    (unsigned)((got + 500000u) / 1000000u), (unsigned)got);
+        } else {
+            cprintf("[CLK] refused: cpufreq takes 40, 90, 180 or 360\n");
+        }
         return;
     } else if (strcmp(cmd_line, "clocks") == 0) {
         /* 34.1, plan/phase34_esp32p4_pll_bringup.md. Read-only, and the

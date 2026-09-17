@@ -194,16 +194,23 @@ static bool arch_ticker_init(void) {
 #define P4_MTIME_SAM_SHIFT  2
 #define P4_MTIME_SAM_MASK   (3u << P4_MTIME_SAM_SHIFT)
 
-/* Nominal only. Nothing states what clocks this counter -- the TRM documents
- * every register of the block and never names its source, and ESP-IDF is no
- * help because it does not use the CLINT on this chip at all (it ticks
- * FreeRTOS off the systimer; its own CLINT_BASE constant, 0x02000000, is the
- * generic RISC-V one and unrelated to this window).
+/* Nominal only. The TRM documents every register of this block and never
+ * names its source, and ESP-IDF is no help because it does not use the CLINT
+ * on this chip at all (it ticks FreeRTOS off the systimer; its own
+ * CLINT_BASE constant, 0x02000000, is the generic RISC-V one and unrelated
+ * to this window).
  *
- * So the rate is measured, in arch_ticker_init() below, exactly as the
- * RP2350 arm measures its own. This value is only what ticker_init()
- * divides by before the measurement replaces it, and the systimer's 16 MHz
- * is as good a starting guess as any. */
+ * **It follows the CPU clock**, established by phase 34 rather than by
+ * reading: at 40 MHz the crystal and the CPU were the same number and the
+ * question could not be asked, and the moment 34.4 put HP_ROOT_CLK on the
+ * PLL this counter moved with it -- measured 79 964 535 Hz at 80 MHz and
+ * 360 070 000 Hz at 360.
+ *
+ * Which makes the measurement below load-bearing rather than tidy: it is
+ * what keeps preemption at 100 Hz across a clock change, and it does. This
+ * value is only what ticker_init() divides by before the measurement
+ * replaces it, and the systimer's 16 MHz is as good a starting guess as
+ * any. */
 #define TICK_HZ 16000000UL
 
 /* The 64-bit counter, read the same way every other target here reads its
@@ -218,8 +225,10 @@ static bool arch_ticker_init(void) {
  * the previous call -- the two halves of one returned value no longer come
  * from the same instant.
  *
- * That is invisible for the first 107 seconds of uptime, and only then. At
- * 40 MHz the low half wraps at 2^32 ticks, and until it does the high half
+ * That is invisible for the first wrap of uptime, and only then. The low
+ * half wraps at 2^32 ticks -- 107 seconds at 40 MHz, and **11.9 seconds at
+ * the 360 MHz phase 34 took this board to**, since this counter follows the
+ * CPU. Until it wraps the high half
  * is 0 and a stale 0 is indistinguishable from a fresh one. After the wrap a
  * mixed read can return a value 2^32 ticks -- 107 seconds -- away from the
  * truth, and ticker_next()'s set_deadline(now() + interval) then arms the
@@ -233,7 +242,8 @@ static bool arch_ticker_init(void) {
  * test passes.
  *
  * The loop costs one extra load in the case where the high half moved, which
- * is once every 107 seconds. There is no version of this where the hardware
+ * is once every wrap -- 11.9 seconds at 360 MHz. There is no version of
+ * this where the hardware
  * mode was worth it. */
 static uint64_t now(void) {
     uint32_t hi, lo;

@@ -1168,8 +1168,38 @@ static void console_tx_drain(void) {
 bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
     uint32_t cpu_div, mem_div, sys_div = 1u, apb_div;
 
+    /* Back to the crystal. 34.6 needs this: comparing a clock change on ONE
+     * image is the only way to measure it to better than the ~3% a rebuild
+     * moves things (34.3), and that means being able to go down as well as
+     * up.
+     *
+     * Order is the reverse of upscaling and ESP-IDF's own
+     * rtc_clk_cpu_freq_to_xtal() explains why the mux goes **first** here:
+     * "Since before the switch, the clock source is CPLL, there is divider
+     * value constraints. Setting the new dividers first is unguaranteed
+     * (hardware could automatically modify the real dividers)."
+     *
+     * The dividers that follow restore the power-on shape, 40-20-20-10, so a
+     * board stepped down to 40 is in the state it boots in rather than a
+     * fourth configuration nobody has tested. */
+    if (mhz == 40u) {
+        console_tx_drain();
+        uint32_t sel = P4_REG(P4_LP_HP_CLK_CTRL);
+        P4_REG(P4_LP_HP_CLK_CTRL) = (sel & ~HP_ROOT_CLK_SRC_SEL_M) | SRC_XTAL;
+
+        root_field_set(P4_ROOT_CLK_CTRL0, CPU_DIV_NUM_S, 1u);
+        root_field_set(P4_ROOT_CLK_CTRL1, MEM_DIV_NUM_S, 2u);
+        root_field_set(P4_ROOT_CLK_CTRL1, SYS_DIV_NUM_S, 1u);
+        root_field_set(P4_ROOT_CLK_CTRL2, APB_DIV_NUM_S, 2u);
+
+        uint32_t hz40 = esp32p4_cpu_measure_hz(20000u);
+        if (measured_hz) *measured_hz = hz40;
+        uint32_t m = (hz40 + 500000u) / 1000000u;
+        ((rom_update_cpu_freq_t)(uintptr_t)ROM_ETS_UPDATE_CPU_FREQUENCY)(m ? m : 40u);
+        return true;
+    }
+
     switch (mhz) {
-    case 40:  return false;               /* the crystal: nothing to do */
     case 90:  cpu_div = 4u; mem_div = 1u; apb_div = 1u; break;
     case 180: cpu_div = 2u; mem_div = 1u; apb_div = 2u; break;
     case 360: cpu_div = 1u; mem_div = 2u; apb_div = 2u; break;

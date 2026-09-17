@@ -975,6 +975,109 @@ honestly and is now measured at the wrong frequency:
 that moved has its source file's comment corrected rather than left describing
 a board that no longer exists.
 
+#### Done, 2026-09-17
+
+The rule 34.3 wrote — *one image at two clocks, never two builds* — is what
+this milestone is built on, and honouring it needed a tool: `cpufreq <mhz>`,
+a runtime switch with a downscale path (mux **first** going down, per
+`rtc_clk_cpu_freq_to_xtal()`'s own warning about divider constraints). Every
+number below except the L2 pair is one image, so the ~3 % build-to-build term
+is out of the picture entirely.
+
+##### The XIP penalty: 241 ms, and it is not the cache
+
+`(perft 3 1)` at all four clocks, one image:
+
+| CPU | perft | speedup | clock ratio | efficiency |
+|---:|---:|---:|---:|---:|
+| 40 MHz | 21 037 ms | 1.000× | 1.00× | 100 % |
+| 90 MHz | 9 438 ms | 2.229× | 2.25× | 99.1 % |
+| 180 MHz | 4 831 ms | 4.354× | 4.50× | 96.8 % |
+| 360 MHz | 2 552 ms | **8.243×** | 9.00× | **91.6 %** |
+
+Fitting `T(f) = A·(40/f) + B` gives **A = 20 796 ms clock-bound and
+B = 241 ms clock-independent**, and that two-parameter model predicts the two
+intermediate points to within 0.7 %. The 241 ms is the flash-bound term, and
+it is the whole of §3's worry made arithmetic:
+
+* at 40 MHz it is **1.1 %** of runtime — which is why phase 32 could move
+  `.text` into flash and measure no cost, and was right to;
+* at 360 MHz it is **9.5 %** — the same absolute stall, nine times more
+  expensive in CPU cycles.
+
+So the phase delivers 8.24× of a theoretical 9×, and the missing 8.4 % has a
+name and a size rather than being a shrug.
+
+##### The L2 trade: 128 KB stays, and the answer is unambiguous
+
+The same four-point sweep, rebuilt with `CONFIG_L2_CACHE_KB = 256` (which
+also needs `RAM` cut from 384K to 256K, dropping the heap from 372 KB to
+244 KB):
+
+| CPU | 128 KB | 256 KB | difference |
+|---:|---:|---:|---:|
+| 40 MHz | 21 037 ms | 21 042 ms | +5 ms (+0.02 %) |
+| 90 MHz | 9 438 ms | 9 438 ms | **0** |
+| 180 MHz | 4 831 ms | 4 831 ms | **0** |
+| 360 MHz | 2 552 ms | 2 552 ms | **0** |
+
+Three of four are bit-identical and the fourth differs by 5 ms in 21 s. The
+fitted flash term is **241 ms for both**. Doubling the L2 changes nothing,
+at any clock.
+
+**Which also says what the 241 ms is.** It is not capacity — a cache twice
+the size would have reduced capacity misses and did not touch it. What is
+left is compulsory misses and the MSPI's fixed latency on them, neither of
+which more cache can avoid. If that term is ever worth attacking, the lever
+is flash *speed* (34.2's second lever: `FLASH_CLK_SRC_SEL` at SPLL/6 for
+80 MHz), not cache size.
+
+**So commit `37902c0`'s conclusion survives.** Its "under 0.1 % between 128
+and 256 KB" was measured at 40 MHz where a miss was nearly free, and this
+milestone existed because that might have been luck. It was not. **128 KB and
+the 372 KB heap both stay**, now on evidence taken where it matters.
+
+##### The tick, and the latency it implies
+
+**99.9716 Hz over 124.5 s — −284 ppm**, implying an interrupt latency of
+**2.84 µs**.
+
+Against `plan/phase27_esp32p4_bringup.md:1384`'s 99.8742 Hz / −1258 ppm /
+12.6 µs at 40 MHz — but **that is not a clean pair and should not be read as
+one**: phase 27's image was RAM-resident, before phase 32 moved `.text` to
+flash. This phase's own prediction ("roughly 126 ppm" on a 400 MHz core) is
+missed by about 2×, in the direction the XIP measurement above predicts, since
+the trap path now takes its instruction fetches through the same flash.
+
+What the figure does establish cleanly is that **34.2a's fix holds under a
+9× clock change**: the tick was asked for 100 Hz and delivers 99.97, with the
+rate self-measured at boot at whatever the CLINT turns out to be.
+
+##### The EMAC: 2000 echoes, zero loss
+
+Phase 28 chased ~1 % frame loss to the RMII pad drive strength, and §6 asked
+whether CPU/DMA contention for L2MEM changes shape at 9×.
+
+**2000 packets transmitted, 2000 received, 0 % loss**, rtt avg 0.586 ms, at
+360 MHz. The sample size is the point — `measure-before-declaring-fixed`
+requires it, and a 1 % rate would have lost about twenty of these. The full
+suite is 20/20 at 360 MHz alongside it, link negotiation included.
+
+##### Comments corrected, as the done-condition requires
+
+* `drivers/emac_esp32p4.c` said *"This kernel has never configured the P4's
+  clock tree ... this file does not know it"*. It does now. The MDC divider
+  is unchanged and the comment explains why that is the choice vindicating
+  itself: CSR/124 gives 161 kHz at SYS 20 MHz and 1.45 MHz at SYS 180, both
+  far inside IEEE 802.3's 25 MHz cap, so a 9× system clock needed no edit
+  beyond the prose.
+* `kernel/ticker.c` carried *"Nothing states what clocks this counter"* as an
+  open question since E4. **It follows the CPU clock**, and the file now says
+  so with the measurements that established it.
+* The same file's "107 seconds" wrap window is 40 MHz arithmetic; at 360 MHz
+  mtime's low half wraps every **11.9 s**, so the `MTIME_SAM` hazard it
+  documents arrives nine times as often.
+
 ### 34.7 — Documents: the clock
 
 * `plan/phase27_esp32p4_bringup.md` §"What E4 deliberately did not do" gets a

@@ -120,20 +120,26 @@
 /* The MDC divider.
  *
  * EMAC_CR selects MDC as a division of the CSR clock, which on this chip is
- * the system clock (IDF emac_ll_get_csr_clk_src(): SOC_MOD_CLK_SYS). This
- * kernel has never configured the P4's clock tree -- phase 27 deliberately
- * drove the console from the crystal so that it would not have to -- so the
- * system clock is whatever the boot ROM left, and this file does not know it.
+ * the system clock (IDF emac_ll_get_csr_clk_src(): SOC_MOD_CLK_SYS).
  *
- * Rather than guess, take the largest divider the field offers: 0b0101 is
- * CSR/124. The asymmetry is what makes this safe rather than lazy. IEEE 802.3
- * caps MDC at 25 MHz, so a divider that is too small breaks the bus, while
- * one that is too large only makes each transaction slower -- at the P4's
- * maximum 400 MHz that is 3.2 MHz, and at the crystal's 40 MHz it is 323 kHz.
+ * **This kernel now does configure the P4's clock tree** -- phase 34 -- so
+ * the sentence that used to stand here ("the system clock is whatever the
+ * boot ROM left, and this file does not know it") is no longer true. SYS_CLK
+ * is 20 MHz on the crystal and 180 MHz at the 360 MHz this board runs at;
+ * `clocks` reports it from the registers.
+ *
+ * The divider does not change, and the reason it does not is the reason it
+ * was chosen: 0b0101 is CSR/124, the largest the field offers, and the
+ * asymmetry is what makes that safe rather than lazy. IEEE 802.3 caps MDC at
+ * 25 MHz, so a divider that is too small breaks the bus while one that is
+ * too large only makes each transaction slower. Across every frequency this
+ * board now supports that is 161 kHz (SYS 20 MHz) to 1.45 MHz (SYS 180 MHz)
+ * -- comfortably inside the cap at both ends, which is why phase 34 moved
+ * the system clock by 9x and this file needed no edit beyond this comment.
  * A scan of 32 addresses costs microseconds either way.
  *
- * Z3 may revisit this once something in this tree knows the system clock.
- * Until then the conservative choice is the honest one. */
+ * Verified at 360 MHz: link negotiation, 2000 echoes with zero loss, and the
+ * PHY answering over MDIO (34.6). */
 #define GMII_CR_CSR_DIV_124     (5u << GMII_CR_S)
 
 /* --- IO_MUX and the GPIO matrix (TRM chapter 10) ------------------------
