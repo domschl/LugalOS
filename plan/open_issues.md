@@ -1827,11 +1827,44 @@ repeated samples, not a fresh boot.
 `tests/runner.py`: two single-core searches with a two-core search between
 them, on the two-hart target, must agree on the move and the node count.
 
-**One thing this did not change, stated so it is not read as settled.**
+**The join was looked at separately afterwards, and it did need work** --
+not because it is wrong today, but because what makes it right was an accident.
+
 `search_helper_join()` waits on a flag the helper sets *before* it returns,
-then gives up after 20 000 000 yields. Nothing was found wrong with it -- the
-primary sets `stop_search` before joining and `pv_search()` tests it at five
-points, so the helper unwinds within a few nodes and the bound is never
-approached -- but if that wait ever did expire, `search_pools_free()` would
-free the helper's position, its search state and the transposition table under
-a live searcher on the other core. It is a bound, not a guarantee.
+which is the correct property to wait on: at that point the helper has stopped
+touching the transposition table, `g_helper_pos` and hart 1's state, and what
+happens between there and the task's exit is the scheduler's business. The
+wait is bounded at 20 000 000 yields, and the bound should be unreachable
+because the primary sets `stop_search` before joining and `pv_search()` /
+`quiescence()` test it at five points.
+
+**But `stop_search` was a plain `bool`**, read on hart 1 and written on hart 0,
+while every other cross-hart word in the file -- `g_helper_active`,
+`g_helper_done`, `g_helper_nodes` -- was already `volatile`. Today's build is
+safe by luck: every read of it sits immediately after a call
+(`check_up_time`, `unmake_move`, `unmake_null_move`), so GCC cannot hold it in
+a register across the move loop, and the disassembly shows one `lbu` per source
+read. Anything that let the compiler prove otherwise would hoist the load, the
+helper would never see the stop, and the bound would start being used.
+
+Behind the bound was the real hazard: giving up was **silent**, and the caller
+then went on to `free_tt()` and `search_pools_free()`, handing three regions
+back to the page allocator while a searcher on another core was still inside
+them.
+
+Both are fixed. `stop_search` is `volatile` -- which changed `pv_search()` and
+`quiescence()` not at all (instruction-for-instruction identical; only
+`search_position()`, called once per search, gained 21 instructions). And a
+join that gives up now latches `g_helper_unjoined`, after which nothing is
+freed and no further helper starts for the rest of the boot: the session stays
+open, the engine keeps working on one core, and it says so on the console. A
+bounded ~150 KB leak that announces itself is a better failure than a
+cross-core use-after-free -- which, note, is precisely the mechanism this
+entry originally guessed at and did not have.
+
+**Exercised rather than reasoned about.** With the bound temporarily set to
+zero so every join gives up, a two-core search reports `helper task #7 did not
+stop (state 2)`, the session refuses to end, `/proc/meminfo` goes from 138 to
+177 pages and stays there, the next search runs single-core with
+`helper nodes 0`, and the board keeps answering with no trap and no scheduler
+complaint.

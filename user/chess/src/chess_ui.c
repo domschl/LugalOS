@@ -181,6 +181,22 @@ static bool chess_ensure_init(void) {
  * the build-time flag itself (phase8), not a session boundary. */
 static void chess_session_end(void) {
     if (!g_chess_ready) return;
+    /* A helper that a join gave up on may still be searching on the other
+     * core, through the transposition table this is about to free -- and
+     * leaving g_chess_ready set is what keeps it freed by nobody, because
+     * chess_ensure_init() would otherwise run init_tt() next session, which
+     * frees the existing table before allocating a new one. So the session
+     * does not end: it stays open, its memory stays put, and the engine keeps
+     * working single-core (search_helper_start() refuses to start another).
+     *
+     * Should be unreachable; see search_helper_join(). Announced rather than
+     * silent, because a session that does not release its ~100 KB is a fact
+     * the next `cat /proc/meminfo` should be explainable by. */
+    if (search_helper_unjoined()) {
+        cprintf("chess: a search helper never confirmed it stopped; keeping "
+                "this session's memory rather than freeing it under it\n");
+        return;
+    }
     free_tt();
     search_pools_free();
     if (g_chess_scratch != NULL) {

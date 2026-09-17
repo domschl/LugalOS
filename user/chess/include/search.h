@@ -18,7 +18,7 @@
 extern int max_search_depth;
 extern long max_search_time_ms;
 extern long start_search_time_ms;
-extern bool stop_search;
+extern volatile bool stop_search;   /* volatile: written on one hart, read on another */
 extern long nodes_searched;
 
 /* X8b: how many cores search_position() may use (1 = pre-X8b behaviour).
@@ -29,6 +29,14 @@ extern int g_search_cores;
  * Reported rather than added to nodes_searched, so "what did the second core
  * actually do" stays answerable. */
 long search_helper_nodes(void);
+
+/* True once a join has given up on a helper, i.e. a searcher on another core
+ * may still be inside pv_search() using the transposition table and hart 1's
+ * search state. It should never become true -- see search_helper_join() -- but
+ * while it is, NOTHING the session allocated may be freed: chess_session_end()
+ * must not end the session, because init_tt() would free and reallocate the
+ * table on the next one. Latched for the rest of the boot. */
+bool search_helper_unjoined(void);
 
 /* Allocates the PV/quiescence move-list scratch space from the page
  * allocator on first call; a no-op returning true on every call after the

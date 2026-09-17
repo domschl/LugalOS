@@ -63,7 +63,21 @@
 int max_search_depth = 64;
 long max_search_time_ms = -1;
 long start_search_time_ms = 0;
-bool stop_search = false;
+/* volatile because it is read on a hart other than the one that writes it.
+ * X8b's helper runs on hart 1 and this flag is the ONLY thing that stops it;
+ * every other cross-hart word in this file (g_helper_active, g_helper_done,
+ * g_helper_nodes) is already volatile, so this was the odd one out rather
+ * than a decision. Phase 33 made g_domain_activations volatile for the same
+ * reason and documented it as hygiene; here it is load-bearing.
+ *
+ * Today's codegen happens to be safe -- every read of this in pv_search() and
+ * quiescence() sits immediately after a call (check_up_time, unmake_move,
+ * unmake_null_move), so the compiler cannot keep it in a register across the
+ * move loop, and the disassembly confirms one lbu per source read. That is an
+ * accident of inlining, not a guarantee: if anything ever lets GCC prove no
+ * call clobbers it, the load is hoisted, the helper never observes the stop,
+ * and search_helper_join() below starts having to use its bound. */
+volatile bool stop_search = false;
 long nodes_searched = 0;
 
 // Move ordering heuristic tables
@@ -283,6 +297,11 @@ void search_pools_free(void) {
     for (unsigned h = 0; h < MAX_HARTS; h++) {
         search_state_t *st = g_search[h];
         if (st == NULL) continue;
+        /* Hart 1 is the helper's, and an unjoined helper is still selecting
+         * its state and its per-ply pools through SS. (The accessor rather
+         * than the variable: this function sits above the Lazy SMP section
+         * that defines it.) */
+        if (search_helper_unjoined() && h == 1) continue;
         if (st->pv != NULL) {
             palloc_free(st->pv, st->pool_pages);
             st->pv = NULL;
@@ -864,8 +883,25 @@ static volatile long g_helper_nodes;
 static Position     *g_helper_pos;
 static uint32_t      g_helper_pos_pages;
 static int           g_helper_depth;
+static int           g_helper_pid = -1;
+
+/* Latched when a join gives up: a searcher on the other core may still be
+ * inside pv_search(), reading g_helper_pos, hart 1's search state and the
+ * transposition table. From that moment none of the three may be freed and no
+ * second helper may be started, for the rest of the boot.
+ *
+ * That is a permanent degraded mode and it is the intended trade. The
+ * alternative is what this code did before: return, let chess_session_end()
+ * free all three, and have another core write into reclaimed pages -- which
+ * is the failure the "chess searches are not independent" report guessed at,
+ * and which would have been far harder to find than a leak that announces
+ * itself. A bounded leak of ~100 KB and a single-core engine is a bad day; a
+ * cross-core use-after-free is a bad week. */
+static volatile int  g_helper_unjoined;
 
 long search_helper_nodes(void) { return g_helper_nodes; }
+
+bool search_helper_unjoined(void) { return g_helper_unjoined != 0; }
 
 static void search_helper_body(void *arg) {
     (void)arg;
@@ -883,6 +919,10 @@ static void search_helper_body(void *arg) {
  * caller reports what actually happened rather than what it asked for. */
 static bool search_helper_start(const Position *pos, int depth) {
     if (smp_harts_online() < 2) return false;
+    /* An earlier helper was never confirmed finished, so its position and its
+     * search state are still in use by something we cannot see. Starting a
+     * second one would overwrite *g_helper_pos underneath it. */
+    if (g_helper_unjoined) return false;
     if (!search_state_init(1)) return false;
 
     if (g_helper_pos == NULL) {
@@ -899,20 +939,42 @@ static bool search_helper_start(const Position *pos, int depth) {
     g_helper_active = 1;
     __atomic_thread_fence(__ATOMIC_RELEASE);
 
-    if (task_create_pinned("chesshelp", search_helper_body, NULL, 1) < 0) {
+    g_helper_pid = task_create_pinned("chesshelp", search_helper_body, NULL, 1);
+    if (g_helper_pid < 0) {
         g_helper_active = 0;
         return false;
     }
     return true;
 }
 
+/* Waits for the helper to be finished with the memory this session owns.
+ *
+ * `g_helper_done` is set at the end of search_helper_body(), before the
+ * function returns, so it means "no longer touching the transposition table,
+ * g_helper_pos or hart 1's search state" rather than "the task has exited".
+ * That is the property the caller needs, and it is why this does not wait for
+ * TASK_DEAD: what happens between that flag and the task's exit is the
+ * scheduler's business and touches nothing of ours.
+ *
+ * The bound should be unreachable. The caller sets stop_search before calling
+ * this, and pv_search()/quiescence() test it at five points, so the helper
+ * unwinds within a few nodes. It is kept because "should be" is not "is", and
+ * an engine that hangs the board is worse than one that reports a leak --
+ * but giving up used to be silent, and the caller then freed all three
+ * regions regardless. Now it says so and latches, and everything downstream
+ * stops freeing. See g_helper_unjoined. */
 static void search_helper_join(void) {
     if (!g_helper_active) return;
-    /* The timer has already set stop_search by the time the primary finishes;
-     * bounded anyway, so a helper that somehow does not notice cannot hang
-     * the game. */
     for (int guard = 0; guard < 20000000 && !g_helper_done; guard++) {
         sched_yield();
+    }
+    if (!g_helper_done) {
+        g_helper_unjoined = 1;
+        printf("info string chess: helper task #%d did not stop (state %d) -- "
+               "its memory is being left allocated and no further helper will "
+               "start this boot\n",
+               g_helper_pid, sched_task_state(g_helper_pid));
+        fflush(stdout);
     }
     g_helper_active = 0;
 }
@@ -921,6 +983,7 @@ static void search_helper_join(void) {
  * where it found it -- the rule this project already holds every user
  * program to. */
 static void search_helper_release(void) {
+    if (g_helper_unjoined) return;   /* it may still be reading this */
     if (g_helper_pos == NULL) return;
     palloc_free(g_helper_pos, g_helper_pos_pages);
     g_helper_pos = NULL;
