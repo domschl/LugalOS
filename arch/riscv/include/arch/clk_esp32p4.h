@@ -98,6 +98,10 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
  */
 bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz);
 
+/* 34.8: the state core 1 will be started from -- its instruction cache, this
+ * hart's branch predictor, and core 1's clock, reset and stall. Read-only. */
+void esp32p4_smpinfo_report(void);
+
 /* The `clocks` shell command's body. */
 void esp32p4_clocks_report(void);
 

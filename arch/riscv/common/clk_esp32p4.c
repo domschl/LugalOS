@@ -1274,4 +1274,84 @@ bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
     return true;
 }
 
+
+/* --- 34.8: what core 1 needs, read before it runs ----------------------
+ *
+ * Read-only. The phase plan asks four questions whose answers decide 34.10's
+ * checklist, and the point of asking them here is that three are *silent*
+ * when wrong -- a core with its instruction cache or its branch predictor
+ * off does not fault, it just runs slowly and drags the other core down with
+ * it through the MSPI.
+ *
+ * The fourth was answered on the TRM page rather than from IDF, because it
+ * is the one whose wrong answer is silent data corruption rather than lost
+ * speed: **Figure 9.3-3 "Cache Structure" shows two icaches and one
+ * dcache**, with the shared data cache tapped by both HP CPU0 and HP CPU1.
+ * So the L1 data cache really is shared between the cores, cross-core data
+ * coherence is free on this chip, and 34.14's shared transposition table
+ * needs no maintenance at all.
+ *
+ * Registers, all from hw_ver1 (this board is v1.3) and named in the report:
+ *
+ *   CACHE_L1_ICACHE_CTRL   0x3FF10000  SHUT_IBUS0 [0], SHUT_IBUS1 [1]
+ *   MHCR (CSR 0x7c1)       RS [4], BFE [5], BTB [12]  -- per-core, XuanTie
+ *   SOC_CLK_CTRL0          0x500E6014  CORE1_CPU_CLK_EN [4], reset 0
+ *   HP_RST_EN0             0x500E60C0  RST_EN_CORE1_GLOBAL [8], reset 1
+ *   PMU_CPU_SW_STALL       0x50115200  HPCORE1_SW_STALL_CODE [23:16]
+ *   HP_SYSTEM_CPU_CORESTALLED_ST 0x500E5064  CORE1 [1], RO
+ *
+ * The branch predictor being a CSR is worth noticing rather than skimming:
+ * it is per-hart state, so core 1 must set it for itself no matter what
+ * core 0 has done, exactly as it must set its own mtvec.
+ */
+#define P4_CACHE_L1_ICACHE_CTRL 0x3FF10000UL
+#define CACHE_SHUT_IBUS0        (1u << 0)
+#define CACHE_SHUT_IBUS1        (1u << 1)
+
+#define MHCR_CSR                0x7c1
+#define MHCR_RS                 (1u << 4)
+#define MHCR_BFE                (1u << 5)
+#define MHCR_BTB                (1u << 12)
+
+#define P4_SOC_CLK_CTRL0        (P4_CLKRST_BASE + 0x14)
+#define CORE1_CPU_CLK_EN        (1u << 4)
+#define P4_HP_RST_EN0           (P4_CLKRST_BASE + 0xc0)
+#define RST_EN_CORE1_GLOBAL     (1u << 8)
+
+#define P4_PMU_CPU_SW_STALL     (P4_PMU_BASE + 0x200)
+#define HPCORE1_STALL_CODE_S    16
+#define P4_HP_SYSTEM_CORESTALL  0x500E5064UL
+#define CORE1_CORESTALLED_ST    (1u << 1)
+
+void esp32p4_smpinfo_report(void) {
+    uint32_t ic  = P4_REG(P4_CACHE_L1_ICACHE_CTRL);
+    uintptr_t mhcr = read_csr(0x7c1);
+    uint32_t ck  = P4_REG(P4_SOC_CLK_CTRL0);
+    uint32_t rst = P4_REG(P4_HP_RST_EN0);
+    uint32_t stl = P4_REG(P4_PMU_CPU_SW_STALL);
+    uint32_t st  = P4_REG(P4_HP_SYSTEM_CORESTALL);
+
+    cprintf("[SMP] icache    = ibus0 %s  ibus1 %s   "
+            "[L1_ICACHE_CTRL = 0x%08x]\n",
+            (ic & CACHE_SHUT_IBUS0) ? "SHUT" : "open",
+            (ic & CACHE_SHUT_IBUS1) ? "SHUT" : "open", (unsigned)ic);
+    cprintf("[SMP] branchpred = this hart: RS %u  BFE %u  BTB %u   "
+            "[MHCR = 0x%08x]\n",
+            (unsigned)((mhcr & MHCR_RS) ? 1u : 0u),
+            (unsigned)((mhcr & MHCR_BFE) ? 1u : 0u),
+            (unsigned)((mhcr & MHCR_BTB) ? 1u : 0u), (unsigned)mhcr);
+    cprintf("[SMP] core1 clk  = %s (reset default off)   "
+            "[SOC_CLK_CTRL0 = 0x%08x]\n",
+            (ck & CORE1_CPU_CLK_EN) ? "ENABLED" : "off", (unsigned)ck);
+    cprintf("[SMP] core1 rst  = %s (reset default held)  "
+            "[HP_RST_EN0 = 0x%08x]\n",
+            (rst & RST_EN_CORE1_GLOBAL) ? "HELD" : "released", (unsigned)rst);
+    cprintf("[SMP] core1 stall= code 0x%02x (0x86 stalls, 0xff runs)  "
+            "stalled=%u\n",
+            (unsigned)((stl >> HPCORE1_STALL_CODE_S) & 0xFFu),
+            (unsigned)((st & CORE1_CORESTALLED_ST) ? 1u : 0u));
+    cprintf("[SMP] L1 dcache  = shared by both cores (TRM Figure 9.3-3: two "
+            "icaches, one dcache)\n");
+}
+
 #endif /* CONFIG_BOARD_ESP32P4 */

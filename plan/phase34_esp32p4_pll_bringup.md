@@ -1133,6 +1133,58 @@ Extend 34.1's `clocks` command to print, from registers:
 
 **Done when:** the four answers are recorded here with their register evidence.
 
+#### Done, 2026-09-17
+
+`smpinfo`, read-only, on the board:
+
+```
+[SMP] icache    = ibus0 open  ibus1 open   [L1_ICACHE_CTRL = 0x00000000]
+[SMP] branchpred = this hart: RS 1  BFE 1  BTB 1   [MHCR = 0x00001030]
+[SMP] core1 clk  = off (reset default off)   [SOC_CLK_CTRL0 = 0xe6df97af]
+[SMP] core1 rst  = HELD (reset default held)  [HP_RST_EN0 = 0x00000100]
+[SMP] core1 stall= code 0x00 (0x86 stalls, 0xff runs)  stalled=0
+[SMP] L1 dcache  = shared by both cores (TRM Figure 9.3-3)
+```
+
+**1. The instruction buses are both open**, `SHUT_IBUS0` and `SHUT_IBUS1`
+clear. That is the bus path, not the cache enable, and the two are not the
+same question — so 34.10 will call `Cache_Enable_L1_CORE1_ICache` (ROM
+`0x4fc004e4`, identical in both ROM variants) explicitly rather than infer
+from an open bus, which is what IDF does and costs one call.
+
+**2. The branch predictor is a CSR, and it is on for core 0.** `MHCR`
+(0x7c1) reads `0x1030` — RS, BFE and BTB all set, so the ROM enabled it. It
+is **per-hart state**, so core 1 must set it for itself exactly as it must
+set its own `mtvec`; core 0 having it changes nothing for core 1. This is the
+quieter of the two silent-when-wrong settings and the reason 34.12 reads a
+sub-1× result as a diagnosis rather than a disappointment.
+
+**3. Nothing has touched core 1's clock or reset.** `CORE1_CPU_CLK_EN` is
+clear and `RST_EN_CORE1_GLOBAL` is set, both at their documented reset
+defaults. IDF checks these before writing because a debugger may have got
+there first; on this board, with nothing attached, they are exactly as the
+silicon left them.
+
+**4. Core 1 is held by reset, not by the stall.** `HPCORE1_SW_STALL_CODE`
+reads `0x00` — neither `0x86` (stall) nor `0xff` (run) — and
+`CORE1_CORESTALLED_ST` reads 0. So the launch reduces to *enable the clock,
+release the reset, set the boot address*; the unstall write IDF makes is
+belt-and-braces here rather than load-bearing. 34.9 will still make it, since
+a launch that depends on a stall register reading 0 is a launch that breaks
+the first time something else writes it.
+
+**And the one that had to come off the TRM page: the L1 data cache is
+shared.** §4.1 flagged this as the single must-verify, because a wrong answer
+is silent data corruption rather than lost speed. **TRM Figure 9.3-3 "Cache
+Structure"** (page 910) draws it directly: HP CPU0 and HP CPU1 above, an L1
+row containing **icache, icache, dcache** — two instruction caches, one data
+cache — with the data bus tapped by both cores. 16 KB each for the icaches,
+64 KB for the shared dcache, above a unified L2.
+
+So cross-core data coherence is free on this chip. Two cores writing the same
+structure see each other with no maintenance, which is what makes 34.10 small
+and 34.14's shared transposition table a non-issue.
+
 ### 34.9 — Core 1 executes one instruction
 
 Mirror RP2350 X3 exactly, and for the reason `kernel/smp.c:104` gives rather

@@ -476,6 +476,7 @@ static void cmd_help(void) {
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
     cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
     cprintf("  cpufreq <mhz>   - Switch the CPU clock live (40/90/180/360); a measurement tool, not a feature\n");
+    cprintf("  smpinfo         - What core 1 would start from: its icache, branch predictor, clock, reset, stall\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -2997,6 +2998,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         } else {
             cprintf("[CLK] refused: cpufreq takes 40, 90, 180 or 360\n");
         }
+        return;
+    } else if (strcmp(cmd_line, "smpinfo") == 0) {
+        /* 34.8, plan/phase34_esp32p4_pll_bringup.md. Read-only. */
+        esp32p4_smpinfo_report();
         return;
     } else if (strcmp(cmd_line, "clocks") == 0) {
         /* 34.1, plan/phase34_esp32p4_pll_bringup.md. Read-only, and the
