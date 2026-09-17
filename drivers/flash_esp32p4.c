@@ -43,6 +43,7 @@
 
 #include "drivers/flash_esp32p4.h"
 #include "kernel/printk.h"
+#include "kernel/hart.h"
 #include "kernel/lock.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -139,7 +140,27 @@ bool flash_p4_init(void) {
  * the destination want 4-byte alignment. Rather than push that onto callers
  * -- a block device hands out whatever the filesystem asked for -- anything
  * unaligned is routed through a small bounce buffer here. */
-/* --- writing flash while executing from it (U3) --------------------------
+/* --- and the OTHER core, while this one writes (34.11) -------------------
+ *
+ * Everything below protects the core doing the writing. **None of it
+ * protects the other one**, and the reason is one word: `mstatus.MIE` is
+ * per-hart. Masking it on core 0 says nothing whatsoever about core 1, which
+ * since 34.10 is running an idle task whose code is in flash like everything
+ * else -- so an erase would pull the instruction stream out from under it.
+ *
+ * `smp_flash_park_request()` (kernel/smp.c) is the answer, generalised by
+ * 34.11 from the protocol X7 wrote for RP2350: core 1 is asked to park in a
+ * `.ramfunc` spin, acknowledges from RAM, and is released afterwards. It
+ * returns true when there is no second core online, so the single-core path
+ * is unchanged and pays one load of a .bss word.
+ *
+ * **A refusal refuses the write.** If core 1 does not park within the
+ * timeout the erase does not happen and the caller gets an error, which is
+ * the same decision drivers/flash_rp2350.c:146 makes and for the same
+ * reason: a refused write is something a caller can report, and a write that
+ * proceeds hopefully is a board that stops mid-erase.
+ *
+ * --- writing flash while executing from it (U3) --------------------------
  *
  * plan/phase32_esp32p4_execute_in_place.md §2. Before phase 32 this file had
  * no such problem: the kernel was loaded into L2MEM and flash was only ever a
@@ -317,7 +338,13 @@ int flash_p4_erase_sector(uint32_t addr) {
     flash_rom_fns_t f;
     flash_rom_fns_init(&f);
     ylock_acquire(&g_flash_ylock);
+    if (!smp_flash_park_request()) {
+        ylock_release(&g_flash_ylock);
+        printk("[Flash] core 1 did not park; refusing to erase\n");
+        return -1;
+    }
     int rc = flash_erase_ram(&f, addr / FLASH_P4_SECTOR_SIZE);
+    smp_flash_park_release();
     ylock_release(&g_flash_ylock);
     return rc;
 }
@@ -338,6 +365,11 @@ int flash_p4_write(uint32_t addr, const void *buf, uint32_t len) {
     flash_rom_fns_t f;
     flash_rom_fns_init(&f);
     ylock_acquire(&g_flash_ylock);
+    if (!smp_flash_park_request()) {
+        ylock_release(&g_flash_ylock);
+        printk("[Flash] core 1 did not park; refusing to write\n");
+        return -1;
+    }
     int rc = 0;
     while (rc == 0 && len > 0) {
         uint32_t chunk = len < 256u ? len : 256u;
@@ -355,6 +387,7 @@ int flash_p4_write(uint32_t addr, const void *buf, uint32_t len) {
         addr += chunk;
         len  -= chunk;
     }
+    smp_flash_park_release();
     ylock_release(&g_flash_ylock);
     return rc;
 }

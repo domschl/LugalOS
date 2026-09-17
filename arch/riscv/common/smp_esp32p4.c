@@ -110,7 +110,70 @@ __attribute__((naked, noreturn)) static void core1_probe_entry(void) {
         ::: "t0", "t1", "memory");
 }
 
-bool esp32p4_core1_launch_probe(void) {
+/* --- 34.10: what core 1 must set for itself --------------------------
+ *
+ * Called from secondary_main() before anything else, because it is per-hart
+ * state that core 0 having cannot give core 1.
+ *
+ * **The branch predictor is a CSR.** `MHCR` (0x7c1) with RS, BFE and BTB --
+ * return stack, predictive jump, branch target buffer. 34.8 read `0x1030` on
+ * core 0, so the ROM enables it there; core 1 comes up without it and
+ * nothing says so. This is one of the two settings §4.2 called silent when
+ * wrong, and it is the one that stays silent.
+ *
+ * **The instruction cache is deliberately left alone.** The other silent
+ * setting, and 34.9 answered it with a measurement rather than a call:
+ * core 1's counter ran at 5.00 cycles per iteration of a four-instruction
+ * loop, which is a cached core at full speed -- uncached fetch over a 40 MHz
+ * MSPI would be two orders of magnitude slower. The ROM leaves `ICACHE1`
+ * enabled.
+ *
+ * `Cache_Enable_L1_CORE1_ICache` is at ROM 0x4fc004e4 in both variants and
+ * calling it would be the belt-and-braces move, except that it takes an
+ * autoload argument this file would be guessing at. A redundant call with a
+ * guessed parameter is not more careful than a measurement; if 34.12 ever
+ * shows core 1 running slow, this is the first thing to add, with the
+ * argument looked up rather than assumed. */
+#define MHCR_CSR_NUM  0x7c1
+#define MHCR_RS       (1u << 4)
+#define MHCR_BFE      (1u << 5)
+#define MHCR_BTB      (1u << 12)
+
+/* What core 1's MHCR read on arrival and after being set.
+ *
+ * Recorded rather than asserted, because this is the whole of what 34.10
+ * changes *for* core 1 and "the branch predictor is on" is otherwise a claim
+ * with nothing behind it: a core without it does not fault, it runs slower in
+ * ways only a benchmark notices. Written by core 1 and read by core 0, which
+ * costs nothing here -- the L1 data cache is shared (34.8). */
+volatile uint32_t g_p4_core1_mhcr_before;
+volatile uint32_t g_p4_core1_mhcr_after;
+
+void esp32p4_core1_early_init(void) {
+    g_p4_core1_mhcr_before = esp32p4_mhcr_read();
+    __asm__ __volatile__("csrs 0x7c1, %0" :: "r"(MHCR_RS | MHCR_BFE | MHCR_BTB));
+    g_p4_core1_mhcr_after = esp32p4_mhcr_read();
+}
+
+uint32_t esp32p4_mhcr_read(void) {
+    uintptr_t v;
+    __asm__ __volatile__("csrr %0, 0x7c1" : "=r"(v));
+    return (uint32_t)v;
+}
+
+/* Where core 1 is pointed. 34.9's probe, or the kernel.
+ *
+ * `_start` is deliberate rather than a second entry stub of this board's own.
+ * §4.1 established that `mhartid` really is the core id here, so
+ * arch/riscv/common/entry.S's existing secondary path -- the QEMU-shaped one,
+ * not RP2350's bootrom handshake -- already does everything core 1 needs:
+ * its own mtvec, its own stack from `_stack_secondary_top`, the release wait
+ * on `g_smp_release`, `SETUP_HART_POINTER`, then `secondary_main()`. The one
+ * thing it had to learn is not to redo the XIP mapping, which 34.10 guarded.
+ */
+extern char _start[];
+
+bool esp32p4_core1_launch(bool into_kernel) {
     /* 1. Unstall. Belt-and-braces on this board; see the header. */
     uint32_t stall = P4_REG(P4_PMU_CPU_SW_STALL);
     stall &= ~(HPCORE1_STALL_CODE_M << HPCORE1_STALL_CODE_S);
@@ -137,14 +200,17 @@ bool esp32p4_core1_launch_probe(void) {
     /* 3. The boot address, last, because it is the handshake rather than a
      * setting: core 1 is already running ROM code that waits for it. */
     ((rom_set_appcpu_boot_addr_t)(uintptr_t)ROM_ETS_SET_APPCPU_BOOT_ADDR)
-        ((uint32_t)(uintptr_t)core1_probe_entry);
+        (into_kernel ? (uint32_t)(uintptr_t)_start
+                     : (uint32_t)(uintptr_t)core1_probe_entry);
     return true;
 }
+
+bool esp32p4_core1_launch_probe(void) { return esp32p4_core1_launch(false); }
 
 void esp32p4_core1_probe_report(void) {
     uint32_t before = g_p4_core1_ticks;
 
-    if (!esp32p4_core1_launch_probe()) {
+    if (!esp32p4_core1_launch(false)) {
         return;
     }
 

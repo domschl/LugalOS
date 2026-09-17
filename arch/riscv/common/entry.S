@@ -68,6 +68,21 @@ _start:
 .Lhave_stack:
 
 #if defined(CONFIG_BOARD_ESP32P4)
+#if CONFIG_ENABLE_SMP
+    /* Hart 0 only. 34.10, plan/phase34_esp32p4_pll_bringup.md.
+     *
+     * Core 1 enters here too -- its boot address is `_start`, so it takes the
+     * same path and the same secondary branch below. It must not take *this*
+     * block: the watchdogs were disarmed once at boot and re-disarming them is
+     * merely pointless, but esp32p4_xip_map() disables the L2 cache, rewrites
+     * the flash MMU and re-enables it, and doing that underneath a core 0 that
+     * is executing from the window being remapped is not pointless at all.
+     *
+     * The other secondary-hart guards in this file sit lower, after .data and
+     * .bss; this one has to be here because what follows it is unsafe rather
+     * than merely redundant. */
+    bnez tp, .Lp4_skip_boot_setup
+#endif
     /* Map flash into the CPU's address space, before anything else.
      * U2, plan/phase32_esp32p4_execute_in_place.md.
      *
@@ -92,6 +107,9 @@ _start:
      * shell and then resets. See xip_esp32p4.c. */
     call esp32p4_boot_wdt_disable
     call esp32p4_xip_map
+#if CONFIG_ENABLE_SMP
+.Lp4_skip_boot_setup:
+#endif
 #endif
 
 #if defined(CONFIG_MODE_S)

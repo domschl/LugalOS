@@ -1264,6 +1264,76 @@ executing XIP and say why. What is not acceptable is leaving
 **Done when:** a filesystem write soak — many writes under load with core 1
 running, not one erase — completes with `/flash0` intact.
 
+#### Done, 2026-09-17
+
+**The hazard was real and specific.** `drivers/flash_esp32p4.c` protects the
+core doing the writing — `.ramfunc` routines, ROM pointers resolved before
+entry, and `mstatus.MIE` masked. **`mstatus.MIE` is per-hart.** Masking it on
+core 0 says nothing whatsoever about core 1, which since 34.10 runs an idle
+task whose code is in flash like everything else. An erase would have pulled
+the instruction stream out from under it, and the failure would not have been
+an error — a fetch from a busy flash chip returns whatever it drives, and the
+CPU executes that.
+
+**Extracted rather than rewritten.** X7's protocol was inside
+`kernel/smp.c`'s `#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)`
+block along with the SIO FIFO handshake and everything else RP2350-shaped. It
+now sits in its own block guarded for *both* boards that execute from flash.
+The reasons differ — RP2350 turns XIP off outright, the P4 leaves the mapping
+alone but the chip stops answering reads for tens of milliseconds — and the
+mechanism does not: core 1 parks in a `.ramfunc` spin, acknowledges from RAM,
+and is released after. Both boards have `.ramfunc`; QEMU keeps the stubs.
+
+`flash_p4_erase_sector()` and `flash_p4_write()` now ask, and **refuse the
+write** if core 1 does not park — the same decision `flash_rp2350.c:146`
+makes, and for the reason it gives: a refused write is something a caller can
+report, a hopeful one is a board that stops mid-erase.
+
+**The soak.** 120 rewrites of a file on `/flash0`, with `harts online = 2`
+before and after, read-back verified every 20:
+
+```
+   20 writes,  21 s, readback OK        100 writes, 103 s, readback OK
+   40 writes,  41 s, readback OK        120 writes, 123 s, readback OK
+   60 writes,  62 s, readback OK
+   80 writes,  82 s, readback OK
+RESULT: 120 rewrites in 123 s, 0 park-refused
+/flash0 15% used -- unchanged
+```
+
+Each rewrite erases and programs both the data cluster and the directory
+entry, so this is roughly 240 erase/program windows with a second core live
+and **not one park refusal**. `flashtest`'s erase/program/read-back also
+passes with core 1 running.
+
+##### Why the soak rewrites rather than creates, and the bug that decided it
+
+The first attempt created new files and nearly all of them failed. That is
+**not** this milestone's hazard, and the control is the whole reason it can
+be said so plainly — from a fresh boot, both ways:
+
+| | create new file | rewrite existing |
+|---|---|---|
+| `harts online = 1` | `#f` | `#t`, content verified |
+| `harts online = 2` | `#f` | `#t`, content verified |
+
+**Identical single-core.** File creation on `/flash0` is broken independently
+of the second core and of everything phase 34 has touched; `/proc/df` shows
+the filesystem 15 % full, so it is not space either. Filed in
+`plan/open_issues.md` with the leading suspicion (a full root directory) and
+the observation that the create path returns a bare `#f` with no diagnostic,
+which is itself worth fixing before guessing.
+
+So a creation soak would have measured that bug instead of the park protocol.
+Rewrites exercise the same erase and program path — which is the window the
+park protects — without the confound.
+
+One other thing the soak surfaced, also filed: the shell's `write` command
+builds and evaluates a Lisp call, and after ~60 invocations the Lisp string
+pool is exhausted. Harmless interactively, a real limit for scripted use, and
+it cost one of the 120 writes. The filesystem was unaffected — the next
+checkpoint read back clean.
+
 ### 34.12 — perft on two cores: correctness first, then speed
 
 **This is the success criterion for the second half of the phase**, and perft is

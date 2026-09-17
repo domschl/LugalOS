@@ -63,6 +63,8 @@
 #include "arch/clk_esp32p4.h"
 #include "kernel/console.h"
 #include "kernel/ticker.h"
+#include "kernel/hart.h"
+#include "arch/smp_esp32p4.h"
 #include "kernel/time.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
@@ -1352,6 +1354,16 @@ void esp32p4_smpinfo_report(void) {
             (unsigned)((st & CORE1_CORESTALLED_ST) ? 1u : 0u));
     cprintf("[SMP] L1 dcache  = shared by both cores (TRM Figure 9.3-3: two "
             "icaches, one dcache)\n");
+    cprintf("[SMP] harts online = %u\n", smp_harts_online());
+    if (g_p4_core1_mhcr_after != 0u) {
+        /* 34.10's only actual change to core 1, and therefore the one thing
+         * here that needs evidence rather than a claim. A core without its
+         * branch predictor does not fault; it runs slower in ways only a
+         * benchmark notices. */
+        cprintf("[SMP] core1 MHCR = 0x%08x on arrival -> 0x%08x after\n",
+                (unsigned)g_p4_core1_mhcr_before,
+                (unsigned)g_p4_core1_mhcr_after);
+    }
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */

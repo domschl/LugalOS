@@ -342,6 +342,24 @@ SECTIONS
      * while before anything matters". It is not a guard page -- nothing
      * faults -- but it is strictly better than the alternative and costs
      * nothing at all. */
+    /* Core 1's stack, 34.10 (plan/phase34_esp32p4_pll_bringup.md).
+     *
+     * In LOWRAM immediately below the boot stack, which is where it costs
+     * nothing: the heap is `_heap_end - _kernel_end` in RAM, and LOWRAM is
+     * NOLOAD .bss territory. Putting it in RAM would have taken 16 KB off
+     * the 372 KB phase 32 fought for.
+     *
+     * Same size as the boot stack, and for the same reason phase 23 gives
+     * about RP2350's: X7's first hardware attempt sized core 1's stack by
+     * argument (4 KB) against a chain core 0 measures at 8372 bytes, and took
+     * the board down. .bss has ~45 KB of headroom below this, and the ASSERT
+     * below is what notices if that stops being true. */
+    .stack_secondary (ORIGIN(LOWRAM) + LENGTH(LOWRAM) - 32k) (NOLOAD) : {
+        _stack_secondary_bottom = .;
+        . += 16k;
+        _stack_secondary_top = .;
+    } > LOWRAM
+
     .stack (ORIGIN(LOWRAM) + LENGTH(LOWRAM) - 16k) (NOLOAD) : {
         _stack_bottom = .;
         . += 16k;
@@ -426,8 +444,10 @@ SECTIONS
      * the first attempt here did. An explicit address does move it, and
      * takes ld's own overflow check for LOWRAM off the stack in exchange, so
      * the collision it was protecting against is checked here instead. */
-    ASSERT(_bss_end <= _stack_bottom,
-           ".bss has grown into the boot stack -- LOWRAM is full; see the header comment")
+    ASSERT(_bss_end <= _stack_secondary_bottom,
+           ".bss has grown into core 1's stack -- LOWRAM is full; see the header comment")
+    ASSERT(_stack_secondary_top == _stack_bottom,
+           "core 1's stack is no longer directly below the boot stack -- see the .stack_secondary comment")
     ASSERT(_stack_top == ORIGIN(LOWRAM) + LENGTH(LOWRAM),
            "the boot stack is no longer at the top of LOWRAM -- see the .stack comment")
 

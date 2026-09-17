@@ -479,6 +479,7 @@ static void cmd_help(void) {
     cprintf("  cpufreq <mhz>   - Switch the CPU clock live (40/90/180/360); a measurement tool, not a feature\n");
     cprintf("  smpinfo         - What core 1 would start from: its icache, branch predictor, clock, reset, stall\n");
     cprintf("  smpstart        - Launch core 1 on a counter and report whether it moved (34.9)\n");
+    cprintf("  smpstart join   - Launch core 1 into the kernel: its own stack, trap vector and task (34.10)\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -3006,6 +3007,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * boot step, for the reason kernel/smp.c gives about RP2350's: a
          * board that boots is a board that can be reflashed. */
         esp32p4_core1_probe_report();
+        return;
+    } else if (strcmp(cmd_line, "smpstart join") == 0) {
+        /* 34.10: core 1 into the kernel, via entry.S's secondary path. */
+        if (esp32p4_core1_launch(true)) {
+            cprintf("[SMP] core 1 launched into the kernel; harts online "
+                    "reported below\n");
+        }
         return;
     } else if (strcmp(cmd_line, "smpinfo") == 0) {
         /* 34.8, plan/phase34_esp32p4_pll_bringup.md. Read-only. */

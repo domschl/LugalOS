@@ -116,6 +116,7 @@
       "binaryDir": "${sourceDir}/build/esp32p4",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_ENABLE_SMP": "ON",
         "LUGALOS_ENABLE_CC": "ON",
         "LUGALOS_ENABLE_ED": "OFF",
         "LUGALOS_ENABLE_SPISD": "OFF",

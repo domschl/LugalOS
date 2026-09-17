@@ -1658,3 +1658,54 @@ record per-attempt timings so a stalled attempt can be told from a slow one,
 and check whether the stall correlates with a particular test rather than a
 particular section.
 
+
+
+## Creating a new file on the ESP32-P4's /flash0 fails, though rewrites work
+
+**Found 2026-09-17 while running 34.11's write soak**
+(`plan/phase34_esp32p4_pll_bringup.md`). Not a phase-34 defect and explicitly
+not caused by the second core — the control below is the point of this entry.
+
+`write /flash0/newname.txt something` returns `#f`. Rewriting a file that
+already exists returns `#t` and the content reads back correctly.
+
+**It is not the second core.** Checked both ways from a fresh boot:
+
+| | create new file | rewrite existing |
+|---|---|---|
+| `harts online = 1` | `#f` | `#t`, content verified |
+| `harts online = 2` | `#f` | `#t`, content verified |
+
+Identical single-core, so 34.11's flash-park protocol is not implicated, and
+neither is anything else phase 34 changed.
+
+**It is not space.** `/proc/df` reports `/flash0` at **15 %** — 870 of 1024
+512-byte blocks free.
+
+**Leading suspicion: the root directory is out of entries.** `ls /flash0`
+shows a modest file count, but a FAT32 root directory is a fixed number of
+entries and long filenames consume several apiece. Worth confirming before
+acting on it. A second candidate is that the create path takes a different
+route through `vfs_write()` than the overwrite path and fails somewhere that
+returns no diagnostic — the absence of *any* message beyond `#f` is itself a
+finding, since the flash driver is talkative about refusals.
+
+**Worth doing:** make the create path say why it failed before guessing at
+the cause. Everything above was inferred from a boolean.
+
+## The shell's `write` exhausts the Lisp string pool after ~60 calls
+
+Same session, same soak. Write 61 of 120 failed with
+
+```
+[Lisp Error] String pool exhausted! Further strings/symbols will alias.
+```
+
+`kernel/shell.c`'s `write` command builds a Lisp call and evaluates it
+(`write "path" "text"`), so each invocation interns two strings that are
+never reclaimed. Harmless interactively -- nobody types 60 writes -- and it
+is a real limit for any scripted use of the shell, which is exactly what
+`tests/hw/` does.
+
+The filesystem was unaffected: the soak's next read-back checkpoint passed,
+and all six checkpoints across 120 rewrites read back correctly.

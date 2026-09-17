@@ -12,6 +12,9 @@
 #include "arch/rp2350_bootrom.h"
 #include "kernel/console.h"
 #include "kernel/meminfo.h"
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "arch/smp_esp32p4.h"
+#endif
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -361,6 +364,33 @@ static bool smp_launch_core1(void) {
     fifo_drain();
     return i == 6;
 }
+
+#endif /* CONFIG_ENABLE_SMP && CONFIG_BOARD_RP2350 */
+
+/* --- Parking the other core across a flash write ------------------------
+ *
+ * Shared by the two boards that execute from flash, because the hazard is
+ * theirs jointly and the mechanism is not specific to either. 34.11,
+ * plan/phase34_esp32p4_pll_bringup.md, generalised what X7 wrote for RP2350.
+ *
+ * The *reasons* differ and the shape does not:
+ *
+ *   * **RP2350** turns XIP off outright (drivers/flash_rp2350.c), and for
+ *     that window every fetch from 0x10000000-and-up faults or hangs.
+ *   * **ESP32-P4** leaves the mapping alone, but an erase or program makes
+ *     the flash chip stop answering reads for tens of milliseconds
+ *     (drivers/flash_esp32p4.c). A fetch during it returns whatever the busy
+ *     chip drives, and the CPU executes that.
+ *
+ * Both flash drivers protect the core doing the writing -- `.ramfunc` plus
+ * masked interrupts -- and **neither can protect the other core, because
+ * interrupt masking is per-hart**. That asymmetry is the whole reason this
+ * exists: on the P4 it is `mstatus.MIE`, masked on core 0, saying nothing
+ * whatsoever about core 1, which at 34.10 is running an idle task whose code
+ * is in flash like everything else.
+ */
+#if CONFIG_ENABLE_SMP && (defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4))
+
 /* --- X7 step 6: parking core 1 across a flash write ----------------------
  *
  * drivers/flash_rp2350.c turns XIP off, and for that window every
@@ -433,6 +463,9 @@ void smp_flash_park_release(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
+#endif /* the two flash-executing boards */
+
+#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
 int smp_start_secondary(unsigned mode) {
     /* One launch per boot, whatever the mode. harts_online() alone is not
      * enough: probe and locktest leave core 1 running without ever entering
@@ -686,10 +719,15 @@ int smp_start_secondary(unsigned mode) {
 }
 #endif /* CONFIG_ENABLE_SMP && CONFIG_BOARD_RP2350 */
 
-#if !(CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350))
-/* Every other target: there is no second core to park, and no XIP window to
- * lose. Stubs rather than #ifdefs at the call sites, so sched_yield() and
- * the flash driver read the same on every board. */
+#if !(CONFIG_ENABLE_SMP && (defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)))
+/* Every other target: either there is no second core to park, or there is no
+ * flash window to lose. Stubs rather than #ifdefs at the call sites, so
+ * sched_yield() and the flash driver read the same on every board.
+ *
+ * 34.11 narrowed what "every other target" means. Before it, this stub also
+ * answered on an SMP ESP32-P4 -- returning true, which on a board with a
+ * second core executing from flash was not a simplification but a false
+ * statement, and one nothing would have failed on until a filesystem did. */
 bool smp_flash_park_request(void) { return true; }
 void smp_flash_park_release(void) { }
 void smp_flash_park_check(void) { }
@@ -728,6 +766,13 @@ void smp_release_secondaries(void) {
 
 #if CONFIG_ENABLE_SMP
 void secondary_main(void) {
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* 34.10, plan/phase34_esp32p4_pll_bringup.md. Per-hart state that core 0
+     * having does not give core 1: the branch predictor is a CSR, and a core
+     * running without it does not say so. Before everything, because it costs
+     * two instructions and every instruction after it benefits. */
+    esp32p4_core1_early_init();
+#endif
     /* First, before anything that touches a kernel address: join the address
      * space the primary built. satp is per-hart, so until this runs we are in
      * bare mode while hart 0 translates. See vmm_secondary_init(). */
