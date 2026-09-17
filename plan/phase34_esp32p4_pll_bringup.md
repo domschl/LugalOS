@@ -871,9 +871,81 @@ is precisely why §3 called this the hazard that makes this a phase. What must
 that is overvolting past the vendor's calibration point, and it is the one
 move here that damages a part rather than merely failing.
 
-**Where this leaves the phase.** 180 MHz is a legitimate resting point at
-4.5×, fully verified, and the board is already faster than the RP2350. 360
-remains available at 2× more, behind one gated piece of analog work.
+##### 360 MHz reached — it was the DC-DC, not the LDO
+
+The analog work was authorised and done, in two stages, each regression-tested
+at 180 MHz before being tried at 360.
+
+**Stage one: the digital regulator under register control.** The four
+`I2C_DIG_REG` and four `I2C_BIAS` writes from `rtc_clk_init.c` — ported in
+IDF's order with fields from `regi2c_dig_reg.h` and `regi2c_bias.h`.
+`FORCE_DIG_DREG = 1` is the load-bearing one: it takes the regulator voltage
+off analog control and puts it on the register 34.3 had been writing.
+
+Read back from the board, the writes land exactly as intended:
+
+```
+DIG_REG[10]=0x03   FORCE_RTC_DREG=1, FORCE_DIG_DREG=1
+DIG_REG[13]=0x42   XPD_RTC_REG=0, XPD_DIG_REG=0
+BIAS[4]=0x00       all four force-on overrides cleared
+```
+
+**And 360 MHz still failed.** Which is the most useful negative result in the
+phase: with the regulator demonstrably under register control at this chip's
+own eFuse trim, the LDO cannot run this core at 360. The remaining gap is not
+a missing register write, it is voltage.
+
+**Stage two: the external DC-DC.** IDF's `rtc_clk_init()` finishes by moving
+the core onto an external converter and switching the LDO off, and it does so
+**unconditionally on every ESP32-P4 boot** — not behind a Kconfig gate. The
+evidence that this board is built for it:
+
+* `Kconfig.dcdc` describes an external part ("TI-TLV62569/TLV62569P"), not an
+  SoC block;
+* the NANO schematic carries `EN_DCDC`, `FB_DCDC` and `VDDPST_DCDC` with a
+  470K 1 % feedback divider, and MPS regulators (MP1605/MP1658);
+* **Waveshare's own shipped firmware**
+  (`~/gith/esp/ESP32-P4-Platform/firmware/brookesia`) overrides neither the
+  CPU frequency nor anything in the DCDC menu, so the board ships running
+  exactly this sequence.
+
+`dcm_vset` is IDF's own `max(PVT, 27)`, and it is deliberately not adjusted
+for the MPS parts: 27 is the figure the stock firmware this board ships with
+uses against this board's own feedback network. Deriving a different number
+from a different regulator's datasheet would be the mistake, not the caution.
+
+**And it resolves 34.3's mystery as a side effect.** `HP_DBIAS_VOL` was never
+a dbias readback. IDF reads that field as `pvt_hp_dcmvset` — a PVT-derived
+*floor for the DC-DC setting* — which is why it never followed a dbias write,
+and why `DIG_DBIAS_INIT` moved it to 20 when 34.3 poked it. `clocks` prints
+control and indicator separately for exactly this reason; the two were never
+the same quantity.
+
+##### 360 MHz: verified
+
+```
+[CLK] CPLL 320 -> 360 MHz (rc=0)
+[CLK] CPU at 360 MHz, measured
+CPU = 360   MEM = 180   SYS = 180   APB = 90 MHz      ROM says 360
+CPU meas = 360 000 920 Hz      ticker measured 360 112 000 Hz
+```
+
+* `(perft 3 1)` — **2563 ms against 21 941, 0 errors.**
+* `/flash0` mounted, heap 372 KB, boot stack peak 11 484 B — unchanged.
+
+**8.56× on a 9.0× clock change**, and that shortfall is the first sign of §3's
+XIP concern arriving: about 3 % of it is the build-to-build term 34.3
+measured, and the rest is a 9:1 CPU-to-flash ratio starting to cost what 2:1
+and 4.5:1 did not. It is a small effect at the top of a 9× win, and 34.6 is
+where it gets characterised rather than guessed at.
+
+For scale: this suite took **21 941 ms** on this board at the start of the
+phase and **6465 ms** on the RP2350. It now takes 2563 ms.
+
+**Where this leaves the phase.** The clock half is done at its ceiling —
+360 MHz is the maximum this silicon revision offers, since the 400 MHz ladder
+needs rev ≥ 3.0. 34.6 re-measures what the clock invalidated, and the L2
+cache trade is now genuinely live rather than theoretical.
 
 ### 34.6 — Re-measure everything the clock invalidated
 

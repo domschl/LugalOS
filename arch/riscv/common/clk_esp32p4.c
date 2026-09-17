@@ -301,30 +301,6 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
 #define I2C_CPLL_REG_DIV_7_0    3u
 #define I2C_CPLL_REG_DCUR       6u
 
-static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
-    if (!(P4_REG(P4_LPPERI_CLK_EN) & LPPERI_CK_EN_LP_I2CMST)) {
-        return false;   /* master is gated; say so rather than ungate it */
-    }
-    P4_REG(P4_ANA_MST_ANA_CONF1) &= ~ANA_CONF_FIELD_M;
-    P4_REG(P4_ANA_MST_ANA_CONF2) &= ~ANA_CONF_FIELD_M;
-    P4_REG(P4_ANA_MST_ANA_CONF2) |= REGI2C_PLL_CPU_MST_SEL;
-
-    while (P4_REG(P4_ANA_MST_I2C0_CTRL) & REGI2C_BUSY) { }
-    P4_REG(P4_ANA_MST_I2C0_CTRL) =
-        (uint32_t)I2C_CPLL_SLAVE | ((uint32_t)reg_addr << 8);
-    while (P4_REG(P4_ANA_MST_I2C0_CTRL) & REGI2C_BUSY) { }
-
-    *out = (uint8_t)((P4_REG(P4_ANA_MST_I2C0_CTRL) >> REGI2C_DATA_S) & 0xFFu);
-    return true;
-}
-
-static uint32_t cpll_hz(void) {
-    uint8_t div = 0, ref = 0;
-    if (!regi2c_read_cpll(I2C_CPLL_REG_DIV_7_0, &div)) return 0u;
-    if (!regi2c_read_cpll(I2C_CPLL_REG_REF_DIV, &ref)) return 0u;
-    return (uint32_t)CONFIG_XTAL_HZ * (uint32_t)div / ((uint32_t)(ref & 0xFu) + 1u);
-}
-
 /* REGI2C write. Same transaction as the read, plus WR_CNTL and the data
  * byte -- this is the first thing in phase 34 to write the analog bus.
  *
@@ -360,18 +336,64 @@ static bool regi2c_wait_idle(void) {
     return false;
 }
 
-static bool regi2c_write_cpll(uint8_t reg_addr, uint8_t val) {
+/* Point the analog master at one block. Every transaction begins here;
+ * ESP-IDF's regi2c_enable_block() does the same two clears and one set. */
+static bool regi2c_select(uint32_t mst_sel) {
+    if (!(P4_REG(P4_LPPERI_CLK_EN) & LPPERI_CK_EN_LP_I2CMST)) {
+        return false;   /* master is gated; say so rather than ungate it */
+    }
     P4_REG(P4_ANA_MST_ANA_CONF1) &= ~ANA_CONF_FIELD_M;
     P4_REG(P4_ANA_MST_ANA_CONF2) &= ~ANA_CONF_FIELD_M;
-    P4_REG(P4_ANA_MST_ANA_CONF2) |= REGI2C_PLL_CPU_MST_SEL;
+    P4_REG(P4_ANA_MST_ANA_CONF2) |= mst_sel;
+    return true;
+}
 
+static bool regi2c_read(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
+                        uint8_t *out) {
+    if (!regi2c_select(mst_sel)) return false;
+    if (!regi2c_wait_idle()) return false;
+    P4_REG(P4_ANA_MST_I2C0_CTRL) = blk | ((uint32_t)reg_addr << REGI2C_ADDR_S);
+    if (!regi2c_wait_idle()) return false;
+    *out = (uint8_t)((P4_REG(P4_ANA_MST_I2C0_CTRL) >> REGI2C_DATA_S) & 0xFFu);
+    return true;
+}
+
+static bool regi2c_read_cpll(uint8_t reg_addr, uint8_t *out) {
+    return regi2c_read(I2C_CPLL_SLAVE, REGI2C_PLL_CPU_MST_SEL, reg_addr, out);
+}
+
+static uint32_t cpll_hz(void) {
+    uint8_t div = 0, ref = 0;
+    if (!regi2c_read_cpll(I2C_CPLL_REG_DIV_7_0, &div)) return 0u;
+    if (!regi2c_read_cpll(I2C_CPLL_REG_REF_DIV, &ref)) return 0u;
+    return (uint32_t)CONFIG_XTAL_HZ * (uint32_t)div / ((uint32_t)(ref & 0xFu) + 1u);
+}
+
+
+static bool regi2c_write(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
+                         uint8_t val) {
+    if (!regi2c_select(mst_sel)) return false;
     if (!regi2c_wait_idle()) return false;
     P4_REG(P4_ANA_MST_I2C0_CTRL) =
-        (uint32_t)I2C_CPLL_SLAVE
-        | ((uint32_t)reg_addr << REGI2C_ADDR_S)
-        | REGI2C_WR_CNTL
+        blk | ((uint32_t)reg_addr << REGI2C_ADDR_S) | REGI2C_WR_CNTL
         | ((uint32_t)val << REGI2C_DATA_S);
     return regi2c_wait_idle();
+}
+
+/* Read-modify-write of one bit, which is what ESP-IDF's REGI2C_WRITE_MASK
+ * reduces to for every field this file touches. The read and the write are
+ * separate transactions on the same selected block. */
+static bool regi2c_write_bit(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
+                             unsigned bit, unsigned value) {
+    uint8_t v = 0;
+    if (!regi2c_read(blk, mst_sel, reg_addr, &v)) return false;
+    if (value) v |= (uint8_t)(1u << bit);
+    else       v &= (uint8_t)~(1u << bit);
+    return regi2c_write(blk, mst_sel, reg_addr, v);
+}
+
+static bool regi2c_write_cpll(uint8_t reg_addr, uint8_t val) {
+    return regi2c_write(I2C_CPLL_SLAVE, REGI2C_PLL_CPU_MST_SEL, reg_addr, val);
 }
 
 
@@ -497,6 +519,24 @@ static int cpll_configure_360(void) {
 #define PMU_HP_DBIAS_VOL_S      9
 #define PMU_DBIAS_VOL_M         0x1Fu
 #define PMU_DIG_REG0_DBIAS_SEL  (1u << 14)
+#define PMU_HP_ACT_REGULATOR_XPD (1u << 18)
+
+/* The external DC-DC, and the registers that hand the core over to it.
+ * PMU_HP_ACTIVE_BIAS (0x18) DCM_VSET [22:18]; PMU_POWER_DCDC_SWITCH (0x10c)
+ * FORCE_PU bit 0 (reset 1) and FORCE_PD bit 1; PMU_DCM_CTRL (0x204) ON_REQ
+ * bit 0 and DONE_FORCE bit 7. */
+#define P4_PMU_HP_ACTIVE_BIAS   (P4_PMU_BASE + 0x18)
+#define PMU_DCM_VSET_S          18
+#define PMU_DCM_VSET_M          0x1Fu
+#define P4_PMU_DCDC_SWITCH      (P4_PMU_BASE + 0x10c)
+#define PMU_FORCE_DCDC_SW_PU    (1u << 0)
+#define PMU_FORCE_DCDC_SW_PD    (1u << 1)
+#define P4_PMU_DCM_CTRL         (P4_PMU_BASE + 0x204)
+#define PMU_DCDC_ON_REQ         (1u << 0)
+#define PMU_DCDC_DONE_FORCE     (1u << 7)
+
+/* IDF's HP_CALI_ACTIVE_DCM_VSET_DEFAULT, "For DCDC, about 1.25v". */
+#define HP_CALI_ACTIVE_DCM_VSET 27u
 
 /* eFuse BLK1 word 4, the same block drivers/efuse_esp32p4.c reads the factory
  * MAC out of: active_hp_dbias in [19:16]. IDF's get_act_hp_dbias() uses
@@ -815,6 +855,89 @@ void esp32p4_clocks_report(void) {
  * up. If the eFuse is unburnt (0) it leaves the register alone: IDF's
  * fallback for that case is 24, which is what is already there.
  */
+/* --- 34.5a: putting the digital regulator under register control --------
+ *
+ * 34.3 wrote this chip's eFuse trim into HP_ACTIVE_HP_REGULATOR_DBIAS and the
+ * regulator's own indicator did not move. 34.5 then found 360 MHz failing
+ * deterministically while 180 -- same MEM, same flash, same MSPI -- is fine,
+ * which leaves the core voltage as the only thing that differs. The missing
+ * piece is the part of ESP-IDF's rtc_clk_init() that 34.3 skipped.
+ *
+ * Ported from ~/gith/esp/esp-idf, components/esp_hw_support/port/esp32p4/
+ * rtc_clk_init.c, in its order, with field definitions from
+ * components/soc/esp32p4/include/soc/regi2c_dig_reg.h and regi2c_bias.h:
+ *
+ *     REGI2C_WRITE_MASK(I2C_DIG_REG, I2C_DIG_REG_FORCE_RTC_DREG, 1);
+ *     REGI2C_WRITE_MASK(I2C_DIG_REG, I2C_DIG_REG_FORCE_DIG_DREG, 1);
+ *     REGI2C_WRITE_MASK(I2C_DIG_REG, I2C_DIG_REG_XPD_RTC_REG,    0);
+ *     REGI2C_WRITE_MASK(I2C_DIG_REG, I2C_DIG_REG_XPD_DIG_REG,    0);
+ *     REGI2C_WRITE_MASK(I2C_BIAS, I2C_BIAS_OR_FORCE_XPD_CK,           0);
+ *     REGI2C_WRITE_MASK(I2C_BIAS, I2C_BIAS_OR_FORCE_XPD_REF_OUT_BUF,  0);
+ *     REGI2C_WRITE_MASK(I2C_BIAS, I2C_BIAS_OR_FORCE_XPD_IPH,          0);
+ *     REGI2C_WRITE_MASK(I2C_BIAS, I2C_BIAS_OR_FORCE_XPD_VGATE_BUF,    0);
+ *
+ * FORCE_*_DREG = 1 is the one that matters: it takes the regulator voltage
+ * off the analog block's own control and puts it on the register this kernel
+ * has been writing since 34.3. The XPD_*_REG = 0 pair powers down the
+ * analog-side regulators that the PMU is superseding, and the four I2C_BIAS
+ * bits clear force-on overrides for the bias network.
+ *
+ * ## What is deliberately NOT ported, and why that is a judgement not an
+ * ## oversight
+ *
+ * IDF continues past this point to **switch the core onto an external DC-DC
+ * converter** and then disable the internal LDO:
+ *
+ *     pmu_ll_set_dcdc_en(&PMU, true);
+ *     pmu_ll_hp_set_dcm_vset(&PMU, PMU_MODE_HP_ACTIVE, hp_dcmvset);
+ *     ...
+ *     pmu_ll_hp_set_regulator_xpd(&PMU, PMU_MODE_HP_ACTIVE, false);
+ *
+ * That DC-DC is a chip on the board, not a block in the SoC --
+ * components/esp_hw_support/port/esp32p4/Kconfig.dcdc says so plainly, naming
+ * "TI-TLV62569/TLV62569P" and warning that "the same parameter value may
+ * correspond to different voltage values on different models of DCDC chips".
+ * The NANO has `EN_DCDC` and `FB_DCDC` nets with a 470K 1% feedback divider
+ * and carries MPS parts (MP1605/MP1658), **not** the TI one those vset
+ * numbers are calibrated for. `HP_CALI_ACTIVE_DCM_VSET_DEFAULT = 27` is a
+ * number for somebody else's regulator.
+ *
+ * So the LDO keeps supplying the core here, at the voltage this chip's own
+ * eFuse asks for, and the external converter is left exactly as the ROM left
+ * it. If 360 MHz needs more than the LDO can give, that is a finding to
+ * report -- not a reason to program a foreign vset into a feedback divider.
+ *
+ * LP dbias is skipped for the same reason: IDF's get_act_lp_dbias() adds
+ * "+16 +4" with the comment "efuse dbias need to add 4 to near to dcdc
+ * voltage", which is an adjustment relative to a DC-DC this is not enabling.
+ */
+#define I2C_DIG_REG_BLK         0x6Du
+#define REGI2C_DIG_REG_MST_SEL  (1u << 10)
+#define I2C_BIAS_BLK            0x6Au
+#define REGI2C_BIAS_MST_SEL     (1u << 12)
+
+#define DIG_REG_FORCE_REG       10u   /* FORCE_RTC_DREG bit 0, FORCE_DIG_DREG bit 1 */
+#define DIG_REG_XPD_REG         13u   /* XPD_RTC_REG bit 2, XPD_DIG_REG bit 3 */
+#define BIAS_FORCE_XPD_REG      4u    /* four force-on overrides, bits 0..3 */
+
+static bool regulator_force_register_control(void) {
+    bool ok = true;
+    ok &= regi2c_write_bit(I2C_DIG_REG_BLK, REGI2C_DIG_REG_MST_SEL,
+                           DIG_REG_FORCE_REG, 0, 1);   /* FORCE_RTC_DREG */
+    ok &= regi2c_write_bit(I2C_DIG_REG_BLK, REGI2C_DIG_REG_MST_SEL,
+                           DIG_REG_FORCE_REG, 1, 1);   /* FORCE_DIG_DREG */
+    ok &= regi2c_write_bit(I2C_DIG_REG_BLK, REGI2C_DIG_REG_MST_SEL,
+                           DIG_REG_XPD_REG, 2, 0);     /* XPD_RTC_REG */
+    ok &= regi2c_write_bit(I2C_DIG_REG_BLK, REGI2C_DIG_REG_MST_SEL,
+                           DIG_REG_XPD_REG, 3, 0);     /* XPD_DIG_REG */
+
+    for (unsigned b = 0; b < 4u; b++) {                /* I2C_BIAS reg 4 [3:0] */
+        ok &= regi2c_write_bit(I2C_BIAS_BLK, REGI2C_BIAS_MST_SEL,
+                               BIAS_FORCE_XPD_REG, b, 0);
+    }
+    return ok;
+}
+
 bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
                                          uint32_t *indicated) {
     uint32_t reg0 = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
@@ -837,9 +960,88 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
         return false;   /* never step down; see the header */
     }
 
+    /* The analog master needs its own source clock before any of this, the
+     * same lesson 34.5's CPLL work learned the hard way. */
+    P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
+
+    /* Take the regulator voltage off analog control and put it on the
+     * register about to be written. Without this the write below lands and
+     * the regulator ignores it -- which is what 34.3 measured. */
+    if (!regulator_force_register_control()) {
+        /* The analog bus refused. Say so: the dbias write below will land in
+         * a register the regulator is not listening to, which is precisely
+         * the state 34.3 spent a milestone not understanding. */
+        printk("[PMU] regi2c: could not put the regulator under register "
+               "control; dbias will not take effect\n");
+    }
+
+    /* HP_ACTIVE regulator enabled (IDF sets this true before the dbias;
+     * reset default is already 1 on this board). */
+    reg0 |= PMU_HP_ACT_REGULATOR_XPD;
+
     reg0 &= ~(PMU_DBIAS_FIELD_M << PMU_HP_ACT_REG_DBIAS_S);
     reg0 |= (want & PMU_DBIAS_FIELD_M) << PMU_HP_ACT_REG_DBIAS_S;
     P4_REG(P4_PMU_HP_ACT_REGULATOR0) = reg0;
+
+    /* --- and the core moves onto the external DC-DC -------------------
+     *
+     * This is what 34.5 found the LDO could not do. With the regulator under
+     * register control at this chip's eFuse trim -- verified by reading the
+     * analog bits back -- 360 MHz still failed, while 180 was fine. The LDO's
+     * calibration target is ~1.15 V; the DC-DC's active setting is ~1.25 V,
+     * and that gap is the top clock step.
+     *
+     * ESP-IDF does this unconditionally on every ESP32-P4 boot -- it is not
+     * behind a Kconfig gate -- so every board running stock IDF has its core
+     * on the external converter, this one included: Waveshare's own shipped
+     * firmware (~/gith/esp/ESP32-P4-Platform/firmware/brookesia) overrides
+     * neither the CPU frequency nor anything in the DCDC menu.
+     *
+     * Order is rtc_clk_init.c's, exactly:
+     *
+     *     pmu_ll_set_dcdc_en(&PMU, true);                  // done_force=0, on_req=1
+     *     pmu_ll_set_dcdc_switch_force_power_down(&PMU, false);  // force_pu=0, force_pd=0
+     *     pmu_ll_hp_set_dcm_vset(&PMU, HP_ACTIVE, hp_dcmvset);
+     *     SET_PERI_REG_MASK(..., PMU_DIG_REGULATOR0_DBIAS_SEL);
+     *     esp_rom_delay_us(1000);
+     *     pmu_ll_hp_set_regulator_xpd(&PMU, HP_ACTIVE, false);   // LDO off
+     *
+     * The vset is IDF's own arithmetic: max(PVT, 27), where PVT is the RO
+     * HP_DBIAS_VOL field. **That field is not a dbias readback** -- IDF reads
+     * it as `pvt_hp_dcmvset` and uses it as a floor for the DC-DC setting,
+     * which finally explains why it never followed the dbias writes in 34.3.
+     * It reads 24 here, so the floor does not bind and the setting is 27.
+     *
+     * Not invented, and deliberately not adjusted: 27 is the vendor's active
+     * figure. The board carries MPS parts (MP1605/MP1658) rather than the
+     * TI TLV62569 IDF's Kconfig help names, and its feedback network is
+     * Waveshare's -- which is exactly why the number to use is the one the
+     * stock firmware this board ships with uses, rather than one derived
+     * here from a different regulator's datasheet. */
+    uint32_t pvt = (P4_REG(P4_PMU_HP_ACT_REGULATOR0) >> PMU_HP_DBIAS_VOL_S)
+                   & PMU_DBIAS_FIELD_M;
+    uint32_t vset = (pvt > HP_CALI_ACTIVE_DCM_VSET) ? pvt : HP_CALI_ACTIVE_DCM_VSET;
+
+    P4_REG(P4_PMU_DCM_CTRL) &= ~PMU_DCDC_DONE_FORCE;
+    P4_REG(P4_PMU_DCM_CTRL) |= PMU_DCDC_ON_REQ;
+
+    uint32_t sw = P4_REG(P4_PMU_DCDC_SWITCH);
+    sw &= ~(PMU_FORCE_DCDC_SW_PU | PMU_FORCE_DCDC_SW_PD);
+    P4_REG(P4_PMU_DCDC_SWITCH) = sw;
+
+    uint32_t bias = P4_REG(P4_PMU_HP_ACTIVE_BIAS);
+    bias &= ~(PMU_DCM_VSET_M << PMU_DCM_VSET_S);
+    bias |= (vset & PMU_DCM_VSET_M) << PMU_DCM_VSET_S;
+    P4_REG(P4_PMU_HP_ACTIVE_BIAS) = bias;
+
+    /* DBIAS_SEL, as IDF does -- "Hand over control of dbias to pmu" -- then
+     * its 1 ms settle before the LDO is taken away. */
+    P4_REG(P4_PMU_HP_ACT_REGULATOR0) |= PMU_DIG_REG0_DBIAS_SEL;
+    uint64_t t0 = time_get_us();
+    while (time_get_us() - t0 < 1000u) { }
+
+    /* The LDO off, last, with the converter carrying the core. */
+    P4_REG(P4_PMU_HP_ACT_REGULATOR0) &= ~PMU_HP_ACT_REGULATOR_XPD;
 
 
     /* Both, because they disagree and hiding either would be the wrong kind
