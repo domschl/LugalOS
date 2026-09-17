@@ -1094,6 +1094,29 @@ suite is 20/20 at 360 MHz alongside it, link negotiation included.
   regulator sequence, because both are the sort of thing that is expensive to
   re-derive and invisible in the code.
 
+#### Done, 2026-09-17 — and the clock half of phase 34 closes here
+
+* `plan/phase27_esp32p4_bringup.md`'s E4 deferral (*"No PLL … it belongs with
+  E6 or later"*) carries its forward reference. The deferral was right: E4
+  would have spent the phase on a clock tree instead of a console.
+* `drivers/emac_esp32p4.c` and `kernel/ticker.c` were corrected in 34.6,
+  where the measurements that falsified them were taken.
+* `README.md` gains the figure, because it now has one worth stating: this
+  board went from the slowest target in the tree to the fastest during a
+  single phase.
+* **`esp32p4-l2-cache-steals-ram` needs no change.** 34.6 asked its question
+  at 360 MHz and got the same answer, so the memory's claim still holds — the
+  one outcome that required nothing to be rewritten.
+* Memory `esp32p4-clock-and-regulator` records what cost the most to derive:
+  that 360 MHz needs the external DC-DC rather than the LDO, that
+  `HP_DBIAS_VOL` is a PVT floor and not a dbias readback, that
+  `LP_I2C_ANA_MST_CLK160M` must be set before calibration though reads work
+  without it, and that the ROM's `uart_tx_wait_idle` hangs this kernel.
+
+**The clock half is complete.** 40 → 360 MHz, 8.24× measured on perft, at the
+ceiling this silicon revision offers. What remains of phase 34 is the second
+core.
+
 ### 34.8 — What core 1 needs, established before it runs
 
 Read-only, and the answers decide 34.10's checklist rather than IDF deciding it.
@@ -1180,6 +1203,45 @@ In order, and the order matters:
 fetching XIP with a cold `ICACHE1` and starving core 0 at the MSPI — see §6 —
 and it is fixed in 34.10, not by tuning the split.
 
+### 34.14 — Lazy SMP: chess on both cores
+
+*Added by amendment, 2026-09-17. This was in §7 as out of scope on the
+grounds that a search sharing a transposition table has no exact answer to
+check against. That is true and it is not a reason to skip it: **chess is the
+only workload in this tree that a second core actually helps**, and a phase
+that brings up SMP without running the one application that wants it has
+proved a mechanism rather than delivered a capability.*
+
+Perft stays the correctness criterion — 34.12 is unchanged and comes first,
+because a search is only worth timing once the move generator is known to be
+right on two cores.
+
+**The code already exists.** X8b (`plan/phase23_multicore_scheduling.md:780`)
+built Lazy SMP for RP2350: a helper searches the same root to its own
+schedule, shares only the transposition table, and its result is discarded.
+`(chess [cores])` and `(chess-selftest [cores] [tt_kb] [depth])` are the
+entry points. None of it is RP2350-specific, so this milestone is about
+*enabling and measuring*, not writing.
+
+**One thing this board makes cheaper than the other one.** §4.1 established
+that the P4's two HP cores **share their L1 data cache**. A transposition
+table written by one core and read by the other needs no maintenance at all
+here — the hazard that usually makes shared-TT Lazy SMP delicate is absent.
+
+**Measure time-to-fixed-depth, and X8b's account says why in detail.** Its
+first metric was "how deep in a fixed 2 seconds", and that metric said the
+helper was *pure overhead* — identical mean depth, ~8 % fewer nodes searched
+by the primary. Time to a fixed depth showed **1.60×** on RP2350. Use the
+metric that was right, and quote the median of at least three runs the way
+X8b did.
+
+**Done when:** `(chess-selftest 2 ...)` agrees with the one-core result on
+the positions it checks, and time-to-fixed-depth at two cores is recorded
+against one core at 360 MHz — median of three, with the speedup reported
+rather than claimed. A result at or below 1.0× is a finding too, and the
+first thing to check is whether the helper is pinned to the second hart at
+all.
+
 ### 34.13 — Documents: the second core
 
 * `plan/phase27_esp32p4_bringup.md` §7's *"The second HP core"* deferral gets
@@ -1233,10 +1295,6 @@ and it is fixed in 34.10, not by tuning the split.
 
 ## 7. Explicitly not in this phase
 
-* **No lazy-SMP chess search on the P4.** X8b did that for RP2350, and it is a
-  different kind of proof: a search sharing a transposition table has no exact
-  answer to check against. Perft is the criterion here precisely because it
-  does.
 * **No work stealing, no dynamic balancing, no migration tuning.** The
   round-robin root split and pinned tasks of X8a, unchanged. If 34.12's measured
   speedup makes a better split worth having, that is the next phase's evidence.

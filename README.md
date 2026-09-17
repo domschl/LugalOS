@@ -91,7 +91,7 @@ against a GPS-disciplined reference clock):
   loader validates every header offset against the file size before using it.
 - Boots to an interactive shell (`lsh`) on all supported targets — QEMU RV32/RV64, several distinct
   RP2350 board personas (`rp2350-chess`, `rp2350-clock`, ...), and a second silicon entirely, the
-  ESP32-P4 (see [Build presets](#build-presets)).
+  ESP32-P4 at 360 MHz (see [Build presets](#build-presets)).
 - FAT32 filesystem engine — subdirectories, `mkdir`/`rmdir`/`cp`/`rm`, VirtIO and physical SPI SD
   backends, embedded flash ROM disk, RAM disk.
 - The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the

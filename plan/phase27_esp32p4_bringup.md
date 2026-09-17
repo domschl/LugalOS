@@ -1726,6 +1726,12 @@ away.
   what made `preempttest` look like a hang for most of an afternoon. Bringing
   the PLL up is not needed by any milestone here and would change every timing
   measurement in this phase; it belongs with E6 or later.
+
+  *Done by `plan/phase34_esp32p4_pll_bringup.md`, 2026-09-17: 40 → 360 MHz,
+  8.24× measured. The deferral was right — reaching it needed the CPLL
+  reprogrammed over an analog bus the TRM does not document and the core moved
+  onto an external DC-DC, and E4 would have spent this phase on a clock tree
+  instead of getting a console.*
 * **No interrupt nesting.** One flat level, as on every other target. Now that
   `MIL` is understood, levels would be implementable — and are still not wanted.
 * **No use of `mnxti`.** See the fix note above.
