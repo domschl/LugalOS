@@ -1709,3 +1709,37 @@ is a real limit for any scripted use of the shell, which is exactly what
 
 The filesystem was unaffected: the soak's next read-back checkpoint passed,
 and all six checkpoints across 120 rewrites read back correctly.
+
+
+## Chess searches are not independent across sessions in one boot
+
+**Found 2026-09-17 by 34.14** (`plan/phase34_esp32p4_pll_bringup.md`), on the
+ESP32-P4 at 360 MHz with both cores running.
+
+Six `(chess-selftest … 32 7)` runs in a single boot, alternating 1 and 2
+cores, gave wildly inconsistent results — including a **single-core** run
+taking 4 024 ms and 233 923 nodes where its neighbours took ~1 900 ms and
+~120 000, and returning the move the *preceding two-core run* had found.
+
+The same measurement from **independent boots** is reproducible to 1 ms with
+bit-identical node counts:
+
+```
+one boot each:  1 core 1992 / 1992 / 1993 ms, 122 612 nodes every time
+                2 cores 3380 / 3381 / 3380 ms, ~200 700 nodes
+```
+
+So something survives `chess_session_end()` and changes the next search.
+
+**Not simple TT carryover**, which was the first guess and is wrong:
+`init_tt()` calls `clear_tt()`, which memsets the table.
+
+**Worth eliminating first: a helper task outliving its session.** X8b's Lazy
+SMP helper is a pinned task; `chess_session_end()` calls `free_tt()`. If a
+helper can still be running at that point it would be writing into freed
+pages from the other core, which would explain both the cross-run influence
+and the direction of it. That is a hypothesis, not a finding — nobody has
+looked at `search_helper_join()`'s guarantees yet.
+
+Until it is understood, **chess benchmarks must be taken one per boot**. All
+of 34.14's published figures were.

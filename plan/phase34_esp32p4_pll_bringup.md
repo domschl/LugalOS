@@ -1476,6 +1476,64 @@ rather than claimed. A result at or below 1.0× is a finding too, and the
 first thing to check is whether the helper is pinned to the second hart at
 all.
 
+#### Done, 2026-09-17 — 1.51×, and the depth is the experiment
+
+Every run from a **fresh boot** (reset, `smpstart join`, one search), 32 KB TT:
+
+| depth | 1 core | 2 cores | speedup | 1-core nodes | 2-core primary nodes |
+|---:|---:|---:|---:|---:|---:|
+| 7 | 1 992 ms | 3 380 ms | **0.59×** | 122 612 | 200 712 |
+| 8 | 8 253 ms | 5 452 ms | **1.51×** | 487 264 | 323 982 |
+| 9 | 22 264 ms | 15 495 ms | **1.44×** | 1 329 222 | 920 729 |
+
+**Depth 7 is a real slowdown, and chasing it is what produced the result.**
+It reproduces to 1 ms across three boots with bit-identical node counts, so
+it is not noise. The checks the milestone prescribes came back clean: the
+helper *is* pinned to hart 1 (`task_create_pinned("chesshelp", …, 1)`) and it
+really ran — 200 475 nodes. And the primary's node *rate* barely moves,
+61.6k/s alone against 59.4k/s with the helper. Both cores run at full speed.
+
+What changes is that the primary searches **64 % more nodes**. The shared
+table was making its move ordering worse, not better.
+
+**The cause is that depth 7 is the wrong experiment on this board.** X8b
+chose it for RP2350, where it takes **9 532 ms**. The same depth here takes
+1 992 ms, because phase 34 made this board nine times faster. Lazy SMP's
+helper has to fill the table before it pays for itself, and in a two-second
+search it mostly interferes — so carrying X8b's depth over unchanged measures
+the helper's startup cost instead of its benefit.
+
+**Matched on wall time rather than depth, the two boards agree.** The P4's
+depth 8 takes 8 253 ms — the same regime as RP2350's depth 7 at 9 532 ms —
+and yields **1.51×** against X8b's **1.60×**. Depth 9 gives 1.44× over a
+22-second search, so the benefit is real and sustained rather than a single
+lucky point.
+
+> **The general lesson, and it will outlive this milestone: a benchmark's
+> *depth* is not portable across a 9× change in clock speed; its *wall time*
+> is.** Anything in this tree that fixes a search depth or an iteration count
+> to make a measurement is now calibrated for a board that no longer exists.
+
+**Correctness.** At depths 8 and 9 both configurations return the same move
+(d2d3, then b1c3). The *scores* differ at depth 9 (0 against −3) and both
+move and score differ at depth 7. That is search instability from TT
+interference rather than a wrong answer — Lazy SMP shares a table between two
+searches on different schedules, so cutoffs land differently and a fixed
+depth is not a deterministic function of the position any more. It is also
+precisely why **perft, not the search, is 34.12's correctness criterion**:
+perft's node counts are exact and published, and a parallel search's are not
+supposed to be.
+
+**One thing measured and deliberately not concluded.** Six searches run
+*within one boot* gave the opposite answer at depth 7 — two cores faster,
+1 362 ms against 1 883 — with wildly varying node counts, including a
+single-core run at 4 024 ms that returned the preceding two-core run's move.
+`init_tt()` does clear the table, so simple carryover is not the explanation
+and no other was established. Every number above therefore comes from an
+independent boot. The open question is filed rather than answered: something
+persists across `chess_session_end()`, and the candidate worth eliminating
+first is a helper task outliving the session whose TT was just freed.
+
 ### 34.13 — Documents: the second core
 
 * `plan/phase27_esp32p4_bringup.md` §7's *"The second HP core"* deferral gets
