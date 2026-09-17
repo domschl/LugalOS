@@ -1361,6 +1361,82 @@ In order, and the order matters:
 fetching XIP with a cold `ICACHE1` and starving core 0 at the MSPI — see §6 —
 and it is fixed in 34.10, not by tuning the split.
 
+#### Done, 2026-09-17 — 1.91×, and the node counts are exact
+
+One image, one boot, `harts online = 2` verified before measuring; only the
+`cores` argument differs between rows:
+
+```
+(perft 4 1)   96 passed depths, 0 errors (cores used: 1, 61 007 ms)
+(perft 4 2)   96 passed depths, 0 errors (cores used: 2, 31 980 ms)
+(perft 4 1)   96 passed depths, 0 errors (cores used: 1, 61 015 ms)
+(perft 4 2)   96 passed depths, 0 errors (cores used: 2, 31 970 ms)
+```
+
+**Correctness first, and it holds.** 96 depths against published node counts,
+**0 errors**, `cores used: 2`. That is the whole reason perft was chosen over
+the search: the answer is exact, so a parallel run is either right or wrong
+with no argument about it. The split drops no root move and double-counts
+none.
+
+**Then speed: 1.908×**, from 61 011 ms to 31 975 ms. Run-to-run spread is
+8 ms and 10 ms — under 0.03 % — because this is one image at one boot, which
+is the rule 34.3 wrote and 34.6 built the tooling for.
+
+**That is better than this milestone predicted, and the prediction deserves
+correcting rather than quietly forgetting.** §34.12 said *"expect less than
+2×"* on the grounds that `perft.c`'s round-robin split is static and root
+moves have wildly different subtree sizes. Both remain true; at depth 4 they
+simply cost less than expected — 4.8 % against a perfect 2×.
+
+**Depth is what decides it, and depth 3 shows the other end.** The same two
+cores on the same boot:
+
+| suite depth | 1 core | 2 cores | speedup |
+|---|---:|---:|---:|
+| 3 | 2 574 ms | 2 038 ms | 1.26× |
+| 4 | 61 011 ms | 31 975 ms | **1.91×** |
+
+The split is **per position, per depth**: `run_perft_cores()` allocates worker
+records, spawns a pinned task, joins and frees for each of the 96 depths the
+suite walks. Most of those are tiny — a depth-1 position is a few dozen nodes
+— so at depth 3 the overhead is a large fraction of the work and the small
+positions cap what is achievable. At depth 4 the big subtrees dominate
+(kiwipete 4.08 M nodes, position-6 3.89 M, strange bugs 2.1 M) and the same
+overhead amortises away. Neither number is wrong; they measure different
+mixes, and the honest summary is the pair.
+
+##### What phase 34 has done to this workload
+
+```
+ 40 MHz, 1 core   557 153 ms      the board as this phase found it
+360 MHz, 1 core    61 011 ms      9.13x
+360 MHz, 2 cores   31 975 ms     17.42x
+```
+
+The depth-4 suite ran in nine and a half minutes at the start of the phase and
+runs in thirty-two seconds now. (The 9.13× single-core figure is above the
+9.00× clock ratio; that is cross-build comparison against a 40 MHz image from
+before several milestones of `.text` growth, and 34.3 measured that term at
+~3 %. The two-core figure inherits the same caveat. Both are quoted against
+the phase's starting point rather than as clean same-image ratios, which the
+rows above them are.)
+
+##### One thing that went wrong, and it was the harness
+
+The first attempt at this measurement produced a log that stopped mid-run and
+looked exactly like a hung board. It was not: the driver was run with a
+10-second idle timeout, and **a single depth-4 position produces no output for
+longer than that** while it works. The driver declared the run finished
+fifteen lines in, fired the remaining commands into the line editor, and
+stopped listening; the board ran all of them and returned to its prompt.
+
+The fix already existed — the driver used for 34.4's measurements waits for
+the suite's own `PERFT Results` line rather than for silence, precisely
+because silence is not an end-of-run signal here. Worth recording because the
+failure mode is *indistinguishable from a hang* at a glance, and this phase
+has met a genuine one.
+
 ### 34.14 — Lazy SMP: chess on both cores
 
 *Added by amendment, 2026-09-17. This was in §7 as out of scope on the
