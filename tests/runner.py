@@ -2225,9 +2225,66 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             + "exit"
         )
         ok, log = session.send_and_expect(cmd_gc, rf"=> {n_churn * 5 + 10}", timeout=15.0)
-        exhausted_at_least_once = "Node pool exhausted" in log
-        ok = ok and exhausted_at_least_once
+        # Every one of the 60 answers must be right -- (churn i) is 5i+15 --
+        # and none may have degraded to nil.
+        #
+        # This used to additionally require "Node pool exhausted" to appear,
+        # as the evidence that the collector was being exercised rather than
+        # the churn count being too small to stress anything. That stopped
+        # being the right evidence when lisp_gc_safepoint() started collecting
+        # on low headroom instead of only after a pool had already run dry
+        # (plan/open_issues.md, the shell's `write` exhausting the string
+        # pool): the collector now keeps the session out of exhaustion
+        # entirely, so requiring the message is requiring the symptom.
+        #
+        # What replaces it is stronger, not weaker. The allocation volume here
+        # is unchanged and is known to exceed the pool -- with no collector at
+        # all this session exhausts partway through and every command after
+        # that returns () for the rest of the session, which is the
+        # pre-S3 behaviour confirmed live during development. So "all 60
+        # answers correct" cannot be satisfied without the collector having
+        # run; it simply no longer insists on *when*.
+        all_answers = all(re.search(rf"=> {i * 5 + 15}\b", log) for i in range(n_churn))
+        degraded = "=> ()" in log
+        ok = ok and all_answers and not degraded
         results.append(("Lisp Mark-Sweep Collector Reclaims Garbage Across Top-Level Forms (S3)",
+                        ok, log if not ok else ""))
+
+        # 21g-2. The string pool's *large* tier, which is the one that runs
+        # out (plan/open_issues.md, the shell `write` that failed at write 61
+        # of 120 on the ESP32-P4).
+        #
+        # A string of STRING_SMALL_LEN characters or more can only be interned
+        # in the large tier, and that tier is STRING_POOL_SIZE/6 -- 341 slots
+        # on these QEMU targets, 64 on the two real boards. So the pool as a
+        # whole can be 80 % free while this is empty, which is exactly why
+        # the first attempt at the fix measured nothing.
+        #
+        # 420 forms, each interning one distinct 40-character literal that is
+        # garbage the moment the form ends. That is past 341, so before
+        # lisp_gc_safepoint() learned to collect on low headroom this printed
+        # "String pool exhausted" partway through (measured: write 340 on
+        # rv64) and every later string aliased. Sent as one block for the same
+        # reason the churn test above is -- 420 round trips would cost
+        # seconds; one costs a fraction of one.
+        n_str = 420
+        str_cmds = "".join(
+            '(string-length "pool-pressure-%04d-abcdefghijklmnop")\n' % i
+            for i in range(n_str))
+        cmd_strpool = "lisp\n" + str_cmds + "(+ 4 5)\nexit"
+        ok, log = session.send_and_expect(cmd_strpool, r"=> 9", timeout=30.0)
+        # Every literal is the same length, so every answer must be that --
+        # an aliased slot shows up as a wrong length, not just as a warning.
+        lit_len = len("pool-pressure-0000-abcdefghijklmnop")
+        lengths_right = log.count("=> %d" % lit_len) == n_str
+        # The load-bearing assertion. A slot handed out after exhaustion
+        # still holds a 35-character string, so the lengths above stay right
+        # while the engine is quietly aliasing; the engine saying so is the
+        # observable. Confirmed both ways: with lisp_gc_safepoint()'s
+        # headroom check compiled out, this line fires and the rest passes.
+        no_exhaustion = "String pool exhausted" not in log
+        ok = ok and lengths_right and no_exhaustion
+        results.append(("Lisp Collector Keeps The Large String Tier Off Empty (open_issues)",
                         ok, log if not ok else ""))
 
         # 21h. S4 (plan/phase13_lisp_engine_extensions.md): standard library,
@@ -2487,6 +2544,43 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             r"=> #t",
             timeout=4.0,
         )
+
+        # 24b. Regression: a directory must be able to *become* more than one
+        # cluster long. The test above scans a multi-cluster directory
+        # correctly; until 2026-09-17 nothing in fs/fat32.c could ever produce
+        # one, because both write paths gave up when every slot in a
+        # directory's existing chain was taken ("Directory full") instead of
+        # appending a cluster. So a directory held whatever its initial
+        # allocation held, forever, on every target.
+        #
+        # What that looked like from outside was a create failing on a volume
+        # that is 85 % free while rewriting an existing file worked -- the
+        # rewrite matches a name and never needs a free slot. Reported against
+        # the ESP32-P4's /flash0 (plan/open_issues.md) and reproduced here in
+        # one session: the seventh new file in /sd0's root used to fail.
+        #
+        # 30 files, against 16 entries per cluster (sec_per_clus = 1 in this
+        # tree's own images) less "." and "..", so this needs at least two
+        # more clusters than it starts with. Each is read back, because a
+        # directory that grows into a cluster nobody zeroed reads as entries
+        # made of whatever that cluster held before.
+        n_dir = 30
+        session.send_and_expect("mkdir /ram0/grow", r"=> #t", timeout=4.0)
+        creates = "".join(f"write /ram0/grow/n{i:02d}.txt body{i:02d}\n"
+                          for i in range(n_dir))
+        ok, log = session.send_and_expect(creates + f"cat /ram0/grow/n{n_dir-1:02d}.txt",
+                                          rf"body{n_dir-1:02d}", timeout=20.0)
+        all_created = log.count("=> #t") >= n_dir
+        reads = "".join(f"cat /ram0/grow/n{i:02d}.txt\n" for i in range(n_dir)) + "echo GROWDONE"
+        ok2, rlog = session.send_and_expect(reads, r"GROWDONE", timeout=20.0)
+        all_read = all(f"body{i:02d}" in rlog for i in range(n_dir))
+        ok = ok and ok2 and all_created and all_read
+        results.append(("FAT32 A Full Directory Grows A Cluster Instead Of Refusing (open_issues)",
+                        ok,
+                        (log + rlog) if not ok else ""))
+        session.send_and_expect(
+            "".join(f"rm /ram0/grow/n{i:02d}.txt\n" for i in range(n_dir)) + "rmdir /ram0/grow",
+            r"=> #t", timeout=20.0)
 
         # 25. Regression: a corrupt/blank volume must no longer be silently
         # auto-formatted on mount (B10); (format "<path>") is now the only
@@ -6749,6 +6843,48 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
                                           r"helper nodes [1-9]\d+", timeout=60.0)
         out.append(("SMP: chess on two cores really searches on the second (X8b)",
                     ok, log if not ok else ""))
+
+        # One session must not change the next one's search. Two identical
+        # single-core searches in this same boot, with a two-core search
+        # between them, must return the same move and the same node count --
+        # the search is deterministic on one core, so anything that differs
+        # is state that survived chess_session_end().
+        #
+        # It did: search_state_t holds the history heuristic, and hart 0's
+        # struct is a plain static that search_pools_free() skipped (it frees
+        # only heap-allocated ones), so every session inherited the previous
+        # session's move ordering. Reported on the ESP32-P4 as searches that
+        # disagreed by 1.7x in nodes and returned different moves
+        # (plan/open_issues.md); reproduced here between two consecutive
+        # single-core runs, where no helper exists to blame.
+        #
+        # A **fixed depth**, not the selftest's default 2-second budget.
+        # That is load-bearing: under a time budget the node count is a
+        # function of how much wall clock the search got, which on QEMU
+        # varies run to run, so equal counts would be asserting something
+        # this suite cannot promise. At a fixed depth with no time limit the
+        # single-core search is deterministic, and equality is then exactly
+        # the right assertion. (Written the other way first, and it failed
+        # once in two runs -- the flake was the test, not the engine.)
+        node_counts = []
+        move_seq = []
+        ok_ind = True
+        for cores in ("1", "2", "1"):
+            okc, logc = session.send_and_expect(f"(chess-selftest {cores} 32 6)",
+                                                r"cores requested \d+, harts online 2, "
+                                                r"helper nodes -?\d+", timeout=60.0)
+            m = re.findall(r"chess: best move (\S+), score (-?\d+), depth (\d+), (\d+) nodes", logc)
+            if not okc or not m:
+                ok_ind = False
+                break
+            if cores == "1":
+                node_counts.append(int(m[-1][3]))
+                move_seq.append(m[-1][0])
+        ok_ind = ok_ind and len(node_counts) == 2 and node_counts[0] == node_counts[1] \
+                 and move_seq[0] == move_seq[1]
+        out.append(("SMP: a chess session does not change the next one (open_issues)",
+                    ok_ind,
+                    "" if ok_ind else f"nodes={node_counts} moves={move_seq}"))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

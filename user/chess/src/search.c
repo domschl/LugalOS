@@ -294,6 +294,24 @@ void search_pools_free(void) {
                            / (uint32_t)PAGE_SIZE;
             palloc_free(st, pages);
             g_search[h] = NULL;
+        } else {
+            /* Hart 0's struct is a static and is not freed, so nothing was
+             * resetting its heuristics -- the history table above all, which
+             * search_position() (unlike killers) does not clear. A hart whose
+             * struct comes from the heap gets a memset one from
+             * search_state_init() next session; hart 0 was carrying the
+             * previous session's move ordering into the next one.
+             *
+             * That is the whole of "chess searches are not independent across
+             * sessions" (plan/open_issues.md, found by 34.14): two identical
+             * single-core benchmarks in one boot returned 122 612 and 210 136
+             * nodes and two *different* best moves, because the second one
+             * searched with the first one's history. Zeroing here rather than
+             * in search_position() keeps history doing its job within a game
+             * -- it is meant to accumulate across the moves of one session --
+             * and makes a session leave the state it found, which is the rule
+             * the pools above already follow. */
+            memset(st, 0, sizeof(*st));
         }
     }
 }

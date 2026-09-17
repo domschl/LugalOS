@@ -379,7 +379,16 @@ static char *intern_string(const char *src) {
          * silently corrupt whatever still-live value points at it, e.g. the
          * name of a primitive bound in global_env. */
         if (!string_pool_exhausted_warned) {
-            printk("[Lisp Error] String pool exhausted! Further strings/symbols will alias.\n");
+            /* Which tier, because "the string pool" being full and *this*
+             * string having nowhere to go are different facts: a string of
+             * STRING_SMALL_LEN characters or more can only come from the
+             * large tier, so this fires with most of the pool still free.
+             * The plain message sent one investigation looking for a leak
+             * that was not there. */
+            printk("[Lisp Error] String pool exhausted -- no %s-tier slot for a "
+                   "%u-character string! Further strings/symbols will alias.\n",
+                   (len < STRING_SMALL_LEN) ? "small- or large" : "large",
+                   (unsigned)len);
             string_pool_exhausted_warned = true;
         }
         idx = (len < STRING_SMALL_LEN) ? (int)STRING_SMALL_SLOTS - 1
@@ -565,10 +574,73 @@ static void gc_collect(void) {
     }
 }
 
+/* How much must still be claimable for the next top-level form to be given a
+ * clear run at it. The reserve has to cover the *largest* ordinary form, not
+ * the average one, because if the estimate is wrong there is no safe point
+ * inside a form to collect at.
+ *
+ * Per tier, and that is the whole point rather than a detail. The tiers are
+ * not interchangeable: a string of 32 characters or more can only ever come
+ * from the large tier, which is a sixth of the slots (64 of them on RP2350
+ * and the ESP32-P4). So the large tier runs dry while five sixths of the pool
+ * is still free, and any check on the pool as a whole -- which is what this
+ * was written as first -- sees nothing wrong right up to the failure. That is
+ * measured, not argued: 340 shell `write`s of a 33-character payload exhaust
+ * rv64's 341-slot large tier with 837 slots still free overall. */
+#define GC_NODE_HEADROOM        (NODE_POOL_SIZE / 8)
+#define GC_STRING_SMALL_HEADROOM (STRING_SMALL_SLOTS / 8)
+#define GC_STRING_LARGE_HEADROOM (STRING_LARGE_SLOTS / 4)
+
+/* Walked rather than counted incrementally: a free list is at most its tier's
+ * size, this runs once per top-level form, and a counter maintained across
+ * take_small()/take_large()/alloc_node() and the sweep loops is five places to
+ * keep in agreement instead of one place to read. */
+static int gc_free_nodes(void) {
+    int n = 0;
+    for (lisp_val_t *c = node_free_list; c; c = c->u.pair.cdr) n++;
+    return n;
+}
+
+static int gc_free_slots(int head) {
+    int n = 0;
+    for (int idx = head; idx >= 0; n++) {
+        int next;
+        memcpy(&next, slot_at(idx), sizeof(next));
+        idx = next;
+    }
+    return n;
+}
+
+static bool gc_headroom_low(void) {
+    int nodes = (NODE_POOL_SIZE - node_pool_idx) + gc_free_nodes();
+    int small = ((int)STRING_SMALL_SLOTS - string_small_idx)
+              + gc_free_slots(string_free_head);
+    int large = ((int)STRING_LARGE_SLOTS - string_large_idx)
+              + gc_free_slots(string_large_free_head);
+    return nodes  < GC_NODE_HEADROOM
+        || small  < (int)GC_STRING_SMALL_HEADROOM
+        || large  < (int)GC_STRING_LARGE_HEADROOM;
+}
+
 /* Public wrapper (declared in lisp.h) -- see its own comment there for who
- * calls this and why each call site is a genuine safe point. */
+ * calls this and why each call site is a genuine safe point.
+ *
+ * Collecting on the exhaustion flags alone was reactive by one form: the
+ * command that ran the pool dry still failed, and only the one after it got
+ * a collected heap. Every shell command is a Lisp form (kernel/shell.c
+ * translates it to an S-expression), so that made roughly one shell command
+ * in sixty fail outright once the pool filled -- measured on the ESP32-P4 as
+ * write 61 of a 120-write soak dying on `[Lisp Error] String pool exhausted!`
+ * with the filesystem entirely innocent (plan/open_issues.md). Collecting
+ * while there is still headroom means the form that would have failed never
+ * runs short in the first place.
+ *
+ * The flags are still tested, and first: they mean a form has *already*
+ * failed, which is worth a collection whatever the headroom arithmetic
+ * says. */
 void lisp_gc_safepoint(void) {
-    if (node_pool_exhausted_warned || string_pool_exhausted_warned) {
+    if (node_pool_exhausted_warned || string_pool_exhausted_warned ||
+        gc_headroom_low()) {
         gc_collect();
     }
 }

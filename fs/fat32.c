@@ -565,6 +565,79 @@ static bool write_slot_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
+/* Claims a directory slot for a new entry, growing the directory if every
+ * slot it already has is taken.
+ *
+ * Until this existed, both write paths below simply gave up there
+ * (`if (ctx.free_sector_lba < 0) return -1; // Directory full`), and
+ * fat32_scan_dir() only ever walks the chain a directory already has -- so a
+ * directory could never hold more entries than its initial allocation, on any
+ * device, for the life of the filesystem. What that looks like from the shell
+ * is `write /flash0/newname.txt something` returning `#f` on a volume that is
+ * 15 % full, while rewriting an existing file works perfectly: the rewrite
+ * matches a name and never needs a free slot. Reported against the ESP32-P4's
+ * /flash0 (plan/open_issues.md, 2026-09-17) and reproduced immediately on
+ * QEMU's /sd0, where the seventh new file in the root failed.
+ *
+ * Growing a directory is the ordinary FAT32 answer: append a cluster to its
+ * chain and zero it. Zeroing is not optional -- a 0x00 first byte is what
+ * marks the end of a directory, so an un-zeroed cluster would be read as
+ * entries made of whatever that cluster held before.
+ *
+ * Returns 0 with ctx->free_sector_lba/free_slot set, or -1 having said why. */
+#define FAT32_MAX_DIR_CLUSTERS 65536u   /* a cycle in a corrupt FAT must not spin here */
+
+static int dir_claim_slot(fat32_fs_t *fs, uint32_t dir_clus, write_slot_ctx_t *ctx) {
+    if (ctx->free_sector_lba >= 0) return 0;   /* the scan already found one */
+
+    /* Walk to the chain's last cluster. Only an end-of-chain marker counts as
+     * the end: an entry reading 0 or 1 is not a short chain, it is a damaged
+     * one, and linking onto it would be worse than refusing. It would also be
+     * unsafe -- a cluster whose FAT entry is 0 is exactly what
+     * fat_alloc_cluster() considers free, so it could hand back `last` itself
+     * and fat_set_entry() would then point that cluster at itself. */
+    uint32_t last = dir_clus;
+    bool found_end = false;
+    for (uint32_t guard = 0; guard < FAT32_MAX_DIR_CLUSTERS; guard++) {
+        uint32_t next = fat_get_entry(fs, last);
+        if (next >= 0x0FFFFFF8) { found_end = true; break; }
+        if (next < 2) break;   /* damaged: not an end, and not followable */
+        last = next;
+    }
+    if (!found_end) {
+        printk("[FAT32] Device '%s': directory cluster chain is damaged or "
+               "does not end; refusing to extend it\n",
+               fs->dev->name ? fs->dev->name : "unknown");
+        return -1;
+    }
+
+    uint32_t clus = fat_alloc_cluster(fs);
+    if (clus == last) {
+        printk("[FAT32] Device '%s': the allocator returned the directory's "
+               "own last cluster; refusing to extend it\n",
+               fs->dev->name ? fs->dev->name : "unknown");
+        return -1;
+    }
+    if (clus == 0) {
+        printk("[FAT32] Device '%s': directory is full and the volume has no "
+               "free cluster to extend it with\n",
+               fs->dev->name ? fs->dev->name : "unknown");
+        return -1;
+    }
+
+    fat32_sector_t zero;
+    memset(&zero, 0, sizeof(zero));
+    uint32_t base = cluster_to_lba(fs, clus);
+    for (uint32_t sec = 0; sec < fs->bpb.sec_per_clus; sec++) {
+        fs->dev->write_blocks(fs->dev, zero.raw, base + sec, 1);
+    }
+    fat_set_entry(fs, last, clus);
+
+    ctx->free_sector_lba = (int)base;
+    ctx->free_slot = 0;
+    return 0;
+}
+
 /* Finds `path`'s directory entry via a fresh scan and patches its file_size
  * field in place. Shared by fat32_write_at() and fat32_append_file() (via
  * fat32_write_at()) -- both need to update file_size after extending a
@@ -592,14 +665,23 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
-    if (parent_clus == 0 || target_name[0] == '\0') return -1;
+    if (parent_clus == 0 || target_name[0] == '\0') {
+        /* Everything below this point can fail for a reason the caller cannot
+         * see: the shell's `write` reports a bare `#f`, and a driver that is
+         * otherwise talkative about refusals said nothing at all -- which is
+         * how a full directory came to be investigated as a space problem
+         * (plan/open_issues.md, 2026-09-17). Each failure now names itself. */
+        printk("[FAT32] Device '%s': no directory to create '%s' in\n",
+               fs->dev->name ? fs->dev->name : "unknown", path);
+        return -1;
+    }
 
     char name83[11];
     filename_to_83(target_name, name83);
 
     write_slot_ctx_t ctx = { .name83 = name83, .free_sector_lba = -1, .free_slot = 0, .name_matched = false };
     fat32_scan_dir(fs, parent_clus, write_slot_cb, &ctx);
-    if (ctx.free_sector_lba < 0) return -1; // Directory full
+    if (dir_claim_slot(fs, parent_clus, &ctx) != 0) return -1;
 
     /* Overwriting an existing file: free its old cluster chain first so
      * the old clusters don't leak (see B8 in
@@ -619,7 +701,12 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
 
     for (uint32_t s = 0; s < sectors_needed; s++) {
         uint32_t next_clus = fat_alloc_cluster(fs);
-        if (next_clus == 0) return -1;
+        if (next_clus == 0) {
+            printk("[FAT32] Device '%s': volume full writing '%s' (%u of %u "
+                   "sectors placed)\n", fs->dev->name ? fs->dev->name : "unknown",
+                   path, (unsigned int)s, (unsigned int)sectors_needed);
+            return -1;
+        }
 
         if (s == 0) {
             first_cluster = next_clus;
@@ -788,10 +875,14 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path) {
 
     write_slot_ctx_t ctx = { .name83 = name83, .free_sector_lba = -1, .free_slot = 0, .name_matched = false };
     fat32_scan_dir(fs, parent_clus, write_slot_cb, &ctx);
-    if (ctx.free_sector_lba < 0) return -1; // Directory full
+    if (dir_claim_slot(fs, parent_clus, &ctx) != 0) return -1;
 
     uint32_t new_clus = fat_alloc_cluster(fs);
-    if (new_clus == 0) return -1;
+    if (new_clus == 0) {
+        printk("[FAT32] Device '%s': no free cluster for the new directory '%s'\n",
+               fs->dev->name ? fs->dev->name : "unknown", new_dir_name);
+        return -1;
+    }
 
     fat32_sector_t dir_sec;
     memset(&dir_sec, 0, sizeof(dir_sec));

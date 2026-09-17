@@ -1660,86 +1660,178 @@ particular section.
 
 
 
-## Creating a new file on the ESP32-P4's /flash0 fails, though rewrites work
+## FIXED: no directory could ever grow, so a create failed on a 15 %-full volume
 
-**Found 2026-09-17 while running 34.11's write soak**
-(`plan/phase34_esp32p4_pll_bringup.md`). Not a phase-34 defect and explicitly
-not caused by the second core — the control below is the point of this entry.
+**Reported 2026-09-17** against the ESP32-P4's `/flash0` while running 34.11's
+write soak (`plan/phase34_esp32p4_pll_bringup.md`): `write /flash0/newname.txt
+something` returned `#f`, while rewriting a file that already existed returned
+`#t` and read back correctly. **Fixed 2026-09-17.** Kept rather than deleted
+because the report's own framing -- a P4 problem, possibly a phase-34 one --
+was three steps away from the defect, and the steps are the interesting part.
 
-`write /flash0/newname.txt something` returns `#f`. Rewriting a file that
-already exists returns `#t` and the content reads back correctly.
+**What it actually was.** `fat32_scan_dir()` walks the cluster chain a
+directory already has, and nothing in `fs/fat32.c` ever appended to one. Both
+write paths simply gave up when every slot was taken:
 
-**It is not the second core.** Checked both ways from a fresh boot:
+```c
+if (ctx.free_sector_lba < 0) return -1; // Directory full
+```
 
-| | create new file | rewrite existing |
-|---|---|---|
-| `harts online = 1` | `#f` | `#t`, content verified |
-| `harts online = 2` | `#f` | `#t`, content verified |
+So a directory could never hold more entries than its initial allocation --
+on any device, on any target, for the life of the filesystem. A rewrite works
+because it matches an existing name and never needs a free slot, which is
+exactly the asymmetry the report describes. `dir_claim_slot()` now appends a
+zeroed cluster to the chain instead (zeroing is not optional: a 0x00 first
+byte is what ends a directory), and `fat32_mkdir()` goes through the same
+helper.
 
-Identical single-core, so 34.11's flash-park protocol is not implicated, and
-neither is anything else phase 34 changed.
+**It was never a P4 problem**, though every observation in the original report
+was correct. The report had ruled out the second core and ruled out space, and
+suspected the root directory was out of entries -- which was right as far as it
+went. Reproducing it took one QEMU session: on `/sd0` the **seventh** new file
+in the root failed. Nothing about flash, the board or phase 34 was involved.
 
-**It is not space.** `/proc/df` reports `/flash0` at **15 %** — 870 of 1024
-512-byte blocks free.
+**Verified both ways.** On QEMU, 80 creates in a directory that previously
+stopped at 6, all 80 read back and all 80 listed by `ls`. On the reporting
+board, the failing command from the report now succeeds, and 24 further files
+take the root well past its single 16-entry cluster.
 
-**Leading suspicion: the root directory is out of entries.** `ls /flash0`
-shows a modest file count, but a FAT32 root directory is a fixed number of
-entries and long filenames consume several apiece. Worth confirming before
-acting on it. A second candidate is that the create path takes a different
-route through `vfs_write()` than the overwrite path and fails somewhere that
-returns no diagnostic — the absence of *any* message beyond `#f` is itself a
-finding, since the flash driver is talkative about refusals.
+**Guarded by** `FAT32 A Full Directory Grows A Cluster Instead Of Refusing`
+in `tests/runner.py`: 30 files in one subdirectory, each read back, against
+16 entries per cluster.
 
-**Worth doing:** make the create path say why it failed before guessing at
-the cause. Everything above was inferred from a boolean.
+**The transferable part**, and the reason this entry stayed: the report ended
+with *"make the create path say why it failed before guessing at the cause.
+Everything above was inferred from a boolean."* That was the right
+instruction and it is now permanent -- `fat32_write_file()` names the
+directory it could not find, the full directory it could not extend, and the
+volume it ran out of space on, instead of returning a bare -1 that the shell
+renders as `#f`.
 
-## The shell's `write` exhausts the Lisp string pool after ~60 calls
+## FIXED: the string pool has two tiers, and only the small one is big
 
-Same session, same soak. Write 61 of 120 failed with
+**Reported 2026-09-17**, same soak: write 61 of 120 failed with
 
 ```
 [Lisp Error] String pool exhausted! Further strings/symbols will alias.
 ```
 
-`kernel/shell.c`'s `write` command builds a Lisp call and evaluates it
-(`write "path" "text"`), so each invocation interns two strings that are
-never reclaimed. Harmless interactively -- nobody types 60 writes -- and it
-is a real limit for any scripted use of the shell, which is exactly what
-`tests/hw/` does.
+**Fixed 2026-09-17**, and the original diagnosis in this entry was wrong in a
+way worth recording. It said each `write` "interns two strings that are never
+reclaimed". They are reclaimable -- phase 13's S3 collector does exactly that
+-- and the pool was not leaking. Two other things were true instead.
 
-The filesystem was unaffected: the soak's next read-back checkpoint passed,
-and all six checkpoints across 120 rewrites read back correctly.
+**One: the collector only ran after a failure.** `lisp_gc_safepoint()`
+collected if `node_pool_exhausted_warned || string_pool_exhausted_warned`, so
+the form that ran the pool dry still failed and only the *next* form got a
+collected heap. Every shell command is a Lisp form -- `kernel/shell.c`
+translates it into an S-expression -- so that is one shell command in sixty
+failing outright, then recovering, then failing again later. It now also
+collects while headroom remains, which is what keeps the failing form from
+happening at all.
 
+**Two, and this is the trap: the pool is two tiers and the check has to be per
+tier.** §2.4 of phase 15 split `string_pool` into 32-byte and 128-byte slots,
+the large tier being `STRING_POOL_SIZE / 6` -- **64 slots** on RP2350 and the
+ESP32-P4. A string of 32 characters or more can only come from the large tier,
+so the large tier empties while five sixths of the pool is still free, and any
+check on the pool as a whole sees nothing wrong right up to the failure. That
+is not a deduction: the first version of this fix checked the pool as a whole
+and changed nothing, and the measurement that showed why was 340 shell
+`write`s exhausting rv64's 341-slot large tier **with 837 slots free
+overall**. The soak's failure at write 61 against a 64-slot large tier is the
+same arithmetic on the smaller board.
 
-## Chess searches are not independent across sessions in one boot
+The exhaustion message now names the tier and the length that could not be
+placed, so the next person to meet this is not told the pool is full when it
+is 80 % empty.
 
-**Found 2026-09-17 by 34.14** (`plan/phase34_esp32p4_pll_bringup.md`), on the
-ESP32-P4 at 360 MHz with both cores running.
+**Measured:** rv64, 33-character payloads, one write per shell command.
+Before: exhausted at write 340. After: 1 000 writes, no exhaustion. On the
+reporting board: 120 writes, none failed, no exhaustion -- the soak from the
+original report, run again.
 
-Six `(chess-selftest … 32 7)` runs in a single boot, alternating 1 and 2
-cores, gave wildly inconsistent results — including a **single-core** run
-taking 4 024 ms and 233 923 nodes where its neighbours took ~1 900 ms and
-~120 000, and returning the move the *preceding two-core run* had found.
+**Guarded by** `Lisp Collector Keeps The Large String Tier Off Empty` in
+`tests/runner.py`: 420 forms each interning one distinct 35-character literal,
+against a 341-slot large tier. Checked both ways -- with the headroom test
+compiled out it reports the exhaustion and the rest of the test still passes,
+which is why the message is the assertion that matters.
 
-The same measurement from **independent boots** is reproducible to 1 ms with
-bit-identical node counts:
+**One test changed with it**, deliberately and not quietly: the S3 test
+required `"Node pool exhausted"` to appear in its log as evidence that the
+collector was being exercised. That was requiring the symptom. It now requires
+every one of its 60 answers to be correct and none to have degraded to nil --
+which the same allocation volume cannot satisfy without a collector, and which
+does not care when the collector chose to run.
+
+## FIXED: hart 0's search state is a static, so nothing reset it between sessions
+
+**Reported 2026-09-17 by 34.14** (`plan/phase34_esp32p4_pll_bringup.md`):
+`(chess-selftest … 32 7)` runs in a single boot disagreed wildly, including a
+single-core run of 4 024 ms and 233 923 nodes among neighbours at ~1 900 ms and
+~120 000, returning the move the *preceding two-core run* had found. The same
+measurement from independent boots was reproducible to 1 ms.
+**Fixed 2026-09-17.**
+
+**The hypothesis in this entry was wrong, and disproving it took one run.**
+It proposed a Lazy SMP helper outliving `chess_session_end()` and writing into
+freed pages. Reproduced on QEMU's `rv64-smp`, the divergence appears between
+two consecutive **single-core** runs, where no helper is ever started:
 
 ```
-one boot each:  1 core 1992 / 1992 / 1993 ms, 122 612 nodes every time
-                2 cores 3380 / 3381 / 3380 ms, ~200 700 nodes
+run 0: cores=1  b1c3  score 0  122 612 nodes  1454 ms
+run 1: cores=1  d2d3  score 3  210 136 nodes  2793 ms     <- same command
+run 2: cores=1  b1c3  score 0  108 287 nodes  1437 ms
 ```
 
-So something survives `chess_session_end()` and changes the next search.
+A different move, a different score and 1.7x the nodes, from the identical
+command in the same boot. Whatever carries over does not need a second core.
 
-**Not simple TT carryover**, which was the first guess and is wrong:
-`init_tt()` calls `clear_tt()`, which memsets the table.
+**What it was.** `search_state_t` holds the history heuristic, and
+`search_position()` clears `SS->killers` but not `SS->history` -- correctly, since
+history is meant to accumulate across the moves of one game. The session
+boundary is what should have reset it, and for every hart but one it did:
+`search_pools_free()` frees a heap-allocated state, so the next session's
+`search_state_init()` hands back a memset one. **Hart 0's state is a plain
+static** (`g_search0`, deliberately, so a single-core build pays no heap), so
+it was freed by nobody and reset by nothing. Every session inherited the
+previous session's move ordering. `search_pools_free()` now memsets the static
+instead of skipping it, which puts it in exactly the state a fresh boot has.
 
-**Worth eliminating first: a helper task outliving its session.** X8b's Lazy
-SMP helper is a pinned task; `chess_session_end()` calls `free_tt()`. If a
-helper can still be running at that point it would be writing into freed
-pages from the other core, which would explain both the cross-run influence
-and the direction of it. That is a hypothesis, not a finding — nobody has
-looked at `search_helper_join()`'s guarantees yet.
+**The shape worth remembering:** a per-hart resource where one hart's copy is
+static and the others' come from the heap has two different lifecycles, and
+the one that is never freed is the one that silently keeps state. The
+free-vs-memset asymmetry is invisible at the call site -- `search_pools_free()`
+reads as if it resets everything.
 
-Until it is understood, **chess benchmarks must be taken one per boot**. All
-of 34.14's published figures were.
+**Verified.** On QEMU `rv64-smp`, single-core runs are now bit-identical
+across sessions -- 122 612 nodes at depth 7 and 55 363 at depth 6, every run,
+including runs interleaved with two-core ones. On the reporting board, at
+360 MHz with both cores online, one boot now produces what only independent
+boots produced before:
+
+```
+1 core   122 612 nodes, 1988 / 1968 / 1967 ms
+2 cores  202 486 / 200 340 nodes, 3387 / 3356 ms
+```
+
+against the entry's independent-boot figures of 122 612 nodes at 1992/1992/1993
+ms and ~200 700 nodes at 3380/3381/3380 ms. So **"chess benchmarks must be
+taken one per boot" no longer applies** to the single-core figure, which is now
+exactly reproducible. The two-core figure still varies by about 1 % run to run
+and always will: Lazy SMP shares a transposition table between two searchers
+racing each other, and that race is not deterministic. A two-core number needs
+repeated samples, not a fresh boot.
+
+**Guarded by** `SMP: a chess session does not change the next one` in
+`tests/runner.py`: two single-core searches with a two-core search between
+them, on the two-hart target, must agree on the move and the node count.
+
+**One thing this did not change, stated so it is not read as settled.**
+`search_helper_join()` waits on a flag the helper sets *before* it returns,
+then gives up after 20 000 000 yields. Nothing was found wrong with it -- the
+primary sets `stop_search` before joining and `pv_search()` tests it at five
+points, so the helper unwinds within a few nodes and the bound is never
+approached -- but if that wait ever did expire, `search_pools_free()` would
+free the helper's position, its search state and the transposition table under
+a live searcher on the other core. It is a bound, not a guarantee.
