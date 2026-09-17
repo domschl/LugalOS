@@ -61,6 +61,7 @@
 #include "drivers/flash_esp32p4.h"
 #include "drivers/emac_esp32p4.h"
 #include "arch/clk_esp32p4.h"
+#include "arch/smp_esp32p4.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -477,6 +478,7 @@ static void cmd_help(void) {
     cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
     cprintf("  cpufreq <mhz>   - Switch the CPU clock live (40/90/180/360); a measurement tool, not a feature\n");
     cprintf("  smpinfo         - What core 1 would start from: its icache, branch predictor, clock, reset, stall\n");
+    cprintf("  smpstart        - Launch core 1 on a counter and report whether it moved (34.9)\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -2998,6 +3000,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         } else {
             cprintf("[CLK] refused: cpufreq takes 40, 90, 180 or 360\n");
         }
+        return;
+    } else if (strcmp(cmd_line, "smpstart") == 0) {
+        /* 34.9, plan/phase34_esp32p4_pll_bringup.md. Explicit rather than a
+         * boot step, for the reason kernel/smp.c gives about RP2350's: a
+         * board that boots is a board that can be reflashed. */
+        esp32p4_core1_probe_report();
         return;
     } else if (strcmp(cmd_line, "smpinfo") == 0) {
         /* 34.8, plan/phase34_esp32p4_pll_bringup.md. Read-only. */

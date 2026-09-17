@@ -786,6 +786,11 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # lands in 34.3-34.5 -- the code that changes these clocks and the code
     # that reports them belong in one file.
     list(APPEND SOURCES arch/riscv/common/clk_esp32p4.c)
+    # 34.9, plan/phase34_esp32p4_pll_bringup.md: the second HP core. Its own
+    # file rather than kernel/smp.c's, because that file's SMP paths are
+    # RP2350's bootrom handshake and QEMU's release-from-a-spin-loop, and this
+    # board's is neither -- a stall register, a reset bit and a ROM call.
+    list(APPEND SOURCES arch/riscv/common/smp_esp32p4.c)
     # Z1, plan/phase28_esp32p4_ethernet.md: the EMAC. Built only for this
     # board, because its registers are this chip's and nobody else's -- the
     # category A rule in plan/hardware_seams.md §1. At Z1 it registers no

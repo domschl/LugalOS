@@ -1203,6 +1203,42 @@ and for the same reason: a board that boots is a board that can be reflashed.
 reset, the boot address, the stack and core 1's first instructions in one step
 that cannot be confused with a failure above it.
 
+#### Done, 2026-09-17 — first time this core has ever executed our code
+
+```
+[SMP] CORE1_ALIVE -- counter 0 -> 7198790 in 100 ms
+[SMP] core1 clk  = ENABLED   core1 rst = released   stall code 0xff
+```
+
+**No stack, and that is the milestone doing its job.** `linker/esp32p4.ld` has
+no `_stack_secondary` (§4.2) and giving core 1 one is 34.10's work, so the
+probe is four instructions of assembly with no calls: load, add, store,
+branch. This milestone can therefore fail for exactly one reason, which is
+the entire argument `kernel/smp.c:104` makes about X3.
+
+**The rate is a second result, and a better one than "it runs".**
+7 198 790 increments in 100 ms is **71.99 M/s**, which against a 360 MHz clock
+is **5.00 cycles per iteration** of a four-instruction loop — about what a
+store-to-load dependency through the data cache should cost.
+
+So core 1 is not merely alive, it is running **at full speed with a working
+instruction cache**. That matters because §4.2 listed `ICACHE1` as one of two
+settings that are silent when wrong, and the arithmetic settles it: an
+uncached fetch of every instruction over a 40 MHz MSPI would be two orders of
+magnitude slower, not 5 cycles. **The ROM leaves core 1's instruction cache
+usable.**
+
+34.10 will still enable it explicitly. The cost is one ROM call and the
+alternative is depending on a ROM behaviour nothing in this tree asked for —
+but the number above means a sub-1× result in 34.12 now has one fewer
+candidate explanation, which is what 34.8 and 34.9 exist to produce.
+
+The launch was IDF's `start_other_core()` order, and 34.8's reading of it
+held: the stall was already released (`0x00`, neither stall nor run), so it
+was the **reset** bit that had core 1 parked. The unstall write is made
+regardless and `smpinfo` afterwards shows all three moved — clock enabled,
+reset released, stall code `0xff`.
+
 ### 34.10 — Core 1 in the kernel
 
 `_stack_secondary` in `linker/esp32p4.ld`; `CONFIG_ENABLE_SMP` on for the
