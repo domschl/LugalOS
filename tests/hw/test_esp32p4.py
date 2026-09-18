@@ -844,6 +844,121 @@ def test_lan_node(b: Board) -> tuple[str, bool, str]:
                         f"9P over TCP read /proc/kmsg ({len(kmsg)} B, {lines} lines)")
 
 
+def test_sd_card_present(b: Board) -> tuple[str, bool, str]:
+    """35.5, plan/phase35_esp32p4_sdmmc.md.
+
+    `sdinfo` re-reads the card and the controller on every run, so this is a
+    claim the hardware answers rather than a constant the kernel printed once
+    at boot. It also carries the fact §1.1 of the plan exists for: an empty
+    slot and an unpowered rail look identical from a distance, and the "no
+    card" line says which the board is in."""
+    name = "microSD card answers (35.5)"
+    out = b.console_session.cmd("sdinfo", deadline=25.0)
+    if "no card" in out:
+        return name, False, f"slot reported empty: {out.strip()[-200:]}"
+    m = re.search(r"(\d+) MB \((\d+) blocks", out)
+    if not m:
+        return name, False, f"no capacity in sdinfo: {out.strip()[-200:]}"
+    mb, blocks = int(m.group(1)), int(m.group(2))
+    if mb < 8 or blocks * 512 // (1024 * 1024) != mb:
+        return name, False, f"capacity does not add up: {mb} MB, {blocks} blocks"
+    w = re.search(r"bus\s+(\d)-bit at (\d+) kHz", out)
+    if not w:
+        return name, False, f"no bus line in sdinfo: {out.strip()[-200:]}"
+    return name, True, f"{mb} MB, {w.group(1)}-bit at {w.group(2)} kHz"
+
+
+def test_sd_bus_is_four_bit(b: Board) -> tuple[str, bool, str]:
+    """The half of the line above that a `return true` would pass.
+
+    ACMD6 answers R1 with no error whether or not D1-D3 are connected, so the
+    driver proves 4-bit by reading a block back at the final clock and falls
+    back to 1-bit when it cannot. A board reporting 1-bit is therefore not a
+    configuration choice -- it is that fallback having fired, and it is worth
+    failing on rather than passing quietly at a quarter of the bandwidth."""
+    name = "the bus really is 4-bit (35.4)"
+    out = b.console_session.cmd("sdinfo", deadline=25.0)
+    w = re.search(r"bus\s+(\d)-bit at (\d+) kHz", out)
+    if not w:
+        return name, False, f"no bus line: {out.strip()[-200:]}"
+    if w.group(1) != "4":
+        return name, False, f"fell back to {w.group(1)}-bit -- check D1-D3"
+    if int(w.group(2)) < 10000:
+        return name, False, f"clock stuck at {w.group(2)} kHz"
+    return name, True, f"4-bit at {w.group(2)} kHz"
+
+
+def test_sd0_mounted(b: Board) -> tuple[str, bool, str]:
+    """35.2: the card carries a FAT32 volume and the VFS found it."""
+    name = "/sd0 is mounted (35.2)"
+    out = b.console_session.cmd("df", deadline=20.0)
+    line = [l for l in out.splitlines() if l.strip().startswith("/sd0/")]
+    if not line:
+        return name, False, f"no /sd0 row in df: {out.strip()[-200:]}"
+    if "not mounted" in out:
+        return name, False, f"/sd0 present but unmounted: {line[0].strip()}"
+    return name, True, line[0].strip()
+
+
+def test_sd_write_survives_reboot(b: Board) -> tuple[str, bool, str]:
+    """The whole point of the persona: bytes that are still there afterwards.
+
+    Shaped exactly like the /flash0 test above, and for the same reason -- the
+    reboot is what separates "the filesystem cached it" from "the card has
+    it". Unlike that one it also proves the FAT is written back, since a new
+    file changes a directory entry, the FAT and the data area."""
+    name = "/sd0 survives a reboot (35.4)"
+    c = b.console_session
+    payloads = {f"/sd0/p35w{i}.txt": f"phase35-{i}-0123456789abcdef" for i in range(1, 4)}
+
+    for path, text in payloads.items():
+        out = c.cmd(f"write {path} {text}", deadline=20.0)
+        if "#t" not in out:
+            return name, False, f"write of {path} refused: {out.strip()[-120:]}"
+    for path, text in payloads.items():
+        out = c.cmd(f"cat {path}", deadline=15.0)
+        if text not in out:
+            return name, False, f"{path} read back wrong before reboot"
+
+    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
+    time.sleep(1.5)
+    b.console_session = Console(b.console)
+    c = b.console_session
+    c.cmd("", deadline=10.0)
+    for path, text in payloads.items():
+        out = c.cmd(f"cat {path}", deadline=15.0)
+        if text not in out:
+            return name, False, f"{path} did not survive the reboot"
+    for path in payloads:
+        c.cmd(f"rm {path}", deadline=15.0)
+    return name, True, f"{len(payloads)} files written, rebooted, read back"
+
+
+def test_sd_goes_through_the_task(b: Board) -> tuple[str, bool, str]:
+    """M4.5's question, asked of this board's block driver.
+
+    Every caller can silently fall back to direct hardware access, and the
+    system works either way -- which is exactly why "the sdblk task is
+    serving" needs evidence and not an assertion. A count that is nonzero and
+    grows across a read is that evidence."""
+    name = "reads go through the sdblk task (35.3)"
+    c = b.console_session
+    before = c.cmd("blkstats", deadline=15.0)
+    m0 = re.search(r"calls=(\d+)", before)
+    if not m0:
+        return name, False, f"no blkstats output: {before.strip()[-200:]}"
+    c.cmd("ls /sd0", deadline=20.0)
+    c.cmd("cat /proc/df", deadline=20.0)
+    after = c.cmd("blkstats", deadline=15.0)
+    m1 = re.search(r"calls=(\d+)", after)
+    if not m1:
+        return name, False, f"no blkstats output: {after.strip()[-200:]}"
+    if int(m1.group(1)) <= int(m0.group(1)):
+        return name, False, (f"count did not grow ({m0.group(1)} -> {m1.group(1)}): "
+                             "every caller fell back to direct access")
+    return name, True, f"{m0.group(1)} -> {m1.group(1)} calls served"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -865,6 +980,11 @@ TESTS = [
     test_emac_frames,
     test_node_identity_from_silicon,
     test_lan_node,
+    test_sd_card_present,
+    test_sd_bus_is_four_bit,
+    test_sd0_mounted,
+    test_sd_goes_through_the_task,
+    test_sd_write_survives_reboot,
 ]
 
 

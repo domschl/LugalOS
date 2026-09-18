@@ -345,7 +345,7 @@ Available configure presets:
   "rp2350-gateway" - RP2350 (Pico 2) — network gateway persona
   "rp2350-wifi"    - RP2350W (Pico 2 W) — wireless netif persona
   "rp2350-sensor"  - RP2350W (Pico 2 W) — environment sensor persona
-  "esp32p4"        - ESP32-P4 (Waveshare ESP32-P4-NANO)
+  "esp32p4"        - ESP32-P4 (Waveshare ESP32-P4-NANO) — network-storage persona
   "rv64-smp"       - QEMU RV64 (Sv39 MMU) — SMP, two harts
   "rp2350-smp"     - RP2350 (Pico 2) — chess persona, both cores
 ```
@@ -359,6 +359,20 @@ takes interrupts through the CLIC, confines U-mode tasks with PMP, mounts a
 writable `/flash0` through the boot ROM's own SPI routines, reads a BME280
 over I2C which it serves as `/proc/sensors` to any 9P client, and drives an
 IP101G PHY over RMII at 100 Mbit/s.
+
+[`plan/phase35_esp32p4_sdmmc.md`](plan/phase35_esp32p4_sdmmc.md) gives it a
+**disk**: the microSD card in its own socket, on the SD/MMC host controller at
+four bits and 20 MHz, mounted as `/sd0` and served over the same 9P the
+Ethernet carries. Measured on the board: **1547 KB/s** sequential read, over
+1 MB and again over 4 MB. That is what makes this preset the network-storage
+persona rather than a general dev board with a card slot — the SD pads collide
+with nothing else on the NANO, so there is no version of it that wants them
+back. Three things about that peripheral are worth knowing before touching it,
+and the phase document leads with them: the pads have no supply until software
+enables an on-chip LDO; the CPU FIFO path the TRM documents **does not work on
+this silicon** (the read never pops — measured, and the driver uses the
+controller's DMA instead); and the socket's card-detect switch is wired to
+nothing at all.
 
 Since [`plan/phase28_esp32p4_ethernet.md`](plan/phase28_esp32p4_ethernet.md)
 that PHY carries traffic: the board registers `eth0` at boot under the MAC
@@ -382,7 +396,7 @@ refuses an image that expects it.
 cmake --preset esp32p4 && cmake --build --preset esp32p4
 uv run tools/p4flash.py                                  # bootloader, OS image, filesystem
 tools/p4run.py --run --interactive                       # reset and talk to it
-cd tests/hw && uv run test_esp32p4.py                    # flash, then twenty checks
+cd tests/hw && uv run test_esp32p4.py                    # flash, then twenty-five checks
 ```
 
 That board needs **two** USB cables doing different jobs, and neither can do

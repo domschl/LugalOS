@@ -227,10 +227,12 @@ uv run test_esp32p4.py --no-load    # test whatever is already running
 ```
 
 `uv run test_esp32p4.py` needs no hands: it resets the board over the
-CH343P's modem lines, delivers `build/esp32p4/lugalos.elf` with
-`esptool load-ram`, waits for the shell and runs twelve checks. Nothing it
-does writes flash. With no board attached it prints what it looked for and
-exits 0.
+CH343P's modem lines, waits for the shell and runs twenty-five checks. With no
+board attached it prints what it looked for and exits 0.
+
+Two of those checks do write: the `/flash0` and `/sd0` round trips each write
+files, reboot the board and read them back, which is the only way to prove the
+bytes reached the chip rather than a buffer. Both clean up after themselves.
 
 ### What the P4 suite proves
 
@@ -252,6 +254,11 @@ the I2C controller are exercised here or nowhere.
 | `/proc/sensors` carries a fresh reading (E7) | `age_s` against `sample_period_s` — a file that is valid but hours old is a frozen sensor reported as a working one |
 | the sampler advances unattended (E7) | watches `reads` increase with nobody asking for a measurement |
 | readings leave the board over 9P (E7) | `p9share` plus a real 9P client on the same wire — the persona's whole point, tested the way it is used |
+| microSD card answers (35.5) | an empty slot, or a rail that was never switched on — the two look identical from a distance, and `sdinfo` says which |
+| the bus really is 4-bit (35.4) | **ACMD6 answers R1 with no error whether or not D1–D3 are connected.** The driver proves the width by reading a block back and falls back to 1-bit; a board reporting 1-bit here is that fallback having fired, at a quarter of the bandwidth |
+| `/sd0` is mounted (35.2) | a card the VFS found but could not read a FAT from |
+| reads go through the sdblk task (35.3) | every caller silently using the direct-hardware fallback — the system works either way, which is why the count has to be watched |
+| `/sd0` survives a reboot (35.4) | a write path that updates the directory entry, the FAT and the data area in a cache and never on the card |
 
 ### When `i2c scan` works and every register read fails
 

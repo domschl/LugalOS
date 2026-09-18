@@ -209,3 +209,65 @@ set(CONFIG_EMAC_PHY_ID2        0x0C54)
 # esp32p4/rom/cache.h). Changing this is the only edit needed: the RAM region
 # follows from it.
 set(CONFIG_L2_CACHE_KB 128)
+
+# --- The microSD slot: SDMMC slot 0, and the rail that powers it ---------
+#
+# 35.1, plan/phase35_esp32p4_sdmmc.md. Every number here is either the chip's
+# (from the TRM and IDF's generated headers) or this board's (from
+# ~/gith/esp/datasheet/ESP32-P4-NANO-schematic.pdf, sheet "MicroSD Card"),
+# and each is labelled below with which.
+
+# 0x50083000 = DR_REG_HPPERIPH0_BASE (0x50000000) + 0x83000. TRM Table 9.3-2
+# ("SD/MMC Host Controller  0x5008_3000  0x5008_3FFF"), matching IDF's
+# reg_base.h DR_REG_SDMMC_BASE.
+set(CONFIG_SDMMC_BASE      0x50083000)
+
+# --- The pins.
+#
+# **These are not a choice and must not be "tidied".** SDMMC slot 0 on the
+# ESP32-P4 has no GPIO-matrix route at all -- its six signals are IO_MUX pads
+# at function 0 and nowhere else (IDF's sdmmc_pins.h, and
+# SDMMC_LL_SLOT_SUPPORT_GPIO_MATRIX(0) is 0). The six numbers below are that
+# fixed pad set, and the Waveshare wiring matches it exactly, which is the one
+# piece of luck this peripheral offers: there is no routing to get wrong.
+#
+# Corroborated for *this* board by Waveshare's own
+# ~/gith/esp/ESP32-P4-Platform/examples/arduino/examples/SD_Card/SD_Card.ino
+# and examples/esp-idf/09_sdmmc, which name the same six.
+set(CONFIG_SDMMC_CLK_GPIO  43)
+set(CONFIG_SDMMC_CMD_GPIO  44)
+set(CONFIG_SDMMC_D0_GPIO   39)
+set(CONFIG_SDMMC_D1_GPIO   40)
+set(CONFIG_SDMMC_D2_GPIO   41)
+set(CONFIG_SDMMC_D3_GPIO   42)
+
+# The card's power switch -- a BOARD fact, not a chip one, and the reason a
+# correctly configured controller can still see nothing.
+#
+# Schematic: the chip's LDO channel 4 (net ESP_LDO_VO4) feeds both VDDPST_5 --
+# the IO domain GPIO39-45 live in -- and, through R14 (0R) and Q1 (an AO3401
+# P-channel MOSFET), the card's own VDD. Q1's gate is GPIO45, pulled to ground
+# by R27 (10K) with the pull-up R23 not fitted, so the switch is CLOSED by
+# default and opens only if something drives GPIO45 high.
+#
+# GPIO45 is also SDMMC slot 0's D4 pad. That matters only for an 8-bit bus,
+# which an SD card does not have; on this board the pad is the power switch
+# and drivers/sdmmc_esp32p4.c keeps it a plain GPIO driving low.
+set(CONFIG_SDMMC_PWR_GPIO  45)
+
+# 4-bit, and the driver proves it rather than assuming it: ACMD6 answers with
+# no error whether or not D1-D3 are actually connected, so the driver reads a
+# block back at the final clock and falls back to 1-bit if it cannot. Set this
+# to 1 to skip the attempt entirely.
+set(CONFIG_SDMMC_BUS_WIDTH 4)
+
+# The card clock after identification, in kHz.
+#
+# 20000, which is PLL_F160M / 8 exactly and is the fastest this driver may use
+# without negotiating for it: default speed is capped at 25 MHz by the SD
+# physical-layer spec, and going above it means CMD6 (switch to high speed),
+# a re-timed sampling phase, and a card that is allowed to refuse. 20 MHz on
+# four lines is 10 MB/s of bus, which is already well beyond what the CPU-side
+# FIFO path will sustain -- so the next real speed-up is multi-block
+# transfers, not a faster clock. See plan/phase35_esp32p4_sdmmc.md §5.
+set(CONFIG_SDMMC_FREQ_KHZ  20000)

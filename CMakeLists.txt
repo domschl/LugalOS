@@ -193,6 +193,16 @@ option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet im
 # fs/vfs_server.c's spisd_get_device() call sites need no matching #if.
 option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
 
+# 35.1, plan/phase35_esp32p4_sdmmc.md: the ESP32-P4's own SD/MMC host, which
+# is a different peripheral from the SPI card reader above and so a different
+# flag -- the two are never both meaningful on one board. Default ON and
+# stubbed internally rather than gated out of the source list, exactly like
+# ENABLE_SPISD and for the same reason: fs/vfs_server.c, kernel/board.c and
+# kernel/shell.c call into it without a matching #if. The NANO's SD pins
+# (GPIO39-44) collide with nothing else on that board, so this is OFF only
+# when someone deliberately wants the pads back.
+option(LUGALOS_ENABLE_SDMMC "Build SD-card support via the SD/MMC host controller (ESP32-P4 only)" ON)
+
 # L2 (plan/phase11_pico_clock_green.md): the SM16106/SM5166P LED matrix +
 # LDR driver for the Pico-Clock-Green baseboard persona specifically.
 # Default OFF, opposite of ENABLE_ST7735/TM1638/CHESS/SPISD above -- those
@@ -455,7 +465,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
         -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
         -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
-        -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
+        -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
         -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
         -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
@@ -487,7 +497,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
             -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
-            -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD}
+            -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
             -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
             -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
@@ -802,6 +812,13 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # locally-administered MAC from a build seed, which two boards flashed
     # from one build would share.
     list(APPEND SOURCES drivers/efuse_esp32p4.c)
+    # 35.1, plan/phase35_esp32p4_sdmmc.md: the SD/MMC host, and with it this
+    # board's first block device. Built only here -- the registers are this
+    # chip's, and the RP2350's SD card is a different peripheral entirely
+    # (SPI mode over a PL022, drivers/spisd_rp2350.c). Like that file it is
+    # not gated out when the feature is off; it stubs itself internally, so
+    # fs/vfs_server.c and kernel/board.c need no matching #if.
+    list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

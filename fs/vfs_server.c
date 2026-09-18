@@ -158,6 +158,7 @@ typedef struct {
 static vfs_handle_t g_handles[VFS_MAX_HANDLES];
 
 #include "drivers/spisd.h"
+#include "drivers/sdmmc.h"
 
 static int vfs_mount_flashdisk(void) {
     block_dev_t *flash_dev = flashdisk_get_device();
@@ -317,10 +318,18 @@ void vfs_server_init(void) {
         }
     }
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* E2, plan/phase27_esp32p4_bringup.md: no block device on this board
-     * yet, so /sd0 stays unmounted and `df` reports it as such. Not a
-     * fall-through to the virtio branch below -- that driver is not built
-     * for this target. */
+    /* 35.2, plan/phase35_esp32p4_sdmmc.md: the microSD card in the NANO's
+     * own slot, on the SD/MMC host controller rather than on a SPI bus.
+     * Where E2 had nothing to mount here, an empty slot now reports itself
+     * the same way an unformatted card does -- /sd0 stays unmounted and `df`
+     * says so. */
+    block_dev_t *sd_dev = sdmmc_get_device();
+    if (sd_dev) {
+        if (fat32_init(&g_fat32_sd, sd_dev) == 0) {
+            g_sd_mounted = true;
+            printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: SD/MMC MicroSD Card Reader)\n");
+        }
+    }
 #else
     /* VirtIO block device is available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
@@ -1999,7 +2008,7 @@ int vfs_format(const char *path) {
 #if defined(CONFIG_BOARD_RP2350)
         block_dev_t *dev = spisd_get_device();
 #elif defined(CONFIG_BOARD_ESP32P4)
-        block_dev_t *dev = NULL;   /* no block device yet -- E6 */
+        block_dev_t *dev = sdmmc_get_device();   /* 35.2 */
 #else
         block_dev_t *dev = virtio_blk_get_device();
 #endif

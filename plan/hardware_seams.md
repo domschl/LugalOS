@@ -40,7 +40,7 @@ Already abstracted, and they held.
 
 | Contract | Declared in | Implementations |
 |---|---|---|
-| Block device | `drivers/include/drivers/block.h` | `virtio_blk.c`, `spisd_rp2350.c`, `flashdisk.c`, `ramdisk.c`, `idstore_rp2350.c`, `virtio_blk_id.c` |
+| Block device | `drivers/include/drivers/block.h` | `virtio_blk.c`, `spisd_rp2350.c`, `sdmmc_esp32p4.c`, `flashdisk.c`, `ramdisk.c`, `idstore_rp2350.c`, `virtio_blk_id.c` |
 | Network interface | `net/include/net/netif.h` (`net/netif.c`) | `virtio_net.c`, `enc28j60_rp2350.c`, `cyw43_rp2350.c`, `uart_net.c`, `loopback_net.c`, `emac_esp32p4.c` |
 | Console | `kernel/include/kernel/console.h` | `uart_16550.c`, `uart_rp2350.c`, `uart_esp32p4.c`, `usb_cdc.c`, `virtio_console.c` |
 | Device registry (`/dev`) | `kernel/include/kernel/device.h` | one, `kernel/device.c` — the registry itself is the abstraction |

@@ -31,7 +31,9 @@
 #include "drivers/cyw43.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/spisd.h"
-#elif !defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4)
+#include "drivers/sdmmc.h"
+#else
 #include "drivers/virtio_blk.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -480,6 +482,8 @@ static void cmd_help(void) {
     cprintf("  smpinfo         - What core 1 would start from: its icache, branch predictor, clock, reset, stall\n");
     cprintf("  smpstart        - Launch core 1 on a counter and report whether it moved (34.9)\n");
     cprintf("  smpstart join   - Launch core 1 into the kernel: its own stack, trap vector and task (34.10)\n");
+    cprintf("  sdinfo          - What is in the microSD slot, and at what width and clock (35.5)\n");
+    cprintf("  sdbench [KB]    - Sequential read throughput from the card, default 1 MB (35.5)\n");
 #endif
     cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
     cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
@@ -2978,6 +2982,20 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * actually on a bus. */
         emac_phy_scan();
         return;
+    } else if (strcmp(cmd_line, "sdinfo") == 0) {
+        /* 35.5, plan/phase35_esp32p4_sdmmc.md. `emac scan`'s shape and its
+         * reason: a table a human asked for, re-read from the card and the
+         * controller on every run, so it is a claim rather than a comment.
+         * Probes an empty slot before answering -- a card may have been
+         * inserted since boot. */
+        sdmmc_info_report();
+        return;
+    } else if (strncmp(cmd_line, "sdbench", 7) == 0) {
+        /* 35.5. The instrument the phase plan's §7 asks for: a rate with a
+         * sample size attached, because a rate without one is not a
+         * measurement. */
+        sdmmc_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
+        return;
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
         return;
@@ -3523,7 +3541,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * reason the TX half has one: the exact matches above keep working. */
         printk("[UartStats] rx_overruns=%u\n", uart_rx_overruns());
         return;
-#if !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "blkstats") == 0) {
         /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
          * exposes blk_task_call_count() so a test can confirm the sdblk/blk
@@ -3531,13 +3548,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * rather than every caller silently using the direct-hardware
          * fallback the whole time.
          *
-         * Absent on ESP32-P4, which has no block device until E6 -- the
-         * counter is defined by whichever block driver the target builds
-         * (drivers/spisd_rp2350.c or drivers/virtio_blk.c) and that board
-         * builds neither. */
+         * Defined by whichever block driver the target builds --
+         * drivers/spisd_rp2350.c, drivers/virtio_blk.c, or (since 35.3)
+         * drivers/sdmmc_esp32p4.c, which is why this used to be absent on
+         * the P4 and no longer is. */
         printk("[BlkStats] calls=%u\n", blk_task_call_count());
         return;
-#endif
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strncmp(cmd_line, "i2cdiag", 7) == 0) {
         {

@@ -110,8 +110,8 @@
     },
     {
       "name": "esp32p4",
-      "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO)",
-      "description": "E2, plan/phase27_esp32p4_bringup.md, grown by phase 32. The second silicon this project runs on. It boots from its own flash: .text and .rodata execute in place from the XIP window and the ROM loads a small RAM half from 0x2000, so the board powers on into LugalOS with nothing attached -- flash it with `uv run tools/p4flash.py`, not `esptool load-ram`. UART0 console, printk, shell and /proc, a writable /flash0, I2C with a BME280, and Ethernet: an EMAC driving an IP101G over RMII at 100 Mbit/s, registered as `eth0` under the eFuse MAC and serving 9P over TCP (phase 28). chibicc and the chess engine are ON as of phase 32: they were off while this board had a 128 KB heap and RAM-resident .text, and U2 took the heap to 372 KB with 4x headroom in the flash segment, so the reason expired. No display, no radio.",
+      "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO) \u2014 network-storage persona",
+      "description": "E2, plan/phase27_esp32p4_bringup.md, grown by phase 32. The second silicon this project runs on. It boots from its own flash: .text and .rodata execute in place from the XIP window and the ROM loads a small RAM half from 0x2000, so the board powers on into LugalOS with nothing attached -- flash it with `uv run tools/p4flash.py`, not `esptool load-ram`. UART0 console, printk, shell and /proc, a writable /flash0, I2C with a BME280, and Ethernet: an EMAC driving an IP101G over RMII at 100 Mbit/s, registered as `eth0` under the eFuse MAC and serving 9P over TCP (phase 28). chibicc and the chess engine are ON as of phase 32: they were off while this board had a 128 KB heap and RAM-resident .text, and U2 took the heap to 372 KB with 4x headroom in the flash segment, so the reason expired. Phase 35 adds the microSD slot on the SD/MMC host (4-bit, 20 MHz, GPIO39-44) as /sd0, reading at 1547 KB/s, which is what makes this the network-storage persona rather than a second preset: those pads collide with nothing else on this board, so there is no version of it without a card slot. No display, no radio.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32p4",
       "cacheVariables": {
@@ -120,6 +120,7 @@
         "LUGALOS_ENABLE_CC": "ON",
         "LUGALOS_ENABLE_ED": "OFF",
         "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "ON",
         "LUGALOS_ENABLE_ST7735": "OFF",
         "LUGALOS_ENABLE_TM1638": "OFF",
         "LUGALOS_ENABLE_CHESS": "ON",

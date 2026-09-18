@@ -53,7 +53,9 @@
 #include "drivers/virtio_blk.h"
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* E2, plan/phase27_esp32p4_bringup.md: neither set of headers. This board has
- * no virtio (it is not QEMU) and none of the RP2350 drivers below. */
+ * no virtio (it is not QEMU) and none of the RP2350 drivers below -- 35.3's
+ * SD/MMC card is its own, and is the one storage header it does take. */
+#include "drivers/sdmmc.h"
 #else
 #include "drivers/spisd.h"
 #include "drivers/dcf77_p0log.h"
@@ -397,10 +399,13 @@ void kernel_main(void) {
 #if defined(CONFIG_BOARD_RP2350)
     spisd_task_start();
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* No block device on this board yet (E6). Deliberately not a
-     * fall-through to virtio_blk_task_start(): that driver is not built
-     * here, and if it were it would be probing addresses that mean something
-     * else on this chip. */
+    /* 35.3, plan/phase35_esp32p4_sdmmc.md: the microSD card on the SD/MMC
+     * host. Same endpoint name and same batching as the two above, and the
+     * same ordering rule: vfs_server_init() has already mounted the volume
+     * through direct hardware access, and this only changes the path for
+     * reads that happen after it. Returns -1 and stays on that path when the
+     * slot is empty, which is not an error. */
+    sdmmc_task_start();
 #else
     virtio_blk_task_start();
 #endif

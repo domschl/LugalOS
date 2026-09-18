@@ -13,7 +13,7 @@
 #
 # Inputs: BOARD (path to the board-*.cmake file), OUT (header path to write),
 # ENABLE_CC / ENABLE_ED / ENABLE_ST7735 / ENABLE_TM1638 / ENABLE_CHESS /
-# ENABLE_SPISD / ENABLE_PICO_CLOCK_GREEN / ENABLE_DCF77 (ON/OFF feature
+# ENABLE_SPISD / ENABLE_SDMMC / ENABLE_PICO_CLOCK_GREEN / ENABLE_DCF77 (ON/OFF feature
 # flags, F0 plan/phase8_feature_flags.md, H3 plan/phase9_chess_computer.md,
 # L1/L2 plan/phase11_pico_clock_green.md, D2 plan/phase17_clock_ui_and_
 # dcf77.md -- build persona choices, not board facts, so they arrive as
@@ -27,7 +27,7 @@
 if(NOT DEFINED BOARD OR NOT EXISTS "${BOARD}")
     message(FATAL_ERROR "gen_config.cmake: board file not found: '${BOARD}'")
 endif()
-foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
+foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_SDMMC ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
     if(NOT DEFINED ${_flag})
         message(FATAL_ERROR "gen_config.cmake: ${_flag} is required")
     endif()
@@ -42,7 +42,7 @@ foreach(_key CONFIG_PALLOC_MAX_PAGES CONFIG_BALLOC_ARENA_PAGES CONFIG_UART0_BASE
     endif()
 endforeach()
 
-foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
+foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_SDMMC ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
     if(${_flag})
         set(CONFIG_${_flag} 1)
     else()
@@ -94,6 +94,15 @@ set(_optional_keys
     # U5: the L2 cache size in KB. Read by arch/riscv/common/trap.c, and
     # passed separately to the linker so the two cannot drift.
     CONFIG_L2_CACHE_KB
+    # 35.1, plan/phase35_esp32p4_sdmmc.md: the P4's SD/MMC host and the
+    # microSD socket the NANO hangs off it. Optional like every pin map here.
+    # CONFIG_SDMMC_PWR_GPIO is not one of the bus's signals -- it is this
+    # board's power switch, and the board file says what it switches.
+    CONFIG_SDMMC_BASE
+    CONFIG_SDMMC_CLK_GPIO CONFIG_SDMMC_CMD_GPIO
+    CONFIG_SDMMC_D0_GPIO CONFIG_SDMMC_D1_GPIO
+    CONFIG_SDMMC_D2_GPIO CONFIG_SDMMC_D3_GPIO
+    CONFIG_SDMMC_PWR_GPIO CONFIG_SDMMC_BUS_WIDTH CONFIG_SDMMC_FREQ_KHZ
     # R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on SPI0.
     CONFIG_ETH_SCK_GPIO CONFIG_ETH_MOSI_GPIO CONFIG_ETH_MISO_GPIO
     CONFIG_ETH_CS_GPIO CONFIG_ETH_RST_GPIO CONFIG_ETH_INT_GPIO
@@ -209,7 +218,7 @@ string(APPEND _content "#ifndef LUGALOS_CONFIG_H\n#define LUGALOS_CONFIG_H\n\n")
 string(APPEND _content "#define CONFIG_PALLOC_MAX_PAGES ${CONFIG_PALLOC_MAX_PAGES}\n")
 string(APPEND _content "#define CONFIG_BALLOC_ARENA_PAGES ${CONFIG_BALLOC_ARENA_PAGES}\n")
 string(APPEND _content "#define CONFIG_UART0_BASE ${CONFIG_UART0_BASE}\n")
-foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
+foreach(_flag ENABLE_CC ENABLE_ED ENABLE_ST7735 ENABLE_TM1638 ENABLE_CHESS ENABLE_SPISD ENABLE_SDMMC ENABLE_PICO_CLOCK_GREEN ENABLE_DCF77 ENABLE_GPS ENABLE_SMP)
     string(APPEND _content "#define CONFIG_${_flag} ${CONFIG_${_flag}}\n")
 endforeach()
 foreach(_key ${_optional_keys})

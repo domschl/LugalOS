@@ -19,6 +19,7 @@
 
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/emac_esp32p4.h"
+#include "drivers/sdmmc.h"
 #endif
 
 #if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
@@ -174,6 +175,12 @@ static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
  * and nothing at this seam. */
 static int   probe_emac(void) { return emac_netif_init(); }
 static void *get_emac(void)   { return emac_get_netif(); }
+/* 35.3, plan/phase35_esp32p4_sdmmc.md: the microSD card in the NANO's slot,
+ * and this board's first block device. The accessor pattern is the RP2350
+ * card's (get_spisd() above) rather than the netif's: no probe hook, because
+ * the driver initialises the card on first ask and kernel_main() has already
+ * asked by the time dev_probe_all() runs. */
+static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -283,7 +290,7 @@ static const dev_driver_t dev_enc28j60 = {
  * had no device table of its own at all until the EMAC arrived. The entries
  * board_register_devices() registers unconditionally still cover the rest --
  * the RTC, sensor and EEPROM probes, the USB CDC stub, and UART0 with its two
- * 9P links. There is still no block device and no second console.
+ * 9P links. Phase 35's `sdblk` joined them; there is still no second console.
  *
  * The arm exists so this is a stated content rather than a fall-through. The
  * #else below is the QEMU one, and it registers virtio devices; a P4 build
@@ -292,6 +299,9 @@ static const dev_driver_t dev_enc28j60 = {
 static const dev_driver_t dev_emac = {
     .name = "eth0", .kind = DEV_KIND_NETIF,
     .probe = probe_emac, .get = get_emac,
+};
+static const dev_driver_t dev_sdmmc = {
+    .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_sdmmc,
 };
 #else
 static const dev_driver_t dev_vconsole = {
@@ -336,6 +346,7 @@ void board_register_devices(void) {
 #endif
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
+    dev_register(&dev_sdmmc);
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_vblk);
