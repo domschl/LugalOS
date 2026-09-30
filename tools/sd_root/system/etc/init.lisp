@@ -44,6 +44,12 @@
 (path-set "ram0 sd0 flash0")
 
 ;; 3. Clear command history file on boot (configurable)
+;;    A card fresh out of the packet has no /system, and this write used to
+;;    fail on it at every boot with "no directory to create
+;;    'system/history.lisp' in" (36.0a, plan/phase36_rp2350_lcd7_terminal.md).
+;;    mkdir first: it is a silent no-op when the directory exists or when
+;;    there is no card at all.
+(mkdir "/sd0/system")
 (write-file "/sd0/system/history.lisp" "")
 
 ;; 4. Kernel log and device policy (B0). Both registries are inspectable...

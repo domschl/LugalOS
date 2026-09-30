@@ -111,7 +111,31 @@ static void add_history(const char *line) {
         entry_buf[elen++] = *p++;
     }
     entry_buf[elen++] = '\n';
-    vfs_append("/sd0/system/history.lisp", entry_buf, elen);
+
+    /* A card fresh out of the packet has no /system (36.0a,
+     * plan/phase36_rp2350_lcd7_terminal.md). The append used to fail on every
+     * single command, and each failure logged fat32.c's "no directory to
+     * create 'system/history.lisp' in" -- a board with a new card printed that
+     * line after everything anyone typed, forever. The directory belongs to
+     * this file's own record, so this file creates it.
+     *
+     * Checked once, not per command: a stat on the card for every line typed
+     * would be a cost paid only to rediscover a fact. The latch clears when an
+     * append fails, which is what a swapped card looks like from here. No card
+     * at all: vfs_mkdir() on an inactive mount fails silently, and so does
+     * this -- history is a convenience, not something to warn about. */
+    static bool history_dir_ready = false;
+    if (!history_dir_ready) {
+        vfs_stat_t st;
+        if (vfs_stat("/sd0/system", &st) != 0 || !st.is_dir) {
+            if (vfs_mkdir("/sd0/system") != 0) return;
+            printk("[LineEditor] created /sd0/system for the command history\n");
+        }
+        history_dir_ready = true;
+    }
+    if (vfs_append("/sd0/system/history.lisp", entry_buf, elen) < 0) {
+        history_dir_ready = false;
+    }
 }
 
 
