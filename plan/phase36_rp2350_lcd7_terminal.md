@@ -1328,9 +1328,23 @@ before the task runs, or if it fails, the kernel draws directly.
 On the board: task #5, `ps` Isol PMP; `lcdtermisotest` →
 LCDTERM_ISOLATION_OK; `lcd outbench` 92 273 chars/s (unchanged). QEMU
 372/372. Static RAM +2 527 bytes on rp2350-terminal (U-mode stack, batch,
-request buffer), +4 elsewhere (the flush hook). **Pending: the owner's
-interactive typing check on the panel** (echo must appear per keystroke),
-and a `test_rp2350.py` rerun.
+request buffer), +4 elsewhere (the flush hook). The owner's typing check passed
+(every keystroke echoes at once, history and mid-line edits included).
+
+`test_rp2350.py` 25/25 after two harness fixes found on the way:
+- **The port probe re-ran the last command.** Its 9P Tversion frame
+  contained 0x10 (Ctrl-P) and 0x01 (Ctrl-A), which on the console port
+  recalled the last history line; probe step 2's newline then submitted it.
+  When that line was `e`, the editor took every test that followed. The
+  frame now uses msize 8192 and NOTAG, which contain no editing keys (an
+  assert guards this), and step 2 sends Ctrl-A Ctrl-K first, so the newline
+  submits an empty line. A counter test proves it: the old probe ran the last
+  command a second time (2), the new one does not (1); the net port still
+  classifies as net.
+- **K3 checked this board against the chess board's pin map.**
+  `/proc/config` now reports the panel and PIO-USB pins (488 bytes on this
+  board, of 896), and K3 recognises the persona by them: UART0 16/17, SD CS
+  15, the panel and USB pins, and no LED check.
 
 ### 36.7 — PIO-USB: the engine on core 1 talks to the keyboard
 

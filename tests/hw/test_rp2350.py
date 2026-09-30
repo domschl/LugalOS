@@ -1648,13 +1648,24 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         # -- and on two more whose values are legitimately different per
         # board. That is the test reporting "wrong pins" about a board whose
         # pins are right.
+        # The RP2350-LCD-7 (phase 36) is the one persona whose shared pins
+        # differ: GP0 is its PSRAM chip select, so the console UART is on
+        # GP16/17, and the SD card's CS is GP15. It is recognised by its
+        # panel pins, which only it reports.
+        lcd7 = re.search(r"^LCD_PCLK_GPIO=", out, re.M) is not None
         expected = {
-            # Every RP2350 persona has these, with these values.
+            # Every RP2350 persona has these; the UART pins per board above.
             "PALLOC_MAX_PAGES": "128",
             "UART0_BASE": "0x40070000",
-            "UART0_TX_GPIO": "0",
-            "UART0_RX_GPIO": "1",
+            "UART0_TX_GPIO": "16" if lcd7 else "0",
+            "UART0_RX_GPIO": "17" if lcd7 else "1",
         }
+        if lcd7:
+            expected.update({
+                "LCD_DE_GPIO": "20", "LCD_PCLK_GPIO": "23", "LCD_DATA0_GPIO": "24",
+                "LCD_RST_GPIO": "41", "LCD_BL_GPIO": "44", "LCD_EN_GPIO": "45",
+                "PIOUSB_DP_GPIO": "42", "PIOUSB_DM_GPIO": "43",
+            })
         # Parsed from the reading this test already took, rather than via
         # rp2350.feature_enabled(): that would reopen the console to fetch a
         # file whose contents are sitting in `out`. It also keeps the check
@@ -1670,7 +1681,7 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
                 "SPI1_SCK_GPIO": "10",
                 "SPI1_MOSI_GPIO": "11",
                 "SPI1_MISO_GPIO": "12",
-                "SPI1_CS_GPIO": "13",
+                "SPI1_CS_GPIO": "15" if lcd7 else "13",
             })
         if built_with("ENABLE_ST7735"):
             expected.update({
@@ -1697,8 +1708,11 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         # persona, but its presence can: K3 is about /proc/config reporting
         # the pins that were compiled in, and a build that reported none
         # would be the regression worth catching.
-        checks.append(("an LED pin is reported",
-                       re.search(r"LED_(ONBOARD|EXT)_GPIO=\d+", out) is not None))
+        # The RP2350-LCD-7 has no user LED at all, so there it is the panel
+        # pins above that prove the pin map is being reported.
+        if not lcd7:
+            checks.append(("an LED pin is reported",
+                           re.search(r"LED_(ONBOARD|EXT)_GPIO=\d+", out) is not None))
         failed = [label for label, ok in checks if not ok]
         if failed:
             return (name, False, f"failed: {', '.join(failed)}\n{out[-800:]}")

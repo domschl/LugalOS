@@ -95,11 +95,25 @@ def _candidate_ports() -> tuple[list[str], list[str]]:
     return acm, uart
 
 
-# A complete, self-contained Tversion frame (msize=4096, "9P2000", tag=1),
+# A complete, self-contained Tversion frame (msize=8192, "9P2000", NOTAG),
 # used to probe an unidentified port -- see _probe_port()'s docstring for
 # why it has to be a *whole* frame, not a bare newline.
-_PROBE_TVERSION_FRAME = bytes.fromhex("13000000640100001000000600395032303030")
-assert 0x0D not in _PROBE_TVERSION_FRAME and 0x0A not in _PROBE_TVERSION_FRAME
+#
+# On the console port these bytes are keystrokes to the shell's line editor
+# (kernel/line_editor.c), so they must not be ones it acts on. The old frame
+# said msize=4096 and tag=1, i.e. bytes 0x10 (Ctrl-P, history previous) and
+# 0x01 (Ctrl-A): the probe recalled the last command, and step 2's newline
+# then ran it -- re-running whatever was typed last, and when that was `e`,
+# leaving the editor open to swallow every following test (found on the
+# RP2350-LCD-7, 2026-09-30). msize=8192 is 00 20 00 00 and NOTAG is ff ff;
+# the server negotiates msize down to its own maximum either way.
+_PROBE_TVERSION_FRAME = bytes.fromhex("1300000064ffff002000000600395032303030")
+_LINE_EDITOR_KEYS = {0x0A, 0x0D, 0x01, 0x10, 0x0E, 0x0B, 0x0C, 0x04, 0x05, 0x02, 0x03}
+assert not (_LINE_EDITOR_KEYS & set(_PROBE_TVERSION_FRAME)), "probe frame would drive the line editor"
+# Sent ahead of step 2's newline: Ctrl-A, Ctrl-K -- start of line, kill to
+# end. Whatever printable part of the frame the editor did insert ("d 9P2000")
+# is erased, so the newline submits an empty line rather than a command.
+_CLEAR_LINE = b"\x01\x0b"
 
 
 def ports_by_usb_descriptor() -> Rp2350Ports | None:
@@ -186,7 +200,7 @@ def _probe_port(port: str) -> str | None:
                 return "net"
 
             s.reset_input_buffer()
-            s.write(b"\r\n")
+            s.write(_CLEAR_LINE + b"\r\n")
             s.flush()
             time.sleep(0.5)
             data = s.read(s.in_waiting or 1)
@@ -218,7 +232,7 @@ def _probe_port(port: str) -> str | None:
             s.flush()
             time.sleep(0.8)
             s.reset_input_buffer()
-            s.write(b"\r\n")
+            s.write(_CLEAR_LINE + b"\r\n")
             s.flush()
             time.sleep(0.6)
             data = s.read(s.in_waiting or 1)

@@ -1179,6 +1179,22 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             CONFIG_CLOCK_TEMP_OFFSET_C, CONFIG_CLOCK_COLON_BLINK);
 #endif
 #endif
+#ifdef CONFIG_LCD_PCLK_GPIO
+        /* 36.x, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's panel
+         * and its PIO-USB host port. Keyed on the pins, like UART1 above. Only
+         * this persona has them, and it has none of the ST7735/TM1638/clock/
+         * DCF77 blocks, so proc_buf's all-flags worst case does not grow. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "LCD_DE_GPIO=%d\nLCD_PCLK_GPIO=%d\nLCD_DATA0_GPIO=%d\n"
+            "LCD_RST_GPIO=%d\nLCD_BL_GPIO=%d\nLCD_EN_GPIO=%d\n",
+            CONFIG_LCD_DE_GPIO, CONFIG_LCD_PCLK_GPIO, CONFIG_LCD_DATA0_GPIO,
+            CONFIG_LCD_RST_GPIO, CONFIG_LCD_BL_GPIO, CONFIG_LCD_EN_GPIO);
+#endif
+#ifdef CONFIG_PIOUSB_DP_GPIO
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "PIOUSB_DP_GPIO=%d\nPIOUSB_DM_GPIO=%d\n",
+            CONFIG_PIOUSB_DP_GPIO, CONFIG_PIOUSB_DM_GPIO);
+#endif
 #if CONFIG_ENABLE_DCF77
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "DCF77_OUT_GPIO=%d\nDCF77_PON_GPIO=%d\nDCF77_PON_ACTIVE_LOW=%d\n"
