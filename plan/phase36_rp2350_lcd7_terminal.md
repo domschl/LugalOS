@@ -1111,6 +1111,11 @@ follow-up phase, once 36.13 is done.
   A larger `/flash0`, or fonts and bitmaps kept in flash, only needs a
   per-board layout, and the flash is free to use.
 * **PSRAM (2 MB on QMI CS1, GP0).** A RAM disk first, as `raw_ideas.md` says.
+  **Couple it with the XIP-layout performance question** (36.1,
+  `plan/open_issues.md`, owner's suggestion 2026-09-30): what moves *out* of
+  SRAM into PSRAM (the RAM disk, possibly the Lisp heap) pays for what moves
+  *in* from flash (the chess engine's hot ~31 KB of code and tables). Measure
+  the Lisp heap's behaviour on PSRAM before committing to that half.
   Then colour, which needs a CPU-free path from PSRAM to PIO that this
   document has not designed.
 * **2-bpp, four-colour text** from the same PIO trick (`out pc, 2` into four

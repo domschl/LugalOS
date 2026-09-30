@@ -440,6 +440,18 @@ to choose, since there is no sampling profiler on RP2350 yet;
 The decision belongs with 36.11 (chess on the LCD-7), or with any phase that
 wants RP2350 perft numbers to mean something across builds.
 
+**Couple it with PSRAM (owner's suggestion, 2026-09-30).** The real
+constraint is that SRAM is the only fast memory and everything competes for
+it. On a board with PSRAM (the RP2350-LCD-7 has 2 MB on QMI CS1), the trade
+could be made in the other direction: move what is large and tolerant of
+latency out of SRAM, into PSRAM -- a RAM disk (`/ram0`), and possibly the Lisp
+heap -- and spend the SRAM this frees on the latency-critical code and tables
+that currently execute in place from flash. Worth measuring first: the Lisp
+heap's access pattern (a mark-sweep collector walks all of it) against PSRAM
+latency through the same XIP cache, which could make Lisp slower by the same
+mechanism this entry is about. Decide together with PSRAM bring-up
+(plan/phase36 §7), not separately.
+
 ---
 
 ## Every RP2350 board enumerates with the same USB serial number
