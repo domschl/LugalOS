@@ -4285,7 +4285,12 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
         # common thing to debug against a real broker.
         ok, log = session.send_and_expect(
             f"mqtt connect 10.0.2.2:{refusing.port} someone wrongpass\n",
-            r"mqtt: (the broker rejected|.*refused|.*did not answer)", timeout=25.0)
+            # The verdict is the command's last line: the first `mqtt: ` line
+            # that is not `mqtt: connecting`. The old `mqtt: .*refused` spanned
+            # lines under DOTALL, matched the [MQTT] printk that precedes the
+            # verdict, and returned early -- leaving the verdict to arrive
+            # during step 2 and match *its* pattern (2026-09-30, RV64).
+            r"^mqtt: (?!connecting)[^\n]*\n", timeout=25.0)
         if not ok:
             return (name, False, f"a refused CONNECT produced no verdict:\n{log[-700:]}")
         if "bad username or password" not in log:
@@ -4302,7 +4307,10 @@ def test_mqtt_client(elf_path: Path, img_path: Path, arch_name: str) -> tuple[st
         # 2. A broker that accepts, and a publish that has to arrive intact.
         ok, log = session.send_and_expect(
             f"mqtt connect 10.0.2.2:{accepting.port}\n",
-            r"state CONNECTED|mqtt: (the broker|no |not )", timeout=25.0)
+            # Success prints `mqtt: broker ..., client-id ...` and only then
+            # `state CONNECTED`; failure prints one `mqtt: <reason>` line. So
+            # the `broker` line is neither verdict and must not end the wait.
+            r"state [A-Z]+|^mqtt: (?!connecting|broker )[^\n]*\n", timeout=25.0)
         if not ok or "CONNECTED" not in log:
             # `connections` says which half of the guest's own message is true:
             # it prints "refused the connection, or is unreachable" for a reset

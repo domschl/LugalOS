@@ -514,7 +514,10 @@ short read made them pass when they should have failed. Separately,
 pattern, which ate the line break after the echo. That is why `^address:`
 failed against a log that visibly contained `address: 10.0.9.42`, about half
 the time on RV64. All of those are fixed (phase 36, 36.0a), and four
-consecutive full runs since then are 368/368.
+consecutive full runs since then are 368/368. An eighth appeared during 36.3: the
+MQTT client test's refusal step returned on a `[MQTT]` printk ahead of the
+verdict line, and the verdict then matched step 2's pattern. That test now
+waits for the verdict line itself.
 
 **Why the rest is parked:** a scan finds about 70 `send_and_expect()` calls
 followed by a further search of the returned log. Most of them re-check the
