@@ -72,6 +72,7 @@
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
+#include "drivers/usbkbd_task.h"
 
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
@@ -466,6 +467,10 @@ void kernel_main(void) {
     /* 36.6a: the screen terminal moves into its own U-mode task. Until this
      * runs -- and if it fails -- the lcd facade draws from the kernel. */
     if (lcd7_task_start() > 0) console_set_flush_hook(lcd7_screen_flush);
+#endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    /* 36.8: the USB keyboard, as its own U-mode task over the engine. */
+    (void)usbkbd_start();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm1638_task_start();

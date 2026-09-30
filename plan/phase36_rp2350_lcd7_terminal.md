@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.7 done 2026-09-30, 36.8 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.8 done 2026-09-30, 36.9 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -1435,6 +1435,62 @@ solid.
 key pressed on the test keyboard; unplugging and re-plugging the keyboard 20
 times re-enumerates 20 times with no reboot; the keyboard model and speed are
 recorded here.
+
+**Done, 2026-09-30, with the hot-plug criterion withdrawn for this board
+(owner's decision, below).** The `kbd` task (`drivers/usbkbd_rp2350.c`)
+runs in U-mode, PMP-confined to its stack, `.kbdtext` (8 KB region,
+3.3 KB used), its 1 KB state block and the engine's 512-byte shared block
+(the transaction ring and status, now padded and aligned for exactly that
+grant). It submits transactions straight into the ring and sleeps with a
+new `SYS_SLEEP_MS`, so waiting costs no scheduler slices. Descriptor
+parsing and report diffing are portable (`drivers/usbkbd.c`) and checked
+on QEMU by `usbkbdselftest`. `tools/check_umode_text.py` now runs on
+every build: everything reachable from `lcdterm_umode_body` and
+`kbd_umode_body` must stay inside its own section (it flags
+`lcdterm_intruder`, which deliberately writes outside).
+
+What it does: root reset, enumeration at address 1; for a hub, the hub
+descriptor, port power, port reset and enumeration of each device, then
+the hub's status-change endpoint every 100 ms, with a once-a-second retry
+for a connected port that has no working device; for a boot keyboard,
+SET_PROTOCOL(boot), SET_IDLE(0), interrupt IN at bInterval, NAK as "no
+news", and make/break events into a 64-entry ring. `kbd` (state), `kbd
+desc`, `kbd off|on` (hand the port to the kernel for `usbprobe`), `kbdlog
+[s]` (replays the last 32 events, then live).
+
+**Low speed behind the hub (PRE)** is in the engine: before every host
+packet to a low-speed device, a full-speed PRE through a patched copy of
+the TX program's EOP section, then the packet at 1.5 Mbit/s with
+full-speed polarity; the edge detector re-clocked to 12 MHz. It worked
+only once the switch matched Pico-PIO-USB exactly: *restarting* the edge
+detector's program (or the TX clock divider) at the speed change left the
+device silent.
+
+Keyboards seen:
+* The owner's keyboard: a `1a40:0801` hub (4 ports) with the keyboard
+  `258a:01af` (full speed, boot keyboard, 1 ms) on port 1 and a Cherry
+  `046a:b092` low-speed boot mouse on port 3. The keyboard runs on battery
+  and drops off the hub when it sleeps; it comes back through the hub's
+  status-change path.
+* A second keyboard, `03eb:ff01`: full speed, directly at the root, seven
+  interfaces with the boot keyboard as interface 1 (10 ms).
+Both typed correctly through `kbdlog` (make/break, modifiers, overlapping
+keys). Polling at 1 ms costs core 0 ~0.6 % (`(perft 3 1)` 7 003 ms vs
+6 963 ms with `kbd off`).
+
+**Hot-plug at the host port is not supported on this board.** Plugging a
+keyboard into J7 while running browns the board out: `[CLK] last reset:
+... (BROWN-OUT)`, logged at every boot now from POWMAN CHIP_RESET. It
+happens on PC-port power and on an external 5 V supply; with a battery the
+board survives but the replug stops the battery charging until a
+power-cycle. J7's VBUS is evidently on the 5 V rail with no current
+limit or soft start, and no GPIO switches it (the demo never does). So:
+the keyboard is attached before power-up. The software's root
+detach/attach path stays; hot-plug *behind* a hub works (the sleeping
+keyboard). The 20-replug test is withdrawn for this hardware.
+
+Static RAM +3 181 bytes on rp2350-terminal (the task's 2 KB stack and
+1 KB state, and the shared block's padding to 512).
 
 ### 36.9 — Typing into the shell
 

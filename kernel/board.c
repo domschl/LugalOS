@@ -76,6 +76,14 @@ void board_lcdterm_text_region(uintptr_t *base, uintptr_t *size) {
     *size = 8192;
 }
 
+extern char _kbdtext_start[];
+
+/* 36.8: the USB keyboard task's region, linker/rp2350.ld's .kbdtext. */
+void board_kbd_text_region(uintptr_t *base, uintptr_t *size) {
+    *base = (uintptr_t)_kbdtext_start;
+    *size = 8192;
+}
+
 extern char _blktext_start[];
 
 void board_blk_text_region(uintptr_t *base, uintptr_t *size) {

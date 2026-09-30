@@ -65,6 +65,20 @@ SECTIONS
     _lcdtermtext_used = _lcdtermtext_content_end - _lcdtermtext_start;
     ASSERT(_lcdtermtext_used <= 8192, "lcdterm's U-mode code and font outgrew their 8 KB region")
 
+    /* 36.8: the USB keyboard task's own U-mode region -- drivers/usbkbd.c's
+     * portable half and drivers/usbkbd_rp2350.c's task (drivers/kbd_attr.h).
+     * Same shape as .lcdtermtext above: empty and zero-size where there is
+     * no PIO-USB port. */
+    .kbdtext : ALIGN(8192) {
+        _kbdtext_start = .;
+        *(.kbdtext .kbdtext.*)
+        *(.kbdrodata .kbdrodata.*)
+        _kbdtext_content_end = ABSOLUTE(.);
+        . = _kbdtext_start + ((ABSOLUTE(.) > _kbdtext_start) ? 8192 : 0);
+    } > FLASH
+    _kbdtext_used = _kbdtext_content_end - _kbdtext_start;
+    ASSERT(_kbdtext_used <= 8192, "the kbd task's U-mode code outgrew its 8 KB region")
+
     /* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own
      * dedicated U-mode-executable page, same reasoning as .st7735text
      * above -- the shared .utext page overflowed by 84 bytes once blk's

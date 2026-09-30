@@ -172,6 +172,31 @@ void rp2350_clocks_boot_check(void) {
     printk("[CLK] clk_sys %u MHz measured, %lu Hz from PLL_SYS%s\n", mhz,
            (unsigned long)from_regs,
            from_regs == (uint32_t)CONFIG_CLK_SYS_HZ ? "" : "  -- DISAGREES with CONFIG_CLK_SYS_HZ");
+
+    /* Why the chip last reset -- 36.8: a keyboard hot-plugged onto the
+     * RP2350-LCD-7's USB host port reset the board, and "brown-out" versus
+     * "watchdog" versus "software" is the first question about that.
+     * POWMAN CHIP_RESET (0x40100000 + 0x2c); bit layout from the SDK's
+     * hardware/regs/powman.h. The flags describe the reset that started this
+     * boot. */
+    static const struct { uint32_t bit; const char *name; } causes[] = {
+        { 1u << 16, "power-on" },       { 1u << 17, "BROWN-OUT" },
+        { 1u << 18, "RUN pin" },        { 1u << 19, "debugger" },
+        { 1u << 21, "rescue" },         { 1u << 22, "watchdog (powman async)" },
+        { 1u << 23, "watchdog (powman)" }, { 1u << 24, "watchdog (switched core)" },
+        { 1u << 25, "switched-core power-down" }, { 1u << 26, "GLITCH DETECTOR" },
+        { 1u << 27, "hazard3 reset request" },    { 1u << 28, "watchdog (PSM)" },
+    };
+    uint32_t cr = *(volatile uint32_t *)(uintptr_t)(0x40100000UL + 0x2c);
+    char line[160];
+    uint32_t used = (uint32_t)ksnprintf(line, sizeof(line), "[CLK] last reset: CHIP_RESET=0x%08lx", (unsigned long)cr);
+    const char *sep = " (";
+    for (unsigned i = 0; i < sizeof(causes) / sizeof(causes[0]); i++) {
+        if (!(cr & causes[i].bit)) continue;
+        used += (uint32_t)ksnprintf(line + used, sizeof(line) - used, "%s%s", sep, causes[i].name);
+        sep = ", ";
+    }
+    printk("%s%s\n", line, sep[0] == ',' ? ")" : "");
 }
 
 #endif /* CONFIG_BOARD_RP2350 */

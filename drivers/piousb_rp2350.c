@@ -138,6 +138,21 @@ _Static_assert(CONFIG_CLK_SYS_HZ % 48000000u == 0,
 #define I_MOV_OSR_NOTNULL 0xa0ebu
 #define I_JMP(a)         ((uint32_t)(a))
 
+/* 36.8: low speed behind a full-speed hub. Every packet the host sends such a
+ * device goes out as a full-speed PRE (SYNC + PID 0x3C, no EOP), then at
+ * 1.5 Mbit/s with full-speed polarity; the hub opens its low-speed port for
+ * it, and passes the device's replies back the same way. The TX program's
+ * EOP section (words 4-7) is swapped for Pico-PIO-USB's usb_tx_fs_pre for the
+ * PRE itself -- written as immediates below, not a const table, which would
+ * be .rodata in flash. */
+#define PID_PRE          0x3Cu
+#define TX_DIV_FS        ((CONFIG_CLK_SYS_HZ / 48000000u) << 16)
+#define TX_DIV_LS        ((CONFIG_CLK_SYS_HZ / 6000000u) << 16)
+#define EDGE_DIV_FS      ((uint32_t)((((uint64_t)CONFIG_CLK_SYS_HZ * 256u / 96000000u) >> 8) << 16) | \
+                          (uint32_t)((((uint64_t)CONFIG_CLK_SYS_HZ * 256u / 96000000u) & 0xffu) << 8))
+#define EDGE_DIV_LS      ((CONFIG_CLK_SYS_HZ / 12000000u) << 16)
+_Static_assert(CONFIG_CLK_SYS_HZ % 12000000u == 0, "piousb: low speed needs an integer divider to 6 and 12 MHz");
+
 #define PIN_DP   (CONFIG_PIOUSB_DP_GPIO - 16u)   /* PIO pin numbers, GPIOBASE 16 */
 #define PIN_DM   (CONFIG_PIOUSB_DM_GPIO - 16u)
 
@@ -190,19 +205,25 @@ static const uint16_t k_edge_prog[17] = {
 
 /* --- State shared between the cores -------------------------------------
  *
- * One ring whose slots complete in place: core 0 fills slot[submitted] and
- * advances `submitted`; core 1 runs slot[completed], writes the result into
- * the same slot, and advances `completed`. Each index has one writer, so no
- * lock -- the request and completion rings of §3.2 folded into one, which
- * saves copying a 76-byte slot across. All of it is .bss, in SRAM. */
-#define RING 4u
-static struct {
-    volatile uint32_t submitted;
-    volatile uint32_t completed;
-    piousb_xfer_t     slot[RING];
-} g_ring;
+ * drivers/piousb.h's piousb_shared_t: the ring (the request and completion
+ * rings of §3.2 folded into one, which saves copying a 76-byte slot across)
+ * and the status. Padded to exactly 512 bytes on a 512-byte boundary, so a
+ * PMP grant of it covers nothing else. .bss, in SRAM. */
+#define RING PIOUSB_RING
+static union {
+    piousb_shared_t s;
+    uint8_t         raw[512];
+} g_usb_mem __attribute__((aligned(512)));
+_Static_assert(sizeof(piousb_shared_t) <= 512, "piousb: the shared block outgrew its 512-byte grant");
+#define g_ring g_usb_mem.s
+#define g_st   g_usb_mem.s.st
 
-static piousb_status_t g_st;          /* written by core 1, read by core 0 */
+piousb_shared_t *piousb_shared(void) { return &g_usb_mem.s; }
+
+void piousb_shared_region(uintptr_t *base, uintptr_t *size) {
+    *base = (uintptr_t)&g_usb_mem;
+    *size = sizeof(g_usb_mem);
+}
 static uint16_t        g_crc_tbl[256];
 static ylock_t         g_xfer_lock;
 static bool            g_inited;
@@ -220,6 +241,7 @@ static bool            g_inited;
 #define ST ((volatile piousb_status_t *)&g_st)
 
 static uint32_t g_release_cyc;        /* when tx_packet() let the SM go */
+static bool     g_ls;                 /* the current transaction is low speed */
 static uint16_t g_frame;
 static uint32_t g_tx_stuck;
 
@@ -282,7 +304,8 @@ ENG static void rx_prepare(void) {
  * free from a slower call path; this one is fast enough to lose the race. */
 ENG static void rx_start(void) {
     uint32_t t0 = cyc();
-    while (!(REG(PIO_IRQ(RX_PIO)) & RX_EOP) && cyc() - t0 < 3u * CPU_MHZ) { }
+    uint32_t wait = (g_ls ? 25u : 3u) * CPU_MHZ;   /* an LS bit is 8 FS bits */
+    while (!(REG(PIO_IRQ(RX_PIO)) & RX_EOP) && cyc() - t0 < wait) { }
     uint32_t w = cyc() - t0;
     if (!(REG(PIO_IRQ(RX_PIO)) & RX_EOP)) ST->rx_eop_misses++;
     else if (w > ST->rx_eop_wait_max_cycles) ST->rx_eop_wait_max_cycles = w;
@@ -304,7 +327,7 @@ ENGI bool rx_byte(uint32_t *b) {
  * DATA packet. *eop_cyc: when the end of the packet was seen. */
 ENG static uint32_t rx_packet(uint8_t *buf, uint32_t max, uint32_t *n, uint32_t *crc, uint32_t *eop_cyc) {
     uint32_t t0 = cyc(), idx = 0, pid = 0, c = 0xffffu, b;
-    uint32_t limit = 20u * CPU_MHZ;             /* SYNC due within ~1 us */
+    uint32_t limit = (g_ls ? 80u : 20u) * CPU_MHZ;   /* SYNC due within ~1 us (FS) */
     for (;;) {
         if (rx_byte(&b)) {
             if (idx == 1) pid = b;
@@ -313,7 +336,7 @@ ENG static uint32_t rx_packet(uint8_t *buf, uint32_t max, uint32_t *n, uint32_t 
                 if (idx - 2 < max) buf[idx - 2] = (uint8_t)b;
             }
             idx++;
-            limit = 120u * CPU_MHZ;             /* a 64-byte packet is ~50 us */
+            limit = (g_ls ? 1200u : 120u) * CPU_MHZ;  /* a 64-byte FS packet is ~50 us */
             continue;
         }
         if (REG(PIO_IRQ(RX_PIO)) & RX_EOP) {
@@ -388,20 +411,76 @@ ENGI uint32_t handshake_status(uint32_t pid) {
     return PIOUSB_PROTOCOL;
 }
 
+/* The edge detector at a new rate: stopped, re-clocked, started again where
+ * it was -- as Pico-PIO-USB does it (send_pre(), restore_fs_bus()). */
+ENGI void edge_restart(uint32_t div) {
+    REG(PIO_CTRL(RX_PIO) + ALIAS_CLR) = 1u << EDGE_SM;
+    REG(SM_CLKDIV(RX_PIO, EDGE_SM)) = div;
+    REG(PIO_CTRL(RX_PIO) + ALIAS_SET) = 1u << EDGE_SM;
+}
+
+ENGI bool tx_parked(uint32_t us) {
+    uint32_t t0 = cyc();
+    while (!(REG(PIO_IRQ(TX_PIO)) & TX_COMP)) {
+        if (cyc() - t0 > us * CPU_MHZ) { g_tx_stuck++; return false; }
+    }
+    return true;
+}
+
+/* A PRE at full speed, then the bus set for one low-speed packet: TX at
+ * 6 MHz (1.5 Mbit/s), the edge detector at 12 MHz. Before *every* host
+ * packet to a low-speed device -- token, DATA and ACK alike. */
+ENG static void tx_pre(void) {
+    if (!tx_parked(100)) return;
+    REG(PIO_CTRL(TX_PIO) + ALIAS_CLR) = 1u << TX_SM;
+    REG(SM_CLKDIV(TX_PIO, TX_SM)) = TX_DIV_FS;
+    REG(PIO_INSTR_MEM(TX_PIO, 4)) = 0xd701;     /* irq nowait 1 side J [3] */
+    REG(PIO_INSTR_MEM(TX_PIO, 5)) = 0xe080;     /* set pindirs, 0 */
+    REG(PIO_INSTR_MEM(TX_PIO, 6)) = 0xa042;     /* nop */
+    REG(PIO_INSTR_MEM(TX_PIO, 7)) = 0xa042;     /* nop */
+    REG(PIO_CTRL(TX_PIO) + ALIAS_SET) = 1u << TX_SM;
+    REG(PIO_TXF(TX_PIO, TX_SM)) = USB_SYNC;
+    REG(PIO_TXF(TX_PIO, TX_SM)) = PID_PRE;
+    REG(PIO_IRQ(TX_PIO)) = TX_COMP | TX_EOP;
+    (void)tx_parked(20);
+    REG(PIO_CTRL(TX_PIO) + ALIAS_CLR) = 1u << TX_SM;
+    REG(PIO_INSTR_MEM(TX_PIO, 4)) = 0xd301;     /* irq nowait 1 side SE0 [3] */
+    REG(PIO_INSTR_MEM(TX_PIO, 5)) = 0xa342;     /* nop [3] */
+    REG(PIO_INSTR_MEM(TX_PIO, 6)) = 0xb442;     /* nop side J */
+    REG(PIO_INSTR_MEM(TX_PIO, 7)) = 0xe380;     /* set pindirs, 0 [3] */
+    REG(SM_CLKDIV(TX_PIO, TX_SM)) = TX_DIV_LS;
+    REG(PIO_CTRL(TX_PIO) + ALIAS_SET) = 1u << TX_SM;
+    edge_restart(EDGE_DIV_LS);
+}
+
+/* Back to full speed after a low-speed transaction, before the next SOF. */
+ENG static void restore_fs(void) {
+    (void)tx_parked(1000);
+    REG(PIO_CTRL(TX_PIO) + ALIAS_CLR) = 1u << TX_SM;
+    REG(SM_CLKDIV(TX_PIO, TX_SM)) = TX_DIV_FS;
+    REG(PIO_CTRL(TX_PIO) + ALIAS_SET) = 1u << TX_SM;
+    edge_restart(EDGE_DIV_FS);
+    g_ls = false;
+}
+
 /* SETUP and OUT: token, DATA packet, then the device's handshake. */
 ENG static void do_out(piousb_xfer_t *x, bool setup) {
     uint8_t tok[4], pkt[PIOUSB_MAX_PACKET + 4], hs[4];
     uint32_t len = x->len > PIOUSB_MAX_PACKET ? PIOUSB_MAX_PACKET : x->len;
     uint32_t plen = build_data(pkt, setup ? false : x->data1, x->data, len);
     uint32_t n, crc, eop;
+    g_ls = x->low_speed != 0;
     rx_prepare();
+    if (g_ls) tx_pre();
     send_token(setup ? PID_SETUP : PID_OUT, x->addr, setup ? 0 : x->ep, tok);
+    if (g_ls) tx_pre();
     tx_packet(pkt, plen);
     rx_start();
     uint32_t pid = rx_packet(hs, sizeof(hs), &n, &crc, &eop);
     x->pid = (uint8_t)pid;
     x->rx_len = 0;
     x->status = (uint8_t)handshake_status(pid);
+    if (g_ls) restore_fs();
 }
 
 /* IN: token, then a DATA packet we ACK at once -- the one timing-critical
@@ -413,15 +492,19 @@ ENG static void do_in(piousb_xfer_t *x) {
     uint32_t n, crc, eop = 0;
     ackp[0] = USB_SYNC;
     ackp[1] = PID_ACK;
+    g_ls = x->low_speed != 0;
     rx_prepare();
+    if (g_ls) tx_pre();
     send_token(PID_IN, x->addr, x->ep, tok);
     rx_start();
     uint32_t pid = rx_packet(rbuf, sizeof(rbuf), &n, &crc, &eop);
     x->pid = (uint8_t)pid;
     x->rx_len = 0;
     if (pid == PID_DATA0 || pid == PID_DATA1) {
-        if (n < 2 || crc != USB_CRC16_RESIDUAL) { x->status = PIOUSB_CRC; return; }
+        if (n < 2 || crc != USB_CRC16_RESIDUAL) { x->status = PIOUSB_CRC; if (g_ls) restore_fs(); return; }
+        if (g_ls) tx_pre();
         tx_packet(ackp, 2);
+        if (g_ls) restore_fs();
         uint32_t ta = g_release_cyc - eop;
         if (ta > ST->turnaround_max_cycles) ST->turnaround_max_cycles = ta;
         x->rx_len = (uint16_t)(n - 2 > PIOUSB_MAX_PACKET ? PIOUSB_MAX_PACKET : n - 2);
@@ -430,6 +513,7 @@ ENG static void do_in(piousb_xfer_t *x) {
         return;
     }
     x->status = (uint8_t)(pid_valid(pid) || pid == 0 ? handshake_status(pid) : PIOUSB_PROTOCOL);
+    if (g_ls) restore_fs();
 }
 
 /* With len == 0: our token alone. With len == 8: a whole SETUP stage --
@@ -442,11 +526,27 @@ ENG static void do_loopback(piousb_xfer_t *x) {
     bool whole = (x->len == 8);
     for (uint32_t i = 0; i < 8; i++) d[i] = x->data[i];
     uint32_t plen = build_data(pkt, false, d, 8);
+    g_ls = x->low_speed != 0;
     rx_prepare();
+    if (g_ls) tx_pre();                         /* then decode our LS token */
     REG(PIO_IRQ(RX_PIO)) = RX_ALL;
     REG(PIO_CTRL(RX_PIO) + ALIAS_SET) = 1u << DEC_SM;
     send_token(PID_SETUP, x->addr, x->ep, tok);
-    if (whole) {
+    if (whole && g_ls) {
+        /* Low speed: our token and DATA0 behind PREs, then whatever the
+         * device says back. Our DATA0 is not read back (tx_packet() cannot
+         * drain RX meanwhile); the reply is what this is for. */
+        uint32_t t1 = cyc();
+        while (!(REG(PIO_IRQ(RX_PIO)) & RX_EOP) && cyc() - t1 < 40u * CPU_MHZ) {
+            if (rx_byte(&b) && n < PIOUSB_MAX_PACKET) x->data[n++] = (uint8_t)b;
+        }
+        while (rx_byte(&b)) if (n < PIOUSB_MAX_PACKET) x->data[n++] = (uint8_t)b;
+        rx_prepare();
+        tx_pre();
+        tx_packet(pkt, plen);
+        rx_start();
+        if (n < PIOUSB_MAX_PACKET) x->data[n++] = 0xEE;      /* marks "our packets end here" */
+    } else if (whole) {
         uint32_t t1 = cyc();
         while (!(REG(PIO_IRQ(RX_PIO)) & RX_EOP) && cyc() - t1 < 3u * CPU_MHZ) { }
         while (rx_byte(&b)) if (n < PIOUSB_MAX_PACKET) x->data[n++] = (uint8_t)b;
@@ -473,9 +573,10 @@ ENG static void do_loopback(piousb_xfer_t *x) {
         REG(PIO_CTRL(RX_PIO) + ALIAS_SET) = 1u << DEC_SM;
     }
     uint32_t t0 = cyc();
-    while (cyc() - t0 < 20u * CPU_MHZ) {
+    while (cyc() - t0 < (g_ls ? 150u : 20u) * CPU_MHZ) {
         if (rx_byte(&b) && n < PIOUSB_MAX_PACKET) x->data[n++] = (uint8_t)b;
     }
+    if (g_ls) restore_fs();
     rx_stop();
     x->rx_len = (uint16_t)n;
     x->pid = (uint8_t)(REG(PIO_IRQ(RX_PIO)) & 0xffu);   /* the RX flags, for the record */
@@ -580,7 +681,7 @@ ENG static void __attribute__((noreturn)) engine(void) {
         }
         /* Keep every transaction inside its frame: the longest (a 64-byte
          * IN) is ~60 us on the wire, and the SOF must not be pushed late. */
-        if ((int32_t)(next_sof - now) < 150) continue;
+        if ((int32_t)(next_sof - now) < (x->low_speed ? 400 : 150)) continue;
         if (x->op == PIOUSB_OP_SETUP) do_out(x, true);
         else if (x->op == PIOUSB_OP_OUT) do_out(x, false);
         else if (x->op == PIOUSB_OP_IN) do_in(x);
@@ -687,6 +788,7 @@ int piousb_init(void) {
 
 int piousb_xfer(piousb_xfer_t *x, uint32_t timeout_us) {
     if (!g_inited || !ST->running) return x->status = PIOUSB_ENGINE;
+    if (g_ring.owner != PIOUSB_OWNER_KERNEL) return x->status = PIOUSB_BUSY;
     ylock_acquire(&g_xfer_lock);
     uint64_t deadline = time_get_us() + timeout_us;
     /* A slot is free once its previous transaction completed -- including
@@ -723,7 +825,7 @@ void piousb_status(piousb_status_t *st) {
 
 static const char *status_name(unsigned s) {
     static const char *const names[] = { "ok", "NAK", "STALL", "timeout", "CRC error",
-                                         "bad PID", "no device", "toggle mismatch", "engine" };
+                                         "bad PID", "no device", "toggle mismatch", "engine", "busy: the kbd task owns the port" };
     return s < sizeof(names) / sizeof(names[0]) ? names[s] : "?";
 }
 
@@ -784,6 +886,10 @@ void piousb_probe(void) {
     memset(&x, 0, sizeof(x));
     x.op = PIOUSB_OP_RESET;
     int st = piousb_xfer(&x, 200000);
+    if (st == PIOUSB_BUSY) {
+        cprintf("usbprobe: the kbd task owns the port -- `kbd` shows what it found\n");
+        return;
+    }
     if (st != PIOUSB_OK) {
         cprintf("usbprobe: bus reset: %s (%s-speed device)\n", status_name((unsigned)st),
                 x.speed ? "full" : "low");
@@ -850,6 +956,27 @@ void piousb_loopback(void) {
     for (unsigned i = 0; i < x.rx_len; i++) cprintf(" %02x", x.data[i]);
     cprintf("\nusbprobe loop: sent 80 2d 00 10 | 80 c3 80 06 00 01 00 00 08 00 eb 94 | then the device's handshake"
             " (prefill took %u bytes)\n", x.addr);
+
+    memset(&x, 0, sizeof(x));
+    x.op = PIOUSB_OP_LOOPBACK;
+    x.addr = 0x15; x.ep = 0xe;
+    x.low_speed = 1;
+    st = piousb_xfer(&x, 200000);
+    cprintf("usbprobe loop: low speed (PRE, then the token at 1.5 Mbit/s): %s, %u bytes:", status_name((unsigned)st),
+            (unsigned)x.rx_len);
+    for (unsigned i = 0; i < x.rx_len; i++) cprintf(" %02x", x.data[i]);
+    cprintf("  (want 80 2d 15 ef)\n");
+
+    memset(&x, 0, sizeof(x));
+    x.op = PIOUSB_OP_LOOPBACK;
+    x.len = 8;
+    x.low_speed = 1;
+    memcpy(x.data, get_dev8, 8);
+    st = piousb_xfer(&x, 200000);
+    cprintf("usbprobe loop: low-speed SETUP stage to address 0: %s, %u bytes:", status_name((unsigned)st),
+            (unsigned)x.rx_len);
+    for (unsigned i = 0; i < x.rx_len; i++) cprintf(" %02x", x.data[i]);
+    cprintf("\nusbprobe loop: (our token, ee, then the device's reply -- 80 d2 is an ACK)\n");
 }
 
 int piousb_proc_render(char *buf, uint32_t cap) {
@@ -878,6 +1005,8 @@ int piousb_proc_render(char *buf, uint32_t cap) {
 int piousb_init(void) { return -1; }
 int piousb_xfer(piousb_xfer_t *x, uint32_t timeout_us) { (void)timeout_us; return x->status = PIOUSB_ENGINE; }
 void piousb_status(piousb_status_t *st) { memset(st, 0, sizeof(*st)); }
+piousb_shared_t *piousb_shared(void) { return NULL; }
+void piousb_shared_region(uintptr_t *base, uintptr_t *size) { *base = 0; *size = 0; }
 void piousb_probe(void) { cprintf("usbprobe: this board has no PIO-USB host port\n"); }
 void piousb_loopback(void) { piousb_probe(); }
 int piousb_proc_render(char *buf, uint32_t cap) { return ksnprintf(buf, cap, "running=0\n"); }

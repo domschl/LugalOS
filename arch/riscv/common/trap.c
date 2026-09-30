@@ -1110,6 +1110,13 @@ void trap_handler(trap_frame_t *frame) {
                      * directly. */
                     ret = (long)time_get_ms();
                     break;
+                case SYS_SLEEP_MS:
+                    /* 36.8: see kernel/include/kernel/ipc.h. A value, no
+                     * pointer; capped at a minute so a garbage argument
+                     * cannot park a driver for weeks. */
+                    task_sleep_ms((uint32_t)frame->a1 > 60000u ? 60000u : (uint32_t)frame->a1);
+                    ret = 0;
+                    break;
                 case SYS_DELAY_US:
                     /* M5 Phase 2, plan/phase12_microkernel_migration.md:
                      * SYS_TIME_MS's millisecond granularity is useless for a

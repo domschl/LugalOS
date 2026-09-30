@@ -582,6 +582,9 @@ set(SOURCES
     # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
     # before the PIO-USB engine puts them on a wire.
     drivers/usb_crc.c
+    # 36.8: a boot keyboard above the transaction interface -- descriptor
+    # parsing and report diffing, checked on QEMU by `usbkbdselftest`.
+    drivers/usbkbd.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU
@@ -760,6 +763,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # 36.7: the PIO-USB host engine on core 1; guard-by-pin-map again
     # (CONFIG_PIOUSB_DP_GPIO), stubs elsewhere.
     list(APPEND SOURCES drivers/piousb_rp2350.c)
+    # 36.8: the `kbd` task on top of it (U-mode, .kbdtext).
+    list(APPEND SOURCES drivers/usbkbd_rp2350.c)
     # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.
@@ -901,6 +906,9 @@ set_source_files_properties(
     # engine runs on core 1 from RAM and must never read flash, where a jump
     # table's .rodata would be.
     drivers/piousb_rp2350.c
+    # 36.8: the kbd task's U-mode code.
+    drivers/usbkbd.c
+    drivers/usbkbd_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
 # Every object, not an enumerated subset: lugalos_config.h is reached
@@ -1168,11 +1176,27 @@ if(DEFINED CONFIG_PIOUSB_DP_GPIO)
 else()
     set(CORE1_RAM_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
 endif()
+# 36.8: the same idea for the PMP-confined U-mode tasks -- everything reachable
+# from a task's U-mode entry must stay inside its own text section, or it
+# faults the first time that path runs (tools/check_umode_text.py).
+set(UMODE_TEXT_PAIRS "")
+if(DEFINED CONFIG_LCD_PCLK_GPIO)
+    list(APPEND UMODE_TEXT_PAIRS lcdterm_umode_body .lcdtermtext)
+endif()
+if(DEFINED CONFIG_PIOUSB_DP_GPIO)
+    list(APPEND UMODE_TEXT_PAIRS kbd_umode_body .kbdtext)
+endif()
+if(UMODE_TEXT_PAIRS)
+    set(UMODE_TEXT_COMMANDS COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_umode_text.py lugalos.elf ${CMAKE_OBJDUMP} ${UMODE_TEXT_PAIRS})
+else()
+    set(UMODE_TEXT_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
+endif()
 
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
 add_custom_command(TARGET lugalos.elf POST_BUILD
     ${RAW_BIN_COMMANDS}
     ${CORE1_RAM_COMMANDS}
+    ${UMODE_TEXT_COMMANDS}
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     # Per build directory, NOT shared across targets. The image carries the

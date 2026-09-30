@@ -57,6 +57,13 @@
  * function it wraps. */
 #define SYS_REBOOT_BOOTSEL   27
 
+/* 36.8, plan/phase36_rp2350_lcd7_terminal.md: sleep, blocked, for `a1`
+ * milliseconds -- task_sleep_ms() for a U-mode driver. SYS_YIELD keeps a
+ * waiting task runnable, so a driver that waits most of the time (the
+ * keyboard task between polls, a hub's power-good time) would take a slice of
+ * every scheduler round doing nothing; this lets it block instead. */
+#define SYS_SLEEP_MS         28
+
 void ipc_init(void);
 
 #endif /* LUGALOS_KERNEL_IPC_H */

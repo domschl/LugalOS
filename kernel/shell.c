@@ -23,6 +23,8 @@
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
+#include "drivers/usbkbd.h"
+#include "drivers/usbkbd_task.h"
 #include "drivers/vtterm.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
@@ -581,8 +583,11 @@ static void cmd_help(void) {
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  usbselftest     - USB CRC5/CRC16 against known packets (36.7)\n");
+    cprintf("  usbkbdselftest  - USB descriptor parsing and keyboard report diffing (36.8)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
-    cprintf("  usbprobe        - Reset the PIO-USB port and read the device descriptor\n");
+    cprintf("  usbprobe        - Reset the PIO-USB port and read the device descriptor (if kbd is not running)\n");
+    cprintf("  kbd             - The USB keyboard task: devices found, hub ports, counters\n");
+    cprintf("  kbdlog [s]      - Print key make/break events for s seconds (default 30)\n");
 #endif
     cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
@@ -3060,12 +3065,35 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "usbselftest") == 0) {
         (void)usb_crc_selftest();
         return;
+    } else if (strcmp(cmd_line, "usbkbdselftest") == 0) {
+        (void)usbkbd_selftest();
+        return;
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     } else if (strcmp(cmd_line, "usbprobe") == 0) {
         piousb_probe();
         return;
     } else if (strcmp(cmd_line, "usbprobe loop") == 0) {
         piousb_loopback();
+        return;
+    } else if (strcmp(cmd_line, "kbd") == 0) {
+        usbkbd_report();
+        return;
+    } else if (strcmp(cmd_line, "kbd desc") == 0) {
+        usbkbd_dump_desc();
+        return;
+    } else if (strcmp(cmd_line, "kbd off") == 0 || strcmp(cmd_line, "kbd on") == 0) {
+        bool off = cmd_line[5] == 'f';
+        cprintf("kbd: %s\n", usbkbd_set_off(off) ? (off ? "off; the port is the kernel's (usbprobe)" : "on")
+                                                   : "the task did not answer");
+        return;
+    } else if (strncmp(cmd_line, "kbdlog", 6) == 0 && (cmd_line[6] == 0 || cmd_line[6] == ' ')) {
+        uint32_t s = 30;
+        if (cmd_line[6] == ' ') {
+            s = 0;
+            for (const char *p = cmd_line + 7; *p >= '0' && *p <= '9'; p++) s = s * 10u + (uint32_t)(*p - '0');
+            if (s == 0) s = 30;
+        }
+        usbkbd_log(s);
         return;
 #endif
     } else if (strcmp(cmd_line, "vtselftest") == 0) {

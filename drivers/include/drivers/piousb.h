@@ -43,6 +43,7 @@ enum {
     PIOUSB_NODEV     = 6,   /* no device, or the port is not enabled */
     PIOUSB_TOGGLE    = 7,   /* IN: DATA0/1 other than expected (ACKed, dropped) */
     PIOUSB_ENGINE    = 8,   /* core 0 side: the engine is not running/answering */
+    PIOUSB_BUSY      = 9,   /* core 0 side: the kbd task owns the port */
 };
 
 typedef struct {
@@ -55,7 +56,7 @@ typedef struct {
     uint8_t  pid;           /* completion: the PID the device answered with */
     uint16_t rx_len;        /* completion: IN payload bytes in data[] */
     uint8_t  speed;         /* completion of RESET: 1 full speed, 0 low speed */
-    uint8_t  _pad;
+    uint8_t  low_speed;     /* 36.8: a low-speed device behind a hub: PRE, 1.5 Mbit/s */
     uint8_t  data[PIOUSB_MAX_PACKET];
 } piousb_xfer_t;
 
@@ -78,6 +79,32 @@ typedef struct {
     uint32_t loops;                  /* engine loop iterations (liveness) */
     uint32_t core1_stack_used;
 } piousb_status_t;
+
+/* The block core 1 shares with its one submitter (36.8): the transaction ring
+ * and the engine's status, 512 bytes on a 512-byte boundary so that the U-mode
+ * `kbd` task's domain can grant exactly it and nothing else.
+ *
+ * One ring whose slots complete in place: the submitter fills
+ * slot[submitted % PIOUSB_RING] and advances `submitted`; core 1 runs
+ * slot[completed % PIOUSB_RING], writes the result into the same slot and
+ * advances `completed`. Each index has one writer, so there is no lock -- and
+ * there is exactly one submitter at a time, named by `owner`. */
+#define PIOUSB_RING        4u
+#define PIOUSB_OWNER_KERNEL 0u      /* usbprobe, from the shell */
+#define PIOUSB_OWNER_KBD    1u      /* the kbd task (drivers/usbkbd_rp2350.c) */
+typedef struct {
+    volatile uint32_t submitted;
+    volatile uint32_t completed;
+    volatile uint32_t owner;
+    uint32_t          _pad;
+    piousb_xfer_t     slot[PIOUSB_RING];
+    piousb_status_t   st;           /* written by core 1 */
+} piousb_shared_t;
+
+/* The shared block and its extent, for a domain grant. NULL/0 where there is
+ * no PIO-USB port. */
+piousb_shared_t *piousb_shared(void);
+void piousb_shared_region(uintptr_t *base, uintptr_t *size);
 
 /* Boot: set up PIO0 (TX) and PIO1 (RX) on the port's pins and launch the
  * engine on core 1. 0 on success. */

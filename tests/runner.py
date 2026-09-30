@@ -576,6 +576,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("USB CRC5/CRC16 Against Known Packets (36.7 usbselftest)",
                         ok, log if not ok else ""))
 
+        # 36.8: the keyboard's portable half -- configuration descriptors
+        # (the HID spec's example, a composite device, a hub, a malformed one)
+        # and boot-report diffing into make/break events.
+        ok, log = session.send_and_expect("usbkbdselftest", r"USBKBD_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
+        if ok and "USBKBD_SELFTEST_FAIL" in log:
+            ok = False
+        results.append(("USB Descriptors And Keyboard Reports (36.8 usbkbdselftest)",
+                        ok, log if not ok else ""))
+
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
         #
