@@ -107,7 +107,9 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path);
 int fat32_rmdir(fat32_fs_t *fs, const char *path);
 int fat32_remove_file(fat32_fs_t *fs, const char *path);
 void fat32_list_dir(fat32_fs_t *fs, const char *path);
-int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes);
+/* Size and free space in 512-byte blocks (32 bits cover 2 TB; bytes would
+ * not cover 4 GiB). The free count scans the whole FAT. */
+int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks);
 
 /* Offset-addressed read/write, underlying fs/vfs_server.c's handle-based
  * vfs_pread()/vfs_pwrite() (see A1 in plan/phase5_distributed_design.md).

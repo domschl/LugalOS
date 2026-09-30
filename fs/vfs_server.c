@@ -591,32 +591,26 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "Filesystem     512-blocks       Used  Available Capacity Mounted on\n");
         if (g_flash_mounted) {
-            uint32_t total = 0, free = 0;
-            fat32_statfs(&g_fat32_flash, &total, &free);
-            uint32_t total_b = total / 512;
-            uint32_t free_b = free / 512;
+            uint32_t total_b = 0, free_b = 0;
+            fat32_statfs(&g_fat32_flash, &total_b, &free_b);
             uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
-            uint32_t pct = total_b ? (used_b * 100 / total_b) : 100;
+            uint32_t pct = total_b ? (uint32_t)((uint64_t)used_b * 100u / total_b) : 100;
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "/flash0/         %9u  %9u  %9u     %3u%% /flash0/\n", total_b, used_b, free_b, pct);
         }
         if (g_ram_mounted) {
-            uint32_t total = 0, free = 0;
-            fat32_statfs(&g_fat32_ram, &total, &free);
-            uint32_t total_b = total / 512;
-            uint32_t free_b = free / 512;
+            uint32_t total_b = 0, free_b = 0;
+            fat32_statfs(&g_fat32_ram, &total_b, &free_b);
             uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
-            uint32_t pct = total_b ? (used_b * 100 / total_b) : 0;
+            uint32_t pct = total_b ? (uint32_t)((uint64_t)used_b * 100u / total_b) : 0;
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "/ram0/           %9u  %9u  %9u     %3u%% /ram0/\n", total_b, used_b, free_b, pct);
         }
         if (g_sd_mounted) {
-            uint32_t total = 0, free = 0;
-            fat32_statfs(&g_fat32_sd, &total, &free);
-            uint32_t total_b = total / 512;
-            uint32_t free_b = free / 512;
+            uint32_t total_b = 0, free_b = 0;
+            fat32_statfs(&g_fat32_sd, &total_b, &free_b);
             uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
-            uint32_t pct = total_b ? (used_b * 100 / total_b) : 0;
+            uint32_t pct = total_b ? (uint32_t)((uint64_t)used_b * 100u / total_b) : 0;
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "/sd0/            %9u  %9u  %9u     %3u%% /sd0/\n", total_b, used_b, free_b, pct);
         }

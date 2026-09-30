@@ -516,10 +516,14 @@ by walking the chain from the file's first cluster every call
 Each step is `fat_get_entry()`, which reads the FAT sector from the device
 with no cache, one SD sector read per cluster before the offset, per call.
 
-**`df` shows the same shape on a whole volume** (2026-09-30, RP2350-LCD-7):
-42 s for `/sd0` on a 3.3 GB card, the shell unresponsive meanwhile. The free
-count reads every FAT sector over SPI; a cached free count (FSInfo, or
-remembered after the first scan) would make it instant after the first.
+**`df` has the same cost on a whole volume** (2026-09-30, RP2350-LCD-7):
+42 s for `/sd0` on a 128 GB card, the shell unresponsive meanwhile. The free
+count reads every FAT sector (~15 MB of FAT at 32 KB clusters) over SPI. The
+fix is FSInfo's free count (FAT32's own cache, sector `BPB_FSInfo`, validated
+by its signatures), kept current by the allocator and rewritten on unmount,
+with the full scan as the fallback when FSInfo says "unknown". (The same
+`df` also reported the card as 3.3 GB: a byte count overflowing 32 bits,
+fixed the same day -- fat32_statfs() now reports 512-byte blocks.)
 
 **Why it is parked:** at the file sizes this tree writes today (source files,
 init scripts, PGNs, the writer's documents) it costs milliseconds. The fix

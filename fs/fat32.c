@@ -1010,11 +1010,13 @@ int fat32_rmdir(fat32_fs_t *fs, const char *path) {
     return fat32_remove_file(fs, path);
 }
 
-int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes) {
+int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks) {
     if (!fs || !fs->dev) return -1;
     uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
-    uint32_t total_sz = total_sec * fs->bpb.bytes_per_sec;
-    if (total_bytes) *total_bytes = total_sz;
+    /* In 512-byte blocks, not bytes: a byte count overflows 32 bits past
+     * 4 GiB, and a 128 GB card read as 3.3 GB in `df` (2026-09-30). */
+    uint32_t blocks_per_sec = fs->bpb.bytes_per_sec / 512u;
+    if (total_blocks) *total_blocks = total_sec * blocks_per_sec;
 
     uint32_t free_clusters = 0;
     uint32_t total_clusters = (total_sec > fs->data_start_sector) ?
@@ -1032,7 +1034,7 @@ int fat32_statfs(fat32_fs_t *fs, uint32_t *total_bytes, uint32_t *free_bytes) {
         fat_sec++;
     }
 
-    if (free_bytes) *free_bytes = free_clusters * fs->bytes_per_cluster;
+    if (free_blocks) *free_blocks = free_clusters * (fs->bytes_per_cluster / 512u);
     return 0;
 }
 
