@@ -66,6 +66,10 @@ class QemuSession:
         self.process: subprocess.Popen[bytes] | None = None
         self._log_path: Path | None = None
         self._log_file: "BinaryIO | None" = None  # read-mode file object, opened in start()
+        # send_and_expect()'s completion sentinels: `(+ N 0)` with N unique per
+        # session. A number rather than a symbol, because every distinct symbol
+        # would be interned in the guest's Lisp heap for good.
+        self._sentinel_seq: int = 700000
 
     def start(self, extra_qemu_args: list[str] | None = None, identity_img_path: "Path | None" = None) -> None:
 
@@ -222,17 +226,48 @@ class QemuSession:
         echo_pattern = r"\r?\n".join(escaped_lines)
         return re.sub(echo_pattern, "", text, count=1)
 
-    def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0) -> tuple[bool, str]:
+    # How long to keep waiting for a sentinel once the pattern has matched
+    # but the sentinel has not appeared, measured from the last new byte. A
+    # sentinel that never comes means the command did not hand the console
+    # back to lsh/Lisp (it rebooted the guest, or a program is reading input);
+    # returning after this is the old behaviour plus a bounded grace.
+    SENTINEL_GRACE_S = 3.0
+
+    def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0,
+                        sentinel: "bool | None" = None) -> tuple[bool, str]:
         """Writes `command` to QEMU's stdin, then tails its log file --
         read()-what's-new, sleep briefly, repeat -- until `expected_pattern`
         matches or `timeout` elapses.
 
-        **Expect the last line the command prints, not the first.** This
-        returns as soon as the pattern matches, so output produced afterwards
-        is captured only if it happened to arrive in the same read. Matching an
-        early confirmation and then asserting on a later line is a race that
-        passes on an idle machine and fails under load -- and fails looking
-        like a fault in the guest.
+        **Completion sentinels (2026-09-30).** Once the pattern has matched,
+        this sends one more line, `(+ N 0)`, which lsh and the Lisp REPL alike
+        evaluate and answer with `=> N`. The guest runs one line at a time, so
+        everything the command prints comes before that answer. The call
+        returns when the answer appears: the whole of the command's output is
+        in the result, and none of it is left behind to be matched by the next
+        call. It is sent after the match rather than with the command, so the
+        guest sees no extra input while the command runs (see the body).
+
+        That retires, for every caller at once, the race the paragraph below
+        describes and eight tests were hand-fixed for (plan/open_issues.md).
+        Details:
+          * If the pattern matches and the sentinel never comes, the call
+            returns SENTINEL_GRACE_S after the last new byte: the command did
+            not give the console back (a reboot, a program reading input).
+          * The sentinel's echo and its `=> N` are removed from the returned
+            text, so a test counting `=>` lines sees only its own.
+          * `sentinel=False` sends the command alone, for a caller that leaves
+            a program other than lsh/Lisp reading the console (it would take
+            the sentinel as input). An empty command never gets one: those
+            calls wait for boot or asynchronous output, not for a command.
+
+        **Before sentinels: expect the last line the command prints, not the
+        first.** This used to return as soon as the pattern matched, so output
+        produced afterwards was captured only if it happened to arrive in the
+        same read. Matching an early confirmation and then asserting on a
+        later line is a race that passes on an idle machine and fails under
+        load -- and fails looking like a fault in the guest. It is still the
+        rule for `sentinel=False` callers.
 
         This method (and how it reads QEMU's output -- see start()'s
         comment for that half) went through several revisions chasing what
@@ -275,52 +310,95 @@ class QemuSession:
 
         self._drain()
 
+        use_sentinel = bool(command) and (sentinel is not False)
+        marker_re = echo_re = None
+        sentinel_line = b""
+        if use_sentinel:
+            self._sentinel_seq += 1
+            n = self._sentinel_seq
+            sentinel_line = f"(+ {n} 0)\n".encode()
+            marker_re = re.compile(rf"=> {n}\r*\n")
+            echo_re = re.compile(rf"\(\+ {n} 0\)\r*\n")
         if command:
             self.process.stdin.write((command + "\n").encode())
             self.process.stdin.flush()
+        sentinel_sent = False
+
+        def without_sentinel(text: str) -> str:
+            if echo_re is not None:
+                text = echo_re.sub("", text, count=1)
+            if marker_re is not None:
+                text = marker_re.sub("", text, count=1)
+            return text
 
         accumulated = b""
         start_time = time.time()
+        last_new = start_time
+        matched_waiting = False
         regex = re.compile(expected_pattern, re.MULTILINE | re.DOTALL)
-
-        def check(raw: bytes) -> tuple[bool, str]:
-            text = raw.decode("utf-8", "replace")
-            return bool(regex.search(self._strip_echo(text, command))), text
 
         while time.time() - start_time < timeout:
             chunk = self._log_file.read()
             if not chunk:
+                if matched_waiting and time.time() - last_new > self.SENTINEL_GRACE_S:
+                    self._sentinel_trace("grace", command)
+                    return True, without_sentinel(accumulated.decode("utf-8", "replace"))
                 time.sleep(0.02)
                 continue
             accumulated += chunk
+            last_new = time.time()
 
             if any(marker.encode() in accumulated for marker in self.FAULT_MARKERS):
                 return False, accumulated.decode("utf-8", "replace")
-            matched, text = check(accumulated)
-            if matched:
-                # One more non-blocking read before returning.
-                #
-                # This returns on the first chunk in which the pattern
-                # matches, so anything the guest printed *after* it is in the
-                # result only by luck of chunk boundaries. A caller that waits
-                # for one line and then asserts on a later one is therefore
-                # racing, and it fails as a firmware fault rather than as a
-                # test bug -- which cost several dismissals of an "unexplained
-                # flake" before it was tracked down (2026-09-04, the I6 WLAN
-                # credential test).
-                #
-                # This does not make such a caller correct; the fix for that is
-                # to expect the *last* line the command produces. But it costs
-                # nothing, it strictly widens what is captured, and it removes
-                # the most common version of the race -- output already written
-                # to the log and simply not read yet.
-                trailing = self._log_file.read()
-                if trailing:
-                    accumulated += trailing
-                    text = accumulated.decode("utf-8", "replace")
-                return True, text
 
+            raw = accumulated.decode("utf-8", "replace")
+            text = without_sentinel(raw)
+            matched = bool(regex.search(self._strip_echo(text, command)))
+            if not use_sentinel:
+                if matched:
+                    # One more non-blocking read before returning: anything
+                    # already in the log is captured, which removes the most
+                    # common version of the race above (2026-09-04, the I6
+                    # WLAN credential test). It does not make an early-line
+                    # caller correct; the sentinel does.
+                    trailing = self._log_file.read()
+                    if trailing:
+                        accumulated += trailing
+                        text = accumulated.decode("utf-8", "replace")
+                    return True, text
+                continue
+
+            if matched and not sentinel_sent:
+                # Sent only now, not with the command: until the command has
+                # produced what the test waits for, the guest sees exactly the
+                # input it always did. Sending it up front put a queued line in
+                # front of lockselftest's 200 ms klog-drain window on the
+                # two-hart target and failed it 2 times in 12 (2026-09-30).
+                # Queued now, it still lands behind anything the command has
+                # yet to print, so completeness holds.
+                self.process.stdin.write(sentinel_line)
+                self.process.stdin.flush()
+                sentinel_sent = True
+                last_new = time.time()
+            if matched and marker_re is not None and marker_re.search(raw):
+                return True, text
+            matched_waiting = matched
+
+        if matched_waiting:
+            self._sentinel_trace("timeout-matched", command)
+            return True, without_sentinel(accumulated.decode("utf-8", "replace"))
         return False, accumulated.decode("utf-8", "replace")
+
+    @staticmethod
+    def _sentinel_trace(kind: str, command: str) -> None:
+        """LUGALOS_SENTINEL_TRACE=<file>: record each call whose sentinel never
+        came back, with the command. A sentinel that is not answered went to
+        something other than lsh/Lisp -- the list of callers that should pass
+        sentinel=False, found by running the suite rather than guessed."""
+        path = os.environ.get("LUGALOS_SENTINEL_TRACE")
+        if path:
+            with open(path, "a") as f:
+                f.write(f"{kind}\t{command!r}\n")
 
     def _report_qemu_log(self) -> None:
         """Summarise QEMU's own diagnostics, if it produced any.
@@ -465,7 +543,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # it. Generic VFS code, so the virtio SD image exercises exactly what
         # the RP2350's SPI card does. `verified` is the last thing it prints;
         # the file must be gone afterwards, or the test left litter on /sd0.
-        ok, log = session.send_and_expect("sdbench w 64", r"sdbench w: 64 KB file: .*(verified|VERIFY FAILED)", timeout=20.0)
+        # 16 KB, not 64: QEMU's virtio disk writes slowly (64 KB took 10.7 s
+        # on RV64 even on an idle host, and a loaded one timed out at 20 s).
+        # 16 KB is still 32 clusters on this 512-byte-cluster image, so the
+        # chain is walked and extended many times over.
+        ok, log = session.send_and_expect("sdbench w 16", r"sdbench w: 16 KB file: .*(verified|VERIFY FAILED)", timeout=30.0)
         if ok and "VERIFY FAILED" in log:
             ok = False
         if ok:
@@ -1559,12 +1641,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # of the previous chess session, landing at an unpredictable point
         # relative to whatever that test assumed was a clean chess> prompt.
         # Waiting explicitly for "lsh>" after `quit` closes that gap.
+        # sentinel=False here and on the stalemate case below: both end with
+        # the chess console reading moves, which would take the completion
+        # sentinel as one (found by LUGALOS_SENTINEL_TRACE, 2026-09-30).
+        # The `quit` after each is back in lsh and answers normally.
         cmd_checkmate = (
             "(chess)\n"
             "fen rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2\n"
             "d8h4"
         )
-        ok, log = session.send_and_expect(cmd_checkmate, r"Checkmate! Black wins!", timeout=6.0)
+        ok, log = session.send_and_expect(cmd_checkmate, r"Checkmate! Black wins!", timeout=6.0,
+                                          sentinel=False)
         results.append(("Chess Checkmate Detection (fool's mate, J2)", ok, log if not ok else ""))
         session.send_and_expect("quit", r"lsh>", timeout=4.0)
 
@@ -1577,7 +1664,8 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "fen k7/8/1Q6/8/8/8/8/7K b - - 0 1\n"
             "go"
         )
-        ok, log = session.send_and_expect(cmd_stalemate, r"Stalemate! Game is a draw", timeout=6.0)
+        ok, log = session.send_and_expect(cmd_stalemate, r"Stalemate! Game is a draw", timeout=6.0,
+                                          sentinel=False)
         results.append(("Chess Stalemate Detection (J2)", ok, log if not ok else ""))
         session.send_and_expect("quit", r"lsh>", timeout=4.0)
 

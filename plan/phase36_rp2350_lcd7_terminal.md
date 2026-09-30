@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.3 done 2026-09-30, 36.4 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.3a done 2026-09-30, 36.4 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -996,6 +996,72 @@ been "none" throughout, and the DMA read pointer walking the ring.
 (`tools/sizereport-rp2350-terminal.json` re-baselined), the other personas
 +0. The panel starts at boot in `kernel_main()`, before the scheduler, and
 never needs it again.
+
+### 36.3a — The test harness waits for commands to finish *(added 2026-09-30)*
+
+Not panel work. It is here because it was paid for in this phase's time. On
+this machine the QEMU suite failed about one run in three, a different test
+each time, and eight tests were hand-fixed over 36.0a–36.3 for the same
+defect. The owner asked for the class to be fixed from the ground up
+before 36.4.
+
+**The defect.** `send_and_expect()` returned as soon as its pattern matched
+anywhere in the output read so far. A test asserting on a later line raced
+chunk boundaries, and a late line of one command could satisfy the *next*
+command's pattern.
+
+**The fix: completion sentinels** (`tests/runner.py`). Once the pattern has
+matched, the harness sends `(+ N 0)`, which lsh and the Lisp REPL alike answer
+with `=> N`. The guest runs one line at a time, so the call returns with the
+command's complete output and leaves nothing behind. N is a number, unique
+per session, because a symbol would be interned in the guest's Lisp heap
+forever. The sentinel's echo and answer are stripped from what tests see.
+Empty sends (waits for boot or asynchronous output) get none. A caller that
+leaves a program other than lsh/Lisp reading the console passes
+`sentinel=False`: the two chess-console sends, found by running the suite
+with `LUGALOS_SENTINEL_TRACE`, which records every unanswered sentinel.
+
+**Proven, not assumed.** The flaw's shape (wait for `/proc/node`'s first
+line, assert on its last), 40 times per architecture with half the host's
+16 cores busy: the old behaviour lost the last line **9/40 (RV64) and 2/40
+(RV32)** on one run and 3/40 and 15/40 on another; with sentinels **0/40**
+every time.
+
+**Two things the first version got wrong, both caught by measuring:**
+
+* *Sent together with the command, the sentinel changed what the guest saw
+  while the command ran.* The two-hart `lockselftest` gives klogd 200 ms to
+  report a deliberately lost log burst, and a queued input line in that window
+  failed it **2 times in 12**, against 0 in 12 without. The sentinel is now
+  sent only after the pattern matches, and the guest sees the old input
+  sequence until then: 0 in 16.
+* *Sent after the match, it exposed a real kernel bug:* see below.
+
+**The kernel bug it found: two console readers could strand one of them.**
+`console_pump()` did `if (uart_has_char()) c = uart_getc();`, and two tasks
+run it: the line reader, and anything polling for Ctrl-C, which includes the
+background mqttd task (`net/mqtt.c`'s connect loop calls
+`console_interrupt_requested()`). mqttd saw a byte arrive, the shell's
+`console_getc()` took it first through its own unlocked `uart_getc()`
+fallback, and mqttd then sat in a *blocking* `uart_getc()` until someone
+typed again: no connect and no error, in 2 runs of 3. On hardware, typing
+at the shell while mqttd connects would do the same. **Fix
+(`kernel/console.c`):** the pump's check-and-read is under a ylock, and
+`console_getc()` no longer reads the device outside the pump; it pumps,
+pops and yields. That mqttd test is now 12/12, and the two-hart lock
+self-test 12/12.
+
+**Result:** 370/370 on four idle runs and on one run with 8 of the 16 host
+cores busy, with the sentinel trace empty. The suite takes ~244 s idle,
+about 3 % over the old ~237 s. One new test of mine was over-tight and is
+fixed with it: `sdbench w` took 10.7 s for 64 KB on RV64's virtual disk and
+timed out under load at 20 s. It now writes 16 KB, still 32 clusters, with
+a 30 s timeout.
+
+The ~70 unvetted call sites in `plan/open_issues.md` are retired with this,
+so that entry is deleted. The hand fixes from 36.0a–36.3 stay: they are
+correct, and a `sentinel=False` caller still depends on the old rule.
+`tests/hw/` has its own reader and is not changed by this.
 
 ### 36.4 — The 1-bpp framebuffer, through DMA, at zero CPU
 
