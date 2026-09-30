@@ -426,7 +426,10 @@ chess persona 7 373 ms; the same preset with the ST7735/TM1638 drivers built
 out 9 588 ms; the rp2350-terminal image 16 970 ms, and 16 971 ms on the
 RP2350-LCD-7, so it is not the board. The flash interface was identical in all
 cases (QMI M0: quad continuous read, CLKDIV 3), and `clocks` verified the CPU
-clock on both boards (plan/phase36 36.1).
+clock on both boards (plan/phase36 36.1). Later terminal images moved again
+with no change to chess: 8 281 ms at 36.6a, 7 029 ms at 36.7, whose only
+effect on core 0 is where the linker put things (the same 36.7 image runs
+7 029 ms with the USB engine idle and with it carrying SOFs).
 
 **What it is:** the engine executes in place from flash through the 16 KB
 XIP cache. Its hot path (bitboard, position, movegen, evaluation, tt, search:
@@ -512,6 +515,11 @@ by walking the chain from the file's first cluster every call
 (`fs/fat32.c:483`, and the matching walk in the write path near line 771).
 Each step is `fat_get_entry()`, which reads the FAT sector from the device
 with no cache, one SD sector read per cluster before the offset, per call.
+
+**`df` shows the same shape on a whole volume** (2026-09-30, RP2350-LCD-7):
+42 s for `/sd0` on a 3.3 GB card, the shell unresponsive meanwhile. The free
+count reads every FAT sector over SPI; a cached free count (FSInfo, or
+remembered after the first scan) would make it instant after the first.
 
 **Why it is parked:** at the file sizes this tree writes today (source files,
 init scripts, PGNs, the writer's documents) it costs milliseconds. The fix
@@ -648,6 +656,10 @@ told, and its own docstring records a false mismatch from guessing wrong
 would settle it. Deferred 2026-09-03 because only a clock board was
 attached, and a rewrite that cannot be run against a chess persona is
 worse than a narrower change that can.
+
+The RP2350-LCD-7 (phase 36) made the table's cost concrete: its UART0 and SD
+chip select differ from every other persona, so K3 now recognises it by its
+panel pins and carries a third set of values (2026-09-30).
 
 ---
 

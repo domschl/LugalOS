@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.6 done 2026-09-30, 36.7 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.7 done 2026-09-30, 36.8 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -1363,6 +1363,64 @@ VID:PID and bMaxPacketSize0; `/proc/usbhost` shows SOFs advancing at
 the SOF count nor is refused (§3.2.1); `(perft 3 1)` on core 0 takes the same
 time with the engine running as without it.
 
+**Done, 2026-09-30.** `drivers/piousb_rp2350.c`: PIO0 SM0 transmits, PIO1
+decodes (NRZI decoder SM0 + edge detector SM1, which fill PIO1's 32 slots
+exactly), and core 1 runs the engine from RAM with interrupts off. The three
+PIO programs are Pico-PIO-USB's, assembled with the SDK's pioasm (built from
+the local pico-sdk) and embedded with their MIT notice; the engine is new.
+USB's CRCs are portable (`drivers/usb_crc.c`) and `usbselftest` checks them on
+QEMU against known packets (`2D 00 10`, `DD 94`, `E0 F4`, the whitepaper's
+CRC5 examples, the 0xB001 residual). Core 1 launches without SMP:
+`kernel/smp.c`'s handshake and core-1 stack are now available to a non-SMP
+persona that supplies its own `core1_main`.
+
+On the board:
+* `usbprobe`: `12 01 00 02 09 00 00 40 40 1a 01 08 00 01 00 01 00 01`, a
+  **USB 2.0 hub, VID:PID 1a40:0801** (the keyboard's built-in hub, as
+  expected), bMaxPacketSize0 64, full speed.
+* ACK turnaround **94-96 cycles (652-666 ns)** from the device's EOP to our
+  ACK, about half the ~1.3 us budget. §6's first USB risk is retired.
+* SOFs: **61 403 in 61.40 s = 1000.0/s**, no late frames, port enabled
+  throughout.
+* `(perft 3 1)`: 7 029 ms before the port carries traffic and 7 029 ms after.
+  The pre-36.7 image ran 8 281 ms, which is the code-layout effect in
+  plan/open_issues.md, not the engine.
+* `test_rp2350.py` 25/25; `boardprobe` reads through the engine's input
+  inversion and no longer rewrites its pads.
+
+What went wrong on the way, for the next PIO-USB work:
+* **The device ignored every SETUP until the TX prefill was cut to 2 bytes.**
+  Polling 9 bytes into the FIFO before releasing the SM put ~7 bit times into
+  the token → DATA0 gap, and the hub never ACKed. A loopback diagnostic
+  (`usbprobe loop`: the decoder reading our own packets off the wire) proved
+  TX and RX byte-exact first, which is what pointed at timing.
+* **The loopback clipped at 9 bytes** until it drained the RX FIFO while
+  transmitting: the RX FIFO is 8 deep. The real receive path drains
+  continuously.
+* rx_start() waits for the edge detector to flag *our own* EOP before
+  clearing it. The reference gets this ordering for free from a slower call
+  path; this engine is fast enough to lose the race otherwise.
+
+Deviations from the plan above, each deliberate:
+* No NRZI or bit-stuff encoder in C: the TX program does both, and the RX
+  programs undo them. Only the CRCs are in C.
+* The two rings became one ring whose slots complete in place (each index
+  has one writer), which avoids copying a 76-byte slot across.
+* No DMA channel for TX: core 1 feeds the FIFO itself, having nothing else
+  to do.
+* **§3.2.1's flash test could not run as written:** on this persona `/flash0`
+  is a read-only ROM disk, and the only runtime flash writer (the identity
+  store) reboots the board when it completes. What the test was for, that
+  core 1 never touches flash, is instead checked on the compiled code at
+  every build: `tools/check_core1_ram.py` walks everything reachable from
+  `core1_main` and fails the build if any of it is outside RAM or computes a
+  flash address (13 functions today; it rejects the SMP image's flash-
+  resident core1_main, as it should). No park acknowledgement is needed:
+  without SMP, `smp_flash_park_request()` has nothing to park.
+
+Static RAM +940 bytes on rp2350-terminal (the CRC table 512, the ring, the
+status block); +0 on the other personas.
+
 ### 36.8 — Enumeration and the boot keyboard
 
 The `kbd` task: the full enumeration sequence (§3.2), SET_PROTOCOL(boot),
@@ -1436,7 +1494,9 @@ three uses. `plan/hardware_seams.md`: `vtterm.c` under Console
 implementations, `CONFIG_CLK_SYS_HZ` in §1 as the clock row's RP2350
 refinement, and the second canvas implementation noted (§4.6). A sizecheck
 baseline for the new persona. The decision on the ACM0 tee (§4.4). This
-document's §1.5 updated with whatever the board contradicted.
+document's §1.5 updated with whatever the board contradicted. Third-party
+notices in the README for the two pieces of outside work the image carries:
+the Spleen font (BSD-2, 36.5) and Pico-PIO-USB's PIO programs (MIT, 36.7).
 
 ---
 

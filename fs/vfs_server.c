@@ -13,6 +13,7 @@
 #include "drivers/cyw43.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/bme280.h"
+#include "drivers/piousb.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -1206,6 +1207,12 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #endif
         return (int)used;
     }
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    else if (strcmp(rel, "usbhost") == 0) {
+        /* 36.7: the PIO-USB engine's counters, key=value (drivers/piousb.h). */
+        return piousb_proc_render(buf, cap);
+    }
+#endif
     else if (strcmp(rel, "sensors") == 0) {
         /* E7, plan/phase27_esp32p4_bringup.md: the environment sensor, for a
          * reader that is not on this board.
@@ -1558,6 +1565,9 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
 static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors",
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    "usbhost",
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif

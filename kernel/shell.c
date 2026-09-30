@@ -21,6 +21,8 @@
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
+#include "drivers/piousb.h"
+#include "drivers/usb_crc.h"
 #include "drivers/vtterm.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
@@ -578,6 +580,10 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
+    cprintf("  usbselftest     - USB CRC5/CRC16 against known packets (36.7)\n");
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    cprintf("  usbprobe        - Reset the PIO-USB port and read the device descriptor\n");
+#endif
     cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
 #if defined(CONFIG_BOARD_RP2350)
@@ -3051,6 +3057,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "umodetest") == 0) {
         umode_probe_run();
         return;
+    } else if (strcmp(cmd_line, "usbselftest") == 0) {
+        (void)usb_crc_selftest();
+        return;
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    } else if (strcmp(cmd_line, "usbprobe") == 0) {
+        piousb_probe();
+        return;
+    } else if (strcmp(cmd_line, "usbprobe loop") == 0) {
+        piousb_loopback();
+        return;
+#endif
     } else if (strcmp(cmd_line, "vtselftest") == 0) {
         /* 36.6, plan/phase36_rp2350_lcd7_terminal.md: portable, so it runs on
          * QEMU as well as on the board with the panel. */

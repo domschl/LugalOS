@@ -71,6 +71,7 @@
 #include "arch/riscv/rp2350/binary_info.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
+#include "drivers/piousb.h"
 
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
@@ -344,6 +345,11 @@ void kernel_main(void) {
         console_bind_device("lcd");
     }
 #endif
+#endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    /* 36.7: the USB host port's engine takes core 1 for good. Like the panel,
+     * it needs no scheduler, so it starts before one exists. */
+    (void)piousb_init();
 #endif
 
     sched_init();

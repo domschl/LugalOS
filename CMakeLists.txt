@@ -579,6 +579,9 @@ set(SOURCES
     drivers/font8x16.c
     # 36.6: the terminal emulator on top of it, and its `vtselftest`.
     drivers/vtterm.c
+    # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
+    # before the PIO-USB engine puts them on a wire.
+    drivers/usb_crc.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU
@@ -754,6 +757,9 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     list(APPEND SOURCES drivers/clocks_rp2350.c)
     # 36.3: the RP2350-LCD-7's RGB panel; guard-by-pin-map (CONFIG_LCD_*).
     list(APPEND SOURCES drivers/lcd7_rp2350.c)
+    # 36.7: the PIO-USB host engine on core 1; guard-by-pin-map again
+    # (CONFIG_PIOUSB_DP_GPIO), stubs elsewhere.
+    list(APPEND SOURCES drivers/piousb_rp2350.c)
     # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.
@@ -891,6 +897,10 @@ set_source_files_properties(
     drivers/lcd7_rp2350.c
     drivers/vtterm.c
     drivers/fbtext.c
+    # 36.7: not U-mode, but the same hazard from the other side -- the USB
+    # engine runs on core 1 from RAM and must never read flash, where a jump
+    # table's .rodata would be.
+    drivers/piousb_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
 # Every object, not an enumerated subset: lugalos_config.h is reached
@@ -1148,9 +1158,21 @@ else()
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)
 endif()
 
+# 36.7 (plan/phase36_rp2350_lcd7_terminal.md §3.2.1): on a persona whose
+# core 1 is the PIO-USB engine, the build fails if anything reachable from
+# core1_main could touch flash -- the engine keeps running while core 0 has XIP
+# off, so that is a hang waiting for a flash write. Checked on the compiled
+# code, every build, rather than by a test that has to catch it in the act.
+if(DEFINED CONFIG_PIOUSB_DP_GPIO)
+    set(CORE1_RAM_COMMANDS COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_core1_ram.py lugalos.elf ${CMAKE_OBJDUMP})
+else()
+    set(CORE1_RAM_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
+endif()
+
 # Generate Raw Binary, Disassembly, Shared SD Disk Image, and UF2 Firmware
 add_custom_command(TARGET lugalos.elf POST_BUILD
     ${RAW_BIN_COMMANDS}
+    ${CORE1_RAM_COMMANDS}
     COMMAND ${CMAKE_OBJDUMP} -d -S lugalos.elf > lugalos.asm
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/build"
     # Per build directory, NOT shared across targets. The image carries the

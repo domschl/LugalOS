@@ -567,6 +567,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Screen Terminal Emulator Against A RAM Grid (36.6 vtselftest)",
                         ok, log if not ok else ""))
 
+        # 36.7: USB's CRC5 and CRC16 against packets from the spec's examples
+        # and bus captures, and the receive path's residual check -- before
+        # the PIO-USB engine on the board depends on them.
+        ok, log = session.send_and_expect("usbselftest", r"USB_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
+        if ok and "USB_SELFTEST_FAIL" in log:
+            ok = False
+        results.append(("USB CRC5/CRC16 Against Known Packets (36.7 usbselftest)",
+                        ok, log if not ok else ""))
+
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
         #

@@ -177,6 +177,13 @@ int smp_selftest(void);
  * counter -- the only state of this path proven on silicon, kept selectable
  * because a bring-up whose fallback is a git revert is a bring-up done
  * blind. CORE1_MODE_JOIN runs secondary_main() and joins the scheduler. */
+/* 36.7: launches core 1 into the persona's own core1_main() -- the
+ * PIO-USB host engine on the RP2350-LCD-7, whose second core never joins the
+ * scheduler. Non-SMP RP2350 builds only; false if core 1 did not answer or
+ * was already launched. */
+bool smp_launch_core1_engine(void);
+uint32_t smp_core1_stack_used(void);
+
 #define CORE1_MODE_PROBE    0u
 #define CORE1_MODE_JOIN     1u
 /* Cross-core mutual exclusion, with no scheduler and no traps on core 1 --

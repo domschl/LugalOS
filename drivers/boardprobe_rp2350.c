@@ -91,11 +91,17 @@ void boardprobe(void) {
             rev == 0x2 ? "PRESENT -- do not rely on pad pull-downs for USB detach"
                        : "fixed on this stepping");
 
-    /* The pads are left as this configures them: FUNCSEL is untouched (NULL
-     * at reset, so nothing drives the lines), and pull-downs are exactly what
-     * a USB host presents on D+/D- anyway. */
-    REG(PADS_BANK0_PAD(CONFIG_PIOUSB_DP_GPIO)) = PAD_INPUT_PULLDOWN;
-    REG(PADS_BANK0_PAD(CONFIG_PIOUSB_DM_GPIO)) = PAD_INPUT_PULLDOWN;
+    /* Before the PIO-USB engine (36.7) starts, the pads are left as this
+     * configures them: FUNCSEL untouched (NULL at reset, so nothing drives the
+     * lines), and pull-downs are what a USB host presents on D+/D- anyway.
+     * Once the engine owns the port, its pads and its input inversion are its
+     * own: read through them rather than rewrite them. */
+    bool owned = (REG(IO_BANK0_CTRL(CONFIG_PIOUSB_DP_GPIO)) & FUNCSEL_MASK) != FUNCSEL_NULL;
+    unsigned inv = (REG(IO_BANK0_CTRL(CONFIG_PIOUSB_DP_GPIO)) >> 16) & 1u;
+    if (!owned) {
+        REG(PADS_BANK0_PAD(CONFIG_PIOUSB_DP_GPIO)) = PAD_INPUT_PULLDOWN;
+        REG(PADS_BANK0_PAD(CONFIG_PIOUSB_DM_GPIO)) = PAD_INPUT_PULLDOWN;
+    }
     time_delay_us(1000);   /* let the lines settle through 27 R + cable */
 
     /* Several samples, not one: a device mid-attach (or a noisy cable) should
@@ -103,8 +109,8 @@ void boardprobe(void) {
     unsigned dp_hi = 0, dm_hi = 0;
     const unsigned samples = 64;
     for (unsigned i = 0; i < samples; i++) {
-        dp_hi += hi_in(CONFIG_PIOUSB_DP_GPIO);
-        dm_hi += hi_in(CONFIG_PIOUSB_DM_GPIO);
+        dp_hi += hi_in(CONFIG_PIOUSB_DP_GPIO) ^ inv;
+        dm_hi += hi_in(CONFIG_PIOUSB_DM_GPIO) ^ inv;
         time_delay_us(50);
     }
     const char *verdict;

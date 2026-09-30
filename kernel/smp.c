@@ -57,7 +57,18 @@ void smp_mark(uint32_t step);
 static inline void smp_mark(uint32_t step) { (void)step; }
 #endif
 
-#if CONFIG_ENABLE_SMP && defined(CONFIG_BOARD_RP2350)
+/* 36.7, plan/phase36_rp2350_lcd7_terminal.md: core 1 can be launched without
+ * SMP. The RP2350-LCD-7 persona gives its second core to the PIO-USB host
+ * engine (drivers/piousb_rp2350.c), which never joins the scheduler -- so it
+ * needs the launch handshake and core 1's stack below, and none of the rest.
+ * The engine supplies core1_main() itself on that persona. */
+#if defined(CONFIG_BOARD_RP2350) && (CONFIG_ENABLE_SMP || defined(CONFIG_PIOUSB_DP_GPIO))
+#define SMP_RP2350_CORE1 1
+#else
+#define SMP_RP2350_CORE1 0
+#endif
+
+#if SMP_RP2350_CORE1
 
 /* RP2350's SIO FIFO, the mailbox the bootrom listens on while core 1 waits.
  * Offsets and status bits from the SDK's own register header
@@ -95,6 +106,8 @@ static void smp_paint_core1_stack(void) {
     uintptr_t *top = (uintptr_t *)&_stack1_top;
     while (p < top) *p++ = STACK_POISON_WORD;
 }
+
+#if CONFIG_ENABLE_SMP
 
 /* X3's evidence, and deliberately the whole of what core 1 does.
  *
@@ -280,6 +293,7 @@ void core1_main(void) {
 
     core1_probe_main();         /* X3: proof of life, and nothing else. */
 }
+#endif /* CONFIG_ENABLE_SMP */
 
 /* Hazard3's equivalent of Arm's SEV: `slt x0, x0, x1` is a hint encoding --
  * a no-op on a standard RISC-V core, decoded by Hazard3 as "unblock". Taken
@@ -365,7 +379,22 @@ static bool smp_launch_core1(void) {
     return i == 6;
 }
 
-#endif /* CONFIG_ENABLE_SMP && CONFIG_BOARD_RP2350 */
+#if !CONFIG_ENABLE_SMP
+/* 36.7: launch core 1 into a dedicated engine -- whatever core1_main() the
+ * persona provides (drivers/piousb_rp2350.c on the RP2350-LCD-7). Once per
+ * boot; the stack is painted first, so smp_core1_stack_used() measures the
+ * engine exactly as it does a scheduling core 1. */
+bool smp_launch_core1_engine(void) {
+    static bool launched;
+    if (launched) return false;
+    launched = true;
+    smp_paint_core1_stack();
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    return smp_launch_core1();
+}
+#endif
+
+#endif /* SMP_RP2350_CORE1 */
 
 /* --- Parking the other core across a flash write ------------------------
  *
