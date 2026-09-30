@@ -21,6 +21,7 @@
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
+#include "drivers/vtterm.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -502,6 +503,7 @@ static void cmd_help(void) {
     cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
     cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert|text> - Diagnostic patterns\n");
     cprintf("  lcd scroll [n]  - Scroll n numbered lines of text (default 1000), timing each scroll\n");
+    cprintf("  lcd tee <uart|usb|off> - Where the lcd console also writes (uart = UART0 + USB mirror)\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
@@ -574,6 +576,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+    cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
 #if defined(CONFIG_BOARD_RP2350)
@@ -3047,6 +3050,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "umodetest") == 0) {
         umode_probe_run();
         return;
+    } else if (strcmp(cmd_line, "vtselftest") == 0) {
+        /* 36.6, plan/phase36_rp2350_lcd7_terminal.md: portable, so it runs on
+         * QEMU as well as on the board with the panel. */
+        (void)vtterm_selftest();
+        return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
@@ -3384,6 +3392,32 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lcd test text") == 0) {
         /* 36.5 */
         if (lcd7_text_test() != 0) cprintf("lcd test text: panel not running\n");
+        return;
+    } else if (strcmp(cmd_line, "lcd outbench") == 0) {
+        /* 36.6: 20 full lines through the real console path (console_putc,
+         * so whatever the tee is set to), timed on the board itself -- the
+         * host sees nothing with the tee off, so it cannot be the stopwatch. */
+        uint64_t t0 = time_get_us();
+        console_lock();
+        for (int line = 0; line < 20; line++) {
+            for (int i = 0; i < 98; i++) console_putc((char)('A' + (line + i) % 26));
+            console_putc('\n');
+        }
+        console_flush();
+        console_unlock();
+        uint64_t us = time_get_us() - t0;
+        cprintf("lcd outbench: 1980 characters in %lu us = %lu chars/s\n",
+                (unsigned long)us, (unsigned long)(1980ull * 1000000u / (us ? us : 1)));
+        return;
+    } else if (strncmp(cmd_line, "lcd tee", 7) == 0) {
+        const char *m = cmd_line + 7;
+        while (*m == ' ') m++;
+        if (strcmp(m, "uart") == 0) lcd7_set_tee(LCD_TEE_UART);
+        else if (strcmp(m, "usb") == 0) lcd7_set_tee(LCD_TEE_USB);
+        else if (strcmp(m, "off") == 0) lcd7_set_tee(LCD_TEE_OFF);
+        else if (*m) { cprintf("lcd tee: uart, usb or off\n"); return; }
+        static const char *const names[] = { "uart (UART0 + USB mirror)", "usb (ACM0 only)", "off" };
+        cprintf("lcd tee: %s\n", names[lcd7_tee()]);
         return;
     } else if (strncmp(cmd_line, "lcd scroll", 10) == 0) {
         lcd7_scroll_test(shell_trailing_uint(&cmd_line[10]));

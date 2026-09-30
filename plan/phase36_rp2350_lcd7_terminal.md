@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.5 done 2026-09-30, 36.6 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.6 done 2026-09-30, 36.7 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -1237,6 +1237,80 @@ full `lsh` session driven from the **host keyboard over ACM0** renders
 correctly on the panel: the line editor (insert mid-line, history, a line
 exactly 100 characters long), `ls`, `cat` of a long file, `ed`, `e`, and the
 Lisp REPL. `test_rp2350.py` still passes with `lcd` bound.
+
+#### Done, 2026-09-30 — the panel is the console, and the tee had to learn to wait
+
+**On the board (owner):** boot log, prompt and output on the panel, typed
+from the PC over USB. `vtselftest` is 16/16 there and on QEMU.
+
+What landed:
+
+* **`drivers/vtterm.c`**, portable. It implements exactly §4.3's set, plus
+  pending wrap, minimal UTF-8 (one cell per code point) and an XOR underline
+  cursor. A grep of the tree found two non-ASCII characters it prints, `─`
+  and `│` in `e`'s frame. So the font generator now also takes the
+  single-line box set from Spleen (11 glyphs, `fbtext_glyph()` bisects
+  them), and anything else draws as `?`.
+* **`vtselftest`** runs sixteen cases (pending wrap, scrolling, every
+  sequence, clamping, SGR incl. truecolour arguments, swallowed unknowns,
+  UTF-8, TAB/BS/BEL, cursor on/off) against a 20 × 4 RAM grid, **comparing
+  pixels** with fbtext's own rendering. It is in the QEMU suite on RV32 and
+  RV64 (372 tests). Its grid comes from `scratch` and its state is on the
+  stack, so it costs +0 on every persona.
+* **The `lcd` console device** (`kernel/board.c`) holds the UART0 wire
+  like `uart`, because it tees there, so `p9serve` cannot take a wire that
+  console text is being written to. The kernel binds it once `lcd7_init()`
+  succeeds, and the kernel log gets a screen-only sink, `lcd` (the UART has
+  its own).
+* **`console_bind_device()` now releases before it claims.** It used to
+  claim the new device's wire first, so moving the console between two
+  devices on the same wire (uart → lcd) was refused as a conflict with
+  itself. A failed claim restores the previous one.
+
+**The tee, measured and then fixed twice** (`lcd tee <uart|usb|off>`,
+`lcd outbench`: 1 980 characters through `console_putc`, timed on the board):
+
+1. **Through the UART path it paced the screen at 11 313 chars/s**, which
+   is 115 200 baud exactly: `uart_putc()` feeds UART0 whether or not anything
+   is on header H7. The owner saw it as `e` repainting line by line. The
+   default is now **USB only (ACM0)**, and `lcd tee uart` is one command for
+   when an adapter is on H7. The kernel log still reaches UART0 through its
+   own sink.
+2. **`usb_cdc_putc()` drops bytes when its ring is full.** Paced by the UART
+   it never filled; at screen speed it did, and the host saw `[1;3[1;36m` and
+   scrambled line numbers (the screen itself had every byte). New
+   `usb_cdc_putc_wait()` yields while the ring is full, only while a host
+   has the port open, and for at most 20 ms. **Verified:** `lcd outbench`
+   20/20 lines intact on the host in three rounds, at 88–94 K chars/s, and
+   `help` (8 254 bytes, 4× the ring) byte-identical in three runs with no
+   broken sequences. (The first "90 K chars/s" measured before this fix had
+   been partly bytes thrown away; it did not show on a burst that nearly
+   fits the ring.)
+
+**`tests/hw/test_rp2350.py` with `lcd` bound: 23/24.** Everything touching
+the console passes: type-ahead during an engine search, the ACM1 9P link and
+its resync, isolation, user programs, one owner per wire, and memory margins
+(heap peak 51/83 pages, largest free run 46). The failure is **K3**, which
+checks `/proc/config` against the chess board's pin table; this board
+correctly reports its own pins. That is the existing open issue "K3 checks pin
+values from a table, not from the build".
+
+**Deferred, deliberately:**
+
+* **The `lcdterm` U-mode task** (PMP-confined, batched writes). The
+  emulator runs in the console path, which the plan needed for boot anyway.
+  Moving it into its own domain means granting the framebuffer, the font in
+  flash and a channel protocol. It is worth its own commit, and the owner is
+  asked before it is done.
+* **The cell shadow and the text window** move to **36.10**, the first
+  milestone with anything to draw over the terminal. Until then they would
+  be 6 KB of RAM with no reader.
+* **`e` flickers on a file taller than the screen** (owner, 43 lines on 30
+  rows). `redraw_box()` walks the cursor up by its line number (`ESC[A`,
+  which stops at row 0) and reprints the whole box, so each redraw scrolls
+  the screen a dozen times. The editor assumes its box fits the terminal.
+  Fixing it (a viewport, absolute positioning) belongs with **36.12**'s
+  full-screen editor.
 
 ### 36.7 — PIO-USB: the engine on core 1 talks to the keyboard
 

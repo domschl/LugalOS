@@ -557,6 +557,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("SD File Write, Read Back And Verify Through FAT32 (36.2 sdbench w)",
                         ok, log if not ok else ""))
 
+        # 36.6: the screen's terminal emulator, portable and so testable here:
+        # sixteen cases fed through vtterm into a RAM grid and compared pixel by
+        # pixel against fbtext's own rendering (pending wrap, scrolling, every
+        # sequence the tree emits, clamping, UTF-8 box drawing, the cursor).
+        ok, log = session.send_and_expect("vtselftest", r"VTTERM_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
+        if ok and "VTTERM_SELFTEST_FAIL" in log:
+            ok = False
+        results.append(("Screen Terminal Emulator Against A RAM Grid (36.6 vtselftest)",
+                        ok, log if not ok else ""))
+
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
         #

@@ -577,6 +577,8 @@ set(SOURCES
     # target: the RP2350-LCD-7 draws with it, and QEMU tests it (36.6).
     drivers/fbtext.c
     drivers/font8x16.c
+    # 36.6: the terminal emulator on top of it, and its `vtselftest`.
+    drivers/vtterm.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU

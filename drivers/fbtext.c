@@ -30,6 +30,40 @@ void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned cols, unsigned
     t->rows = (uint16_t)rows;
 }
 
+const uint8_t *fbtext_glyph(uint32_t cp) {
+    if (cp >= FONT8X16_FIRST && cp <= FONT8X16_LAST) return font8x16_glyphs[cp - FONT8X16_FIRST];
+    unsigned lo = 0, hi = FONT8X16_EXTRA_COUNT;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2u;
+        if (font8x16_extra_cp[mid] == cp) return font8x16_extra[mid];
+        if (font8x16_extra_cp[mid] < cp) lo = mid + 1u;
+        else hi = mid;
+    }
+    return font8x16_glyphs['?' - FONT8X16_FIRST];
+}
+
+void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
+    if (col >= t->cols || row >= t->rows) return;
+    const uint8_t *g = fbtext_glyph(cp);
+    uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
+    uint8_t x = inverse ? 0xffu : 0x00u;
+    for (unsigned r = 0; r < FONT8X16_H; r++) {
+        *p = (uint8_t)(g[r] ^ x);
+        p += t->stride;
+    }
+}
+
+void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1) {
+    if (row >= t->rows) return;
+    if (col1 > t->cols) col1 = t->cols;
+    if (col0 >= col1) return;
+    uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col0;
+    for (unsigned r = 0; r < FONT8X16_H; r++) {
+        memset(p, 0, col1 - col0);
+        p += t->stride;
+    }
+}
+
 void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse) {
     if (col >= t->cols || row >= t->rows) return;
     unsigned char uc = (unsigned char)c;

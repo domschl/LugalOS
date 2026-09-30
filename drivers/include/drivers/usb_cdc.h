@@ -39,6 +39,9 @@ bool usb_cdc_task_alive(void);
 
 // Console CDC Port (/dev/ttyACM0)
 void usb_cdc_putc(char c);
+/* 36.6: waits (yielding, up to timeout_us) for ring space instead of dropping;
+ * false if not queued. Task context only. */
+bool usb_cdc_putc_wait(char c, uint32_t timeout_us);
 char usb_cdc_getc(void);
 bool usb_cdc_has_char(void);
 

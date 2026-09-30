@@ -116,6 +116,14 @@ static void klog_terminal_sink(char c) {
     console_emit(uart_putc, c);
 }
 
+#if defined(CONFIG_LCD_PCLK_GPIO)
+/* 36.6: the same log onto the panel, CRLF included -- a terminal is a
+ * terminal whichever glass it is. Screen only: the UART has the sink above. */
+static void klog_lcd_sink(char c) {
+    console_emit(lcd7_screen_putc, c);
+}
+#endif
+
 void kernel_main(void) {
 #if defined(CONFIG_BOARD_ESP32P4)
     /* Before anything else, and before the first printk: the top of L2MEM is
@@ -326,8 +334,15 @@ void kernel_main(void) {
     rp2350_clocks_boot_check();
 #if defined(CONFIG_LCD_PCLK_GPIO)
     /* 36.3: the panel's scan-out runs from PIO + DMA with no CPU, so it
-     * starts here, once, and never needs the scheduler. */
-    (void)lcd7_init();
+     * starts here, once, and never needs the scheduler. 36.6: and once it
+     * runs it is the terminal -- the kernel log gets a screen-only sink (the
+     * UART already has its own), and the console stream moves to the `lcd`
+     * device, which tees to the UART so a host still sees everything.
+     * init.lisp can bind elsewhere, as on any board. */
+    if (lcd7_init() == 0) {
+        klog_sink_register("lcd", klog_lcd_sink);
+        console_bind_device("lcd");
+    }
 #endif
 #endif
 

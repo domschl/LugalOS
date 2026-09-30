@@ -32,6 +32,16 @@ void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned cols, unsigned
  * also the terminal's SGR 7. Out-of-range cells are ignored. */
 void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse);
 
+/* 36.6: the glyph for a Unicode code point -- printable ASCII, the box-drawing
+ * set font8x16.h lists, and '?' for anything else. */
+const uint8_t *fbtext_glyph(uint32_t cp);
+
+/* One code point into one cell, as fbtext_putc(). */
+void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse);
+
+/* Clear cells [col0, col1) of one cell row to background. */
+void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1);
+
 /* Clear `n` cell rows starting at `row` to background. */
 void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n);
 

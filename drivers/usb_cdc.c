@@ -1024,6 +1024,36 @@ void usb_cdc_putc(char c) {
     spin_unlock_irqrestore(&g_usb_tx_lock, flags);
 }
 
+/* As usb_cdc_putc(), but waits for room instead of dropping -- 36.6,
+ * plan/phase36_rp2350_lcd7_terminal.md. usb_cdc_putc() discards a byte when
+ * the ring is full, which is fine where the producer is paced (through the
+ * UART console path it never is faster than 115200 baud), and was not for the
+ * RP2350-LCD-7's screen console, which writes as fast as it draws: the host
+ * view lost bytes mid-escape-sequence and showed `[1;3[1;36m`. This yields to
+ * the USB task while the ring is full, and gives up after `timeout_us` so a
+ * host that stops reading cannot stall the writer for good. With no host on
+ * the port (DTR low) it returns at once, as usb_cdc_putc() does. Returns
+ * whether the byte was queued. Task context only: it yields. */
+bool usb_cdc_putc_wait(char c, uint32_t timeout_us) {
+    if (!g_usb_cdc_connected || !g_usb.ep2_configured || !g_usb.ep2_dtr) return false;
+    uint64_t t0 = time_get_us();
+    for (;;) {
+        uintptr_t flags = spin_lock_irqsave(&g_usb_tx_lock);
+        uint32_t head = g_usb.ep2_tx_head % USB_EP2_TX_RING_SIZE;
+        uint32_t tail = g_usb.ep2_tx_tail % USB_EP2_TX_RING_SIZE;
+        uint32_t next = (head + 1) % USB_EP2_TX_RING_SIZE;
+        if (next != tail) {
+            g_usb.ep2_tx_ring[head] = (uint8_t)c;
+            g_usb.ep2_tx_head = next;
+            spin_unlock_irqrestore(&g_usb_tx_lock, flags);
+            return true;
+        }
+        spin_unlock_irqrestore(&g_usb_tx_lock, flags);
+        if (time_get_us() - t0 > timeout_us || !g_usb.ep2_dtr) return false;
+        sched_yield();
+    }
+}
+
 bool usb_cdc_has_char(void) {
     return g_usb.ep2_configured && g_usb.ep2_rx_head != g_usb.ep2_rx_tail;
 }
@@ -1832,6 +1862,12 @@ bool usb_cdc_is_connected(void) {
 
 void usb_cdc_putc(char c) {
     uart_putc(c);
+}
+
+bool usb_cdc_putc_wait(char c, uint32_t timeout_us) {
+    (void)timeout_us;
+    uart_putc(c);
+    return true;
 }
 
 char usb_cdc_getc(void) {

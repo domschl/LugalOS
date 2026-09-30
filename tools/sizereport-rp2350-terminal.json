@@ -11,7 +11,7 @@
     "drivers/edgecap.c": 21,
     "drivers/i2c_bus.c": 630,
     "drivers/i2c_rtc.c": 15,
-    "drivers/lcd7_rp2350.c": 21,
+    "drivers/lcd7_rp2350.c": 74,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 8,
@@ -69,5 +69,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 157936
+  "total": 157989
 }

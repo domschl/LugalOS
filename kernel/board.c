@@ -3,6 +3,7 @@
 #include "drivers/uart.h"
 #include "drivers/uart_net.h"
 #include "drivers/usb_cdc.h"
+#include "drivers/lcd7.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
@@ -217,6 +218,20 @@ static const dev_driver_t dev_uart = {
     .name = "uart", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_UART0, .get = get_uart_console,
 };
 
+#if defined(CONFIG_LCD_PCLK_GPIO)
+/* 36.6, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's panel as a
+ * console. It tees everything to the UART path, so it holds UART0 exactly as
+ * `uart` does -- which keeps `p9serve` off a wire that console text is being
+ * written to. No probe: the registry is probed before the panel starts, and
+ * lcd7_console_putc() draws nothing until then. The kernel binds to it once
+ * lcd7_init() succeeds (kernel/main.c). */
+static console_dev_t g_lcd_console = { .putc = lcd7_console_putc };
+static void *get_lcd_console(void) { return &g_lcd_console; }
+static const dev_driver_t dev_lcd = {
+    .name = "lcd", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_UART0, .get = get_lcd_console,
+};
+#endif
+
 /* UART-backed 9P links: present unconditionally (the UART itself is brought
  * up during early boot bootstrap, before the registry exists), but WITHOUT
  * DEV_F_BACKGROUND_9P -- they share a wire with the console, so they stay
@@ -330,6 +345,9 @@ void board_register_devices(void) {
     dev_register(&dev_eeprom);
     dev_register(&dev_usb);
     dev_register(&dev_uart);
+#if defined(CONFIG_LCD_PCLK_GPIO)
+    dev_register(&dev_lcd);
+#endif
     dev_register(&dev_uartslip);
     dev_register(&dev_uartdemux);
 #if defined(CONFIG_BOARD_RP2350)

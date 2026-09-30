@@ -27,6 +27,23 @@ void lcd7_set_colours(uint16_t fg, uint16_t bg);
  * lay things out on 0..798, and never put a frame line on x = 799. */
 uint32_t *lcd7_framebuffer(void);
 
+/* 36.6: the screen as a terminal. lcd7_screen_putc() draws only (the kernel
+ * log's `lcd` sink); lcd7_console_putc() draws and tees to the UART console
+ * path (the `lcd` console device). No-ops until the panel is running.
+ * lcd7_unknown_sequences(): escape sequences swallowed without effect. */
+void lcd7_screen_putc(char c);
+void lcd7_console_putc(char c);
+
+/* Where the `lcd` console also writes: UART (UART0 and its USB mirror, paced
+ * at 115200 baud: 11.3 K chars/s), USB only (ACM0, the default: 89.8 K
+ * chars/s), or nowhere. */
+#define LCD_TEE_UART 0u
+#define LCD_TEE_USB  1u
+#define LCD_TEE_OFF  2u
+void lcd7_set_tee(unsigned mode);
+unsigned lcd7_tee(void);
+uint32_t lcd7_unknown_sequences(void);
+
 /* 36.5: `lcd test text` -- every glyph, a pangram, reverse video, a cursor.
  * `lcd scroll <n>` -- n numbered lines through the 100 x 30 grid, timing
  * each scroll. */

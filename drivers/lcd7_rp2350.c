@@ -62,6 +62,9 @@
 #include "drivers/lcd7.h"
 #include "drivers/fbtext.h"
 #include "drivers/font8x16.h"
+#include "drivers/uart.h"
+#include "drivers/usb_cdc.h"
+#include "drivers/vtterm.h"
 #include "arch/rp2350_clocks.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
@@ -442,6 +445,51 @@ static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
     for (unsigned col = 0; *s && col < t->cols; col++, s++) fbtext_putc(t, col, row, *s, inverse);
 }
 
+/* --- The screen as a terminal (36.6) ----------------------------------------
+ *
+ * One vtterm over the whole 100 x 30 grid. Two writers feed it, the console
+ * stream (lcd7_console_putc) and the kernel log's `lcd` sink
+ * (lcd7_screen_putc), and both run under console_lock(), so the emulator
+ * never sees two at once. */
+static vtterm_t g_vt;
+static bool     g_vt_ready;
+
+void lcd7_screen_putc(char c) {
+    if (g_vt_ready) vtterm_putc(&g_vt, c);
+}
+
+/* The `lcd` console device: the screen, plus a tee so a host sees what the
+ * screen shows. Where the tee goes is a setting (`lcd tee`), because the
+ * UART path paces everything: uart_putc() feeds UART0 at 115200 baud and
+ * mirrors to USB ACM0, and the screen then draws no faster than 11.5 KB/s --
+ * visible as the `e` editor painting its box line by line (the owner's
+ * observation, 2026-09-30). */
+/* USB by default. Measured on the board with `lcd outbench` (1980 characters
+ * through console_putc): tee to the UART path 11 313 chars/s -- exactly
+ * 115200 baud -- against 89 795 chars/s to ACM0 alone. The host console is on
+ * USB anyway; nothing is attached to header H7 unless someone puts an adapter
+ * there, and then `lcd tee uart` is one command. The kernel log still reaches
+ * UART0 through its own sink either way. */
+static uint8_t g_tee = LCD_TEE_USB;
+
+void lcd7_set_tee(unsigned mode) {
+    if (mode <= LCD_TEE_OFF) g_tee = (uint8_t)mode;
+}
+
+unsigned lcd7_tee(void) {
+    return g_tee;
+}
+
+void lcd7_console_putc(char c) {
+    lcd7_screen_putc(c);
+    if (g_tee == LCD_TEE_UART) uart_putc(c);
+    else if (g_tee == LCD_TEE_USB) (void)usb_cdc_putc_wait(c, 20000u);   /* never drop mid-sequence */
+}
+
+uint32_t lcd7_unknown_sequences(void) {
+    return g_vt_ready ? g_vt.unknown : 0;
+}
+
 /* `lcd test text`: every glyph, a pangram, reversed video, and a cursor. */
 int lcd7_text_test(void) {
     if (!g_fb) return -1;
@@ -605,6 +653,11 @@ int lcd7_init(void) {
     REG(PIO_CTRL) = 3u;                                          /* SM0 + SM1 */
     g_running = true;
 
+    fbtext_t text;
+    fbtext_init(&text, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
+    vtterm_init(&g_vt, &text);
+    g_vt_ready = true;
+
     lcd7_set_backlight(100);
     printk("[LCD] 800x480 panel running: PCLK %lu kHz, %u x %u total, %lu.%lu Hz, 1-bpp framebuffer at 0x%08lx\n",
            (unsigned long)(CONFIG_CLK_SYS_HZ / LCD_CYCLES_PER_PCLK / 1000u),
@@ -623,7 +676,9 @@ void lcd7_report(void) {
         return;
     }
     uint32_t fdebug = REG(PIO_FDEBUG);
-    cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%\n", g_fg, g_bg, g_brightness);
+    cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%; terminal at row %u col %u, "
+            "%lu unknown sequences swallowed\n", g_fg, g_bg, g_brightness,
+            (unsigned)g_vt.row, (unsigned)g_vt.col, (unsigned long)g_vt.unknown);
     cprintf("lcd: timing SM pc %lu, underrun %s; pixel SM pc %lu, underrun %s\n",
             (unsigned long)(REG(PIO_SM0_ADDR) & 0x1fu),
             (fdebug & FDEBUG_TXSTALL_SM0) ? "SEEN" : "none",
@@ -642,6 +697,11 @@ int lcd7_init(void) { return -1; }
 void lcd7_set_colour(uint16_t rgb565) { (void)rgb565; }
 void lcd7_set_colours(uint16_t fg, uint16_t bg) { (void)fg; (void)bg; }
 uint32_t *lcd7_framebuffer(void) { return 0; }
+void lcd7_screen_putc(char c) { (void)c; }
+void lcd7_console_putc(char c) { (void)c; }
+void lcd7_set_tee(unsigned mode) { (void)mode; }
+unsigned lcd7_tee(void) { return LCD_TEE_OFF; }
+uint32_t lcd7_unknown_sequences(void) { return 0; }
 int lcd7_text_test(void) { return -1; }
 void lcd7_scroll_test(unsigned n) { (void)n; }
 int lcd7_test_pattern(const char *name) { (void)name; return -1; }

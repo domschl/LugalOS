@@ -15,4 +15,10 @@
 
 extern const uint8_t font8x16_glyphs[FONT8X16_LAST - FONT8X16_FIRST + 1][FONT8X16_H];
 
+/* 36.6: the few code points beyond ASCII this tree prints (box drawing for
+ * the `e` editor's frame), sorted, with their glyphs in the same order. */
+#define FONT8X16_EXTRA_COUNT 11
+extern const uint16_t font8x16_extra_cp[FONT8X16_EXTRA_COUNT];
+extern const uint8_t font8x16_extra[FONT8X16_EXTRA_COUNT][FONT8X16_H];
+
 #endif /* LUGALOS_DRIVERS_FONT8X16_H */

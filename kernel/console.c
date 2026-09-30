@@ -150,12 +150,18 @@ int console_bind_device(const char *name) {
      * same physical channel -- the UART is a console, a dedicated 9P link and
      * a demultiplexed one under three names -- and binding the console to a
      * wire something else is already driving used to be silently allowed. */
-    if (dev_claim(name) != 0) return -1;
-
-    /* Release the previous binding's wire, so moving the console frees what it
-     * was on rather than holding both. */
-    if (g_bound_name && strcmp(g_bound_name, name) != 0) {
-        dev_release(g_bound_name);
+    /* Release the previous binding's wire first, so moving the console frees
+     * what it was on rather than holding both -- and so a move between two
+     * devices on the *same* wire is not refused as a conflict with itself.
+     * 36.6's `lcd` console tees to UART0 and so claims that wire, exactly as
+     * `uart` does; claiming before releasing made uart -> lcd impossible. If
+     * the new claim fails, the old one is put back and nothing changes. */
+    const char *prev = g_bound_name;
+    bool moving = prev && strcmp(prev, name) != 0;
+    if (moving) dev_release(prev);
+    if (dev_claim(name) != 0) {
+        if (moving) (void)dev_claim(prev);
+        return -1;
     }
 
     console_bind(d->putc);
