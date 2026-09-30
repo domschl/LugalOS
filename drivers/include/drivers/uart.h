@@ -29,6 +29,12 @@ bool uart_has_char(void);
  * cannot be inspected without consuming (a plain UART FIFO), this answers
  * false and the pump behaves as it always did. */
 bool uart_peek_interrupt(void);
+
+/* RP2350 only (36.9): the serial half of uart_has_char()/uart_getc(), UART0 or
+ * the demux console, registered as its own console input source. getc()
+ * returns -1 when nothing is waiting; it never blocks. */
+bool uart_serial_has_char(void);
+int uart_serial_getc(void);
 void uart_puts(const char *s);
 
 // M4/M4.5 verify: how many batched-write chan_call()s the uart task has

@@ -78,6 +78,29 @@ void console_flush(void);
  * sitting in a batch. One slot; NULL clears it. */
 void console_set_flush_hook(void (*fn)(void));
 
+/* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
+ * from. Each source is polled by the console pump, in registration order,
+ * into the one pushback ring every reader uses. The RP2350 has two today --
+ * the serial UART (or its demux) and USB CDC -- and the RP2350-LCD-7 adds the
+ * USB keyboard; every other board has the single `uart` source.
+ *
+ *   has_char()        a byte is waiting
+ *   getc()            it, or -1 if there turned out to be none; never blocks
+ *   peek_interrupt()  optional: a Ctrl-C is waiting, answered *without*
+ *                     consuming, so it latches even when the ring is full
+ *
+ * Registered once at boot by kernel/board.c (a keyboard later, when its task
+ * starts); the table holds CONSOLE_INPUT_MAX. */
+typedef struct {
+    const char *name;
+    bool (*has_char)(void);
+    int  (*getc)(void);
+    bool (*peek_interrupt)(void);
+} console_input_t;
+
+#define CONSOLE_INPUT_MAX 4
+int console_input_register(const console_input_t *src);
+
 void console_putc(char c);
 void console_puts(const char *s);
 

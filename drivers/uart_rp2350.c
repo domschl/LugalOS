@@ -1147,24 +1147,41 @@ bool uart_peek_interrupt(void) {
     return usb_cdc_peek_interrupt();
 }
 
-bool uart_has_char(void) {
+/* 36.9: the serial half of console input -- UART0 through its task, or the
+ * demux's console channel when UART0 carries the multiplexed link -- as its
+ * own console input source (kernel/board.c). USB CDC is the other source. */
+bool uart_serial_has_char(void) {
     uart_flush();
+    if (uart_demux_is_enabled()) return uart_demux_console_has_char();
+    if (uart_task_alive()) {
+        uint8_t req[1] = { UART_REQ_HASCHAR };
+        uint8_t resp[1];
+        return uart_call_with_retry(req, 1, resp, 1) == 1 && resp[0];
+    }
+    return hw_uart_has_char();
+}
+
+int uart_serial_getc(void) {
+    if (uart_demux_is_enabled())
+        return uart_demux_console_has_char() ? (int)(unsigned char)uart_demux_console_getc() : -1;
+    if (uart_task_alive()) {
+        uint8_t req[1] = { UART_REQ_READ };
+        uint8_t resp[2];
+        int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+        return (n >= 2 && resp[0]) ? (int)resp[1] : -1;
+    }
+    return hw_uart_has_char() ? (int)(unsigned char)hw_uart_getc() : -1;
+}
+
+/* Both halves together, for anything that still asks the UART driver for
+ * "console input" directly. The console itself polls the two as separate
+ * sources since 36.9. */
+bool uart_has_char(void) {
     /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c) now services
      * this on its own schedule; only pump it directly here as a fallback
      * for the (untested-in-practice) case that task failed to start. */
     if (!usb_cdc_task_alive()) usb_cdc_task();
-    if (uart_demux_is_enabled()) {
-        if (uart_demux_console_has_char()) return true;
-        return usb_cdc_has_char();
-    }
-    if (uart_task_alive()) {
-        uint8_t req[1] = { UART_REQ_HASCHAR };
-        uint8_t resp[1];
-        if (uart_call_with_retry(req, 1, resp, 1) == 1 && resp[0]) return true;
-    } else if (hw_uart_has_char()) {
-        return true;
-    }
-    return usb_cdc_has_char();
+    return uart_serial_has_char() || usb_cdc_has_char();
 }
 
 char uart_getc(void) {

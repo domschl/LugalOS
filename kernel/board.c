@@ -356,7 +356,34 @@ static const dev_driver_t dev_vnet = {
 };
 #endif
 
+/* 36.9 (plan/phase36_rp2350_lcd7_terminal.md §4.4): console input sources.
+ * The RP2350's uart_has_char()/uart_getc() used to open-code two sources, the
+ * serial UART and USB CDC; they are registered separately here, in the order
+ * the old code polled them, so the console pump reads them exactly as before
+ * -- and a third (the USB keyboard) is one more registration, not a third
+ * `if`. Every other board keeps its single source. */
+#if defined(CONFIG_BOARD_RP2350)
+static bool usb_input_has_char(void) {
+    if (!usb_cdc_task_alive()) usb_cdc_task();   /* see uart_has_char() */
+    return usb_cdc_has_char();
+}
+static int usb_input_getc(void) {
+    return usb_cdc_has_char() ? (int)(unsigned char)usb_cdc_getc() : -1;
+}
+static const console_input_t g_in_uart = { "uart", uart_serial_has_char, uart_serial_getc, 0 };
+static const console_input_t g_in_usb  = { "usb", usb_input_has_char, usb_input_getc, usb_cdc_peek_interrupt };
+#else
+static int uart_input_getc(void) {
+    return uart_has_char() ? (int)(unsigned char)uart_getc() : -1;
+}
+static const console_input_t g_in_uart = { "uart", uart_has_char, uart_input_getc, uart_peek_interrupt };
+#endif
+
 void board_register_devices(void) {
+    (void)console_input_register(&g_in_uart);
+#if defined(CONFIG_BOARD_RP2350)
+    (void)console_input_register(&g_in_usb);
+#endif
     dev_register(&dev_rtc);
     dev_register(&dev_bme280);
     dev_register(&dev_eeprom);

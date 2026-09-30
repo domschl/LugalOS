@@ -255,6 +255,18 @@ static int pushback_get(void) {
  * the uart task on RP2350). Zero-initialised, like g_console_lock. */
 static ylock_t g_input_lock;
 
+/* 36.9: the registered input sources (kernel/include/kernel/console.h). */
+static const console_input_t *g_inputs[CONSOLE_INPUT_MAX];
+static unsigned               g_ninputs;
+
+int console_input_register(const console_input_t *src) {
+    if (!src || !src->has_char || !src->getc || g_ninputs >= CONSOLE_INPUT_MAX) return -1;
+    g_inputs[g_ninputs] = src;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    g_ninputs++;
+    return 0;
+}
+
 static void console_pump(void) {
     ylock_acquire(&g_input_lock);
     /* The interrupt latch comes FIRST, and deliberately not inside the drain
@@ -275,7 +287,8 @@ static void console_pump(void) {
      * uart_peek_interrupt() answers without consuming, so this neither eats
      * input nor depends on having room to store it. Where a device cannot be
      * inspected that way it answers false, and the old behaviour stands. */
-    if (uart_peek_interrupt()) g_interrupt_pending = true;
+    for (unsigned i = 0; i < g_ninputs; i++)
+        if (g_inputs[i]->peek_interrupt && g_inputs[i]->peek_interrupt()) g_interrupt_pending = true;
 
     /* Moves device bytes into the ring, latching Ctrl-C on the way past.
      *
@@ -299,11 +312,20 @@ static void console_pump(void) {
      * runner submits multi-line command blocks well over that size, and
      * their tails vanished. Surplus left in the device is also the right
      * back-pressure: the UART's own buffering holds it until a reader makes
-     * room. */
-    while (!pushback_full() && uart_has_char()) {
-        char c = uart_getc();
-        if (c == 0x03) g_interrupt_pending = true;
-        pushback_put(c);
+     * room.
+     *
+     * 36.9: sources in registration order, each drained as far as the ring
+     * allows. There is no fairness to arrange: a person types on one of
+     * them at a time, and a script sending a block on another is exactly
+     * what the ring bound above already handles. */
+    for (unsigned i = 0; i < g_ninputs; i++) {
+        const console_input_t *src = g_inputs[i];
+        while (!pushback_full() && src->has_char()) {
+            int c = src->getc();
+            if (c < 0) break;
+            if (c == 0x03) g_interrupt_pending = true;
+            pushback_put((char)c);
+        }
     }
     ylock_release(&g_input_lock);
 }
