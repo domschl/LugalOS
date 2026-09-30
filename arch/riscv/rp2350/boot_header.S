@@ -7,6 +7,20 @@
 
 #include "kernel/meminfo.h"
 #include "kernel/hart.h"
+#include "arch/rp2350_clocks.h"
+
+/* 36.1: clk_sys is CONFIG_CLK_SYS_HZ, a board fact (arch/rp2350_clocks.h),
+ * and a value the PLL cannot produce within its datasheet limits fails the
+ * build here rather than booting a board at some other frequency. */
+.if (CONFIG_CLK_SYS_HZ % 1200000) != 0
+.error "CONFIG_CLK_SYS_HZ must be a multiple of 1.2 MHz (FBDIV x 12 MHz / 10)"
+.endif
+.if RP2350_PLL_SYS_FBDIV < 63 || RP2350_PLL_SYS_FBDIV > 133
+.error "CONFIG_CLK_SYS_HZ puts PLL_SYS's VCO outside 756..1596 MHz"
+.endif
+.if CONFIG_CLK_SYS_HZ > 150000000
+.error "CONFIG_CLK_SYS_HZ is above the RP2350's rated 150 MHz"
+.endif
 
 .equ BINARY_INFO_MARKER_START,    0x7188ebf2
 .equ BINARY_INFO_MARKER_END,      0xe71aa390
@@ -333,12 +347,13 @@ init_pll:
     and a2, a2, a0
     bne a2, a0, 1b
 
-    /* Set FBDIV: VCO = 1500 MHz */
+    /* Set FBDIV: VCO = 12 MHz x FBDIV = 10 x clk_sys (1500 MHz at 150,
+     * 1440 at 144). */
     li a1, PLL_SYS_FBDIV_INT
     lw a0, (a1)
     li a2, (~0x00000fff)
     and a0, a0, a2
-    ori a0, a0, 125
+    ori a0, a0, RP2350_PLL_SYS_FBDIV
     sw a0, (a1)
 
     /* Turn on PLL and PLL VCO */
@@ -353,12 +368,12 @@ init_pll:
     bexti a1, a1, 31 /* Extract LOCK bit */
     beqz a1, 1b
 
-    /* Set post dividers: 5 and 2 -> 150 MHz sys clock */
+    /* Set post dividers: 5 and 2 -> VCO / 10 = CONFIG_CLK_SYS_HZ */
     li a1, PLL_SYS_PRIM
     lw a0, (a1)
     li a2, (~0x00077000)
     and a0, a0, a2
-    li a2, (5 << 16) | (2 << 12)
+    li a2, (RP2350_PLL_SYS_POSTDIV1 << 16) | (RP2350_PLL_SYS_POSTDIV2 << 12)
     or a0, a0, a2
     sw a0, (a1)
 
@@ -370,6 +385,7 @@ init_pll:
 
 .equ CLOCKS_BASE,             0x40010000
 .equ CLOCKS_CLK_REF_CTRL,     CLOCKS_BASE + 0x30
+.equ CLOCKS_CLK_REF_DIV,      CLOCKS_BASE + 0x34
 .equ CLOCKS_CLK_REF_SELECTED, CLOCKS_BASE + 0x38
 .equ CLOCKS_CLK_SYS_CTRL,     CLOCKS_BASE + 0x3c
 .equ CLOCKS_CLK_SYS_SELECTED, CLOCKS_BASE + 0x44
@@ -390,9 +406,53 @@ configure_clk_ref:
     lw a2, (a0)
     andi a2, a2, 0x00f
     bne a2, a1, 1b
+
+    /* ...and undivided: clk_ref = the 12 MHz crystal (36.1).
+     *
+     * Selecting XOSC was all this ever did, which inherits whatever divider
+     * the bootrom left in CLK_REF_DIV. Measured on an RP2350B (the
+     * RP2350-LCD-7), 2026-09-30: INT = 4, so clk_ref was 3 MHz, TIMER0's
+     * "1 us" tick (12 clk_ref cycles, start_sys_timers below) was 4 us, and
+     * the board's uptime advanced 5.3 s while the host counted 21.4. The
+     * Pico 2 boards this tree grew up on evidently get a divider of 1 --
+     * their DCF-77 pulse widths measured correctly -- which is why a
+     * reliance on bootrom state went unnoticed until a board that differed.
+     * INT is bits 23:16; the divider may be changed on the fly. */
+    li a0, CLOCKS_CLK_REF_DIV
+    li a1, (1 << 16)
+    sw a1, (a0)
     ret
 
 configure_clk_sys:
+    /* clk_sys = PLL_SYS, said explicitly (36.1).
+     *
+     * This used to set SRC = aux and nothing else, which selects whatever
+     * AUXSRC already holds -- and AUXSRC resets to 2, ROSC, not 0, PLL_SYS
+     * (datasheet, CLK_SYS_CTRL). Measured on an RP2350B, 2026-09-30, the
+     * first time anything here read the clock tree back rather than assuming
+     * it: PLL_SYS locked at a 1500 MHz VCO and unused, and clk_sys running
+     * from the bootrom's ring oscillator at **187.7 MHz** -- 25% over the
+     * rated 150, uncalibrated, and with every UART/SPI/I2C/PWM divider in
+     * the tree computed for a clock the board was not running.
+     *
+     * AUXSRC "will glitch when switching", so the order is the datasheet's:
+     * move clk_sys to clk_ref (glitchless, already the 12 MHz XOSC), set
+     * AUXSRC, then move back to aux. CLK_SYS_SELECTED is one-hot: bit 0 is
+     * clk_ref, bit 1 aux. */
+    li a0, 1
+    li a1, CLOCKS_CLK_SYS_CTRL + ATOMIC_CLEAR
+    sw a0, (a1)                             /* SRC = clk_ref */
+    li a0, CLOCKS_CLK_SYS_SELECTED
+    li a1, 0b01
+1:
+    lw a2, (a0)
+    andi a2, a2, 0x003
+    bne a2, a1, 1b
+
+    li a0, (7 << 5)
+    li a1, CLOCKS_CLK_SYS_CTRL + ATOMIC_CLEAR
+    sw a0, (a1)                             /* AUXSRC = 0, CLKSRC_PLL_SYS */
+
     /* Select AUX as source */
     li a0, 1
     li a1, CLOCKS_CLK_SYS_CTRL + ATOMIC_SET

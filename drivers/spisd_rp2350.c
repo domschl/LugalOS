@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include "arch/rp2350_clocks.h"
 
 /* Some RP2350 board personas (e.g. the Pico-Clock-Green baseboard, phase11,
  * plan/phase11_pico_clock_green.md) wire GP10-13 to different hardware
@@ -217,8 +218,9 @@ static int spisd_init_hardware(void) {
      * that card is lenient -- a second card, on the gateway, answered CMD0
      * and then refused ACMD41 forever (2026-08-24).
      *
-     * 250 * (1 + 1) = 500 -> 300 kHz, comfortably inside the window with
-     * margin at both ends. CPSDVSR must be an even value in 2..254, which is
+     * 250 * (1 + 1) = 500 -> 300 kHz at 150 MHz (288 kHz at the terminal
+     * persona's 144, 36.1), comfortably inside the window with margin at
+     * both ends. CPSDVSR must be an even value in 2..254, which is
      * why the divisor is split across both fields rather than being one
      * larger prescaler. */
     REG(SSPCPSR) = 250;                                    // CPSDVSR (even, 2..254)
@@ -313,14 +315,20 @@ static int spisd_init_hardware(void) {
 
     cs_deselect();
 
-    /* 4. Switch SPI clock prescaler to 12.5 MHz for solid signal integrity */
+    /* 4. Switch SPI clock prescaler to clk_peri / 12 for solid signal
+     *    integrity: 12.5 MHz at 150 MHz, 12 MHz at 144 (36.1). */
     REG(SSPCR1) = 0;
-    REG(SSPCPSR) = 12; // Prescaler = 12 (150 MHz / 12 = 12.5 MHz SPI speed)
+    REG(SSPCPSR) = 12;
     REG(SSPCR1) = (1u << 1);
 
     g_sd_initialized = true;
-    printk("[SPI SD Driver] MicroSD Card initialized on SPI1 (GP10-GP13, Mode: %s, Speed: 12.5 MHz)\n",
-           g_sd_is_sdhc ? "SDHC/SDXC Block" : "Standard Byte");
+    /* Pins and speed from the board facts. This used to print "GP10-GP13"
+     * and "12.5 MHz" as text, which the RP2350-LCD-7 (CS on GP15, 144 MHz)
+     * made wrong on both counts. */
+    printk("[SPI SD Driver] MicroSD Card initialized on SPI1 (SCK GP%d, CS GP%d, Mode: %s, Speed: %lu kHz)\n",
+           CONFIG_SPI1_SCK_GPIO, CONFIG_SPI1_CS_GPIO,
+           g_sd_is_sdhc ? "SDHC/SDXC Block" : "Standard Byte",
+           (unsigned long)(CONFIG_CLK_SYS_HZ / 12 / 1000));
     return 0;
 }
 

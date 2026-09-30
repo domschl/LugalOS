@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include "arch/rp2350_clocks.h"
 
 #define CLOCKS_BASE             0x40010000UL
 #define RESETS_BASE             0x40020000UL
@@ -467,7 +468,8 @@ static void uart_isr(void *ctx) {
 void uart_init(uintptr_t base_addr) {
     (void)base_addr;
 
-    /* 1. Explicitly enable clk_peri and attach it to clk_sys (150 MHz) */
+    /* 1. Explicitly enable clk_peri and attach it to clk_sys
+     *    (CONFIG_CLK_SYS_HZ, arch/rp2350_clocks.h) */
     REG(CLOCKS_BASE + 0x48) = (1u << 11);
 
     /* 2. Unreset IO_BANK0 (bit 6), PADS_BANK0 (bit 9), UART0 (bit 26) */
@@ -520,9 +522,16 @@ void uart_init(uintptr_t base_addr) {
     /* 5. Disable UART before programming baud rate and line control */
     REG(UART0_BASE + 0x30) = 0;
 
-    /* 6. Configure Baud Rate for 150MHz clk_peri -> 115200 baud */
-    REG(UART0_BASE + 0x24) = 81;  // UARTIBRD
-    REG(UART0_BASE + 0x28) = 24;  // UARTFBRD
+    /* 6. 115200 baud from clk_peri. The PL011 divisor is clk_peri /
+     *    (16 * baud) in 6.6 fixed point, i.e. (4 * clk_peri) / baud as an
+     *    integer -- the derivation drivers/uart1_link_rp2350.c spells out.
+     *    This used to be the literals 81/24, correct only at 150 MHz; they
+     *    are what this folds to there (36.1). */
+    {
+        const uint32_t div64 = (uint32_t)((4ull * CONFIG_CLK_SYS_HZ) / 115200u);
+        REG(UART0_BASE + 0x24) = div64 / 64u;  // UARTIBRD
+        REG(UART0_BASE + 0x28) = div64 % 64u;  // UARTFBRD
+    }
 
     /* 7. 8 bits, no parity, 1 stop bit, enable FIFOs */
     REG(UART0_BASE + 0x2C) = (3u << 5) | (1u << 4); // UARTLCR_H

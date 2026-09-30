@@ -19,6 +19,7 @@
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/boardprobe.h"
+#include "drivers/clocks_rp2350.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -479,6 +480,9 @@ static void cmd_help(void) {
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
+#if defined(CONFIG_BOARD_RP2350)
+    cprintf("  clocks          - clk_sys from PLL_SYS registers, measured against TIMER0, vs CONFIG_CLK_SYS_HZ\n");
+#endif
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
     cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
@@ -3247,6 +3251,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "p9serve") == 0) {
         cmd_p9serve();
         return;
+#if defined(CONFIG_BOARD_RP2350)
+    } else if (strcmp(cmd_line, "clocks") == 0) {
+        /* 36.1, plan/phase36_rp2350_lcd7_terminal.md. Read-only. */
+        rp2350_clocks_report();
+        return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     } else if (strcmp(cmd_line, "boardprobe") == 0) {
         boardprobe();

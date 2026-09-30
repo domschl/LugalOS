@@ -25,6 +25,7 @@
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include "lugalos_config.h"
+#include "arch/rp2350_clocks.h"
 
 #include <string.h>
 
@@ -160,7 +161,7 @@ void uart1_link_init(void) {
      * The PL011 divisor is clk_peri / (16 * baud) in 6.6 fixed point, which
      * is exactly (4 * clk_peri) / baud as an integer. */
     {
-        uint32_t div64 = (uint32_t)((4ull * 150000000ull) / (uint32_t)CONFIG_UART1_BAUD);
+        uint32_t div64 = (uint32_t)((4ull * CONFIG_CLK_SYS_HZ) / (uint32_t)CONFIG_UART1_BAUD);
         REG(U1_IBRD) = div64 / 64u;
         REG(U1_FBRD) = div64 % 64u;
     }

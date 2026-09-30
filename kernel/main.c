@@ -69,6 +69,7 @@
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
+#include "drivers/clocks_rp2350.h"
 
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
@@ -317,6 +318,12 @@ void kernel_main(void) {
      * binding as "(none)", which would be a lie the moment anyone asked
      * which device owns the terminal. */
     console_bind_device("uart");
+
+#if defined(CONFIG_BOARD_RP2350)
+    /* 36.1: clk_sys is a board fact now, so say what it came out as --
+     * measured, and checked against PLL_SYS -- before anything is timed. */
+    rp2350_clocks_boot_check();
+#endif
 
     sched_init();
     /* Preemption (B6). Started after sched_init() so there is a task table to

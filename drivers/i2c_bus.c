@@ -12,6 +12,7 @@
 #include "arch/umode.h"
 #include "drivers/uart.h"
 #include "lugalos_config.h"
+#include "arch/rp2350_clocks.h"
 #include <string.h>
 
 /* See drivers/include/drivers/i2c_bus.h for what this file is and why it is
@@ -160,8 +161,10 @@ void i2c_bus_init(void) {
      * device, which for this file's whole history it did. */
     REG(IC_TAR) = 0x00;
 
-    /* 100kHz Standard Mode Clock Dividers for 150MHz system clock */
-    uint32_t freq_in = 150000000;
+    /* 100kHz Standard Mode clock dividers from clk_sys (CONFIG_CLK_SYS_HZ,
+     * arch/rp2350_clocks.h -- this was the literal 150000000 until 36.1).
+     * The per-line figures are at 150 MHz. */
+    uint32_t freq_in = CONFIG_CLK_SYS_HZ;
     uint32_t baudrate = 100000; // 100 kHz
     uint32_t period = (freq_in + baudrate / 2) / baudrate; // 1500 cycles
     uint32_t lcnt = period * 3 / 5; // 900
@@ -174,7 +177,7 @@ void i2c_bus_init(void) {
 
     REG(IC_FS_SPKLEN) = lcnt < 16 ? 1 : lcnt / 16;
 
-    /* Critical 300ns SDA Hold Time for 150MHz system clock (matching Pico SDK) */
+    /* Critical 300ns SDA Hold Time (matching Pico SDK); 46 cycles at 150 MHz */
     uint32_t sda_tx_hold_count = ((freq_in * 3) / 10000000) + 1; // 46 cycles = 307ns
     REG(IC_SDA_HOLD) = sda_tx_hold_count;
 

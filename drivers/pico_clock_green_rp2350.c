@@ -60,6 +60,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include "arch/rp2350_clocks.h"
 
 #define IO_BANK0_BASE           0x40028000UL
 #define IO_BANK0_CTRL(n)        (IO_BANK0_BASE + 0x004 + (n) * 8)
@@ -223,7 +224,8 @@
  * not -- ten times the frequency changed nothing -- which is what identified
  * the frame rate as the cause instead. A negative result, and the one that
  * pointed at the right thing. */
-#define PWM_TOP_COUNT    1500u     /* 150 MHz / 1500 = 100 kHz */
+/* 100 kHz from clk_sys: 1500 at 150 MHz (36.1, arch/rp2350_clocks.h). */
+#define PWM_TOP_COUNT    ((uint32_t)(CONFIG_CLK_SYS_HZ / 100000u))
 
 #define TIMER0_BASE      0x400B0000UL
 #define TIMER0_TIMERAWL  (*(volatile uint32_t *)(TIMER0_BASE + 0x28))
@@ -684,9 +686,9 @@ static void buttons_init(void);
 /* The OE slice: a 1 us tick, wrapping just past the row period, output
  * inverted because OE is active low.
  *
- * clk_sys is 150 MHz and fixed by arch/riscv/rp2350/boot_header.S, so the
- * divider is a literal here for the same reason the UART's is: nothing in
- * this tree can ask the clock tree what it was set to. DIV's integer part
+ * clk_sys is CONFIG_CLK_SYS_HZ (arch/rp2350_clocks.h, 36.1): the slice runs
+ * undivided and PWM_TOP_COUNT is derived from it, where both used to be
+ * literals for a 150 MHz clock nothing could ask about. DIV's integer part
  * lives in bits 4..11.
  *
  * Done before the pin is routed, so the peripheral is already producing a
@@ -698,8 +700,8 @@ static void oe_pwm_init(void) {
     while (!(REG(RESETS_RESET_DONE) & RESETS_RESET_PWM_BIT) && --timeout > 0);
 
     REG(PWM_CSR) = 0;                          /* stopped while configured  */
-    REG(PWM_DIV) = 1u << 4;                    /* undivided: 150 MHz        */
-    REG(PWM_TOP) = PWM_TOP_COUNT - 1u;         /* 150 MHz / 1500 = 100 kHz  */
+    REG(PWM_DIV) = 1u << 4;                    /* undivided: clk_sys        */
+    REG(PWM_TOP) = PWM_TOP_COUNT - 1u;         /* clk_sys / TOP = 100 kHz   */
     REG(PWM_CC)  = 0;                          /* blanked                   */
     REG(PWM_CTR) = 0;
     REG(PWM_CSR) = PWM_CSR_EN | PWM_CSR_B_INV;

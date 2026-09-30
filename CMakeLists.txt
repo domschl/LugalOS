@@ -744,6 +744,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # 36.0 (plan/phase36_rp2350_lcd7_terminal.md): same guard-by-pin-map rule,
     # keyed on the board declaring a PIO-USB port (CONFIG_PIOUSB_DP_GPIO).
     list(APPEND SOURCES drivers/boardprobe_rp2350.c)
+    # 36.1: clk_sys read back and measured (`clocks`), on every RP2350 persona.
+    list(APPEND SOURCES drivers/clocks_rp2350.c)
     # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.

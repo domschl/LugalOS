@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 done 2026-09-30, 36.1 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 and 36.1 done 2026-09-30, 36.2 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -794,6 +794,75 @@ before (sizecheck +0, and `cmp` of the images); `rp2350-terminal` boots at
 `/proc/cpuinfo` reports clk_sys from PLL registers, not from the constant; a
 perft-3 run on this persona is ~4 % slower than on the chess persona, which
 confirms the clock actually moved.
+
+#### Done, 2026-09-30 — and the board was not running on its PLL at all
+
+`CONFIG_CLK_SYS_HZ` is a board fact (`arch/riscv/include/arch/rp2350_clocks.h`,
+default 150 000 000). `boot_header.S` derives FBDIV from it, with `.if` checks
+against the datasheet's limits (a multiple of 1.2 MHz, FBDIV 63..133, at most
+150 MHz). The seven literals are gone: UART0 (whose `81/24` now folds from
+`(4·clk)/baud`; checked in the 150 MHz chess image's disassembly, still
+`li 81` / `li 24`), UART1, GPS, I2C, SPI SD (whose boot line now prints its
+real pins and speed instead of "GP10-GP13 … 12.5 MHz"), and the clock
+board's PWM. `rp2350-terminal` sets 144 MHz.
+
+**The instrument, `clocks`, found two bugs on its first run, both older than
+this phase.**
+
+1. **clk_sys was on the ring oscillator.** `configure_clk_sys` set
+   `CLK_SYS_CTRL.SRC = aux` and never set `AUXSRC`, which **resets to ROSC,
+   not PLL_SYS**. PLL_SYS was locked and unused. On this board clk_sys was
+   ~47 MHz from the bootrom's ROSC. It now moves to clk_ref, sets `AUXSRC =
+   PLL_SYS`, and moves back, the datasheet's order for a source that
+   "will glitch when switching".
+2. **clk_ref was divided by 4.** `configure_clk_ref` selected the crystal
+   and inherited the bootrom's `CLK_REF_DIV` (INT = 4 here). TIMER0's "1 µs"
+   tick was 4 µs, so every delay, timestamp and uptime on this board ran at a
+   quarter speed: the board's `time` advanced 5.3 s while the host counted
+   21.4. It is now set to 1 explicitly.
+
+The first measurement read **576 MHz** for a 144 MHz clock, because it
+assumed the TIMER ruler was 1 MHz. `clocks` now derives TIMER0's tick from
+clk_ref's own registers and scales by it. It also enables `mcycle` for its
+window, because Hazard3 resets with the cycle counter inhibited
+(`mcountinhibit.CY`) and nothing in this kernel had ever enabled it, so the
+very first reading was 0 Hz.
+
+After the fixes, on the board:
+
+```
+PLL_SYS:  locked, REFDIV 1, FBDIV 120, POSTDIV 5/2 -> VCO 1440 MHz
+clk_sys:  SRC aux, AUXSRC PLL_SYS, DIV 1.0000
+clk_ref:  SRC 2 (XOSC), DIV 1; TIMER0 tick 1000000 Hz
+clk_sys:  144000000 Hz from the registers, 143993950 Hz measured (mcycle over 20000 TIMER0 ticks)
+config:   CONFIG_CLK_SYS_HZ = 144000000 -- agrees with the registers
+```
+
+The board's `time` now advances 21.38 s against the host's 21.40 s.
+
+**Perft, same board, same image, only the clock changed:** 16 285 ms at 150
+MHz, 16 971 ms at 144. The ratio is 1.0421, against 150/144 = 1.0417. The
+clock moves exactly as configured.
+
+**Open, and not closable from this board:** that suite took **6 465 ms on
+the Pico 2 in phase 34** (89 625 nps "strange bugs" against 34 199 here, at
+150 MHz on both). Flash is not the difference: QMI window 0 is already quad
+I/O continuous read (`RFMT` 0x492A8, `RCMD` 0xEB) at CLKDIV 3. The Pico 2
+figure was also taken on a board whose clock tree nobody had read back, with
+its own TIMER as the stopwatch, and today showed that bootroms leave that
+tree in different states. **The first thing to do on each of the other
+RP2350 boards is flash this tree and run `clocks`.** Items 1 and 2 above are
+no-ops where the bootrom already left PLL_SYS and ÷1, and a real change
+where it did not. A board that was quietly running on ROSC will now run at
+its configured clock, and its perft figures, UART baud rates and DCF-77
+timing with it.
+
+**Checks:** every RP2350 preset and `esp32p4` build. The only diagnostic is
+an objcopy warning on `esp32p4` (*empty loadable segment at 0x40000000*),
+which reproduces on a clean checkout of the parent commit, so it predates
+this work (probably newer binutils on this machine) and is left for the P4.
+QEMU 368/368. Sizecheck +1 byte on every persona, which is 36.0a's
+`history_dir_ready` latch, re-baselined here.
 
 ### 36.2 — The SD card
 

@@ -132,6 +132,9 @@ set(_optional_keys
     # USB host port (J7). Optional like every pin map here; its presence is what
     # builds drivers/boardprobe_rp2350.c's content.
     CONFIG_PIOUSB_DP_GPIO CONFIG_PIOUSB_DM_GPIO
+    # 36.1: the RP2350's clk_sys in Hz. Optional; arch/rp2350_clocks.h
+    # defaults it to the 150 MHz every persona ran at before it existed.
+    CONFIG_CLK_SYS_HZ
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only

@@ -34,7 +34,7 @@
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
     "kernel/klog.c": 8314,
-    "kernel/line_editor.c": 4625,
+    "kernel/line_editor.c": 4626,
     "kernel/lock.c": 665,
     "kernel/palloc.c": 36,
     "kernel/path.c": 68,
@@ -64,5 +64,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 140606
+  "total": 140607
 }

@@ -17,6 +17,15 @@
 set(CONFIG_PALLOC_MAX_PAGES 128)
 set(CONFIG_BALLOC_ARENA_PAGES 4)
 
+# clk_sys at 144 MHz, not the 150 every other persona runs (36.1, plan §3.3).
+# PIO-USB wants a multiple of 12 MHz -- at 150 the full-speed TX divider is
+# 3.125, and a fractional PIO divider dithers each bit edge by a whole cycle
+# (6.7 ns of an 83 ns bit) -- and 144 also gives the panel an integer 24 MHz
+# pixel clock at 6 cycles per pixel. PLL_SYS: 12 MHz x 120 = 1440 MHz VCO,
+# /5 /2. arch/rp2350_clocks.h derives the rest, and every UART/SPI/I2C/PWM
+# divider follows it.
+set(CONFIG_CLK_SYS_HZ 144000000)
+
 # UART0 on GP16/GP17, header H7 (pin 1 3V3, 2 GND, 3 RXD0, 4 TXD0).
 #
 # **Not GP0/GP1, which every other RP2350 board file uses, and this is not a

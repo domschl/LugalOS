@@ -6,6 +6,7 @@
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include "lugalos_config.h"
+#include "arch/rp2350_clocks.h"
 #include <string.h>
 
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_GPS_UART_BASE)
@@ -370,10 +371,10 @@ void gps_init(void) {
     /* The PL011 divisor is clk_peri / (16 * baud) in 6.6 fixed point, which is
      * exactly (4 * clk_peri) / baud as an integer -- the same derivation
      * uart1_link_rp2350.c spells out, rather than two magic numbers. */
-    /* 150 MHz clk_peri, the same literal drivers/uart1_link_rp2350.c uses --
-     * this board's clock tree is fixed by arch/riscv/rp2350/boot_header.S and
-     * neither driver has a way to ask it. */
-    uint32_t div64 = (uint32_t)((4ull * 150000000ull) / (uint32_t)CONFIG_GPS_BAUD);
+    /* clk_peri is clk_sys, which is CONFIG_CLK_SYS_HZ (36.1,
+     * arch/rp2350_clocks.h) -- a board fact rather than the 150 MHz literal
+     * this and uart1_link_rp2350.c used to carry separately. */
+    uint32_t div64 = (uint32_t)((4ull * CONFIG_CLK_SYS_HZ) / (uint32_t)CONFIG_GPS_BAUD);
     REG(U_IBRD) = div64 / 64u;
     REG(U_FBRD) = div64 % 64u;
     REG(U_LCR_H) = (3u << 5) | (1u << 4);               /* 8N1, FIFOs on */
