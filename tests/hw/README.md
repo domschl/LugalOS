@@ -215,6 +215,47 @@ many times the driver's own MAC/PHY recovery has fired since boot -- see
 the wiring section above for what a nonzero, climbing reinit count means
 and why it is expected rather than a fault.
 
+## RP2350-LCD-7: the stand-alone terminal (36.9)
+
+The `rp2350-terminal` persona is a whole machine: the panel is its screen and
+a USB keyboard on the PIO-USB port (J7) its input. This checklist is 36.9's
+done-condition (plan/phase36_rp2350_lcd7_terminal.md) and is run **by a
+person, with no host computer**: J3 on a USB charger, nothing reading ACM0.
+
+**Attach the keyboard before power-up.** J7 is not hot-pluggable on this
+board: plugging a device in while it runs browns it out (the boot log says
+`[CLK] last reset: ... (BROWN-OUT)`). A keyboard behind a hub may come and
+go on the hub freely.
+
+1. Power up. The boot log scrolls on the panel and ends at `lsh>`.
+   `kbd` shows the keyboard as `BOOT KEYBOARD`.
+2. There is no console login in LugalOS (the auth that exists is 9P's), so
+   the plan's "log in if auth is configured" step has nothing to exercise.
+3. Line editing: type `(+ 1 2)`, then Home, End, Left, Right, Backspace,
+   Delete, Ctrl-A, Ctrl-E, Ctrl-B, Ctrl-F, Ctrl-D, Ctrl-K; Enter evaluates.
+   Shift and Caps Lock give capitals and the shifted symbols (`!@#$%^&*()_+{}|:"<>?~`).
+4. History: Up and Down (and Ctrl-P, Ctrl-N) recall earlier lines.
+5. Holding a key repeats it after half a second, about 30 a second.
+6. `(perft 4 1)` runs for a minute or more; Ctrl-C stops it and the prompt
+   returns.
+7. C: `ed /ram0/t.c`, `a`, three lines --
+   `int main(void) {`, `return 42;`, `}` -- then `.`, `w`, `q`;
+   `cc /ram0/t.c /ram0/t.elf`, `exec /ram0/t.elf`: `[ELF] '/ram0/t.elf' returned 42`.
+8. Lisp (Scheme-style: `define`, not `defun`): `e /ram0/t.lisp`, type
+   `(define (sq x) (* x x))` and `(print (sq 7))`,
+   Ctrl-X Ctrl-E evaluates, Ctrl-X Ctrl-S saves, Ctrl-X Ctrl-C leaves;
+   `(load "/ram0/t.lisp")` at the prompt prints 49 (`load` evaluates a
+   file's forms without echoing them, hence the `print`).
+
+If a step fails:
+* **Keys do nothing:** `kbd` -- no `BOOT KEYBOARD` means enumeration did not
+  finish (its last error names the step); `kbd` running but no events in
+  `kbdlog` means the reports are not arriving.
+* **The wrong characters:** `kbdlog` shows each key's HID usage and modifier
+  byte; the US keymap is drivers/usbkbd.c.
+* **A `~` appears after PgUp/PgDn/Insert:** an editor that does not swallow
+  unbound `ESC [ n ~` sequences (kernel/line_editor.c does since 36.9).
+
 ## ESP32-P4 (Waveshare ESP32-P4-NANO)
 
 Phase 27's second silicon.

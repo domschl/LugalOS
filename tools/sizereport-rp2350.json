@@ -57,7 +57,7 @@
     "net/udp.c": 48,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_ui.c": 10764,
-    "user/chess/src/perft.c": 12,
+    "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/search.c": 5697,
     "user/chess/src/tt.c": 13,
@@ -70,5 +70,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 162197
+  "total": 162202
 }

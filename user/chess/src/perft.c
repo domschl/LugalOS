@@ -48,6 +48,16 @@
 #include "kernel/palloc.h"
 #include "kernel/sched.h"
 #include "kernel/hart.h"
+#include "kernel/console.h"
+
+/* Ctrl-C (36.9, plan/phase36_rp2350_lcd7_terminal.md): perft never polled for
+ * it, so `(perft 4 1)` ran to the end whatever was typed -- a minute and more
+ * on RP2350, found typing on the RP2350-LCD-7's own keyboard. Polled every
+ * 4096 nodes and only on hart 0, as search.c polls its stop callback (the
+ * console's input sources are served from hart 0). A stop unwinds every
+ * worker; the suite driver reports it rather than a wrong node count. */
+static volatile bool g_perft_stop;
+static uint32_t      g_perft_poll;
 
 /* Generous relative to any depth perft is actually run at -- the deepest
  * table entry is 7, and perft's own node counts make depth 10+ take longer
@@ -320,6 +330,10 @@ static void print_u64(uint64_t v) {
 
 // Recursive perft runner, against one worker's own pools.
 static uint64_t perft_rec(perft_ctx_t *c, Position *pos, int depth) {
+    if ((++g_perft_poll & 0xFFFu) == 0 && hart_id() == 0 && console_interrupt_requested()) {
+        console_interrupt_clear();
+        g_perft_stop = true;
+    }
     if (depth == 0) {
         return 1ULL;
     }
@@ -338,6 +352,7 @@ static uint64_t perft_rec(perft_ctx_t *c, Position *pos, int depth) {
         }
         nodes += perft_rec(c, pos, depth - 1);
         unmake_move(pos);
+        if (g_perft_stop) break;
     }
     c->ply--;
 
@@ -369,6 +384,7 @@ int run_perft_tests_cores(int max_depth, int workers) {
 
     printf("Starting PERFT Verification Suite (Max Depth: %d, cores requested: %d)...\n",
            max_depth, workers);
+    g_perft_stop = false;
     uint64_t suite_start_ms = time_get_ms();
     printf("========================================================================\n");
 
@@ -395,6 +411,7 @@ int run_perft_tests_cores(int max_depth, int workers) {
             uint64_t actual = run_perft_cores(&pos, d, workers, &used);
             uint64_t elapsed_ms = time_get_ms() - start_ms;
             if (used > used_max) used_max = used;
+            if (g_perft_stop) break;          /* Ctrl-C: the count is partial */
 
             if (actual != expected) {
                 printf("\n  -> ERROR at Depth %d: Expected ", d);
@@ -421,6 +438,10 @@ int run_perft_tests_cores(int max_depth, int workers) {
             }
         }
         printf("\n------------------------------------------------------------------------\n");
+        if (g_perft_stop) {
+            printf("PERFT interrupted (Ctrl-C).\n");
+            break;
+        }
     }
 
     /* Total elapsed, in-guest. The per-depth nps figures above are already

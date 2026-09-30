@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.8 done 2026-09-30, 36.9 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.9 done 2026-09-30, 36.10 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -1506,6 +1506,37 @@ keys, interrupt a long `(perft 4 1)` with Ctrl-C, write and run a three-line
 C program with `ed` and `cc`, and edit and evaluate a Lisp file with `e`. The
 steps are written as a checklist in `tests/hw/README.md`, next to the other
 failure signatures.
+
+**Done, 2026-09-30.** Two commits, as planned: first the console input
+sources as a registered list (`console_input_register()`, kernel/console.h),
+with the RP2350's serial UART and USB CDC converted onto it unchanged
+(test_rp2350.py 25/25 with exactly that commit); then the keyboard as the
+third source.
+
+The keyboard source (drivers/usbkbd_rp2350.c, kernel side) drains the kbd
+task's event ring through drivers/usbkbd.c's translator into a 64-byte
+queue the console pump reads: US keymap with Shift, Ctrl and Caps Lock;
+Enter `\r`, Backspace 0x7F, Tab, Esc; arrows `ESC[A-D`, Home `ESC[1~`,
+Insert `ESC[2~`, Delete `ESC[3~`, End `ESC[4~`, PgUp/PgDn `ESC[5~`/`ESC[6~`;
+the keypad as with Num Lock on; typematic 500 ms, then every 33 ms, stopped
+if the keyboard goes away. Its `peek_interrupt` makes a keyboard Ctrl-C
+latch like any other. `usbkbdselftest` covers the translation and the
+typematic timing on QEMU. Both editors now swallow `ESC [ n ~` sequences
+they do not bind (the `~` used to land in the text).
+
+**Found on the way: `perft` never polled for Ctrl-C** from any source; it
+now does every 4096 nodes on hart 0 (as the search polls), and the suite
+prints "PERFT interrupted". Over USB it stops 0.2 s after the Ctrl-C.
+
+The owner ran the stand-alone checklist (tests/hw/README.md) on the panel
+and keyboard: line editing, history, Shift and symbols, typematic, Ctrl-C
+on `(perft 4 1)`, a C program through `ed`/`cc`/`exec`, and a Lisp file
+in `e`, all working. The checklist's first draft said `defun`; this Lisp is
+Scheme-style (`define`), and `load` does not echo. There is no console login
+in LugalOS, so the plan's "log in if auth is configured" had nothing to test.
+
+Static RAM +89 bytes on rp2350-terminal (the key queue and translator
+state, and perft's stop flag), +5 on rp2350 (the perft stop), +0 elsewhere.
 
 ### 36.10 — Lisp graphics
 

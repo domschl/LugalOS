@@ -418,6 +418,28 @@ entry once it has stayed quiet across enough full runs to mean something.
 
 ---
 
+## RV32 guest hung once in the Lisp `spawn` test, and the runner waited forever
+
+**Trigger:** `tests/runner.py`, 2026-09-30, one run in four that day. The RV32
+guest stopped right after `(spawn "/flash0/system/bin/uhello.elf")` created
+its task (the log ends at `=>`); the same tree passed 376/376 on the rerun
+and on every run before and after.
+
+**What it is:** unknown -- a U-mode spawn/scheduling race on the single-hart
+RV32 target is the obvious suspect; nothing in the change under test ran
+there. **The harness half is known:** the guest stopped reading its UART,
+QEMU stopped reading its stdin, and `send_and_expect()` blocked in
+`stdin.flush()` for 20 minutes (a pipe write has no timeout). The suite
+only ended when the guest was killed by hand.
+
+**Fix, when it is worth it:** make the runner's writes non-blocking (or
+bound them with a watchdog thread that kills the guest), so a hung guest is
+a FAIL with its log rather than a stuck suite; then, if it recurs, the log
+names where the guest stopped. Until then, run the suite under
+`timeout 1200` as the pre-commit routine now does.
+
+---
+
 ## Chess speed on RP2350 depends on where the linker puts it (2.3x spread)
 
 **Trigger:** `(perft 3 1)` on real RP2350 silicon, with images that differ

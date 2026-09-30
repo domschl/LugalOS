@@ -535,6 +535,11 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
                         out_buf[len] = '\0';
                         redraw_box(active_filename, out_buf, len, pos, status_msg);
                     }
+                } else if (seq2 >= '0' && seq2 <= '9') {
+                    /* 36.9: Insert, PgUp, PgDn (ESC [ 2/5/6 ~) from the USB
+                     * keyboard: not bound yet, but the '~' must not be
+                     * typed into the text. */
+                    console_getc();
                 }
             }
             continue;
@@ -762,6 +767,11 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
                         out_buf[len] = '\0';
                         redraw_line(prompt, out_buf, len, pos);
                     }
+                } else if (seq2 >= '0' && seq2 <= '9') {
+                    /* 36.9: Insert, PgUp, PgDn (ESC [ 2/5/6 ~) from the USB
+                     * keyboard: not bound here, but the '~' must not become
+                     * part of the line. */
+                    console_getc();
                 }
             }
             goto done;

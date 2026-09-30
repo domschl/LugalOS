@@ -436,6 +436,68 @@ static void kbd_task_body(void *arg) {
     (void)driver_umode_enter(&spec);
 }
 
+/* --- The keyboard as a console input source (36.9) -----------------------
+ *
+ * The kernel side of the event ring: events are translated into bytes
+ * (drivers/usbkbd.c: US keymap, VT sequences, typematic) into a small queue
+ * the console pump reads like any other source. Typematic runs here, on the
+ * pump's polls, because the keyboard reports only on change. */
+#define KQ_SIZE 64u
+static usbkbd_xlate_t g_xl;
+static uint32_t       g_ev_tail;
+static uint8_t        g_kq[KQ_SIZE];
+static uint32_t       g_kq_head, g_kq_tail;
+
+static bool kbd_present(void) {
+    for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++)
+        if (g_kbd.dev[i].addr && g_kbd.dev[i].is_kbd) return true;
+    return false;
+}
+
+static void kq_put(const uint8_t *b, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (g_kq_head - g_kq_tail >= KQ_SIZE) return;   /* full: drop */
+        g_kq[g_kq_head % KQ_SIZE] = b[i];
+        g_kq_head++;
+    }
+}
+
+static void kbd_fill(void) {
+    uint32_t now = (uint32_t)time_get_ms();
+    uint32_t head = g_kbd.ev_head;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (head - g_ev_tail > USBKBD_EV_RING) g_ev_tail = head - USBKBD_EV_RING;  /* lapped */
+    uint8_t out[USBKBD_SEQ_MAX];
+    while (g_ev_tail != head && KQ_SIZE - (g_kq_head - g_kq_tail) >= USBKBD_SEQ_MAX) {
+        uint32_t e = g_kbd.ev[g_ev_tail % USBKBD_EV_RING];
+        g_ev_tail++;
+        kq_put(out, usbkbd_translate(&g_xl, e, now, out));
+    }
+    /* A key held on a keyboard that has gone away must not repeat forever. */
+    if (!kbd_present()) g_xl.repeat_usage = 0;
+    if (KQ_SIZE - (g_kq_head - g_kq_tail) >= USBKBD_SEQ_MAX)
+        kq_put(out, usbkbd_repeat(&g_xl, now, out));
+}
+
+static bool kbd_has_char(void) {
+    kbd_fill();
+    return g_kq_head != g_kq_tail;
+}
+
+static int kbd_getc(void) {
+    if (g_kq_head == g_kq_tail) return -1;
+    return g_kq[g_kq_tail++ % KQ_SIZE];
+}
+
+static bool kbd_peek_interrupt(void) {
+    kbd_fill();
+    for (uint32_t i = g_kq_tail; i != g_kq_head; i++)
+        if (g_kq[i % KQ_SIZE] == 0x03) return true;
+    return false;
+}
+
+static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_peek_interrupt };
+
 int usbkbd_start(void) {
     piousb_shared_t *u = piousb_shared();
     if (!u || !u->st.running) {
@@ -451,7 +513,10 @@ int usbkbd_start(void) {
         return -1;
     }
     g_kbd_pid = pid;
-    printk("[KBD] USB keyboard task #%d (U-mode) owns the PIO-USB port\n", pid);
+    g_ev_tail = g_kbd.ev_head;
+    if (console_input_register(&g_in_kbd) != 0)
+        printk("[KBD] the console has no room for a third input source\n");
+    printk("[KBD] USB keyboard task #%d (U-mode) owns the PIO-USB port; keys are console input\n", pid);
     return pid;
 }
 
@@ -555,15 +620,13 @@ void usbkbd_log(uint32_t seconds) {
     uint32_t back = head < 32u ? head : 32u;
     uint32_t tail = head - back;
     uint64_t end = time_get_ms() + (uint64_t)seconds * 1000u;
-    cprintf("kbdlog: the last %lu events, then live for %lu s (any console key stops)\n",
+    cprintf("kbdlog: the last %lu events, then live for %lu s (Ctrl-C stops)\n",
             (unsigned long)back, (unsigned long)seconds);
     while (time_get_ms() < end) {
-        /* The CR/LF that ended the command line is still arriving: only a
-         * real key stops the log. */
-        if (console_has_char()) {
-            char c = console_getc();
-            if (c != '\r' && c != '\n') break;
-        }
+        /* Only Ctrl-C stops the log: since 36.9 the keyboard being logged is
+         * console input too, so "any key" would stop it at the first key.
+         * Everything else typed meanwhile is discarded. */
+        if (console_has_char() && console_getc() == 0x03) break;
         while (tail != k->ev_head) {
             uint32_t e = k->ev[tail & (USBKBD_EV_RING - 1u)];
             tail++;
