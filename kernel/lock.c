@@ -966,7 +966,14 @@ int lock_selftest(void) {
          * was the first version of this test's bug, since sched_yield() does
          * not advance a sleeping task's deadline. */
         printk("[KlogBurst] burst over\n");
-        for (int i = 0; i < 40 && klog_gaps() == gaps_before; i++) task_sleep_ms(5);
+        /* Up to 2 s, not the 200 ms this used to allow. The wait ends the
+         * moment klogd counts the gap, so a healthy run is no slower; the
+         * bound only decides how long a *slow* one may take. On the two-hart
+         * QEMU target klogd was sometimes not scheduled within 200 ms -- one
+         * run in sixteen on 2026-09-30, with nothing in the tested path
+         * changed -- and that read as "the loss is not reported", which is a
+         * different and far more serious claim. The assertion is unchanged. */
+        for (int i = 0; i < 400 && klog_gaps() == gaps_before; i++) task_sleep_ms(5);
 
         check("log burst: the producer never blocked, and the loss is reported",
               klog_gaps() == gaps_before + 1 && klog_gap_bytes() > 0);
