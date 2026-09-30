@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 and 36.1 done 2026-09-30, 36.2 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0, 36.1 and 36.2 done 2026-09-30, 36.3 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -892,6 +892,50 @@ bring-up, writer files, chess games in `/sd0/chess/`) can then rely on it.
 measured and recorded; GP13/14 and the CMD/data pull-ups are checked
 (against the schematic and by reading the pad state) and recorded in the
 board file.
+
+#### Done, 2026-09-30
+
+The card had already mounted at 36.0. What 36.2 adds is the measurements and
+the pin questions.
+
+**Throughput**, on a 16 GB-class SDHC card, SPI at 12 MHz (clk_sys / 12):
+
+| instrument | sample | rate |
+|---|---|---|
+| `sdbench` (raw sequential read through `block_dev_t`) | 1024 KB | **349 KB/s** |
+| `sdbench w` (FAT32 file write / read back, verified) | 256 KB | write 41, read 181 KB/s |
+| `sdbench w` | 1024 KB | write 25, read 71 KB/s |
+
+`sdbench` is the P4's instrument (35.5) with the same output, so the boards
+compare side by side: 349 KB/s against the P4's 1547 over 4-bit SD/MMC. This is
+the second implementation, so it is noted and not extracted. `sdbench w` is
+new and generic (`kernel/shell.c`): it writes an offset-dependent pattern
+through the VFS, reads it back, verifies every byte and removes the file. It
+is also a QEMU test now (370/370). Its buffers come from `scratch`, not
+`.bss`.
+
+**The file rates fall as the file grows, and the cause is in `fs/fat32.c`,
+not the card.** Every `pread`/`pwrite` walks the cluster chain from the
+file's first cluster (`fat32.c:483`), and each step re-reads a FAT sector from
+the device with no cache (`fat_get_entry()`), so a whole-file pass is
+quadratic in its length. Filed in `plan/open_issues.md`. It is harmless at
+the sizes the writer app will save (36.12 records the document budget), and a
+one-sector FAT cache is the likely fix. That touches every FAT volume and the
+P4's two-core build, so it gets its own change.
+
+**Pins, from the schematic's "SD Card" block:** all six SDIO lines have 10 K
+pull-ups to 3V3 (R61–R66), including D1/D2, which is what SPI mode wants on
+unused lines. The socket's card-detect switch (TF-07F pin 9) goes to no GPIO,
+so **there is no card detect**, and a card inserted after boot is found only
+by a retry. On the board, GP13/14 are at FUNCSEL NULL with pads `0x116`
+(ISO = 1, IE = 0), the RP2350's reset state for an unclaimed pad. They read
+0 in `GPIO_IN` whatever the line does, which is expected and not a fault:
+nothing drives them and the card sees them pulled high.
+
+**Power cycle:** a marker written with `write-file` was read back intact after
+the USB cable was unplugged and replugged (uptime 21.7 s at the check, against
+485 s before). The marker was removed afterwards. The command history also
+survived, which it has done since 36.0a.
 
 ### 36.3 — The panel lights: power, reset, backlight, sync, a solid colour
 

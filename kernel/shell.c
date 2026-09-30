@@ -169,6 +169,88 @@ static void cmd_trapselftest(bool fatal) {
             "(halts the system).\n");
 }
 
+/* `sdbench w [kb]` -- 36.2, plan/phase36_rp2350_lcd7_terminal.md.
+ *
+ * The file-level counterpart of the read-only `sdbench`: what the writer app
+ * will actually do, which is write a file through FAT32, close it, and read it
+ * back. Writes /sd0/sdbench.tmp in 2 KB pwrite()s, reads it back, verifies
+ * every byte, and removes it. The pattern is a function of the absolute
+ * offset, so a block written to the wrong place, or a stale block read back,
+ * fails the comparison rather than passing by coincidence.
+ *
+ * Generic on purpose: nothing here knows what is under /sd0, so the same
+ * command runs on the QEMU virtio image, the RP2350's SPI card and the P4's
+ * SD/MMC card, and tests/runner.py can check the logic without hardware. */
+static uint8_t sdbench_pattern(uint32_t off) {
+    return (uint8_t)(off ^ (off >> 8) ^ (off >> 16) ^ 0x5a);
+}
+
+static void cmd_sdbench_write(unsigned kb) {
+    static const char path[] = "/sd0/sdbench.tmp";
+    const uint32_t chunk = 2048;
+    if (kb == 0 || kb > 4096u) kb = 256u;
+    uint32_t total = (uint32_t)kb * 1024u;
+
+    scratch_t sc;
+    if (!scratch_acquire(&sc, chunk)) {
+        cprintf("sdbench w: no memory for the buffer\n");
+        return;
+    }
+    uint8_t *buf = (uint8_t *)sc.base;
+
+    int fd = vfs_open(path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+    if (fd < 0) {
+        cprintf("sdbench w: cannot create %s (no card?)\n", path);
+        scratch_release(&sc);
+        return;
+    }
+    uint64_t t0 = time_get_us();
+    for (uint32_t off = 0; off < total; off += chunk) {
+        for (uint32_t i = 0; i < chunk; i++) buf[i] = sdbench_pattern(off + i);
+        if (vfs_pwrite(fd, buf, chunk, off) != (int)chunk) {
+            cprintf("sdbench w: write failed at %u\n", (unsigned)off);
+            vfs_close(fd);
+            vfs_remove(path);
+            scratch_release(&sc);
+            return;
+        }
+    }
+    vfs_close(fd);
+    uint64_t t_write = time_get_us() - t0;
+
+    fd = vfs_open(path, VFS_O_READ);
+    if (fd < 0) {
+        cprintf("sdbench w: cannot reopen %s\n", path);
+        vfs_remove(path);
+        scratch_release(&sc);
+        return;
+    }
+    uint32_t bad = 0, first_bad = 0;
+    t0 = time_get_us();
+    for (uint32_t off = 0; off < total; off += chunk) {
+        if (vfs_pread(fd, buf, chunk, off) != (int)chunk) {
+            cprintf("sdbench w: read back failed at %u\n", (unsigned)off);
+            bad = 1;
+            break;
+        }
+        for (uint32_t i = 0; i < chunk; i++) {
+            if (buf[i] != sdbench_pattern(off + i) && bad++ == 0) first_bad = off + i;
+        }
+    }
+    uint64_t t_read = time_get_us() - t0;
+    vfs_close(fd);
+    vfs_remove(path);
+    scratch_release(&sc);
+
+    if (t_write == 0) t_write = 1;
+    if (t_read == 0) t_read = 1;
+    cprintf("sdbench w: %u KB file: write %u ms = %u KB/s, read back %u ms = %u KB/s, ",
+            kb, (unsigned)(t_write / 1000u), (unsigned)((uint64_t)kb * 1000000u / t_write),
+            (unsigned)(t_read / 1000u), (unsigned)((uint64_t)kb * 1000000u / t_read));
+    if (bad) cprintf("VERIFY FAILED: %u bad bytes, first at %u\n", (unsigned)bad, (unsigned)first_bad);
+    else cprintf("verified\n");
+}
+
 #if defined(CONFIG_BOARD_ESP32P4)
 /* E6: read flash, and show enough of it to be checkable against something
  * that is not this code.
@@ -209,6 +291,7 @@ static void cmd_flashinfo(void) {
  * The sector used is the last one in the writable region, not the first: the
  * first is where the filesystem image goes, and a self-test should not sit on
  * top of the thing it will later be asked not to disturb. */
+
 static void cmd_flashtest(void) {
     if (!flash_p4_init()) { cprintf("[FlashTest] flash not available\n"); return; }
 
@@ -404,6 +487,10 @@ static void cmd_help(void) {
 #if CONFIG_ENABLE_ED
     cprintf("  ed [file]       - Launch teletype line editor\n");
 #endif
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+    cprintf("  sdbench [kb]    - SD sequential read rate through the block device (read-only)\n");
+#endif
+    cprintf("  sdbench w [kb]  - Write, read back and verify /sd0/sdbench.tmp, then remove it\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
@@ -3245,6 +3332,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
         return;
+    } else if (strncmp(cmd_line, "sdbench w", 9) == 0) {
+        /* 36.2: before any board's `sdbench`, which would match first. */
+        cmd_sdbench_write(shell_trailing_uint(&cmd_line[9]));
+        return;
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+    } else if (strncmp(cmd_line, "sdbench", 7) == 0) {
+        spisd_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
+        return;
+#endif
     } else if (strcmp(cmd_line, "lisp") == 0) {
         lisp_repl();
         return;

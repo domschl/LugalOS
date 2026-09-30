@@ -471,6 +471,31 @@ suit this tree.
 
 ---
 
+## FAT32 file access is quadratic in file length
+
+**Trigger:** `sdbench w 256` against `sdbench w 1024` on the RP2350-LCD-7
+(2026-09-30): write 41 then 25 KB/s, read back 181 then 71 KB/s. Four times
+the data takes 6.5 times as long to write and ten times as long to read.
+
+**What it is:** `fat32_pread()`/`pwrite()` find the cluster holding `offset`
+by walking the chain from the file's first cluster every call
+(`fs/fat32.c:483`, and the matching walk in the write path near line 771).
+Each step is `fat_get_entry()`, which reads the FAT sector from the device
+with no cache, one SD sector read per cluster before the offset, per call.
+
+**Why it is parked:** at the file sizes this tree writes today (source files,
+init scripts, PGNs, the writer's documents) it costs milliseconds. The fix
+touches every FAT volume (`/flash0`, `/ram0`, `/sd0`) and the ESP32-P4's
+two-core build, so it should not ride in on a benchmark milestone.
+
+**Fix, when it is worth it:** a single cached FAT sector per mounted volume
+(128 entries: a whole chain walk usually stays inside one), updated
+write-through by `fat_set_entry()`. Better still, remember each open handle's
+last (offset, cluster) pair so sequential access never walks at all.
+`sdbench w` is the before/after instrument, and it is also a QEMU test.
+
+---
+
 ## The harness still has ~70 "wait for one line, assert on another" sites
 
 **Trigger:** run the full QEMU suite repeatedly on a fast, lightly loaded

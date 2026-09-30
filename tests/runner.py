@@ -460,6 +460,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("ELF Loader Rejects Malformed Program Headers (B12)",
                         ok, log if not ok else ""))
 
+        # 36.2: `sdbench w` writes a file through FAT32, reads it back and
+        # verifies every byte against an offset-dependent pattern, then removes
+        # it. Generic VFS code, so the virtio SD image exercises exactly what
+        # the RP2350's SPI card does. `verified` is the last thing it prints;
+        # the file must be gone afterwards, or the test left litter on /sd0.
+        ok, log = session.send_and_expect("sdbench w 64", r"sdbench w: 64 KB file: .*(verified|VERIFY FAILED)", timeout=20.0)
+        if ok and "VERIFY FAILED" in log:
+            ok = False
+        if ok:
+            ok2, log2 = session.send_and_expect("ls /sd0", r"Directory Listing.*lsh>", timeout=6.0)
+            if not ok2 or "SDBENCH" in log2.upper():
+                ok, log = False, f"sdbench.tmp was left behind (or ls failed):\n{log2[-400:]}"
+        results.append(("SD File Write, Read Back And Verify Through FAT32 (36.2 sdbench w)",
+                        ok, log if not ok else ""))
+
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
         #

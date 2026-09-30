@@ -12,6 +12,8 @@
 #include "drivers/spisd.h"
 #include "drivers/driver_task.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
+#include "kernel/scratch.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/chan.h"
@@ -903,10 +905,61 @@ block_dev_t *spisd_get_device(void) {
     return &g_spisd_dev;
 }
 
+/* `sdbench`, 36.2. Same shape and wording as sdmmc_bench_report() on the P4
+ * (drivers/sdmmc_esp32p4.c), on purpose: a rate with its sample size, read
+ * from LBA 0 upwards, nothing written. Four blocks per call, as there; the
+ * driver below splits them into its one-sector requests (BLK_MAX_COUNT), and
+ * that cost is part of what a filesystem sees, so it is part of the figure. */
+void spisd_bench_report(uint32_t kilobytes) {
+    block_dev_t *dev = spisd_get_device();
+    if (!dev) {
+        cprintf("sdbench: no card\n");
+        return;
+    }
+    if (kilobytes == 0 || kilobytes > 8192u) kilobytes = 1024u;
+
+    uint32_t blocks = kilobytes * 2u;
+    if (blocks > dev->num_blocks) blocks = dev->num_blocks;
+
+    /* On demand, not .bss: 2 KB for a command run a handful of times would
+     * be heap no other subsystem could have (kernel/scratch.h's rule). */
+    scratch_t sc;
+    if (!scratch_acquire(&sc, 512 * 4)) {
+        cprintf("sdbench: no memory for the buffer\n");
+        return;
+    }
+    uint8_t *buf = (uint8_t *)sc.base;
+    uint32_t done = 0;
+    uint64_t t0 = time_get_us();
+    while (done < blocks) {
+        uint32_t chunk = (blocks - done) > 4u ? 4u : (blocks - done);
+        if (dev->read_blocks(dev, buf, done, chunk) != 0) {
+            cprintf("sdbench: read failed at lba %u\n", (unsigned)done);
+            scratch_release(&sc);
+            return;
+        }
+        done += chunk;
+    }
+    uint64_t us = time_get_us() - t0;
+    scratch_release(&sc);
+    if (us == 0) us = 1;
+
+    uint32_t kb = done / 2u;
+    uint32_t kb_per_s = (uint32_t)(((uint64_t)kb * 1000000u) / us);
+    cprintf("sdbench: %u KB in %u ms = %u KB/s (SPI at %u kHz, %u blocks, "
+           "4 per call, 1 per request)\n",
+           (unsigned)kb, (unsigned)(us / 1000u), (unsigned)kb_per_s,
+           (unsigned)(CONFIG_CLK_SYS_HZ / 12 / 1000), (unsigned)done);
+}
+
 #else // !CONFIG_ENABLE_SPISD
 
 block_dev_t *spisd_get_device(void) {
     return NULL;
+}
+
+void spisd_bench_report(uint32_t kilobytes) {
+    (void)kilobytes;
 }
 
 int spisd_task_start(void) {
