@@ -413,6 +413,52 @@ shape the runner already uses elsewhere.
 
 ---
 
+## Chess speed on RP2350 depends on where the linker puts it (2.3x spread)
+
+**Trigger:** `(perft 3 1)` on real RP2350 silicon, with images that differ
+only in code the search never runs. Measured 2026-09-30 on one Pico 2: the
+chess persona 7 373 ms; the same preset with the ST7735/TM1638 drivers built
+out 9 588 ms; the rp2350-terminal image 16 970 ms, and 16 971 ms on the
+RP2350-LCD-7, so it is not the board. The flash interface was identical in all
+cases (QMI M0: quad continuous read, CLKDIV 3), and `clocks` verified the CPU
+clock on both boards (plan/phase36 36.1).
+
+**What it is:** the engine executes in place from flash through the 16 KB
+XIP cache. Its hot path (bitboard, position, movegen, evaluation, tt, search:
+~21 KB of text) and tables (~10 KB of position/evaluation rodata) are larger
+than the cache, so its miss rate, and with it the node rate, depends on how
+the link happens to align them. Phase 34's RP2350 cycles/node figure, and any
+before/after comparison across two builds, carries this noise.
+
+**Why it is parked:** the fix spends heap. **Options:**
+(a) the hot search files in `.ramfunc` and their tables in `.data`: ~31 KB,
+about 8 pages, on every chess persona, where the chess board has fewer
+spare than the terminal board;
+(b) only the innermost part (movegen + attack lookup), which needs a profile
+to choose, since there is no sampling profiler on RP2350 yet;
+(c) accept it and benchmark only within one image.
+The decision belongs with 36.11 (chess on the LCD-7), or with any phase that
+wants RP2350 perft numbers to mean something across builds.
+
+---
+
+## Every RP2350 board enumerates with the same USB serial number
+
+**Trigger:** plug in two LugalOS RP2350 boards. Both report `LUGALOS-0001`,
+so `/dev/serial/by-id/usb-LugalOS_LugalOS_Dual_CDC_ACM_LUGALOS-0001-if00`
+points at whichever enumerated last, and a script using the stable name can
+talk to, or flash, the wrong board. Found 2026-09-30 with the chess board and
+the RP2350-LCD-7 attached together. `flash.py --console /dev/ttyACMn` and the
+USB path in sysfs (`/sys/bus/usb/devices/3-1` against `3-7`) are the
+workaround.
+
+**Fix, when it is worth it:** derive the string descriptor from the chip's
+unique ID (the bootrom's `get_sys_info` / OTP CHIPID). The node identity
+already has a uid, and a USB serial and a node uid saying the same thing would
+suit this tree.
+
+---
+
 ## The harness still has ~70 "wait for one line, assert on another" sites
 
 **Trigger:** run the full QEMU suite repeatedly on a fast, lightly loaded

@@ -844,18 +844,35 @@ The board's `time` now advances 21.38 s against the host's 21.40 s.
 MHz, 16 971 ms at 144. The ratio is 1.0421, against 150/144 = 1.0417. The
 clock moves exactly as configured.
 
-**Open, and not closable from this board:** that suite took **6 465 ms on
-the Pico 2 in phase 34** (89 625 nps "strange bugs" against 34 199 here, at
-150 MHz on both). Flash is not the difference: QMI window 0 is already quad
-I/O continuous read (`RFMT` 0x492A8, `RCMD` 0xEB) at CLKDIV 3. The Pico 2
-figure was also taken on a board whose clock tree nobody had read back, with
-its own TIMER as the stopwatch, and today showed that bootroms leave that
-tree in different states. **The first thing to do on each of the other
-RP2350 boards is flash this tree and run `clocks`.** Items 1 and 2 above are
-no-ops where the bootrom already left PLL_SYS and ÷1, and a real change
-where it did not. A board that was quietly running on ROSC will now run at
-its configured clock, and its perft figures, UART baud rates and DCF-77
-timing with it.
+**The cold boot, and the other board, 2026-09-30.** After a power cycle,
+`clocks` on the LCD-7 reads the same (PLL_SYS, ÷1, 1 MHz tick, 143 997 500 Hz
+measured). The Pico 2 chess board's bootrom, read with `peek` on its *old*
+firmware, had left `CLK_SYS_CTRL` = 1 (aux on PLL_SYS), `CLK_REF_DIV` ÷1 and
+FBDIV 125. So that board has always run at a true 150 MHz, both fixes are
+no-ops there as predicted, and only the LCD-7's bootrom leaves the other
+state. The new tree on the chess board: 150 000 000 from the registers,
+149 997 450 measured.
+
+**The 2.6× perft gap is code layout, not the board.** Same `(perft 3 1)`
+suite, all on real silicon:
+
+| image | board | clk_sys | suite |
+|---|---|---|---|
+| chess persona, old build 575 | Pico 2 | 150 | 6 862 ms |
+| chess persona, this tree | Pico 2 | 150 | 7 373 ms |
+| chess persona **minus ST7735/TM1638 code** | Pico 2 | 150 | 9 588 ms |
+| terminal persona | **Pico 2** | 144 | **16 970 ms** |
+| terminal persona | LCD-7 | 144 | 16 971 ms |
+
+The terminal image is as slow on the Pico 2 as on the LCD-7, and the flash
+configuration is identical on both (QMI quad continuous read, CLKDIV 3). Just
+removing two drivers the search never calls costs the chess preset 30 %.
+The engine runs in place from flash through the 16 KB XIP cache, and its
+speed depends on where the linker happens to put its hot code and tables. That
+is filed in `plan/open_issues.md` with the options. The obvious one, the hot
+~21 KB of search code plus ~10 KB of tables in SRAM, costs about 8 heap
+pages on every chess persona, so it is a decision rather than a fix. It
+matters for 36.11 (chess on this board) and is not a blocker before then.
 
 **Checks:** every RP2350 preset and `esp32p4` build. The only diagnostic is
 an objcopy warning on `esp32p4` (*empty loadable segment at 0x40000000*),
