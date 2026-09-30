@@ -27,6 +27,12 @@ void lcd7_set_colours(uint16_t fg, uint16_t bg);
  * lay things out on 0..798, and never put a frame line on x = 799. */
 uint32_t *lcd7_framebuffer(void);
 
+/* 36.5: `lcd test text` -- every glyph, a pangram, reverse video, a cursor.
+ * `lcd scroll <n>` -- n numbered lines through the 100 x 30 grid, timing
+ * each scroll. */
+int lcd7_text_test(void);
+void lcd7_scroll_test(unsigned n);
+
 /* 36.4: `lcd test <name>`: clear, border, stripes, checker, grid, invert.
  * Returns -1 for an unknown name or no panel. */
 int lcd7_test_pattern(const char *name);

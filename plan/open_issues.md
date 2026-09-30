@@ -476,6 +476,31 @@ suit this tree.
 
 ---
 
+## libc's memmove/memcpy/memset are byte loops
+
+**Trigger:** anything that moves a lot of memory. Measured 2026-09-30 on the
+RP2350-LCD-7 at 144 MHz: a 46 400-byte `memmove()` (one text scroll) took
+2.0 ms, about six cycles a byte. The same move done with 32-bit words took
+693 µs (plan/phase36 36.5).
+
+**What it is:** `libc/string.c` implements `memmove()` and `memset()` (and,
+by the look of it, `memcpy()`) as plain byte loops. The tree compiles with
+`-fno-tree-loop-distribute-patterns` (the compiler must not turn those loops
+back into calls to themselves), so nothing rewrites them.
+
+**Why it is parked:** everything links against these, on every target and in
+U-mode, so a faster version has to be right for every alignment, overlap
+direction and length. That is its own small change with its own tests, not
+something to fold into a display milestone. `drivers/fbtext.c` does its own
+word copies meanwhile.
+
+**Fix, when it is worth it:** word loops for the co-aligned case, byte loops
+for the head/tail and the rest, both directions for memmove, and QEMU tests
+over a grid of (src offset, dst offset, length, overlap) against a byte-wise
+reference.
+
+---
+
 ## FAT32 file access is quadratic in file length
 
 **Trigger:** `sdbench w 256` against `sdbench w 1024` on the RP2350-LCD-7

@@ -573,6 +573,10 @@ set(SOURCES
     arch/riscv/common/pmp_probe.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
+    # 36.5: text on a 1-bpp framebuffer, and its font. Portable, so on every
+    # target: the RP2350-LCD-7 draws with it, and QEMU tests it (36.6).
+    drivers/fbtext.c
+    drivers/font8x16.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU

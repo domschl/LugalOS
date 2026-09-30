@@ -60,6 +60,8 @@
  */
 
 #include "drivers/lcd7.h"
+#include "drivers/fbtext.h"
+#include "drivers/font8x16.h"
 #include "arch/rp2350_clocks.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
@@ -428,6 +430,67 @@ int lcd7_test_pattern(const char *name) {
     return 0;
 }
 
+/* --- Text (36.5) -----------------------------------------------------------
+ *
+ * The 100 x 30 cell grid of 8 x 16 glyphs that exactly tiles the panel. */
+#define TEXT_COLS            (LCD_H_ACTIVE / FONT8X16_W)
+#define TEXT_ROWS            (LCD_V_ACTIVE / FONT8X16_H)
+_Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
+               "lcd7: the text grid must tile the panel exactly");
+
+static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
+    for (unsigned col = 0; *s && col < t->cols; col++, s++) fbtext_putc(t, col, row, *s, inverse);
+}
+
+/* `lcd test text`: every glyph, a pangram, reversed video, and a cursor. */
+int lcd7_text_test(void) {
+    if (!g_fb) return -1;
+    fbtext_t t;
+    fbtext_init(&t, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
+    fbtext_clear_rows(&t, 0, TEXT_ROWS);
+    text_line(&t, 0, "LugalOS on the RP2350-LCD-7: Spleen 8x16, 100 x 30 cells, 1-bpp at 56 Hz", false);
+    unsigned row = 2, col = 0;
+    for (int c = FONT8X16_FIRST; c <= FONT8X16_LAST; c++) {
+        fbtext_putc(&t, col, row, (char)c, false);
+        if (++col == 64u) { col = 0; row++; }
+    }
+    text_line(&t, 5, "The quick brown fox jumps over the lazy dog. 0123456789", false);
+    text_line(&t, 6, "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG! (){}[]<>=+-*/\\|~^", false);
+    text_line(&t, 8, " Reverse video: SGR 7 is exact on a 1-bpp screen. ", true);
+    text_line(&t, 10, "Cursor after this >", false);
+    fbtext_cursor_xor(&t, 19, 10);
+    for (unsigned c = 0; c < TEXT_COLS; c++) fbtext_putc(&t, c, TEXT_ROWS - 1u, (char)('0' + c % 10u), false);
+    return 0;
+}
+
+/* `lcd scroll <n>`: n numbered lines, each written after scrolling the grid up
+ * one row -- what `cat` of a long file does. Times each scroll alone. */
+void lcd7_scroll_test(unsigned n) {
+    if (!g_fb) return;
+    if (n == 0) n = 1000u;
+    fbtext_t t;
+    fbtext_init(&t, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
+    uint64_t total = 0, worst = 0, best = ~(uint64_t)0;
+    uint64_t t_all = time_get_us();
+    char buf[TEXT_COLS + 1];
+    for (unsigned i = 1; i <= n; i++) {
+        uint64_t t0 = time_get_us();
+        fbtext_scroll_up(&t, 1);
+        uint64_t d = time_get_us() - t0;
+        total += d;
+        if (d > worst) worst = d;
+        if (d < best) best = d;
+        ksnprintf(buf, sizeof(buf), "line %5u of %u: the quick brown fox jumps over the lazy dog", i, n);
+        text_line(&t, TEXT_ROWS - 1u, buf, false);
+    }
+    uint64_t all = time_get_us() - t_all;
+    cprintf("lcd scroll: %u lines in %lu ms; one scroll (a %lu-byte memmove) took %lu us on average, "
+            "best %lu, worst %lu\n",
+            n, (unsigned long)(all / 1000u),
+            (unsigned long)((TEXT_ROWS - 1u) * FONT8X16_H * (LCD_H_ACTIVE / 8u)),
+            (unsigned long)(total / n), (unsigned long)best, (unsigned long)worst);
+}
+
 int lcd7_init(void) {
     unreset(RESET_DMA | RESET_PIO2 | RESET_PWM);
 
@@ -579,6 +642,8 @@ int lcd7_init(void) { return -1; }
 void lcd7_set_colour(uint16_t rgb565) { (void)rgb565; }
 void lcd7_set_colours(uint16_t fg, uint16_t bg) { (void)fg; (void)bg; }
 uint32_t *lcd7_framebuffer(void) { return 0; }
+int lcd7_text_test(void) { return -1; }
+void lcd7_scroll_test(unsigned n) { (void)n; }
 int lcd7_test_pattern(const char *name) { (void)name; return -1; }
 void lcd7_set_backlight(unsigned percent) { (void)percent; }
 void lcd7_report(void) { }

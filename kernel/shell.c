@@ -500,7 +500,8 @@ static void cmd_help(void) {
     cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
     cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
     cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
-    cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert> - Diagnostic patterns\n");
+    cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert|text> - Diagnostic patterns\n");
+    cprintf("  lcd scroll [n]  - Scroll n numbered lines of text (default 1000), timing each scroll\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
@@ -3379,6 +3380,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         lcd7_set_colour((uint16_t)v);
         cprintf("lcd: colour 0x%04x\n", (unsigned)(v & 0xffffu));
+        return;
+    } else if (strcmp(cmd_line, "lcd test text") == 0) {
+        /* 36.5 */
+        if (lcd7_text_test() != 0) cprintf("lcd test text: panel not running\n");
+        return;
+    } else if (strncmp(cmd_line, "lcd scroll", 10) == 0) {
+        lcd7_scroll_test(shell_trailing_uint(&cmd_line[10]));
         return;
     } else if (strncmp(cmd_line, "lcd test ", 9) == 0) {
         /* 36.4: patterns that fail in a way that names the fault. */

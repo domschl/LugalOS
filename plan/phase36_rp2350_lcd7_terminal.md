@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.4 done 2026-09-30, 36.5 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.5 done 2026-09-30, 36.6 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -1187,6 +1187,38 @@ the character set and scrolls it.
 **Done when:** every printable ASCII glyph is legible at arm's length;
 scrolling 1000 lines leaves no residue; the time for one scroll is measured
 and recorded (§2's "~100 µs" was a guess until then).
+
+#### Done, 2026-09-30
+
+* **Font:** Spleen 8×16 2.1.0 (upstream release tarball SHA-256
+  `8b47c56f…0c372f`). The BDF and its BSD 2-Clause licence are vendored in
+  `tools/fonts/`. `tools/gen_font_bdf.py` emits printable ASCII as
+  `drivers/font8x16.c` (committed, generated), bit-reversed so the leftmost
+  pixel is bit 0. The generated file carries the font's notice *and* the
+  full licence text, as a BSD source redistribution must. A binary
+  distribution must also reproduce the notice "in the documentation", which
+  becomes a third-party notice in the README at 36.13. All 95 glyphs share
+  one 8 × 16 cell and leave their rightmost pixel column blank, which suits
+  the half-hidden screen column 799.
+* **`drivers/fbtext.c`:** portable text on any 1-bpp buffer in this bit
+  order. It has putc (a non-ASCII byte draws as `?`), inverse video, clearing
+  rows, scroll-up and an XOR underline cursor. There is no hardware in it,
+  and it builds on every target so that 36.6 can test on QEMU.
+* **On the board** (owner): `lcd test text` shows every glyph, pangrams,
+  reverse video and a cursor, all legible; the 100th column reaches the
+  right edge (with the known softness of pixel 799). `lcd scroll 1000`
+  ends on lines 971–1000, consecutive and clean, with no residue and no
+  tearing noticed.
+* **Scroll cost, measured** (the §2 guess of ~100 µs was wrong): the tree's
+  `memmove()`/`memset()` (`libc/string.c`) are byte loops, and one scroll,
+  a 46 400-byte move, took **2.0 ms**. `fbtext` now copies and clears in
+  words when the buffer allows it (the framebuffer is page-aligned, 25 words
+  a row), bringing it to **693 µs** a scroll, or 1 000 lines in 807 ms,
+  about 1 240 lines/s. The byte-wise libc is filed in `plan/open_issues.md`.
+  It is worth fixing for everything, and is not this milestone's to change.
+
+Costs: static RAM +0 on every persona (the font is 1.5 KB of flash
+`.rodata`, and `fbtext` has no state). QEMU 370/370.
 
 ### 36.6 — The terminal emulator and the `lcd` console
 
