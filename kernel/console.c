@@ -6,6 +6,7 @@
 #include "drivers/uart.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
+#include "kernel/sched.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -226,7 +227,23 @@ static int pushback_get(void) {
  * drain paths, whichever ran first would decide the byte's fate, and a
  * Ctrl-C consumed by the line editor -- which has no handling for it -- would
  * simply vanish. */
+/* Serialises every read of the input device (2026-09-30).
+ *
+ * The pump's `uart_has_char()` then `uart_getc()` is a check-then-act, and two
+ * tasks run it: whoever is reading a line, and anything polling for Ctrl-C --
+ * which includes background tasks (mqttd's connect loop calls
+ * console_interrupt_requested(), net/mqtt.c). Without this lock the second
+ * reader could see a byte, lose it to the first between the two calls, and
+ * then sit in a *blocking* uart_getc() until someone typed again. Found by
+ * the test harness once its completion sentinel started arriving just as
+ * mqttd connected: mqttd hung silently -- no connect, no error -- about two
+ * runs in three, and on hardware typing at the shell while mqttd connects
+ * would do the same. A ylock, because uart_getc() may block (a chan_call to
+ * the uart task on RP2350). Zero-initialised, like g_console_lock. */
+static ylock_t g_input_lock;
+
 static void console_pump(void) {
+    ylock_acquire(&g_input_lock);
     /* The interrupt latch comes FIRST, and deliberately not inside the drain
      * loop below.
      *
@@ -275,6 +292,7 @@ static void console_pump(void) {
         if (c == 0x03) g_interrupt_pending = true;
         pushback_put(c);
     }
+    ylock_release(&g_input_lock);
 }
 
 bool console_has_char(void) {
@@ -286,15 +304,17 @@ bool console_has_char(void) {
 }
 
 char console_getc(void) {
-    console_pump();
-    int c = pushback_get();
-    if (c >= 0) return (char)c;
-
-    /* Nothing queued: block on the device, latching a Ctrl-C that arrives
-     * this way too, and still handing it on. */
-    char raw = uart_getc();
-    if (raw == 0x03) g_interrupt_pending = true;
-    return raw;
+    /* Every device read goes through the pump, under g_input_lock. This used
+     * to fall through to a bare uart_getc() when nothing was queued -- a
+     * second, unlocked reader, and the half of the race described at
+     * g_input_lock that took the byte out from under the pump. Polling with
+     * a yield is what uart_getc() does internally on every target anyway. */
+    for (;;) {
+        console_pump();
+        int c = pushback_get();
+        if (c >= 0) return (char)c;
+        sched_yield();
+    }
 }
 
 void console_ungetc(char c) {
