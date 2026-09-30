@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.3a done 2026-09-30, 36.4 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.4 done 2026-09-30, 36.5 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -322,8 +322,19 @@ possible:
   stream receive buffer already uses (README, "a lock-free SPSC ring").
 
 **Boot protocol only.** An 8-byte report, 6-key rollover, and no HID report
-descriptor parser. Every USB keyboard is required to support it. Hubs are out
-of scope: the keyboard goes directly into J7.
+descriptor parser. Every USB keyboard is required to support it.
+
+**A hub is in scope after all (2026-09-30, owner).** The keyboard on this
+board has a built-in USB hub with a mouse attached, so the device on J7 is a
+**hub**. It was the full-speed device 36.0's `boardprobe` saw, and the
+keyboard is one of its downstream ports. So 36.8 needs a minimal hub class
+driver: enumerate the hub, power its ports, read port status, reset a port
+with something on it, enumerate that device at a new address, and find the
+HID boot keyboard among the devices. If the keyboard is low-speed behind the
+full-speed hub, the host must also send the PRE token (the reference
+implementation's `send_pre()`). The mouse on the same hub is left
+unenumerated until the windowing phase (§7.1), but the hub work is what will
+make it reachable.
 
 **From scratch, not ported.** LugalOS carries no TinyUSB or Pico SDK runtime
 (README: the CDC stack was *"written from scratch against the hardware"*).
@@ -390,6 +401,22 @@ that the refactor changed nothing it was not meant to.
 That is deliberate, and it is what makes them testable on QEMU (§4.5).
 
 ### 4.2 The font
+
+**Decision for 36.5 (owner, 2026-09-30, later the same day): Spleen 8×16, as
+originally planned.** It is the easiest route, and BSD-licensed. The
+Mac-style faces below are for a later experiment with font variations, and
+are not a 36.5 dependency.
+
+**Earlier the same day (owner):** the fonts should *resemble the original
+Macintosh's*. The aim is the general look and feel, not a pixel-perfect copy,
+and it is subject to licensing. So: a Monaco-like fixed-width face for the
+terminal (candidate: ProFont, a Monaco 9 descendant under a permissive
+licence), and a Chicago-like face for window titles later (candidates: the
+free Chicago look-alikes, or glyphs drawn here). Every licence gets checked
+at 36.5 before anything is committed. If none is clean, the fallback is
+drawing the ~95 ASCII glyphs ourselves, in that style, at the cell size
+chosen. Spleen below stays as the fallback's fallback. The bit-order and
+generator rules in this section still apply whichever face wins.
 
 **Spleen 8×16** (BSD 2-clause, compatible with this tree's MIT licence),
 converted from its BDF by a small host script in `tools/` and committed as
@@ -1088,6 +1115,69 @@ late pixel).
 the underrun counter is **0** at the final PCLK; an idle-loop benchmark shows
 no measurable CPU cost with the panel on versus off.
 
+#### Done, 2026-09-30 — pixel-exact, and the last column is under the bezel
+
+`drivers/lcd7_rp2350.c`. The design that ran first time differs from the §3.1
+sketch in three ways, all to save PIO registers or cycles:
+
+* **Colour is not in the pixel path.** The pixel SM drives all 16 data pins
+  to all-ones or all-zeros, and each data pin's IO_BANK0 `OUTOVER` (13:12)
+  maps that to any fg/bg pair: pass, invert, force low, force high per bit.
+  Colours change instantly (`lcd colours <fg> <bg>`), no PIO register holds
+  them, and the default is **black on white** (§7.1).
+* **Cycle-locked, not edge-following.** SM1 syncs on DE's rise, then runs
+  exactly 6 cycles per pixel on both branch paths (`out x,1` / `jmp !x` /
+  `mov pins,~null|null [2]` / `jmp y--`), which puts every data write on a
+  falling PCLK edge with half a PCLK of setup and of hold.
+* **Pixel 0 goes out one PCLK early.** The SM sees DE two cycles after it
+  rises, too late for the first sampling edge, so each line's loop emits
+  pixels 1..799 and then the *next* line's pixel 0. The very first pixel 0
+  is emitted once at start-up, synchronised to VSYNC, which is also what
+  aligns the stream to line 0. Each line still consumes exactly 800 bits.
+
+Registers: X the bit, Y the pixel count, ISR a constant 799 loaded once
+through the FIFO. PIO2 now holds 21 of 32 instructions (timing 4, pixels
+17), with the encodings checked by a small Python assembler before use.
+
+**The frame DMA is a self-restarting pair.** Channel 1 streams the 12 000
+framebuffer words into SM1 and chains to channel 2, which writes the frame's
+start address into channel 1's `AL3_READ_ADDR_TRIG`, re-arming and
+re-triggering it (TRANS_COUNT reloads on each trigger). Channel 0 still
+loops the timing table in ENDLESS mode. No IRQ, and no CPU after start-up.
+Bus load is 12 000 + 1 024 words per frame at 56 Hz, ~0.73 M transfers/s:
+under 1 % of the bus.
+
+**On the board, by eye (the owner's):**
+
+* The `border` pattern first drew its frame *on* the outermost pixels, where
+  it could not be told apart from the black bezel (the owner's point). It
+  now draws the frame inset by one pixel, so a correct image shows a
+  background gap on all four sides.
+* That showed the right side short, and a `ruler` pattern (one column per
+  band at x = 0..3 and 799..796) measured it: **x = 0 touches the left
+  bezel, x = 798 sits at the right border, and x = 799 is not visible**.
+* The stripes decided between a slip and cropping. Alternating 1-pixel
+  columns stayed **even edge to edge, with no seam**, so the pixel machine
+  does not drift; the last column only shows a coloured glow, which is a
+  partly covered white column's subpixels. **The panel's last column is
+  mostly under the bezel.** Everything is driven; layouts should treat the
+  usable width as 799 (and a window frame should not sit on x = 799).
+* `checker` (8 × 16 cells) is regular across the width, so bytes, words and
+  cells align. `grid` is even and its diagonal a straight 45°. `invert`
+  swaps the colours cleanly.
+
+The underrun flags (PIO FDEBUG TXSTALL for both SMs) have read "none" in
+every check. **The soak:** grid pattern shown at board uptime 884.3 s and
+checked again at 1488.6 s (604 s later): both state machines still "underrun
+none", the frame DMA still walking the buffer. That is the §5 done-when "no
+shimmer, underrun counter 0" over ten minutes.
+
+**Costs:** 12 heap pages for the framebuffer and one for the timing table on
+this persona. The idle free-page count is the next thing to re-measure
+(36.0 recorded 70; this takes 13). Static state: +10 bytes. The re-baselined
+sizereports also carry **+12 bytes in `kernel/console.c` on every persona**,
+the input lock from `ca77a28`, which was committed without a sizecheck run.
+
 ### 36.5 — Text on the screen
 
 The generated font (§4.2), glyph blit, 100 × 30 grid, scroll by `memmove`, and
@@ -1273,3 +1363,31 @@ follow-up phase, once 36.13 is done.
   `mov pins, <reg>` slots: background, fg, bold, and one more), at 96 KB.
   This makes SGR colours real without PSRAM.
 * **CAN (XL2515 on SPI0, GP2–5)** and the **battery ADC (GP40)**.
+
+### 7.1 Long-term direction: toward the original Macintosh *(owner, 2026-09-30)*
+
+The terminal's look should evolve, step by step, toward the original
+Macintosh: first **window decorations** (a single, static terminal window to
+start with) and **fonts**, and in later phases a **windowing system**.
+
+This fits what this phase is already building:
+
+* **The Mac was a 1-bpp framebuffer machine** (512 × 342, black and white,
+  greys by dithering). This board's 800 × 480 1-bpp framebuffer (36.4) is the
+  same model, and a title bar with stripes, a close box, a one-pixel frame
+  with a drop shadow and the 50 % desktop pattern are all canvas operations
+  (36.10). Nothing in 36.4 has to change for it. Two defaults follow from it:
+  **black on white**, and the two colours as a runtime choice (36.4 does
+  them with the GPIO output-override, so any pair is free), not baked in.
+* **Its windowing model suits this RAM budget:** no per-window backing
+  store, and an application redraws what an overlapping window uncovers
+  (update events). Per-window buffers are not affordable at 520 KB.
+  Redraw-on-demand is, and 36.6's cell shadow already makes the terminal
+  one such redrawable client.
+* **Fonts:** Apple's bitmap fonts (Chicago, Geneva) are copyrighted, so
+  freely licensed look-alikes or our own drawings, and a proportional-font
+  renderer beside the fixed-cell terminal one.
+* **The mouse is already attached:** the keyboard has a built-in hub with a
+  mouse on it (owner, 2026-09-30). The hub class driver 36.8 needs for the
+  keyboard is therefore also the mouse's path; the windowing phase adds a
+  boot-protocol mouse on the same hub.

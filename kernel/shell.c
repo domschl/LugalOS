@@ -499,6 +499,8 @@ static void cmd_help(void) {
     cprintf("  lcd             - Panel scan-out state: PIO pc, underrun flag, DMA position\n");
     cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
     cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
+    cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
+    cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert> - Diagnostic patterns\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
@@ -3377,6 +3379,26 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         lcd7_set_colour((uint16_t)v);
         cprintf("lcd: colour 0x%04x\n", (unsigned)(v & 0xffffu));
+        return;
+    } else if (strncmp(cmd_line, "lcd test ", 9) == 0) {
+        /* 36.4: patterns that fail in a way that names the fault. */
+        if (lcd7_test_pattern(cmd_line + 9) != 0)
+            cprintf("lcd test: clear, border, ruler, stripes, checker, grid or invert\n");
+        return;
+    } else if (strncmp(cmd_line, "lcd colours ", 12) == 0 || strncmp(cmd_line, "lcd colors ", 11) == 0) {
+        const char *h = cmd_line + (cmd_line[8] == 'u' ? 12 : 11);   /* "colours" vs "colors" */
+        uint32_t v[2] = { 0, 0 };
+        for (int k = 0; k < 2; k++) {
+            while (*h == ' ') h++;
+            for (; *h && *h != ' '; h++) {
+                char c = *h;
+                if (c >= '0' && c <= '9') v[k] = v[k] * 16u + (uint32_t)(c - '0');
+                else if (c >= 'a' && c <= 'f') v[k] = v[k] * 16u + (uint32_t)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') v[k] = v[k] * 16u + (uint32_t)(c - 'A' + 10);
+            }
+        }
+        lcd7_set_colours((uint16_t)v[0], (uint16_t)v[1]);
+        cprintf("lcd: fg 0x%04x bg 0x%04x\n", (unsigned)(v[0] & 0xffffu), (unsigned)(v[1] & 0xffffu));
         return;
     } else if (strncmp(cmd_line, "lcd backlight", 13) == 0) {
         unsigned p = shell_trailing_uint(&cmd_line[13]);
