@@ -45,6 +45,26 @@ SECTIONS
         . = _st7735text_start + 4096;
     } > FLASH
 
+    /* 36.6a, plan/phase36_rp2350_lcd7_terminal.md: the screen terminal's own
+     * U-mode region -- vtterm's putc path, fbtext and the font tables
+     * (drivers/lcdterm_attr.h). Code and the font's constant data come from two
+     * input sections, so GCC never sees code and data in one section of one
+     * file (a "section type conflict"), and land in one output region, so the
+     * lcdterm domain still grants a single R/X text region like every other
+     * driver. Only the RP2350-LCD-7 persona has anything here; on the others
+     * the section is empty and reserves nothing. */
+    .lcdtermtext : ALIGN(8192) {
+        _lcdtermtext_start = .;
+        *(.lcdtermtext .lcdtermtext.*)
+        *(.lcdtermrodata .lcdtermrodata.*)
+        _lcdtermtext_content_end = ABSOLUTE(.);
+        /* Pad to the full region only when something is in it. ABSOLUTE(),
+         * because `.` inside an output section is section-relative. */
+        . = _lcdtermtext_start + ((ABSOLUTE(.) > _lcdtermtext_start) ? 8192 : 0);
+    } > FLASH
+    _lcdtermtext_used = _lcdtermtext_content_end - _lcdtermtext_start;
+    ASSERT(_lcdtermtext_used <= 8192, "lcdterm's U-mode code and font outgrew their 8 KB region")
+
     /* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own
      * dedicated U-mode-executable page, same reasoning as .st7735text
      * above -- the shared .utext page overflowed by 84 bytes once blk's

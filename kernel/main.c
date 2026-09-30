@@ -456,6 +456,11 @@ void kernel_main(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     st7735_task_start();
 #endif
+#if defined(CONFIG_LCD_PCLK_GPIO)
+    /* 36.6a: the screen terminal moves into its own U-mode task. Until this
+     * runs -- and if it fails -- the lcd facade draws from the kernel. */
+    if (lcd7_task_start() > 0) console_set_flush_hook(lcd7_screen_flush);
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm1638_task_start();
 #endif

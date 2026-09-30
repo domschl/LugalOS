@@ -159,6 +159,10 @@ void board_text_region(uintptr_t *base, uintptr_t *size);
  * that uses it. */
 void board_st7735_text_region(uintptr_t *base, uintptr_t *size);
 
+/* 36.6a, plan/phase36_rp2350_lcd7_terminal.md: the screen terminal's U-mode
+ * code and font (drivers/lcdterm_attr.h). RP2350 only. */
+void board_lcdterm_text_region(uintptr_t *base, uintptr_t *size);
+
 /* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own dedicated
  * U-mode-executable page (linker: .blktext), same reasoning as
  * board_st7735_text_region() above -- the shared .utext page overflowed

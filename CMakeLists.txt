@@ -886,6 +886,11 @@ set_source_files_properties(
     drivers/pico_clock_green_rp2350.c
     drivers/pico_clock_font.c
     kernel/umode_probe.c
+    # 36.6a: the screen terminal's U-mode path (drivers/lcdterm_attr.h).
+    # vtterm.c's parser is exactly the switch-heavy code this list exists for.
+    drivers/lcd7_rp2350.c
+    drivers/vtterm.c
+    drivers/fbtext.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
 # Every object, not an enumerated subset: lugalos_config.h is reached

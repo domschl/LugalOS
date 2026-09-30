@@ -65,6 +65,14 @@
 #include "drivers/uart.h"
 #include "drivers/usb_cdc.h"
 #include "drivers/vtterm.h"
+#include "drivers/driver_task.h"
+#include "drivers/lcdterm_attr.h"
+#include "kernel/chan.h"
+#include "kernel/device.h"
+#include "kernel/ipc.h"
+#include "kernel/mem_domain.h"
+#include "kernel/sched.h"
+#include "arch/umode.h"
 #include "arch/rp2350_clocks.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
@@ -302,6 +310,8 @@ _Static_assert(PIX_ORG + sizeof(k_pixel_prog) / 2u <= 32u, "lcd7: PIO2 has 32 in
 #define FB_BYTES             (FB_WORDS * 4u)
 #define FB_PAGES             ((FB_BYTES + 4095u) / 4096u)
 _Static_assert(LCD_H_ACTIVE % 32u == 0, "lcd7: a line must be whole words");
+_Static_assert(FB_PAGES * 4096u - FB_BYTES >= sizeof(vtterm_t),
+               "lcd7: the terminal's state lives in the framebuffer's spare tail");
 
 static uint16_t *g_table;         /* one heap page, never freed while the panel runs */
 static uint32_t *g_fb;            /* FB_PAGES heap pages, likewise */
@@ -451,11 +461,205 @@ static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
  * stream (lcd7_console_putc) and the kernel log's `lcd` sink
  * (lcd7_screen_putc), and both run under console_lock(), so the emulator
  * never sees two at once. */
-static vtterm_t g_vt;
-static bool     g_vt_ready;
+/* --- 36.6a: the terminal as the U-mode `lcdterm` task ---------------------
+ *
+ * The emulator's state lives in the framebuffer's last page, in the 1 152
+ * bytes the 48 000-byte buffer leaves spare -- inside the region the task's
+ * domain grants anyway, so it costs no RAM and no extra PMP region. The task's
+ * domain is exactly: its stack, .lcdtermtext (code and font, R/X), and the
+ * framebuffer as a 32 KB and a 16 KB naturally aligned piece. No MMIO at all:
+ * drawing is plain stores to RAM, and PIO/DMA stay kernel-owned.
+ *
+ * Writers batch into g_batch and hand it over in one chan_call(); the batch
+ * is flushed at every console_flush() and before the console waits for input
+ * (kernel/console.c's flush hook), so an echoed keystroke appears at once.
+ * Until the task is alive -- boot, or if it never starts -- the facade draws
+ * directly, the fallback every driver task here has. */
+static vtterm_t *g_vtp;             /* in the framebuffer's tail */
+static bool      g_vt_ready;
+
+#define LCDTERM_BATCH     256u
+#define LCDTERM_OP_WRITE  'W'
+static uint8_t          g_batch[LCDTERM_BATCH];
+static uint32_t         g_batch_len;
+static uint8_t          g_lcdterm_req[1u + LCDTERM_BATCH];
+static uint8_t          g_lcdterm_resp[1];
+static chan_endpoint_t *g_lcdterm_ep;
+static int              g_lcdterm_pid = -1;
+static uint32_t         g_lcdterm_calls;
+
+static bool lcdterm_alive(void) {
+    if (g_lcdterm_pid < 0 || !g_lcdterm_ep) return false;
+    int st = sched_task_state(g_lcdterm_pid);
+    return st != TASK_UNUSED && st != TASK_DEAD;
+}
+
+/* Hand-rolled per file, as every U-mode driver here does: an LCDTERM_UTEXT
+ * function must not call anything outside its own region. */
+__attribute__((always_inline)) static inline long lcdterm_usys_serve_wait(const char *name, uint8_t *buf, long max) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = max;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+
+__attribute__((always_inline)) static inline long lcdterm_usys_serve_reply(const char *name, const uint8_t *buf, long len) {
+    register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_REPLY;
+    register long r_a1 __asm__("a1") = (long)name;
+    register long r_a2 __asm__("a2") = (long)buf;
+    register long r_a3 __asm__("a3") = len;
+    __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1), "r"(r_a2), "r"(r_a3) : "memory");
+    return r_a0;
+}
+
+/* The task, in U-mode. `arg` is the emulator's state (arch_enter_user() puts
+ * the spec's arg in a0, as spisd's body relies on). The endpoint name is built
+ * in a volatile stack array, not a literal: a literal is .rodata, outside
+ * this domain -- the fault drivers/tm1638_rp2350.c documents. */
+LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
+    vtterm_t *vt = (vtterm_t *)arg;
+    volatile char name[8];
+    name[0] = 'l'; name[1] = 'c'; name[2] = 'd'; name[3] = 't';
+    name[4] = 'e'; name[5] = 'r'; name[6] = 'm'; name[7] = '\0';
+    for (;;) {
+        uint8_t req[1u + LCDTERM_BATCH];
+        long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
+        if (n > 1 && req[0] == LCDTERM_OP_WRITE) {
+            for (long i = 1; i < n; i++) vtterm_putc(vt, (char)req[i]);
+        }
+        lcdterm_usys_serve_reply((const char *)name, 0, 0);
+    }
+}
+
+/* 2 KB: vtterm_putc's deepest chain is a handful of frames, plus the 257-byte
+ * request buffer. */
+static uint8_t g_lcdterm_ustack[2048] __attribute__((aligned(2048)))
+                                       __attribute__((section(".ustacks2048")));
+
+static void lcdterm_task_body(void *arg) {
+    (void)arg;
+    while (!g_lcdterm_ep) sched_yield();
+    uintptr_t fb = (uintptr_t)g_fb;
+    const driver_umode_spec_t spec = {
+        .name         = "lcdterm",
+        .fallback     = "the terminal keeps drawing from the kernel.",
+        .body         = (void (*)(void))lcdterm_umode_body,
+        .text_region  = board_lcdterm_text_region,
+        .stack_base   = (uintptr_t)g_lcdterm_ustack,
+        .stack_size   = sizeof(g_lcdterm_ustack),
+        .regions      = { { fb,           32768u, MEM_R | MEM_W },
+                          { fb + 32768u,  16384u, MEM_R | MEM_W } },
+        .region_count = 2,
+        .arg          = (uintptr_t)g_vtp,
+    };
+    (void)driver_umode_enter(&spec);
+}
+
+int lcd7_task_start(void) {
+    if (!g_vt_ready) return -1;
+    int pid = task_create_driver("lcdterm", lcdterm_task_body, NULL, 1);
+    if (pid < 0) {
+        printk("[LCD] could not start the lcdterm task; the terminal keeps drawing from the kernel\n");
+        return -1;
+    }
+    if (chan_register_task("lcdterm", pid, g_lcdterm_req, sizeof(g_lcdterm_req),
+                           g_lcdterm_resp, sizeof(g_lcdterm_resp)) != 0) {
+        printk("[LCD] could not register the lcdterm endpoint; the terminal keeps drawing from the kernel\n");
+        return -1;
+    }
+    g_lcdterm_pid = pid;
+    g_lcdterm_ep = chan_lookup("lcdterm");
+    printk("[LCD] terminal running as U-mode task #%d, reachable via chan_call(\"lcdterm\", ...)\n", pid);
+    return pid;
+}
+
+uint32_t lcd7_task_call_count(void) { return g_lcdterm_calls; }
+
+/* Called with the batch full, from console_flush(), and before input waits.
+ * Takes console_lock itself (re-entrant) because writers append under it. */
+void lcd7_screen_flush(void) {
+    if (g_batch_len == 0) return;
+    console_lock();
+    if (g_batch_len > 0) {
+        uint8_t req[1u + LCDTERM_BATCH];
+        req[0] = LCDTERM_OP_WRITE;
+        for (uint32_t i = 0; i < g_batch_len; i++) req[1u + i] = g_batch[i];
+        uint32_t len = g_batch_len;
+        g_batch_len = 0;
+        bool sent = false;
+        if (lcdterm_alive()) {
+            for (int attempt = 0; attempt < 8 && !sent; attempt++) {
+                if (chan_call(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
+                    g_lcdterm_calls++;
+                    sent = true;
+                } else {
+                    sched_yield();
+                }
+            }
+        }
+        /* The task died or never answered: draw it here rather than lose it. */
+        if (!sent) for (uint32_t i = 0; i < len; i++) vtterm_putc(g_vtp, (char)req[1u + i]);
+    }
+    console_unlock();
+}
 
 void lcd7_screen_putc(char c) {
-    if (g_vt_ready) vtterm_putc(&g_vt, c);
+    if (!g_vt_ready) return;
+    if (!lcdterm_alive()) {
+        vtterm_putc(g_vtp, c);
+        return;
+    }
+    g_batch[g_batch_len++] = (uint8_t)c;
+    if (g_batch_len == LCDTERM_BATCH) lcd7_screen_flush();
+}
+
+/* `lcdtermisotest`: the lcdterm domain, but a body that stores into kernel
+ * memory. Must fault, and the canary must survive -- the check every isolated
+ * driver here has (st7735isotest, blkisotest, ...). */
+static volatile uintptr_t g_lcdterm_canary = 0xC0FFEE;
+static volatile bool      g_lcdterm_intruder_entered;
+
+LCDTERM_UTEXT static void lcdterm_intruder(void) {
+    g_lcdterm_canary = 0xDEAD;
+    for (;;) { }                    /* only reached if the store was not stopped */
+}
+
+static void lcdterm_intruder_task_body(void *arg) {
+    uint8_t *ustack = (uint8_t *)arg;
+    mem_domain_t dom;
+    mem_domain_init(&dom);
+    mem_domain_add(&dom, (uintptr_t)ustack, 4096, MEM_R | MEM_W);
+    uintptr_t tbase, tsize;
+    board_lcdterm_text_region(&tbase, &tsize);
+    mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
+    mem_domain_add(&dom, (uintptr_t)g_fb, 32768u, MEM_R | MEM_W);
+    mem_domain_add(&dom, (uintptr_t)g_fb + 32768u, 16384u, MEM_R | MEM_W);
+    if (task_set_domain(sched_current_pid(), &dom) != 0) {
+        printk("[LcdtermIso] refusing to enter U-mode: memory domain not enforceable\n");
+        return;
+    }
+    g_lcdterm_intruder_entered = true;
+    arch_enter_user(lcdterm_intruder, (uintptr_t)ustack + 4096, 0, 0, 0);
+}
+
+bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    g_lcdterm_canary = 0xC0FFEE;
+    g_lcdterm_intruder_entered = false;
+    if (!g_fb) return false;
+    void *ustack = palloc_pages(1);
+    if (!ustack) return false;
+    int pid = task_create("lcdterm_intruder", lcdterm_intruder_task_body, ustack);
+    if (pid < 0) {
+        palloc_free(ustack, 1);
+        return false;
+    }
+    for (int i = 0; i < 10000 && sched_task_state(pid) != TASK_DEAD; i++) sched_yield();
+    *out_exited_clean = (sched_task_state(pid) == TASK_DEAD);
+    *out_canary = g_lcdterm_canary;
+    palloc_free(ustack, 1);
+    return g_lcdterm_intruder_entered;
 }
 
 /* The `lcd` console device: the screen, plus a tee so a host sees what the
@@ -487,7 +691,7 @@ void lcd7_console_putc(char c) {
 }
 
 uint32_t lcd7_unknown_sequences(void) {
-    return g_vt_ready ? g_vt.unknown : 0;
+    return g_vt_ready ? g_vtp->unknown : 0;
 }
 
 /* `lcd test text`: every glyph, a pangram, reversed video, and a cursor. */
@@ -570,7 +774,9 @@ int lcd7_init(void) {
     /* The command table: one page, which is also the 4 KB alignment the
      * DMA read ring requires. The framebuffer: 12 pages, cleared. */
     g_table = (uint16_t *)palloc_pages(1);
-    g_fb = (uint32_t *)palloc_pages(FB_PAGES);
+    /* 32 KB-aligned, so the lcdterm domain can grant it as two naturally
+     * aligned pieces (32 KB + 16 KB) -- PMP NAPOT regions must be. */
+    g_fb = (uint32_t *)palloc_pages_aligned(FB_PAGES, 8);
     if (!g_table || !g_fb) {
         printk("[LCD] no memory for the timing table or framebuffer; panel stays dark\n");
         return -1;
@@ -655,7 +861,8 @@ int lcd7_init(void) {
 
     fbtext_t text;
     fbtext_init(&text, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
-    vtterm_init(&g_vt, &text);
+    g_vtp = (vtterm_t *)(void *)((uint8_t *)g_fb + FB_BYTES);
+    vtterm_init(g_vtp, &text);
     g_vt_ready = true;
 
     lcd7_set_backlight(100);
@@ -678,7 +885,10 @@ void lcd7_report(void) {
     uint32_t fdebug = REG(PIO_FDEBUG);
     cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%; terminal at row %u col %u, "
             "%lu unknown sequences swallowed\n", g_fg, g_bg, g_brightness,
-            (unsigned)g_vt.row, (unsigned)g_vt.col, (unsigned long)g_vt.unknown);
+            (unsigned)g_vtp->row, (unsigned)g_vtp->col, (unsigned long)g_vtp->unknown);
+    cprintf("lcd: terminal %s (task #%d, %lu batches served)\n",
+            lcdterm_alive() ? "in the U-mode lcdterm task" : "drawn from the kernel",
+            g_lcdterm_pid, (unsigned long)g_lcdterm_calls);
     cprintf("lcd: timing SM pc %lu, underrun %s; pixel SM pc %lu, underrun %s\n",
             (unsigned long)(REG(PIO_SM0_ADDR) & 0x1fu),
             (fdebug & FDEBUG_TXSTALL_SM0) ? "SEEN" : "none",
@@ -702,6 +912,10 @@ void lcd7_console_putc(char c) { (void)c; }
 void lcd7_set_tee(unsigned mode) { (void)mode; }
 unsigned lcd7_tee(void) { return LCD_TEE_OFF; }
 uint32_t lcd7_unknown_sequences(void) { return 0; }
+int lcd7_task_start(void) { return -1; }
+void lcd7_screen_flush(void) { }
+uint32_t lcd7_task_call_count(void) { return 0; }
+bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (void)out_canary; (void)out_exited_clean; return false; }
 int lcd7_text_test(void) { return -1; }
 void lcd7_scroll_test(unsigned n) { (void)n; }
 int lcd7_test_pattern(const char *name) { (void)name; return -1; }

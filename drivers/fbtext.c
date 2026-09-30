@@ -10,27 +10,38 @@
 
 #include "drivers/fbtext.h"
 #include "drivers/font8x16.h"
+#include "drivers/lcdterm_attr.h"
 
 #include <stdint.h>
-#include <string.h>
 
-/* Word-wise when the buffer allows it. This tree's memmove()/memset()
- * (libc/string.c) copy a byte at a time: scrolling the 800x480 screen with
- * them took 2.0 ms per line, measured on the RP2350-LCD-7 (36.5). The
+/* Word-wise when the buffer allows it. Byte loops scrolled the 800x480
+ * screen at 2.0 ms a line, measured on the RP2350-LCD-7 (36.5); the
  * framebuffer is page-aligned and a pixel row is 25 whole words, so the common
- * case copies words; anything else falls back to the byte routines. */
-static bool word_ok(const void *p, uint32_t stride) {
+ * case copies words, and anything else falls back to the byte loops above. */
+/* No libc on this path: on the RP2350-LCD-7 it runs in the U-mode `lcdterm`
+ * task, which cannot execute kernel text (drivers/lcdterm_attr.h). The
+ * compiler is kept from turning these loops back into library calls by
+ * -fno-tree-loop-distribute-patterns, which the whole tree uses. */
+LCDTERM_UTEXT static void bytes_zero(uint8_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) p[i] = 0;
+}
+
+LCDTERM_UTEXT static void bytes_move_down(uint8_t *dst, const uint8_t *src, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) dst[i] = src[i];     /* dst < src */
+}
+
+LCDTERM_UTEXT static bool word_ok(const void *p, uint32_t stride) {
     return (((uintptr_t)p | stride) & 3u) == 0;
 }
 
-void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned cols, unsigned rows) {
+LCDTERM_UTEXT void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned cols, unsigned rows) {
     t->fb = (uint8_t *)fb;
     t->stride = stride;
     t->cols = (uint16_t)cols;
     t->rows = (uint16_t)rows;
 }
 
-const uint8_t *fbtext_glyph(uint32_t cp) {
+LCDTERM_UTEXT const uint8_t *fbtext_glyph(uint32_t cp) {
     if (cp >= FONT8X16_FIRST && cp <= FONT8X16_LAST) return font8x16_glyphs[cp - FONT8X16_FIRST];
     unsigned lo = 0, hi = FONT8X16_EXTRA_COUNT;
     while (lo < hi) {
@@ -42,7 +53,7 @@ const uint8_t *fbtext_glyph(uint32_t cp) {
     return font8x16_glyphs['?' - FONT8X16_FIRST];
 }
 
-void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
+LCDTERM_UTEXT void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     if (col >= t->cols || row >= t->rows) return;
     const uint8_t *g = fbtext_glyph(cp);
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
@@ -53,18 +64,18 @@ void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inv
     }
 }
 
-void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1) {
+LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1) {
     if (row >= t->rows) return;
     if (col1 > t->cols) col1 = t->cols;
     if (col0 >= col1) return;
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col0;
     for (unsigned r = 0; r < FONT8X16_H; r++) {
-        memset(p, 0, col1 - col0);
+        bytes_zero(p, col1 - col0);
         p += t->stride;
     }
 }
 
-void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse) {
+LCDTERM_UTEXT void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse) {
     if (col >= t->cols || row >= t->rows) return;
     unsigned char uc = (unsigned char)c;
     if (uc < FONT8X16_FIRST || uc > FONT8X16_LAST) uc = '?';
@@ -77,7 +88,7 @@ void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse) 
     }
 }
 
-void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
+LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
     if (row >= t->rows) return;
     if (n > (unsigned)t->rows - row) n = t->rows - row;
     uint32_t px_rows = (uint32_t)n * FONT8X16_H;
@@ -89,12 +100,12 @@ void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
         return;
     }
     for (uint32_t y = 0; y < px_rows; y++) {
-        memset(p, 0, t->cols);
+        bytes_zero(p, t->cols);
         p += t->stride;
     }
 }
 
-void fbtext_scroll_up(fbtext_t *t, unsigned n) {
+LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
     if (n == 0) return;
     if (n >= t->rows) {
         fbtext_clear_rows(t, 0, t->rows);
@@ -109,12 +120,12 @@ void fbtext_scroll_up(fbtext_t *t, unsigned n) {
         const uint32_t *src = (const uint32_t *)(const void *)(t->fb + (uint32_t)n * line);
         for (uint32_t i = 0; i < bytes / 4u; i++) d[i] = src[i];
     } else {
-        memmove(t->fb, t->fb + (uint32_t)n * line, bytes);
+        bytes_move_down(t->fb, t->fb + (uint32_t)n * line, bytes);
     }
     fbtext_clear_rows(t, t->rows - n, n);
 }
 
-void fbtext_cursor_xor(fbtext_t *t, unsigned col, unsigned row) {
+LCDTERM_UTEXT void fbtext_cursor_xor(fbtext_t *t, unsigned col, unsigned row) {
     if (col >= t->cols || row >= t->rows) return;
     uint8_t *p = t->fb + ((uint32_t)row * FONT8X16_H + FONT8X16_H - 2u) * t->stride + col;
     p[0] ^= 0xffu;

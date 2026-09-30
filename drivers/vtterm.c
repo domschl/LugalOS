@@ -10,41 +10,50 @@
 
 #include "drivers/vtterm.h"
 #include "drivers/font8x16.h"
+#include "drivers/lcdterm_attr.h"
 #include "kernel/console.h"
 #include "kernel/scratch.h"
 
-#include <string.h>
 
 enum { ST_GROUND, ST_ESC, ST_CSI };
 
-static void cursor_hide(vtterm_t *vt) {
+LCDTERM_UTEXT static void cursor_hide(vtterm_t *vt) {
     if (vt->cursor_drawn) {
         fbtext_cursor_xor(&vt->text, vt->col, vt->row);
         vt->cursor_drawn = false;
     }
 }
 
-static void cursor_show(vtterm_t *vt) {
+LCDTERM_UTEXT static void cursor_show(vtterm_t *vt) {
     if (vt->cursor_on && !vt->cursor_drawn) {
         fbtext_cursor_xor(&vt->text, vt->col, vt->row);
         vt->cursor_drawn = true;
     }
 }
 
-void vtterm_init(vtterm_t *vt, const fbtext_t *text) {
-    memset(vt, 0, sizeof(*vt));
-    vt->text = *text;
+LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text) {
+    /* Field by field, not memset() and a struct copy: this is in the U-mode
+     * section, and should not lean on libc that the section cannot reach. */
+    vt->text.fb = text->fb;
+    vt->text.stride = text->stride;
+    vt->text.cols = text->cols;
+    vt->text.rows = text->rows;
+    vt->col = vt->row = 0;
+    vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
+    vt->state = vt->nparams = vt->utf8_need = 0;
+    vt->utf8_cp = vt->unknown = 0;
+    for (unsigned i = 0; i < 8u; i++) vt->params[i] = 0;
     vt->cursor_on = true;
     fbtext_clear_rows(&vt->text, 0, vt->text.rows);
     cursor_show(vt);
 }
 
-static void line_feed(vtterm_t *vt) {
+LCDTERM_UTEXT static void line_feed(vtterm_t *vt) {
     if (vt->row + 1u < vt->text.rows) vt->row++;
     else fbtext_scroll_up(&vt->text, 1);
 }
 
-static void put_cp(vtterm_t *vt, uint32_t cp) {
+LCDTERM_UTEXT static void put_cp(vtterm_t *vt, uint32_t cp) {
     if (vt->pending_wrap) {
         vt->col = 0;
         line_feed(vt);
@@ -55,15 +64,15 @@ static void put_cp(vtterm_t *vt, uint32_t cp) {
     else vt->pending_wrap = true;
 }
 
-static unsigned param(const vtterm_t *vt, unsigned i, unsigned dflt) {
+LCDTERM_UTEXT static unsigned param(const vtterm_t *vt, unsigned i, unsigned dflt) {
     return (i < vt->nparams && vt->params[i] != 0) ? vt->params[i] : dflt;
 }
 
-static unsigned clampu(unsigned v, unsigned hi) {
+LCDTERM_UTEXT static unsigned clampu(unsigned v, unsigned hi) {
     return v > hi ? hi : v;
 }
 
-static void sgr(vtterm_t *vt) {
+LCDTERM_UTEXT static void sgr(vtterm_t *vt) {
     if (vt->nparams == 0) {
         vt->inverse = false;
         return;
@@ -82,7 +91,7 @@ static void sgr(vtterm_t *vt) {
     }
 }
 
-static void csi_final(vtterm_t *vt, char f) {
+LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
     unsigned cols = vt->text.cols, rows = vt->text.rows;
     if (vt->private_mode) {
         if ((f == 'h' || f == 'l') && vt->nparams >= 1 && vt->params[0] == 25) vt->cursor_on = (f == 'h');
@@ -125,7 +134,7 @@ static void csi_final(vtterm_t *vt, char f) {
     vt->pending_wrap = false;              /* every cursor movement cancels it */
 }
 
-static void ground(vtterm_t *vt, unsigned char c) {
+LCDTERM_UTEXT static void ground(vtterm_t *vt, unsigned char c) {
     if (vt->utf8_need) {
         if ((c & 0xc0u) == 0x80u) {
             vt->utf8_cp = (vt->utf8_cp << 6) | (c & 0x3fu);
@@ -157,7 +166,7 @@ static void ground(vtterm_t *vt, unsigned char c) {
     }
 }
 
-void vtterm_putc(vtterm_t *vt, char ch) {
+LCDTERM_UTEXT void vtterm_putc(vtterm_t *vt, char ch) {
     unsigned char c = (unsigned char)ch;
     cursor_hide(vt);
     switch (vt->state) {
@@ -169,7 +178,7 @@ void vtterm_putc(vtterm_t *vt, char ch) {
             vt->state = ST_CSI;
             vt->nparams = 0;
             vt->private_mode = false;
-            memset(vt->params, 0, sizeof(vt->params));
+            for (unsigned i = 0; i < 8u; i++) vt->params[i] = 0;   /* no libc in U-mode */
         } else {
             vt->state = ST_GROUND;         /* ESC x: two bytes, no effect */
             vt->unknown++;
@@ -200,7 +209,7 @@ void vtterm_putc(vtterm_t *vt, char ch) {
     cursor_show(vt);
 }
 
-void vtterm_write(vtterm_t *vt, const char *s, uint32_t n) {
+LCDTERM_UTEXT void vtterm_write(vtterm_t *vt, const char *s, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) vtterm_putc(vt, s[i]);
 }
 

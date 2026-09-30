@@ -101,16 +101,16 @@ def main() -> None:
                 for text in lf.read().splitlines():
                     f.write(f" *   {text}".rstrip() + "\n")
         f.write(" */\n\n#include \"drivers/font8x16.h\"\n\n")
-        f.write(f"const uint8_t font8x16_glyphs[{LAST - FIRST + 1}][{CELL_H}] = {{\n")
+        f.write(f"LCDTERM_URODATA const uint8_t font8x16_glyphs[{LAST - FIRST + 1}][{CELL_H}] = {{\n")
         for c in range(FIRST, LAST + 1):
             label = chr(c) if chr(c) not in "\\'" else "\\" + chr(c)
             data = ", ".join(f"0x{reverse8(r):02x}" for r in glyphs[c])
             f.write(f"    /* 0x{c:02x} '{label}' */ {{ {data} }},\n")
         f.write("};\n\n")
         f.write("/* Code points beyond ASCII, sorted, and their glyphs in the same order. */\n")
-        f.write(f"const uint16_t font8x16_extra_cp[{len(EXTRA)}] = {{ ")
+        f.write(f"LCDTERM_URODATA const uint16_t font8x16_extra_cp[{len(EXTRA)}] = {{ ")
         f.write(", ".join(f"0x{c:04x}" for c in EXTRA) + " };\n")
-        f.write(f"const uint8_t font8x16_extra[{len(EXTRA)}][{CELL_H}] = {{\n")
+        f.write(f"LCDTERM_URODATA const uint8_t font8x16_extra[{len(EXTRA)}][{CELL_H}] = {{\n")
         for c in EXTRA:
             data = ", ".join(f"0x{reverse8(r):02x}" for r in glyphs[c])
             f.write(f"    /* U+{c:04X} */ {{ {data} }},\n")

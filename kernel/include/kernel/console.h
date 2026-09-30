@@ -72,6 +72,12 @@ void console_unlock(void);
  * the boundary; single characters still batch. */
 void console_flush(void);
 
+/* 36.6a: one more thing to flush at a write boundary -- the RP2350-LCD-7's
+ * screen terminal batches into its U-mode task. Called from console_flush()
+ * and before the console waits for input, so an echoed keystroke is not left
+ * sitting in a batch. One slot; NULL clears it. */
+void console_set_flush_hook(void (*fn)(void));
+
 void console_putc(char c);
 void console_puts(const char *s);
 

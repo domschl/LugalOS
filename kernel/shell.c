@@ -497,6 +497,7 @@ static void cmd_help(void) {
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+    cprintf("  lcdtermisotest  - Same, under the real lcdterm task's own domain (stack, code+font, framebuffer)\n");
     cprintf("  lcd             - Panel scan-out state: PIO pc, underrun flag, DMA position\n");
     cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
     cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
@@ -3373,6 +3374,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
     } else if (strcmp(cmd_line, "lcd") == 0) {
         lcd7_report();
+        return;
+    } else if (strcmp(cmd_line, "lcdtermisotest") == 0) {
+        /* 36.6a: the same claim as st7735isotest and the others, against the
+         * lcdterm domain -- a store into kernel memory must fault, and the
+         * canary must survive. */
+        uintptr_t canary = 0;
+        bool exited_clean = false;
+        bool entered = lcd7_isolation_test(&canary, &exited_clean);
+        if (!entered) cprintf("[LcdtermIso] probe never reached U-mode: INCONCLUSIVE\n");
+        else if (canary == 0xC0FFEE && exited_clean)
+            cprintf("[LcdtermIso] out-of-domain store faulted, canary intact: LCDTERM_ISOLATION_OK\n");
+        else cprintf("[LcdtermIso] canary 0x%lx, exited %s: LCDTERM_ISOLATION_FAIL\n",
+                     (unsigned long)canary, exited_clean ? "yes" : "no");
         return;
     } else if (strncmp(cmd_line, "lcd colour ", 11) == 0 || strncmp(cmd_line, "lcd color ", 10) == 0) {
         /* 36.3. Hex, because RGB565 is read as hex everywhere it is written

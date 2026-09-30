@@ -32,8 +32,15 @@ void console_unlock(void) {
     ylock_release(&g_console_lock);
 }
 
+static void (*g_flush_hook)(void);
+
+void console_set_flush_hook(void (*fn)(void)) {
+    g_flush_hook = fn;
+}
+
 void console_flush(void) {
     uart_flush();
+    if (g_flush_hook) g_flush_hook();
 }
 
 void console_bind(console_putc_fn putc) {
@@ -302,6 +309,9 @@ static void console_pump(void) {
 }
 
 bool console_has_char(void) {
+    /* A reader is about to look for input: whatever was echoed must be on
+     * the screen first (uart_getc() flushes its own batch the same way). */
+    if (g_flush_hook) g_flush_hook();
     console_pump();
     uintptr_t f = irq_save();
     bool queued = (g_pb_head != g_pb_tail);
@@ -310,6 +320,7 @@ bool console_has_char(void) {
 }
 
 char console_getc(void) {
+    if (g_flush_hook) g_flush_hook();   /* see console_has_char() */
     /* Every device read goes through the pump, under g_input_lock. This used
      * to fall through to a bare uart_getc() when nothing was queued -- a
      * second, unlocked reader, and the half of the race described at

@@ -1,6 +1,7 @@
 #ifndef LUGALOS_DRIVERS_LCD7_H
 #define LUGALOS_DRIVERS_LCD7_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* The RP2350-LCD-7's 800x480 RGB panel (ST7262), plan/phase36 36.3 onward.
@@ -43,6 +44,15 @@ void lcd7_console_putc(char c);
 void lcd7_set_tee(unsigned mode);
 unsigned lcd7_tee(void);
 uint32_t lcd7_unknown_sequences(void);
+
+/* 36.6a: the terminal as the U-mode `lcdterm` task (after sched_init()), the
+ * batch flush kernel/console.c calls at write boundaries and before input
+ * waits, the batches served, and `lcdtermisotest` (a store outside the task's
+ * domain that must fault; returns whether the probe entered U-mode). */
+int lcd7_task_start(void);
+void lcd7_screen_flush(void);
+uint32_t lcd7_task_call_count(void);
+bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
 /* 36.5: `lcd test text` -- every glyph, a pangram, reverse video, a cursor.
  * `lcd scroll <n>` -- n numbered lines through the 100 x 30 grid, timing

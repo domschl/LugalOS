@@ -1312,6 +1312,26 @@ values from a table, not from the build".
   Fixing it (a viewport, absolute positioning) belongs with **36.12**'s
   full-screen editor.
 
+### 36.6a — The terminal in its own U-mode task *(owner's call, 2026-09-30)*
+
+**Done, 2026-09-30.** The emulator runs as the U-mode `lcdterm` task, PMP
+confined to its stack, `.lcdtermtext` (vtterm's putc path, fbtext and the
+font, 4 060 of 8 192 bytes; the region is empty and reserves nothing on the
+other personas), and the framebuffer as 32 KB + 16 KB, now allocated 32 KB
+aligned. It has no MMIO at all. Its state lives in the framebuffer's spare
+tail. The putc path is libc-free and built with `-fno-jump-tables`, and a
+disassembly check found no reference outside the region except the isolation
+probe's own canary store. Writers batch (256 bytes) into one `chan_call`,
+flushed by a console flush hook at write boundaries and before input waits;
+before the task runs, or if it fails, the kernel draws directly.
+
+On the board: task #5, `ps` Isol PMP; `lcdtermisotest` →
+LCDTERM_ISOLATION_OK; `lcd outbench` 92 273 chars/s (unchanged). QEMU
+372/372. Static RAM +2 527 bytes on rp2350-terminal (U-mode stack, batch,
+request buffer), +4 elsewhere (the flush hook). **Pending: the owner's
+interactive typing check on the panel** (echo must appear per keystroke),
+and a `test_rp2350.py` rerun.
+
 ### 36.7 — PIO-USB: the engine on core 1 talks to the keyboard
 
 `CORE1_MODE_USBHOST`; TX and RX PIO programs in PIO0/PIO1 at GPIOBASE 16;
