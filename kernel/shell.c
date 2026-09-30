@@ -20,6 +20,7 @@
 #include "drivers/bme280.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
+#include "drivers/lcd7.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -494,6 +495,11 @@ static void cmd_help(void) {
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+    cprintf("  lcd             - Panel scan-out state: PIO pc, underrun flag, DMA position\n");
+    cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
+    cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
 #endif
@@ -3351,6 +3357,31 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "clocks") == 0) {
         /* 36.1, plan/phase36_rp2350_lcd7_terminal.md. Read-only. */
         rp2350_clocks_report();
+        return;
+#endif
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+    } else if (strcmp(cmd_line, "lcd") == 0) {
+        lcd7_report();
+        return;
+    } else if (strncmp(cmd_line, "lcd colour ", 11) == 0 || strncmp(cmd_line, "lcd color ", 10) == 0) {
+        /* 36.3. Hex, because RGB565 is read as hex everywhere it is written
+         * down (f800 red, 07e0 green, 001f blue, ffff white). */
+        const char *h = cmd_line + (cmd_line[8] == 'u' ? 11 : 10);   /* "colour" vs "color" */
+        uint32_t v = 0;
+        for (; *h; h++) {
+            char c = *h;
+            if (c >= '0' && c <= '9') v = v * 16u + (uint32_t)(c - '0');
+            else if (c >= 'a' && c <= 'f') v = v * 16u + (uint32_t)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') v = v * 16u + (uint32_t)(c - 'A' + 10);
+            else break;
+        }
+        lcd7_set_colour((uint16_t)v);
+        cprintf("lcd: colour 0x%04x\n", (unsigned)(v & 0xffffu));
+        return;
+    } else if (strncmp(cmd_line, "lcd backlight", 13) == 0) {
+        unsigned p = shell_trailing_uint(&cmd_line[13]);
+        lcd7_set_backlight(p);
+        cprintf("lcd: backlight %u%%\n", p > 100u ? 100u : p);
         return;
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)

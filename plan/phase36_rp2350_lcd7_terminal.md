@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0, 36.1 and 36.2 done 2026-09-30, 36.3 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: in progress — 36.0 to 36.3 done 2026-09-30, 36.4 next. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -955,6 +955,47 @@ stops working, if it does.
 colours**, which proves the bit order of all 16 pins; the backlight follows a
 `(backlight n)` setting 0–100; the timing in use is written down in the
 driver with its source.
+
+#### Done, 2026-09-30 — lit first time, and at the datasheet's clock
+
+`drivers/lcd7_rp2350.c`. The design turned out simpler than §3.1 sketched:
+
+* **Timing is one PIO2 state machine running a four-instruction program**
+  (`out pins,3` / `out x,13` / `nop` / `jmp x--`, PCLK by side-set on every
+  instruction). It executes 16-bit segment commands `{DE/VS/HS levels,
+  length}`. The ~6-instruction estimate in §3.1 was 4, which leaves 28 of
+  PIO2's 32 slots for 36.4's pixel machine.
+* **The whole frame is one 4096-byte command table** (512 lines × 4
+  segments × 2 bytes), fed by **one DMA channel in RP2350's ENDLESS mode**
+  through a 4 KB read ring. There is no re-arm, no chaining and no IRQ, and
+  the CPU is never involved once it starts. The cost is one heap page, whose
+  4 KB alignment is exactly what the ring needs. The line count is 512 so
+  that the table is a power of two: 4 + 12 + 480 + 16.
+* **The data pins are plain SIO outputs holding one colour** (`lcd colour
+  <hex>`). This tested sync, polarity and pin order in isolation from any
+  pixel path.
+* Instructions are hand-encoded (the tree has no pioasm), with the delay
+  derived from `LCD_CYCLES_PER_PCLK`. At a delay of 3 the macro reproduces
+  the four literal words that first lit the panel, which is its check.
+
+**On the board, judged by eye (the owner's):** solid blue at first boot.
+Then red, green and white, and each channel's top bit alone (`8000` dark
+red, `0400` dark green, `0010` dark blue), which puts all 16 data pins on
+the right colour groups; the order of the lower bits within each group waits
+for 36.4's gradient bars. `lcd backlight 20` visibly dims white, so R41/R42
+*are* fitted on this board and the inverted PWM is right.
+
+**Timing:** first lit at 18 MHz (8 cycles per PCLK), then moved to **24 MHz,
+the ST7262's typical DCLK: 836 × 512 total, 56.0 Hz, "solid blue, no
+artefacts"**. H: pulse 4, back 16, front 16. V: pulse 4, back 12, front 16
+(the datasheet's maximum is 12, the demo's is 32; the panel does not
+mind). `lcd` reports the SM's pc, the TX-stall (underrun) flag, which has
+been "none" throughout, and the DMA read pointer walking the ring.
+
+**Costs:** one heap page (the table), 11 bytes of static state
+(`tools/sizereport-rp2350-terminal.json` re-baselined), the other personas
++0. The panel starts at boot in `kernel_main()`, before the scheduler, and
+never needs it again.
 
 ### 36.4 — The 1-bpp framebuffer, through DMA, at zero CPU
 

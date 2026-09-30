@@ -746,6 +746,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     list(APPEND SOURCES drivers/boardprobe_rp2350.c)
     # 36.1: clk_sys read back and measured (`clocks`), on every RP2350 persona.
     list(APPEND SOURCES drivers/clocks_rp2350.c)
+    # 36.3: the RP2350-LCD-7's RGB panel; guard-by-pin-map (CONFIG_LCD_*).
+    list(APPEND SOURCES drivers/lcd7_rp2350.c)
     # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.

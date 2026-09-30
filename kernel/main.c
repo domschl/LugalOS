@@ -70,6 +70,7 @@
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
 #include "drivers/clocks_rp2350.h"
+#include "drivers/lcd7.h"
 
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
@@ -323,6 +324,11 @@ void kernel_main(void) {
     /* 36.1: clk_sys is a board fact now, so say what it came out as --
      * measured, and checked against PLL_SYS -- before anything is timed. */
     rp2350_clocks_boot_check();
+#if defined(CONFIG_LCD_PCLK_GPIO)
+    /* 36.3: the panel's scan-out runs from PIO + DMA with no CPU, so it
+     * starts here, once, and never needs the scheduler. */
+    (void)lcd7_init();
+#endif
 #endif
 
     sched_init();

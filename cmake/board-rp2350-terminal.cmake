@@ -74,9 +74,25 @@ set(CONFIG_I2C_RTC_SCL_GPIO 7)
 set(CONFIG_PIOUSB_DP_GPIO 42)
 set(CONFIG_PIOUSB_DM_GPIO 43)
 
+# The 7" RGB panel (ST7262), 36.3. From the schematic's pin table:
+#   GP20 DE, GP21 VSYNC, GP22 HSYNC, GP23 PCLK -- consecutive, which the PIO
+#   timing program relies on (drivers/lcd7_rp2350.c asserts it);
+#   GP24..GP39 RGB565 data, in native order: B3-B7 on 24-28, G2-G7 on 29-34,
+#   R3-R7 on 35-39, so an RGB565 word's bit n drives GP24+n;
+#   GP41 LCD_RST, GP44 LCD_BL (PWM10 A), GP45 LCD_EN.
+# LCD_EN enables the AP3032 backlight boost converter. LCD_BL feeds a voltage
+# into that converter's feedback node through R41/R42, so a HIGHER level means
+# a DIMMER backlight (the demo drives it inverted for this reason), and R41/R42
+# are marked "10K/NC" / "68K/NC" -- on a board without them, dimming does
+# nothing and LCD_EN is the only control.
+set(CONFIG_LCD_DE_GPIO    20)
+set(CONFIG_LCD_PCLK_GPIO  23)
+set(CONFIG_LCD_DATA0_GPIO 24)
+set(CONFIG_LCD_RST_GPIO   41)
+set(CONFIG_LCD_BL_GPIO    44)
+set(CONFIG_LCD_EN_GPIO    45)
+
 # Not declared yet, each with a pin already reserved by the board:
 #   UART1 GP8/9  -- hard-wired to the SP3485 RS485 transceiver (plan §7)
 #   SPI0 GP2-5   -- the XL2515 CAN controller, INT GP1, RST GP46
-#   GP20-45      -- the LCD (DE/VSYNC/HSYNC/PCLK, RGB565 on GP24-39, RST 41,
-#                   backlight 44, EN 45), 36.3 onward
 #   GP40         -- battery ADC

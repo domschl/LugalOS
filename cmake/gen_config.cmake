@@ -135,6 +135,10 @@ set(_optional_keys
     # 36.1: the RP2350's clk_sys in Hz. Optional; arch/rp2350_clocks.h
     # defaults it to the 150 MHz every persona ran at before it existed.
     CONFIG_CLK_SYS_HZ
+    # 36.3: the RP2350-LCD-7's RGB panel. Guard-by-pin-map: their presence
+    # builds drivers/lcd7_rp2350.c's content.
+    CONFIG_LCD_DE_GPIO CONFIG_LCD_PCLK_GPIO CONFIG_LCD_DATA0_GPIO
+    CONFIG_LCD_RST_GPIO CONFIG_LCD_BL_GPIO CONFIG_LCD_EN_GPIO
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only
