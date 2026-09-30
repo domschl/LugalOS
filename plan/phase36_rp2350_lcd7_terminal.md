@@ -733,6 +733,57 @@ framebuffer (12), cell shadow (~2), USB engine and writer spend from.
 * `drivers/boardprobe_rp2350.c` is guard-by-pin-map, like the UART1
   downlink.
 
+### 36.0a — Two things a new card and a new machine found *(added 2026-09-30)*
+
+Neither is specific to this board. Both were invisible on the machine and
+card the project grew up on, and both surfaced within an hour of starting
+somewhere fresh.
+
+**A new SD card logged a warning after every command.** `[FAT32] Device
+'spisd0': no directory to create 'system/history.lisp' in` appeared once at
+boot and again after every line typed. There were two writers, and neither
+created the directory it wrote into:
+
+* `init.lisp` clears the history at boot with `(write-file
+  "/sd0/system/history.lisp" "")`. That was the boot-time line, at 0.315 s
+  right after `Loaded stdlib.lisp`, with nothing typed. The first guess, a
+  floating UART0 RX on the unconnected H7 header, was wrong, and the log's
+  timing is what showed it.
+* `add_history()` (`kernel/line_editor.c`) appends every line. That was the
+  per-command line.
+
+The fixes are one line each, plus a latch. `init.lisp` does `(mkdir
+"/sd0/system")` before the write, which is a silent no-op when the directory
+exists or no card is mounted. `add_history()` checks for the directory once,
+creates it if missing, and re-checks only after an append fails (a swapped
+card). The history belongs to the line editor, so the line editor makes sure
+its directory exists, rather than depending on `init.lisp` having run.
+
+**Verified on the board:** the card's `/system` was removed in one Lisp
+line (any shell command re-creates it through the history before it runs,
+which is how the first attempt failed), then a reboot with nothing typed.
+The boot log shows `Subdirectory created: 'system'` and no warning, and the
+first command lands in the history.
+
+**B12 failed on every fresh clone.** `tests/runner.py`'s "ELF Loader Rejects
+Malformed Program Headers (B12)" execs `/sd0/badelf.bin`, which was meant to
+be a checked-in file under `tools/sd_root/`. It never was: `.gitignore`'s
+`*.bin` swallowed it, so it existed only in the working tree where it was
+made. It is now generated at build time by `tools/gen_badelf.py` (a
+twelve-field `struct.pack` of exactly the header the test describes),
+staged beside the user programs.
+
+**And the suite was flaky on the new machine, which turned out to be the
+harness.** Once RV64 and SMP were built, six full runs produced five
+different single failures, each passing on its own. Two causes:
+`_strip_echo()` swallowed the line break after the echo whenever a command
+was sent with a trailing `"\n"` (so `^address:` could not match text that was
+in the log), and seven tests waited for one line and asserted on a later one.
+Both are fixed in `tests/runner.py`, and the ~70 sites of the same shape not
+yet vetted are an entry in `plan/open_issues.md`. **Four consecutive full
+runs since the fix: 368/368** (RV32, RV64, multi-node, two-hart SMP;
+~215 s each).
+
 ### 36.1 — `CONFIG_CLK_SYS_HZ`, and 144 MHz on this persona
 
 §3.3. The refactor first, at 150 MHz everywhere, then the persona's value.

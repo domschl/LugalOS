@@ -207,7 +207,18 @@ class QemuSession:
         matching against it."""
         if not command:
             return text
-        escaped_lines = [re.escape(line) for line in command.split("\n")]
+        lines = command.split("\n")
+        # A trailing "\n" in the command (several callers send "netcfg\n")
+        # must not become part of the echo pattern. It made the pattern
+        # `netcfg\r?\n`, which stripped the line break *after* the echo too
+        # and glued the command's first line of output onto the prompt line
+        # -- so a pattern anchored on that line (`^address:`, `^broker :`)
+        # could not match text that was plainly in the log. It showed up as
+        # "`netcfg` did not answer" above a log holding netcfg's full answer,
+        # about half the time on RV64 (2026-09-30, plan/phase36 36.0a).
+        while len(lines) > 1 and lines[-1] == "":
+            lines.pop()
+        escaped_lines = [re.escape(line) for line in lines]
         echo_pattern = r"\r?\n".join(escaped_lines)
         return re.sub(echo_pattern, "", text, count=1)
 
@@ -2987,7 +2998,11 @@ def test_node_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[
         if not ok:
             return (name, False, f"guest did not reach the shell: {log[-400:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node", r"mac source:", timeout=6.0)
+        # Every `cat /proc/node` in this file waits for `9P uname:`, the file's
+        # last line, because the tests assert on lines all through it and
+        # send_and_expect() returns on the first chunk that matches. Waiting
+        # for an early line (`mac source:`) raced the later ones (2026-09-30).
+        ok, log = session.send_and_expect("cat /proc/node", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
 
@@ -3086,7 +3101,7 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
         if not ok:
             return (name, False, f"provisioned guest did not reach the shell: {log[-400:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node", r"uid source:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
 
@@ -3124,7 +3139,7 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
         if not ok:
             return (name, False, f"unprovisioned guest did not reach the shell: {log[-400:]}")
 
-        ok, log = session2.send_and_expect("cat /proc/node", r"uid source:", timeout=6.0)
+        ok, log = session2.send_and_expect("cat /proc/node", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
 
@@ -3187,8 +3202,11 @@ def test_grants_in_record(elf_path: Path, img_path: Path, arch_name: str) -> tup
 
         # 1. The board reads back what the host wrote -- name, scope and mode,
         #    with the key shown only as a fingerprint.
-        ok, log = session.send_and_expect("peers", r"fingerprint", timeout=6.0)
-        if not ok:
+        # Expect the row, not the header: `fingerprint` is in the header line,
+        # and returning on it left the row this asserts on to the luck of
+        # chunk boundaries (send_and_expect()'s "expect the last line" rule).
+        ok, log = session.send_and_expect("peers", rf"^alice\s+{fp}\s+\S+\s+\S+", timeout=6.0)
+        if not ok and "fingerprint" not in log:
             return (name, False, f"`peers` did not answer: {log[-400:]}")
         if not re.search(rf"^alice\s+{fp}\s+/sd0\s+ro", log, re.MULTILINE):
             return (name, False,
@@ -3259,7 +3277,7 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
 
         # The MAC before anything touches the identity store, to compare
         # against after a persisted rename.
-        ok, log = session.send_and_expect("cat /proc/node\n", r"mac source:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
         mm = re.search(r"^mac: ([0-9a-f:]{17})", log, re.MULTILINE)
@@ -3285,7 +3303,7 @@ def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tup
         if not ok:
             return (name, False, f"rename did not report success:\n{log[-500:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node\n", r"mac source:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer after rename: {log[-400:]}")
         if not re.search(r"^name: toolset-test\b", log, re.MULTILINE):
@@ -3392,7 +3410,7 @@ def test_network_autoconfig(elf_path: Path, img_path: Path, arch_name: str) -> t
         if not re.search(rf"^address: {re.escape(ip)}\b", log, re.MULTILINE):
             return (name, False, f"netcfg does not report the stored address:\n{log[-500:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node\n", r"^ipv4:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
         if not re.search(rf"^ipv4: {re.escape(ip)}/{re.escape(mask)} gw {re.escape(gw)}",
@@ -3400,7 +3418,8 @@ def test_network_autoconfig(elf_path: Path, img_path: Path, arch_name: str) -> t
             return (name, False, f"/proc/node does not show the stored address:\n{log[-500:]}")
 
         # 3. Replacing it, and the refusals that keep an unusable one out.
-        ok, log = session.send_and_expect("netcfg 10.0.9.77 255.255.0.0\n", r"^address:", timeout=6.0)
+        # `gateway:` is netcfg's last line, and the one asserted on below.
+        ok, log = session.send_and_expect("netcfg 10.0.9.77 255.255.0.0\n", r"^gateway:", timeout=6.0)
         if not ok or not re.search(r"^address: 10\.0\.9\.77\b", log, re.MULTILINE):
             return (name, False, f"netcfg did not store a replacement:\n{log[-500:]}")
         if not re.search(r"^gateway: none", log, re.MULTILINE):
@@ -3420,7 +3439,7 @@ def test_network_autoconfig(elf_path: Path, img_path: Path, arch_name: str) -> t
         ok, log = session.send_and_expect("netcfg\n", r"address:", timeout=6.0)
         if not ok or "none stored" not in log:
             return (name, False, f"the address survived a clear:\n{log[-500:]}")
-        ok, log = session.send_and_expect("cat /proc/node\n", r"^ipv4:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok or not re.search(r"^ipv4: none", log, re.MULTILINE):
             return (name, False, f"/proc/node still shows an address after clear:\n{log[-500:]}")
 
@@ -3486,7 +3505,7 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
             return (name, False, f"the provisioned psk's fingerprint does not match "
                                  f"the host-computed one ({prov_fp}):\n{log[-500:]}")
 
-        ok, log = session.send_and_expect("cat /proc/node\n", r"wlan psk fingerprint: (?:[0-9a-f]{16}|none)", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
         if not re.search(rf"^wlan ssid: {re.escape(prov_ssid)}\b", log, re.MULTILINE):
@@ -3886,8 +3905,12 @@ def test_ip_stack(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, 
         peer.send(ipv4_to_guest(47, b"\x00" * 20))
         time.sleep(1.0)
 
-        ok, log = session.send_and_expect("cat /proc/net", r"drop: .*no-port", timeout=8.0)
-        if not ok:
+        # Wait for the ARP row asserted at the end, not the drop counters:
+        # /proc/net prints the ARP cache last, so returning on `drop:` left
+        # the row to chunk boundaries (send_and_expect()'s "expect the last
+        # line" rule, 2026-09-30).
+        ok, log = session.send_and_expect("cat /proc/net", r"192\.168\.77\.1 02:00:00:00:00:42", timeout=8.0)
+        if not ok and "drop:" not in log:
             return (name, False, f"/proc/net did not answer: {log[-500:]}")
         m = re.search(r"drop: (\d+) not-for-us, (\d+) short, (\d+) checksum, (\d+) fragment,\s*"
                       r"(\d+) proto, (\d+) no-route, (\d+) no-port", log)
@@ -4492,8 +4515,10 @@ def test_mqtt_config_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -
         time.sleep(1.0)
 
         # 2. The device reads back what the host wrote.
-        ok, log = session.send_and_expect("mqttcfg\n", r"^broker :", timeout=6.0)
-        if not ok:
+        # Expect `pass`, the last line asserted on below, not `broker`, the
+        # first: returning on the first left user/pass to chunk boundaries.
+        ok, log = session.send_and_expect("mqttcfg\n", r"^pass   :", timeout=6.0)
+        if not ok and "broker :" not in log:
             return (name, False, f"`mqttcfg` did not answer: {log[-400:]}")
         if not re.search(rf"^broker : 10\.0\.2\.2:{broker.port}\b", log, re.MULTILINE):
             return (name, False, f"the stored broker did not read back:\n{log[-600:]}")
@@ -4506,7 +4531,7 @@ def test_mqtt_config_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -
 
         # 3. It is on /proc/node too, so a board can be asked over 9P what it
         # will do before it is rebooted.
-        ok, log = session.send_and_expect("cat /proc/node\n", r"^mqtt:", timeout=6.0)
+        ok, log = session.send_and_expect("cat /proc/node\n", r"^9P uname:", timeout=6.0)
         if not ok:
             return (name, False, f"/proc/node did not answer: {log[-400:]}")
         if not re.search(rf"^mqtt: 10\.0\.2\.2:{broker.port} user sensors pass set",
@@ -5190,7 +5215,10 @@ def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) ->
         tcp5 = dial(40104)
         tcp5.send(netpeer.TCP_RST)
         time.sleep(0.5)
-        ok, log = session.send_and_expect("cat /proc/net", r"tcp: listening", timeout=8.0)
+        # `udp bindings:` follows the connection list; `tcp: listening`
+        # precedes it, and an absence check that returns there passes on a
+        # read that simply stopped early.
+        ok, log = session.send_and_expect("cat /proc/net", r"udp bindings:", timeout=8.0)
         if ok and re.search(r"192\.168\.77\.1:40104", log):
             return (name, False, f"a reset connection is still in the table: {log[-400:]}")
         tcp6 = dial(40105)            # the slot must be dialable again
@@ -6201,7 +6229,7 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
         # of *open* connections is deliberately not asserted -- the refused
         # one may or may not have left TIME_WAIT yet.
         ok, log = session_b.send_and_expect("cat /proc/net",
-                                            r"tcp: listening on 564, \d+ open, 2 accepted", timeout=8.0)
+                                            r"tcp: listening on 564, \d+ open, 2 accepted.*udp bindings:", timeout=8.0)
         if not ok:
             return (name, False, f"Node B does not report two accepted connections: {log[-500:]}")
         if not re.search(r"192\.168\.99\.3:\d+ -> :564 ESTABLISHED", log):
@@ -6221,7 +6249,7 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"unmount refused: {log[-400:]}")
         for _ in range(10):
-            ok, log = session_a.send_and_expect("cat /proc/net", r"tcp: listening", timeout=8.0)
+            ok, log = session_a.send_and_expect("cat /proc/net", r"udp bindings:", timeout=8.0)
             if ok and not re.search(r"192\.168\.99\.2:564 -> :\d+ (ESTABLISHED|FIN_WAIT|CLOSING)", log):
                 break
             time.sleep(0.5)

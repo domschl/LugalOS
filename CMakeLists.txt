@@ -282,6 +282,11 @@ set(SD_STAGE_COMMANDS
 # reachable by bare name and the convention would exist only on paper.
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SD_STAGE}/system/bin)
+# The malformed ELF tests/runner.py's B12 case execs from /sd0. Generated, not
+# checked in: `*.bin` in .gitignore means a checked-in copy never reached a
+# fresh clone (tools/gen_badelf.py has the history).
+list(APPEND SD_STAGE_COMMANDS
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_badelf.py ${SD_STAGE}/badelf.bin)
 foreach(uprog ${USER_PROG_STAGED})
     list(APPEND SD_STAGE_COMMANDS
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/${uprog}.stripped

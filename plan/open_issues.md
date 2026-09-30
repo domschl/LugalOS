@@ -413,6 +413,41 @@ shape the runner already uses elsewhere.
 
 ---
 
+## The harness still has ~70 "wait for one line, assert on another" sites
+
+**Trigger:** run the full QEMU suite repeatedly on a fast, lightly loaded
+host. On 2026-09-30, on a new machine, six full runs produced five different
+single failures across the identity, MQTT and IP-stack tests. Each one passed
+in isolation or on the next run.
+
+**What it was, where it has been fixed:** `send_and_expect()` returns on the
+first chunk that matches, and its docstring says *"Expect the last line the
+command prints, not the first."* Seven tests did not follow that rule. They
+waited for a table header or a first line and then asserted on a later
+line (`peers`, `mqttcfg`, `netcfg <addr>`, `cat /proc/node` ×9, `cat
+/proc/net` ×4). Two of the `/proc/net` sites were *absence* checks, so a
+short read made them pass when they should have failed. Separately,
+`_strip_echo()` turned a trailing `"\n"` in the command into part of the echo
+pattern, which ate the line break after the echo. That is why `^address:`
+failed against a log that visibly contained `address: 10.0.9.42`, about half
+the time on RV64. All of those are fixed (phase 36, 36.0a), and four
+consecutive full runs since then are 368/368.
+
+**Why the rest is parked:** a scan finds about 70 `send_and_expect()` calls
+followed by a further search of the returned log. Most of them re-check the
+line they waited for, which is safe. The rest are latent instances of the
+same race, and each fails only when a chunk boundary lands between the two
+lines. A generic fix (keep reading after a match until the guest has been
+quiet for some window) was considered and declined for now. It adds its
+window to each of ~1500 runtime calls, several minutes a run, and it is
+still a heuristic under load.
+
+**Fix, when it is worth it:** vet the ~70 sites one at a time against the
+command's actual last line, the way the seven above were. The WLAN credential
+entry above is probably one of them.
+
+---
+
 ## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
 
 **Trigger:** open and close 9P/TCP sessions in a tight loop. The third
