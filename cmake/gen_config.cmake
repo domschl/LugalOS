@@ -128,6 +128,10 @@ set(_optional_keys
     # module's gSPI bus, bit-banged over PIO0. GP23/24/25/29 on every
     # Pico 2 W, whichever persona carries one.
     CONFIG_WL_ON_GPIO CONFIG_WL_DATA_GPIO CONFIG_WL_CS_GPIO CONFIG_WL_CLK_GPIO
+    # 36.0, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's PIO-driven
+    # USB host port (J7). Optional like every pin map here; its presence is what
+    # builds drivers/boardprobe_rp2350.c's content.
+    CONFIG_PIOUSB_DP_GPIO CONFIG_PIOUSB_DM_GPIO
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only

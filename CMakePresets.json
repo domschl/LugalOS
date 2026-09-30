@@ -109,6 +109,24 @@
       }
     },
     {
+      "name": "rp2350-terminal",
+      "displayName": "RP2350B (Waveshare RP2350-LCD-7) \u2014 terminal / workstation persona",
+      "description": "36.0, plan/phase36_rp2350_lcd7_terminal.md. The Waveshare RP2350-LCD-7 (non-touch): an RP2350B with a 7-inch 800x480 RGB panel, 16 MB flash, a microSD socket, and a PIO-USB host port for a keyboard. The panel is the terminal screen and the keyboard its input, and the board is also a stand-alone machine for Lisp, chess and writing to the SD card. UART0 is on GP16/17 (header H7), NOT GP0/1: GP0 is the PSRAM chip select on this board. No user LED, so no heartbeat. The panel and keyboard arrive in later milestones; until then this is a USB-console node with an SD card.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rp2350-terminal",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-terminal.cmake",
+        "LUGALOS_ENABLE_SPISD": "ON",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "ON",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF"
+      }
+    },
+    {
       "name": "esp32p4",
       "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO) \u2014 network-storage persona",
       "description": "E2, plan/phase27_esp32p4_bringup.md, grown by phase 32. The second silicon this project runs on. It boots from its own flash: .text and .rodata execute in place from the XIP window and the ROM loads a small RAM half from 0x2000, so the board powers on into LugalOS with nothing attached -- flash it with `uv run tools/p4flash.py`, not `esptool load-ram`. UART0 console, printk, shell and /proc, a writable /flash0, I2C with a BME280, and Ethernet: an EMAC driving an IP101G over RMII at 100 Mbit/s, registered as `eth0` under the eFuse MAC and serving 9P over TCP (phase 28). chibicc and the chess engine are ON as of phase 32: they were off while this board had a 128 KB heap and RAM-resident .text, and U2 took the heap to 372 KB with 4x headroom in the flash segment, so the reason expired. Phase 35 adds the microSD slot on the SD/MMC host (4-bit, 20 MHz, GPIO39-44) as /sd0, reading at 1547 KB/s, which is what makes this the network-storage persona rather than a second preset: those pads collide with nothing else on this board, so there is no version of it without a card slot. No display, no radio.",
@@ -180,6 +198,10 @@
     {
       "name": "rp2350-sensor",
       "configurePreset": "rp2350-sensor"
+    },
+    {
+      "name": "rp2350-terminal",
+      "configurePreset": "rp2350-terminal"
     },
     {
       "name": "esp32p4",

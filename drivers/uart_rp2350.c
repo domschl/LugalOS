@@ -90,8 +90,16 @@
  * GP9 alone (phase17 C1). */
 #ifdef CONFIG_LED_ONBOARD_GPIO
 #define LED_MASK  ((1u << CONFIG_LED_ONBOARD_GPIO) | (1u << CONFIG_LED_EXT_GPIO))
-#else
+#elif defined(CONFIG_LED_EXT_GPIO)
 #define LED_MASK  (1u << CONFIG_LED_EXT_GPIO)
+#else
+/* 36.0, plan/phase36_rp2350_lcd7_terminal.md §1.4: the Waveshare
+ * RP2350-LCD-7 has no user LED on any GPIO (Led1/Led2 are power and charge
+ * indicators), so its board file sets neither key. No LED then means no
+ * heartbeat task and no pin claimed -- not a write to whatever pin a default
+ * would have named. On that board GP0, the old default for everything, is
+ * the PSRAM chip select. led_on()/led_off() write an empty mask: no-ops. */
+#define LED_MASK  0u
 #endif
 
 #include "drivers/usb_cdc.h"
@@ -183,6 +191,7 @@ __attribute__((always_inline)) static inline long heartbeat_usys_time_ms(void) {
     return r_a0;
 }
 
+#ifdef CONFIG_LED_EXT_GPIO
 /* Found on real hardware, not predicted: a plain `static void`, neither
  * always_inline nor HEARTBEAT_UATTR, is not a guarantee the compiler places
  * it (or keeps it placed) in .utext -- it was correctly inlined into
@@ -274,6 +283,14 @@ int heartbeat_task_start(void) {
     task_set_priority(pid, TASK_PRIO_NORMAL);
     return pid;
 }
+#else
+/* No LED on this board (see LED_MASK above), so no heartbeat task: the
+ * liveness it proved is still visible in `ps`, it just has nothing to blink. */
+int heartbeat_task_start(void) {
+    printk("[Heartbeat] no LED on this board; heartbeat task not started\n");
+    return -1;
+}
+#endif
 
 /* M5 phase 1's own "Verify" deliverable: does the real heartbeat domain
  * shape (stack + .utext + a 4096-byte SIO window) actually confine the
@@ -466,6 +483,7 @@ void uart_init(uintptr_t base_addr) {
     REG(IO_BANK0_CTRL(CONFIG_LED_ONBOARD_GPIO)) = 5;
     REG(PADS_BANK0_PAD(CONFIG_LED_ONBOARD_GPIO)) = 0x56;
 #endif
+#ifdef CONFIG_LED_EXT_GPIO
     REG(IO_BANK0_CTRL(CONFIG_LED_EXT_GPIO)) = 5;
     REG(PADS_BANK0_PAD(CONFIG_LED_EXT_GPIO)) = 0x56;
     REG(SIO_GPIO_OE_SET) = LED_MASK;
@@ -479,6 +497,7 @@ void uart_init(uintptr_t base_addr) {
      * is one of the two ACCESSCTRL registers exempt from the 0xacce
      * write-protection prefix every other ACCESSCTRL register needs. */
     REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
+#endif
 
     /* M5 Phase 6: UART0 itself needs the same Non-secure grant, for the
      * "uart" task's own U-mode serve loop further below -- see
@@ -486,8 +505,10 @@ void uart_init(uintptr_t base_addr) {
     REG(ACCESSCTRL_UART0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_UART0)
                             | ACCESSCTRL_UART0_NSP | ACCESSCTRL_UART0_NSU;
 
+#ifdef CONFIG_LED_EXT_GPIO
     /* Default GP16 to LOW (OFF in active-high configuration) */
     REG(SIO_GPIO_OUT_CLR) = (1u << CONFIG_LED_EXT_GPIO);
+#endif
 
     /* 4. Mux GP0 to UART0 TX (Function 2), GP1 to UART0 RX (Function 2) */
     REG(IO_BANK0_CTRL(CONFIG_UART0_TX_GPIO)) = 2;

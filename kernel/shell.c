@@ -18,6 +18,7 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
+#include "drivers/boardprobe.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -405,6 +406,9 @@ static void cmd_help(void) {
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
     cprintf("  uart1test [ms]  - Raw UART1 downlink test: registers, a burst, then listen\n");
     cprintf("  uart1pins       - Continuity between the downlink pins, using plain GPIO\n");
@@ -3243,6 +3247,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "p9serve") == 0) {
         cmd_p9serve();
         return;
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
+    } else if (strcmp(cmd_line, "boardprobe") == 0) {
+        boardprobe();
+        return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
     } else if (strcmp(cmd_line, "uart1pins") == 0) {
         uart1_pin_test();

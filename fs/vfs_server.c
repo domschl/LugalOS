@@ -1125,8 +1125,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LED_ONBOARD_GPIO=%d\n", CONFIG_LED_ONBOARD_GPIO);
 #endif
+#ifdef CONFIG_LED_EXT_GPIO
+        /* Optional too since 36.0: the RP2350-LCD-7 has no user LED at all. */
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LED_EXT_GPIO=%d\n", CONFIG_LED_EXT_GPIO);
+#endif
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "I2C_RTC_BASE=0x%lx\nI2C_RTC_SDA_GPIO=%d\nI2C_RTC_SCL_GPIO=%d\n",
             (unsigned long)CONFIG_I2C_RTC_BASE, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
