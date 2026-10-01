@@ -1229,6 +1229,9 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
 def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """A runaway Lisp recursion must degrade the shell, not take the board down.
 
+    Since 37.3a (plan/phase37_screen_layouts_and_apps.md) the runaway is a list
+    that grows without end: garbage alone no longer exhausts the pool.
+
     **This board is the only place the check means anything.** One runaway
     recursion allocates roughly 500 nodes; RP2350's node pool is 512 while the
     QEMU targets get 4096, so it exhausts the pool here on the first try and
@@ -1263,7 +1266,11 @@ def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str
             time.sleep(0.3)
             ser.reset_input_buffer()
             out = ""
-            for cmd in (b"lisp\n(define (loop n) (loop (+ n 1)))\n(loop 0)\n",
+            # A list that only grows, not `(loop (+ n 1))`: since 37.3a the
+            # collector runs inside a form, so a loop that keeps nothing alive
+            # never exhausts the pool -- it runs until Ctrl-C. Live data
+            # outgrowing the pool is what still exhausts it.
+            for cmd in (b"lisp\n(define (grow acc) (grow (cons 1 acc)))\n(grow '())\n",
                         b"exit\n"):
                 ser.write(cmd)
                 ser.flush()

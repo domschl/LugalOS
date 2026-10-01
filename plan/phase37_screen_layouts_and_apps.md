@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.2 done 2026-10-01, 37.3 next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.3a done 2026-10-01, 37.3b next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -482,7 +482,66 @@ returns 5, and the line editor edits that line correctly.
   before, backspaces over and deletes multi-byte characters. QEMU suite
   380/380; `test_rp2350` 25/25.
 
-### 37.3 — Layouts and the canvas: Lisp graphics
+### 37.3a — Lisp collects inside a form *(added 2026-10-01)*
+
+Found while measuring the interpreter for 37.3's showcase (the owner's
+request: a cellular automaton, rule 30 or 110, and maybe Mandelbrot or a
+Lorenz attractor). The collector ran only between top-level forms, every
+arithmetic result is a node, and the RP2350's pool is 1 024 nodes: a loop
+of a few hundred iterations ended in "Node pool exhausted", and so would
+37.3's own sine plot. The owner chose to fix the engine first.
+
+**Done, 2026-10-01.**
+
+* **`gc_collect_in_form()`** (`user/lisp/lisp.c`): when `alloc_node()` or
+  `intern_string()` finds its pool dry, it collects on the spot. The roots
+  are `global_env` and **every word of the evaluating task's stack** that
+  points into a pool, interior pointers included (a conservative scan, as
+  Boehm's collector does); `s0`–`s11` are stored into the scanning frame
+  first, so a pointer held only in a callee-saved register is seen.
+  Caller-saved registers live across a call are spilled by their callers.
+  The stack's bounds come from the new `sched_current_stack()`: the
+  current task's kernel stack, or the linker's boot stack on hart 0.
+* **Why the stack is all of it:** Lisp is evaluated only from the shell,
+  on one stack, and no static outside `global_env` and the free list holds
+  a node (checked). A half-built node's stale fields point at free cells
+  (pre-marked, not followed) or valid ones, so marking through them only
+  keeps garbage a little longer.
+* **Out of memory is decided, not waited for:** a collection inside a form
+  that frees less than a thirty-second of the pool counts as exhaustion.
+  Without that rule, a list growing into the pool was collected after every
+  few allocations near the end -- quadratic, 25 s on RV64 -- before the old
+  exhaustion path finally ran.
+* **Found by the suite, fixed:** once out of memory was decided, the
+  form's last few allocations while unwinding took the old clamp, which
+  reuses the pool's last slot -- and in a pool full of live data that slot
+  is live. It hung the shell after an exhaustion about one run in six on
+  RV64. The cells the deciding collection freed are now handed out first,
+  and no further collection runs inside that form: 20/20 and 10/10 since.
+* **The exhaustion tests changed with it** (the runner's and
+  `test_rp2350`'s): their runaway was `(loop (+ n 1))`, which keeps nothing
+  alive and now simply runs until Ctrl-C. They now grow a list without end,
+  which is what still exhausts a pool.
+* **First run on RV64 found:** `__builtin_unwind_init()` also saves the FP
+  registers there (the kernel is built with D, and the FPU is off): an
+  illegal instruction. The registers are saved explicitly now.
+* **Measured on the board:** `(lp 100000 0)` runs in 15.9 s (~6 300
+  iterations/s) with 4 498 collections inside the form, about 27 nodes per
+  iteration; `(fib 20)` (21 891 calls) in 2.9 s. `(gc-stats)` reports the
+  count and the free nodes.
+* **What it means for the showcase:** a rule-30/110 automaton and a Lorenz
+  attractor are Lisp-sized (seconds per row, seconds per few thousand
+  points). Mandelbrot is not (~200 000 pixels × ~20 iterations: hours in
+  this interpreter); it belongs in a C program built by `cc`, which needs a
+  canvas path for U-mode programs -- after 37.3b.
+* **Cost:** static RAM +5 bytes on every RP2350 persona.
+* **Tests:** a runner test per target -- a 30 000-iteration loop, `(fib
+  18)`, a list defined before string churn that comes through intact, a
+  string held only by an argument across the churn, and `(gc-stats)`
+  counting at least one in-form collection; the same, longer, by hand on
+  RV32, RV64 and the board.
+
+### 37.3b — Layouts and the canvas: Lisp graphics
 
 The layout manager in `lcdterm` (§1), the restore rule, the damage counter,
 `canvas1.c` and the canvas calls on the channel, and the Lisp bindings. This

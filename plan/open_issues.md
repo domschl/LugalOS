@@ -1535,6 +1535,19 @@ whose faults are hardest to reproduce.
 `_inst_lo` is now `_xip_start`, spanning flash and RAM together exactly as
 `linker/rp2350.ld` already did for the same reason.
 
+## `test_rp2350`'s st7735/tm1638 skip misfires while the host is loaded
+
+Seen twice on 2026-10-01 (37.3a), both times with the QEMU suite running on
+the same host in parallel: on the RP2350-LCD-7, which builds without either
+driver, the two tests reported "board firmware predates the `st7735stats`
+command" instead of skipping. The skip is decided by reading `/proc/config`
+(`feature_enabled()` in `tests/hw/rp2350.py`); when that read comes back
+incomplete the test falls through to running the command, which this
+persona does not have. Run alone, the suite passed 25/25 each time. Next
+step: make `feature_enabled()` retry an incomplete read, or report "could
+not read /proc/config" rather than guessing. Until then, run the board
+suite with the host otherwise idle.
+
 ## `lockselftest`'s log-burst case still flakes on rv64-smp (~1 in 8)
 
 Seen 2026-10-01 during 37.1: the full suite's RV64 SMP target failed

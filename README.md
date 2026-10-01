@@ -253,7 +253,7 @@ against a GPS-disciplined reference clock):
 * **Native C11 Compiler (`chibicc`)**: Integrated C11 compiler (`cc <src.c> <dst.elf>`) generating native RISC-V ELF binaries directly on LugalOS!
 * **Unified Lisp Machine Shell (`lsh`)**:
   * **POSIX $\rightarrow$ S-Expression Transformation**: All standard POSIX shell inputs (`ls /sd0`, `cp a b`, `cc src dst`) are automatically transformed into Lisp S-Expressions (`(ls "/sd0")`, `(cp "a" "b")`) and executed directly by the core Lisp engine!
-  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, named let, `while`, `cond`, a standard library of list/string/predicate/comparison/integer-math primitives, memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position, including named-let loops), and a mark-sweep collector reclaims unreachable values between top-level commands.
+  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, named let, `while`, `cond`, a standard library of list/string/predicate/comparison/integer-math primitives, memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position, including named-let loops), and a mark-sweep collector reclaims unreachable values, between top-level commands and, when a pool runs dry, in the middle of one.
   * **System Boot Scripts**: Automatically loads `/sd0/system/stdlib.lisp` and executes `/sd0/system/init.lisp` at system startup.
   * **Dual-Mode Interactive Line Editor & Emacs Multi-Line Canvas**: Single-line editing with ANSI escape sequences (`Ctrl-A/E/K/L/P/N`, Arrow keys, Delete), clean session history logging, and a full Emacs-style multi-line editor (`e [filename]` or `Ctrl-X Ctrl-M`) featuring a top optical separator, line numbers (`%3d │ `), an active status line, and keybindings:
     * `Ctrl-X Ctrl-E`: Evaluate buffer in Lisp engine
@@ -1457,11 +1457,12 @@ stack space regardless of how many iterations it performs. Non-tail recursion (a
 itself an argument to something else, e.g. `(* n (factorial (- n 1)))`) is unaffected and still bounded
 by the evaluator's stack-depth guard.
 
-Values that become unreachable are reclaimed by a mark-sweep collector between top-level commands (not
-mid-expression), so a long interactive session does not exhaust available memory the way a single
-unbounded computation still can — a command that itself allocates more than the pool can hold still
-degrades that one command to `()`, but the shell recovers on the next command rather than staying
-degraded for the rest of the session.
+Values that become unreachable are reclaimed by a mark-sweep collector: precisely between top-level
+commands, and — since phase 37 — also in the middle of one, the moment a pool runs dry. Mid-expression it
+treats every word of the evaluating stack that points into a pool as a root (a conservative scan, as
+Boehm's collector does), so a loop of any length runs in the 1,024-node pool of an RP2350: only what a
+command keeps *alive* is bounded, not what it allocates. `(gc-stats)` reports how often that has happened
+and how much of the pool is free.
 
 ### Built-in Primitives & Standard Library
 

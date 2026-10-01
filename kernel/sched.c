@@ -621,6 +621,22 @@ bool sched_stack_full(int pid) {
     return *(const uintptr_t *)t->stack_base != STACK_POISON_WORD;
 }
 
+extern char _stack_bottom[];
+extern char _stack_top[];
+
+bool sched_current_stack(uintptr_t *lo, uintptr_t *hi) {
+    int pid = cur();
+    if (pid >= 0 && pid < MAX_TASKS && g_tasks[pid].stack_base) {
+        *lo = (uintptr_t)g_tasks[pid].stack_base;
+        *hi = *lo + (uintptr_t)g_tasks[pid].stack_pages * PAGE_SIZE;
+        return true;
+    }
+    if (hart_id() != 0) return false;
+    *lo = (uintptr_t)_stack_bottom;
+    *hi = (uintptr_t)_stack_top;
+    return true;
+}
+
 uint32_t sched_stack_size(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return 0;
     task_t *t = &g_tasks[pid];

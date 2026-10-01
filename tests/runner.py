@@ -2582,6 +2582,31 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Line Editor Moves, Deletes And Inserts Whole UTF-8 Characters (37.2)",
                         ok, "" if ok else log1 + log2 + log3))
 
+        # 37.3a: the collector runs *inside* a form when a pool runs dry,
+        # with the evaluating task's stack scanned for roots. Before it, any
+        # loop longer than the pool (4096 nodes here, 1024 on the boards)
+        # ended in "Node pool exhausted". A 30 000-iteration loop, deep
+        # non-tail recursion, a list defined before string churn that must
+        # come through intact, and a string held only by an argument across
+        # 5 000 collections' worth of garbage.
+        cmd_gc_in_form = (
+            "(define (lp n acc) (if (= n 0) acc (lp (- n 1) (+ acc 1))))\n"
+            "(lp 30000 0)\n"
+            "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n"
+            "(fib 18)\n"
+            "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))\n"
+            "(define big (build 300 '()))\n"
+            "(define (keep s n) (if (= n 0) s (begin (string-append s (number->string n)) (keep s (- n 1)))))\n"
+            "(keep (string-append \"hello-\" \"world\") 5000)\n"
+            "(list (length big) (car (reverse big)) (car (gc-stats)))"
+        )
+        ok, log = session.send_and_expect(cmd_gc_in_form, r"=> \(300 300 \d+\)", timeout=60.0)
+        m = re.search(r"=> \(300 300 (\d+)\)", log)
+        gc_ok = (ok and "=> 30000" in log and "=> 2584" in log and '=> "hello-world"' in log
+                 and m is not None and int(m.group(1)) > 0 and "exhausted" not in log)
+        results.append(("Lisp Collects Inside A Form: Long Loops, Deep Recursion, Live Data Survives (37.3a)",
+                        gc_ok, log if not gc_ok else ""))
+
         cmd_s4_apply_eval = (
             "lisp\n"
             "(apply + (list 1 2 3))\n"
@@ -2936,8 +2961,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # command typed here appends to /sd0/system/history.lisp, and by this
         # point in the session that file is large enough that the FAT32 writes,
         # not the evaluator, dominate the runtime.
-        cmd_pool_exhaust = ("lisp\n(define (loop n) (loop (+ n 1)))\n"
-                            + "(loop 0)\n" * 8 + "exit\n")
+        #
+        # 37.3a changed what runs a pool dry. The collector now runs inside a
+        # form, so `(loop (+ n 1))` -- which keeps nothing alive -- no longer
+        # exhausts anything: it is reclaimed as it goes and simply runs until
+        # Ctrl-C. Exhaustion now means *live* data outgrowing the pool, so the
+        # runaway builds a list that only grows: each iteration keeps one more
+        # cell, the collector reclaims the rest, and the list eventually fills
+        # the pool.
+        cmd_pool_exhaust = ("lisp\n(define (grow acc) (grow (cons 1 acc)))\n"
+                            + "(grow '())\n" * 8 + "exit\n")
         ok, log = session.send_and_expect(
             cmd_pool_exhaust, r"Node pool exhausted.*=> \(\)", timeout=25.0)
         results.append(("Node Pool Exhaustion Degrades Instead Of Hanging (P6 §6.4)",

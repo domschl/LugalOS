@@ -106,11 +106,13 @@
  * constraint was memory and only one of the two boards lost it. That board's
  * heap went from 128 KB to 372 KB when .text moved to flash, and 1024 nodes
  * is visibly too few for it: `(fib 14)` -- 1,219 calls, each allocating
- * several cells -- exhausts the pool. Note what does *not* explain that.
+ * several cells -- exhausted the pool. Note what does *not* explain that.
  * `fib` has no tail calls, so tail-call elimination is irrelevant; and the
- * collector cannot help, because there is no safe point inside a single
- * still-executing top-level form to collect at (see gc_collect()). It is
- * purely a pool that is smaller than one expression's garbage.
+ * collector could not help then, because it had no safe point inside a single
+ * still-executing top-level form to collect at. It was purely a pool smaller
+ * than one expression's garbage. (Since 37.3a the collector runs inside a
+ * form too -- gc_collect_in_form() -- so this now bounds only what one form
+ * keeps *alive*, not what it allocates.)
  *
  * 2048 and not more, and the ceiling is not the heap. node_pool is .bss, and
  * after phase 32 split the image .bss lives in LOWRAM's 252 KB while the heap
@@ -180,6 +182,12 @@ static void strncpy_local(char *dst, const char *src, int n) {
     dst[i] = '\0';
 }
 
+/* 37.3a: collection inside a form (gc_collect_in_form(), with the
+ * collector below), and how often it has run -- `(gc-stats)`. */
+static bool gc_collect_in_form(void);
+static int gc_free_nodes(void);
+static unsigned long gc_in_form_count;
+
 /* Node allocation */
 static lisp_val_t *alloc_node(lisp_type_t type) {
     /* S3: reuse a reclaimed cell before ever touching the bump cursor.
@@ -194,6 +202,34 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
         node_free_list = v->u.pair.cdr;
         v->type = type;
         return v;
+    }
+    /* 37.3a: the pool is dry -- collect right here, the stack's values
+     * counted as roots. If that frees less than a thirty-second of the pool,
+     * live data has all but filled it, and carrying on would collect again
+     * after every few allocations -- quadratic, measured at 25 s on RV64 for
+     * a list growing into 4096 nodes -- so the form is out of memory: the
+     * exhaustion flag is set, and lisp_eval() refuses to descend further.
+     *
+     * The cells that collection *did* free are still handed out, and that
+     * is load-bearing: the form makes a few more allocations while it
+     * unwinds, and without them each would take the clamp below, which
+     * reuses the pool's last slot -- live data, once the pool is full of it
+     * (it is the oldest-allocated end of a filled pool, not scratch). That
+     * overwrote a live node about one run in six and hung the shell. Once
+     * the flag is set, no further collection runs inside the form: it
+     * could only find the same nothing. */
+    if (node_pool_idx >= NODE_POOL_SIZE && !node_pool_exhausted_warned && gc_collect_in_form()) {
+        if (gc_free_nodes() < NODE_POOL_SIZE / 32) {
+            printk("[Lisp Error] Node pool exhausted! Further evaluation will "
+                   "produce wrong results until the shell restarts.\n");
+            node_pool_exhausted_warned = true;
+        }
+        if (node_free_list) {
+            lisp_val_t *v = node_free_list;
+            node_free_list = v->u.pair.cdr;
+            v->type = type;
+            return v;
+        }
     }
     if (node_pool_idx >= NODE_POOL_SIZE) {
         /* Do NOT wrap back to index 0: global_env and every value evaluated
@@ -372,6 +408,10 @@ static char *intern_string(const char *src) {
     int idx = (len < STRING_SMALL_LEN) ? take_small() : -1;
     if (idx < 0) idx = take_large();
     if (idx < 0 && len < STRING_SMALL_LEN) idx = take_small();
+    if (idx < 0 && gc_collect_in_form()) {       /* 37.3a: collect, then try again */
+        idx = (len < STRING_SMALL_LEN) ? take_small() : -1;
+        if (idx < 0) idx = take_large();
+    }
 
     if (idx < 0) {
         /* Same clamp-not-wrap policy as alloc_node() (see B6 in
@@ -462,32 +502,86 @@ static void gc_push(int *sp, lisp_val_t *v) {
     gc_work_stack[(*sp)++] = v;
 }
 
-static void gc_mark(lisp_val_t *root) {
-    int sp = 0;
-    gc_push(&sp, root);
-    while (sp > 0) {
-        lisp_val_t *v = gc_work_stack[--sp];
+static void gc_drain(int *sp) {
+    while (*sp > 0) {
+        lisp_val_t *v = gc_work_stack[--*sp];
         switch (v->type) {
             case LISP_STRING:
             case LISP_SYMBOL:
                 gc_mark_string_slot(v->u.str);
                 break;
             case LISP_PAIR:
-                gc_push(&sp, v->u.pair.car);
-                gc_push(&sp, v->u.pair.cdr);
+                gc_push(sp, v->u.pair.car);
+                gc_push(sp, v->u.pair.cdr);
                 break;
             case LISP_LAMBDA:
-                gc_push(&sp, v->u.lambda.params);
-                gc_push(&sp, v->u.lambda.body);
+                gc_push(sp, v->u.lambda.params);
+                gc_push(sp, v->u.lambda.body);
                 /* NULL means "resolve against live global_env at call
                  * time" (B3) -- nothing extra to mark, global_env is
                  * already this collection's root. */
-                if (v->u.lambda.env) gc_push(&sp, v->u.lambda.env);
+                if (v->u.lambda.env) gc_push(sp, v->u.lambda.env);
                 break;
             default:
                 break; /* LISP_INT, LISP_PRIMITIVE, LISP_NIL: no children */
         }
     }
+}
+
+/* 37.3a: one word from the C stack, taken as a root if it could be a
+ * pointer into a pool -- including into the *middle* of a node or a string
+ * slot, which is what an optimised caller may hold (&v->u.pair.cdr, or
+ * s + start inside a string). An integer that happens to look like such a
+ * pointer keeps its target alive one collection longer: wasteful, never
+ * wrong, which is the whole bargain of a conservative scan. */
+static void gc_push_word(int *sp, uintptr_t w) {
+    uintptr_t lo = (uintptr_t)node_pool, hi = (uintptr_t)(node_pool + NODE_POOL_SIZE);
+    if (w >= lo && w < hi) {
+        gc_push(sp, &node_pool[(w - lo) / sizeof(lisp_val_t)]);
+        return;
+    }
+    gc_mark_string_slot((const char *)w);
+}
+
+/* 37.3a: every word of the current stack, from this frame up, as a possible
+ * root. The callee-saved registers s0..s11 are stored into `regs` first,
+ * which is in this frame, so a pointer that a caller keeps only in one of
+ * them is on the stack by the time the scan reaches it; a caller-saved
+ * register live across a call is spilled by its caller anyway.
+ *
+ * Explicit stores rather than __builtin_unwind_init(): on RV64 the kernel is
+ * built with the D extension, so the builtin also saves fs0..fs11 -- and the
+ * FPU is off in the kernel, so that is an illegal instruction (the first
+ * QEMU run of this collector). Lisp has no floats; no node pointer is ever in
+ * an FP register. noinline, so "this frame" is a real frame below every
+ * caller's. */
+#if __riscv_xlen == 64
+#define GC_STORE "sd"
+#else
+#define GC_STORE "sw"
+#endif
+__attribute__((noinline)) static void gc_push_stack(int *sp, uintptr_t top) {
+    volatile uintptr_t regs[12];
+    __asm__ volatile(
+        GC_STORE " s0, %c[w0](%[r])\n" GC_STORE " s1, %c[w1](%[r])\n"
+        GC_STORE " s2, %c[w2](%[r])\n" GC_STORE " s3, %c[w3](%[r])\n"
+        GC_STORE " s4, %c[w4](%[r])\n" GC_STORE " s5, %c[w5](%[r])\n"
+        GC_STORE " s6, %c[w6](%[r])\n" GC_STORE " s7, %c[w7](%[r])\n"
+        GC_STORE " s8, %c[w8](%[r])\n" GC_STORE " s9, %c[w9](%[r])\n"
+        GC_STORE " s10, %c[w10](%[r])\n" GC_STORE " s11, %c[w11](%[r])\n"
+        : : [r] "r"(regs),
+            [w0] "i"(0 * sizeof(uintptr_t)), [w1] "i"(1 * sizeof(uintptr_t)),
+            [w2] "i"(2 * sizeof(uintptr_t)), [w3] "i"(3 * sizeof(uintptr_t)),
+            [w4] "i"(4 * sizeof(uintptr_t)), [w5] "i"(5 * sizeof(uintptr_t)),
+            [w6] "i"(6 * sizeof(uintptr_t)), [w7] "i"(7 * sizeof(uintptr_t)),
+            [w8] "i"(8 * sizeof(uintptr_t)), [w9] "i"(9 * sizeof(uintptr_t)),
+            [w10] "i"(10 * sizeof(uintptr_t)), [w11] "i"(11 * sizeof(uintptr_t))
+        : "memory");
+    for (unsigned i = 0; i < 12u; i++) gc_push_word(sp, regs[i]);
+    uintptr_t here;
+    __asm__ volatile("mv %0, sp" : "=r"(here));
+    here &= ~(uintptr_t)(sizeof(uintptr_t) - 1u);
+    for (const uintptr_t *p = (const uintptr_t *)here; (uintptr_t)p < top; p++) gc_push_word(sp, *p);
 }
 
 /* Runs one full stop-the-world mark-sweep pass. Safe to call ONLY from
@@ -502,20 +596,18 @@ static void gc_mark(lisp_val_t *root) {
  * finished has already returned -- so rooting from it alone is exact
  * there, not approximate.
  *
- * One direct, load-bearing consequence: a single top-level form that
- * itself exhausts a pool while consing (e.g. one huge non-terminating
- * loop) still aborts that form exactly as before S3 -- there is no safe
- * point inside it to collect at. What S3 actually buys is the *next*
- * top-level form no longer inheriting a permanently degraded shell: this
- * pass runs before it, and any garbage the previous (aborted or merely
- * finished) form left behind becomes reclaimable capacity again.
+ * What this pass bought in S3 was the *next* top-level form no longer
+ * inheriting a permanently degraded shell. A form that itself ran a pool dry
+ * still failed, because there was no safe point inside it -- until 37.3a,
+ * which adds the stack as a root (gc_collect_in_form() below) and calls this
+ * with the stack's top from inside the allocator.
  *
  * Frees nothing by itself if nothing is garbage: node_pool_exhausted_warned
  * / string_pool_exhausted_warned are cleared below only if this pass
  * actually grew the corresponding free list, so a session with genuinely
  * no reclaimable garbage still degrades to nil exactly as it did before
  * S3, rather than retrying a hopeless collection on every later form. */
-static void gc_collect(void) {
+static void gc_collect_from(uintptr_t stack_top) {
     memset(node_mark_bits, 0, sizeof(node_mark_bits));
     memset(string_mark_bits, 0, sizeof(string_mark_bits));
 
@@ -541,7 +633,10 @@ static void gc_collect(void) {
         idx = next;
     }
 
-    gc_mark(global_env);
+    int sp = 0;
+    gc_push(&sp, global_env);
+    if (stack_top) gc_push_stack(&sp, stack_top);
+    gc_drain(&sp);
 
     for (int i = 0; i < node_pool_idx; i++) {
         uint8_t bit = (uint8_t)(1u << (i % 8));
@@ -574,10 +669,49 @@ static void gc_collect(void) {
     }
 }
 
+/* The precise collection, from global_env alone: exact between top-level
+ * forms, which is the only place it runs (lisp_gc_safepoint()). */
+static void gc_collect(void) {
+    gc_collect_from(0);
+}
+
+/* 37.3a, plan/phase37_screen_layouts_and_apps.md: collection *inside* a
+ * form, when a pool has run dry. The precise collector cannot run there --
+ * the values a half-evaluated form is working on live in C locals, not in
+ * global_env (gc_collect_from()'s comment above). So this one also takes
+ * every word of the evaluating task's stack that points into a pool as a
+ * root (gc_push_stack()): Boehm's conservative scan, which is safe for the
+ * reason the comment above says the precise one is not -- whatever a C
+ * frame holds, it holds on that stack or in a register the scan saves.
+ *
+ * Only the evaluating task's stack, and that is complete: Lisp is only ever
+ * evaluated from the shell (kernel/shell.c, all on one stack), and nothing
+ * else in the tree holds a node in a static (checked 2026-10-01: global_env
+ * and the free list are the only ones). Refuses -- returning false, so the
+ * caller fails as before -- when the stack's bounds are not known, or when
+ * a collection is already running.
+ *
+ * Interior pointers count (gc_push_word()), and a freshly allocated node
+ * whose fields are not yet filled is harmless: its stale fields point at
+ * nodes or slots that are either still free (pre-marked, so not followed)
+ * or valid, so marking through them only keeps garbage a little longer. */
+static bool gc_in_progress;
+
+static bool gc_collect_in_form(void) {
+    uintptr_t lo, hi, here = (uintptr_t)__builtin_frame_address(0);
+    if (gc_in_progress || !sched_current_stack(&lo, &hi) || here < lo || here >= hi) return false;
+    gc_in_progress = true;
+    gc_collect_from(hi);
+    gc_in_progress = false;
+    gc_in_form_count++;
+    return true;
+}
+
 /* How much must still be claimable for the next top-level form to be given a
- * clear run at it. The reserve has to cover the *largest* ordinary form, not
- * the average one, because if the estimate is wrong there is no safe point
- * inside a form to collect at.
+ * clear run at it. Written when there was no safe point inside a form, so the
+ * reserve had to cover the *largest* ordinary form; since 37.3a a form that
+ * runs short collects in place instead, and this reserve only makes that
+ * rarer and cheaper (a collection between forms needs no stack scan).
  *
  * Per tier, and that is the whole point rather than a detail. The tiers are
  * not interchangeable: a string of 32 characters or more can only ever come
@@ -1187,6 +1321,16 @@ static lisp_val_t *prim_string_length(lisp_val_t *args, lisp_val_t *env) {
     lisp_val_t *a = lisp_list_ref(args, 0);
     if (!a || a->type != LISP_STRING) return make_int(0);
     return make_int(utf8_count(a->u.str, (long)strlen(a->u.str)));
+}
+
+/* (gc-stats) -> (collections-inside-a-form free-nodes): 37.3a's
+ * collector, made visible -- how often a form ran a pool dry and was
+ * rescued, and how much of the node pool is free right now. */
+static lisp_val_t *prim_gc_stats(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    long free_nodes = (long)(NODE_POOL_SIZE - node_pool_idx) + (long)gc_free_nodes();
+    lisp_val_t *tail = make_pair(make_int(free_nodes), &nil_val);
+    return make_pair(make_int((long)gc_in_form_count), tail);
 }
 
 static lisp_val_t *prim_string_bytes(lisp_val_t *args, lisp_val_t *env) {
@@ -3225,6 +3369,7 @@ void lisp_init(void) {
     env_set(&global_env, "string-length", make_prim(prim_string_length));
     env_set(&global_env, "substring", make_prim(prim_substring));
     env_set(&global_env, "string-bytes", make_prim(prim_string_bytes));
+    env_set(&global_env, "gc-stats", make_prim(prim_gc_stats));
     env_set(&global_env, "string->number", make_prim(prim_string_to_number));
     env_set(&global_env, "number->string", make_prim(prim_number_to_string));
     env_set(&global_env, "string=?", make_prim(prim_string_eq));
@@ -4163,10 +4308,10 @@ tail_call:
  * comment) reuses this same call instead of recursing for the tail call
  * itself, so eval_depth only reflects genuine nesting, never the length of
  * a tail-recursive loop. That loop can still run forever in wall-clock
- * terms -- see the Ctrl-C poll below, and node_pool/string_pool exhaustion,
- * which is what bounds a single such command even with the S3 collector in
- * place (see gc_collect()'s own comment for exactly why: there is no safe
- * point *inside* one still-executing top-level form to collect at). */
+ * terms -- see the Ctrl-C poll below. Since 37.3a pool exhaustion no
+ * longer bounds it: a form that runs a pool dry is collected in place, with
+ * its stack as roots (gc_collect_in_form()); only what it keeps alive is
+ * bounded. */
 lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     /* An exhausted node pool is not survivable by carrying on. alloc_node()
      * clamps to its last slot when it runs out, so every further allocation

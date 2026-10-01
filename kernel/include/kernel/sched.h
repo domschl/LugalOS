@@ -161,6 +161,14 @@ uint32_t sched_stack_size(int pid);
  * hardware for as long as it takes someone to notice two equal numbers. */
 bool sched_stack_full(int pid);
 
+/* 37.3a: the bounds [lo, hi) of the stack the calling code is running on --
+ * the current task's own kernel stack, or the linker's boot stack for the
+ * boot task (and before the scheduler exists) on hart 0. False where it is
+ * not known (a secondary hart's boot/idle stack). For Lisp's conservative
+ * collector (user/lisp/lisp.c), which treats every word on that stack that
+ * looks like a node pointer as a root. */
+bool sched_current_stack(uintptr_t *lo, uintptr_t *hi);
+
 void sched_yield(void);
 
 /* Marks the calling task DEAD, frees its stack, and yields permanently.
