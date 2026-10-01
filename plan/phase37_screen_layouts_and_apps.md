@@ -663,22 +663,94 @@ phase.
   an empty dark square, both kings' bodies and rims, and the frame -- a
   runner test on every target. QEMU suite 390/390; `test_rp2350` 25/25.
 
-### 37.5 — The writer, and `e`'s viewport
+### 37.5 — Editing: a clipboard for every text input, and `e` as editor and writer *(reworked with the owner, 2026-10-01)*
 
-Phase 36 §4.8, which is phase 36's 36.12, plus `e`'s viewport and flicker
-fix and PgUp/PgDn (deferred there), built on `console_size()` and the UTF-8
-helpers.
+The owner's review before starting: `e` has only the basics (movement,
+insert, delete; save, save-as, open, insert-file and evaluate already
+exist), and editing needs **search/replace** and **select / cut / copy /
+paste** -- the latter **for every text input**, the way cursor movement
+already is. Settled with the owner, 2026-10-01:
 
-`e` fills the whole text tile (owner, 37.1), sized by `console_size()`.
+* **Two key families, one command set.** The Emacs keys (Ctrl-Space mark,
+  Ctrl-W cut, Alt-W copy, Ctrl-Y paste, Ctrl-K kill to the clipboard,
+  Ctrl-_ undo, Ctrl-S/Ctrl-R search) and a **unified clipboard on Super**
+  (Super+C/X/V, Super+Z undo, Super+F/G find). Both map to the same internal
+  commands. Super cannot cross the serial line (the host's terminal keeps
+  Cmd for itself), which is why the Emacs keys stay first-class.
+* **Super is sent as CSI-u** (`ESC [ 99 ; 9 u` for Super+c: the code
+  point, then 1 + the modifier bits, Super = 8) -- the form kitty, foot and
+  xterm use. Alt is an ESC prefix, Shift/Ctrl with a navigation key xterm's
+  `ESC [ 1 ; m X`, Ctrl-Space NUL: the same bytes a host terminal sends, so
+  editing over serial and on the panel is one protocol.
+* **The writer is `e` in text mode** (by file extension: `.txt`, `.md`):
+  soft wrap, no line numbers, paragraphs saved as single lines. One editor,
+  so the writer gets the viewport, selection, search and undo for free.
+* **Undo** belongs to 37.5b, bounded; **the clipboard** holds up to 8 KB.
+  Both are allocated on first use.
+* **Resizable splits:** the text tile in three widths -- 38 columns (canvas
+  469 px, today's `split-wide`, the one the chess board needs), 48 (both
+  ~385 px, today's `split-half`) and 64 (canvas 261 px, new) -- cycled with
+  **Super+[ and Super+]**, caught before any program sees them (the first,
+  fixed piece of the tiling control deferred in §6; not Super+Left/Right,
+  which are line start/end on the Mac). Lisp gains `'split-narrow`.
+* **Editing Lisp beside its canvas:** `e` runs in a split, evaluates the
+  buffer **and stays** (result or error on its status line), and redraws
+  through the program's redraw function when the canvas is lost. In the 38-
+  and 48-column tiles code lines scroll sideways rather than wrap.
 
-**Done when:** a text of several pages **with umlauts typed by compose** is
-written on the board from the keyboard, saved to `/sd0`, the board is
-power-cycled, and the file reopens intact; the same file opened on a PC shows
-paragraphs as single lines with no inserted line breaks, and the umlauts
-correct; saving while the card is removed reports an error and keeps the
-document in memory; the QEMU tests for wrap/cursor and atomic save pass;
-`e` scrolls a file longer than the screen without repainting it line by
-line.
+### 37.5a — Keys, the clipboard, and selection in every text input
+
+1. **Keyboard** (`drivers/usbkbd.c`): Alt as an ESC prefix, Shift and Ctrl
+   with arrows/Home/End/PgUp/PgDn (`ESC [ 1 ; m X` / `ESC [ n ; m ~`),
+   Super as CSI-u, Ctrl-Space as NUL. Super+[ and Super+] are taken here and
+   cycle the split's width (through the console's screen).
+2. **One key-sequence parser** for all text inputs, replacing the line
+   editor's ESC-then-two-bytes handling.
+3. **Every text input on the shared line editor:** `ed`'s and the `lisp`
+   REPL's readers and `e`'s prompts (file names, search) move onto it, so
+   all of them get UTF-8, history where it fits, and the clipboard.
+4. **The clipboard** in the kernel: up to 8 KB, allocated on first use;
+   `/dev/clipboard` (like Plan 9's `/dev/snarf`: `cat`, Lisp files and 9P
+   clients get it for free) and `(clipboard)` / `(clipboard-set s)`.
+5. **Selection in the line editor:** Shift+movement or Ctrl-Space then
+   movement, shown in reverse video; cut/copy/paste in both key families;
+   Ctrl-K kills into the clipboard. Word movement (Alt-B/F, Ctrl-arrows).
+6. **The split's third width and full-width text** (above): the text
+   shadow keeps every row at the full width, so narrowing and widening the
+   text tile loses nothing that was written wider.
+
+**Done when:** on the panel, a word selected with Shift+arrows in the shell
+is copied with Super+C and pasted with Super+V into `ed`, and the same
+through the Emacs keys over the serial line; `cat /dev/clipboard` shows it;
+Super+[ / ] cycle a Lisp demo's split through three widths, the demo
+redrawing each time, and the text tile's earlier output intact after a
+round trip. QEMU tests for the key parser (every sequence form), the
+clipboard's file and limit, and selection editing.
+
+### 37.5b — The editor: viewport, search, undo, the canvas beside it, and text mode
+
+1. **A viewport:** `e` fills its tile (`console_size()`), scrolls instead
+   of repainting, PgUp/PgDn, sideways scrolling for long code lines.
+2. **UTF-8 editing** with 37.2's helpers.
+3. **37.5a's selection and clipboard across lines.**
+4. **Search and replace:** incremental search (Ctrl-S/Ctrl-R, Super+F/G),
+   replace with confirm-each or all.
+5. **Undo,** bounded (Ctrl-_ / Super+Z).
+6. **Evaluate and stay,** with the canvas beside it and redraws on damage.
+7. **Text mode -- the writer:** soft wrap, no line numbers, paragraphs as
+   single lines on disk; chosen by extension.
+
+**Done when:** (the writer, from phase 36's 36.12) a text of several pages
+**with umlauts typed by compose** is written on the board from the
+keyboard, saved to `/sd0`, the board is power-cycled, and the file reopens
+intact; the same file opened on a PC shows paragraphs as single lines with
+no inserted line breaks, and the umlauts correct; saving while the card is
+removed reports an error and keeps the document in memory; the QEMU tests
+for wrap/cursor and atomic save pass. **And** (the editor) `e` scrolls a
+file longer than its tile without repainting it line by line; a Lisp
+graphics program is edited, evaluated and re-evaluated in a split without
+leaving `e`; search, replace, cut/paste across lines and undo work in both
+key families.
 
 ### 37.6 — Documents
 
