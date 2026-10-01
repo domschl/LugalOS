@@ -144,6 +144,11 @@ static int g_prev_target_line = 1;
 
 /* Same whole-write rule as redraw_line() above, and for the same reason. */
 static void redraw_box(const char *filename, const char *buf, int len, int pos, const char *status_msg) {
+    /* 37.1: the status bar names the file. Every redraw, because Ctrl-X
+     * Ctrl-F and Ctrl-W change it; an unchanged title costs a strcmp. */
+    char title[80];
+    ksnprintf(title, sizeof(title), "e: %s", filename);
+    console_set_title(title);
     console_lock();
     console_sync();
     console_puts("\033[?25l"); // Hide cursor during box redraw

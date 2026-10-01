@@ -32,15 +32,27 @@ void console_unlock(void) {
     ylock_release(&g_console_lock);
 }
 
-static void (*g_flush_hook)(void);
+static const console_screen_t *g_screen;
 
-void console_set_flush_hook(void (*fn)(void)) {
-    g_flush_hook = fn;
+void console_set_screen(const console_screen_t *screen) {
+    g_screen = screen;
+}
+
+static void screen_flush(void) {
+    if (g_screen && g_screen->flush) g_screen->flush();
 }
 
 void console_flush(void) {
     uart_flush();
-    if (g_flush_hook) g_flush_hook();
+    screen_flush();
+}
+
+bool console_size(unsigned *cols, unsigned *rows) {
+    return g_screen && g_screen->size && g_screen->size(cols, rows);
+}
+
+void console_set_title(const char *title) {
+    if (g_screen && g_screen->set_title) g_screen->set_title(title);
 }
 
 void console_bind(console_putc_fn putc) {
@@ -333,7 +345,7 @@ static void console_pump(void) {
 bool console_has_char(void) {
     /* A reader is about to look for input: whatever was echoed must be on
      * the screen first (uart_getc() flushes its own batch the same way). */
-    if (g_flush_hook) g_flush_hook();
+    screen_flush();
     console_pump();
     uintptr_t f = irq_save();
     bool queued = (g_pb_head != g_pb_tail);
@@ -342,13 +354,17 @@ bool console_has_char(void) {
 }
 
 char console_getc(void) {
-    if (g_flush_hook) g_flush_hook();   /* see console_has_char() */
     /* Every device read goes through the pump, under g_input_lock. This used
      * to fall through to a bare uart_getc() when nothing was queued -- a
      * second, unlocked reader, and the half of the race described at
      * g_input_lock that took the byte out from under the pump. Polling with
-     * a yield is what uart_getc() does internally on every target anyway. */
+     * a yield is what uart_getc() does internally on every target anyway.
+     *
+     * The screen is flushed on every turn, not only on the way in (see
+     * console_has_char()): an empty flush is one comparison, and the turns
+     * of a wait are when the status bar's clock gets to move (37.1). */
     for (;;) {
+        screen_flush();
         console_pump();
         int c = pushback_get();
         if (c >= 0) return (char)c;

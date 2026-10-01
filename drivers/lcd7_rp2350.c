@@ -60,10 +60,14 @@
  */
 
 #include "drivers/lcd7.h"
+
+#include <string.h>
+
 #include "drivers/fbtext.h"
 #include "drivers/font8x16.h"
 #include "drivers/uart.h"
 #include "drivers/usb_cdc.h"
+#include "drivers/screen.h"
 #include "drivers/vtterm.h"
 #include "drivers/driver_task.h"
 #include "drivers/lcdterm_attr.h"
@@ -310,8 +314,6 @@ _Static_assert(PIX_ORG + sizeof(k_pixel_prog) / 2u <= 32u, "lcd7: PIO2 has 32 in
 #define FB_BYTES             (FB_WORDS * 4u)
 #define FB_PAGES             ((FB_BYTES + 4095u) / 4096u)
 _Static_assert(LCD_H_ACTIVE % 32u == 0, "lcd7: a line must be whole words");
-_Static_assert(FB_PAGES * 4096u - FB_BYTES >= sizeof(vtterm_t),
-               "lcd7: the terminal's state lives in the framebuffer's spare tail");
 
 static uint16_t *g_table;         /* one heap page, never freed while the panel runs */
 static uint32_t *g_fb;            /* FB_PAGES heap pages, likewise */
@@ -451,35 +453,46 @@ int lcd7_test_pattern(const char *name) {
 _Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
                "lcd7: the text grid must tile the panel exactly");
 
+/* 37.1: the screen's state -- the status bar, the terminal, and the cell
+ * shadow (100 x 29 x 2 bytes) -- in its own 8 KB, 8 KB-aligned block, which
+ * the lcdterm domain is granted as one more naturally aligned region. The
+ * framebuffer's 1 152-byte spare tail, where 36.6a kept the terminal, is too
+ * small for a shadow. Five regions in all (stack, text, framebuffer as two,
+ * this), which is exactly what a domain may have (kernel/mem_domain.h). */
+#define STATE_PAGES          2u
+#define STATE_BYTES          (STATE_PAGES * 4096u)
+_Static_assert(SCREEN_BYTES(TEXT_COLS, TEXT_ROWS) <= STATE_BYTES,
+               "lcd7: the screen's state and its shadow must fit their block");
+
 static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
     for (unsigned col = 0; *s && col < t->cols; col++, s++) fbtext_putc(t, col, row, *s, inverse);
 }
 
 /* --- The screen as a terminal (36.6) ----------------------------------------
  *
- * One vtterm over the whole 100 x 30 grid. Two writers feed it, the console
- * stream (lcd7_console_putc) and the kernel log's `lcd` sink
- * (lcd7_screen_putc), and both run under console_lock(), so the emulator
- * never sees two at once. */
+ * Two writers feed it, the console stream (lcd7_console_putc) and the kernel
+ * log's `lcd` sink (lcd7_screen_putc), and both run under console_lock(), so
+ * the emulator never sees two at once. Since 37.1 it is a screen_t
+ * (drivers/screen.h): a status bar on the top row and the terminal below. */
 /* --- 36.6a: the terminal as the U-mode `lcdterm` task ---------------------
  *
- * The emulator's state lives in the framebuffer's last page, in the 1 152
- * bytes the 48 000-byte buffer leaves spare -- inside the region the task's
- * domain grants anyway, so it costs no RAM and no extra PMP region. The task's
- * domain is exactly: its stack, .lcdtermtext (code and font, R/X), and the
- * framebuffer as a 32 KB and a 16 KB naturally aligned piece. No MMIO at all:
- * drawing is plain stores to RAM, and PIO/DMA stay kernel-owned.
+ * The task's domain is exactly: its stack, .lcdtermtext (code and font,
+ * R/X), the framebuffer as a 32 KB and a 16 KB naturally aligned piece, and
+ * the screen's 8 KB state block (37.1). No MMIO at all: drawing is plain
+ * stores to RAM, and PIO/DMA stay kernel-owned.
  *
  * Writers batch into g_batch and hand it over in one chan_call(); the batch
  * is flushed at every console_flush() and before the console waits for input
- * (kernel/console.c's flush hook), so an echoed keystroke appears at once.
+ * (kernel/console.c's screen hooks), so an echoed keystroke appears at once.
  * Until the task is alive -- boot, or if it never starts -- the facade draws
  * directly, the fallback every driver task here has. */
-static vtterm_t *g_vtp;             /* in the framebuffer's tail */
+static screen_t *g_scr;             /* STATE_PAGES heap pages */
 static bool      g_vt_ready;
 
 #define LCDTERM_BATCH     256u
-#define LCDTERM_OP_WRITE  'W'
+#define LCDTERM_OP_WRITE  'W'       /* terminal output */
+#define LCDTERM_OP_TITLE  'T'       /* 37.1: the status bar's title */
+#define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
 static uint8_t          g_lcdterm_req[1u + LCDTERM_BATCH];
@@ -519,22 +532,26 @@ __attribute__((always_inline)) static inline long lcdterm_usys_serve_reply(const
  * in a volatile stack array, not a literal: a literal is .rodata, outside
  * this domain -- the fault drivers/tm1638_rp2350.c documents. */
 LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
-    vtterm_t *vt = (vtterm_t *)arg;
+    screen_t *scr = (screen_t *)arg;
     volatile char name[8];
     name[0] = 'l'; name[1] = 'c'; name[2] = 'd'; name[3] = 't';
     name[4] = 'e'; name[5] = 'r'; name[6] = 'm'; name[7] = '\0';
     for (;;) {
         uint8_t req[1u + LCDTERM_BATCH];
         long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
-        if (n > 1 && req[0] == LCDTERM_OP_WRITE) {
-            for (long i = 1; i < n; i++) vtterm_putc(vt, (char)req[i]);
+        if (n >= 1) {
+            const char *p = (const char *)req + 1;
+            uint32_t len = (uint32_t)(n - 1);
+            if (req[0] == LCDTERM_OP_WRITE) screen_write(scr, p, len);
+            else if (req[0] == LCDTERM_OP_TITLE) screen_set_title(scr, p, len);
+            else if (req[0] == LCDTERM_OP_RIGHT) screen_set_right(scr, p, len);
         }
         lcdterm_usys_serve_reply((const char *)name, 0, 0);
     }
 }
 
-/* 2 KB: vtterm_putc's deepest chain is a handful of frames, plus the 257-byte
- * request buffer. */
+/* 2 KB: screen_write's deepest chain is a handful of frames, plus the
+ * 257-byte request buffer. */
 static uint8_t g_lcdterm_ustack[2048] __attribute__((aligned(2048)))
                                        __attribute__((section(".ustacks2048")));
 
@@ -549,10 +566,11 @@ static void lcdterm_task_body(void *arg) {
         .text_region  = board_lcdterm_text_region,
         .stack_base   = (uintptr_t)g_lcdterm_ustack,
         .stack_size   = sizeof(g_lcdterm_ustack),
-        .regions      = { { fb,           32768u, MEM_R | MEM_W },
-                          { fb + 32768u,  16384u, MEM_R | MEM_W } },
-        .region_count = 2,
-        .arg          = (uintptr_t)g_vtp,
+        .regions      = { { fb,                   32768u,      MEM_R | MEM_W },
+                          { fb + 32768u,          16384u,      MEM_R | MEM_W },
+                          { (uintptr_t)g_scr,     STATE_BYTES, MEM_R | MEM_W } },
+        .region_count = 3,
+        .arg          = (uintptr_t)g_scr,
     };
     (void)driver_umode_enter(&spec);
 }
@@ -577,30 +595,35 @@ int lcd7_task_start(void) {
 
 uint32_t lcd7_task_call_count(void) { return g_lcdterm_calls; }
 
+/* One request to the task: op, then payload. False if the task is not
+ * there to take it (it died, or never started), and the caller draws. */
+static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
+    if (!lcdterm_alive()) return false;
+    uint8_t req[1u + LCDTERM_BATCH];
+    if (len > LCDTERM_BATCH) len = LCDTERM_BATCH;
+    req[0] = op;
+    for (uint32_t i = 0; i < len; i++) req[1u + i] = (uint8_t)p[i];
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (chan_call(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
+            g_lcdterm_calls++;
+            return true;
+        }
+        sched_yield();
+    }
+    return false;
+}
+
 /* Called with the batch full, from console_flush(), and before input waits.
  * Takes console_lock itself (re-entrant) because writers append under it. */
 void lcd7_screen_flush(void) {
     if (g_batch_len == 0) return;
     console_lock();
     if (g_batch_len > 0) {
-        uint8_t req[1u + LCDTERM_BATCH];
-        req[0] = LCDTERM_OP_WRITE;
-        for (uint32_t i = 0; i < g_batch_len; i++) req[1u + i] = g_batch[i];
         uint32_t len = g_batch_len;
         g_batch_len = 0;
-        bool sent = false;
-        if (lcdterm_alive()) {
-            for (int attempt = 0; attempt < 8 && !sent; attempt++) {
-                if (chan_call(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
-                    g_lcdterm_calls++;
-                    sent = true;
-                } else {
-                    sched_yield();
-                }
-            }
-        }
         /* The task died or never answered: draw it here rather than lose it. */
-        if (!sent) for (uint32_t i = 0; i < len; i++) vtterm_putc(g_vtp, (char)req[1u + i]);
+        if (!lcdterm_send(LCDTERM_OP_WRITE, (const char *)g_batch, len))
+            screen_write(g_scr, (const char *)g_batch, len);
     }
     console_unlock();
 }
@@ -608,11 +631,85 @@ void lcd7_screen_flush(void) {
 void lcd7_screen_putc(char c) {
     if (!g_vt_ready) return;
     if (!lcdterm_alive()) {
-        vtterm_putc(g_vtp, c);
+        screen_write(g_scr, &c, 1);
         return;
     }
     g_batch[g_batch_len++] = (uint8_t)c;
     if (g_batch_len == LCDTERM_BATCH) lcd7_screen_flush();
+}
+
+/* The batch goes first, so a title and the output before it arrive in the
+ * order they were made. */
+static void lcdterm_op(uint8_t op, const char *p, uint32_t len) {
+    console_lock();
+    lcd7_screen_flush();
+    if (!lcdterm_send(op, p, len)) {
+        if (op == LCDTERM_OP_TITLE) screen_set_title(g_scr, p, len);
+        else screen_set_right(g_scr, p, len);
+    }
+    console_unlock();
+}
+
+void lcd7_set_title(const char *title) {
+    if (!g_vt_ready) return;
+    uint32_t n = (uint32_t)strlen(title);
+    /* The task owns the state; reading it here is only a check that saves a
+     * round trip when the title is already showing. */
+    if (n < VT_TITLE_MAX && strcmp(g_scr->vt.title, title) == 0) return;
+    lcdterm_op(LCDTERM_OP_TITLE, title, n);
+}
+
+/* The status bar's clock: HH:MM once the clock has been set, nothing
+ * before (an unset clock shows the build's instant, which would be a lie).
+ * Checked at most once a second, from the console's flush -- which runs on
+ * every turn of an input wait and at every write, so the minute moves while
+ * the shell is idle and while a program prints. A program that computes for
+ * minutes in silence leaves it stale until it next writes or reads. */
+static uint64_t g_clock_next_us;
+static int16_t  g_clock_shown = -1;     /* hour * 60 + minute, or -1 */
+
+static void clock_tick(void) {
+    uint64_t now = time_get_us();
+    if (now < g_clock_next_us) return;
+    g_clock_next_us = now + 1000000u;
+    int16_t m = -1;
+    rtc_time_t tm;
+    if (time_is_set()) {
+        time_get_local(&tm);
+        m = (int16_t)(tm.hour * 60 + tm.min);
+    }
+    if (m == g_clock_shown) return;
+    g_clock_shown = m;
+    char buf[8];
+    uint32_t n = 0;
+    if (m >= 0) {
+        buf[0] = (char)('0' + tm.hour / 10); buf[1] = (char)('0' + tm.hour % 10); buf[2] = ':';
+        buf[3] = (char)('0' + tm.min / 10);  buf[4] = (char)('0' + tm.min % 10);
+        n = 5;
+    }
+    lcdterm_op(LCDTERM_OP_RIGHT, buf, n);
+}
+
+static void lcd7_console_flush(void) {
+    if (!g_vt_ready) return;
+    lcd7_screen_flush();
+    clock_tick();
+}
+
+static bool lcd7_console_size(unsigned *cols, unsigned *rows) {
+    if (!g_vt_ready) return false;
+    screen_text_size(g_scr, cols, rows);
+    return true;
+}
+
+static const console_screen_t g_console_screen = {
+    .flush     = lcd7_console_flush,
+    .size      = lcd7_console_size,
+    .set_title = lcd7_set_title,
+};
+
+const console_screen_t *lcd7_console_screen(void) {
+    return g_vt_ready ? &g_console_screen : NULL;
 }
 
 /* `lcdtermisotest`: the lcdterm domain, but a body that stores into kernel
@@ -636,6 +733,7 @@ static void lcdterm_intruder_task_body(void *arg) {
     mem_domain_add(&dom, tbase, tsize, MEM_R | MEM_X);
     mem_domain_add(&dom, (uintptr_t)g_fb, 32768u, MEM_R | MEM_W);
     mem_domain_add(&dom, (uintptr_t)g_fb + 32768u, 16384u, MEM_R | MEM_W);
+    mem_domain_add(&dom, (uintptr_t)g_scr, STATE_BYTES, MEM_R | MEM_W);
     if (task_set_domain(sched_current_pid(), &dom) != 0) {
         printk("[LcdtermIso] refusing to enter U-mode: memory domain not enforceable\n");
         return;
@@ -647,7 +745,7 @@ static void lcdterm_intruder_task_body(void *arg) {
 bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
     g_lcdterm_canary = 0xC0FFEE;
     g_lcdterm_intruder_entered = false;
-    if (!g_fb) return false;
+    if (!g_fb || !g_scr) return false;
     void *ustack = palloc_pages(1);
     if (!ustack) return false;
     int pid = task_create("lcdterm_intruder", lcdterm_intruder_task_body, ustack);
@@ -691,7 +789,7 @@ void lcd7_console_putc(char c) {
 }
 
 uint32_t lcd7_unknown_sequences(void) {
-    return g_vt_ready ? g_vtp->unknown : 0;
+    return g_vt_ready ? g_scr->vt.unknown : 0;
 }
 
 /* `lcd test text`: every glyph, a pangram, reversed video, and a cursor. */
@@ -859,11 +957,13 @@ int lcd7_init(void) {
     REG(PIO_CTRL) = 3u;                                          /* SM0 + SM1 */
     g_running = true;
 
-    fbtext_t text;
-    fbtext_init(&text, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
-    g_vtp = (vtterm_t *)(void *)((uint8_t *)g_fb + FB_BYTES);
-    vtterm_init(g_vtp, &text);
-    g_vt_ready = true;
+    g_scr = (screen_t *)palloc_pages_aligned(STATE_PAGES, STATE_PAGES);
+    if (!g_scr) {
+        printk("[LCD] no memory for the screen's state; the panel runs without a terminal\n");
+    } else {
+        screen_init(g_scr, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
+        g_vt_ready = true;
+    }
 
     lcd7_set_backlight(100);
     printk("[LCD] 800x480 panel running: PCLK %lu kHz, %u x %u total, %lu.%lu Hz, 1-bpp framebuffer at 0x%08lx\n",
@@ -883,9 +983,14 @@ void lcd7_report(void) {
         return;
     }
     uint32_t fdebug = REG(PIO_FDEBUG);
-    cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%; terminal at row %u col %u, "
-            "%lu unknown sequences swallowed\n", g_fg, g_bg, g_brightness,
-            (unsigned)g_vtp->row, (unsigned)g_vtp->col, (unsigned long)g_vtp->unknown);
+    cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%\n", g_fg, g_bg, g_brightness);
+    if (g_vt_ready) {
+        cprintf("lcd: text window %u x %u below the status bar, cursor at row %u col %u, "
+                "%lu unknown sequences swallowed; title \"%s\"\n",
+                (unsigned)g_scr->vt.text.cols, (unsigned)g_scr->vt.text.rows,
+                (unsigned)g_scr->vt.row, (unsigned)g_scr->vt.col,
+                (unsigned long)g_scr->vt.unknown, g_scr->vt.title);
+    }
     cprintf("lcd: terminal %s (task #%d, %lu batches served)\n",
             lcdterm_alive() ? "in the U-mode lcdterm task" : "drawn from the kernel",
             g_lcdterm_pid, (unsigned long)g_lcdterm_calls);
@@ -914,6 +1019,8 @@ unsigned lcd7_tee(void) { return LCD_TEE_OFF; }
 uint32_t lcd7_unknown_sequences(void) { return 0; }
 int lcd7_task_start(void) { return -1; }
 void lcd7_screen_flush(void) { }
+const console_screen_t *lcd7_console_screen(void) { return NULL; }
+void lcd7_set_title(const char *title) { (void)title; }
 uint32_t lcd7_task_call_count(void) { return 0; }
 bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (void)out_canary; (void)out_exited_clean; return false; }
 int lcd7_text_test(void) { return -1; }

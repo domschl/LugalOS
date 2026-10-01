@@ -41,27 +41,36 @@ LCDTERM_UTEXT void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned 
     t->rows = (uint16_t)rows;
 }
 
-LCDTERM_UTEXT const uint8_t *fbtext_glyph(uint32_t cp) {
-    if (cp >= FONT8X16_FIRST && cp <= FONT8X16_LAST) return font8x16_glyphs[cp - FONT8X16_FIRST];
-    unsigned lo = 0, hi = FONT8X16_EXTRA_COUNT;
+LCDTERM_UTEXT uint8_t fbtext_code(uint32_t cp) {
+    if ((cp >= 0x20u && cp <= 0x7eu) || (cp >= 0xa0u && cp <= 0xffu)) return (uint8_t)cp;
+    unsigned lo = 0, hi = FONT8X16_MAP_COUNT;
     while (lo < hi) {
         unsigned mid = (lo + hi) / 2u;
-        if (font8x16_extra_cp[mid] == cp) return font8x16_extra[mid];
-        if (font8x16_extra_cp[mid] < cp) lo = mid + 1u;
+        if (font8x16_map_cp[mid] == cp) return font8x16_map_code[mid];
+        if (font8x16_map_cp[mid] < cp) lo = mid + 1u;
         else hi = mid;
     }
-    return font8x16_glyphs['?' - FONT8X16_FIRST];
+    return FONT8X16_REPLACEMENT;
 }
 
-LCDTERM_UTEXT void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
+LCDTERM_UTEXT const uint8_t *fbtext_glyph(uint32_t cp) {
+    return font8x16_glyphs[fbtext_code(cp) - FONT8X16_FIRST];
+}
+
+LCDTERM_UTEXT void fbtext_putcode(fbtext_t *t, unsigned col, unsigned row, uint8_t code, bool inverse) {
     if (col >= t->cols || row >= t->rows) return;
-    const uint8_t *g = fbtext_glyph(cp);
+    if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
+    const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
     uint8_t x = inverse ? 0xffu : 0x00u;
     for (unsigned r = 0; r < FONT8X16_H; r++) {
         *p = (uint8_t)(g[r] ^ x);
         p += t->stride;
     }
+}
+
+LCDTERM_UTEXT void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
+    fbtext_putcode(t, col, row, fbtext_code(cp), inverse);
 }
 
 LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1) {
@@ -76,16 +85,9 @@ LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, u
 }
 
 LCDTERM_UTEXT void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, bool inverse) {
-    if (col >= t->cols || row >= t->rows) return;
     unsigned char uc = (unsigned char)c;
-    if (uc < FONT8X16_FIRST || uc > FONT8X16_LAST) uc = '?';
-    const uint8_t *g = font8x16_glyphs[uc - FONT8X16_FIRST];
-    uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
-    uint8_t x = inverse ? 0xffu : 0x00u;
-    for (unsigned r = 0; r < FONT8X16_H; r++) {
-        *p = (uint8_t)(g[r] ^ x);
-        p += t->stride;
-    }
+    if (uc < 0x20u || uc > 0x7eu) uc = '?';
+    fbtext_putcode(t, col, row, uc, inverse);
 }
 
 LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
@@ -112,15 +114,23 @@ LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
         return;
     }
     uint32_t line = FONT8X16_H * t->stride;
-    uint32_t bytes = (uint32_t)(t->rows - n) * line;
-    if (word_ok(t->fb, t->stride)) {
+    if (t->cols != t->stride) {
+        /* A window narrower than the buffer: move only its own bytes of
+         * each pixel row, top to bottom (the source is below). */
+        uint32_t px_rows = (uint32_t)(t->rows - n) * FONT8X16_H;
+        uint8_t *d = t->fb;
+        const uint8_t *src = t->fb + (uint32_t)n * line;
+        for (uint32_t y = 0; y < px_rows; y++, d += t->stride, src += t->stride)
+            bytes_move_down(d, src, t->cols);
+    } else if (word_ok(t->fb, t->stride)) {
         /* Upward, so the source is always ahead of the destination: a
          * forward copy is correct although the two overlap. */
+        uint32_t bytes = (uint32_t)(t->rows - n) * line;
         uint32_t *d = (uint32_t *)(void *)t->fb;
         const uint32_t *src = (const uint32_t *)(const void *)(t->fb + (uint32_t)n * line);
         for (uint32_t i = 0; i < bytes / 4u; i++) d[i] = src[i];
     } else {
-        bytes_move_down(t->fb, t->fb + (uint32_t)n * line, bytes);
+        bytes_move_down(t->fb, t->fb + (uint32_t)n * line, (uint32_t)(t->rows - n) * line);
     }
     fbtext_clear_rows(t, t->rows - n, n);
 }

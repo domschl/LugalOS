@@ -72,11 +72,35 @@ void console_unlock(void);
  * the boundary; single characters still batch. */
 void console_flush(void);
 
-/* 36.6a: one more thing to flush at a write boundary -- the RP2350-LCD-7's
- * screen terminal batches into its U-mode task. Called from console_flush()
- * and before the console waits for input, so an echoed keystroke is not left
- * sitting in a batch. One slot; NULL clears it. */
-void console_set_flush_hook(void (*fn)(void));
+/* What a console that is a *screen* adds to a byte stream -- the
+ * RP2350-LCD-7's, and nothing else today. One slot; NULL clears it, and then
+ * every call below answers as a plain serial line would.
+ *
+ *   flush      36.6a: the screen terminal batches into its U-mode task.
+ *              Called from console_flush(), and on every turn of an input
+ *              wait, so an echoed keystroke is not left in a batch -- and so
+ *              the screen gets a regular chance to update its status bar
+ *              (37.1) while nothing is being written.
+ *   size       37.1: the text window's size (it is smaller than the screen:
+ *              the status bar takes a row).
+ *   set_title  37.1: the status bar's title. */
+typedef struct {
+    void (*flush)(void);
+    bool (*size)(unsigned *cols, unsigned *rows);
+    void (*set_title)(const char *title);
+} console_screen_t;
+
+void console_set_screen(const console_screen_t *screen);
+
+/* 37.1, plan/phase37_screen_layouts_and_apps.md §2.4: how many columns and
+ * rows a program may use. False when the console cannot say (a serial line:
+ * the far end's size is not known here), and the caller keeps its default. */
+bool console_size(unsigned *cols, unsigned *rows);
+
+/* 37.1: what the screen's status bar names as the running program. A no-op
+ * where there is no screen, so callers need not ask. Nothing is written to
+ * the byte stream: a host terminal on the tee keeps its own title. */
+void console_set_title(const char *title);
 
 /* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
  * from. Each source is polled by the console pump, in registration order,

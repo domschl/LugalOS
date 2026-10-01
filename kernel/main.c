@@ -344,6 +344,7 @@ void kernel_main(void) {
     if (lcd7_init() == 0) {
         klog_sink_register("lcd", klog_lcd_sink);
         console_bind_device("lcd");
+        console_set_screen(lcd7_console_screen());   /* 37.1: size, title, flush */
     }
 #endif
 #endif
@@ -466,7 +467,7 @@ void kernel_main(void) {
 #if defined(CONFIG_LCD_PCLK_GPIO)
     /* 36.6a: the screen terminal moves into its own U-mode task. Until this
      * runs -- and if it fails -- the lcd facade draws from the kernel. */
-    if (lcd7_task_start() > 0) console_set_flush_hook(lcd7_screen_flush);
+    (void)lcd7_task_start();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     /* 36.8: the USB keyboard, as its own U-mode task over the engine. */

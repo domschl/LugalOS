@@ -1535,6 +1535,20 @@ whose faults are hardest to reproduce.
 `_inst_lo` is now `_xip_start`, spanning flash and RAM together exactly as
 `linker/rp2350.ld` already did for the same reason.
 
+## `lockselftest`'s log-burst case still flakes on rv64-smp (~1 in 8)
+
+Seen 2026-10-01 during 37.1: the full suite's RV64 SMP target failed
+`log burst: the producer never blocked, and the loss is reported`, and eight
+standalone `lockselftest` runs on `-smp 2` failed it once more. The 2026-09-30
+mitigation in `kernel/lock.c` (waiting up to 2 s for klogd instead of 200 ms)
+did not remove it, so "klogd not scheduled in time" is probably not the whole
+story. The check needs `klog_gaps() == gaps_before + 1`: a burst counted as
+**two** gaps, or a gap counted before `gaps_before` was read, would fail it
+just as well. Next step: print `klog_gaps() - gaps_before` and
+`klog_gap_bytes()` on failure, to see which. Single-hart targets have never
+shown it. 37.1's change (`console_getc()` calling the screen flush every turn)
+is a NULL check on this target, which has no screen.
+
 ## MQTT tests flake ~8% of runs: the broker is a one-shot listener
 
 **Now the dominant intermittent**, once the echo splice was fixed: 9 failures

@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: planned. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 and 37.1 done 2026-10-01, 37.2 next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -51,9 +51,9 @@ Glyph drawing on the 1-bpp screen is byte-aligned (8-pixel cells), so every
 tile boundary is a **column boundary** *(owner, 2026-10-01: char-based)*.
 Free ratios such as 0.618 are not offered; they would snap anyway.
 
-### 1.1 The status bar **[sign-off]**
+### 1.1 The status bar *(owner, 2026-10-01: yes)*
 
-**Recommended: one status bar, always present, in the top text row (16 px),
+**One status bar, always present, in the top text row (16 px),
 drawn inverted (white on black), owned by `lcdterm`.** This is the first
 window decoration on the way to the Mac look (phase 36 §7.1), and it costs
 one text row: the screen becomes **100 × 29** cells below the bar.
@@ -110,8 +110,8 @@ a 56-px square with a margin. Phase 36's plan had a 400 × 400 board in a
   normally or by a fault**, by the kernel and not by the program. A crashed
   program cannot leave the screen split.
 * `screen text` at the shell does it by hand.
-* **[sign-off]** Whether a key (for example Ctrl-Alt-Backspace style) forces
-  `text` from anywhere. Not needed while the shell always comes back.
+* **No key forces `text` from anywhere** *(owner, 2026-10-01)*: the shell
+  always comes back, and the restore rule above covers a crash.
 
 ---
 
@@ -286,7 +286,12 @@ more RAM or with PSRAM, changes `lcdterm` and not the applications:
 5. **Backing store is optional, never assumed.** With PSRAM, `lcdterm` can
    keep a copy and send fewer redraws. Applications still have to handle
    redraw, so nothing breaks either way.
-6. **Colour:** 0/non-zero today. A palette index or RGB565 tomorrow, mapped
+6. **A tiling-control API, later** *(owner, 2026-10-01: probably not in this
+   phase)*. Today only the foreground program requests a layout, through its
+   canvas calls. A general API (named tiles, which program owns which,
+   moving a client between tiles) is what turns tiles into a window manager,
+   and it is shaped by the first time two programs want the screen at once.
+7. **Colour:** 0/non-zero today. A palette index or RGB565 tomorrow, mapped
    by `lcdterm` to whatever the panel does (phase 36 §7 sketches 2-bpp text
    and PSRAM colour).
 
@@ -303,6 +308,9 @@ infrastructure.
 **Done when:** the owner has answered the **[sign-off]** items (the status
 bar §1.1, a force-`text` key §1.3), and this document records the answers.
 
+**Done, 2026-10-01.** The status bar: yes. A force-`text` key: no. A
+tiling-control API is noted for later (§6, item 6).
+
 ### 37.1 — Text tiles in `vtterm`
 
 The text window as a rectangle (phase 36 §4.3), the cell shadow and repaint
@@ -315,6 +323,52 @@ output, malformed UTF-8.
 **Done when:** `cat` of a UTF-8 file with German text and chess figurines
 shows correctly on the panel and on a UTF-8 host terminal through ACM0; the
 status bar shows the program's name; `vtselftest` covers the new cases.
+
+**Done, 2026-10-01.**
+
+* **`drivers/screen.c`** (new, portable): the status bar on the top row over
+  a `vtterm` window of 100 × 29. The bar is inverted: a space, the title,
+  and the indicators ending one cell short of the right edge (x = 799 is
+  under the bezel); a long title is cut, never the indicators.
+* **`vtterm.c`:** the cell shadow (`uint16_t` per cell: code + reverse bit)
+  kept by four wrappers that draw and record together, so the two cannot
+  disagree; `vtterm_repaint()`; **OSC 0/2 titles** with BEL or ST, other
+  OSCs swallowed (before this, an OSC printed its text onto the screen).
+* **`fbtext.c`:** lookup by internal glyph code; a scroll inside a window
+  narrower than the buffer moves only the window's own bytes.
+* **The glyph table** (`tools/gen_font_bdf.py`): codes 0x20–0xFF as §3.1
+  planned, but with every extra in 0x80–0x9F, so 0x00–0x1F stays unused:
+  box drawing (11), the twelve figurines (drawn in the generator; the white
+  ones are the black ones with the interior cleared), €, ‘ ’ “ ” …, •, █ and
+  ▒. 0x7F is the replacement glyph, a reversed `?`. C1 code points
+  (U+0080–009F) draw as the replacement, not as Latin-1.
+* **State:** the screen, its terminal and the shadow live in their own
+  8 KB, 8 KB-aligned block, the lcdterm domain's fifth region (the most a
+  domain may have). The framebuffer's spare tail, which held the terminal
+  since 36.6a, was too small. Two heap pages: 52 free at idle against 54.
+* **The kernel side:** `console_screen_t` (flush, size, title) replaces
+  36.6a's flush hook; `console_size()` and `console_set_title()` are
+  portable and answer "no screen" elsewhere. The channel to `lcdterm` gains
+  title and indicator operations. Titles: `lsh` at the prompt, the file
+  name for `exec`, `Chess`, `e: <file>`. The clock (HH:MM, only once the
+  time is set) is checked once a second from the console flush, which now
+  runs on every turn of an input wait.
+* **Measured:** `lcdterm`'s U-mode section holds 7 524 of 8 192 bytes (the
+  font is 3.5 KB now); 37.3 grows it. Static RAM +8 bytes (the clock).
+* **Tests:** `vtselftest` 23/23 on QEMU, 8 of them new: Latin-1, figurines
+  and C1; repaint restores every pixel; OSC titles and their terminators;
+  a narrow window leaves the bytes beside it alone; the bar's layout,
+  truncation and full repaint. Full suite 375/376: the one failure is the
+  known log-burst flake on rv64-smp (`plan/open_issues.md`).
+* **On the board** (the owner, 2026-10-01): the bar shows the title and a
+  ticking clock; a UTF-8 file (German, French and Spanish letters, €, °,
+  the figurines, quotes, blocks, box lines, and characters outside the
+  font) displays correctly on the panel and arrives byte-identical at the
+  host through ACM0; `e` shows its file name; output scrolls under the
+  bar. The file went to the card over 9P, because **the line editor drops
+  bytes above 0x7F**: typing them is 37.2's.
+* **Owner's note for 37.5:** `e` should fill the whole text tile, not
+  draw a box sized by its content.
 
 ### 37.2 — Compose and UTF-8 aware editing
 
@@ -360,6 +414,8 @@ are the moves that change more than two squares); the PGN lands in
 Phase 36 §4.8, which is phase 36's 36.12, plus `e`'s viewport and flicker
 fix and PgUp/PgDn (deferred there), built on `console_size()` and the UTF-8
 helpers.
+
+`e` fills the whole text tile (owner, 37.1), sized by `console_size()`.
 
 **Done when:** a text of several pages **with umlauts typed by compose** is
 written on the board from the keyboard, saved to `/sd0`, the board is

@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "kernel/console.h"
+
 /* The RP2350-LCD-7's 800x480 RGB panel (ST7262), plan/phase36 36.3 onward.
  * Stubs everywhere else; the real body is built where the board file
  * declares CONFIG_LCD_PCLK_GPIO. */
@@ -51,6 +53,12 @@ uint32_t lcd7_unknown_sequences(void);
  * domain that must fault; returns whether the probe entered U-mode). */
 int lcd7_task_start(void);
 void lcd7_screen_flush(void);
+
+/* 37.1, plan/phase37_screen_layouts_and_apps.md: the screen's side of the
+ * console (kernel/console.h's console_screen_t): flush, the text window's
+ * size, and the status bar's title. NULL where there is no panel. */
+const console_screen_t *lcd7_console_screen(void);
+void lcd7_set_title(const char *title);
 uint32_t lcd7_task_call_count(void);
 bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 

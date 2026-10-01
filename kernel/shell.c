@@ -4118,6 +4118,8 @@ void shell_run(void) {
     klogd_start();
 
     while (1) {
+        /* 37.1: back at the prompt, the shell is what is running. */
+        console_set_title("lsh");
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
         if (idx == 0) continue;
         /* S3 (plan/phase13_lisp_engine_extensions.md): the Lisp engine's

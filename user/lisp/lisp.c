@@ -1418,6 +1418,7 @@ static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
  * `chess-run`/`chess-selftest` below `chess` itself. */
 static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
+    console_set_title("Chess");
     chess_console_run(); /* returns on 'quit' */
     return &true_val;
 }
@@ -1438,6 +1439,7 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
      * is cleared when the session ends, so it never leaks into the next. */
     g_search_cores = (int)arg_int(args, 0, 1);
     if (g_search_cores < 1) g_search_cores = 1;
+    console_set_title("Chess");
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
 #else
@@ -1875,6 +1877,10 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     char safe_path[128];
     const char *p = get_str_val(args->u.pair.car);
     strncpy_local(safe_path, p, 127); safe_path[127] = '\0';
+    /* 37.1: the status bar names the program, by its file name. */
+    const char *name = safe_path;
+    for (const char *q = safe_path; *q; q++) if (*q == '/') name = q + 1;
+    console_set_title(name);
     int res = elf_load_and_run(safe_path);
     return make_int(res);
 }
