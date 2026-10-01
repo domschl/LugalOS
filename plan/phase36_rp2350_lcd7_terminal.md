@@ -1,6 +1,6 @@
 # Phase 36 — A terminal you can sit in front of: the RP2350-LCD-7 persona
 
-**Status: in progress — 36.0 to 36.9 done 2026-09-30, 36.10 next. Written 2026-09-30, revised the same day**, from the board's
+**Status: done 2026-10-01 — 36.0 to 36.9 and 36.13. Lisp graphics, the chess board and the writer (36.10–36.12) moved to phase 37 (`plan/phase37_screen_layouts_and_apps.md`), owner's call 2026-10-01: they need a screen-layout design first. Written 2026-09-30, revised the same day**, from the board's
 schematic (`~/Source/gith/pico/datasheet/RP2350-Touch-LCD-7.pdf`), the ST7262
 and RP2350 datasheets in the same directory, and Waveshare's demo tree
 (`~/Source/gith/pico/RP2350-Touch-LCD-7-Demo`). Nothing in this document has
@@ -164,7 +164,10 @@ of the existing board files' pin comments.
 |---|---|---|---|
 | Panel DCLK | ST7262 datasheet §7.3.4: **23–27 MHz**, HBP/HFP 4–48, VBP/VFP 4–12, Th 808–896, Tv 488–504 | Demo: **16 MHz**, and porches of 32 lines vertically, which is outside the VBP/VFP maximum | The panel tolerates at least the demo's timing. That is one empirical point, and nobody knows where the edge is. 36.3 starts from the demo's timing (known to work) and moves toward the datasheet's typical values, measuring as it goes. |
 | Buzzer | Demo `bsp_buzzer.h`: GP41 | Schematic: GP41 = LCD_RST | The demo header is wrong or refers to another board revision. Ignore it. |
-| System clock | Demo: `set_cpu_clock(240)` for the LCD demo, `120 MHz` for PIO-USB | LugalOS: 150 MHz, fixed in `boot_header.S` | §3.3 |
+| System clock | Demo: `set_cpu_clock(240)` for the LCD demo, `120 MHz` for PIO-USB | LugalOS: 150 MHz, fixed in `boot_header.S` | §3.3 **Resolved (36.1):** 144 MHz from `CONFIG_CLK_SYS_HZ`. Bring-up also found clk_sys had been on the ring oscillator (~47 MHz) and clk_ref divided by 4 on every RP2350 persona. |
+| Panel porches, measured (36.3) | ST7262: VBP/VFP at most 12 | Running: 24 MHz DCLK, H 4/16/16, V 4/12/**16**, 56 Hz | The panel takes a front porch above the datasheet's maximum without complaint. 24 MHz, the datasheet's typical, is what ships. |
+| Panel width (36.4) | 800 visible columns | x = 799 is mostly under the bezel (only a glow shows) | Text is unaffected (the last glyph column is mostly blank); a frame or divider must not sit on x = 799. |
+| USB host port J7 (36.8) | Schematic: a plain host port with VBUS from the board's 5 V | Plugging a device in while running **browns the board out** (PC power and external 5 V alike); on battery it survives but the charger stops until a power-cycle | **Not hot-pluggable** (owner, 2026-09-30). Keyboards are attached before power-up; the boot log's `[CLK] last reset:` line tells a brown-out from a software reset. |
 
 Provenance rule for this phase, the same one `drivers/README.md` sets: **the
 schematic and the RP2350 datasheet are provenance, and the demo is a
@@ -535,6 +538,8 @@ the other end of J7. That is the one manual check in the phase, and 36.9
 defines it as a short script a human follows.
 
 ### 4.6 Lisp graphics: the existing `canvas-*` names, on a new screen
+
+*Carried into phase 37 (2026-10-01), which places the canvas in a layout tile; read with that plan.*
 
 Lisp already has canvas primitives: `canvas-fill`, `canvas-pixel`,
 `canvas-rect` and `canvas-text` (`user/lisp/lisp.c:3191`), built over the
@@ -1538,41 +1543,20 @@ in LugalOS, so the plan's "log in if auth is configured" had nothing to test.
 Static RAM +89 bytes on rp2350-terminal (the key queue and translator
 state, and perft's stop flag), +5 on rp2350 (the perft stop), +0 elsewhere.
 
-### 36.10 — Lisp graphics
+### 36.10 to 36.12 — moved to phase 37 *(owner's call, 2026-10-01)*
 
-§4.6: `canvas1.c`, the canvas calls on the `lcdterm` channel, the existing
-four `canvas-*` primitives bound on this persona, the five new ones, and
-`canvas-window`. QEMU tests for the canvas by framebuffer hash.
+Lisp graphics, the chess board and the writer were planned here as three
+consumers of one mechanism, the text-window rectangle of §4.3, each placing
+itself on the screen. Before starting them the owner asked how text and
+graphics should share the screen *as a policy*, not only as a mechanism, so
+that three applications do not invent three layouts. The answer is a small
+constrained tiling scheme (character-aligned layouts owned by the `lcdterm`
+task, redraw messages instead of backing store, a status bar, UTF-8 output
+with a compose key for input), and it is a design step of its own.
 
-**Done when:** a Lisp program typed on the board draws a labelled function
-plot (axes, a sine curve with `canvas-line`, text with `canvas-text`) in
-`split` mode while the REPL stays usable on the right; `(canvas-window
-'text)` restores the terminal intact from its shadow; the same program, minus
-anything the ST7735 cannot do, still runs on the `rp2350-chess` persona.
-
-### 36.11 — The chess board
-
-§4.7: the split layout, dithered dark squares, scaled and outlined pieces, and
-redraw on every move from either side.
-
-**Done when:** a full game against `(chess)` at a level that answers in a few
-seconds is played **from the keyboard, on the board, with no host
-attached**; the graphical board matches the ASCII board after every move
-(checked on at least one castling, one en-passant and one promotion, which
-are the moves that change more than two squares); the PGN lands in
-`/sd0/chess/`.
-
-### 36.12 — The writer
-
-§4.8. The first step is reading `e`'s implementation and recording the
-decision (new program or `e` mode) in this document.
-
-**Done when:** a text of several pages is written on the board from the
-keyboard, saved to `/sd0`, the board is power-cycled, and the file reopens
-intact; the same file opened on a PC shows paragraphs as single lines with no
-inserted line breaks; saving while the card is removed reports an error and
-keeps the document in memory; the QEMU tests for wrap/cursor and atomic save
-pass.
+**The milestones move to `plan/phase37_screen_layouts_and_apps.md`**
+unchanged in intent; their "done when" criteria carry over there.
+§4.6–§4.8 stay as written, as that phase's input.
 
 ### 36.13 — Documents
 
@@ -1584,6 +1568,32 @@ baseline for the new persona. The decision on the ACM0 tee (§4.4). This
 document's §1.5 updated with whatever the board contradicted. Third-party
 notices in the README for the two pieces of outside work the image carries:
 the Spleen font (BSD-2, 36.5) and Pico-PIO-USB's PIO programs (MIT, 36.7).
+
+**Done, 2026-10-01.**
+
+* **README:** the persona in "Working today" (as a terminal and a
+  stand-alone machine, with graphics, chess and the writer named as phase
+  37's) and in the preset table, with a paragraph on the RP2350B, 144 MHz,
+  UART0 on GP16/17 and the non-hot-pluggable J7. Test counts brought up to
+  date (376 QEMU, 25 hardware). Third-party notices for **Spleen** (BSD-2,
+  the font) and **Pico-PIO-USB** (MIT, the three PIO programs and the PRE
+  variant). `CMakePresets.json`'s description no longer says the panel and
+  keyboard are still to come.
+* **`plan/hardware_seams.md`:** `lcd7_rp2350.c` (with `vtterm.c` and
+  `fbtext.c`) under Console, the first console that is not a wire; a new
+  row for console *input* sources, the seam 36.9 extracted; a "How fast the
+  chip runs" row for `CONFIG_CLK_SYS_HZ`; `_lcdtermtext_start` and
+  `_kbdtext_start` among `rp2350.ld`'s per-board symbols. The canvas note
+  waits for phase 37, where the second canvas implementation is written.
+* **Sizecheck baseline:** `tools/sizereport-rp2350-terminal.json`, kept
+  current milestone by milestone since 36.0.
+* **The ACM0 tee stays**, defaulting to USB (ACM0) only, as 36.6 left it.
+  It costs nothing when no host has the port open, it is what lets
+  `tests/hw` see everything the screen shows, and a stand-alone machine
+  loses nothing by having it. `lcd tee uart|usb|off` remains for the
+  other cases.
+* **§1.5** gained what the board contradicted: the porches the panel
+  accepts, the bezel over x = 799, the clock tree's two older bugs, and J7.
 
 ---
 

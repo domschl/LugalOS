@@ -31,6 +31,7 @@ predate phase 27.
 | What time is it | `kernel/include/kernel/time.h`, `kernel/include/kernel/ticker.h` | `kernel/time.c`, `kernel/ticker.c`, same four-arm shape | One arm each. The P4 tick runs off the CLINT (E4). |
 | How memory maps | `arch/riscv/include/arch/vmm.h` | `arch/riscv/rv32_nommu/vmm.c`, `arch/riscv/rv64_mmu/vmm.c` | **Nothing.** `rv32_nommu/` was reused verbatim. |
 | How a task is isolated | `arch/riscv/include/arch/pmp.h`, `arch/riscv/include/arch/umode.h`, `kernel/include/kernel/mem_domain.h` | `arch/riscv/common/pmp_probe.c`, `umode.c`, `umode.S`, `mem_domain.c` | **Untouched.** The P4's PMP is a standard one. |
+| How fast the chip runs | `CONFIG_CLK_SYS_HZ`, a board-file fact (`arch/riscv/include/arch/rp2350_clocks.h`, default 150 MHz) | `boot_header.S` derives the PLL's FBDIV from it at assemble time, with the datasheet's limits as `.if` checks; every driver divider (UART, I2C, SPI, PWM, panel, PIO-USB) reads it. Phase 36.1, when `rp2350-terminal` needed 144 MHz; the other personas came out byte-identical | Nothing: RP2350 only. The P4 sets its clocks in its own bring-up (phase 34) |
 | Board facts the linker knows | the four scripts in `linker/` | `qemu-rv32.ld`, `qemu-rv64.ld`, `rp2350.ld`, `esp32p4.ld` | See §3 — this seam is newer than the others and phase 27 is what produced it. |
 
 ## 2. Device-class contracts (category D)
@@ -42,7 +43,8 @@ Already abstracted, and they held.
 |---|---|---|
 | Block device | `drivers/include/drivers/block.h` | `virtio_blk.c`, `spisd_rp2350.c`, `sdmmc_esp32p4.c`, `flashdisk.c`, `ramdisk.c`, `idstore_rp2350.c`, `virtio_blk_id.c` |
 | Network interface | `net/include/net/netif.h` (`net/netif.c`) | `virtio_net.c`, `enc28j60_rp2350.c`, `cyw43_rp2350.c`, `uart_net.c`, `loopback_net.c`, `emac_esp32p4.c` |
-| Console | `kernel/include/kernel/console.h` | `uart_16550.c`, `uart_rp2350.c`, `uart_esp32p4.c`, `usb_cdc.c`, `virtio_console.c` |
+| Console | `kernel/include/kernel/console.h` | `uart_16550.c`, `uart_rp2350.c`, `uart_esp32p4.c`, `usb_cdc.c`, `virtio_console.c`, and the first that is not a wire: `lcd7_rp2350.c` (the `lcd` device, a portable `vtterm.c` emulator over `fbtext.c` in the U-mode `lcdterm` task, phase 36) |
+| Console input sources | `kernel/include/kernel/console.h` (`console_input_register()`) | `uart_rp2350.c` and `usb_cdc.c` (via `kernel/board.c`), `usbkbd_rp2350.c` (the USB keyboard). Extracted at the third source, 36.9; the console pump polls the list and every source's Ctrl-C latches the same way |
 | Device registry (`/dev`) | `kernel/include/kernel/device.h` | one, `kernel/device.c` — the registry itself is the abstraction |
 | Channels / endpoints | `kernel/include/kernel/chan.h` | one, `kernel/chan.c` |
 
@@ -99,8 +101,10 @@ of G1 had them above and happened to resolve correctly, which is not the same
 as being correct.
 
 Per-board extras are legitimate and stay per-board: `rp2350.ld` alone defines
-`_blktext_start`, `_st7735text_start`, `_clocktext_start`, `_usbtext_start`
-(one `.utext` section per U-mode driver domain) and the `__scratch_x/y` and
+`_blktext_start`, `_st7735text_start`, `_clocktext_start`, `_usbtext_start`,
+`_lcdtermtext_start`, `_kbdtext_start` (one `.utext` section per U-mode driver
+domain; the last two are 8 KB and present only when their persona puts code
+in them) and the `__scratch_x/y` and
 `__ramfunc` pairs the RP2350 boot path needs.
 
 ## 4. Bus arbitration (category E)

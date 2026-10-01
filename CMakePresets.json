@@ -111,7 +111,7 @@
     {
       "name": "rp2350-terminal",
       "displayName": "RP2350B (Waveshare RP2350-LCD-7) \u2014 terminal / workstation persona",
-      "description": "36.0, plan/phase36_rp2350_lcd7_terminal.md. The Waveshare RP2350-LCD-7 (non-touch): an RP2350B with a 7-inch 800x480 RGB panel, 16 MB flash, a microSD socket, and a PIO-USB host port for a keyboard. The panel is the terminal screen and the keyboard its input, and the board is also a stand-alone machine for Lisp, chess and writing to the SD card. UART0 is on GP16/17 (header H7), NOT GP0/1: GP0 is the PSRAM chip select on this board. No user LED, so no heartbeat. The panel and keyboard arrive in later milestones; until then this is a USB-console node with an SD card.",
+      "description": "36.0, plan/phase36_rp2350_lcd7_terminal.md. The Waveshare RP2350-LCD-7 (non-touch): an RP2350B with a 7-inch 800x480 RGB panel, 16 MB flash, a microSD socket, and a PIO-USB host port for a keyboard. The panel is the terminal screen and the keyboard its input, and the board is also a stand-alone machine for Lisp, chess and writing to the SD card. UART0 is on GP16/17 (header H7), NOT GP0/1: GP0 is the PSRAM chip select on this board. No user LED, so no heartbeat. The keyboard goes on the PIO-USB port (J7) before power-up: that port is not hot-pluggable.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-terminal",
       "cacheVariables": {

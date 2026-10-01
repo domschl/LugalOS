@@ -17,9 +17,9 @@ LugalOS is early-stage. The section below reflects what's actually implemented t
 long-term architectural goal described in the rest of this document and in [`plan/`](plan/) — if
 a feature isn't listed here as working, treat it as roadmap, not present-tense fact.
 
-**Working today**, verified by the automated test suite (`tests/runner.py`, 359 tests on QEMU RV32
+**Working today**, verified by the automated test suite (`tests/runner.py`, 376 tests on QEMU RV32
 NOMMU, RV64 MMU and a two-hart RV64 SMP target) and by hardware-in-the-loop suites (`tests/hw/`,
-against real RP2350 silicon: 24 core tests, 15 more for the wired gateway, 6 over the radio, 3
+against real RP2350 silicon: 25 core tests, 15 more for the wired gateway, 6 over the radio, 3
 against a GPS-disciplined reference clock):
 - **Microkernel core**: preemptive scheduler with per-task kernel stacks; copy-always message
   channels as the IPC primitive; U-mode tasks with **hardware-enforced per-task memory domains** —
@@ -134,6 +134,17 @@ against a GPS-disciplined reference clock):
   through the same driver-task architecture as the default `rp2350-chess` persona, demonstrating that
   "which hardware this board has" is a per-persona table (`cmake/board-rp2350-clock.cmake`), not a
   fork of the kernel.
+- **A terminal you can sit in front of**: `rp2350-terminal` targets the Waveshare RP2350-LCD-7, an
+  RP2350B with a 7" 800×480 panel, and runs it as a **stand-alone machine with no host computer**. The
+  screen is a 1-bpp framebuffer (48 KB in SRAM) that DMA and a PIO program expand to the panel at zero
+  CPU cost; a VT-subset terminal emulator with the Spleen 8×16 font (100×30 cells) runs in its own
+  PMP-confined U-mode task. The keyboard is on a **USB host port driven entirely by PIO**: a host
+  engine on the second core sends SOFs and transactions from RAM, and a U-mode `kbd` task enumerates
+  through a USB hub, reaches low-speed devices behind it, and reads boot keyboards. Keyboard, UART and
+  USB-CDC are three registered console input sources, so the shell, both line editors, `ed`, `cc`, `e`
+  and Ctrl-C work from the keyboard exactly as from a serial line. Everything the screen shows is also
+  mirrored to ACM0. See [`plan/phase36_rp2350_lcd7_terminal.md`](plan/phase36_rp2350_lcd7_terminal.md);
+  graphics, the chess board and a writer come next, in phase 37.
 - **An IP stack of our own, over two different wires**: ARP, IPv4, ICMP, UDP and a server-side TCP,
   written here rather than bought in silicon — about 2,100 lines under `net/`, sized for an RP2350
   and developed against a packet-level QEMU peer before either piece of hardware existed. Two frame
@@ -338,16 +349,17 @@ cmake --list-presets
 ```
 Available configure presets:
 
-  "rv32-nommu"     - QEMU RV32 (NOMMU)
-  "rv64-mmu"       - QEMU RV64 (Sv39 MMU)
-  "rp2350-chess"   - RP2350 (Pico 2) — chess-computer persona
-  "rp2350-clock"   - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
-  "rp2350-gateway" - RP2350 (Pico 2) — network gateway persona
-  "rp2350-wifi"    - RP2350W (Pico 2 W) — wireless netif persona
-  "rp2350-sensor"  - RP2350W (Pico 2 W) — environment sensor persona
-  "esp32p4"        - ESP32-P4 (Waveshare ESP32-P4-NANO) — network-storage persona
-  "rv64-smp"       - QEMU RV64 (Sv39 MMU) — SMP, two harts
-  "rp2350-smp"     - RP2350 (Pico 2) — chess persona, both cores
+  "rv32-nommu"      - QEMU RV32 (NOMMU)
+  "rv64-mmu"        - QEMU RV64 (Sv39 MMU)
+  "rp2350-chess"    - RP2350 (Pico 2) — chess-computer persona
+  "rp2350-clock"    - RP2350 (Pico 2 / Pico 2 W) — Pico-Clock-Green persona
+  "rp2350-gateway"  - RP2350 (Pico 2) — network gateway persona
+  "rp2350-wifi"     - RP2350W (Pico 2 W) — wireless netif persona
+  "rp2350-sensor"   - RP2350W (Pico 2 W) — environment sensor persona
+  "rp2350-terminal" - RP2350B (Waveshare RP2350-LCD-7) — terminal / workstation persona
+  "esp32p4"         - ESP32-P4 (Waveshare ESP32-P4-NANO) — network-storage persona
+  "rv64-smp"        - QEMU RV64 (Sv39 MMU) — SMP, two harts
+  "rp2350-smp"      - RP2350 (Pico 2) — chess persona, both cores
 ```
 
 `esp32p4` is the **second silicon** this kernel runs on, and the reason the
@@ -402,6 +414,14 @@ cd tests/hw && uv run test_esp32p4.py                    # flash, then twenty-fi
 That board needs **two** USB cables doing different jobs, and neither can do
 the other's — see [`tests/hw/README.md`](tests/hw/README.md)'s ESP32-P4
 section, which is also where the flashing procedure lives.
+
+`rp2350-terminal` is the first persona on the **QFN-80 RP2350B** (GPIOs above 29, a PIO `GPIOBASE` of
+16, 16 MB of flash) and the first that runs its system clock at 144 MHz instead of 150, because the
+panel's pixel clock and the PIO-USB bit clock both divide it evenly (`CONFIG_CLK_SYS_HZ`, a board fact).
+UART0 is on GP16/17 (header H7), not GP0/1: on this board GP0 is the PSRAM's chip select and must never
+be driven. Plug the keyboard into the PIO-USB port (J7) **before** powering up: that port is not
+hot-pluggable on this board, since a device plugged in while it runs browns the board out. The
+stand-alone checklist is in [`tests/hw/README.md`](tests/hw/README.md).
 
 The two SMP presets are the only ones that set `CONFIG_ENABLE_SMP`. Every other persona boots on a
 single hart exactly as it did before phase 23, and the second-core code compiles out entirely — so a
@@ -1972,5 +1992,7 @@ LugalOS is licensed under the [MIT License](LICENSE).
 * **Raspberry Pi Picotool**: [`tools/picotool`](tools/picotool) is sourced from the [Raspberry Pi Picotool Repository](https://github.com/raspberrypi/picotool) (BSD 3-Clause License), used for RP2350 image analysis, partition table parsing, and binary validation.
 * **Igor Michalak's bare-metal-rp2350**: Reference bootloader headers, RISC-V XOSC/PLL clock tree setup, and dual-core reset patterns from [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350).
 * **hathach's TinyUSB**: The native RP2350 USB CDC ACM driver (`drivers/usb_cdc.c`) was implemented and debugged against DPRAM/endpoint-control register layouts and buffer-control write ordering cross-checked from [`rp2040_usb.c`/`usb_dpram.h`](https://github.com/hathach/tinyusb) (MIT License) — no TinyUSB code or runtime is linked into LugalOS; the USB device stack is written from scratch directly against the hardware.
+* **Frederic Cambus's Spleen**: the terminal font on `rp2350-terminal` (`drivers/font8x16.c`) is generated from [Spleen](https://github.com/fcambus/spleen) 8×16 (BSD 2-Clause License, copied in full to `tools/fonts/LICENSE.spleen`) by `tools/gen_font_bdf.py`.
+* **sekigon-gonnoc's Pico-PIO-USB**: the three PIO programs of the USB host port (`drivers/piousb_rp2350.c`: `usb_tx_fs`, `usb_nrzi_decoder`, `usb_edge_detector`, and the low-speed `PRE` variant of the transmitter's end) are from [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB) (MIT License, quoted in that file's header), embedded as assembled instruction words. The host engine, hub and keyboard code around them are written for this tree.
 * **Rui Ueyama's chibicc**: C11 compiler architecture adapted from [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
 * **Ken Thompson & Bell Labs**: Unix `ed` teletype editor and the Plan 9 Operating System universal namespace model.

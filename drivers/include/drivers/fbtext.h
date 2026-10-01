@@ -14,8 +14,8 @@
  * 1 bits are foreground.
  *
  * The cell grid starts at the buffer's top-left. A text window smaller than
- * the screen (36.6, 36.10's `canvas-window`) extends this rather than
- * replacing it. */
+ * the screen (phase 37's layouts, plan/phase37_screen_layouts_and_apps.md)
+ * extends this rather than replacing it. */
 
 typedef struct {
     uint8_t *fb;        /* the bitmap */

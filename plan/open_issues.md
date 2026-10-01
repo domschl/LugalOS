@@ -467,7 +467,7 @@ spare than the terminal board;
 (b) only the innermost part (movegen + attack lookup), which needs a profile
 to choose, since there is no sampling profiler on RP2350 yet;
 (c) accept it and benchmark only within one image.
-The decision belongs with 36.11 (chess on the LCD-7), or with any phase that
+The decision belongs with 37.4 (chess on the LCD-7, moved from 36.11), or with any phase that
 wants RP2350 perft numbers to mean something across builds.
 
 **Couple it with PSRAM (owner's suggestion, 2026-09-30).** The real
