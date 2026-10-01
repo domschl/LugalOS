@@ -59,6 +59,10 @@ void lcd7_screen_flush(void);
  * size, and the status bar's title. NULL where there is no panel. */
 const console_screen_t *lcd7_console_screen(void);
 void lcd7_set_title(const char *title);
+
+/* 37.1a: `lcd repaint` -- the whole screen again, the text from the cell
+ * shadow, so whatever a test pattern drew over it is gone. */
+void lcd7_repaint(void);
 uint32_t lcd7_task_call_count(void);
 bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 

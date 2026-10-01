@@ -22,12 +22,32 @@
  * task, which cannot execute kernel text (drivers/lcdterm_attr.h). The
  * compiler is kept from turning these loops back into library calls by
  * -fno-tree-loop-distribute-patterns, which the whole tree uses. */
-LCDTERM_UTEXT static void bytes_zero(uint8_t *p, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) p[i] = 0;
-}
-
 LCDTERM_UTEXT static void bytes_move_down(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) dst[i] = src[i];     /* dst < src */
+}
+
+/* One pixel row's run of bytes, a word at a time in the middle (37.1a): a
+ * text window inside frames starts a byte in from the buffer's edge, so its
+ * rows are never word-aligned as a whole, but their middles are. */
+LCDTERM_UTEXT static void row_zero(uint8_t *d, uint32_t n) {
+    while (n && ((uintptr_t)d & 3u)) { *d++ = 0; n--; }
+    uint32_t *dw = (uint32_t *)(void *)d;
+    for (uint32_t i = 0; i < n / 4u; i++) dw[i] = 0;
+    d += n & ~3u;
+    for (uint32_t i = 0; i < (n & 3u); i++) d[i] = 0;
+}
+
+LCDTERM_UTEXT static void row_copy(uint8_t *d, const uint8_t *s, uint32_t n) {     /* d < s */
+    while (n && ((uintptr_t)d & 3u)) { *d++ = *s++; n--; }
+    if (((uintptr_t)s & 3u) == 0) {
+        uint32_t *dw = (uint32_t *)(void *)d;
+        const uint32_t *sw = (const uint32_t *)(const void *)s;
+        for (uint32_t i = 0; i < n / 4u; i++) dw[i] = sw[i];
+        d += n & ~3u;
+        s += n & ~3u;
+        n &= 3u;
+    }
+    bytes_move_down(d, s, n);
 }
 
 LCDTERM_UTEXT static bool word_ok(const void *p, uint32_t stride) {
@@ -39,6 +59,8 @@ LCDTERM_UTEXT void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned 
     t->stride = stride;
     t->cols = (uint16_t)cols;
     t->rows = (uint16_t)rows;
+    t->xbyte = 0;
+    t->whole_rows = false;
 }
 
 LCDTERM_UTEXT uint8_t fbtext_code(uint32_t cp) {
@@ -79,7 +101,7 @@ LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, u
     if (col0 >= col1) return;
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col0;
     for (unsigned r = 0; r < FONT8X16_H; r++) {
-        bytes_zero(p, col1 - col0);
+        row_zero(p, col1 - col0);
         p += t->stride;
     }
 }
@@ -102,7 +124,7 @@ LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
         return;
     }
     for (uint32_t y = 0; y < px_rows; y++) {
-        bytes_zero(p, t->cols);
+        row_zero(p, t->cols);
         p += t->stride;
     }
 }
@@ -114,14 +136,20 @@ LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
         return;
     }
     uint32_t line = FONT8X16_H * t->stride;
-    if (t->cols != t->stride) {
+    uint8_t *row0 = t->fb - t->xbyte;
+    if (t->whole_rows && word_ok(row0, t->stride)) {
+        /* The rows beside the window move with it, unchanged (37.1a). */
+        uint32_t *d = (uint32_t *)(void *)row0;
+        const uint32_t *src = (const uint32_t *)(const void *)(row0 + (uint32_t)n * line);
+        for (uint32_t i = 0; i < (uint32_t)(t->rows - n) * line / 4u; i++) d[i] = src[i];
+    } else if (t->cols != t->stride) {
         /* A window narrower than the buffer: move only its own bytes of
          * each pixel row, top to bottom (the source is below). */
         uint32_t px_rows = (uint32_t)(t->rows - n) * FONT8X16_H;
         uint8_t *d = t->fb;
         const uint8_t *src = t->fb + (uint32_t)n * line;
         for (uint32_t y = 0; y < px_rows; y++, d += t->stride, src += t->stride)
-            bytes_move_down(d, src, t->cols);
+            row_copy(d, src, t->cols);
     } else if (word_ok(t->fb, t->stride)) {
         /* Upward, so the source is always ahead of the destination: a
          * forward copy is correct although the two overlap. */

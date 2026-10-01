@@ -453,15 +453,15 @@ int lcd7_test_pattern(const char *name) {
 _Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
                "lcd7: the text grid must tile the panel exactly");
 
-/* 37.1: the screen's state -- the status bar, the terminal, and the cell
- * shadow (100 x 29 x 2 bytes) -- in its own 8 KB, 8 KB-aligned block, which
+/* 37.1: the screen's state -- the chrome's, the terminal, and the cell
+ * shadow (98 x 27 x 2 bytes since 37.1a) -- in its own 8 KB, 8 KB-aligned block, which
  * the lcdterm domain is granted as one more naturally aligned region. The
  * framebuffer's 1 152-byte spare tail, where 36.6a kept the terminal, is too
  * small for a shadow. Five regions in all (stack, text, framebuffer as two,
  * this), which is exactly what a domain may have (kernel/mem_domain.h). */
 #define STATE_PAGES          2u
 #define STATE_BYTES          (STATE_PAGES * 4096u)
-_Static_assert(SCREEN_BYTES(TEXT_COLS, TEXT_ROWS) <= STATE_BYTES,
+_Static_assert(SCREEN_BYTES(LCD_H_ACTIVE, LCD_V_ACTIVE) <= STATE_BYTES,
                "lcd7: the screen's state and its shadow must fit their block");
 
 static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
@@ -493,6 +493,7 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_WRITE  'W'       /* terminal output */
 #define LCDTERM_OP_TITLE  'T'       /* 37.1: the status bar's title */
 #define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */
+#define LCDTERM_OP_REPAINT 'R'      /* 37.1a: everything, from the shadow */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
 static uint8_t          g_lcdterm_req[1u + LCDTERM_BATCH];
@@ -545,6 +546,7 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
             if (req[0] == LCDTERM_OP_WRITE) screen_write(scr, p, len);
             else if (req[0] == LCDTERM_OP_TITLE) screen_set_title(scr, p, len);
             else if (req[0] == LCDTERM_OP_RIGHT) screen_set_right(scr, p, len);
+            else if (req[0] == LCDTERM_OP_REPAINT) screen_repaint(scr);
         }
         lcdterm_usys_serve_reply((const char *)name, 0, 0);
     }
@@ -645,9 +647,14 @@ static void lcdterm_op(uint8_t op, const char *p, uint32_t len) {
     lcd7_screen_flush();
     if (!lcdterm_send(op, p, len)) {
         if (op == LCDTERM_OP_TITLE) screen_set_title(g_scr, p, len);
-        else screen_set_right(g_scr, p, len);
+        else if (op == LCDTERM_OP_RIGHT) screen_set_right(g_scr, p, len);
+        else screen_repaint(g_scr);
     }
     console_unlock();
+}
+
+void lcd7_repaint(void) {
+    if (g_vt_ready) lcdterm_op(LCDTERM_OP_REPAINT, "", 0);
 }
 
 void lcd7_set_title(const char *title) {
@@ -961,7 +968,7 @@ int lcd7_init(void) {
     if (!g_scr) {
         printk("[LCD] no memory for the screen's state; the panel runs without a terminal\n");
     } else {
-        screen_init(g_scr, g_fb, LCD_H_ACTIVE / 8u, TEXT_COLS, TEXT_ROWS);
+        screen_init(g_scr, g_fb, LCD_H_ACTIVE / 8u, LCD_H_ACTIVE, LCD_V_ACTIVE);
         g_vt_ready = true;
     }
 
@@ -985,7 +992,7 @@ void lcd7_report(void) {
     uint32_t fdebug = REG(PIO_FDEBUG);
     cprintf("lcd: running, fg 0x%04x bg 0x%04x, backlight %u%%\n", g_fg, g_bg, g_brightness);
     if (g_vt_ready) {
-        cprintf("lcd: text window %u x %u below the status bar, cursor at row %u col %u, "
+        cprintf("lcd: text window %u x %u in its tile, cursor at row %u col %u, "
                 "%lu unknown sequences swallowed; title \"%s\"\n",
                 (unsigned)g_scr->vt.text.cols, (unsigned)g_scr->vt.text.rows,
                 (unsigned)g_scr->vt.row, (unsigned)g_scr->vt.col,
@@ -1021,6 +1028,7 @@ int lcd7_task_start(void) { return -1; }
 void lcd7_screen_flush(void) { }
 const console_screen_t *lcd7_console_screen(void) { return NULL; }
 void lcd7_set_title(const char *title) { (void)title; }
+void lcd7_repaint(void) { }
 uint32_t lcd7_task_call_count(void) { return 0; }
 bool lcd7_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (void)out_canary; (void)out_exited_clean; return false; }
 int lcd7_text_test(void) { return -1; }

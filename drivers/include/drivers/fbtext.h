@@ -23,6 +23,14 @@ typedef struct {
     uint32_t stride;    /* bytes per pixel row (100 for 800 pixels) */
     uint16_t cols;      /* cells across */
     uint16_t rows;      /* cells down */
+    /* 37.1a: the window's first byte is this far into its pixel row, and
+     * whether a scroll may move its pixel rows whole -- true when whatever
+     * lies beside the window repeats every 16 rows (a frame and the grey
+     * desktop do), so moving it along changes nothing. A whole-row move is
+     * one word-wise copy; otherwise each pixel row moves on its own.
+     * fbtext_init() sets 0 and false. */
+    uint16_t xbyte;
+    bool     whole_rows;
 } fbtext_t;
 
 void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned cols, unsigned rows);

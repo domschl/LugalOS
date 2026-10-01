@@ -51,7 +51,12 @@ LCDTERM_UTEXT static void grid_scroll(vtterm_t *vt) {
     fbtext_scroll_up(&vt->text, 1);
     if (!vt->shadow) return;
     unsigned cols = vt->text.cols, cells = (unsigned)(vt->text.rows - 1u) * cols;
-    for (unsigned i = 0; i < cells; i++) vt->shadow[i] = vt->shadow[i + cols];
+    if (((uintptr_t)vt->shadow & 3u) == 0 && (cols & 1u) == 0) {
+        uint32_t *d = (uint32_t *)(void *)vt->shadow;          /* two cells a word */
+        for (unsigned i = 0; i < cells / 2u; i++) d[i] = d[i + cols / 2u];
+    } else {
+        for (unsigned i = 0; i < cells; i++) vt->shadow[i] = vt->shadow[i + cols];
+    }
     shadow_blank(vt, cells, cols);
 }
 
@@ -76,6 +81,8 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.stride = text->stride;
     vt->text.cols = text->cols;
     vt->text.rows = text->rows;
+    vt->text.xbyte = text->xbyte;
+    vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
     vt->col = vt->row = 0;
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
@@ -332,14 +339,18 @@ LCDTERM_UTEXT void vtterm_write(vtterm_t *vt, const char *s, uint32_t n) {
 /* The self-test's state lives on its stack, not in statics: a command run
  * rarely should cost every persona nothing while it is not running. */
 typedef struct {
-    uint8_t  *buf;          /* the grid: ST_COLS x (ST_ROWS + 1) cells of pixels */
+    uint8_t  *buf;          /* the grid, or the test screen: ST_BUF_BYTES */
     uint8_t  *copy;         /* as much again, to compare a repaint against */
     uint16_t *shadow;       /* ST_COLS x ST_ROWS cells */
-    screen_t *scr;          /* SCREEN_BYTES(ST_COLS, ST_ROWS + 1) */
+    screen_t *scr;          /* SCREEN_BYTES(ST_SW, ST_SH) */
     int fail, cases;
 } st_ctx_t;
 
-#define ST_GRID_BYTES (ST_COLS * (ST_ROWS + 1u) * FONT8X16_H)
+/* The screen test's screen: 192 x 110 px, which gives a 22 x 4 text window
+ * in its tile -- small, but every piece of the panel's chrome is there. */
+#define ST_SW 192u
+#define ST_SH 110u
+#define ST_BUF_BYTES (ST_SW / 8u * ST_SH)
 
 static bool cell_is(vtterm_t *vt, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     const uint8_t *g = fbtext_glyph(cp);
@@ -390,16 +401,16 @@ static void st_check(st_ctx_t *cx, const char *name, bool ok) {
 
 int vtterm_selftest(void) {
     /* ~4 KB, on demand rather than in .bss (kernel/scratch.h's rule). */
-    uint32_t shadow_off = 2u * ST_GRID_BYTES;
+    uint32_t shadow_off = 2u * ST_BUF_BYTES;
     uint32_t scr_off = (shadow_off + ST_COLS * ST_ROWS * 2u + 7u) & ~7u;
     scratch_t sc;
-    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_COLS, ST_ROWS + 1u))) {
+    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_SW, ST_SH))) {
         cprintf("VTTERM_SELFTEST_FAIL (no memory for the test grid)\n");
         return 1;
     }
     vtterm_t vt;
     uint8_t *base = (uint8_t *)sc.base;
-    st_ctx_t cx = { base, base + ST_GRID_BYTES, (uint16_t *)(void *)(base + shadow_off),
+    st_ctx_t cx = { base, base + ST_BUF_BYTES, (uint16_t *)(void *)(base + shadow_off),
                     (screen_t *)(void *)(base + scr_off), 0, 0 };
     cprintf("vtterm selftest (%ux%u grid):\n", ST_COLS, ST_ROWS);
 
@@ -504,36 +515,67 @@ int vtterm_selftest(void) {
     }
 
     {
-        /* The screen: a status bar over the terminal. Output scrolls below
-         * the bar and never into it; a title and the indicators are drawn in
-         * reverse, the indicators ending one cell short of the edge. */
+        /* 37.1a, the screen (plan §1.1): the menu bar, the desktop, the
+         * framed tile and its title bar, and the terminal inside it. Checked
+         * at the pixels the geometry in drivers/screen.h promises. */
         screen_t *scr = cx.scr;
-        screen_init(scr, cx.buf, ST_COLS, ST_COLS, ST_ROWS + 1u);
-        fbtext_t bar;
-        fbtext_init(&bar, cx.buf, ST_COLS, ST_COLS, 1);
-        bool initial = grid_cell_is(&bar, 1, 0, 'L', true) && grid_cell_is(&bar, 0, 0, ' ', true);
+        screen_init(scr, cx.buf, ST_SW / 8u, ST_SW, ST_SH);
+        const uint32_t stride = ST_SW / 8u;
+#define PX(x, y) ((cx.buf[(uint32_t)(y) * stride + (uint32_t)(x) / 8u] >> ((x) % 8u)) & 1u)
+        unsigned c, r;
+        screen_text_size(scr, &c, &r);
+        int x1 = 8 + 8 * 22 + 2, y1 = 40 + 16 * 4 + 1;        /* 186, 105 */
+        bool rule = true, menu_blank = true;
+        for (uint32_t b = 0; b < stride; b++) {
+            if (cx.buf[19u * stride + b] != 0xffu) rule = false;
+            if (cx.buf[1u * stride + b] != 0u) menu_blank = false;
+        }
+        bool geometry = c == 22 && r == 4 && scr->fx0 == 4 && scr->fy0 == 22 &&
+                        scr->fx1 == x1 && scr->fy1 == y1;
+        bool desktop = cx.buf[20u * stride] == 0xaau && cx.buf[21u * stride] == 0x55u &&
+                       PX(190, 60) == ((190 + 60) & 1u) && PX(0, 109) == ((0 + 109) & 1u);
+        bool frame = PX(4, 60) && !PX(5, 60) && !PX(7, 60) && PX(x1, 60) && !PX(x1 - 1, 60) &&
+                     PX(x1 + 1, 60) && PX(x1 + 1, 23) && PX(100, y1) && PX(100, y1 + 1) &&
+                     !PX(4, y1 + 1) && PX(5, y1 + 1);
+        /* Stripes on rows y0+3..y0+13 (odd offsets), white between; the
+         * title box is centred: "LugalOS" is 7 glyphs, a box 68 px wide. */
+        int bw = 8 * 7 + 12, bx = (4 + x1 + 1) / 2 - bw / 2;
+        bool stripes = PX(6, 22 + 3) && !PX(6, 22 + 4) && PX(6, 22 + 13) && !PX(6, 22 + 14) &&
+                       !PX(6, 22 + 1) && !PX(6, 22 + 15) && PX(6, 22 + 16) && PX(6, 22) &&
+                       !PX(5, 22 + 3) && PX(bx - 1, 22 + 3) && !PX(bx, 22 + 3) &&
+                       !PX(bx + bw - 1, 22 + 3) && PX(bx + bw, 22 + 3);
+        /* The title in bold from (bx + 6, y0 + 1): its glyph rows 1..14,
+         * each pixel and its right neighbour. */
+        bool title = true;
+        const uint8_t *gL = fbtext_glyph('L');
+        for (unsigned row = 1; row < 15; row++)
+            for (unsigned b = 0; b < 8; b++) {
+                bool on = ((gL[row] >> b) & 1u) || (b > 0 && ((gL[row] >> (b - 1)) & 1u));
+                if ((bool)PX(bx + 6 + (int)b, 23 + (int)row) != on) title = false;
+            }
+        bool initial = geometry && rule && menu_blank && desktop && frame && stripes && title;
+
         screen_write(scr, "\033]2;Lisp\007", 9);
         screen_set_right(scr, "12:34", 5);
         screen_write(scr, "1\r\n2\r\n3\r\n4\r\n5", 14);
-        unsigned c, r;
-        screen_text_size(scr, &c, &r);
-        bool bar_ok = grid_cell_is(&bar, 1, 0, 'L', true) && grid_cell_is(&bar, 4, 0, 'p', true) &&
-                      grid_cell_is(&bar, 5, 0, ' ', true) && grid_cell_is(&bar, 14, 0, '1', true) &&
-                      grid_cell_is(&bar, 18, 0, '4', true) && grid_cell_is(&bar, 19, 0, ' ', true);
+        fbtext_t clock;                       /* the clock: at x = 192 - 16 - 40 = 136, y = 2 */
+        fbtext_init(&clock, cx.buf + 2u * stride, stride, ST_SW / 8u, 1);
+        bool menu = grid_cell_is(&clock, 17, 0, '1', false) && grid_cell_is(&clock, 21, 0, '4', false);
+        int bw2 = 8 * 4 + 12, bx2 = (4 + x1 + 1) / 2 - bw2 / 2;
+        bool retitled = PX(bx2 - 1, 22 + 3) && !PX(bx2, 22 + 3) && PX(bx2 + bw2, 22 + 3);
         bool text_ok = grid_cell_is(&scr->vt.text, 0, 0, '2', false) &&
-                       grid_cell_is(&scr->vt.text, 0, 3, '5', false);
-        st_check(&cx, "37.1: the screen's status bar: title, indicators, and text scrolling below it",
-                 initial && bar_ok && text_ok && c == ST_COLS && r == ST_ROWS);
+                       grid_cell_is(&scr->vt.text, 0, 3, '5', false) && rule && PX(4, 60);
+        st_check(&cx, "37.1a: the screen's chrome: menu bar, desktop, frame, shadow, title bar",
+                 initial);
+        st_check(&cx, "37.1a: a new title is re-centred, the clock sits 16 px from the edge, text scrolls in its tile",
+                 menu && retitled && text_ok);
 
-        screen_set_title(scr, "a very long title that cannot fit", 33);
-        bool cut = grid_cell_is(&bar, 11, 0, 'g', true) && grid_cell_is(&bar, 12, 0, ' ', true) &&
-                   grid_cell_is(&bar, 13, 0, ' ', true) &&
-                   grid_cell_is(&bar, 14, 0, '1', true);
-        for (uint32_t i = 0; i < ST_GRID_BYTES; i++) cx.copy[i] = cx.buf[i];
-        for (uint32_t i = 0; i < ST_GRID_BYTES; i++) cx.buf[i] = 0;
+        for (uint32_t i = 0; i < ST_BUF_BYTES; i++) cx.copy[i] = cx.buf[i];
+        for (uint32_t i = 0; i < ST_BUF_BYTES; i++) cx.buf[i] = 0x3c;
         screen_repaint(scr);
-        st_check(&cx, "37.1: a long title is cut before the indicators; the whole screen repaints",
-                 cut && bytes_equal(cx.buf, cx.copy, ST_GRID_BYTES));
+        st_check(&cx, "37.1a: the whole screen repaints to the same bytes",
+                 bytes_equal(cx.buf, cx.copy, ST_BUF_BYTES));
+#undef PX
     }
 
     st_fresh(&cx, &vt); FEED(&vt, "ab\tc\bd\a");

@@ -579,8 +579,11 @@ set(SOURCES
     drivers/font8x16.c
     # 36.6: the terminal emulator on top of it, and its `vtselftest`.
     drivers/vtterm.c
-    # 37.1: the screen around it -- the status bar, and later the layouts.
+    # 37.1: the screen around it -- the menu bar, the framed tile, and later
+    # the layouts -- and 37.1a's drawing at any pixel, which Lisp's canvas
+    # extends in 37.3.
     drivers/screen.c
+    drivers/canvas1.c
     # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
     # before the PIO-USB engine puts them on a wire.
     drivers/usb_crc.c
@@ -905,6 +908,7 @@ set_source_files_properties(
     drivers/vtterm.c
     drivers/fbtext.c
     drivers/screen.c
+    drivers/canvas1.c
     # 36.7: not U-mode, but the same hazard from the other side -- the USB
     # engine runs on core 1 from RAM and must never read flash, where a jump
     # table's .rodata would be.

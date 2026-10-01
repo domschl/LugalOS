@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 and 37.1 done 2026-10-01, 37.2 next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0, 37.1 and 37.1a done 2026-10-01, 37.2 next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -51,52 +51,64 @@ Glyph drawing on the 1-bpp screen is byte-aligned (8-pixel cells), so every
 tile boundary is a **column boundary** *(owner, 2026-10-01: char-based)*.
 Free ratios such as 0.618 are not offered; they would snap anyway.
 
-### 1.1 The status bar *(owner, 2026-10-01: yes)*
+### 1.1 The look: a menu bar and framed tiles *(owner, 2026-10-01)*
 
-**One status bar, always present, in the top text row (16 px),
-drawn inverted (white on black), owned by `lcdterm`.** This is the first
-window decoration on the way to the Mac look (phase 36 §7.1), and it costs
-one text row: the screen becomes **100 × 29** cells below the bar.
+37.1 built a status bar as one inverted text row. The owner then chose a
+Macintosh-like look over keeping every text row: three designs were
+rendered at 800 × 480 with the real font (a 16-px inverted bar; a menu bar
+with framed tiles; the same with a striped title bar per tile), and the
+third, refined twice by eye, is the design (**"C2"**):
 
-* **Left:** the title of each tile, written over the tile it names (in a
-  split, the bar is divided at the tile boundary). Titles are set by the
-  application (`"Lisp"`, `"Chess — white to move"`) and default to the
-  program's name.
-* **Right:** indicators. The compose state (§3.2) while a compose sequence
-  is pending, the time once the clock is set, and SD presence.
-* **Why inverted and not a Mac-style bar with a rule under it:** a 16-px
-  glyph row leaves no pixel for a separating line, and taking 17 px breaks
-  the character grid. A proportional Chicago-like bar belongs to the later
-  fonts work.
+* **The menu bar:** y 0–19, white, a 1-px rule at y 19. The system name in
+  bold on the left (`LugalOS`; menus can live there later), the indicators
+  on the right ending 16 px from the edge: the time once the clock is set,
+  and 37.2's compose state.
+* **The desktop:** everything no tile covers, the 50 % grey pattern.
+* **A tile:** a 1-px frame with a 1-px drop shadow (right and below).
+* **Its title bar, 17 px:** the frame's top border, a white row, six
+  stripes with white rows between them, a white row, a border. The title
+  is centred **to the pixel** in a white box, in bold, glyph rows 1–14
+  drawn from one pixel below the top border, so capitals have two white
+  rows above and three below. The application sets it (OSC 0/2, or
+  `console_set_title()`), and it defaults to the program's name.
+* **Text inside a tile** starts on the 8-px grid with a 3-px margin to
+  the frame on both sides (Spleen glyphs leave their rightmost column
+  blank, so the frame sits 4 px left of the text, 2 px right of it).
 
-The alternatives were per-tile title bars (two rows lost in a split, for no
-extra information) and no bar at all (no place for the compose indicator,
-and nothing that says which program has the screen).
+**The rule behind it: terminal text stays on the 8-px column grid,
+everything else may sit at any pixel.** Text is drawn, scrolled and
+repainted thousands of glyphs at a time, and byte alignment keeps that one
+store per glyph row; frames, title bars, the menu bar and canvas text are
+drawn rarely, by a glyph routine that shifts and masks (`canvas1.c`).
+Vertical placement was never constrained: a text window starts on any
+pixel row.
+
+The cost against 37.1's bar: one more text row and two columns (98 × 27
+instead of 100 × 29), and 52-px chess squares instead of 56.
 
 ### 1.2 The layouts
 
-With the status bar, the area below it is 800 × 464 px, 100 × 29 cells. A
-split puts the canvas on the left and the text on the right, separated by a
-**one-column gutter** with a 1-px vertical rule at its centre. The rule never
-touches a glyph, and none of the layouts puts anything on x = 799, which is
-under the bezel (phase 36 §1.5).
+All geometry is in pixels on the 800 × 480 panel. Nothing is drawn on
+x = 799, which is under the bezel (phase 36 §1.5): a frame's right border
+is at x 794 and its shadow at 795.
 
-| Layout | Canvas (px) | Gutter | Text (cells) | For |
+| Layout | Canvas tile (frame, x) | Text tile (frame, x) | Text (cells) | For |
 |---|---|---|---|---|
-| `text` | none | — | 100 × 29 | the shell, `e`, the writer: the default |
-| `canvas` | 800 × 464 | — | none visible (output still lands in the shadow) | full-screen graphics |
-| `split-wide` | **480 × 464** (cols 0–59) | col 60 | 39 × 29 (cols 61–99) | chess, Lisp plots |
-| `split-half` | 400 × 464 (cols 0–49) | col 50 | 49 × 29 (cols 51–99) | Lisp with a wider REPL |
+| `text` | none | 4–794 | **98 × 27** (cols 1–98) | the shell, `e`, the writer: the default |
+| `canvas` | 4–794 | none (output still lands in the shadow) | — | full-screen graphics |
+| `split-wide` | 4–474 | 484–794 | **38 × 27** (cols 61–98) | chess, Lisp plots |
+| `split-half` | 4–394 | 404–794 | 48 × 27 (cols 51–98) | Lisp with a wider REPL |
 
-480/800 = 0.6, close to the proposed golden-ratio split, and a whole number
-of columns. Side-by-side only: a top/bottom split of 29 rows would leave
-about 12 rows of text, which is too few.
+Every tile's frame runs from y 22 to 473, its title bar from y 22 to 38,
+and its content from y 39 (text from y 40, 27 rows to y 471). A canvas
+tile's drawable area is the frame's interior below the title bar: 469 × 434
+px in `split-wide`, 389 × 434 in `split-half`, 789 × 434 in `canvas`.
+Side-by-side only: a top/bottom split would leave about 12 rows of text.
 
-**The chess board in `split-wide`:** 8 × 56 px = 448 px board, with 16 px for
-the file letters below it (448 + 16 = 464) and the rank numbers in the 32 px
-to its left (32 + 448 = 480). The 16 × 16 piece bitmaps scaled 3× (48 px) fit
-a 56-px square with a margin. Phase 36's plan had a 400 × 400 board in a
-400 × 480 split, which wasted an 80-px strip.
+**The chess board in `split-wide`:** 8 × 52 px = 416 px, centred in the
+tile, **without coordinates** (the owner's call: the labels cut into the
+frame, and the move list already names squares). The 48-px pieces fit a
+52-px square.
 
 ### 1.3 Who may change the layout, and when it comes back
 
@@ -369,6 +381,57 @@ status bar shows the program's name; `vtselftest` covers the new cases.
   bytes above 0x7F**: typing them is 37.2's.
 * **Owner's note for 37.5:** `e` should fill the whole text tile, not
   draw a box sized by its content.
+
+### 37.1a — The menu bar and framed tiles *(added 2026-10-01)*
+
+§1.1's design, for the one tile 37.1 has: the menu bar, the desktop, the
+`text` tile's frame, shadow and title bar, the text window at 98 × 27.
+`drivers/canvas1.c` starts here with what the chrome needs (fills with a
+pattern, lines, a glyph at any pixel in bold), and 37.3 extends it.
+`lcdterm`'s U-mode section grows to 16 KB. `lcd repaint` redraws the whole
+screen from the shadow, which makes the shadow testable on the board.
+
+**Done when:** the panel matches the C2 mockup with the shell in it; the
+title follows the program; the clock ticks; `lcd test stripes` then
+`lcd repaint` restores the screen exactly; `vtselftest` checks the chrome's
+geometry on QEMU.
+
+**Done, 2026-10-01.** The owner checked the panel against the mockup: the
+look, the titles, `lcd test stripes` then `lcd repaint` restoring the
+screen exactly, and scrolling inside the tile.
+
+* **`drivers/canvas1.c`** (new): fills in white, black or 50 % grey with
+  masked edges, lines, and a glyph at any pixel (shifted across two bytes,
+  foreground only, a row range, bold as the Mac did it), and UTF-8 text.
+* **`screen.c`** draws the menu bar, desktop, frame, shadow and title bar
+  from the geometry in `screen.h`; the text window is 98 × 27 from (8, 40).
+  `lcd repaint` asks the task to redraw everything from the shadow.
+* **Scrolling:** a window one byte in from the buffer's edge is never
+  word-aligned as a whole, so `fbtext` copies each row's middle by words;
+  and a tile that spans the screen scrolls **whole pixel rows** in one
+  word-wise copy, because beside its text are only the frame and the grey
+  desktop, which repeat every two rows (`fbtext_t.whole_rows`). The shadow
+  scrolls two cells a word.
+* **Measured** (`lcd outbench`, 20 lines of 98 characters through the
+  console with the USB tee): 36.6 89 800 chars/s; 37.1 77 200 (the
+  shadow); 37.1a 60 000 with row-wise scrolling, **66 500** with whole-row
+  scrolling. The per-character path is the same as 37.1's and the scroll
+  now copies less, so the rest is most likely the code's new place in
+  flash: it runs through the XIP cache it shares with the kernel. The
+  owner's call: accept it, and look at it with the PSRAM work. 66 K chars/s
+  still repaints a full screen in about 40 ms.
+* **Cost:** `lcdterm`'s U-mode section is 16 KB (8 784 bytes used); static
+  RAM +0.
+* **Tests:** `vtselftest` 24/24 (its screen test now checks the chrome's
+  pixels: the menu bar's rule, the desktop's phase, the frame and shadow,
+  the stripes, the centred box and the bold title, the clock's position,
+  and that a scroll and a full repaint agree byte for byte); QEMU suite
+  376/376; `test_rp2350` 25/25.
+* **Found by the owner, fixed:** `ed` and the `lisp` REPL echoed typed
+  characters with `uart_putc()`, past the console, so on the panel the
+  input was processed but never shown; `clear` cleared the UART's
+  terminal and not the screen. All three write through the console now.
+  Since 36.6, when the screen became the console.
 
 ### 37.2 — Compose and UTF-8 aware editing
 

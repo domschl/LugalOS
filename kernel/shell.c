@@ -508,6 +508,7 @@ static void cmd_help(void) {
     cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
     cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert|text> - Diagnostic patterns\n");
     cprintf("  lcd scroll [n]  - Scroll n numbered lines of text (default 1000), timing each scroll\n");
+    cprintf("  lcd repaint     - Redraw the whole screen, the text from the terminal's cell shadow\n");
     cprintf("  lcd tee <uart|usb|off> - Where the lcd console also writes (uart = UART0 + USB mirror)\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
@@ -3038,7 +3039,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
     } else if (strcmp(cmd_line, "clear") == 0) {
-        uart_puts("\033[2J\033[H");
+        console_puts("\033[2J\033[H");   /* the console, so the screen clears too */
+        console_flush();
         return;
 #if CONFIG_ENABLE_ED
     } else if (strcmp(cmd_line, "ed") == 0) {
@@ -3448,6 +3450,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         lcd7_set_colour((uint16_t)v);
         cprintf("lcd: colour 0x%04x\n", (unsigned)(v & 0xffffu));
         return;
+    } else if (strcmp(cmd_line, "lcd repaint") == 0) {
+        /* 37.1a, plan/phase37_screen_layouts_and_apps.md. */
+        lcd7_repaint();
     } else if (strcmp(cmd_line, "lcd test text") == 0) {
         /* 36.5 */
         if (lcd7_text_test() != 0) cprintf("lcd test text: panel not running\n");
