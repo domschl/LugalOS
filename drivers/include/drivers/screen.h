@@ -34,6 +34,11 @@
  *   CANVAS       -- (text hidden)             4 .. 8(C-1)+2
  *   SPLIT_WIDE   8k-4 .. 8(C-1)+2, 38 cols    4 .. 8k-14,   k = C-39
  *   SPLIT_HALF   the same with 48 cols        4 .. 8k-14,   k = C-49
+ *   SPLIT_NARROW the same with 64 cols        4 .. 8k-14,   k = C-65  (37.5a)
+ *
+ * Swapped (37.5a), a split puts the text tile on the left -- its frame
+ * x 4 .. 8(cols+1)+2 -- and the canvas 10 px right of it to x 8(C-1)+2, so
+ * the canvas is exactly as wide as unswapped.
  *
  * On the 800 x 480 panel: 98 x 27 or 38 x 27 or 48 x 27 cells; a canvas of
  * 789, 469 or 389 x 434 px. Nothing is drawn on x 799 (under the bezel).
@@ -60,6 +65,7 @@ enum {
     SCREEN_LAYOUT_CANVAS = 1,
     SCREEN_LAYOUT_SPLIT_WIDE = 2,
     SCREEN_LAYOUT_SPLIT_HALF = 3,
+    SCREEN_LAYOUT_SPLIT_NARROW = 4,     /* 37.5a: a narrow canvas, 64 text columns */
 };
 
 typedef struct {
@@ -67,6 +73,8 @@ typedef struct {
     canvas1_t cc;                       /* the canvas tile's drawable area */
     uint8_t   layout;
     uint8_t   full_cols;                /* the text window's width in TEXT */
+    uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
+    uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
     int16_t   fx0, fy0, fx1, fy1;       /* the text tile's frame */
     int16_t   cx0, cy0, cx1, cy1;       /* the canvas tile's frame */
@@ -125,11 +133,28 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *   't' x y bold(u8) bytes              text, black, the glyph's top-left at x y
  *   'b' x y n scale bits...             a row of n pixels from packed bits
  *   'g' x y                             nothing drawn; the reply has the pixel
+ *   'w' s8 dir                          37.5a: the divider one step left (-1)
+ *                                       or right (+1), through five places:
+ *                                       text only (TEXT), the three splits,
+ *                                       canvas only (CANVAS) -- so at its ends
+ *                                       it closes a pane. With the canvas on
+ *                                       the left, left means more text; when
+ *                                       swapped, less. Refused at an end or
+ *                                       while locked.
+ *   'X'                                 37.5a: in a split, swap the panes
+ *                                       (canvas left or right); with one pane
+ *                                       full, show the other one full (TEXT <->
+ *                                       CANVAS); refused while locked
+ *   'K' u8 lock                         37.5a: 1 keeps the layout as it is
+ *                                       ('w' and 'X' refused) until a 'K' 0 or
+ *                                       a change to TEXT -- chess's board fits
+ *                                       only the 38-column split
  *
  * The reply, SCREEN_REPLY_LEN bytes: [0] 0 done, 1 refused (no canvas in
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
- * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout. */
-#define SCREEN_REPLY_LEN 9u
+ * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout; [9] 1 if
+ * the panes are swapped. */
+#define SCREEN_REPLY_LEN 10u
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
 

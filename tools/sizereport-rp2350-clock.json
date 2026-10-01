@@ -29,7 +29,8 @@
     "fs/vfs_server.c": 10775,
     "kernel/balloc.c": 2055,
     "kernel/chan.c": 900,
-    "kernel/console.c": 453,
+    "kernel/clipboard.c": 8,
+    "kernel/console.c": 457,
     "kernel/device.c": 136,
     "kernel/devirq.c": 132,
     "kernel/discipline.c": 82,
@@ -68,5 +69,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 41064
   },
-  "total": 150735
+  "total": 150747
 }

@@ -26,31 +26,34 @@ enum { ST_GROUND, ST_ESC, ST_CSI, ST_OSC };
 LCDTERM_UTEXT static void cell_put(vtterm_t *vt, unsigned col, unsigned row, uint8_t code, bool inverse) {
     if (!vt->hidden) fbtext_putcode(&vt->text, col, row, code, inverse);
     if (vt->shadow && col < vt->text.cols && row < vt->text.rows)
-        vt->shadow[row * vt->text.cols + col] = (uint16_t)(code | (inverse ? VT_CELL_INVERSE : 0u));
+        vt->shadow[row * vt->shadow_cols + col] = (uint16_t)(code | (inverse ? VT_CELL_INVERSE : 0u));
 }
 
 LCDTERM_UTEXT static void shadow_blank(vtterm_t *vt, unsigned from, unsigned n) {
     for (unsigned i = 0; i < n; i++) vt->shadow[from + i] = ' ';
 }
 
+/* 37.5a: a clear that reaches the window's right edge clears the shadow's
+ * whole row: a line cleared "to the end" must not bring back text that sat
+ * past a narrower window's edge when the window widens again. */
 LCDTERM_UTEXT static void span_clear(vtterm_t *vt, unsigned row, unsigned col0, unsigned col1) {
     if (!vt->hidden) fbtext_clear_span(&vt->text, row, col0, col1);
     if (!vt->shadow || row >= vt->text.rows) return;
-    if (col1 > vt->text.cols) col1 = vt->text.cols;
-    if (col0 < col1) shadow_blank(vt, row * vt->text.cols + col0, col1 - col0);
+    if (col1 >= vt->text.cols) col1 = vt->shadow_cols;
+    if (col0 < col1) shadow_blank(vt, row * vt->shadow_cols + col0, col1 - col0);
 }
 
 LCDTERM_UTEXT static void rows_clear(vtterm_t *vt, unsigned row, unsigned n) {
     if (!vt->hidden) fbtext_clear_rows(&vt->text, row, n);
     if (!vt->shadow || row >= vt->text.rows) return;
     if (n > (unsigned)vt->text.rows - row) n = vt->text.rows - row;
-    shadow_blank(vt, row * vt->text.cols, n * vt->text.cols);
+    shadow_blank(vt, row * vt->shadow_cols, n * vt->shadow_cols);
 }
 
 LCDTERM_UTEXT static void grid_scroll(vtterm_t *vt) {
     if (!vt->hidden) fbtext_scroll_up(&vt->text, 1);
     if (!vt->shadow) return;
-    unsigned cols = vt->text.cols, cells = (unsigned)(vt->text.rows - 1u) * cols;
+    unsigned cols = vt->shadow_cols, cells = (unsigned)(vt->text.rows - 1u) * cols;
     if (((uintptr_t)vt->shadow & 3u) == 0 && (cols & 1u) == 0) {
         uint32_t *d = (uint32_t *)(void *)vt->shadow;          /* two cells a word */
         for (unsigned i = 0; i < cells / 2u; i++) d[i] = d[i + cols / 2u];
@@ -84,6 +87,7 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
+    vt->shadow_cols = text->cols;           /* 37.5a: fixed from here on */
     vt->hidden = false;
     vt->col = vt->row = 0;
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
@@ -106,7 +110,7 @@ LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
     unsigned cols = vt->text.cols;
     for (unsigned row = 0; row < vt->text.rows; row++) {
         for (unsigned col = 0; col < cols; col++) {
-            uint16_t v = vt->shadow[row * cols + col];
+            uint16_t v = vt->shadow[row * vt->shadow_cols + col];
             fbtext_putcode(&vt->text, col, row, (uint8_t)v, (v & VT_CELL_INVERSE) != 0);
         }
     }
@@ -114,21 +118,11 @@ LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
 }
 
 LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
-    unsigned oc = vt->text.cols, nc = text->cols, rows = text->rows;
-    if (vt->shadow && nc != oc) {
-        if (nc < oc) {
-            for (unsigned r = 0; r < rows; r++)
-                for (unsigned c = 0; c < nc; c++) vt->shadow[r * nc + c] = vt->shadow[r * oc + c];
-        } else {
-            for (unsigned r = rows; r-- > 0;) {
-                for (unsigned c = nc; c-- > 0;)
-                    vt->shadow[r * nc + c] = c < oc ? vt->shadow[r * oc + c] : (uint16_t)' ';
-            }
-        }
-    }
+    unsigned nc = text->cols, rows = text->rows;
+    if (nc > vt->shadow_cols) nc = vt->shadow_cols;         /* never past the shadow */
     vt->text.fb = text->fb;
     vt->text.stride = text->stride;
-    vt->text.cols = text->cols;
+    vt->text.cols = (uint16_t)nc;
     vt->text.rows = text->rows;
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
@@ -429,7 +423,10 @@ typedef struct {
  * cells, which gives the wide split a 69 x 66 canvas beside 38 x 4 text. */
 #define ST_LW 400u
 #define ST_LH 110u
-#define ST_BUF_BYTES (ST_LW / 8u * ST_LH)
+/* 37.5a's split-width test: 576 px, 72 cells -- the narrowest screen on
+ * which the 64-column split still leaves a canvas. */
+#define ST_WW 576u
+#define ST_BUF_BYTES (ST_WW / 8u * ST_LH)
 
 static bool cell_is(vtterm_t *vt, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     const uint8_t *g = fbtext_glyph(cp);
@@ -491,7 +488,7 @@ int vtterm_selftest(void) {
     uint32_t shadow_off = 2u * ST_BUF_BYTES;
     uint32_t scr_off = (shadow_off + ST_COLS * ST_ROWS * 2u + 7u) & ~7u;
     scratch_t sc;
-    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_LW, ST_LH))) {
+    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_WW, ST_LH))) {
         cprintf("VTTERM_SELFTEST_FAIL (no memory for the test grid)\n");
         return 1;
     }
@@ -754,11 +751,65 @@ int vtterm_selftest(void) {
         bool back = rp[0] == 0 && RW == 0 && c == 48 && !scr->vt.hidden &&
                     grid_cell_is(&scr->vt.text, 0, 2, 'h', false) &&
                     grid_cell_is(&scr->vt.text, 37, 0, '7', false) &&
-                    grid_cell_is(&scr->vt.text, 38, 0, ' ', false);
+                    grid_cell_is(&scr->vt.text, 38, 0, '8', false) &&     /* 37.5a: kept */
+                    grid_cell_is(&scr->vt.text, 45, 0, '5', false);
         REQ('T', 'B', 'o', 'a', 'r', 'd');
         bool titled = scr->ctitle[0] == 'B' && scr->ctitle[5] == '\0';
-        st_check(&cx, "37.3b: the full canvas hides text that keeps arriving; a repaint clears the canvas; back to text",
+        st_check(&cx, "37.3b: the full canvas hides text that keeps arriving; a repaint clears the canvas; "
+                      "back to text with the line past the narrow split's edge intact (37.5a)",
                  full && cleared && back && titled);
+
+        /* 37.5a: the divider's five places, stepped left and right, the
+         * swap, and the lock -- on a 72-cell screen, where all three splits
+         * leave a canvas. Canvas on the left: left means more text. */
+        screen_init(scr, cx.buf, ST_WW / 8u, ST_WW, ST_LH);
+        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        unsigned wide_w = RW;
+        REQ('w', -1);
+        screen_text_size(scr, &c, &r);
+        bool to_half = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && c == 48;
+        REQ('w', -1);
+        screen_text_size(scr, &c, &r);
+        bool to_narrow = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_NARROW && c == 64;
+        REQ('w', -1);
+        bool closed = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && RW == 0;
+        REQ('w', -1);
+        bool left_end = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_TEXT;
+        REQ('w', 1);
+        bool reopened = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_NARROW;
+        REQ('w', 1); REQ('w', 1); REQ('w', 1);
+        bool all_canvas = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_CANVAS && scr->vt.hidden;
+        REQ('w', 1);
+        bool right_end = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_CANVAS;
+        st_check(&cx, "37.5a: the divider steps through text only, three splits and canvas only, and stops",
+                 to_half && to_narrow && closed && left_end && reopened && all_canvas && right_end);
+
+        /* Swapped: text left, the canvas right and exactly as wide; left
+         * now means less text. */
+        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        REQ('X');
+        bool swapped = rp[0] == 0 && rp[9] == 1 && scr->fx0 == 4 && scr->cx0 > scr->fx1 &&
+                       RW == wide_w && scr->vt.text.fb == cx.buf + 40u * (ST_WW / 8u) + 1u;
+        REQ('w', 1);
+        screen_text_size(scr, &c, &r);
+        bool mirrored = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && c == 48;
+        REQ('K', 1);
+        REQ('w', 1);
+        bool lk1 = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF;
+        REQ('X');
+        bool lk2 = rp[0] == 1 && rp[9] == 1;
+        REQ('L', SCREEN_LAYOUT_TEXT);           /* releases the lock */
+        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        REQ('X');
+        bool unlocked = rp[0] == 0 && rp[9] == 0;
+        REQ('L', SCREEN_LAYOUT_TEXT);
+        REQ('X');
+        bool to_canvas = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_CANVAS && scr->vt.hidden;
+        REQ('X');
+        bool to_text = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && !scr->vt.hidden;
+        st_check(&cx, "37.5a: swapped panes mirror the divider; a lock holds both until text; "
+                      "with one pane full, the swap shows the other one full",
+                 swapped && mirrored && lk1 && lk2 && unlocked && to_canvas && to_text);
 
         /* A split is refused where there is no room for a canvas. */
         screen_init(scr, cx.buf, ST_SW / 8u, ST_SW, ST_SH);

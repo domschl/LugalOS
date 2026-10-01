@@ -2,6 +2,10 @@
 #include "kernel/klog.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/keyseq.h"
+#include "kernel/sched.h"
+#include "kernel/time.h"
+#include "kernel/clipboard.h"
 #include "kernel/scratch.h"
 #include "drivers/uart.h"
 #include "fs/vfs.h"
@@ -85,15 +89,19 @@ static void line_cut(char *buf, int *len, int from, int to) {
     buf[*len] = '\0';
 }
 
-static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
+/* 37.5a: the selection [sel_a, sel_b) in reverse video (sel_a < 0: none). */
+static void redraw_line_sel(const char *prompt, const char *buf, int len, int pos, int sel_a, int sel_b) {
     console_lock();
     console_sync();   /* backlog before the redraw, never inside it */
     console_puts("\033[?25l"); // Hide cursor during display redraw
     console_puts("\r");
     console_puts(prompt);
     for (int i = 0; i < len; i++) {
+        if (i == sel_a && sel_a < sel_b) console_puts("\033[7m");
+        if (i == sel_b && sel_a >= 0) console_puts("\033[27m");
         console_putc(buf[i]);
     }
+    if (sel_a >= 0 && sel_b >= len) console_puts("\033[27m");
     console_puts("\033[K"); // Clear remaining line to the right
 
     // Move cursor back to pos using ANSI Cursor Left (\033[D), one per character
@@ -104,6 +112,9 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
     console_unlock();
 }
 
+static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
+    redraw_line_sel(prompt, buf, len, pos, -1, -1);
+}
 
 void line_editor_init(void) {
     history_count = 0;
@@ -280,34 +291,14 @@ static bool read_status_prompt(int total_lines, int target_line, const char *pro
     for (int m = 0; m < move_down; m++) {
         console_puts("\033[B");
     }
-    console_puts("\r\033[K\033[1;33m");
-    console_puts(prompt);
-    console_puts("\033[0m");
-
-    int len = 0;
-    out_buf[0] = '\0';
-    while (1) {
-        char c = console_getc();
-        if (c == '\r' || c == '\n') {
-            out_buf[len] = '\0';
-            return (len > 0);
-        } else if (c == 0x07 || c == 0x1B) { // Ctrl-G or Esc to cancel
-            out_buf[0] = '\0';
-            return false;
-        } else if (c == 0x08 || c == 0x7F) { // Backspace
-            if (len > 0) {
-                len--;
-                out_buf[len] = '\0';
-                console_puts("\b \b");
-            }
-        } else if (c >= 32 && c <= 126) {
-            if (len < max_len - 1) {
-                out_buf[len++] = c;
-                out_buf[len] = '\0';
-                console_putc(c);
-            }
-        }
-    }
+    /* 37.5a: the shared line editor, so a file name can be pasted, and
+     * edited with the same keys as anything else. */
+    static const readline_opts_t opts = { true, true, true };
+    char shown[96];
+    ksnprintf(shown, sizeof(shown), "\033[1;33m%s\033[0m", prompt);
+    int n = readline_ex(shown, out_buf, max_len, &opts);
+    if (n < 0) out_buf[0] = '\0';
+    return n > 0;
 }
 
 static void exit_editor_cleanup(int len, const char *buf) {
@@ -352,13 +343,37 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
     redraw_box(active_filename, out_buf, len, pos, status_msg);
 
     while (1) {
-        char c = console_getc();
+        /* 37.5a: keys through the parser every text input shares. Until
+         * 37.5b reworks `e`, the keys it had keep their meaning (arrows,
+         * Home, End and Delete map onto its Ctrl keys); modified keys and
+         * non-ASCII text are ignored rather than typed as escape debris. */
+        key_event_t k = keyseq_read_console();
+        char c;
+        if (k.mods & (KMOD_ALT | KMOD_SUPER | KMOD_CTRL)) continue;
+        if (k.key == KEY_UP) c = 0x10;
+        else if (k.key == KEY_DOWN) c = 0x0E;
+        else if (k.key == KEY_LEFT) c = 0x02;
+        else if (k.key == KEY_RIGHT) c = 0x06;
+        else if (k.key == KEY_HOME) c = 0x01;
+        else if (k.key == KEY_END) c = 0x05;
+        else if (k.key == KEY_DELETE) {
+            if (pos < len) {
+                int to = u8_next(out_buf, len, pos);
+                line_cut(out_buf, &len, pos, to);
+                modified = true;
+                redraw_box(active_filename, out_buf, len, pos, status_msg);
+            }
+            continue;
+        }
+        else if (k.key >= 0x80u || k.key == 0x1b) continue;
+        else c = (char)k.key;
 
         int num_lines = 1;
         for (int i = 0; i < len; i++) if (out_buf[i] == '\n') num_lines++;
 
         if (c == 0x18) { // Ctrl-X
-            char c2 = console_getc();
+            key_event_t k2 = keyseq_read_console();
+            char c2 = k2.key < 0x80u ? (char)k2.key : 0;
             if (c2 == 0x05 || c2 == 'e' || c2 == 'E') { // Ctrl-E: Eval
                 out_buf[len] = '\0';
                 exit_editor_cleanup(len, out_buf);
@@ -520,71 +535,6 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
             continue;
         }
 
-        // Escape Sequences (Arrow keys, Home, End, Delete)
-        if (c == 0x1B) {
-            char seq1 = console_getc();
-            if (seq1 == '[' || seq1 == 'O') {
-                char seq2 = console_getc();
-                if (seq2 == 'A') { // Up Arrow
-                    int line_start = pos;
-                    while (line_start > 0 && out_buf[line_start - 1] != '\n') line_start--;
-                    if (line_start > 0) {
-                        int col = pos - line_start;
-                        int prev_line_end = line_start - 1;
-                        int prev_line_start = prev_line_end;
-                        while (prev_line_start > 0 && out_buf[prev_line_start - 1] != '\n') prev_line_start--;
-                        int prev_line_len = prev_line_end - prev_line_start;
-                        if (col > prev_line_len) col = prev_line_len;
-                        pos = prev_line_start + col;
-                    }
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == 'B') { // Down Arrow
-                    int line_end = pos;
-                    while (line_end < len && out_buf[line_end] != '\n') line_end++;
-                    if (line_end < len) {
-                        int line_start = pos;
-                        while (line_start > 0 && out_buf[line_start - 1] != '\n') line_start--;
-                        int col = pos - line_start;
-                        int next_line_start = line_end + 1;
-                        int next_line_end = next_line_start;
-                        while (next_line_end < len && out_buf[next_line_end] != '\n') next_line_end++;
-                        int next_line_len = next_line_end - next_line_start;
-                        if (col > next_line_len) col = next_line_len;
-                        pos = next_line_start + col;
-                    }
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == 'C') { // Right Arrow
-                    if (pos < len) pos++;
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == 'D') { // Left Arrow
-                    if (pos > 0) pos--;
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == 'H' || seq2 == '1') { // Home key
-                    if (seq2 == '1') console_getc();
-                    while (pos > 0 && out_buf[pos - 1] != '\n') pos--;
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == 'F' || seq2 == '4') { // End key
-                    if (seq2 == '4') console_getc();
-                    while (pos < len && out_buf[pos] != '\n') pos++;
-                    redraw_box(active_filename, out_buf, len, pos, status_msg);
-                } else if (seq2 == '3') { // Delete key
-                    console_getc();
-                    if (pos < len) {
-                        for (int i = pos; i < len - 1; i++) out_buf[i] = out_buf[i + 1];
-                        len--;
-                        out_buf[len] = '\0';
-                        redraw_box(active_filename, out_buf, len, pos, status_msg);
-                    }
-                } else if (seq2 >= '0' && seq2 <= '9') {
-                    /* 36.9: Insert, PgUp, PgDn (ESC [ 2/5/6 ~) from the USB
-                     * keyboard: not bound yet, but the '~' must not be
-                     * typed into the text. */
-                    console_getc();
-                }
-            }
-            continue;
-        }
-
         if (c == '\r' || c == '\n') {
             if (len < max_len - 1) {
                 for (int i = len; i > pos; i--) out_buf[i] = out_buf[i - 1];
@@ -646,263 +596,339 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
  * (§"chess_next_event", plan/phase15_memory_reclamation.md.) */
 
 #define LINE_INCOMPLETE (-1)
+#define LINE_CANCELLED  (-2)
 
+/* 37.5a, plan/phase37_screen_layouts_and_apps.md: the line is edited with
+ * keys from kernel/keyseq.c -- one parser for every text input -- and has a
+ * selection and the machine's clipboard (kernel/clipboard.h).
+ *
+ * **Selection.** `mark` is the other end of the selection, or -1. Shift with
+ * a movement sets it where the cursor was and moves (a *transient*
+ * selection, which the next plain movement ends); Ctrl-Space sets it where
+ * the cursor is (the Emacs mark, which movements keep: `mark_sticky`).
+ * Ctrl-G or Esc ends it. Typing, Backspace and Delete replace or remove a
+ * selection.
+ *
+ * **Two key families, one command set** (§37.5): cut Ctrl-W / Super+X, copy
+ * Alt-W / Super+C, paste Ctrl-Y / Super+V, select all Super+A; Ctrl-K kills
+ * to the end of the line into the clipboard. Words: Alt-B/F or Ctrl-arrows
+ * to move, Alt-Backspace and Alt-D to delete. */
 typedef struct {
     int  len;
     int  pos;
     int  hist_nav_idx;
+    int  mark;              /* the selection's other end, or -1 */
+    bool mark_sticky;       /* set by Ctrl-Space: movement keeps it */
     char temp_saved_line[MAX_LINE_LEN];
-    char pend[4];           /* 37.2: a UTF-8 character still arriving */
-    int  pend_len, pend_need;
 } line_state_t;
 
 static void line_begin(line_state_t *st, const char *prompt, char *out_buf) {
     st->len = 0;
     st->pos = 0;
     st->hist_nav_idx = history_count;
+    st->mark = -1;
+    st->mark_sticky = false;
     st->temp_saved_line[0] = '\0';
-    st->pend_len = st->pend_need = 0;
     out_buf[0] = '\0';
     redraw_line(prompt, out_buf, st->len, st->pos);
 }
 
-/* Consumes one character. Returns the completed line's length, or
- * LINE_INCOMPLETE while the line is still being edited. */
-static int line_feed(line_state_t *st, char c, const char *prompt,
-                     char *out_buf, int max_len) {
-    /* Aliased so the body below is the original, unedited code. Written back
-     * in one place at `done:`, which is also where every former `continue`
-     * now lands. */
-    int len = st->len;
-    int pos = st->pos;
-    int hist_nav_idx = st->hist_nav_idx;
-    char *temp_saved_line = st->temp_saved_line;
-    int ret = LINE_INCOMPLETE;
-    if (!u8_cont(c)) st->pend_need = 0;     /* 37.2: anything else abandons a half-arrived character */
-
-
-        // Control character handling
-        if (c == 0x01) { // Ctrl-A: Move to beginning of line
-            pos = 0;
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x05) { // Ctrl-E: Move to end of line
-            pos = len;
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x02) { // Ctrl-B: Left
-            if (pos > 0) pos--;
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x06) { // Ctrl-F: Right
-            if (pos < len) pos++;
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x04) { // Ctrl-D: Delete char under cursor
-            if (pos < len) {
-                line_cut(out_buf, &len, pos, u8_next(out_buf, len, pos));
-                redraw_line(prompt, out_buf, len, pos);
-            }
-            goto done;
-        } else if (c == 0x0B) { // Ctrl-K: Kill to end of line
-            len = pos;
-            out_buf[len] = '\0';
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x0C) { // Ctrl-L: Clear screen
-            console_puts("\033[2J\033[H");
-            redraw_line(prompt, out_buf, len, pos);
-            goto done;
-        } else if (c == 0x10) { // Ctrl-P: History Previous
-            if (hist_nav_idx > 0) {
-                if (hist_nav_idx == history_count) {
-                    safe_strncpy(temp_saved_line, out_buf, MAX_LINE_LEN);
-                }
-                hist_nav_idx--;
-                safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
-                len = strlen(out_buf);
-                pos = len;
-                redraw_line(prompt, out_buf, len, pos);
-            }
-            goto done;
-        } else if (c == 0x0E) { // Ctrl-N: History Next
-            if (hist_nav_idx < history_count) {
-                hist_nav_idx++;
-                if (hist_nav_idx == history_count) {
-                    safe_strncpy(out_buf, temp_saved_line, max_len);
-                } else {
-                    safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
-                }
-                len = strlen(out_buf);
-                pos = len;
-                redraw_line(prompt, out_buf, len, pos);
-            }
-            goto done;
-        } else if (c == 0x18) { // Ctrl-X
-            char c2 = console_getc();
-            if (c2 == 0x0D || c2 == 0x0A || c2 == 0x05 || c2 == 'm' || c2 == 'M' || c2 == 'e' || c2 == 'E') { // Ctrl-M or Ctrl-E
-                int mlen = edit_multiline_box("/ram0/system/scratch.lisp", out_buf, max_len);
-                add_history(out_buf);
-                ret = mlen;
-                goto done;
-            }
-            goto done;
-        }
-
-
-        // Escape Sequences (Arrow keys, Home, End, Delete)
-        if (c == 0x1B) {
-            char seq1 = console_getc();
-            if (seq1 == '[' || seq1 == 'O') {
-                char seq2 = console_getc();
-
-                if (seq2 == 'A') { // Up Arrow (History Prev)
-                    if (hist_nav_idx > 0) {
-                        if (hist_nav_idx == history_count) {
-                            safe_strncpy(temp_saved_line, out_buf, MAX_LINE_LEN);
-                        }
-                        hist_nav_idx--;
-                        safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
-                        len = strlen(out_buf);
-                        pos = len;
-                        redraw_line(prompt, out_buf, len, pos);
-                    }
-                } else if (seq2 == 'B') { // Down Arrow (History Next)
-                    if (hist_nav_idx < history_count) {
-                        hist_nav_idx++;
-                        if (hist_nav_idx == history_count) {
-                            safe_strncpy(out_buf, temp_saved_line, max_len);
-                        } else {
-                            safe_strncpy(out_buf, history_stack[hist_nav_idx], max_len);
-                        }
-                        len = strlen(out_buf);
-                        pos = len;
-                        redraw_line(prompt, out_buf, len, pos);
-                    }
-                } else if (seq2 == 'C') { // Right Arrow
-                    if (pos < len) {
-                        pos = u8_next(out_buf, len, pos);
-                        redraw_line(prompt, out_buf, len, pos);
-                    }
-                } else if (seq2 == 'D') { // Left Arrow
-                    if (pos > 0) {
-                        pos = u8_prev(out_buf, pos);
-                        redraw_line(prompt, out_buf, len, pos);
-                    }
-                } else if (seq2 == 'H' || seq2 == '1') { // Home key
-                    pos = 0;
-                    if (seq2 == '1') console_getc(); // consume '~'
-                    redraw_line(prompt, out_buf, len, pos);
-                } else if (seq2 == 'F' || seq2 == '4') { // End key
-                    pos = len;
-                    if (seq2 == '4') console_getc(); // consume '~'
-                    redraw_line(prompt, out_buf, len, pos);
-                } else if (seq2 == '3') { // Delete key
-                    console_getc(); // consume '~'
-                    if (pos < len) {
-                        line_cut(out_buf, &len, pos, u8_next(out_buf, len, pos));
-                        redraw_line(prompt, out_buf, len, pos);
-                    }
-                } else if (seq2 >= '0' && seq2 <= '9') {
-                    /* 36.9: Insert, PgUp, PgDn (ESC [ 2/5/6 ~) from the USB
-                     * keyboard: not bound here, but the '~' must not become
-                     * part of the line. */
-                    console_getc();
-                }
-            }
-            goto done;
-        }
-
-        // Backspace handling
-        if (c == 0x08 || c == 0x7F) {
-            if (pos > 0) {
-                int from = u8_prev(out_buf, pos);
-                line_cut(out_buf, &len, from, pos);
-                pos = from;
-                redraw_line(prompt, out_buf, len, pos);
-            }
-            goto done;
-        }
-
-        // Enter key
-        if (c == '\r' || c == '\n') {
-            console_puts("\n");
-            out_buf[len] = '\0';
-            add_history(out_buf);
-            /* A Ctrl-C typed while composing this line cancelled nothing --
-             * there was no command running to cancel. Clear it here, as the
-             * line is handed over, so it cannot be mistaken for an interrupt
-             * aimed at the command about to run. Ctrl-C pressed *during* that
-             * command still latches normally, which is the case that matters.
-             * (Ctrl-C never arrives here as a character: kernel/console.c
-             * latches it at the pump and never delivers it as data.) */
-            console_interrupt_clear();
-            ret = len;
-            goto done;
-        }
-
-        // Standard printable character, or 37.2's UTF-8: a lead byte starts
-        // a character, continuation bytes complete it, and only a whole one
-        // is inserted -- the cursor never stands inside a character. A
-        // continuation byte with no lead before it, or a byte that cannot
-        // start a character, is dropped.
-        {
-            unsigned char uc = (unsigned char)c;
-            char seq[4];
-            int n = 0;
-            if (uc >= 32 && uc <= 126) {
-                st->pend_need = 0;
-                seq[0] = c;
-                n = 1;
-            } else if (u8_cont(c)) {
-                if (st->pend_need > 0) {
-                    st->pend[st->pend_len++] = c;
-                    if (--st->pend_need == 0) {
-                        for (int i = 0; i < st->pend_len; i++) seq[i] = st->pend[i];
-                        n = st->pend_len;
-                    }
-                }
-            } else if (uc >= 0xc2 && uc <= 0xf4) {
-                st->pend[0] = c;
-                st->pend_len = 1;
-                st->pend_need = uc >= 0xf0 ? 3 : uc >= 0xe0 ? 2 : 1;
-            }
-            if (n > 0 && len + n < max_len) {
-                for (int i = len - 1; i >= pos; i--) out_buf[i + n] = out_buf[i];
-                for (int i = 0; i < n; i++) out_buf[pos + i] = seq[i];
-                pos += n;
-                len += n;
-                out_buf[len] = '\0';
-                if (pos == len) {
-                    for (int i = 0; i < n; i++) console_putc(seq[i]);
-                } else {
-                    redraw_line(prompt, out_buf, len, pos);
-                }
-            }
-        }
-    
-done:
-    st->len = len;
-    st->pos = pos;
-    st->hist_nav_idx = hist_nav_idx;
-    return ret;
+static void line_show(const line_state_t *st, const char *prompt, const char *buf) {
+    if (st->mark >= 0 && st->mark != st->pos) {
+        int a = st->mark < st->pos ? st->mark : st->pos, b = st->mark < st->pos ? st->pos : st->mark;
+        redraw_line_sel(prompt, buf, st->len, st->pos, a, b);
+    } else {
+        redraw_line(prompt, buf, st->len, st->pos);
+    }
 }
 
-int readline_interactive(const char *prompt, char *out_buf, int max_len) {
+/* A word is a run of letters, digits, '_' or any non-ASCII character. */
+static bool word_byte(char c) {
+    unsigned char u = (unsigned char)c;
+    return u >= 0x80u || (u >= '0' && u <= '9') || (u >= 'a' && u <= 'z') ||
+           (u >= 'A' && u <= 'Z') || u == '_';
+}
+
+static int word_left(const char *buf, int pos) {
+    while (pos > 0 && !word_byte(buf[pos - 1])) pos--;
+    while (pos > 0 && word_byte(buf[pos - 1])) pos--;
+    return pos;
+}
+
+static int word_right(const char *buf, int len, int pos) {
+    while (pos < len && !word_byte(buf[pos])) pos++;
+    while (pos < len && word_byte(buf[pos])) pos++;
+    return pos;
+}
+
+static bool sel_range(const line_state_t *st, int *a, int *b) {
+    if (st->mark < 0 || st->mark == st->pos) return false;
+    *a = st->mark < st->pos ? st->mark : st->pos;
+    *b = st->mark < st->pos ? st->pos : st->mark;
+    return true;
+}
+
+/* Deletes the selection, if there is one; true if it did. */
+static bool sel_delete(line_state_t *st, char *buf) {
+    int a, b;
+    if (!sel_range(st, &a, &b)) return false;
+    line_cut(buf, &st->len, a, b);
+    st->pos = a;
+    st->mark = -1;
+    return true;
+}
+
+/* Inserts `n` bytes at the cursor, as far as the line has room, dropping
+ * controls (a paste may carry newlines and tabs; they become spaces). Never
+ * stops inside a UTF-8 character. */
+static void line_insert(line_state_t *st, char *buf, int max_len, const char *s, int n) {
+    for (int i = 0; i < n;) {
+        int k = 1;
+        unsigned char c = (unsigned char)s[i];
+        if (c >= 0xc0u) k = c >= 0xf0u ? 4 : c >= 0xe0u ? 3 : 2;
+        if (i + k > n) break;
+        char one[4];
+        int m = k;
+        if (k == 1) {
+            if (c == '\n' || c == '\r' || c == '\t') one[0] = ' ';
+            else if (c < 0x20u || c == 0x7fu || c >= 0x80u) { i++; continue; }
+            else one[0] = (char)c;
+        } else {
+            for (int j = 0; j < k; j++) one[j] = s[i + j];
+        }
+        if (st->len + m >= max_len) break;
+        for (int j = st->len - 1; j >= st->pos; j--) buf[j + m] = buf[j];
+        for (int j = 0; j < m; j++) buf[st->pos + j] = one[j];
+        st->pos += m;
+        st->len += m;
+        i += k;
+    }
+    buf[st->len] = '\0';
+}
+
+static void clip_copy(const line_state_t *st, const char *buf) {
+    int a, b;
+    if (sel_range(st, &a, &b)) (void)clipboard_set(buf + a, (uint32_t)(b - a));
+}
+
+static void clip_paste(line_state_t *st, char *buf, int max_len) {
+    uint32_t n;
+    const char *s = clipboard_data(&n);
+    (void)sel_delete(st, buf);
+    if (s) line_insert(st, buf, max_len, s, (int)n);
+}
+
+/* A movement: with Shift it extends the selection (setting the mark first);
+ * without, it ends a transient one. */
+static void line_move(line_state_t *st, int to, bool shift) {
+    if (shift) {
+        if (st->mark < 0) { st->mark = st->pos; st->mark_sticky = false; }
+    } else if (!st->mark_sticky) {
+        st->mark = -1;
+    }
+    st->pos = to;
+}
+
+static void hist_show(line_state_t *st, char *out_buf, int max_len, int idx) {
+    if (idx == history_count) safe_strncpy(out_buf, st->temp_saved_line, max_len);
+    else safe_strncpy(out_buf, history_stack[idx], max_len);
+    st->hist_nav_idx = idx;
+    st->len = (int)strlen(out_buf);
+    st->pos = st->len;
+    st->mark = -1;
+}
+
+/* Encodes a code point as UTF-8 into out; returns the bytes. */
+static int utf8_encode(uint32_t cp, char *out) {
+    if (cp < 0x80u) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800u) { out[0] = (char)(0xc0u | (cp >> 6)); out[1] = (char)(0x80u | (cp & 0x3fu)); return 2; }
+    if (cp < 0x10000u) {
+        out[0] = (char)(0xe0u | (cp >> 12)); out[1] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+        out[2] = (char)(0x80u | (cp & 0x3fu));
+        return 3;
+    }
+    out[0] = (char)(0xf0u | (cp >> 18)); out[1] = (char)(0x80u | ((cp >> 12) & 0x3fu));
+    out[2] = (char)(0x80u | ((cp >> 6) & 0x3fu)); out[3] = (char)(0x80u | (cp & 0x3fu));
+    return 4;
+}
+
+/* Consumes one key. Returns the completed line's length, LINE_INCOMPLETE
+ * while the line is still being edited, or LINE_CANCELLED (Esc or Ctrl-G
+ * with nothing selected, when the options allow it). */
+static int line_key(line_state_t *st, key_event_t k, const char *prompt,
+                    char *out_buf, int max_len, const readline_opts_t *o) {
+    uint32_t key = k.key;
+    bool shift = (k.mods & KMOD_SHIFT) != 0, alt = (k.mods & KMOD_ALT) != 0;
+    bool ctrl = (k.mods & KMOD_CTRL) != 0, super = (k.mods & KMOD_SUPER) != 0;
+    int len = st->len, pos = st->pos;
+    (void)len;
+
+    if (super) {
+        if (key == 'c') { clip_copy(st, out_buf); st->mark = -1; }
+        else if (key == 'x') { clip_copy(st, out_buf); (void)sel_delete(st, out_buf); }
+        else if (key == 'v') clip_paste(st, out_buf, max_len);
+        else if (key == 'a') { st->mark = 0; st->mark_sticky = true; st->pos = st->len; }
+        else return LINE_INCOMPLETE;            /* other Super keys: not ours */
+        line_show(st, prompt, out_buf);
+        return LINE_INCOMPLETE;
+    }
+    if (alt) {
+        if (key == 'b' || key == 'B') line_move(st, word_left(out_buf, pos), false);
+        else if (key == 'f' || key == 'F') line_move(st, word_right(out_buf, st->len, pos), false);
+        else if (key == 'w' || key == 'W') { clip_copy(st, out_buf); st->mark = -1; }
+        else if (key == 0x7f || key == 0x08) {
+            int from = word_left(out_buf, pos);
+            line_cut(out_buf, &st->len, from, pos);
+            st->pos = from;
+            st->mark = -1;
+        } else if (key == 'd' || key == 'D') {
+            line_cut(out_buf, &st->len, pos, word_right(out_buf, st->len, pos));
+            st->mark = -1;
+        } else if (key == KEY_LEFT) line_move(st, word_left(out_buf, pos), shift);
+        else if (key == KEY_RIGHT) line_move(st, word_right(out_buf, st->len, pos), shift);
+        else return LINE_INCOMPLETE;
+        line_show(st, prompt, out_buf);
+        return LINE_INCOMPLETE;
+    }
+
+    switch (key) {
+    case KEY_LEFT:
+        line_move(st, ctrl ? word_left(out_buf, pos) : u8_prev(out_buf, pos), shift);
+        break;
+    case KEY_RIGHT:
+        line_move(st, ctrl ? word_right(out_buf, st->len, pos) : u8_next(out_buf, st->len, pos), shift);
+        break;
+    case 0x02: line_move(st, u8_prev(out_buf, pos), false); break;                 /* Ctrl-B */
+    case 0x06: line_move(st, u8_next(out_buf, st->len, pos), false); break;        /* Ctrl-F */
+    case KEY_HOME: case 0x01: line_move(st, 0, shift); break;                      /* Ctrl-A */
+    case KEY_END:  case 0x05: line_move(st, st->len, shift); break;                /* Ctrl-E */
+    case KEY_UP: case 0x10:                                                         /* Ctrl-P */
+        if (o->no_history) return LINE_INCOMPLETE;
+        if (st->hist_nav_idx > 0) {
+            if (st->hist_nav_idx == history_count) safe_strncpy(st->temp_saved_line, out_buf, MAX_LINE_LEN);
+            hist_show(st, out_buf, max_len, st->hist_nav_idx - 1);
+        }
+        break;
+    case KEY_DOWN: case 0x0E:                                                       /* Ctrl-N */
+        if (o->no_history) return LINE_INCOMPLETE;
+        if (st->hist_nav_idx < history_count) hist_show(st, out_buf, max_len, st->hist_nav_idx + 1);
+        break;
+    case 0x00:                                                                      /* Ctrl-Space */
+        st->mark = pos;
+        st->mark_sticky = true;
+        break;
+    case 0x07: case 0x1b:                                                           /* Ctrl-G, Esc */
+        if (st->mark < 0 && o->cancel_on_esc) {
+            out_buf[0] = '\0';
+            return LINE_CANCELLED;
+        }
+        st->mark = -1;
+        break;
+    case 0x17: clip_copy(st, out_buf); (void)sel_delete(st, out_buf); break;     /* Ctrl-W */
+    case 0x19: clip_paste(st, out_buf, max_len); break;                           /* Ctrl-Y */
+    case 0x0B:                                                                      /* Ctrl-K */
+        if (pos < st->len) (void)clipboard_set(out_buf + pos, (uint32_t)(st->len - pos));
+        st->len = pos;
+        out_buf[st->len] = '\0';
+        st->mark = -1;
+        break;
+    case 0x04: case KEY_DELETE:                                                     /* Ctrl-D */
+        if (!sel_delete(st, out_buf) && pos < st->len) line_cut(out_buf, &st->len, pos, u8_next(out_buf, st->len, pos));
+        break;
+    case 0x08: case 0x7F:                                                           /* Backspace */
+        if (!sel_delete(st, out_buf) && pos > 0) {
+            int from = u8_prev(out_buf, pos);
+            line_cut(out_buf, &st->len, from, pos);
+            st->pos = from;
+        }
+        break;
+    case 0x0C:                                                                      /* Ctrl-L */
+        console_puts("\033[2J\033[H");
+        break;
+    case 0x18: {                                                                    /* Ctrl-X */
+        if (o->no_history) return LINE_INCOMPLETE;
+        key_event_t k2 = keyseq_read_console();
+        if (k2.key == 0x0D || k2.key == 0x0A || k2.key == 0x05 || k2.key == 'm' || k2.key == 'M' ||
+            k2.key == 'e' || k2.key == 'E') {
+            int mlen = edit_multiline_box("/ram0/system/scratch.lisp", out_buf, max_len);
+            add_history(out_buf);
+            return mlen;
+        }
+        return LINE_INCOMPLETE;
+    }
+    case '\r': case '\n':
+        if (!o->no_newline) console_puts("\n");
+        out_buf[st->len] = '\0';
+        if (!o->no_history) add_history(out_buf);
+        /* A Ctrl-C typed while composing this line cancelled nothing --
+         * there was no command running to cancel. Clear it here, as the
+         * line is handed over, so it cannot be mistaken for an interrupt
+         * aimed at the command about to run. Ctrl-C pressed *during* that
+         * command still latches normally, which is the case that matters. */
+        console_interrupt_clear();
+        return st->len;
+    default:
+        if (key >= 0x20 && key != 0x7f && key < 0x110000u && !ctrl) {
+            char enc[4];
+            int n = utf8_encode(key, enc);
+            bool sel = sel_delete(st, out_buf);
+            bool at_end = st->pos == st->len;
+            line_insert(st, out_buf, max_len, enc, n);
+            if (at_end && !sel && st->mark < 0) {
+                /* The common case, typing at the end: echo, no redraw. */
+                for (int i = 0; i < n; i++) console_putc(enc[i]);
+                return LINE_INCOMPLETE;
+            }
+            break;
+        }
+        return LINE_INCOMPLETE;                 /* Tab, other controls: nothing */
+    }
+    line_show(st, prompt, out_buf);
+    return LINE_INCOMPLETE;
+}
+
+static const readline_opts_t g_shell_opts = { false, false, false };
+
+static void (*g_idle)(void);
+
+void readline_set_idle(void (*fn)(void)) {
+    g_idle = fn;
+}
+
+/* The next key, giving the idle hook its turns while none is there. */
+static key_event_t next_key(void) {
+    if (g_idle) {
+        uint64_t next = time_get_us() + 100000u;
+        while (!console_has_char()) {
+            if (time_get_us() >= next) {
+                g_idle();
+                next = time_get_us() + 100000u;
+            }
+            sched_yield();
+        }
+    }
+    return keyseq_read_console();
+}
+
+int readline_ex(const char *prompt, char *out_buf, int max_len, const readline_opts_t *opts) {
     /* Before the prompt is drawn (Y5c). The prompt reaches the console
      * through console_putc(), which no longer drains -- see kernel/console.c
      * -- so without this the tail of a command's diagnostics lands after the
      * next prompt, or in front of the next command's output where it reads as
      * that command's. */
     klog_drain();
-
+    const readline_opts_t *o = opts ? opts : &g_shell_opts;
     line_state_t st;
     line_begin(&st, prompt, out_buf);
-
     for (;;) {
-        int r = line_feed(&st, console_getc(), prompt, out_buf, max_len);
+        int r = line_key(&st, next_key(), prompt, out_buf, max_len, o);
+        if (r == LINE_CANCELLED) return -1;
         if (r != LINE_INCOMPLETE) return r;
     }
+}
+
+int readline_interactive(const char *prompt, char *out_buf, int max_len) {
+    return readline_ex(prompt, out_buf, max_len, NULL);
 }
 
 /* Non-blocking counterpart. Consumes whatever input is already available and
@@ -916,6 +942,10 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
  * line being typed into it by definition. readline_poll_reset() abandons a
  * half-typed line for a caller that gives up on one.
  *
+ * A key that arrives as several bytes is read whole once its first byte is
+ * there (kernel/keyseq.c): a terminal sends a sequence in one burst, so the
+ * wait is for bytes already in flight, never for the user.
+ *
  * The prompt is drawn once, when a fresh line starts. */
 static line_state_t g_poll_state;
 static bool         g_poll_in_progress = false;
@@ -927,8 +957,8 @@ int readline_poll(const char *prompt, char *out_buf, int max_len) {
     }
 
     while (console_has_char()) {
-        int r = line_feed(&g_poll_state, console_getc(), prompt, out_buf, max_len);
-        if (r != LINE_INCOMPLETE) {
+        int r = line_key(&g_poll_state, keyseq_read_console(), prompt, out_buf, max_len, &g_shell_opts);
+        if (r != LINE_INCOMPLETE && r != LINE_CANCELLED) {
             g_poll_in_progress = false;
             return r;
         }

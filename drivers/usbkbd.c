@@ -80,6 +80,33 @@ static const char k_keypad[0x64 - 0x54] = {
 
 #define MOD_CTRL  0x11u     /* left or right */
 #define MOD_SHIFT 0x22u
+#define MOD_ALT   0x44u     /* 37.5a */
+#define MOD_GUI   0x88u     /* Super, Cmd, the Windows key */
+
+/* xterm's modifier parameter: 1 + Shift 1 + Alt 2 + Ctrl 4 + Super 8. */
+static unsigned xterm_mod(uint32_t mods) {
+    return 1u + ((mods & MOD_SHIFT) ? 1u : 0u) + ((mods & MOD_ALT) ? 2u : 0u) +
+           ((mods & MOD_CTRL) ? 4u : 0u) + ((mods & MOD_GUI) ? 8u : 0u);
+}
+
+static uint32_t put_dec(uint8_t *out, unsigned v) {
+    char tmp[4];
+    uint32_t n = 0, k = 0;
+    do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v && n < 4u);
+    while (n) out[k++] = (uint8_t)tmp[--n];
+    return k;
+}
+
+/* ESC [ a ; m final -- a navigation key with modifiers, or CSI-u. */
+static uint32_t seq_mod(uint8_t *out, unsigned a, unsigned m, char final) {
+    uint32_t n = 0;
+    out[n++] = 0x1b; out[n++] = '[';
+    n += put_dec(out + n, a);
+    out[n++] = ';';
+    n += put_dec(out + n, m);
+    out[n++] = (uint8_t)final;
+    return n;
+}
 
 static uint32_t seq(uint8_t *out, char final, char digit) {
     out[0] = 0x1b; out[1] = '[';
@@ -91,9 +118,18 @@ static uint32_t seq(uint8_t *out, char final, char digit) {
 /* The bytes one usage produces with modifiers `mods`; 0 for none. */
 static uint32_t usage_bytes(uint32_t u, uint32_t mods, uint8_t *out) {
     bool shift = (mods & MOD_SHIFT) != 0, ctrl = (mods & MOD_CTRL) != 0;
+    bool alt = (mods & MOD_ALT) != 0, gui = (mods & MOD_GUI) != 0;
     if (u >= 0x04 && u <= 0x38) {
+        if (gui) {                              /* CSI-u, the unshifted key */
+            char base = k_us_plain[u - 0x04];
+            return base ? seq_mod(out, (unsigned char)base, xterm_mod(mods), 'u') : 0;
+        }
         char c = shift ? k_us_shift[u - 0x04] : k_us_plain[u - 0x04];
         if (!c) return 0;
+        if (ctrl && c == ' ') {                 /* Ctrl-Space: NUL, the Emacs mark */
+            out[0] = 0;
+            return 1;
+        }
         if (ctrl) {
             if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 1);
             else if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 1);
@@ -102,10 +138,28 @@ static uint32_t usage_bytes(uint32_t u, uint32_t mods, uint8_t *out) {
             else if (c == ']') c = 0x1d;
             else if (c != '\r' && c != 0x7f && c != '\t' && c != 0x1b) return 0;
         }
+        if (alt) {                              /* Alt: an ESC prefix */
+            out[0] = 0x1b;
+            out[1] = (uint8_t)c;
+            return 2;
+        }
         out[0] = (uint8_t)c;
         return 1;
     }
     if (u >= 0x54 && u <= 0x63) { out[0] = (uint8_t)k_keypad[u - 0x54]; return 1; }
+    if (mods & (MOD_SHIFT | MOD_ALT | MOD_CTRL | MOD_GUI)) {
+        unsigned m = xterm_mod(mods);
+        if (u == 0x52) return seq_mod(out, 1, m, 'A');
+        if (u == 0x51) return seq_mod(out, 1, m, 'B');
+        if (u == 0x4f) return seq_mod(out, 1, m, 'C');
+        if (u == 0x50) return seq_mod(out, 1, m, 'D');
+        if (u == 0x4a) return seq_mod(out, 1, m, 'H');
+        if (u == 0x4d) return seq_mod(out, 1, m, 'F');
+        if (u == 0x49) return seq_mod(out, 2, m, '~');
+        if (u == 0x4c) return seq_mod(out, 3, m, '~');
+        if (u == 0x4b) return seq_mod(out, 5, m, '~');
+        if (u == 0x4e) return seq_mod(out, 6, m, '~');
+    }
     if (u == 0x52) return seq(out, 'A', 0);     /* Up */
     if (u == 0x51) return seq(out, 'B', 0);     /* Down */
     if (u == 0x4f) return seq(out, 'C', 0);     /* Right */
@@ -266,6 +320,22 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
         if (u == x->repeat_usage) x->repeat_usage = 0;
         return 0;
     }
+    /* 37.5a: the screen's keys, before anything else sees them. */
+    if ((x->mods & MOD_GUI) && !(x->mods & (MOD_CTRL | MOD_ALT))) {
+        bool sh = (x->mods & MOD_SHIFT) != 0;
+        /* [ and ] move the split's divider left and right (the owner's
+         * reading on the panel -- the first version made them "text
+         * narrower/wider", which reverses when the panes swap); \ swaps. */
+        uint8_t hk = (!sh && u == 0x2f) ? USBKBD_HOTKEY_LEFT
+                   : (!sh && u == 0x30) ? USBKBD_HOTKEY_RIGHT
+                   : (!sh && u == 0x31) ? USBKBD_HOTKEY_SWAP
+                   : (sh && u == 0x20)  ? USBKBD_HOTKEY_SCREENSHOT : USBKBD_HOTKEY_NONE;
+        if (hk) {
+            x->hotkey = hk;
+            x->repeat_usage = 0;
+            return 0;
+        }
+    }
     if (u == 0x39) {                            /* Caps Lock: compose, or cancel it */
         x->compose = x->compose ? 0 : 1;
         x->repeat_usage = 0;
@@ -299,6 +369,11 @@ uint32_t usbkbd_repeat(usbkbd_xlate_t *x, uint32_t now_ms, uint8_t *out) {
 }
 
 /* --- selftest (kernel only) --------------------------------------------- */
+
+static bool bytes_eq(const uint8_t *a, const uint8_t *b, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return false;
+    return true;
+}
 
 int usbkbd_selftest(void) {
     int fails = 0;
@@ -426,6 +501,35 @@ int usbkbd_selftest(void) {
           m == 0 && m3 == 0 && m4 == 0 && c.compose == 0 && m5 == 1 && o[0] == 'a');
     (void)KEY(0x39, 0); (void)KEY(0x34, 0x02); m = KEY(0x28, 0);
     CHECK("compose: Enter cancels and is still Enter", m == 1 && o[0] == '\r' && c.compose == 0);
+
+    /* 37.5a: the modifier encodings kernel/keyseq.c reads. HID modifier
+     * bits: LCtrl 0x01, LShift 0x02, LAlt 0x04, LGUI 0x08. */
+#define SEQ_IS(n_, str_) ((n_) == sizeof(str_) - 1u && bytes_eq(o, (const uint8_t *)(str_), (n_)))
+    usbkbd_xlate_t k = { 0 };
+    c = k;
+    m = KEY(0x1a, 0x04);                        /* Alt-w */
+    CHECK("Alt-w -> ESC w", SEQ_IS(m, "\x1b" "w"));
+    m = KEY(0x50, 0x02);                        /* Shift-Left */
+    CHECK("Shift-Left -> ESC [ 1 ; 2 D", SEQ_IS(m, "\x1b[1;2D"));
+    m = KEY(0x4f, 0x01);                        /* Ctrl-Right */
+    CHECK("Ctrl-Right -> ESC [ 1 ; 5 C", SEQ_IS(m, "\x1b[1;5C"));
+    m = KEY(0x4c, 0x02);                        /* Shift-Delete */
+    CHECK("Shift-Delete -> ESC [ 3 ; 2 ~", SEQ_IS(m, "\x1b[3;2~"));
+    m = KEY(0x06, 0x08);                        /* Super-c */
+    CHECK("Super-c -> CSI-u ESC [ 99 ; 9 u", SEQ_IS(m, "\x1b[99;9u"));
+    m = KEY(0x1d, 0x0a);                        /* Super-Shift-z */
+    CHECK("Super-Shift-z -> ESC [ 122 ; 10 u", SEQ_IS(m, "\x1b[122;10u"));
+    m = KEY(0x2c, 0x01);                        /* Ctrl-Space */
+    CHECK("Ctrl-Space -> NUL", m == 1 && o[0] == 0);
+    m = KEY(0x2f, 0x08);
+    uint8_t hk1 = c.hotkey; c.hotkey = 0;
+    uint32_t m2 = KEY(0x30, 0x08);
+    uint8_t hk2 = c.hotkey; c.hotkey = 0;
+    uint32_t m6 = KEY(0x20, 0x0a);              /* Super-Shift-3 */
+    CHECK("Super+[ / ] / Shift+3 are the screen's: no bytes, a hotkey each",
+          m == 0 && m2 == 0 && m6 == 0 && hk1 == USBKBD_HOTKEY_LEFT &&
+          hk2 == USBKBD_HOTKEY_RIGHT && c.hotkey == USBKBD_HOTKEY_SCREENSHOT);
+#undef SEQ_IS
 #undef KEY
 #undef CHECK
     cprintf("%s\n", fails ? "USBKBD_SELFTEST_FAIL" : "USBKBD_SELFTEST_OK");

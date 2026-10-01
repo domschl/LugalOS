@@ -15,7 +15,10 @@
 ; Each step is drawn as a line from the last point, so the curve stays
 ; unbroken. Ctrl-C stops it; it redraws itself when the canvas comes back.
 
-(define (lz-sx x w) (+ (quotient w 2) (quotient (* x 9) 1000)))
+; x spans about +-22 units: scaled to the canvas's width, so the butterfly
+; fits every split (9 px a unit on the 469-px canvas). x * w stays below
+; 2^31: |x| < 30 000, w < 800.
+(define (lz-sx x w) (+ (quotient w 2) (quotient (* x w) 52000)))
 (define (lz-sy z h) (- h 8 (quotient (* z 8) 1000)))
 
 (define (lz-run x y z px py n w h)
@@ -29,11 +32,16 @@
         (lz-run x2 y2 z2 sx sy (- n 1) w h))
       'done))
 
+; The layout is set once, by (lorenz steps); the redraw function only draws,
+; so a split the user has resized since (Super+[ / Super+]) stays as it is.
 (define (lorenz steps)
   (canvas-window 'split)
+  (canvas-on-redraw (lambda () (lorenz-draw steps)))
+  (lorenz-draw steps))
+
+(define (lorenz-draw steps)
   (canvas-title "Lorenz attractor")
   (canvas-fill 0)
-  (canvas-on-redraw (lambda () (lorenz steps)))
   (let* ((size (canvas-size))
          (w (car size))
          (h (car (cdr size))))

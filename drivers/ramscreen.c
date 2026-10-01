@@ -42,7 +42,17 @@ static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     return true;
 }
 
-static const console_screen_t g_ramscreen = { .canvas = rs_canvas };
+/* 37.5a: what a screenshot saves -- once something has drawn. */
+static bool rs_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride) {
+    if (!g_rs) return false;
+    *fb = g_rs->cv.fb;
+    *w = RS_W;
+    *h = RS_H;
+    *stride = RS_W / 8u;
+    return true;
+}
+
+static const console_screen_t g_ramscreen = { .canvas = rs_canvas, .pixels = rs_pixels };
 
 const console_screen_t *ramscreen_console(void) {
     return &g_ramscreen;

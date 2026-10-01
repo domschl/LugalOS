@@ -1,4 +1,6 @@
 #include "kernel/console.h"
+#include "kernel/screenshot.h"
+#include "drivers/screen.h"
 #include "kernel/klog.h"
 #include "kernel/chan.h"
 #include "kernel/device.h"
@@ -57,6 +59,36 @@ void console_set_title(const char *title) {
 
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     return g_screen && g_screen->canvas && g_screen->canvas(req, n, reply);
+}
+
+bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride) {
+    return g_screen && g_screen->pixels && g_screen->pixels(fb, w, h, stride);
+}
+
+static volatile unsigned g_hotkey;
+
+void console_hotkey(unsigned code) {
+    g_hotkey = code;
+}
+
+/* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
+ * to the SD card (a screenshot), neither of which belongs inside a print. */
+static void run_hotkey(void) {
+    unsigned hk = g_hotkey;
+    if (!hk) return;
+    g_hotkey = 0;
+    if (hk == CONSOLE_HOTKEY_SCREENSHOT) {
+        char path[48];
+        (void)screenshot_save(NULL, path, sizeof(path));
+        return;
+    }
+    uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
+    if (hk == CONSOLE_HOTKEY_SWAP) {
+        req[0] = 'X';
+        (void)console_canvas(req, 1, reply);
+        return;
+    }
+    (void)console_canvas(req, 2, reply);
 }
 
 void console_bind(console_putc_fn putc) {
@@ -364,6 +396,7 @@ bool console_has_char(void) {
      * the screen first (uart_getc() flushes its own batch the same way). */
     screen_flush();
     console_pump();
+    run_hotkey();
     uintptr_t f = irq_save();
     bool queued = (g_pb_head != g_pb_tail);
     irq_restore(f);
@@ -383,6 +416,7 @@ char console_getc(void) {
     for (;;) {
         screen_flush();
         console_pump();
+        run_hotkey();
         int c = pushback_get();
         if (c >= 0) return (char)c;
         sched_yield();

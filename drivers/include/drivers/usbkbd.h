@@ -44,8 +44,15 @@ int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint3
 
 /* --- Key events to terminal bytes (36.9): kernel side, not U-mode ------------
  *
- * US layout only (plan §4.4): Shift and Ctrl change a byte; Alt and GUI are
- * ignored. **Caps Lock is the compose key** (37.2,
+ * US layout only (plan §4.4): Shift and Ctrl change a byte. Since 37.5a
+ * (plan/phase37_screen_layouts_and_apps.md) the other modifiers send what a
+ * modern terminal sends, so that kernel/keyseq.c reads the panel's keyboard
+ * and a host's terminal alike: Alt is an ESC prefix; Shift, Alt, Ctrl or
+ * Super with an arrow, Home, End or a ~ key is xterm's ESC [ 1 ; m X or
+ * ESC [ n ; m ~ (m = 1 + Shift 1 + Alt 2 + Ctrl 4 + Super 8); Super with
+ * anything else is CSI-u, ESC [ cp ; m u with the unshifted key's code
+ * point; Ctrl-Space is NUL. Super+[ , Super+] , Super+\\ and Super+Shift+3
+ * are the screen's (USBKBD_HOTKEY_*) and send nothing. **Caps Lock is the compose key** (37.2,
  * plan/phase37_screen_layouts_and_apps.md §3.2): Caps, then two keys, gives
  * one character as UTF-8 -- `Caps " a` is ä, `Caps = e` is € -- by X11's
  * compose conventions, in either order. An unknown pair gives nothing; Esc
@@ -59,7 +66,7 @@ int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint3
  * ms, every USBKBD_REPEAT_EVERY ms, until it (or anything else) changes. */
 #define USBKBD_REPEAT_DELAY 500u
 #define USBKBD_REPEAT_EVERY  33u
-#define USBKBD_SEQ_MAX        4u    /* the longest sequence: ESC [ n ~, or a 3-byte character */
+#define USBKBD_SEQ_MAX       10u    /* the longest sequence: CSI-u, ESC [ 127 ; 16 u */
 
 typedef struct {
     uint8_t  mods;          /* current modifier byte */
@@ -67,7 +74,19 @@ typedef struct {
     uint8_t  repeat_usage;  /* 0: nothing repeating */
     uint8_t  compose_first; /* the first key's character, in state 2 */
     uint32_t repeat_at;     /* ms: when it next repeats */
+    uint8_t  hotkey;        /* 37.5a: USBKBD_HOTKEY_*, for the caller to take */
+    uint8_t  _pad[3];
 } usbkbd_xlate_t;
+
+/* 37.5a: keys the screen takes before any program sees them -- they
+ * produce no bytes, only `hotkey`, which the caller hands to the console. */
+#define USBKBD_HOTKEY_NONE       0u
+#define USBKBD_HOTKEY_LEFT       1u     /* Super+[ : the split's divider one step left */
+#define USBKBD_HOTKEY_RIGHT      2u     /* Super+] : one step right */
+#define USBKBD_HOTKEY_SCREENSHOT 3u     /* Super+Shift+3, as on the Mac */
+#define USBKBD_HOTKEY_SWAP       4u     /* Super+\\ : canvas and text change sides */
+/* The same numbers as kernel/console.h's CONSOLE_HOTKEY_*, which the
+ * keyboard source hands them to unchanged. */
 
 /* The bytes for one event at time `now_ms` (for typematic); returns how many
  * were written to out[USBKBD_SEQ_MAX], 0 for keys that produce nothing. */

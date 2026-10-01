@@ -107,10 +107,11 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     unsigned rows = SCREEN_TEXT_ROWS(scr->cv.h);
     int y1 = SCREEN_TEXT_Y + 16 * (int)rows + 1;
     int col0 = 1, cols = scr->full_cols;
-    if (layout == SCREEN_LAYOUT_SPLIT_WIDE || layout == SCREEN_LAYOUT_SPLIT_HALF) {
-        cols = layout == SCREEN_LAYOUT_SPLIT_WIDE ? 38 : 48;
-        col0 = C - 1 - cols;
-        if (8 * col0 - 14 < 4 + 24) return false;          /* no room for a canvas */
+    if (layout == SCREEN_LAYOUT_SPLIT_WIDE || layout == SCREEN_LAYOUT_SPLIT_HALF ||
+        layout == SCREEN_LAYOUT_SPLIT_NARROW) {
+        cols = layout == SCREEN_LAYOUT_SPLIT_WIDE ? 38 : layout == SCREEN_LAYOUT_SPLIT_HALF ? 48 : 64;
+        col0 = scr->swapped ? 1 : C - 1 - cols;
+        if (8 * (C - 1 - cols) - 14 < 4 + 24) return false;   /* no room for a canvas */
     } else if (layout != SCREEN_LAYOUT_TEXT && layout != SCREEN_LAYOUT_CANVAS) {
         return false;
     }
@@ -119,8 +120,14 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     scr->fx1 = (int16_t)(8 * (col0 + cols) + 2);
     scr->fy0 = SCREEN_TILE_Y;
     scr->fy1 = (int16_t)y1;
-    scr->cx0 = 4;
-    scr->cx1 = (int16_t)(layout == SCREEN_LAYOUT_CANVAS ? 8 * (C - 1) + 2 : 8 * col0 - 14);
+    bool split = layout != SCREEN_LAYOUT_TEXT && layout != SCREEN_LAYOUT_CANVAS;
+    if (split && scr->swapped) {                 /* 37.5a: text left, canvas right */
+        scr->cx0 = (int16_t)(scr->fx1 + 10);
+        scr->cx1 = (int16_t)(8 * (C - 1) + 2);
+    } else {
+        scr->cx0 = 4;
+        scr->cx1 = (int16_t)(layout == SCREEN_LAYOUT_CANVAS ? 8 * (C - 1) + 2 : 8 * col0 - 14);
+    }
     scr->cy0 = SCREEN_TILE_Y;
     scr->cy1 = (int16_t)y1;
     canvas1_window(&scr->cc, &scr->cv, scr->cx0 + 1, scr->cy0 + 17,
@@ -143,6 +150,8 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     canvas1_init(&scr->cv, fb, stride, w, h);
     scr->full_cols = (uint8_t)SCREEN_TEXT_COLS(w);
     scr->damage = 0;
+    scr->locked = 0;
+    scr->swapped = 0;
     const char *name = "LugalOS";
     unsigned i = 0;
     for (; name[i] && i < SCREEN_NAME_MAX - 1u; i++) scr->name[i] = name[i];
@@ -191,6 +200,7 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
      * damage and call it again, for ever. */
     if (layout == scr->layout) return true;
     if (!place(scr, layout)) return false;
+    if (layout == SCREEN_LAYOUT_TEXT) scr->locked = 0;
     draw_all(scr);
     return true;
 }
@@ -227,6 +237,37 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         for (uint32_t i = 0; i < len; i++) scr->ctitle[i] = (char)req[1u + i];
         scr->ctitle[len] = '\0';
         if (has_canvas(scr)) draw_titlebar(&scr->cv, scr->cx0, scr->cy0, scr->cx1, scr->ctitle);
+    } else if (op == 'w') {
+        /* The divider's five places, from text only to canvas only, with
+         * the canvas on the left; swapped, the same places mirrored.
+         * Computed, not a table: a const table is .rodata, outside the
+         * lcdterm task's domain. */
+        int dir = n >= 2 ? (int)(int8_t)req[1] : 0;
+        int at = scr->layout == SCREEN_LAYOUT_TEXT ? 0
+               : scr->layout == SCREEN_LAYOUT_SPLIT_NARROW ? 1
+               : scr->layout == SCREEN_LAYOUT_SPLIT_HALF ? 2
+               : scr->layout == SCREEN_LAYOUT_SPLIT_WIDE ? 3 : 4;
+        int to = at + (scr->swapped ? -dir : dir);
+        unsigned next = to == 0 ? SCREEN_LAYOUT_TEXT : to == 1 ? SCREEN_LAYOUT_SPLIT_NARROW
+                      : to == 2 ? SCREEN_LAYOUT_SPLIT_HALF : to == 3 ? SCREEN_LAYOUT_SPLIT_WIDE
+                      : SCREEN_LAYOUT_CANVAS;
+        status = (scr->locked || dir == 0 || to < 0 || to > 4 || !screen_set_layout(scr, next)) ? 1 : 0;
+    } else if (op == 'X') {
+        if (scr->locked) {
+            status = 1;
+        } else if (scr->layout == SCREEN_LAYOUT_TEXT || scr->layout == SCREEN_LAYOUT_CANVAS) {
+            /* One pane full: show the other one full (the owner's call). */
+            status = screen_set_layout(scr, scr->layout == SCREEN_LAYOUT_TEXT ? SCREEN_LAYOUT_CANVAS
+                                                                          : SCREEN_LAYOUT_TEXT) ? 0 : 1;
+        } else {
+            scr->swapped = (uint8_t)!scr->swapped;
+            if (scr->layout != SCREEN_LAYOUT_TEXT && scr->layout != SCREEN_LAYOUT_CANVAS) {
+                (void)place(scr, scr->layout);
+                draw_all(scr);
+            }
+        }
+    } else if (op == 'K') {
+        scr->locked = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'S' || op == 0) {
         /* the reply is all */
     } else if (!has_canvas(scr)) {
@@ -270,4 +311,5 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     reply[4] = (uint8_t)cc->h; reply[5] = (uint8_t)(cc->h >> 8);
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
     reply[8] = scr->layout;
+    reply[9] = scr->swapped;
 }

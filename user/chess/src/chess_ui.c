@@ -2764,6 +2764,8 @@ static void canvas_board_begin(const Position *pos) {
         (void)console_canvas(req, 2, reply);
         req[0] = 'T'; req[1] = 'B'; req[2] = 'o'; req[3] = 'a'; req[4] = 'r'; req[5] = 'd';
         (void)console_canvas(req, 6, reply);
+        req[0] = 'K'; req[1] = 1;               /* 37.5a: the board fits only this split */
+        (void)console_canvas(req, 2, reply);
     }
     canvas_board_draw(pos);
 }

@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.4 done 2026-10-01, 37.5 next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.5a done 2026-10-01, 37.5b next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -689,8 +689,12 @@ already is. Settled with the owner, 2026-10-01:
   Both are allocated on first use.
 * **Resizable splits:** the text tile in three widths -- 38 columns (canvas
   469 px, today's `split-wide`, the one the chess board needs), 48 (both
-  ~385 px, today's `split-half`) and 64 (canvas 261 px, new) -- cycled with
-  **Super+[ and Super+]**, caught before any program sees them (the first,
+  ~385 px, today's `split-half`) and 64 (canvas 261 px, new) -- stepped with
+  **Super+[ and Super+]**, which move the divider left and right (Super+[
+  makes the text tile wider: the owner's reading on the panel, 37.5a)
+  through five places -- text only, the three splits, canvas only -- so they
+  also close a pane; **Super+\\** swaps the panes in a split, and with one
+  pane full shows the other one full (both the owner's, 37.5a), caught before any program sees them (the first,
   fixed piece of the tiling control deferred in §6; not Super+Left/Right,
   which are line start/end on the Mac). Lisp gains `'split-narrow`.
 * **Editing Lisp beside its canvas:** `e` runs in a split, evaluates the
@@ -726,6 +730,61 @@ Super+[ / ] cycle a Lisp demo's split through three widths, the demo
 redrawing each time, and the text tile's earlier output intact after a
 round trip. QEMU tests for the key parser (every sequence form), the
 clipboard's file and limit, and selection editing.
+
+**Done, 2026-10-01.** The owner used the clipboard in the shell, `ed` and
+the `lisp` REPL, and resized, closed and swapped a demo's split on the
+panel.
+
+* **Keys** (`drivers/usbkbd.c`): Alt as an ESC prefix; Shift, Alt, Ctrl or
+  Super with a navigation key as xterm's `ESC [ 1 ; m X` / `ESC [ n ; m ~`;
+  Super with anything else as CSI-u; Ctrl-Space as NUL. Super+[ , Super+] ,
+  Super+\\ and Super+Shift+3 are the screen's hotkeys: the keyboard hands
+  them to the console (`console_hotkey()`), which runs them from its next
+  input wait, outside every lock.
+* **One parser** (`kernel/keyseq.c`): UTF-8 code points, controls, Alt,
+  CSI and SS3 arrows, the `~` keys, xterm modifiers, CSI-u; a lone ESC is
+  one that nothing follows within 30 ms; anything unknown is consumed whole.
+* **The line editor** reads keys through it and has a **selection** (Shift
+  with a movement, or Ctrl-Space's sticky mark; reverse video; typing,
+  Backspace and Delete replace or remove it), **cut/copy/paste** in both
+  families (Ctrl-W / Alt-W / Ctrl-Y and Super+X / C / V, Super+A, Ctrl-K into
+  the clipboard), and **words** (Alt-B/F, Ctrl-arrows, Alt-Backspace, Alt-D).
+  `readline_ex()` with options serves `ed`, the `lisp` REPL and `e`'s
+  prompts, which all moved onto it; `e`'s own keys go through the parser
+  too (its editing is 37.5b's).
+* **The clipboard** (`kernel/clipboard.c`): 8 KB in two heap pages taken on
+  first use; `/dev/clipboard` (read; a write at 0 replaces, at the end
+  appends); `(clipboard)` and `(clipboard-set s)`.
+* **The divider** -- the owner's design, refined on the panel: Super+[ and
+  Super+] move it left and right through five places, text only, the
+  38/48/64-column splits, canvas only (so they close either pane);
+  **Super+\\** swaps the panes in a split, and with one pane full shows the
+  other one full. In Lisp: `'split-narrow`, `(canvas-swap)`. Chess locks the
+  layout. The text shadow keeps its full width, so a narrowed text tile
+  loses nothing written wide. While the shell waits for a key it checks for
+  a lost canvas ten times a second (`readline_set_idle()`), so a program's
+  redraw runs at once. **Found on the panel:** the first version's keys were
+  "text narrower/wider" (reversed once swapped), and the demos' redraw
+  functions reset the layout, undoing the resize; both fixed, and Lorenz
+  scales to the canvas's width.
+* **Screenshots** (the owner's request, `kernel/screenshot.c`):
+  `screenshot [file]`, `(screenshot)`, Super+Shift+3 -- a binary PBM, the
+  frame bit for bit, to `/sd0/screenshots/shot-NNN.pbm`. Checked on QEMU by
+  cutting one out of the SD image and opening it.
+* **The test harness:** `board_config()` retries a `/proc/config` read
+  that comes back empty -- the st7735/tm1638 "firmware predates" failures,
+  which were the first suite run after a flash, not host load.
+* **Logged, not reproduced:** one boot after a flash hung with USB up and
+  the panel never started (`plan/open_issues.md`).
+* **Cost:** static RAM +12 bytes on every RP2350 persona, +17 on the
+  terminal; the clipboard's two pages only once used. `lcdterm`'s section
+  12 228 of 16 384 bytes.
+* **Tests:** `keyselftest` (11 cases), `usbkbdselftest` +8 (the encodings
+  and hotkeys), `vtselftest` 32/32 (the divider's places, the swap, the
+  lock, full-width text after a round trip); runner tests for selection and
+  the clipboard through real key bytes in both families, the narrow split
+  and a screenshot. QEMU suite 396/396; `test_rp2350` 25/25 straight after
+  a flash.
 
 ### 37.5b — The editor: viewport, search, undo, the canvas beside it, and text mode
 

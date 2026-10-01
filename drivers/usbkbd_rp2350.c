@@ -472,6 +472,10 @@ static void kbd_fill(void) {
         uint32_t e = g_kbd.ev[g_ev_tail % USBKBD_EV_RING];
         g_ev_tail++;
         kq_put(out, usbkbd_translate(&g_xl, e, now, out));
+        if (g_xl.hotkey) {                      /* 37.5a: the screen's, not a program's */
+            console_hotkey(g_xl.hotkey);        /* USBKBD_HOTKEY_* == CONSOLE_HOTKEY_* */
+            g_xl.hotkey = USBKBD_HOTKEY_NONE;
+        }
     }
     /* A key held on a keyboard that has gone away must not repeat forever. */
     if (!kbd_present()) g_xl.repeat_usage = 0;

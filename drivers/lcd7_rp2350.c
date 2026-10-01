@@ -744,11 +744,24 @@ static bool lcd7_console_size(unsigned *cols, unsigned *rows) {
     return true;
 }
 
+/* 37.5a: the frame, for a screenshot. Read from the kernel while the task
+ * may be drawing: a screenshot taken mid-scroll shows that scroll half done,
+ * which is what was on the glass. */
+static bool lcd7_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride) {
+    if (!g_fb) return false;
+    *fb = (const uint8_t *)g_fb;
+    *w = LCD_H_ACTIVE;
+    *h = LCD_V_ACTIVE;
+    *stride = LCD_H_ACTIVE / 8u;
+    return true;
+}
+
 static const console_screen_t g_console_screen = {
     .flush     = lcd7_console_flush,
     .size      = lcd7_console_size,
     .set_title = lcd7_set_title,
     .canvas    = lcd7_canvas,
+    .pixels    = lcd7_pixels,
 };
 
 const console_screen_t *lcd7_console_screen(void) {

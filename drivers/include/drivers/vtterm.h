@@ -52,7 +52,8 @@
 
 typedef struct {
     fbtext_t  text;
-    uint16_t *shadow;           /* cols x rows cells, or NULL for none */
+    uint16_t *shadow;           /* shadow_cols x rows cells, or NULL for none */
+    uint16_t  shadow_cols;      /* 37.5a: the width vtterm_init() was given */
     bool      hidden;           /* 37.3b: draw into the shadow only */
     uint16_t  col, row;
     bool      pending_wrap;
@@ -81,10 +82,11 @@ void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *shadow);
 /* Redraws every cell from the shadow (a no-op without one), and the cursor. */
 void vtterm_repaint(vtterm_t *vt);
 
-/* 37.3b: the window moves and changes width (a layout change). The shadow is
- * re-laid out row by row: a narrower window keeps each row's left part and
- * loses the rest, a wider one pads with blanks; the cursor is clamped. The
- * rows count must not grow beyond what the shadow was sized for. Nothing is
+/* 37.3b: the window moves and changes width (a layout change). Since 37.5a
+ * the shadow keeps the width vtterm_init() gave it and the window shows its
+ * left part, so narrowing and widening again loses nothing written wide
+ * (only text written while narrow is wrapped at that width). The window is
+ * never wider than the shadow, nor taller; the cursor is clamped. Nothing is
  * drawn -- the caller repaints. */
 void vtterm_resize(vtterm_t *vt, const fbtext_t *text);
 

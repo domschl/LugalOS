@@ -17,6 +17,7 @@
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/clipboard.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
@@ -1572,7 +1573,11 @@ static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df
 #endif
 #endif
 };
-static const char *g_dev_names[4]  = { "uart", "null", "zero", "eeprom" };
+/* 37.5a: `clipboard` is the machine's clipboard (kernel/clipboard.h), as a
+ * file -- Plan 9's /dev/snarf -- so cat, Lisp's file functions and any 9P
+ * client read and write it with nothing new to learn. */
+static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboard" };
+#define DEV_COUNT ((int)(sizeof(g_dev_names) / sizeof(g_dev_names[0])))
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
  * into g_handles[]) on success or -1 on failure. /srv/ (message-oriented
@@ -1640,7 +1645,7 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
              * here?" probe) and getting back a false "yes, and it's a
              * 0-byte file" instead of the expected walk failure. */
             bool known = false;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < DEV_COUNT; i++) {
                 if (strcmp(rel, g_dev_names[i]) == 0) { known = true; break; }
             }
             if (!known) return -1;
@@ -1739,6 +1744,14 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 return at24c32_read((uint16_t)offset, (uint8_t *)buf, count);
             } else if (strcmp(h->rel_path, "null") == 0 || strcmp(h->rel_path, "zero") == 0) {
                 return 0;
+            } else if (strcmp(h->rel_path, "clipboard") == 0) {
+                uint32_t len;
+                const char *d = clipboard_data(&len);
+                if (!d || offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, d + offset, k);
+                return (int)k;
             }
             return -1;
         case MOUNT_REMOTE9P:
@@ -1772,6 +1785,8 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
                 return at24c32_write((uint16_t)offset, (const uint8_t *)buf, count);
             } else if (strcmp(h->rel_path, "null") == 0) {
                 return (int)count;
+            } else if (strcmp(h->rel_path, "clipboard") == 0) {
+                return clipboard_write_at((const char *)buf, count, (uint32_t)offset);
             }
             return -1;
         case MOUNT_REMOTE9P:
@@ -1825,12 +1840,17 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
             return 0;
         }
         case MOUNT_DEV: {
-            if (index >= 4) return -1;
+            if (index >= (uint32_t)DEV_COUNT) return -1;
             if (name_out && name_max > 0) {
                 strncpy(name_out, g_dev_names[index], name_max - 1);
                 name_out[name_max - 1] = '\0';
             }
-            if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
+            if (stat_out) {
+                uint32_t clen = 0;
+                if (strcmp(g_dev_names[index], "clipboard") == 0) (void)clipboard_data(&clen);
+                stat_out->size = clen;
+                stat_out->is_dir = 0;
+            }
             return 0;
         }
         case MOUNT_REMOTE9P: {
@@ -2187,7 +2207,7 @@ void vfs_ls(const char *path) {
         }
         case MOUNT_DEV:
             cprintf("\nDirectory Listing (/dev/):\n");
-            cprintf("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\n\n");
+            cprintf("Name        Type\n----------  ----\nuart        char device\nnull        bit bucket\nzero        null generator\neeprom      i2c eeprom (4KB)\nclipboard   the clipboard (8KB)\n\n");
             break;
         case MOUNT_SRV:
             cprintf("\nDirectory Listing (/srv/):\n");

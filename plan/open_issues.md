@@ -1548,18 +1548,32 @@ comes back. Next step if it does: the runner's trap and scheduler dump
 (`[Sched Table]`) from the stuck guest, which a timeout does not capture
 today.
 
-## `test_rp2350`'s st7735/tm1638 skip misfires while the host is loaded
+## The RP2350-LCD-7 once hung during boot after a flash: USB up, panel never started
 
-Seen twice on 2026-10-01 (37.3a), both times with the QEMU suite running on
-the same host in parallel: on the RP2350-LCD-7, which builds without either
-driver, the two tests reported "board firmware predates the `st7735stats`
-command" instead of skipping. The skip is decided by reading `/proc/config`
-(`feature_enabled()` in `tests/hw/rp2350.py`); when that read comes back
-incomplete the test falls through to running the command, which this
-persona does not have. Run alone, the suite passed 25/25 each time. Next
-step: make `feature_enabled()` retry an incomplete read, or report "could
-not read /proc/config" rather than guessing. Until then, run the board
-suite with the host otherwise idle.
+Seen once on 2026-10-01 (during 37.5a), on the second of two flashes of the
+same image: the board enumerated its two ACM ports, but the console never
+answered, and the panel showed its own built-in test pattern (solid red,
+green, blue, black, white, cycling every 2-3 s) -- what the ST7262 does when
+no picture arrives, i.e. `lcd7_init()` never started the scan-out, or
+something stopped it. A power cycle booted normally, and the hardware suite
+then passed 25/25. The first flash of the same image had booted and run the
+suite too. Not reproduced. Where USB enumerates and the panel does not start
+is early boot, before the console is up, so the only log of it goes to UART0
+on header H7. Next step if it comes back: an adapter on H7 for the boot log,
+and the `[CLK] last reset:` line of the boot after it.
+
+## FIXED: `test_rp2350`'s st7735/tm1638 skip misfired on the first run after a flash
+
+Seen three times on 2026-10-01 on the RP2350-LCD-7, which builds without
+either driver: the two tests reported "board firmware predates the
+`st7735stats` command" instead of skipping. First put down to host load
+(two of the three runs overlapped the QEMU suite); the third ran on an idle
+host and showed the real pattern -- every time it was **the first suite run
+after flashing**, and every later run passed. The skip is decided by reading
+`/proc/config` (`board_config()` in `tests/hw/rp2350.py`); right after a
+flash that read sometimes came back without a single `ENABLE_` line, and an
+empty answer means "run the test". `board_config()` now tries three times,
+two seconds apart, and never caches an empty answer.
 
 ## `lockselftest`'s log-burst case still flakes on rv64-smp (~1 in 8)
 

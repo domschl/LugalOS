@@ -47,11 +47,17 @@
         (ca-run tab (ca-step tab 0 row '()) x (+ y scale) (- gens 1) scale))
       'done))
 
+; The layout is set once, by (ca rule scale); the redraw function only draws,
+; so a split the user has resized since (Super+[ / Super+]) stays as it is --
+; and the automaton is recomputed for the canvas's new width.
 (define (ca rule scale)
   (canvas-window 'split)
+  (canvas-on-redraw (lambda () (ca-draw rule scale)))
+  (ca-draw rule scale))
+
+(define (ca-draw rule scale)
   (canvas-title (string-append "Rule " (number->string rule)))
   (canvas-fill 0)
-  (canvas-on-redraw (lambda () (ca rule scale)))
   (let* ((size (canvas-size))
          (w (quotient (car size) scale))
          (h (quotient (car (cdr size)) scale))

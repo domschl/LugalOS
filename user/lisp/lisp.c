@@ -3,6 +3,9 @@
 #include "kernel/scratch.h"
 #include "kernel/path.h"
 #include "kernel/console.h"
+#include "kernel/line_editor.h"
+#include "kernel/clipboard.h"
+#include "kernel/screenshot.h"
 #include "drivers/screen.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
@@ -1424,6 +1427,42 @@ static lisp_val_t *prim_gc_stats(lisp_val_t *args, lisp_val_t *env) {
     return make_pair(make_int((long)gc_in_form_count), tail);
 }
 
+/* 37.5a: (clipboard) -> the clipboard's text, "" when empty;
+ * (clipboard-set s) -> #t, or #f past its 8 KB. The same clipboard every
+ * text input cuts to and /dev/clipboard is. A string here is bounded by
+ * STRING_SLOT_LEN, so (clipboard) returns at most that much; the file has
+ * all of it. */
+static lisp_val_t *prim_clipboard(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    uint32_t n;
+    const char *d = clipboard_data(&n);
+    char buf[STRING_SLOT_LEN];
+    if (n > STRING_SLOT_LEN - 1u) {
+        n = STRING_SLOT_LEN - 1u;
+        while (n > 0 && ((unsigned char)d[n] & 0xc0u) == 0x80u) n--;
+    }
+    if (n) memcpy(buf, d, n);
+    buf[n] = '\0';
+    return make_str(buf);
+}
+
+static lisp_val_t *prim_clipboard_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *s = get_str_val(lisp_list_ref(args, 0));
+    return clipboard_set(s, (uint32_t)strlen(s)) ? &true_val : &false_val;
+}
+
+/* (screenshot [path]) -> the file written, or #f: 37.5a's PBM of the
+ * screen (kernel/screenshot.h), to /sd0/screenshots/ by default. */
+static lisp_val_t *prim_screenshot(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    const char *path = (a && a->type == LISP_STRING) ? a->u.str : NULL;
+    char saved[48];
+    if (screenshot_save(path, saved, sizeof(saved)) != 0) return &false_val;
+    return make_str(saved);
+}
+
 static lisp_val_t *prim_string_bytes(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
@@ -1754,9 +1793,10 @@ static lisp_val_t *prim_canvas_size(lisp_val_t *args, lisp_val_t *env) {
     return make_pair(make_int(reply16(reply, 2)), h);
 }
 
-/* (canvas-window 'text | 'canvas | 'split | 'split-half) -> #t, or #f if
- * refused. 'split is the wide one (§1.2): the canvas left, 38 text columns
- * right. */
+/* (canvas-window 'text | 'canvas | 'split | 'split-half | 'split-narrow)
+ * -> #t, or #f if refused. The splits by their text tile: 'split 38 columns
+ * (the widest canvas), 'split-half 48, 'split-narrow 64 (§1.2, 37.5a);
+ * Super+[ and Super+] step between them on the panel. */
 static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *w = get_str_val(lisp_list_ref(args, 0));
@@ -1765,7 +1805,17 @@ static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     else if (streq(w, "canvas")) req[1] = SCREEN_LAYOUT_CANVAS;
     else if (streq(w, "split") || streq(w, "split-wide")) req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
     else if (streq(w, "split-half")) req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    else if (streq(w, "split-narrow")) req[1] = SCREEN_LAYOUT_SPLIT_NARROW;   /* 37.5a */
     return canvas_call(req, sizeof(req), reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-swap) -- 37.5a: canvas and text change sides in a split, or with
+ * one pane full the other one is shown full (Super+\\ on the panel); #f
+ * while a program has locked the layout. */
+static lisp_val_t *prim_canvas_swap(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    uint8_t req[1] = { 'X' }, reply[SCREEN_REPLY_LEN];
+    return canvas_call(req, 1, reply, false) ? &true_val : &false_val;
 }
 
 /* (canvas-title str) -- the canvas tile's title bar */
@@ -3697,6 +3747,9 @@ void lisp_init(void) {
     BUILTIN("substring", prim_substring);
     BUILTIN("string-bytes", prim_string_bytes);
     BUILTIN("gc-stats", prim_gc_stats);
+    BUILTIN("clipboard", prim_clipboard);
+    BUILTIN("clipboard-set", prim_clipboard_set);
+    BUILTIN("screenshot", prim_screenshot);
     BUILTIN("string->number", prim_string_to_number);
     BUILTIN("number->string", prim_number_to_string);
     BUILTIN("string=?", prim_string_eq);
@@ -3726,6 +3779,7 @@ void lisp_init(void) {
     BUILTIN("canvas-window", prim_canvas_window);
     BUILTIN("canvas-title", prim_canvas_title);
     BUILTIN("canvas-on-redraw", prim_canvas_on_redraw);
+    BUILTIN("canvas-swap", prim_canvas_swap);
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     BUILTIN("tm-display", prim_tm_display);
@@ -4768,34 +4822,10 @@ void lisp_repl(void) {
     char buf[128];
     while (1) {
         lisp_canvas_poll();     /* 37.3b: redraw a lost canvas before the prompt */
-        cprintf("lisp> ");
-        int idx = 0;
-        while (1) {
-            char c = console_getc();
-            if (c == '\r' || c == '\n') {
-                console_puts("\n");     /* the console adds the CR */
-                buf[idx] = '\0';
-                break;
-            } else if (c == 0x08 || c == 0x7F) {
-                if (idx > 0) {
-                    /* 37.2: a whole UTF-8 character, not its last byte */
-                    do { idx--; } while (idx > 0 && ((unsigned char)buf[idx] & 0xc0u) == 0x80u);
-                    console_puts("\b \b");
-                    console_flush();
-                }
-            } else if ((c >= 32 && c <= 126) || (unsigned char)c >= 0x80u) {   /* 37.2: UTF-8 too */
-                if (idx < 127) {
-                    buf[idx++] = c;
-                    console_putc(c);
-                    /* Through the console, not uart_putc(): on the RP2350-LCD-7 the
-                     * console is the screen, and an echo straight to the UART never
-                     * reached it (37.1a, found by the owner). Flushed per keystroke
-                     * for the reason M4 gave: output batches, and an unflushed echo
-                     * would only appear with the next one. */
-                    console_flush();
-                }
-            }
-        }
+        /* 37.5a: the shared line editor, with the shell's history -- the
+         * same keys, UTF-8, selection and clipboard as the shell itself. */
+        int idx = readline_ex("lisp> ", buf, (int)sizeof(buf), NULL);
+        if (idx < 0) continue;
 
         if (streq(buf, "exit")) break;
         if (idx == 0) continue;

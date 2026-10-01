@@ -10,6 +10,8 @@
 #include "kernel/device.h"
 #include "kernel/ticker.h"
 #include "kernel/line_editor.h"
+#include "kernel/keyseq.h"
+#include "kernel/screenshot.h"
 #include "kernel/sched.h"
 #include "kernel/lock.h"
 #include "kernel/hart.h"
@@ -583,6 +585,8 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
+    cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
+    cprintf("  screenshot [file] - The screen as a PBM, to /sd0/screenshots/ (or Super+Shift+3)\n");
     cprintf("  usbselftest     - USB CRC5/CRC16 against known packets (36.7)\n");
     cprintf("  usbkbdselftest  - USB descriptor parsing and keyboard report diffing (36.8)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
@@ -3098,6 +3102,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         usbkbd_log(s);
         return;
 #endif
+    } else if (strcmp(cmd_line, "screenshot") == 0 || strncmp(cmd_line, "screenshot ", 11) == 0) {
+        /* 37.5a: the screen as a PBM, to /sd0/screenshots/ or a path. */
+        const char *arg = cmd_line[10] ? &cmd_line[11] : NULL;
+        while (arg && *arg == ' ') arg++;
+        char saved[48];
+        if (screenshot_save(arg && *arg ? arg : NULL, saved, sizeof(saved)) == 0)
+            cprintf("screenshot: %s\n", saved);
+        else
+            cprintf("screenshot: nothing saved (no screen yet, or no card)\n");
+        return;
+    } else if (strcmp(cmd_line, "keyselftest") == 0) {
+        /* 37.5a, plan/phase37_screen_layouts_and_apps.md: the key parser
+         * every text input uses, against byte strings. */
+        (void)keyseq_selftest();
+        return;
     } else if (strcmp(cmd_line, "vtselftest") == 0) {
         /* 36.6, plan/phase36_rp2350_lcd7_terminal.md: portable, so it runs on
          * QEMU as well as on the board with the panel. */
@@ -4121,6 +4140,11 @@ void shell_run(void) {
      * Idempotent, so the second entry to shell_run() (a nested shell) is a
      * no-op. */
     klogd_start();
+
+    /* 37.5a: while the prompt waits for a key, a program that lost its
+     * canvas (a hotkey changed the split) redraws it -- not only after the
+     * next Enter. */
+    readline_set_idle(lisp_canvas_poll);
 
     while (1) {
         /* 37.1: back at the prompt, the shell is what is running. 37.3b:

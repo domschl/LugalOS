@@ -91,6 +91,9 @@ typedef struct {
     bool (*size)(unsigned *cols, unsigned *rows);
     void (*set_title)(const char *title);
     bool (*canvas)(const uint8_t *req, uint32_t n, uint8_t *reply);
+    /* 37.5a: the whole 1-bpp frame, for a screenshot -- drivers/fbtext.h's
+     * format (leftmost pixel in bit 0); false if there is none yet. */
+    bool (*pixels)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
 } console_screen_t;
 
 void console_set_screen(const console_screen_t *screen);
@@ -111,6 +114,20 @@ void console_set_title(const char *title);
  * `reply` holds SCREEN_REPLY_LEN bytes. False when there is no canvas at
  * all; the reply's own status says whether this request was refused. */
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
+
+/* 37.5a: the frame, for kernel/screenshot.c; false where there is none. */
+bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
+
+/* 37.5a: keys the screen takes before any program sees them -- the USB
+ * keyboard's Super+[ , Super+] , Super+\\ and Super+Shift+3. An input source hands one
+ * over here while it is being drained (under the input lock); the console
+ * runs it from its next input wait, outside every lock, where it may draw
+ * and write files. */
+#define CONSOLE_HOTKEY_LEFT       1u    /* the split's divider one step left */
+#define CONSOLE_HOTKEY_RIGHT      2u    /* one step right */
+#define CONSOLE_HOTKEY_SCREENSHOT 3u
+#define CONSOLE_HOTKEY_SWAP       4u    /* canvas and text change sides */
+void console_hotkey(unsigned code);
 
 /* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
  * from. Each source is polled by the console pump, in registration order,

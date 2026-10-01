@@ -317,25 +317,37 @@ def board_config(console_port: str) -> "dict[str, int]":
     if _config_cache is not None:
         return _config_cache
 
+    # Up to three tries. Right after a flash the read sometimes came back
+    # with no ENABLE_ lines at all -- the board still finishing its boot --
+    # and the gated tests then ran on a board without the drivers and
+    # reported "firmware predates the `st7735stats` command" (2026-10-01,
+    # three times, every time on the first run after flashing; it was first
+    # put down to host load, wrongly). An empty answer is not cached.
     cfg: "dict[str, int]" = {}
-    try:
-        with serial.Serial(console_port, 115200, timeout=2) as ser:
-            ser.dtr = True
-            time.sleep(0.3)
-            ser.reset_input_buffer()
-            # The clock persona's application owns the terminal until Ctrl-C
-            # hands it back, so ask for it before asking anything else.
-            ser.write(b"\x03")
-            ser.flush()
-            time.sleep(0.8)
-            drain(ser, quiet=0.5, deadline=3.0)
-            ser.reset_input_buffer()
-            ser.write(b"cat /proc/config\n")
-            ser.flush()
-            out = drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
-        for key, val in re.findall(r"^(ENABLE_[A-Z0-9_]+)=(\d+)", out, re.M):
-            cfg[key] = int(val)
-    except Exception:
+    for attempt in range(3):
+        try:
+            with serial.Serial(console_port, 115200, timeout=2) as ser:
+                ser.dtr = True
+                time.sleep(0.3)
+                ser.reset_input_buffer()
+                # The clock persona's application owns the terminal until
+                # Ctrl-C hands it back, so ask for it before anything else.
+                ser.write(b"\x03")
+                ser.flush()
+                time.sleep(0.8)
+                drain(ser, quiet=0.5, deadline=3.0)
+                ser.reset_input_buffer()
+                ser.write(b"cat /proc/config\n")
+                ser.flush()
+                out = drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
+            for key, val in re.findall(r"^(ENABLE_[A-Z0-9_]+)=(\d+)", out, re.M):
+                cfg[key] = int(val)
+        except Exception:
+            cfg = {}
+        if cfg:
+            break
+        time.sleep(2.0)
+    if not cfg:
         # An unreadable /proc/config must not silently disable every gated
         # test -- an empty dict means feature_enabled() answers True and the
         # tests run as they always did, failing honestly if the feature is

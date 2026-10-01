@@ -1,4 +1,5 @@
 #include "kernel/console.h"
+#include "kernel/line_editor.h"
 #include "ed.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
@@ -56,35 +57,14 @@ static void ed_buffers_release(void) {
     out_buf = NULL;
 }
 
-static void ed_read_line(char *out_buf, int max_len) {
+/* 37.5a: the shared line editor (kernel/line_editor.h), so ed's lines get
+ * the same keys, UTF-8, selection and clipboard as every other text input --
+ * its own loop used to echo past the console, and knew Backspace only. Out
+ * of the shell's history: these are a document's lines, not commands. */
+static void ed_read_line(const char *prompt, char *out_buf, int max_len) {
+    static const readline_opts_t opts = { true, false, false };
     if (!out_buf || max_len <= 0) return;
-    int idx = 0;
-    while (1) {
-        char c = console_getc();
-        if (c == '\r' || c == '\n') {
-            console_puts("\n");     /* the console adds the CR */
-            out_buf[idx] = '\0';
-            break;
-        } else if (c == 0x08 || c == 0x7F) {
-            if (idx > 0) {
-                /* 37.2: a whole UTF-8 character, not its last byte */
-                do { idx--; } while (idx > 0 && ((unsigned char)out_buf[idx] & 0xc0u) == 0x80u);
-                console_puts("\b \b");
-                console_flush();
-            }
-        } else if ((c >= 32 && c <= 126) || (unsigned char)c >= 0x80u) {   /* 37.2: UTF-8 too */
-            if (idx < max_len - 1) {
-                out_buf[idx++] = c;
-                console_putc(c);
-                /* Through the console, not uart_putc(): on the RP2350-LCD-7 the
-                 * console is the screen, and an echo straight to the UART never
-                 * reached it (37.1a, found by the owner). Flushed per keystroke
-                 * for the reason M4 gave: output batches, and an unflushed echo
-                 * would only appear with the next one. */
-                console_flush();
-            }
-        }
-    }
+    if (readline_ex(prompt, out_buf, max_len, &opts) < 0) out_buf[0] = '\0';
 }
 
 static void ed_load_file(const char *filename) {
@@ -349,8 +329,7 @@ static void ed_main_inner(const char *filename) {
 
     char line_in[128];
     while (1) {
-        cprintf(":");
-        ed_read_line(line_in, 128);
+        ed_read_line(":", line_in, 128);
         if (line_in[0] == '\0') continue;
 
         if (line_in[0] == '/') {
@@ -403,7 +382,7 @@ static void ed_main_inner(const char *filename) {
             int insert_pos = (end_addr >= 0 && end_addr <= line_count) ? end_addr : dot;
             while (line_count < MAX_ED_LINES) {
                 char input_str[MAX_LINE_LEN];
-                ed_read_line(input_str, MAX_LINE_LEN);
+                ed_read_line("", input_str, MAX_LINE_LEN);
                 if (strcmp(input_str, ".") == 0) break;
                 insert_pos++;
                 ed_insert_line(insert_pos, input_str);
@@ -412,7 +391,7 @@ static void ed_main_inner(const char *filename) {
             int insert_pos = (start_addr >= 1 && start_addr <= line_count) ? start_addr : (dot > 0 ? dot : 1);
             while (line_count < MAX_ED_LINES) {
                 char input_str[MAX_LINE_LEN];
-                ed_read_line(input_str, MAX_LINE_LEN);
+                ed_read_line("", input_str, MAX_LINE_LEN);
                 if (strcmp(input_str, ".") == 0) break;
                 ed_insert_line(insert_pos, input_str);
                 insert_pos++;
@@ -426,7 +405,7 @@ static void ed_main_inner(const char *filename) {
                 int insert_pos = start_addr;
                 while (line_count < MAX_ED_LINES) {
                     char input_str[MAX_LINE_LEN];
-                    ed_read_line(input_str, MAX_LINE_LEN);
+                    ed_read_line("", input_str, MAX_LINE_LEN);
                     if (strcmp(input_str, ".") == 0) break;
                     ed_insert_line(insert_pos, input_str);
                     insert_pos++;

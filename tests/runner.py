@@ -2695,6 +2695,54 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                         ok, "" if ok else log1 + log2 + log3 + log4 + log5))
         session.send_and_expect("(canvas-window 'text)", r"=> #t", timeout=10.0)
 
+        # 37.5a: one key parser for every text input (keyselftest), and the
+        # clipboard with selection in the shared line editor -- driven by the
+        # bytes a terminal sends: Shift+arrows (xterm), Super+C/X/V (CSI-u),
+        # Ctrl-W/Ctrl-Y/Ctrl-K, Ctrl-Space's mark, Alt-Backspace.
+        ok, log = session.send_and_expect("keyselftest", r"KEYSEQ_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
+        results.append(("Key Sequences: UTF-8, Alt, xterm Modifiers, CSI-u (37.5a keyselftest)",
+                        ok and "KEYSEQ_SELFTEST_OK" in log, log if not (ok and "KEYSEQ_SELFTEST_OK" in log) else ""))
+        L, R, HOME, END = "\x1b[D", "\x1b[C", "\x1b[H", "\x1b[F"
+        SR = "\x1b[1;2C"
+        SUPC, SUPX, SUPV = "\x1b[99;9u", "\x1b[120;9u", "\x1b[118;9u"
+        sel_steps = [
+            ('(clipboard-set "hello")', r"=> #t"),
+            ("cat /dev/clipboard", r"hello"),
+            ("(+ 1 2)" + HOME + SR * 7 + SUPC + END, r"=> 3"),
+            ("(clipboard)", r'=> "\(\+ 1 2\)"'),
+            ('(string-length "' + "\x19" + '")', r"=> 7"),
+            ("xyz(+ 4 5)" + HOME + SR * 3 + SUPX, r"=> 9"),
+            ("(clipboard)", r'=> "xyz"'),
+            ("(+ 1 1)junk" + L * 4 + "\x0b", r"=> 2"),
+            ("(clipboard)", r'=> "junk"'),
+            ("(+ 10 20) foo bar" + "\x1b\x7f" * 2, r"=> 30"),
+            ("abc(+ 3 3)" + HOME + "\x00" + R * 3 + "\x17", r"=> 6"),
+            ("(+ 7 1)" + "\x1b[1;2H" + "(* 2 4)", r"=> 8"),
+            ('(clipboard-set "3")', r"=> #t"),
+            ("(* 3 " + SUPV + ")", r"=> 9"),
+            ("lisp\n(+ 1 2)\nexit", r"=> 3"),
+        ]
+        sel_ok, sel_log = True, ""
+        for cmd, pat in sel_steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                sel_ok, sel_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Selection And The Clipboard In Every Text Input, Both Key Families (37.5a)",
+                        sel_ok, sel_log))
+
+        # 37.5a: the third split width, and a screenshot of the RAM screen.
+        steps = [("(canvas-window 'split-narrow)", r"=> #t"), ("(canvas-size)", r"=> \(261 434\)"),
+                 ('(screenshot "/sd0/shot.pbm")', r'=> "/sd0/shot.pbm"'),
+                 ("(canvas-window 'text)", r"=> #t")]
+        shot_ok, shot_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=20.0)
+            if not ok:
+                shot_ok, shot_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("The Narrow Split, And A Screenshot To The SD Card (37.5a)", shot_ok, shot_log))
+
         cmd_s4_apply_eval = (
             "lisp\n"
             "(apply + (list 1 2 3))\n"

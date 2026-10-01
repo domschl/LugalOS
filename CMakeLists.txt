@@ -561,6 +561,11 @@ set(SOURCES
     kernel/sched.c
     kernel/shell.c
     kernel/line_editor.c
+    # 37.5a: one parser for every text input's keys, and the clipboard.
+    kernel/keyseq.c
+    kernel/clipboard.c
+    # 37.5a: the screen to a PBM file.
+    kernel/screenshot.c
     kernel/ubsan.c
 
     arch/riscv/common/entry.S
