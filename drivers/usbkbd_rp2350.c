@@ -496,7 +496,15 @@ static bool kbd_peek_interrupt(void) {
     return false;
 }
 
-static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_peek_interrupt };
+/* 37.2: `Compose` / `Compose "` while a compose sequence is open. */
+static char g_kbd_hint[12];
+
+static const char *kbd_indicator(void) {
+    usbkbd_compose_hint(&g_xl, g_kbd_hint, sizeof(g_kbd_hint));
+    return g_kbd_hint;
+}
+
+static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_peek_interrupt, kbd_indicator };
 
 int usbkbd_start(void) {
     piousb_shared_t *u = piousb_shared();

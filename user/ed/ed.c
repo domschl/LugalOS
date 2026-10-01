@@ -67,11 +67,12 @@ static void ed_read_line(char *out_buf, int max_len) {
             break;
         } else if (c == 0x08 || c == 0x7F) {
             if (idx > 0) {
-                idx--;
+                /* 37.2: a whole UTF-8 character, not its last byte */
+                do { idx--; } while (idx > 0 && ((unsigned char)out_buf[idx] & 0xc0u) == 0x80u);
                 console_puts("\b \b");
                 console_flush();
             }
-        } else if (c >= 32 && c <= 126) {
+        } else if ((c >= 32 && c <= 126) || (unsigned char)c >= 0x80u) {   /* 37.2: UTF-8 too */
             if (idx < max_len - 1) {
                 out_buf[idx++] = c;
                 console_putc(c);

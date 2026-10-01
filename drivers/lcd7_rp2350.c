@@ -666,41 +666,42 @@ void lcd7_set_title(const char *title) {
     lcdterm_op(LCDTERM_OP_TITLE, title, n);
 }
 
-/* The status bar's clock: HH:MM once the clock has been set, nothing
- * before (an unset clock shows the build's instant, which would be a lie).
- * Checked at most once a second, from the console's flush -- which runs on
- * every turn of an input wait and at every write, so the minute moves while
- * the shell is idle and while a program prints. A program that computes for
- * minutes in silence leaves it stale until it next writes or reads. */
+/* The menu bar's right side: the console's indicators (37.2: the
+ * keyboard's compose state), then the clock -- HH:MM once the clock has been
+ * set, nothing before (an unset clock shows the build's instant, which would
+ * be a lie). Rebuilt on every console flush, which runs on every turn of an
+ * input wait and at every write, and sent only when it changed; the clock
+ * itself is read at most once a second. A program that computes for minutes
+ * in silence leaves it stale until it next writes or reads. */
 static uint64_t g_clock_next_us;
-static int16_t  g_clock_shown = -1;     /* hour * 60 + minute, or -1 */
+static char     g_clock[6];             /* "HH:MM", or "" */
 
-static void clock_tick(void) {
+static void status_tick(void) {
     uint64_t now = time_get_us();
-    if (now < g_clock_next_us) return;
-    g_clock_next_us = now + 1000000u;
-    int16_t m = -1;
-    rtc_time_t tm;
-    if (time_is_set()) {
-        time_get_local(&tm);
-        m = (int16_t)(tm.hour * 60 + tm.min);
+    if (now >= g_clock_next_us) {
+        g_clock_next_us = now + 1000000u;
+        g_clock[0] = '\0';
+        if (time_is_set()) {
+            rtc_time_t tm;
+            time_get_local(&tm);
+            g_clock[0] = (char)('0' + tm.hour / 10); g_clock[1] = (char)('0' + tm.hour % 10);
+            g_clock[2] = ':';
+            g_clock[3] = (char)('0' + tm.min / 10);  g_clock[4] = (char)('0' + tm.min % 10);
+            g_clock[5] = '\0';
+        }
     }
-    if (m == g_clock_shown) return;
-    g_clock_shown = m;
-    char buf[8];
-    uint32_t n = 0;
-    if (m >= 0) {
-        buf[0] = (char)('0' + tm.hour / 10); buf[1] = (char)('0' + tm.hour % 10); buf[2] = ':';
-        buf[3] = (char)('0' + tm.min / 10);  buf[4] = (char)('0' + tm.min % 10);
-        n = 5;
-    }
-    lcdterm_op(LCDTERM_OP_RIGHT, buf, n);
+    char right[SCREEN_RIGHT_MAX];
+    uint32_t n = console_indicators(right, sizeof(right));
+    if (n > 0 && g_clock[0] && n + 2u < sizeof(right)) { right[n++] = ' '; right[n++] = ' '; }
+    for (uint32_t i = 0; g_clock[i] && n + 1u < sizeof(right); i++) right[n++] = g_clock[i];
+    right[n] = '\0';
+    if (strcmp(right, g_scr->right) != 0) lcdterm_op(LCDTERM_OP_RIGHT, right, n);
 }
 
 static void lcd7_console_flush(void) {
     if (!g_vt_ready) return;
     lcd7_screen_flush();
-    clock_tick();
+    status_tick();
 }
 
 static bool lcd7_console_size(unsigned *cols, unsigned *rows) {

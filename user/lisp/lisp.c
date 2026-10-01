@@ -1157,29 +1157,68 @@ static lisp_val_t *prim_string_append(lisp_val_t *args, lisp_val_t *env) {
     return make_str(buf);
 }
 
+/* 37.2, plan/phase37_screen_layouts_and_apps.md §3.3: strings are UTF-8, and
+ * the functions that count or index *characters* count code points: a
+ * character starts at every byte that is not a continuation byte
+ * (10xxxxxx). A stray continuation byte therefore belongs to the character
+ * before it, and one at the very start is a character of its own -- count
+ * and index agree, and no byte is ever lost or skipped. string-bytes is the
+ * byte count, for file and protocol work. */
+static long utf8_count(const char *s, long bytes) {
+    long n = 0;
+    for (long i = 0; i < bytes; i++)
+        if (((unsigned char)s[i] & 0xc0u) != 0x80u || i == 0) n++;
+    return n;
+}
+
+/* The byte offset of character `k` (clamped to the end). */
+static long utf8_offset(const char *s, long bytes, long k) {
+    long i = 0;
+    while (k > 0 && i < bytes) {
+        i++;
+        while (i < bytes && ((unsigned char)s[i] & 0xc0u) == 0x80u) i++;
+        k--;
+    }
+    return i;
+}
+
 static lisp_val_t *prim_string_length(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_STRING) return make_int(0);
+    return make_int(utf8_count(a->u.str, (long)strlen(a->u.str)));
+}
+
+static lisp_val_t *prim_string_bytes(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
     if (!a || a->type != LISP_STRING) return make_int(0);
     return make_int((long)strlen(a->u.str));
 }
 
-/* (substring str start end) -- end defaults to the string's own length. */
+/* (substring str start end) -- in characters; end defaults to the string's
+ * own length. */
 static lisp_val_t *prim_substring(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
     if (!a || a->type != LISP_STRING) return make_str("");
     const char *s = a->u.str;
-    long len = (long)strlen(s);
+    long bytes = (long)strlen(s);
+    long len = utf8_count(s, bytes);
     long start = arg_int(args, 1, 0);
     long end = arg_int(args, 2, len);
     if (start < 0) start = 0;
     if (end > len) end = len;
     if (start > end) start = end;
-    long n = end - start;
+    long b0 = utf8_offset(s, bytes, start);
+    long b1 = utf8_offset(s, bytes, end);
+    long n = b1 - b0;
     char buf[STRING_SLOT_LEN];
-    if (n >= (long)sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, s + start, (size_t)n);
+    if (n >= (long)sizeof(buf)) {
+        n = sizeof(buf) - 1;
+        while (n > 0 && ((unsigned char)s[b0 + n] & 0xc0u) == 0x80u) n--;   /* not mid-character */
+    }
+    memcpy(buf, s + b0, (size_t)n);
     buf[n] = '\0';
     return make_str(buf);
 }
@@ -3185,6 +3224,7 @@ void lisp_init(void) {
     env_set(&global_env, "string-append", make_prim(prim_string_append));
     env_set(&global_env, "string-length", make_prim(prim_string_length));
     env_set(&global_env, "substring", make_prim(prim_substring));
+    env_set(&global_env, "string-bytes", make_prim(prim_string_bytes));
     env_set(&global_env, "string->number", make_prim(prim_string_to_number));
     env_set(&global_env, "number->string", make_prim(prim_number_to_string));
     env_set(&global_env, "string=?", make_prim(prim_string_eq));
@@ -4247,11 +4287,12 @@ void lisp_repl(void) {
                 break;
             } else if (c == 0x08 || c == 0x7F) {
                 if (idx > 0) {
-                    idx--;
+                    /* 37.2: a whole UTF-8 character, not its last byte */
+                    do { idx--; } while (idx > 0 && ((unsigned char)buf[idx] & 0xc0u) == 0x80u);
                     console_puts("\b \b");
                     console_flush();
                 }
-            } else if (c >= 32 && c <= 126) {
+            } else if ((c >= 32 && c <= 126) || (unsigned char)c >= 0x80u) {   /* 37.2: UTF-8 too */
                 if (idx < 127) {
                     buf[idx++] = c;
                     console_putc(c);

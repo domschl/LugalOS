@@ -112,6 +112,12 @@ void console_set_title(const char *title);
  *   getc()            it, or -1 if there turned out to be none; never blocks
  *   peek_interrupt()  optional: a Ctrl-C is waiting, answered *without*
  *                     consuming, so it latches even when the ring is full
+ *   indicator()       optional (37.2): a short state to show on a screen's
+ *                     status bar, e.g. the keyboard's `Compose "`, or "" for
+ *                     none. Polled by the screen, never pushed: a source is
+ *                     drained under the input lock, and drawing takes the
+ *                     console lock, so a push from here could deadlock
+ *                     against a program printing while it checks for Ctrl-C.
  *
  * Registered once at boot by kernel/board.c (a keyboard later, when its task
  * starts); the table holds CONSOLE_INPUT_MAX. */
@@ -120,10 +126,15 @@ typedef struct {
     bool (*has_char)(void);
     int  (*getc)(void);
     bool (*peek_interrupt)(void);
+    const char *(*indicator)(void);
 } console_input_t;
 
 #define CONSOLE_INPUT_MAX 4
 int console_input_register(const console_input_t *src);
+
+/* 37.2: every source's non-empty indicator, two spaces apart, into buf
+ * (NUL-terminated, at most cap bytes). Returns the length. */
+uint32_t console_indicators(char *buf, uint32_t cap);
 
 void console_putc(char c);
 void console_puts(const char *s);

@@ -50,6 +50,41 @@ static int history_count = 0;
  * Held across the writes and nothing else -- never across console_getc(),
  * which waits for a human. A ylock is the right primitive precisely because
  * a console write ends in a block (kernel/console.c). */
+/* 37.2, plan/phase37_screen_layouts_and_apps.md §3.3: the line is UTF-8.
+ * It stays a byte buffer, but the cursor only ever stands on a character
+ * boundary: every movement and deletion steps over a whole character, and a
+ * multi-byte character typed in is collected and inserted whole (line_feed).
+ * Every character is one cell on the screen (no combining or double-width
+ * characters, §3.1), so cursor columns are character counts. */
+static bool u8_cont(char c) {
+    return ((unsigned char)c & 0xc0u) == 0x80u;
+}
+
+static int u8_prev(const char *buf, int pos) {
+    if (pos > 0) pos--;
+    while (pos > 0 && u8_cont(buf[pos])) pos--;
+    return pos;
+}
+
+static int u8_next(const char *buf, int len, int pos) {
+    if (pos < len) pos++;
+    while (pos < len && u8_cont(buf[pos])) pos++;
+    return pos;
+}
+
+static int u8_chars(const char *buf, int from, int to) {
+    int n = 0;
+    for (int i = from; i < to; i++) if (!u8_cont(buf[i])) n++;
+    return n;
+}
+
+/* Removes buf[from, to) from a line of *len bytes. */
+static void line_cut(char *buf, int *len, int from, int to) {
+    for (int i = to; i < *len; i++) buf[i - (to - from)] = buf[i];
+    *len -= to - from;
+    buf[*len] = '\0';
+}
+
 static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
     console_lock();
     console_sync();   /* backlog before the redraw, never inside it */
@@ -61,8 +96,8 @@ static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
     }
     console_puts("\033[K"); // Clear remaining line to the right
 
-    // Move cursor back to pos using ANSI Cursor Left (\033[D)
-    for (int i = 0; i < len - pos; i++) {
+    // Move cursor back to pos using ANSI Cursor Left (\033[D), one per character
+    for (int i = 0; i < u8_chars(buf, pos, len); i++) {
         console_puts("\033[D");
     }
     console_puts("\033[?25h"); // Show cursor at final target position
@@ -446,11 +481,11 @@ int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len)
             redraw_box(active_filename, out_buf, len, pos, status_msg);
             continue;
         } else if (c == 0x02) { // Ctrl-B: Left
-            if (pos > 0) pos--;
+            pos = u8_prev(out_buf, pos);
             redraw_box(active_filename, out_buf, len, pos, status_msg);
             continue;
         } else if (c == 0x06) { // Ctrl-F: Right
-            if (pos < len) pos++;
+            pos = u8_next(out_buf, len, pos);
             redraw_box(active_filename, out_buf, len, pos, status_msg);
             continue;
         } else if (c == 0x10) { // Ctrl-P: Up line
@@ -617,6 +652,8 @@ typedef struct {
     int  pos;
     int  hist_nav_idx;
     char temp_saved_line[MAX_LINE_LEN];
+    char pend[4];           /* 37.2: a UTF-8 character still arriving */
+    int  pend_len, pend_need;
 } line_state_t;
 
 static void line_begin(line_state_t *st, const char *prompt, char *out_buf) {
@@ -624,6 +661,7 @@ static void line_begin(line_state_t *st, const char *prompt, char *out_buf) {
     st->pos = 0;
     st->hist_nav_idx = history_count;
     st->temp_saved_line[0] = '\0';
+    st->pend_len = st->pend_need = 0;
     out_buf[0] = '\0';
     redraw_line(prompt, out_buf, st->len, st->pos);
 }
@@ -640,6 +678,7 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
     int hist_nav_idx = st->hist_nav_idx;
     char *temp_saved_line = st->temp_saved_line;
     int ret = LINE_INCOMPLETE;
+    if (!u8_cont(c)) st->pend_need = 0;     /* 37.2: anything else abandons a half-arrived character */
 
 
         // Control character handling
@@ -661,11 +700,7 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
             goto done;
         } else if (c == 0x04) { // Ctrl-D: Delete char under cursor
             if (pos < len) {
-                for (int i = pos; i < len - 1; i++) {
-                    out_buf[i] = out_buf[i + 1];
-                }
-                len--;
-                out_buf[len] = '\0';
+                line_cut(out_buf, &len, pos, u8_next(out_buf, len, pos));
                 redraw_line(prompt, out_buf, len, pos);
             }
             goto done;
@@ -746,12 +781,12 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
                     }
                 } else if (seq2 == 'C') { // Right Arrow
                     if (pos < len) {
-                        pos++;
+                        pos = u8_next(out_buf, len, pos);
                         redraw_line(prompt, out_buf, len, pos);
                     }
                 } else if (seq2 == 'D') { // Left Arrow
                     if (pos > 0) {
-                        pos--;
+                        pos = u8_prev(out_buf, pos);
                         redraw_line(prompt, out_buf, len, pos);
                     }
                 } else if (seq2 == 'H' || seq2 == '1') { // Home key
@@ -765,11 +800,7 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
                 } else if (seq2 == '3') { // Delete key
                     console_getc(); // consume '~'
                     if (pos < len) {
-                        for (int i = pos; i < len - 1; i++) {
-                            out_buf[i] = out_buf[i + 1];
-                        }
-                        len--;
-                        out_buf[len] = '\0';
+                        line_cut(out_buf, &len, pos, u8_next(out_buf, len, pos));
                         redraw_line(prompt, out_buf, len, pos);
                     }
                 } else if (seq2 >= '0' && seq2 <= '9') {
@@ -785,12 +816,9 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
         // Backspace handling
         if (c == 0x08 || c == 0x7F) {
             if (pos > 0) {
-                for (int i = pos - 1; i < len - 1; i++) {
-                    out_buf[i] = out_buf[i + 1];
-                }
-                pos--;
-                len--;
-                out_buf[len] = '\0';
+                int from = u8_prev(out_buf, pos);
+                line_cut(out_buf, &len, from, pos);
+                pos = from;
                 redraw_line(prompt, out_buf, len, pos);
             }
             goto done;
@@ -813,23 +841,41 @@ static int line_feed(line_state_t *st, char c, const char *prompt,
             goto done;
         }
 
-        // Standard printable character
-        if (c >= 32 && c <= 126) {
-            if (len < max_len - 1) {
-                if (pos == len) {
-                    out_buf[pos] = c;
-                    pos++;
-                    len++;
-                    out_buf[len] = '\0';
-                    console_putc(c);
-                } else {
-                    for (int i = len; i > pos; i--) {
-                        out_buf[i] = out_buf[i - 1];
+        // Standard printable character, or 37.2's UTF-8: a lead byte starts
+        // a character, continuation bytes complete it, and only a whole one
+        // is inserted -- the cursor never stands inside a character. A
+        // continuation byte with no lead before it, or a byte that cannot
+        // start a character, is dropped.
+        {
+            unsigned char uc = (unsigned char)c;
+            char seq[4];
+            int n = 0;
+            if (uc >= 32 && uc <= 126) {
+                st->pend_need = 0;
+                seq[0] = c;
+                n = 1;
+            } else if (u8_cont(c)) {
+                if (st->pend_need > 0) {
+                    st->pend[st->pend_len++] = c;
+                    if (--st->pend_need == 0) {
+                        for (int i = 0; i < st->pend_len; i++) seq[i] = st->pend[i];
+                        n = st->pend_len;
                     }
-                    out_buf[pos] = c;
-                    pos++;
-                    len++;
-                    out_buf[len] = '\0';
+                }
+            } else if (uc >= 0xc2 && uc <= 0xf4) {
+                st->pend[0] = c;
+                st->pend_len = 1;
+                st->pend_need = uc >= 0xf0 ? 3 : uc >= 0xe0 ? 2 : 1;
+            }
+            if (n > 0 && len + n < max_len) {
+                for (int i = len - 1; i >= pos; i--) out_buf[i + n] = out_buf[i];
+                for (int i = 0; i < n; i++) out_buf[pos + i] = seq[i];
+                pos += n;
+                len += n;
+                out_buf[len] = '\0';
+                if (pos == len) {
+                    for (int i = 0; i < n; i++) console_putc(seq[i]);
+                } else {
                     redraw_line(prompt, out_buf, len, pos);
                 }
             }

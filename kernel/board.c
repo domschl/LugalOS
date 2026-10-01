@@ -370,13 +370,13 @@ static bool usb_input_has_char(void) {
 static int usb_input_getc(void) {
     return usb_cdc_has_char() ? (int)(unsigned char)usb_cdc_getc() : -1;
 }
-static const console_input_t g_in_uart = { "uart", uart_serial_has_char, uart_serial_getc, 0 };
-static const console_input_t g_in_usb  = { "usb", usb_input_has_char, usb_input_getc, usb_cdc_peek_interrupt };
+static const console_input_t g_in_uart = { "uart", uart_serial_has_char, uart_serial_getc, 0, 0 };
+static const console_input_t g_in_usb  = { "usb", usb_input_has_char, usb_input_getc, usb_cdc_peek_interrupt, 0 };
 #else
 static int uart_input_getc(void) {
     return uart_has_char() ? (int)(unsigned char)uart_getc() : -1;
 }
-static const console_input_t g_in_uart = { "uart", uart_has_char, uart_input_getc, uart_peek_interrupt };
+static const console_input_t g_in_uart = { "uart", uart_has_char, uart_input_getc, uart_peek_interrupt, 0 };
 #endif
 
 void board_register_devices(void) {

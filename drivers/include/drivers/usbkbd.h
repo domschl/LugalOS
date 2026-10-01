@@ -44,8 +44,13 @@ int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint3
 
 /* --- Key events to terminal bytes (36.9): kernel side, not U-mode ------------
  *
- * US layout only (plan §4.4): Shift, Ctrl and Caps Lock change a byte; Alt and
- * GUI are ignored. Enter is \r, Backspace 0x7F, Tab \t, Esc 0x1B; Ctrl-letter
+ * US layout only (plan §4.4): Shift and Ctrl change a byte; Alt and GUI are
+ * ignored. **Caps Lock is the compose key** (37.2,
+ * plan/phase37_screen_layouts_and_apps.md §3.2): Caps, then two keys, gives
+ * one character as UTF-8 -- `Caps " a` is ä, `Caps = e` is € -- by X11's
+ * compose conventions, in either order. An unknown pair gives nothing; Esc
+ * or Caps again cancels; any other key (Enter, an arrow) cancels and does
+ * what it always does. Nothing in a compose sequence repeats. Enter is \r, Backspace 0x7F, Tab \t, Esc 0x1B; Ctrl-letter
  * is 0x01-0x1A; arrows ESC[A-D, Home ESC[1~, Insert ESC[2~, Delete ESC[3~,
  * End ESC[4~, PgUp ESC[5~, PgDn ESC[6~; the keypad as if Num Lock were on.
  *
@@ -54,13 +59,13 @@ int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint3
  * ms, every USBKBD_REPEAT_EVERY ms, until it (or anything else) changes. */
 #define USBKBD_REPEAT_DELAY 500u
 #define USBKBD_REPEAT_EVERY  33u
-#define USBKBD_SEQ_MAX        4u    /* the longest sequence, ESC [ n ~ */
+#define USBKBD_SEQ_MAX        4u    /* the longest sequence: ESC [ n ~, or a 3-byte character */
 
 typedef struct {
     uint8_t  mods;          /* current modifier byte */
-    uint8_t  caps;          /* Caps Lock toggled on */
+    uint8_t  compose;       /* 37.2: 0 off, 1 Caps pressed, 2 one key in */
     uint8_t  repeat_usage;  /* 0: nothing repeating */
-    uint8_t  _pad;
+    uint8_t  compose_first; /* the first key's character, in state 2 */
     uint32_t repeat_at;     /* ms: when it next repeats */
 } usbkbd_xlate_t;
 
@@ -70,6 +75,11 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
 
 /* A repeat that is due at `now_ms`: its bytes, else 0. */
 uint32_t usbkbd_repeat(usbkbd_xlate_t *x, uint32_t now_ms, uint8_t *out);
+
+/* 37.2: what the screen shows while a compose sequence is open --
+ * `Compose`, then `Compose "` once the first key is in -- or "" when none
+ * is. Writes a NUL-terminated string of at most `cap` bytes. */
+void usbkbd_compose_hint(const usbkbd_xlate_t *x, char *buf, uint32_t cap);
 
 /* `usbkbdselftest`. Prints USBKBD_SELFTEST_OK/_FAIL; returns failures. */
 int usbkbd_selftest(void);

@@ -279,6 +279,19 @@ int console_input_register(const console_input_t *src) {
     return 0;
 }
 
+uint32_t console_indicators(char *buf, uint32_t cap) {
+    uint32_t n = 0;
+    if (cap == 0) return 0;
+    for (unsigned i = 0; i < g_ninputs; i++) {
+        const char *s = g_inputs[i]->indicator ? g_inputs[i]->indicator() : NULL;
+        if (!s || !*s) continue;
+        if (n > 0) for (int k = 0; k < 2 && n + 1 < cap; k++) buf[n++] = ' ';
+        while (*s && n + 1 < cap) buf[n++] = *s++;
+    }
+    buf[n] = '\0';
+    return n;
+}
+
 static void console_pump(void) {
     ylock_acquire(&g_input_lock);
     /* The interrupt latch comes FIRST, and deliberately not inside the drain

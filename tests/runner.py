@@ -2549,6 +2549,39 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp String Processing string-append,length,substring,string<->number,string=? (S4)",
                         ok, log if not ok else ""))
 
+        # 37.2 (plan/phase37_screen_layouts_and_apps.md §3.3): strings are
+        # UTF-8, string-length and substring count characters, string-bytes
+        # counts bytes -- typed through the lisp REPL's reader, which used to
+        # drop every byte above 0x7E.
+        cmd_utf8_strings = (
+            "lisp\n"
+            "(string-length \"Grüße\")\n"
+            "(string-bytes \"Grüße\")\n"
+            "(substring \"Grüße\" 2 4)\n"
+            "(substring \"5 €!\" 2)\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_utf8_strings, r'=> "€!"', timeout=6.0)
+        utf8_correct = "=> 5" in log and "=> 7" in log and '=> "üß"' in log
+        ok = ok and utf8_correct
+        results.append(("Lisp Strings Count Characters, Not Bytes: string-length, substring, string-bytes (37.2)",
+                        ok, log if not ok else ""))
+
+        # 37.2: the shell's line editor steps over whole characters. Typed:
+        # `(string-length "aé")`, three Lefts (over `)`, `"` and the two-byte
+        # é), then ü -> "aüé", 3 characters. Then `(string-bytes "xß`,
+        # Backspace (the whole ß, both bytes), `öy")` -> "xöy", 4 bytes. And
+        # Delete on a multi-byte character: `(string-length "ñab")`, Home,
+        # 16 Rights onto ñ, Delete -> "ab", 2.
+        left, right, home, dele = "\x1b[D", "\x1b[C", "\x1b[1~", "\x1b[3~"
+        ok1, log1 = session.send_and_expect('(string-length "aé")' + left * 3 + "ü", r"=> 3\b", timeout=6.0)
+        ok2, log2 = session.send_and_expect('(string-bytes "xß' + "\x7f" + 'öy")', r"=> 4\b", timeout=6.0)
+        ok3, log3 = session.send_and_expect('(string-length "ñab")' + home + right * 16 + dele,
+                                            r"=> 2\b", timeout=6.0)
+        ok = ok1 and ok2 and ok3
+        results.append(("Line Editor Moves, Deletes And Inserts Whole UTF-8 Characters (37.2)",
+                        ok, "" if ok else log1 + log2 + log3))
+
         cmd_s4_apply_eval = (
             "lisp\n"
             "(apply + (list 1 2 3))\n"

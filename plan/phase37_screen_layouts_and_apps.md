@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0, 37.1 and 37.1a done 2026-10-01, 37.2 next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.2 done 2026-10-01, 37.3 next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -444,6 +444,43 @@ Delete and Ctrl-K at every position.
 
 **Done when:** on the board, `(string-length "Grüße")` typed with compose
 returns 5, and the line editor edits that line correctly.
+
+**Done, 2026-10-01.** The owner composed and edited on the panel.
+
+* **Compose** (`drivers/usbkbd.c`): Caps Lock opens a sequence, the next two
+  printable keys pick a character from an 89-entry table (every Latin-1
+  letter, €, and the common Latin-1 symbols, X11's pairs), looked up in
+  either order; the table was generated with a check that no pair means two
+  things either way round. Esc or Caps again cancels; an unknown pair gives
+  nothing; any other key cancels and then does its usual thing; nothing in
+  a sequence repeats. Caps Lock no longer toggles capitals.
+* **The indicator:** a console input source may offer `indicator()`, and
+  the screen *polls* it (`console_indicators()`), rebuilding the menu bar's
+  right side -- indicators, then the clock -- on every console flush and
+  sending it only when it changed. Not pushed from the keyboard, because the
+  keyboard is drained under the input lock and drawing takes the console
+  lock: a push could deadlock against a program printing while it checks
+  for Ctrl-C.
+* **The line editor** keeps a byte buffer with the cursor on character
+  boundaries: Left/Right, Ctrl-B/F, Backspace, Delete and Ctrl-D step over
+  whole characters, a typed multi-byte character is collected and inserted
+  whole (anything else abandons a half-arrived one), and the redraw moves
+  the screen cursor by characters. `ed`'s and the `lisp` REPL's line
+  readers accept UTF-8 and back up over a whole character.
+* **Lisp:** `string-length` and `substring` count characters (a stray
+  continuation byte belongs to the character before it, so count and index
+  agree); `string-bytes` is new. No Lisp file in the tree relied on byte
+  counts.
+* **Not yet:** `e` and its file-name prompts still drop non-ASCII keys;
+  that is 37.5's, with the viewport.
+* **Cost:** static RAM +12 bytes on every RP2350 persona (the polled line
+  reader's pending character), +30 on the terminal (with the hint and the
+  clock string).
+* **Tests:** `usbkbdselftest` gains six compose cases (the hint, either
+  order, a 3-byte €, an unknown pair, Esc and Caps-twice, Enter); the runner
+  gains Lisp's character counting and a line-editor test that inserts
+  before, backspaces over and deletes multi-byte characters. QEMU suite
+  380/380; `test_rp2350` 25/25.
 
 ### 37.3 — Layouts and the canvas: Lisp graphics
 

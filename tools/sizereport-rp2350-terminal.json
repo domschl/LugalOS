@@ -11,7 +11,7 @@
     "drivers/edgecap.c": 21,
     "drivers/i2c_bus.c": 630,
     "drivers/i2c_rtc.c": 15,
-    "drivers/lcd7_rp2350.c": 2609,
+    "drivers/lcd7_rp2350.c": 2615,
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_ui.c": 136,
     "drivers/piousb_rp2350.c": 1048,
@@ -20,7 +20,7 @@
     "drivers/uart_net.c": 10540,
     "drivers/uart_rp2350.c": 1325,
     "drivers/usb_cdc.c": 16648,
-    "drivers/usbkbd_rp2350.c": 3156,
+    "drivers/usbkbd_rp2350.c": 3168,
     "fs/9p.c": 5837,
     "fs/p9_chan.c": 6152,
     "fs/p9_link.c": 12448,
@@ -35,7 +35,7 @@
     "kernel/identity.c": 47,
     "kernel/idstore.c": 4,
     "kernel/klog.c": 8314,
-    "kernel/line_editor.c": 4626,
+    "kernel/line_editor.c": 4638,
     "kernel/lock.c": 665,
     "kernel/palloc.c": 36,
     "kernel/path.c": 68,
@@ -71,5 +71,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 39581
   },
-  "total": 164758
+  "total": 164788
 }
