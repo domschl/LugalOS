@@ -1862,6 +1862,13 @@ static lisp_val_t *prim_chess_san_selftest(lisp_val_t *args, lisp_val_t *env) {
  * the pre-X8b path. The command reports cores requested, harts online and
  * helper nodes alongside the usual result, so a run that silently fell back
  * to one core cannot be mistaken for a two-core one. */
+/* (chess-board-selftest) -- 37.4: the canvas chess board, drawn from a
+ * known position and checked at its pixels (user/chess/src/chess_ui.c). */
+static lisp_val_t *prim_chess_board_selftest(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return chess_canvas_selftest() == 0 ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     /* Optional third-of-nothing: `(chess-selftest cores [tt_kb])`. The table
@@ -3727,6 +3734,7 @@ void lisp_init(void) {
 #endif
 #if CONFIG_ENABLE_CHESS
     BUILTIN("chess-selftest", prim_chess_selftest);
+    BUILTIN("chess-board-selftest", prim_chess_board_selftest);
     BUILTIN("chess-san-selftest", prim_chess_san_selftest);
     BUILTIN("perft", prim_perft);
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638

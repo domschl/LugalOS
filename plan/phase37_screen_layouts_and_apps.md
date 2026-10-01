@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.3b done 2026-10-01, 37.4 next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.4 done 2026-10-01, 37.5 next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -622,6 +622,46 @@ attached**; the graphical board matches the ASCII board after every move
 (checked on at least one castling, one en-passant and one promotion, which
 are the moves that change more than two squares); the PGN lands in
 `/sd0/chess/`.
+
+**Done, 2026-10-01.** The owner played on the panel: "all graphics
+function and basic game play work well"; further tuning is for a later
+phase.
+
+* **The console board is a checkerboard now** (the owner's point): it
+  colours squares with 24-bit SGR backgrounds, which the 1-bpp terminal
+  used to ignore. `vtterm` turns a **dark background** -- ANSI 40-47 and
+  100-107, 256-colour and 24-bit, by brightness below `VT_DARK_LUMA` (160)
+  -- into reverse video; SGR 7 on a dark background reverses back, and SGR
+  0 or 49 ends it. The board's light squares (brightness ~222) stay white,
+  the dark ones (~145) turn black.
+* **Figurines in a reversed cell use their opposite-colour glyph** -- the
+  "second character set" the owner asked about, which the font already
+  had: a white king on a dark square is the solid king reversed (a white
+  silhouette), a black one the outline reversed (a white rim around black).
+  The same rule will keep pieces readable inside a text selection.
+* **The graphical board** (`user/chess/src/chess_ui.c`): `(chess)` on a
+  screen switches to the wide split, titles the canvas "Board", and draws
+  an 8 x 52 px board, centred, framed, without coordinates: light squares
+  white, dark squares the grey pattern, `piece_bitmaps[]` (now outside the
+  ST7735 guard) scaled 3x to 48 px with a 1-px rim in the opposite colour.
+  Built a pixel row at a time, 416 canvas row requests, from `chess_show()`
+  -- so after every change to the position, whoever made it. Leaving chess
+  puts the screen back to text (37.3b's rule). It draws only on a real
+  screen (`console_size()`) or a canvas already open, so the QEMU targets'
+  RAM screen is not allocated by every chess session.
+* **Left as they are, for a later phase:** the ASCII board is still printed
+  after every move beside the graphical one (12 lines of the 38-column text
+  tile); the pieces are the 16-px art scaled, not drawn at 48 px; no
+  square-cursor input.
+* **Cost:** static RAM +0. `lcdterm`'s U-mode section: 12 076 of 16 384
+  bytes. The boot stack's peak in the hardware suite rose from 8 372 to
+  11 452 of 16 384 bytes, with `(chess-board-selftest)` (a `Position` and
+  the drawing buffers on the stack) run earlier in the same boot.
+* **Tests:** `vtselftest` 30/30 (dark backgrounds in all three colour
+  forms with SGR 7 on top, and the figurine swap); `(chess-board-selftest)`
+  draws the starting position on the canvas and checks an empty light and
+  an empty dark square, both kings' bodies and rims, and the frame -- a
+  runner test on every target. QEMU suite 390/390; `test_rp2350` 25/25.
 
 ### 37.5 — The writer, and `e`'s viewport
 

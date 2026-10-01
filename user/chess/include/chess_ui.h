@@ -36,6 +36,12 @@ void chess_perft_cores(int max_depth, int cores);
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */
 void chess_console_run(void);
 
+/* 37.4, plan/phase37_screen_layouts_and_apps.md: the canvas board (the
+ * RP2350-LCD-7's, or a RAM screen's on QEMU) drawn from the starting
+ * position and checked pixel by pixel. Prints CHESSBOARD_SELFTEST_OK/_FAIL;
+ * returns the failures. On a build whose board is the ST7735, nothing to do. */
+int chess_canvas_selftest(void);
+
 /* The session's shared scratch Position (phase 15 §1.3). Non-NULL only
  * between chess_ensure_init() and chess_session_end(). Declared here now that
  * pgn.c wants it too -- search.c still reaches it with its own `extern` at the

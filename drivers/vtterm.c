@@ -87,6 +87,7 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->hidden = false;
     vt->col = vt->row = 0;
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
+    vt->bg_dark = false;
     vt->state = vt->nparams = vt->utf8_need = 0;
     vt->utf8_cp = vt->unknown = 0;
     for (unsigned i = 0; i < 8u; i++) vt->params[i] = 0;
@@ -167,7 +168,11 @@ LCDTERM_UTEXT static void put_cp(vtterm_t *vt, uint32_t cp) {
         line_feed(vt);
         vt->pending_wrap = false;
     }
-    cell_put(vt, vt->col, vt->row, fbtext_code(cp), vt->inverse);
+    bool rev = vt->inverse != vt->bg_dark;
+    uint8_t code = fbtext_code(cp);
+    if (rev && code >= FONT8X16_FIG_WHITE && code < FONT8X16_FIG_BLACK + 6u)   /* 37.4 */
+        code = (uint8_t)(code < FONT8X16_FIG_BLACK ? code + 6u : code - 6u);
+    cell_put(vt, vt->col, vt->row, code, rev);
     if (vt->col + 1u < vt->text.cols) vt->col++;
     else vt->pending_wrap = true;
 }
@@ -180,22 +185,60 @@ LCDTERM_UTEXT static unsigned clampu(unsigned v, unsigned hi) {
     return v > hi ? hi : v;
 }
 
+/* 37.4: the brightness (0..255, Rec. 601 weights) of the 16 ANSI colours as
+ * xterm draws them -- black, red, green, yellow, blue, magenta, cyan, white,
+ * then the bright eight. In the task's own read-only section: a plain
+ * const table would be .rodata, outside its domain. */
+LCDTERM_URODATA static const uint8_t k_ansi_luma[16] = {
+    0, 61, 120, 181, 27, 84, 143, 229, 127, 76, 149, 226, 110, 105, 178, 255,
+};
+
+LCDTERM_UTEXT static unsigned luma(unsigned r, unsigned g, unsigned b) {
+    return (77u * (r > 255u ? 255u : r) + 150u * (g > 255u ? 255u : g) + 29u * (b > 255u ? 255u : b)) >> 8;
+}
+
+/* A 256-colour palette index's brightness: the 16 ANSI colours, the 6x6x6
+ * cube (levels 0, 95, 135, 175, 215, 255), and the 24-step grey ramp. */
+LCDTERM_UTEXT static unsigned luma256(unsigned n) {
+    if (n < 16u) return k_ansi_luma[n];
+    if (n < 232u) {
+        unsigned i = n - 16u, r = i / 36u, g = (i / 6u) % 6u, b = i % 6u;
+        r = r ? 55u + 40u * r : 0u; g = g ? 55u + 40u * g : 0u; b = b ? 55u + 40u * b : 0u;
+        return luma(r, g, b);
+    }
+    return n <= 255u ? 8u + 10u * (n - 232u) : 255u;
+}
+
 LCDTERM_UTEXT static void sgr(vtterm_t *vt) {
     if (vt->nparams == 0) {
-        vt->inverse = false;
+        vt->inverse = vt->bg_dark = false;
         return;
     }
     for (unsigned i = 0; i < vt->nparams; i++) {
         unsigned p = vt->params[i];
-        if (p == 0 || p == 27) vt->inverse = false;
+        if (p == 0) vt->inverse = vt->bg_dark = false;
+        else if (p == 27) vt->inverse = false;
         else if (p == 7) vt->inverse = true;
+        else if (p >= 40u && p <= 47u) vt->bg_dark = k_ansi_luma[p - 40u] < VT_DARK_LUMA;
+        else if (p >= 100u && p <= 107u) vt->bg_dark = k_ansi_luma[p - 100u + 8u] < VT_DARK_LUMA;
+        else if (p == 49) vt->bg_dark = false;
         else if (p == 38 || p == 48) {
-            /* Extended colour: skip its arguments rather than reading them as
-             * attributes -- a truecolour 7 must not turn on reverse video. */
-            if (i + 1u < vt->nparams && vt->params[i + 1u] == 5) i += 2;
-            else if (i + 1u < vt->nparams && vt->params[i + 1u] == 2) i += 4;
+            /* Extended colour: its arguments are consumed here, never read as
+             * attributes -- a truecolour 7 must not turn on reverse video.
+             * A background's brightness decides reverse video (37.4); a
+             * foreground's is ignored. */
+            if (i + 2u < vt->nparams && vt->params[i + 1u] == 5) {
+                if (p == 48) vt->bg_dark = luma256(vt->params[i + 2u]) < VT_DARK_LUMA;
+                i += 2;
+            } else if (i + 4u < vt->nparams && vt->params[i + 1u] == 2) {
+                if (p == 48)
+                    vt->bg_dark = luma(vt->params[i + 2u], vt->params[i + 3u], vt->params[i + 4u]) < VT_DARK_LUMA;
+                i += 4;
+            } else if (i + 1u < vt->nparams && (vt->params[i + 1u] == 5 || vt->params[i + 1u] == 2)) {
+                i = vt->nparams;            /* truncated: nothing more to read */
+            }
         }
-        /* everything else -- bold, colours -- has no 1-bpp rendering */
+        /* everything else -- bold, foreground colours -- has no 1-bpp rendering */
     }
 }
 
@@ -496,9 +539,29 @@ int vtterm_selftest(void) {
              cell_is(&vt, 0, 0, 'a', false) && cell_is(&vt, 1, 0, 'b', true) &&
              cell_is(&vt, 2, 0, 'c', false) && cell_is(&vt, 3, 0, 'd', true) && cell_is(&vt, 4, 0, 'e', false));
 
-    st_fresh(&cx, &vt); FEED(&vt, "\033[1;36mK\033[48;2;7;7;7mL\033[38;5;7mM\033[0m");
-    st_check(&cx, "colours and bold are consumed, truecolour 7 is not reverse",
+    st_fresh(&cx, &vt); FEED(&vt, "\033[1;36mK\033[38;2;7;7;7m\033[48;2;200;200;200mL\033[38;5;7mM\033[0m");
+    st_check(&cx, "foreground colours and bold are consumed, a truecolour 7 is not reverse, nor a light background",
              row_is(&vt, 0, "KLM") && vt.unknown == 0);
+
+    /* 37.4: dark backgrounds are reverse video -- the console chess board's
+     * own two square colours, then ANSI, 256-colour and SGR 7 on top. */
+    st_fresh(&cx, &vt);
+    FEED(&vt, "\033[48;2;240;217;181mA\033[0m\033[48;2;181;136;99mB\033[0m"
+              "\033[40mC\033[47mD\033[49mE\033[48;5;232mF\033[48;5;255mG\033[0m"
+              "\033[44m\033[7mH\033[0mI");
+    st_check(&cx, "37.4: dark backgrounds reverse (truecolour, ANSI, 256); SGR 7 on dark reverses back",
+             cell_is(&vt, 0, 0, 'A', false) && cell_is(&vt, 1, 0, 'B', true) &&
+             cell_is(&vt, 2, 0, 'C', true) && cell_is(&vt, 3, 0, 'D', false) &&
+             cell_is(&vt, 4, 0, 'E', false) && cell_is(&vt, 5, 0, 'F', true) &&
+             cell_is(&vt, 6, 0, 'G', false) && cell_is(&vt, 7, 0, 'H', false) &&
+             cell_is(&vt, 8, 0, 'I', false));
+
+    st_fresh(&cx, &vt);
+    FEED(&vt, "\xe2\x99\x94\033[40m\xe2\x99\x94\xe2\x99\x9f\033[0m\xe2\x99\x9f");
+    st_check(&cx, "37.4: a figurine in a reversed cell is drawn with its opposite-colour glyph",
+             fbtext_code(0x2654) == FONT8X16_FIG_WHITE && fbtext_code(0x265a) == FONT8X16_FIG_BLACK &&
+             cell_is(&vt, 0, 0, 0x2654, false) && cell_is(&vt, 1, 0, 0x265a, true) &&
+             cell_is(&vt, 2, 0, 0x2659, true) && cell_is(&vt, 3, 0, 0x265f, false));
 
     st_fresh(&cx, &vt); FEED(&vt, "\033[5n\033=\033[?1049hX");
     st_check(&cx, "unknown sequences are swallowed and counted, never printed",

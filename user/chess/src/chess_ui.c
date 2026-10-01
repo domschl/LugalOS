@@ -51,6 +51,8 @@
 #include "kernel/hart.h"
 #include "pgn.h"
 #include "kernel/scratch.h"
+#include "kernel/console.h"
+#include "drivers/screen.h"
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -344,6 +346,9 @@ typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
  * The output side is now symmetric with the input side that phase 15's
  * chess_next_event() already made symmetric. */
 static void chess_show(const Position *pos);
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+static void canvas_board_begin(const Position *pos);    /* 37.4, defined beside chess_show() */
+#endif
 
 static ChessCmdResult console_dispatch_line(const char *line);
 
@@ -1359,6 +1364,9 @@ void chess_console_run(void) {
 
     cprintf("\nLugalOS chess console. Type 'help' for commands, 'quit' to leave.\n");
     print_board(&g_chess_pos);
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    canvas_board_begin(&g_chess_pos);   /* 37.4: the board beside the text */
+#endif
 
     bool keypad_hint_shown = false;
 
@@ -1397,11 +1405,12 @@ void chess_console_run(void) {
     }
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* 16x16 monochrome chess piece bitmaps, vendored from
  * ~/gith/domschl/LugalChess (firmware/st7735.c) -- presentation data, not
  * logic, and specific to this UI (H1's canvas driver deliberately doesn't
- * carry chess content). Indexed PAWN..KING (defs.h's piece enum). */
+ * carry chess content). Indexed PAWN..KING (defs.h's piece enum). Bit 15 of
+ * a row is its leftmost pixel. Outside the ST7735 guard since 37.4: the
+ * RP2350-LCD-7's canvas board draws them too, scaled. */
 static const uint16_t piece_bitmaps[6][16] = {
     // Pawn
     { 0x0000, 0x0000, 0x03c0, 0x07e0, 0x07e0, 0x03c0, 0x0180, 0x03c0,
@@ -1423,6 +1432,7 @@ static const uint16_t piece_bitmaps[6][16] = {
       0x3ffe, 0x1ff8, 0x1e78, 0x0ff0, 0x0ff0, 0x1ff8, 0x3ffc, 0x0000 }
 };
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Light square darkened from the vendored value (0xEF7B, a near-white
  * cream) to a warm tan -- confirmed live on the physical panel that white
  * pieces (drawn solid ST7735_WHITE) were nearly imperceptible against it.
@@ -2660,6 +2670,169 @@ void chess_run(void) {
 #endif /* CONFIG_ENABLE_ST7735 */
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
 
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+/* --- 37.4: the board on the canvas ------------------------------------------
+ *
+ * plan/phase37_screen_layouts_and_apps.md §1.2, phase 36 §4.7: an 8 x 52 px
+ * board centred in the wide split's canvas tile, beside the text tile where
+ * the console session goes on. Light squares white, dark squares the 50 %
+ * grey pattern; the pieces are piece_bitmaps[] scaled 3x to 48 px, with a
+ * one-pixel outline in the opposite colour -- white pieces white with a black
+ * rim, black pieces black with a white one -- so both read on both kinds of
+ * square. No coordinates (the owner's call: they cut into the frame, and the
+ * moves name squares anyway).
+ *
+ * Drawn a pixel row at a time: 416 canvas row requests of 52 bytes, built
+ * here, which is what makes a full redraw cheap enough to do after every
+ * move. Only where there is a screen to look at -- console_size() answers
+ * for a panel, not for the RAM screen of the targets without one -- or where
+ * a canvas has been opened already (which is how chessboardselftest tests
+ * it on QEMU). */
+#define CB_SQ 52
+#define CB_N  (8 * CB_SQ)
+
+static uint16_t cb_u16(const uint8_t *r, unsigned at) {
+    return (uint16_t)(r[at] | (r[at + 1u] << 8));
+}
+
+static void cb_put16(uint8_t *b, int v) {
+    b[0] = (uint8_t)((unsigned)v & 0xffu);
+    b[1] = (uint8_t)(((unsigned)v >> 8) & 0xffu);
+}
+
+/* Is (bx, by) of the 48 x 48 scaled piece inside its shape? */
+static bool cb_in(int piece, int bx, int by) {
+    if (bx < 0 || by < 0 || bx >= 48 || by >= 48) return false;
+    return (piece_bitmaps[piece][by / 3] >> (15 - bx / 3)) & 1u;
+}
+
+/* The canvas, if there is one this board should be drawn on: its size in
+ * *w, *h. */
+static bool cb_canvas(int *w, int *h) {
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply) || reply[8] == SCREEN_LAYOUT_TEXT) return false;
+    *w = cb_u16(reply, 2);
+    *h = cb_u16(reply, 4);
+    return true;
+}
+
+static void canvas_board_draw(const Position *pos) {
+    int w, h;
+    if (!cb_canvas(&w, &h)) return;
+    int x0 = (w - CB_N) / 2, y0 = (h - CB_N) / 2;
+    uint8_t req[9 + CB_N / 8], reply[SCREEN_REPLY_LEN];
+    req[0] = 'o';
+    cb_put16(req + 1, x0 - 1); cb_put16(req + 3, y0 - 1);
+    cb_put16(req + 5, CB_N + 2); cb_put16(req + 7, CB_N + 2);
+    cb_put16(req + 9, 1);
+    (void)console_canvas(req, 11, reply);
+    for (int py = 0; py < CB_N; py++) {
+        int rank = 7 - py / CB_SQ, sy = py % CB_SQ;
+        for (unsigned i = 9; i < sizeof(req); i++) req[i] = 0;
+        for (int px = 0; px < CB_N; px++) {
+            int file = px / CB_SQ, sx = px % CB_SQ, sq = rank * 8 + file;
+            bool dark = ((rank + file) % 2) == 0;
+            int on = dark ? ((x0 + px + y0 + py) & 1) : 0;
+            int piece = pos->board[sq];
+            if (piece != NO_PIECE) {
+                bool white = (pos->color_bbs[WHITE] & (1ULL << sq)) != 0;
+                int bx = sx - 2, by = sy - 2;
+                if (cb_in(piece, bx, by)) {
+                    on = white ? 0 : 1;
+                } else {
+                    bool rim = false;
+                    for (int dy = -1; dy <= 1 && !rim; dy++)
+                        for (int dx = -1; dx <= 1 && !rim; dx++)
+                            if (cb_in(piece, bx + dx, by + dy)) rim = true;
+                    if (rim) on = white ? 1 : 0;
+                }
+            }
+            if (on) req[9 + px / 8] |= (uint8_t)(1u << (px % 8));
+        }
+        req[0] = 'b';
+        cb_put16(req + 1, x0); cb_put16(req + 3, y0 + py);
+        cb_put16(req + 5, CB_N); cb_put16(req + 7, 1);
+        (void)console_canvas(req, sizeof(req), reply);
+    }
+}
+
+/* A session starts: on a real screen, the board goes beside the text. */
+static void canvas_board_begin(const Position *pos) {
+    unsigned cols, rows;
+    if (console_size(&cols, &rows)) {
+        uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_WIDE }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
+        req[0] = 'T'; req[1] = 'B'; req[2] = 'o'; req[3] = 'a'; req[4] = 'r'; req[5] = 'd';
+        (void)console_canvas(req, 6, reply);
+    }
+    canvas_board_draw(pos);
+}
+
+/* One canvas pixel, read back through the protocol. A function, not a
+ * comma expression: two of those in one comparison share the reply buffer,
+ * and C does not say which call's reply each side reads. */
+static unsigned cb_pixel(int x, int y) {
+    uint8_t req[5], reply[SCREEN_REPLY_LEN];
+    req[0] = 'g';
+    cb_put16(req + 1, x);
+    cb_put16(req + 3, y);
+    (void)console_canvas(req, 5, reply);
+    return reply[1];
+}
+
+/* `chessboardselftest`: the starting position drawn on whatever canvas
+ * there is (opened in the wide split for the purpose), checked at pixels
+ * that say each part is right, then the screen put back to text. */
+int chess_canvas_selftest(void) {
+    if (!chess_ensure_init()) {
+        cprintf("CHESSBOARD_SELFTEST_FAIL (chess did not initialise)\n");
+        return 1;
+    }
+    uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_WIDE }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 2, reply) || reply[0] != 0) {
+        cprintf("CHESSBOARD_SELFTEST_FAIL (no canvas)\n");
+        return 1;
+    }
+    Position p;
+    parse_fen(&p, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    canvas_board_draw(&p);
+    int w, h;
+    (void)cb_canvas(&w, &h);
+    int x0 = (w - CB_N) / 2, y0 = (h - CB_N) / 2, fails = 0;
+#define PIX(x, y) cb_pixel((x), (y))
+    /* e4 (rank 4, file e): a light square, empty -- all white. a3 is dark
+     * (rank 3, file a): the grey pattern, so two neighbours differ. */
+    int e4x = x0 + 4 * CB_SQ, e4y = y0 + 4 * CB_SQ;
+    int a3x = x0, a3y = y0 + 5 * CB_SQ;
+    bool light = !PIX(e4x + 10, e4y + 10) && !PIX(e4x + 30, e4y + 31);
+    bool grey = PIX(a3x + 10, a3y + 10) != PIX(a3x + 11, a3y + 10);
+    /* The kings: e1 (white, on a dark square) and e8 (black, on a light one).
+     * Inside the king's body -- bitmap row 8, 0x3ffe -- white is white and
+     * black black; just left of the body's edge is the rim, the other way. */
+    int k1x = x0 + 4 * CB_SQ, k1y = y0 + 7 * CB_SQ, k8x = x0 + 4 * CB_SQ, k8y = y0;
+    int bodyx = 2 + 3 * 7, bodyy = 2 + 3 * 8 + 1;          /* bit 8 of 0x3ffe, row 8 */
+    int rimx = 2 + 3 * 2 - 1;                                 /* left of bit 13, 0x3ffe's top bit */
+    bool wking = !PIX(k1x + bodyx, k1y + bodyy) && PIX(k1x + rimx, k1y + bodyy);
+    bool bking = PIX(k8x + bodyx, k8y + bodyy) && !PIX(k8x + rimx, k8y + bodyy);
+    bool frame = PIX(x0 - 1, y0 + 100) && PIX(x0 + CB_N, y0 + 100);
+#undef PIX
+    cprintf("  [%s] empty light square is white\n", light ? "ok" : "FAIL"); fails += !light;
+    cprintf("  [%s] empty dark square is the grey pattern\n", grey ? "ok" : "FAIL"); fails += !grey;
+    cprintf("  [%s] white king: white body, black rim\n", wking ? "ok" : "FAIL"); fails += !wking;
+    cprintf("  [%s] black king: black body, white rim\n", bking ? "ok" : "FAIL"); fails += !bking;
+    cprintf("  [%s] the board's frame\n", frame ? "ok" : "FAIL"); fails += !frame;
+    req[0] = 'L'; req[1] = SCREEN_LAYOUT_TEXT;
+    (void)console_canvas(req, 2, reply);
+    cprintf("%s\n", fails ? "CHESSBOARD_SELFTEST_FAIL" : "CHESSBOARD_SELFTEST_OK");
+    return fails;
+}
+#else
+int chess_canvas_selftest(void) {
+    cprintf("CHESSBOARD_SELFTEST_OK (this build draws its board on the ST7735)\n");
+    return 0;
+}
+#endif
+
 /* See the forward declaration near the top of this file for why this exists.
  *
  * Defined out here, past every hardware guard, because it is the one function
@@ -2670,6 +2843,9 @@ void chess_run(void) {
  * has. */
 static void chess_show(const Position *pos) {
     print_board(pos);
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    canvas_board_draw(pos);     /* 37.4 */
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm_redraw_if_display(pos);
     tm_sync_move_slots(pos);

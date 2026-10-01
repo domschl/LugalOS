@@ -2679,6 +2679,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Showcase Demo: Rule 30 Matches An Unbounded Line, Edges Included (37.3b)",
                         ok_r, "" if ok_r else log_r2 + log_r3))
 
+        # 37.4: the chess board on the canvas, from the starting position:
+        # an empty light square, the grey of an empty dark one, both kings'
+        # bodies and rims, the frame.
+        ok, log = session.send_and_expect("(chess-board-selftest)",
+                                          r"CHESSBOARD_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=60.0)
+        results.append(("Chess Board On The Canvas: Squares, Pieces And Their Rims (37.4)",
+                        ok and "CHESSBOARD_SELFTEST_OK" in log, log if not (ok and "CHESSBOARD_SELFTEST_OK" in log) else ""))
+
         ok4, log4 = session.send_and_expect('(load "/sd0/demos/lorenz.lisp")', r"=> #t", timeout=20.0)
         ok5, log5 = session.send_and_expect("(lorenz 1500)", r"=> done", timeout=120.0)
         ok6, log6 = session.send_and_expect("(canvas-on-redraw '())", r"=> #t", timeout=10.0)

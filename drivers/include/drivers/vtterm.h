@@ -14,10 +14,19 @@
  *
  * Understood: CR, LF (scrolling at the bottom), BS, TAB (stops every 8), and
  * the CSI sequences A/B/C/D (with counts), H/f (cursor position), J and K
- * (0/1/2), m (SGR: 0 and 27 reset, 7 reverse video; colours, 38/48 with
- * their ;5;n or ;2;r;g;b arguments, and bold are parsed and ignored -- a
- * 1-bpp screen has no colour, and reverse is the one attribute it can show
- * exactly), and ?25h/?25l (cursor on/off). UTF-8 is decoded to one cell per
+ * (0/1/2), m (SGR: 0 and 27 reset, 7 reverse video; bold and foreground
+ * colours are parsed and ignored -- a 1-bpp screen has no colour -- but a
+ * **dark background** (40-47, 100-107, 48;5;n, 48;2;r;g;b darker than
+ * VT_DARK_LUMA, 37.4) is shown as reverse video, so a checkerboard printed in
+ * colours, such as the console chess board's, comes out as one; SGR 7 on a
+ * dark background reverses back), and ?25h/?25l (cursor on/off).
+ *
+ * In a reversed cell the twelve chess figurines are drawn with their
+ * opposite-colour glyph (37.4): a white king on a dark square is the solid
+ * king glyph reversed -- a white silhouette -- and so still reads as white;
+ * a black king there is the outline glyph reversed, a white rim around a
+ * black body. Text selection, when it comes, is reverse video too, and keeps
+ * pieces readable the same way. UTF-8 is decoded to one cell per
  * code point, drawn by its glyph code (fbtext_code(): the replacement glyph
  * where the font has nothing, and for a malformed sequence). OSC 0 and 2
  * (`ESC ] 2 ; title BEL`, or ST for BEL) set the window title (37.1); other
@@ -39,6 +48,7 @@
 #define VT_CELL_INVERSE 0x100u
 #define VT_TITLE_MAX    64u        /* bytes of UTF-8, with the NUL */
 #define VT_OSC_MAX      72u
+#define VT_DARK_LUMA    160u       /* 0..255: a background below this is dark */
 
 typedef struct {
     fbtext_t  text;
@@ -47,6 +57,7 @@ typedef struct {
     uint16_t  col, row;
     bool      pending_wrap;
     bool      inverse;          /* SGR 7 */
+    bool      bg_dark;          /* 37.4: the SGR background is dark: reverse video */
     bool      cursor_on;        /* ?25h / ?25l */
     bool      cursor_drawn;     /* the XOR underline is currently on screen */
     uint8_t   state;            /* parser state, vtterm.c */

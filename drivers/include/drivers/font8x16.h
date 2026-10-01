@@ -27,6 +27,13 @@
 
 extern const uint8_t font8x16_glyphs[FONT8X16_LAST - FONT8X16_FIRST + 1][FONT8X16_H];
 
+/* 37.4: where tools/gen_font_bdf.py's EXTRA order puts the figurines --
+ * white king, queen, rook, bishop, knight, pawn, then the black six. The
+ * generator's order and these must agree; vtselftest checks them through
+ * fbtext_code(). */
+#define FONT8X16_FIG_WHITE 0x8b
+#define FONT8X16_FIG_BLACK 0x91
+
 /* The code points at 0x80..0x9F, sorted, with their glyph codes. */
 #define FONT8X16_MAP_COUNT 32
 extern const uint16_t font8x16_map_cp[FONT8X16_MAP_COUNT];
