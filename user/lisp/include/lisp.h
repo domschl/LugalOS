@@ -53,6 +53,13 @@ typedef struct lisp_val {
 } lisp_val_t;
 
 void lisp_init(void);
+
+/* 37.3b, plan/phase37_screen_layouts_and_apps.md §2.2: at a prompt, call
+ * the program's (canvas-on-redraw f) if the canvas was lost since it last
+ * drew; and put the screen back to text (after an `exec`'d program or a
+ * chess session). Both no-ops where Lisp's canvas is the ST7735's. */
+void lisp_canvas_poll(void);
+void lisp_canvas_reset(void);
 lisp_val_t *make_int(long val);
 lisp_val_t *make_str(const char *str);
 lisp_val_t *make_sym(const char *sym);

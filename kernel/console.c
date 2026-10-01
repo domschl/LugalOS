@@ -55,6 +55,10 @@ void console_set_title(const char *title) {
     if (g_screen && g_screen->set_title) g_screen->set_title(title);
 }
 
+bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
+    return g_screen && g_screen->canvas && g_screen->canvas(req, n, reply);
+}
+
 void console_bind(console_putc_fn putc) {
     g_console_putc = putc;
 }

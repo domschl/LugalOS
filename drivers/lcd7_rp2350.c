@@ -494,10 +494,11 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_TITLE  'T'       /* 37.1: the status bar's title */
 #define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */
 #define LCDTERM_OP_REPAINT 'R'      /* 37.1a: everything, from the shadow */
+#define LCDTERM_OP_CANVAS 'C'       /* 37.3b: a canvas request; the reply comes back */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
 static uint8_t          g_lcdterm_req[1u + LCDTERM_BATCH];
-static uint8_t          g_lcdterm_resp[1];
+static uint8_t          g_lcdterm_resp[SCREEN_REPLY_LEN];
 static chan_endpoint_t *g_lcdterm_ep;
 static int              g_lcdterm_pid = -1;
 static uint32_t         g_lcdterm_calls;
@@ -539,7 +540,13 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
     name[4] = 'e'; name[5] = 'r'; name[6] = 'm'; name[7] = '\0';
     for (;;) {
         uint8_t req[1u + LCDTERM_BATCH];
+        uint8_t reply[SCREEN_REPLY_LEN];
         long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
+        if (n >= 1 && req[0] == LCDTERM_OP_CANVAS) {
+            screen_canvas(scr, req + 1, (uint32_t)(n - 1), reply);
+            lcdterm_usys_serve_reply((const char *)name, reply, (long)sizeof(reply));
+            continue;
+        }
         if (n >= 1) {
             const char *p = (const char *)req + 1;
             uint32_t len = (uint32_t)(n - 1);
@@ -653,6 +660,33 @@ static void lcdterm_op(uint8_t op, const char *p, uint32_t len) {
     console_unlock();
 }
 
+/* 37.3b: a canvas request through the task, its reply copied back; drawn
+ * here if the task is not there. The text batch goes first, so a layout
+ * change lands after the output written before it. */
+static bool lcd7_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
+    if (!g_vt_ready || n == 0 || n > LCDTERM_BATCH) return false;
+    console_lock();
+    lcd7_screen_flush();
+    bool sent = false;
+    if (lcdterm_alive()) {
+        uint8_t buf[1u + LCDTERM_BATCH];
+        buf[0] = LCDTERM_OP_CANVAS;
+        for (uint32_t i = 0; i < n; i++) buf[1u + i] = req[i];
+        for (int attempt = 0; attempt < 8 && !sent; attempt++) {
+            if (chan_call(g_lcdterm_ep, buf, 1u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
+                g_lcdterm_calls++;
+                for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
+                sent = true;
+            } else {
+                sched_yield();
+            }
+        }
+    }
+    if (!sent) screen_canvas(g_scr, req, n, reply);
+    console_unlock();
+    return true;
+}
+
 void lcd7_repaint(void) {
     if (g_vt_ready) lcdterm_op(LCDTERM_OP_REPAINT, "", 0);
 }
@@ -714,6 +748,7 @@ static const console_screen_t g_console_screen = {
     .flush     = lcd7_console_flush,
     .size      = lcd7_console_size,
     .set_title = lcd7_set_title,
+    .canvas    = lcd7_canvas,
 };
 
 const console_screen_t *lcd7_console_screen(void) {

@@ -15,6 +15,7 @@
     "drivers/loopback_net.c": 2048,
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 8,
+    "drivers/ramscreen.c": 4,
     "drivers/spisd_rp2350.c": 3093,
     "drivers/uart1_link_rp2350.c": 2061,
     "drivers/uart_net.c": 10540,
@@ -62,7 +63,7 @@
     "user/chibicc/preprocess.c": 20,
     "user/chibicc/tokenize.c": 17,
     "user/ed/ed.c": 92,
-    "user/lisp/lisp.c": 39586
+    "user/lisp/lisp.c": 41064
   },
-  "total": 140660
+  "total": 142142
 }

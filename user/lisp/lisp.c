@@ -3,6 +3,7 @@
 #include "kernel/scratch.h"
 #include "kernel/path.h"
 #include "kernel/console.h"
+#include "drivers/screen.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "drivers/i2c_rtc.h"
@@ -52,7 +53,13 @@
 #include <string.h>
 
 
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_LISP_NODE_POOL)
+/* 37.3a: a board file may size the pool itself. The RP2350-LCD-7 persona,
+ * whose point is to be a Lisp machine with a screen, takes 2048: the
+ * showcase demos' cellular automaton keeps two rows of ~156 cells alive at
+ * once, and 1024 nodes could not hold that beside the loaded program. */
+#define NODE_POOL_SIZE CONFIG_LISP_NODE_POOL
+#elif defined(CONFIG_BOARD_RP2350)
 /* 512 was already close to the ceiling a full hardware test-suite run
  * reaches within one boot session -- H1+H2 (plan/phase9_chess_computer.md)
  * added 7 new global primitive bindings (canvas-*, tm-*) and tipped it into
@@ -779,7 +786,48 @@ void lisp_gc_safepoint(void) {
     }
 }
 
+/* 37.3a: the integers -16..255 are shared constant nodes (in flash on the
+ * RP2350), not allocated: a loop counter, a list of 0s and 1s, a colour or
+ * a coordinate under 256 then costs the pool nothing. Safe because nothing
+ * writes an integer node after make_int() made it, and the collector leaves
+ * nodes outside the pool alone. */
+#define SMALL_INT_MIN (-16)
+#define SMALL_INT_MAX (255)
+#define SI(v) { .type = LISP_INT, .u.i = (v) }
+static const lisp_val_t small_ints[SMALL_INT_MAX - SMALL_INT_MIN + 1] = {
+    SI(-16), SI(-15), SI(-14), SI(-13), SI(-12), SI(-11), SI(-10), SI(-9), SI(-8), SI(-7),
+    SI(-6), SI(-5), SI(-4), SI(-3), SI(-2), SI(-1), SI(0), SI(1), SI(2), SI(3), SI(4), SI(5),
+    SI(6), SI(7), SI(8), SI(9), SI(10), SI(11), SI(12), SI(13), SI(14), SI(15), SI(16), SI(17),
+    SI(18), SI(19), SI(20), SI(21), SI(22), SI(23), SI(24), SI(25), SI(26), SI(27), SI(28),
+    SI(29), SI(30), SI(31), SI(32), SI(33), SI(34), SI(35), SI(36), SI(37), SI(38), SI(39),
+    SI(40), SI(41), SI(42), SI(43), SI(44), SI(45), SI(46), SI(47), SI(48), SI(49), SI(50),
+    SI(51), SI(52), SI(53), SI(54), SI(55), SI(56), SI(57), SI(58), SI(59), SI(60), SI(61),
+    SI(62), SI(63), SI(64), SI(65), SI(66), SI(67), SI(68), SI(69), SI(70), SI(71), SI(72),
+    SI(73), SI(74), SI(75), SI(76), SI(77), SI(78), SI(79), SI(80), SI(81), SI(82), SI(83),
+    SI(84), SI(85), SI(86), SI(87), SI(88), SI(89), SI(90), SI(91), SI(92), SI(93), SI(94),
+    SI(95), SI(96), SI(97), SI(98), SI(99), SI(100), SI(101), SI(102), SI(103), SI(104),
+    SI(105), SI(106), SI(107), SI(108), SI(109), SI(110), SI(111), SI(112), SI(113), SI(114),
+    SI(115), SI(116), SI(117), SI(118), SI(119), SI(120), SI(121), SI(122), SI(123), SI(124),
+    SI(125), SI(126), SI(127), SI(128), SI(129), SI(130), SI(131), SI(132), SI(133), SI(134),
+    SI(135), SI(136), SI(137), SI(138), SI(139), SI(140), SI(141), SI(142), SI(143), SI(144),
+    SI(145), SI(146), SI(147), SI(148), SI(149), SI(150), SI(151), SI(152), SI(153), SI(154),
+    SI(155), SI(156), SI(157), SI(158), SI(159), SI(160), SI(161), SI(162), SI(163), SI(164),
+    SI(165), SI(166), SI(167), SI(168), SI(169), SI(170), SI(171), SI(172), SI(173), SI(174),
+    SI(175), SI(176), SI(177), SI(178), SI(179), SI(180), SI(181), SI(182), SI(183), SI(184),
+    SI(185), SI(186), SI(187), SI(188), SI(189), SI(190), SI(191), SI(192), SI(193), SI(194),
+    SI(195), SI(196), SI(197), SI(198), SI(199), SI(200), SI(201), SI(202), SI(203), SI(204),
+    SI(205), SI(206), SI(207), SI(208), SI(209), SI(210), SI(211), SI(212), SI(213), SI(214),
+    SI(215), SI(216), SI(217), SI(218), SI(219), SI(220), SI(221), SI(222), SI(223), SI(224),
+    SI(225), SI(226), SI(227), SI(228), SI(229), SI(230), SI(231), SI(232), SI(233), SI(234),
+    SI(235), SI(236), SI(237), SI(238), SI(239), SI(240), SI(241), SI(242), SI(243), SI(244),
+    SI(245), SI(246), SI(247), SI(248), SI(249), SI(250), SI(251), SI(252), SI(253), SI(254),
+    SI(255),
+};
+#undef SI
+
 lisp_val_t *make_int(long val) {
+    if (val >= SMALL_INT_MIN && val <= SMALL_INT_MAX)
+        return (lisp_val_t *)&small_ints[val - SMALL_INT_MIN];
     lisp_val_t *v = alloc_node(LISP_INT);
     v->u.i = val;
     return v;
@@ -830,6 +878,49 @@ static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
 static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
     lisp_val_t *binding = make_pair(make_sym(sym), val);
     *env = make_pair(binding, *env);
+}
+
+/* 37.3a: the built-in names, outside the node pool. They used to be ordinary
+ * global_env bindings, four nodes and a string slot each -- some 680 of the
+ * RP2350's 1024 nodes and 170 of its 384 string slots, taken at boot and
+ * live for good, which left a program about 400 nodes: `(load
+ * "/sd0/demos/ca.lisp")` alone ran the pool dry on the board. Now each value
+ * is a `static const` node (in flash on the RP2350, outside the pool, so the
+ * collector neither marks nor sweeps it) and the name and value sit in this
+ * table, which symbol lookup consults after the environment -- so a program's
+ * own `define` of a built-in name still wins, exactly as before.
+ *
+ * Nothing mutates a primitive's value node; the cast that drops `const` in
+ * builtin_get() is for the evaluator's signature only. A build with more
+ * built-ins than BUILTIN_MAX binds the rest in global_env the old way. */
+typedef struct {
+    const char       *name;
+    const lisp_val_t *val;
+} builtin_t;
+
+#define BUILTIN_MAX 184
+static builtin_t builtins[BUILTIN_MAX];
+static int builtin_count;
+
+static void builtin_add(const char *name, const lisp_val_t *val) {
+    if (builtin_count < BUILTIN_MAX) {
+        builtins[builtin_count].name = name;
+        builtins[builtin_count].val = val;
+        builtin_count++;
+    } else {
+        env_set(&global_env, name, (lisp_val_t *)val);
+    }
+}
+
+#define BUILTIN(name, fn) do { \
+        static const lisp_val_t v_ = { .type = LISP_PRIMITIVE, .u.prim = (fn) }; \
+        builtin_add((name), &v_); \
+    } while (0)
+
+static lisp_val_t *builtin_get(const char *sym) {
+    for (int i = 0; i < builtin_count; i++)
+        if (streq(builtins[i].name, sym)) return (lisp_val_t *)builtins[i].val;
+    return NULL;
 }
 
 /* Safe argument-list accessors for primitives. `args` is the proper list of
@@ -1511,6 +1602,226 @@ static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
     st7735_draw_string(x, y, str, color, size);
     return &true_val;
 }
+
+/* 37.3b's hooks have nothing to do on the ST7735: it has no layouts. */
+void lisp_canvas_poll(void) { }
+void lisp_canvas_reset(void) { }
+#else
+/* 37.3b, plan/phase37_screen_layouts_and_apps.md: the canvas on every build
+ * without the ST7735 -- the RP2350-LCD-7's panel, or a screen in RAM on the
+ * others (drivers/ramscreen.c), which is what makes these testable on QEMU.
+ * Each call is one request in drivers/screen.h's protocol, sent through
+ * console_canvas(); coordinates are the canvas tile's own, and everything
+ * clips to it. Colours: 0 white, 1 black (the default), 2 grey; any other
+ * value is black, so a program written for the ST7735's RGB565 still draws.
+ *
+ * Damage (§2.2): every reply carries the canvas's damage count. Drawing
+ * calls remember it, canvas-window does not -- so after a layout change,
+ * or a `lcd repaint`, the next prompt sees a count the program has not seen
+ * and calls its (canvas-on-redraw f). */
+static uint16_t g_canvas_seen;      /* the damage the program has drawn after */
+
+static void put16(uint8_t *b, long v) {
+    b[0] = (uint8_t)((unsigned long)v & 0xffu);
+    b[1] = (uint8_t)(((unsigned long)v >> 8) & 0xffu);
+}
+
+static uint16_t reply16(const uint8_t *r, unsigned at) {
+    return (uint16_t)(r[at] | (r[at + 1u] << 8));
+}
+
+/* One request; #t if it was done, #f if refused or there is no canvas. */
+static bool canvas_call(const uint8_t *req, uint32_t n, uint8_t *reply, bool drawn) {
+    if (!console_canvas(req, n, reply)) return false;
+    if (drawn) g_canvas_seen = reply16(reply, 6);
+    return reply[0] == 0;
+}
+
+/* An op with `count` int16 arguments from args, defaulting the colour (the
+ * last) to black. */
+static lisp_val_t *canvas_op(char op, lisp_val_t *args, int count, bool colour) {
+    uint8_t req[1 + 2 * 6], reply[SCREEN_REPLY_LEN];
+    req[0] = (uint8_t)op;
+    for (int i = 0; i < count; i++) {
+        long dflt = (colour && i == count - 1) ? 1 : 0;
+        put16(req + 1 + 2 * i, arg_int(args, i, dflt));
+    }
+    return canvas_call(req, 1u + 2u * (uint32_t)count, reply, true) ? &true_val : &false_val;
+}
+
+/* (canvas-fill [c]) -- the whole canvas, white by default. */
+static lisp_val_t *prim_canvas_fill(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t req[3], reply[SCREEN_REPLY_LEN];
+    req[0] = 'F';
+    put16(req + 1, arg_int(args, 0, 0));
+    return canvas_call(req, sizeof(req), reply, true) ? &true_val : &false_val;
+}
+
+/* (canvas-pixel x y [c]) */
+static lisp_val_t *prim_canvas_pixel(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('p', args, 3, true);
+}
+
+/* (canvas-rect x y w h [c]) -- filled, as on the ST7735 */
+static lisp_val_t *prim_canvas_rect(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('r', args, 5, true);
+}
+
+/* (canvas-frame x y w h [c]) -- the outline */
+static lisp_val_t *prim_canvas_frame(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('o', args, 5, true);
+}
+
+/* (canvas-line x0 y0 x1 y1 [c]) */
+static lisp_val_t *prim_canvas_line(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('l', args, 5, true);
+}
+
+/* (canvas-circle x y r [c]) */
+static lisp_val_t *prim_canvas_circle(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('c', args, 4, true);
+}
+
+/* (canvas-invert x y w h) */
+static lisp_val_t *prim_canvas_invert(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return canvas_op('i', args, 4, false);
+}
+
+/* (canvas-text x y str [c] [size]) -- black on the canvas, the glyph's
+ * top-left at x y; c and size are the ST7735's and are accepted and
+ * ignored, except that a size above 1 draws bold. */
+static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t req[6 + STRING_SLOT_LEN], reply[SCREEN_REPLY_LEN];
+    const char *str = get_str_val(lisp_list_ref(args, 2));
+    uint32_t len = (uint32_t)strlen(str);
+    if (len > STRING_SLOT_LEN) len = STRING_SLOT_LEN;
+    req[0] = 't';
+    put16(req + 1, arg_int(args, 0, 0));
+    put16(req + 3, arg_int(args, 1, 0));
+    req[5] = arg_int(args, 4, 1) > 1 ? 1 : 0;
+    memcpy(req + 6, str, len);
+    return canvas_call(req, 6u + len, reply, true) ? &true_val : &false_val;
+}
+
+/* (canvas-row x y cells [scale]) -- one row of pixels from a list, each
+ * element 0 (white) or anything else (black), each `scale` x `scale`
+ * pixels: one request per row, the shape of a cellular automaton's
+ * generation or an image's scan line. */
+#define CANVAS_ROW_MAX 1600
+static lisp_val_t *prim_canvas_row(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t req[9 + CANVAS_ROW_MAX / 8], reply[SCREEN_REPLY_LEN];
+    for (unsigned i = 9; i < sizeof(req); i++) req[i] = 0;
+    long n = 0;
+    for (lisp_val_t *c = lisp_list_ref(args, 2); c && c->type == LISP_PAIR && n < CANVAS_ROW_MAX;
+         c = c->u.pair.cdr, n++) {
+        lisp_val_t *v = c->u.pair.car;
+        if (v && !(v->type == LISP_INT && v->u.i == 0)) req[9 + n / 8] |= (uint8_t)(1u << (n % 8));
+    }
+    req[0] = 'b';
+    put16(req + 1, arg_int(args, 0, 0));
+    put16(req + 3, arg_int(args, 1, 0));
+    put16(req + 5, n);
+    put16(req + 7, arg_int(args, 3, 1));
+    return canvas_call(req, 9u + (uint32_t)(n + 7) / 8u, reply, true) ? &true_val : &false_val;
+}
+
+/* (canvas-get x y) -> 0 or 1 */
+static lisp_val_t *prim_canvas_get(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t req[5], reply[SCREEN_REPLY_LEN];
+    req[0] = 'g';
+    put16(req + 1, arg_int(args, 0, 0));
+    put16(req + 3, arg_int(args, 1, 0));
+    if (!canvas_call(req, sizeof(req), reply, false)) return make_int(0);
+    return make_int(reply[1]);
+}
+
+/* (canvas-size) -> (w h), (0 0) while there is no canvas tile */
+static lisp_val_t *prim_canvas_size(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply)) return make_pair(make_int(0), make_pair(make_int(0), &nil_val));
+    lisp_val_t *h = make_pair(make_int(reply16(reply, 4)), &nil_val);
+    return make_pair(make_int(reply16(reply, 2)), h);
+}
+
+/* (canvas-window 'text | 'canvas | 'split | 'split-half) -> #t, or #f if
+ * refused. 'split is the wide one (§1.2): the canvas left, 38 text columns
+ * right. */
+static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *w = get_str_val(lisp_list_ref(args, 0));
+    uint8_t req[2] = { 'L', 0xff }, reply[SCREEN_REPLY_LEN];
+    if (streq(w, "text")) req[1] = SCREEN_LAYOUT_TEXT;
+    else if (streq(w, "canvas")) req[1] = SCREEN_LAYOUT_CANVAS;
+    else if (streq(w, "split") || streq(w, "split-wide")) req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
+    else if (streq(w, "split-half")) req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    return canvas_call(req, sizeof(req), reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-title str) -- the canvas tile's title bar */
+static lisp_val_t *prim_canvas_title(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint8_t req[1 + SCREEN_CTITLE_MAX], reply[SCREEN_REPLY_LEN];
+    const char *t = get_str_val(lisp_list_ref(args, 0));
+    uint32_t len = (uint32_t)strlen(t);
+    if (len > SCREEN_CTITLE_MAX - 1u) len = SCREEN_CTITLE_MAX - 1u;
+    req[0] = 'T';
+    memcpy(req + 1, t, len);
+    return canvas_call(req, 1u + len, reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-on-redraw f) -- f, a procedure of no arguments, is called at the
+ * next prompt after the canvas was lost (a layout change, `lcd repaint`);
+ * (canvas-on-redraw '()) forgets it. Kept in the global environment, so the
+ * collector sees it. */
+#define CANVAS_REDRAW_SYM "*canvas-redraw*"
+static lisp_val_t *prim_canvas_on_redraw(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *f = lisp_list_ref(args, 0);
+    /* In place when it is already bound: a program that registers on every
+     * run (and the demos do, redraws included) must not grow global_env,
+     * whose shadowed bindings the collector could never reclaim. */
+    lisp_val_t *binding = NULL;
+    for (lisp_val_t *e = global_env; e && e->type == LISP_PAIR; e = e->u.pair.cdr) {
+        lisp_val_t *b = e->u.pair.car;
+        if (b && b->type == LISP_PAIR && b->u.pair.car && b->u.pair.car->type == LISP_SYMBOL &&
+            streq(b->u.pair.car->u.sym, CANVAS_REDRAW_SYM)) {
+            binding = b;
+            break;
+        }
+    }
+    if (binding) binding->u.pair.cdr = f ? f : &nil_val;
+    else env_set(&global_env, CANVAS_REDRAW_SYM, f ? f : &nil_val);
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 1, reply)) g_canvas_seen = reply16(reply, 6);
+    return &true_val;
+}
+
+void lisp_canvas_poll(void) {
+    lisp_val_t *f = env_get(global_env, CANVAS_REDRAW_SYM);
+    if (!f || (f->type != LISP_LAMBDA && f->type != LISP_PRIMITIVE)) return;
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply) || reply[8] == SCREEN_LAYOUT_TEXT) return;
+    if (reply16(reply, 6) == g_canvas_seen) return;
+    g_canvas_seen = reply16(reply, 6);
+    (void)lisp_eval(make_pair(f, &nil_val), global_env);
+}
+
+void lisp_canvas_reset(void) {
+    uint8_t req[2] = { 'L', SCREEN_LAYOUT_TEXT }, reply[SCREEN_REPLY_LEN];
+    uint8_t ask[1] = { 'S' };
+    if (console_canvas(ask, 1, reply) && reply[8] != SCREEN_LAYOUT_TEXT) (void)console_canvas(req, 2, reply);
+}
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
@@ -1603,6 +1914,7 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     console_set_title("Chess");
     chess_console_run(); /* returns on 'quit' */
+    lisp_canvas_reset();    /* 37.3b */
     return &true_val;
 }
 
@@ -1629,6 +1941,7 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     chess_console_run(); /* returns on 'quit' */
 #endif
     g_search_cores = 1;
+    lisp_canvas_reset();    /* 37.3b */
     return &true_val;
 }
 #endif
@@ -2065,6 +2378,7 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     for (const char *q = safe_path; *q; q++) if (*q == '/') name = q + 1;
     console_set_title(name);
     int res = elf_load_and_run(safe_path);
+    lisp_canvas_reset();    /* 37.3b: whatever it left, the shell gets text back */
     return make_int(res);
 }
 
@@ -3301,6 +3615,11 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
         cprintf("  %s -- %s\n", k->u.sym, kind);
         count++;
     }
+    for (int i = 0; i < builtin_count; i++) {
+        cprintf("  %s -- %s\n", builtins[i].name,
+                builtins[i].val->type == LISP_PRIMITIVE ? "primitive" : "value");
+        count++;
+    }
     cprintf("-------------------------------------------------\n");
     cprintf("%d bound symbols. Special forms (not primitives, so not listed\n"
            "above): define, lambda, quote / ', if, begin, let, named let\n"
@@ -3320,192 +3639,209 @@ void lisp_init(void) {
     eval_depth_exceeded_warned = false;
     global_env = &nil_val;
 
-    env_set(&global_env, "#t", &true_val);
-    env_set(&global_env, "#f", &false_val);
+    builtin_count = 0;
+    builtin_add("#t", &true_val);
+    builtin_add("#f", &false_val);
 
-    env_set(&global_env, "+", make_prim(prim_add));
-    env_set(&global_env, "-", make_prim(prim_sub));
-    env_set(&global_env, "*", make_prim(prim_mul));
-    env_set(&global_env, "=", make_prim(prim_eq));
+    BUILTIN("+", prim_add);
+    BUILTIN("-", prim_sub);
+    BUILTIN("*", prim_mul);
+    BUILTIN("=", prim_eq);
 
     /* S4 (plan/phase13_lisp_engine_extensions.md): standard library,
      * as C primitives -- see prim_map()/prim_filter()'s own comments for
      * why (touching existing cons cells directly costs no interpreter-
      * level node allocation for the traversal itself, unlike a Lisp-
      * defined equivalent recursing through the evaluator). */
-    env_set(&global_env, "<", make_prim(prim_lt));
-    env_set(&global_env, ">", make_prim(prim_gt));
-    env_set(&global_env, "<=", make_prim(prim_le));
-    env_set(&global_env, ">=", make_prim(prim_ge));
-    env_set(&global_env, "/=", make_prim(prim_ne));
-    env_set(&global_env, "/", make_prim(prim_div));
-    env_set(&global_env, "quotient", make_prim(prim_quotient));
-    env_set(&global_env, "remainder", make_prim(prim_remainder));
-    env_set(&global_env, "modulo", make_prim(prim_modulo));
-    env_set(&global_env, "abs", make_prim(prim_abs));
-    env_set(&global_env, "min", make_prim(prim_min));
-    env_set(&global_env, "max", make_prim(prim_max));
-    env_set(&global_env, "null?", make_prim(prim_null_p));
-    env_set(&global_env, "pair?", make_prim(prim_pair_p));
-    env_set(&global_env, "symbol?", make_prim(prim_symbol_p));
-    env_set(&global_env, "string?", make_prim(prim_string_p));
-    env_set(&global_env, "integer?", make_prim(prim_integer_p));
-    env_set(&global_env, "procedure?", make_prim(prim_procedure_p));
-    env_set(&global_env, "zero?", make_prim(prim_zero_p));
-    env_set(&global_env, "boolean?", make_prim(prim_boolean_p));
-    env_set(&global_env, "cons", make_prim(prim_cons));
-    env_set(&global_env, "car", make_prim(prim_car));
-    env_set(&global_env, "cdr", make_prim(prim_cdr));
-    env_set(&global_env, "list", make_prim(prim_list));
-    env_set(&global_env, "length", make_prim(prim_length));
-    env_set(&global_env, "append", make_prim(prim_append));
-    env_set(&global_env, "reverse", make_prim(prim_reverse));
-    env_set(&global_env, "list-ref", make_prim(prim_list_ref));
-    env_set(&global_env, "nth", make_prim(prim_list_ref));
-    env_set(&global_env, "map", make_prim(prim_map));
-    env_set(&global_env, "filter", make_prim(prim_filter));
-    env_set(&global_env, "for-each", make_prim(prim_for_each));
-    env_set(&global_env, "string-append", make_prim(prim_string_append));
-    env_set(&global_env, "string-length", make_prim(prim_string_length));
-    env_set(&global_env, "substring", make_prim(prim_substring));
-    env_set(&global_env, "string-bytes", make_prim(prim_string_bytes));
-    env_set(&global_env, "gc-stats", make_prim(prim_gc_stats));
-    env_set(&global_env, "string->number", make_prim(prim_string_to_number));
-    env_set(&global_env, "number->string", make_prim(prim_number_to_string));
-    env_set(&global_env, "string=?", make_prim(prim_string_eq));
-    env_set(&global_env, "apply", make_prim(prim_apply));
-    env_set(&global_env, "eval", make_prim(prim_eval));
+    BUILTIN("<", prim_lt);
+    BUILTIN(">", prim_gt);
+    BUILTIN("<=", prim_le);
+    BUILTIN(">=", prim_ge);
+    BUILTIN("/=", prim_ne);
+    BUILTIN("/", prim_div);
+    BUILTIN("quotient", prim_quotient);
+    BUILTIN("remainder", prim_remainder);
+    BUILTIN("modulo", prim_modulo);
+    BUILTIN("abs", prim_abs);
+    BUILTIN("min", prim_min);
+    BUILTIN("max", prim_max);
+    BUILTIN("null?", prim_null_p);
+    BUILTIN("pair?", prim_pair_p);
+    BUILTIN("symbol?", prim_symbol_p);
+    BUILTIN("string?", prim_string_p);
+    BUILTIN("integer?", prim_integer_p);
+    BUILTIN("procedure?", prim_procedure_p);
+    BUILTIN("zero?", prim_zero_p);
+    BUILTIN("boolean?", prim_boolean_p);
+    BUILTIN("cons", prim_cons);
+    BUILTIN("car", prim_car);
+    BUILTIN("cdr", prim_cdr);
+    BUILTIN("list", prim_list);
+    BUILTIN("length", prim_length);
+    BUILTIN("append", prim_append);
+    BUILTIN("reverse", prim_reverse);
+    BUILTIN("list-ref", prim_list_ref);
+    BUILTIN("nth", prim_list_ref);
+    BUILTIN("map", prim_map);
+    BUILTIN("filter", prim_filter);
+    BUILTIN("for-each", prim_for_each);
+    BUILTIN("string-append", prim_string_append);
+    BUILTIN("string-length", prim_string_length);
+    BUILTIN("substring", prim_substring);
+    BUILTIN("string-bytes", prim_string_bytes);
+    BUILTIN("gc-stats", prim_gc_stats);
+    BUILTIN("string->number", prim_string_to_number);
+    BUILTIN("number->string", prim_number_to_string);
+    BUILTIN("string=?", prim_string_eq);
+    BUILTIN("apply", prim_apply);
+    BUILTIN("eval", prim_eval);
 
-    env_set(&global_env, "peek", make_prim(prim_peek));
-    env_set(&global_env, "poke", make_prim(prim_poke));
+    BUILTIN("peek", prim_peek);
+    BUILTIN("poke", prim_poke);
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-    env_set(&global_env, "canvas-fill", make_prim(prim_canvas_fill));
-    env_set(&global_env, "canvas-pixel", make_prim(prim_canvas_pixel));
-    env_set(&global_env, "canvas-rect", make_prim(prim_canvas_rect));
-    env_set(&global_env, "canvas-text", make_prim(prim_canvas_text));
+    BUILTIN("canvas-fill", prim_canvas_fill);
+    BUILTIN("canvas-pixel", prim_canvas_pixel);
+    BUILTIN("canvas-rect", prim_canvas_rect);
+    BUILTIN("canvas-text", prim_canvas_text);
+#else
+    /* 37.3b: the same four names, and the new ones, on the screen protocol. */
+    BUILTIN("canvas-fill", prim_canvas_fill);
+    BUILTIN("canvas-pixel", prim_canvas_pixel);
+    BUILTIN("canvas-rect", prim_canvas_rect);
+    BUILTIN("canvas-text", prim_canvas_text);
+    BUILTIN("canvas-frame", prim_canvas_frame);
+    BUILTIN("canvas-line", prim_canvas_line);
+    BUILTIN("canvas-circle", prim_canvas_circle);
+    BUILTIN("canvas-invert", prim_canvas_invert);
+    BUILTIN("canvas-row", prim_canvas_row);
+    BUILTIN("canvas-get", prim_canvas_get);
+    BUILTIN("canvas-size", prim_canvas_size);
+    BUILTIN("canvas-window", prim_canvas_window);
+    BUILTIN("canvas-title", prim_canvas_title);
+    BUILTIN("canvas-on-redraw", prim_canvas_on_redraw);
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-    env_set(&global_env, "tm-display", make_prim(prim_tm_display));
-    env_set(&global_env, "tm-set-leds", make_prim(prim_tm_set_leds));
-    env_set(&global_env, "tm-get-key", make_prim(prim_tm_get_key));
+    BUILTIN("tm-display", prim_tm_display);
+    BUILTIN("tm-set-leds", prim_tm_set_leds);
+    BUILTIN("tm-get-key", prim_tm_get_key);
 #endif
 #if CONFIG_ENABLE_CHESS
-    env_set(&global_env, "chess-selftest", make_prim(prim_chess_selftest));
-    env_set(&global_env, "chess-san-selftest", make_prim(prim_chess_san_selftest));
-    env_set(&global_env, "perft", make_prim(prim_perft));
+    BUILTIN("chess-selftest", prim_chess_selftest);
+    BUILTIN("chess-san-selftest", prim_chess_san_selftest);
+    BUILTIN("perft", prim_perft);
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
-    env_set(&global_env, "chess-run", make_prim(prim_chess_run));
+    BUILTIN("chess-run", prim_chess_run);
 #endif
-    env_set(&global_env, "chess-console", make_prim(prim_chess_console));
-    env_set(&global_env, "chess", make_prim(prim_chess));
+    BUILTIN("chess-console", prim_chess_console);
+    BUILTIN("chess", prim_chess);
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
-    env_set(&global_env, "clock", make_prim(prim_clock));
-    env_set(&global_env, "clock-light", make_prim(prim_clock_light));
-    env_set(&global_env, "clock-keys", make_prim(prim_clock_keys));
-    env_set(&global_env, "clock-leds", make_prim(prim_clock_leds));
-    env_set(&global_env, "clock-text", make_prim(prim_clock_text));
-    env_set(&global_env, "beep", make_prim(prim_beep));
+    BUILTIN("clock", prim_clock);
+    BUILTIN("clock-light", prim_clock_light);
+    BUILTIN("clock-keys", prim_clock_keys);
+    BUILTIN("clock-leds", prim_clock_leds);
+    BUILTIN("clock-text", prim_clock_text);
+    BUILTIN("beep", prim_beep);
 #if CONFIG_ENABLE_DCF77
-    env_set(&global_env, "dcf-monitor", make_prim(prim_dcf_monitor));
-    env_set(&global_env, "dcf-status", make_prim(prim_dcf_status));
+    BUILTIN("dcf-monitor", prim_dcf_monitor);
+    BUILTIN("dcf-status", prim_dcf_status);
 #endif
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
-    env_set(&global_env, "dcf-raw", make_prim(prim_dcf_raw));
-    env_set(&global_env, "dcf-pins", make_prim(prim_dcf_pins));
-    env_set(&global_env, "dcf-hunt", make_prim(prim_dcf_hunt));
-    env_set(&global_env, "dcf-pinscan", make_prim(prim_dcf_pinscan));
-    env_set(&global_env, "dcf-listen", make_prim(prim_dcf_listen));
-    env_set(&global_env, "dcf-drivetest", make_prim(prim_dcf_drivetest));
-    env_set(&global_env, "dcf-poweron", make_prim(prim_dcf_poweron));
-    env_set(&global_env, "dcf-mirror", make_prim(prim_dcf_mirror));
-    env_set(&global_env, "dcf-sync", make_prim(prim_dcf_sync));
+    BUILTIN("dcf-raw", prim_dcf_raw);
+    BUILTIN("dcf-pins", prim_dcf_pins);
+    BUILTIN("dcf-hunt", prim_dcf_hunt);
+    BUILTIN("dcf-pinscan", prim_dcf_pinscan);
+    BUILTIN("dcf-listen", prim_dcf_listen);
+    BUILTIN("dcf-drivetest", prim_dcf_drivetest);
+    BUILTIN("dcf-poweron", prim_dcf_poweron);
+    BUILTIN("dcf-mirror", prim_dcf_mirror);
+    BUILTIN("dcf-sync", prim_dcf_sync);
 #endif
-    env_set(&global_env, "ls", make_prim(prim_ls));
-    env_set(&global_env, "cat", make_prim(prim_cat));
-    env_set(&global_env, "touch", make_prim(prim_touch));
-    env_set(&global_env, "write", make_prim(prim_write));
-    env_set(&global_env, "mkdir", make_prim(prim_mkdir));
-    env_set(&global_env, "rmdir", make_prim(prim_rmdir));
-    env_set(&global_env, "cp", make_prim(prim_cp));
-    env_set(&global_env, "rm", make_prim(prim_rm));
+    BUILTIN("ls", prim_ls);
+    BUILTIN("cat", prim_cat);
+    BUILTIN("touch", prim_touch);
+    BUILTIN("write", prim_write);
+    BUILTIN("mkdir", prim_mkdir);
+    BUILTIN("rmdir", prim_rmdir);
+    BUILTIN("cp", prim_cp);
+    BUILTIN("rm", prim_rm);
 #if CONFIG_ENABLE_CC
-    env_set(&global_env, "cc", make_prim(prim_cc));
+    BUILTIN("cc", prim_cc);
 #endif
-    env_set(&global_env, "exec", make_prim(prim_exec));
-    env_set(&global_env, "spawn", make_prim(prim_spawn));
-    env_set(&global_env, "path-set", make_prim(prim_path_set));
-    env_set(&global_env, "which", make_prim(prim_which));
-    env_set(&global_env, "ps", make_prim(prim_ps));
-    env_set(&global_env, "meminfo", make_prim(prim_meminfo));
-    env_set(&global_env, "version", make_prim(prim_version));
-    env_set(&global_env, "df", make_prim(prim_df));
-    env_set(&global_env, "top", make_prim(prim_top));
-    env_set(&global_env, "time", make_prim(prim_time));
-    env_set(&global_env, "date", make_prim(prim_date));
-    env_set(&global_env, "date-utc", make_prim(prim_date_utc));
-    env_set(&global_env, "tz", make_prim(prim_tz));
-    env_set(&global_env, "set-date", make_prim(prim_set_date));
-    env_set(&global_env, "set-time", make_prim(prim_set_date));
-    env_set(&global_env, "i2c-scan", make_prim(prim_i2c_scan));
-    env_set(&global_env, "eeprom-read", make_prim(prim_eeprom_read));
-    env_set(&global_env, "eeprom-write", make_prim(prim_eeprom_write));
-    env_set(&global_env, "p9-loopback", make_prim(prim_p9_loopback));
-    env_set(&global_env, "p9-cat", make_prim(prim_p9_cat));
+    BUILTIN("exec", prim_exec);
+    BUILTIN("spawn", prim_spawn);
+    BUILTIN("path-set", prim_path_set);
+    BUILTIN("which", prim_which);
+    BUILTIN("ps", prim_ps);
+    BUILTIN("meminfo", prim_meminfo);
+    BUILTIN("version", prim_version);
+    BUILTIN("df", prim_df);
+    BUILTIN("top", prim_top);
+    BUILTIN("time", prim_time);
+    BUILTIN("date", prim_date);
+    BUILTIN("date-utc", prim_date_utc);
+    BUILTIN("tz", prim_tz);
+    BUILTIN("set-date", prim_set_date);
+    BUILTIN("set-time", prim_set_date);
+    BUILTIN("i2c-scan", prim_i2c_scan);
+    BUILTIN("eeprom-read", prim_eeprom_read);
+    BUILTIN("eeprom-write", prim_eeprom_write);
+    BUILTIN("p9-loopback", prim_p9_loopback);
+    BUILTIN("p9-cat", prim_p9_cat);
     /* No longer RP2350-guarded: both resolve their link through the B0
      * device registry rather than hardcoding virtio-console, so RP2350 can
      * use them over its `usbnet` (ACM1/EP4) link. */
-    env_set(&global_env, "p9-remote-cat", make_prim(prim_p9_remote_cat));
-    env_set(&global_env, "mount-remote", make_prim(prim_mount_remote));
-    env_set(&global_env, "net-config", make_prim(prim_net_config));
-    env_set(&global_env, "net-mount", make_prim(prim_net_mount));
-    env_set(&global_env, "net-identity", make_prim(prim_net_identity));
-    env_set(&global_env, "identity", make_prim(prim_identity));
-    env_set(&global_env, "identity-name", make_prim(prim_identity_name));
-    env_set(&global_env, "identity-provision", make_prim(prim_identity_provision));
-    env_set(&global_env, "identity-key", make_prim(prim_identity_key));
-    env_set(&global_env, "peers", make_prim(prim_peers));
-    env_set(&global_env, "peers-add", make_prim(prim_peers_add));
-    env_set(&global_env, "peers-remove", make_prim(prim_peers_remove));
-    env_set(&global_env, "wlan", make_prim(prim_wlan));
-    env_set(&global_env, "wlan-set", make_prim(prim_wlan_set));
-    env_set(&global_env, "net-status", make_prim(prim_net_status));
-    env_set(&global_env, "ntp-sync", make_prim(prim_ntp_sync));
-    env_set(&global_env, "console-bind", make_prim(prim_console_bind));
-    env_set(&global_env, "console-device", make_prim(prim_console_device));
-    env_set(&global_env, "spawn-pump", make_prim(prim_spawn_pump));
-    env_set(&global_env, "mount-local", make_prim(prim_mount_local));
-    env_set(&global_env, "unmount", make_prim(prim_unmount));
+    BUILTIN("p9-remote-cat", prim_p9_remote_cat);
+    BUILTIN("mount-remote", prim_mount_remote);
+    BUILTIN("net-config", prim_net_config);
+    BUILTIN("net-mount", prim_net_mount);
+    BUILTIN("net-identity", prim_net_identity);
+    BUILTIN("identity", prim_identity);
+    BUILTIN("identity-name", prim_identity_name);
+    BUILTIN("identity-provision", prim_identity_provision);
+    BUILTIN("identity-key", prim_identity_key);
+    BUILTIN("peers", prim_peers);
+    BUILTIN("peers-add", prim_peers_add);
+    BUILTIN("peers-remove", prim_peers_remove);
+    BUILTIN("wlan", prim_wlan);
+    BUILTIN("wlan-set", prim_wlan_set);
+    BUILTIN("net-status", prim_net_status);
+    BUILTIN("ntp-sync", prim_ntp_sync);
+    BUILTIN("console-bind", prim_console_bind);
+    BUILTIN("console-device", prim_console_device);
+    BUILTIN("spawn-pump", prim_spawn_pump);
+    BUILTIN("mount-local", prim_mount_local);
+    BUILTIN("unmount", prim_unmount);
 
     /* B0 part 3: registry/sink binding, so init.lisp owns the policy. */
-    env_set(&global_env, "devices", make_prim(prim_devices));
-    env_set(&global_env, "dev-present?", make_prim(prim_dev_present));
-    env_set(&global_env, "klog-sinks", make_prim(prim_klog_sinks));
-    env_set(&global_env, "klog-detach", make_prim(prim_klog_detach));
-    env_set(&global_env, "klog-attach", make_prim(prim_klog_attach));
-    env_set(&global_env, "p9-serve", make_prim(prim_p9_serve));
-    env_set(&global_env, "p9-unserve", make_prim(prim_p9_unserve));
-    env_set(&global_env, "p9-uart-send", make_prim(prim_p9_uart_send));
+    BUILTIN("devices", prim_devices);
+    BUILTIN("dev-present?", prim_dev_present);
+    BUILTIN("klog-sinks", prim_klog_sinks);
+    BUILTIN("klog-detach", prim_klog_detach);
+    BUILTIN("klog-attach", prim_klog_attach);
+    BUILTIN("p9-serve", prim_p9_serve);
+    BUILTIN("p9-unserve", prim_p9_unserve);
+    BUILTIN("p9-uart-send", prim_p9_uart_send);
 
-    env_set(&global_env, "load", make_prim(prim_load));
-    env_set(&global_env, "display", make_prim(prim_display));
-    env_set(&global_env, "newline", make_prim(prim_newline));
-    env_set(&global_env, "read-file", make_prim(prim_read_file));
-    env_set(&global_env, "write-file", make_prim(prim_write_file));
+    BUILTIN("load", prim_load);
+    BUILTIN("display", prim_display);
+    BUILTIN("newline", prim_newline);
+    BUILTIN("read-file", prim_read_file);
+    BUILTIN("write-file", prim_write_file);
 
-    env_set(&global_env, "arch", make_prim(prim_arch));
-    env_set(&global_env, "board", make_prim(prim_board));
-    env_set(&global_env, "boot-program", make_prim(prim_boot_program));
-    env_set(&global_env, "bind", make_prim(prim_bind));
-    env_set(&global_env, "release", make_prim(prim_release));
-    env_set(&global_env, "ports", make_prim(prim_ports));
-    env_set(&global_env, "mount-ramdisk", make_prim(prim_mount_ramdisk));
-    env_set(&global_env, "mounted?", make_prim(prim_mounted));
-    env_set(&global_env, "format", make_prim(prim_format));
-    env_set(&global_env, "lsh", make_prim(prim_lsh));
-    env_set(&global_env, "usb-status", make_prim(prim_usb_status));
-    env_set(&global_env, "help", make_prim(prim_help));
+    BUILTIN("arch", prim_arch);
+    BUILTIN("board", prim_board);
+    BUILTIN("boot-program", prim_boot_program);
+    BUILTIN("bind", prim_bind);
+    BUILTIN("release", prim_release);
+    BUILTIN("ports", prim_ports);
+    BUILTIN("mount-ramdisk", prim_mount_ramdisk);
+    BUILTIN("mounted?", prim_mounted);
+    BUILTIN("format", prim_format);
+    BUILTIN("lsh", prim_lsh);
+    BUILTIN("usb-status", prim_usb_status);
+    BUILTIN("help", prim_help);
 
     printk("[Lisp Engine] Online.\n");
 
@@ -3938,6 +4274,7 @@ tail_call:
 
     if (val->type == LISP_SYMBOL) {
         lisp_val_t *res = env_get(env, val->u.sym);
+        if (!res) res = builtin_get(val->u.sym);       /* 37.3a: the built-ins */
         if (res) return res;
         cprintf("Unbound symbol: %s\n", val->u.sym);
         return &nil_val;
@@ -4422,6 +4759,7 @@ void lisp_repl(void) {
 
     char buf[128];
     while (1) {
+        lisp_canvas_poll();     /* 37.3b: redraw a lost canvas before the prompt */
         cprintf("lisp> ");
         int idx = 0;
         while (1) {

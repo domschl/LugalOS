@@ -83,11 +83,14 @@ void console_flush(void);
  *              (37.1) while nothing is being written.
  *   size       37.1: the text window's size (it is smaller than the screen:
  *              the status bar takes a row).
- *   set_title  37.1: the status bar's title. */
+ *   set_title  37.1: the status bar's title.
+ *   canvas     37.3b: one canvas request (drivers/screen.h's protocol) and
+ *              its reply; false if there is no canvas to ask. */
 typedef struct {
     void (*flush)(void);
     bool (*size)(unsigned *cols, unsigned *rows);
     void (*set_title)(const char *title);
+    bool (*canvas)(const uint8_t *req, uint32_t n, uint8_t *reply);
 } console_screen_t;
 
 void console_set_screen(const console_screen_t *screen);
@@ -101,6 +104,13 @@ bool console_size(unsigned *cols, unsigned *rows);
  * where there is no screen, so callers need not ask. Nothing is written to
  * the byte stream: a host terminal on the tee keeps its own title. */
 void console_set_title(const char *title);
+
+/* 37.3b, plan/phase37_screen_layouts_and_apps.md §2: a canvas request, as
+ * drivers/screen.h describes them, to whatever screen there is -- the
+ * RP2350-LCD-7's panel, or a RAM screen elsewhere (drivers/ramscreen.c).
+ * `reply` holds SCREEN_REPLY_LEN bytes. False when there is no canvas at
+ * all; the reply's own status says whether this request was refused. */
+bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
 
 /* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
  * from. Each source is polled by the console pump, in registration order,

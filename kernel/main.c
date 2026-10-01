@@ -1,6 +1,7 @@
 #include "kernel/printk.h"
 #include "kernel/klog.h"
 #include "kernel/console.h"
+#include "drivers/ramscreen.h"
 #include "kernel/device.h"
 #include "kernel/palloc.h"
 #include "kernel/balloc.h"
@@ -329,6 +330,12 @@ void kernel_main(void) {
      * binding as "(none)", which would be a lie the moment anyone asked
      * which device owns the terminal. */
     console_bind_device("uart");
+
+#if !defined(CONFIG_LCD_PCLK_GPIO)
+    /* 37.3b: no panel, so Lisp's canvas draws into a screen in RAM, which
+     * costs nothing until it is first used (drivers/ramscreen.c). */
+    console_set_screen(ramscreen_console());
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
     /* 36.1: clk_sys is a board fact now, so say what it came out as --

@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.3a done 2026-10-01, 37.3b next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.3b done 2026-10-01, 37.4 next. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -555,6 +555,61 @@ split calls the registered redraw function and the plot reappears; an
 `exec`'d program that faults in `split-wide` leaves the screen in `text`;
 the same program, minus anything the ST7735 cannot do, still runs on the
 `rp2350-chess` persona.
+
+**Done, 2026-10-01.** The owner ran the layouts, the redraw and the
+demos on the panel.
+
+* **Layouts** (`drivers/screen.c`): TEXT, CANVAS, SPLIT_WIDE and
+  SPLIT_HALF, by §1.2's table, with a framed canvas tile and its own title
+  bar. The text window moves and resizes with the layout (`vtterm_resize()`:
+  a narrower window keeps each row's left part); in CANVAS it is hidden but
+  still written (`vtterm_set_hidden()`), so nothing printed meanwhile is
+  lost. Asking for the layout already showing changes nothing -- else a
+  redraw function that starts by asking for its layout would loop.
+* **The canvas protocol** (`screen.h`): one request and a 9-byte reply,
+  executed by `screen_canvas()` -- in the `lcdterm` task on the panel (a
+  new `'C'` op whose reply comes back over the channel), and by a **RAM
+  screen** everywhere else (`drivers/ramscreen.c`: the panel's 800 x 480,
+  allocated on first use), so Lisp's canvas runs and is tested on QEMU.
+  `console_canvas()` is the kernel's entry.
+* **`canvas1.c`** gained tile windows (origin and clip), line, circle,
+  invert, packed-bit rows with a scale, and pixel read-back.
+* **Lisp** (every build without the ST7735): `canvas-fill`, `-pixel`,
+  `-rect`, `-text` as before, and `canvas-frame`, `-line`, `-circle`,
+  `-invert`, `-row`, `-get`, `-size`, `-window` (`'text`, `'canvas`,
+  `'split`, `'split-half`), `-title`, `-on-redraw`. Colours 0 white, 1
+  black, 2 grey. **Redraw:** every reply carries the canvas's damage
+  count; drawing calls remember it, `canvas-window` does not, and the
+  prompt (shell and `lisp` REPL) calls the registered function when the
+  count moved on. **Reset:** `exec` and chess put the screen back to text.
+* **The showcase** (`tools/sd_root/demos/`): `ca.lisp` -- elementary
+  cellular automata, `(ca 30 3)`, `(ca 110 3)`, `(ca 90 3)` -- and
+  `lorenz.lisp`, the Lorenz attractor in 1/1000 fixed point (1000 steps in
+  2.0 s on the board). **The owner caught a bug in `ca.lisp`:** cells past
+  the canvas counted as 0, so rule 30's left side went wrong once the
+  pattern reached the edge. It now simulates past both edges by the light
+  cone's width and draws shifted, clipped by the canvas; rules 30, 110 and
+  90 match a Python reference on an unbounded line exactly (a runner test
+  for rule 30). Rule 110 grows only to the left (`001` -> 1, `100` -> 0),
+  so from one cell it fills a triangle from the top right.
+* **Lisp needed room** (the board ran out of nodes loading the demos): the
+  ~170 built-ins left the node pool for a static table looked up after the
+  environment (values `static const`, a program's `define` still shadows
+  them) -- about 680 nodes and 170 string slots back on every target, for
+  1.5 KB of RAM; the integers -16..255 are shared constant nodes; and the
+  terminal persona's pool is 2048 nodes (`CONFIG_LISP_NODE_POOL`, a new
+  board setting). Measured on the board: 1 869 nodes free at idle (843
+  with 1024), 1 184 with both demos loaded.
+* **Cost:** static RAM +1.5 KB on every RP2350 persona (the built-ins
+  table), +22 KB on the terminal (the pool, five pages: heap 79 -> 74 pages,
+  peak 55 in the hardware suite). `lcdterm`'s U-mode section: 11 648 of
+  16 384 bytes.
+* **Tests:** `vtselftest` 28/28 (layouts and resizing, the canvas
+  operations and their clipping, the hidden text, damage, a refused split);
+  runner tests for Lisp's canvas through the RAM screen (sizes per layout,
+  drawing read back, redraw at the prompt, reset after `exec`) and for the
+  demos (Sierpinski cells for rule 90, the rule-30 reference, Lorenz).
+  QEMU suite 388/388 on an idle host; `test_rp2350` 25/25.
 
 ### 37.4 — The chess board
 

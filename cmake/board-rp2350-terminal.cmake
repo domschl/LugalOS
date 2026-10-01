@@ -26,6 +26,13 @@ set(CONFIG_BALLOC_ARENA_PAGES 4)
 # divider follows it.
 set(CONFIG_CLK_SYS_HZ 144000000)
 
+# Lisp's node pool: 2048 rather than the RP2350's 1024 (37.3a,
+# plan/phase37_screen_layouts_and_apps.md). This persona is the Lisp machine
+# with a screen, and the showcase's cellular automaton keeps two rows of ~156
+# cells alive beside the loaded program. 16 bytes a node plus its share of
+# the collector's work list: about 20 KB, five heap pages.
+set(CONFIG_LISP_NODE_POOL 2048)
+
 # UART0 on GP16/GP17, header H7 (pin 1 3V3, 2 GND, 3 RXD0, 4 TXD0).
 #
 # **Not GP0/GP1, which every other RP2350 board file uses, and this is not a

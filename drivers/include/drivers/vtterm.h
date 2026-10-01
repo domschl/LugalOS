@@ -43,6 +43,7 @@
 typedef struct {
     fbtext_t  text;
     uint16_t *shadow;           /* cols x rows cells, or NULL for none */
+    bool      hidden;           /* 37.3b: draw into the shadow only */
     uint16_t  col, row;
     bool      pending_wrap;
     bool      inverse;          /* SGR 7 */
@@ -68,6 +69,18 @@ void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *shadow);
 
 /* Redraws every cell from the shadow (a no-op without one), and the cursor. */
 void vtterm_repaint(vtterm_t *vt);
+
+/* 37.3b: the window moves and changes width (a layout change). The shadow is
+ * re-laid out row by row: a narrower window keeps each row's left part and
+ * loses the rest, a wider one pads with blanks; the cursor is clamped. The
+ * rows count must not grow beyond what the shadow was sized for. Nothing is
+ * drawn -- the caller repaints. */
+void vtterm_resize(vtterm_t *vt, const fbtext_t *text);
+
+/* 37.3b: hide or show the window. Hidden, output still goes to the shadow
+ * (so nothing is lost while a full-screen canvas is up), and the pixels are
+ * left alone; showing it again does not draw -- the caller repaints. */
+void vtterm_set_hidden(vtterm_t *vt, bool hidden);
 
 /* Sets the title as an OSC 2 would: at most VT_TITLE_MAX - 1 bytes of `s`. */
 void vtterm_set_title(vtterm_t *vt, const char *s, uint32_t n);

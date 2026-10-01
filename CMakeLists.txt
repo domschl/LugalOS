@@ -584,6 +584,8 @@ set(SOURCES
     # extends in 37.3.
     drivers/screen.c
     drivers/canvas1.c
+    # 37.3b: the same screen in RAM, for Lisp's canvas where there is no panel.
+    drivers/ramscreen.c
     # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
     # before the PIO-USB engine puts them on a wire.
     drivers/usb_crc.c

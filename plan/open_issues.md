@@ -1535,6 +1535,19 @@ whose faults are hardest to reproduce.
 `_inst_lo` is now `_xip_start`, spanning flash and RAM together exactly as
 `linker/rp2350.ld` already did for the same reason.
 
+## rv64-smp went silent at `usertest 1` once, under heavy host load
+
+Seen once on 2026-10-01 (37.3b), in a full suite run that overlapped with
+several other QEMU sessions and a board run on the same host: after `usertest
+1` (a U-mode task syscalling from hart 1) the guest printed nothing more, and
+every later test on that target timed out (the run took 758 s instead of
+~235). Fifteen runs of the SMP target alone right afterwards, and the next
+full suite on an idle host, passed. Not reproduced, so not known to be new
+with 37.3b; logged because a hang that needs load to show is the kind that
+comes back. Next step if it does: the runner's trap and scheduler dump
+(`[Sched Table]`) from the stuck guest, which a timeout does not capture
+today.
+
 ## `test_rp2350`'s st7735/tm1638 skip misfires while the host is loaded
 
 Seen twice on 2026-10-01 (37.3a), both times with the QEMU suite running on

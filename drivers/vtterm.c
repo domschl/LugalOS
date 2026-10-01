@@ -24,7 +24,7 @@ enum { ST_GROUND, ST_ESC, ST_CSI, ST_OSC };
  * the pixels: each does the fbtext operation and then the same thing to the
  * shadow, with the same bounds. */
 LCDTERM_UTEXT static void cell_put(vtterm_t *vt, unsigned col, unsigned row, uint8_t code, bool inverse) {
-    fbtext_putcode(&vt->text, col, row, code, inverse);
+    if (!vt->hidden) fbtext_putcode(&vt->text, col, row, code, inverse);
     if (vt->shadow && col < vt->text.cols && row < vt->text.rows)
         vt->shadow[row * vt->text.cols + col] = (uint16_t)(code | (inverse ? VT_CELL_INVERSE : 0u));
 }
@@ -34,21 +34,21 @@ LCDTERM_UTEXT static void shadow_blank(vtterm_t *vt, unsigned from, unsigned n) 
 }
 
 LCDTERM_UTEXT static void span_clear(vtterm_t *vt, unsigned row, unsigned col0, unsigned col1) {
-    fbtext_clear_span(&vt->text, row, col0, col1);
+    if (!vt->hidden) fbtext_clear_span(&vt->text, row, col0, col1);
     if (!vt->shadow || row >= vt->text.rows) return;
     if (col1 > vt->text.cols) col1 = vt->text.cols;
     if (col0 < col1) shadow_blank(vt, row * vt->text.cols + col0, col1 - col0);
 }
 
 LCDTERM_UTEXT static void rows_clear(vtterm_t *vt, unsigned row, unsigned n) {
-    fbtext_clear_rows(&vt->text, row, n);
+    if (!vt->hidden) fbtext_clear_rows(&vt->text, row, n);
     if (!vt->shadow || row >= vt->text.rows) return;
     if (n > (unsigned)vt->text.rows - row) n = vt->text.rows - row;
     shadow_blank(vt, row * vt->text.cols, n * vt->text.cols);
 }
 
 LCDTERM_UTEXT static void grid_scroll(vtterm_t *vt) {
-    fbtext_scroll_up(&vt->text, 1);
+    if (!vt->hidden) fbtext_scroll_up(&vt->text, 1);
     if (!vt->shadow) return;
     unsigned cols = vt->text.cols, cells = (unsigned)(vt->text.rows - 1u) * cols;
     if (((uintptr_t)vt->shadow & 3u) == 0 && (cols & 1u) == 0) {
@@ -68,7 +68,7 @@ LCDTERM_UTEXT static void cursor_hide(vtterm_t *vt) {
 }
 
 LCDTERM_UTEXT static void cursor_show(vtterm_t *vt) {
-    if (vt->cursor_on && !vt->cursor_drawn) {
+    if (vt->cursor_on && !vt->cursor_drawn && !vt->hidden) {
         fbtext_cursor_xor(&vt->text, vt->col, vt->row);
         vt->cursor_drawn = true;
     }
@@ -84,6 +84,7 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
+    vt->hidden = false;
     vt->col = vt->row = 0;
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
     vt->state = vt->nparams = vt->utf8_need = 0;
@@ -99,7 +100,7 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
 }
 
 LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
-    if (!vt->shadow) return;
+    if (!vt->shadow || vt->hidden) return;
     vt->cursor_drawn = false;              /* its pixels are about to be redrawn */
     unsigned cols = vt->text.cols;
     for (unsigned row = 0; row < vt->text.rows; row++) {
@@ -109,6 +110,37 @@ LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
         }
     }
     cursor_show(vt);
+}
+
+LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
+    unsigned oc = vt->text.cols, nc = text->cols, rows = text->rows;
+    if (vt->shadow && nc != oc) {
+        if (nc < oc) {
+            for (unsigned r = 0; r < rows; r++)
+                for (unsigned c = 0; c < nc; c++) vt->shadow[r * nc + c] = vt->shadow[r * oc + c];
+        } else {
+            for (unsigned r = rows; r-- > 0;) {
+                for (unsigned c = nc; c-- > 0;)
+                    vt->shadow[r * nc + c] = c < oc ? vt->shadow[r * oc + c] : (uint16_t)' ';
+            }
+        }
+    }
+    vt->text.fb = text->fb;
+    vt->text.stride = text->stride;
+    vt->text.cols = text->cols;
+    vt->text.rows = text->rows;
+    vt->text.xbyte = text->xbyte;
+    vt->text.whole_rows = text->whole_rows;
+    if (vt->col >= nc) vt->col = (uint16_t)(nc - 1u);
+    if (vt->row >= rows) vt->row = (uint16_t)(rows - 1u);
+    vt->pending_wrap = false;
+    vt->cursor_drawn = false;              /* the caller repaints */
+}
+
+LCDTERM_UTEXT void vtterm_set_hidden(vtterm_t *vt, bool hidden) {
+    if (hidden && vt->cursor_drawn) cursor_hide(vt);
+    vt->hidden = hidden;
+    vt->cursor_drawn = false;
 }
 
 LCDTERM_UTEXT void vtterm_set_title(vtterm_t *vt, const char *s, uint32_t n) {
@@ -350,7 +382,11 @@ typedef struct {
  * in its tile -- small, but every piece of the panel's chrome is there. */
 #define ST_SW 192u
 #define ST_SH 110u
-#define ST_BUF_BYTES (ST_SW / 8u * ST_SH)
+/* 37.3b's layout test needs a screen a split fits on: 400 x 110 px, 50
+ * cells, which gives the wide split a 69 x 66 canvas beside 38 x 4 text. */
+#define ST_LW 400u
+#define ST_LH 110u
+#define ST_BUF_BYTES (ST_LW / 8u * ST_LH)
 
 static bool cell_is(vtterm_t *vt, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     const uint8_t *g = fbtext_glyph(cp);
@@ -381,6 +417,14 @@ static bool bytes_equal(const uint8_t *a, const uint8_t *b, uint32_t n) {
     return true;
 }
 
+/* 37.3b: a canvas pixel through the protocol, as a program would read it. */
+static unsigned st_get(screen_t *scr, int x, int y) {
+    const uint8_t req[5] = { 'g', (uint8_t)x, (uint8_t)((unsigned)x >> 8), (uint8_t)y, (uint8_t)((unsigned)y >> 8) };
+    uint8_t rp[SCREEN_REPLY_LEN];
+    screen_canvas(scr, req, sizeof(req), rp);
+    return rp[1];
+}
+
 /* A cell of an arbitrary grid (the screen's bar), against a code point. */
 static bool grid_cell_is(const fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     const uint8_t *g = fbtext_glyph(cp);
@@ -404,7 +448,7 @@ int vtterm_selftest(void) {
     uint32_t shadow_off = 2u * ST_BUF_BYTES;
     uint32_t scr_off = (shadow_off + ST_COLS * ST_ROWS * 2u + 7u) & ~7u;
     scratch_t sc;
-    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_SW, ST_SH))) {
+    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_LW, ST_LH))) {
         cprintf("VTTERM_SELFTEST_FAIL (no memory for the test grid)\n");
         return 1;
     }
@@ -570,12 +614,100 @@ int vtterm_selftest(void) {
         st_check(&cx, "37.1a: a new title is re-centred, the clock sits 16 px from the edge, text scrolls in its tile",
                  menu && retitled && text_ok);
 
-        for (uint32_t i = 0; i < ST_BUF_BYTES; i++) cx.copy[i] = cx.buf[i];
-        for (uint32_t i = 0; i < ST_BUF_BYTES; i++) cx.buf[i] = 0x3c;
+        const uint32_t sbytes = ST_SW / 8u * ST_SH;
+        for (uint32_t i = 0; i < sbytes; i++) cx.copy[i] = cx.buf[i];
+        for (uint32_t i = 0; i < sbytes; i++) cx.buf[i] = 0x3c;
         screen_repaint(scr);
         st_check(&cx, "37.1a: the whole screen repaints to the same bytes",
-                 bytes_equal(cx.buf, cx.copy, ST_BUF_BYTES));
+                 bytes_equal(cx.buf, cx.copy, sbytes));
 #undef PX
+    }
+
+    {
+        /* 37.3b: layouts and the canvas protocol, on a screen a split fits. */
+        screen_t *scr = cx.scr;
+        screen_init(scr, cx.buf, ST_LW / 8u, ST_LW, ST_LH);
+        uint8_t rp[SCREEN_REPLY_LEN];
+#define REQ(...) do { const uint8_t r_[] = { __VA_ARGS__ }; screen_canvas(scr, r_, sizeof(r_), rp); } while (0)
+#define I16(v) (uint8_t)((v) & 0xff), (uint8_t)(((unsigned)(v) >> 8) & 0xff)
+#define RW (unsigned)(rp[2] | (rp[3] << 8))
+#define RH (unsigned)(rp[4] | (rp[5] << 8))
+#define RD (unsigned)(rp[6] | (rp[7] << 8))
+        REQ('p', I16(1), I16(1), I16(1));
+        bool no_canvas = rp[0] == 1 && RW == 0 && RH == 0 && rp[8] == SCREEN_LAYOUT_TEXT;
+        screen_write(scr, "0123456789012345678901234567890123456789012345\r\nxyz", 51);
+        unsigned d0 = RD;
+        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        unsigned c, r;
+        screen_text_size(scr, &c, &r);
+        bool split = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE && RW == 69 && RH == 66 &&
+                     RD == d0 + 1 && c == 38 && r == 4 && scr->cx1 == 74 && scr->fx0 == 84 &&
+                     grid_cell_is(&scr->vt.text, 0, 0, '0', false) &&
+                     grid_cell_is(&scr->vt.text, 37, 0, '7', false) &&
+                     scr->vt.text.fb == cx.buf + 40u * (ST_LW / 8u) + 11u;
+        REQ('L', 9);
+        bool bad = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE;
+        st_check(&cx, "37.3b: the wide split: canvas size, text 38 wide keeping each row's left part, damage moves",
+                 no_canvas && split && bad);
+
+        const uint32_t stride = ST_LW / 8u;
+#define PXL(x, y) ((cx.buf[(uint32_t)(y) * stride + (uint32_t)(x) / 8u] >> ((x) % 8u)) & 1u)
+#define GET(x, y) st_get(scr, (x), (y))
+        REQ('F', I16(0));
+        REQ('l', I16(0), I16(0), I16(10), I16(5), I16(1));
+        bool line = GET(0, 0) && GET(10, 5) && GET(2, 1) && !GET(10, 0) && !GET(0, 5);
+        REQ('c', I16(30), I16(30), I16(10), I16(1));
+        bool circle = GET(40, 30) && GET(20, 30) && GET(30, 20) && GET(30, 40) && !GET(30, 30);
+        REQ('b', I16(0), I16(50), I16(5), I16(1), 0x16);         /* 0b10110: pixels 1, 2, 4 */
+        bool row = !GET(0, 50) && GET(1, 50) && GET(2, 50) && !GET(3, 50) && GET(4, 50);
+        REQ('b', I16(10), I16(52), I16(2), I16(3), 0x01);        /* 3x3 cells: one on, one off */
+        bool scaled = GET(10, 52) && GET(12, 54) && !GET(13, 52) && !GET(15, 54);
+        REQ('r', I16(50), I16(50), I16(4), I16(4), I16(1));
+        REQ('i', I16(50), I16(50), I16(2), I16(4));
+        bool inv = !GET(50, 50) && !GET(51, 53) && GET(52, 50) && GET(53, 53);
+        REQ('t', I16(40), I16(0), I16(0), 0, 'H');
+        bool text = GET(40, 2) && GET(41, 6);                      /* 'H''s left stem */
+        /* Clipping: a line across the whole buffer stays inside the tile --
+         * the frame, its shadow and the desktop beside it are untouched. */
+        REQ('l', I16(-100), I16(-50), I16(500), I16(200), I16(1));
+        bool clip = PXL(4, 60) && !PXL(5, 22 + 17 + 1) && PXL(75, 60) &&
+                    PXL(76, 60) == ((76 + 60) & 1u) && PXL(4, 22) && !PXL(84 + 2, 60 + 40);
+        st_check(&cx, "37.3b: canvas line, circle, row (and scaled), rectangle, invert, text; all clipped to the tile",
+                 line && circle && row && scaled && inv && text && clip);
+
+        /* The full canvas hides the text, which keeps being written to its
+         * shadow, and comes back with it; a repaint clears the canvas and
+         * moves the damage on. */
+        REQ('L', SCREEN_LAYOUT_CANVAS);
+        bool full = rp[0] == 0 && RW == 389u && RH == 66u && scr->vt.hidden;   /* frame x 4..394 */
+        screen_write(scr, "\r\nhid", 6);
+        REQ('p', I16(5), I16(5), I16(1));
+        unsigned d1 = RD;
+        screen_repaint(scr);
+        REQ('S');
+        bool cleared = RD == d1 + 1 && !GET(5, 5);
+        REQ('L', SCREEN_LAYOUT_TEXT);
+        screen_text_size(scr, &c, &r);
+        bool back = rp[0] == 0 && RW == 0 && c == 48 && !scr->vt.hidden &&
+                    grid_cell_is(&scr->vt.text, 0, 2, 'h', false) &&
+                    grid_cell_is(&scr->vt.text, 37, 0, '7', false) &&
+                    grid_cell_is(&scr->vt.text, 38, 0, ' ', false);
+        REQ('T', 'B', 'o', 'a', 'r', 'd');
+        bool titled = scr->ctitle[0] == 'B' && scr->ctitle[5] == '\0';
+        st_check(&cx, "37.3b: the full canvas hides text that keeps arriving; a repaint clears the canvas; back to text",
+                 full && cleared && back && titled);
+
+        /* A split is refused where there is no room for a canvas. */
+        screen_init(scr, cx.buf, ST_SW / 8u, ST_SW, ST_SH);
+        REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+        st_check(&cx, "37.3b: a split the screen is too narrow for is refused", rp[0] == 1 && rp[8] == 0);
+#undef GET
+#undef PXL
+#undef RD
+#undef RH
+#undef RW
+#undef I16
+#undef REQ
     }
 
     st_fresh(&cx, &vt); FEED(&vt, "ab\tc\bd\a");

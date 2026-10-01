@@ -2607,6 +2607,86 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Collects Inside A Form: Long Loops, Deep Recursion, Live Data Survives (37.3a)",
                         gc_ok, log if not gc_ok else ""))
 
+        # 37.3b: Lisp's canvas, on QEMU through the RAM screen
+        # (drivers/ramscreen.c) -- the same drivers/screen.c and protocol the
+        # RP2350-LCD-7 runs, read back pixel by pixel with canvas-get. The
+        # layouts' canvas sizes are the panel's; a redraw function runs at
+        # the prompt after the canvas was lost; exec puts the text back.
+        canvas_steps = [
+            ("(canvas-size)", r"=> \(0 0\)"),
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(canvas-size)", r"=> \(469 434\)"),
+            ("(canvas-line 0 0 100 50)", r"=> #t"),
+            ("(list (canvas-get 0 0) (canvas-get 100 50) (canvas-get 50 25) (canvas-get 50 0))", r"=> \(1 1 1 0\)"),
+            ("(canvas-circle 200 200 50)", r"=> #t"),
+            ("(list (canvas-get 250 200) (canvas-get 200 150) (canvas-get 200 200))", r"=> \(1 1 0\)"),
+            ("(canvas-row 0 300 '(1 0 1 1) 2)", r"=> #t"),
+            ("(list (canvas-get 0 300) (canvas-get 1 301) (canvas-get 2 300) (canvas-get 4 300))", r"=> \(1 1 0 1\)"),
+            ("(define (rd) (canvas-rect 10 10 5 5))", r"=> rd"),
+            ("(canvas-on-redraw rd)", r"=> #t"),
+            ("(canvas-window 'text)", r"=> #t"),
+            ("(canvas-window 'split-half)", r"=> #t"),
+            ("(list (canvas-size) (canvas-get 12 12))", r"=> \(\(389 434\) 1\)"),
+            ("(canvas-window 'canvas)", r"=> #t"),
+            ("(canvas-size)", r"=> \(789 434\)"),
+            ("(canvas-on-redraw '())", r"=> #t"),
+            ("exec /sd0/badelf.bin", r"=> -1"),
+            ("(canvas-size)", r"=> \(0 0\)"),
+        ]
+        canvas_ok, canvas_log = True, ""
+        for cmd, pat in canvas_steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                canvas_ok, canvas_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Lisp Canvas On The Screen Protocol: Layouts, Drawing, Read-Back, Redraw, Reset (37.3b)",
+                        canvas_ok, canvas_log))
+
+        # 37.3b: the showcase demos run, and draw what they should. Rule 90
+        # from one cell is the Sierpinski triangle: with 3-px cells,
+        # generation 1 is the middle cell's two neighbours, generation 2 the
+        # cells two away, and the middle stays empty in both.
+        ok1, log1 = session.send_and_expect('(load "/sd0/demos/ca.lisp")', r"=> #t", timeout=20.0)
+        ok2, log2 = session.send_and_expect("(ca 90 3)", r"=> done", timeout=120.0)
+        ok3, log3 = session.send_and_expect(
+            "(list (canvas-get 234 0) (canvas-get 231 3) (canvas-get 237 3) (canvas-get 234 3) "
+            "(canvas-get 228 6) (canvas-get 240 6) (canvas-get 234 6))", r"=> \(1 1 1 0 1 1 0\)", timeout=10.0)
+        # Rule 30 against an exact reference on an unbounded line. The
+        # demo's first version treated cells past the canvas as 0, and the
+        # owner saw its left side go wrong once the pattern reached the
+        # border; it now simulates past the edges. The last generation and
+        # the left edge column are where that showed.
+        cw, ch = 469 // 3, 434 // 3
+        pad = ch + 2
+        ref = [0] * (cw + 2 * pad)
+        ref[pad + cw // 2] = 1
+        ref_rows = []
+        for _ in range(ch):
+            ref_rows.append(ref[pad:pad + cw])
+            ref = [0] + [(30 >> (4 * ref[i - 1] + 2 * ref[i] + ref[i + 1])) & 1
+                         for i in range(1, len(ref) - 1)] + [0]
+        ok_r1, log_r1 = session.send_and_expect("(ca 30 3)", r"=> done", timeout=180.0)
+        session.send_and_expect("(define (rd x y dx dy n acc) (if (= n 0) (reverse acc) "
+                                "(rd (+ x dx) (+ y dy) dx dy (- n 1) (cons (canvas-get x y) acc))))",
+                                r"=> rd", timeout=10.0)
+        ok_r2, log_r2 = session.send_and_expect(f"(rd 0 {(ch - 1) * 3} 3 0 {cw} '())", r"=> \([01 ]+\)", timeout=60.0)
+        ok_r3, log_r3 = session.send_and_expect(f"(rd 0 0 0 3 {ch} '())", r"=> \([01 ]+\)", timeout=60.0)
+        def bits(log: str) -> list[int]:
+            found = re.findall(r"=> \(([01 ]+)\)", log)
+            return [int(b) for b in found[-1].split()] if found else []
+        ok_r = (ok_r1 and ok_r2 and ok_r3 and bits(log_r2) == ref_rows[-1]
+                and bits(log_r3) == [r[0] for r in ref_rows])
+        results.append(("Showcase Demo: Rule 30 Matches An Unbounded Line, Edges Included (37.3b)",
+                        ok_r, "" if ok_r else log_r2 + log_r3))
+
+        ok4, log4 = session.send_and_expect('(load "/sd0/demos/lorenz.lisp")', r"=> #t", timeout=20.0)
+        ok5, log5 = session.send_and_expect("(lorenz 1500)", r"=> done", timeout=120.0)
+        ok6, log6 = session.send_and_expect("(canvas-on-redraw '())", r"=> #t", timeout=10.0)
+        ok = ok1 and ok2 and ok3 and ok4 and ok5 and ok6
+        results.append(("Showcase Demos: Rule 90 Draws Sierpinski, Lorenz Attractor Runs (37.3b)",
+                        ok, "" if ok else log1 + log2 + log3 + log4 + log5))
+        session.send_and_expect("(canvas-window 'text)", r"=> #t", timeout=10.0)
+
         cmd_s4_apply_eval = (
             "lisp\n"
             "(apply + (list 1 2 3))\n"
