@@ -143,8 +143,22 @@ against a GPS-disciplined reference clock):
   through a USB hub, reaches low-speed devices behind it, and reads boot keyboards. Keyboard, UART and
   USB-CDC are three registered console input sources, so the shell, both line editors, `ed`, `cc`, `e`
   and Ctrl-C work from the keyboard exactly as from a serial line. Everything the screen shows is also
-  mirrored to ACM0. See [`plan/phase36_rp2350_lcd7_terminal.md`](plan/phase36_rp2350_lcd7_terminal.md);
-  graphics, the chess board and a writer come next, in phase 37.
+  mirrored to ACM0. See [`plan/phase36_rp2350_lcd7_terminal.md`](plan/phase36_rp2350_lcd7_terminal.md).
+- **Text and graphics side by side on that screen** (phase 37): a Mac-like menu bar with the title and
+  a clock, and **constrained tiling** -- the text tile, a graphics canvas, or both, the divider moved
+  with Super+[ / Super+] through five places and the panes swapped with Super+\\; text stays on the
+  8-pixel grid and is kept in a cell shadow, so nothing written is lost when a tile narrows or hides.
+  **Lisp draws** -- `canvas-line`, `-circle`, `-rect`, `-text`, `-row` and more, with a redraw
+  function the system calls when a layout change has lost the canvas; `/sd0/demos/` has cellular
+  automata (rules 30/90/110) and the Lorenz attractor. **Chess** shows its board on the canvas,
+  and the console board is checkered in reverse video. **UTF-8** throughout, with Latin-1, box
+  drawing and the chess figurines on screen and **Caps Lock as a compose key** (`Caps " a` → ä).
+  **One key parser and a clipboard for every text input** (Emacs keys, and Super/Cmd as CSI-u:
+  Super+C/X/V), `/dev/clipboard`, and **screenshots** (Super+Shift+3 → `/sd0/screenshots/`, PBM).
+  **`e` is a full-screen editor and a writer**: it fills its tile and scrolls, selects across
+  lines, searches and replaces, undoes, and evaluates Lisp beside its canvas without leaving;
+  `.txt` and `.md` files are soft-wrapped prose saved a paragraph to a line, and every save goes
+  through a safety copy. See [`plan/phase37_screen_layouts_and_apps.md`](plan/phase37_screen_layouts_and_apps.md).
 - **An IP stack of our own, over two different wires**: ARP, IPv4, ICMP, UDP and a server-side TCP,
   written here rather than bought in silicon — about 2,100 lines under `net/`, sized for an RP2350
   and developed against a packet-level QEMU peer before either piece of hardware existed. Two frame
@@ -1993,7 +2007,7 @@ LugalOS is licensed under the [MIT License](LICENSE).
 * **Raspberry Pi Picotool**: [`tools/picotool`](tools/picotool) is sourced from the [Raspberry Pi Picotool Repository](https://github.com/raspberrypi/picotool) (BSD 3-Clause License), used for RP2350 image analysis, partition table parsing, and binary validation.
 * **Igor Michalak's bare-metal-rp2350**: Reference bootloader headers, RISC-V XOSC/PLL clock tree setup, and dual-core reset patterns from [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350).
 * **hathach's TinyUSB**: The native RP2350 USB CDC ACM driver (`drivers/usb_cdc.c`) was implemented and debugged against DPRAM/endpoint-control register layouts and buffer-control write ordering cross-checked from [`rp2040_usb.c`/`usb_dpram.h`](https://github.com/hathach/tinyusb) (MIT License) — no TinyUSB code or runtime is linked into LugalOS; the USB device stack is written from scratch directly against the hardware.
-* **Frederic Cambus's Spleen**: the terminal font on `rp2350-terminal` (`drivers/font8x16.c`) is generated from [Spleen](https://github.com/fcambus/spleen) 8×16 (BSD 2-Clause License, copied in full to `tools/fonts/LICENSE.spleen`) by `tools/gen_font_bdf.py`.
+* **Frederic Cambus's Spleen**: the terminal font on `rp2350-terminal` (`drivers/font8x16.c`) is generated from [Spleen](https://github.com/fcambus/spleen) 8×16 (BSD 2-Clause License, copied in full to `tools/fonts/LICENSE.spleen`) by `tools/gen_font_bdf.py` -- ASCII, and since phase 37 Latin-1, the box-drawing set, € and the typographic quotes and dashes, all Spleen's glyphs. The twelve chess figurines and the replacement glyph are drawn in the generator for this tree; Spleen has none.
 * **sekigon-gonnoc's Pico-PIO-USB**: the three PIO programs of the USB host port (`drivers/piousb_rp2350.c`: `usb_tx_fs`, `usb_nrzi_decoder`, `usb_edge_detector`, and the low-speed `PRE` variant of the transmitter's end) are from [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB) (MIT License, quoted in that file's header), embedded as assembled instruction words. The host engine, hub and keyboard code around them are written for this tree.
 * **Rui Ueyama's chibicc**: C11 compiler architecture adapted from [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
 * **Ken Thompson & Bell Labs**: Unix `ed` teletype editor and the Plan 9 Operating System universal namespace model.

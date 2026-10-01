@@ -247,7 +247,28 @@ go on the hub freely.
    `(load "/ram0/t.lisp")` at the prompt prints 49 (`load` evaluates a
    file's forms without echoing them, hence the `print`).
 
+9. Phase 37 -- compose, the screen and the editor:
+   * Compose: Caps Lock, then `"` `a` gives ä; `"` `o` ö, `s` `s` ß,
+     `=` `e` €, in either order. The menu bar shows a compose that is
+     waiting for its second key.
+   * Graphics: `(load "/sd0/demos/lorenz.lisp")`, `(lorenz 3000)` -- the
+     attractor beside the text. Super+[ and Super+] move the divider
+     (text only, three splits, canvas only), Super+\\ swaps the panes;
+     the demo redraws each time, and the text is intact afterwards.
+   * Clipboard: in the shell select a word with Shift+arrows, Super+C,
+     then paste it into `ed` with Super+V; `cat /dev/clipboard` shows it.
+   * Screenshot: Super+Shift+3 writes `/sd0/screenshots/shot-NNN.pbm`.
+   * The writer: `e /sd0/notes.txt`, a few paragraphs with composed
+     umlauts, Ctrl-X Ctrl-S; power-cycle; the file reopens intact, and on
+     a PC every paragraph is one line. Saving with the card pulled says
+     `WRITE FAILED` and keeps the text.
+   * The editor: `e /sd0/demos/lorenz.lisp`, add `(lorenz 2000)`,
+     Super+Enter -- it draws and `e` stays; search (Ctrl-S), replace
+     (Alt-%), undo (Ctrl-_), cut and paste across lines.
+
 If a step fails:
+* **Compose does nothing:** Caps Lock must be pressed and released alone,
+  then the two keys; the table is in drivers/usbkbd.c.
 * **Keys do nothing:** `kbd` -- no `BOOT KEYBOARD` means enumeration did not
   finish (its last error names the step); `kbd` running but no events in
   `kbdlog` means the reports are not arriving.

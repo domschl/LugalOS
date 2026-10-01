@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.5a done 2026-10-01, 37.5b done. Written 2026-10-01, from the owner's proposal of the same
+**Status: done 2026-10-01 — 37.0 to 37.6. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -887,6 +887,13 @@ persona; the compose key in the stand-alone checklist (`tests/hw/README.md`).
 `plan/hardware_seams.md`: the second canvas implementation noted (phase 36
 §4.6's rule: extract at the third), and `console_size()` if it became a seam.
 The Spleen notice extended to the glyphs this phase took from it.
+
+**Done, 2026-10-01.** The README has phase 37 under the terminal persona
+(and the Spleen notice says which glyphs are Spleen's and which are drawn
+here); the stand-alone checklist has a step 9 for compose, the divider,
+the clipboard, screenshots, the writer and the editor; `hardware_seams.md`
+lists the screen as a device-class contract with its two implementations,
+`console_size()` included.
 
 ---
 
