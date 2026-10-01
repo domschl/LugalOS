@@ -4242,23 +4242,25 @@ void lisp_repl(void) {
         while (1) {
             char c = console_getc();
             if (c == '\r' || c == '\n') {
-                uart_puts("\r\n");
+                console_puts("\n");     /* the console adds the CR */
                 buf[idx] = '\0';
                 break;
             } else if (c == 0x08 || c == 0x7F) {
                 if (idx > 0) {
                     idx--;
-                    uart_puts("\b \b");
+                    console_puts("\b \b");
+                    console_flush();
                 }
             } else if (c >= 32 && c <= 126) {
                 if (idx < 127) {
                     buf[idx++] = c;
-                    uart_putc(c);
-                    /* M4: uart_putc() batches now -- without this, this
-                     * keystroke's echo only becomes visible whenever the
-                     * *next* uart_getc() call happens to flush it, a
-                     * one-character lag a real user would notice. */
-                    uart_flush();
+                    console_putc(c);
+                    /* Through the console, not uart_putc(): on the RP2350-LCD-7 the
+                     * console is the screen, and an echo straight to the UART never
+                     * reached it (37.1a, found by the owner). Flushed per keystroke
+                     * for the reason M4 gave: output batches, and an unflushed echo
+                     * would only appear with the next one. */
+                    console_flush();
                 }
             }
         }
