@@ -10,6 +10,7 @@
 #include "kernel/device.h"
 #include "kernel/ticker.h"
 #include "kernel/line_editor.h"
+#include "kernel/editor.h"
 #include "kernel/keyseq.h"
 #include "kernel/screenshot.h"
 #include "kernel/sched.h"
@@ -2984,41 +2985,85 @@ static void cmd_ballocdemo(void) {
            free_after, arena_bytes);
 }
 
-/* `e`'s edit buffer used to be a fixed 2 KB stack array (bug: init.lisp is
- * 4378 bytes and silently lost its tail). Heap-on-demand instead, sized to
- * the file it is about to load rather than a guess -- room for the file to
- * roughly double under editing, rounded up to a page, with a floor for new
- * files. Refuses outright on allocation failure rather than falling back to
- * a smaller buffer that would just reintroduce the truncation. */
-#define EDITOR_MIN_CAPACITY  8192u
-static void shell_run_editor(const char *filename) {
-    vfs_stat_t st;
-    uint32_t existing = (vfs_stat(filename, &st) == 0) ? st.size : 0;
-    uint32_t want = existing * 2;
-    if (want < EDITOR_MIN_CAPACITY) want = EDITOR_MIN_CAPACITY;
+/* 37.5b: `e` evaluates and stays (kernel/editor.c). What the evaluation
+ * prints is captured rather than drawn over the text, and the status line
+ * gets one line of it: the error the Lisp engine logged, if any, else the
+ * value, and the last line the program printed. */
 
-    uint32_t pages = (want + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    char *edit_buf = (char *)palloc_pages(pages);
-    if (!edit_buf) {
-        cprintf("e: no memory for a %u KB edit buffer (file is %u bytes)\n",
-                pages * (uint32_t)PAGE_SIZE / 1024, existing);
+/* The last non-empty line of s[0..n), without escape sequences or controls. */
+static uint32_t last_line(const char *s, uint32_t n, char *o, uint32_t cap) {
+    uint32_t a = n;
+    while (a > 0 && (s[a - 1u] == '\n' || s[a - 1u] == '\r' || s[a - 1u] == ' ')) a--;
+    uint32_t end = a;
+    while (a > 0 && s[a - 1u] != '\n') a--;
+    uint32_t k = 0;
+    for (uint32_t i = a; i < end && k + 1u < cap; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0x1bu) {                               /* ESC [ ... final */
+            if (i + 1u < end && s[i + 1u] == '[') {
+                i += 2u;
+                while (i < end && !((unsigned char)s[i] >= 0x40u && (unsigned char)s[i] <= 0x7eu)) i++;
+            }
+            continue;
+        }
+        if (c < 0x20u) continue;
+        o[k++] = (char)c;
+    }
+    o[k] = '\0';
+    return k;
+}
+
+static void shell_editor_eval(const char *src, char *msg, uint32_t cap) {
+    scratch_t sc;
+    if (!scratch_acquire(&sc, 1024)) {
+        ksnprintf(msg, cap, "No memory to evaluate");
         return;
     }
+    char *printed = (char *)sc.base, *val = printed + 256, *logged = val + 128, *line = logged + 512;
+    uint64_t k0 = klog_total();
+    console_capture(printed, 256);
+    lisp_val_t *res = lisp_eval_string(src);
+    uint32_t pn = console_capture_end();
+    console_capture(val, 127);
+    lisp_print(res);
+    uint32_t vn = console_capture_end();
+    val[vn] = '\0';
+    lisp_gc_safepoint();
 
-    int mlen = edit_multiline_box(filename, edit_buf, (int)(pages * PAGE_SIZE));
-    if (mlen > 0) {
-        lisp_val_t *res = lisp_eval_string(edit_buf);
-        if (res) {
-            if (res->type != LISP_NIL) {
-                cprintf("=> ");
-                lisp_print(res);
-                cprintf("\n");
-            } else {
-                cprintf("\n");
-            }
-        }
+    uint64_t k1 = klog_total(), from = k1 - k0 > 512u ? k1 - 512u : k0;
+    uint32_t ln = from < k1 ? klog_read(from, logged, (uint32_t)(k1 - from)) : 0;
+    const char *err = NULL;
+    for (uint32_t i = 0; i + 5u <= ln; i++)
+        if (memcmp(logged + i, "rror", 4) == 0) err = logged + i;
+    /* The evaluator's one error that is printed rather than logged. */
+    const char *unbound = NULL;
+    for (uint32_t i = 0; i + 14u <= pn; i++)
+        if (memcmp(printed + i, "Unbound symbol", 14) == 0) unbound = printed + i;
+    if (unbound) {
+        uint32_t e = (uint32_t)(unbound - printed), k = 0;
+        while (e < pn && printed[e] != '\n' && k + 1u < 96u) line[k++] = printed[e++];
+        line[k] = '\0';
+        ksnprintf(msg, cap, "%s", line);
+    } else if (err) {
+        uint32_t e = (uint32_t)(err - logged);
+        while (e < ln && logged[e] != '\n') e++;
+        last_line(logged, e, line, 96);
+        const char *t = line;
+        if (t[0] == '[' && strchr(t, ']')) t = strchr(t, ']') + 1;   /* the timestamp */
+        while (*t == ' ') t++;
+        ksnprintf(msg, cap, "%s", t);
+    } else if (last_line(printed, pn, line, 96)) {
+        ksnprintf(msg, cap, "=> %s  | %s", val, line);
+    } else {
+        ksnprintf(msg, cap, "=> %s", val);
     }
-    palloc_free(edit_buf, pages);
+    scratch_release(&sc);
+}
+
+static const editor_hooks_t g_shell_editor = { shell_editor_eval };
+
+static void shell_run_editor(const char *filename) {
+    (void)editor_run(filename, &g_shell_editor, NULL, 0);
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -3061,6 +3106,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *fn = &cmd_line[2];
         while (*fn == ' ') fn++;
         shell_run_editor(fn);
+        return;
+    } else if (strcmp(cmd_line, "editselftest") == 0) {
+        (void)editor_selftest();
         return;
     } else if (strcmp(cmd_line, "hmacselftest") == 0) {
         sha256_selftest();

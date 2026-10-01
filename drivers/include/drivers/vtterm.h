@@ -19,7 +19,10 @@
  * **dark background** (40-47, 100-107, 48;5;n, 48;2;r;g;b darker than
  * VT_DARK_LUMA, 37.4) is shown as reverse video, so a checkerboard printed in
  * colours, such as the console chess board's, comes out as one; SGR 7 on a
- * dark background reverses back), and ?25h/?25l (cursor on/off).
+ * dark background reverses back), and ?25h/?25l (cursor on/off). Since 37.5b
+ * (the editor's scrolling) also a **scroll region** -- `r` (DECSTBM, which
+ * homes the cursor), LF at its bottom scrolls only the region, `L`/`M`
+ * insert and delete lines inside it, `S`/`T` scroll it up and down.
  *
  * In a reversed cell the twelve chess figurines are drawn with their
  * opposite-colour glyph (37.4): a white king on a dark square is the solid
@@ -56,6 +59,7 @@ typedef struct {
     uint16_t  shadow_cols;      /* 37.5a: the width vtterm_init() was given */
     bool      hidden;           /* 37.3b: draw into the shadow only */
     uint16_t  col, row;
+    uint16_t  top, bot;         /* 37.5b: the scroll region, rows top..bot */
     bool      pending_wrap;
     bool      inverse;          /* SGR 7 */
     bool      bg_dark;          /* 37.4: the SGR background is dark: reverse video */

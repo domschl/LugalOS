@@ -30,6 +30,9 @@ int readline_ex(const char *prompt, char *out_buf, int max_len, const readline_o
  * canvas lost to a split hotkey is redrawn at once. NULL for none. */
 void readline_set_idle(void (*fn)(void));
 
+/* 37.5b: one turn of that hook, for the editor's own key wait. */
+void readline_idle(void);
+
 /* Non-blocking line reader, sharing readline_interactive()'s editor exactly
  * (same history, cursor movement, Home/End/Delete, Ctrl-X multiline escape --
  * see kernel/line_editor.c, where the two are one body with two drivers).
@@ -51,6 +54,8 @@ void readline_poll_reset(void);
  * avoid stepping on the user's in-progress input when it wants to redraw
  * something else. */
 bool readline_poll_active(void);
+/* The shell's Ctrl-X Ctrl-E box: kernel/editor.c without an evaluator, so
+ * Ctrl-X Ctrl-E hands the text back (its length; 0 if the user left). */
 int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len);
 
 #endif /* LUGALOS_KERNEL_LINE_EDITOR_H */

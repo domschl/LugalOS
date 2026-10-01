@@ -736,6 +736,7 @@ void usb_cdc_task(void) {
         uint8_t req_type = setup[0];
         uint8_t req      = setup[1];
         uint16_t value   = (uint16_t)setup[2] | ((uint16_t)setup[3] << 8);
+        uint16_t index   = (uint16_t)setup[4] | ((uint16_t)setup[5] << 8);
         uint16_t length  = (uint16_t)setup[6] | ((uint16_t)setup[7] << 8);
 
         if ((req_type & 0x60) == 0x00) { // Standard Device Request
@@ -806,6 +807,14 @@ void usb_cdc_task(void) {
                 // once that data genuinely arrives.
                 g_usb.ep0_awaiting_line_coding = true;
                 ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_OUT_CTRL, (1u << 10) | (1u << 13) | 64);
+            } else if (req == 0x22 && index != 0) {
+                /* DTR of the other port (interface 2, ACM1: 9P). It used to
+                 * be taken for the console's -- wIndex was never read -- so
+                 * a 9P client opening ACM1 "opened" ACM0 too, and with no
+                 * one reading ACM0 its ring filled and every byte the LCD-7
+                 * tees there waited out usb_cdc_putc_wait()'s 20 ms: ten
+                 * seconds a keystroke in `e` (found on the panel, 37.5b). */
+                ep0_send_ack();
             } else if (req == 0x22) { // SET_CONTROL_LINE_STATE (wValue bit 0 = DTR)
                 bool dtr_now = (value & 0x1) != 0;
                 if (dtr_now && !g_usb.ep2_dtr) {
@@ -1578,6 +1587,7 @@ USB_UATTR static void usb_cdc_umode_body(void) {
             uint8_t req_type = setup[0];
             uint8_t req      = setup[1];
             uint16_t value   = (uint16_t)setup[2] | ((uint16_t)setup[3] << 8);
+            uint16_t index   = (uint16_t)setup[4] | ((uint16_t)setup[5] << 8);
             uint16_t length  = (uint16_t)setup[6] | ((uint16_t)setup[7] << 8);
 
             if ((req_type & 0x60) == 0x00) { // Standard Device Request
@@ -1626,6 +1636,8 @@ USB_UATTR static void usb_cdc_umode_body(void) {
                 } else if (req == 0x20 && length > 0) { // SET_LINE_CODING
                     g_usb.ep0_awaiting_line_coding = true;
                     u_ep_buf_ctrl_write((volatile uint32_t *)USB_EP0_OUT_CTRL, (1u << 10) | (1u << 13) | 64);
+                } else if (req == 0x22 && index != 0) {   /* ACM1's DTR: not the console's */
+                    u_ep0_send_ack();
                 } else if (req == 0x22) { // SET_CONTROL_LINE_STATE
                     bool dtr_now = (value & 0x1) != 0;
                     if (dtr_now && !g_usb.ep2_dtr) {

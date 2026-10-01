@@ -121,7 +121,32 @@ void console_emit(console_putc_fn out, char c) {
  * outright in any context that must not block -- see kernel/klog.c. It does
  * not recurse: the drain writes to klog's *sinks* (console_emit(uart_putc,
  * ...)), not back through here. */
+/* 37.5b: console_capture() -- the last `cap` bytes written, kept instead
+ * of shown. */
+static char    *g_cap;
+static uint32_t g_cap_max, g_cap_len;
+
+void console_capture(char *buf, uint32_t cap) {
+    g_cap_len = 0;
+    g_cap_max = cap;
+    g_cap = cap ? buf : NULL;
+}
+
+uint32_t console_capture_end(void) {
+    g_cap = NULL;
+    return g_cap_len;
+}
+
 void console_putc(char c) {
+    if (g_cap) {
+        if (g_cap_len == g_cap_max) {           /* full: keep the newer half */
+            uint32_t h = g_cap_max / 2u;
+            memmove(g_cap, g_cap + h, g_cap_max - h);
+            g_cap_len = g_cap_max - h;
+        }
+        g_cap[g_cap_len++] = c;
+        return;
+    }
     console_emit(g_console_putc, c);
 }
 

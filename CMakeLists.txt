@@ -561,6 +561,7 @@ set(SOURCES
     kernel/sched.c
     kernel/shell.c
     kernel/line_editor.c
+    kernel/editor.c
     # 37.5a: one parser for every text input's keys, and the clipboard.
     kernel/keyseq.c
     kernel/clipboard.c

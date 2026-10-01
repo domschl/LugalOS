@@ -67,6 +67,11 @@ void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n);
  * window, so the pixels beside it stay put. */
 void fbtext_scroll_up(fbtext_t *t, unsigned n);
 
+/* 37.5b: move `n` cell rows from row `src` to row `dst` (either direction,
+ * overlapping or not), inside the window; the rows left behind keep their
+ * pixels -- the caller clears them. */
+void fbtext_move_rows(fbtext_t *t, unsigned dst, unsigned src, unsigned n);
+
 /* Invert the bottom two pixel rows of a cell: an underline cursor. XOR, so
  * calling it twice restores the cell exactly; the caller removes it before
  * drawing into that cell and puts it back after (plan §4.3). */

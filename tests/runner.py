@@ -1749,10 +1749,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_box, r"999", timeout=4.0)
         results.append(("Emacs Multiline Lisp Editor (Ctrl-X Ctrl-E)", ok, log if not ok else ""))
 
-        # 13. Direct Shell Editor Command (`e /sd0/test_e.lisp`)
+        # 13. Direct Shell Editor Command (`e /sd0/test_e.lisp`). Since 37.5b
+        # `e` evaluates and stays, the value on its status line: no sentinel
+        # while it runs (it would be typed into the buffer), then leave it.
         cmd_e_file = "e /sd0/test_e.lisp\n(+ 777 222)\x18\x05"
-        ok, log = session.send_and_expect(cmd_e_file, r"999", timeout=4.0)
-        results.append(("Direct Shell Editor Command (e <filename>)", ok, log if not ok else ""))
+        ok, log = session.send_and_expect(cmd_e_file, r"=> 999", timeout=6.0, sentinel=False)
+        ok2, log2 = session.send_and_expect("\x18\x03y", r"lsh>", timeout=6.0)
+        results.append(("Direct Shell Editor Command (e <filename>), Evaluating And Staying (37.5b)",
+                        ok and ok2, "" if ok and ok2 else log + log2))
 
         # 14. Emacs Quit Keybinding (`Ctrl-X Ctrl-C` with unsaved changes confirmation)
         cmd_e_quit = "e\nmodified\x18\x03y\n"
@@ -2102,25 +2106,13 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Command Output Is On The Console Stream, Not The Log (C0)",
                         not stream_fail, "; ".join(stream_fail)))
 
-        # C0: the editor's box always ends where it says it ends.
-        #
-        # redraw_box() cleared each line it painted with \033[K but never
-        # erased below the last one, so loading a 5-line file after a 10-line
-        # file left lines 6-10 of the previous document on screen, below the
-        # status line, looking like part of the new file.
-        #
-        # This asserts the erase sequence rather than the screen state, and
-        # that is a deliberate limit rather than laziness: the stale text is
-        # never re-transmitted -- it is already on the terminal and simply is
-        # not cleared -- so the defect is invisible in the byte stream unless
-        # the test models a screen. Position is what makes the assertion
-        # meaningful: \033[J must come immediately after the status line, the
-        # last thing the box draws. Emitted earlier it would erase the box
-        # itself, and a bare "contains \033[J" check would not notice.
+        # C0, redone for 37.5b's full-screen editor: leaving it gives the
+        # screen back -- the scroll region reset, the screen cleared -- so
+        # nothing of the document is left looking like shell output.
         ok, log = session.send_and_expect("e\nabc\x18\x03y\n",
-                                          r"C-X C-C: exit ───\033\[0m\033\[J",
+                                          r"\x1b\[r\x1b\[2J\x1b\[H",
                                           timeout=5.0)
-        results.append(("Editor Erases Below The Status Line (C0)", ok, log if not ok else ""))
+        results.append(("Editor Resets The Scroll Region And Clears On Exit (C0, 37.5b)", ok, log if not ok else ""))
 
         # NOTE: the "unknown link name is rejected" assertion deliberately does
         # NOT live here. On this single-node session no virtconsole is
@@ -2742,6 +2734,70 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 shot_ok, shot_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
                 break
         results.append(("The Narrow Split, And A Screenshot To The SD Card (37.5a)", shot_ok, shot_log))
+
+        # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
+        # rows and UTF-8, undo, search, the safe save), then the real thing
+        # through key bytes. Steps that leave `e` running send no sentinel,
+        # and end where the Enter the session appends does no harm.
+        ok, log = session.send_and_expect("editselftest", r"EDITOR_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
+        results.append(("Editor: Wrap, Rows, UTF-8, Undo, Search, Safe Save (37.5b editselftest)",
+                        ok and "EDITOR_SELFTEST_OK" in log, log if not (ok and "EDITOR_SELFTEST_OK" in log) else ""))
+
+        # The writer: a paragraph longer than the screen is wide, with
+        # umlauts, is saved as one line -- no line breaks inserted.
+        para = ("Der B\u00e4r ging \u00fcber die Br\u00fccke, langsam und m\u00fcde, "
+                "weil der Weg durch den Wald so lang gewesen war. ") * 3
+        para = para.strip()
+        steps = [("e /sd0/w.txt\n" + para + "\x18\x13", r"Saved", False),
+                 ("\x18\x03y", r"lsh>", None),
+                 ("cat /sd0/w.txt", re.escape(para), None)]
+        w_ok, w_log = True, ""
+        for cmd, pat, sen in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=15.0, sentinel=sen)
+            if not ok:
+                w_ok, w_log = False, f"{cmd[:40]!r} did not give {pat[:40]!r}:\n{log}"
+                break
+        results.append(("The Writer: A Wrapped Paragraph With Umlauts Saved As One Line (37.5b)", w_ok, w_log))
+
+        # Replace all, undo the last replacement, cut two lines (Ctrl-Space,
+        # Ctrl-N, Ctrl-W) and paste them at the end (Alt->, Ctrl-Y).
+        steps = [("e /ram0/r.txt\naa\rbb aa\rcc\x1b<\x1b%aa\rzz", r"Replace\? y n", False),
+                 ("!\x1f\x1b<\x00\x0e\x0e\x17\x1b>\x19\x18\x13", r"Saved", False),
+                 ("\x18\x03y", r"lsh>", None),
+                 ("cat /ram0/r.txt", r"cczz\r?\nbb aa", None)]
+        r_ok, r_log = True, ""
+        for cmd, pat, sen in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0, sentinel=sen)
+            if not ok:
+                r_ok, r_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Editor: Replace, Undo, Cut And Paste Across Lines (37.5b)", r_ok, r_log))
+
+        # Found on the panel: saving lorenz.lisp deleted it -- the safety copy
+        # lorenz.lis~ is LORENZ.LIS on the card, the file's own 8.3 name. A
+        # four-letter extension on /sd0, saved, survives; the kernel log's
+        # sinks, quiet while `e` runs, are attached again afterwards.
+        steps = [("e /sd0/keep.lisp\n(+ 20 22)\x18\x13", r"Saved", False),
+                 ("\x18\x03y", r"lsh>", None),
+                 ("cat /sd0/keep.lisp", r"\(\+ 20 22\)", None),
+                 ("ls /sd0/", r"KEEP|keep", None),
+                 ("klog", r"console: attached", None)]
+        k_ok, k_log = True, ""
+        for cmd, pat, sen in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0, sentinel=sen)
+            if not ok or (cmd.startswith("ls") and re.search(r"~ISP|~isp", log)):
+                k_ok, k_log = False, f"{cmd!r} did not give {pat!r} (or left its copy):\n{log}"
+                break
+        results.append(("Editor: Saving A .lisp File Keeps It; The Log Is Back After `e` (37.5b)", k_ok, k_log))
+
+        # Scrolling, not repainting: Enter on the last row of a 23-row view
+        # moves the rows up with one delete-line in the scroll region.
+        lines = "\r".join(f"(define v{i} {i})" for i in range(30))     # the last Enter: the session's
+        ok, log = session.send_and_expect("e /ram0/s.lisp\n" + lines, r"L31:C1 ", timeout=15.0, sentinel=False)
+        ok = ok and "\x1b[1;23r" in log and "\x1b[1;1H\x1b[1M" in log
+        ok2, log2 = session.send_and_expect("\x18\x03y", r"lsh>", timeout=6.0)
+        results.append(("Editor: The View Scrolls With The Scroll Region, Not A Repaint (37.5b)",
+                        ok and ok2, "" if ok and ok2 else log[-2000:] + log2))
 
         cmd_s4_apply_eval = (
             "lisp\n"

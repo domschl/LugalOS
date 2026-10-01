@@ -1,6 +1,6 @@
 # Phase 37 — Sharing the screen: layouts, text, and the first graphical applications
 
-**Status: in progress — 37.0 to 37.5a done 2026-10-01, 37.5b next. Written 2026-10-01, from the owner's proposal of the same
+**Status: in progress — 37.0 to 37.5a done 2026-10-01, 37.5b done. Written 2026-10-01, from the owner's proposal of the same
 day and the review that followed.** Decisions marked *(owner, 2026-10-01)*
 are settled. Decisions marked **[sign-off]** are recommendations that wait
 for the owner's yes before 37.1 starts.
@@ -810,6 +810,75 @@ file longer than its tile without repainting it line by line; a Lisp
 graphics program is edited, evaluated and re-evaluated in a split without
 leaving `e`; search, replace, cut/paste across lines and undo work in both
 key families.
+
+**Done, 2026-10-01.** The owner wrote, evaluated and saved on the panel, with a 9P mount open.
+
+* **A new editor** (`kernel/editor.c`, replacing the box in
+  `line_editor.c`): full screen in the text tile at whatever size the
+  console reports (80 x 24 on a serial line), following a resize while it
+  runs. The buffer is one UTF-8 run on the heap, grown by doubling; every
+  change is one primitive, so undo, the view and the selection follow it.
+* **Drawing is a diff:** each frame hashes every visible row and sends only
+  the changed ones; a row shift (scrolling, Enter, joining lines) is found
+  first and done by the terminal with insert/delete-line inside a scroll
+  region (rows 1 .. n-1, the status line below it). Typing a character
+  sends its row and the status line; scrolling by one sends one row.
+  `drivers/vtterm.c` learned DECSTBM, IL/DL and SU/SD for it
+  (`fbtext_move_rows()`).
+* **Code mode:** line numbers, long lines scroll sideways (by half a tile),
+  Enter keeps the indent, Tab is two spaces. **Text mode -- the writer**
+  (`.txt`, `.md`; Ctrl-X Ctrl-T switches): soft wrap after the last space
+  that fits, no numbers, Up/Down/Home/End by screen row, a paragraph one
+  line on disk.
+* **Keys in both families** (editor.h lists them): selection with Shift or
+  Ctrl-Space, across lines; cut/copy/paste through the clipboard; Ctrl-K
+  kills collect; word moves and deletes; PgUp/PgDn, Alt-< / Alt->, go to
+  line (Alt-G, Super+L).
+* **Search:** incremental (Ctrl-S/Ctrl-R, Super+F), Super+G and
+  Super+Shift+G again, wrapping once; smart case. **Replace:** Alt-% /
+  Super+R, each match y / n / ! / . / q.
+* **Undo:** 8 KB of inverse records, taken on the first edit; typing
+  coalesces a word at a time; when full the oldest go (and undo says so).
+* **Evaluate and stay:** Ctrl-X Ctrl-E (Super+Enter) evaluates the buffer,
+  or the selection, and stays. What it prints is captured
+  (`console_capture()`) and the status line shows the value, the last line
+  printed, or the error -- "Unbound symbol", or the last `Error` line the
+  Lisp engine logged meanwhile. The canvas's redraw runs while `e` waits
+  for keys, as in the shell. The shell's Ctrl-X box is the same editor
+  without an evaluator: Ctrl-X Ctrl-E hands the text back, as before.
+* **The safe save:** the text goes to a copy first, then to the file, and
+  the copy is removed once both writes succeeded -- then the file is
+  checked once more and rewritten if it is gone. The copy is the file's
+  name with the extension's **first** letter made `~` (`notes.~xt`,
+  `lorenz.~isp`). The card's FAT32 cuts an extension to three letters, so
+  any change past the third names the file itself: `notes.txt~` was found
+  by the self-test, and the extension's *last* letter -- `lorenz.lis~`,
+  which is `LORENZ.LIS` -- by the owner on the panel, where saving
+  `lorenz.lisp` deleted it. Opening a file whose copy is still there says
+  so. A failed save says so and keeps the buffer modified.
+* **Found on the panel (owner, 2026-10-01), fixed:** in a 48-column tile a
+  question on the status line was cut off -- a message now drops the file
+  name, then the position, before itself; with the canvas full screen a
+  question or prompt brings the text back (the Super+\\ toggle). A kernel
+  log line (the first screenshot's "directory created") printed into the
+  editor's text: while `e` runs the log's sinks are detached (the ring keeps
+  everything, `/proc/kmsg`) and reattached on exit; what a canvas redraw
+  prints while `e` waits is captured and dropped.
+* **Found on the panel, fixed: a 9P connection made the editor take ~10 s
+  a key.** The USB device took *any* port's DTR for the console's --
+  `SET_CONTROL_LINE_STATE`'s wIndex was never read -- so a 9P client
+  opening ACM1 "opened" ACM0. With nobody reading ACM0, its ring filled
+  after ~50 scrolled lines and every byte the LCD-7 tees there waited out
+  `usb_cdc_putc_wait()`'s 20 ms. Now only interface 0's DTR is the
+  console's (both the kernel and the U-mode USB paths). Measured on the
+  board, 15 KB of output with the console port closed and ACM1 held open:
+  40.3 s before, 0.43 s after (0.43 s without ACM1 either way).
+* **Tests:** `editselftest` (wrapping in four shapes, movement over wrapped
+  rows, UTF-8 steps, undo by word and its overflow, search, the save and a
+  failed save); `vtselftest` +2 (the region, IL/DL, SU/SD); runner tests
+  for evaluate-and-stay, the writer (a wrapped paragraph with umlauts saved
+  as one line), replace/undo/cut/paste across lines, and scrolling by
+  delete-line. The C0 test now checks the screen handed back on exit.
 
 ### 37.6 — Documents
 

@@ -115,6 +115,15 @@ void console_set_title(const char *title);
  * all; the reply's own status says whether this request was refused. */
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
 
+/* 37.5b: everything written through console_putc() -- cprintf(), a Lisp
+ * program's output, lisp_print() -- goes into `buf` instead of the screen
+ * until console_capture_end(), which returns how many bytes it holds (the
+ * last `cap` written). The editor's evaluate-and-stay uses it to put a
+ * result on its status line rather than over its text. Not the kernel log,
+ * which has its own sinks. One capture at a time. */
+void console_capture(char *buf, uint32_t cap);
+uint32_t console_capture_end(void);
+
 /* 37.5a: the frame, for kernel/screenshot.c; false where there is none. */
 bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
 

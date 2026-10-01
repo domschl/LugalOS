@@ -163,6 +163,24 @@ LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
     fbtext_clear_rows(t, t->rows - n, n);
 }
 
+/* 37.5b: n cell rows from `src` to `dst`, either way, inside the window only
+ * -- a scroll region's scroll and the insert and delete of lines. Pixel row
+ * by pixel row, in the order that never reads a row already overwritten;
+ * one pixel row's bytes never overlap another's, so each is a forward copy. */
+LCDTERM_UTEXT void fbtext_move_rows(fbtext_t *t, unsigned dst, unsigned src, unsigned n) {
+    if (n == 0 || dst == src || dst >= t->rows || src >= t->rows) return;
+    unsigned far = dst > src ? dst : src;
+    if (n > (unsigned)t->rows - far) n = t->rows - far;
+    uint32_t px = (uint32_t)n * FONT8X16_H;
+    uint8_t *d = t->fb + (uint32_t)dst * FONT8X16_H * t->stride;
+    const uint8_t *s = t->fb + (uint32_t)src * FONT8X16_H * t->stride;
+    if (dst < src) {
+        for (uint32_t y = 0; y < px; y++) row_copy(d + y * t->stride, s + y * t->stride, t->cols);
+    } else {
+        for (uint32_t y = px; y-- > 0;) row_copy(d + y * t->stride, s + y * t->stride, t->cols);
+    }
+}
+
 LCDTERM_UTEXT void fbtext_cursor_xor(fbtext_t *t, unsigned col, unsigned row) {
     if (col >= t->cols || row >= t->rows) return;
     uint8_t *p = t->fb + ((uint32_t)row * FONT8X16_H + FONT8X16_H - 2u) * t->stride + col;

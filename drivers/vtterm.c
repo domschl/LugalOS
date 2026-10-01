@@ -63,6 +63,27 @@ LCDTERM_UTEXT static void grid_scroll(vtterm_t *vt) {
     shadow_blank(vt, cells, cols);
 }
 
+/* 37.5b: rows top..bot (inclusive) move up (`up`) or down by n; the rows
+ * that open are cleared. The whole screen up by one is grid_scroll(), the
+ * fast path every line of output takes. */
+LCDTERM_UTEXT static void region_scroll(vtterm_t *vt, unsigned top, unsigned bot, unsigned n, bool up) {
+    if (bot >= vt->text.rows || top > bot || n == 0) return;
+    unsigned h = bot - top + 1u;
+    if (up && n == 1 && top == 0 && h == vt->text.rows) {
+        grid_scroll(vt);
+        return;
+    }
+    if (n > h) n = h;
+    unsigned keep = h - n, cols = vt->shadow_cols;
+    if (!vt->hidden && keep) fbtext_move_rows(&vt->text, up ? top : top + n, up ? top + n : top, keep);
+    if (vt->shadow && keep) {
+        unsigned d = (up ? top : top + n) * cols, s = (up ? top + n : top) * cols, cells = keep * cols;
+        if (up) { for (unsigned i = 0; i < cells; i++) vt->shadow[d + i] = vt->shadow[s + i]; }
+        else    { for (unsigned i = cells; i-- > 0;) vt->shadow[d + i] = vt->shadow[s + i]; }
+    }
+    rows_clear(vt, up ? bot + 1u - n : top, n);
+}
+
 LCDTERM_UTEXT static void cursor_hide(vtterm_t *vt) {
     if (vt->cursor_drawn) {
         fbtext_cursor_xor(&vt->text, vt->col, vt->row);
@@ -90,6 +111,8 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->shadow_cols = text->cols;           /* 37.5a: fixed from here on */
     vt->hidden = false;
     vt->col = vt->row = 0;
+    vt->top = 0;
+    vt->bot = (uint16_t)(text->rows - 1u);
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
     vt->bg_dark = false;
     vt->state = vt->nparams = vt->utf8_need = 0;
@@ -128,6 +151,10 @@ LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
     vt->text.whole_rows = text->whole_rows;
     if (vt->col >= nc) vt->col = (uint16_t)(nc - 1u);
     if (vt->row >= rows) vt->row = (uint16_t)(rows - 1u);
+    if (vt->bot >= rows || vt->top >= vt->bot) {    /* 37.5b: a region that no longer fits */
+        vt->top = 0;
+        vt->bot = (uint16_t)(rows - 1u);
+    }
     vt->pending_wrap = false;
     vt->cursor_drawn = false;              /* the caller repaints */
 }
@@ -152,8 +179,8 @@ LCDTERM_UTEXT void vtterm_set_title(vtterm_t *vt, const char *s, uint32_t n) {
 }
 
 LCDTERM_UTEXT static void line_feed(vtterm_t *vt) {
-    if (vt->row + 1u < vt->text.rows) vt->row++;
-    else grid_scroll(vt);
+    if (vt->row == vt->bot) region_scroll(vt, vt->top, vt->bot, 1, true);
+    else if (vt->row + 1u < vt->text.rows) vt->row++;
 }
 
 LCDTERM_UTEXT static void put_cp(vtterm_t *vt, uint32_t cp) {
@@ -273,6 +300,25 @@ LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
         }
         break;
     }
+    case 'r': {                            /* 37.5b: DECSTBM, then home */
+        unsigned t = param(vt, 0, 1) - 1u, b = param(vt, 1, rows) - 1u;
+        if (b >= rows) b = rows - 1u;
+        if (t >= b) break;
+        vt->top = (uint16_t)t;
+        vt->bot = (uint16_t)b;
+        vt->row = vt->col = 0;
+        break;
+    }
+    case 'L':
+    case 'M':                              /* insert / delete lines, inside the region */
+        if (vt->row >= vt->top && vt->row <= vt->bot)
+            region_scroll(vt, vt->row, vt->bot, param(vt, 0, 1), f == 'M');
+        vt->col = 0;
+        break;
+    case 'S':
+    case 'T':
+        region_scroll(vt, vt->top, vt->bot, param(vt, 0, 1), f == 'S');
+        break;
     case 'm': sgr(vt); return;             /* SGR leaves a pending wrap alone */
     default:  vt->unknown++; return;
     }
@@ -511,6 +557,23 @@ int vtterm_selftest(void) {
 
     st_fresh(&cx, &vt); FEED(&vt, "abcdefghijklmnopqrstU");
     st_check(&cx, "the next printable wraps", row_is(&vt, 1, "U") && vt.row == 1 && vt.col == 1);
+
+    /* 37.5b: the editor's scrolling -- a region of rows 1-3, the fourth (a
+     * status line) left alone by every scroll. */
+    st_fresh(&cx, &vt); FEED(&vt, "\033[4;1HS\033[1;3r\033[3;1Ha\r\nb\r\nc");
+    st_check(&cx, "37.5b: a scroll region: LF at its bottom scrolls rows 1-3 only",
+             row_is(&vt, 0, "a") && row_is(&vt, 1, "b") && row_is(&vt, 2, "c") && row_is(&vt, 3, "S") && vt.row == 2);
+    FEED(&vt, "\033[1;1H\033[L");
+    bool il = row_is(&vt, 0, "") && row_is(&vt, 1, "a") && row_is(&vt, 2, "b") && row_is(&vt, 3, "S");
+    FEED(&vt, "\033[2;1H\033[2M");
+    bool dl = row_is(&vt, 0, "") && row_is(&vt, 1, "") && row_is(&vt, 2, "") && row_is(&vt, 3, "S");
+    FEED(&vt, "\033[1;1Hx\033[2;1Hy\033[3;1Hz\033[2T");
+    bool sd = row_is(&vt, 0, "") && row_is(&vt, 1, "") && row_is(&vt, 2, "x") && row_is(&vt, 3, "S");
+    FEED(&vt, "\033[S");
+    bool su = row_is(&vt, 1, "x") && row_is(&vt, 2, "") && row_is(&vt, 3, "S");
+    FEED(&vt, "\033[r\033[4;1H\n");
+    st_check(&cx, "37.5b: insert and delete lines, scroll down and up, inside the region; ESC[r resets it",
+             il && dl && sd && su && row_is(&vt, 3, "") && row_is(&vt, 2, "S"));
 
     st_fresh(&cx, &vt); FEED(&vt, "1\r\n2\r\n3\r\n4\r\n5");
     st_check(&cx, "LF at the bottom scrolls", row_is(&vt, 0, "2") && row_is(&vt, 3, "5") && vt.row == 3);
