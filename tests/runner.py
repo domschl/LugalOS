@@ -2615,6 +2615,55 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Symbolic Foundations (dotted pairs, quasiquote, equal?, accessors, assoc) (Phase 42)",
                         ok, log if not ok else ""))
 
+        # Phase 42.7: Arbitrary-Precision Bignums and Exact Rationals
+        cmd_p42_numbers = (
+            "lisp\n"
+            "(* 10000000000 10000000000)\n"
+            "(- 100000000000000000000 1)\n"
+            "(- 100000000000000000000 99999999999999999995)\n"
+            "(bignum? 100000000000000000000)\n"
+            "(bignum? 5)\n"
+            "(+ 1/2 1/3)\n"
+            "(- 5/6 1/3)\n"
+            "(* 2/3 3/4)\n"
+            "(/ 1/2 1/3)\n"
+            "(/ 6 2)\n"
+            "(/ 4 6)\n"
+            "(- 100000000000000000000/3 1/3)\n"
+            "(numerator 5/6)\n"
+            "(denominator 5/6)\n"
+            "(numerator 42)\n"
+            "(denominator 42)\n"
+            "(gcd 12 18)\n"
+            "(lcm 12 18)\n"
+            "(< 1/3 1/2)\n"
+            "(= 2/4 1/2)\n"
+            "(= 100000000000000000000/10000000000000000000 10)\n"
+            "(string->number \"100000000000000000000\")\n"
+            "(string->number \"3/4\")\n"
+            "(number->string 3/4)\n"
+            "(display \"P42_NUM_OK\\n\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p42_numbers, r"P42_NUM_OK", timeout=6.0)
+        p42_num_correct = (
+            "100000000000000000000" in log and
+            "99999999999999999999" in log and
+            "=> 5" in log and
+            "=> 5/6" in log and
+            "=> 1/2" in log and
+            "=> 3/2" in log and
+            "=> 3" in log and
+            "=> 2/3" in log and
+            "33333333333333333333" in log and
+            "=> 6" in log and
+            "=> 36" in log and
+            "\"3/4\"" in log
+        )
+        ok = ok and p42_num_correct
+        results.append(("Lisp Arbitrary-Precision Bignums and Exact Rationals (Phase 42.7)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"

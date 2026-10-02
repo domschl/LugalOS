@@ -568,6 +568,13 @@ static void gc_drain(int *sp) {
             case LISP_SYMBOL:
                 gc_mark_string_slot(v->u.str);
                 break;
+            case LISP_BIGNUM:
+                if (v->u.bignum.limbs) gc_mark_string_slot((const char *)v->u.bignum.limbs);
+                break;
+            case LISP_RATIO:
+                gc_push(sp, v->u.ratio.num);
+                gc_push(sp, v->u.ratio.den);
+                break;
             case LISP_PAIR:
                 gc_push(sp, v->u.pair.car);
                 gc_push(sp, v->u.pair.cdr);
@@ -1124,58 +1131,1040 @@ static bool lisp_truthy(lisp_val_t *v) {
  * apply below -- all added in S4 -- need to call it. */
 static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env);
 
-/* Built-in primitives */
-static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    long sum = 0;
-    /* Bounded, belt-and-braces against a cyclic list. lisp_eval() now refuses
-     * to build one (see alloc_node), but this loop is where a cycle actually
-     * manifested -- spinning forever while accumulating into `sum` until the
-     * signed overflow at this line -- and the bound is free and exactly
-     * correct: a list cannot have more elements than the pool has nodes. */
-    int guard = 0;
-    for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
-         c = c->u.pair.cdr, guard++) {
-        if (c->u.pair.car->type == LISP_INT) {
-            sum += c->u.pair.car->u.i;
-        }
-    }
-    return make_int(sum);
+/* =========================================================================
+ * Phase 42.7: Arbitrary-Precision Bignums and Exact Rationals From Scratch
+ * ========================================================================= */
+
+#define BIGNUM_MAX_LIMBS 32
+
+static inline bool is_number_val(const lisp_val_t *v) {
+    return v && (v->type == LISP_INT || v->type == LISP_BIGNUM || v->type == LISP_RATIO);
 }
 
-static lisp_val_t *prim_sub(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    if (!args || args->type != LISP_PAIR) return make_int(0);
-    long res = arg_int(args, 0, 0);
-    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-        if (c->u.pair.car->type == LISP_INT) {
-            res -= c->u.pair.car->u.i;
-        }
-    }
-    return make_int(res);
+static inline int bn_normalize(const uint32_t *limbs, int len) {
+    while (len > 0 && limbs[len - 1] == 0) len--;
+    return len;
 }
 
-static lisp_val_t *prim_mul(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    long prod = 1;
-    for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-        if (c->u.pair.car->type == LISP_INT) {
-            prod *= c->u.pair.car->u.i;
+static uint32_t *alloc_limbs(int num_limbs, int *out_capacity) {
+    int idx = -1;
+    int cap = 8;
+    if (num_limbs <= 8) {
+        idx = take_small();
+        if (idx < 0) {
+            idx = take_large();
+            cap = 32;
+        }
+    } else if (num_limbs <= 32) {
+        idx = take_large();
+        cap = 32;
+    } else {
+        return NULL; /* Exceeds maximum 32 limbs (1024 bits) */
+    }
+
+    if (idx < 0 && gc_collect_in_form()) {
+        if (num_limbs <= 8) {
+            idx = take_small();
+            cap = 8;
+            if (idx < 0) {
+                idx = take_large();
+                cap = 32;
+            }
+        } else if (num_limbs <= 32) {
+            idx = take_large();
+            cap = 32;
         }
     }
-    return make_int(prod);
+
+    if (idx < 0) return NULL;
+    if (out_capacity) *out_capacity = cap;
+    uint32_t *limbs = (uint32_t *)(void *)slot_at(idx);
+    memset(limbs, 0, cap * sizeof(uint32_t));
+    return limbs;
+}
+
+static lisp_val_t *make_bignum_raw(int sign, int len, int capacity, uint32_t *limbs) {
+    lisp_val_t *v = alloc_node(LISP_BIGNUM);
+    v->u.bignum.sign = (int16_t)sign;
+    v->u.bignum.len = (uint16_t)len;
+    v->u.bignum.capacity = (uint16_t)capacity;
+    v->u.bignum.limbs = limbs;
+    return v;
+}
+
+static lisp_val_t *bn_demote_if_possible(int sign, int len, int capacity, uint32_t *limbs) {
+    len = bn_normalize(limbs, len);
+    if (len == 0) return make_int(0);
+
+#if __SIZEOF_LONG__ == 8
+    if (len <= 2) {
+        uint64_t v = (len == 1) ? (uint64_t)limbs[0] : (((uint64_t)limbs[1] << 32) | limbs[0]);
+        if (sign > 0 && v <= (uint64_t)LONG_MAX) {
+            return make_int((long)v);
+        }
+        if (sign < 0 && v <= (uint64_t)LONG_MAX + 1ULL) {
+            if (v == (uint64_t)LONG_MAX + 1ULL) return make_int(LONG_MIN);
+            return make_int(-(long)v);
+        }
+    }
+#else
+    if (len == 1) {
+        uint32_t v = limbs[0];
+        if (sign > 0 && v <= (uint32_t)LONG_MAX) {
+            return make_int((long)v);
+        }
+        if (sign < 0 && v <= (uint32_t)LONG_MAX + 1UL) {
+            if (v == (uint32_t)LONG_MAX + 1UL) return make_int(LONG_MIN);
+            return make_int(-(long)v);
+        }
+    }
+#endif
+
+    return make_bignum_raw(sign, len, capacity, limbs);
+}
+
+static void int_to_limbs(long val, int *out_sign, int *out_len, uint32_t *limbs) {
+    if (val == 0) {
+        *out_sign = 1;
+        *out_len = 0;
+        return;
+    }
+    if (val < 0) {
+        *out_sign = -1;
+#if __SIZEOF_LONG__ == 8
+        uint64_t uval = (val == LONG_MIN) ? ((uint64_t)LONG_MAX + 1ULL) : (uint64_t)(-val);
+        limbs[0] = (uint32_t)(uval & 0xFFFFFFFFUL);
+        limbs[1] = (uint32_t)(uval >> 32);
+        *out_len = (limbs[1] ? 2 : 1);
+#else
+        uint32_t uval = (val == LONG_MIN) ? ((uint32_t)LONG_MAX + 1UL) : (uint32_t)(-val);
+        limbs[0] = uval;
+        *out_len = 1;
+#endif
+    } else {
+        *out_sign = 1;
+#if __SIZEOF_LONG__ == 8
+        uint64_t uval = (uint64_t)val;
+        limbs[0] = (uint32_t)(uval & 0xFFFFFFFFUL);
+        limbs[1] = (uint32_t)(uval >> 32);
+        *out_len = (limbs[1] ? 2 : 1);
+#else
+        limbs[0] = (uint32_t)val;
+        *out_len = 1;
+#endif
+    }
+}
+
+static void get_num_limbs(const lisp_val_t *v, int *out_sign, int *out_len, const uint32_t **out_limbs, uint32_t temp_limbs[2]) {
+    if (v->type == LISP_INT) {
+        int_to_limbs(v->u.i, out_sign, out_len, temp_limbs);
+        *out_limbs = temp_limbs;
+    } else if (v->type == LISP_BIGNUM) {
+        *out_sign = v->u.bignum.sign;
+        *out_len = v->u.bignum.len;
+        *out_limbs = v->u.bignum.limbs;
+    } else {
+        *out_sign = 1;
+        *out_len = 0;
+        *out_limbs = NULL;
+    }
+}
+
+static int bn_cmp_abs(const uint32_t *a, int a_len, const uint32_t *b, int b_len) {
+    a_len = bn_normalize(a, a_len);
+    b_len = bn_normalize(b, b_len);
+    if (a_len != b_len) return a_len > b_len ? 1 : -1;
+    for (int i = a_len - 1; i >= 0; i--) {
+        if (a[i] != b[i]) return a[i] > b[i] ? 1 : -1;
+    }
+    return 0;
+}
+
+static int bn_add_abs(uint32_t *res, const uint32_t *a, int a_len, const uint32_t *b, int b_len) {
+    a_len = bn_normalize(a, a_len);
+    b_len = bn_normalize(b, b_len);
+    if (a_len < b_len) return bn_add_abs(res, b, b_len, a, a_len);
+    uint64_t carry = 0;
+    int i = 0;
+    for (; i < b_len; i++) {
+        uint64_t sum = (uint64_t)a[i] + b[i] + carry;
+        res[i] = (uint32_t)sum;
+        carry = sum >> 32;
+    }
+    for (; i < a_len; i++) {
+        uint64_t sum = (uint64_t)a[i] + carry;
+        res[i] = (uint32_t)sum;
+        carry = sum >> 32;
+    }
+    if (carry) {
+        res[i++] = (uint32_t)carry;
+    }
+    return i;
+}
+
+static int bn_sub_abs(uint32_t *res, const uint32_t *a, int a_len, const uint32_t *b, int b_len) {
+    a_len = bn_normalize(a, a_len);
+    b_len = bn_normalize(b, b_len);
+    int64_t borrow = 0;
+    int i = 0;
+    for (; i < b_len; i++) {
+        int64_t diff = (int64_t)a[i] - b[i] - borrow;
+        if (diff < 0) {
+            diff += 0x100000000ULL;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        res[i] = (uint32_t)diff;
+    }
+    for (; i < a_len; i++) {
+        int64_t diff = (int64_t)a[i] - borrow;
+        if (diff < 0) {
+            diff += 0x100000000ULL;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        res[i] = (uint32_t)diff;
+    }
+    while (i > 0 && res[i - 1] == 0) i--;
+    return i;
+}
+
+static int bn_mul_abs(uint32_t *res, const uint32_t *a, int a_len, const uint32_t *b, int b_len) {
+    a_len = bn_normalize(a, a_len);
+    b_len = bn_normalize(b, b_len);
+    if (a_len == 0 || b_len == 0) return 0;
+    memset(res, 0, (a_len + b_len) * sizeof(uint32_t));
+    for (int i = 0; i < a_len; i++) {
+        if (a[i] == 0) continue;
+        uint64_t carry = 0;
+        for (int j = 0; j < b_len; j++) {
+            uint64_t cur = (uint64_t)res[i + j] + (uint64_t)a[i] * (uint64_t)b[j] + carry;
+            res[i + j] = (uint32_t)cur;
+            carry = cur >> 32;
+        }
+        res[i + b_len] += (uint32_t)carry;
+    }
+    int len = a_len + b_len;
+    while (len > 0 && res[len - 1] == 0) len--;
+    return len;
+}
+
+static void bn_div_single(uint32_t *q, int *q_len, uint32_t *rem, const uint32_t *a, int a_len, uint32_t d) {
+    a_len = bn_normalize(a, a_len);
+    uint64_t r = 0;
+    for (int i = a_len - 1; i >= 0; i--) {
+        uint64_t cur = (r << 32) | a[i];
+        q[i] = (uint32_t)(cur / d);
+        r = cur % d;
+    }
+    int len = a_len;
+    while (len > 0 && q[len - 1] == 0) len--;
+    *q_len = len;
+    *rem = (uint32_t)r;
+}
+
+static void bn_div_multi(uint32_t *q, int *q_len, uint32_t *r, int *r_len,
+                         const uint32_t *a, int a_len, const uint32_t *b, int b_len) {
+    a_len = bn_normalize(a, a_len);
+    b_len = bn_normalize(b, b_len);
+    memset(q, 0, (a_len + 1) * sizeof(uint32_t));
+    memset(r, 0, (b_len + 1) * sizeof(uint32_t));
+    int curr_r_len = 0;
+
+    if (a_len == 0 || bn_cmp_abs(a, a_len, b, b_len) < 0) {
+        *q_len = 0;
+        memcpy(r, a, a_len * sizeof(uint32_t));
+        *r_len = a_len;
+        return;
+    }
+
+    int high_bit = 31;
+    while (high_bit > 0 && !(a[a_len - 1] & (1U << high_bit))) high_bit--;
+    int total_bits = (a_len - 1) * 32 + high_bit + 1;
+
+    for (int bit = total_bits - 1; bit >= 0; bit--) {
+        uint32_t carry = 0;
+        for (int i = 0; i < curr_r_len; i++) {
+            uint32_t next_carry = (r[i] >> 31) & 1;
+            r[i] = (r[i] << 1) | carry;
+            carry = next_carry;
+        }
+        if (carry) {
+            r[curr_r_len++] = carry;
+        }
+
+        int a_word = bit / 32;
+        int a_bit = bit % 32;
+        int in_bit = (a[a_word] >> a_bit) & 1;
+        if (in_bit) {
+            r[0] |= 1;
+            if (curr_r_len == 0) curr_r_len = 1;
+        }
+
+        if (bn_cmp_abs(r, curr_r_len, b, b_len) >= 0) {
+            curr_r_len = bn_sub_abs(r, r, curr_r_len, b, b_len);
+            q[bit / 32] |= (1U << (bit % 32));
+        }
+    }
+
+    int len = a_len;
+    while (len > 0 && q[len - 1] == 0) len--;
+    *q_len = len;
+    *r_len = bn_normalize(r, curr_r_len);
+}
+
+static int bn_shift_right_1(uint32_t *x, int len) {
+    uint32_t carry = 0;
+    for (int i = len - 1; i >= 0; i--) {
+        uint32_t next_carry = (x[i] & 1) ? 0x80000000U : 0;
+        x[i] = (x[i] >> 1) | carry;
+        carry = next_carry;
+    }
+    while (len > 0 && x[len - 1] == 0) len--;
+    return len;
+}
+
+static int bn_shift_left(uint32_t *res, const uint32_t *x, int len, int k) {
+    if (len == 0 || k == 0) {
+        if (res != x) memcpy(res, x, len * sizeof(uint32_t));
+        return len;
+    }
+    int word_shift = k / 32;
+    int bit_shift = k % 32;
+    int new_len = len + word_shift + (bit_shift ? 1 : 0);
+    memset(res, 0, new_len * sizeof(uint32_t));
+    uint32_t carry = 0;
+    for (int i = 0; i < len; i++) {
+        uint64_t cur = ((uint64_t)x[i] << bit_shift) | carry;
+        res[i + word_shift] = (uint32_t)cur;
+        carry = (uint32_t)(cur >> 32);
+    }
+    if (carry) {
+        res[len + word_shift] = carry;
+    }
+    while (new_len > 0 && res[new_len - 1] == 0) new_len--;
+    return new_len;
+}
+
+static int bn_gcd_abs(uint32_t *res, const uint32_t *u_in, int u_len, const uint32_t *v_in, int v_len) {
+    u_len = bn_normalize(u_in, u_len);
+    v_len = bn_normalize(v_in, v_len);
+    if (u_len == 0) { memcpy(res, v_in, v_len * sizeof(uint32_t)); return v_len; }
+    if (v_len == 0) { memcpy(res, u_in, u_len * sizeof(uint32_t)); return u_len; }
+
+    uint32_t u[34], v[34];
+    memcpy(u, u_in, u_len * sizeof(uint32_t));
+    memcpy(v, v_in, v_len * sizeof(uint32_t));
+
+    int k = 0;
+    while ((u[0] & 1) == 0 && (v[0] & 1) == 0) {
+        u_len = bn_shift_right_1(u, u_len);
+        v_len = bn_shift_right_1(v, v_len);
+        k++;
+    }
+
+    while (u_len > 0 && (u[0] & 1) == 0) {
+        u_len = bn_shift_right_1(u, u_len);
+    }
+
+    while (v_len > 0) {
+        while ((v[0] & 1) == 0) {
+            v_len = bn_shift_right_1(v, v_len);
+        }
+        if (bn_cmp_abs(u, u_len, v, v_len) > 0) {
+            uint32_t tmp[34];
+            memcpy(tmp, u, u_len * sizeof(uint32_t));
+            int tmp_len = u_len;
+            memcpy(u, v, v_len * sizeof(uint32_t));
+            u_len = v_len;
+            memcpy(v, tmp, tmp_len * sizeof(uint32_t));
+            v_len = tmp_len;
+        }
+        v_len = bn_sub_abs(v, v, v_len, u, u_len);
+    }
+
+    return bn_shift_left(res, u, u_len, k);
+}
+
+static void format_uint_digits(char **p, char *end, uint32_t val, int pad_to) {
+    char temp[12];
+    int i = 0;
+    if (val == 0) temp[i++] = '0';
+    while (val > 0) {
+        temp[i++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    while (i < pad_to) {
+        temp[i++] = '0';
+    }
+    while (i > 0 && *p < end) {
+        *(*p)++ = temp[--i];
+    }
+}
+
+static void bn_to_string(const lisp_val_t *v, char *out, size_t max_out) {
+    if (!v || v->type != LISP_BIGNUM) {
+        if (max_out > 0) out[0] = '\0';
+        return;
+    }
+    int len = bn_normalize(v->u.bignum.limbs, v->u.bignum.len);
+    if (len == 0) {
+        if (max_out > 1) { out[0] = '0'; out[1] = '\0'; }
+        return;
+    }
+    if (len > 34) len = 34;
+    uint32_t temp[34];
+    memcpy(temp, v->u.bignum.limbs, len * sizeof(uint32_t));
+    uint32_t rems[40];
+    int num_rems = 0;
+    while (len > 0) {
+        uint32_t rem = 0;
+        bn_div_single(temp, &len, &rem, temp, len, 1000000000U);
+        rems[num_rems++] = rem;
+    }
+    if (num_rems == 0) rems[num_rems++] = 0;
+
+    char *p = out;
+    char *end = out + max_out - 1;
+    if (v->u.bignum.sign < 0 && p < end) *p++ = '-';
+    format_uint_digits(&p, end, rems[num_rems - 1], 0);
+    for (int i = num_rems - 2; i >= 0; i--) {
+        format_uint_digits(&p, end, rems[i], 9);
+    }
+    *p = '\0';
+}
+
+static lisp_val_t *bn_from_string(const char *s, int len, int sign) {
+    uint32_t res[34];
+    memset(res, 0, sizeof(res));
+    int res_len = 0;
+    int idx = 0;
+    while (idx < len) {
+        int chunk_len = (len - idx) % 9;
+        if (chunk_len == 0) chunk_len = 9;
+        uint32_t chunk_val = 0;
+        uint32_t mul = 1;
+        for (int i = 0; i < chunk_len; i++) {
+            chunk_val = chunk_val * 10 + (s[idx + i] - '0');
+            mul *= 10;
+        }
+        idx += chunk_len;
+
+        uint64_t carry = 0;
+        for (int i = 0; i < res_len; i++) {
+            uint64_t cur = (uint64_t)res[i] * mul + carry;
+            res[i] = (uint32_t)cur;
+            carry = cur >> 32;
+        }
+        if (carry) {
+            res[res_len++] = (uint32_t)carry;
+        }
+
+        carry = chunk_val;
+        for (int i = 0; i < res_len; i++) {
+            uint64_t cur = (uint64_t)res[i] + carry;
+            res[i] = (uint32_t)cur;
+            carry = cur >> 32;
+            if (!carry) break;
+        }
+        if (carry) {
+            res[res_len++] = (uint32_t)carry;
+        }
+        if (res_len == 0 && chunk_val > 0) {
+            res[res_len++] = chunk_val;
+        }
+    }
+    res_len = bn_normalize(res, res_len);
+    if (res_len == 0) return make_int(0);
+
+    int cap = 8;
+    uint32_t *limbs = alloc_limbs(res_len, &cap);
+    if (!limbs) return &nil_val;
+    memcpy(limbs, res, res_len * sizeof(uint32_t));
+    return bn_demote_if_possible(sign, res_len, cap, limbs);
+}
+
+static lisp_val_t *bn_add(lisp_val_t *a, lisp_val_t *b) {
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+
+    uint32_t res[34];
+    int res_len, res_sign;
+
+    if (a_sign == b_sign) {
+        res_sign = a_sign;
+        res_len = bn_add_abs(res, a_limbs, a_len, b_limbs, b_len);
+    } else {
+        int cmp = bn_cmp_abs(a_limbs, a_len, b_limbs, b_len);
+        if (cmp == 0) return make_int(0);
+        if (cmp > 0) {
+            res_sign = a_sign;
+            res_len = bn_sub_abs(res, a_limbs, a_len, b_limbs, b_len);
+        } else {
+            res_sign = b_sign;
+            res_len = bn_sub_abs(res, b_limbs, b_len, a_limbs, a_len);
+        }
+    }
+    res_len = bn_normalize(res, res_len);
+    if (res_len == 0) return make_int(0);
+
+    int cap = 8;
+    uint32_t *limbs = alloc_limbs(res_len, &cap);
+    if (!limbs) return &nil_val;
+    memcpy(limbs, res, res_len * sizeof(uint32_t));
+    return bn_demote_if_possible(res_sign, res_len, cap, limbs);
+}
+
+static lisp_val_t *bn_sub(lisp_val_t *a, lisp_val_t *b) {
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+    b_sign = -b_sign;
+
+    uint32_t res[34];
+    int res_len, res_sign;
+
+    if (a_sign == b_sign) {
+        res_sign = a_sign;
+        res_len = bn_add_abs(res, a_limbs, a_len, b_limbs, b_len);
+    } else {
+        int cmp = bn_cmp_abs(a_limbs, a_len, b_limbs, b_len);
+        if (cmp == 0) return make_int(0);
+        if (cmp > 0) {
+            res_sign = a_sign;
+            res_len = bn_sub_abs(res, a_limbs, a_len, b_limbs, b_len);
+        } else {
+            res_sign = b_sign;
+            res_len = bn_sub_abs(res, b_limbs, b_len, a_limbs, a_len);
+        }
+    }
+    res_len = bn_normalize(res, res_len);
+    if (res_len == 0) return make_int(0);
+
+    int cap = 8;
+    uint32_t *limbs = alloc_limbs(res_len, &cap);
+    if (!limbs) return &nil_val;
+    memcpy(limbs, res, res_len * sizeof(uint32_t));
+    return bn_demote_if_possible(res_sign, res_len, cap, limbs);
+}
+
+static lisp_val_t *bn_mul(lisp_val_t *a, lisp_val_t *b) {
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+
+    if (a_len == 0 || b_len == 0) return make_int(0);
+
+    uint32_t res[68];
+    int res_len = bn_mul_abs(res, a_limbs, a_len, b_limbs, b_len);
+    int res_sign = a_sign * b_sign;
+
+    res_len = bn_normalize(res, res_len);
+    if (res_len == 0) return make_int(0);
+
+    int cap = 8;
+    uint32_t *limbs = alloc_limbs(res_len, &cap);
+    if (!limbs) return &nil_val;
+    memcpy(limbs, res, res_len * sizeof(uint32_t));
+    return bn_demote_if_possible(res_sign, res_len, cap, limbs);
+}
+
+static void bn_div_rem(lisp_val_t *a, lisp_val_t *b, lisp_val_t **out_q, lisp_val_t **out_r) {
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+
+    if (b_len == 0) {
+        if (out_q) *out_q = &nil_val;
+        if (out_r) *out_r = &nil_val;
+        return;
+    }
+
+    uint32_t q_buf[35], r_buf[35];
+    int q_len = 0, r_len = 0;
+
+    if (b_len == 1) {
+        uint32_t rem = 0;
+        bn_div_single(q_buf, &q_len, &rem, a_limbs, a_len, b_limbs[0]);
+        if (rem) {
+            r_buf[0] = rem;
+            r_len = 1;
+        } else {
+            r_len = 0;
+        }
+    } else {
+        bn_div_multi(q_buf, &q_len, r_buf, &r_len, a_limbs, a_len, b_limbs, b_len);
+    }
+
+    int q_sign = a_sign * b_sign;
+    int r_sign = a_sign;
+
+    q_len = bn_normalize(q_buf, q_len);
+    r_len = bn_normalize(r_buf, r_len);
+
+    if (out_q) {
+        if (q_len == 0) {
+            *out_q = make_int(0);
+        } else {
+            int cap = 8;
+            uint32_t *q_limbs = alloc_limbs(q_len, &cap);
+            if (!q_limbs) { *out_q = &nil_val; }
+            else {
+                memcpy(q_limbs, q_buf, q_len * sizeof(uint32_t));
+                *out_q = bn_demote_if_possible(q_sign, q_len, cap, q_limbs);
+            }
+        }
+    }
+
+    if (out_r) {
+        if (r_len == 0) {
+            *out_r = make_int(0);
+        } else {
+            int cap = 8;
+            uint32_t *r_limbs = alloc_limbs(r_len, &cap);
+            if (!r_limbs) { *out_r = &nil_val; }
+            else {
+                memcpy(r_limbs, r_buf, r_len * sizeof(uint32_t));
+                *out_r = bn_demote_if_possible(r_sign, r_len, cap, r_limbs);
+            }
+        }
+    }
+}
+
+static lisp_val_t *bn_gcd(lisp_val_t *a, lisp_val_t *b) {
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+
+    uint32_t res[34];
+    int res_len = bn_gcd_abs(res, a_limbs, a_len, b_limbs, b_len);
+    res_len = bn_normalize(res, res_len);
+    if (res_len == 0) return make_int(0);
+
+    int cap = 8;
+    uint32_t *limbs = alloc_limbs(res_len, &cap);
+    if (!limbs) return &nil_val;
+    memcpy(limbs, res, res_len * sizeof(uint32_t));
+    return bn_demote_if_possible(1, res_len, cap, limbs);
+}
+
+static bool num_is_zero(const lisp_val_t *v) {
+    if (!v) return false;
+    if (v->type == LISP_INT) return v->u.i == 0;
+    if (v->type == LISP_BIGNUM) return v->u.bignum.len == 0;
+    if (v->type == LISP_RATIO) return num_is_zero(v->u.ratio.num);
+    return false;
+}
+
+static bool num_is_negative(const lisp_val_t *v) {
+    if (!v) return false;
+    if (v->type == LISP_INT) return v->u.i < 0;
+    if (v->type == LISP_BIGNUM) return v->u.bignum.sign < 0;
+    if (v->type == LISP_RATIO) return num_is_negative(v->u.ratio.num);
+    return false;
+}
+
+static lisp_val_t *num_neg(lisp_val_t *v);
+
+static lisp_val_t *make_ratio(lisp_val_t *num, lisp_val_t *den) {
+    if (!num || !den) return &nil_val;
+    if (num_is_zero(den)) {
+        printk("[Lisp Error] Division by zero\n");
+        return &nil_val;
+    }
+    if (num_is_zero(num)) {
+        return make_int(0);
+    }
+
+    if (num_is_negative(den)) {
+        num = num_neg(num);
+        den = num_neg(den);
+    }
+
+    lisp_val_t *g = bn_gcd(num, den);
+    if (g && (g->type != LISP_INT || g->u.i != 1)) {
+        lisp_val_t *q_num = NULL, *q_den = NULL;
+        bn_div_rem(num, g, &q_num, NULL);
+        bn_div_rem(den, g, &q_den, NULL);
+        if (q_num) num = q_num;
+        if (q_den) den = q_den;
+    }
+
+    if (den->type == LISP_INT && den->u.i == 1) {
+        return num;
+    }
+
+    lisp_val_t *v = alloc_node(LISP_RATIO);
+    v->u.ratio.num = num;
+    v->u.ratio.den = den;
+    return v;
+}
+
+static lisp_val_t *num_neg(lisp_val_t *v) {
+    if (!v) return &nil_val;
+    if (v->type == LISP_INT) {
+        if (v->u.i == LONG_MIN) {
+            uint32_t limbs[2];
+            int sign, len;
+            int_to_limbs(v->u.i, &sign, &len, limbs);
+            int cap = 8;
+            uint32_t *nl = alloc_limbs(len, &cap);
+            if (!nl) return &nil_val;
+            memcpy(nl, limbs, len * sizeof(uint32_t));
+            return make_bignum_raw(-sign, len, cap, nl);
+        }
+        return make_int(-v->u.i);
+    }
+    if (v->type == LISP_BIGNUM) {
+        int cap = 8;
+        uint32_t *nl = alloc_limbs(v->u.bignum.len, &cap);
+        if (!nl) return &nil_val;
+        memcpy(nl, v->u.bignum.limbs, v->u.bignum.len * sizeof(uint32_t));
+        return make_bignum_raw(-v->u.bignum.sign, v->u.bignum.len, cap, nl);
+    }
+    if (v->type == LISP_RATIO) {
+        return make_ratio(num_neg(v->u.ratio.num), v->u.ratio.den);
+    }
+    return v;
+}
+
+static lisp_val_t *ratio_add(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *n1 = (a->type == LISP_RATIO) ? a->u.ratio.num : a;
+    lisp_val_t *d1 = (a->type == LISP_RATIO) ? a->u.ratio.den : make_int(1);
+    lisp_val_t *n2 = (b->type == LISP_RATIO) ? b->u.ratio.num : b;
+    lisp_val_t *d2 = (b->type == LISP_RATIO) ? b->u.ratio.den : make_int(1);
+
+    lisp_val_t *g = bn_gcd(d1, d2);
+    if (g->type == LISP_INT && g->u.i == 1) {
+        lisp_val_t *t1 = bn_mul(n1, d2);
+        lisp_val_t *t2 = bn_mul(n2, d1);
+        lisp_val_t *num = bn_add(t1, t2);
+        lisp_val_t *den = bn_mul(d1, d2);
+        return make_ratio(num, den);
+    } else {
+        lisp_val_t *d1_prime = NULL, *d2_prime = NULL;
+        bn_div_rem(d1, g, &d1_prime, NULL);
+        bn_div_rem(d2, g, &d2_prime, NULL);
+        lisp_val_t *t1 = bn_mul(n1, d2_prime);
+        lisp_val_t *t2 = bn_mul(n2, d1_prime);
+        lisp_val_t *num = bn_add(t1, t2);
+        lisp_val_t *den = bn_mul(d1_prime, d2);
+        return make_ratio(num, den);
+    }
+}
+
+static lisp_val_t *ratio_sub(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *n1 = (a->type == LISP_RATIO) ? a->u.ratio.num : a;
+    lisp_val_t *d1 = (a->type == LISP_RATIO) ? a->u.ratio.den : make_int(1);
+    lisp_val_t *n2 = (b->type == LISP_RATIO) ? b->u.ratio.num : b;
+    lisp_val_t *d2 = (b->type == LISP_RATIO) ? b->u.ratio.den : make_int(1);
+
+    lisp_val_t *g = bn_gcd(d1, d2);
+    if (g->type == LISP_INT && g->u.i == 1) {
+        lisp_val_t *t1 = bn_mul(n1, d2);
+        lisp_val_t *t2 = bn_mul(n2, d1);
+        lisp_val_t *num = bn_sub(t1, t2);
+        lisp_val_t *den = bn_mul(d1, d2);
+        return make_ratio(num, den);
+    } else {
+        lisp_val_t *d1_prime = NULL, *d2_prime = NULL;
+        bn_div_rem(d1, g, &d1_prime, NULL);
+        bn_div_rem(d2, g, &d2_prime, NULL);
+        lisp_val_t *t1 = bn_mul(n1, d2_prime);
+        lisp_val_t *t2 = bn_mul(n2, d1_prime);
+        lisp_val_t *num = bn_sub(t1, t2);
+        lisp_val_t *den = bn_mul(d1_prime, d2);
+        return make_ratio(num, den);
+    }
+}
+
+static lisp_val_t *ratio_mul(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *n1 = (a->type == LISP_RATIO) ? a->u.ratio.num : a;
+    lisp_val_t *d1 = (a->type == LISP_RATIO) ? a->u.ratio.den : make_int(1);
+    lisp_val_t *n2 = (b->type == LISP_RATIO) ? b->u.ratio.num : b;
+    lisp_val_t *d2 = (b->type == LISP_RATIO) ? b->u.ratio.den : make_int(1);
+
+    lisp_val_t *g1 = bn_gcd(n1, d2);
+    lisp_val_t *g2 = bn_gcd(n2, d1);
+
+    lisp_val_t *n1_p = n1, *d2_p = d2;
+    lisp_val_t *n2_p = n2, *d1_p = d1;
+    if (g1->type != LISP_INT || g1->u.i != 1) {
+        bn_div_rem(n1, g1, &n1_p, NULL);
+        bn_div_rem(d2, g1, &d2_p, NULL);
+    }
+    if (g2->type != LISP_INT || g2->u.i != 1) {
+        bn_div_rem(n2, g2, &n2_p, NULL);
+        bn_div_rem(d1, g2, &d1_p, NULL);
+    }
+
+    lisp_val_t *num = bn_mul(n1_p, n2_p);
+    lisp_val_t *den = bn_mul(d1_p, d2_p);
+    return make_ratio(num, den);
+}
+
+static lisp_val_t *ratio_div(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *n2 = (b->type == LISP_RATIO) ? b->u.ratio.num : b;
+    lisp_val_t *d2 = (b->type == LISP_RATIO) ? b->u.ratio.den : make_int(1);
+    if (num_is_zero(n2)) {
+        printk("[Lisp Error] Division by zero\n");
+        return &nil_val;
+    }
+    lisp_val_t *inv_b = make_ratio(d2, n2);
+    return ratio_mul(a, inv_b);
+}
+
+static int num_cmp(const lisp_val_t *a, const lisp_val_t *b) {
+    if (a->type == LISP_INT && b->type == LISP_INT) {
+        return a->u.i > b->u.i ? 1 : (a->u.i < b->u.i ? -1 : 0);
+    }
+    if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
+        lisp_val_t *n1 = (a->type == LISP_RATIO) ? a->u.ratio.num : (lisp_val_t *)a;
+        lisp_val_t *d1 = (a->type == LISP_RATIO) ? a->u.ratio.den : make_int(1);
+        lisp_val_t *n2 = (b->type == LISP_RATIO) ? b->u.ratio.num : (lisp_val_t *)b;
+        lisp_val_t *d2 = (b->type == LISP_RATIO) ? b->u.ratio.den : make_int(1);
+        lisp_val_t *cross1 = bn_mul(n1, d2);
+        lisp_val_t *cross2 = bn_mul(n2, d1);
+        return num_cmp(cross1, cross2);
+    }
+    int a_sign, b_sign, a_len, b_len;
+    const uint32_t *a_limbs, *b_limbs;
+    uint32_t a_temp[2], b_temp[2];
+    get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
+    get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
+    if (a_len == 0 && b_len == 0) return 0;
+    if (a_len == 0) return b_sign > 0 ? -1 : 1;
+    if (b_len == 0) return a_sign > 0 ? 1 : -1;
+    if (a_sign != b_sign) return a_sign > b_sign ? 1 : -1;
+    int cmp_abs = bn_cmp_abs(a_limbs, a_len, b_limbs, b_len);
+    return a_sign > 0 ? cmp_abs : -cmp_abs;
+}
+
+static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b) {
+    if (a->type == LISP_INT && b->type == LISP_INT) {
+        long res;
+        if (!__builtin_add_overflow(a->u.i, b->u.i, &res)) {
+            return make_int(res);
+        }
+    }
+    if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
+        return ratio_add(a, b);
+    }
+    return bn_add(a, b);
+}
+
+static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b) {
+    if (a->type == LISP_INT && b->type == LISP_INT) {
+        long res;
+        if (!__builtin_sub_overflow(a->u.i, b->u.i, &res)) {
+            return make_int(res);
+        }
+    }
+    if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
+        return ratio_sub(a, b);
+    }
+    return bn_sub(a, b);
+}
+
+static lisp_val_t *num_mul(lisp_val_t *a, lisp_val_t *b) {
+    if (a->type == LISP_INT && b->type == LISP_INT) {
+        long res;
+        if (!__builtin_mul_overflow(a->u.i, b->u.i, &res)) {
+            return make_int(res);
+        }
+    }
+    if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
+        return ratio_mul(a, b);
+    }
+    return bn_mul(a, b);
+}
+
+static lisp_val_t *num_div(lisp_val_t *a, lisp_val_t *b) {
+    if (num_is_zero(b)) {
+        return &nil_val;
+    }
+    if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
+        return ratio_div(a, b);
+    }
+    if (a->type == LISP_INT && b->type == LISP_INT) {
+        if (b->u.i == 0) return &nil_val;
+        if (a->u.i % b->u.i == 0) {
+            return make_int(a->u.i / b->u.i);
+        }
+    }
+    return make_ratio(a, b);
+}
+
+static void ratio_to_string(const lisp_val_t *v, char *out, size_t max_out) {
+    if (!v || v->type != LISP_RATIO) {
+        if (max_out > 0) out[0] = '\0';
+        return;
+    }
+    char *p = out;
+    char *end = out + max_out - 1;
+    if (v->u.ratio.num->type == LISP_BIGNUM) {
+        char num_buf[350];
+        bn_to_string(v->u.ratio.num, num_buf, sizeof(num_buf));
+        const char *s = num_buf;
+        while (*s && p < end) *p++ = *s++;
+    } else {
+        long n = v->u.ratio.num->u.i;
+        if (n < 0 && p < end) { *p++ = '-'; n = -n; }
+        format_uint_digits(&p, end, (uint32_t)n, 0);
+    }
+    if (p < end) *p++ = '/';
+    if (v->u.ratio.den->type == LISP_BIGNUM) {
+        char den_buf[350];
+        bn_to_string(v->u.ratio.den, den_buf, sizeof(den_buf));
+        const char *s = den_buf;
+        while (*s && p < end) *p++ = *s++;
+    } else {
+        long d = v->u.ratio.den->u.i;
+        format_uint_digits(&p, end, (uint32_t)d, 0);
+    }
+    *p = '\0';
+}
+
+static bool is_delimiter(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+           c == '(' || c == ')' || c == ';' || c == '"' || c == '\'' ||
+           c == '`' || c == ',';
+}
+
+static bool is_number_token(const char *str) {
+    if (!str || *str == '\0') return false;
+    const char *p = str;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+        if (is_delimiter(*p)) return false;
+        while (!is_delimiter(*p)) {
+            char c = *p;
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+            p++;
+        }
+        return true;
+    }
+
+    if (*p == '+' || *p == '-') {
+        p++;
+    }
+    if (is_delimiter(*p) || *p < '0' || *p > '9') return false;
+
+    while (*p >= '0' && *p <= '9') {
+        p++;
+    }
+    if (*p == '/') {
+        p++;
+        if (is_delimiter(*p) || *p < '0' || *p > '9') return false;
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+    }
+    return is_delimiter(*p);
+}
+
+static lisp_val_t *parse_number_token(const char **str) {
+    if ((**str == '0') && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
+        const char *hstart = *str + 2;
+        (*str) += 2;
+        uint32_t limbs[34];
+        memset(limbs, 0, sizeof(limbs));
+        int len = 0;
+        while ((**str >= '0' && **str <= '9') || (**str >= 'a' && **str <= 'f') || (**str >= 'A' && **str <= 'F')) {
+            char c = **str;
+            uint32_t digit = 0;
+            if (c >= '0' && c <= '9') digit = (uint32_t)(c - '0');
+            else if (c >= 'a' && c <= 'f') digit = (uint32_t)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') digit = (uint32_t)(c - 'A' + 10);
+
+            uint64_t carry = digit;
+            for (int i = 0; i < len; i++) {
+                uint64_t cur = ((uint64_t)limbs[i] << 4) | carry;
+                limbs[i] = (uint32_t)cur;
+                carry = cur >> 32;
+            }
+            if (carry) limbs[len++] = (uint32_t)carry;
+            if (len == 0 && digit > 0) limbs[len++] = digit;
+            (*str)++;
+        }
+        if (*str == hstart) return NULL;
+        len = bn_normalize(limbs, len);
+        if (len == 0) return make_int(0);
+        int cap = 8;
+        uint32_t *nl = alloc_limbs(len, &cap);
+        if (!nl) return &nil_val;
+        memcpy(nl, limbs, len * sizeof(uint32_t));
+        return bn_demote_if_possible(1, len, cap, nl);
+    }
+
+    int sign = 1;
+    if (**str == '-') {
+        sign = -1;
+        (*str)++;
+    } else if (**str == '+') {
+        (*str)++;
+    }
+
+    const char *start_num = *str;
+    while (**str >= '0' && **str <= '9') (*str)++;
+    int num_len = (int)(*str - start_num);
+    if (num_len == 0) return NULL;
+
+    lisp_val_t *numerator = NULL;
+    if (num_len <= 9) {
+        long v = 0;
+        for (int i = 0; i < num_len; i++) v = v * 10 + (start_num[i] - '0');
+        numerator = make_int(sign * v);
+    } else {
+        numerator = bn_from_string(start_num, num_len, sign);
+    }
+
+    if (**str == '/' && (*str)[1] >= '0' && (*str)[1] <= '9') {
+        (*str)++; // skip '/'
+        const char *start_den = *str;
+        while (**str >= '0' && **str <= '9') (*str)++;
+        int den_len = (int)(*str - start_den);
+        if (den_len == 0) return NULL;
+        lisp_val_t *denominator = NULL;
+        if (den_len <= 9) {
+            long v = 0;
+            for (int i = 0; i < den_len; i++) v = v * 10 + (start_den[i] - '0');
+            denominator = make_int(v);
+        } else {
+            denominator = bn_from_string(start_den, den_len, 1);
+        }
+        return make_ratio(numerator, denominator);
+    }
+
+    return numerator;
 }
 
 static bool lisp_values_equal(lisp_val_t *a, lisp_val_t *b) {
-    if (!a || !b || a->type != b->type) return false;
+    if (!a || !b) return false;
+    if (is_number_val(a) && is_number_val(b)) {
+        return num_cmp(a, b) == 0;
+    }
+    if (a->type != b->type) return false;
     switch (a->type) {
-        case LISP_INT:
-            return a->u.i == b->u.i;
         case LISP_STRING:
             return strcmp(a->u.str, b->u.str) == 0;
         case LISP_SYMBOL:
-            /* #t/#f are themselves LISP_SYMBOL ("#t"/"#f"), so this also
-             * makes (= #t #t) behave sensibly rather than always false. */
             return streq(a->u.sym, b->u.sym);
         default:
             return false;
@@ -1190,12 +2179,14 @@ static bool lisp_equal_p(lisp_val_t *a, lisp_val_t *b) {
         b = b->u.pair.cdr;
     }
     if (a == b) return true;
-    if (!a || !b || a->type != b->type) return false;
+    if (!a || !b) return false;
+    if (is_number_val(a) && is_number_val(b)) {
+        return num_cmp(a, b) == 0;
+    }
+    if (a->type != b->type) return false;
     switch (a->type) {
         case LISP_NIL:
             return true;
-        case LISP_INT:
-            return a->u.i == b->u.i;
         case LISP_STRING:
             return strcmp(a->u.str, b->u.str) == 0;
         case LISP_SYMBOL:
@@ -1225,155 +2216,199 @@ static lisp_val_t *prim_eq_p(lisp_val_t *args, lisp_val_t *env) {
     return &false_val;
 }
 
-/* S4 (plan/phase13_lisp_engine_extensions.md): generalized from strictly
- * 2-arg to N-ary (all args equal to the first, which for equality is the
- * same thing as all-equal-to-each-other) -- everything else about it,
- * including cross-type behavior, is unchanged. */
 static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     lisp_val_t *first = args->u.pair.car;
     lisp_val_t *c = args->u.pair.cdr;
-    if (!c || c->type != LISP_PAIR) return &false_val; /* requires at least 2 args */
+    if (!c || c->type != LISP_PAIR) return &false_val;
     for (; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
         if (!lisp_values_equal(first, c->u.pair.car)) return &false_val;
     }
     return &true_val;
 }
 
-/* S4: chained numeric comparison shared by </>/<=/>=, matching the
- * standard Scheme reading of e.g. (< 1 2 3) as "1<2 AND 2<3", not just
- * "first < last". Requires at least 2 int args, same as prim_eq requiring
- * at least 2 -- a single or missing argument returns #f rather than
- * vacuously #t, for consistency with the existing `=` behavior this
- * generalizes rather than chasing full R7RS single-argument semantics. */
-static lisp_val_t *prim_chain_compare(lisp_val_t *args, bool (*cmp)(long, long)) {
+static lisp_val_t *prim_chain_compare(lisp_val_t *args, int (*op)(int cmp)) {
     if (!args || args->type != LISP_PAIR) return &false_val;
     lisp_val_t *prev = args->u.pair.car;
-    if (!prev || prev->type != LISP_INT) return &false_val;
+    if (!is_number_val(prev)) return &false_val;
     lisp_val_t *c = args->u.pair.cdr;
-    if (!c || c->type != LISP_PAIR) return &false_val; /* requires at least 2 args */
-    long prev_val = prev->u.i;
+    if (!c || c->type != LISP_PAIR) return &false_val;
     for (; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
         lisp_val_t *cur = c->u.pair.car;
-        if (!cur || cur->type != LISP_INT) return &false_val;
-        if (!cmp(prev_val, cur->u.i)) return &false_val;
-        prev_val = cur->u.i;
+        if (!is_number_val(cur)) return &false_val;
+        int cmp = num_cmp(prev, cur);
+        if (!op(cmp)) return &false_val;
+        prev = cur;
     }
     return &true_val;
 }
 
+static int cmp_op_lt(int cmp) { return cmp < 0; }
+static int cmp_op_gt(int cmp) { return cmp > 0; }
+static int cmp_op_le(int cmp) { return cmp <= 0; }
+static int cmp_op_ge(int cmp) { return cmp >= 0; }
 
-static bool cmp_lt(long a, long b) { return a < b; }
-static bool cmp_gt(long a, long b) { return a > b; }
-static bool cmp_le(long a, long b) { return a <= b; }
-static bool cmp_ge(long a, long b) { return a >= b; }
+static lisp_val_t *prim_lt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_op_lt); }
+static lisp_val_t *prim_gt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_op_gt); }
+static lisp_val_t *prim_le(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_op_le); }
+static lisp_val_t *prim_ge(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_op_ge); }
 
-static lisp_val_t *prim_lt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_lt); }
-static lisp_val_t *prim_gt(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_gt); }
-static lisp_val_t *prim_le(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_le); }
-static lisp_val_t *prim_ge(lisp_val_t *args, lisp_val_t *env) { (void)env; return prim_chain_compare(args, cmp_ge); }
-
-/* (/= a b c ...) -- R7RS semantics are "every pair is different", not just
- * adjacent chaining like </>/<=/>=, since a<b<c doesn't imply a!=c the way
- * it implies a<c, but it DOES already imply a!=b and b!=c specifically --
- * "not equal" has no transitive shortcut the ordering relations get for
- * free. O(n^2) is fine: argument counts here are always small. */
 static lisp_val_t *prim_ne(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     int n = lisp_list_len(args);
     if (n < 2) return &false_val;
     for (int i = 0; i < n; i++) {
         lisp_val_t *a = lisp_list_ref(args, i);
-        if (!a || a->type != LISP_INT) return &false_val;
+        if (!is_number_val(a)) return &false_val;
         for (int j = i + 1; j < n; j++) {
             lisp_val_t *b = lisp_list_ref(args, j);
-            if (!b || b->type != LISP_INT || a->u.i == b->u.i) return &false_val;
+            if (!is_number_val(b) || num_cmp(a, b) == 0) return &false_val;
         }
     }
     return &true_val;
 }
 
-/* (/ a b c ...) -- chained integer division, matching prim_sub's shape.
- * Guards division by zero explicitly: this build runs with
- * -fsanitize=undefined -fno-sanitize-recover=all, so an actual C division
- * by zero here would be a fatal UBSan trap on QEMU and an unrecoverable
- * fault on RP2350, not a catchable error -- degrading to nil (the same
- * signal used elsewhere for malformed input, e.g. B1's arity fixes) is the
- * only acceptable outcome. */
+static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *sum = make_int(0);
+    int guard = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        if (is_number_val(c->u.pair.car)) {
+            sum = num_add(sum, c->u.pair.car);
+        }
+    }
+    return sum;
+}
+
+static lisp_val_t *prim_sub(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(0);
+    lisp_val_t *first = args->u.pair.car;
+    if (!is_number_val(first)) return make_int(0);
+    lisp_val_t *c = args->u.pair.cdr;
+    if (!c || c->type != LISP_PAIR) {
+        return num_neg(first);
+    }
+    lisp_val_t *res = first;
+    int guard = 0;
+    for (; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        if (is_number_val(c->u.pair.car)) {
+            res = num_sub(res, c->u.pair.car);
+        }
+    }
+    return res;
+}
+
+static lisp_val_t *prim_mul(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *prod = make_int(1);
+    int guard = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
+         c = c->u.pair.cdr, guard++) {
+        if (is_number_val(c->u.pair.car)) {
+            prod = num_mul(prod, c->u.pair.car);
+        }
+    }
+    return prod;
+}
+
 static lisp_val_t *prim_div(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
-    long res = arg_int(args, 0, 0);
+    lisp_val_t *first = args->u.pair.car;
+    if (!is_number_val(first)) return make_int(0);
+    lisp_val_t *c = args->u.pair.cdr;
+    if (!c || c->type != LISP_PAIR) {
+        return num_div(make_int(1), first);
+    }
+    lisp_val_t *res = first;
     int guard = 0;
-    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
-         c = c->u.pair.cdr, guard++) {
-        if (c->u.pair.car->type == LISP_INT) {
-            long divisor = c->u.pair.car->u.i;
-            if (divisor == 0) return &nil_val;
-            res /= divisor;
+    for (; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        if (is_number_val(c->u.pair.car)) {
+            res = num_div(res, c->u.pair.car);
+            if (res == &nil_val) return &nil_val;
         }
     }
-    return make_int(res);
+    return res;
 }
 
 static lisp_val_t *prim_quotient(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    long b = arg_int(args, 1, 0);
-    if (b == 0) return &nil_val;
-    return make_int(arg_int(args, 0, 0) / b);
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (num_is_zero(b)) return &nil_val;
+    lisp_val_t *q = NULL;
+    bn_div_rem(a, b, &q, NULL);
+    return q ? q : &nil_val;
 }
 
 static lisp_val_t *prim_remainder(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    long b = arg_int(args, 1, 0);
-    if (b == 0) return &nil_val;
-    return make_int(arg_int(args, 0, 0) % b);
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (num_is_zero(b)) return &nil_val;
+    lisp_val_t *r = NULL;
+    bn_div_rem(a, b, NULL, &r);
+    return r ? r : &nil_val;
 }
 
-/* modulo differs from remainder when signs differ: the result takes the
- * divisor's sign (R7RS), not the dividend's. */
 static lisp_val_t *prim_modulo(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    long a = arg_int(args, 0, 0);
-    long b = arg_int(args, 1, 0);
-    if (b == 0) return &nil_val;
-    long r = a % b;
-    if (r != 0 && ((r < 0) != (b < 0))) r += b;
-    return make_int(r);
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (num_is_zero(b)) return &nil_val;
+    lisp_val_t *r = NULL;
+    bn_div_rem(a, b, NULL, &r);
+    if (!r) return &nil_val;
+    if (!num_is_zero(r) && (num_is_negative(r) != num_is_negative(b))) {
+        r = num_add(r, b);
+    }
+    return r;
 }
 
 static lisp_val_t *prim_abs(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    long a = arg_int(args, 0, 0);
-    return make_int(a < 0 ? -a : a);
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!is_number_val(a)) return make_int(0);
+    return num_is_negative(a) ? num_neg(a) : a;
 }
 
 static lisp_val_t *prim_min(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
-    long best = arg_int(args, 0, 0);
+    lisp_val_t *best = args->u.pair.car;
+    if (!is_number_val(best)) return make_int(0);
     int guard = 0;
     for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
          c = c->u.pair.cdr, guard++) {
-        if (c->u.pair.car->type == LISP_INT && c->u.pair.car->u.i < best) best = c->u.pair.car->u.i;
+        if (is_number_val(c->u.pair.car) && num_cmp(c->u.pair.car, best) < 0) {
+            best = c->u.pair.car;
+        }
     }
-    return make_int(best);
+    return best;
 }
 
 static lisp_val_t *prim_max(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
-    long best = arg_int(args, 0, 0);
+    lisp_val_t *best = args->u.pair.car;
+    if (!is_number_val(best)) return make_int(0);
     int guard = 0;
     for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
          c = c->u.pair.cdr, guard++) {
-        if (c->u.pair.car->type == LISP_INT && c->u.pair.car->u.i > best) best = c->u.pair.car->u.i;
+        if (is_number_val(c->u.pair.car) && num_cmp(c->u.pair.car, best) > 0) {
+            best = c->u.pair.car;
+        }
     }
-    return make_int(best);
+    return best;
 }
 
-/* --- Predicates --- */
+/* --- Predicates & Numeric Introspection --- */
 
 static lisp_val_t *prim_null_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -1402,7 +2437,37 @@ static lisp_val_t *prim_string_p(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_integer_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
-    return (a && a->type == LISP_INT) ? &true_val : &false_val;
+    return (a && (a->type == LISP_INT || a->type == LISP_BIGNUM)) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_rational_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return is_number_val(a) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_exact_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return is_number_val(a) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_bignum_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_BIGNUM) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_ratio_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_RATIO) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_number_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return is_number_val(a) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_procedure_p(lisp_val_t *args, lisp_val_t *env) {
@@ -1414,7 +2479,59 @@ static lisp_val_t *prim_procedure_p(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_zero_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
-    return (a && a->type == LISP_INT && a->u.i == 0) ? &true_val : &false_val;
+    return (a && num_is_zero(a)) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_numerator(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a) return &nil_val;
+    if (a->type == LISP_RATIO) return a->u.ratio.num;
+    if (a->type == LISP_INT || a->type == LISP_BIGNUM) return a;
+    return &nil_val;
+}
+
+static lisp_val_t *prim_denominator(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a) return &nil_val;
+    if (a->type == LISP_RATIO) return a->u.ratio.den;
+    if (a->type == LISP_INT || a->type == LISP_BIGNUM) return make_int(1);
+    return &nil_val;
+}
+
+static lisp_val_t *prim_gcd(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(0);
+    lisp_val_t *res = args->u.pair.car;
+    if (!is_number_val(res)) return make_int(0);
+    if (num_is_negative(res)) res = num_neg(res);
+    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        if (is_number_val(c->u.pair.car)) {
+            res = bn_gcd(res, c->u.pair.car);
+        }
+    }
+    return res;
+}
+
+static lisp_val_t *prim_lcm(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return make_int(1);
+    lisp_val_t *res = args->u.pair.car;
+    if (!is_number_val(res)) return make_int(1);
+    if (num_is_negative(res)) res = num_neg(res);
+    for (lisp_val_t *c = args->u.pair.cdr; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *arg = c->u.pair.car;
+        if (is_number_val(arg)) {
+            if (num_is_zero(res) || num_is_zero(arg)) return make_int(0);
+            lisp_val_t *g = bn_gcd(res, arg);
+            lisp_val_t *q = NULL;
+            bn_div_rem(res, g, &q, NULL);
+            res = bn_mul(q, arg);
+            if (num_is_negative(res)) res = num_neg(res);
+        }
+    }
+    return res;
 }
 
 /* #t/#f are LISP_SYMBOL, same as every other symbol -- distinguished only
@@ -1793,39 +2910,43 @@ static lisp_val_t *prim_string_to_number(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *s = get_str_val(lisp_list_ref(args, 0));
     if (!s || !*s) return &false_val;
+    if (!is_number_token(s)) return &false_val;
     const char *p = s;
-    int sign = 1;
-    if (*p == '-') { sign = -1; p++; } else if (*p == '+') { p++; }
-    if (!*p) return &false_val;
-    long val = 0;
-    for (; *p; p++) {
-        if (*p < '0' || *p > '9') return &false_val;
-        val = val * 10 + (*p - '0');
-    }
-    return make_int(sign * val);
+    lisp_val_t *num = parse_number_token(&p);
+    if (!num || *p != '\0') return &false_val;
+    return num;
 }
 
-/* Converts via unsigned magnitude rather than negating the value directly,
- * so LONG_MIN (whose negation is undefined behavior -- this build runs
- * with UBSan trapping on it) converts correctly instead of crashing on the
- * one input where naive negation breaks. */
 static lisp_val_t *prim_number_to_string(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
-    if (!a || a->type != LISP_INT) return make_str("");
-    long v = a->u.i;
-    bool neg = v < 0;
-    unsigned long uv = neg ? (unsigned long)(-(v + 1)) + 1UL : (unsigned long)v;
-    char digits[24];
-    int i = 0;
-    if (uv == 0) digits[i++] = '0';
-    while (uv > 0) { digits[i++] = (char)('0' + (uv % 10)); uv /= 10; }
-    char buf[26];
-    int j = 0;
-    if (neg) buf[j++] = '-';
-    while (i > 0) buf[j++] = digits[--i];
-    buf[j] = '\0';
-    return make_str(buf);
+    if (!a) return make_str("");
+    if (a->type == LISP_INT) {
+        long v = a->u.i;
+        bool neg = v < 0;
+        unsigned long uv = neg ? (unsigned long)(-(v + 1)) + 1UL : (unsigned long)v;
+        char digits[24];
+        int i = 0;
+        if (uv == 0) digits[i++] = '0';
+        while (uv > 0) { digits[i++] = (char)('0' + (uv % 10)); uv /= 10; }
+        char buf[26];
+        int j = 0;
+        if (neg) buf[j++] = '-';
+        while (i > 0) buf[j++] = digits[--i];
+        buf[j] = '\0';
+        return make_str(buf);
+    }
+    if (a->type == LISP_BIGNUM) {
+        char buf[350];
+        bn_to_string(a, buf, sizeof(buf));
+        return make_str(buf);
+    }
+    if (a->type == LISP_RATIO) {
+        char buf[700];
+        ratio_to_string(a, buf, sizeof(buf));
+        return make_str(buf);
+    }
+    return make_str("");
 }
 
 static lisp_val_t *prim_string_eq(lisp_val_t *args, lisp_val_t *env) {
@@ -4085,6 +5206,18 @@ void lisp_print(lisp_val_t *val) {
         case LISP_INT:
             cprintf("%ld", val->u.i);
             break;
+        case LISP_BIGNUM: {
+            char buf[350];
+            bn_to_string(val, buf, sizeof(buf));
+            cprintf("%s", buf);
+            break;
+        }
+        case LISP_RATIO: {
+            char buf[700];
+            ratio_to_string(val, buf, sizeof(buf));
+            cprintf("%s", buf);
+            break;
+        }
         case LISP_STRING:
             cprintf("\"%s\"", val->u.str);
             break;
@@ -4140,44 +5273,6 @@ static void skip_whitespace(const char **str) {
             break;
         }
     }
-}
-
-
-static bool is_delimiter(char c) {
-    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
-           c == '(' || c == ')' || c == ';' || c == '"' || c == '\'' ||
-           c == '`' || c == ',';
-}
-
-static bool is_number_token(const char *str) {
-    if (!str || *str == '\0') return false;
-    const char *p = str;
-
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-        if (is_delimiter(*p)) return false;
-        while (!is_delimiter(*p)) {
-            char c = *p;
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-                return false;
-            }
-            p++;
-        }
-        return true;
-    }
-
-    if (*p == '+' || *p == '-') {
-        p++;
-    }
-    if (is_delimiter(*p)) return false;
-
-    while (!is_delimiter(*p)) {
-        if (*p < '0' || *p > '9') {
-            return false;
-        }
-        p++;
-    }
-    return true;
 }
 
 lisp_val_t *lisp_read(const char **str) {
@@ -4298,33 +5393,8 @@ lisp_val_t *lisp_read(const char **str) {
             return &nil_val;
         }
 
-        if (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
-            (*str) += 2;
-            long val = 0;
-            while ((**str >= '0' && **str <= '9') || (**str >= 'a' && **str <= 'f') || (**str >= 'A' && **str <= 'F')) {
-                char c = **str;
-                val = val * 16;
-                if (c >= '0' && c <= '9') val += (c - '0');
-                else if (c >= 'a' && c <= 'f') val += (c - 'a' + 10);
-                else if (c >= 'A' && c <= 'F') val += (c - 'A' + 10);
-                (*str)++;
-            }
-            return make_int(val);
-        } else {
-            long val = 0;
-            int sign = 1;
-            if (**str == '-') {
-                sign = -1;
-                (*str)++;
-            } else if (**str == '+') {
-                (*str)++;
-            }
-            while (**str >= '0' && **str <= '9') {
-                val = val * 10 + (**str - '0');
-                (*str)++;
-            }
-            return make_int(sign * val);
-        }
+        lisp_val_t *res = parse_number_token(str);
+        return res ? res : &nil_val;
     }
 
     /* S4 (plan/phase13_lisp_engine_extensions.md): a leading sign
@@ -4338,14 +5408,19 @@ lisp_val_t *lisp_read(const char **str) {
      * (the subtraction/addition primitives themselves) and identifiers
      * like `->foo` still need to fall through to the symbol reader below. */
     if ((**str == '-' || **str == '+') && (*str)[1] >= '0' && (*str)[1] <= '9') {
-        int sign = (**str == '-') ? -1 : 1;
-        (*str)++;
-        long val = 0;
-        while (**str >= '0' && **str <= '9') {
-            val = val * 10 + (**str - '0');
-            (*str)++;
+        if (!is_number_token(*str)) {
+            char bad_tok[32];
+            int i = 0;
+            while (**str != '\0' && !is_delimiter(**str)) {
+                if (i < 31) bad_tok[i++] = **str;
+                (*str)++;
+            }
+            bad_tok[i] = '\0';
+            printk("[Lisp Syntax Error] Invalid number: '%s'\n", bad_tok);
+            return &nil_val;
         }
-        return make_int(sign * val);
+        lisp_val_t *res = parse_number_token(str);
+        return res ? res : &nil_val;
     }
 
     /* Symbols */
@@ -4571,7 +5646,8 @@ static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
 tail_call:
     if (!val) return &nil_val;
 
-    if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE || val->type == LISP_LAMBDA) {
+    if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE ||
+        val->type == LISP_LAMBDA || val->type == LISP_BIGNUM || val->type == LISP_RATIO) {
         return val;
     }
 

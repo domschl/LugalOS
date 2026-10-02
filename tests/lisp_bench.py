@@ -47,6 +47,16 @@ BENCHMARKS: list[tuple[str, str, str]] = [
         "Recursive fibonacci (fib 16) - 1,973 calls",
         "(begin (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (let ((t0 (time))) (let ((res (fib 16))) (- (time) t0))))",
     ),
+    (
+        "bignum_fact_50",
+        "50 iterations of factorial 50 (bignum mul)",
+        "(begin (define (fact n) (if (<= n 1) 1 (* n (fact (- n 1))))) (let ((t0 (time))) (let loop ((i 0)) (if (= i 50) (- (time) t0) (begin (fact 50) (loop (+ i 1)))))))",
+    ),
+    (
+        "rational_harmonic_100",
+        "Harmonic series sum 1/i to 100 (exact rationals)",
+        "(let ((t0 (time))) (let loop ((i 1) (acc 0)) (if (> i 100) (- (time) t0) (loop (+ i 1) (+ acc (/ 1 i))))))",
+    ),
 ]
 
 

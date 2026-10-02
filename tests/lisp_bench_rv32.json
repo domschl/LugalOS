@@ -1,50 +1,68 @@
 {
-  "timestamp": 1790964681.7223651,
+  "timestamp": 1790966176.625887,
   "arch": "rv32",
   "scores": {
     "loop_10k": {
       "name": "Named-let loop 10,000 iterations",
-      "min_ms": 34,
+      "min_ms": 46,
       "runs_ms": [
-        37,
-        34,
-        35
+        48,
+        46,
+        48
       ]
     },
     "special_forms_10k": {
       "name": "10k iterations of let* + begin + math",
-      "min_ms": 70,
+      "min_ms": 94,
       "runs_ms": [
-        71,
-        72,
-        70
+        94,
+        95,
+        94
       ]
     },
     "comparison_10k": {
       "name": "10k chained comparisons (< 1 2 3 4 5)",
-      "min_ms": 56,
+      "min_ms": 70,
       "runs_ms": [
-        60,
-        57,
-        56
+        71,
+        70,
+        70
       ]
     },
     "list_cons_1k": {
       "name": "1,000 cons allocations and traversal",
-      "min_ms": 6,
+      "min_ms": 8,
       "runs_ms": [
-        7,
-        6,
-        7
+        8,
+        8,
+        8
       ]
     },
     "fib_16": {
       "name": "Recursive fibonacci (fib 16) - 1,973 calls",
-      "min_ms": 13,
+      "min_ms": 16,
       "runs_ms": [
-        14,
-        13,
-        14
+        16,
+        16,
+        17
+      ]
+    },
+    "bignum_fact_50": {
+      "name": "50 iterations of factorial 50 (bignum mul)",
+      "min_ms": 18,
+      "runs_ms": [
+        19,
+        18,
+        19
+      ]
+    },
+    "rational_harmonic_100": {
+      "name": "Harmonic series sum 1/i to 100 (exact rationals)",
+      "min_ms": 8,
+      "runs_ms": [
+        10,
+        8,
+        9
       ]
     }
   }

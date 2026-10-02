@@ -12,7 +12,9 @@ typedef enum {
     LISP_SYMBOL,
     LISP_PAIR,
     LISP_PRIMITIVE,
-    LISP_LAMBDA
+    LISP_LAMBDA,
+    LISP_BIGNUM,
+    LISP_RATIO
 } lisp_type_t;
 
 struct lisp_val;
@@ -38,6 +40,16 @@ typedef struct lisp_val {
             struct lisp_val *car;
             struct lisp_val *cdr;
         } pair;
+        struct {
+            int16_t sign;       /* +1 or -1 */
+            uint16_t len;       /* number of limbs (1..32) */
+            uint16_t capacity;  /* 8 or 32 */
+            uint32_t *limbs;    /* limbs array in little-endian order */
+        } bignum;
+        struct {
+            struct lisp_val *num; /* LISP_INT or LISP_BIGNUM */
+            struct lisp_val *den; /* LISP_INT or LISP_BIGNUM (> 1) */
+        } ratio;
         lisp_prim_fn prim;
         struct {
             struct lisp_val *params;
