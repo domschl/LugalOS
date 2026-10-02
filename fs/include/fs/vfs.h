@@ -82,6 +82,7 @@ int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_cp(const char *src_path, const char *dst_path);
 int vfs_format(const char *path);
+void vfs_fat_recount(void);   /* `df -r`, 38.0 */
 void vfs_ls(const char *path);
 
 /* --- Mount table (A5, plan/phase5_distributed_design.md) ---

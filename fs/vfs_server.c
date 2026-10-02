@@ -48,6 +48,16 @@
 static fat32_fs_t g_fat32_sd;
 static fat32_fs_t g_fat32_ram;
 static fat32_fs_t g_fat32_flash;
+
+/* 38.0: /sd0's FAT-sector cache (fat32_set_fat_cache()). Only where there is
+ * a card to read: on a card every FAT lookup is a sector transfer, while
+ * /ram0 and /flash0 are memcpy and would gain nothing for the 512 bytes. */
+#if (defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD) || \
+    (defined(CONFIG_BOARD_ESP32P4) && CONFIG_ENABLE_SDMMC) || \
+    (!defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4))
+#define VFS_SD_FAT_CACHE 1
+static uint32_t g_sd_fat_cache[128];
+#endif
 static bool g_sd_mounted = false;
 static bool g_ram_mounted = false;
 static bool g_flash_mounted = false;
@@ -127,6 +137,8 @@ typedef struct {
     bool is_dir;
     fat32_fs_t *fs;              /* valid for MOUNT_FAT32 */
     fat32_dir_entry_t entry;     /* valid for MOUNT_FAT32, non-dir */
+    fat32_cursor_t cursor;       /* MOUNT_FAT32: where in the chain this handle last was (38.0) */
+    bool wrote;                  /* MOUNT_FAT32: sync FSInfo on close */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
     /* Generated /proc file content (PROC, non-dir), shared by every file
@@ -309,6 +321,12 @@ void vfs_server_init(void) {
 
     /* Mount embedded Flash ROM filesystem on /flash0/ */
     vfs_mount_flashdisk();
+
+#ifdef VFS_SD_FAT_CACHE
+    /* Before the mount: fat32_init() keeps the buffer and empties it, so the
+     * cache also survives (format "/sd0") remounting the same struct. */
+    fat32_set_fat_cache(&g_fat32_sd, g_sd_fat_cache);
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
     /* Try mounting physical MicroSD card via SPI1 (GP10-GP13) on RP2350 */
@@ -1725,7 +1743,7 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
 
     switch (h->kind) {
         case MOUNT_FAT32:
-            return fat32_read_at(h->fs, &h->entry, buf, count, offset);
+            return fat32_read_at(h->fs, &h->entry, buf, count, offset, &h->cursor);
         case MOUNT_PROC: {
             if (offset >= h->proc_len) return 0;
             uint32_t avail = h->proc_len - (uint32_t)offset;
@@ -1771,8 +1789,9 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 
     switch (h->kind) {
         case MOUNT_FAT32: {
-            int n = fat32_write_at(h->fs, h->rel_path, buf, count, offset);
+            int n = fat32_write_at(h->fs, h->rel_path, buf, count, offset, &h->cursor);
             if (n > 0) fat32_find_file(h->fs, h->rel_path, &h->entry); // refresh cached size
+            h->wrote = true;
             return n;
         }
         case MOUNT_DEV:
@@ -1905,6 +1924,9 @@ int vfs_close(int fd) {
     if (h->kind == MOUNT_REMOTE9P) {
         p9_remote_close(h->remote_mount, h->remote_fid);
     }
+    /* A written file's close is where FSInfo's free count goes back to disk
+     * (fat32_sync()): one sector, so `df` after a reboot need not rescan. */
+    if (h->kind == MOUNT_FAT32 && h->wrote) fat32_sync(h->fs);
     memset(h, 0, sizeof(*h));
     return 0;
 }
@@ -2041,6 +2063,29 @@ int vfs_append(const char *path, const void *buf, uint32_t len) {
  * deliberate fallback for the always-starts-blank RAM disk) a volume gets
  * formatted now. Remote mounts can't be formatted (nonsensical -- it isn't
  * this node's storage to reinitialize). */
+/* `df -r` (38.0): recount the writable FAT volumes' free space from the FAT
+ * itself and store it in FSInfo, saying what the stored count had been. */
+void vfs_fat_recount(void) {
+    struct { const char *name; fat32_fs_t *fs; bool mounted; } v[] = {
+        { "/sd0/",  &g_fat32_sd,  g_sd_mounted },
+        { "/ram0/", &g_fat32_ram, g_ram_mounted },
+    };
+    for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++) {
+        if (!v[i].mounted) continue;
+        uint64_t t0 = time_get_ms();
+        uint32_t before = fat32_recount(v[i].fs);
+        uint32_t after = v[i].fs->free_count;
+        if (before == FAT32_FREE_UNKNOWN) {
+            cprintf("%-7s %lu free clusters (none stored), %lu ms\n", v[i].name,
+                    (unsigned long)after, (unsigned long)(time_get_ms() - t0));
+        } else {
+            cprintf("%-7s %lu free clusters, stored count was %lu (%s), %lu ms\n", v[i].name,
+                    (unsigned long)after, (unsigned long)before, before == after ? "right" : "STALE",
+                    (unsigned long)(time_get_ms() - t0));
+        }
+    }
+}
+
 int vfs_format(const char *path) {
     if (!path) return -1;
     bool is_root;

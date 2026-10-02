@@ -1417,6 +1417,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect(cmd_df, r"Filesystem\s+512-blocks", timeout=4.0)
         results.append(("Filesystem Usage Metrics (df)", ok, log if not ok else ""))
 
+        # 38.0: the free count the allocator maintains (and FSInfo stores)
+        # must agree with a full recount of the FAT, after everything the
+        # suite has written and removed on /sd0 and /ram0 by this point.
+        ok, log = session.send_and_expect(
+            "df -r", r"/ram0/\s+\d+ free clusters.*?, \d+ ms", timeout=20.0)
+        if ok and "STALE" in log:
+            ok, log = False, f"a maintained free count disagreed with the recount:\n{log[-400:]}"
+        results.append(("FAT32 Free Count Matches A Full Recount (38.0 df -r)",
+                        ok, log if not ok else ""))
+
         cmd_top = "cat /proc/ps"
         ok, log = session.send_and_expect(cmd_top, r"PID\s+State\s+Name", timeout=4.0)
         results.append(("System Process & Memory Monitor (top)", ok, log if not ok else ""))

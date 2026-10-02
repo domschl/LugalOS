@@ -474,6 +474,7 @@ static void cmd_help(void) {
     cprintf("  ps              - Alias for 'cat /proc/ps'\n");
     cprintf("  meminfo         - Alias for 'cat /proc/meminfo'\n");
     cprintf("  df              - Alias for 'cat /proc/df'\n");
+    cprintf("  df -r           - Recount free space from the FAT (repairs a stale FSInfo)\n");
     cprintf("  top             - System process, memory & storage monitor\n");
     cprintf("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
     cprintf("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
@@ -3463,6 +3464,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
+        return;
+    } else if (strcmp(cmd_line, "df -r") == 0) {
+        /* 38.0: recount free space from the FAT, repairing a stale FSInfo. */
+        vfs_fat_recount();
         return;
     } else if (strncmp(cmd_line, "sdbench w", 9) == 0) {
         /* 36.2: before any board's `sdbench`, which would match first. */

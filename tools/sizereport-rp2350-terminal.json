@@ -24,7 +24,7 @@
     "fs/9p.c": 5837,
     "fs/p9_chan.c": 6152,
     "fs/p9_link.c": 12448,
-    "fs/vfs_server.c": 10775,
+    "fs/vfs_server.c": 11611,
     "kernel/balloc.c": 2055,
     "kernel/chan.c": 900,
     "kernel/clipboard.c": 8,
@@ -72,5 +72,5 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 61673
   },
-  "total": 186917
+  "total": 187753
 }

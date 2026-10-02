@@ -112,14 +112,68 @@ static uint32_t cluster_to_lba(fat32_fs_t *fs, uint32_t cluster) {
     return fs->data_start_sector + (cluster - 2) * fs->bpb.sec_per_clus;
 }
 
+/* FSInfo (FAT32 spec, "FAT32 FSInfo Sector Structure"): three signatures
+ * and two hints, the free cluster count and where to look for the next free
+ * cluster. Both are hints by the spec's own words, so a value that is out of
+ * range is treated as "unknown", never trusted. */
+#define FSINFO_LEAD_SIG   0x41615252u
+#define FSINFO_STRUC_SIG  0x61417272u
+#define FSINFO_TRAIL_SIG  0xAA550000u
+#define FSINFO_W_LEAD     0
+#define FSINFO_W_STRUC    (484 / 4)
+#define FSINFO_W_FREE     (488 / 4)
+#define FSINFO_W_NXT      (492 / 4)
+#define FSINFO_W_TRAIL    (508 / 4)
+
+static void fsinfo_write(fat32_fs_t *fs, uint32_t free_count) {
+    if (!fs->fsinfo_lba || !fs->dev->write_blocks) return;
+    fat32_sector_t sec;
+    if (fs->dev->read_blocks(fs->dev, sec.raw, fs->fsinfo_lba, 1) != 0) return;
+    if (sec.words[FSINFO_W_LEAD] != FSINFO_LEAD_SIG || sec.words[FSINFO_W_STRUC] != FSINFO_STRUC_SIG) return;
+    sec.words[FSINFO_W_FREE] = free_count;
+    sec.words[FSINFO_W_NXT] = fs->next_free;
+    fs->dev->write_blocks(fs->dev, sec.raw, fs->fsinfo_lba, 1);
+}
+
+/* Called before every FAT change. The first change after mount (or after a
+ * sync) withdraws the on-disk count, one sector write, so that FSInfo is
+ * never left claiming a number the FAT no longer matches. */
+static void fat_will_change(fat32_fs_t *fs) {
+    fs->modified = true;
+    if (fs->fsinfo_valid) {
+        fsinfo_write(fs, FAT32_FREE_UNKNOWN);
+        fs->fsinfo_valid = false;
+    }
+}
+
+/* The FAT sector holding `cluster`'s entry, through the cache when the
+ * volume has one. Returns NULL on a read error (with the cache emptied, so
+ * a failed read is never served as data later). `tmp` is the caller's
+ * buffer for the uncached case. */
+static const uint32_t *fat_sector_words(fat32_fs_t *fs, uint32_t fat_sector, fat32_sector_t *tmp) {
+    if (fs->fat_cache) {
+        if (fs->fat_cache_lba != fat_sector) {
+            fs->fat_cache_lba = 0;
+            if (fs->dev->read_blocks(fs->dev, fs->fat_cache, fat_sector, 1) != 0) return NULL;
+            fs->fat_cache_lba = fat_sector;
+        }
+        return fs->fat_cache;
+    }
+    if (fs->dev->read_blocks(fs->dev, tmp->raw, fat_sector, 1) != 0) return NULL;
+    return tmp->words;
+}
+
 /* Read a 32-bit FAT entry for the given cluster */
 static uint32_t fat_get_entry(fat32_fs_t *fs, uint32_t cluster) {
     if (!fs || !fs->dev || !fs->dev->read_blocks) return 0x0FFFFFFF;
     uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
     uint32_t fat_offset = (cluster * 4) % 512;
-    fat32_sector_t fat_sec;
-    fs->dev->read_blocks(fs->dev, fat_sec.raw, fat_sector, 1);
-    return fat_sec.words[fat_offset / 4] & 0x0FFFFFFF;
+    fat32_sector_t tmp;
+    const uint32_t *w = fat_sector_words(fs, fat_sector, &tmp);
+    /* An unreadable FAT sector ends the chain: the old code returned
+     * whatever the stack buffer held, which could be followed anywhere. */
+    if (!w) return 0x0FFFFFFF;
+    return w[fat_offset / 4] & 0x0FFFFFFF;
 }
 
 /* Write a 32-bit FAT entry for the given cluster (both FAT1 and FAT2) */
@@ -127,9 +181,14 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
     if (!fs || !fs->dev || !fs->dev->write_blocks) return;
     uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
     uint32_t fat_offset = (cluster * 4) % 512;
+    fat_will_change(fs);
     fat32_sector_t fat_sec;
-    fs->dev->read_blocks(fs->dev, fat_sec.raw, fat_sector, 1);
-    fat_sec.words[fat_offset / 4] = value;
+    const uint32_t *w = fat_sector_words(fs, fat_sector, &fat_sec);
+    if (!w) return;
+    if (w != fat_sec.words) memcpy(fat_sec.words, w, 512);
+    /* The top four bits of an entry are reserved and must be preserved. */
+    fat_sec.words[fat_offset / 4] = (fat_sec.words[fat_offset / 4] & 0xF0000000u) | (value & 0x0FFFFFFFu);
+    if (fs->fat_cache) memcpy(fs->fat_cache, fat_sec.words, 512);   /* write-through */
     fs->dev->write_blocks(fs->dev, fat_sec.raw, fat_sector, 1); // FAT1
     if (fs->bpb.num_fats > 1) {
         /* The second FAT copy starts fat_sz32 sectors after the first, not
@@ -154,40 +213,47 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
  * self-referential chain looping forever. */
 static void fat32_free_chain(fat32_fs_t *fs, uint32_t first_cluster) {
     uint32_t clus = first_cluster;
-    while (clus >= 2 && clus < 0x0FFFFFF8) {
+    fs->gen++;   /* every cursor on this volume may now point into freed space */
+    while (clus >= 2 && clus < fs->total_clusters + 2) {
         uint32_t next = fat_get_entry(fs, clus);
+        if (next == 0) break;   /* already free: the rest is not ours to count */
         fat_set_entry(fs, clus, 0x00000000);
+        if (fs->free_count != FAT32_FREE_UNKNOWN) fs->free_count++;
+        if (clus < fs->next_free) fs->next_free = clus;
         if (next == clus) break;
         clus = next;
     }
 }
 
-/* Dynamically allocate a free cluster from the FAT table */
+/* Dynamically allocate a free cluster from the FAT table.
+ *
+ * Searches from the next_free hint and wraps, rather than from cluster 2
+ * every time: the old scan cost one FAT lookup per cluster already in use,
+ * per allocation, which on a well-used card made every appended cluster
+ * slower than the last. Clusters are numbered 2 .. total_clusters + 1, and
+ * the bound matters (B9 in plan/completed/2026-08-07_review_and_remediation.md):
+ * tot_sec32 counts sectors, not clusters, and scanning to it reached past
+ * the data region. */
 static uint32_t fat_alloc_cluster(fat32_fs_t *fs) {
-    if (!fs || fs->bpb.sec_per_clus == 0) return 0;
-    /* tot_sec32 is a *sector* count, not a cluster count -- clusters are
-     * numbered from 2 and only span the data region (total sectors minus
-     * the reserved+FAT area), which is always fewer than tot_sec32.
-     * Iterating cluster numbers up to tot_sec32 (the previous behavior)
-     * scanned past the real data region into the FAT2 copy (or beyond the
-     * device entirely), could return a "free" cluster number that actually
-     * pointed past the end of the volume, and fat_set_entry() would then
-     * write a chain-link into whatever unrelated storage that cluster
-     * number's FAT-entry offset landed on (see B9 in
-     * plan/completed/2026-08-07_review_and_remediation.md). */
-    uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
-    uint32_t fat_area_sec = fs->bpb.reserved_sec_cnt + (uint32_t)fs->bpb.num_fats * fs->bpb.fat_sz32;
-    if (total_sec <= fat_area_sec) return 0;
-    uint32_t data_sec = total_sec - fat_area_sec;
-    uint32_t total_clusters = data_sec / fs->bpb.sec_per_clus;
-    uint32_t max_cluster = total_clusters + 2; /* exclusive upper bound; clusters start at 2 */
-
-    for (uint32_t c = 2; c < max_cluster; c++) {
+    if (!fs || fs->total_clusters == 0) return 0;
+    /* A free count of 0 is not trusted to refuse: it may come from an FSInfo
+     * another writer let go stale (every card LugalOS wrote before 38.0), and
+     * a stale-low count would report a volume full that is not. The scan
+     * below is what decides; on a really full volume it costs one FAT pass. */
+    uint32_t end = fs->total_clusters + 2;   /* exclusive */
+    uint32_t start = (fs->next_free >= 2 && fs->next_free < end) ? fs->next_free : 2;
+    uint32_t c = start;
+    do {
         if (fat_get_entry(fs, c) == 0x00000000) {
             fat_set_entry(fs, c, 0x0FFFFFFF);
+            if (fs->free_count == 0) fs->free_count = FAT32_FREE_UNKNOWN;   /* it was wrong */
+            else if (fs->free_count != FAT32_FREE_UNKNOWN) fs->free_count--;
+            fs->next_free = (c + 1 < end) ? c + 1 : 2;
             return c;
         }
-    }
+        if (++c >= end) c = 2;
+    } while (c != start);
+    fs->free_count = 0;
     return 0;
 }
 
@@ -403,6 +469,44 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
     fs->root_dir_cluster = fs->bpb.root_clus;
     fs->bytes_per_cluster = fs->bpb.sec_per_clus * fs->bpb.bytes_per_sec;
 
+    /* 38.0: the allocator's bookkeeping. A remount (format, then init again
+     * on the same struct) must not keep anything from the old volume, but it
+     * keeps the cache buffer itself -- that belongs to the mount, not to the
+     * volume -- and the lock, which nobody can hold during a mount. */
+    uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
+    uint32_t fat_area_sec = fs->bpb.reserved_sec_cnt + (uint32_t)fs->bpb.num_fats * fs->bpb.fat_sz32;
+    fs->total_clusters = (fs->bpb.sec_per_clus && total_sec > fat_area_sec)
+                       ? (total_sec - fat_area_sec) / fs->bpb.sec_per_clus : 0;
+    /* A FAT holds fat_sz32 * 128 entries, two of them reserved. A volume
+     * that claims more clusters than its FAT can describe is damaged; never
+     * let the allocator index past the FAT on its say-so. */
+    uint32_t fat_entries = fs->bpb.fat_sz32 * 128u;
+    if (fat_entries >= 2 && fs->total_clusters > fat_entries - 2) fs->total_clusters = fat_entries - 2;
+    fs->free_count = FAT32_FREE_UNKNOWN;
+    fs->next_free = 2;
+    fs->fsinfo_lba = 0;
+    fs->fsinfo_valid = false;
+    fs->modified = false;
+    fs->gen++;
+    fs->fat_cache_lba = 0;
+    if (fs->bpb.fs_info >= 1 && fs->bpb.fs_info < fs->bpb.reserved_sec_cnt) {
+        fat32_sector_t info;
+        uint32_t lba = partition_lba + fs->bpb.fs_info;
+        if (dev->read_blocks(dev, info.raw, lba, 1) == 0 &&
+            info.words[FSINFO_W_LEAD] == FSINFO_LEAD_SIG &&
+            info.words[FSINFO_W_STRUC] == FSINFO_STRUC_SIG &&
+            info.words[FSINFO_W_TRAIL] == FSINFO_TRAIL_SIG) {
+            fs->fsinfo_lba = lba;
+            uint32_t fc = info.words[FSINFO_W_FREE];
+            uint32_t nf = info.words[FSINFO_W_NXT];
+            if (fc <= fs->total_clusters) {
+                fs->free_count = fc;
+                fs->fsinfo_valid = true;
+            }
+            if (nf >= 2 && nf < fs->total_clusters + 2) fs->next_free = nf;
+        }
+    }
+
     if (!quiet) {
         printk("[FAT32] Device '%s': Volume Mounted. Label: '%.11s', Data LBA: %u\n",
                dev->name ? dev->name : "unknown", fs->bpb.vol_lab, (unsigned int)fs->data_start_sector);
@@ -435,7 +539,7 @@ static bool find_file_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry) {
+static int fat32_find_file_nolock(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks) return -1;
     while (*path == '/') path++;
     if (*path == '\0') {
@@ -460,16 +564,64 @@ int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_ent
     return ctx.found ? 0 : -1;
 }
 
+int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_find_file_nolock(fs, path, out_entry);
+    ylock_release(&fs->lock);
+    return r;
+}
+
+/* The cluster holding cluster-index `target` of the chain starting at
+ * `first`, starting from `cur` when it is still valid and not past the
+ * target, else from the first cluster. With `extend`, a chain that ends
+ * early is grown with zeroed clusters (a write past EOF zero-fills the gap);
+ * without, an early end returns 0. Updates `cur` to the result. */
+static uint32_t chain_seek(fat32_fs_t *fs, uint32_t first, uint32_t target,
+                           fat32_cursor_t *cur, bool extend) {
+    uint32_t cluster = first, index = 0;
+    if (cur && cur->first == first && cur->gen == fs->gen &&
+        cur->cluster >= 2 && cur->index <= target) {
+        cluster = cur->cluster;
+        index = cur->index;
+    }
+    while (index < target) {
+        uint32_t next = fat_get_entry(fs, cluster);
+        if (next >= 0x0FFFFFF8) {
+            if (!extend) return 0;
+            uint32_t new_clus = fat_alloc_cluster(fs);
+            if (new_clus == 0) return 0;
+            fat_set_entry(fs, cluster, new_clus);
+            uint8_t zero_sec[512];
+            memset(zero_sec, 0, 512);
+            for (uint32_t s = 0; s < fs->bpb.sec_per_clus; s++) {
+                fs->dev->write_blocks(fs->dev, zero_sec, cluster_to_lba(fs, new_clus) + s, 1);
+            }
+            next = new_clus;
+        }
+        if (next < 2) return 0;   /* a free or reserved entry inside a chain: damaged */
+        cluster = next;
+        index++;
+    }
+    if (cur) {
+        cur->first = first;
+        cur->gen = fs->gen;
+        cur->index = index;
+        cur->cluster = cluster;
+    }
+    return cluster;
+}
+
 /* Reads `count` bytes starting at byte `offset` within the file described
- * by `entry`. Walks the cluster chain from the start on every call (no
- * per-handle position cache yet -- O(offset), acceptable for now; see A1 in
- * plan/phase5_distributed_design.md for the caching follow-up once this is
- * actually a hot path). Unlike fat32_read_file(), does not NUL-terminate:
- * this is the byte-exact primitive underlying fs/vfs_server.c's
- * vfs_pread(), which has its own notion of "how many bytes did I get",
- * not "give me a C string". Returns the number of bytes actually read
- * (0 at or past EOF), or -1 on a bad argument. */
-int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset) {
+ * by `entry`. With a cursor, continues from where the handle last was in the
+ * chain (38.0); without one, walks from the first cluster, which is O(offset).
+ * Unlike fat32_read_file(), does not NUL-terminate: this is the byte-exact
+ * primitive underlying fs/vfs_server.c's vfs_pread(), which has its own
+ * notion of "how many bytes did I get", not "give me a C string". Returns
+ * the number of bytes actually read (0 at or past EOF), or -1 on a bad
+ * argument. */
+int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset,
+                  fat32_cursor_t *cur) {
     if (!fs || !entry || !buf || !fs->dev || !fs->dev->read_blocks) return -1;
     uint64_t file_size = entry->file_size;
     if (offset >= file_size || count == 0) return 0;
@@ -477,43 +629,53 @@ int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t 
     uint64_t remaining_in_file = file_size - offset;
     uint32_t to_read = (remaining_in_file < count) ? (uint32_t)remaining_in_file : count;
 
-    uint32_t cluster = ((uint32_t)entry->fst_clus_hi << 16) | entry->fst_clus_lo;
+    uint32_t first = ((uint32_t)entry->fst_clus_hi << 16) | entry->fst_clus_lo;
     uint32_t bpc = fs->bytes_per_cluster ? fs->bytes_per_cluster : 512;
+    if (first < 2) return 0;
+    /* Without a caller's cursor, still never re-walk within this call. */
+    fat32_cursor_t local = {0};
+    if (!cur) cur = &local;
 
-    /* Skip whole clusters up to `offset`. */
-    uint64_t skip = offset;
-    while (skip >= bpc && cluster < 0x0FFFFFF8) {
-        cluster = fat_get_entry(fs, cluster);
-        skip -= bpc;
+    ylock_acquire(&fs->lock);
+    uint32_t index = (uint32_t)(offset / bpc);
+    uint32_t cluster = chain_seek(fs, first, index, cur, false);
+    if (cluster == 0) {
+        ylock_release(&fs->lock);
+        return 0;
     }
-    if (cluster >= 0x0FFFFFF8) return 0;
 
-    uint32_t sector_in_cluster = (uint32_t)(skip / 512);
-    uint32_t offset_in_sector = (uint32_t)(skip % 512);
+    uint32_t skip = (uint32_t)(offset % bpc);
+    uint32_t sector_in_cluster = skip / 512;
+    uint32_t offset_in_sector = skip % 512;
     uint32_t sec_per_clus = fs->bpb.sec_per_clus ? fs->bpb.sec_per_clus : 1;
 
     uint8_t *dst = (uint8_t *)buf;
     uint32_t read_total = 0;
 
-    while (read_total < to_read && cluster < 0x0FFFFFF8) {
+    while (read_total < to_read) {
         while (sector_in_cluster < sec_per_clus && read_total < to_read) {
-            uint8_t sec[512];
             uint32_t lba = cluster_to_lba(fs, cluster) + sector_in_cluster;
-            fs->dev->read_blocks(fs->dev, sec, lba, 1);
-
             uint32_t chunk = 512 - offset_in_sector;
             if (chunk > to_read - read_total) chunk = to_read - read_total;
-            memcpy(dst + read_total, sec + offset_in_sector, chunk);
-
+            if (chunk == 512) {
+                /* A whole sector: straight into the caller's buffer. */
+                fs->dev->read_blocks(fs->dev, dst + read_total, lba, 1);
+            } else {
+                uint8_t sec[512];
+                fs->dev->read_blocks(fs->dev, sec, lba, 1);
+                memcpy(dst + read_total, sec + offset_in_sector, chunk);
+            }
             read_total += chunk;
             sector_in_cluster++;
             offset_in_sector = 0;
         }
         if (read_total < to_read) {
-            cluster = fat_get_entry(fs, cluster);
+            cluster = chain_seek(fs, first, ++index, cur, false);
+            if (cluster == 0) break;
             sector_in_cluster = 0;
         }
     }
+    ylock_release(&fs->lock);
     return (int)read_total;
 }
 
@@ -528,7 +690,7 @@ int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_
      * read was >= that size (see B7 in
      * plan/completed/2026-08-07_review_and_remediation.md). Clamping here makes the
      * function safe regardless of what any given caller passes. */
-    int n = fat32_read_at(fs, entry, buf, max_size - 1, 0);
+    int n = fat32_read_at(fs, entry, buf, max_size - 1, 0, NULL);
     if (n < 0) return -1;
     ((char *)buf)[n] = '\0';
     return n;
@@ -639,10 +801,10 @@ static int dir_claim_slot(fat32_fs_t *fs, uint32_t dir_clus, write_slot_ctx_t *c
 }
 
 /* Finds `path`'s directory entry via a fresh scan and patches its file_size
- * field in place. Shared by fat32_write_at() and fat32_append_file() (via
- * fat32_write_at()) -- both need to update file_size after extending a
- * file's content without touching its name, attributes, or first cluster. */
-static int fat32_update_file_size(fat32_fs_t *fs, const char *path, uint32_t new_size) {
+ * field in place -- and its first cluster, when `set_first` is non-zero (an
+ * empty file has none until its first write, 38.0). Shared by
+ * fat32_write_at() and fat32_append_file() (via fat32_write_at()). */
+static int fat32_update_entry(fat32_fs_t *fs, const char *path, uint32_t new_size, uint32_t set_first) {
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
     if (parent_clus == 0 || target_name[0] == '\0') return -1;
@@ -657,11 +819,15 @@ static int fat32_update_file_size(fat32_fs_t *fs, const char *path, uint32_t new
     fat32_sector_t sec;
     fs->dev->read_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1);
     sec.entries[ctx.free_slot].file_size = new_size;
+    if (set_first) {
+        sec.entries[ctx.free_slot].fst_clus_hi = (uint16_t)(set_first >> 16);
+        sec.entries[ctx.free_slot].fst_clus_lo = (uint16_t)(set_first & 0xFFFF);
+    }
     fs->dev->write_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1);
     return 0;
 }
 
-int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size) {
+static int fat32_write_file_nolock(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
@@ -693,22 +859,47 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
         if (old_clus) fat32_free_chain(fs, old_clus);
     }
 
-    uint32_t sectors_needed = (size + 511) / 512;
-    if (sectors_needed == 0) sectors_needed = 1;
+    /* One cluster per bytes_per_cluster, every sector of it written. Until
+     * 38.0 this allocated a cluster per 512 bytes and wrote only its first
+     * sector -- correct where a cluster *is* one sector (every volume this
+     * tree formats), and on a PC-formatted card (32 KB clusters) a file read
+     * back with bytes 512.. taken from the unwritten rest of the first
+     * cluster. The VFS never reached it with data (it creates empty, then
+     * writes through fat32_write_at()), which is why nothing noticed. */
+    uint32_t bpc = fs->bytes_per_cluster ? fs->bytes_per_cluster : 512;
+    uint32_t sec_per_clus = fs->bpb.sec_per_clus ? fs->bpb.sec_per_clus : 1;
+    /* An empty file has no cluster at all (first cluster 0), as the FAT
+     * spec has it; fsck.fat truncates anything else. fat32_write_at() gives
+     * it one on its first write. */
+    uint32_t clusters_needed = (size + bpc - 1) / bpc;
 
     uint32_t first_cluster = 0;
     uint32_t cur_clus = 0;
 
-    for (uint32_t s = 0; s < sectors_needed; s++) {
+    for (uint32_t c = 0; c < clusters_needed; c++) {
         uint32_t next_clus = fat_alloc_cluster(fs);
         if (next_clus == 0) {
             printk("[FAT32] Device '%s': volume full writing '%s' (%u of %u "
-                   "sectors placed)\n", fs->dev->name ? fs->dev->name : "unknown",
-                   path, (unsigned int)s, (unsigned int)sectors_needed);
+                   "clusters placed)\n", fs->dev->name ? fs->dev->name : "unknown",
+                   path, (unsigned int)c, (unsigned int)clusters_needed);
+            /* Not leaked: the clusters placed so far are freed again. An
+             * entry being overwritten already lost its old chain above, so
+             * it is left empty rather than pointing at freed clusters that
+             * the next allocation would cross-link. */
+            if (first_cluster) fat32_free_chain(fs, first_cluster);
+            if (ctx.name_matched) {
+                fat32_sector_t sector;
+                if (fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1) == 0) {
+                    sector.entries[ctx.free_slot].fst_clus_hi = 0;
+                    sector.entries[ctx.free_slot].fst_clus_lo = 0;
+                    sector.entries[ctx.free_slot].file_size = 0;
+                    fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+                }
+            }
             return -1;
         }
 
-        if (s == 0) {
+        if (c == 0) {
             first_cluster = next_clus;
         } else {
             fat_set_entry(fs, cur_clus, next_clus);
@@ -716,15 +907,21 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
         cur_clus = next_clus;
 
         uint32_t data_lba = cluster_to_lba(fs, cur_clus);
-        uint8_t data_sec[512];
-        memset(data_sec, 0, 512);
-        uint32_t offset = s * 512;
-        uint32_t chunk = (size > offset) ? (size - offset) : 0;
-        if (chunk > 512) chunk = 512;
-        if (buf && chunk > 0) memcpy(data_sec, (const uint8_t *)buf + offset, chunk);
-        fs->dev->write_blocks(fs->dev, data_sec, data_lba, 1);
+        for (uint32_t sct = 0; sct < sec_per_clus; sct++) {
+            uint32_t offset = c * bpc + sct * 512;
+            if (offset >= size && sct > 0) break;   /* past EOF: never read */
+            uint32_t chunk = (size > offset) ? (size - offset) : 0;
+            if (chunk > 512) chunk = 512;
+            if (buf && chunk == 512) {
+                fs->dev->write_blocks(fs->dev, (const uint8_t *)buf + offset, data_lba + sct, 1);
+                continue;
+            }
+            uint8_t data_sec[512];
+            memset(data_sec, 0, 512);
+            if (buf && chunk > 0) memcpy(data_sec, (const uint8_t *)buf + offset, chunk);
+            fs->dev->write_blocks(fs->dev, data_sec, data_lba + sct, 1);
+        }
     }
-    fat_set_entry(fs, cur_clus, 0x0FFFFFFF);
 
     fat32_sector_t sector;
     fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
@@ -736,6 +933,14 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
     entries[ctx.free_slot].file_size = size;
     fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
     return 0;
+}
+
+int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_write_file_nolock(fs, path, buf, size);
+    ylock_release(&fs->lock);
+    return r;
 }
 
 /* Writes `count` bytes at byte `offset` within an existing file: walks (or
@@ -751,46 +956,55 @@ int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t
  * file that doesn't exist yet, or has never had a cluster allocated, isn't
  * supported (there's no chain to extend without an offset==0 starting
  * point). Returns bytes written, or -1. */
-int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset) {
+int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset,
+                   fat32_cursor_t *cur) {
     if (!fs || !path || !buf || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     if (count == 0) return 0;
+    fat32_cursor_t local = {0};
+    if (!cur) cur = &local;
 
+    ylock_acquire(&fs->lock);
     fat32_dir_entry_t entry;
-    uint32_t first_cluster = 0;
-    if (fat32_find_file(fs, path, &entry) == 0) {
-        first_cluster = ((uint32_t)entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+    if (fat32_find_file(fs, path, &entry) != 0) {
+        int r = -1;
+        if (offset == 0) r = (fat32_write_file(fs, path, buf, count) == 0) ? (int)count : -1;
+        ylock_release(&fs->lock);
+        return r;
     }
-    if (first_cluster == 0) {
-        if (offset != 0) return -1;
-        return (fat32_write_file(fs, path, buf, count) == 0) ? (int)count : -1;
-    }
-
+    uint32_t first_cluster = ((uint32_t)entry.fst_clus_hi << 16) | entry.fst_clus_lo;
     uint32_t bpc = fs->bytes_per_cluster ? fs->bytes_per_cluster : 512;
-    uint32_t sec_per_clus = fs->bpb.sec_per_clus ? fs->bpb.sec_per_clus : 1;
-
-    /* Walk to the cluster containing `offset`, allocating (zeroed) new
-     * clusters if offset falls beyond the current chain. */
-    uint32_t cluster = first_cluster;
-    uint64_t pos = 0; /* byte offset of the start of `cluster` within the file */
-    while (pos + bpc <= offset) {
-        uint32_t next = fat_get_entry(fs, cluster);
-        if (next >= 0x0FFFFFF8) {
-            uint32_t new_clus = fat_alloc_cluster(fs);
-            if (new_clus == 0) return -1;
-            fat_set_entry(fs, cluster, new_clus);
-            fat_set_entry(fs, new_clus, 0x0FFFFFFF);
+    bool new_first = false;
+    if (first_cluster == 0) {
+        /* An empty file's first write gives it its first cluster. Zeroed
+         * only when the write starts past it, since then part of it is a
+         * gap that reads back as zeros. */
+        first_cluster = fat_alloc_cluster(fs);
+        if (first_cluster == 0) {
+            ylock_release(&fs->lock);
+            return -1;
+        }
+        if (offset > 0) {
             uint8_t zero_sec[512];
             memset(zero_sec, 0, 512);
-            for (uint32_t s = 0; s < sec_per_clus; s++) {
-                fs->dev->write_blocks(fs->dev, zero_sec, cluster_to_lba(fs, new_clus) + s, 1);
+            for (uint32_t z = 0; z < fs->bpb.sec_per_clus; z++) {
+                fs->dev->write_blocks(fs->dev, zero_sec, cluster_to_lba(fs, first_cluster) + z, 1);
             }
-            next = new_clus;
         }
-        cluster = next;
-        pos += bpc;
+        new_first = true;
     }
 
-    uint32_t offset_in_cluster = (uint32_t)(offset - pos);
+    /* Walk (or extend, zero-filled) to the cluster containing `offset`. */
+    uint32_t index = (uint32_t)(offset / bpc);
+    uint32_t cluster = chain_seek(fs, first_cluster, index, cur, true);
+    if (cluster == 0) {
+        /* Out of space on the way to `offset`. A first cluster given to an
+         * empty file just now is recorded anyway, so nothing leaks. */
+        if (new_first) fat32_update_entry(fs, path, entry.file_size, first_cluster);
+        ylock_release(&fs->lock);
+        return -1;
+    }
+
+    uint32_t offset_in_cluster = (uint32_t)(offset % bpc);
     const uint8_t *src = (const uint8_t *)buf;
     uint32_t written = 0;
 
@@ -800,43 +1014,59 @@ int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t c
             uint32_t offset_in_sector = offset_in_cluster % 512;
             uint32_t lba = cluster_to_lba(fs, cluster) + sector_in_cluster;
 
-            uint8_t sec[512];
-            fs->dev->read_blocks(fs->dev, sec, lba, 1);
             uint32_t space = 512 - offset_in_sector;
             uint32_t chunk = (count - written) < space ? (count - written) : space;
-            memcpy(sec + offset_in_sector, src + written, chunk);
-            fs->dev->write_blocks(fs->dev, sec, lba, 1);
+            if (chunk == 512) {
+                /* A whole sector replaces what was there: no read needed. */
+                fs->dev->write_blocks(fs->dev, src + written, lba, 1);
+            } else {
+                uint8_t sec[512];
+                fs->dev->read_blocks(fs->dev, sec, lba, 1);
+                memcpy(sec + offset_in_sector, src + written, chunk);
+                fs->dev->write_blocks(fs->dev, sec, lba, 1);
+            }
 
             written += chunk;
             offset_in_cluster += chunk;
         }
         if (written < count) {
+            /* Extending here does not zero the new cluster first: every byte
+             * up to the new EOF is about to be written, and what lies past
+             * EOF is never read. */
             uint32_t next = fat_get_entry(fs, cluster);
             if (next >= 0x0FFFFFF8) {
                 uint32_t new_clus = fat_alloc_cluster(fs);
                 if (new_clus == 0) break; /* out of space; keep whatever was written */
                 fat_set_entry(fs, cluster, new_clus);
-                fat_set_entry(fs, new_clus, 0x0FFFFFFF);
                 next = new_clus;
+            } else if (next < 2) {
+                break;   /* damaged chain */
             }
             cluster = next;
+            index++;
+            cur->first = first_cluster;
+            cur->gen = fs->gen;
+            cur->index = index;
+            cur->cluster = cluster;
             offset_in_cluster = 0;
         }
     }
 
     uint64_t new_size = offset + written;
-    if (new_size > entry.file_size) {
-        fat32_update_file_size(fs, path, (uint32_t)new_size);
+    if (new_size > entry.file_size || new_first) {
+        fat32_update_entry(fs, path, (uint32_t)(new_size > entry.file_size ? new_size : entry.file_size),
+                           new_first ? first_cluster : 0);
     }
+    ylock_release(&fs->lock);
     return (int)written;
 }
 
 /* Frees an existing file's cluster chain and resets it to empty (size 0,
  * no first cluster) without deleting its directory entry -- the FAT32-level
  * primitive behind VFS_O_TRUNC. Reuses fat32_write_file()'s own "free the
- * old chain, then allocate a chain sized to `size`" path (which, given
- * size == 0, still allocates exactly one empty cluster -- fat32_write_at()
- * relies on that to have somewhere to start extending from). */
+ * old chain, then allocate a chain sized to `size`" path; for size 0 that
+ * is no chain at all since 38.0, and fat32_write_at() allocates the first
+ * cluster on the first write. */
 int fat32_truncate(fat32_fs_t *fs, const char *path) {
     return fat32_write_file(fs, path, NULL, 0);
 }
@@ -852,16 +1082,21 @@ int fat32_truncate(fat32_fs_t *fs, const char *path) {
 int fat32_append_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t len) {
     if (!fs || !path || !buf || len == 0) return 0;
 
+    ylock_acquire(&fs->lock);
+    int r;
     fat32_dir_entry_t entry;
     if (fat32_find_file(fs, path, &entry) < 0) {
-        return (fat32_write_file(fs, path, buf, len) == 0) ? (int)len : -1;
+        r = (fat32_write_file(fs, path, buf, len) == 0) ? (int)len : -1;
+    } else {
+        r = fat32_write_at(fs, path, buf, len, entry.file_size, NULL);
     }
-    return fat32_write_at(fs, path, buf, len, entry.file_size);
+    ylock_release(&fs->lock);
+    return r;
 }
 
 /* --- fat32_mkdir: free-slot search (read-only match, reuses write_slot_cb) --- */
 
-int fat32_mkdir(fat32_fs_t *fs, const char *path) {
+static int fat32_mkdir_nolock(fat32_fs_t *fs, const char *path) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char new_dir_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, new_dir_name);
@@ -917,6 +1152,14 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path) {
     return 0;
 }
 
+int fat32_mkdir(fat32_fs_t *fs, const char *path) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_mkdir_nolock(fs, path);
+    ylock_release(&fs->lock);
+    return r;
+}
+
 /* --- fat32_remove_file --- */
 
 typedef struct {
@@ -942,7 +1185,7 @@ static bool remove_file_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-int fat32_remove_file(fat32_fs_t *fs, const char *path) {
+static int fat32_remove_file_nolock(fat32_fs_t *fs, const char *path) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
@@ -954,6 +1197,14 @@ int fat32_remove_file(fat32_fs_t *fs, const char *path) {
     remove_ctx_t ctx = { .name83 = name83, .removed = false };
     fat32_scan_dir(fs, parent_clus, remove_file_cb, &ctx);
     return ctx.removed ? 0 : -1;
+}
+
+int fat32_remove_file(fat32_fs_t *fs, const char *path) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_remove_file_nolock(fs, path);
+    ylock_release(&fs->lock);
+    return r;
 }
 
 /* --- fat32_rmdir: empty-check scan --- */
@@ -979,7 +1230,7 @@ static bool dir_empty_check_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-int fat32_rmdir(fat32_fs_t *fs, const char *path) {
+static int fat32_rmdir_nolock(fat32_fs_t *fs, const char *path) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     fat32_dir_entry_t entry;
     if (fat32_find_file(fs, path, &entry) < 0) return -1;
@@ -1010,32 +1261,84 @@ int fat32_rmdir(fat32_fs_t *fs, const char *path) {
     return fat32_remove_file(fs, path);
 }
 
+int fat32_rmdir(fat32_fs_t *fs, const char *path) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_rmdir_nolock(fs, path);
+    ylock_release(&fs->lock);
+    return r;
+}
+
 int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks) {
     if (!fs || !fs->dev) return -1;
+    ylock_acquire(&fs->lock);
     uint32_t total_sec = fs->bpb.tot_sec32 ? fs->bpb.tot_sec32 : fs->bpb.tot_sec16;
     /* In 512-byte blocks, not bytes: a byte count overflows 32 bits past
      * 4 GiB, and a 128 GB card read as 3.3 GB in `df` (2026-09-30). */
     uint32_t blocks_per_sec = fs->bpb.bytes_per_sec / 512u;
     if (total_blocks) *total_blocks = total_sec * blocks_per_sec;
 
-    uint32_t free_clusters = 0;
-    uint32_t total_clusters = (total_sec > fs->data_start_sector) ?
-        ((total_sec - fs->data_start_sector) / fs->bpb.sec_per_clus) : 0;
-    uint32_t fat_sec = fs->fat_start_sector;
-    uint32_t fat_buf[128];
-
-    uint32_t checked = 0;
-    while (checked < total_clusters && (fat_sec < fs->data_start_sector)) {
-        if (fs->dev->read_blocks(fs->dev, fat_buf, fat_sec, 1) != 0) break;
-        for (int i = 0; i < 128 && checked < total_clusters; i++, checked++) {
-            uint32_t val = fat_buf[i] & 0x0FFFFFFF;
-            if (val == 0) free_clusters++;
+    /* The full scan is now the fallback, run at most once per mount: a
+     * 128 GB card's FAT is ~15 MB, and reading all of it over SPI is what
+     * made `df` take 42 s (plan/open_issues.md, 2026-09-30). It also used to
+     * count from entry 0 -- the two reserved entries -- and so missed the
+     * volume's last two clusters. */
+    if (fs->free_count == FAT32_FREE_UNKNOWN) {
+        uint32_t free_clusters = 0;
+        uint32_t end = fs->total_clusters + 2;   /* entries 2 .. end-1 */
+        uint32_t fat_buf[128];
+        bool ok = true;
+        for (uint32_t first = 0; first < end; first += 128) {
+            if (fs->dev->read_blocks(fs->dev, fat_buf, fs->fat_start_sector + first / 128, 1) != 0) {
+                ok = false;
+                break;
+            }
+            for (uint32_t i = 0; i < 128 && first + i < end; i++) {
+                if (first + i >= 2 && (fat_buf[i] & 0x0FFFFFFF) == 0) free_clusters++;
+            }
         }
-        fat_sec++;
+        if (ok) fs->free_count = free_clusters;
     }
-
+    uint32_t free_clusters = (fs->free_count == FAT32_FREE_UNKNOWN) ? 0 : fs->free_count;
     if (free_blocks) *free_blocks = free_clusters * (fs->bytes_per_cluster / 512u);
+    fat32_sync(fs);
+    ylock_release(&fs->lock);
     return 0;
+}
+
+uint32_t fat32_recount(fat32_fs_t *fs) {
+    if (!fs || !fs->dev) return FAT32_FREE_UNKNOWN;
+    ylock_acquire(&fs->lock);
+    uint32_t before = fs->free_count;
+    fs->free_count = FAT32_FREE_UNKNOWN;
+    /* Counted as a change, so fat32_statfs()'s sync writes the result: the
+     * point of a recount is usually an FSInfo that someone else let go stale
+     * (any FAT writer that did not maintain it -- LugalOS before 38.0). */
+    fs->modified = true;
+    fs->fsinfo_valid = false;
+    fat32_statfs(fs, NULL, NULL);
+    ylock_release(&fs->lock);
+    return before;
+}
+
+void fat32_sync(fat32_fs_t *fs) {
+    if (!fs || !fs->dev) return;
+    ylock_acquire(&fs->lock);
+    /* Only a volume this mount has changed: /flash0 is read-only, and a
+     * count we merely computed is no reason to write to anyone's card. */
+    if (fs->modified && !fs->fsinfo_valid && fs->free_count != FAT32_FREE_UNKNOWN && fs->fsinfo_lba) {
+        fsinfo_write(fs, fs->free_count);
+        fs->fsinfo_valid = true;
+    }
+    ylock_release(&fs->lock);
+}
+
+void fat32_set_fat_cache(fat32_fs_t *fs, uint32_t *buf128) {
+    if (!fs) return;
+    ylock_acquire(&fs->lock);
+    fs->fat_cache = buf128;
+    fs->fat_cache_lba = 0;
+    ylock_release(&fs->lock);
 }
 
 
@@ -1065,7 +1368,7 @@ static bool list_dir_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-void fat32_list_dir(fat32_fs_t *fs, const char *path) {
+static void fat32_list_dir_nolock(fat32_fs_t *fs, const char *path) {
     if (!fs || !fs->dev || !fs->dev->read_blocks) return;
 
     uint32_t target_clus = fs->root_dir_cluster;
@@ -1094,6 +1397,13 @@ void fat32_list_dir(fat32_fs_t *fs, const char *path) {
         cprintf("(empty directory)\n");
     }
     cprintf("\n");
+}
+
+void fat32_list_dir(fat32_fs_t *fs, const char *path) {
+    if (!fs) return;
+    ylock_acquire(&fs->lock);
+    fat32_list_dir_nolock(fs, path);
+    ylock_release(&fs->lock);
 }
 
 /* --- fat32_readdir --- */
@@ -1130,7 +1440,7 @@ static bool readdir_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
+static int fat32_readdir_nolock(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
                    char *name_out, uint32_t name_max, fat32_dir_entry_t *out_entry) {
     if (!fs) return -1;
     readdir_ctx_t ctx = {
@@ -1140,4 +1450,13 @@ int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
     };
     fat32_scan_dir(fs, dir_cluster, readdir_cb, &ctx);
     return ctx.found ? 0 : -1;
+}
+
+int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
+                   char *name_out, uint32_t name_max, fat32_dir_entry_t *out_entry) {
+    if (!fs) return -1;
+    ylock_acquire(&fs->lock);
+    int r = fat32_readdir_nolock(fs, dir_cluster, index, name_out, name_max, out_entry);
+    ylock_release(&fs->lock);
+    return r;
 }

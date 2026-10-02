@@ -16,14 +16,6 @@ phase doc and the commit carry the history.
 ---
 
 
-## Idea: the FAT in PSRAM (owner, 2026-10-01)
-
-A 4 GB card made the board noticeably faster than a larger one: FAT32 walks
-the allocation table on the card for every cluster chain (see "FAT32 file
-access is quadratic in file length" below). With PSRAM, caching the FAT (or
-the part in use) would make large cards as fast as small ones -- for the
-PSRAM phase.
-
 ## Where the 2026-09-14/15 stability campaign is written up
 
 Phase 28 (ESP32-P4 Ethernet) paused after Z3 to clear the intermittents rather
@@ -531,40 +523,6 @@ word copies meanwhile.
 for the head/tail and the rest, both directions for memmove, and QEMU tests
 over a grid of (src offset, dst offset, length, overlap) against a byte-wise
 reference.
-
----
-
-## FAT32 file access is quadratic in file length
-
-**Trigger:** `sdbench w 256` against `sdbench w 1024` on the RP2350-LCD-7
-(2026-09-30): write 41 then 25 KB/s, read back 181 then 71 KB/s. Four times
-the data takes 6.5 times as long to write and ten times as long to read.
-
-**What it is:** `fat32_pread()`/`pwrite()` find the cluster holding `offset`
-by walking the chain from the file's first cluster every call
-(`fs/fat32.c:483`, and the matching walk in the write path near line 771).
-Each step is `fat_get_entry()`, which reads the FAT sector from the device
-with no cache, one SD sector read per cluster before the offset, per call.
-
-**`df` has the same cost on a whole volume** (2026-09-30, RP2350-LCD-7):
-42 s for `/sd0` on a 128 GB card, the shell unresponsive meanwhile. The free
-count reads every FAT sector (~15 MB of FAT at 32 KB clusters) over SPI. The
-fix is FSInfo's free count (FAT32's own cache, sector `BPB_FSInfo`, validated
-by its signatures), kept current by the allocator and rewritten on unmount,
-with the full scan as the fallback when FSInfo says "unknown". (The same
-`df` also reported the card as 3.3 GB: a byte count overflowing 32 bits,
-fixed the same day -- fat32_statfs() now reports 512-byte blocks.)
-
-**Why it is parked:** at the file sizes this tree writes today (source files,
-init scripts, PGNs, the writer's documents) it costs milliseconds. The fix
-touches every FAT volume (`/flash0`, `/ram0`, `/sd0`) and the ESP32-P4's
-two-core build, so it should not ride in on a benchmark milestone.
-
-**Fix, when it is worth it:** a single cached FAT sector per mounted volume
-(128 entries: a whole chain walk usually stays inside one), updated
-write-through by `fat_set_entry()`. Better still, remember each open handle's
-last (offset, cluster) pair so sequential access never walks at all.
-`sdbench w` is the before/after instrument, and it is also a QEMU test.
 
 ---
 

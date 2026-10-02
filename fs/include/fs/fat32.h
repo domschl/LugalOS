@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "drivers/block.h"
+#include "kernel/lock.h"
 
 #define FAT32_ATTR_READ_ONLY 0x01
 #define FAT32_ATTR_HIDDEN    0x02
@@ -73,6 +74,9 @@ typedef struct {
 } fat32_dir_entry_t;
 #pragma pack(pop)
 
+/* free_count's "not counted yet", and FSInfo's own spelling of the same. */
+#define FAT32_FREE_UNKNOWN 0xFFFFFFFFu
+
 typedef struct {
     block_dev_t *dev;
     fat32_bpb_t bpb;
@@ -80,9 +84,59 @@ typedef struct {
     uint32_t data_start_sector;
     uint32_t root_dir_cluster;
     uint32_t bytes_per_cluster;
+
+    /* 38.0, plan/open_issues.md "FAT32 file access is quadratic". Every
+     * public call takes `lock`, so the cached state below is never seen
+     * half-updated -- before it existed each call read the FAT into its own
+     * stack buffer and there was nothing shared to tear. Re-entrant, because
+     * the public calls use each other (write_at -> find_file). */
+    ylock_t  lock;
+    uint32_t total_clusters;   /* data clusters, numbered 2 .. total_clusters + 1 */
+    uint32_t free_count;       /* FAT32_FREE_UNKNOWN until counted or read from FSInfo */
+    uint32_t next_free;        /* where the allocator starts looking */
+    uint32_t fsinfo_lba;       /* 0: the volume has no usable FSInfo sector */
+    bool     fsinfo_valid;     /* the on-disk FSInfo holds a count we stand behind */
+    bool     modified;         /* the FAT changed since mount; only then is FSInfo written */
+    uint32_t gen;              /* bumped whenever a chain is freed: stale cursors see it */
+    /* One FAT sector, write-through. Optional: NULL leaves the volume
+     * uncached, which is right for /ram0 and /flash0, where a "read" is a
+     * memcpy and 512 bytes of SRAM would buy nothing. fat_cache_lba 0 is
+     * "empty" (sector 0 is the boot sector, never a FAT sector). */
+    uint32_t *fat_cache;       /* 128 words */
+    uint32_t fat_cache_lba;
 } fat32_fs_t;
 
+/* Where a handle last was in its file's cluster chain, so sequential
+ * reads and writes continue from there instead of walking the chain from
+ * the first cluster on every call. Zero-initialised is "nowhere". Valid
+ * only while `first` and `gen` still match: a chain freed anywhere on the
+ * volume (truncate, rm) bumps fs->gen, and every cursor falls back to a
+ * walk from the start once rather than following a freed cluster. */
+typedef struct {
+    uint32_t first;            /* the file's first cluster; 0 = unset */
+    uint32_t gen;
+    uint32_t index;            /* cluster number within the file, from 0 */
+    uint32_t cluster;
+} fat32_cursor_t;
+
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev);
+
+/* Gives a mounted volume a FAT-sector cache (512 bytes, 4-byte aligned,
+ * owned by the caller for the volume's lifetime). Worth it on a real card,
+ * where every uncached FAT lookup is a sector read over SPI or SDMMC. */
+void fat32_set_fat_cache(fat32_fs_t *fs, uint32_t *buf128);
+
+/* Writes the in-memory free count back to the FSInfo sector, if the FAT
+ * changed since mount and the count is known. The first FAT change after a
+ * sync marks FSInfo "unknown" on disk, so a board that loses power between
+ * the two leaves a volume that recounts once, never one that lies. */
+void fat32_sync(fat32_fs_t *fs);
+
+/* Forgets the free count, counts the whole FAT, and writes the result to
+ * FSInfo (`df -r`). For a card whose FSInfo another writer let go stale --
+ * every card LugalOS wrote before 38.0, which never maintained it. Returns
+ * the count it replaced. Slow on a large card: it reads the entire FAT. */
+uint32_t fat32_recount(fat32_fs_t *fs);
 
 /* Same, without the "no valid volume" line on failure (Y5a,
  * plan/phase31_concurrency_hierarchy.md).
@@ -108,15 +162,20 @@ int fat32_rmdir(fat32_fs_t *fs, const char *path);
 int fat32_remove_file(fat32_fs_t *fs, const char *path);
 void fat32_list_dir(fat32_fs_t *fs, const char *path);
 /* Size and free space in 512-byte blocks (32 bits cover 2 TB; bytes would
- * not cover 4 GiB). The free count scans the whole FAT. */
+ * not cover 4 GiB). The free count comes from FSInfo or the allocator's own
+ * bookkeeping; only a volume whose FSInfo says "unknown" is scanned, once. */
 int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks);
 
 /* Offset-addressed read/write, underlying fs/vfs_server.c's handle-based
  * vfs_pread()/vfs_pwrite() (see A1 in plan/phase5_distributed_design.md).
  * fat32_read_file() and fat32_append_file() are now thin wrappers over
  * these two. */
-int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset);
-int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset);
+/* `cur` may be NULL (walk from the start, as before 38.0); a handle passes
+ * its own so sequential access never re-walks the chain. */
+int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset,
+                  fat32_cursor_t *cur);
+int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset,
+                   fat32_cursor_t *cur);
 
 /* Frees an existing file's cluster chain and resets it to empty (size 0,
  * no first cluster) without deleting its directory entry -- the FAT32-level
