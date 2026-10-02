@@ -2861,6 +2861,54 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok = ok and named_let_correct
         results.append(("Lisp Named let Loop With TCO (S5)", ok, log if not ok else ""))
 
+        # set!, and calling what is not a function (plan/open_issues.md,
+        # 2026-10-01). set! changes the innermost binding -- a global, and a
+        # let's variable a closure captured -- and refuses an unbound name;
+        # an unknown or non-function operator is an error, where it used to
+        # hand back the form unevaluated.
+        cmd_set = (
+            "(define k 0)\n"
+            "(while (< k 3) (set! k (+ k 1)))\n"
+            "(+ k 100)\n"
+            "(define (mk) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))\n"
+            "(define c (mk))\n"
+            "(c)\n"
+            "(+ (c) 200)\n"
+            "(set! nosuch 1)\n"
+            "(frob 1 2)\n"
+            "(5 1)"
+        )
+        ok, log = session.send_and_expect(cmd_set, r"Not a function: 5", timeout=8.0)
+        ok = (ok and "=> 103" in log and "=> 202" in log
+              and "set!: unbound variable nosuch" in log and "Unbound function: frob" in log)
+        results.append(("Lisp set! And Non-Function Operators", ok, log if not ok else ""))
+
+        # Ctrl-C stops a while loop whose condition never changes, promptly,
+        # and only that command: the next line evaluates. Inside lsh the
+        # evaluator's depth never returns to 0, and the latch used to stay
+        # set for good -- every later line answered nil.
+        ok, log = session.send_and_expect("(define w 0)\n(while (< w 1) (+ w 1))",
+                                          r"\(while", timeout=4.0, sentinel=False)
+        if ok:
+            time.sleep(0.5)
+            ok, log2 = session.send_and_expect("\x03", r"interrupted by Ctrl-C", timeout=4.0,
+                                               sentinel=False)
+            log += log2
+        if ok:
+            ok, log2 = session.send_and_expect("(+ 2 3)", r"=> 5", timeout=4.0)
+            log += log2
+        results.append(("Lisp Ctrl-C Stops while, Next Line Evaluates", ok, log if not ok else ""))
+
+        # A line longer than the line editor's buffer is refused with a
+        # message, not cut and run (the tail used to be read as nonsense).
+        long_line = "(+ 1 " + "1 " * 300 + ")"
+        ok, log = session.send_and_expect(long_line, r"Line too long: \d+ bytes did not fit in 511",
+                                          timeout=8.0)
+        if ok:
+            ok, log2 = session.send_and_expect("(+ 3 4)", r"=> 7", timeout=4.0)
+            log += log2
+        results.append(("Over-Long Line Refused With A Message", ok, log if not ok else ""))
+
 
         # 22. Discoverability: the (help) Lisp primitive lists bound globals
         # (D2/D3), and the POSIX-shell `help` command points to it.

@@ -16,26 +16,6 @@ phase doc and the commit carry the history.
 ---
 
 
-## Lisp has no `set!`, and an unknown operator returns its form (found 2026-10-01)
-
-`(set! n (+ n 1))` does nothing and evaluates to the list
-`(set! n (+ n 1))`: there is no `set!`, and a call whose operator is an
-unbound symbol hands back the form instead of failing. So a counting loop,
-`(while (< k 3) (set! k (+ k 1)))`, never ends -- and **Ctrl-C does not
-stop a `while`** (the board had to be reflashed to stop one, 37.5b's USB
-test). Found while measuring the DTR fault below; no program in the tree
-relies on `set!`. Fixing: add `set!` (update the innermost binding), make an
-unbound operator an error like an unbound variable, and check
-`console_interrupt_requested()` in `while`'s loop as the evaluator does
-elsewhere.
-
-## A line longer than 512 bytes is cut silently (found 2026-10-01)
-
-The line editor's `MAX_LINE_LEN` is 512; a longer pasted or sent line is
-truncated without a word, and Lisp then reads the tail as nonsense (the owner
-saw `()p4(m)` at the end of an 1100-byte test line on the panel). Fixing: a
-visible bell or message when input is dropped; longer programs belong in `e`.
-
 ## Idea: the FAT in PSRAM (owner, 2026-10-01)
 
 A 4 GB card made the board noticeably faster than a larger one: FAT32 walks

@@ -261,7 +261,7 @@ const char *console_bound_device(void);
  * anything by itself. A long-running foreground command polls
  * console_interrupt_requested() at a cheap, regular interval of its own
  * choosing (search.c's check_up_time() already does this every 2048
- * nodes; lisp_eval() does it every ~1024 calls) and unwinds cooperatively
+ * nodes; lisp_eval() every 50 ms of evaluation) and unwinds cooperatively
  * when it returns true.
  *
  * Non-blocking, byte-level: drains whatever is waiting on the bound input

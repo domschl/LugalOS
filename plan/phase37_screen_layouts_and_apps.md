@@ -895,6 +895,58 @@ the clipboard, screenshots, the writer and the editor; `hardware_seams.md`
 lists the screen as a device-class contract with its two implementations,
 `console_size()` included.
 
+### 37.7 — The Lisp open issues *(added 2026-10-02)*
+
+Three entries `plan/open_issues.md` gained during 37.5b, fixed before the
+next phase (the owner's call): no `set!`, Ctrl-C could not stop a `while`,
+and a line longer than the editor's buffer was cut silently.
+
+**Done, 2026-10-02.**
+
+* **`set!`** (`user/lisp/lisp.c`): a special form that changes the innermost
+  existing binding -- a global, a parameter, a `let`'s variable, and a
+  closure that captured it sees the change; an unbound name is an error
+  (`set!: unbound variable x`), so a typo cannot create a global. Its value
+  is the new value. `(help)` lists it.
+* **Calling what is not a function is an error.** An unknown operator says
+  `Unbound function: frob`, a value that is not callable `Not a function: 5`,
+  both before any argument is evaluated. Before, both handed back the form
+  unevaluated -- which is how `(set! k (+ k 1))` "worked" and the loop
+  around it never ended. No Lisp file in the tree relied on it.
+* **Ctrl-C reached a `while` only after ~2^20 evaluator calls**: some 15 s
+  of plain arithmetic on the RP2350, minutes when every iteration printed
+  to the panel. The poll is by time now -- the clock every 256 calls, the
+  console every 50 ms -- and `while` asks at the top of every iteration.
+  The old rarity was for a console that threw away what it drained; it
+  queues it since phase 36's pump.
+* **Found while reproducing it: one Ctrl-C in `lsh` made every later line
+  answer nil.** The latch was cleared only at evaluator depth 0, and inside
+  `lsh` -- which runs inside the boot script's `(shell)` form -- the depth
+  never gets back to 0. It is cleared at the collector's safe point, which
+  every shell, REPL and `e` evaluation passes between commands.
+* **An over-long line is refused, not cut** (`kernel/line_editor.c`): Enter
+  right after input that found no room prints `Line too long: N bytes did
+  not fit in 511 -- not entered` and enters nothing; any other key first
+  (the person has seen the line, perhaps fixed it) and Enter means it. Also
+  found: a key typed at the end of a full line was *echoed* though not
+  stored, so the screen showed a line the buffer did not hold.
+* **Found by the new refusal: the `lisp` REPL's line was 128 bytes.** The
+  runner's own `while` test sends a 133-byte line; it had been cut all
+  along and passed only because the reader forgives missing closing
+  parentheses. The REPL's line is the shell's 512 now, taken from scratch
+  (a heap page while the REPL is open) rather than from the shell's stack.
+* **Cost:** static RAM +1 byte on every RP2350 persona (the poll's
+  timestamp, with the call counter shrunk to a byte; the dropped count sits
+  in what was padding). The gateway's baseline was exactly at a page
+  boundary: the first cut, +12 bytes, cost it a 4 KB heap page.
+* **Tests:** runner tests for `set!` (a counting `while`, a closure
+  counter, the unbound-name error) and both operator errors; Ctrl-C
+  stopping a `while` with the next line evaluating; a 600-byte line refused
+  and the next one run. QEMU suite 411/412 (the one, the MQTT client test on RV32, is
+  the known one-shot-broker flake); `test_rp2350` 25/25 on the LCD-7. On
+  the board, Ctrl-C stops a busy `while` in 0.20 s and one that prints in
+  0.24 s.
+
 ---
 
 ## 8. Risks

@@ -64,7 +64,7 @@
     "user/chibicc/preprocess.c": 20,
     "user/chibicc/tokenize.c": 17,
     "user/ed/ed.c": 92,
-    "user/lisp/lisp.c": 41064
+    "user/lisp/lisp.c": 41065
   },
-  "total": 142166
+  "total": 142167
 }

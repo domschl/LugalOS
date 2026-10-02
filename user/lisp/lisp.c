@@ -166,8 +166,10 @@ static bool eval_depth_exceeded_warned = false;
  * exponential-blowup recursive definition well under the depth-100
  * ceiling can still run for a long time). See lisp_eval()'s own use of
  * these for the full mechanism. */
-static unsigned long eval_poll_count = 0;
+static uint8_t eval_poll_count = 0;      /* wraps: the clock every 256 calls */
 static bool lisp_interrupted = false;
+static uint32_t interrupt_poll_us;      /* when the console was last asked */
+static bool lisp_poll_interrupt(void);
 
 static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
@@ -783,6 +785,12 @@ static bool gc_headroom_low(void) {
  * failed, which is worth a collection whatever the headroom arithmetic
  * says. */
 void lisp_gc_safepoint(void) {
+    /* Between two commands is also where a Ctrl-C ends: it stops the
+     * command it was pressed during, not every one after it. lisp_eval()
+     * cannot decide that by itself at eval_depth 0, because inside lsh the
+     * depth never returns to 0 -- (shell) is the boot script's own form --
+     * and a Ctrl-C there used to turn every later line into nil. */
+    lisp_interrupted = false;
     if (node_pool_exhausted_warned || string_pool_exhausted_warned ||
         gc_headroom_low()) {
         gc_collect();
@@ -865,17 +873,24 @@ lisp_val_t *make_prim(lisp_prim_fn fn) {
 }
 
 /* Environment management */
-static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
+/* The innermost (name . value) pair for `sym`, or NULL. `set!` writes its
+ * cdr; env_get() reads it. */
+static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
     for (lisp_val_t *curr = env; curr && curr->type == LISP_PAIR; curr = curr->u.pair.cdr) {
         lisp_val_t *binding = curr->u.pair.car;
         if (binding && binding->type == LISP_PAIR) {
             lisp_val_t *k = binding->u.pair.car;
             if (k && k->type == LISP_SYMBOL && streq(k->u.sym, sym)) {
-                return binding->u.pair.cdr;
+                return binding;
             }
         }
     }
     return NULL;
+}
+
+static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
+    lisp_val_t *binding = env_binding(env, sym);
+    return binding ? binding->u.pair.cdr : NULL;
 }
 
 static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
@@ -3680,7 +3695,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
     cprintf("-------------------------------------------------\n");
     cprintf("%d bound symbols. Special forms (not primitives, so not listed\n"
            "above): define, lambda, quote / ', if, begin, let, named let\n"
-           "(let name ((v init)...) body...), let*, while, cond.\n\n", count);
+           "(let name ((v init)...) body...), let*, while, cond, set!.\n\n", count);
     return &nil_val;
 }
 
@@ -4505,18 +4520,20 @@ tail_call:
          * needs neither TCO nor a depth-guard bound to be safe, and is the
          * cheapest possible looping construct here. Each iteration's
          * condition/body evaluation still goes through the real, depth-
-         * guarded lisp_eval(), so an interrupt or node-pool exhaustion
-         * mid-loop is caught the same way it always is: that call returns
-         * nil, `is_true` treats nil as false (see the `if` special form
-         * above for the same truthiness rule), and the loop exits on its
-         * own next condition check -- no separate abort check needed here.
-         * Returns nil always, matching Scheme convention that `while` is
-         * for side effects, not a value. */
+         * guarded lisp_eval(). An interrupt or a pool exhaustion ends the
+         * loop at the top of the next iteration -- checked explicitly, and
+         * the console asked there too: a loop whose condition never
+         * changes, `(while (< k 3) (display k))`, was otherwise only as
+         * interruptible as lisp_eval()'s own throttled poll, and a body
+         * that prints spends so long per call that Ctrl-C took minutes on
+         * the board. Returns nil always, matching Scheme convention that
+         * `while` is for side effects, not a value. */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "while")) {
             if (args && args->type == LISP_PAIR) {
                 lisp_val_t *cond_expr = args->u.pair.car;
                 lisp_val_t *body = args->u.pair.cdr;
                 for (;;) {
+                    if (node_pool_exhausted_warned || lisp_interrupted || lisp_poll_interrupt()) break;
                     lisp_val_t *cond_val = lisp_eval(cond_expr, refresh_global_tail(env, env, was_global));
                     if (!lisp_truthy(cond_val)) break;
                     for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
@@ -4586,6 +4603,32 @@ tail_call:
             }
         }
 
+        /* Special form: set! -- (set! name expr) changes the innermost
+         * existing binding of `name`, the way Scheme's does: a let's
+         * variable, a parameter, or a global, and a closure that captured
+         * that binding sees the change. Not a definition: an unbound name is
+         * an error, so a typo cannot quietly create a global. A frozen
+         * closure's env may predate a later global `define`, hence the
+         * second look in global_env. The value is the new value. */
+        if (op->type == LISP_SYMBOL && streq(op->u.sym, "set!")) {
+            lisp_val_t *name = (args && args->type == LISP_PAIR) ? args->u.pair.car : NULL;
+            lisp_val_t *rest = name ? args->u.pair.cdr : NULL;
+            if (!name || name->type != LISP_SYMBOL || !rest || rest->type != LISP_PAIR) {
+                printk("[Lisp Error] set!: expected (set! name value)\n");
+                return &nil_val;
+            }
+            lisp_val_t *v = lisp_eval(rest->u.pair.car, refresh_global_tail(env, env, was_global));
+            if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+            lisp_val_t *binding = env_binding(refresh_global_tail(env, env, was_global), name->u.sym);
+            if (!binding) binding = env_binding(global_env, name->u.sym);
+            if (!binding) {
+                cprintf("set!: unbound variable %s\n", name->u.sym);
+                return &nil_val;
+            }
+            binding->u.pair.cdr = v;
+            return v;
+        }
+
         /* Special form: lambda -- (lambda (arg...) body-form...) */
         if (op->type == LISP_SYMBOL && streq(op->u.sym, "lambda")) {
             lisp_val_t *params = (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
@@ -4608,8 +4651,20 @@ tail_call:
         }
 
 
-        /* Evaluate Operator */
-        lisp_val_t *fn = lisp_eval(op, refresh_global_tail(env, env, was_global));
+        /* Evaluate Operator. A name is looked up here rather than through
+         * lisp_eval() so that an unknown one can say it was meant as a
+         * function. */
+        lisp_val_t *fn;
+        if (op->type == LISP_SYMBOL) {
+            fn = env_get(refresh_global_tail(env, env, was_global), op->u.sym);
+            if (!fn) fn = builtin_get(op->u.sym);
+            if (!fn) {
+                cprintf("Unbound function: %s\n", op->u.sym);
+                return &nil_val;
+            }
+        } else {
+            fn = lisp_eval(op, refresh_global_tail(env, env, was_global));
+        }
         if (!fn) return &nil_val;
         /* An abort (pool exhaustion, Ctrl-C, depth exceeded) discovered
          * during this lisp_eval() call surfaces here as fn == &nil_val,
@@ -4622,6 +4677,17 @@ tail_call:
          * importantly, breaks the documented contract that an aborted
          * evaluation degrades to nil (see lisp_eval()'s own comments). */
         if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+
+        /* Calling what is not a function is an error, before any argument
+         * is evaluated. It used to hand back the form itself, unevaluated:
+         * `(set! k (+ k 1))`, before set! existed, "worked" and changed
+         * nothing, and the while loop around it never ended. */
+        if (fn->type != LISP_PRIMITIVE && fn->type != LISP_LAMBDA) {
+            cprintf("Not a function: ");
+            lisp_print(fn);
+            cprintf("\n");
+            return &nil_val;
+        }
 
         /* Evaluate Arguments */
         lisp_val_t *eval_args_head = &nil_val;
@@ -4684,6 +4750,32 @@ tail_call:
     }
 
     return val;
+}
+
+/* Ctrl-C, asked at most every LISP_INTERRUPT_POLL_US of wall time.
+ *
+ * By time, not by count of calls: what one call costs ranges from a
+ * microsecond to however long the panel takes to scroll a printed line, so
+ * any count is either needlessly frequent in QEMU or far too rare on the
+ * board -- the old one, a poll every 2^20 calls, was some 15 s of plain
+ * arithmetic on the RP2350 and minutes for a loop that printed.
+ *
+ * It used to have to be rare: console_interrupt_requested() once threw away
+ * whatever input it drained, so a poll during a command destroyed the next
+ * one a script had already sent. It queues that input now (kernel/
+ * console.c, console_pump()), and asking costs a lock and a look at each
+ * input device. 50 ms is a delay nobody notices after pressing a key. */
+#define LISP_INTERRUPT_POLL_US 50000u
+
+static bool lisp_poll_interrupt(void) {
+    uint32_t now = (uint32_t)time_get_us();     /* wraps every 71 min: harmless */
+    if (now - interrupt_poll_us < LISP_INTERRUPT_POLL_US) return false;
+    interrupt_poll_us = now;
+    if (!console_interrupt_requested()) return false;
+    printk("[Lisp] interrupted by Ctrl-C\n");
+    lisp_interrupted = true;
+    console_interrupt_clear();
+    return true;
 }
 
 /* This interpreter recurses on the C stack with no other bound, and every
@@ -4750,21 +4842,9 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
          * before making any further nested lisp_eval() call. Clear any
          * interrupt left latched from a previous evaluation here, so
          * Ctrl-C aborts only the call it was pressed during, not every one
-         * after it.
-         *
-         * eval_poll_count resets here too -- found live, not assumed: left
-         * as a single ever-incrementing counter across the whole session,
-         * the 1024-call poll would eventually land mid-evaluation of some
-         * ordinary *fast* command purely by cumulative chance, draining
-         * whatever a caller had already queued up next on the same input
-         * stream (tests/runner.py pipelines several commands as one write,
-         * e.g. "(loop 0)\n(+ 5 5)\nexit" -- two existing regression tests
-         * broke exactly this way). Resetting per top-level call means only
-         * a single evaluation that itself performs >=1024 lisp_eval() calls
-         * -- LISP_MAX_EVAL_DEPTH=100 keeps any ordinary recursion far below
-         * that -- can ever trigger the drain, which is the actual intent:
-         * a wide-but-depth-bounded blowup, not routine use. */
-        lisp_interrupted = false;
+         * after it (lisp_gc_safepoint(), just called, cleared the latch;
+         * it is also what clears it between lsh's commands, where the depth
+         * never gets back to 0). */
         eval_poll_count = 0;
     }
     if (lisp_interrupted) {
@@ -4778,32 +4858,9 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
         }
         return &nil_val;
     }
-    /* Throttled the same way search.c's check_up_time() throttles its own
-     * poll (every 2048 nodes there) -- uart_has_char() inside
-     * console_interrupt_requested() isn't free enough to call on literally
-     * every recursive step. The interval matters more here than it does
-     * for search.c, though: console_interrupt_requested() drains and
-     * discards *everything* waiting on the input device, Ctrl-C or not
-     * (its own header comment in kernel/console.h says why), so any poll
-     * that fires while a caller has already queued up its next command on
-     * the same stream destroys that queued input. tests/runner.py does
-     * exactly this -- pipelines several commands in one write -- and an
-     * earlier, much lower threshold here (1024) broke two existing
-     * regression tests that way: found live, not a hypothetical, since a
-     * single depth-100-bounded recursive call turned out to cost more than
-     * 1024 total lisp_eval() invocations (every argument sub-expression is
-     * its own call too, not just the tail-recursive chain itself) well
-     * before LISP_MAX_EVAL_DEPTH ever cuts it off. ~1M calls in comparison
-     * gives generous headroom above what any single bounded-depth (<=100)
-     * recursive chain can produce, while still being a small fraction of a
-     * second of real time for the genuinely wide, long-running computation
-     * (many separate depth-bounded calls, e.g. over a large list) this
-     * exists for -- responsiveness to an actual runaway script is
-     * unaffected in any way a human would notice. */
-    if ((++eval_poll_count & 0xFFFFFUL) == 0 && console_interrupt_requested()) {
-        printk("[Lisp] interrupted by Ctrl-C\n");
-        lisp_interrupted = true;
-        console_interrupt_clear();
+    /* Every 256 calls, the clock; every LISP_INTERRUPT_POLL_US, the console
+     * (lisp_poll_interrupt()). */
+    if (++eval_poll_count == 0 && lisp_poll_interrupt()) {
         return &nil_val;
     }
     eval_depth++;
@@ -4819,12 +4876,20 @@ void lisp_repl(void) {
     cprintf("  Type 'exit' to return to lugal shell.            \n");
     cprintf("==================================================\n");
 
-    char buf[128];
+    /* The shell's line length (512), from scratch rather than this stack:
+     * it was 128 bytes here, and a longer line -- one of the runner's own
+     * tests -- was cut short and read without its closing parentheses. */
+    scratch_t sc = { 0 };
+    if (!scratch_acquire(&sc, 512)) {
+        cprintf("No memory for the REPL's line\n");
+        return;
+    }
+    char *buf = (char *)sc.base;
     while (1) {
         lisp_canvas_poll();     /* 37.3b: redraw a lost canvas before the prompt */
         /* 37.5a: the shared line editor, with the shell's history -- the
          * same keys, UTF-8, selection and clipboard as the shell itself. */
-        int idx = readline_ex("lisp> ", buf, (int)sizeof(buf), NULL);
+        int idx = readline_ex("lisp> ", buf, 512, NULL);
         if (idx < 0) continue;
 
         if (streq(buf, "exit")) break;
@@ -4854,6 +4919,7 @@ void lisp_repl(void) {
         lisp_print(result);
         cprintf("\n");
     }
+    scratch_release(&sc);
 }
 
 lisp_val_t *lisp_eval_string(const char *str) {

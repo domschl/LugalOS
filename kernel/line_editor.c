@@ -236,6 +236,8 @@ typedef struct {
     int  hist_nav_idx;
     int  mark;              /* the selection's other end, or -1 */
     bool mark_sticky;       /* set by Ctrl-Space: movement keeps it */
+    uint16_t dropped;       /* bytes that did not fit, since the last edit
+                             * (in what was padding: no growth) */
     char temp_saved_line[MAX_LINE_LEN];
 } line_state_t;
 
@@ -245,6 +247,7 @@ static void line_begin(line_state_t *st, const char *prompt, char *out_buf) {
     st->hist_nav_idx = history_count;
     st->mark = -1;
     st->mark_sticky = false;
+    st->dropped = 0;
     st->temp_saved_line[0] = '\0';
     out_buf[0] = '\0';
     redraw_line(prompt, out_buf, st->len, st->pos);
@@ -297,7 +300,8 @@ static bool sel_delete(line_state_t *st, char *buf) {
 
 /* Inserts `n` bytes at the cursor, as far as the line has room, dropping
  * controls (a paste may carry newlines and tabs; they become spaces). Never
- * stops inside a UTF-8 character. */
+ * stops inside a UTF-8 character. What finds no room is counted in
+ * `dropped`, for Enter to refuse the line (line_key()). */
 static void line_insert(line_state_t *st, char *buf, int max_len, const char *s, int n) {
     for (int i = 0; i < n;) {
         int k = 1;
@@ -313,7 +317,11 @@ static void line_insert(line_state_t *st, char *buf, int max_len, const char *s,
         } else {
             for (int j = 0; j < k; j++) one[j] = s[i + j];
         }
-        if (st->len + m >= max_len) break;
+        if (st->len + m >= max_len) {
+            int d = st->dropped + (n - i);
+            st->dropped = (uint16_t)(d > 0xffff ? 0xffff : d);
+            break;
+        }
         for (int j = st->len - 1; j >= st->pos; j--) buf[j + m] = buf[j];
         for (int j = 0; j < m; j++) buf[st->pos + j] = one[j];
         st->pos += m;
@@ -379,6 +387,14 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
     bool ctrl = (k.mods & KMOD_CTRL) != 0, super = (k.mods & KMOD_SUPER) != 0;
     int len = st->len, pos = st->pos;
     (void)len;
+
+    /* A line that lost input (a paste or a sent block longer than the
+     * buffer) is refused by the Enter that ends it -- see below -- unless
+     * some other key came first: then the person has seen the line as it
+     * is, perhaps fixed it, and Enter means it. */
+    bool input = (key == '\r' || key == '\n') ||
+                 (super ? key == 'v' : !alt && (key == 0x19 || (!ctrl && key >= 0x20 && key != 0x7f && key < 0x110000u)));
+    if (!input) st->dropped = 0;
 
     if (super) {
         if (key == 'c') { clip_copy(st, out_buf); st->mark = -1; }
@@ -475,6 +491,20 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
     }
     case '\r': case '\n':
         if (!o->no_newline) console_puts("\n");
+        if (st->dropped > 0) {
+            /* Silently cut, the tail of a program used to be read as
+             * whatever was left: Lisp saw `()p4(m)` at the end of an
+             * 1100-byte line. Nothing of it is entered, or kept in the
+             * history; the person learns why. */
+            cprintf("Line too long: %d bytes did not fit in %d -- not entered."
+                    " Longer programs belong in a file (e).\n", (int)st->dropped, max_len - 1);
+            st->dropped = 0;
+            st->len = 0;
+            st->pos = 0;
+            out_buf[0] = '\0';
+            console_interrupt_clear();
+            return 0;
+        }
         out_buf[st->len] = '\0';
         if (!o->no_history) add_history(out_buf);
         /* A Ctrl-C typed while composing this line cancelled nothing --
@@ -490,10 +520,13 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
             int n = utf8_encode(key, enc);
             bool sel = sel_delete(st, out_buf);
             bool at_end = st->pos == st->len;
+            int before = st->len;
             line_insert(st, out_buf, max_len, enc, n);
             if (at_end && !sel && st->mark < 0) {
-                /* The common case, typing at the end: echo, no redraw. */
-                for (int i = 0; i < n; i++) console_putc(enc[i]);
+                /* The common case, typing at the end: echo, no redraw --
+                 * and nothing for a key that found no room, or the screen
+                 * would show a line the buffer does not hold. */
+                if (st->len > before) for (int i = 0; i < n; i++) console_putc(enc[i]);
                 return LINE_INCOMPLETE;
             }
             break;

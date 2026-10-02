@@ -96,7 +96,7 @@ against a GPS-disciplined reference clock):
   backends, embedded flash ROM disk, RAM disk.
 - The embedded Scheme/Lisp interpreter, including `define`/`lambda` (self-recursion and the
   `(define (fn args...) body...)` signature form both work), `if`, `begin`, `let`/`let*`/named let,
-  `while`, `cond`, `quote`, tail-call optimization, a mark-sweep collector, a standard library of
+  `while`, `set!`, `cond`, `quote`, tail-call optimization, a mark-sweep collector, a standard library of
   list/string/predicate/comparison/integer-math primitives, and dozens of system/hardware
   primitives — run `(help)` for the current list.
 - The native C11 compiler (`chibicc`), producing real RISC-V ELF binaries, and the Thompson
@@ -267,7 +267,7 @@ against a GPS-disciplined reference clock):
 * **Native C11 Compiler (`chibicc`)**: Integrated C11 compiler (`cc <src.c> <dst.elf>`) generating native RISC-V ELF binaries directly on LugalOS!
 * **Unified Lisp Machine Shell (`lsh`)**:
   * **POSIX $\rightarrow$ S-Expression Transformation**: All standard POSIX shell inputs (`ls /sd0`, `cp a b`, `cc src dst`) are automatically transformed into Lisp S-Expressions (`(ls "/sd0")`, `(cp "a" "b")`) and executed directly by the core Lisp engine!
-  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, named let, `while`, `cond`, a standard library of list/string/predicate/comparison/integer-math primitives, memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position, including named-let loops), and a mark-sweep collector reclaims unreachable values, between top-level commands and, when a pool runs dry, in the middle of one.
+  * **Scheme / Lisp Core**: Support for `define`, `lambda`, `quote` (`'`), `if`, `begin`, `let`, `let*`, named let, `while`, `set!`, `cond`, a standard library of list/string/predicate/comparison/integer-math primitives, memory `peek`/`poke`, and string data types. Tail calls are optimized (constant stack/call-depth for self- and mutually-recursive loops in tail position, including named-let loops), and a mark-sweep collector reclaims unreachable values, between top-level commands and, when a pool runs dry, in the middle of one.
   * **System Boot Scripts**: Automatically loads `/sd0/system/stdlib.lisp` and executes `/sd0/system/init.lisp` at system startup.
   * **Dual-Mode Interactive Line Editor & Emacs Multi-Line Canvas**: Single-line editing with ANSI escape sequences (`Ctrl-A/E/K/L/P/N`, Arrow keys, Delete), clean session history logging, and a full Emacs-style multi-line editor (`e [filename]` or `Ctrl-X Ctrl-M`) featuring a top optical separator, line numbers (`%3d │ `), an active status line, and keybindings:
     * `Ctrl-X Ctrl-E`: Evaluate buffer in Lisp engine
