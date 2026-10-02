@@ -32,6 +32,7 @@ predate phase 27.
 | How memory maps | `arch/riscv/include/arch/vmm.h` | `arch/riscv/rv32_nommu/vmm.c`, `arch/riscv/rv64_mmu/vmm.c` | **Nothing.** `rv32_nommu/` was reused verbatim. |
 | How a task is isolated | `arch/riscv/include/arch/pmp.h`, `arch/riscv/include/arch/umode.h`, `kernel/include/kernel/mem_domain.h` | `arch/riscv/common/pmp_probe.c`, `umode.c`, `umode.S`, `mem_domain.c` | **Untouched.** The P4's PMP is a standard one. |
 | How fast the chip runs | `CONFIG_CLK_SYS_HZ`, a board-file fact (`arch/riscv/include/arch/rp2350_clocks.h`, default 150 MHz) | `boot_header.S` derives the PLL's FBDIV from it at assemble time, with the datasheet's limits as `.if` checks; every driver divider (UART, I2C, SPI, PWM, panel, PIO-USB) reads it. Phase 36.1, when `rp2350-terminal` needed 144 MHz; the other personas came out byte-identical | Nothing: RP2350 only. The P4 sets its clocks in its own bring-up (phase 34) |
+| A second, slower memory (the bulk class) | `kernel/include/kernel/palloc.h` (`palloc_pages_bulk()`, `palloc_pages_bulk_aligned()`, `palloc_is_bulk()`, `BULK_BSS`), `drivers/include/drivers/xip_cache.h` | RP2350: `drivers/psram_rp2350.c` brings the QSPI PSRAM up on the QMI's second window (chip select 1, cached alias `0x11000000`, uncached `0x15000000`) and `kernel/palloc.c`'s bulk zone covers what `BULK_BSS` leaves; `drivers/xip_cache_rp2350.c` maintains the cache by address. QEMU: a stand-in zone in ordinary RAM, so the suite runs every consumer's bulk path. Everywhere else the bulk calls are the fast ones. Phase 38, 2026-10-02 | Not yet: the P4's PSRAM is phase 39, the second implementation -- and the test of whether "bulk" is the right abstraction, the way phase 27 tested the others |
 | Board facts the linker knows | the four scripts in `linker/` | `qemu-rv32.ld`, `qemu-rv64.ld`, `rp2350.ld`, `esp32p4.ld` | See §3 — this seam is newer than the others and phase 27 is what produced it. |
 
 ## 2. Device-class contracts (category D)
@@ -107,6 +108,16 @@ Per-board extras are legitimate and stay per-board: `rp2350.ld` alone defines
 domain; the last two are 8 KB and present only when their persona puts code
 in them) and the `__scratch_x/y` and
 `__ramfunc` pairs the RP2350 boot path needs.
+
+Since phase 38 `rp2350.ld` also INCLUDEs four fragments that
+`cmake/gen_config.cmake` writes per board, because ld cannot choose a memory
+region or a rule conditionally: `lugalos_bulk.ld` (the `.bulk_bss` section in
+the `PSRAM` region, `_bulk_bss_start`/`_end`; both 0 without PSRAM), and
+`lugalos_text.ld`, `lugalos_rodata.ld` and `lugalos_ramcode.ld` (38.9: the
+`.text`/`.rodata` rules less the chess hot path, and that path inside `.data`
+between `__chess_ram_start`/`_end`; the plain rules and an empty range where
+`CONFIG_CHESS_HOT_RAM` is not set). The `PSRAM` memory region is declared on
+every RP2350 board and used only where a board names a chip.
 
 ## 4. Bus arbitration (category E)
 

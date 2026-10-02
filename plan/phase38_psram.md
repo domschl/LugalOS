@@ -1,6 +1,8 @@
 # Phase 38 — PSRAM on the RP2350: a second memory, and what moves into it
 
-**Status: planned 2026-10-02; in progress.** Written from the owner's proposal of the same
+**Status: done 2026-10-02.** 38.0-38.10 complete; phase 39 (the ESP32-P4)
+is §9's outline, and the chess pane noted during 38.9 is
+[`plan/phase41_chess_pane.md`](phase41_chess_pane.md). Planned 2026-10-02. Written from the owner's proposal of the same
 day, the review of it, and the measurements in
 [`plan/phase38_preliminaries.md`](phase38_preliminaries.md), which this plan
 cites throughout as **[P§n]**. Decisions marked *(owner, 2026-10-02)* are
@@ -743,11 +745,36 @@ version of the pad was garbage-collected and all four "builds" were one:
 2 515 ms). QEMU 424/424 (one run hit the known log-burst intermittent);
 `test_rp2350.py` 31/31.
 
-### 38.10 — Documents
+### 38.10 — Documents *(done 2026-10-02)*
 
 README (the LCD-7 section: 8 MB PSRAM, the memory classes), the per-board
 memory table, `plan/hardware_seams.md` (the QMI's second window as a seam),
 open issues closed by this phase deleted, and this file's status line.
+
+**Done (2026-10-02).** README: a phase-38 section with a per-persona
+memory table (SRAM heap from each image, PSRAM and what lives in it), the
+LCD-7's GP0 note, `/ram0`'s size. `plan/hardware_seams.md`: the bulk class
+as a seam (RP2350 and QEMU's stand-in implement it; the P4 will be the
+second real one) and the generated linker fragments. `plan/open_issues.md`:
+the USB serial entry deleted (38.1); the chess spread moved to part C, the
+owner having decided the Pico 2 keeps its SRAM; the log-burst flake's
+recent rate recorded.
+
+## What phase 38 changed, in numbers
+
+| | before | after |
+|---|---|---|
+| LCD-7 SRAM heap | 74 pages | 78 (86 before 38.9 spent 8 on the chess hot path) |
+| Peak heap, two user programs resident | 57 pages | 43 |
+| Lisp nodes | 2 048 | 65 536 (1.83x slower compute, 2.2x allocation-heavy) |
+| `/ram0` | 64 KB, when there was no card | 2 MB at every boot |
+| Largest editor document | what the heap held (~200 KB) | megabytes; a keystroke at the start of 200 KB 28 ms |
+| Chess hash table | 32 KB | 512 KB (depth 8: 33.9 s -> 26.0 s) |
+| Chess search, depth 6 | 3.26-3.85 s (link-dependent) | 2.51 s |
+| Layout switch with a drawing | a redraw | a restore (~35 ms) |
+| `memcpy` SRAM -> SRAM | 20 MB/s | 136 MB/s (measured on the RP2350; the word loops are on every target) |
+| Flash write's after-effects | XIP 46 % slower, dirty PSRAM lines lost | none (every RP2350 board) |
+| Text output to the panel | 62 700 chars/s | 54 800 (the screen state in PSRAM) |
 
 ---
 

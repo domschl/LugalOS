@@ -254,10 +254,21 @@ go on the hub freely.
    * Graphics: `(load "/sd0/demos/lorenz.lisp")`, `(lorenz 3000)` -- the
      attractor beside the text. Super+[ and Super+] move the divider
      (text only, three splits, canvas only), Super+\\ swaps the panes;
-     the demo redraws each time, and the text is intact afterwards.
+     the demo redraws the first time each width appears and is restored
+     from its stored copy after that (38.8), and the text is intact.
    * Clipboard: in the shell select a word with Shift+arrows, Super+C,
      then paste it into `ed` with Super+V; `cat /dev/clipboard` shows it.
    * Screenshot: Super+Shift+3 writes `/sd0/screenshots/shot-NNN.pbm`.
+
+10. Phase 38 -- the PSRAM:
+   * `psram` reports 8 MB in QPI at 72 MHz; `psram test` passes (it also
+     checks that dirty PSRAM survives a flash-path cycle).
+   * `cat /proc/meminfo` has a `Bulk Pages` line with **0 SRAM fallbacks**.
+   * `df` shows `/ram0` at 4096 blocks; `fsbench /ram0 1024` verifies.
+   * `lcd` says the screen state is in PSRAM with four canvas stores.
+   * `test_rp2350.py` checks all of this and the timings with a host
+     attached (`test_psram`, `test_bulk_zone`, `test_ram0_in_psram`,
+     `test_editor_in_psram`, `test_canvas_store`, `test_chess_hot_path`).
    * The writer: `e /sd0/notes.txt`, a few paragraphs with composed
      umlauts, Ctrl-X Ctrl-S; power-cycle; the file reopens intact, and on
      a PC every paragraph is one line. Saving with the card pulled says

@@ -38,38 +38,6 @@ history.
 
 # A. Actionable
 
-## Every RP2350 board enumerates with the same USB serial number
-
-**Destination: 38.1** -- its tests attach the chess board and the LCD-7
-together, which is exactly when this bites.
-
-Every board reports `LUGALOS-0001` (`g_usb_str_serial` in
-`drivers/usb_cdc.c`), so `/dev/serial/by-id/...LUGALOS-0001-if00` points at
-whichever enumerated last and a script can flash or talk to the wrong board.
-Found 2026-09-30 with two boards attached. Workaround: `flash.py --console
-/dev/ttyACMn`, and the USB path in sysfs.
-
-**Fix:** build the string descriptor from the chip's unique ID (OTP CHIPID /
-the bootrom's `get_sys_info`) at USB init -- the same uid the node identity
-carries. Both copies of the descriptor (kernel and U-mode, `u_ep0_send`) use
-it.
-
-## Chess search speed on the chess persona depends on the link (18 % spread)
-
-**Destination: the owner's call** (it costs the chess board 8 heap pages).
-
-The engine executes in place from flash through the 16 KB XIP cache, and its
-hot path (~21 KB of code, ~10 KB of tables) does not fit, so the search's
-node rate depends on how the link aligns it: a depth-6 search took
-3 264-3 849 ms on four LCD-7 builds that differed only in a pad in unrelated
-code (38.9, 2026-10-02). Perft, once the headline (7.0-17.0 s on
-2026-09-30), no longer varies by more than 1 % -- 38.3's word-wide `memcpy`
-took most of that away.
-
-**Fixed on the LCD-7 by 38.9:** `CONFIG_CHESS_HOT_RAM` puts the hot files in
-SRAM (0.3 % spread, 23-35 % faster). The same key on the chess persona
-would fix it there, for 31 KB of a heap that has no PSRAM behind it.
-
 ## The runner cannot see inside a stuck guest
 
 **Destination: phase 40, item 1.** The instrument for most of part B.
@@ -353,11 +321,14 @@ the mechanism was proven outside QEMU.
 Non-zero means the broker accepted and the fault is above the socket; zero
 means nothing arrived.
 
-## `lockselftest`'s log-burst case flakes on rv64-smp (~1 in 8)
+## `lockselftest`'s log-burst case flakes on rv64-smp (~1 in 8, lately more)
 
 **Seen:** 2026-10-01 (37.1), once in a full suite and once in eight
 standalone `lockselftest` runs on `-smp 2`; never on one hart. Waiting 2 s
-instead of 200 ms for klogd (2026-09-30) did not remove it.
+instead of 200 ms for klogd (2026-09-30) did not remove it. During phase 38
+(2026-10-02) it failed 3 of about 12 full suites, 2 of the last 4, each
+time passing on the rerun; no phase-38 change touches `kernel/lock.c` or
+klog.
 
 **What would settle it:** print `klog_gaps() - gaps_before` and
 `klog_gap_bytes()` on failure. The check needs exactly one new gap; a burst
@@ -444,6 +415,16 @@ vaddr=0x40000000`. Intended and explained at the `lugalos-ram.elf` step in
 PT_LOAD, which is precisely the point (the ROM must not be handed a segment
 there). `readelf -lW lugalos-ram.elf` shows four PT_LOADs, all at `0x4ff…`.
 The one place `memory/zero_warning_policy.md` is knowingly bent.
+
+## The chess persona's search speed depends on the link (18 % spread)
+
+**Decided (owner, 2026-10-02): stays.** On a board without PSRAM the
+engine's hot path executes in place from flash through the 16 KB XIP cache,
+and a depth-6 search varies by 18 % with how unrelated code shifts the link
+(3 264-3 849 ms, measured on four LCD-7 builds in 38.9). `CONFIG_CHESS_HOT_RAM`
+removes it -- the LCD-7 sets it -- for 31 KB of SRAM, which on the Pico 2 is
+heap worth more than the spread. A cross-build search benchmark on that
+persona carries this noise; perft no longer does (1 %).
 
 ---
 

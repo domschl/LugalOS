@@ -159,6 +159,32 @@ against a GPS-disciplined reference clock):
   lines, searches and replaces, undoes, and evaluates Lisp beside its canvas without leaving;
   `.txt` and `.md` files are soft-wrapped prose saved a paragraph to a line, and every save goes
   through a safety copy. See [`plan/phase37_screen_layouts_and_apps.md`](plan/phase37_screen_layouts_and_apps.md).
+- **A second memory: the LCD-7's 8 MB of PSRAM** (phase 38). The QSPI PSRAM on the QMI's second
+  window comes up at boot in quad mode at 72 MHz (a persona built for it halts with the reason if it is
+  missing), and becomes a **bulk class** of memory beside SRAM: `palloc_pages_bulk()` for pages and
+  `BULK_BSS` for static arrays, with SRAM kept for what is hot or DMA'd. The Lisp heap moved there and
+  grew 32-fold to **65 536 nodes**; `/ram0` is **2 MB** and mounted at boot; the editor, `cc`, user
+  program images (which run from PSRAM under the same PMP regions) and a **512 KB chess hash table**
+  live there; and the screen keeps **one canvas per layout**, so switching or resizing restores a
+  drawing instead of asking for a redraw. What that gave back in SRAM pays for the chess search's hot
+  path in RAM, 23-35 % faster and no longer at the mercy of link alignment. On the way: flash writes
+  no longer leave XIP slow and PSRAM corrupt (every RP2350 board), libc copies words instead of bytes
+  (`memcpy` 20 -> 136 MB/s in SRAM), FAT32 formats volumes larger than 511 KB correctly, and each board
+  has its own USB serial number. See [`plan/phase38_psram.md`](plan/phase38_psram.md).
+
+  | Persona | SRAM heap | PSRAM | In PSRAM |
+  |---|---|---|---|
+  | `rp2350-terminal` (LCD-7) | 78 pages (312 KB) | 8 MB | Lisp nodes and strings (1.4 MB, static); 6.6 MB of bulk pages: `/ram0` 2 MB, chess table 512 KB, screen state and canvas stores 256 KB, editor, `cc`, user images |
+  | `rp2350-chess` | 81 pages | -- | -- |
+  | `rp2350-smp` | 81 pages | -- | -- |
+  | `rp2350-clock` | 84 pages | -- | -- |
+  | `rp2350-wifi` | 84 pages | -- | -- |
+  | `rp2350-sensor` | 85 pages | -- | -- |
+  | `rp2350-gateway` | 86 pages | -- | -- |
+
+  The terminal's heap is the smallest by choice: it spends 31 KB on the chess hot path and its
+  peak with two programs resident is 43 pages. Measured on 2026-10-02 from each image's
+  `_kernel_end`..`_heap_end`; `/proc/meminfo` shows the live figures, the bulk zone's included.
 - **An IP stack of our own, over two different wires**: ARP, IPv4, ICMP, UDP and a server-side TCP,
   written here rather than bought in silicon — about 2,100 lines under `net/`, sized for an RP2350
   and developed against a packet-level QEMU peer before either piece of hardware existed. Two frame
@@ -211,7 +237,7 @@ against a GPS-disciplined reference clock):
   write, since turning XIP off stops instruction fetch for *both* cores.
 * **Plan 9 Inspired Universal Namespace**: Everything is addressed through top-level resource paths:
   * `/sd0/` — FAT32 VirtIO persistent SD storage volume (`/sd0/docs/readme.txt`).
-  * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`).
+  * `/ram0/` — FAT32 in-memory RAMDisk storage volume (`/ram0/notes.txt`), sized by `init.lisp`: 2 MB in PSRAM on the LCD-7, mounted at every boot.
   * `/proc/` — Synthetic kernel metrics, generated on read and served as real byte streams (so a
     remote node can read them over 9P): `/proc/ps` (the live task table), `/proc/meminfo` (live page
     allocator counters), `/proc/version`, `/proc/df`, `/proc/kmsg` (the kernel log ring),
@@ -432,8 +458,8 @@ section, which is also where the flashing procedure lives.
 `rp2350-terminal` is the first persona on the **QFN-80 RP2350B** (GPIOs above 29, a PIO `GPIOBASE` of
 16, 16 MB of flash) and the first that runs its system clock at 144 MHz instead of 150, because the
 panel's pixel clock and the PIO-USB bit clock both divide it evenly (`CONFIG_CLK_SYS_HZ`, a board fact).
-UART0 is on GP16/17 (header H7), not GP0/1: on this board GP0 is the PSRAM's chip select and must never
-be driven. Plug the keyboard into the PIO-USB port (J7) **before** powering up: that port is not
+UART0 is on GP16/17 (header H7), not GP0/1: on this board GP0 is the PSRAM's chip select, which the
+kernel hands to the QMI as its second chip select at boot (phase 38) and nothing else may drive. Plug the keyboard into the PIO-USB port (J7) **before** powering up: that port is not
 hot-pluggable on this board, since a device plugged in while it runs browns the board out. The
 stand-alone checklist is in [`tests/hw/README.md`](tests/hw/README.md).
 
