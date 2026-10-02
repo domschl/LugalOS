@@ -336,7 +336,7 @@ with the new PSRAM test -- though its first run straight after a flash
 failed that test once and passed on every run after; the suite does not
 print which figure, so if it recurs, the detail line says. QEMU 414/414.
 
-### 38.3 — libc moves words, not bytes
+### 38.3 — libc moves words, not bytes *(done 2026-10-02, folded into 38.2)*
 
 `libc/string.c`: `memcpy`, `memmove` and `memset` word-wide when both
 pointers allow it, with byte heads and tails; `memmove` correct in both
@@ -347,6 +347,32 @@ turn the loops back into calls to themselves.
 a large copy, both overlap directions, against a byte reference. On the
 LCD-7, `psram bench`'s memcpy lines: SRAM → SRAM from 20 MB/s towards the
 word loop's ~200, PSRAM → SRAM from 9.6 towards ~22 [P§2].
+
+**Done.** `copy_forward`/`copy_backward` move four machine words a step
+(4 bytes on RV32, 8 on RV64) when source and destination share their
+alignment, bytes otherwise; `memset` fills words. A `may_alias` word type
+keeps it legal under strict aliasing. **Found on the way:** the kernel was
+*not* built with `-fno-tree-loop-distribute-patterns` (only the user
+programs were, and the open issue said otherwise); `libc/string.c` now is,
+so GCC cannot turn the loops back into calls to themselves.
+
+`memselftest` (QEMU suite, all targets): every offset pair within two
+words, every length to 67, memmove at every overlap distance both ways,
+plus large copies -- 44 067 cases on RV32, 88 131 on RV64, against a byte
+reference with guard bytes. A planted bug (two words swapped in the
+backward copy) failed 3 014 of them.
+
+**Measured on the LCD-7** (`psram bench`):
+
+| | before | after |
+|---|---|---|
+| `memcpy` PSRAM → SRAM | 9.6 MB/s | **22.2 MB/s** (= the hand-written word loop: the bus) |
+| `memcpy` SRAM → SRAM | 20 MB/s | **136 MB/s** |
+| `memmove` SRAM, overlapping | 15.6 MB/s | **131 MB/s** |
+| `memset` SRAM | 35 MB/s | **197 MB/s** |
+
+Static RAM +0 on every preset. QEMU 416/416, `test_rp2350.py` 26/26.
+The P4's 128-bit SIMD for the same functions is a phase 39 reminder (§9).
 
 ### 38.4 — The bulk zone and `.bulk_bss`
 

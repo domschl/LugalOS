@@ -413,6 +413,10 @@ add_custom_target(lugalos_build_id ALL DEPENDS ${LUGALOS_BUILD_ID_HEADER})
 # only get by accident of GCC's own header-scanning already having seen a
 # newer mtime by the time it ran.
 set_source_files_properties(fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_BUILD_ID_HEADER})
+# 38.3: libc's word loops must not be turned back into calls to themselves.
+# -fno-builtin does not prevent that; this does (the user programs above pass
+# the same flag for the same reason).
+set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
 
 # Per-board config header (K0, plan/phase7_kernel_config.md): platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
@@ -680,6 +684,8 @@ set(SOURCES
     drivers/bme280.c
     fs/p9_chan.c
     libc/string.c
+    # 38.3: the exhaustive check behind libc's word loops (`memselftest`).
+    kernel/memselftest.c
     user/lisp/lisp.c
 )
 

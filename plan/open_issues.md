@@ -54,21 +54,6 @@ the bootrom's `get_sys_info`) at USB init -- the same uid the node identity
 carries. Both copies of the descriptor (kernel and U-mode, `u_ep0_send`) use
 it.
 
-## libc's memmove/memcpy/memset are byte loops
-
-**Destination: 38.3.**
-
-`libc/string.c` moves one byte per iteration; the tree compiles with
-`-fno-tree-loop-distribute-patterns`, so nothing rewrites the loops. Measured
-on the RP2350-LCD-7 at 144 MHz: a 46 400-byte `memmove()` 2.0 ms against
-693 µs as words (phase 36, 36.5); `memcpy` out of PSRAM 9.6 MB/s against
-~25 MB/s the bus delivers ([`phase38_preliminaries.md`](phase38_preliminaries.md) §3).
-
-**Fix:** word loops for the co-aligned case, bytes for head/tail and the
-rest, both directions for memmove, and QEMU tests over a grid of (src offset,
-dst offset, length, overlap) against a byte-wise reference. Everything links
-against these, U-mode included, which is why it is a milestone of its own.
-
 ## `sizereport` cannot see initialised statics on RP2350
 
 **Destination: 38.4** -- the `.bulk_bss` section makes the size tooling

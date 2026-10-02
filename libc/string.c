@@ -1,12 +1,70 @@
 #include "string.h"
 
+/* 38.3, plan/phase38_psram.md: word-wide copies and fills.
+ *
+ * These were byte loops, which cost a 46 KB text scroll 2.0 ms against 693 us
+ * as words (phase 36, 36.5) and copied out of PSRAM at 9.6 MB/s where the bus
+ * gives ~22 (plan/phase38_preliminaries.md §2). Words are used when the two
+ * pointers share their alignment within a word -- then a byte head brings
+ * both to a word boundary at once, and a byte tail finishes. Pointers that
+ * differ in alignment stay on the byte loop: the RP2350's Hazard3 traps on a
+ * misaligned word access, and shifting words into place is more code than
+ * the cases that hit it are worth.
+ *
+ * `word_t` is the machine word (8 bytes on RV64) and is may_alias: these
+ * functions are handed any type's memory, and strict aliasing would let the
+ * compiler reorder word accesses against the caller's own. Four words are
+ * loaded before any is stored, which is what lets memmove's forward case
+ * share the same loop when the destination overlaps below the source.
+ *
+ * This file is built with -fno-tree-loop-distribute-patterns (CMakeLists.txt):
+ * otherwise GCC may recognise these loops as the very functions they are and
+ * turn them into calls to themselves. */
+typedef unsigned long __attribute__((may_alias)) word_t;
+#define WSIZE ((size_t)sizeof(word_t))
+#define WMASK ((uintptr_t)(WSIZE - 1))
+
+static void copy_forward(unsigned char *d, const unsigned char *s, size_t n) {
+    if ((((uintptr_t)d ^ (uintptr_t)s) & WMASK) == 0) {
+        while (n && ((uintptr_t)d & WMASK)) { *d++ = *s++; n--; }
+        word_t *dw = (word_t *)(void *)d;
+        const word_t *sw = (const word_t *)(const void *)s;
+        while (n >= 4 * WSIZE) {
+            word_t a = sw[0], b = sw[1], c = sw[2], e = sw[3];
+            dw[0] = a; dw[1] = b; dw[2] = c; dw[3] = e;
+            dw += 4; sw += 4; n -= 4 * WSIZE;
+        }
+        while (n >= WSIZE) { *dw++ = *sw++; n -= WSIZE; }
+        d = (unsigned char *)dw;
+        s = (const unsigned char *)sw;
+    }
+    while (n--) *d++ = *s++;
+}
+
+/* From the end down: the destination overlaps above the source. */
+static void copy_backward(unsigned char *d, const unsigned char *s, size_t n) {
+    d += n;
+    s += n;
+    if ((((uintptr_t)d ^ (uintptr_t)s) & WMASK) == 0) {
+        while (n && ((uintptr_t)d & WMASK)) { *--d = *--s; n--; }
+        word_t *dw = (word_t *)(void *)d;
+        const word_t *sw = (const word_t *)(const void *)s;
+        while (n >= 4 * WSIZE) {
+            dw -= 4; sw -= 4;
+            word_t a = sw[3], b = sw[2], c = sw[1], e = sw[0];
+            dw[3] = a; dw[2] = b; dw[1] = c; dw[0] = e;
+            n -= 4 * WSIZE;
+        }
+        while (n >= WSIZE) { *--dw = *--sw; n -= WSIZE; }
+        d = (unsigned char *)dw;
+        s = (const unsigned char *)sw;
+    }
+    while (n--) *--d = *--s;
+}
+
 void *memcpy(void *dst, const void *src, size_t n) {
     if (!dst || !src) return dst;
-    char *d = (char *)dst;
-    const char *s = (const char *)src;
-    for (size_t i = 0; i < n; i++) {
-        d[i] = s[i];
-    }
+    copy_forward((unsigned char *)dst, (const unsigned char *)src, n);
     return dst;
 }
 
@@ -15,12 +73,12 @@ void *memcpy(void *dst, const void *src, size_t n) {
  * yet, so that case walks backwards instead. */
 void *memmove(void *dst, const void *src, size_t n) {
     if (!dst || !src || dst == src) return dst;
-    char *d = (char *)dst;
-    const char *s = (const char *)src;
-    if (d < s) {
-        for (size_t i = 0; i < n; i++) d[i] = s[i];
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+    if ((uintptr_t)d < (uintptr_t)s || (uintptr_t)d >= (uintptr_t)s + n) {
+        copy_forward(d, s, n);
     } else {
-        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+        copy_backward(d, s, n);
     }
     return dst;
 }
@@ -28,9 +86,19 @@ void *memmove(void *dst, const void *src, size_t n) {
 void *memset(void *s, int c, size_t n) {
     if (!s) return s;
     unsigned char *p = (unsigned char *)s;
-    for (size_t i = 0; i < n; i++) {
-        p[i] = (unsigned char)c;
+    unsigned char b = (unsigned char)c;
+    while (n && ((uintptr_t)p & WMASK)) { *p++ = b; n--; }
+    if (n >= WSIZE) {
+        word_t w = (word_t)b * (word_t)(~(word_t)0 / 0xffu);   /* b in every byte */
+        word_t *pw = (word_t *)(void *)p;
+        while (n >= 4 * WSIZE) {
+            pw[0] = w; pw[1] = w; pw[2] = w; pw[3] = w;
+            pw += 4; n -= 4 * WSIZE;
+        }
+        while (n >= WSIZE) { *pw++ = w; n -= WSIZE; }
+        p = (unsigned char *)pw;
     }
+    while (n--) *p++ = b;
     return s;
 }
 

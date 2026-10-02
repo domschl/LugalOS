@@ -588,6 +588,7 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+    cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
     cprintf("  screenshot [file] - The screen as a PBM, to /sd0/screenshots/ (or Super+Shift+3)\n");
@@ -3179,6 +3180,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
+    } else if (strcmp(cmd_line, "memselftest") == 0) {
+        /* 38.3, plan/phase38_psram.md: libc's word loops. */
+        extern void mem_selftest(void);
+        mem_selftest();
         return;
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "emac linktest") == 0) {

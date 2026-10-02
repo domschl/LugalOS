@@ -760,6 +760,18 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
                         lock_ok, log if not lock_ok else ""))
 
+        # 38.3 (plan/phase38_psram.md): libc's memcpy/memmove/memset are word
+        # loops now, and every line of the kernel links against them. Every
+        # offset pair within two words, every length to 67, memmove at every
+        # overlap distance in both directions, against a byte reference with
+        # guard bytes. Checked with a planted bug (two words swapped in the
+        # backward copy): 3014 of 44067 cases failed.
+        ok, log = session.send_and_expect("memselftest\n",
+                                          r"MEMSELFTEST_(OK|FAIL)", timeout=60.0)
+        mem_ok = ok and "MEMSELFTEST_OK" in log
+        results.append(("libc Word Loops Match A Byte Reference At Every Alignment (38.3 memselftest)",
+                        mem_ok, log if not mem_ok else ""))
+
         # The nonce source behind that gate. On QEMU there is no hardware
         # entropy and the command says so rather than inventing a verdict --
         # SKIP is the pass here, and RANDTEST_OK/WEAK is a hardware result.
