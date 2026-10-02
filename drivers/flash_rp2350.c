@@ -47,7 +47,7 @@
  *     in boot RAM. This tree's boot leaves M0 in plain quad I/O read (0xEB,
  *     suffix 0x00, no continuous-read mode bits), so the chip needs no
  *     re-entry sequence and putting the registers back is the whole repair --
- *     which `flashtest` checks against a timed read rather than assuming;
+ *     which `xipcycle` checks against a timed read rather than assuming;
  *   - window 1 (PSRAM, when a board has it) is left reading 03h from a chip in
  *     QPI mode, i.e. garbage, and the flush **discards** dirty lines: 1008 of
  *     1024 words written through the cache were lost in the measurement.
@@ -164,7 +164,7 @@ typedef struct {
  * `noinline` so it cannot be inlined back into a flash-resident caller, which
  * would silently undo the whole point of the section attribute.
  *
- * `data` NULL runs the sequence without erasing or programming (`flashtest`).
+ * `data` NULL runs the sequence without erasing or programming (`xipcycle`).
  * `rom_left`, when given, receives the registers as the bootrom left them,
  * before the restore -- the evidence that the restore is doing something. */
 __attribute__((section(".ramfunc"), noinline))
@@ -301,13 +301,17 @@ static uint32_t timed_flash_read_us(void) {
     return (uint32_t)(t1 - t0);
 }
 
+int flash_rp2350_xip_cycle(void) {
+    return flash_rom_op(0, NULL, NULL);
+}
+
 void flash_rp2350_selftest(void) {
     qspi_state_t before, rom_left, after;
     qspi_save(&before);
     uint32_t us_before = timed_flash_read_us();
 
     if (flash_rom_op(0, NULL, &rom_left) != 0) {
-        cprintf("flashtest: the sequence did not run\n");
+        cprintf("xipcycle: the sequence did not run\n");
         return;
     }
     qspi_save(&after);
@@ -318,7 +322,7 @@ void flash_rp2350_selftest(void) {
     for (unsigned i = 0; i < PADS_QSPI_IOS; i++) differ += before.pads[i] != after.pads[i];
     differ += before.xip_ctrl != after.xip_ctrl;
 
-    cprintf("flashtest: bootrom XIP exit and re-entry ran (nothing erased or written)\n");
+    cprintf("xipcycle: bootrom XIP exit and re-entry ran (nothing erased or written)\n");
     cprintf("  as the bootrom left them:\n  ");
     window_line("M0", rom_left.qmi[0], rom_left.qmi[1], rom_left.qmi[2]);
     cprintf("  ");
@@ -327,7 +331,7 @@ void flash_rp2350_selftest(void) {
     window_line("M0", after.qmi[0], after.qmi[1], after.qmi[2]);
     cprintf("  ");
     window_line("M1", after.qmi[5], after.qmi[6], after.qmi[7]);
-    cprintf("flashtest: %u of %u QSPI registers differ from before; "
+    cprintf("xipcycle: %u of %u QSPI registers differ from before; "
             "64 KB uncached flash read %lu us before, %lu us after -- %s\n",
             differ, (unsigned)(QMI_WINDOW_REGS + PADS_QSPI_IOS + 1),
             (unsigned long)us_before, (unsigned long)us_after,
@@ -344,6 +348,7 @@ int flash_rp2350_write_sector(uint32_t flash_offs, const void *data) {
 }
 
 void flash_rp2350_selftest(void) {}
+int flash_rp2350_xip_cycle(void) { return -1; }
 void flash_rp2350_qmi_report(void) {}
 
 #endif

@@ -3,7 +3,7 @@
 # (plan/phase36_rp2350_lcd7_terminal.md).
 #
 # An RP2350**B** (QFN-80, GPIO0-47) on one board with a 7" 800x480 RGB panel
-# (ST7262), 16 MB flash, 2 MB PSRAM, a microSD socket, RS485, CAN and two
+# (ST7262), 16 MB flash, 8 MB PSRAM, a microSD socket, RS485, CAN and two
 # USB-C ports: the native one (J3: flashing, /dev/ttyACM0) and a PIO-driven
 # host port (J7, GP42/43) for the keyboard. Every pin below was read off the
 # schematic's pin table (datasheet/RP2350-Touch-LCD-7.pdf, 2026-09-30), not
@@ -46,6 +46,15 @@ set(CONFIG_LISP_NODE_POOL 2048)
 set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  16)
 set(CONFIG_UART0_RX_GPIO  17)
+
+# The PSRAM, on GP0 as the QMI's second chip select (38.2,
+# plan/phase38_psram.md). **8 MB**: an APS6404-class part (KGD 0x5D, EID
+# 0x53), measured by aliasing in the phase 38 preliminaries -- this file said
+# 2 MB until then, which is what the board's listing says too. Checked at
+# every boot; a size smaller than this is refused. Setting these makes the
+# persona *require* PSRAM: without it the board halts with the reason (S1).
+set(CONFIG_PSRAM_CS_GPIO 0)
+set(CONFIG_PSRAM_BYTES   8388608)
 
 # Deliberately no CONFIG_LED_*: this board has no user LED on any GPIO
 # (Led1/Led2 on the schematic are power and charge indicators). With neither

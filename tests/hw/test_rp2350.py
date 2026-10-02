@@ -640,7 +640,7 @@ def test_flash_path_restores_qspi(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
     """38.1 (plan/phase38_psram.md): the bootrom's flash sequence -- XIP off,
     flash_enter_cmd_xip -- leaves both QMI windows at its serial 03h read,
     clk_sys/12, and until 38.1 flash stayed that slow until the next reset.
-    `flashtest` runs drivers/flash_rp2350.c's own RAM routine with the erase
+    `xipcycle` runs drivers/flash_rp2350.c's own RAM routine with the erase
     and program left out (an identity write reboots, so it cannot be observed
     after one) and reports what the bootrom left, what was restored, and a
     timed uncached flash read before and after.
@@ -648,27 +648,27 @@ def test_flash_path_restores_qspi(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
     Three things must hold: the bootrom really did reset M0 (else the test
     proves nothing about the restore), no QSPI register differs afterwards,
     and the read is no slower. `clocks` must agree that M0 is quad EBh."""
-    name = "Flash path: XIP exit/re-entry restores the QSPI windows (38.1 flashtest)"
+    name = "Flash path: XIP exit/re-entry restores the QSPI windows (38.1 xipcycle)"
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
             time.sleep(0.3)
             ser.reset_input_buffer()
-            ser.write(b"flashtest\n")
+            ser.write(b"xipcycle\n")
             ser.flush()
             out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
             ser.write(b"clocks\n")
             ser.flush()
             out += rp2350.drain(ser, quiet=0.5, deadline=5.0)
         text = out.decode("utf-8", errors="replace").replace("\r", "")
-        if "Unbound symbol: flashtest" in text or "Unknown command" in text:
-            return (name, False, "board firmware predates `flashtest` -- reflash it")
+        if "Unbound symbol: xipcycle" in text or "Unknown command" in text:
+            return (name, False, "board firmware predates `xipcycle` -- reflash it")
         left = re.search(r"as the bootrom left them:\s*M0 TIMING \S+ RFMT \S+ RCMD (0x[0-9a-f]+)", text)
         verdict = re.search(r"(\d+) of \d+ QSPI registers differ from before; "
                             r"64 KB uncached flash read (\d+) us before, (\d+) us after -- (\w+ ?\w*)", text)
         m0 = re.search(r"QMI M0 \(flash\): .*?, (quad I/O EBh|.*)$", text, re.M)
         if not (left and verdict and m0):
-            return (name, False, f"flashtest/clocks output not recognised:\n{text[:600]}")
+            return (name, False, f"xipcycle/clocks output not recognised:\n{text[:600]}")
         detail = (f"bootrom left RCMD {left.group(1)}; {verdict.group(1)} registers differ; "
                   f"read {verdict.group(2)} -> {verdict.group(3)} us; clocks: M0 {m0.group(1)}")
         if int(left.group(1), 16) != 0x03:
@@ -677,6 +677,73 @@ def test_flash_path_restores_qspi(ports: rp2350.Rp2350Ports) -> tuple[str, bool,
         if verdict.group(4) != "RESTORED" or m0.group(1) != "quad I/O EBh":
             return (name, False, detail)
         return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.2 (plan/phase38_psram.md): the PSRAM is up at boot, the size the
+    board file says, holds data through both aliases and through a flash
+    write's XIP exit/re-entry, and runs at the rates the preliminaries
+    measured (plan/phase38_preliminaries.md §2) within 10 %.
+
+    Skipped on a persona without PSRAM_BYTES in /proc/config. `psram test`
+    is destructive over the whole chip, which is right only while nothing
+    allocates from it -- 38.4 restricts it to free pages."""
+    name = "PSRAM: up at boot, 8 MB, pattern and flash-path test, rates (38.2)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no PSRAM (no PSRAM_BYTES in /proc/config)")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"psram\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
+            ser.write(b"psram test\n")
+            ser.flush()
+            # ~4 s of silence while it runs: the quiet window must outlast it.
+            out += rp2350.drain(ser, quiet=8.0, deadline=30.0)
+            ser.write(b"psram bench\n")
+            ser.flush()
+            out += rp2350.drain(ser, quiet=1.0, deadline=20.0)
+        text = out.decode("utf-8", errors="replace").replace("\r", "")
+        m = re.search(r"psram: (\d+) KB \((\d+) KB by aliasing\)", text)
+        if not m:
+            return (name, False, f"no PSRAM status line:\n{text[:400]}")
+        if int(m.group(1)) != 8192 or int(m.group(2)) < 8192:
+            return (name, False, f"size {m.group(1)} KB ({m.group(2)} by aliasing), expected 8192")
+        t = re.search(r"psram test: .*? -- (PASS|FAIL)", text)
+        if not t or t.group(1) != "PASS":
+            return (name, False, f"psram test: {t.group(0) if t else 'no result'}")
+
+        # Each label appears under several headings ("PSRAM uncached" is both
+        # a read and a write), so look it up within its own section.
+        def rate(section: str, label: str) -> int | None:
+            part = text.split(section, 1)[-1] if section in text else ""
+            r = re.search(re.escape(label) + r"\s+(\d+) KB/s", part)
+            return int(r.group(1)) if r else None
+
+        def chase(kind: str, kb: int) -> int | None:
+            r = re.search(rf"PSRAM {kind}\s+{kb} KB:\s+(\d+) ns", text)
+            return int(r.group(1)) if r else None
+
+        # plan/phase38_preliminaries.md §2, the same bench at the same clock.
+        refs = [("read uncached KB/s", rate("sequential read", "PSRAM uncached"), 24492),
+                ("read cached cold KB/s", rate("sequential read", "PSRAM cached (cold, 64 KB > cache)"), 26111),
+                ("write uncached KB/s", rate("sequential write", "PSRAM uncached"), 31113),
+                ("chase cached 1 MB ns", chase("cached  ", 1024), 505),
+                ("chase uncached 1 MB ns", chase("uncached", 1024), 392)]
+        detail, ok = [], True
+        for what, got, ref in refs:
+            if got is None:
+                return (name, False, f"bench line missing: {what}\n{text[-800:]}")
+            within = abs(got - ref) <= ref // 10
+            ok &= within
+            detail.append(f"{what} {got} (ref {ref}){'' if within else ' OUT OF 10%'}")
+        return (name, ok, "; ".join(detail))
     except Exception as e:
         return (name, False, str(e))
 
@@ -1867,7 +1934,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

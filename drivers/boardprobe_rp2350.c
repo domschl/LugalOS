@@ -124,9 +124,17 @@ void boardprobe(void) {
 
     uint32_t gp0 = REG(IO_BANK0_CTRL(0));
     unsigned fsel = gp0 & FUNCSEL_MASK;
+#if defined(CONFIG_PSRAM_BYTES) && CONFIG_PSRAM_CS_GPIO == 0
+    /* 38.2: with PSRAM support GP0 is the QMI's second chip select on
+     * purpose, and anything else on it is the hazard this check exists for. */
+    cprintf("gp0:     GPIO0_CTRL=0x%08lx FUNCSEL=%u: %s\n", (unsigned long)gp0, fsel,
+            fsel == 9u ? "XIP_CS1 (the PSRAM's chip select, as configured)"
+                       : "NOT XIP_CS1 -- the PSRAM is not selected by the QMI");
+#else
     cprintf("gp0:     GPIO0_CTRL=0x%08lx FUNCSEL=%u: %s\n", (unsigned long)gp0, fsel,
             fsel == FUNCSEL_NULL ? "untouched (PSRAM /CS left to its pull-up)"
                                  : "CLAIMED -- something drives the PSRAM chip select");
+#endif
 }
 
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_PIOUSB_DP_GPIO */

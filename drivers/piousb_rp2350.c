@@ -14,6 +14,10 @@
  *             RAM with interrupts off and never touches flash, so a flash
  *             write on core 0 does not disturb it (§3.2.1), and nothing else
  *             can delay the ACK it owes a device ~1.3 us after a DATA packet.
+ *             **Nor PSRAM** (phase 38 H2): the flash write also takes the
+ *             PSRAM window away, and tools/check_core1_ram.py checks where
+ *             code lives, not where its data does -- so the ring and every
+ *             buffer core 1 reads or writes stay in SRAM, as a rule.
  *
  * The three PIO programs are sekigon-gonnoc's Pico-PIO-USB (usb_tx.pio's
  * usb_tx_fs, usb_rx.pio's usb_nrzi_decoder and usb_edge_detector),

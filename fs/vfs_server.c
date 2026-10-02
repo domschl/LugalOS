@@ -4,6 +4,7 @@
 #include "fs/p9_link.h"
 #include "fs/p9_chan.h"
 #include "drivers/block.h"
+#include "drivers/psram_rp2350.h"
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
 #include "drivers/at24c32.h"
@@ -647,7 +648,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * the board's actual RAM, which is the thing that decides whether
          * another static array fits.
          *
-         * The whole report has to land inside the handle's 512-byte proc_buf
+         * The whole report has to land inside the handle's 896-byte proc_buf
          * (see vfs_handle_t). ksnprintf() truncates safely rather than
          * overrunning, so the failure mode is a silently short file; the
          * Storage line is deliberately kept last so that a test asserting on
@@ -725,6 +726,9 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "Flash: %u KB of %u KB\n", flash_used / 1024, flash_total / 1024);
         }
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+        used += (uint32_t)psram_meminfo(buf + used, cap - used);
+#endif
 
         /* Read off the mount table rather than spelled out as a constant.
          * The fixed string this replaces named "/sd0/ (VirtIO SD)" on every
@@ -1208,6 +1212,12 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "PIOUSB_DP_GPIO=%d\nPIOUSB_DM_GPIO=%d\n",
             CONFIG_PIOUSB_DP_GPIO, CONFIG_PIOUSB_DM_GPIO);
+#endif
+#ifdef CONFIG_PSRAM_BYTES
+        /* 38.2: the PSRAM's chip select and its configured size. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "PSRAM_CS_GPIO=%d\nPSRAM_BYTES=%lu\n",
+            CONFIG_PSRAM_CS_GPIO, (unsigned long)CONFIG_PSRAM_BYTES);
 #endif
 #if CONFIG_ENABLE_DCF77
         used += (uint32_t)ksnprintf(buf + used, cap - used,

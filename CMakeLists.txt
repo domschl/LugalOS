@@ -816,6 +816,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # is ever built, which is what lets both define identity_store_device()
     # strongly over kernel/identity.c's weak default.
     list(APPEND SOURCES drivers/flash_rp2350.c drivers/idstore_rp2350.c)
+    # 38.2, plan/phase38_psram.md: empty unless the board file names a PSRAM.
+    list(APPEND SOURCES drivers/psram_rp2350.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # E2, plan/phase27_esp32p4_bringup.md. One driver, and the shortness of
     # this list is the milestone: no block device, no netif, no identity

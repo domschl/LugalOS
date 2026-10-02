@@ -142,6 +142,10 @@ set(_optional_keys
     # 37.3a, plan/phase37_screen_layouts_and_apps.md: Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL
+    # 38.2, plan/phase38_psram.md: a QSPI PSRAM on the QMI's second chip
+    # select, and its size. Guard-by-pin-map: their presence builds
+    # drivers/psram_rp2350.c's content and makes the persona require it (S1).
+    CONFIG_PSRAM_CS_GPIO CONFIG_PSRAM_BYTES
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only

@@ -265,7 +265,7 @@ Not needed: this tree's boot leaves M0 in plain quad I/O read (0xEB, suffix
 and restoring the registers is the whole repair -- checked by a timed read,
 below. That saves the 256 B of SRAM the copy would have cost.
 
-`clocks` now prints both QMI windows; `flashtest` runs the same RAM routine
+`clocks` now prints both QMI windows; `xipcycle` runs the same RAM routine
 with erase and program left out and reports what the bootrom left, what was
 restored, and a timed 64 KB uncached flash read before and after.
 
@@ -279,18 +279,18 @@ within page rounding (heap pages unchanged on all four sizechecked presets).
 **Left for later, deliberately:**
 * A real identity write was **not** run on the board: the LCD-7's name is
   still derived, and a write would turn it into a stored record that no
-  command clears. The write path differs from `flashtest`'s only by the
+  command clears. The write path differs from `xipcycle`'s only by the
   erase and program between exit and re-entry, which do not touch the
   window registers -- but the owner may want one real write on a board
   whose record is already stored (the chess board).
 * PSRAM's dirty lines surviving a flash write is tested in 38.2, the first
-  milestone with PSRAM up: write through the cache, `flashtest`, read back
+  milestone with PSRAM up: write through the cache, `xipcycle`, read back
   uncached.
 * Whether the identity store's reboot can go: only the USB reason is left,
   and it was measured once, on a USB driver that has changed since. A
   `phase 40` candidate, not this phase.
 
-### 38.2 — PSRAM bring-up at boot
+### 38.2 — PSRAM bring-up at boot *(done 2026-10-02, with 38.3 folded in)*
 
 `drivers/psram_rp2350.c` becomes the driver, starting from the spike's
 direct-mode code [P§7] and losing its bench commands to 38.2's `psram`:
@@ -312,6 +312,29 @@ direct-mode code [P§7] and losing its bench commands to 38.2's `psram`:
 **Tests:** `test_rp2350.py`: PSRAM present, 8 MB, `psram test` clean,
 `psram bench` within 10 % of [P§2]. Cold boot and warm reset both (a warm
 reset finds the chip already in QPI -- the spike's exit-QPI first step).
+
+**Done.** As planned, with these differences:
+* **S1's "halt"** is: no shell and no Lisp, the reason repeated every 5 s on
+  the console and the panel, USB left running. A halt before the scheduler
+  would have been silent over USB and needed the BOOTSEL button; this way
+  `tests/hw/flash.py` recovers the board. Checked with a build that fakes an
+  absent chip, then reflashed from the halted state.
+* **`.bulk_bss` zeroing** moves to 38.4, which creates the section.
+* **`psram test` is destructive over the whole chip** for now (nothing
+  allocates from PSRAM yet) and ends with H2's check: 4 KB left dirty in the
+  cache, the flash write's XIP exit/re-entry, read back uncached -- 0 of 1024
+  lost (1008 before 38.1).
+* 38.1's `flashtest` was renamed **`xipcycle`**: the ESP32-P4 already has a
+  `flashtest`, and it erases and programs a sector.
+
+**Measured on the LCD-7:** 8192 KB by aliasing, KGD 0x5D EID 0x53, QPI at
+72 MHz, M1_TIMING 0x60242202 (as the spike). Bench within 1 % of [P§2] on
+every checked figure. Warm reset (chip still in QPI) comes up clean; **a cold
+power-on has not been tried** -- it needs the owner to pull power. Static RAM
++15 B (the driver's state), heap pages unchanged. `test_rp2350.py` 26/26
+with the new PSRAM test -- though its first run straight after a flash
+failed that test once and passed on every run after; the suite does not
+print which figure, so if it recurs, the detail line says. QEMU 414/414.
 
 ### 38.3 — libc moves words, not bytes
 
@@ -508,5 +531,14 @@ Not elaborated until it starts. What is known now:
 * **What it reuses from phase 38:** the bulk zone, `.bulk_bss`, the latency
   classes, the libc fixes, every consumer's class decision -- the P4 adds a
   backend and re-measures.
+* **Reminder *(owner, 2026-10-02)*: the P4's SIMD for 38.3's libc.** The
+  P4's HP cores have Espressif's own 128-bit SIMD extension ("PIE",
+  ESP-IDF's `esp32p4` DSP and AI routines use it) -- not the standard
+  RISC-V V extension, so neither GCC's auto-vectoriser nor RVV intrinsics
+  apply; it is hand-written assembly with the toolchain's support for those
+  opcodes to be checked first. Worth measuring for `memcpy`/`memset` between
+  PSRAM and L2MEM, where 128-bit loads and stores could beat 38.3's word
+  loops -- a P4-only path behind the shared libc, decided on the bench's
+  numbers, and only if the gain survives PSRAM's own bandwidth limit.
 * **First milestone:** the same bench as [P§2] on the P4, before any
   consumer moves. The display (MIPI-DSI) is the phase after.

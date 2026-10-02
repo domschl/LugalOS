@@ -24,6 +24,7 @@
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/flash_rp2350.h"
+#include "drivers/psram_rp2350.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
@@ -601,7 +602,10 @@ static void cmd_help(void) {
     cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
 #if defined(CONFIG_BOARD_RP2350)
     cprintf("  clocks          - clk_sys from PLL_SYS registers, measured against TIMER0, vs CONFIG_CLK_SYS_HZ\n");
-    cprintf("  flashtest       - XIP exit/re-entry as a flash write does it (nothing written); QSPI restored?\n");
+    cprintf("  xipcycle        - XIP exit/re-entry as a flash write does it (nothing written); QSPI restored?\n");
+#if defined(CONFIG_PSRAM_BYTES)
+    cprintf("  psram [test|bench] - The PSRAM: status, a destructive pattern test, the rate bench\n");
+#endif
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
@@ -3491,10 +3495,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* 36.1, plan/phase36_rp2350_lcd7_terminal.md. Read-only. */
         rp2350_clocks_report();
         return;
-    } else if (strcmp(cmd_line, "flashtest") == 0) {
-        /* 38.1, plan/phase38_psram.md. Writes nothing. */
+    } else if (strcmp(cmd_line, "xipcycle") == 0) {
+        /* 38.1, plan/phase38_psram.md. Writes nothing -- unlike the P4's
+         * `flashtest` above, which erases and programs a test sector; hence
+         * a different name. */
         flash_rp2350_selftest();
         return;
+#if defined(CONFIG_PSRAM_BYTES)
+    } else if (strcmp(cmd_line, "psram") == 0 || strncmp(cmd_line, "psram ", 6) == 0) {
+        /* 38.2, plan/phase38_psram.md. */
+        psram_command(cmd_line + 5);
+        return;
+#endif
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
     } else if (strcmp(cmd_line, "lcd") == 0) {

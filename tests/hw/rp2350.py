@@ -358,7 +358,8 @@ def board_config(console_port: str) -> "dict[str, int]":
                 ser.write(b"cat /proc/config\n")
                 ser.flush()
                 out = drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
-            for key, val in re.findall(r"^(ENABLE_[A-Z0-9_]+)=(\d+)", out, re.M):
+            # PSRAM_BYTES too (38.2): its presence is what gates the PSRAM test.
+            for key, val in re.findall(r"^(ENABLE_[A-Z0-9_]+|PSRAM_BYTES)=(\d+)", out, re.M):
                 cfg[key] = int(val)
         except Exception:
             cfg = {}
