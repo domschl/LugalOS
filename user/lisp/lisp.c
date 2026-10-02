@@ -351,10 +351,9 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
 #else
 #define STRING_POOL_SIZE (NODE_POOL_SIZE / 2)
 #endif
-/* The longest string or symbol this engine can hold. Unchanged at 128; what
- * changed in §2.4 (plan/phase15_memory_reclamation.md) is that not every slot
- * costs that much any more. */
-#define STRING_SLOT_LEN 128
+/* The longest string, symbol or bignum limb slot this engine can hold.
+ * 256 bytes accommodates 64-limb bignums (2048 bits / ~616 decimal digits). */
+#define STRING_SLOT_LEN 256
 
 /* ## Two tiers, because almost nothing needs the big one
  *
@@ -882,6 +881,7 @@ void lisp_gc_safepoint(void) {
      * depth never returns to 0 -- (shell) is the boot script's own form --
      * and a Ctrl-C there used to turn every later line into nil. */
     lisp_interrupted = false;
+    eval_depth_exceeded_warned = false;
     if (node_pool_exhausted_warned || string_pool_exhausted_warned ||
         gc_headroom_low()) {
         gc_collect();
@@ -1135,7 +1135,7 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
  * Phase 42.7: Arbitrary-Precision Bignums and Exact Rationals From Scratch
  * ========================================================================= */
 
-#define BIGNUM_MAX_LIMBS 32
+#define BIGNUM_MAX_LIMBS 64
 
 static inline bool is_number_val(const lisp_val_t *v) {
     return v && (v->type == LISP_INT || v->type == LISP_BIGNUM || v->type == LISP_RATIO);
@@ -1147,19 +1147,24 @@ static inline int bn_normalize(const uint32_t *limbs, int len) {
 }
 
 static uint32_t *alloc_limbs(int num_limbs, int *out_capacity) {
+    if (num_limbs > BIGNUM_MAX_LIMBS) {
+        printk("[Lisp Error] Bignum capacity exceeded: %d limbs > max %d limbs (%d bits)\n",
+               num_limbs, BIGNUM_MAX_LIMBS, BIGNUM_MAX_LIMBS * 32);
+        return NULL;
+    }
     int idx = -1;
     int cap = 8;
     if (num_limbs <= 8) {
         idx = take_small();
         if (idx < 0) {
             idx = take_large();
-            cap = 32;
+            cap = BIGNUM_MAX_LIMBS;
         }
-    } else if (num_limbs <= 32) {
+    } else if (num_limbs <= BIGNUM_MAX_LIMBS) {
         idx = take_large();
-        cap = 32;
+        cap = BIGNUM_MAX_LIMBS;
     } else {
-        return NULL; /* Exceeds maximum 32 limbs (1024 bits) */
+        return NULL;
     }
 
     if (idx < 0 && gc_collect_in_form()) {
@@ -1168,11 +1173,11 @@ static uint32_t *alloc_limbs(int num_limbs, int *out_capacity) {
             cap = 8;
             if (idx < 0) {
                 idx = take_large();
-                cap = 32;
+                cap = BIGNUM_MAX_LIMBS;
             }
-        } else if (num_limbs <= 32) {
+        } else if (num_limbs <= BIGNUM_MAX_LIMBS) {
             idx = take_large();
-            cap = 32;
+            cap = BIGNUM_MAX_LIMBS;
         }
     }
 
@@ -1454,7 +1459,9 @@ static int bn_gcd_abs(uint32_t *res, const uint32_t *u_in, int u_len, const uint
     if (u_len == 0) { memcpy(res, v_in, v_len * sizeof(uint32_t)); return v_len; }
     if (v_len == 0) { memcpy(res, u_in, u_len * sizeof(uint32_t)); return u_len; }
 
-    uint32_t u[34], v[34];
+    if (u_len > BIGNUM_MAX_LIMBS) u_len = BIGNUM_MAX_LIMBS;
+    if (v_len > BIGNUM_MAX_LIMBS) v_len = BIGNUM_MAX_LIMBS;
+    uint32_t u[BIGNUM_MAX_LIMBS + 4], v[BIGNUM_MAX_LIMBS + 4];
     memcpy(u, u_in, u_len * sizeof(uint32_t));
     memcpy(v, v_in, v_len * sizeof(uint32_t));
 
@@ -1474,7 +1481,7 @@ static int bn_gcd_abs(uint32_t *res, const uint32_t *u_in, int u_len, const uint
             v_len = bn_shift_right_1(v, v_len);
         }
         if (bn_cmp_abs(u, u_len, v, v_len) > 0) {
-            uint32_t tmp[34];
+            uint32_t tmp[BIGNUM_MAX_LIMBS + 4];
             memcpy(tmp, u, u_len * sizeof(uint32_t));
             int tmp_len = u_len;
             memcpy(u, v, v_len * sizeof(uint32_t));
@@ -1514,12 +1521,15 @@ static void bn_to_string(const lisp_val_t *v, char *out, size_t max_out) {
         if (max_out > 1) { out[0] = '0'; out[1] = '\0'; }
         return;
     }
-    if (len > 34) len = 34;
-    uint32_t temp[34];
+    if (len > BIGNUM_MAX_LIMBS) len = BIGNUM_MAX_LIMBS;
+    uint32_t temp[BIGNUM_MAX_LIMBS + 4];
     memcpy(temp, v->u.bignum.limbs, len * sizeof(uint32_t));
-    uint32_t rems[40];
+    uint32_t rems[80];
     int num_rems = 0;
     while (len > 0) {
+        if (num_rems >= (int)(sizeof(rems) / sizeof(rems[0]))) {
+            break;
+        }
         uint32_t rem = 0;
         bn_div_single(temp, &len, &rem, temp, len, 1000000000U);
         rems[num_rems++] = rem;
@@ -1537,7 +1547,7 @@ static void bn_to_string(const lisp_val_t *v, char *out, size_t max_out) {
 }
 
 static lisp_val_t *bn_from_string(const char *s, int len, int sign) {
-    uint32_t res[34];
+    uint32_t res[BIGNUM_MAX_LIMBS + 4];
     memset(res, 0, sizeof(res));
     int res_len = 0;
     int idx = 0;
@@ -1559,7 +1569,12 @@ static lisp_val_t *bn_from_string(const char *s, int len, int sign) {
             carry = cur >> 32;
         }
         if (carry) {
-            res[res_len++] = (uint32_t)carry;
+            if (res_len < (int)(sizeof(res) / sizeof(res[0]))) {
+                res[res_len++] = (uint32_t)carry;
+            } else {
+                printk("[Lisp Error] Bignum string exceeds maximum capacity\n");
+                return &nil_val;
+            }
         }
 
         carry = chunk_val;
@@ -1570,10 +1585,17 @@ static lisp_val_t *bn_from_string(const char *s, int len, int sign) {
             if (!carry) break;
         }
         if (carry) {
-            res[res_len++] = (uint32_t)carry;
+            if (res_len < (int)(sizeof(res) / sizeof(res[0]))) {
+                res[res_len++] = (uint32_t)carry;
+            } else {
+                printk("[Lisp Error] Bignum string exceeds maximum capacity\n");
+                return &nil_val;
+            }
         }
         if (res_len == 0 && chunk_val > 0) {
-            res[res_len++] = chunk_val;
+            if (res_len < (int)(sizeof(res) / sizeof(res[0]))) {
+                res[res_len++] = chunk_val;
+            }
         }
     }
     res_len = bn_normalize(res, res_len);
@@ -1593,7 +1615,7 @@ static lisp_val_t *bn_add(lisp_val_t *a, lisp_val_t *b) {
     get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
     get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
 
-    uint32_t res[34];
+    uint32_t res[BIGNUM_MAX_LIMBS + 4];
     int res_len, res_sign;
 
     if (a_sign == b_sign) {
@@ -1628,7 +1650,7 @@ static lisp_val_t *bn_sub(lisp_val_t *a, lisp_val_t *b) {
     get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
     b_sign = -b_sign;
 
-    uint32_t res[34];
+    uint32_t res[BIGNUM_MAX_LIMBS + 4];
     int res_len, res_sign;
 
     if (a_sign == b_sign) {
@@ -1664,12 +1686,17 @@ static lisp_val_t *bn_mul(lisp_val_t *a, lisp_val_t *b) {
 
     if (a_len == 0 || b_len == 0) return make_int(0);
 
-    uint32_t res[68];
+    uint32_t res[BIGNUM_MAX_LIMBS * 2 + 8];
     int res_len = bn_mul_abs(res, a_limbs, a_len, b_limbs, b_len);
     int res_sign = a_sign * b_sign;
 
     res_len = bn_normalize(res, res_len);
     if (res_len == 0) return make_int(0);
+    if (res_len > BIGNUM_MAX_LIMBS) {
+        printk("[Lisp Error] Bignum multiplication overflow (%d limbs > %d)\n",
+               res_len, BIGNUM_MAX_LIMBS);
+        return &nil_val;
+    }
 
     int cap = 8;
     uint32_t *limbs = alloc_limbs(res_len, &cap);
@@ -1691,7 +1718,7 @@ static void bn_div_rem(lisp_val_t *a, lisp_val_t *b, lisp_val_t **out_q, lisp_va
         return;
     }
 
-    uint32_t q_buf[35], r_buf[35];
+    uint32_t q_buf[BIGNUM_MAX_LIMBS + 4], r_buf[BIGNUM_MAX_LIMBS + 4];
     int q_len = 0, r_len = 0;
 
     if (b_len == 1) {
@@ -1749,7 +1776,7 @@ static lisp_val_t *bn_gcd(lisp_val_t *a, lisp_val_t *b) {
     get_num_limbs(a, &a_sign, &a_len, &a_limbs, a_temp);
     get_num_limbs(b, &b_sign, &b_len, &b_limbs, b_temp);
 
-    uint32_t res[34];
+    uint32_t res[BIGNUM_MAX_LIMBS + 4];
     int res_len = bn_gcd_abs(res, a_limbs, a_len, b_limbs, b_len);
     res_len = bn_normalize(res, res_len);
     if (res_len == 0) return make_int(0);
@@ -1954,6 +1981,7 @@ static int num_cmp(const lisp_val_t *a, const lisp_val_t *b) {
 }
 
 static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b) {
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_add_overflow(a->u.i, b->u.i, &res)) {
@@ -1967,6 +1995,7 @@ static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b) {
 }
 
 static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b) {
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_sub_overflow(a->u.i, b->u.i, &res)) {
@@ -1980,6 +2009,7 @@ static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b) {
 }
 
 static lisp_val_t *num_mul(lisp_val_t *a, lisp_val_t *b) {
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_mul_overflow(a->u.i, b->u.i, &res)) {
@@ -1993,6 +2023,7 @@ static lisp_val_t *num_mul(lisp_val_t *a, lisp_val_t *b) {
 }
 
 static lisp_val_t *num_div(lisp_val_t *a, lisp_val_t *b) {
+    if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
     if (num_is_zero(b)) {
         return &nil_val;
     }
@@ -2016,10 +2047,9 @@ static void ratio_to_string(const lisp_val_t *v, char *out, size_t max_out) {
     char *p = out;
     char *end = out + max_out - 1;
     if (v->u.ratio.num->type == LISP_BIGNUM) {
-        char num_buf[350];
-        bn_to_string(v->u.ratio.num, num_buf, sizeof(num_buf));
-        const char *s = num_buf;
-        while (*s && p < end) *p++ = *s++;
+        size_t avail = (p < end) ? (size_t)(end - p + 1) : 0;
+        bn_to_string(v->u.ratio.num, p, avail);
+        while (*p) p++;
     } else {
         long n = v->u.ratio.num->u.i;
         if (n < 0 && p < end) { *p++ = '-'; n = -n; }
@@ -2027,10 +2057,9 @@ static void ratio_to_string(const lisp_val_t *v, char *out, size_t max_out) {
     }
     if (p < end) *p++ = '/';
     if (v->u.ratio.den->type == LISP_BIGNUM) {
-        char den_buf[350];
-        bn_to_string(v->u.ratio.den, den_buf, sizeof(den_buf));
-        const char *s = den_buf;
-        while (*s && p < end) *p++ = *s++;
+        size_t avail = (p < end) ? (size_t)(end - p + 1) : 0;
+        bn_to_string(v->u.ratio.den, p, avail);
+        while (*p) p++;
     } else {
         long d = v->u.ratio.den->u.i;
         format_uint_digits(&p, end, (uint32_t)d, 0);
@@ -2083,7 +2112,7 @@ static lisp_val_t *parse_number_token(const char **str) {
     if ((**str == '0') && ((*str)[1] == 'x' || (*str)[1] == 'X')) {
         const char *hstart = *str + 2;
         (*str) += 2;
-        uint32_t limbs[34];
+        uint32_t limbs[BIGNUM_MAX_LIMBS + 4];
         memset(limbs, 0, sizeof(limbs));
         int len = 0;
         while ((**str >= '0' && **str <= '9') || (**str >= 'a' && **str <= 'f') || (**str >= 'A' && **str <= 'F')) {
@@ -2099,8 +2128,16 @@ static lisp_val_t *parse_number_token(const char **str) {
                 limbs[i] = (uint32_t)cur;
                 carry = cur >> 32;
             }
-            if (carry) limbs[len++] = (uint32_t)carry;
-            if (len == 0 && digit > 0) limbs[len++] = digit;
+            if (carry) {
+                if (len < (int)(sizeof(limbs) / sizeof(limbs[0]))) {
+                    limbs[len++] = (uint32_t)carry;
+                }
+            }
+            if (len == 0 && digit > 0) {
+                if (len < (int)(sizeof(limbs) / sizeof(limbs[0]))) {
+                    limbs[len++] = digit;
+                }
+            }
             (*str)++;
         }
         if (*str == hstart) return NULL;
@@ -2275,9 +2312,11 @@ static lisp_val_t *prim_add(lisp_val_t *args, lisp_val_t *env) {
     int guard = 0;
     for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
          c = c->u.pair.cdr, guard++) {
-        if (is_number_val(c->u.pair.car)) {
-            sum = num_add(sum, c->u.pair.car);
+        if (!is_number_val(c->u.pair.car)) {
+            return &nil_val;
         }
+        sum = num_add(sum, c->u.pair.car);
+        if (sum == &nil_val) return &nil_val;
     }
     return sum;
 }
@@ -2286,7 +2325,7 @@ static lisp_val_t *prim_sub(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
     lisp_val_t *first = args->u.pair.car;
-    if (!is_number_val(first)) return make_int(0);
+    if (!is_number_val(first)) return &nil_val;
     lisp_val_t *c = args->u.pair.cdr;
     if (!c || c->type != LISP_PAIR) {
         return num_neg(first);
@@ -2294,9 +2333,9 @@ static lisp_val_t *prim_sub(lisp_val_t *args, lisp_val_t *env) {
     lisp_val_t *res = first;
     int guard = 0;
     for (; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
-        if (is_number_val(c->u.pair.car)) {
-            res = num_sub(res, c->u.pair.car);
-        }
+        if (!is_number_val(c->u.pair.car)) return &nil_val;
+        res = num_sub(res, c->u.pair.car);
+        if (res == &nil_val) return &nil_val;
     }
     return res;
 }
@@ -2307,9 +2346,11 @@ static lisp_val_t *prim_mul(lisp_val_t *args, lisp_val_t *env) {
     int guard = 0;
     for (lisp_val_t *c = args; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE;
          c = c->u.pair.cdr, guard++) {
-        if (is_number_val(c->u.pair.car)) {
-            prod = num_mul(prod, c->u.pair.car);
+        if (!is_number_val(c->u.pair.car)) {
+            return &nil_val;
         }
+        prod = num_mul(prod, c->u.pair.car);
+        if (prod == &nil_val) return &nil_val;
     }
     return prod;
 }
@@ -2318,7 +2359,7 @@ static lisp_val_t *prim_div(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_int(0);
     lisp_val_t *first = args->u.pair.car;
-    if (!is_number_val(first)) return make_int(0);
+    if (!is_number_val(first)) return &nil_val;
     lisp_val_t *c = args->u.pair.cdr;
     if (!c || c->type != LISP_PAIR) {
         return num_div(make_int(1), first);
@@ -2326,10 +2367,9 @@ static lisp_val_t *prim_div(lisp_val_t *args, lisp_val_t *env) {
     lisp_val_t *res = first;
     int guard = 0;
     for (; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
-        if (is_number_val(c->u.pair.car)) {
-            res = num_div(res, c->u.pair.car);
-            if (res == &nil_val) return &nil_val;
-        }
+        if (!is_number_val(c->u.pair.car)) return &nil_val;
+        res = num_div(res, c->u.pair.car);
+        if (res == &nil_val) return &nil_val;
     }
     return res;
 }
@@ -3018,12 +3058,12 @@ static lisp_val_t *prim_number_to_string(lisp_val_t *args, lisp_val_t *env) {
         return make_str(buf);
     }
     if (a->type == LISP_BIGNUM) {
-        char buf[350];
+        char buf[700];
         bn_to_string(a, buf, sizeof(buf));
         return make_str(buf);
     }
     if (a->type == LISP_RATIO) {
-        char buf[700];
+        char buf[1400];
         ratio_to_string(a, buf, sizeof(buf));
         return make_str(buf);
     }
@@ -5288,13 +5328,13 @@ void lisp_print(lisp_val_t *val) {
             cprintf("%ld", val->u.i);
             break;
         case LISP_BIGNUM: {
-            char buf[350];
+            char buf[700];
             bn_to_string(val, buf, sizeof(buf));
             cprintf("%s", buf);
             break;
         }
         case LISP_RATIO: {
-            char buf[700];
+            char buf[1400];
             ratio_to_string(val, buf, sizeof(buf));
             cprintf("%s", buf);
             break;
@@ -5392,9 +5432,9 @@ lisp_val_t *lisp_read(const char **str) {
     /* Double Quoted Strings "..." */
     if (**str == '"') {
         (*str)++; // skip opening quote
-        char buf[128];
+        char buf[STRING_SLOT_LEN];
         int i = 0;
-        while (**str != '"' && **str != '\0' && i < 127) {
+        while (**str != '"' && **str != '\0' && i < (int)sizeof(buf) - 1) {
             if (**str == '\\' && (*str)[1] != '\0') {
                 (*str)++;
                 if (**str == 'n') buf[i++] = '\n';
@@ -6195,6 +6235,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
          * the boot-time case; lisp_repl()'s and kernel/shell.c's own
          * per-command loops cover the interactive ones. */
         lisp_gc_safepoint();
+        eval_depth_exceeded_warned = false;
     }
     if (node_pool_exhausted_warned) {
         return &nil_val;
@@ -6213,6 +6254,18 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     }
     if (lisp_interrupted) {
         return &nil_val;
+    }
+    uintptr_t stack_lo, stack_hi;
+    uintptr_t stack_here = (uintptr_t)__builtin_frame_address(0);
+    if (sched_current_stack(&stack_lo, &stack_hi)) {
+        if (stack_here < stack_lo + 2048) {
+            if (!eval_depth_exceeded_warned) {
+                printk("[Lisp Error] Stack limit reached (near stack bottom) -- "
+                       "aborting recursion to prevent crash\n");
+                eval_depth_exceeded_warned = true;
+            }
+            return &nil_val;
+        }
     }
     if (eval_depth >= LISP_MAX_EVAL_DEPTH) {
         if (!eval_depth_exceeded_warned) {
