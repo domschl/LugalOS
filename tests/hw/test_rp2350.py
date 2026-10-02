@@ -882,13 +882,20 @@ def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     lines = [
         "(define n38 0)",
         "(canvas-window 'split)",
-        "(canvas-on-redraw (lambda () (set! n38 (+ n38 1))))",
+        "(canvas-on-redraw (lambda () (set! n38 (+ n38 1)) (canvas-circle 100 100 50 1)))",
         "(canvas-fill 0)",
         "(canvas-circle 100 100 50 1)",
         "(canvas-window 'text)",
         "(canvas-window 'split)",
         "(list 'store n38 (canvas-get 150 100) (canvas-get 100 100))",
         "(list 'switch (let ((t0 (time))) (canvas-window 'text) (canvas-window 'split) (- (time) t0)))",
+        # The owner's Lorenz case: a resize to a size not yet drawn redraws
+        # once; back and forth after that restores, with no more redraws.
+        "(canvas-window 'split-half)",
+        "(canvas-window 'split)",
+        "(canvas-window 'split-half)",
+        "(canvas-window 'split)",
+        "(list 'resize n38 (canvas-get 150 100))",
         "(canvas-on-redraw '())",
         "(canvas-window 'text)",
         "lcd",
@@ -906,14 +913,16 @@ def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         out = out.replace("\r", "")
         st = re.search(r"=> \(store (\d+) (\d) (\d)\)", out)
         sw = re.search(r"=> \(switch (\d+)\)", out)
+        rs = re.search(r"=> \(resize (\d+) (\d)\)", out)
         lcd = re.search(r"screen state (\d+) KB at (0x[0-9a-f]+) \((\w+)\), canvas stores ([^,]+),", out)
-        if not st or not sw or not lcd:
+        if not st or not sw or not lcd or not rs:
             return (name, False, f"output not recognised:\n{out[-800:]}")
         detail = (f"state {lcd.group(1)} KB at {lcd.group(2)} in {lcd.group(3)}, stores {lcd.group(4)}; "
                   f"redraws {st.group(1)}, circle {st.group(2)}, centre {st.group(3)}; "
-                  f"text and back {sw.group(1)} ms")
+                  f"text and back {sw.group(1)} ms; resizes: {rs.group(1)} redraw, circle {rs.group(2)}")
         ok = (lcd.group(3) == "PSRAM" and lcd.group(4) == "4 x 48000 bytes"
-              and st.group(1) == "0" and st.group(2) == "1" and st.group(3) == "0")
+              and st.group(1) == "0" and st.group(2) == "1" and st.group(3) == "0"
+              and rs.group(1) == "1" and rs.group(2) == "1")
         return (name, ok, detail)
     except Exception as e:
         return (name, False, str(e))

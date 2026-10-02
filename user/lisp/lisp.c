@@ -1921,14 +1921,31 @@ static lisp_val_t *prim_canvas_on_redraw(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+/* 38.8: set while the redraw function runs, between 'D' 1 and 'D' 0, so
+ * that its drawing does not make the other layouts' stored canvases stale.
+ * A redraw cut short (Ctrl-C, an error) is closed at the next prompt. */
+static bool g_canvas_redrawing;
+
 void lisp_canvas_poll(void) {
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (g_canvas_redrawing) {
+        uint8_t end[2] = { 'D', 0 };
+        (void)console_canvas(end, 2, reply);
+        g_canvas_redrawing = false;
+    }
     lisp_val_t *f = env_get(global_env, CANVAS_REDRAW_SYM);
     if (!f || (f->type != LISP_LAMBDA && f->type != LISP_PRIMITIVE)) return;
-    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    uint8_t req[1] = { 'S' };
     if (!console_canvas(req, 1, reply) || reply[8] == SCREEN_LAYOUT_TEXT) return;
     if (reply16(reply, 6) == g_canvas_seen) return;
     g_canvas_seen = reply16(reply, 6);
+    uint8_t begin[2] = { 'D', 1 }, end[2] = { 'D', 0 };
+    g_canvas_redrawing = console_canvas(begin, 2, reply);
     (void)lisp_eval(make_pair(f, &nil_val), global_env);
+    if (g_canvas_redrawing) {
+        (void)console_canvas(end, 2, reply);
+        g_canvas_redrawing = false;
+    }
 }
 
 void lisp_canvas_reset(void) {

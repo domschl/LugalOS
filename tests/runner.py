@@ -2686,6 +2686,18 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             ("(canvas-window 'text)", r"=> #t"),
             ("(canvas-window 'split)", r"=> #t"),
             ("(list (canvas-get 140 100) (canvas-get 100 100))", r"=> \(1 0\)"),
+            # The owner's Lorenz case: with a redraw function, a resize to a
+            # size not yet drawn redraws once; back and forth after that
+            # restores both, with no further redraw.
+            ("(define n38 0)", r"=> n38"),
+            ("(canvas-on-redraw (lambda () (set! n38 (+ n38 1)) (canvas-circle 100 100 40)))", r"=> #t"),
+            ("(canvas-window 'split-half)", r"=> #t"),
+            ("n38", r"=> 1"),
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(canvas-window 'split-half)", r"=> #t"),
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(list n38 (canvas-get 140 100))", r"=> \(1 1\)"),
+            ("(canvas-on-redraw '())", r"=> #t"),
             ("exec /sd0/badelf.bin", r"=> -1"),
             ("(canvas-window 'split)", r"=> #t"),
             ("(canvas-get 140 100)", r"=> 0"),

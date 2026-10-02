@@ -223,6 +223,7 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     scr->store_ok = 0;
     scr->store_slot = 0;
     scr->draw_gen = 0;
+    scr->redrawing = 0;
     scr->locked = 0;
     scr->swapped = 0;
     const char *name = "LugalOS";
@@ -274,6 +275,7 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
     if (layout == scr->layout) return true;
     if (has_canvas(scr)) store_save(scr);
     if (!place(scr, layout)) return false;     /* place() changed nothing */
+    scr->redrawing = 0;
     if (layout == SCREEN_LAYOUT_TEXT) scr->locked = 0;
     draw_all_from(scr, true);
     return true;
@@ -345,6 +347,9 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         scr->locked = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'Z') {
         scr->store_ok = 0;              /* 38.8 */
+        scr->redrawing = 0;
+    } else if (op == 'D') {
+        scr->redrawing = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'S' || op == 0) {
         /* the reply is all */
     } else if (!has_canvas(scr)) {
@@ -381,8 +386,9 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         }
         else if (op == 'g') pixel = (uint8_t)canvas1_get(cc, a, b);
         else status = 1;
-        /* 38.8: drawn on -- every other layout's store is now out of date. */
-        if (op != 'g' && status == 0) scr->draw_gen++;
+        /* 38.8: drawn on -- every other layout's store is now out of date,
+         * unless this is a redraw of the same picture ('D'). */
+        if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
     }
     reply[0] = status;
     reply[1] = pixel;

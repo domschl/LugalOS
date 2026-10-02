@@ -660,6 +660,19 @@ so phase 37's redraw contract is unchanged. A new request `'Z'` forgets
 every store; `lisp_canvas_reset()` sends it after an `exec`'d program or
 `(chess)` returns, so the next program never sees the last one's pixels.
 
+**Found by the owner with `lorenz.lisp`:** every resize redrew. A resize
+is a layout change to a size not yet drawn, so the first visit has to
+redraw -- but that redraw was drawing, which made every other layout's
+store stale, so going back redrew too, and so on for ever. A redraw after
+damage is the same picture at another size, so Lisp now brackets the
+redraw function with `'D' 1` .. `'D' 0`, and drawing inside it leaves the
+other stores good. A layout change and `'Z'` end the bracket; a redraw cut
+short (Ctrl-C) is closed at the next prompt. Each size is now drawn once,
+and resizing back and forth restores. (The bracket trusts the redraw
+function to draw the program's picture as it was; a program that changes
+its picture *inside* its redraw function would leave other stores showing
+the old one.)
+
 **The PMP budget had no room** for the planned sixth region: a domain has
 five (eight entries less the three that shadow Hazard3's hardwired grants),
 and `lcdterm` used all five. So the screen's 8 KB state block moved into the
@@ -676,7 +689,8 @@ bulk zone the state stays in SRAM and nothing is stored.
 panel; no redraw call. Heap peak with two programs resident (C2): 45 -> 43
 pages.
 
-**Tests:** `vtselftest` (35/35) gains the store case -- kept, swapped,
+**Tests:** `vtselftest` (36/36) gains the store cases (and the redraw
+bracket's) -- kept, swapped,
 stale after drawing elsewhere, forgotten on `'Z'`, the tile's last column
 restored without touching its frame; QEMU drives the same through Lisp on
 the RAM screen, whose stores come from the bulk stand-in; `test_rp2350.py`'s

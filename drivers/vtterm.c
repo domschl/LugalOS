@@ -913,9 +913,31 @@ int vtterm_selftest(void) {
             REQ('Z');
             REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
             bool forgot = RD == d + 3u && !GET(3, 3);
+            /* A redraw after damage ('D' 1 .. 'D' 0) is the same picture at
+             * another size: both layouts' stores stay good, and resizing
+             * back and forth restores without damage (the owner's Lorenz
+             * case). A layout change ends the bracket. */
+            REQ('p', I16(3), I16(3), I16(1));           /* drawn in wide */
+            REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+            unsigned dh = RD;
+            REQ('D', 1);
+            REQ('p', I16(7), I16(7), I16(1));           /* the redraw, in half */
+            REQ('D', 0);
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+            bool wide_back = RD == dh && GET(3, 3) && !GET(7, 7);
+            REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+            bool half_back = RD == dh && GET(7, 7) && !GET(3, 3);
+            REQ('D', 1);
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);         /* ends the bracket */
+            REQ('p', I16(9), I16(9), I16(1));
+            REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+            bool ended = RD == dh + 1u && !GET(7, 7);
             st_check(&cx, "38.8: a layout's canvas is stored and comes back without damage, also swapped; "
                           "stale after drawing elsewhere, and forgotten on 'Z'",
                      kept && other_side && fresh && stale && forgot);
+            st_check(&cx, "38.8: a redraw ('D') keeps the other stores good, so resizing back and forth "
+                          "restores both; a layout change ends it",
+                     wide_back && half_back && ended);
 #undef GET
 #undef PXW
         }

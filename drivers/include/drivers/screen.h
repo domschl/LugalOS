@@ -81,6 +81,7 @@ typedef struct {
     uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
     uint8_t   store_ok;                 /* 38.8: bit L-1 -- layout L's store holds its canvas */
+    uint8_t   redrawing;                /* 38.8: between 'D' 1 and 'D' 0 */
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
     uint32_t  store_slot;               /* bytes per slot */
     uint32_t  draw_gen;                 /* bumped by every drawing request */
@@ -171,6 +172,14 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *   'Z'                                 38.8: forget every stored canvas -- a
  *                                       program has ended, and the next must
  *                                       not be shown its pixels
+ *   'D' u8 on                           38.8: 1 -- what follows is a redraw
+ *                                       of the program's picture after damage,
+ *                                       not a change to it, so the other
+ *                                       layouts' stores stay good; 0 ends it,
+ *                                       as do a layout change and 'Z'. Without
+ *                                       it, a redraw handler's drawing made
+ *                                       every other store stale, and each
+ *                                       resize redrew (the owner, Lorenz)
  *
  * The reply, SCREEN_REPLY_LEN bytes: [0] 0 done, 1 refused (no canvas in
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
