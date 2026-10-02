@@ -42,3 +42,6 @@ tools/picotool
 # editing session holding the file. Editor state, not repo content, and
 # easy to sweep up accidentally with `git add -A`.
 .#*
+
+# Hardware-specific test/bench outputs
+tests/lisp_bench*hw*.json

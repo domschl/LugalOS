@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -72,15 +71,18 @@ class HardwareSession:
 
     def start(self) -> None:
         self.ser.reset_input_buffer()
-        self.ser.write(b"\r\n")
+        self.ser.write(b"\x03\n")
         self.ser.flush()
-        time.sleep(0.2)
+        time.sleep(0.3)
+        self.ser.write(b"lisp\n")
+        self.ser.flush()
+        time.sleep(0.3)
 
     def send_and_expect(
         self, command: str, expected_pattern: str, timeout: float = 15.0
     ) -> tuple[bool, str]:
         self.ser.reset_input_buffer()
-        self.ser.write((command + "\r\n").encode("utf-8"))
+        self.ser.write((command + "\n").encode("utf-8"))
         self.ser.flush()
 
         out = ""
@@ -148,7 +150,7 @@ def run_benchmarks(
     for bench_id, desc, expr in BENCHMARKS:
         times: list[int] = []
         for _ in range(3):
-            ok, res_text = session.send_and_expect(expr, "=>", timeout=20.0)
+            ok, res_text = session.send_and_expect(expr, r"=>\s+-?\d+", timeout=20.0)
             if ok:
                 match = re.search(r"=>\s+(-?\d+)", res_text)
                 if match:
@@ -207,7 +209,7 @@ def main() -> None:
         try:
             with open(baseline_file, "r", encoding="utf-8") as f:
                 baseline_data = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             baseline_data = None
 
     results = run_benchmarks(
@@ -224,7 +226,7 @@ def main() -> None:
         try:
             with open(history_file, "r", encoding="utf-8") as f:
                 history = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             history = []
 
     history.append(results)
