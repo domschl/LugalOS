@@ -432,7 +432,7 @@ and `/proc/meminfo` showing both zones.
 after one 4 KB BULK_BSS page. `zonetest` 0.4 s including zeroing all 8 MB
 twice. QEMU 418/418, `test_rp2350.py` 27/27.
 
-### 38.5 — The Lisp heap moves to PSRAM
+### 38.5 — The Lisp heap moves to PSRAM *(done 2026-10-02)*
 
 * `node_pool`, `string_small`, `string_large` and `gc_work_stack` become
   `BULK_BSS`; the mark bits stay in SRAM.
@@ -451,6 +451,53 @@ the SRAM regained (`sizereport`, `meminfo`).
 **Tests:** the QEMU Lisp suite unchanged; `test_rp2350.py`'s node-pool
 exhaustion test (it must still exhaust, now later, and still degrade
 cleanly -- its timeout may need to grow with the pool).
+
+**Done.** Pools in `BULK_BSS`, mark bitmaps in SRAM, sizes from the board
+file: `CONFIG_LISP_NODE_POOL 65536` as before plus a new
+`CONFIG_LISP_STRING_POOL 3072` (any preset can size both; the others keep
+their defaults and their placement).
+
+| LCD-7 | SRAM, 2 048 nodes | PSRAM, 65 536 nodes | |
+|---|---|---|---|
+| `(fib 18)` | 268 ms | 491 ms | **1.83x** |
+| allocation loop (300 x 200 conses) | 3 041 ms | ~6 650-6 970 ms | **2.2-2.3x** |
+| collections inside a form, both runs | 1 132 | 84 | |
+| longest GC pause, benchmark | -- | 32 ms | full sweep of 1 MB |
+| longest GC pause, pool filled with live data | -- | 102 ms | marking 64 k live nodes |
+| SRAM static, `lisp.c` | 61.7 KB | 10.6 KB (8 KB of it the mark bitmap) | |
+| heap pages | 74 | **86** (+48 KB) | |
+| PSRAM, `BULK_BSS` | -- | 1 424 KB | bulk zone 1 691 pages left |
+
+**Where the time goes.** The baseline is faster than the preliminaries'
+(308 / 3 427 ms) because 38.3's libc sped up both builds. Strings in SRAM
+instead of PSRAM changed nothing (measured: 498 / 6 907 ms), so name
+comparison is not the cost. GC is ~20 % of the allocation loop in PSRAM
+(2.7 s of 13.3 s for two loops; `(gc-stats)` now reports total and longest
+collection time): without it the loop would be ~1.76x, the preliminaries'
+figure. The rest is the evaluator touching nodes and environments in PSRAM.
+
+**Found and fixed: a per-command cost.** `gc_headroom_low()` walked the
+node and string free lists before every shell command to count them --
+free in SRAM, one cache miss per node in PSRAM: a trivial command's round
+trip went 10 → 30 ms once the pool had cycled. The lists' lengths are now
+counters, changed at the five places the lists are; the collector's own
+free-list walk (which it needs anyway) checks them and reports a
+`[Lisp BUG]` on a mismatch. After the fix, a cycled pool and a fresh one
+give the same round trips (median 20 ms, on the 10 ms tick).
+
+**Left for the owner: the allocation-heavy 2.2x.** The lever is the sweep:
+it touches every node in the pool (1 MB of PSRAM) on each collection. A
+lazy sweep -- allocation finds the next unmarked node in the SRAM mark
+bitmap instead of the sweep threading a free list through PSRAM -- removes
+that pass, the free-list walks, and most of the 32 ms pause, and should
+bring allocation-heavy code to ~1.76x. It is a change to the collector's
+core, the kind the owner deferred to a dedicated Lisp phase; whether it
+comes forward into phase 38 is the owner's call.
+
+The node-pool exhaustion test still exhausts (4.8 s, cleanly); its read
+window grew to 8 s. `zonetest`'s floor became "at least half the chip".
+QEMU 418/418 (one earlier run hit the known log-burst intermittent,
+`open_issues.md` part B; the rerun was clean). `test_rp2350.py` 27/27.
 
 ### 38.6 — `/ram0` in PSRAM
 

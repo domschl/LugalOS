@@ -26,12 +26,18 @@ set(CONFIG_BALLOC_ARENA_PAGES 4)
 # divider follows it.
 set(CONFIG_CLK_SYS_HZ 144000000)
 
-# Lisp's node pool: 2048 rather than the RP2350's 1024 (37.3a,
-# plan/phase37_screen_layouts_and_apps.md). This persona is the Lisp machine
-# with a screen, and the showcase's cellular automaton keeps two rows of ~156
-# cells alive beside the loaded program. 16 bytes a node plus its share of
-# the collector's work list: about 20 KB, five heap pages.
-set(CONFIG_LISP_NODE_POOL 2048)
+# Lisp's node pool. 37.3a raised it to 2048 (from the RP2350's 1024) for the
+# showcase's cellular automaton, at about 20 KB -- five heap pages -- of SRAM.
+set(CONFIG_LISP_NODE_POOL 65536)
+
+# 38.5 (plan/phase38_psram.md, sign-off S2): the pools are BULK_BSS, so on
+# this board they live in PSRAM and the 2048 above became 65 536 -- 1 MB of
+# nodes, 256 KB of GC work stack. Measured ~1.7x slower than SRAM per node
+# touched (plan/phase38_preliminaries.md §3), accepted for "basically
+# unlimited" nodes. The node mark bitmap stays in SRAM: 8 KB at this size.
+# The string pool at eight times the RP2350 default of 384 slots (both
+# tiers: 2560 x 32 B and 512 x 128 B, 144 KB).
+set(CONFIG_LISP_STRING_POOL 3072)
 
 # UART0 on GP16/GP17, header H7 (pin 1 3V3, 2 GND, 3 RXD0, 4 TXD0).
 #

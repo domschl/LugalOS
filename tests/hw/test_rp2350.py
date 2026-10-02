@@ -783,7 +783,10 @@ def test_bulk_zone(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         if m.group(3) != "OK":
             fails = "; ".join(re.findall(r"FAIL: (.*)", text))
             return (name, False, f"{detail}: {fails}")
-        if not (0x11000000 <= int(m.group(2), 16) < 0x12000000) or int(m.group(1)) < 2000:
+        # At least half the chip: the link refuses a BULK_BSS over half (the
+        # generated lugalos_bulk.ld's ASSERT), and BULK_BSS has grown since
+        # 38.4 -- 1691 pages once 38.5 put the Lisp heap there.
+        if not (0x11000000 <= int(m.group(2), 16) < 0x12000000) or int(m.group(1)) < 1024:
             return (name, False, f"the zone is not the PSRAM: {detail}")
         return (name, True, detail)
     except Exception as e:
@@ -1424,11 +1427,13 @@ def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str
             # collector runs inside a form, so a loop that keeps nothing alive
             # never exhausts the pool -- it runs until Ctrl-C. Live data
             # outgrowing the pool is what still exhausts it.
+            # quiet=8: on the LCD-7 the pool is 65 536 nodes in PSRAM (38.5)
+            # and filling it takes ~5 s with nothing printed until the end.
             for cmd in (b"lisp\n(define (grow acc) (grow (cons 1 acc)))\n(grow '())\n",
                         b"exit\n"):
                 ser.write(cmd)
                 ser.flush()
-                out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
+                out += rp2350.drain(ser, quiet=8.0, deadline=60.0).decode("utf-8", "replace")
 
         checks = [
             ("exhaustion reported", "Node pool exhausted" in out),

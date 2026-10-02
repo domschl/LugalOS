@@ -9,6 +9,7 @@
 #include "drivers/screen.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
+#include "kernel/palloc.h"   /* BULK_BSS */
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/at24c32.h"
@@ -143,7 +144,11 @@
 
 
 
-static lisp_val_t node_pool[NODE_POOL_SIZE];
+/* 38.5, plan/phase38_psram.md: the pools are BULK_BSS -- PSRAM on a board
+ * that has one (the LCD-7: 65 536 nodes, 1 MB, measured 1.7x slower than
+ * SRAM and accepted for the size), ordinary .bss everywhere else. The mark
+ * bitmaps further down stay in SRAM: they are small and hit at random. */
+static lisp_val_t node_pool[NODE_POOL_SIZE] BULK_BSS;
 
 static int node_pool_idx = 0;
 static bool node_pool_exhausted_warned = false;
@@ -153,6 +158,16 @@ static bool node_pool_exhausted_warned = false;
  * storage) -- see gc_collect() further down for how cells get here. NULL
  * means empty, i.e. every collection so far has reclaimed nothing new. */
 static lisp_val_t *node_free_list = NULL;
+/* 38.5: the free lists' lengths, kept as they change rather than walked.
+ * Walking was free while the pools were SRAM; in PSRAM a walk of the node
+ * list is one cache miss per node, and gc_headroom_low() did it before
+ * every shell command -- measured on the LCD-7 at 20 ms a command once the
+ * pool had cycled (10 ms round trip fresh, 30 ms after). Changed in exactly
+ * the places the lists are: the pops in alloc_node()/take_small()/
+ * take_large() and the pushes in the sweep. */
+static int node_free_count;
+static int string_small_free_count;
+static int string_large_free_count;
 
 /* Guards against unbounded C-stack recursion in lisp_eval() (see its
  * definition near the bottom of this file for the full rationale). */
@@ -212,6 +227,7 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
     if (node_free_list) {
         lisp_val_t *v = node_free_list;
         node_free_list = v->u.pair.cdr;
+        node_free_count--;
         v->type = type;
         return v;
     }
@@ -239,6 +255,7 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
         if (node_free_list) {
             lisp_val_t *v = node_free_list;
             node_free_list = v->u.pair.cdr;
+            node_free_count--;
             v->type = type;
             return v;
         }
@@ -299,7 +316,11 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
  * search.c) need room in too. 384 is what this constant was already
  * proven sufficient at, so it stays fixed at that regardless of how much
  * further NODE_POOL_SIZE grows for its own, separately-justified reasons. */
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_LISP_STRING_POOL)
+/* 38.5: a board file may size it, as it may size the node pool. The LCD-7
+ * keeps both in PSRAM and takes eight times the default (sign-off S2). */
+#define STRING_POOL_SIZE CONFIG_LISP_STRING_POOL
+#elif defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
 /* Fixed at 384 on both real boards, and deliberately not the NODE_POOL_SIZE/2
  * ratio -- see the paragraph above for why that ratio was the bug rather than
  * the rule. */
@@ -344,8 +365,8 @@ _Static_assert(STRING_SMALL_LEN >= sizeof(int),
 _Static_assert(STRING_LARGE_SLOTS >= 1 && STRING_SMALL_SLOTS >= 1,
                "both tiers must exist for the spill path to mean anything");
 
-static char string_small[STRING_SMALL_SLOTS][STRING_SMALL_LEN];
-static char string_large[STRING_LARGE_SLOTS][STRING_SLOT_LEN];
+static char string_small[STRING_SMALL_SLOTS][STRING_SMALL_LEN] BULK_BSS;
+static char string_large[STRING_LARGE_SLOTS][STRING_SLOT_LEN] BULK_BSS;
 
 /* Bump indices, one per tier. */
 static int string_small_idx = 0;
@@ -383,6 +404,7 @@ static int take_small(void) {
         int next;
         memcpy(&next, slot_at(idx), sizeof(next));
         string_free_head = next;
+        string_small_free_count--;
         return idx;
     }
     if (string_small_idx < (int)STRING_SMALL_SLOTS) return string_small_idx++;
@@ -395,6 +417,7 @@ static int take_large(void) {
         int next;
         memcpy(&next, slot_at(idx), sizeof(next));
         string_large_free_head = next;
+        string_large_free_count--;
         return idx;
     }
     if (string_large_idx < (int)STRING_LARGE_SLOTS) {
@@ -477,7 +500,7 @@ static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE];
  * needs to hold more than NODE_POOL_SIZE entries no matter how bushy the
  * live graph is, so it can be sized exactly and statically rather than
  * guessed. */
-static lisp_val_t *gc_work_stack[NODE_POOL_SIZE];
+static lisp_val_t *gc_work_stack[NODE_POOL_SIZE] BULK_BSS;
 
 static int string_slot_index(const char *slot) {
     if (!slot) return -1;
@@ -619,7 +642,25 @@ __attribute__((noinline)) static void gc_push_stack(int *sp, uintptr_t top) {
  * actually grew the corresponding free list, so a session with genuinely
  * no reclaimable garbage still degrades to nil exactly as it did before
  * S3, rather than retrying a hopeless collection on every later form. */
+/* 38.5: the longest collection so far and how many there were, for
+ * `(gc-stats)` -- with the pool in PSRAM, a full sweep is the one pause a
+ * user can feel, so it is measured rather than estimated. */
+static uint32_t gc_max_pause_us;
+static uint32_t gc_total_ms_x1000;   /* total time collecting, in microseconds */
+static unsigned long gc_collections;
+
+static void gc_collect_from_timed(uintptr_t stack_top);
+
 static void gc_collect_from(uintptr_t stack_top) {
+    uint64_t t0 = time_get_us();
+    gc_collect_from_timed(stack_top);
+    uint32_t us = (uint32_t)(time_get_us() - t0);
+    if (us > gc_max_pause_us) gc_max_pause_us = us;
+    gc_total_ms_x1000 += us;
+    gc_collections++;
+}
+
+static void gc_collect_from_timed(uintptr_t stack_top) {
     memset(node_mark_bits, 0, sizeof(node_mark_bits));
     memset(string_mark_bits, 0, sizeof(string_mark_bits));
 
@@ -628,21 +669,34 @@ static void gc_collect_from(uintptr_t stack_top) {
      * would grow it a cycle or a duplicate entry. Pre-marking them here
      * makes the sweep treat "already free" exactly like "still live":
      * either way, leave it alone. */
+    int walked_nodes = 0, walked_small = 0, walked_large = 0;
     for (lisp_val_t *c = node_free_list; c; c = c->u.pair.cdr) {
         long idx = c - node_pool;
         node_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
+        walked_nodes++;
     }
-    for (int idx = string_free_head; idx >= 0;) {
+    for (int idx = string_free_head; idx >= 0; walked_small++) {
         string_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
         int next;
         memcpy(&next, slot_at(idx), sizeof(next));
         idx = next;
     }
-    for (int idx = string_large_free_head; idx >= 0;) {
+    for (int idx = string_large_free_head; idx >= 0; walked_large++) {
         string_mark_bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
         int next;
         memcpy(&next, slot_at(idx), sizeof(next));
         idx = next;
+    }
+    /* The walk above is needed anyway; it costs nothing to check the
+     * counters that replaced the per-command walks (38.5) against it. */
+    if (walked_nodes != node_free_count || walked_small != string_small_free_count ||
+        walked_large != string_large_free_count) {
+        printk("[Lisp BUG] free counts %d/%d/%d, lists hold %d/%d/%d -- corrected\n",
+               node_free_count, string_small_free_count, string_large_free_count,
+               walked_nodes, walked_small, walked_large);
+        node_free_count = walked_nodes;
+        string_small_free_count = walked_small;
+        string_large_free_count = walked_large;
     }
 
     int sp = 0;
@@ -655,6 +709,7 @@ static void gc_collect_from(uintptr_t stack_top) {
         if (!(node_mark_bits[i / 8] & bit)) {
             node_pool[i].u.pair.cdr = node_free_list;
             node_free_list = &node_pool[i];
+            node_free_count++;
         }
     }
     if (node_free_list) node_pool_exhausted_warned = false;
@@ -666,6 +721,7 @@ static void gc_collect_from(uintptr_t stack_top) {
         if (!(string_mark_bits[i / 8] & bit)) {
             memcpy(slot_at(i), &string_free_head, sizeof(string_free_head));
             string_free_head = i;
+            string_small_free_count++;
         }
     }
     for (int k = 0; k < string_large_idx; k++) {
@@ -674,6 +730,7 @@ static void gc_collect_from(uintptr_t stack_top) {
         if (!(string_mark_bits[i / 8] & bit)) {
             memcpy(slot_at(i), &string_large_free_head, sizeof(string_large_free_head));
             string_large_free_head = i;
+            string_large_free_count++;
         }
     }
     if (string_free_head >= 0 || string_large_free_head >= 0) {
@@ -737,32 +794,17 @@ static bool gc_collect_in_form(void) {
 #define GC_STRING_SMALL_HEADROOM (STRING_SMALL_SLOTS / 8)
 #define GC_STRING_LARGE_HEADROOM (STRING_LARGE_SLOTS / 4)
 
-/* Walked rather than counted incrementally: a free list is at most its tier's
- * size, this runs once per top-level form, and a counter maintained across
- * take_small()/take_large()/alloc_node() and the sweep loops is five places to
- * keep in agreement instead of one place to read. */
+/* Counted, not walked (38.5): see node_free_count. These were walks while the
+ * pools were SRAM, on the argument that one place to read beats five places
+ * to keep in agreement; PSRAM made the walk the slow part of every command. */
 static int gc_free_nodes(void) {
-    int n = 0;
-    for (lisp_val_t *c = node_free_list; c; c = c->u.pair.cdr) n++;
-    return n;
-}
-
-static int gc_free_slots(int head) {
-    int n = 0;
-    for (int idx = head; idx >= 0; n++) {
-        int next;
-        memcpy(&next, slot_at(idx), sizeof(next));
-        idx = next;
-    }
-    return n;
+    return node_free_count;
 }
 
 static bool gc_headroom_low(void) {
     int nodes = (NODE_POOL_SIZE - node_pool_idx) + gc_free_nodes();
-    int small = ((int)STRING_SMALL_SLOTS - string_small_idx)
-              + gc_free_slots(string_free_head);
-    int large = ((int)STRING_LARGE_SLOTS - string_large_idx)
-              + gc_free_slots(string_large_free_head);
+    int small = ((int)STRING_SMALL_SLOTS - string_small_idx) + string_small_free_count;
+    int large = ((int)STRING_LARGE_SLOTS - string_large_idx) + string_large_free_count;
     return nodes  < GC_NODE_HEADROOM
         || small  < (int)GC_STRING_SMALL_HEADROOM
         || large  < (int)GC_STRING_LARGE_HEADROOM;
@@ -1432,13 +1474,19 @@ static lisp_val_t *prim_string_length(lisp_val_t *args, lisp_val_t *env) {
     return make_int(utf8_count(a->u.str, (long)strlen(a->u.str)));
 }
 
-/* (gc-stats) -> (collections-inside-a-form free-nodes): 37.3a's
- * collector, made visible -- how often a form ran a pool dry and was
- * rescued, and how much of the node pool is free right now. */
+/* (gc-stats) -> (collections-inside-a-form free-nodes longest-pause-us
+ * collections total-ms): 37.3a's collector, made visible -- how often a form ran a
+ * pool dry and was rescued, and how much of the node pool is free right now;
+ * since 38.5 also the longest collection so far in microseconds, how many
+ * collections there were in all, and the milliseconds spent in them. New
+ * figures go on the end. */
 static lisp_val_t *prim_gc_stats(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     long free_nodes = (long)(NODE_POOL_SIZE - node_pool_idx) + (long)gc_free_nodes();
-    lisp_val_t *tail = make_pair(make_int(free_nodes), &nil_val);
+    lisp_val_t *tail = make_pair(make_int((long)(gc_total_ms_x1000 / 1000u)), &nil_val);
+    tail = make_pair(make_int((long)gc_collections), tail);
+    tail = make_pair(make_int((long)gc_max_pause_us), tail);
+    tail = make_pair(make_int(free_nodes), tail);
     return make_pair(make_int((long)gc_in_form_count), tail);
 }
 
@@ -3706,6 +3754,8 @@ void lisp_init(void) {
     string_large_idx = 0;
     string_free_head = -1;
     string_large_free_head = -1;
+    string_small_free_count = 0;
+    string_large_free_count = 0;
     string_pool_exhausted_warned = false;
     eval_depth = 0;
     eval_depth_exceeded_warned = false;

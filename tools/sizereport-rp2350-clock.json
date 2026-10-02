@@ -74,8 +74,8 @@
     "user/chibicc/preprocess.c": 20,
     "user/chibicc/tokenize.c": 17,
     "user/ed/ed.c": 92,
-    "user/lisp/lisp.c": 41109
+    "user/lisp/lisp.c": 41133
   },
   "ram_code": 264,
-  "total": 152043
+  "total": 152067
 }
