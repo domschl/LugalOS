@@ -1003,7 +1003,7 @@ endif()
 # edit to the memory layout silently produced a stale binary -- which cost a
 # confusing debugging round when a 2 MB alignment appeared not to take effect.
 set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS
-    "${LINKER_SCRIPT};${CMAKE_CURRENT_BINARY_DIR}/lugalos_bulk.ld")
+    "${LINKER_SCRIPT};${CMAKE_CURRENT_BINARY_DIR}/lugalos_bulk.ld;${CMAKE_CURRENT_BINARY_DIR}/lugalos_text.ld;${CMAKE_CURRENT_BINARY_DIR}/lugalos_rodata.ld;${CMAKE_CURRENT_BINARY_DIR}/lugalos_ramcode.ld")
 # -L: linker/rp2350.ld INCLUDEs the generated lugalos_bulk.ld (38.4).
 target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT} -L${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(lugalos.elf PRIVATE gcc)

@@ -928,6 +928,34 @@ def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_chess_hot_path(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.9 (plan/phase38_psram.md): on the LCD-7 the chess engine's hot
+    files run from SRAM, so a depth-6 search of the bench position takes
+    the same time whatever the rest of the link does -- 2.51-2.52 s on four
+    builds padded differently, where from flash it was 3.26-3.85 s."""
+    name = "Chess hot path in SRAM: depth-6 search at the measured speed (38.9)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: only the PSRAM persona runs chess from SRAM")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"(chess-selftest 1 0 6)\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=6.0, deadline=40.0).decode("utf-8", errors="replace")
+        m = re.search(r"best move (\w+), score (-?\d+), depth 6, (\d+) nodes", out)
+        t = re.search(r"helper nodes \d+, (\d+) ms", out)
+        if not m or not t:
+            return (name, False, f"chess-selftest output not recognised:\n{out[-600:]}")
+        ms = int(t.group(1))
+        detail = f"best {m.group(1)}, {m.group(3)} nodes, {ms} ms (measured 2515)"
+        return (name, ms <= 2515 * 1.15, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
     scheduler share the CPU fairly between two same-tier
@@ -2116,7 +2144,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_chess_hot_path, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

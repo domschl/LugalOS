@@ -54,22 +54,21 @@ the bootrom's `get_sys_info`) at USB init -- the same uid the node identity
 carries. Both copies of the descriptor (kernel and U-mode, `u_ep0_send`) use
 it.
 
-## Chess speed on RP2350 depends on where the linker puts it (2.3x spread)
+## Chess search speed on the chess persona depends on the link (18 % spread)
 
-**Destination: 38.9.**
+**Destination: the owner's call** (it costs the chess board 8 heap pages).
 
-`(perft 3 1)` on the same silicon, with images that differ only in code the
-search never runs: 7 029 to 16 971 ms (2026-09-30, Pico 2 and LCD-7, QMI and
-CPU clock verified identical). The engine executes in place from flash
-through the 16 KB XIP cache; its hot path (~21 KB of text) and tables
-(~10 KB) do not fit, so the node rate depends on how the link aligns them.
-Any cross-build perft comparison carries this noise.
+The engine executes in place from flash through the 16 KB XIP cache, and its
+hot path (~21 KB of code, ~10 KB of tables) does not fit, so the search's
+node rate depends on how the link aligns it: a depth-6 search took
+3 264-3 849 ms on four LCD-7 builds that differed only in a pad in unrelated
+code (38.9, 2026-10-02). Perft, once the headline (7.0-17.0 s on
+2026-09-30), no longer varies by more than 1 % -- 38.3's word-wide `memcpy`
+took most of that away.
 
-**Fix:** the hot search files in `.ramfunc` and their tables in `.data`,
-~31 KB. Parked because that spends heap; phase 38 moves the Lisp heap and
-`/ram0` to PSRAM on the LCD-7 and spends what it frees here. On the chess
-persona (no PSRAM) the same change costs ~8 pages it may not have -- 38.9
-decides per persona.
+**Fixed on the LCD-7 by 38.9:** `CONFIG_CHESS_HOT_RAM` puts the hot files in
+SRAM (0.3 % spread, 23-35 % faster). The same key on the chess persona
+would fix it there, for 31 KB of a heap that has no PSRAM behind it.
 
 ## The runner cannot see inside a stuck guest
 

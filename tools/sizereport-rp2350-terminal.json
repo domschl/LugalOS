@@ -4,8 +4,8 @@
     "user/lisp/lisp.c": 1458176
   },
   "bulk_total": 1458240,
-  "heap_bytes": 352256,
-  "heap_pages": 86,
+  "heap_bytes": 319488,
+  "heap_pages": 78,
   "per_file": {
     "arch/riscv/common/elf.c": 1456,
     "arch/riscv/common/mem_domain.c": 8,
@@ -68,13 +68,15 @@
     "net/stack.c": 169,
     "net/tcp.c": 279,
     "net/udp.c": 48,
+    "user/chess/include/zobrist_tables.h": 6784,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
     "user/chess/src/chess_ui.c": 10751,
+    "user/chess/src/evaluation.c": 3072,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
-    "user/chess/src/position.c": 48,
-    "user/chess/src/search.c": 5721,
+    "user/chess/src/position.c": 304,
+    "user/chess/src/search.c": 6548,
     "user/chess/src/tt.c": 17,
     "user/chibicc/codegen.c": 85,
     "user/chibicc/main.c": 8,
@@ -85,6 +87,6 @@
     "user/ed/ed.c": 92,
     "user/lisp/lisp.c": 10622
   },
-  "ram_code": 4090,
-  "total": 141866
+  "ram_code": 24352,
+  "total": 173067
 }

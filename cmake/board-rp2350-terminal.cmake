@@ -73,6 +73,11 @@ set(CONFIG_RAMDISK_MAX_KB 4096)
 # 26.0 s against 33.9 s; 1 MB bought 4 % more and 4 MB 5 % -- the owner
 # chose 512 KB.
 set(CONFIG_CHESS_TT_KB 512)
+# The chess engine's hot path in SRAM (38.9): search, move generation, make/
+# unmake, evaluation, bitboards and the TT code, and their tables -- ~32 KB of
+# the heap PSRAM gave back, so the node rate no longer depends on how the link
+# happens to align them against the 16 KB XIP cache.
+set(CONFIG_CHESS_HOT_RAM 1)
 
 # Deliberately no CONFIG_LED_*: this board has no user LED on any GPIO
 # (Led1/Led2 on the schematic are power and charge indicators). With neither

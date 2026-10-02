@@ -696,7 +696,7 @@ restored without touching its frame; QEMU drives the same through Lisp on
 the RAM screen, whose stores come from the bulk stand-in; `test_rp2350.py`'s
 `test_canvas_store` on the panel. QEMU 424/424, `test_rp2350.py` 30/30.
 
-### 38.9 — Spending what was freed: the chess hot path
+### 38.9 — Spending what was freed: the chess hot path *(done 2026-10-02)*
 
 `plan/open_issues.md`'s "chess speed depends on where the linker puts it
 (2.3x spread)": option (a), the hot search files in `.ramfunc` and their
@@ -708,6 +708,40 @@ code: the spread must collapse (today 7.0-17.0 s) and the speed match or
 beat the best of today's builds. On the chess persona (no PSRAM) the same
 change costs 8 pages it may not have -- applied to the LCD-7 persona only,
 unless the owner wants the chess board too.
+
+**Done (2026-10-02), LCD-7 only** (the owner: scope as planned).
+`CONFIG_CHESS_HOT_RAM`, a board key, makes `cmake/gen_config.cmake` write
+three linker fragments that `linker/rp2350.ld` INCLUDEs: the `.text` and
+`.rodata` rules less six files (search, movegen, position, evaluation,
+bitboard, tt), and those files' code and `.rodata` inside `.data` after
+`.ramfunc` -- copied at boot like `.data`, no new copy loop. Their strings
+stay in flash. ld gives a section to the first rule that matches, so the
+exclusions are what make it work. 31 201 bytes; heap 86 -> 78 pages.
+
+Measured with a temporary pad in `kernel/main.c`'s `.text` (1, 1 060,
+4 000, 6 244 bytes) that shifts everything linked after it -- the first
+version of the pad was garbage-collected and all four "builds" were one:
+
+| | perft 3 (flash) | perft 3 (SRAM) | depth-6 search (flash) | depth-6 search (SRAM) |
+|---|---|---|---|---|
+| pad 1 | 7 263 ms | 7 554 ms | 3 421 ms | 2 515 ms |
+| pad 1 060 | 7 303 ms | 7 552 ms | 3 849 ms | 2 512 ms |
+| pad 4 000 | 7 275 ms | 7 547 ms | 3 333 ms | 2 511 ms |
+| pad 6 244 | 7 361 ms | 7 595 ms | 3 264 ms | 2 520 ms |
+
+* **The search** -- what play runs -- had an 18 % spread from flash and has
+  0.3 % from SRAM, and is 23-35 % faster than any flash build.
+* **Perft** no longer shows the issue's 2.3x spread even from flash (1 %):
+  the 7.0-17.0 s of 2026-09-30 predates 38.3's word-wide `memcpy`, which
+  make/unmake leans on. From SRAM it is 3-4 % *slower*: its working set
+  fit the XIP cache already, and SRAM code fetch competes with the panel's
+  scan-out DMA (38.7 saw the same with a U-mode program). `perft.c` itself
+  in SRAM did not help (7.59-7.61 s) and stays in flash. Perft is a
+  move-generator check, not play, so the search's number decides.
+
+**Tests:** `test_rp2350.py`'s `test_chess_hot_path` (depth 6 within 15 % of
+2 515 ms). QEMU 424/424 (one run hit the known log-burst intermittent);
+`test_rp2350.py` 31/31.
 
 ### 38.10 — Documents
 
