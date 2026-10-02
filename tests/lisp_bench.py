@@ -147,9 +147,11 @@ def run_benchmarks(
     for bench_id, desc, expr in BENCHMARKS:
         times: list[int] = []
         for _ in range(3):
-            ok, res_text = session.send_and_expect(expr, r"=>\s+-?\d+", timeout=20.0)
+            ok, res_text = session.send_and_expect(
+                expr, r"=>\s+-?\d+\s*[\r\n]", timeout=20.0
+            )
             if ok:
-                match = re.search(r"=>\s+(-?\d+)", res_text)
+                match = re.search(r"=>\s+(-?\d+)\s*[\r\n]", res_text)
                 if match:
                     times.append(int(match.group(1)))
             time.sleep(0.05)
