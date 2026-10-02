@@ -793,6 +793,48 @@ def test_bulk_zone(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_ram0_in_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.6 (plan/phase38_psram.md): /ram0 is mounted at boot at 2 MB
+    (sign-off S3), the whole of it addressable -- fat32_format() sized its
+    FAT for 511 KB until 38.6 -- and a 1 MB file written through FAT32 reads
+    back verified, at rates near the ones measured when it was built."""
+    name = "/ram0 in PSRAM: 2 MB at boot, all of it usable, 1 MB file verified (38.6)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no PSRAM (no PSRAM_BYTES in /proc/config)")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"df\n")
+            ser.flush()
+            # `df` is silent while it counts /sd0's free clusters from the
+            # FAT when the stored count is unknown -- 5 to 10 s on a card.
+            df = rp2350.drain(ser, quiet=12.0, deadline=40.0).decode("utf-8", errors="replace")
+            ser.write(b"fsbench /ram0 1024\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=2.0, deadline=30.0).decode("utf-8", errors="replace")
+        m = re.search(r"/ram0/\s+(\d+)\s+(\d+)\s+(\d+)", df)
+        if not m:
+            return (name, False, f"/ram0 not in df:\n{df[-600:]}")
+        blocks, avail = int(m.group(1)), int(m.group(3))
+        if blocks != 4096 or avail < 3900:
+            return (name, False, f"/ram0 is {blocks} blocks with {avail} available; want 4096 and >= 3900")
+        b = re.search(r"fsbench: 1024 KB file: write \d+ ms = (\d+) KB/s, read back \d+ ms = (\d+) KB/s, (\w+)", out)
+        if not b or b.group(3) != "verified":
+            return (name, False, f"fsbench did not verify:\n{out[-600:]}")
+        w, r = int(b.group(1)), int(b.group(2))
+        detail = f"{blocks} blocks, {avail} available; write {w} KB/s, read {r} KB/s"
+        # Measured at 38.6: 2150 and 5626 KB/s. A floor, not a band: faster
+        # is welcome, a quarter slower means something changed.
+        if w < 2150 * 0.75 or r < 5626 * 0.75:
+            return (name, False, f"slower than measured at 38.6 (2150/5626): {detail}")
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
     scheduler share the CPU fairly between two same-tier
@@ -1981,7 +2023,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

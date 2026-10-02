@@ -10,6 +10,7 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"   /* BULK_BSS */
+#include "drivers/psram_rp2350.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/at24c32.h"
@@ -2770,6 +2771,18 @@ static lisp_val_t *prim_mounted(lisp_val_t *args, lisp_val_t *env) {
     return vfs_volume_writable(name) ? &true_val : &false_val;
 }
 
+/* (psram) -- bytes of PSRAM this board brought up, 0 where there is none.
+ * init.lisp asks it to size /ram0 (38.6, plan/phase38_psram.md): with PSRAM
+ * the RAM disk costs no heap, so it is mounted large and unconditionally. */
+static lisp_val_t *prim_psram(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+    return make_int((long)psram_bytes());
+#else
+    return make_int(0);
+#endif
+}
+
 static lisp_val_t *prim_mount_ramdisk(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     int size_kb = (int)arg_int(args, 0, 512);
@@ -3965,6 +3978,7 @@ void lisp_init(void) {
     BUILTIN("ports", prim_ports);
     BUILTIN("mount-ramdisk", prim_mount_ramdisk);
     BUILTIN("mounted?", prim_mounted);
+    BUILTIN("psram", prim_psram);
     BUILTIN("format", prim_format);
     BUILTIN("lsh", prim_lsh);
     BUILTIN("usb-status", prim_usb_status);

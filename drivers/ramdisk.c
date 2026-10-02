@@ -27,8 +27,11 @@
 /* An upper bound on what a mount may ask for, not a reservation. Generous
  * relative to the heap on each target, so the allocator's refusal is what
  * limits an oversized request -- a cap that binds first would report the wrong
- * reason. */
-#if defined(CONFIG_BOARD_RP2350)
+ * reason. A board with PSRAM sets its own (38.6): there the storage comes
+ * from the bulk zone, and the cap is a share of the PSRAM. */
+#if defined(CONFIG_RAMDISK_MAX_KB)
+#define RAMDISK_MAX_BLOCKS ((CONFIG_RAMDISK_MAX_KB) * 1024u / RAMDISK_BLOCK_SIZE)
+#elif defined(CONFIG_BOARD_RP2350)
 #define RAMDISK_MAX_BLOCKS 128   /* 64 KB */
 #else
 #define RAMDISK_MAX_BLOCKS 1024  /* 512 KB */
@@ -51,6 +54,10 @@ static int ramdisk_write(block_dev_t *dev, const void *buf, uint32_t lba, uint32
     (void)dev;
     if (!g_storage || !buf) return -1;
     if (lba + count > ramdisk_device.num_blocks) return -1;
+    /* Through the cached alias, like the read (38.6). Writing through the
+     * uncached alias and invalidating the range -- which keeps a file write
+     * from evicting code from the 16 KB XIP cache -- was measured and lost:
+     * `fsbench /ram0 1024` wrote 1.91 MB/s that way, 2.15 MB/s like this. */
     memcpy(&g_storage[lba * RAMDISK_BLOCK_SIZE], buf, count * RAMDISK_BLOCK_SIZE);
     return 0;
 }
@@ -79,7 +86,11 @@ int ramdisk_init(uint32_t blocks) {
     /* Allocated before the old block is released, so a failed resize leaves
      * the existing disk intact rather than destroying it and then reporting
      * an error. */
-    uint8_t *fresh = (uint8_t *)palloc_pages(pages);
+    /* The bulk class (38.6): PSRAM where the board has it, which is what
+     * lets /ram0 be megabytes; the fast zone, counted as a fallback, where
+     * the bulk zone cannot take it. A RAM disk is copied in and out 512
+     * bytes at a time -- sequential access, PSRAM's best case. */
+    uint8_t *fresh = (uint8_t *)palloc_pages_bulk(pages);
     if (!fresh) {
         printk("[RAMDisk] No memory for a %u KB RAM disk (%u pages)\n",
                bytes / 1024, pages);

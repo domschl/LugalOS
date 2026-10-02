@@ -12,12 +12,13 @@
 #define FAT32_ATTR_VOLUME_ID 0x08
 /* The smallest volume fat32_format() can produce that is actually usable.
  *
- * Its layout spends 32 reserved sectors plus two 8-sector FATs, so 48 sectors
- * are gone before the first byte of data. A volume smaller than that formats,
- * mounts, reports success -- and then fails every write. That is exactly what
- * a 16 KB RAM disk did on RP2350 until this constant existed, and only a test
- * that happened to write a file noticed. 64 sectors leaves 16 data clusters:
- * small, but coherent. */
+ * Its layout spends 32 reserved sectors plus two FATs before the first byte
+ * of data. A volume smaller than that formats, mounts, reports success -- and
+ * then fails every write. That is exactly what a 16 KB RAM disk did on
+ * RP2350 until this constant existed, and only a test that happened to write
+ * a file noticed. Since 38.6 the FATs are sized from the volume (one sector
+ * each at this size), so 64 sectors leaves 30 data clusters: small, but
+ * coherent. */
 #define FAT32_MIN_SECTORS 64
 
 #define FAT32_ATTR_DIRECTORY 0x10

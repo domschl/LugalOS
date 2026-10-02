@@ -499,7 +499,7 @@ window grew to 8 s. `zonetest`'s floor became "at least half the chip".
 QEMU 418/418 (one earlier run hit the known log-burst intermittent,
 `open_issues.md` part B; the rerun was clean). `test_rp2350.py` 27/27.
 
-### 38.6 — `/ram0` in PSRAM
+### 38.6 — `/ram0` in PSRAM *(done 2026-10-02)*
 
 * `ramdisk.c`'s storage from the bulk zone; `RAMDISK_MAX_BLOCKS` a board
   value. On the LCD-7, 2 MB mounted at boot **[sign-off S3]** -- `cc`'s
@@ -510,6 +510,42 @@ QEMU 418/418 (one earlier run hit the known log-burst intermittent,
 
 **Measured:** `sdbench w` generalised to take a path (`fsbench /ram0 1024`),
 before (SRAM, at the size SRAM allows) and after.
+
+**Done (2026-10-02).** `ramdisk.c` allocates with `palloc_pages_bulk`;
+`CONFIG_RAMDISK_MAX_KB` is a board key (the LCD-7: 4096). `init.lisp` asks
+the new `(psram)` and, where it is non-zero, mounts 2 MB unconditionally --
+it costs no heap, so the old "skip it when /sd0 is there" reasoning no
+longer applies. Other boards are unchanged: their RAM disk comes from the
+fast zone (no bulk zone) or QEMU's stand-in.
+
+`fsbench <dir> [kb]` is `sdbench w` on any volume. On the LCD-7:
+
+| `/ram0` | file | write | read back |
+|---|---|---|---|
+| SRAM (192 KB disk, the most the heap holds) | 128 KB | 5.06 MB/s | 8.14 MB/s |
+| PSRAM, cached writes | 128 KB | 2.37 MB/s | 5.46 MB/s |
+| PSRAM, cached writes | 1 MB | 2.15 MB/s | 5.63 MB/s |
+| PSRAM, uncached writes + invalidate | 128 KB | 1.97 MB/s | 5.60 MB/s |
+| PSRAM, uncached writes + invalidate | 1 MB | 1.91 MB/s | 5.65 MB/s |
+
+The uncached write path lost (~11 %) and was not kept: writes go through the
+cached alias like reads. Against SRAM, writes are 2.1x and reads 1.45x
+slower -- for a disk ten times the size SRAM could give, and without a
+page of heap.
+
+**A bug found on the way:** `fat32_format()` wrote a fixed layout -- one
+sector per cluster, an 8-sector FAT -- which addresses 1022 clusters
+(511 KB). The 2 MB disk mounted "75 % used" while empty: `fat32_init()`
+clamps to what the FAT addresses, so nothing was corrupted, but three
+quarters of it was unreachable. The format now sizes the FAT from the volume
+(and doubles the cluster above 65 536 of them), and zeroes every FAT sector
+rather than the first one of each copy -- a reformat of a used volume left
+the old chains behind past that sector. A fresh 2 MB `/ram0` now has 3999 of
+4096 sectors free.
+
+**Tests:** QEMU `fsbench /ram0 40` (the stand-in zone); `test_rp2350.py`'s
+`test_ram0_in_psram` -- 4096 blocks, >= 3900 available, a 1 MB file verified,
+rates above three quarters of the table's.
 
 ### 38.7 — On-demand consumers: editor, `cc`, U-mode images, chess TT
 

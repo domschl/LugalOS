@@ -154,6 +154,9 @@ set(_optional_keys
     # the RAM above the fast zone, so the suite runs the zone code. Absent:
     # no bulk zone, and the bulk calls are the fast ones.
     CONFIG_PALLOC_BULK_PAGES
+    # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
+    # other than drivers/ramdisk.c's per-target default.
+    CONFIG_RAMDISK_MAX_KB
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only

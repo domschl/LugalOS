@@ -193,8 +193,8 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
     if (fs->bpb.num_fats > 1) {
         /* The second FAT copy starts fat_sz32 sectors after the first, not
          * a hardcoded +8 -- that only happened to be correct for volumes
-         * this codebase's own fat32_format() created (which always uses an
-         * 8-sector FAT). Any normally-sized FAT32 volume (a real SD card
+         * this codebase's own fat32_format() created (which used an
+         * 8-sector FAT until 38.6). Any normally-sized FAT32 volume (a real SD card
          * formatted by a PC) has a much larger FAT, and the hardcoded
          * offset silently wrote cluster-chain updates into whatever
          * unrelated sector was 8 sectors after FAT1 instead of into FAT2
@@ -273,7 +273,7 @@ typedef bool (*fat32_dir_scan_fn)(fat32_fs_t *fs, uint32_t sector_lba,
  * cluster -- every directory scan in this file used to read only a
  * cluster's first sector (16 entries), silently hiding any entries stored
  * in later sectors of a cluster. That went unnoticed because this
- * codebase's own fat32_format() always uses sec_per_clus = 1, but any
+ * codebase's own fat32_format() used sec_per_clus = 1 (still does below 32 MB), but any
  * normally PC-formatted FAT32 card typically uses 8-64 sectors per cluster
  * (see B9 in plan/completed/2026-08-07_review_and_remediation.md). Two of the
  * write-path scans (fat32_write_file's and fat32_mkdir's old free-slot
@@ -377,8 +377,31 @@ int fat32_format(block_dev_t *dev) {
     return fat32_format_quiet(dev, false);
 }
 
+/* The layout is sized from the volume (38.6, plan/phase38_psram.md). It used
+ * to be fixed -- 512-byte clusters and an 8-sector FAT -- which addresses
+ * 1022 clusters, 511 KB: the whole of every RAM disk while the cap was
+ * 512 KB, and a quarter of the LCD-7's 2 MB one, which mounted at "75 %
+ * used" while empty. fat32_init() clamps to what the FAT addresses, so
+ * nothing was corrupted; the space was simply unreachable.
+ *
+ * Clusters stay one sector until a volume would need more than 65 536 of
+ * them, then double (up to 32 KB): a FAT of at most 512 sectors per copy for
+ * anything up to 2 GB, and every FAT sector is zeroed -- a reformat of a used
+ * volume no longer inherits the old chains past the first FAT sector. */
 int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     if (!dev || !dev->write_blocks) return -1;
+    const uint32_t reserved = 32;
+    const uint32_t num_fats = 2;
+    if (dev->num_blocks <= reserved + num_fats + 1) return -1;
+
+    uint32_t spc = 1;
+    while (spc < 64 && (dev->num_blocks - reserved) / spc > 65536u) spc <<= 1;
+    /* Entries for every cluster the data area could hold if the FATs took no
+     * room -- an upper bound, so the FAT is never too small. */
+    uint32_t fat_sz = (((dev->num_blocks - reserved) / spc + 2u) * 4u + 511u) / 512u;
+    uint32_t data_start = reserved + num_fats * fat_sz;
+    if (data_start + spc > dev->num_blocks) return -1;
+
     fat32_sector_t sector;
     memset(&sector, 0, sizeof(sector));
 
@@ -386,11 +409,11 @@ int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     bpb->jmp_boot[0] = 0xEB; bpb->jmp_boot[1] = 0x58; bpb->jmp_boot[2] = 0x90;
     memcpy(bpb->oem_name, "MSWIN4.1", 8);
     bpb->bytes_per_sec = 512;
-    bpb->sec_per_clus = 1;
-    bpb->reserved_sec_cnt = 32;
-    bpb->num_fats = 2;
+    bpb->sec_per_clus = (uint8_t)spc;
+    bpb->reserved_sec_cnt = (uint16_t)reserved;
+    bpb->num_fats = (uint8_t)num_fats;
     bpb->tot_sec32 = dev->num_blocks;
-    bpb->fat_sz32 = 8;
+    bpb->fat_sz32 = fat_sz;
     bpb->root_clus = 2;
     bpb->boot_sig = 0x29;
     memcpy(bpb->vol_lab, "LUGALOS_FAT", 11);
@@ -398,18 +421,22 @@ int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     sector.raw[510] = 0x55;
     sector.raw[511] = 0xAA;
 
-    dev->write_blocks(dev, sector.raw, 0, 1);
+    if (dev->write_blocks(dev, sector.raw, 0, 1) != 0) return -1;
 
+    /* Both FATs and the root directory's cluster, zeroed... */
     memset(&sector, 0, sizeof(sector));
+    for (uint32_t lba = reserved; lba < data_start + spc; lba++) {
+        if (dev->write_blocks(dev, sector.raw, lba, 1) != 0) return -1;
+    }
+
+    /* ...then each FAT's first sector: the media and end-of-chain entries,
+     * and cluster 2, the root directory, a chain of one. */
     sector.words[0] = 0x0FFFFFF8;
     sector.words[1] = 0x0FFFFFFF;
     sector.words[2] = 0x0FFFFFFF;
-
-    dev->write_blocks(dev, sector.raw, 32, 1);
-    dev->write_blocks(dev, sector.raw, 40, 1);
-
-    memset(&sector, 0, sizeof(sector));
-    dev->write_blocks(dev, sector.raw, 48, 1);
+    for (uint32_t f = 0; f < num_fats; f++) {
+        if (dev->write_blocks(dev, sector.raw, reserved + f * fat_sz, 1) != 0) return -1;
+    }
 
     if (!quiet) {
         printk("[FAT32] Device '%s': Volume formatted cleanly as FAT32.\n", dev->name ? dev->name : "unknown");

@@ -180,7 +180,9 @@ static void cmd_trapselftest(bool fatal) {
             "(halts the system).\n");
 }
 
-/* `sdbench w [kb]` -- 36.2, plan/phase36_rp2350_lcd7_terminal.md.
+/* `sdbench w [kb]` -- 36.2, plan/phase36_rp2350_lcd7_terminal.md; and
+ * `fsbench <dir> [kb]` (38.6, plan/phase38_psram.md), the same on any volume,
+ * which is how /ram0 in SRAM and in PSRAM were compared.
  *
  * The file-level counterpart of the read-only `sdbench`: what the writer app
  * will actually do, which is write a file through FAT32, close it, and read it
@@ -196,22 +198,25 @@ static uint8_t sdbench_pattern(uint32_t off) {
     return (uint8_t)(off ^ (off >> 8) ^ (off >> 16) ^ 0x5a);
 }
 
-static void cmd_sdbench_write(unsigned kb) {
-    static const char path[] = "/sd0/sdbench.tmp";
+static void cmd_fsbench(const char *dir, const char *name, unsigned kb) {
+    char path[64], label[24];
+    ksnprintf(label, sizeof(label), "%s", strcmp(name, "sdbench") == 0 ? "sdbench w" : name);
+    ksnprintf(path, sizeof(path), "%s/%s.tmp", dir, name);
     const uint32_t chunk = 2048;
     if (kb == 0 || kb > 4096u) kb = 256u;
     uint32_t total = (uint32_t)kb * 1024u;
 
     scratch_t sc;
     if (!scratch_acquire(&sc, chunk)) {
-        cprintf("sdbench w: no memory for the buffer\n");
+        cprintf("%s: no memory for the buffer\n", label);
         return;
     }
     uint8_t *buf = (uint8_t *)sc.base;
 
     int fd = vfs_open(path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
     if (fd < 0) {
-        cprintf("sdbench w: cannot create %s (no card?)\n", path);
+        cprintf("%s: cannot create %s%s\n", label, path,
+                strcmp(dir, "/sd0") == 0 ? " (no card?)" : "");
         scratch_release(&sc);
         return;
     }
@@ -219,7 +224,7 @@ static void cmd_sdbench_write(unsigned kb) {
     for (uint32_t off = 0; off < total; off += chunk) {
         for (uint32_t i = 0; i < chunk; i++) buf[i] = sdbench_pattern(off + i);
         if (vfs_pwrite(fd, buf, chunk, off) != (int)chunk) {
-            cprintf("sdbench w: write failed at %u\n", (unsigned)off);
+            cprintf("%s: write failed at %u\n", label, (unsigned)off);
             vfs_close(fd);
             vfs_remove(path);
             scratch_release(&sc);
@@ -231,7 +236,7 @@ static void cmd_sdbench_write(unsigned kb) {
 
     fd = vfs_open(path, VFS_O_READ);
     if (fd < 0) {
-        cprintf("sdbench w: cannot reopen %s\n", path);
+        cprintf("%s: cannot reopen %s\n", label, path);
         vfs_remove(path);
         scratch_release(&sc);
         return;
@@ -240,7 +245,7 @@ static void cmd_sdbench_write(unsigned kb) {
     t0 = time_get_us();
     for (uint32_t off = 0; off < total; off += chunk) {
         if (vfs_pread(fd, buf, chunk, off) != (int)chunk) {
-            cprintf("sdbench w: read back failed at %u\n", (unsigned)off);
+            cprintf("%s: read back failed at %u\n", label, (unsigned)off);
             bad = 1;
             break;
         }
@@ -255,7 +260,7 @@ static void cmd_sdbench_write(unsigned kb) {
 
     if (t_write == 0) t_write = 1;
     if (t_read == 0) t_read = 1;
-    cprintf("sdbench w: %u KB file: write %u ms = %u KB/s, read back %u ms = %u KB/s, ",
+    cprintf("%s: %u KB file: write %u ms = %u KB/s, read back %u ms = %u KB/s, ", label,
             kb, (unsigned)(t_write / 1000u), (unsigned)((uint64_t)kb * 1000000u / t_write),
             (unsigned)(t_read / 1000u), (unsigned)((uint64_t)kb * 1000000u / t_read));
     if (bad) cprintf("VERIFY FAILED: %u bad bytes, first at %u\n", (unsigned)bad, (unsigned)first_bad);
@@ -503,6 +508,7 @@ static void cmd_help(void) {
     cprintf("  sdbench [kb]    - SD sequential read rate through the block device (read-only)\n");
 #endif
     cprintf("  sdbench w [kb]  - Write, read back and verify /sd0/sdbench.tmp, then remove it\n");
+    cprintf("  fsbench dir [kb] - The same on any volume: dir/fsbench.tmp (e.g. fsbench /ram0 1024)\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
@@ -3489,7 +3495,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sdbench w", 9) == 0) {
         /* 36.2: before any board's `sdbench`, which would match first. */
-        cmd_sdbench_write(shell_trailing_uint(&cmd_line[9]));
+        cmd_fsbench("/sd0", "sdbench", shell_trailing_uint(&cmd_line[9]));
+        return;
+    } else if (strncmp(cmd_line, "fsbench ", 8) == 0) {
+        /* `fsbench <dir> [kb]` (38.6): `sdbench w` on any volume. */
+        const char *a = &cmd_line[8];
+        while (*a == ' ') a++;
+        char dir[40];
+        uint32_t n = 0;
+        while (a[n] && a[n] != ' ' && n + 1 < sizeof(dir)) { dir[n] = a[n]; n++; }
+        dir[n] = '\0';
+        while (n > 1 && dir[n - 1] == '/') dir[--n] = '\0';
+        cmd_fsbench(dir, "fsbench", shell_trailing_uint(a + n));
         return;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
     } else if (strncmp(cmd_line, "sdbench", 7) == 0) {

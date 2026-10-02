@@ -64,6 +64,10 @@ set(CONFIG_PSRAM_BYTES   8388608)
 # The bulk page zone's capacity (38.4): the whole chip's worth of pages; the
 # zone itself starts after BULK_BSS, so it uses fewer. A 256-byte bitmap.
 set(CONFIG_PALLOC_BULK_PAGES 2048)
+# /ram0's cap (38.6): its storage comes from the bulk zone, so the cap is a
+# share of PSRAM, not of the heap. init.lisp mounts 2 MB at boot (sign-off
+# S3); `(mount-ramdisk 4096)` can ask for up to this.
+set(CONFIG_RAMDISK_MAX_KB 4096)
 
 # Deliberately no CONFIG_LED_*: this board has no user LED on any GPIO
 # (Led1/Led2 on the schematic are power and charge indicators). With neither

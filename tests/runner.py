@@ -557,6 +557,15 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("SD File Write, Read Back And Verify Through FAT32 (36.2 sdbench w)",
                         ok, log if not ok else ""))
 
+        # 38.6: the same on /ram0 (`fsbench <dir>`), whose storage now comes
+        # from the bulk zone -- QEMU's stand-in. 40 KB because RV32's /ram0 is
+        # 64 KB (init.lisp); the 1 MB case is test_rp2350.py's, on PSRAM.
+        ok, log = session.send_and_expect("fsbench /ram0 40", r"fsbench: 40 KB file: .*(verified|VERIFY FAILED)", timeout=20.0)
+        if ok and "VERIFY FAILED" in log:
+            ok = False
+        results.append(("RAM Disk File Write, Read Back And Verify, Storage From The Bulk Zone (38.6 fsbench)",
+                        ok, log if not ok else ""))
+
         # 36.6: the screen's terminal emulator, portable and so testable here:
         # sixteen cases fed through vtterm into a RAM grid and compared pixel by
         # pixel against fbtext's own rendering (pending wrap, scrolling, every

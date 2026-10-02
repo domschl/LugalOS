@@ -23,13 +23,19 @@
 ;;
 ;;    (board) rather than (arch): RP2350 and QEMU's virt board are both "rv32",
 ;;    but one has 512 KB of SRAM and the other 128 MB.
+;;
+;;    With PSRAM (the RP2350-LCD-7, 38.6) none of that applies: the storage
+;;    comes from the PSRAM's page zone, not the heap, so /ram0 is 2 MB and
+;;    always mounted (sign-off S3, plan/phase38_psram.md).
+(if (> (psram) 0)
+    (mount-ramdisk 2048)
 (if (= (board) "rp2350")
     (if (mounted? "/sd0")
         (display "[Init] /sd0 is writable; no RAM disk needed\n")
         (mount-ramdisk 64))
     (if (= (arch) "rv32")
         (mount-ramdisk 64)
-        (mount-ramdisk 512)))
+        (mount-ramdisk 512))))
 
 ;; 2. Command search path (C1). Typing a bare name at the shell runs
 ;;    /<vol>/system/bin/<name>.elf from the first volume in this list that
