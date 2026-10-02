@@ -157,6 +157,9 @@ set(_optional_keys
     # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB
+    # 38.7: the chess transposition table, in KB, when a board wants other
+    # than the 32 KB default (sign-off S4).
+    CONFIG_CHESS_TT_KB
 )
 
 # Emitted as a quoted C string rather than a bare token, which is the only

@@ -316,7 +316,13 @@ static user_proc_t *proc_alloc(uint32_t image_pages) {
      * k-page-aligned address, and on a small heap the alignment binds long
      * before the free page count does -- which is the whole reason C5 ran
      * before C4. */
-    p->image = (uint8_t *)palloc_pages_aligned(image_pages, image_pages);
+    /* The bulk class (38.7, plan/phase38_psram.md): on the LCD-7 the image
+     * runs from PSRAM through the XIP cache, under the same PMP regions --
+     * a compute-bound program measured 279 ms there against 299 ms from
+     * SRAM, which shares its bus with the panel's scan-out. Where the bulk
+     * zone cannot place it, the fast zone does, counted as a fallback. The
+     * user stack stays in SRAM. */
+    p->image = (uint8_t *)palloc_pages_bulk_aligned(image_pages, image_pages);
     if (!p->image) {
         uint32_t total = 0, free_pg = 0, run = 0;
         palloc_stats(&total, &free_pg);

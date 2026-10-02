@@ -10,6 +10,7 @@
 
 #include "tt.h"
 #include "kernel/palloc.h"
+#include "lugalos_config.h"
 
 TTEntry *tt_table = NULL;
 int tt_size_entries = 0;
@@ -17,8 +18,19 @@ uint8_t tt_current_age = 0;
 
 static uint32_t tt_pages = 0;
 
-/* See init_tt(). 32 KB is the pre-X8b value and the default. */
-uint32_t tt_embedded_bytes = 32u * 1024u;
+
+/* See init_tt(). 32 KB is the pre-X8b value and the default; a board sets
+ * its own with CONFIG_CHESS_TT_KB (38.7, sign-off S4). The LCD-7's 1 MB, in
+ * PSRAM, searched the bench position to depth 8 in 25.1 s against 33.9 s
+ * for 32 KB in SRAM: the larger table more than pays for the slower
+ * memory, and 2 MB and 4 MB bought under 1 % more. */
+#if defined(CONFIG_CHESS_TT_KB)
+#define TT_DEFAULT_BYTES ((uint32_t)(CONFIG_CHESS_TT_KB) * 1024u)
+#else
+#define TT_DEFAULT_BYTES (32u * 1024u)
+#endif
+uint32_t tt_embedded_bytes = TT_DEFAULT_BYTES;
+const uint32_t tt_default_bytes = TT_DEFAULT_BYTES;
 
 void init_tt(int size_mb) {
     if (tt_table != NULL) {
@@ -29,7 +41,8 @@ void init_tt(int size_mb) {
 #if defined(LUGALCHESS_EMBEDDED)
     (void)size_mb;
     /* On microcontrollers, a fixed table rather than size_mb -- 32 KB, i.e.
-     * 2048 entries, which is what RP2350's heap can spare.
+     * 2048 entries, which is what RP2350's heap can spare; 1 MB on the
+     * LCD-7, in PSRAM (38.7, CONFIG_CHESS_TT_KB).
      *
      * Settable since X8b (plan/phase23_multicore_scheduling.md), because it
      * is the variable that decides whether Lazy SMP is worth anything: the
@@ -50,7 +63,11 @@ void init_tt(int size_mb) {
 
     // Allocate memory
     tt_pages = (uint32_t)((bytes + PAGE_SIZE - 1) / PAGE_SIZE);
-    tt_table = (TTEntry *)palloc_pages(tt_pages);
+    /* The bulk class (38.7): PSRAM on the LCD-7, where it costs ~2 % in
+     * nodes per second and makes room for a table 32 times larger. Fast
+     * everywhere without a bulk zone -- including every SMP persona, whose
+     * helper search on core 1 must not touch PSRAM (H2). */
+    tt_table = (TTEntry *)palloc_pages_bulk(tt_pages);
     if (tt_table == NULL) {
         tt_size_entries = 0;
         tt_pages = 0;

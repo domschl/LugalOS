@@ -90,7 +90,9 @@ bool chibicc_pools_acquire(void) {
                     preprocess_pools_bytes() + main_pools_bytes() + 128u;
     g_pages = (want + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
 
-    g_arena = (uint8_t *)palloc_pages(g_pages);
+    /* The bulk class (38.7, plan/phase38_psram.md): PSRAM on the LCD-7,
+     * where five compiles of multi.c took ~165 ms against ~135 from SRAM. */
+    g_arena = (uint8_t *)palloc_pages_bulk(g_pages);
     if (!g_arena) {
         printk("[chibicc Error] No memory for a %u KB compiler arena; cc needs "
                "it only while compiling, so try again with less running\n",

@@ -1994,7 +1994,7 @@ static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     int depth = (int)arg_int(args, 2, 0);
     if (kb > 0) tt_embedded_bytes = (uint32_t)kb * 1024u;
     chess_selftest_bench((int)arg_int(args, 0, 1), depth);
-    if (kb > 0) tt_embedded_bytes = 32u * 1024u;
+    if (kb > 0) tt_embedded_bytes = tt_default_bytes;
     return &true_val;
 }
 

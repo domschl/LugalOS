@@ -72,6 +72,14 @@ typedef struct {
     uint32_t hash[ED_ROWS_MAX];     /* what each text row shows now */
     uint32_t rs[ED_ROWS_MAX], nh[ED_ROWS_MAX], lns[ED_ROWS_MAX];   /* the frame being drawn */
     uint32_t status_hash;
+    /* Line counts, kept rather than recounted (38.7): every frame of a code
+     * file asked for the lines before the end, the top and the cursor, three
+     * scans of the whole text -- 51 ms a keystroke for 200 KB in SRAM, 88 ms
+     * in PSRAM. `nl` is the newlines in the text; `ln_n` the newlines before
+     * `ln_at`, the last position asked about. ed_raw() keeps both; a text
+     * replaced any other way calls ed_lines_reset(). */
+    bool     ln_ok;
+    uint32_t nl, ln_at, ln_n;
     uint8_t *undo;
     uint32_t undo_len;
     bool     undo_lost;             /* records were dropped, or never kept */
@@ -190,9 +198,31 @@ static uint32_t pos_at(const ed_t *e, uint32_t rs, unsigned goal) {
     return p;
 }
 
-static uint32_t lines_before(const ed_t *e, uint32_t p) {
-    uint32_t n = 0;
-    for (uint32_t i = 0; i < p; i++) if (e->buf[i] == '\n') n++;
+static uint32_t count_nl(const char *s, uint32_t n) {
+    uint32_t c = 0;
+    for (uint32_t i = 0; i < n; i++) if (s[i] == '\n') c++;
+    return c;
+}
+
+static void ed_lines_reset(ed_t *e) {
+    e->ln_ok = false;
+}
+
+/* Newlines before `p`: counted from the last position asked about, from
+ * the start, or not at all for the end -- whichever is nearest. */
+static uint32_t lines_before(ed_t *e, uint32_t p) {
+    if (!e->ln_ok) {
+        e->nl = count_nl(e->buf, e->len);
+        e->ln_at = e->ln_n = 0;
+        e->ln_ok = true;
+    }
+    if (p >= e->len) return e->nl;
+    uint32_t n;
+    if (p >= e->ln_at) n = e->ln_n + count_nl(e->buf + e->ln_at, p - e->ln_at);
+    else if (e->ln_at - p <= p) n = e->ln_n - count_nl(e->buf + p, e->ln_at - p);
+    else n = count_nl(e->buf, p);
+    e->ln_at = p;
+    e->ln_n = n;
     return n;
 }
 
@@ -235,12 +265,21 @@ static bool text_ext(const char *f) {
 
 /* --- The buffer, and undo ---------------------------------------------- */
 
+/* The text's pages -- the buffer, undo and an inserted file's staging --
+ * are the bulk class (38.7, plan/phase38_psram.md): PSRAM on the LCD-7.
+ * `edbench 200` there: a keystroke at the start of the text 28 ms (5 in
+ * SRAM), a frame's line counts 3 us, a search to the end 63 ms (50).
+ * The state (ed_t) stays in SRAM: it is small and touched on every key. */
+static void *ed_pages(uint32_t pages) {
+    return palloc_pages_bulk(pages);
+}
+
 static bool ed_reserve(ed_t *e, uint32_t more) {
     if (e->len + more + 1u <= e->cap) return true;
     uint32_t want = e->cap * 2u;
     if (want < e->len + more + 1u) want = e->len + more + 1u;
     uint32_t pages = (want + PAGE_SIZE - 1u) / PAGE_SIZE;
-    char *nb = (char *)palloc_pages(pages);
+    char *nb = (char *)ed_pages(pages);
     if (!nb) return false;
     memcpy(nb, e->buf, e->len + 1u);
     palloc_free(e->buf, e->cap / PAGE_SIZE);
@@ -255,6 +294,18 @@ static bool ed_raw(ed_t *e, uint32_t at, uint32_t dn, const char *ins, uint32_t 
     if (in > dn && !ed_reserve(e, in - dn)) {
         say(e, "Out of memory -- the change was not made");
         return false;
+    }
+    if (e->ln_ok) {
+        uint32_t gone = count_nl(e->buf + at, dn), come = count_nl(ins, in);
+        e->nl = e->nl + come - gone;
+        if (at < e->ln_at) {
+            if (e->ln_at >= at + dn) {
+                e->ln_at = e->ln_at + in - dn;
+                e->ln_n = e->ln_n + come - gone;
+            } else {
+                e->ln_at = e->ln_n = 0;     /* the remembered spot went */
+            }
+        }
     }
     memmove(e->buf + at + in, e->buf + at + dn, e->len - at - dn);
     if (in) memcpy(e->buf + at, ins, in);
@@ -286,7 +337,7 @@ static void undo_drop_oldest(ed_t *e) {
 
 static void undo_push(ed_t *e, uint32_t at, uint32_t dn, uint32_t in, bool merge) {
     if (!e->undo) {
-        e->undo = (uint8_t *)palloc_pages(ED_UNDO_PAGES);
+        e->undo = (uint8_t *)ed_pages(ED_UNDO_PAGES);
         e->undo_len = 0;
         if (!e->undo) {
             e->undo_lost = true;
@@ -415,7 +466,7 @@ static bool ed_load(ed_t *e, const char *path) {
     uint32_t size = (vfs_stat(path, &st) == 0 && !st.is_dir) ? st.size : 0;
     uint32_t pages = (size + 4096u + PAGE_SIZE - 1u) / PAGE_SIZE;
     if (pages < 2u) pages = 2u;
-    char *nb = (char *)palloc_pages(pages);
+    char *nb = (char *)ed_pages(pages);
     if (!nb) {
         say(e, "No memory for the file");
         return false;
@@ -426,6 +477,7 @@ static bool ed_load(ed_t *e, const char *path) {
     int r = size ? vfs_read(path, e->buf, e->cap - 1u) : -1;
     e->len = r > 0 ? (uint32_t)r : 0;
     e->buf[e->len] = '\0';
+    ed_lines_reset(e);
     strncpy(e->file, path, sizeof(e->file) - 1u);
     e->file[sizeof(e->file) - 1u] = '\0';
     e->pos = e->top = e->hleft = 0;
@@ -1057,7 +1109,7 @@ static void ed_insert_file(ed_t *e) {
         return;
     }
     uint32_t pages = (st.size + 1u + PAGE_SIZE - 1u) / PAGE_SIZE;
-    char *t = (char *)palloc_pages(pages);
+    char *t = (char *)ed_pages(pages);
     if (!t) {
         say(e, "Out of memory");
         return;
@@ -1436,6 +1488,7 @@ static void st_check(int *fail, const char *name, bool ok) {
 static void st_set(ed_t *e, const char *s, bool text, unsigned tcols) {
     e->len = 0;
     e->buf[0] = '\0';
+    ed_lines_reset(e);
     (void)ed_raw(e, 0, 0, s, (uint32_t)strlen(s));
     e->pos = e->top = 0;
     e->mark = e->goal = -1;
@@ -1588,6 +1641,107 @@ int editor_selftest(void) {
              fail && e->modified && e->len == 13 && strncmp(e->msg, "WRITE FAILED", 12) == 0);
 
     ed_free(e);
+    /* 38.7: the kept line counts against a count from scratch, asked about
+     * in an order that walks the remembered spot forward, back, and through
+     * changes before it, after it and across it. */
+    st_set(e, "a\nb\nc\nd\ne\nf\ng\nh\n", false, 40);
+    bool lc = true;
+    static const uint32_t probe[] = { 9, 3, 16, 0, 12, 5 };
+    for (unsigned k = 0; k < 4u; k++) {
+        for (unsigned i = 0; i < sizeof(probe) / sizeof(probe[0]); i++) {
+            uint32_t q = probe[i] < e->len ? probe[i] : e->len;
+            if (lines_before(e, q) != count_nl(e->buf, q)) lc = false;
+        }
+        if (lines_before(e, e->len) != count_nl(e->buf, e->len)) lc = false;
+        (void)lines_before(e, 8);
+        if (k == 0) (void)ed_raw(e, 2, 0, "x\ny\n", 4);       /* before the spot */
+        if (k == 1) (void)ed_raw(e, 12, 0, "\n\n", 2);        /* after it */
+        if (k == 2) (void)ed_raw(e, 4, 8, "z", 1);            /* across it */
+    }
+    st_check(&fails, "line counts: kept through changes before, after and across the remembered spot", lc);
+
     cprintf(fails ? "EDITOR_SELFTEST_FAIL\n" : "EDITOR_SELFTEST_OK\n");
     return fails;
+}
+
+/* `edbench [kb] [dir]` (38.7, plan/phase38_psram.md): what a document of
+ * `kb` costs the editor where its buffer lives -- the save and load (the
+ * file I/O itself, as ed_save()/ed_load() do it), a keystroke at the start
+ * (one memmove of the whole text), a search that runs to the end, and the
+ * scans a frame of a code file makes (ed_layout()'s line count of the whole
+ * buffer, the gutter's and the status line's up to the cursor), with the
+ * cursor at the end. Prints EDBENCH lines; returns 0 or -1. */
+int editor_bench(unsigned kb, const char *dir) {
+    if (kb == 0) kb = 200u;
+    uint32_t want = (uint32_t)kb * 1024u;
+    uint32_t pages = (want + 4096u + PAGE_SIZE - 1u) / PAGE_SIZE;
+    ed_t *e = ed_new();
+    if (!e) { cprintf("edbench: no memory\n"); return -1; }
+    e->buf = (char *)ed_pages(pages);
+    if (!e->buf) { ed_free(e); cprintf("edbench: no memory for %u KB\n", kb); return -1; }
+    e->cap = pages * PAGE_SIZE;
+    while (e->len + 64u < want) {
+        e->len += (uint32_t)ksnprintf(e->buf + e->len, e->cap - e->len,
+                                      "line %06u: the quick brown fox jumps over it\n",
+                                      (unsigned)(e->len / 48u));
+    }
+    e->len += (uint32_t)ksnprintf(e->buf + e->len, e->cap - e->len, "needle\n");
+    e->buf[e->len] = '\0';
+    ed_lines_reset(e);
+    uint32_t len = e->len;
+    cprintf("edbench: %u KB document (%u bytes) in %s\n", kb, (unsigned)len,
+            palloc_is_bulk(e->buf) ? "the bulk zone" : "the fast zone");
+
+    char path[64];
+    ksnprintf(path, sizeof(path), "%s/edbench.txt", dir && *dir ? dir : "/ram0");
+    uint64_t t0 = time_get_us();
+    int w = vfs_write(path, e->buf, e->len);
+    uint64_t t_save = time_get_us() - t0;
+    memset(e->buf, 0, e->len);
+    t0 = time_get_us();
+    int r = vfs_read(path, e->buf, e->cap - 1u);
+    uint64_t t_load = time_get_us() - t0;
+    (void)vfs_remove(path);
+    if (w != 0 || r != (int)len) {
+        cprintf("edbench: save/load through %s failed (%d, %d)\n", path, w, r);
+        ed_free(e);
+        return -1;
+    }
+
+    const int keys = 20;
+    t0 = time_get_us();
+    for (int i = 0; i < keys; i++) {
+        e->pos = 0;
+        ed_insert(e, "x", 1, true);
+    }
+    uint64_t t_key = (time_get_us() - t0) / (uint64_t)keys;
+
+    uint32_t at = 0;
+    t0 = time_get_us();
+    bool found = ed_find(e, "needle", 0, true, &at);
+    uint64_t t_find = time_get_us() - t0;
+
+    /* A frame's scans with the cursor at the end: the first after a load
+     * (every count from scratch), then the next frame after a keystroke. */
+    ed_lines_reset(e);
+    e->pos = e->len;
+    e->top = e->len > 2000u ? e->len - 2000u : 0;
+    t0 = time_get_us();
+    uint32_t n = lines_before(e, e->len);
+    (void)lines_before(e, e->top);
+    (void)lines_before(e, e->pos);
+    uint64_t t_scan = time_get_us() - t0;
+    ed_insert(e, "y", 1, true);
+    t0 = time_get_us();
+    (void)lines_before(e, e->len);
+    (void)lines_before(e, e->top);
+    (void)lines_before(e, e->pos);
+    uint64_t t_scan2 = time_get_us() - t0;
+
+    cprintf("EDBENCH save %u us, load %u us, key at start %u us, find to end %u us (%s), "
+            "frame scans at end %u us first, %u us after a key (%u lines)\n",
+            (unsigned)t_save, (unsigned)t_load, (unsigned)t_key, (unsigned)t_find,
+            found ? "found" : "NOT FOUND", (unsigned)t_scan, (unsigned)t_scan2, (unsigned)n);
+    ed_free(e);
+    return found ? 0 : -1;
 }

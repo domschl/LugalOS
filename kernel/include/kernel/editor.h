@@ -62,4 +62,9 @@ int editor_run(const char *filename, const editor_hooks_t *hooks, char *out, int
  * EDITOR_SELFTEST_OK/_FAIL; returns the failures. */
 int editor_selftest(void);
 
+/* `edbench [kb] [dir]` (38.7): the editor's costs for a `kb` document --
+ * save, load, a keystroke at the start, a search to the end, a frame's line
+ * scans. Prints an EDBENCH line; returns 0, or -1. */
+int editor_bench(unsigned kb, const char *dir);
+
 #endif /* LUGALOS_KERNEL_EDITOR_H */

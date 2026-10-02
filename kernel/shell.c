@@ -509,6 +509,7 @@ static void cmd_help(void) {
 #endif
     cprintf("  sdbench w [kb]  - Write, read back and verify /sd0/sdbench.tmp, then remove it\n");
     cprintf("  fsbench dir [kb] - The same on any volume: dir/fsbench.tmp (e.g. fsbench /ram0 1024)\n");
+    cprintf("  edbench [kb] [dir] - Editor costs for a kb document: save, load, key, find, frame scans\n");
     cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
     cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
     cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
@@ -3121,6 +3122,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *fn = &cmd_line[2];
         while (*fn == ' ') fn++;
         shell_run_editor(fn);
+        return;
+    } else if (strcmp(cmd_line, "edbench") == 0 || strncmp(cmd_line, "edbench ", 8) == 0) {
+        /* 38.7: `edbench [kb] [dir]`. */
+        const char *a = cmd_line + 7;
+        while (*a == ' ') a++;
+        unsigned kb = 0;
+        while (*a >= '0' && *a <= '9') kb = kb * 10u + (unsigned)(*a++ - '0');
+        while (*a == ' ') a++;
+        (void)editor_bench(kb, a);
         return;
     } else if (strcmp(cmd_line, "editselftest") == 0) {
         (void)editor_selftest();

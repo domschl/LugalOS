@@ -43,6 +43,7 @@ static inline int score_from_tt(int score, int ply) {
  * before X8b used. It is exposed because it, and not the threading, is what
  * bounds Lazy SMP's usefulness here. Takes effect at the next init_tt(). */
 extern uint32_t tt_embedded_bytes;
+extern const uint32_t tt_default_bytes;   /* the board's (38.7) */
 
 void init_tt(int size_mb);
 void free_tt(void);

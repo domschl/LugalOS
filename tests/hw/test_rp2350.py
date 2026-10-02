@@ -835,6 +835,42 @@ def test_ram0_in_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_editor_in_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.7 (plan/phase38_psram.md): the editor's buffer is in PSRAM, and a
+    200 KB document stays usable -- a keystroke at the very start (the
+    whole text moved by one byte) under 50 ms, and a frame's line counts
+    after a keystroke under 1 ms, where they were three scans of the whole
+    text (88 ms) before 38.7 kept them."""
+    name = "Editor in PSRAM: 200 KB document, keystroke and frame costs (38.7 edbench)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no PSRAM (no PSRAM_BYTES in /proc/config)")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"edbench 200\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=2.0, deadline=30.0).decode("utf-8", errors="replace")
+        if "the bulk zone" not in out:
+            return (name, False, f"the buffer is not in the bulk zone:\n{out[-600:]}")
+        m = re.search(r"EDBENCH save (\d+) us, load (\d+) us, key at start (\d+) us, "
+                      r"find to end (\d+) us \((\w+)\), frame scans at end (\d+) us first, "
+                      r"(\d+) us after a key", out)
+        if not m or m.group(5) != "found":
+            return (name, False, f"edbench output not recognised:\n{out[-600:]}")
+        key, scan = int(m.group(3)), int(m.group(7))
+        detail = (f"save {int(m.group(1)) // 1000} ms, load {int(m.group(2)) // 1000} ms, "
+                  f"key at start {key // 1000} ms, find {int(m.group(4)) // 1000} ms, "
+                  f"frame scans {scan} us after a key")
+        if key > 50000 or scan > 1000:
+            return (name, False, detail)
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
     scheduler share the CPU fairly between two same-tier
@@ -2023,7 +2059,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

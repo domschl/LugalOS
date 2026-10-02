@@ -2785,6 +2785,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Editor: Wrap, Rows, UTF-8, Undo, Search, Safe Save (37.5b editselftest)",
                         ok and "EDITOR_SELFTEST_OK" in log, log if not (ok and "EDITOR_SELFTEST_OK" in log) else ""))
 
+        # 38.7: `edbench` -- the editor's buffer from the bulk zone, a 16 KB
+        # document saved to and loaded from /ram0, typed into and searched.
+        # Timings are the hardware suite's business; here it must finish and
+        # find what it planted.
+        ok, log = session.send_and_expect("edbench 16", r"EDBENCH [^\n]*\n|edbench: [^\n]*failed[^\n]*\n", timeout=20.0)
+        ok = ok and "(found)" in log and "bulk zone" in log
+        results.append(("Editor Bench: Bulk-Zone Buffer, Save, Load, Type, Search (38.7 edbench)", ok, log if not ok else ""))
+
         # The writer: a paragraph longer than the screen is wide, with
         # umlauts, is saved as one line -- no line breaks inserted.
         para = ("Der B\u00e4r ging \u00fcber die Br\u00fccke, langsam und m\u00fcde, "

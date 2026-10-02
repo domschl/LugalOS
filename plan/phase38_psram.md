@@ -547,7 +547,7 @@ the old chains behind past that sector. A fresh 2 MB `/ram0` now has 3999 of
 `test_ram0_in_psram` -- 4096 blocks, >= 3900 available, a 1 MB file verified,
 rates above three quarters of the table's.
 
-### 38.7 — On-demand consumers: editor, `cc`, U-mode images, chess TT
+### 38.7 — On-demand consumers: editor, `cc`, U-mode images, chess TT *(done 2026-10-02)*
 
 Each is a one-line class change (`palloc_pages` → `palloc_pages_bulk`) with
 its own measurement; each is kept or reverted on its own number:
@@ -568,6 +568,68 @@ them their *data* pages.
 **Tests:** `test_rp2350.py`'s C2 (two programs resident) and C4 (multi-page
 image, W^X) on bulk-zone images; `meminfo` peak with two programs, before
 and after.
+
+**Done (2026-10-02).** All four moved; each was measured against its "keep
+if" on the LCD-7 with a temporary switch, removed before the commit.
+
+*Chess TT* -- the owner asked whether a larger table would make up for
+PSRAM. It does. Depth-limited search of `chess-selftest`'s midgame position:
+
+| Table | depth 7 | depth 8 |
+|---|---|---|
+| 32 KB SRAM (today) | 8.2 s, 122 612 nodes | 33.9 s, 487 264 nodes |
+| 32 KB PSRAM | 8.3 s | 34.5 s |
+| 128 KB SRAM | 15.8 s, 227 344 nodes | -- |
+| 512 KB PSRAM | 15.4 s | 26.0 s, 369 933 nodes |
+| 1 MB PSRAM | 14.5 s | 25.1 s, 359 175 nodes |
+| 2 MB PSRAM | -- | 24.9 s |
+| 4 MB PSRAM | 14.5 s | 24.8 s |
+
+PSRAM itself costs ~2 % in nodes per second (15 024 -> 14 729 at 32 KB):
+the table is a small share of the search's memory traffic. At depth 7 the
+small table happened to need the fewest nodes -- every table of 128 KB or
+more found a different line (d2d3, not b1c3) and spent more nodes on it --
+so one depth on one position is not the measure; at depth 8 all of them
+agree on the move and the larger tables need 25 % fewer nodes. **S4,
+proposed: 1 MB** (`CONFIG_CHESS_TT_KB`, a board key; 32 KB elsewhere);
+beyond it under 1 %. The SMP personas have no bulk zone, so core 1's
+helper search never touches PSRAM (H2).
+
+*chibicc arena* -- five compiles of `multi.c`: ~135 ms from SRAM, ~165 ms
+from PSRAM (1.2x; the noise is ~25 ms). Kept.
+
+*U-mode images* -- H4 holds: images run from the M1 window under the same
+PMP regions, and C4's W^X fault still fires. A compute-bound program
+(`fib(28)`, 396 bytes) took 279 ms from PSRAM against 299 ms from SRAM:
+SRAM shares its bus with the panel's scan-out, and a small program runs
+from the XIP cache. A program larger than the 16 KB cache has not been
+measured. Peak heap with two programs resident (C2): 57 -> 45 pages.
+
+*Editor* -- `edbench [kb] [dir]` (new): save, load, a keystroke at the
+start, a search to the end, a frame's line counts. 200 KB document:
+
+| | SRAM before | PSRAM before | SRAM after | PSRAM after |
+|---|---|---|---|---|
+| keystroke at the start | 13.0 ms | 37.6 ms | 4.7 ms | 28.1 ms |
+| frame's line counts, cursor at the end | 51.5 ms | 87.8 ms | 5 us | 3 us |
+| search to the end | 50.2 ms | 63.3 ms | 50.2 ms | 63.4 ms |
+| save / load (/ram0) | 45 / 13 ms | 59 / 40 ms | -- | 58 / 39 ms |
+
+The measurement found two costs that were not PSRAM's and fixed both,
+since PSRAM made them visible. Every frame of a code file counted the lines
+before the end, the top and the cursor -- three scans of the whole text;
+the editor now keeps the counts, updated by the one primitive every change
+goes through. And libc's memmove fell back to bytes when source and
+destination differ in alignment, which a keystroke always does; it now
+shifts aligned words together (`memselftest`, 44 067 cases, caught a
+planted bug in the new path). A keystroke at the start of 1 MB is still
+143 ms -- the flat buffer's inherent cost, and 1 MB documents exist only
+since PSRAM; a gap buffer would remove it.
+
+**Tests:** QEMU `edbench 16` and the editor selftest's kept-line-count
+case; `test_rp2350.py`'s `test_editor_in_psram` (200 KB: keystroke
+< 50 ms, frame scans < 1 ms); C2 and C4 now run on bulk-zone images.
+QEMU 422/422, `test_rp2350.py` 29/29.
 
 ### 38.8 — A canvas backing store
 
