@@ -54,22 +54,6 @@ the bootrom's `get_sys_info`) at USB init -- the same uid the node identity
 carries. Both copies of the descriptor (kernel and U-mode, `u_ep0_send`) use
 it.
 
-## `sizereport` cannot see initialised statics on RP2350
-
-**Destination: 38.4** -- the `.bulk_bss` section makes the size tooling
-count by section anyway.
-
-`tools/sizereport.py` sums `nm` symbols typed `b`/`d`. On RP2350, `.data`
-shares an executable PT_LOAD with `.ramfunc`, so `nm` types its symbols `t`
-and the filter drops them: 329 `b`, 68 `t`, **zero** `d` in the RAM window
-(2026-09-03). An initialised static costs heap and `sizecheck` does not see
-a byte of it -- it once reported a 24-byte *saving* for two new locks.
-
-**Fix:** count by section (`readelf -sW` gives each symbol's section index),
-excluding `.ramfunc` code on purpose rather than by accident. Until then: on
-RP2350 prefer zero-initialised statics, and treat a size *drop* on a change
-that added state as a measurement bug.
-
 ## Chess speed on RP2350 depends on where the linker puts it (2.3x spread)
 
 **Destination: 38.9.**

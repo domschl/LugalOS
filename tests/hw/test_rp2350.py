@@ -685,7 +685,14 @@ def test_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """38.2 (plan/phase38_psram.md): the PSRAM is up at boot, the size the
     board file says, holds data through both aliases and through a flash
     write's XIP exit/re-entry, and runs at the rates the preliminaries
-    measured (plan/phase38_preliminaries.md §2) within 10 %.
+    measured (plan/phase38_preliminaries.md §2) within 15 %.
+
+    15, not 10: run to run on one board, uncached reads measured 23.4-24.8
+    MB/s and uncached writes 28.1-31.1 (2026-10-02, the LCD scan-out DMA and
+    the tick sharing the bus with a 2 ms window), and the reference write
+    figure is the top of that range. At 10 % this test failed once on a
+    healthy board. A real regression -- a wrong divider, a lost QPI mode --
+    costs a factor, not 15 %.
 
     Skipped on a persona without PSRAM_BYTES in /proc/config. `psram test`
     is destructive over the whole chip, which is right only while nothing
@@ -740,10 +747,45 @@ def test_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         for what, got, ref in refs:
             if got is None:
                 return (name, False, f"bench line missing: {what}\n{text[-800:]}")
-            within = abs(got - ref) <= ref // 10
+            within = abs(got - ref) <= ref * 15 // 100
             ok &= within
-            detail.append(f"{what} {got} (ref {ref}){'' if within else ' OUT OF 10%'}")
+            detail.append(f"{what} {got} (ref {ref}){'' if within else ' OUT OF 15%'}")
         return (name, ok, "; ".join(detail))
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_bulk_zone(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.4 (plan/phase38_psram.md §3.1): the bulk page zone on the PSRAM --
+    placement, NAPOT alignment, free by address, a re-allocated run reading
+    zero through the cache after its previous owner left dirty lines, the
+    SRAM fallback when the zone is exhausted, and a BULK_BSS object in the
+    PSRAM window. The same `zonetest` the QEMU suite runs on its stand-in
+    zone; here it runs on the memory the zone exists for."""
+    name = "PSRAM bulk zone: placement, NAPOT, free by address, zeroing, fallback (38.4 zonetest)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no PSRAM (no PSRAM_BYTES in /proc/config)")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"zonetest\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=2.0, deadline=20.0)
+        text = out.decode("utf-8", errors="replace").replace("\r", "")
+        m = re.search(r"zonetest: bulk zone (\d+) pages at (0x[0-9a-f]+).*ZONETEST_(\w+)", text)
+        probe = re.search(r"BULK_BSS probe at (0x[0-9a-f]+)", text)
+        if not m or not probe:
+            return (name, False, f"zonetest output not recognised:\n{text[:600]}")
+        detail = f"{m.group(1)} pages at {m.group(2)}, BULK_BSS probe at {probe.group(1)}"
+        if m.group(3) != "OK":
+            fails = "; ".join(re.findall(r"FAIL: (.*)", text))
+            return (name, False, f"{detail}: {fails}")
+        if not (0x11000000 <= int(m.group(2), 16) < 0x12000000) or int(m.group(1)) < 2000:
+            return (name, False, f"the zone is not the PSRAM: {detail}")
+        return (name, True, detail)
     except Exception as e:
         return (name, False, str(e))
 
@@ -1934,7 +1976,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

@@ -7,6 +7,11 @@ MEMORY
     RAM   (rwx)    : ORIGIN = 0x20000000, LENGTH = 512k
     SCRATCH_X (rwx): ORIGIN = 0x20080000, LENGTH = 4k
     SCRATCH_Y (rwx): ORIGIN = 0x20081000, LENGTH = 4k
+    /* QMI window 1, cached alias (38.4, plan/phase38_psram.md). Declared on
+     * every RP2350 board and used only where lugalos_bulk.ld places
+     * .bulk_bss in it -- i.e. where the board file names a PSRAM. 16 MB is
+     * the window; the chip's own size is checked by that file's ASSERT. */
+    PSRAM (rw)     : ORIGIN = 0x11000000, LENGTH = 16M
 }
 
 ENTRY(_entry_point)
@@ -251,6 +256,12 @@ SECTIONS
 
     __data_load_ptr = LOADADDR(.data);
     _sidata = LOADADDR(.data);
+
+    /* 38.4: BULK_BSS objects -- a NOLOAD section in PSRAM on a board that has
+     * one, nothing here otherwise (then .bss's `.bss.*` below takes them).
+     * Generated per board by cmake/gen_config.cmake; it must come before
+     * .bss, whose wildcard would otherwise claim `.bss.bulk` first. */
+    INCLUDE lugalos_bulk.ld
 
     .bss (NOLOAD) : {
         . = ALIGN(4);

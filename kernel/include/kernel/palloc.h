@@ -1,6 +1,7 @@
 #ifndef LUGALOS_KERNEL_PALLOC_H
 #define LUGALOS_KERNEL_PALLOC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Page allocator (B2, plan/phase5_distributed_design.md §5.4).
@@ -80,7 +81,53 @@ void *palloc_pages(uint32_t n);
  * so the NOMMU constraint is not something only one build has ever run. */
 void *palloc_pages_aligned(uint32_t n, uint32_t align_pages);
 
+/* Either zone: the zone is found from the address (38.4), so a bulk page can
+ * never be freed into the fast bitmap or the other way round. */
 void  palloc_free(void *p, uint32_t n);
+
+/* ---- The bulk class (38.4, plan/phase38_psram.md §3.1) ------------------
+ *
+ * Memory that is large and tolerant of latency -- the Lisp heap, /ram0, the
+ * editor's buffer -- asks for the bulk class; everything else (stacks, DMA
+ * targets, anything a failure report needs) stays on palloc_pages().
+ *
+ * On a board with PSRAM the bulk zone is the PSRAM, reached through the XIP
+ * cache (cached addresses, ~500 ns a missed load against ~35 for SRAM). When
+ * it is exhausted the request falls back to SRAM and the fallback is counted
+ * in /proc/meminfo -- a number that should stay 0. On a board without a bulk
+ * zone these are palloc_pages() and palloc_pages_aligned(), uncounted. QEMU
+ * has a stand-in bulk zone in ordinary RAM, so the suite runs this code.
+ *
+ * Zeroed like every palloc allocation; in PSRAM that is done through the
+ * uncached alias after dropping the range's cache lines. */
+void *palloc_pages_bulk(uint32_t n);
+void *palloc_pages_bulk_aligned(uint32_t n, uint32_t align_pages);
+
+/* Brings up the bulk zone over [start, end). `uncached_delta` is what to add
+ * to an address in the zone to reach the same byte without the cache (0 if
+ * there is no such alias). Called by kernel_main() once the PSRAM is up; on
+ * QEMU palloc_init() calls it itself. */
+void palloc_init_bulk(uintptr_t start, uintptr_t end, uintptr_t uncached_delta);
+
+/* True if `p` lies in the bulk zone. */
+bool palloc_is_bulk(const void *p);
+
+typedef struct {
+    uintptr_t base;
+    uint32_t  total_pages, free_pages, peak_used_pages, largest_free_run;
+    uint32_t  fallbacks;    /* bulk requests served from the fast zone */
+} palloc_zone_stats_t;
+
+/* The bulk zone's figures for /proc/meminfo; false if there is none. */
+bool palloc_bulk_stats(palloc_zone_stats_t *out);
+
+/* Large static arrays of the bulk class: `static T big[N] BULK_BSS;`. In
+ * PSRAM on a board with one (linker/rp2350.ld INCLUDEs the generated
+ * lugalos_bulk.ld), in .bss everywhere else. The name starts with ".bss" so
+ * GCC emits it as NOBITS. Zero at boot either way -- but on a PSRAM board
+ * only once psram_init() has run, so nothing may touch a BULK_BSS object
+ * before kernel_main() has called it. */
+#define BULK_BSS __attribute__((section(".bss.bulk")))
 
 void palloc_stats(uint32_t *total_pages, uint32_t *free_pages);
 

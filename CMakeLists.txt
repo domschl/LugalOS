@@ -686,6 +686,8 @@ set(SOURCES
     libc/string.c
     # 38.3: the exhaustive check behind libc's word loops (`memselftest`).
     kernel/memselftest.c
+    # 38.4: the bulk page zone's checks (`zonetest`).
+    kernel/zonetest.c
     user/lisp/lisp.c
 )
 
@@ -824,6 +826,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     list(APPEND SOURCES drivers/flash_rp2350.c drivers/idstore_rp2350.c)
     # 38.2, plan/phase38_psram.md: empty unless the board file names a PSRAM.
     list(APPEND SOURCES drivers/psram_rp2350.c)
+    # 38.4: XIP cache clean/invalidate by address (H1), used by the bulk zone.
+    list(APPEND SOURCES drivers/xip_cache_rp2350.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # E2, plan/phase27_esp32p4_bringup.md. One driver, and the shortness of
     # this list is the milestone: no block device, no netif, no identity
@@ -998,8 +1002,10 @@ endif()
 # Relink when the linker script changes. CMake does not infer this, so an
 # edit to the memory layout silently produced a stale binary -- which cost a
 # confusing debugging round when a 2 MB alignment appeared not to take effect.
-set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS ${LINKER_SCRIPT})
-target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT})
+set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS
+    "${LINKER_SCRIPT};${CMAKE_CURRENT_BINARY_DIR}/lugalos_bulk.ld")
+# -L: linker/rp2350.ld INCLUDEs the generated lugalos_bulk.ld (38.4).
+target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT} -L${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(lugalos.elf PRIVATE gcc)
 
 # I7a §3.3: the same four numbers the compiler got, handed to the linker so

@@ -376,7 +376,7 @@ backward copy) failed 3 014 of them.
 Static RAM +0 on every preset. QEMU 416/416, `test_rp2350.py` 26/26.
 The P4's 128-bit SIMD for the same functions is a phase 39 reminder (§9).
 
-### 38.4 — The bulk zone and `.bulk_bss`
+### 38.4 — The bulk zone and `.bulk_bss` *(done 2026-10-02)*
 
 §3.1 and §3.2, with no consumer moved yet:
 
@@ -394,6 +394,43 @@ The P4's 128-bit SIMD for the same functions is a phase 39 reminder (§9).
 the bulk zone, exhaustion falling back to SRAM and being counted, a bulk
 page freed by address. On the LCD-7: the same through a `psram` subcommand,
 and `/proc/meminfo` showing both zones.
+
+**Done**, as designed, with these details settled on the way:
+* **The section is `.bss.bulk`** (`BULK_BSS` in `kernel/palloc.h`), not
+  `.bulk_bss`: a name starting `.bss` makes GCC emit NOBITS, and every linker
+  script's `.bss.*` already takes it into SRAM. So only the RP2350 needs the
+  generated include (`lugalos_bulk.ld`, written by `cmake/gen_config.cmake`
+  beside the config header): on the LCD-7 a NOLOAD output section in a
+  `PSRAM` region placed *before* `.bss`; on the other RP2350 boards two zero
+  symbols. QEMU and the P4 scripts are unchanged. `objcopy` skips the NOBITS
+  segment at 0x11000000 -- `lugalos.bin` stays 470 KB, where a loadable one
+  would have padded it by 16 MB.
+* **Zeroing a bulk run** drops the range's cache lines first (dirty lines of
+  the previous owner must never be written back over the zeros), then writes
+  zeros through the uncached alias. `zonetest` checks exactly that case.
+* **`zonetest`**, one command for QEMU and the LCD-7 instead of a `psram`
+  subcommand: placement, NAPOT, free by address (both zones' counts come
+  back), re-allocated run reads zero, exhaustion falls back to SRAM and is
+  counted, and a 64-byte BULK_BSS probe (built only where a bulk zone
+  exists) lies in PSRAM and is zero at boot. Each run adds one deliberate
+  fallback to the counter, which `/proc/meminfo`'s source says.
+* **`psram test` and `psram bench`** now run on pages taken from the bulk
+  zone, not on fixed chip offsets that would trample it.
+* **QEMU's stand-in zone:** 512 pages right above the fast zone
+  (`CONFIG_PALLOC_BULK_PAGES 512` in the two QEMU board files).
+* **`sizereport`** counts by symbol type (`readelf`), which makes
+  initialised statics and RAM-resident code visible: +700..900 B of `.data`
+  and 264 B (4 090 B on the terminal) of code that the old count never saw.
+  All four baselines re-recorded; the heap page counts did not move.
+  `open_issues.md`'s entry deleted.
+* **The rate test's tolerance went from 10 % to 15 %:** run to run the
+  uncached rates spread 23.4-24.8 and 28.1-31.1 MB/s, and the reference
+  write figure is the top of that range -- which is very likely the one
+  unexplained failure recorded under 38.2.
+
+**Measured on the LCD-7:** bulk zone 2 047 pages (8 188 KB) at 0x11001000,
+after one 4 KB BULK_BSS page. `zonetest` 0.4 s including zeroing all 8 MB
+twice. QEMU 418/418, `test_rp2350.py` 27/27.
 
 ### 38.5 — The Lisp heap moves to PSRAM
 

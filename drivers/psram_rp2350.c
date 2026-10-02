@@ -52,6 +52,7 @@
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
 
 #include "drivers/flash_rp2350.h"
+#include "drivers/xip_cache.h"
 #include "arch/rp2350_clocks.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -89,7 +90,10 @@
 
 #define XIP_CTRL          0x400c8000UL
 #define XIP_CTRL_WRITABLE_M1 (1u << 11)
-#define XIP_MAINT_BASE    0x18000000UL
+#define UNCACHED(p)       ((uintptr_t)(p) + (PSRAM_UNCACHED_BASE - PSRAM_CACHED_BASE))
+
+/* linker/rp2350.ld via the generated lugalos_bulk.ld (38.4). */
+extern char _bulk_bss_start[], _bulk_bss_end[];
 
 #define FLASH_CACHED      0x10000000UL
 #define FLASH_UNCACHED    0x14000000UL
@@ -217,16 +221,6 @@ static void m1_program(void) {
     REG(XIP_CTRL) |= XIP_CTRL_WRITABLE_M1;
 }
 
-/* Writes back every dirty line (by set/way over the top 16 KB of the XIP
- * space: the RP2350-E11 workaround, as pico-sdk's xip_cache_clean_all()).
- * 38.4 replaces this with the shared by-range helpers of H1. */
-static void xip_clean_all(void) {
-    for (uintptr_t a = 0x04000000UL - 16384u; a < 0x04000000UL; a += 8) {
-        *(volatile uint8_t *)(XIP_MAINT_BASE + a + 1u) = 0;
-    }
-    __asm__ __volatile__("fence" ::: "memory");
-}
-
 /* The chip's size by aliasing rather than from the EID's decoding: a
  * distinct word at each power of two, and see where the address bits wrap.
  * A chip that does not hold data at all stops at the first step. */
@@ -271,9 +265,18 @@ void psram_init(void) {
     g_bytes = (uint32_t)CONFIG_PSRAM_BYTES;
     g_up = true;
     g_reason = "";
-    printk("[PSRAM] %lu KB on GP%u (KGD 0x%02x EID 0x%02x), QPI at %lu MHz (clk_sys/%u)\n",
+
+    /* BULK_BSS (38.4): the reset handler zeroes .bss long before the chip
+     * answers, so these objects are zeroed here -- around the cache, after
+     * dropping any lines for the range. Nothing may read them before this. */
+    size_t bulk = (size_t)(_bulk_bss_end - _bulk_bss_start);
+    xip_cache_invalidate_range(_bulk_bss_start, bulk);
+    memset((void *)UNCACHED(_bulk_bss_start), 0, bulk);
+    printk("[PSRAM] %lu KB on GP%u (KGD 0x%02x EID 0x%02x), QPI at %lu MHz (clk_sys/%u); "
+           "BULK_BSS %lu KB\n",
            (unsigned long)(g_bytes / 1024), (unsigned)CONFIG_PSRAM_CS_GPIO, g_kgd, g_eid,
-           (unsigned long)(CONFIG_CLK_SYS_HZ / PSRAM_CLKDIV / 1000000u), (unsigned)PSRAM_CLKDIV);
+           (unsigned long)(CONFIG_CLK_SYS_HZ / PSRAM_CLKDIV / 1000000u), (unsigned)PSRAM_CLKDIV,
+           (unsigned long)(bulk / 1024));
 }
 
 bool psram_is_up(void) { return g_up; }
@@ -292,9 +295,10 @@ void psram_require(void) {
 
 int psram_meminfo(char *buf, uint32_t cap) {
     if (!g_up) return ksnprintf(buf, cap, "PSRAM: not up (%s)\n", g_reason);
-    return ksnprintf(buf, cap, "PSRAM: %lu KB at 0x%08lx, QPI %lu MHz\n",
+    return ksnprintf(buf, cap, "PSRAM: %lu KB at 0x%08lx, QPI %lu MHz, BULK_BSS %lu KB\n",
                      (unsigned long)(g_bytes / 1024), (unsigned long)PSRAM_CACHED_BASE,
-                     (unsigned long)(CONFIG_CLK_SYS_HZ / PSRAM_CLKDIV / 1000000u));
+                     (unsigned long)(CONFIG_CLK_SYS_HZ / PSRAM_CLKDIV / 1000000u),
+                     (unsigned long)((uintptr_t)(_bulk_bss_end - _bulk_bss_start) / 1024));
 }
 
 /* ---- psram test ------------------------------------------------------------ */
@@ -304,16 +308,18 @@ static uint32_t pat(uint32_t i, uint32_t salt) {
     return x ^ (x >> 15);
 }
 
-static uint32_t test_pass(uintptr_t wbase, uintptr_t rbase, uint32_t salt, bool clean) {
-    uint32_t words = g_bytes / 4, bad = 0;
+/* One pass over [base, base+bytes): write through `wbase`'s alias, read
+ * through `rbase`'s (each either the cached or the uncached address). */
+static uint32_t test_pass(uintptr_t wbase, uintptr_t rbase, uint32_t bytes, uint32_t salt, bool clean) {
+    uint32_t words = bytes / 4, bad = 0;
     volatile uint32_t *w = (volatile uint32_t *)wbase;
     volatile uint32_t *r = (volatile uint32_t *)rbase;
     for (uint32_t i = 0; i < words; i++) w[i] = pat(i, salt);
-    if (clean) xip_clean_all();
+    if (clean) xip_cache_clean_range((const void *)wbase, bytes);
     for (uint32_t i = 0; i < words; i++) {
         uint32_t v = r[i], e = pat(i, salt);
         if (v != e && bad++ < 4) {
-            cprintf("  [%06lx] 0x%08lx != 0x%08lx\n", (unsigned long)(i * 4),
+            cprintf("  [%08lx] 0x%08lx != 0x%08lx\n", (unsigned long)(rbase + i * 4),
                     (unsigned long)v, (unsigned long)e);
         }
     }
@@ -323,11 +329,12 @@ static uint32_t test_pass(uintptr_t wbase, uintptr_t rbase, uint32_t salt, bool 
 /* H2's test: 4 KB written through the cache and left dirty, then the flash
  * write's XIP exit and re-entry (without a write), then read uncached. Before
  * 38.1 1008 of these 1024 words were lost. */
-static uint32_t flash_path_pass(void) {
-    const uint32_t n = 1024, off = 0x1F0000u;
-    volatile uint32_t *c = (volatile uint32_t *)(PSRAM_CACHED_BASE + off);
-    volatile uint32_t *u = (volatile uint32_t *)(PSRAM_UNCACHED_BASE + off);
+static uint32_t flash_path_pass(uintptr_t cached) {
+    const uint32_t n = 1024;
+    volatile uint32_t *c = (volatile uint32_t *)cached;
+    volatile uint32_t *u = (volatile uint32_t *)UNCACHED(cached);
     for (uint32_t i = 0; i < n; i++) u[i] = 0xDEAD0000u | i;
+    xip_cache_invalidate_range((const void *)cached, n * 4);
     for (uint32_t i = 0; i < n; i++) c[i] = pat(i, 0x5555u);
     if (flash_rp2350_xip_cycle() != 0) return n;
     uint32_t bad = 0;
@@ -335,18 +342,34 @@ static uint32_t flash_path_pass(void) {
     return bad;
 }
 
-/* Destructive over the whole chip: right while nothing lives in PSRAM. 38.4
- * gives it a page allocator, and from then on this tests free pages only. */
+/* Over the largest free run of the bulk zone, taken from the allocator and
+ * given back -- never over memory something else owns. */
 static void psram_test(void) {
+    palloc_zone_stats_t st;
+    if (!palloc_bulk_stats(&st) || st.largest_free_run == 0) {
+        cprintf("psram test: no free bulk pages -- FAIL\n");
+        return;
+    }
+    uint32_t pages = st.largest_free_run;
+    uint8_t *p = palloc_pages_bulk(pages);
+    if (!p || !palloc_is_bulk(p)) {
+        cprintf("psram test: could not take %lu bulk pages -- FAIL\n", (unsigned long)pages);
+        if (p) palloc_free(p, pages);
+        return;
+    }
+    const uintptr_t c = (uintptr_t)p, u = UNCACHED(p);
+    const uint32_t bytes = pages * 4096u;
     uint64_t t0 = time_get_us();
-    uint32_t b1 = test_pass(PSRAM_UNCACHED_BASE, PSRAM_UNCACHED_BASE, 0x1111u, false);
-    uint32_t b2 = test_pass(PSRAM_CACHED_BASE, PSRAM_UNCACHED_BASE, 0x2222u, true);
-    uint32_t b3 = test_pass(PSRAM_CACHED_BASE, PSRAM_CACHED_BASE, 0x4444u, false);
-    xip_clean_all();
-    uint32_t b4 = flash_path_pass();
-    cprintf("psram test: %lu KB, mismatching words: uncached %lu, cached->clean->uncached %lu, "
-            "cached %lu; flash path %lu of 1024 (%lu ms) -- %s\n",
-            (unsigned long)(g_bytes / 1024), (unsigned long)b1, (unsigned long)b2,
+    uint32_t b1 = test_pass(u, u, bytes, 0x1111u, false);
+    xip_cache_invalidate_range(p, bytes);
+    uint32_t b2 = test_pass(c, u, bytes, 0x2222u, true);
+    uint32_t b3 = test_pass(c, c, bytes, 0x4444u, false);
+    xip_cache_clean_range(p, bytes);
+    uint32_t b4 = flash_path_pass(c);
+    palloc_free(p, pages);
+    cprintf("psram test: %lu KB of free bulk pages at 0x%08lx, mismatching words: uncached %lu, "
+            "cached->clean->uncached %lu, cached %lu; flash path %lu of 1024 (%lu ms) -- %s\n",
+            (unsigned long)(bytes / 1024), (unsigned long)c, (unsigned long)b1, (unsigned long)b2,
             (unsigned long)b3, (unsigned long)b4,
             (unsigned long)((time_get_us() - t0) / 1000),
             (b1 | b2 | b3 | b4) ? "FAIL" : "PASS");
@@ -398,7 +421,7 @@ static uint32_t chase_ns(uintptr_t base, uint32_t ws, uint32_t hops) {
         node[i * 16] = b;
         node[j * 16] = a;
     }
-    xip_clean_all();
+    xip_cache_clean_range((const void *)base, ws);
     uint32_t idx = 0;
     uint64_t t0 = time_get_us();
     for (uint32_t h = 0; h < hops; h++) idx = node[idx * 16];
@@ -407,16 +430,23 @@ static uint32_t chase_ns(uintptr_t base, uint32_t ws, uint32_t hops) {
     return (uint32_t)(us * 1000u / hops);
 }
 
+/* 1 MB for the largest pointer chase, plus room for the two areas below. */
+#define BENCH_BULK_PAGES 512u
+
 static void psram_bench(void) {
     const uint32_t pages = BENCH_BYTES / 4096u, B = BENCH_BYTES;
     uint8_t *sram = palloc_pages(pages);
-    if (!sram) {
-        cprintf("psram bench: no %u pages of SRAM for the reference buffer\n", (unsigned)pages);
+    uint8_t *bulk = palloc_pages_bulk(BENCH_BULK_PAGES);
+    if (!sram || !bulk || !palloc_is_bulk(bulk)) {
+        cprintf("psram bench: needs %u SRAM pages and %u free bulk pages\n",
+                (unsigned)pages, (unsigned)BENCH_BULK_PAGES);
+        if (sram) palloc_free(sram, pages);
+        if (bulk) palloc_free(bulk, BENCH_BULK_PAGES);
         return;
     }
-    const uintptr_t s = (uintptr_t)sram;
+    const uintptr_t s = (uintptr_t)sram, pb = (uintptr_t)bulk;
     /* Two PSRAM areas 256 KB apart, so a pass over one evicts the other. */
-    const uintptr_t pc = PSRAM_CACHED_BASE + 0x40000u, pu = PSRAM_UNCACHED_BASE + 0x80000u;
+    const uintptr_t pc = pb + 0x40000u, pu = UNCACHED(pb + 0x80000u);
     uint64_t t;
     cprintf("psram bench: clk_sys %lu Hz, SCK clk_sys/%u, %lu KB a pass\n",
             (unsigned long)CONFIG_CLK_SYS_HZ, (unsigned)PSRAM_CLKDIV, (unsigned long)(B / 1024));
@@ -433,7 +463,7 @@ static void psram_bench(void) {
 
     cprintf(" sequential write:\n");
     t = time_get_us(); wr_words(s, B);                  line("SRAM", B, t);
-    t = time_get_us(); wr_words(pc, B); xip_clean_all(); line("PSRAM cached (+ clean_all)", B, t);
+    t = time_get_us(); wr_words(pc, B); xip_cache_clean_range((const void *)pc, B); line("PSRAM cached (+ clean range)", B, t);
     t = time_get_us(); wr_words(pu, B);                 line("PSRAM uncached", B, t);
 
     cprintf(" copy (word loop / libc):\n");
@@ -453,11 +483,13 @@ static void psram_bench(void) {
                 (unsigned long)chase_ns(s, ws_sram[i], 100000));
     for (unsigned i = 0; i < sizeof ws_ps / sizeof ws_ps[0]; i++)
         cprintf("  PSRAM cached   %5lu KB: %4lu ns\n", (unsigned long)(ws_ps[i] / 1024),
-                (unsigned long)chase_ns(PSRAM_CACHED_BASE, ws_ps[i], 100000));
+                (unsigned long)chase_ns(pb, ws_ps[i], 100000));
     for (unsigned i = 0; i < sizeof ws_ps / sizeof ws_ps[0]; i++)
         cprintf("  PSRAM uncached %5lu KB: %4lu ns\n", (unsigned long)(ws_ps[i] / 1024),
-                (unsigned long)chase_ns(PSRAM_UNCACHED_BASE, ws_ps[i], 100000));
+                (unsigned long)chase_ns(UNCACHED(pb), ws_ps[i], 100000));
 
+    xip_cache_invalidate_range(bulk, BENCH_BULK_PAGES * 4096u);  /* written around the cache */
+    palloc_free(bulk, BENCH_BULK_PAGES);
     palloc_free(sram, pages);
 }
 
@@ -478,8 +510,17 @@ void psram_command(const char *args) {
         cprintf("       QPI, SCK clk_sys/%u = %lu kHz, M1_TIMING 0x%08lx, writable %s\n",
                 (unsigned)PSRAM_CLKDIV, (unsigned long)(CONFIG_CLK_SYS_HZ / PSRAM_CLKDIV / 1000u),
                 (unsigned long)REG(QMI_M1_TIMING), (REG(XIP_CTRL) & XIP_CTRL_WRITABLE_M1) ? "yes" : "NO");
-        cprintf("       cached 0x%08lx, uncached 0x%08lx; nothing allocates from it yet (38.4)\n",
-                (unsigned long)PSRAM_CACHED_BASE, (unsigned long)PSRAM_UNCACHED_BASE);
+        cprintf("       cached 0x%08lx, uncached 0x%08lx; BULK_BSS %lu KB at 0x%08lx\n",
+                (unsigned long)PSRAM_CACHED_BASE, (unsigned long)PSRAM_UNCACHED_BASE,
+                (unsigned long)((uintptr_t)(_bulk_bss_end - _bulk_bss_start) / 1024),
+                (unsigned long)(uintptr_t)_bulk_bss_start);
+        palloc_zone_stats_t st;
+        if (palloc_bulk_stats(&st)) {
+            cprintf("       bulk zone %lu pages at 0x%08lx: %lu free (largest run %lu), peak %lu used, "
+                    "%lu SRAM fallbacks\n", (unsigned long)st.total_pages, (unsigned long)st.base,
+                    (unsigned long)st.free_pages, (unsigned long)st.largest_free_run,
+                    (unsigned long)st.peak_used_pages, (unsigned long)st.fallbacks);
+        }
     } else {
         cprintf("usage: psram [test|bench]\n");
     }

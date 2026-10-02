@@ -301,6 +301,16 @@ void kernel_main(void) {
     psram_init();
 #endif
     palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+    /* 38.4: the bulk page zone is the PSRAM above BULK_BSS. Not brought up
+     * when the chip is not: then every bulk request is a fast one, until
+     * psram_require() below stops the boot anyway (S1). */
+    if (psram_is_up()) {
+        extern char _bulk_bss_end[];
+        palloc_init_bulk((uintptr_t)_bulk_bss_end, PSRAM_CACHED_BASE + psram_bytes(),
+                         PSRAM_UNCACHED_BASE - PSRAM_CACHED_BASE);
+    }
+#endif
     /* M1, plan/phase12_microkernel_migration.md: reserves its arena out of
      * what palloc_init() just brought up, so it must follow it and nothing
      * needs to follow *it* -- no other subsystem below depends on balloc

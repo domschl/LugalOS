@@ -589,6 +589,7 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
+    cprintf("  zonetest        - The bulk page zone: placement, alignment, free by address, fallback\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
     cprintf("  screenshot [file] - The screen as a PBM, to /sd0/screenshots/ (or Super+Shift+3)\n");
@@ -3180,6 +3181,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
+    } else if (strcmp(cmd_line, "zonetest") == 0) {
+        /* 38.4, plan/phase38_psram.md: the bulk page zone. */
+        extern void zone_selftest(void);
+        zone_selftest();
         return;
     } else if (strcmp(cmd_line, "memselftest") == 0) {
         /* 38.3, plan/phase38_psram.md: libc's word loops. */

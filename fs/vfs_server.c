@@ -729,6 +729,15 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
         used += (uint32_t)psram_meminfo(buf + used, cap - used);
 #endif
+        /* 38.4: the bulk page zone, where there is one. SRAM fallbacks should
+         * stay 0; each `zonetest` run adds exactly one on purpose (its step 5
+         * exhausts the zone to prove the fallback works). */
+        palloc_zone_stats_t bz;
+        if (palloc_bulk_stats(&bz)) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "  Bulk Pages: %u total, %u free, peak %u, largest run %u, SRAM fallbacks %u\n",
+                bz.total_pages, bz.free_pages, bz.peak_used_pages, bz.largest_free_run, bz.fallbacks);
+        }
 
         /* Read off the mount table rather than spelled out as a constant.
          * The fixed string this replaces named "/sd0/ (VirtIO SD)" on every

@@ -772,6 +772,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("libc Word Loops Match A Byte Reference At Every Alignment (38.3 memselftest)",
                         mem_ok, log if not mem_ok else ""))
 
+        # 38.4 (plan/phase38_psram.md §3.1): the bulk page zone. QEMU has no
+        # PSRAM, so its stand-in is 2 MB of ordinary RAM above the fast zone
+        # -- everything but the memory type: placement, NAPOT alignment, free
+        # by address, re-allocation zeroed, the SRAM fallback when the zone is
+        # exhausted, and a BULK_BSS object zero at boot.
+        ok, log = session.send_and_expect("zonetest\n",
+                                          r"ZONETEST_(OK|FAIL|SKIP)", timeout=60.0)
+        zone_ok = ok and "ZONETEST_OK" in log
+        results.append(("Bulk Page Zone: Placement, Alignment, Free By Address, Fallback (38.4 zonetest)",
+                        zone_ok, log if not zone_ok else ""))
+
         # The nonce source behind that gate. On QEMU there is no hardware
         # entropy and the command says so rather than inventing a verdict --
         # SKIP is the pass here, and RANDTEST_OK/WEAK is a hardware result.

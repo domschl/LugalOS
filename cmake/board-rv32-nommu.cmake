@@ -13,6 +13,11 @@ set(CONFIG_PALLOC_MAX_PAGES 4096)
 # the heap are the same 512 KB budget (§1.1,
 # plan/phase15_memory_reclamation.md).
 set(CONFIG_BALLOC_ARENA_PAGES 16)
+
+# 38.4 (plan/phase38_psram.md): a stand-in bulk page zone, 2 MB of ordinary
+# RAM right above the fast zone, so the suite runs the zone code, the
+# by-address free and the SRAM fallback without a PSRAM.
+set(CONFIG_PALLOC_BULK_PAGES 512)
 set(CONFIG_UART0_BASE       0x10000000)
 
 # P6: the NTP server, on the QEMU targets so the suite can exercise it.
