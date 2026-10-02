@@ -261,14 +261,29 @@ This phase establishes the **language foundations for symbolic mathematics** (AS
 | **9** | **42.9** Depth Tuning & Test Suite | `user/lisp/lisp.c`, `tests/` | **Completed** | `LISP_MAX_EVAL_DEPTH` = 256 |
 
 ### Verification Summary
-- **Test Suite (`uv run tests/runner.py`):** 204 / 204 Tests Passed (118.57s).
-- **Target Builds:** `build/rv32`, `build/rp2350-terminal`, and `build/esp32p4` all compile cleanly without warnings.
-- **Benchmark Suite (`python3 tests/lisp_bench.py --arch rv32`):**
-  - `loop_10k`: 43 ms
-  - `special_forms_10k`: 92 ms (-2.1% faster than baseline)
-  - `comparison_10k`: 68 ms
-  - `list_cons_1k`: 7 ms
-  - `fib_16`: 15 ms
-  - `bignum_fact_50`: 18 ms (50 iterations of 50!)
-  - `rational_harmonic_100`: 8 ms (100-term harmonic series exact sum with GCD cross-cancellations)
+
+- **Automated Regression Suite (`uv run tests/runner.py`):** 204 / 204 Tests Passed (118.57s).
+- **Target Builds:** `build/rv32`, `build/rp2350-terminal`, and `build/esp32p4` all compile cleanly with Ninja without warnings.
+- **Hardware-in-the-Loop Test Suites:**
+  - **RP2350 Silicon (`tests/hw/test_rp2350.py`):** **32 / 32 Passed**. Verified PMP probe, XIP exit/re-entry, 8MB PSRAM, bulk BSS zone, `/ram0` 2MB disk, editor in PSRAM, canvas per-layout store, depth-6 chess in SRAM, `priostress` fair CPU sharing, `uart` task batching, `blk` task SD IPC, `i2c` task, compiler memory return, U-mode isolation, ELF confinement, USB CDC 9P link & garbage resync, `p9share` UART demux, C3/C4/C8/K3/C2, type-ahead, buddy arena, memory margins, node pool exhaustion & graceful reboot.
+  - **ESP32-P4 Silicon (`tests/hw/test_esp32p4.py`):** **25 / 25 Passed** (3 Ethernet cable-carrier tests skipped). Verified boot, `/proc`, `/flash0` XIP write while executing, `chibicc` C compilation on-device, preemption ticks, U-mode isolation, I2C scan (codec `0x18`, BME280 `0x76`), BME280 selftest & live telemetry, unattended sampler advance, 9P readings, EMAC PHY MDIO, EMAC loopback, eFuse MAC identity, 4-bit 20MHz SD card access, `/sd0` mount & reboot survival.
+
+### Multi-Target Lisp Benchmark Matrix
+
+Standardized micro-benchmarks evaluated directly within the LugalOS interactive shell (`lsh>`) via [`tests/lisp_bench.py`](../tests/lisp_bench.py):
+
+| Benchmark | Description | QEMU RV32 (Virt) | RP2350 Pre-42 Stale | RP2350 Silicon (Hazard3 144MHz, PSRAM) | ESP32-P4 Silicon (Dual RV32 360MHz, SRAM) | ESP32-P4 vs RP2350 Speedup |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| `loop_10k` | Named-let loop 10,000 iterations | 19 ms | 1,071 ms | **482 ms** *(+55% speedup)* | **110 ms** | **4.4× faster** |
+| `special_forms_10k` | 10k iterations of `let*` + `begin` + math | 24 ms | 2,650 ms | **1,225 ms** *(+54% speedup)* | **223 ms** | **5.5× faster** |
+| `comparison_10k` | 10k chained comparisons (`< 1 2 3 4 5`) | 22 ms | 1,672 ms | **867 ms** *(+48% speedup)* | **174 ms** | **5.0× faster** |
+| `list_cons_1k` | 1,000 cons allocations and traversal | 5 ms | 155 ms | **70 ms** *(+55% speedup)* | **26 ms** | **2.7× faster** |
+| `fib_16` | Recursive fibonacci (1,973 calls) | 6 ms | 420 ms | **159 ms** *(+62% speedup)* | **37 ms** | **4.3× faster** |
+| `bignum_fact_50` | 50 iterations of $50!$ ($3.04 \times 10^{64}$) | 7 ms | *(overflowed to 0)* | **203 ms** *(exact bignum)* | **41 ms** | **5.0× faster** |
+| `rational_harmonic_100` | Exact harmonic sum $\sum_{i=1}^{100} \frac{1}{i}$ with GCD reduction | 5 ms | *(truncated to 0)* | **80 ms** *(exact ratio)* | **20 ms** | **4.0× faster** |
+
+#### Architectural Observations & Findings
+1. **Phase 42 Micro-Optimization Impact**: Moving the builtins table into Flash `.rodata` with $O(\log N)$ binary search, interning symbols into identity-comparable pointers, and streamlining the evaluation loop cut execution times on the RP2350 in half across every benchmark.
+2. **Internal SRAM vs. External PSRAM**: Internal L2 SRAM on the ESP32-P4 operates with single-cycle latency, whereas 8 MB PSRAM on the RP2350 terminal build trades ~1.7×–2× access latency for massive capacity (65,536 nodes vs 4,096 nodes).
+3. **Freestanding Math Efficiency**: Computing $50!$ (65 decimal digits) takes only 41 ms on ESP32-P4 and 203 ms on RP2350. Calculating the exact 100th harmonic fraction ($H_{100}$) with 100 Stein binary GCD reductions completes in 20 ms on ESP32-P4 and 80 ms on RP2350 without any third-party libraries.
 
