@@ -126,8 +126,8 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
     }
 
     /* The write worked; the board is nonetheless not in a state to carry on,
-     * for two independent reasons, and this reboot is the honest completion
-     * of the operation rather than a workaround bolted onto it.
+     * and this reboot is the honest completion of the operation rather than a
+     * workaround bolted onto it.
      *
      * **The USB console does not survive the write.** Erasing and programming
      * a sector takes on the order of 100 ms with interrupts off, and this
@@ -141,11 +141,11 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
      * boot, which is what identified the console rather than the flash write
      * as the casualty.
      *
-     * **And XIP is degraded regardless.** flash_rp2350_write_sector() returns
-     * with XIP in the bootrom's generic 03h read mode, slower than what the
-     * boot sequence set up, until a reset restores it. Even with a working
-     * console, carrying on would mean running the whole system slower with
-     * nothing to show for it.
+     * There used to be a second reason: flash_rp2350_write_sector() left XIP
+     * in the bootrom's generic 03h read mode until a reset. Since 38.1
+     * (plan/phase38_psram.md) it puts the QSPI interface back as it found
+     * it, so the console is the one reason left -- and the one to measure
+     * before this reboot can go.
      *
      * So: reboot. Nothing after this line runs -- including the caller's
      * "provisioned" report, which is why the message above is printed before
@@ -155,8 +155,7 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
     rp2350_reboot();
 
     /* Only reached if the bootrom refused the reset. Say so plainly: the
-     * record is written and correct, but this board is now running degraded
-     * with a console that may already be gone. */
+     * record is written and correct, but the console may already be gone. */
     printk("[IdStore] identity written, but the reboot request was refused -- "
            "power-cycle the board\n");
     return 0;

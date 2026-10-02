@@ -28,6 +28,7 @@ can see, a board that hangs); then usability; then features.
 | 9 | No clean way to leave a BSS before re-joining | Pico 2 W |
 | 10 | `mqttd` has no file-backed source | gateway + sensor node |
 | 11 | Pressure is published as station pressure | P4 + BME280; **owner decision** on publishing both values |
+| 12 | An identity write reboots the board | LCD-7 and chess board, each with a stored record |
 
 Taken by phase 38 instead: the USB serial number (38.1), libc's byte loops
 (38.3), `sizereport`'s blind spot (38.4), and the chess hot path (38.9).

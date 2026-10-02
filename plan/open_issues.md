@@ -254,6 +254,20 @@ measured temperature -- no FPU and no libm in the kernel, so an interpolation
 table over 0-3000 m; (3) publish both `pressure` and `pressure_msl` (one more
 source slot) rather than replace the honest measurement.
 
+## An identity write reboots the board
+
+**Destination: phase 40, item 12.**
+
+`drivers/idstore_rp2350.c` reboots after every write -- `identity name`,
+`provision`, `key` -- for two reasons it records: the USB console did not
+survive ~60 ms of erase/program with interrupts off (measured once,
+2026-09-01, on a USB driver that has changed since), and XIP was left slow.
+38.1 removed the second. **Fix:** measure the first again on today's driver
+-- one write on a board whose record is already stored, console attached --
+and drop the reboot if the console survives, or keep it with one reason
+instead of two. A rename that does not reboot also stops dropping 9P and
+MQTT sessions.
+
 ## The clock board's DS3231 does not survive a power cut
 
 **Destination: the owner's bench** -- fit a working CR2032.

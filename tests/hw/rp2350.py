@@ -136,17 +136,35 @@ def ports_by_usb_descriptor() -> Rp2350Ports | None:
     of whether the board feels like replying.
 
     Linux only -- macOS has no by-id tree -- and None when the links are
-    absent, so callers keep whatever fallback they had."""
-    console = net = None
+    absent, so callers keep whatever fallback they had.
+
+    **Which board, when there are two.** Since 38.1 each board's USB serial
+    is "LUGALOS-" plus its chip id (before that every board said
+    LUGALOS-0001, and the by-id link named whichever enumerated last). With
+    more than one LugalOS board attached this does not guess: it takes the
+    board whose serial contains $LUGALOS_USB_SERIAL, and otherwise lists the
+    candidates and returns None, so the caller falls back or the user passes
+    --console."""
+    boards: dict[str, dict[str, str]] = {}
     for link in sorted(glob.glob("/dev/serial/by-id/*LugalOS*")):
-        target = os.path.realpath(link)
-        if link.endswith("-if00"):
-            console = target
-        elif link.endswith("-if02"):
-            net = target
-    if not console:
+        m = re.search(r"_(LUGALOS-[0-9A-Fa-f]+)-if(\d\d)", link)
+        if not m:
+            continue
+        boards.setdefault(m.group(1), {})[m.group(2)] = os.path.realpath(link)
+    want = os.environ.get("LUGALOS_USB_SERIAL", "").upper()
+    if want:
+        boards = {k: v for k, v in boards.items() if want in k.upper()}
+    if len(boards) > 1:
+        print("ports_by_usb_descriptor: several LugalOS boards attached ("
+              + ", ".join(f"{k} on {v.get('00', '?')}" for k, v in sorted(boards.items()))
+              + "); set LUGALOS_USB_SERIAL or pass the console port", file=sys.stderr)
         return None
-    return Rp2350Ports(console=console, net=net, uart=None)
+    if not boards:
+        return None
+    ifs = next(iter(boards.values()))
+    if "00" not in ifs:
+        return None
+    return Rp2350Ports(console=ifs["00"], net=ifs.get("02"), uart=None)
 
 
 def _probe_port(port: str) -> str | None:

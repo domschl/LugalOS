@@ -13,6 +13,7 @@
 #include "arch/umode.h"
 #include "drivers/uart.h"
 #include "fs/9p.h"
+#include "kernel/identity.h"
 #include <string.h>
 
 static bool g_usb_cdc_connected = false;
@@ -233,7 +234,8 @@ USB_UDATA static const uint8_t g_usb_cfg_desc[] = {
 USB_UDATA static const uint8_t g_usb_str_lang[] = { 4, 3, 0x09, 0x04 };
 USB_UDATA static const uint8_t g_usb_str_mfg[]  = { 16, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'O',0,'S',0 };
 USB_UDATA static const uint8_t g_usb_str_prod[] = { 44, 3, 'L',0,'u',0,'g',0,'a',0,'l',0,'O',0,'S',0,' ',0,'D',0,'u',0,'a',0,'l',0,' ',0,'C',0,'D',0,'C',0,' ',0,'A',0,'C',0,'M',0 };
-USB_UDATA static const uint8_t g_usb_str_serial[] = { 26, 3, 'L',0,'U',0,'G',0,'A',0,'L',0,'O',0,'S',0,'-',0,'0',0,'0',0,'0',0,'1',0 }; // iSerialNumber = 3
+/* iSerialNumber (3) is not here: it is built per chip into g_usb.str_serial
+ * by usb_cdc_init(), see usb_serial_from_chip(). */
 USB_UDATA static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08 }; // 115200 8N1
 
 #define USB_EP2_TX_RING_SIZE 4096
@@ -254,6 +256,10 @@ USB_UDATA static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0
  * heap/static-buffer analysis (plan/phase12_microkernel_migration.md),
  * not in isolation. */
 #define USB_EP4_RX_RING_SIZE 6144
+
+/* bLength, bDescriptorType, then 24 UTF-16LE characters: "LUGALOS-" + 16 hex. */
+#define USB_STR_SERIAL_CHARS 24u
+#define USB_STR_SERIAL_BYTES (2u + 2u * USB_STR_SERIAL_CHARS)
 
 /* M5 Phase 7, plan/phase12_microkernel_migration.md: every mutable
  * global this driver has -- EP0's own in-flight control-transfer state,
@@ -293,6 +299,14 @@ typedef struct {
                                         * would land in ordinary .bss,
                                         * outside every region this task's
                                         * domain grants. */
+    /* The iSerialNumber string descriptor, "LUGALOS-" and the chip's 64-bit
+     * OTP CHIPID in hex. It lived in .usbtext.rodata as a constant
+     * "LUGALOS-0001" until 38.1, so every board enumerated with the same
+     * serial and /dev/serial/by-id named whichever board came last
+     * (plan/open_issues.md). Here because the U-mode serve loop sends it and
+     * this region is all it can read and write besides its text; the region
+     * had ~1.4 KB of padding, so it costs no RAM. */
+    uint8_t        str_serial[USB_STR_SERIAL_BYTES];
 
     /* EP2 (ACM0 console, /dev/ttyACM0) */
     uint8_t  ep2_tx_ring[USB_EP2_TX_RING_SIZE];
@@ -760,7 +774,7 @@ void usb_cdc_task(void) {
                         } else if (desc_idx == 2) {
                             ep0_send(g_usb_str_prod, sizeof(g_usb_str_prod));
                         } else if (desc_idx == 3) {
-                            ep0_send(g_usb_str_serial, sizeof(g_usb_str_serial));
+                            ep0_send((const uint8_t *)(uintptr_t)g_usb.str_serial, USB_STR_SERIAL_BYTES);
                         } else {
                             // Unsupported string index: reuse ep0_send()'s
                             // 0-length path rather than ep0_send_ack(). This
@@ -850,6 +864,31 @@ void usb_cdc_task(void) {
     in_task = false;
 }
 
+/* "LUGALOS-" and the OTP CHIPID as 16 hex digits -- the same 64 bits the
+ * node identity's uid starts from (kernel/identity.c), so the USB serial
+ * and /proc/node name one chip the same way. A chip whose id cannot be read
+ * gets sixteen zeros: still a well-formed descriptor, and visibly not an id. */
+static void usb_serial_from_chip(void) {
+    static const char prefix[] = "LUGALOS-";
+    static const char hex[] = "0123456789ABCDEF";
+    uint8_t id[8] = { 0 };
+    (void)board_unique_id(id);
+
+    char text[USB_STR_SERIAL_CHARS];
+    for (unsigned i = 0; i < 8; i++) text[i] = prefix[i];
+    for (unsigned i = 0; i < 8; i++) {
+        text[8 + 2 * i]     = hex[id[i] >> 4];
+        text[8 + 2 * i + 1] = hex[id[i] & 0xfu];
+    }
+    volatile uint8_t *d = g_usb.str_serial;
+    d[0] = (uint8_t)USB_STR_SERIAL_BYTES;
+    d[1] = 3;   /* STRING */
+    for (unsigned i = 0; i < USB_STR_SERIAL_CHARS; i++) {
+        d[2 + 2 * i] = (uint8_t)text[i];
+        d[3 + 2 * i] = 0;
+    }
+}
+
 void usb_cdc_init(void) {
     g_usb_cdc_connected = false;
 
@@ -877,6 +916,7 @@ void usb_cdc_init(void) {
         volatile uint8_t *p = (volatile uint8_t *)&g_usb_region;
         for (size_t i = 0; i < sizeof(g_usb_region); i++) p[i] = 0;
     }
+    usb_serial_from_chip();
 
     /* M5 Phase 7: both MMIO windows this driver uses need to be
      * Non-secure-accessible for the "usbcdc" task's own U-mode serve
@@ -1610,7 +1650,7 @@ USB_UATTR static void usb_cdc_umode_body(void) {
                         } else if (desc_idx == 2) {
                             u_ep0_send(g_usb_str_prod, sizeof(g_usb_str_prod));
                         } else if (desc_idx == 3) {
-                            u_ep0_send(g_usb_str_serial, sizeof(g_usb_str_serial));
+                            u_ep0_send((const uint8_t *)(uintptr_t)g_usb.str_serial, USB_STR_SERIAL_BYTES);
                         } else {
                             u_ep0_send(g_usb_str_lang, 0);
                         }

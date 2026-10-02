@@ -32,6 +32,7 @@
  */
 
 #include "arch/rp2350_clocks.h"
+#include "drivers/flash_rp2350.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
@@ -160,6 +161,9 @@ void rp2350_clocks_report(void) {
     cprintf("config:   CONFIG_CLK_SYS_HZ = %lu%s\n", (unsigned long)CONFIG_CLK_SYS_HZ,
             from_regs == (uint32_t)CONFIG_CLK_SYS_HZ ? " -- agrees with the registers"
                                                      : " -- DISAGREES with the registers");
+    /* 38.1: the QSPI windows. A flash write used to leave M0 at the bootrom's
+     * serial 03h read until the next reset, which nothing here showed. */
+    flash_rp2350_qmi_report();
 }
 
 /* One line at boot, the RP2350 equivalent of the P4's "[CLK] CPU at N MHz,

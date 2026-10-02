@@ -636,6 +636,51 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_flash_path_restores_qspi(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.1 (plan/phase38_psram.md): the bootrom's flash sequence -- XIP off,
+    flash_enter_cmd_xip -- leaves both QMI windows at its serial 03h read,
+    clk_sys/12, and until 38.1 flash stayed that slow until the next reset.
+    `flashtest` runs drivers/flash_rp2350.c's own RAM routine with the erase
+    and program left out (an identity write reboots, so it cannot be observed
+    after one) and reports what the bootrom left, what was restored, and a
+    timed uncached flash read before and after.
+
+    Three things must hold: the bootrom really did reset M0 (else the test
+    proves nothing about the restore), no QSPI register differs afterwards,
+    and the read is no slower. `clocks` must agree that M0 is quad EBh."""
+    name = "Flash path: XIP exit/re-entry restores the QSPI windows (38.1 flashtest)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"flashtest\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.5, deadline=5.0)
+            ser.write(b"clocks\n")
+            ser.flush()
+            out += rp2350.drain(ser, quiet=0.5, deadline=5.0)
+        text = out.decode("utf-8", errors="replace").replace("\r", "")
+        if "Unbound symbol: flashtest" in text or "Unknown command" in text:
+            return (name, False, "board firmware predates `flashtest` -- reflash it")
+        left = re.search(r"as the bootrom left them:\s*M0 TIMING \S+ RFMT \S+ RCMD (0x[0-9a-f]+)", text)
+        verdict = re.search(r"(\d+) of \d+ QSPI registers differ from before; "
+                            r"64 KB uncached flash read (\d+) us before, (\d+) us after -- (\w+ ?\w*)", text)
+        m0 = re.search(r"QMI M0 \(flash\): .*?, (quad I/O EBh|.*)$", text, re.M)
+        if not (left and verdict and m0):
+            return (name, False, f"flashtest/clocks output not recognised:\n{text[:600]}")
+        detail = (f"bootrom left RCMD {left.group(1)}; {verdict.group(1)} registers differ; "
+                  f"read {verdict.group(2)} -> {verdict.group(3)} us; clocks: M0 {m0.group(1)}")
+        if int(left.group(1), 16) != 0x03:
+            return (name, False, "the bootrom did not leave M0 at 03h, so this run proves nothing "
+                                 f"about the restore ({detail})")
+        if verdict.group(4) != "RESTORED" or m0.group(1) != "quad I/O EBh":
+            return (name, False, detail)
+        return (name, True, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
     scheduler share the CPU fairly between two same-tier
@@ -1822,7 +1867,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

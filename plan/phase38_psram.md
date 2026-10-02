@@ -233,37 +233,62 @@ spread → 38.9, eleven items → the new
 [`plan/phase40_backlog.md`](phase40_backlog.md) (harness first), the
 DS3231's cell → the owner's bench.
 
-### 38.1 — Flash writes keep XIP fast, and keep PSRAM intact (every RP2350 board)
+### 38.1 — Flash writes keep XIP fast, and keep PSRAM intact (every RP2350 board) *(done 2026-10-02)*
 
-`drivers/flash_rp2350.c` does what pico-sdk's `flash.c` does, in order:
+**A correction first.** The preliminaries [P§4] and this milestone's
+original text assumed an identity write leaves the board running slow. It
+does not, in practice: `drivers/idstore_rp2350.c` **reboots** after every
+write, and has since I7b (2026-09-01) -- for two reasons it wrote down, the
+USB console not surviving ~60 ms with interrupts off, and the degraded XIP.
+So the 46 % slowdown never outlived a write by more than a few
+milliseconds. What 38.1 is really for is the window between the write and
+that reboot (core 1 resumes, the record is verified, the console prints)
+once PSRAM holds live data, and a flash path that can be used without a
+reboot later.
 
-1. At boot, copy the XIP setup function the bootrom leaves in the first
-   256 bytes of boot RAM (`0x400e0000`) into SRAM (`.ramfunc`-adjacent, so
-   it runs with XIP off). **First, verify on the board** that boot RAM holds
-   RISC-V code at that point and that calling it restores the M0 registers
-   observed at boot (RFMT 0x000492a8, RCMD 0xeb, TIMING 0x60007203 on the
-   LCD-7) -- pico-sdk's comment says the copy works on RISC-V; this tree
-   checks.
-2. Before the ROM sequence: clean the XIP cache (H3).
-3. Save QMI M1 TIMING/RFMT/RCMD; after `flash_enter_cmd_xip`, call the
-   saved setup function (M0 back to quad continuous read), then restore M1.
-4. Refuse a source buffer outside SRAM (H2).
-5. *(from `open_issues.md`, 38.0b)* The USB serial number from the chip's
-   unique ID instead of `LUGALOS-0001` on every board -- this milestone's
-   tests are the first to attach two RP2350 boards at once, which is when
-   the shared `/dev/serial/by-id` name sends a flash to the wrong board.
+What `drivers/flash_rp2350.c` does now, inside its `.ramfunc` routine:
 
-`clocks` grows a QMI line (M0 and M1 TIMING/RFMT/RCMD) -- the instrument.
+1. Clean the XIP cache by set/way before the ROM sequence (H3).
+2. Save all ten QMI window registers (M0 and M1 TIMING/RFMT/RCMD/WFMT/WCMD),
+   XIP_CTRL and the six QSPI pad registers; after `flash_enter_cmd_xip`,
+   write them all back.
+3. Refuse a source buffer outside SRAM (H2).
+4. *(from `open_issues.md`, 38.0b)* The USB serial number is "LUGALOS-" and
+   the OTP CHIPID (`LUGALOS-FDF1D7C72F56418E` on the LCD-7), built into the
+   USB driver's existing PMP region at no RAM cost; host discovery
+   (`tests/hw/rp2350.py`) groups the by-id links per board and, with two
+   attached, takes `$LUGALOS_USB_SERIAL` or refuses to guess.
 
-**Tests:**
-* `test_rp2350.py`: read the QMI line, do an `identity name` write, read it
-  again: M0 unchanged. Run on the LCD-7 and (owner to attach) the Pico 2
-  chess board, since every persona writes the identity store.
-* Before/after on the LCD-7: `psram xip` from the spike shows M0 at 03h
-  today; after 38.1 the same sequence leaves it fast.
-* The 46 % slowdown measured after a flash write [P§4] is gone: a flash-
-  bound benchmark (`perft 3` on the chess persona) is the same before and
-  after an identity write, within its noise.
+**Not done: the boot-RAM XIP setup copy** the original step 1 proposed.
+Not needed: this tree's boot leaves M0 in plain quad I/O read (0xEB, suffix
+0x00, no continuous-read mode bits), so the chip needs no re-entry sequence
+and restoring the registers is the whole repair -- checked by a timed read,
+below. That saves the 256 B of SRAM the copy would have cost.
+
+`clocks` now prints both QMI windows; `flashtest` runs the same RAM routine
+with erase and program left out and reports what the bootrom left, what was
+restored, and a timed 64 KB uncached flash read before and after.
+
+**Measured on the LCD-7:** the bootrom left M0 and M1 at serial 03h,
+clk_sys/12 (12 MHz); after the restore 0 of 17 registers differ and the read
+takes 3447 µs before and after (48 MHz quad EBh). `.ramfunc` grew ~200 B,
+within page rounding (heap pages unchanged on all four sizechecked presets).
+`test_rp2350.py` 25/25 with the new test
+"Flash path: XIP exit/re-entry restores the QSPI windows"; QEMU 414/414.
+
+**Left for later, deliberately:**
+* A real identity write was **not** run on the board: the LCD-7's name is
+  still derived, and a write would turn it into a stored record that no
+  command clears. The write path differs from `flashtest`'s only by the
+  erase and program between exit and re-entry, which do not touch the
+  window registers -- but the owner may want one real write on a board
+  whose record is already stored (the chess board).
+* PSRAM's dirty lines surviving a flash write is tested in 38.2, the first
+  milestone with PSRAM up: write through the cache, `flashtest`, read back
+  uncached.
+* Whether the identity store's reboot can go: only the USB reason is left,
+  and it was measured once, on a USB driver that has changed since. A
+  `phase 40` candidate, not this phase.
 
 ### 38.2 — PSRAM bring-up at boot
 
@@ -428,14 +453,11 @@ Decided by the owner, 2026-10-02:
 
 ## 7. Risks
 
-* **The bootrom's XIP setup function is not where pico-sdk expects it** on
-  this boot path (we boot a RISC-V image without boot2). 38.1 checks before
-  relying on it; the fallback is reconstructing the M0 settings observed at
-  boot and re-entering continuous-read mode by hand, which is what the boot
-  RAM function does internally.
+* ~~The bootrom's XIP setup function is not where pico-sdk expects it~~ --
+  retired by 38.1: not needed, the register restore is the whole repair.
 * **Something touches PSRAM inside the flash critical section** -- an
   interrupt that should have been masked, a future DMA user. The symptom is a
-  hang during an identity write. H2 states the rule; 38.1's test exercises
+  hang during an identity write. H2 states the rule; 38.2's test exercises
   the write with PSRAM in active use (a Lisp program running).
 * **Executing from PSRAM under PMP fails or is slow** (H4). 38.7 tests it
   first; the fallback is clear.
