@@ -3,7 +3,9 @@
 **Status: noted, not scheduled (owner, 2026-10-02).** Raised during phase
 38's 38.9, kept out of it: 38.9 is the chess search's speed only, and this
 is a rewrite of what the chess console prints. Elaborated into a plan when
-the phase starts.
+the phase starts. **Preceded by [phase 41a](phase41a_virtual_panel.md)**,
+the virtual panel on QEMU, so the dashboard can be iterated without
+flashing.
 
 ## The problem
 
