@@ -329,8 +329,10 @@ reset finds the chip already in QPI -- the spike's exit-QPI first step).
 
 **Measured on the LCD-7:** 8192 KB by aliasing, KGD 0x5D EID 0x53, QPI at
 72 MHz, M1_TIMING 0x60242202 (as the spike). Bench within 1 % of [P§2] on
-every checked figure. Warm reset (chip still in QPI) comes up clean; **a cold
-power-on has not been tried** -- it needs the owner to pull power. Static RAM
+every checked figure. Warm reset (chip still in QPI) and a cold power-on
+(the owner pulled power, USB gone ~9 s) both come up clean: 8192 KB,
+`psram test` PASS. `[CLK] last reset:` reads "power-on" after a software
+`reboot` too, so it does not tell the two apart -- the absence of USB did. Static RAM
 +15 B (the driver's state), heap pages unchanged. `test_rp2350.py` 26/26
 with the new PSRAM test -- though its first run straight after a flash
 failed that test once and passed on every run after; the suite does not
