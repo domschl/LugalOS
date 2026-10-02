@@ -68,10 +68,11 @@ set(CONFIG_PALLOC_BULK_PAGES 2048)
 # share of PSRAM, not of the heap. init.lisp mounts 2 MB at boot (sign-off
 # S3); `(mount-ramdisk 4096)` can ask for up to this.
 set(CONFIG_RAMDISK_MAX_KB 4096)
-# The chess transposition table (38.7, sign-off S4): 1 MB in PSRAM, against
+# The chess transposition table (38.7, sign-off S4): 512 KB in PSRAM, against
 # 32 KB in SRAM on the other personas. Depth 8 on the bench position took
-# 25.1 s against 33.9 s; 2 MB and 4 MB bought under 1 % more.
-set(CONFIG_CHESS_TT_KB 1024)
+# 26.0 s against 33.9 s; 1 MB bought 4 % more and 4 MB 5 % -- the owner
+# chose 512 KB.
+set(CONFIG_CHESS_TT_KB 512)
 
 # Deliberately no CONFIG_LED_*: this board has no user LED on any GPIO
 # (Led1/Led2 on the schematic are power and charge indicators). With neither

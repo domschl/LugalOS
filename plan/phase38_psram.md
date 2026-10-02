@@ -591,8 +591,8 @@ small table happened to need the fewest nodes -- every table of 128 KB or
 more found a different line (d2d3, not b1c3) and spent more nodes on it --
 so one depth on one position is not the measure; at depth 8 all of them
 agree on the move and the larger tables need 25 % fewer nodes. **S4,
-proposed: 1 MB** (`CONFIG_CHESS_TT_KB`, a board key; 32 KB elsewhere);
-beyond it under 1 %. The SMP personas have no bulk zone, so core 1's
+decided (owner, 2026-10-02): 512 KB** (`CONFIG_CHESS_TT_KB`, a board key;
+32 KB elsewhere) -- 1 MB would buy 4 % more. The SMP personas have no bulk zone, so core 1's
 helper search never touches PSRAM (H2).
 
 *chibicc arena* -- five compiles of `multi.c`: ~135 ms from SRAM, ~165 ms
@@ -631,7 +631,7 @@ case; `test_rp2350.py`'s `test_editor_in_psram` (200 KB: keystroke
 < 50 ms, frame scans < 1 ms); C2 and C4 now run on bulk-zone images.
 QEMU 422/422, `test_rp2350.py` 29/29.
 
-### 38.8 — A canvas backing store
+### 38.8 — A canvas backing store *(done 2026-10-02)*
 
 Phase 37 §6 item 5 left the door open: "with PSRAM, `lcdterm` can keep a
 copy and send fewer redraws". The 1 bpp frame is 48 KB; a stored copy of a
@@ -648,6 +648,39 @@ screen is 48 KB of PSRAM.
 **Scope [sign-off S5, decided]:** one stored screen per layout, so that
 switching between layouts restores each without a redraw. The window system
 itself grows in a later phase; colour is its own later phase.
+
+**Done (2026-10-02).** `drivers/screen.c` keeps one store per layout with a
+canvas (canvas, and the wide, half and narrow splits), each the canvas
+tile's pixels packed tile-local, so a swapped split restores at its new
+side. Leaving a layout saves its canvas; entering one restores it without
+moving `damage` -- **if nothing has been drawn since it was saved**: every
+drawing request bumps a generation, and a store saved under an older one is
+stale. Otherwise the canvas comes back blank with damage, exactly as before,
+so phase 37's redraw contract is unchanged. A new request `'Z'` forgets
+every store; `lisp_canvas_reset()` sends it after an `exec`'d program or
+`(chess)` returns, so the next program never sees the last one's pixels.
+
+**The PMP budget had no room** for the planned sixth region: a domain has
+five (eight entries less the three that shadow Hazard3's hardwired grants),
+and `lcdterm` used all five. So the screen's 8 KB state block moved into the
+store run instead -- one 256 KB naturally aligned run of the bulk zone,
+state then 4 x 48 000 bytes of stores -- and the domain stays at five
+regions, with two SRAM pages given back. The cost is the state's: it is
+touched on every character, and `lcd outbench` fell from 62 700 to 54 800
+chars/s (-12.6 %). The alternative -- the framebuffer and the state in one
+64 KB SRAM region, the stores as the fifth -- keeps the text speed but
+costs two SRAM pages instead of saving two; by §0's rule, RAM won. Without a
+bulk zone the state stays in SRAM and nothing is stored.
+
+**Measured:** text to a split and back, the split restored: 36 ms on the
+panel; no redraw call. Heap peak with two programs resident (C2): 45 -> 43
+pages.
+
+**Tests:** `vtselftest` (35/35) gains the store case -- kept, swapped,
+stale after drawing elsewhere, forgotten on `'Z'`, the tile's last column
+restored without touching its frame; QEMU drives the same through Lisp on
+the RAM screen, whose stores come from the bulk stand-in; `test_rp2350.py`'s
+`test_canvas_store` on the panel. QEMU 424/424, `test_rp2350.py` 30/30.
 
 ### 38.9 — Spending what was freed: the chess hot path
 
@@ -678,7 +711,8 @@ Decided by the owner, 2026-10-02:
   with a message.**
 * **S2** — Lisp sizes on the LCD-7: **65 536 nodes (1 MB), string pools ×8.**
 * **S3** — `/ram0` on the LCD-7: **2 MB, mounted at boot.**
-* **S4** — Chess TT in PSRAM: deferred to 38.7's node-rate number.
+* **S4** — Chess TT in PSRAM: deferred to 38.7's node-rate number;
+  decided after it: 512 KB in PSRAM.
 * **S5** — 38.8's scope: **one stored screen per layout.** The window system
   grows in a later phase; colour is a dedicated later phase of its own.
 

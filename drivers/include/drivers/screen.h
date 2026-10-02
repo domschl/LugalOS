@@ -43,11 +43,15 @@
  * On the 800 x 480 panel: 98 x 27 or 38 x 27 or 48 x 27 cells; a canvas of
  * 789, 469 or 389 x 434 px. Nothing is drawn on x 799 (under the bezel).
  *
- * **The canvas is not stored.** A layout change or a repaint clears it and
- * bumps `damage`; whoever draws on it redraws when that changes (§2.1). The
- * text is stored, in the cell shadow, and survives everything: in CANVAS
- * output still lands in the shadow, and a narrower window keeps each row's
- * left part. */
+ * **The canvas is stored once per layout, where there is memory for it**
+ * (38.8, plan/phase38_psram.md; screen_set_store()). A layout change saves
+ * the canvas it leaves and restores the one it enters -- without bumping
+ * `damage` -- if nothing has been drawn since that one was saved; otherwise,
+ * and always without a store, the canvas comes back blank and `damage`
+ * moves on, and whoever draws on it redraws (§2.1). A repaint clears it
+ * too. The text is stored, in the cell shadow, and survives everything: in
+ * CANVAS output still lands in the shadow, and a narrower window keeps each
+ * row's left part. */
 
 #define SCREEN_MENU_H        20
 #define SCREEN_TILE_Y        22
@@ -76,6 +80,11 @@ typedef struct {
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
     uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
+    uint8_t   store_ok;                 /* 38.8: bit L-1 -- layout L's store holds its canvas */
+    uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
+    uint32_t  store_slot;               /* bytes per slot */
+    uint32_t  draw_gen;                 /* bumped by every drawing request */
+    uint32_t  store_gen[4];             /* draw_gen when each slot was saved */
     int16_t   fx0, fy0, fx1, fy1;       /* the text tile's frame */
     int16_t   cx0, cy0, cx1, cy1;       /* the canvas tile's frame */
     uint32_t  title_drawn;              /* vt.title_seq the title bar shows */
@@ -86,6 +95,12 @@ typedef struct {
     uint16_t  shadow[];                 /* the text window's cells, full width */
 } screen_t;
 
+/* 38.8: the canvas stores -- one per layout with a canvas (CANVAS and the
+ * three splits), each room for a whole frame of w x h, packed tile-local:
+ * a swapped split restores at its new place. */
+#define SCREEN_STORES 4u
+#define SCREEN_STORE_BYTES(w, h) (SCREEN_STORES * ((uint32_t)(w) / 8u) * (uint32_t)(h))
+
 /* What a screen of w x h pixels needs, shadow included. */
 #define SCREEN_BYTES(w, h) \
     (sizeof(screen_t) + SCREEN_TEXT_COLS(w) * SCREEN_TEXT_ROWS(h) * sizeof(uint16_t))
@@ -94,6 +109,10 @@ typedef struct {
  * terminal empty, the tile titled `LugalOS` until something says otherwise.
  * `scr` must hold SCREEN_BYTES(w, h); w must be a multiple of 8. */
 void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h);
+
+/* 38.8: memory for the canvas stores, SCREEN_STORE_BYTES(w, h) of it;
+ * before this, or with NULL, nothing is stored. */
+void screen_set_store(screen_t *scr, void *mem, uint32_t bytes);
 
 /* Terminal output; redraws the title bar if it changed the title. */
 void screen_write(screen_t *scr, const char *s, uint32_t n);
@@ -149,6 +168,9 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       ('w' and 'X' refused) until a 'K' 0 or
  *                                       a change to TEXT -- chess's board fits
  *                                       only the 38-column split
+ *   'Z'                                 38.8: forget every stored canvas -- a
+ *                                       program has ended, and the next must
+ *                                       not be shown its pixels
  *
  * The reply, SCREEN_REPLY_LEN bytes: [0] 0 done, 1 refused (no canvas in
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;

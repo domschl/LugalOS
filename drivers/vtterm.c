@@ -534,7 +534,8 @@ int vtterm_selftest(void) {
     uint32_t shadow_off = 2u * ST_BUF_BYTES;
     uint32_t scr_off = (shadow_off + ST_COLS * ST_ROWS * 2u + 7u) & ~7u;
     scratch_t sc;
-    if (!scratch_acquire(&sc, scr_off + SCREEN_BYTES(ST_WW, ST_LH))) {
+    uint32_t store_off = (scr_off + SCREEN_BYTES(ST_WW, ST_LH) + 7u) & ~7u;
+    if (!scratch_acquire(&sc, store_off + SCREEN_STORE_BYTES(ST_WW, ST_LH))) {
         cprintf("VTTERM_SELFTEST_FAIL (no memory for the test grid)\n");
         return 1;
     }
@@ -873,6 +874,52 @@ int vtterm_selftest(void) {
         st_check(&cx, "37.5a: swapped panes mirror the divider; a lock holds both until text; "
                       "with one pane full, the swap shows the other one full",
                  swapped && mirrored && lk1 && lk2 && unlocked && to_canvas && to_text);
+
+        /* 38.8: the canvas stores. Leaving a layout keeps its canvas, and
+         * coming back shows it with no damage -- also swapped, at the other
+         * side; the pixel in the tile's last column comes back without
+         * touching the frame beside it. Drawing in another layout makes the
+         * old store stale, and 'Z' forgets them all: both come back blank,
+         * with damage, as without a store. */
+        screen_init(scr, cx.buf, ST_WW / 8u, ST_WW, ST_LH);
+        screen_set_store(scr, (uint8_t *)sc.base + store_off, SCREEN_STORE_BYTES(ST_WW, ST_LH));
+        {
+            const uint32_t ws = ST_WW / 8u;
+#define PXW(x, y) ((cx.buf[(uint32_t)(y) * ws + (uint32_t)(x) / 8u] >> ((x) % 8u)) & 1u)
+#define GET(x, y) st_get(scr, (x), (y))
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+            unsigned w = RW, h = RH;
+            REQ('F', I16(0));
+            REQ('l', I16(0), I16(0), I16(20), I16(10), I16(1));
+            REQ('p', I16(3), I16(3), I16(1));
+            REQ('p', I16(w - 1), I16(h - 1), I16(1));
+            unsigned d = RD;
+            REQ('L', SCREEN_LAYOUT_TEXT);
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+            bool kept = RD == d && GET(0, 0) && GET(20, 10) && GET(3, 3) && !GET(20, 0) && !GET(4, 3) &&
+                        GET(w - 1, h - 1) && !GET(w - 2, h - 1) && PXW(scr->cx1, 60) &&
+                        PXW(scr->cx1 + 2, 61) == ((scr->cx1 + 2u + 61u) & 1u);   /* the desktop */
+            REQ('X');
+            bool other_side = rp[9] == 1 && RD == d && GET(0, 0) && GET(20, 10) && GET(3, 3) &&
+                              !GET(4, 3) && GET(w - 1, h - 1) && PXW(scr->cx1, 60) && PXW(scr->cx0, 60);
+            REQ('X');
+            REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+            bool fresh = RD == d + 1u && !GET(3, 3);
+            REQ('p', I16(1), I16(1), I16(1));
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+            bool stale = RD == d + 2u && !GET(3, 3);
+            REQ('p', I16(3), I16(3), I16(1));
+            REQ('L', SCREEN_LAYOUT_TEXT);
+            REQ('Z');
+            REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+            bool forgot = RD == d + 3u && !GET(3, 3);
+            st_check(&cx, "38.8: a layout's canvas is stored and comes back without damage, also swapped; "
+                          "stale after drawing elsewhere, and forgotten on 'Z'",
+                     kept && other_side && fresh && stale && forgot);
+#undef GET
+#undef PXW
+        }
+        screen_set_store(scr, 0, 0);
 
         /* A split is refused where there is no room for a canvas. */
         screen_init(scr, cx.buf, ST_SW / 8u, ST_SW, ST_SH);

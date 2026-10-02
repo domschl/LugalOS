@@ -464,6 +464,18 @@ _Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
 _Static_assert(SCREEN_BYTES(LCD_H_ACTIVE, LCD_V_ACTIVE) <= STATE_BYTES,
                "lcd7: the screen's state and its shadow must fit their block");
 
+/* 38.8, plan/phase38_psram.md: with PSRAM, the state block grows into a
+ * 256 KB naturally aligned run of the bulk zone -- the state, then the
+ * canvas stores (drivers/screen.h, 4 x 48 000 bytes). Still one region, so
+ * the domain stays at five: the budget had no room for a sixth, and this
+ * gives two SRAM pages back besides. The state is touched on every
+ * character; `lcd outbench` measured the cost. Without a bulk zone, the
+ * 8 KB block in SRAM, and no stores. */
+#define STORE_BLOCK_PAGES    64u
+#define STORE_BLOCK_BYTES    (STORE_BLOCK_PAGES * 4096u)
+_Static_assert(STATE_BYTES + SCREEN_STORE_BYTES(LCD_H_ACTIVE, LCD_V_ACTIVE) <= STORE_BLOCK_BYTES,
+               "lcd7: the state and the canvas stores must fit their block");
+
 static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
     for (unsigned col = 0; *s && col < t->cols; col++, s++) fbtext_putc(t, col, row, *s, inverse);
 }
@@ -486,7 +498,8 @@ static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
  * (kernel/console.c's screen hooks), so an echoed keystroke appears at once.
  * Until the task is alive -- boot, or if it never starts -- the facade draws
  * directly, the fallback every driver task here has. */
-static screen_t *g_scr;             /* STATE_PAGES heap pages */
+static screen_t *g_scr;             /* the state block: g_scr_bytes, naturally aligned */
+static uint32_t  g_scr_bytes;
 static bool      g_vt_ready;
 
 #define LCDTERM_BATCH     256u
@@ -577,7 +590,7 @@ static void lcdterm_task_body(void *arg) {
         .stack_size   = sizeof(g_lcdterm_ustack),
         .regions      = { { fb,                   32768u,      MEM_R | MEM_W },
                           { fb + 32768u,          16384u,      MEM_R | MEM_W },
-                          { (uintptr_t)g_scr,     STATE_BYTES, MEM_R | MEM_W } },
+                          { (uintptr_t)g_scr,     g_scr_bytes, MEM_R | MEM_W } },
         .region_count = 3,
         .arg          = (uintptr_t)g_scr,
     };
@@ -1013,11 +1026,22 @@ int lcd7_init(void) {
     REG(PIO_CTRL) = 3u;                                          /* SM0 + SM1 */
     g_running = true;
 
-    g_scr = (screen_t *)palloc_pages_aligned(STATE_PAGES, STATE_PAGES);
+    g_scr = (screen_t *)palloc_pages_bulk_aligned(STORE_BLOCK_PAGES, STORE_BLOCK_PAGES);
+    if (g_scr && !palloc_is_bulk(g_scr)) {      /* the fast zone's: too dear */
+        palloc_free(g_scr, STORE_BLOCK_PAGES);
+        g_scr = NULL;
+    }
+    g_scr_bytes = STORE_BLOCK_BYTES;
+    if (!g_scr) {
+        g_scr = (screen_t *)palloc_pages_aligned(STATE_PAGES, STATE_PAGES);
+        g_scr_bytes = STATE_BYTES;
+    }
     if (!g_scr) {
         printk("[LCD] no memory for the screen's state; the panel runs without a terminal\n");
     } else {
         screen_init(g_scr, g_fb, LCD_H_ACTIVE / 8u, LCD_H_ACTIVE, LCD_V_ACTIVE);
+        if (g_scr_bytes == STORE_BLOCK_BYTES)
+            screen_set_store(g_scr, (uint8_t *)g_scr + STATE_BYTES, STORE_BLOCK_BYTES - STATE_BYTES);
         g_vt_ready = true;
     }
 
@@ -1046,6 +1070,12 @@ void lcd7_report(void) {
                 (unsigned)g_scr->vt.text.cols, (unsigned)g_scr->vt.text.rows,
                 (unsigned)g_scr->vt.row, (unsigned)g_scr->vt.col,
                 (unsigned long)g_scr->vt.unknown, g_scr->vt.title);
+        /* 38.8: where the state is, and which canvases are stored. */
+        cprintf("lcd: screen state %lu KB at 0x%08lx (%s), canvas stores %s, held 0x%x, damage %u\n",
+                (unsigned long)(g_scr_bytes / 1024u), (unsigned long)(uintptr_t)g_scr,
+                palloc_is_bulk(g_scr) ? "PSRAM" : "SRAM",
+                g_scr->store ? "4 x 48000 bytes" : "none",
+                (unsigned)g_scr->store_ok, (unsigned)g_scr->damage);
     }
     cprintf("lcd: terminal %s (task #%d, %lu batches served)\n",
             lcdterm_alive() ? "in the U-mode lcdterm task" : "drawn from the kernel",

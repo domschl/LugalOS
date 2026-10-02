@@ -85,18 +85,87 @@ LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
     scr->title_drawn = scr->vt.title_seq;
 }
 
-/* Every pixel again. The canvas comes back blank, so its damage moves on. */
-LCDTERM_UTEXT static void draw_all(screen_t *scr) {
+/* --- 38.8: the canvas stores ----------------------------------------------
+ *
+ * A slot holds the canvas tile's drawable area, row by row, (w + 7) / 8
+ * bytes a row, pixel x of a row in bit x % 8 of byte x / 8 -- the
+ * framebuffer's own order, but from the tile's left edge rather than the
+ * screen's, so the same slot restores a split at either side. */
+
+LCDTERM_UTEXT static uint8_t *store_slot(const screen_t *scr) {
+    unsigned l = scr->layout;
+    if (!scr->store || l == SCREEN_LAYOUT_TEXT || l > SCREEN_STORES) return 0;
+    return scr->store + (uint32_t)(l - 1u) * scr->store_slot;
+}
+
+/* The canvas as it is now, into its layout's slot. */
+LCDTERM_UTEXT static void store_save(screen_t *scr) {
+    uint8_t *d = store_slot(scr);
+    if (!d) return;
+    const canvas1_t *cc = &scr->cc;
+    unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = cc->ox & 7u;
+    for (unsigned y = 0; y < cc->h; y++) {
+        const uint8_t *src = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (cc->ox >> 3);
+        for (unsigned i = 0; i < rb; i++)
+            d[i] = s ? (uint8_t)((src[i] >> s) | (src[i + 1u] << (8u - s))) : src[i];
+        d += rb;
+    }
+    unsigned bit = 1u << (scr->layout - 1u);
+    scr->store_gen[scr->layout - 1u] = scr->draw_gen;
+    scr->store_ok = (uint8_t)(scr->store_ok | bit);
+}
+
+/* The layout's slot back onto the canvas, if it holds what was there when
+ * nothing has been drawn since; false (and nothing done) otherwise. */
+LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
+    const uint8_t *d = store_slot(scr);
+    if (!d) return false;
+    unsigned l = scr->layout - 1u;
+    if (!(scr->store_ok & (1u << l)) || scr->store_gen[l] != scr->draw_gen) return false;
+    const canvas1_t *cc = &scr->cc;
+    unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = cc->ox & 7u;
+    unsigned tail = (unsigned)cc->w & 7u;
+    for (unsigned y = 0; y < cc->h; y++) {
+        uint8_t *dst = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (cc->ox >> 3);
+        for (unsigned i = 0; i < rb; i++) {
+            unsigned vm = (i + 1u == rb && tail) ? (1u << tail) - 1u : 0xffu;
+            unsigned v = d[i] & vm;
+            unsigned m0 = (vm << s) & 0xffu;
+            dst[i] = (uint8_t)((dst[i] & ~m0) | ((v << s) & m0));
+            if (s) {
+                unsigned m1 = vm >> (8u - s);
+                dst[i + 1u] = (uint8_t)((dst[i + 1u] & ~m1) | ((v >> (8u - s)) & m1));
+            }
+        }
+        d += rb;
+    }
+    return true;
+}
+
+void screen_set_store(screen_t *scr, void *mem, uint32_t bytes) {
+    uint32_t need = SCREEN_STORE_BYTES(scr->cv.w, scr->cv.h);
+    scr->store_ok = 0;
+    scr->store = (mem && bytes >= need) ? (uint8_t *)mem : 0;
+    scr->store_slot = need / SCREEN_STORES;
+}
+
+/* Every pixel again. The canvas comes back blank, so its damage moves on --
+ * unless `restore` and its layout's store has it (38.8). */
+LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     canvas1_fill(cv, 0, SCREEN_MENU_H, cv->w - 1, cv->h - 1, CANVAS1_GREY);
     if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title);
     if (has_canvas(scr)) {
         draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle);
-        scr->damage++;
+        if (!restore || !store_restore(scr)) scr->damage++;
     }
     scr->title_drawn = scr->vt.title_seq;
     draw_menu(scr);
     vtterm_repaint(&scr->vt);
+}
+
+LCDTERM_UTEXT static void draw_all(screen_t *scr) {
+    draw_all_from(scr, false);
 }
 
 /* The tiles' geometry for `layout` (screen.h's table), and the text window
@@ -150,6 +219,10 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     canvas1_init(&scr->cv, fb, stride, w, h);
     scr->full_cols = (uint8_t)SCREEN_TEXT_COLS(w);
     scr->damage = 0;
+    scr->store = 0;
+    scr->store_ok = 0;
+    scr->store_slot = 0;
+    scr->draw_gen = 0;
     scr->locked = 0;
     scr->swapped = 0;
     const char *name = "LugalOS";
@@ -199,9 +272,10 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
      * layout; if that cleared the canvas, the next prompt would see new
      * damage and call it again, for ever. */
     if (layout == scr->layout) return true;
-    if (!place(scr, layout)) return false;
+    if (has_canvas(scr)) store_save(scr);
+    if (!place(scr, layout)) return false;     /* place() changed nothing */
     if (layout == SCREEN_LAYOUT_TEXT) scr->locked = 0;
-    draw_all(scr);
+    draw_all_from(scr, true);
     return true;
 }
 
@@ -260,14 +334,17 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
             status = screen_set_layout(scr, scr->layout == SCREEN_LAYOUT_TEXT ? SCREEN_LAYOUT_CANVAS
                                                                           : SCREEN_LAYOUT_TEXT) ? 0 : 1;
         } else {
+            store_save(scr);            /* 38.8: the same canvas, other side */
             scr->swapped = (uint8_t)!scr->swapped;
             if (scr->layout != SCREEN_LAYOUT_TEXT && scr->layout != SCREEN_LAYOUT_CANVAS) {
                 (void)place(scr, scr->layout);
-                draw_all(scr);
+                draw_all_from(scr, true);
             }
         }
     } else if (op == 'K') {
         scr->locked = (n >= 2 && req[1]) ? 1 : 0;
+    } else if (op == 'Z') {
+        scr->store_ok = 0;              /* 38.8 */
     } else if (op == 'S' || op == 0) {
         /* the reply is all */
     } else if (!has_canvas(scr)) {
@@ -304,6 +381,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         }
         else if (op == 'g') pixel = (uint8_t)canvas1_get(cc, a, b);
         else status = 1;
+        /* 38.8: drawn on -- every other layout's store is now out of date. */
+        if (op != 'g' && status == 0) scr->draw_gen++;
     }
     reply[0] = status;
     reply[1] = pixel;

@@ -1933,8 +1933,11 @@ void lisp_canvas_poll(void) {
 
 void lisp_canvas_reset(void) {
     uint8_t req[2] = { 'L', SCREEN_LAYOUT_TEXT }, reply[SCREEN_REPLY_LEN];
-    uint8_t ask[1] = { 'S' };
+    uint8_t ask[1] = { 'S' }, forget[1] = { 'Z' };
     if (console_canvas(ask, 1, reply) && reply[8] != SCREEN_LAYOUT_TEXT) (void)console_canvas(req, 2, reply);
+    /* 38.8: after the switch, which stores the canvas it leaves -- the
+     * program that drew it has ended, and the next must start blank. */
+    (void)console_canvas(forget, 1, reply);
 }
 #endif
 

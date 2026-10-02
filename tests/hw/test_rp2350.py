@@ -871,6 +871,54 @@ def test_editor_in_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """38.8 (plan/phase38_psram.md, sign-off S5): the screen's state and one
+    stored canvas per layout live in PSRAM; a split left for text and asked
+    for again comes back with its drawing and without a redraw call."""
+    name = "Canvas stored per layout in PSRAM: restored on return, no redraw (38.8)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no PSRAM (no PSRAM_BYTES in /proc/config)")
+    lines = [
+        "(define n38 0)",
+        "(canvas-window 'split)",
+        "(canvas-on-redraw (lambda () (set! n38 (+ n38 1))))",
+        "(canvas-fill 0)",
+        "(canvas-circle 100 100 50 1)",
+        "(canvas-window 'text)",
+        "(canvas-window 'split)",
+        "(list 'store n38 (canvas-get 150 100) (canvas-get 100 100))",
+        "(list 'switch (let ((t0 (time))) (canvas-window 'text) (canvas-window 'split) (- (time) t0)))",
+        "(canvas-on-redraw '())",
+        "(canvas-window 'text)",
+        "lcd",
+    ]
+    try:
+        out = ""
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            for line in lines:
+                ser.write(line.encode() + b"\n")
+                ser.flush()
+                out += rp2350.drain(ser, quiet=0.6, deadline=10.0).decode("utf-8", errors="replace")
+        out = out.replace("\r", "")
+        st = re.search(r"=> \(store (\d+) (\d) (\d)\)", out)
+        sw = re.search(r"=> \(switch (\d+)\)", out)
+        lcd = re.search(r"screen state (\d+) KB at (0x[0-9a-f]+) \((\w+)\), canvas stores ([^,]+),", out)
+        if not st or not sw or not lcd:
+            return (name, False, f"output not recognised:\n{out[-800:]}")
+        detail = (f"state {lcd.group(1)} KB at {lcd.group(2)} in {lcd.group(3)}, stores {lcd.group(4)}; "
+                  f"redraws {st.group(1)}, circle {st.group(2)}, centre {st.group(3)}; "
+                  f"text and back {sw.group(1)} ms")
+        ok = (lcd.group(3) == "PSRAM" and lcd.group(4) == "4 x 48000 bytes"
+              and st.group(1) == "0" and st.group(2) == "1" and st.group(3) == "0")
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """M4.5 Part A (plan/phase12_microkernel_migration.md): does the
     scheduler share the CPU fairly between two same-tier
@@ -2059,7 +2107,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

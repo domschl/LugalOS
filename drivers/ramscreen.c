@@ -12,7 +12,8 @@
  * says "unknown" on a serial line, and nothing a program prints goes into
  * it. It costs nothing until the first canvas request, which allocates the
  * 800 x 480 frame (12 pages) and the screen's state (2) -- the panel's size,
- * so that layouts and canvas sizes are the panel's too.
+ * so that layouts and canvas sizes are the panel's too -- and, from the bulk
+ * zone, the canvas stores (47 pages, 38.8).
  */
 
 #include "drivers/ramscreen.h"
@@ -36,6 +37,10 @@ static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
             return false;
         }
         screen_init(scr, fb, RS_W / 8u, RS_W, RS_H);
+        /* 38.8: the canvas stores, from the bulk zone -- QEMU's stand-in --
+         * so the suite runs them; without one, the canvas is not kept. */
+        void *st = palloc_pages_bulk(RS_PAGES(SCREEN_STORE_BYTES(RS_W, RS_H)));
+        if (st) screen_set_store(scr, st, RS_PAGES(SCREEN_STORE_BYTES(RS_W, RS_H)) * PAGE_SIZE);
         g_rs = scr;
     }
     screen_canvas(g_rs, req, n, reply);

@@ -20,10 +20,10 @@ static uint32_t tt_pages = 0;
 
 
 /* See init_tt(). 32 KB is the pre-X8b value and the default; a board sets
- * its own with CONFIG_CHESS_TT_KB (38.7, sign-off S4). The LCD-7's 1 MB, in
- * PSRAM, searched the bench position to depth 8 in 25.1 s against 33.9 s
+ * its own with CONFIG_CHESS_TT_KB (38.7, sign-off S4). The LCD-7's 512 KB,
+ * in PSRAM, searched the bench position to depth 8 in 26.0 s against 33.9 s
  * for 32 KB in SRAM: the larger table more than pays for the slower
- * memory, and 2 MB and 4 MB bought under 1 % more. */
+ * memory. 1 MB bought 4 % more, 4 MB 5 %. */
 #if defined(CONFIG_CHESS_TT_KB)
 #define TT_DEFAULT_BYTES ((uint32_t)(CONFIG_CHESS_TT_KB) * 1024u)
 #else
@@ -41,7 +41,7 @@ void init_tt(int size_mb) {
 #if defined(LUGALCHESS_EMBEDDED)
     (void)size_mb;
     /* On microcontrollers, a fixed table rather than size_mb -- 32 KB, i.e.
-     * 2048 entries, which is what RP2350's heap can spare; 1 MB on the
+     * 2048 entries, which is what RP2350's heap can spare; 512 KB on the
      * LCD-7, in PSRAM (38.7, CONFIG_CHESS_TT_KB).
      *
      * Settable since X8b (plan/phase23_multicore_scheduling.md), because it

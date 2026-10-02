@@ -159,7 +159,7 @@ static bool chess_ensure_init(void) {
 }
 
 /* Releases the ~100 KB (25 pages) chess_ensure_init() acquires from the
- * page allocator -- the transposition table (32 KB; 1 MB of PSRAM on the
+ * page allocator -- the transposition table (32 KB; 512 KB of PSRAM on the
  * LCD-7, 38.7 -- tt.c's own
  * pre-existing free_tt(), simply never called before this) and J0's
  * on-demand move-list pools (68 KB, search_pools_free()) -- back to

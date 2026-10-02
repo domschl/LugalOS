@@ -131,6 +131,10 @@ frame, and the move list already names squares). The 48-px pieces fit a
 
 ### 2.1 Redraw messages instead of stored canvas pixels *(owner, 2026-10-01)*
 
+*(Since 38.8, on a board with PSRAM, one canvas per layout is stored and
+restored without damage when nothing was drawn meanwhile --
+plan/phase38_psram.md. The contract below still holds.)*
+
 When the canvas is hidden (layout `text`) and shown again, its pixels are
 gone. **`lcdterm` does not keep a copy. It marks the canvas damaged, and the
 application redraws.** This is the original Macintosh's update event, and it

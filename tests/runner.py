@@ -2676,6 +2676,30 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Canvas On The Screen Protocol: Layouts, Drawing, Read-Back, Redraw, Reset (37.3b)",
                         canvas_ok, canvas_log))
 
+        # 38.8: the canvas stores. A split left for text and asked for again
+        # comes back with its drawing (the RAM screen's stores are in the
+        # bulk zone's stand-in); after a program ends, they are forgotten.
+        store_steps = [
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(canvas-fill 0)", r"=> #t"),
+            ("(canvas-circle 100 100 40)", r"=> #t"),
+            ("(canvas-window 'text)", r"=> #t"),
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(list (canvas-get 140 100) (canvas-get 100 100))", r"=> \(1 0\)"),
+            ("exec /sd0/badelf.bin", r"=> -1"),
+            ("(canvas-window 'split)", r"=> #t"),
+            ("(canvas-get 140 100)", r"=> 0"),
+            ("(canvas-window 'text)", r"=> #t"),
+        ]
+        store_ok, store_log = True, ""
+        for cmd, pat in store_steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                store_ok, store_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Canvas Stored Per Layout, Restored On Return, Forgotten After A Program (38.8)",
+                        store_ok, store_log))
+
         # 37.3b: the showcase demos run, and draw what they should. Rule 90
         # from one cell is the Sierpinski triangle: with 3-px cells,
         # generation 1 is the middle cell's two neighbours, generation 2 the
