@@ -71,9 +71,13 @@ class HardwareSession:
 
     def start(self) -> None:
         self.ser.reset_input_buffer()
-        self.ser.write(b"\x03\n")
+        self.ser.write(b"\x03\nexit\n")
         self.ser.flush()
         time.sleep(0.3)
+        self.ser.reset_input_buffer()
+        self.ser.write(b"\n")
+        self.ser.flush()
+        time.sleep(0.2)
 
     def send_and_expect(
         self, command: str, expected_pattern: str, timeout: float = 15.0
