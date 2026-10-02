@@ -1,11 +1,11 @@
 # Phase 38 — PSRAM on the RP2350: a second memory, and what moves into it
 
-**Status: planned 2026-10-02.** Written from the owner's proposal of the same
+**Status: planned 2026-10-02; in progress.** Written from the owner's proposal of the same
 day, the review of it, and the measurements in
 [`plan/phase38_preliminaries.md`](phase38_preliminaries.md), which this plan
 cites throughout as **[P§n]**. Decisions marked *(owner, 2026-10-02)* are
-settled. Decisions marked **[sign-off]** are recommendations that wait for the
-owner's yes before the milestone that needs them starts.
+settled. The **[sign-off]** items of §6 were decided the same day; §6 records
+the answers.
 
 **Where this comes from.** SRAM has been the limit on every persona this
 project has built, and phase 37's GUI made it obvious: the LCD-7 terminal
@@ -210,7 +210,7 @@ latency-sensitive, and last the spending of what was freed.
 * The PSRAM measured on branch `phase38-psram-spike` and written up in
   `plan/phase38_preliminaries.md`.
 
-### 38.0b — `open_issues.md` sorted *(owner, 2026-10-02)*
+### 38.0b — `open_issues.md` sorted *(owner, 2026-10-02; done 2026-10-02)*
 
 The owner's observation: the file holds two different classes of entry.
 Sort it into **actionable** (a known fix, deferred for priority -- each
@@ -221,6 +221,17 @@ or three kept as lessons into a short closing section. No code.
 
 **Done when:** every entry is in one of the two classes and the actionable
 ones each name a destination.
+
+**Done.** 44 headings became 16 actionable entries (one new: the runner's
+blindness to a stuck guest, gathered from the harness halves of three
+intermittents), 12 unexplained intermittents, 3
+"deliberate limits that look like faults" (a third class the sort turned up:
+by design, listed because each once cost an investigation) and 3 lessons;
+the rest were FIXED/CLOSED and deleted. Destinations: the USB serial number
+→ 38.1, libc → 38.3, `sizereport`'s blind spot for `.data` → 38.4, the chess
+spread → 38.9, eleven items → the new
+[`plan/phase40_backlog.md`](phase40_backlog.md) (harness first), the
+DS3231's cell → the owner's bench.
 
 ### 38.1 — Flash writes keep XIP fast, and keep PSRAM intact (every RP2350 board)
 
@@ -237,6 +248,10 @@ ones each name a destination.
 3. Save QMI M1 TIMING/RFMT/RCMD; after `flash_enter_cmd_xip`, call the
    saved setup function (M0 back to quad continuous read), then restore M1.
 4. Refuse a source buffer outside SRAM (H2).
+5. *(from `open_issues.md`, 38.0b)* The USB serial number from the chip's
+   unique ID instead of `LUGALOS-0001` on every board -- this milestone's
+   tests are the first to attach two RP2350 boards at once, which is when
+   the shared `/dev/serial/by-id` name sends a flash to the wrong board.
 
 `clocks` grows a QMI line (M0 and M1 TIMING/RFMT/RCMD) -- the instrument.
 
@@ -293,7 +308,10 @@ word loop's ~200, PSRAM → SRAM from 9.6 towards ~22 [P§2].
   stats, fallback counter.
 * The `PSRAM` region in `linker/rp2350.ld` via the generated include;
   `.bulk_bss` in RAM on every other target.
-* `sizereport` splits `.bulk_bss` out; the baselines gain that column.
+* `sizereport` splits `.bulk_bss` out; the baselines gain that column. It
+  counts by section (`readelf -sW`) rather than by `nm` type, which also
+  closes `open_issues.md`'s blind spot: RP2350's `.data` symbols type as `t`
+  today and are not counted at all.
 * `xip_cache_clean_range()` / `xip_cache_invalidate_range()` (H1).
 
 **Tests:** QEMU: allocate and free across both zones, NAPOT alignment in
@@ -361,17 +379,17 @@ Phase 37 §6 item 5 left the door open: "with PSRAM, `lcdterm` can keep a
 copy and send fewer redraws". The 1 bpp frame is 48 KB; a stored copy of a
 screen is 48 KB of PSRAM.
 
-* `lcdterm` keeps one stored screen: the canvas tile's pixels when a full-
-  screen `text` layout covers it (the editor over a Lisp drawing, a help
+* `lcdterm` keeps one stored screen per layout (48 KB each): the pixels of
+  a layout when another replaces it (the editor over a Lisp drawing, a help
   screen over the chess board), restored on return without a redraw
   message. Applications still handle redraw -- phase 37's contract is
   unchanged, this only makes it rarer.
 * `lcdterm` is a U-mode domain; it gets one more PMP region (the bulk page
-  run for the store). The PMP budget is checked in the milestone.
+  run holding the stores). The PMP budget is checked in the milestone.
 
-**Scope [sign-off S5]:** one stored screen, or per-layout stores, or defer
-the whole milestone to the colour phase that will reorganise `lcdterm`'s
-memory anyway.
+**Scope [sign-off S5, decided]:** one stored screen per layout, so that
+switching between layouts restores each without a redraw. The window system
+itself grows in a later phase; colour is its own later phase.
 
 ### 38.9 — Spending what was freed: the chess hot path
 
@@ -396,16 +414,15 @@ open issues closed by this phase deleted, and this file's status line.
 
 ## 6. Sign-off items
 
-* **S1** — A persona built for PSRAM that does not find it at boot: **halt
-  with a message** (recommended), or continue on SRAM with everything bulk
-  falling back?
-* **S2** — Lisp sizes on the LCD-7: **65 536 nodes (1 MB), string pools ×8**
-  (recommended), or other.
-* **S3** — `/ram0` on the LCD-7: **2 MB, mounted at boot** (recommended), or
-  on demand only.
-* **S4** — Chess TT in PSRAM: decided on 38.7's node-rate number.
-* **S5** — 38.8's scope: one stored screen (recommended), per-layout stores,
-  or deferred to the colour phase.
+Decided by the owner, 2026-10-02:
+
+* **S1** — A persona built for PSRAM that does not find it at boot: **halts
+  with a message.**
+* **S2** — Lisp sizes on the LCD-7: **65 536 nodes (1 MB), string pools ×8.**
+* **S3** — `/ram0` on the LCD-7: **2 MB, mounted at boot.**
+* **S4** — Chess TT in PSRAM: deferred to 38.7's node-rate number.
+* **S5** — 38.8's scope: **one stored screen per layout.** The window system
+  grows in a later phase; colour is a dedicated later phase of its own.
 
 ---
 
