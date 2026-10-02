@@ -74,9 +74,6 @@ class HardwareSession:
         self.ser.write(b"\x03\n")
         self.ser.flush()
         time.sleep(0.3)
-        self.ser.write(b"lisp\n")
-        self.ser.flush()
-        time.sleep(0.3)
 
     def send_and_expect(
         self, command: str, expected_pattern: str, timeout: float = 15.0
