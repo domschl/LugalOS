@@ -172,7 +172,7 @@ static int string_large_free_count;
 
 /* Guards against unbounded C-stack recursion in lisp_eval() (see its
  * definition near the bottom of this file for the full rationale). */
-#define LISP_MAX_EVAL_DEPTH 100
+#define LISP_MAX_EVAL_DEPTH 256
 static int eval_depth = 0;
 static bool eval_depth_exceeded_warned = false;
 
@@ -2595,11 +2595,8 @@ static lisp_val_t *prim_cdddr(lisp_val_t *args, lisp_val_t *env) { (void)env; re
 
 static lisp_val_t *prim_cadddr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_cdr(val_cdr(val_cdr(lisp_list_ref(args, 0))))); }
 
-static lisp_val_t *prim_assoc(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    lisp_val_t *key = lisp_list_ref(args, 0);
-    lisp_val_t *alist = lisp_list_ref(args, 1);
-    if (!key || !alist) return &false_val;
+static lisp_val_t *lisp_assoc(lisp_val_t *key, lisp_val_t *alist) {
+    if (!key || !alist) return NULL;
     for (lisp_val_t *c = alist; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
         lisp_val_t *item = c->u.pair.car;
         if (item && item->type == LISP_PAIR) {
@@ -2608,7 +2605,15 @@ static lisp_val_t *prim_assoc(lisp_val_t *args, lisp_val_t *env) {
             }
         }
     }
-    return &false_val;
+    return NULL;
+}
+
+static lisp_val_t *prim_assoc(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *key = lisp_list_ref(args, 0);
+    lisp_val_t *alist = lisp_list_ref(args, 1);
+    lisp_val_t *res = lisp_assoc(key, alist);
+    return res ? res : &false_val;
 }
 
 static lisp_val_t *prim_assq(lisp_val_t *args, lisp_val_t *env) {
@@ -2657,6 +2662,82 @@ static lisp_val_t *prim_memq(lisp_val_t *args, lisp_val_t *env) {
         }
     }
     return &false_val;
+}
+
+static lisp_val_t *lisp_subst(lisp_val_t *new_val, lisp_val_t *old_val, lisp_val_t *tree) {
+    if (!tree) return &nil_val;
+    if (lisp_equal_p(tree, old_val)) {
+        return new_val;
+    }
+    if (tree->type == LISP_PAIR) {
+        lisp_val_t *new_car = lisp_subst(new_val, old_val, tree->u.pair.car);
+        lisp_val_t *new_cdr = lisp_subst(new_val, old_val, tree->u.pair.cdr);
+        if (new_car == tree->u.pair.car && new_cdr == tree->u.pair.cdr) {
+            return tree;
+        }
+        return make_pair(new_car, new_cdr);
+    }
+    return tree;
+}
+
+static lisp_val_t *prim_subst(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *new_val = lisp_list_ref(args, 0);
+    lisp_val_t *old_val = lisp_list_ref(args, 1);
+    lisp_val_t *tree = lisp_list_ref(args, 2);
+    if (!new_val || !old_val || !tree) return &nil_val;
+    return lisp_subst(new_val, old_val, tree);
+}
+
+static bool is_pattern_var(const lisp_val_t *v) {
+    if (!v || v->type != LISP_SYMBOL) return false;
+    const char *s = v->u.sym;
+    return (s[0] == '?' && s[1] != '\0');
+}
+
+static bool is_anonymous_wildcard(const lisp_val_t *v) {
+    if (!v || v->type != LISP_SYMBOL) return false;
+    const char *s = v->u.sym;
+    return (strcmp(s, "?") == 0 || strcmp(s, "_") == 0);
+}
+
+static lisp_val_t *lisp_match(lisp_val_t *pattern, lisp_val_t *expr, lisp_val_t *bindings) {
+    if (is_anonymous_wildcard(pattern)) {
+        return bindings;
+    }
+    if (is_pattern_var(pattern)) {
+        lisp_val_t *entry = lisp_assoc(pattern, bindings);
+        if (entry) {
+            if (lisp_equal_p(entry->u.pair.cdr, expr)) {
+                return bindings;
+            }
+            return NULL;
+        }
+        return make_pair(make_pair(pattern, expr), bindings);
+    }
+    if (pattern && pattern->type == LISP_PAIR) {
+        if (!expr || expr->type != LISP_PAIR) return NULL;
+        bindings = lisp_match(pattern->u.pair.car, expr->u.pair.car, bindings);
+        if (!bindings) return NULL;
+        return lisp_match(pattern->u.pair.cdr, expr->u.pair.cdr, bindings);
+    }
+    if (lisp_equal_p(pattern, expr)) {
+        return bindings;
+    }
+    return NULL;
+}
+
+static lisp_val_t *prim_match(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *pattern = lisp_list_ref(args, 0);
+    lisp_val_t *expr = lisp_list_ref(args, 1);
+    if (!pattern || !expr) return &false_val;
+    lisp_val_t *bindings = lisp_list_ref(args, 2);
+    if (!bindings || bindings->type == LISP_NIL) {
+        bindings = &nil_val;
+    }
+    lisp_val_t *res = lisp_match(pattern, expr, bindings);
+    return res ? res : &false_val;
 }
 
 /* (list a b c ...) -- `args` is already the proper, already-evaluated

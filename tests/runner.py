@@ -2664,6 +2664,36 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Arbitrary-Precision Bignums and Exact Rationals (Phase 42.7)",
                         ok, log if not ok else ""))
 
+        # Phase 42.8: Tree Transformation Primitives (subst and match)
+        cmd_p42_ast = (
+            "lisp\n"
+            "(subst 'y 'x '(+ (* x 2) (sin x)))\n"
+            "(subst 'b 'a '(c d e))\n"
+            "(match '(+ ?x ?x) '(+ 5 5))\n"
+            "(match '(+ ?x ?x) '(+ 5 6))\n"
+            "(match '(?op ?x ?y) '(* a 10))\n"
+            "(match '(? _ ?x) '(foo bar baz))\n"
+            "(match 42 42)\n"
+            "(match 42 43)\n"
+            "(display \"P42_AST_OK\\n\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p42_ast, r"P42_AST_OK", timeout=6.0)
+        p42_ast_correct = (
+            "(+ (* y 2) (sin y))" in log and
+            "(c d e)" in log and
+            "((?x . 5))" in log and
+            "=> #f" in log and
+            "(?y . 10)" in log and
+            "(?x . a)" in log and
+            "(?op . *)" in log and
+            "((?x . baz))" in log and
+            "=> ()" in log
+        )
+        ok = ok and p42_ast_correct
+        results.append(("Lisp AST Rewriting Primitives subst and match (Phase 42.8)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"
