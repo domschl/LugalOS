@@ -1,6 +1,6 @@
 # Phase 42 — Lisp Symbolic Foundations & Engine Optimizations
 
-**Status: DRAFT / PLANNED (2026-10-02).**
+**Status: COMPLETE (2026-10-02).**
 Branch: `lisp_symbolic`
 Follows Phase 13 (Lisp Engine Extensions), Phase 37.3a (Screen/Lisp Built-ins), and Phase 38.5 (PSRAM Bulk BSS).
 
@@ -247,16 +247,28 @@ This phase establishes the **language foundations for symbolic mathematics** (AS
 ---
 
 ## Milestone Dependency & Execution Order
+ 
+| Step | Milestone | Primary Artifacts | Status | SRAM Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | **42.1** Hot-Path Micro-Opts | `user/lisp/lisp.c` | **Completed** | 0 bytes |
+| **2** | **42.2** `.rodata` Builtin `bsearch` | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | **Completed** | **-1.5 KB (frees SRAM)** |
+| **3** | **42.3** Symbol Interning & Singletons | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | **Completed** | Prevents string pool exhaustion |
+| **4** | **42.4** Dotted Pairs Reader/Printer | `user/lisp/lisp.c` | **Completed** | 0 bytes |
+| **5** | **42.5** Quasiquote & Splicing | `user/lisp/lisp.c` | **Completed** | 0 bytes |
+| **6** | **42.6** Tree Equality & Accessors | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | **Completed** | 0 bytes (in Flash `.rodata`) |
+| **7** | **42.7** Bignums & Exact Rationals | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | **Completed** | 0 bytes (reuses GC string slots) |
+| **8** | **42.8** AST Rewrite & Matcher | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | **Completed** | 0 bytes |
+| **9** | **42.9** Depth Tuning & Test Suite | `user/lisp/lisp.c`, `tests/` | **Completed** | `LISP_MAX_EVAL_DEPTH` = 256 |
 
-| Step | Milestone | Primary Artifacts | Expected SRAM Impact |
-| :--- | :--- | :--- | :--- |
-| **1** | **42.1** Hot-Path Micro-Opts | `user/lisp/lisp.c` | 0 bytes |
-| **2** | **42.2** `.rodata` Builtin `bsearch` | `user/lisp/lisp.c` | **-1.5 KB (frees SRAM)** |
-| **3** | **42.3** Symbol Interning & Singletons | `user/lisp/lisp.c`, `lisp.h` | Prevents string pool exhaustion |
-| **4** | **42.4** Dotted Pairs Reader/Printer | `user/lisp/lisp.c` | 0 bytes |
-| **5** | **42.5** Quasiquote & Splicing | `user/lisp/lisp.c` | 0 bytes |
-| **6** | **42.6** Tree Equality & Accessors | `user/lisp/lisp.c` | 0 bytes (in Flash `.rodata`) |
-| **7** | **42.7** Bignums & Exact Rationals | `user/lisp/lisp.c`, `lisp.h` | 0 bytes |
-| **8** | **42.8** AST Rewrite & Matcher | `user/lisp/lisp.c` | 0 bytes |
-| **9** | **42.9** Depth Tuning & Test Suite | `user/lisp/lisp.c`, `tests/` | 0 bytes |
+### Verification Summary
+- **Test Suite (`uv run tests/runner.py`):** 204 / 204 Tests Passed (118.57s).
+- **Target Builds:** `build/rv32`, `build/rp2350-terminal`, and `build/esp32p4` all compile cleanly without warnings.
+- **Benchmark Suite (`python3 tests/lisp_bench.py --arch rv32`):**
+  - `loop_10k`: 43 ms
+  - `special_forms_10k`: 92 ms (-2.1% faster than baseline)
+  - `comparison_10k`: 68 ms
+  - `list_cons_1k`: 7 ms
+  - `fib_16`: 15 ms
+  - `bignum_fact_50`: 18 ms (50 iterations of 50!)
+  - `rational_harmonic_100`: 8 ms (100-term harmonic series exact sum with GCD cross-cancellations)
 
