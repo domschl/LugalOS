@@ -1,0 +1,51 @@
+{
+  "timestamp": 1790957925.9463437,
+  "arch": "rv32",
+  "scores": {
+    "loop_10k": {
+      "name": "Named-let loop 10,000 iterations",
+      "min_ms": 38,
+      "runs_ms": [
+        42,
+        39,
+        38
+      ]
+    },
+    "special_forms_10k": {
+      "name": "10k iterations of let* + begin + math",
+      "min_ms": 94,
+      "runs_ms": [
+        98,
+        95,
+        94
+      ]
+    },
+    "comparison_10k": {
+      "name": "10k chained comparisons (< 1 2 3 4 5)",
+      "min_ms": 66,
+      "runs_ms": [
+        68,
+        66,
+        66
+      ]
+    },
+    "list_cons_1k": {
+      "name": "1,000 cons allocations and traversal",
+      "min_ms": 7,
+      "runs_ms": [
+        8,
+        8,
+        7
+      ]
+    },
+    "fib_16": {
+      "name": "Recursive fibonacci (fib 16) - 1,973 calls",
+      "min_ms": 14,
+      "runs_ms": [
+        15,
+        14,
+        15
+      ]
+    }
+  }
+}

@@ -30,7 +30,10 @@ typedef struct lisp_val {
                      * each paying for 128 bytes of string capacity they
                      * never use (see V6 in
                      * plan/completed/2026-08-07_review_and_remediation.md). */
-        char *sym;  /* LISP_SYMBOL: same pool as str */
+        struct {
+            char *sym;  /* LISP_SYMBOL: same pool as str */
+            struct lisp_val *sym_next; /* intrusive symbol hash bucket chain */
+        };
         struct {
             struct lisp_val *car;
             struct lisp_val *cdr;

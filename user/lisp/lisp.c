@@ -191,15 +191,37 @@ static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
 static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
 
+/* Flash-resident keyword singletons */
+static const lisp_val_t sym_quote = { .type = LISP_SYMBOL, .u.sym = "quote" };
+static const lisp_val_t sym_lambda = { .type = LISP_SYMBOL, .u.sym = "lambda" };
+static const lisp_val_t sym_if = { .type = LISP_SYMBOL, .u.sym = "if" };
+static const lisp_val_t sym_begin = { .type = LISP_SYMBOL, .u.sym = "begin" };
+static const lisp_val_t sym_let = { .type = LISP_SYMBOL, .u.sym = "let" };
+static const lisp_val_t sym_let_star = { .type = LISP_SYMBOL, .u.sym = "let*" };
+static const lisp_val_t sym_while = { .type = LISP_SYMBOL, .u.sym = "while" };
+static const lisp_val_t sym_cond = { .type = LISP_SYMBOL, .u.sym = "cond" };
+static const lisp_val_t sym_set_bang = { .type = LISP_SYMBOL, .u.sym = "set!" };
+static const lisp_val_t sym_define = { .type = LISP_SYMBOL, .u.sym = "define" };
+static const lisp_val_t sym_else = { .type = LISP_SYMBOL, .u.sym = "else" };
+static const lisp_val_t sym_quasiquote = { .type = LISP_SYMBOL, .u.sym = "quasiquote" };
+static const lisp_val_t sym_unquote = { .type = LISP_SYMBOL, .u.sym = "unquote" };
+static const lisp_val_t sym_unquote_splicing = { .type = LISP_SYMBOL, .u.sym = "unquote-splicing" };
+
+#define SYM_HASH_SIZE 128
+static lisp_val_t *sym_hash_table[SYM_HASH_SIZE];
+
 static lisp_val_t *global_env = &nil_val;
 
 static int streq(const char *s1, const char *s2) {
+    if (s1 == s2) return 1;
+    if (*s1 != *s2) return 0;
     while (*s1 && (*s1 == *s2)) {
         s1++;
         s2++;
     }
     return *(const unsigned char *)s1 - *(const unsigned char *)s2 == 0;
 }
+
 
 static void strncpy_local(char *dst, const char *src, int n) {
     int i = 0;
@@ -705,6 +727,25 @@ static void gc_collect_from_timed(uintptr_t stack_top) {
     if (stack_top) gc_push_stack(&sp, stack_top);
     gc_drain(&sp);
 
+    /* Weak symbol pruning: unlink any unmarked symbol from the hash table */
+    for (int i = 0; i < SYM_HASH_SIZE; i++) {
+        lisp_val_t **prev = &sym_hash_table[i];
+        while (*prev) {
+            lisp_val_t *s = *prev;
+            if (s < node_pool || s >= node_pool + NODE_POOL_SIZE) {
+                prev = &s->u.sym_next;
+                continue;
+            }
+            long idx = s - node_pool;
+            uint8_t bit = (uint8_t)(1u << (idx % 8));
+            if (!(node_mark_bits[idx / 8] & bit)) {
+                *prev = s->u.sym_next;
+            } else {
+                prev = &s->u.sym_next;
+            }
+        }
+    }
+
     for (int i = 0; i < node_pool_idx; i++) {
         uint8_t bit = (uint8_t)(1u << (i % 8));
         if (!(node_mark_bits[i / 8] & bit)) {
@@ -894,10 +935,61 @@ lisp_val_t *make_str(const char *str) {
     return v;
 }
 
+static inline uint32_t sym_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    while (*s) {
+        h ^= (uint8_t)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
 lisp_val_t *make_sym(const char *sym) {
+    if (!sym) sym = "";
+
+    /* Fast check for static Flash singletons */
+    switch (sym[0]) {
+        case 'q':
+            if (streq(sym, "quote")) return (lisp_val_t *)&sym_quote;
+            if (streq(sym, "quasiquote")) return (lisp_val_t *)&sym_quasiquote;
+            break;
+        case 'u':
+            if (streq(sym, "unquote")) return (lisp_val_t *)&sym_unquote;
+            if (streq(sym, "unquote-splicing")) return (lisp_val_t *)&sym_unquote_splicing;
+            break;
+        case 'l':
+            if (streq(sym, "lambda")) return (lisp_val_t *)&sym_lambda;
+            if (streq(sym, "let")) return (lisp_val_t *)&sym_let;
+            if (streq(sym, "let*")) return (lisp_val_t *)&sym_let_star;
+            break;
+        case 'i': if (streq(sym, "if")) return (lisp_val_t *)&sym_if; break;
+        case 'b': if (streq(sym, "begin")) return (lisp_val_t *)&sym_begin; break;
+        case 'w': if (streq(sym, "while")) return (lisp_val_t *)&sym_while; break;
+        case 'c': if (streq(sym, "cond")) return (lisp_val_t *)&sym_cond; break;
+        case 's': if (streq(sym, "set!")) return (lisp_val_t *)&sym_set_bang; break;
+        case 'd': if (streq(sym, "define")) return (lisp_val_t *)&sym_define; break;
+        case 'e': if (streq(sym, "else")) return (lisp_val_t *)&sym_else; break;
+        case '#':
+            if (streq(sym, "#t")) return &true_val;
+            if (streq(sym, "#f")) return &false_val;
+            break;
+        default: break;
+    }
+
+    uint32_t h = sym_hash(sym);
+    int bucket = (int)(h % SYM_HASH_SIZE);
+
+    for (lisp_val_t *curr = sym_hash_table[bucket]; curr; curr = curr->u.sym_next) {
+        if (streq(curr->u.sym, sym)) {
+            return curr;
+        }
+    }
+
     lisp_val_t *v = alloc_node(LISP_SYMBOL);
     char *slot = intern_string(sym);
     v->u.sym = slot;
+    v->u.sym_next = sym_hash_table[bucket];
+    sym_hash_table[bucket] = v;
     return v;
 }
 
@@ -916,14 +1008,13 @@ lisp_val_t *make_prim(lisp_prim_fn fn) {
 }
 
 /* Environment management */
-/* The innermost (name . value) pair for `sym`, or NULL. `set!` writes its
- * cdr; env_get() reads it. */
-static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
+/* Fast pointer-equality symbol lookup in the environment */
+static lisp_val_t *env_binding_sym(lisp_val_t *env, const lisp_val_t *sym) {
     for (lisp_val_t *curr = env; curr && curr->type == LISP_PAIR; curr = curr->u.pair.cdr) {
         lisp_val_t *binding = curr->u.pair.car;
         if (binding && binding->type == LISP_PAIR) {
             lisp_val_t *k = binding->u.pair.car;
-            if (k && k->type == LISP_SYMBOL && streq(k->u.sym, sym)) {
+            if (k == sym || (k && k->type == LISP_SYMBOL && (k->u.sym == sym->u.sym || streq(k->u.sym, sym->u.sym)))) {
                 return binding;
             }
         }
@@ -931,14 +1022,38 @@ static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
     return NULL;
 }
 
+/* The innermost (name . value) pair for `sym`, or NULL. `set!` writes its
+ * cdr; env_get() reads it. */
+static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
+    for (lisp_val_t *curr = env; curr && curr->type == LISP_PAIR; curr = curr->u.pair.cdr) {
+        lisp_val_t *binding = curr->u.pair.car;
+        if (binding && binding->type == LISP_PAIR) {
+            lisp_val_t *k = binding->u.pair.car;
+            if (k && k->type == LISP_SYMBOL && (k->u.sym == sym || streq(k->u.sym, sym))) {
+                return binding;
+            }
+        }
+    }
+    return NULL;
+}
+
+static lisp_val_t *env_get_sym(lisp_val_t *env, const lisp_val_t *sym) {
+    lisp_val_t *binding = env_binding_sym(env, sym);
+    return binding ? binding->u.pair.cdr : NULL;
+}
+
 static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
     lisp_val_t *binding = env_binding(env, sym);
     return binding ? binding->u.pair.cdr : NULL;
 }
 
-static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
-    lisp_val_t *binding = make_pair(make_sym(sym), val);
+static void env_set_sym(lisp_val_t **env, lisp_val_t *sym, lisp_val_t *val) {
+    lisp_val_t *binding = make_pair(sym, val);
     *env = make_pair(binding, *env);
+}
+
+static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
+    env_set_sym(env, make_sym(sym), val);
 }
 
 /* 37.3a: the built-in names, outside the node pool. They used to be ordinary
@@ -959,30 +1074,8 @@ typedef struct {
     const lisp_val_t *val;
 } builtin_t;
 
-#define BUILTIN_MAX 184
-static builtin_t builtins[BUILTIN_MAX];
-static int builtin_count;
+static lisp_val_t *builtin_get(const char *sym);
 
-static void builtin_add(const char *name, const lisp_val_t *val) {
-    if (builtin_count < BUILTIN_MAX) {
-        builtins[builtin_count].name = name;
-        builtins[builtin_count].val = val;
-        builtin_count++;
-    } else {
-        env_set(&global_env, name, (lisp_val_t *)val);
-    }
-}
-
-#define BUILTIN(name, fn) do { \
-        static const lisp_val_t v_ = { .type = LISP_PRIMITIVE, .u.prim = (fn) }; \
-        builtin_add((name), &v_); \
-    } while (0)
-
-static lisp_val_t *builtin_get(const char *sym) {
-    for (int i = 0; i < builtin_count; i++)
-        if (streq(builtins[i].name, sym)) return (lisp_val_t *)builtins[i].val;
-    return NULL;
-}
 
 /* Safe argument-list accessors for primitives. `args` is the proper list of
  * already-evaluated call arguments built by lisp_eval, terminated by the
@@ -1089,17 +1182,61 @@ static bool lisp_values_equal(lisp_val_t *a, lisp_val_t *b) {
     }
 }
 
+static bool lisp_equal_p(lisp_val_t *a, lisp_val_t *b) {
+    while (a && b && a->type == LISP_PAIR && b->type == LISP_PAIR) {
+        if (a == b) return true;
+        if (!lisp_equal_p(a->u.pair.car, b->u.pair.car)) return false;
+        a = a->u.pair.cdr;
+        b = b->u.pair.cdr;
+    }
+    if (a == b) return true;
+    if (!a || !b || a->type != b->type) return false;
+    switch (a->type) {
+        case LISP_NIL:
+            return true;
+        case LISP_INT:
+            return a->u.i == b->u.i;
+        case LISP_STRING:
+            return strcmp(a->u.str, b->u.str) == 0;
+        case LISP_SYMBOL:
+            return a == b || streq(a->u.sym, b->u.sym);
+        default:
+            return a == b;
+    }
+}
+
+static lisp_val_t *prim_equal_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!a || !b) return &false_val;
+    return lisp_equal_p(a, b) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_eq_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    lisp_val_t *b = lisp_list_ref(args, 1);
+    if (!a || !b) return &false_val;
+    if (a == b) return &true_val;
+    if (a->type != b->type) return &false_val;
+    if (a->type == LISP_INT) return (a->u.i == b->u.i) ? &true_val : &false_val;
+    if (a->type == LISP_SYMBOL) return streq(a->u.sym, b->u.sym) ? &true_val : &false_val;
+    return &false_val;
+}
+
 /* S4 (plan/phase13_lisp_engine_extensions.md): generalized from strictly
  * 2-arg to N-ary (all args equal to the first, which for equality is the
  * same thing as all-equal-to-each-other) -- everything else about it,
  * including cross-type behavior, is unchanged. */
 static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    int n = lisp_list_len(args);
-    if (n < 2) return &false_val;
-    lisp_val_t *first = lisp_list_ref(args, 0);
-    for (int i = 1; i < n; i++) {
-        if (!lisp_values_equal(first, lisp_list_ref(args, i))) return &false_val;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    lisp_val_t *first = args->u.pair.car;
+    lisp_val_t *c = args->u.pair.cdr;
+    if (!c || c->type != LISP_PAIR) return &false_val; /* requires at least 2 args */
+    for (; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        if (!lisp_values_equal(first, c->u.pair.car)) return &false_val;
     }
     return &true_val;
 }
@@ -1111,19 +1248,21 @@ static lisp_val_t *prim_eq(lisp_val_t *args, lisp_val_t *env) {
  * vacuously #t, for consistency with the existing `=` behavior this
  * generalizes rather than chasing full R7RS single-argument semantics. */
 static lisp_val_t *prim_chain_compare(lisp_val_t *args, bool (*cmp)(long, long)) {
-    int n = lisp_list_len(args);
-    if (n < 2) return &false_val;
-    lisp_val_t *prev = lisp_list_ref(args, 0);
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    lisp_val_t *prev = args->u.pair.car;
     if (!prev || prev->type != LISP_INT) return &false_val;
+    lisp_val_t *c = args->u.pair.cdr;
+    if (!c || c->type != LISP_PAIR) return &false_val; /* requires at least 2 args */
     long prev_val = prev->u.i;
-    for (int i = 1; i < n; i++) {
-        lisp_val_t *cur = lisp_list_ref(args, i);
+    for (; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *cur = c->u.pair.car;
         if (!cur || cur->type != LISP_INT) return &false_val;
         if (!cmp(prev_val, cur->u.i)) return &false_val;
         prev_val = cur->u.i;
     }
     return &true_val;
 }
+
 
 static bool cmp_lt(long a, long b) { return a < b; }
 static bool cmp_gt(long a, long b) { return a > b; }
@@ -1312,6 +1451,95 @@ static lisp_val_t *prim_cdr(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
     return (a && a->type == LISP_PAIR) ? a->u.pair.cdr : &nil_val;
+}
+
+static inline lisp_val_t *val_car(lisp_val_t *v) {
+    return (v && v->type == LISP_PAIR) ? v->u.pair.car : &nil_val;
+}
+
+static inline lisp_val_t *val_cdr(lisp_val_t *v) {
+    return (v && v->type == LISP_PAIR) ? v->u.pair.cdr : &nil_val;
+}
+
+static lisp_val_t *prim_caar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_car(lisp_list_ref(args, 0))); }
+static lisp_val_t *prim_cadr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_cdr(lisp_list_ref(args, 0))); }
+static lisp_val_t *prim_cdar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_car(lisp_list_ref(args, 0))); }
+static lisp_val_t *prim_cddr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_cdr(lisp_list_ref(args, 0))); }
+
+static lisp_val_t *prim_caaar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_car(val_car(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_caadr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_car(val_cdr(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_cadar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_cdr(val_car(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_caddr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_cdr(val_cdr(lisp_list_ref(args, 0)))); }
+
+static lisp_val_t *prim_cdaar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_car(val_car(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_cdadr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_car(val_cdr(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_cddar(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_cdr(val_car(lisp_list_ref(args, 0)))); }
+static lisp_val_t *prim_cdddr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_cdr(val_cdr(val_cdr(lisp_list_ref(args, 0)))); }
+
+static lisp_val_t *prim_cadddr(lisp_val_t *args, lisp_val_t *env) { (void)env; return val_car(val_cdr(val_cdr(val_cdr(lisp_list_ref(args, 0))))); }
+
+static lisp_val_t *prim_assoc(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *key = lisp_list_ref(args, 0);
+    lisp_val_t *alist = lisp_list_ref(args, 1);
+    if (!key || !alist) return &false_val;
+    for (lisp_val_t *c = alist; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *item = c->u.pair.car;
+        if (item && item->type == LISP_PAIR) {
+            if (lisp_equal_p(key, item->u.pair.car)) {
+                return item;
+            }
+        }
+    }
+    return &false_val;
+}
+
+static lisp_val_t *prim_assq(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *key = lisp_list_ref(args, 0);
+    lisp_val_t *alist = lisp_list_ref(args, 1);
+    if (!key || !alist) return &false_val;
+    for (lisp_val_t *c = alist; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *item = c->u.pair.car;
+        if (item && item->type == LISP_PAIR) {
+            lisp_val_t *k = item->u.pair.car;
+            if (k == key || (k && key && k->type == key->type &&
+                ((k->type == LISP_INT && k->u.i == key->u.i) ||
+                 (k->type == LISP_SYMBOL && streq(k->u.sym, key->u.sym))))) {
+                return item;
+            }
+        }
+    }
+    return &false_val;
+}
+
+static lisp_val_t *prim_member(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *key = lisp_list_ref(args, 0);
+    lisp_val_t *lst = lisp_list_ref(args, 1);
+    if (!key || !lst) return &false_val;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        if (lisp_equal_p(key, c->u.pair.car)) {
+            return c;
+        }
+    }
+    return &false_val;
+}
+
+static lisp_val_t *prim_memq(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *key = lisp_list_ref(args, 0);
+    lisp_val_t *lst = lisp_list_ref(args, 1);
+    if (!key || !lst) return &false_val;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *k = c->u.pair.car;
+        if (k == key || (k && key && k->type == key->type &&
+            ((k->type == LISP_INT && k->u.i == key->u.i) ||
+             (k->type == LISP_SYMBOL && streq(k->u.sym, key->u.sym))))) {
+            return c;
+        }
+    }
+    return &false_val;
 }
 
 /* (list a b c ...) -- `args` is already the proper, already-evaluated
@@ -3743,6 +3971,9 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     return &nil_val;
 }
 
+static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env);
+#include "builtins_table.h"
+
 /* Discoverability (D2/D3 in plan/completed/2026-08-07_review_and_remediation.md): the
  * Lisp engine is the shell's execution core, but had no way to list what's
  * actually callable short of reading the source. This walks global_env
@@ -3768,7 +3999,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
         cprintf("  %s -- %s\n", k->u.sym, kind);
         count++;
     }
-    for (int i = 0; i < builtin_count; i++) {
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
         cprintf("  %s -- %s\n", builtins[i].name,
                 builtins[i].val->type == LISP_PRIMITIVE ? "primitive" : "value");
         count++;
@@ -3781,6 +4012,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
 }
 
 void lisp_init(void) {
+    memset(sym_hash_table, 0, sizeof(sym_hash_table));
     node_pool_idx = 0;
     node_pool_exhausted_warned = false;
     string_small_idx = 0;
@@ -3794,215 +4026,6 @@ void lisp_init(void) {
     eval_depth_exceeded_warned = false;
     global_env = &nil_val;
 
-    builtin_count = 0;
-    builtin_add("#t", &true_val);
-    builtin_add("#f", &false_val);
-
-    BUILTIN("+", prim_add);
-    BUILTIN("-", prim_sub);
-    BUILTIN("*", prim_mul);
-    BUILTIN("=", prim_eq);
-
-    /* S4 (plan/phase13_lisp_engine_extensions.md): standard library,
-     * as C primitives -- see prim_map()/prim_filter()'s own comments for
-     * why (touching existing cons cells directly costs no interpreter-
-     * level node allocation for the traversal itself, unlike a Lisp-
-     * defined equivalent recursing through the evaluator). */
-    BUILTIN("<", prim_lt);
-    BUILTIN(">", prim_gt);
-    BUILTIN("<=", prim_le);
-    BUILTIN(">=", prim_ge);
-    BUILTIN("/=", prim_ne);
-    BUILTIN("/", prim_div);
-    BUILTIN("quotient", prim_quotient);
-    BUILTIN("remainder", prim_remainder);
-    BUILTIN("modulo", prim_modulo);
-    BUILTIN("abs", prim_abs);
-    BUILTIN("min", prim_min);
-    BUILTIN("max", prim_max);
-    BUILTIN("null?", prim_null_p);
-    BUILTIN("pair?", prim_pair_p);
-    BUILTIN("symbol?", prim_symbol_p);
-    BUILTIN("string?", prim_string_p);
-    BUILTIN("integer?", prim_integer_p);
-    BUILTIN("procedure?", prim_procedure_p);
-    BUILTIN("zero?", prim_zero_p);
-    BUILTIN("boolean?", prim_boolean_p);
-    BUILTIN("cons", prim_cons);
-    BUILTIN("car", prim_car);
-    BUILTIN("cdr", prim_cdr);
-    BUILTIN("list", prim_list);
-    BUILTIN("length", prim_length);
-    BUILTIN("append", prim_append);
-    BUILTIN("reverse", prim_reverse);
-    BUILTIN("list-ref", prim_list_ref);
-    BUILTIN("nth", prim_list_ref);
-    BUILTIN("map", prim_map);
-    BUILTIN("filter", prim_filter);
-    BUILTIN("for-each", prim_for_each);
-    BUILTIN("string-append", prim_string_append);
-    BUILTIN("string-length", prim_string_length);
-    BUILTIN("substring", prim_substring);
-    BUILTIN("string-bytes", prim_string_bytes);
-    BUILTIN("gc-stats", prim_gc_stats);
-    BUILTIN("clipboard", prim_clipboard);
-    BUILTIN("clipboard-set", prim_clipboard_set);
-    BUILTIN("screenshot", prim_screenshot);
-    BUILTIN("string->number", prim_string_to_number);
-    BUILTIN("number->string", prim_number_to_string);
-    BUILTIN("string=?", prim_string_eq);
-    BUILTIN("apply", prim_apply);
-    BUILTIN("eval", prim_eval);
-
-    BUILTIN("peek", prim_peek);
-    BUILTIN("poke", prim_poke);
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-    BUILTIN("canvas-fill", prim_canvas_fill);
-    BUILTIN("canvas-pixel", prim_canvas_pixel);
-    BUILTIN("canvas-rect", prim_canvas_rect);
-    BUILTIN("canvas-text", prim_canvas_text);
-#else
-    /* 37.3b: the same four names, and the new ones, on the screen protocol. */
-    BUILTIN("canvas-fill", prim_canvas_fill);
-    BUILTIN("canvas-pixel", prim_canvas_pixel);
-    BUILTIN("canvas-rect", prim_canvas_rect);
-    BUILTIN("canvas-text", prim_canvas_text);
-    BUILTIN("canvas-frame", prim_canvas_frame);
-    BUILTIN("canvas-line", prim_canvas_line);
-    BUILTIN("canvas-circle", prim_canvas_circle);
-    BUILTIN("canvas-invert", prim_canvas_invert);
-    BUILTIN("canvas-row", prim_canvas_row);
-    BUILTIN("canvas-get", prim_canvas_get);
-    BUILTIN("canvas-size", prim_canvas_size);
-    BUILTIN("canvas-window", prim_canvas_window);
-    BUILTIN("canvas-title", prim_canvas_title);
-    BUILTIN("canvas-on-redraw", prim_canvas_on_redraw);
-    BUILTIN("canvas-swap", prim_canvas_swap);
-#endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-    BUILTIN("tm-display", prim_tm_display);
-    BUILTIN("tm-set-leds", prim_tm_set_leds);
-    BUILTIN("tm-get-key", prim_tm_get_key);
-#endif
-#if CONFIG_ENABLE_CHESS
-    BUILTIN("chess-selftest", prim_chess_selftest);
-    BUILTIN("chess-board-selftest", prim_chess_board_selftest);
-    BUILTIN("chess-san-selftest", prim_chess_san_selftest);
-    BUILTIN("perft", prim_perft);
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
-    BUILTIN("chess-run", prim_chess_run);
-#endif
-    BUILTIN("chess-console", prim_chess_console);
-    BUILTIN("chess", prim_chess);
-#endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
-    BUILTIN("clock", prim_clock);
-    BUILTIN("clock-light", prim_clock_light);
-    BUILTIN("clock-keys", prim_clock_keys);
-    BUILTIN("clock-leds", prim_clock_leds);
-    BUILTIN("clock-text", prim_clock_text);
-    BUILTIN("beep", prim_beep);
-#if CONFIG_ENABLE_DCF77
-    BUILTIN("dcf-monitor", prim_dcf_monitor);
-    BUILTIN("dcf-status", prim_dcf_status);
-#endif
-#endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
-    BUILTIN("dcf-raw", prim_dcf_raw);
-    BUILTIN("dcf-pins", prim_dcf_pins);
-    BUILTIN("dcf-hunt", prim_dcf_hunt);
-    BUILTIN("dcf-pinscan", prim_dcf_pinscan);
-    BUILTIN("dcf-listen", prim_dcf_listen);
-    BUILTIN("dcf-drivetest", prim_dcf_drivetest);
-    BUILTIN("dcf-poweron", prim_dcf_poweron);
-    BUILTIN("dcf-mirror", prim_dcf_mirror);
-    BUILTIN("dcf-sync", prim_dcf_sync);
-#endif
-    BUILTIN("ls", prim_ls);
-    BUILTIN("cat", prim_cat);
-    BUILTIN("touch", prim_touch);
-    BUILTIN("write", prim_write);
-    BUILTIN("mkdir", prim_mkdir);
-    BUILTIN("rmdir", prim_rmdir);
-    BUILTIN("cp", prim_cp);
-    BUILTIN("rm", prim_rm);
-#if CONFIG_ENABLE_CC
-    BUILTIN("cc", prim_cc);
-#endif
-    BUILTIN("exec", prim_exec);
-    BUILTIN("spawn", prim_spawn);
-    BUILTIN("path-set", prim_path_set);
-    BUILTIN("which", prim_which);
-    BUILTIN("ps", prim_ps);
-    BUILTIN("meminfo", prim_meminfo);
-    BUILTIN("version", prim_version);
-    BUILTIN("df", prim_df);
-    BUILTIN("top", prim_top);
-    BUILTIN("time", prim_time);
-    BUILTIN("date", prim_date);
-    BUILTIN("date-utc", prim_date_utc);
-    BUILTIN("tz", prim_tz);
-    BUILTIN("set-date", prim_set_date);
-    BUILTIN("set-time", prim_set_date);
-    BUILTIN("i2c-scan", prim_i2c_scan);
-    BUILTIN("eeprom-read", prim_eeprom_read);
-    BUILTIN("eeprom-write", prim_eeprom_write);
-    BUILTIN("p9-loopback", prim_p9_loopback);
-    BUILTIN("p9-cat", prim_p9_cat);
-    /* No longer RP2350-guarded: both resolve their link through the B0
-     * device registry rather than hardcoding virtio-console, so RP2350 can
-     * use them over its `usbnet` (ACM1/EP4) link. */
-    BUILTIN("p9-remote-cat", prim_p9_remote_cat);
-    BUILTIN("mount-remote", prim_mount_remote);
-    BUILTIN("net-config", prim_net_config);
-    BUILTIN("net-mount", prim_net_mount);
-    BUILTIN("net-identity", prim_net_identity);
-    BUILTIN("identity", prim_identity);
-    BUILTIN("identity-name", prim_identity_name);
-    BUILTIN("identity-provision", prim_identity_provision);
-    BUILTIN("identity-key", prim_identity_key);
-    BUILTIN("peers", prim_peers);
-    BUILTIN("peers-add", prim_peers_add);
-    BUILTIN("peers-remove", prim_peers_remove);
-    BUILTIN("wlan", prim_wlan);
-    BUILTIN("wlan-set", prim_wlan_set);
-    BUILTIN("net-status", prim_net_status);
-    BUILTIN("ntp-sync", prim_ntp_sync);
-    BUILTIN("console-bind", prim_console_bind);
-    BUILTIN("console-device", prim_console_device);
-    BUILTIN("spawn-pump", prim_spawn_pump);
-    BUILTIN("mount-local", prim_mount_local);
-    BUILTIN("unmount", prim_unmount);
-
-    /* B0 part 3: registry/sink binding, so init.lisp owns the policy. */
-    BUILTIN("devices", prim_devices);
-    BUILTIN("dev-present?", prim_dev_present);
-    BUILTIN("klog-sinks", prim_klog_sinks);
-    BUILTIN("klog-detach", prim_klog_detach);
-    BUILTIN("klog-attach", prim_klog_attach);
-    BUILTIN("p9-serve", prim_p9_serve);
-    BUILTIN("p9-unserve", prim_p9_unserve);
-    BUILTIN("p9-uart-send", prim_p9_uart_send);
-
-    BUILTIN("load", prim_load);
-    BUILTIN("display", prim_display);
-    BUILTIN("newline", prim_newline);
-    BUILTIN("read-file", prim_read_file);
-    BUILTIN("write-file", prim_write_file);
-
-    BUILTIN("arch", prim_arch);
-    BUILTIN("board", prim_board);
-    BUILTIN("boot-program", prim_boot_program);
-    BUILTIN("bind", prim_bind);
-    BUILTIN("release", prim_release);
-    BUILTIN("ports", prim_ports);
-    BUILTIN("mount-ramdisk", prim_mount_ramdisk);
-    BUILTIN("mounted?", prim_mounted);
-    BUILTIN("psram", prim_psram);
-    BUILTIN("format", prim_format);
-    BUILTIN("lsh", prim_lsh);
-    BUILTIN("usb-status", prim_usb_status);
-    BUILTIN("help", prim_help);
 
     printk("[Lisp Engine] Online.\n");
 
@@ -4121,7 +4144,9 @@ static void skip_whitespace(const char **str) {
 
 
 static bool is_delimiter(char c) {
-    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' || c == ')' || c == ';';
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+           c == '(' || c == ')' || c == ';' || c == '"' || c == '\'' ||
+           c == '`' || c == ',';
 }
 
 static bool is_number_token(const char *str) {
@@ -4167,9 +4192,29 @@ lisp_val_t *lisp_read(const char **str) {
         return make_pair(make_sym("quote"), make_pair(quoted_val, &nil_val));
     }
 
+    /* Quasiquote Syntax `expr */
+    if (**str == '`') {
+        (*str)++; // skip '`'
+        lisp_val_t *val = lisp_read(str);
+        if (!val) val = &nil_val;
+        return make_pair(make_sym("quasiquote"), make_pair(val, &nil_val));
+    }
+
+    /* Unquote Syntax ,@expr and ,expr */
+    if (**str == ',') {
+        (*str)++; // skip ','
+        const char *op_name = "unquote";
+        if (**str == '@') {
+            (*str)++; // skip '@'
+            op_name = "unquote-splicing";
+        }
+        lisp_val_t *val = lisp_read(str);
+        if (!val) val = &nil_val;
+        return make_pair(make_sym(op_name), make_pair(val, &nil_val));
+    }
+
     /* Double Quoted Strings "..." */
     if (**str == '"') {
-
         (*str)++; // skip opening quote
         char buf[128];
         int i = 0;
@@ -4201,6 +4246,28 @@ lisp_val_t *lisp_read(const char **str) {
         lisp_val_t *tail = NULL;
 
         while (**str != ')' && **str != '\0') {
+            if (**str == '.' && is_delimiter((*str)[1])) {
+                /* Dotted pair tail */
+                if (!head) {
+                    printk("[Lisp Syntax Error] Unexpected '.' at start of list\n");
+                    while (**str != ')' && **str != '\0') (*str)++;
+                    if (**str == ')') (*str)++;
+                    return &nil_val;
+                }
+                (*str)++; // skip '.'
+                skip_whitespace(str);
+                lisp_val_t *cdr_val = lisp_read(str);
+                if (!cdr_val) cdr_val = &nil_val;
+                tail->u.pair.cdr = cdr_val;
+                skip_whitespace(str);
+                if (**str != ')') {
+                    printk("[Lisp Syntax Error] Expected ')' after dotted pair tail\n");
+                    while (**str != ')' && **str != '\0') (*str)++;
+                }
+                if (**str == ')') (*str)++;
+                return head;
+            }
+
             lisp_val_t *elem = lisp_read(str);
             if (!elem) break;
             lisp_val_t *new_pair = make_pair(elem, &nil_val);
@@ -4284,7 +4351,7 @@ lisp_val_t *lisp_read(const char **str) {
     /* Symbols */
     char buf[32];
     int i = 0;
-    while (**str != '\0' && **str != ' ' && **str != '\t' && **str != '\n' && **str != '\r' && **str != '(' && **str != ')') {
+    while (**str != '\0' && !is_delimiter(**str)) {
         if (i < 31) buf[i++] = **str;
         (*str)++;
     }
@@ -4390,7 +4457,7 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
         lisp_val_t *a = args;
         while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
             if (p->u.pair.car->type == LISP_SYMBOL) {
-                env_set(&local_env, p->u.pair.car->u.sym, a->u.pair.car);
+                env_set_sym(&local_env, p->u.pair.car, a->u.pair.car);
             }
             p = p->u.pair.cdr;
             a = a->u.pair.cdr;
@@ -4424,6 +4491,82 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
  * nothing here is freed. A collector is tracked separately (plan/
  * phase13_lisp_engine_extensions.md, S0/S3) as the fix for that; this only
  * fixes unbounded call-stack/eval_depth growth. */
+/* Quasiquote evaluator: handles nested quasiquoting, unquote (,), and unquote-splicing (,@) */
+static lisp_val_t *eval_quasiquote(lisp_val_t *form, lisp_val_t *env, int depth) {
+    if (!form || form->type != LISP_PAIR) {
+        return form ? form : &nil_val;
+    }
+
+    lisp_val_t *head = form->u.pair.car;
+    if (head && head->type == LISP_SYMBOL) {
+        if (head == &sym_quasiquote || streq(head->u.sym, "quasiquote")) {
+            lisp_val_t *inner = eval_quasiquote(form->u.pair.cdr, env, depth + 1);
+            return make_pair((lisp_val_t *)&sym_quasiquote, inner);
+        }
+        if (head == &sym_unquote || streq(head->u.sym, "unquote")) {
+            if (depth == 0) {
+                lisp_val_t *expr = (form->u.pair.cdr && form->u.pair.cdr->type == LISP_PAIR)
+                    ? form->u.pair.cdr->u.pair.car : &nil_val;
+                return lisp_eval(expr, env);
+            } else {
+                lisp_val_t *inner = eval_quasiquote(form->u.pair.cdr, env, depth - 1);
+                return make_pair((lisp_val_t *)&sym_unquote, inner);
+            }
+        }
+        if (head == &sym_unquote_splicing || streq(head->u.sym, "unquote-splicing")) {
+            if (depth == 0) {
+                printk("[Lisp Error] unquote-splicing not in list context\n");
+                return &nil_val;
+            } else {
+                lisp_val_t *inner = eval_quasiquote(form->u.pair.cdr, env, depth - 1);
+                return make_pair((lisp_val_t *)&sym_unquote_splicing, inner);
+            }
+        }
+    }
+
+    lisp_val_t *first = form->u.pair.car;
+    lisp_val_t *rest = form->u.pair.cdr;
+
+    /* Check if first is `(unquote-splicing expr)` at depth 0 */
+    if (depth == 0 && first && first->type == LISP_PAIR &&
+        first->u.pair.car && first->u.pair.car->type == LISP_SYMBOL &&
+        (first->u.pair.car == &sym_unquote_splicing || streq(first->u.pair.car->u.sym, "unquote-splicing"))) {
+        lisp_val_t *expr = (first->u.pair.cdr && first->u.pair.cdr->type == LISP_PAIR)
+            ? first->u.pair.cdr->u.pair.car : &nil_val;
+        lisp_val_t *splice_val = lisp_eval(expr, env);
+        lisp_val_t *rest_val = eval_quasiquote(rest, env, depth);
+
+        if (!splice_val || splice_val->type == LISP_NIL) {
+            return rest_val;
+        }
+        if (splice_val->type != LISP_PAIR) {
+            printk("[Lisp Error] unquote-splicing: expected list, got non-pair\n");
+            return rest_val;
+        }
+        lisp_val_t *head_res = &nil_val;
+        lisp_val_t *tail_res = NULL;
+        for (lisp_val_t *c = splice_val; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+            lisp_val_t *p = make_pair(c->u.pair.car, &nil_val);
+            if (!tail_res) {
+                head_res = p;
+                tail_res = p;
+            } else {
+                tail_res->u.pair.cdr = p;
+                tail_res = p;
+            }
+        }
+        if (tail_res) {
+            tail_res->u.pair.cdr = rest_val;
+            return head_res;
+        }
+        return rest_val;
+    }
+
+    lisp_val_t *car_val = eval_quasiquote(first, env, depth);
+    lisp_val_t *cdr_val = eval_quasiquote(rest, env, depth);
+    return make_pair(car_val, cdr_val);
+}
+
 static lisp_val_t *lisp_eval_step(lisp_val_t *val, lisp_val_t *env) {
 tail_call:
     if (!val) return &nil_val;
@@ -4434,7 +4577,7 @@ tail_call:
 
 
     if (val->type == LISP_SYMBOL) {
-        lisp_val_t *res = env_get(env, val->u.sym);
+        lisp_val_t *res = env_get_sym(env, val);
         if (!res) res = builtin_get(val->u.sym);       /* 37.3a: the built-ins */
         if (res) return res;
         cprintf("Unbound symbol: %s\n", val->u.sym);
@@ -4451,288 +4594,268 @@ tail_call:
          * `define` earlier in the same form visible to a later part of it. */
         bool was_global = (env == global_env);
 
-        /* Special form: quote */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "quote")) {
-            return (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
-        }
-
-        /* Special form: if -- the taken branch is a tail position. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "if")) {
-            if (args && args->type == LISP_PAIR && args->u.pair.cdr) {
-                lisp_val_t *cond_val = lisp_eval(args->u.pair.car, refresh_global_tail(env, env, was_global));
-                bool is_true = lisp_truthy(cond_val);
-                if (is_true) {
-                    val = args->u.pair.cdr->u.pair.car;
-                    env = refresh_global_tail(env, env, was_global);
-                    goto tail_call;
-                } else if (args->u.pair.cdr->u.pair.cdr) {
-                    val = args->u.pair.cdr->u.pair.cdr->u.pair.car;
-                    env = refresh_global_tail(env, env, was_global);
-                    goto tail_call;
-                }
-            }
-            return &nil_val;
-        }
-
-        /* Special form: begin -- the last form is a tail position. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "begin")) {
-            lisp_val_t *last = eval_all_but_last(args, env, env, was_global);
-            if (!last) return &nil_val;
-            val = last;
-            env = refresh_global_tail(env, env, was_global);
-            goto tail_call;
-        }
-
-        /* Special form: let -- bindings are evaluated against the outer
-         * env, not each other (that's let*, right below), the last body
-         * form is a tail position in the extended env. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "let")) {
-            /* S5 (plan/phase13_lisp_engine_extensions.md): named let --
-             * (let name ((v init) ...) body...) -- distinguished from
-             * plain `let` by its first argument being a symbol instead of
-             * a bindings list, exactly like real Scheme dispatches the two
-             * shapes. Desugars to a self-referential closure (a fresh
-             * frame binding `name` to the closure itself, so the closure's
-             * OWN captured env lets its body call itself by that name --
-             * the same "tie the knot" problem (define ...)'s NULL-env
-             * marker solves for global recursion, solved explicitly here
-             * since a named-let's `name` is local, not global) applied via
-             * the same tail-position machinery plain lambda application
-             * uses below, so a named-let loop gets S1's TCO for free
-             * without needing a macro system to exist at all. */
-            if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_SYMBOL &&
-                args->u.pair.cdr && args->u.pair.cdr->type == LISP_PAIR) {
-                lisp_val_t *name_sym = args->u.pair.car;
-                lisp_val_t *bindings = args->u.pair.cdr->u.pair.car;
-                lisp_val_t *body = args->u.pair.cdr->u.pair.cdr;
-
-                lisp_val_t *params_head = &nil_val, *params_tail = NULL;
-                lisp_val_t *call_args_head = &nil_val, *call_args_tail = NULL;
-                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
-                    lisp_val_t *pair = b->u.pair.car;
-                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
-                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val,
-                                                       refresh_global_tail(env, env, was_global));
-                        lisp_val_t *pnode = make_pair(pair->u.pair.car, &nil_val);
-                        lisp_val_t *anode = make_pair(bound, &nil_val);
-                        if (!params_tail) { params_head = pnode; params_tail = pnode; } else { params_tail->u.pair.cdr = pnode; params_tail = pnode; }
-                        if (!call_args_tail) { call_args_head = anode; call_args_tail = anode; } else { call_args_tail->u.pair.cdr = anode; call_args_tail = anode; }
+        /* Special forms */
+        if (op->type == LISP_SYMBOL) {
+            switch (op->u.sym[0]) {
+                case 'q':
+                    /* Special form: quote */
+                    if (op == &sym_quote || streq(op->u.sym, "quote")) {
+                        return (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
                     }
-                }
-
-                lisp_val_t *loop_env = refresh_global_tail(env, env, was_global);
-                lisp_val_t *lam = alloc_node(LISP_LAMBDA);
-                lam->u.lambda.params = params_head;
-                lam->u.lambda.body = body;
-                env_set(&loop_env, name_sym->u.sym, lam);
-                lam->u.lambda.env = loop_env; /* ties the knot: name now resolves to lam within lam's own captured env */
-
-                /* Apply lam to call_args_head in tail position -- mirrors
-                 * the LISP_LAMBDA application branch further down exactly. */
-                lisp_val_t *local_env = lam->u.lambda.env;
-                bool nl_was_global = (local_env == global_env);
-                lisp_val_t *nl_original_tail = local_env;
-                lisp_val_t *p = lam->u.lambda.params;
-                lisp_val_t *a = call_args_head;
-                while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
-                    if (p->u.pair.car->type == LISP_SYMBOL) {
-                        env_set(&local_env, p->u.pair.car->u.sym, a->u.pair.car);
+                    /* Special form: quasiquote */
+                    if (op == &sym_quasiquote || streq(op->u.sym, "quasiquote")) {
+                        lisp_val_t *form = (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
+                        return eval_quasiquote(form, refresh_global_tail(env, env, was_global), 0);
                     }
-                    p = p->u.pair.cdr;
-                    a = a->u.pair.cdr;
-                }
-                lisp_val_t *last = eval_all_but_last(lam->u.lambda.body, local_env, nl_original_tail, nl_was_global);
-                if (!last) return &nil_val;
-                val = last;
-                env = refresh_global_tail(local_env, nl_original_tail, nl_was_global);
-                goto tail_call;
-            }
+                    break;
 
-            if (args && args->type == LISP_PAIR) {
-                lisp_val_t *bindings = args->u.pair.car;
-                lisp_val_t *body = args->u.pair.cdr;
-                lisp_val_t *local_env = env;
-
-                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
-                    lisp_val_t *pair = b->u.pair.car;
-                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
-                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(env, env, was_global));
-                        env_set(&local_env, pair->u.pair.car->u.sym, bound);
+                case 'u':
+                    /* Special forms: unquote / unquote-splicing outside quasiquote */
+                    if (op == &sym_unquote || streq(op->u.sym, "unquote") ||
+                        op == &sym_unquote_splicing || streq(op->u.sym, "unquote-splicing")) {
+                        printk("[Lisp Error] %s: unquote outside quasiquote\n", op->u.sym);
+                        return &nil_val;
                     }
-                }
+                    break;
 
-                lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
-                if (!last) return &nil_val;
-                val = last;
-                env = refresh_global_tail(local_env, env, was_global);
-                goto tail_call;
-            }
-        }
-
-        /* Special form: let* (S2, plan/phase13_lisp_engine_extensions.md)
-         * -- identical to `let` above except each binding's init-expr is
-         * evaluated against `local_env` (already containing every
-         * preceding binding) rather than the outer `env`, giving the
-         * sequential visibility `let` doesn't: (let* ((a 1) (b a)) b)
-         * sees `a` while computing `b`; the same form under plain `let`
-         * would report an unbound symbol. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "let*")) {
-            if (args && args->type == LISP_PAIR) {
-                lisp_val_t *bindings = args->u.pair.car;
-                lisp_val_t *body = args->u.pair.cdr;
-                lisp_val_t *local_env = env;
-
-                for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
-                    lisp_val_t *pair = b->u.pair.car;
-                    if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
-                        lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(local_env, env, was_global));
-                        env_set(&local_env, pair->u.pair.car->u.sym, bound);
+                case 'i':
+                    /* Special form: if -- the taken branch is a tail position. */
+                    if (op == &sym_if || streq(op->u.sym, "if")) {
+                        if (args && args->type == LISP_PAIR && args->u.pair.cdr) {
+                            lisp_val_t *cond_val = lisp_eval(args->u.pair.car, refresh_global_tail(env, env, was_global));
+                            bool is_true = lisp_truthy(cond_val);
+                            if (is_true) {
+                                val = args->u.pair.cdr->u.pair.car;
+                                env = refresh_global_tail(env, env, was_global);
+                                goto tail_call;
+                            } else if (args->u.pair.cdr->u.pair.cdr) {
+                                val = args->u.pair.cdr->u.pair.cdr->u.pair.car;
+                                env = refresh_global_tail(env, env, was_global);
+                                goto tail_call;
+                            }
+                        }
+                        return &nil_val;
                     }
-                }
+                    break;
 
-                lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
-                if (!last) return &nil_val;
-                val = last;
-                env = refresh_global_tail(local_env, env, was_global);
-                goto tail_call;
-            }
-        }
-
-        /* Special form: while (S2, plan/phase13_lisp_engine_extensions.md)
-         * -- (while cond body...). A plain C loop, not part of the tail
-         * trampoline at all: it never recurses for control flow, so it
-         * needs neither TCO nor a depth-guard bound to be safe, and is the
-         * cheapest possible looping construct here. Each iteration's
-         * condition/body evaluation still goes through the real, depth-
-         * guarded lisp_eval(). An interrupt or a pool exhaustion ends the
-         * loop at the top of the next iteration -- checked explicitly, and
-         * the console asked there too: a loop whose condition never
-         * changes, `(while (< k 3) (display k))`, was otherwise only as
-         * interruptible as lisp_eval()'s own throttled poll, and a body
-         * that prints spends so long per call that Ctrl-C took minutes on
-         * the board. Returns nil always, matching Scheme convention that
-         * `while` is for side effects, not a value. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "while")) {
-            if (args && args->type == LISP_PAIR) {
-                lisp_val_t *cond_expr = args->u.pair.car;
-                lisp_val_t *body = args->u.pair.cdr;
-                for (;;) {
-                    if (node_pool_exhausted_warned || lisp_interrupted || lisp_poll_interrupt()) break;
-                    lisp_val_t *cond_val = lisp_eval(cond_expr, refresh_global_tail(env, env, was_global));
-                    if (!lisp_truthy(cond_val)) break;
-                    for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                        lisp_eval(c->u.pair.car, refresh_global_tail(env, env, was_global));
-                    }
-                }
-            }
-            return &nil_val;
-        }
-
-        /* Special form: cond -- the last form of the matched clause is a
-         * tail position. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "cond")) {
-            for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
-                lisp_val_t *clause = c->u.pair.car;
-                if (clause && clause->type == LISP_PAIR) {
-                    lisp_val_t *pred = clause->u.pair.car;
-                    bool is_else = (pred->type == LISP_SYMBOL && streq(pred->u.sym, "else"));
-                    lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, refresh_global_tail(env, env, was_global));
-                    if (lisp_truthy(pval)) {
-                        lisp_val_t *last = eval_all_but_last(clause->u.pair.cdr, env, env, was_global);
+                case 'b':
+                    /* Special form: begin -- the last form is a tail position. */
+                    if (op == &sym_begin || streq(op->u.sym, "begin")) {
+                        lisp_val_t *last = eval_all_but_last(args, env, env, was_global);
                         if (!last) return &nil_val;
                         val = last;
                         env = refresh_global_tail(env, env, was_global);
                         goto tail_call;
                     }
-                }
-            }
-            return &nil_val;
-        }
+                    break;
 
-        /* Special form: define
-         *
-         * Two forms:
-         *   (define name value-expr)             -- bind a value
-         *   (define (name arg...) body-form...)  -- bind a function, i.e.
-         *     sugar for (define name (lambda (arg...) body-form...))
-         */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "define")) {
-            if (args && args->type == LISP_PAIR) {
-                lisp_val_t *target = args->u.pair.car;
-                lisp_val_t *rest = args->u.pair.cdr;
+                case 'l':
+                    /* Special form: let -- bindings are evaluated against the outer
+                     * env, not each other (that's let*, right below), the last body
+                     * form is a tail position in the extended env. */
+                    if (op == &sym_let || streq(op->u.sym, "let")) {
+                        if (args && args->type == LISP_PAIR && args->u.pair.car->type == LISP_SYMBOL &&
+                            args->u.pair.cdr && args->u.pair.cdr->type == LISP_PAIR) {
+                            lisp_val_t *name_sym = args->u.pair.car;
+                            lisp_val_t *bindings = args->u.pair.cdr->u.pair.car;
+                            lisp_val_t *body = args->u.pair.cdr->u.pair.cdr;
 
-                if (target && target->type == LISP_PAIR) {
-                    lisp_val_t *name_sym = target->u.pair.car;
-                    if (!name_sym || name_sym->type != LISP_SYMBOL) {
-                        printk("[Lisp Error] define: function name must be a symbol\n");
+                            lisp_val_t *params_head = &nil_val, *params_tail = NULL;
+                            lisp_val_t *call_args_head = &nil_val, *call_args_tail = NULL;
+                            for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                                lisp_val_t *pair = b->u.pair.car;
+                                if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                                    lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val,
+                                                                   refresh_global_tail(env, env, was_global));
+                                    lisp_val_t *pnode = make_pair(pair->u.pair.car, &nil_val);
+                                    lisp_val_t *anode = make_pair(bound, &nil_val);
+                                    if (!params_tail) { params_head = pnode; params_tail = pnode; } else { params_tail->u.pair.cdr = pnode; params_tail = pnode; }
+                                    if (!call_args_tail) { call_args_head = anode; call_args_tail = anode; } else { call_args_tail->u.pair.cdr = anode; call_args_tail = anode; }
+                                }
+                            }
+
+                            lisp_val_t *loop_env = refresh_global_tail(env, env, was_global);
+                            lisp_val_t *lam = alloc_node(LISP_LAMBDA);
+                            lam->u.lambda.params = params_head;
+                            lam->u.lambda.body = body;
+                            env_set_sym(&loop_env, name_sym, lam);
+                            lam->u.lambda.env = loop_env; /* ties the knot: name now resolves to lam within lam's own captured env */
+
+                            /* Apply lam to call_args_head in tail position -- mirrors
+                             * the LISP_LAMBDA application branch further down exactly. */
+                            lisp_val_t *local_env = lam->u.lambda.env;
+                            bool nl_was_global = (local_env == global_env);
+                            lisp_val_t *nl_original_tail = local_env;
+                            lisp_val_t *p = lam->u.lambda.params;
+                            lisp_val_t *a = call_args_head;
+                            while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
+                                if (p->u.pair.car->type == LISP_SYMBOL) {
+                                    env_set_sym(&local_env, p->u.pair.car, a->u.pair.car);
+                                }
+                                p = p->u.pair.cdr;
+                                a = a->u.pair.cdr;
+                            }
+                            lisp_val_t *last = eval_all_but_last(lam->u.lambda.body, local_env, nl_original_tail, nl_was_global);
+                            if (!last) return &nil_val;
+                            val = last;
+                            env = refresh_global_tail(local_env, nl_original_tail, nl_was_global);
+                            goto tail_call;
+                        }
+
+                        if (args && args->type == LISP_PAIR) {
+                            lisp_val_t *bindings = args->u.pair.car;
+                            lisp_val_t *body = args->u.pair.cdr;
+                            lisp_val_t *local_env = env;
+
+                            for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                                lisp_val_t *pair = b->u.pair.car;
+                                if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                                    lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(env, env, was_global));
+                                    env_set_sym(&local_env, pair->u.pair.car, bound);
+                                }
+                            }
+
+                            lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
+                            if (!last) return &nil_val;
+                            val = last;
+                            env = refresh_global_tail(local_env, env, was_global);
+                            goto tail_call;
+                        }
+                    } else if (op == &sym_let_star || streq(op->u.sym, "let*")) {
+                        /* Special form: let* (S2, plan/phase13_lisp_engine_extensions.md) */
+                        if (args && args->type == LISP_PAIR) {
+                            lisp_val_t *bindings = args->u.pair.car;
+                            lisp_val_t *body = args->u.pair.cdr;
+                            lisp_val_t *local_env = env;
+
+                            for (lisp_val_t *b = bindings; b && b->type == LISP_PAIR; b = b->u.pair.cdr) {
+                                lisp_val_t *pair = b->u.pair.car;
+                                if (pair && pair->type == LISP_PAIR && pair->u.pair.car->type == LISP_SYMBOL) {
+                                    lisp_val_t *bound = lisp_eval(pair->u.pair.cdr ? pair->u.pair.cdr->u.pair.car : &nil_val, refresh_global_tail(local_env, env, was_global));
+                                    env_set_sym(&local_env, pair->u.pair.car, bound);
+                                }
+                            }
+
+                            lisp_val_t *last = eval_all_but_last(body, local_env, env, was_global);
+                            if (!last) return &nil_val;
+                            val = last;
+                            env = refresh_global_tail(local_env, env, was_global);
+                            goto tail_call;
+                        }
+                    } else if (op == &sym_lambda || streq(op->u.sym, "lambda")) {
+                        /* Special form: lambda -- (lambda (arg...) body-form...) */
+                        lisp_val_t *params = (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
+                        lisp_val_t *body = (args && args->type == LISP_PAIR) ? args->u.pair.cdr : &nil_val;
+                        lisp_val_t *lam = alloc_node(LISP_LAMBDA);
+                        lam->u.lambda.params = params;
+                        lam->u.lambda.body = body;
+                        lam->u.lambda.env = (env == global_env) ? NULL : env;
+                        return lam;
+                    }
+                    break;
+
+                case 'w':
+                    /* Special form: while (S2, plan/phase13_lisp_engine_extensions.md) */
+                    if (op == &sym_while || streq(op->u.sym, "while")) {
+                        if (args && args->type == LISP_PAIR) {
+                            lisp_val_t *cond_expr = args->u.pair.car;
+                            lisp_val_t *body = args->u.pair.cdr;
+                            for (;;) {
+                                if (node_pool_exhausted_warned || lisp_interrupted || lisp_poll_interrupt()) break;
+                                lisp_val_t *cond_val = lisp_eval(cond_expr, refresh_global_tail(env, env, was_global));
+                                if (!lisp_truthy(cond_val)) break;
+                                for (lisp_val_t *c = body; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                                    lisp_eval(c->u.pair.car, refresh_global_tail(env, env, was_global));
+                                }
+                            }
+                        }
                         return &nil_val;
                     }
-                    lisp_val_t *lam = alloc_node(LISP_LAMBDA);
-                    lam->u.lambda.params = target->u.pair.cdr;
-                    lam->u.lambda.body = rest;
-                    lam->u.lambda.env = (env == global_env) ? NULL : env;
-                    env_set(&global_env, name_sym->u.sym, lam);
-                    return name_sym;
-                }
+                    break;
 
-                if (!target || target->type != LISP_SYMBOL) {
-                    printk("[Lisp Error] define: expected a symbol or (name arg...)\n");
-                    return &nil_val;
-                }
+                case 'c':
+                    /* Special form: cond -- the last form of the matched clause is a tail position. */
+                    if (op == &sym_cond || streq(op->u.sym, "cond")) {
+                        for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                            lisp_val_t *clause = c->u.pair.car;
+                            if (clause && clause->type == LISP_PAIR) {
+                                lisp_val_t *pred = clause->u.pair.car;
+                                bool is_else = (pred == &sym_else || (pred->type == LISP_SYMBOL && streq(pred->u.sym, "else")));
+                                lisp_val_t *pval = is_else ? &true_val : lisp_eval(pred, refresh_global_tail(env, env, was_global));
+                                if (lisp_truthy(pval)) {
+                                    lisp_val_t *last = eval_all_but_last(clause->u.pair.cdr, env, env, was_global);
+                                    if (!last) return &nil_val;
+                                    val = last;
+                                    env = refresh_global_tail(env, env, was_global);
+                                    goto tail_call;
+                                }
+                            }
+                        }
+                        return &nil_val;
+                    }
+                    break;
 
-                lisp_val_t *eval_val = (rest && rest->type == LISP_PAIR)
-                    ? lisp_eval(rest->u.pair.car, env) : &nil_val;
-                env_set(&global_env, target->u.sym, eval_val);
-                return target;
+                case 'd':
+                    /* Special form: define */
+                    if (op == &sym_define || streq(op->u.sym, "define")) {
+                        if (args && args->type == LISP_PAIR) {
+                            lisp_val_t *target = args->u.pair.car;
+                            lisp_val_t *rest = args->u.pair.cdr;
+
+                            if (target && target->type == LISP_PAIR) {
+                                lisp_val_t *name_sym = target->u.pair.car;
+                                if (!name_sym || name_sym->type != LISP_SYMBOL) {
+                                    printk("[Lisp Error] define: function name must be a symbol\n");
+                                    return &nil_val;
+                                }
+                                lisp_val_t *lam = alloc_node(LISP_LAMBDA);
+                                lam->u.lambda.params = target->u.pair.cdr;
+                                lam->u.lambda.body = rest;
+                                lam->u.lambda.env = (env == global_env) ? NULL : env;
+                                env_set_sym(&global_env, name_sym, lam);
+                                return name_sym;
+                            }
+
+                            if (!target || target->type != LISP_SYMBOL) {
+                                printk("[Lisp Error] define: expected a symbol or (name arg...)\n");
+                                return &nil_val;
+                            }
+
+                            lisp_val_t *eval_val = (rest && rest->type == LISP_PAIR)
+                                ? lisp_eval(rest->u.pair.car, env) : &nil_val;
+                            env_set_sym(&global_env, target, eval_val);
+                            return target;
+                        }
+                    }
+                    break;
+
+                case 's':
+                    /* Special form: set! */
+                    if (op == &sym_set_bang || streq(op->u.sym, "set!")) {
+                        lisp_val_t *name = (args && args->type == LISP_PAIR) ? args->u.pair.car : NULL;
+                        lisp_val_t *rest = name ? args->u.pair.cdr : NULL;
+                        if (!name || name->type != LISP_SYMBOL || !rest || rest->type != LISP_PAIR) {
+                            printk("[Lisp Error] set!: expected (set! name value)\n");
+                            return &nil_val;
+                        }
+                        lisp_val_t *v = lisp_eval(rest->u.pair.car, refresh_global_tail(env, env, was_global));
+                        if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+                        lisp_val_t *binding = env_binding_sym(refresh_global_tail(env, env, was_global), name);
+                        if (!binding) binding = env_binding_sym(global_env, name);
+                        if (!binding) {
+                            cprintf("set!: unbound variable %s\n", name->u.sym);
+                            return &nil_val;
+                        }
+                        binding->u.pair.cdr = v;
+                        return v;
+                    }
+                    break;
+
+                default:
+                    break;
             }
         }
 
-        /* Special form: set! -- (set! name expr) changes the innermost
-         * existing binding of `name`, the way Scheme's does: a let's
-         * variable, a parameter, or a global, and a closure that captured
-         * that binding sees the change. Not a definition: an unbound name is
-         * an error, so a typo cannot quietly create a global. A frozen
-         * closure's env may predate a later global `define`, hence the
-         * second look in global_env. The value is the new value. */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "set!")) {
-            lisp_val_t *name = (args && args->type == LISP_PAIR) ? args->u.pair.car : NULL;
-            lisp_val_t *rest = name ? args->u.pair.cdr : NULL;
-            if (!name || name->type != LISP_SYMBOL || !rest || rest->type != LISP_PAIR) {
-                printk("[Lisp Error] set!: expected (set! name value)\n");
-                return &nil_val;
-            }
-            lisp_val_t *v = lisp_eval(rest->u.pair.car, refresh_global_tail(env, env, was_global));
-            if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
-            lisp_val_t *binding = env_binding(refresh_global_tail(env, env, was_global), name->u.sym);
-            if (!binding) binding = env_binding(global_env, name->u.sym);
-            if (!binding) {
-                cprintf("set!: unbound variable %s\n", name->u.sym);
-                return &nil_val;
-            }
-            binding->u.pair.cdr = v;
-            return v;
-        }
-
-        /* Special form: lambda -- (lambda (arg...) body-form...) */
-        if (op->type == LISP_SYMBOL && streq(op->u.sym, "lambda")) {
-            lisp_val_t *params = (args && args->type == LISP_PAIR) ? args->u.pair.car : &nil_val;
-            lisp_val_t *body = (args && args->type == LISP_PAIR) ? args->u.pair.cdr : &nil_val;
-            lisp_val_t *lam = alloc_node(LISP_LAMBDA);
-            lam->u.lambda.params = params;
-            lam->u.lambda.body = body;
-            /* A lambda created directly in the global scope closes over the
-             * LIVE global environment (NULL is the marker, resolved at call
-             * time below) rather than a frozen snapshot of it -- otherwise
-             * a function couldn't see its own binding while evaluating its
-             * own body: (define ...) prepends onto global_env *after* this
-             * lambda value has already captured whatever global_env was
-             * before that happened (see B3 in
-             * plan/completed/2026-08-07_review_and_remediation.md). Lambdas created
-             * inside another lambda's body or a `let` still get a normal
-             * frozen-snapshot closure, which is correct lexical scoping. */
-            lam->u.lambda.env = (env == global_env) ? NULL : env;
-            return lam;
-        }
 
 
         /* Evaluate Operator. A name is looked up here rather than through
@@ -4740,7 +4863,7 @@ tail_call:
          * function. */
         lisp_val_t *fn;
         if (op->type == LISP_SYMBOL) {
-            fn = env_get(refresh_global_tail(env, env, was_global), op->u.sym);
+            fn = env_get_sym(refresh_global_tail(env, env, was_global), op);
             if (!fn) fn = builtin_get(op->u.sym);
             if (!fn) {
                 cprintf("Unbound function: %s\n", op->u.sym);
@@ -4815,7 +4938,7 @@ tail_call:
             lisp_val_t *a = eval_args_head;
             while (p && p->type == LISP_PAIR && a && a->type == LISP_PAIR) {
                 if (p->u.pair.car->type == LISP_SYMBOL) {
-                    env_set(&local_env, p->u.pair.car->u.sym, a->u.pair.car);
+                    env_set_sym(&local_env, p->u.pair.car, a->u.pair.car);
                 }
                 p = p->u.pair.cdr;
                 a = a->u.pair.cdr;

@@ -2564,6 +2564,57 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp List Processing cons,car,cdr,length,append,reverse,list-ref,map,filter,for-each (S4)",
                         ok, log if not ok else ""))
 
+        # Phase 42: Symbolic Foundations (Dotted pairs, Quasiquote, Tree equality, Accessors, Assoc)
+        cmd_p42_symbolic = (
+            "lisp\n"
+            "'(a . b)\n"
+            "'(1 2 . 3)\n"
+            "(car '(x . y))\n"
+            "(cdr '(x . y))\n"
+            "(define v 42)\n"
+            "`(a ,v c)\n"
+            "`(1 ,@'(2 3) 4)\n"
+            "`(a . ,(+ 10 20))\n"
+            "(equal? '(1 (2 3)) '(1 (2 3)))\n"
+            "(equal? '(1 2) '(1 3))\n"
+            "(eq? 'foo 'foo)\n"
+            "(eq? (cons 1 2) (cons 1 2))\n"
+            "(caar '((1 2) 3))\n"
+            "(cadr '(1 2 3))\n"
+            "(cdar '((1 2) 3))\n"
+            "(cddr '(1 2 3))\n"
+            "(caddr '(1 2 3 4))\n"
+            "(cadddr '(1 2 3 4 5))\n"
+            "(assoc 'b '((a 1) (b 2) (c 3)))\n"
+            "(assoc 'x '((a 1) (b 2)))\n"
+            "(member 2 '(1 2 3))\n"
+            "(member 4 '(1 2 3))\n"
+            "(display \"P42_OK\\n\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p42_symbolic, r"P42_OK", timeout=6.0)
+        p42_correct = (
+            "(a . b)" in log and
+            "(1 2 . 3)" in log and
+            "=> x" in log and
+            "=> y" in log and
+            "(a 42 c)" in log and
+            "(1 2 3 4)" in log and
+            "(a . 30)" in log and
+            "=> #t" in log and
+            "=> 1" in log and
+            "=> 2" in log and
+            "=> (2)" in log and
+            "=> (3)" in log and
+            "=> 3" in log and
+            "=> 4" in log and
+            "(b 2)" in log and
+            "(2 3)" in log
+        )
+        ok = ok and p42_correct
+        results.append(("Lisp Symbolic Foundations (dotted pairs, quasiquote, equal?, accessors, assoc) (Phase 42)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"
