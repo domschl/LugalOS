@@ -3156,6 +3156,37 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("CAS Symbolic Expression Simplifier & Canonicalizer (Phase 43.2)",
                         ok, log if not ok else ""))
 
+        # Phase 43.3: Polynomial Algebra, Expansion & Evaluation (cas/poly.lisp)
+        cmd_p43_poly = (
+            "lisp\n"
+            '(load "/sd0/cas/simplify.lisp")\n'
+            '(load "/sd0/cas/poly.lisp")\n'
+            "(expand '(* (+ x 1) (+ x 2)))\n"
+            "(expand '(^ (+ x 1) 3))\n"
+            "(poly-degree '(+ (^ x 3) (* 2 (^ x 5)) 7) 'x)\n"
+            "(poly-coeffs '(+ (^ x 2) (* 3 x) 2) 'x)\n"
+            "(poly-lead-coeff '(+ (* 7 (^ x 3)) (* 2 x)) 'x)\n"
+            "(poly-eval-horner '(1 3 2) 5)\n"
+            "(poly-eval '(+ (* x y) 3) '((x . 4) (y . 5)))\n"
+            "(poly-div '(+ (^ x 2) (* 3 x) 2) '(+ x 1) 'x)\n"
+            '(display "P43_POLY_OK\\n")\n'
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p43_poly, r"P43_POLY_OK", timeout=12.0)
+        p43_poly_correct = (
+            "=> (+ 2 (* 3 x) (^ x 2))" in log and
+            "=> (+ 1 (* 3 x) (* 3 (^ x 2)) (^ x 3))" in log and
+            "=> 5" in log and
+            "=> (1 3 2)" in log and
+            "=> 7" in log and
+            "=> 42" in log and
+            "=> 23" in log and
+            "=> ((+ 2 x) 0)" in log
+        )
+        ok = ok and p43_poly_correct
+        results.append(("CAS Polynomial Engine expansion, inspection, evaluation, division (Phase 43.3)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"

@@ -1,6 +1,6 @@
 # Phase 43 — Symbolic Computer Algebra System (CAS) & Mathematical Visualization
 
-**Status: IN PROGRESS (Milestones 43.1 & 43.2 COMPLETE, Verified on Hardware; 2026-10-03).**  
+**Status: IN PROGRESS (Milestones 43.1, 43.2 & 43.3 COMPLETE, Verified on Hardware; 2026-10-03).**  
 Branch: `lisp_symbolic`  
 Follows Phase 42 (Lisp Symbolic Foundations & Engine Optimizations) and Phase 37/38 (Screen Layouts, Canvas API & PSRAM).
 
@@ -137,19 +137,34 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.3: Polynomial Algebra & Expansion (`cas/poly.lisp`)
+### Milestone 43.3: Polynomial Algebra & Expansion (`cas/poly.lisp`) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** High-level algebraic manipulation of univariate and multivariate polynomials.
 * **Deliverables:**
   1. **Polynomial Expansion (`expand`):**
      - Distributive multiplication over addition: $(a + b)(c + d) = ac + ad + bc + bd$.
-     - Binomial expansion using exact coefficients: `(expand '(^ (+ x 1) 4))` $\rightarrow$ `(+ (^ x 4) (* 4 (^ x 3)) (* 6 (^ x 2)) (* 4 x) 1)`.
+     - Binomial & multinomial expansion using exact coefficients via binary exponentiation:
+       `(expand '(^ (+ x 1) 4))` $\rightarrow$ `(+ 1 (* 4 x) (* 6 (^ x 2)) (* 4 (^ x 3)) (^ x 4))`.
+     - Multi-factor products: `(expand '(* (+ x 1) (+ x 2) (+ x 3)))` $\rightarrow$ `(+ 6 (* 11 x) (* 6 (^ x 2)) (^ x 3))`.
+     - Scalar and constant distributions.
   2. **Polynomial Inspection:**
-     - `(poly-degree expr var)`: Returns highest exponent of `var`.
-     - `(poly-coeffs expr var)`: Returns list of coefficients ordered by descending degree.
-     - `(poly-lead-coeff expr var)`: Leading coefficient.
+     - `(poly-degree expr var)`: Returns highest non-negative integer exponent of `var`.
+     - `(poly-coeffs expr var)`: Returns list of coefficients ordered by descending degree $(c_n, c_{n-1}, \dots, c_0)$, filling missing powers with 0.
+     - `(poly-lead-coeff expr var)`: Leading coefficient ($c_n$).
   3. **Polynomial Evaluation & Horner's Rule:**
-     - `(poly-eval expr '((x . 5)))`: Fast evaluation using Horner's method.
+     - `(poly-eval-horner coeffs x)`: Exact polynomial evaluation using Horner's scheme.
+     - `(poly-eval expr '((x . 5)))`: Evaluation with variable substitution and simplification.
+  4. **Polynomial Long Division (`poly-div`):**
+     - `(poly-div num den var)`: Returns `(list quotient remainder)` with exact rational coefficients.
+  5. **High-Level Aliases:**
+     - `(poly-add p1 p2)` and `(poly-mul p1 p2)`.
+  6. **Storage Synchronization:**
+     - Synchronized `cas/poly.lisp` to `/sd0/cas/poly.lisp` on physical RP2350-terminal using `tools/p9sync.py`.
+* **Verification:**
+  - `tests/test_cas_poly.py`: 47/47 unit tests passing on QEMU.
+  - Integrated into `tests/runner.py` regression suite.
+  - Verified live on physical RP2350-terminal silicon via interactive console (`/dev/ttyACM1`).
 
 ---
 
