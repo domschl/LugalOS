@@ -74,7 +74,13 @@ bool idstore_path_is_secret(const char *path) {
 idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out) {
     uint8_t buf[IDSTORE_SIZE_BYTES];
 
-    if (!dev || !dev->read_blocks || !out) return IDSTORE_CORRUPT;
+    if (!out) return IDSTORE_CORRUPT;
+    /* Anything but IDSTORE_VALID leaves a record with no fields, so a lookup
+     * on it finds nothing rather than walking whatever was on the caller's
+     * stack (idstore_selftest() did exactly that; found by -fanalyzer). */
+    out->fields_len = 0;
+    out->unknown_fields_skipped = 0;
+    if (!dev || !dev->read_blocks) return IDSTORE_CORRUPT;
     if (dev->read_blocks(dev, buf, 0, IDSTORE_BLOCKS) != 0) return IDSTORE_CORRUPT;
 
     if (buf[0] != IDSTORE_MAGIC0 || buf[1] != IDSTORE_MAGIC1 ||
