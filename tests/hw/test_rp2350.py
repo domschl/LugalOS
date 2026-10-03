@@ -1858,43 +1858,69 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     never released would still emit a correct binary every time.
     """
     name = "C6/C7: compiler and editor memory is returned on real silicon"
+
+    # Phase 40, item 7: the count is read only once it has settled, and the
+    # compile runs twice. A single before/after pair failed one run in four on
+    # rp2350-clock in the first minute after a flash, while the WLAN
+    # supervisor was still joining and allocating in between. A tolerance
+    # would have blunted the leak detector; this keeps it exact. A compile
+    # that leaks does so *every* time, so the second compile moves the count
+    # again; a one-off allocation by something else moves it once, between
+    # the first two readings, and the second compile leaves it where it is.
+    def settled_used(ser) -> "int | None":
+        last = None
+        for _ in range(20):
+            ser.write(b"cat /proc/meminfo\n")
+            ser.flush()
+            text = rp2350.drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
+            m = re.search(r"Pages Used: (\d+)", text)
+            if not m:
+                return None
+            now = int(m.group(1))
+            if now == last:
+                return now
+            last = now
+        return None   # never settled in ~20 s: say so rather than guess
+
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
             time.sleep(0.3)
             ser.reset_input_buffer()
             out = ""
-            for cmd in (b"cat /proc/meminfo\n",
-                        # /flash0, not /sd0: this test is about whether the
-                        # compiler hands its arena back, which has nothing to
-                        # do with storage -- /sd0 was only ever where a .c
-                        # file happened to be. On rp2350-clock /sd0 never
-                        # mounts (GP10-13 drive the LED matrix, not an SD
-                        # bus), so the compile could not start and the test
-                        # failed for a reason unrelated to anything it
-                        # checks. /flash0 is built from the same
-                        # tools/sd_root tree on every persona, and /ram0 is
-                        # formatted at boot wherever /flash0 is read-only.
-                        b"cc /flash0/prime.c /ram0/hwtest_cc.elf\n",
-                        b"cat /proc/meminfo\n"):
-                ser.write(cmd)
+            ser.write(b"cat /proc/meminfo\n")
+            ser.flush()
+            out += rp2350.drain(ser, quiet=1.0, deadline=10.0).decode("utf-8", "replace")
+            used = [settled_used(ser)]
+            for _ in range(2):
+                # /flash0, not /sd0: this test is about whether the compiler
+                # hands its arena back, which has nothing to do with storage.
+                # On rp2350-clock /sd0 never mounts (GP10-13 drive the LED
+                # matrix, not an SD bus), and /flash0 is built from the same
+                # tools/sd_root tree on every persona.
+                ser.write(b"cc /flash0/prime.c /ram0/hwtest_cc.elf\n")
                 ser.flush()
                 out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
+                used.append(settled_used(ser))
 
-        used = [int(m) for m in re.findall(r"Pages Used: (\d+)", out)]
         total = re.search(r"Pages Total: (\d+)", out)
-
+        settled = all(u is not None for u in used)
         checks = [
-            ("compile succeeded",  "Build clean" in out),
-            ("two readings taken", len(used) >= 2),
-            ("arena was returned", len(used) >= 2 and used[0] == used[-1]),
+            ("both compiles succeeded", out.count("Build clean") >= 2),
+            ("the page count settled before every reading", settled),
+            ("the second compile returned everything", settled and used[2] == used[1]),
             ("heap is the reclaimed size", total is not None and int(total.group(1)) >= 50),
         ]
         failed = [label for label, ok in checks if not ok]
         if failed:
             return (name, False, f"failed: {', '.join(failed)}; used={used}\n{out[-500:]}")
+        if used[1] != used[0]:
+            return (name, True,
+                    f"heap {used} pages: something else allocated {used[1] - used[0]} "
+                    f"once, between the first two readings; the compiler returned all of "
+                    f"its arena, twice")
         return (name, True,
-                f"heap {used[0]}/{total.group(1)} pages before and after a compile")
+                f"heap {used[0]}/{total.group(1)} pages before and after two compiles")
     except Exception as e:
         return (name, False, str(e))
 

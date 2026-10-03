@@ -74,19 +74,6 @@ attached, find the loop, make it fail the operation; the FAT32 read path now
 returns an end-of-chain on a read error (38.0), which is the shape the rest
 should have.
 
-## C6/C7's exact heap comparison is disturbed by background allocation
-
-**Destination: phase 40, item 7.**
-
-`tests/hw/test_rp2350.py` requires `Pages Used` equal before and after a
-compile. On `rp2350-clock` in the first minute after a flash, while the WLAN
-supervisor was still joining, it differed once in four runs (2026-09-03) --
-consistent with the join allocating in between, inferred from timing.
-
-**Fix:** not a tolerance (that blunts the leak detector): take both readings
-on a demonstrably quiet system, or compare only what the compile owns, which
-`/proc/meminfo`'s peak already separates.
-
 ## The clock display flickers while the radio comes up
 
 **Destination: phase 40, item 8.**
