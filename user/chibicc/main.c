@@ -46,9 +46,17 @@ int chibicc_compile(const char *src_path, const char *dst_elf_path) {
 static int compile_inner(const char *src_path, const char *dst_elf_path) {
 
 
-    int bytes = vfs_read(src_path, src_buf, CHIBICC_BUF_SIZE - 1);
+    int bytes = vfs_read(src_path, src_buf, CHIBICC_BUF_SIZE);
     if (bytes <= 0) {
         printk("[chibicc Error] Failed to read C source file '%s'\n", src_path);
+        return -1;
+    }
+    /* vfs_read() stops at CHIBICC_BUF_SIZE - 1 bytes. A source that filled
+     * them may have been cut short, and the cut-off program used to compile
+     * -- silently, if the cut fell between two functions. */
+    if (bytes >= CHIBICC_BUF_SIZE - 1) {
+        printk("[chibicc Error] '%s' is larger than cc's %d-byte source buffer\n",
+               src_path, CHIBICC_BUF_SIZE - 2);
         return -1;
     }
     src_buf[bytes] = '\0';

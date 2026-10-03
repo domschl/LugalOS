@@ -151,7 +151,11 @@ Token *tokenize(char *p) {
         // Numbers (Decimal & Hexadecimal)
         if (is_digit(*p)) {
             char *start = p;
-            long val = 0;
+            /* Unsigned and capped (phase 40 review): a literal past LONG_MAX
+             * overflowed a signed accumulator, which is undefined. Anything
+             * over 32 bits is refused -- codegen could not load it anyway. */
+            unsigned long val = 0;
+            bool too_big = false;
             if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
                 p += 2;
                 while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
@@ -159,17 +163,23 @@ Token *tokenize(char *p) {
                     if (*p >= '0' && *p <= '9') d = *p - '0';
                     else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
                     else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
-                    val = val * 16 + d;
+                    if (val > 0xFFFFFFFFul) too_big = true;
+                    else val = val * 16 + (unsigned long)d;
                     p++;
                 }
             } else {
                 while (is_digit(*p)) {
-                    val = val * 10 + (*p - '0');
+                    if (val > 0xFFFFFFFFul) too_big = true;
+                    else val = val * 10 + (unsigned long)(*p - '0');
                     p++;
                 }
             }
+            if (too_big || val > 0xFFFFFFFFul) {
+                printk("[chibicc Error] Number literal too large for 32 bits\n");
+                return NULL;
+            }
             cur = cur->next = new_token(TK_NUM, start, p);
-            cur->val = val;
+            cur->val = (long)val;
             continue;
         }
 
