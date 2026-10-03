@@ -208,7 +208,7 @@ static void fat_set_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t value) {
  * fully-freed chain (stops as soon as it reads a 0 entry) and never touches
  * the reserved cluster 0/1 FAT entries, so it's safe to call unconditionally
  * -- e.g. fat32_rmdir() frees a directory's own chain and then calls
- * fat32_remove_file(), which (after the B8 fix below) also frees
+ * fat32_remove_entry_nolock(), which (after the B8 fix below) also frees
  * whatever's left of the same chain. Also guards against a corrupt
  * self-referential chain looping forever. */
 static void fat32_free_chain(fat32_fs_t *fs, uint32_t first_cluster) {
@@ -1215,7 +1215,9 @@ int fat32_mkdir(fat32_fs_t *fs, const char *path) {
 
 typedef struct {
     const char *name83;
+    bool want_dir;      /* the entry must be a directory (rmdir), or must not be */
     bool removed;
+    bool wrong_kind;
 } remove_ctx_t;
 
 static bool remove_file_cb(fat32_fs_t *fs, uint32_t sector_lba,
@@ -1223,8 +1225,12 @@ static bool remove_file_cb(fat32_fs_t *fs, uint32_t sector_lba,
     remove_ctx_t *ctx = (remove_ctx_t *)vctx;
     for (int i = 0; i < count; i++) {
         if (entries[i].name[0] == 0x00) return true;
-        if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+        if (dir_entry_is_skippable(&entries[i])) continue;
         if (memcmp(entries[i].name, ctx->name83, 11) == 0) {
+            if (!(entries[i].attr & FAT32_ATTR_DIRECTORY) != !ctx->want_dir) {
+                ctx->wrong_kind = true;
+                return true;
+            }
             uint32_t clus = ((uint32_t)entries[i].fst_clus_hi << 16) | entries[i].fst_clus_lo;
             if (clus) fat32_free_chain(fs, clus); // B8: free the file's data, don't just orphan it
             entries[i].name[0] = 0xE5; // Mark deleted
@@ -1236,7 +1242,12 @@ static bool remove_file_cb(fat32_fs_t *fs, uint32_t sector_lba,
     return false;
 }
 
-static int fat32_remove_file_nolock(fat32_fs_t *fs, const char *path) {
+/* Removes the entry `path` names, which must be a directory if `want_dir`
+ * and must not be one otherwise. A directory removed as a file used to
+ * succeed with its children still in it: their clusters were orphaned for
+ * good, counted as used and reachable from nowhere (`rm /ram0/dir`). Only
+ * fat32_rmdir(), after checking the directory is empty, removes one. */
+static int fat32_remove_entry_nolock(fat32_fs_t *fs, const char *path, bool want_dir) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
@@ -1245,15 +1256,17 @@ static int fat32_remove_file_nolock(fat32_fs_t *fs, const char *path) {
     char name83[11];
     filename_to_83(target_name, name83);
 
-    remove_ctx_t ctx = { .name83 = name83, .removed = false };
+    remove_ctx_t ctx = { .name83 = name83, .want_dir = want_dir };
     fat32_scan_dir(fs, parent_clus, remove_file_cb, &ctx);
+    if (ctx.wrong_kind && !want_dir)
+        cprintf("rm: '%s' is a directory; use rmdir\n", path);
     return ctx.removed ? 0 : -1;
 }
 
 int fat32_remove_file(fat32_fs_t *fs, const char *path) {
     if (!fs) return -1;
     ylock_acquire(&fs->lock);
-    int r = fat32_remove_file_nolock(fs, path);
+    int r = fat32_remove_entry_nolock(fs, path, false);
     ylock_release(&fs->lock);
     return r;
 }
@@ -1305,11 +1318,11 @@ static int fat32_rmdir_nolock(fat32_fs_t *fs, const char *path) {
     }
 
     /* Free the directory's own cluster chain in the FAT, then mark its
-     * entry in the parent directory deleted (fat32_remove_file() also
+     * entry in the parent directory deleted (fat32_remove_entry_nolock() also
      * frees whatever's left of the chain -- fat32_free_chain() tolerates
      * being pointed at an already-freed chain, see its own comment). */
     fat32_free_chain(fs, dir_clus);
-    return fat32_remove_file(fs, path);
+    return fat32_remove_entry_nolock(fs, path, true);
 }
 
 int fat32_rmdir(fat32_fs_t *fs, const char *path) {

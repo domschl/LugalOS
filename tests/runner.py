@@ -3581,6 +3581,31 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("A Trailing Slash Below A Mount Root Resolves (40.4)",
                         not slash_fail, "\n".join(slash_fail)))
 
+        # Phase 40 review: `rm` on a directory with something in it used to
+        # succeed and orphan its children's clusters -- counted as used,
+        # reachable from nowhere. It is refused now; the free count `df -r`
+        # recounts from the FAT must be back where it started afterwards.
+        def ram0_free() -> str:
+            _, out = session.send_and_expect("df -r", r"/ram0/\s+\d+ free", timeout=6.0)
+            m = re.search(r"/ram0/\s+(\d+) free", out)
+            return m.group(1) if m else "?"
+        free_before = ram0_free()
+        session.send_and_expect("mkdir /ram0/rmd", r"=> ", timeout=4.0)
+        session.send_and_expect("write /ram0/rmd/child data", r"=> ", timeout=4.0)
+        _, rm_dir = session.send_and_expect("rm /ram0/rmd", r"=> ", timeout=4.0)
+        session.send_and_expect("rm /ram0/rmd/child", r"=> ", timeout=4.0)
+        _, rmdir = session.send_and_expect("rmdir /ram0/rmd", r"=> ", timeout=4.0)
+        free_after = ram0_free()
+        rm_fail = []
+        if "is a directory" not in rm_dir or "=> #f" not in rm_dir:
+            rm_fail.append(f"rm removed a non-empty directory:\n{rm_dir[-300:]}")
+        if "=> #t" not in rmdir:
+            rm_fail.append(f"rmdir of the emptied directory failed:\n{rmdir[-300:]}")
+        if free_before == "?" or free_before != free_after:
+            rm_fail.append(f"free clusters {free_before} before, {free_after} after")
+        results.append(("rm Refuses A Directory, And Nothing Leaks (40 review)",
+                        not rm_fail, "\n".join(rm_fail)))
+
         # The path is policy, readable as a file like everything else, and
         # settable at runtime. Reordering must change where a name resolves --
         # asserted the same way, by the answer moving back to /flash0.
