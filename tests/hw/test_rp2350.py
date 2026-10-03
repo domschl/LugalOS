@@ -1946,106 +1946,95 @@ def test_port_binding(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
-def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
-    """K3 on real silicon: the generated pin map matches physical GP0-GP13/16-21/25.
+def find_build_for(build_id: str) -> "Path | None":
+    """The local build directory whose lugalos_build_id.h is `build_id`: every
+    build/*/ of this tree, then any directory in $LUGALOS_EXTRA_BUILDS
+    (colon-separated) -- a build of an older commit, made to check a board
+    that is still running it."""
+    import os
+    dirs = sorted((rp2350.REPO_ROOT / "build").glob("*/"))
+    dirs += [Path(d) for d in os.environ.get("LUGALOS_EXTRA_BUILDS", "").split(":") if d]
+    for d in dirs:
+        h = d / "lugalos_build_id.h"
+        try:
+            m = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"', h.read_text())
+        except OSError:
+            continue
+        if m and m.group(1) == build_id:
+            return d
+    return None
 
-    K2 (plan/phase7_kernel_config.md) replaced the hand-typed GPIO literals in
-    drivers/uart_rp2350.c and drivers/spisd_rp2350.c with values generated from
-    cmake/board-rp2350.cmake. The build matrix and QEMU suite can prove the
-    generator produces *a* header and that the board still boots -- neither
-    can prove the numbers are still the *right* ones, since QEMU has no pin
-    model and this board's own hardware suite talks to it over USB CDC, which
-    uses no GPIO pins at all (see plan/phase7_kernel_config.md's Verification
-    section). This is the first automated check that would catch a wrong
-    generated value on its own, independent of whether the pin it names is
-    otherwise exercised.
+
+def parse_config_header(path: Path) -> dict[str, str]:
+    """`#define CONFIG_X value` lines of a generated lugalos_config.h, by X."""
+    out = {}
+    for m in re.finditer(r"^#define\s+CONFIG_(\w+)\s+(.+?)\s*$", path.read_text(), re.M):
+        out[m.group(1)] = m.group(2)
+    return out
+
+
+def same_value(a: str, b: str) -> bool:
+    """0x40070000 against 1074200576, "x" against x: equal as numbers if both
+    are numbers, else as text without quotes."""
+    try:
+        return int(a, 0) == int(b, 0)
+    except ValueError:
+        return a.strip('"') == b.strip('"')
+
+
+def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """K3 on real silicon: /proc/config reports what the board was built with.
+
+    K2 (plan/phase7_kernel_config.md) generates the pin map and feature flags
+    from cmake/board-*.cmake into lugalos_config.h; /proc/config reports what
+    an image was compiled with. This compares the two -- every line the board
+    reports against the generated header of the build it is running, found by
+    matching /proc/buildid against each local build's lugalos_build_id.h.
+
+    It used to compare against a hand-maintained copy of the board files in
+    this function, gated per feature and recognising the LCD-7 by its panel
+    pins (phase 40, item 6): a persona nobody added to the table was checked
+    against nothing, and a pin changed in cmake/ but not here failed a board
+    whose pins were right. Now no persona needs adding, and the expected
+    values are the build's own.
+
+    A board running a build this tree does not have is SKIPPED with the id it
+    reports: flash it, or build that commit and name the directory in
+    $LUGALOS_EXTRA_BUILDS.
     """
-    name = "K3: /proc/config reports the pins actually compiled in"
+    name = "K3: /proc/config matches the config of the build the board runs"
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
             time.sleep(0.3)
             ser.reset_input_buffer()
+            ser.write(b"cat /proc/buildid\n")
+            ser.flush()
+            bid = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
             ser.write(b"cat /proc/config\n")
             ser.flush()
             out = rp2350.drain(ser, quiet=0.8, deadline=10.0).decode("utf-8", "replace")
 
-        # Split by what a persona actually builds. The single flat table this
-        # replaces was the chess persona's pin map, so on rp2350-clock it
-        # failed on ten keys that are correctly absent -- SPI1 (no SD bus:
-        # GP10-13 are the LED matrix's shift registers there), ST7735, TM1638
-        # -- and on two more whose values are legitimately different per
-        # board. That is the test reporting "wrong pins" about a board whose
-        # pins are right.
-        # The RP2350-LCD-7 (phase 36) is the one persona whose shared pins
-        # differ: GP0 is its PSRAM chip select, so the console UART is on
-        # GP16/17, and the SD card's CS is GP15. It is recognised by its
-        # panel pins, which only it reports.
-        lcd7 = re.search(r"^LCD_PCLK_GPIO=", out, re.M) is not None
-        expected = {
-            # Every RP2350 persona has these; the UART pins per board above.
-            "PALLOC_MAX_PAGES": "128",
-            "UART0_BASE": "0x40070000",
-            "UART0_TX_GPIO": "16" if lcd7 else "0",
-            "UART0_RX_GPIO": "17" if lcd7 else "1",
-        }
-        if lcd7:
-            expected.update({
-                "LCD_DE_GPIO": "20", "LCD_PCLK_GPIO": "23", "LCD_DATA0_GPIO": "24",
-                "LCD_RST_GPIO": "41", "LCD_BL_GPIO": "44", "LCD_EN_GPIO": "45",
-                "PIOUSB_DP_GPIO": "42", "PIOUSB_DM_GPIO": "43",
-            })
-        # Parsed from the reading this test already took, rather than via
-        # rp2350.feature_enabled(): that would reopen the console to fetch a
-        # file whose contents are sitting in `out`. It also keeps the check
-        # honest -- the flags and the pins are then read from the same
-        # snapshot, so they cannot disagree about which board this is.
-        def built_with(flag: str) -> bool:
-            m = re.search(rf"^{flag}=(\d+)", out, re.M)
-            return m is None or m.group(1) != "0"
+        m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", bid.replace("cat /proc/buildid", ""))
+        if not m:
+            return (name, True, "SKIPPED: the board reports no /proc/buildid")
+        build_dir = find_build_for(m.group(2))
+        if build_dir is None:
+            return (name, True,
+                    f"SKIPPED: the board runs build {m.group(2)}, which no local build "
+                    "has -- flash it, or set LUGALOS_EXTRA_BUILDS to a build of that commit")
+        want = parse_config_header(build_dir / "lugalos_config.h")
 
-        if built_with("ENABLE_SPISD"):
-            expected.update({
-                "SPI1_BASE": "0x40088000",
-                "SPI1_SCK_GPIO": "10",
-                "SPI1_MOSI_GPIO": "11",
-                "SPI1_MISO_GPIO": "12",
-                "SPI1_CS_GPIO": "15" if lcd7 else "13",
-            })
-        if built_with("ENABLE_ST7735"):
-            expected.update({
-                "SPI0_BASE": "0x40080000",
-                "ST7735_SCK_GPIO": "18",
-                "ST7735_MOSI_GPIO": "19",
-                "ST7735_CS_GPIO": "17",
-                "ST7735_DC_GPIO": "20",
-                "ST7735_RST_GPIO": "21",
-            })
-        if built_with("ENABLE_TM1638"):
-            expected.update({
-                "TM1638_STB_GPIO": "6",
-                "TM1638_CLK_GPIO": "7",
-                "TM1638_DIO_GPIO": "8",
-            })
-        checks = [
-            (f"{key}={val}", re.search(rf"{key}={re.escape(val)}\b", out) is not None)
-            for key, val in expected.items()
-        ]
-        # The LED pin is a per-board fact (25/16 on chess, 9 on the Pico 2 W
-        # clock, which has no plain onboard LED at all -- its is on the
-        # wireless chip). Its *value* cannot be asserted without knowing the
-        # persona, but its presence can: K3 is about /proc/config reporting
-        # the pins that were compiled in, and a build that reported none
-        # would be the regression worth catching.
-        # The RP2350-LCD-7 has no user LED at all, so there it is the panel
-        # pins above that prove the pin map is being reported.
-        if not lcd7:
-            checks.append(("an LED pin is reported",
-                           re.search(r"LED_(ONBOARD|EXT)_GPIO=\d+", out) is not None))
-        failed = [label for label, ok in checks if not ok]
-        if failed:
-            return (name, False, f"failed: {', '.join(failed)}\n{out[-800:]}")
-        return (name, True, f"{len(checks)} fields matched")
+        reported = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)\s*$", out, re.M))
+        if len(reported) < 4:
+            return (name, False, f"/proc/config was not readable:\n{out[-600:]}")
+        wrong = [f"{k}={v} (built {want[k]})" for k, v in reported.items()
+                 if k in want and not same_value(v, want[k])]
+        unknown = [k for k in reported if k not in want]
+        if wrong or unknown:
+            detail = "; ".join(wrong + [f"{k} not in {build_dir.name}'s config" for k in unknown])
+            return (name, False, detail)
+        return (name, True, f"{len(reported)} values match {build_dir.name}/lugalos_config.h")
     except Exception as e:
         return (name, False, str(e))
 

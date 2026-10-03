@@ -71,19 +71,6 @@ attached, find the loop, make it fail the operation; the FAT32 read path now
 returns an end-of-chain on a read error (38.0), which is the shape the rest
 should have.
 
-## `K3` checks pin values from a table, not from the build
-
-**Destination: phase 40, item 6.**
-
-`test_config_pins` (`tests/hw/test_rp2350.py`) carries a hand-maintained
-copy of `cmake/board-*.cmake`, gated per feature, with a third value set for
-the LCD-7 recognised by its panel pins. A persona nobody adds to the table is
-checked against nothing.
-
-**Fix:** compare `/proc/config` against the `lugalos_config.h` of the build
-the board was flashed from, found by matching `/proc/buildid` against each
-`build/rp2350*/`. Needs two personas on the bench to verify.
-
 ## C6/C7's exact heap comparison is disturbed by background allocation
 
 **Destination: phase 40, item 7.**
