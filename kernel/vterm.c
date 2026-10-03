@@ -154,6 +154,9 @@ void vterm_destroy(int id) {
         return;
     }
 
+    char reset_title[VTERM_TITLE_MAX];
+    bool title_change = false;
+
     /* If closing the active foreground terminal, switch focus to root vterm 0 */
     if (g_active_vterm == id) {
         g_vterms[0].active = true;
@@ -162,7 +165,9 @@ void vterm_destroy(int id) {
             vtterm_set_hidden(&g_vterms[0].vt, false);
             vtterm_repaint(&g_vterms[0].vt);
         }
-        console_set_title(g_vterms[0].title);
+        strncpy(reset_title, g_vterms[0].title, sizeof(reset_title) - 1);
+        reset_title[sizeof(reset_title) - 1] = '\0';
+        title_change = true;
     }
 
     if (vt->shadow) {
@@ -178,6 +183,9 @@ void vterm_destroy(int id) {
     vt->owner_pid = -1;
 
     ylock_release(&g_vterm_mgr_lock);
+    if (title_change) {
+        console_set_title(reset_title);
+    }
 }
 
 bool vterm_set_active(int id) {
@@ -212,8 +220,12 @@ bool vterm_set_active(int id) {
         vtterm_repaint(&target->vt);
     }
 
-    console_set_title(target->title);
+    char active_title[VTERM_TITLE_MAX];
+    strncpy(active_title, target->title, sizeof(active_title) - 1);
+    active_title[sizeof(active_title) - 1] = '\0';
     ylock_release(&g_vterm_mgr_lock);
+
+    console_set_title(active_title);
     return true;
 }
 
@@ -329,9 +341,6 @@ int shell_spawn_terminal(const char *title) {
 
     task_set_vterm(pid, vt->id);
     vt->owner_pid = pid;
-
-    /* Focus new terminal window */
-    vterm_set_active(vt->id);
     return vt->id;
 }
 

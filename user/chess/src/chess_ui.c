@@ -208,6 +208,10 @@ static void chess_session_end(void) {
         g_chess_scratch_pages = 0;
     }
     g_chess_ready = false;
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    uint8_t req[2] = { 'K', 0 }, reply[SCREEN_REPLY_LEN];
+    (void)console_canvas(req, 2, reply);
+#endif
 }
 
 /* search.c calls both of these (`extern void ...` at each call site) but

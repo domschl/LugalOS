@@ -3210,8 +3210,8 @@ static void cmd_vterm(const char *cmd_line) {
             }
             uint8_t reply[SCREEN_REPLY_LEN];
             (void)console_canvas(req, req_len, reply);
-            vterm_set_active(vid);
             cprintf("Spawned terminal on vterm %d\n", vid);
+            vterm_set_active(vid);
         } else {
             cprintf("vterm: failed to spawn terminal\n");
         }

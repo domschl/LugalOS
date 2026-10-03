@@ -208,7 +208,9 @@ void console_putc(char c) {
         if (vt->active) {
             console_emit(g_console_putc, c);
         } else {
+#if defined(CONFIG_LCD_PCLK_GPIO)
             lcd7_screen_putc_vterm(vt->id, c);
+#endif
         }
         return;
     }

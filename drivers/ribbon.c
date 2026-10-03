@@ -54,7 +54,8 @@ LCDTERM_UTEXT void ribbon_layout(ribbon_t *r) {
     for (uint8_t i = 0; i < r->count; i++) {
         ribbon_win_t *w = &r->wins[i];
         uint8_t cols = w->cols;
-        if (cols < 20) cols = 20;
+        if (w->type == RIBBON_WIN_TERM && cols < 20) cols = 20;
+        else if (cols < 1) cols = 1;
         uint8_t max_cols = (uint8_t)(r->screen_w / 8u - 2u);
         if (cols > max_cols) cols = max_cols;
         w->cols = cols;
