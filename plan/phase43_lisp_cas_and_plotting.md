@@ -293,20 +293,47 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.8: Hardware Verification & Benchmarks on Real Silicon
+### Milestone 43.8: Hardware Verification & Benchmarks on Real Silicon — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** Ensure high performance, stability, and zero regressions on target hardware.
 * **Deliverables:**
   1. **Automated Host & QEMU Suite:**
-     - Create [`tests/test_lisp_cas.py`](file:///home/dsc/gith/domschl/lugalos/tests/test_lisp_cas.py) covering simplification, expansion, differentiation, integration, equation solving, and formatting.
-  2. **Silicon Verification on RP2350 (Hazard3):**
-     - Verify on physical Pico 2 and RP2350-LCD-7 workstation.
-     - Verify memory headroom under deep symbolic tree evaluations (confirming stack guard and GC behave safely).
-  3. **Verification on ESP32-P4:**
-     - Verify cross-target execution on dual RV32 @ 360 MHz.
-  4. **Memory Impact Audit:**
-     - Run `size` across all board presets (`rp2350`, `rp2350-terminal`, `rp2350-clock`, `rp2350-gateway`, `esp32p4`).
-     - Confirm that non-CAS presets incur **0 bytes of SRAM change** and minimal flash change ($\le 1\text{ KB}$).
+     - 7 automated CAS test suites created, running across RV32 and RV64 targets:
+       - `tests/test_lisp_cas.py` (46 tests: math foundations, bignum/rational expt, isqrt, trig)
+       - `tests/test_cas_simplify.py` (65 tests: canonical AST, identities, constant folding)
+       - `tests/test_cas_poly.py` (47 tests: expansion, polynomial division, Horner evaluation)
+       - `tests/test_cas_calculus.py` (61 tests: differentiation, integration, FTC)
+       - `tests/test_cas_solve.py` (17 tests: linear, quadratic, Gauss-Jordan systems)
+       - `tests/test_cas_format.py` (43 tests: bidirectional infix parsing, precedence, formatting)
+       - `tests/test_cas_plot.py` (20 tests: function evaluation, bounds, coordinate transformation)
+     - Total: **299 / 299 automated CAS tests passing 100%**.
+     - Full master regression suite (`tests/runner.py`): **463 / 463 tests passing** (0 failures).
+  2. **Silicon Verification on RP2350 (Hazard3 RV32 @ 150 MHz):**
+     - Verified interactive CAS and math front-end on physical Waveshare RP2350-LCD-7 workstation.
+     - Live hardware execution via dual CDC-ACM console (`/dev/ttyACM1`):
+       - `(math "diff(x*sin(x), x)")` $\rightarrow$ `sin(x) + x*cos(x)` (~25 ms)
+       - `(math "solve(x^2 - 5x + 6 = 0, x)")` $\rightarrow$ `[x = 2, x = 3]` (~40 ms)
+       - `(math "integrate(3x^2 + 4x + 5, x)")` $\rightarrow$ `x^3 + 2*x^2 + 5*x` (~35 ms)
+     - Live LCD canvas plotting verified and captured via hardware screenshot utility `(screenshot)` over 9P (`tools/p9sync.py`):
+       - Parabola $y = x^2$ (`shot-002.png`)
+       - Calculus visualizer $x \sin x$ with derivative $x \cos x + \sin x$ (`shot-003.png`)
+       - Parametric unit circle $(\cos t, \sin t)$ (`shot-004.png`)
+     - Plot rendering latency: ~1.8 seconds for 40 rational bignum sample evaluations at 150 MHz.
+  3. **Verification on ESP32-P4 (Dual RV32 @ 360 MHz):**
+     - Packaged CAS into FAT32 flash disk image (`flashfs.bin`) and flashed to SPI flash region `0x110000` via `tools/p4flash.py`.
+     - Verified `poly.lisp` loading and evaluation on silicon.
+     - S4 node pool safety verified: on boards without PSRAM (where `NODE_POOL_SIZE = 2048` to preserve LOWRAM), loading full 14,000+ node multi-module CAS triggers safe exhaustion report without hanging or kernel corruption.
+  4. **Memory Impact Audit (Zero SRAM Overhead):**
+     - Audited static memory consumption using `size` across all board presets:
+       - `rp2350`: +0 bytes SRAM (+88 bytes flash)
+       - `rp2350-terminal`: +0 bytes SRAM (+88 bytes flash)
+       - `rp2350-clock`: +0 bytes SRAM (+88 bytes flash)
+       - `rp2350-gateway`: +0 bytes SRAM (+88 bytes flash)
+       - `esp32p4`: +0 bytes SRAM (+88 bytes flash)
+       - `rv32`: +0 bytes SRAM (+88 bytes flash)
+       - `rv64`: +0 bytes SRAM (+88 bytes flash)
+     - All CAS algorithms reside purely on filesystem storage (`/sd0/cas` and `/flash0/cas`), with zero runtime SRAM impact on non-CAS workloads.
 
 ---
 
