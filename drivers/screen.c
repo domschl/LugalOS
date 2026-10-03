@@ -270,23 +270,31 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             scr->cy1 = (int16_t)y1;
             int cw_w = (int)(scr->cx1 - scr->cx0 - 1);
             int cw_h = (int)(scr->cy1 - scr->cy0 - 17);
-            if (cw_w < 0) cw_w = 0;
+            /* canvas1_t's origin is unsigned: a tile that is not wholly on
+             * the panel gets no drawable area until it slides into view. */
+            if (cw_w < 0 || cx0 < 0 || cx1 >= (int32_t)scr->cv.w) cw_w = 0;
             if (cw_h < 0) cw_h = 0;
-            canvas1_window(&scr->cc, &scr->cv, scr->cx0 + 1, scr->cy0 + 17,
-                           (unsigned)cw_w, (unsigned)cw_h);
+            if (cw_w == 0 || cw_h == 0) {
+                canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
+            } else {
+                canvas1_window(&scr->cc, &scr->cv, scr->cx0 + 1, scr->cy0 + 17,
+                               (unsigned)cw_w, (unsigned)cw_h);
+            }
         } else {
             scr->cx0 = scr->cx1 = 0;
             scr->cy0 = scr->cy1 = 0;
             canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
         }
 
+        bool term_visible = (term_idx >= 0 && scr->fx0 >= 0 &&
+                             scr->fx1 < (int16_t)scr->cv.w);
+        if (!term_visible) { col0 = 1; cols = 1; }
         fbtext_t text;
         fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)col0, scr->cv.stride,
                     (unsigned)cols, rows);
         text.xbyte = (uint16_t)col0;
         text.whole_rows = (term_idx >= 0 && cols == scr->full_cols && col0 == 1);
         vtterm_resize(&scr->vt, &text);
-        bool term_visible = (term_idx >= 0 && scr->fx1 >= 0 && scr->fx0 < (int16_t)scr->cv.w);
         vtterm_set_hidden(&scr->vt, !term_visible);
         return true;
     }

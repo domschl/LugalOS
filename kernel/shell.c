@@ -19,6 +19,7 @@
 #include "kernel/time.h"
 #include "kernel/discipline.h"
 #include "kernel/vterm.h"
+#include "drivers/screen.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
@@ -3201,6 +3202,9 @@ static void cmd_vterm(const char *cmd_line) {
         while (*t == ' ') t++;
         int vid = shell_spawn_terminal(*t ? t : NULL);
         if (vid >= 0) {
+            uint8_t req[3] = { 'N', (uint8_t)vid, 48 }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 3, reply);
+            vterm_set_active(vid);
             cprintf("Spawned terminal on vterm %d\n", vid);
         } else {
             cprintf("vterm: failed to spawn terminal\n");
@@ -3220,6 +3224,8 @@ static void cmd_vterm(const char *cmd_line) {
         }
         cprintf("Switched to vterm %d\n", id);
         vterm_set_active(id);
+        uint8_t req[2] = { 'J', (uint8_t)id }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
         return;
     }
 
