@@ -3220,6 +3220,28 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("CAS Symbolic Calculus differentiation, integration, FTC (Phase 43.4)",
                         ok, log if not ok else ""))
 
+        # Phase 43.5: Exact Equation & System Solving (cas/solve.lisp)
+        cmd_p43_solve = (
+            "lisp\n"
+            '(load "/sd0/cas/simplify.lisp")\n'
+            '(load "/sd0/cas/poly.lisp")\n'
+            '(load "/sd0/cas/calculus.lisp")\n'
+            '(load "/sd0/cas/solve.lisp")\n'
+            "(solve '(= (* 3 x) 2) 'x)\n"
+            "(solve '(= (+ (^ x 2) (* -5 x) 6) 0) 'x)\n"
+            "(solve-system '((= (+ (* 2 x) y) 5) (= (- x (* 3 y)) -8)) '(x y))\n"
+            '(display "P43_SOLVE_OK\\n")\n'
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p43_solve, r"P43_SOLVE_OK", timeout=20.0)
+        ok = ok and (
+            "=> (x . 2/3)" in log and
+            "=> ((x . 2) (x . 3))" in log and
+            "=> ((x . 1) (y . 3))" in log
+        )
+        results.append(("CAS Equation & Linear System Solver (Phase 43.5)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"

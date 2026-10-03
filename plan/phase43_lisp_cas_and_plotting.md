@@ -209,8 +209,10 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.5: Exact Equation & System Solving (`cas/solve.lisp`)
+### Milestone 43.5: Exact Equation & System Solving (`cas/solve.lisp`) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03). `tests/test_cas_solve.py`: 17/17 on RV32 and RV64; integrated into `tests/runner.py`; verified on RP2350-terminal silicon (linear, quadratic, 2x2 system; the 3x3 reply was cut off by the probe's read timing, but passes on QEMU).
+* **Notes:** Also provides `solve-linear`, `solve-quadratic` (double roots, negative discriminants via `i`, symbolic discriminants), pure `a*x^n + c` roots, and Gauss-Jordan with row pivoting (`singular` is returned when there is no unique solution; `none`/`all` for contradictory/identity linear equations). `map` is single-list only in this engine, so row operations use explicit loops.
 * **Goal:** Solve algebraic equations analytically.
 * **Deliverables:**
   1. **Linear Equations:**
