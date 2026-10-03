@@ -363,6 +363,32 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
     }
 }
 
+/* Splits `path` into wname[] components in `out` (each NUL-terminated),
+ * skipping empty ones. Returns the count, or -1 when the path cannot be
+ * walked as written: more than P9_MAX_WALK_ELEM components, or a component
+ * of P9_MAX_NAME_LEN bytes or more (phase 40 review).
+ *
+ * It used to truncate instead, in three ways at once: the path to 127 bytes,
+ * the walk to 16 components, and each name with strncpy() into an
+ * uninitialised array -- which left a 31-byte name without its terminator,
+ * so serialising it ran on into the next name. Each produced a walk to some
+ * other path than the one asked for. */
+static int p9_split_path(const char *path, char out[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN]) {
+    int n = 0;
+    while (*path) {
+        while (*path == '/') path++;
+        if (!*path) break;
+        size_t len = 0;
+        while (path[len] && path[len] != '/') len++;
+        if (n >= P9_MAX_WALK_ELEM || len >= P9_MAX_NAME_LEN) return -1;
+        memcpy(out[n], path, len);
+        out[n][len] = '\0';
+        n++;
+        path += len;
+    }
+    return n;
+}
+
 int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max) {
     if (!link || !link->poll || !link->send_frame || !link->recv_frame || !path) return -1;
     while (*path == '/') path++;
@@ -411,21 +437,9 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     req.tag = 3;
     req.fid = 1;
     req.newfid = 2;
-    char pathcopy[128];
-    strncpy(pathcopy, path, sizeof(pathcopy) - 1);
-    pathcopy[sizeof(pathcopy) - 1] = '\0';
-    uint16_t n = 0;
-    char *tok = pathcopy;
-    while (*tok && n < P9_MAX_WALK_ELEM) {
-        char *slash = strchr(tok, '/');
-        if (slash) *slash = '\0';
-        if (*tok) {
-            strncpy(req.wname[n], tok, P9_MAX_NAME_LEN - 1);
-            n++;
-        }
-        if (!slash) break;
-        tok = slash + 1;
-    }
+    int split = p9_split_path(path, req.wname);
+    if (split < 0) { scratch_release(&sc); return -1; }
+    uint16_t n = (uint16_t)split;
     req.nwname = n;
     if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RWALK || resp.nwqid != n) { scratch_release(&sc); return -1; }
 
@@ -666,46 +680,25 @@ void p9_remote_mount_close(p9_remote_mount_t *m) {
     memset(m, 0, sizeof(*m));
 }
 
-/* Splits `path` into up to P9_MAX_WALK_ELEM wname[] components in `out`
- * (used by open/remove/mkdir below, all of which need the same
- * component-splitting logic p9_link_cat() above already has inline --
- * pulled out here since this section needs it three times). */
-static uint16_t p9_remote_split_path(const char *path, char out[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN]) {
-    char pathcopy[128];
-    strncpy(pathcopy, path, sizeof(pathcopy) - 1);
-    pathcopy[sizeof(pathcopy) - 1] = '\0';
-
-    uint16_t n = 0;
-    char *tok = pathcopy;
-    while (*tok && n < P9_MAX_WALK_ELEM) {
-        char *slash = strchr(tok, '/');
-        if (slash) *slash = '\0';
-        if (*tok) {
-            strncpy(out[n], tok, P9_MAX_NAME_LEN - 1);
-            n++;
-        }
-        if (!slash) break;
-        tok = slash + 1;
-    }
-    return n;
-}
-
 int p9_remote_open(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, bool create, uint32_t *out_fid, bool *out_is_dir) {
     if (!mount || !mount->in_use || !path || !out_fid) return -1;
     while (*path == '/') path++;
 
     char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    uint16_t n = p9_remote_split_path(path, wnames);
+    int split = p9_split_path(path, wnames);
+    if (split < 0) return -1;
+    uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
     p9_msg_t twalk, resp;
     memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = n;
-    memcpy(twalk.wname, wnames, sizeof(wnames));
+    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0) return -1;
 
     bool is_dir = true;
@@ -918,18 +911,20 @@ int p9_remote_remove(p9_remote_mount_t *mount, const char *path) {
     while (*path == '/') path++;
 
     char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    uint16_t n = p9_remote_split_path(path, wnames);
-    if (n == 0) return -1; // refuse to remove the mount root
+    int split = p9_split_path(path, wnames);
+    if (split <= 0) return -1; // a path too long to walk, or the mount root
+    uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
     p9_msg_t twalk, resp;
     memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = n;
-    memcpy(twalk.wname, wnames, sizeof(wnames));
+    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0 || resp.type != P9_RWALK || resp.nwqid != n) {
         if (resp.type == P9_RWALK) p9_remote_close(mount, fid);
         return -1;
@@ -949,18 +944,20 @@ int p9_remote_mkdir(p9_remote_mount_t *mount, const char *path) {
     while (*path == '/') path++;
 
     char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    uint16_t n = p9_remote_split_path(path, wnames);
-    if (n == 0) return -1;
+    int split = p9_split_path(path, wnames);
+    if (split <= 0) return -1;
+    uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
     p9_msg_t twalk, resp;
     memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = (uint16_t)(n - 1); // walk to the parent only
-    memcpy(twalk.wname, wnames, sizeof(wnames));
+    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0 || resp.type != P9_RWALK || resp.nwqid != n - 1) {
         if (resp.type == P9_RWALK) p9_remote_close(mount, fid);
         return -1;
