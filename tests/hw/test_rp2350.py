@@ -1972,21 +1972,27 @@ def test_port_binding(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
-def find_build_for(build_id: str) -> "Path | None":
-    """The local build directory whose lugalos_build_id.h is `build_id`: every
-    build/*/ of this tree, then any directory in $LUGALOS_EXTRA_BUILDS
-    (colon-separated) -- a build of an older commit, made to check a board
-    that is still running it."""
+def find_build_for(build_id: str, persona: str) -> "Path | None":
+    """The local build directory whose lugalos_build_id.h is `build_id` and
+    whose lugalos_config.h is persona `persona`: every build/*/ of this tree,
+    then any directory in $LUGALOS_EXTRA_BUILDS (colon-separated) -- a build
+    of an older commit, made to check a board that is still running it.
+
+    Both, because a build id names a commit, not a persona: every build of
+    one tree carries the same id, and the first version of this matched
+    build/rv32 for an LCD-7 and reported twenty pins "wrong"."""
     import os
     dirs = sorted((rp2350.REPO_ROOT / "build").glob("*/"))
     dirs += [Path(d) for d in os.environ.get("LUGALOS_EXTRA_BUILDS", "").split(":") if d]
     for d in dirs:
-        h = d / "lugalos_build_id.h"
         try:
-            m = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"', h.read_text())
+            bid = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"',
+                            (d / "lugalos_build_id.h").read_text())
+            per = re.search(r'#define\s+CONFIG_NODE_PERSONA\s+"([^"]+)"',
+                            (d / "lugalos_config.h").read_text())
         except OSError:
             continue
-        if m and m.group(1) == build_id:
+        if bid and per and bid.group(1) == build_id and per.group(1) == persona:
             return d
     return None
 
@@ -2040,15 +2046,21 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ser.write(b"cat /proc/config\n")
             ser.flush()
             out = rp2350.drain(ser, quiet=0.8, deadline=10.0).decode("utf-8", "replace")
+            ser.write(b"cat /proc/node\n")
+            ser.flush()
+            node = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
 
         m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", bid.replace("cat /proc/buildid", ""))
         if not m:
             return (name, True, "SKIPPED: the board reports no /proc/buildid")
-        build_dir = find_build_for(m.group(2))
+        pm = re.search(r"^persona: (\S+)", node, re.M)
+        if not pm:
+            return (name, False, f"/proc/node reports no persona:\n{node[-400:]}")
+        build_dir = find_build_for(m.group(2), pm.group(1))
         if build_dir is None:
             return (name, True,
-                    f"SKIPPED: the board runs build {m.group(2)}, which no local build "
-                    "has -- flash it, or set LUGALOS_EXTRA_BUILDS to a build of that commit")
+                    f"SKIPPED: the board runs {pm.group(1)} build {m.group(2)}, which no local "
+                    "build is -- flash it, or set LUGALOS_EXTRA_BUILDS to a build of that commit")
         want = parse_config_header(build_dir / "lugalos_config.h")
 
         reported = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)\s*$", out, re.M))
