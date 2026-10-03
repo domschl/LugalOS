@@ -89,18 +89,6 @@ attached, find the loop, make it fail the operation; the FAT32 read path now
 returns an end-of-chain on a read error (38.0), which is the shape the rest
 should have.
 
-## A trailing slash breaks path resolution below a mount root
-
-**Destination: phase 40, item 4.**
-
-`ls /flash0/system/` → "path 'system/' not found"; `ls /flash0/system` and
-`ls /flash0/` work (RP2350, 2026-09-03). It once made a preflight probe
-report a healthy board as stale.
-
-**Fix:** strip a trailing separator from the relative part in the resolver,
-as the mount-root case already does (`fs/vfs_server.c`), and check `cat`,
-`cp` and the 9P walk, which share it.
-
 ## `cc` searches only /ram0 for a relative `#include`
 
 **Destination: phase 40, item 5.**

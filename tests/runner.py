@@ -3296,6 +3296,24 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                                           r"UPROG_TEXT_OK", timeout=8.0)
         results.append(("A Full Path Bypasses The Search Path (C1)", ok, log if not ok else ""))
 
+        # Phase 40, item 4: a trailing slash below a mount root. `ls
+        # /flash0/system/` used to answer "path 'system/' not found" while
+        # the same path without the slash worked -- the FAT32 walker left an
+        # empty final component. A slash after a *file* name still fails:
+        # it asks for a directory, and a file is not one.
+        _, ls_slash = session.send_and_expect("ls /flash0/system/", r"lsh>", timeout=5.0)
+        _, ls_deep = session.send_and_expect("ls /ram0/system/bin/", r"lsh>", timeout=5.0)
+        _, cat_file = session.send_and_expect("cat /flash0/system/etc/init.lisp/", r"lsh>", timeout=5.0)
+        slash_fail = []
+        if "not found" in ls_slash or not re.search(r"BIN\s.*<DIR>", ls_slash):
+            slash_fail.append(f"ls /flash0/system/ did not list:\n{ls_slash[-400:]}")
+        if "UHELLO" not in ls_deep:
+            slash_fail.append(f"ls /ram0/system/bin/ did not list:\n{ls_deep[-400:]}")
+        if "cannot read" not in cat_file:
+            slash_fail.append(f"cat of a file with a trailing slash succeeded:\n{cat_file[-400:]}")
+        results.append(("A Trailing Slash Below A Mount Root Resolves (40.4)",
+                        not slash_fail, "\n".join(slash_fail)))
+
         # The path is policy, readable as a file like everything else, and
         # settable at runtime. Reordering must change where a name resolves --
         # asserted the same way, by the answer moving back to /flash0.

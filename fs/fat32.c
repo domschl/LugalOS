@@ -342,8 +342,18 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
     if (!fs || !path) return 0;
     while (*path == '/') path++;
 
+    /* A path that does not fit is refused, not truncated: a cut-off path
+     * names a different file, which an operation would then act on. */
     char path_copy[256];
+    if (strlen(path) >= sizeof(path_copy)) return 0;
     safe_strncpy(path_copy, path, sizeof(path_copy));
+
+    /* "system/" names "system" (phase 40, item 4). The trailing separators
+     * used to leave an empty final component, so `ls /flash0/system/` said
+     * "not found" while `ls /flash0/system` worked. Whether the name must
+     * then be a directory is the caller's check (fat32_find_file()). */
+    size_t len = strlen(path_copy);
+    while (len > 0 && path_copy[len - 1] == '/') path_copy[--len] = '\0';
 
     uint32_t cur_clus = fs->root_dir_cluster;
     char *curr = path_copy;
@@ -586,9 +596,17 @@ static int fat32_find_file_nolock(fat32_fs_t *fs, const char *path, fat32_dir_en
     char name83[11];
     filename_to_83(target_name, name83);
 
-    find_file_ctx_t ctx = { .name83 = name83, .out_entry = out_entry, .found = false };
+    fat32_dir_entry_t entry;
+    find_file_ctx_t ctx = { .name83 = name83, .out_entry = &entry, .found = false };
     fat32_scan_dir(fs, parent_clus, find_file_cb, &ctx);
-    return ctx.found ? 0 : -1;
+    if (!ctx.found) return -1;
+
+    /* "file.txt/" is not file.txt: a trailing separator asks for a directory. */
+    size_t len = strlen(path);
+    if (path[len - 1] == '/' && !(entry.attr & FAT32_ATTR_DIRECTORY)) return -1;
+
+    if (out_entry) *out_entry = entry;
+    return 0;
 }
 
 int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry) {
@@ -856,6 +874,12 @@ static int fat32_update_entry(fat32_fs_t *fs, const char *path, uint32_t new_siz
 
 static int fat32_write_file_nolock(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size) {
     if (!fs || !path || !fs->dev || !fs->dev->read_blocks || !fs->dev->write_blocks) return -1;
+    size_t plen = strlen(path);
+    if (plen > 0 && path[plen - 1] == '/') {
+        printk("[FAT32] Device '%s': '%s' names a directory, not a file\n",
+               fs->dev->name ? fs->dev->name : "unknown", path);
+        return -1;
+    }
     char target_name[64];
     uint32_t parent_clus = fat32_get_parent_cluster(fs, path, target_name);
     if (parent_clus == 0 || target_name[0] == '\0') {
