@@ -21,6 +21,7 @@
 #include "drivers/enc28j60.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include "kernel/identity.h"
@@ -222,18 +223,15 @@
  * unclaimed latch directly). Without serialising a whole register sequence
  * -- not just one SPI transfer -- the two interleave mid-operation: one
  * context sets EWRPT for a write, the scheduler preempts, the other reads a
- * pointer register expecting its own prior write to still be in effect. */
-static volatile bool g_busy;
+ * pointer register expecting its own prior write to still be in effect.
+ *
+ * A ylock_t (phase 40, item 2), for the reasons drivers/cyw43_rp2350.c's
+ * bus lock is one: re-entrant for its owner, and an edge in the wait-for
+ * graph, where the flag and yield loop it replaces was neither. */
+static ylock_t g_lock;
 
-static void enc_lock(void) {
-    for (;;) {
-        uintptr_t f = irq_save();
-        if (!g_busy) { g_busy = true; irq_restore(f); return; }
-        irq_restore(f);
-        sched_yield();   /* a no-op before sched_init(), which is when init runs */
-    }
-}
-static void enc_unlock(void) { g_busy = false; }
+static void enc_lock(void) { ylock_acquire(&g_lock); }
+static void enc_unlock(void) { ylock_release(&g_lock); }
 
 /* --- SPI ------------------------------------------------------------------ */
 

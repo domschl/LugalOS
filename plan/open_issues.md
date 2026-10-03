@@ -40,18 +40,21 @@ history.
 
 # A. Actionable
 
-## Two hand-rolled yielding locks are outside the wait-for graph
+## Two bus locks became ylocks -- not yet run on their hardware
 
-**Destination: phase 40, item 2.**
+**Destination: phase 40, item 2** -- code done 2026-10-03, awaiting the bench.
 
 `drivers/cyw43_rp2350.c`'s `g_bus_busy` and `drivers/enc28j60_rp2350.c`'s
-`g_busy` are a flag and a yield loop: no owner, so no edge in phase 31's
-wait-for graph, and not re-entrant. It has cost a BOOTSEL once: a gratuitous
-ARP under `net_set_address()` re-took the bus lock a frame below its holder
-and deadlocked `wifi probe`.
+`g_busy` were a flag and a yield loop: no owner, so no edge in phase 31's
+wait-for graph, and not re-entrant. It cost a BOOTSEL once: a gratuitous ARP
+under `net_set_address()` re-took the bus lock a frame below its holder and
+deadlocked `wifi probe`. Both are `ylock_t` now, and `rp2350-wifi`,
+`rp2350-clock` and `rp2350-gateway` build clean with them.
 
-**Fix:** make both `ylock_t` -- re-entrant for the owner (the failure above)
-and in the graph for free. Needs a board with each chip on the bench.
+**To close:** on a Pico 2 W, `wifi probe`, `wifi join` and a few minutes of
+traffic; on the gateway with the ENC28J60, `net txtest`/`net rxtest` and the
+gateway suite (`tests/hw/test_gateway.py`). Any `[Lock BUG]` on the console is
+a caller taking the bus under a spinlock, which the flag never reported.
 
 ## Pulling the SD card out of a running board hangs it
 

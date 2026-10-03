@@ -50,6 +50,7 @@
 #include "kernel/time.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/identity.h"
 #include "lugalos_config.h"
@@ -400,18 +401,18 @@ static uint32_t g_bp_window = BP_WINDOW_INVALID;
  * sliding window, and both share a single PIO state machine and one
  * transfer buffer. Interleaved, they corrupt each other -- observed as a
  * join failing on an iovar and then `wifi probe` no longer finding the
- * test pattern at all, on a bus that had been working. */
-static volatile bool g_bus_busy;
+ * test pattern at all, on a bus that had been working.
+ *
+ * A ylock_t (phase 40, item 2). It was a flag and a yield loop: no owner,
+ * so not re-entrant -- a gratuitous ARP under net_set_address() re-took the
+ * bus a frame below its holder and deadlocked `wifi probe` -- and no edge in
+ * phase 31's wait-for graph, so a cycle through it could not be seen. The
+ * ylock is re-entrant for its owner, in the graph, and reports being taken
+ * under a spinlock. */
+static ylock_t g_bus_lock;
 
-static void cyw43_lock(void) {
-    for (;;) {
-        uintptr_t f = irq_save();
-        if (!g_bus_busy) { g_bus_busy = true; irq_restore(f); return; }
-        irq_restore(f);
-        sched_yield();   /* a no-op before sched_init(), which is when init runs */
-    }
-}
-static void cyw43_unlock(void) { g_bus_busy = false; }
+static void cyw43_lock(void) { ylock_acquire(&g_bus_lock); }
+static void cyw43_unlock(void) { ylock_release(&g_bus_lock); }
 
 /* Set when a gSPI transfer gave up half-finished. That does not merely mean
  * one transfer failed: the chip and this driver no longer agree on where a
@@ -431,7 +432,7 @@ static volatile bool g_bus_wedged;
  * take it, so the lock is no longer left to memory. */
 static void cyw43_assert_bus_held(const char *who) {
     static bool warned;
-    if (g_bus_busy || warned) return;
+    if (ylock_owner(&g_bus_lock) == sched_context_id() || warned) return;
     warned = true;
     printk("cyw43: BUG: %s reached the bus without cyw43_lock() -- transfers "
            "can now be interleaved and the gSPI stream desynchronised.\n", who);
