@@ -217,6 +217,7 @@ static lisp_val_t *global_env = &nil_val;
 
 static int streq(const char *s1, const char *s2) {
     if (s1 == s2) return 1;
+    if (!s1 || !s2) return 0;
     if (*s1 != *s2) return 0;
     while (*s1 && (*s1 == *s2)) {
         s1++;
@@ -6288,6 +6289,9 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
             p = p->u.pair.cdr;
             a = a->u.pair.cdr;
         }
+        if (p && p->type == LISP_SYMBOL) {
+            env_set_sym(&local_env, p, a ? a : &nil_val);
+        }
         lisp_val_t *last = eval_all_but_last(fn->u.lambda.body, local_env, original_tail, was_global);
         if (!last) return &nil_val;
         return lisp_eval(last, refresh_global_tail(local_env, original_tail, was_global));
@@ -6811,6 +6815,9 @@ tail_call:
                 }
                 p = p->u.pair.cdr;
                 a = a->u.pair.cdr;
+            }
+            if (p && p->type == LISP_SYMBOL) {
+                env_set_sym(&local_env, p, a ? a : &nil_val);
             }
             /* Body is a list of forms (see the lambda special form above),
              * evaluated in sequence like `begin` -- the last is a tail

@@ -168,25 +168,44 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.4: Symbolic Differentiation & Integration (`cas/calculus.lisp`)
+### Milestone 43.4: Symbolic Differentiation & Integration (`cas/calculus.lisp`) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** Perform exact symbolic calculus transformations.
 * **Deliverables:**
   1. **Symbolic Differentiation (`diff`):**
      - `(diff expr var [n])`: Computes the $n$-th derivative $\frac{d^n}{d\text{var}^n}(\text{expr})$.
      - Linearity: $(u + v)' = u' + v'$, $(c \cdot u)' = c \cdot u'$.
-     - Product rule: $(u \cdot v)' = u' v + u v'$.
+     - Product rule: $(u \cdot v)' = u' v + u v'$ generalized over multiple factors.
      - Quotient rule: $(u / v)' = \frac{u' v - u v'}{v^2}$.
      - Power & Chain rule: $(u^n)' = n u^{n-1} u'$, and $(u^v)' = u^v (v' \ln u + v \frac{u'}{u})$.
      - Trigonometric & Transcendental rules:
        $\frac{d}{dx}\sin(u) = \cos(u) u'$, $\frac{d}{dx}\cos(u) = -\sin(u) u'$,
        $\frac{d}{dx}\tan(u) = (1 + \tan^2(u)) u'$,
-       $\frac{d}{dx}e^u = e^u u'$, $\frac{d}{dx}\ln(u) = \frac{u'}{u}$.
-  2. **Basic Symbolic Integration (`integrate`):**
+       $\frac{d}{dx}e^u = e^u u'$, $\frac{d}{dx}\ln(u) = \frac{u'}{u}$,
+       $\frac{d}{dx}\arcsin(u) = \frac{u'}{\sqrt{1 - u^2}}$, $\frac{d}{dx}\arctan(u) = \frac{u'}{1 + u^2}$.
+  2. **Symbolic Integration (`integrate` & `integrate-def`):**
      - `(integrate expr var)`: Indefinite integral $\int \text{expr} \, d\text{var}$.
      - Power rule: $\int x^n dx = \frac{x^{n+1}}{n+1}$ ($n \ne -1$), $\int \frac{1}{x} dx = \ln(x)$.
      - Linearity: $\int (a f + b g) = a \int f + b \int g$.
-     - Elementary trigonometric & exponential integrals: $\int \cos(x) dx = \sin(x)$, $\int \sin(x) dx = -\cos(x)$, $\int e^x dx = e^x$.
+     - Polynomial integration: term-by-term integration of any expanded or factored polynomial.
+     - Elementary trigonometric & exponential integrals with scaled arguments:
+       $\int \cos(a x + b) dx = \frac{\sin(a x + b)}{a}$, $\int \sin(a x + b) dx = -\frac{\cos(a x + b)}{a}$, $\int e^{a x + b} dx = \frac{e^{a x + b}}{a}$.
+     - Integration by parts: $\int x e^x dx = e^x (x - 1)$, $\int x \cos(x) dx = x \sin(x) + \cos(x)$, $\int x \sin(x) dx = \sin(x) - x \cos(x)$, $\int \ln(x) dx = x \ln(x) - x$.
+     - Inverse trigonometric forms: $\int \frac{1}{x^2+1} dx = \arctan(x)$, $\int \frac{1}{\sqrt{1-x^2}} dx = \arcsin(x)$.
+     - Definite integration: `(integrate-def expr var a b)` computing exact $F(b) - F(a)$.
+     - Fundamental Theorem of Calculus verified: $\frac{d}{dx} \int f(x) dx = f(x)$.
+  3. **Lisp Engine Enhancements:**
+     - Supported standard Scheme rest-parameter binding `(define (f . args) ...)` and `(define (f x . rest) ...)` in `user/lisp/lisp.c`.
+     - Hardened `streq` against NULL pointer dereferences on memory exhaustion.
+     - Sized QEMU `CONFIG_LISP_NODE_POOL` to 32768 in `board-rv32-nommu.cmake` and `board-rv64-mmu.cmake`.
+  4. **Hardware Verification:**
+     - Synchronized `cas/calculus.lisp` to `/sd0/cas/calculus.lisp` on physical RP2350-terminal via 9P (`tools/p9sync.py`).
+     - Verified interactive differentiation, integration, higher-order derivatives, and definite integration live on Hazard3 RISC-V silicon.
+* **Verification:**
+  - `tests/test_cas_calculus.py`: 61/61 unit tests passing on both RV32 and RV64 QEMU targets.
+  - Integrated into `tests/runner.py` regression suite.
+  - Verified live on physical RP2350-terminal silicon via interactive console (`/dev/ttyACM1`).
 
 ---
 

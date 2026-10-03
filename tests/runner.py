@@ -3183,8 +3183,41 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             "=> 23" in log and
             "=> ((+ 2 x) 0)" in log
         )
-        ok = ok and p43_poly_correct
         results.append(("CAS Polynomial Engine expansion, inspection, evaluation, division (Phase 43.3)",
+                        ok, log if not ok else ""))
+
+        # Phase 43.4: Symbolic Calculus (cas/calculus.lisp)
+        cmd_p43_calc = (
+            "lisp\n"
+            '(load "/sd0/cas/simplify.lisp")\n'
+            '(load "/sd0/cas/poly.lisp")\n'
+            '(load "/sd0/cas/calculus.lisp")\n'
+            "(diff '(+ (^ x 3) (* 2 (^ x 2)) (* 5 x) 7) 'x)\n"
+            "(diff '(* x (sin x)) 'x)\n"
+            "(diff '(^ x 3) 'x 2)\n"
+            "(integrate '(+ (* 3 (^ x 2)) (* 4 x) 5) 'x)\n"
+            "(integrate '(* (+ x 1) (+ x 2)) 'x)\n"
+            "(integrate '(* x (exp x)) 'x)\n"
+            "(integrate '(/ 1 (+ (^ x 2) 1)) 'x)\n"
+            "(integrate-def '(^ x 2) 'x 0 1)\n"
+            "(diff (integrate '(cos (* 2 x)) 'x) 'x)\n"
+            '(display "P43_CALCULUS_OK\\n")\n'
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p43_calc, r"P43_CALCULUS_OK", timeout=12.0)
+        p43_calc_correct = (
+            "=> (+ 5 (* 4 x) (* 3 (^ x 2)))" in log and
+            "=> (+ (* x (cos x)) (sin x))" in log and
+            "=> (* 6 x)" in log and
+            "=> (+ (* 5 x) (* 2 (^ x 2)) (^ x 3))" in log and
+            "=> (+ (* 2 x) (* 3/2 (^ x 2)) (* 1/3 (^ x 3)))" in log and
+            "=> (* (+ -1 x) (exp x))" in log and
+            "=> (atan x)" in log and
+            "=> 1/3" in log and
+            "=> (cos (* 2 x))" in log
+        )
+        ok = ok and p43_calc_correct
+        results.append(("CAS Symbolic Calculus differentiation, integration, FTC (Phase 43.4)",
                         ok, log if not ok else ""))
 
         cmd_s4_strings = (
