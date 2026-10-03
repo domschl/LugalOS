@@ -74,7 +74,7 @@ typedef struct {
      * loses every difference smaller than 2^k to truncation, so it creeps
      * towards the input and stops a step or two short -- a permanent offset
      * that looks exactly like a miscalibrated sensor. */
-    int32_t  acc;
+    int64_t  acc;
     bool     primed;
 
     /* --- rule state --- */
@@ -113,7 +113,7 @@ int mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
      * configuration mistake that would present as wild readings. 12 leaves
      * plenty of headroom over any fixed-point value a sensor produces. */
     if (st->rule.alpha_shift > 12u) st->rule.alpha_shift = 12u;
-    if (st->rule.delta < 0) st->rule.delta = -st->rule.delta;
+    if (st->rule.delta < 0) st->rule.delta = st->rule.delta == INT32_MIN ? INT32_MAX : -st->rule.delta;
     g_src_count++;
     return 0;
 }
@@ -130,7 +130,7 @@ int mqttd_set_rule(const char *name, const mqttd_rule_t *rule) {
     if (!st || !rule) return -1;
     st->rule = *rule;
     if (st->rule.alpha_shift > 12u) st->rule.alpha_shift = 12u;
-    if (st->rule.delta < 0) st->rule.delta = -st->rule.delta;
+    if (st->rule.delta < 0) st->rule.delta = st->rule.delta == INT32_MIN ? INT32_MAX : -st->rule.delta;
     /* The filter is re-primed rather than rescaled: acc is held scaled by the
      * *old* shift, and reinterpreting it under a new one would produce one
      * spectacularly wrong reading. */
@@ -143,19 +143,26 @@ const mqttd_rule_t *mqttd_get_rule(const char *name) {
     return st ? &st->rule : NULL;
 }
 
-/* y += (x - y) / 2^k, carried on an accumulator scaled by 2^k. */
+/* y += (x - y) / 2^k, carried on an accumulator scaled by 2^k.
+ *
+ * Scaled by multiplying, in 64 bits (phase 40 review). It was `x << k` on
+ * an int32_t: undefined for any negative reading -- the first sample below
+ * zero halted a QEMU guest under UBSan, and only the compiler's goodwill
+ * kept a frozen sensor node on the RP2350 working -- and an overflow for a
+ * large one. The right shift of a negative accumulator is arithmetic in GCC,
+ * which is the rounding the filter was designed with. */
 static int32_t filter_step(mqttd_source_state_t *st, int32_t x) {
     uint8_t k = st->rule.alpha_shift;
     if (k == 0) return x;
     if (!st->primed) {
         /* Start at the first real reading, not at zero: a filter that ramps
          * up from nothing publishes a minute of fiction after every boot. */
-        st->acc = x << k;
+        st->acc = (int64_t)x * ((int64_t)1 << k);
         st->primed = true;
         return x;
     }
-    st->acc += x - (st->acc >> k);
-    return st->acc >> k;
+    st->acc += (int64_t)x - (st->acc >> k);
+    return (int32_t)(st->acc >> k);
 }
 
 /* Signed fixed-point, `dec` places. Done by hand because this kernel's
@@ -192,7 +199,7 @@ static bool due(const mqttd_source_state_t *st, uint64_t now) {
         since < (uint64_t)st->rule.min_interval_s * 1000u)
         return false;                          /* too soon, whatever it did */
 
-    int32_t moved = st->filtered - st->last_sent;
+    int64_t moved = (int64_t)st->filtered - st->last_sent;   /* 64 bits: no overflow */
     if (moved < 0) moved = -moved;
     if (moved >= st->rule.delta && (st->rule.delta > 0 || moved > 0))
         return true;                           /* it moved enough */

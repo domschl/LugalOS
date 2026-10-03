@@ -1391,6 +1391,7 @@ static void cmd_mqttd(const char *arg) {
         r.delta = (int32_t)v[2];
         if (got >= 4u) r.alpha_shift = (uint8_t)v[3];
         if (mqttd_set_rule(name, &r) != 0) { cprintf("mqttd: could not set it\n"); return; }
+        r = *mqttd_get_rule(name);   /* as clamped: 1u << an unclamped shift is undefined */
         cprintf("mqttd: %s publishes on a move of %ld, at most every %us, "
                 "at least every %us, ema 1/%u\n",
                 name, (long)r.delta, r.min_interval_s, r.max_interval_s,

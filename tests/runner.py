@@ -5509,6 +5509,13 @@ def test_mqttd_file_source(elf_path: Path, img_path: Path, arch_name: str) -> tu
         ok, log = session.send_and_expect("(mqttd-file \"temp\" \"/x\" \"y\")", r"=> #f", timeout=6.0)
         if not ok:
             return (name, False, f"a second source with the same name was not refused: {log[-300:]}")
+        # A second source on the default rule, whose filter is on: its first
+        # reading below zero used to be `x << k` on a negative int -- a UBSan
+        # halt on QEMU (phase 40 review).
+        session.send_and_expect('(write-file "/ram0/cold.txt" "t=-500\\n")', r"#t", timeout=5.0)
+        ok, log = session.send_and_expect("mqttd file cold /ram0/cold.txt t 2", r'"cold" reads', timeout=6.0)
+        if not ok:
+            return (name, False, f"could not add the second source: {log[-300:]}")
         ok, log = session.send_and_expect(f"mqttd start 10.0.2.2:{broker.port} 1",
                                           r"mqttd: started as pid \d+", timeout=10.0)
         if not ok:
@@ -5520,6 +5527,9 @@ def test_mqttd_file_source(elf_path: Path, img_path: Path, arch_name: str) -> tu
             time.sleep(0.2)
         if temps()[:1] != [b"-12.34"]:
             return (name, False, f"expected -12.34 first, got {temps()}")
+        colds = [p.payload for p in broker.publishes if p.topic.endswith("/cold")]
+        if colds[:1] != [b"-5.00"]:
+            return (name, False, f"the filtered negative source published {colds}")
 
         put("valid=no\\nage_s=3\\ntemperature_c100=2000\\n")
         time.sleep(4.0)
