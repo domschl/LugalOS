@@ -55,6 +55,10 @@ static int compile_inner(const char *src_path, const char *dst_elf_path) {
 
     printk("[chibicc] Preprocessing '%s'...\n", src_path);
     char *preprocessed_src = preprocess(src_buf, src_path);
+    if (!preprocessed_src) {
+        printk("[chibicc Error] Preprocessing '%s' failed\n", src_path);
+        return -1;
+    }
 
     printk("[chibicc] Tokenizing '%s'...\n", src_path);
     Token *tok = tokenize(preprocessed_src);

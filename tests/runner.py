@@ -1685,6 +1685,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc: #ifdef nests inside a skipped region, and #else works (40 review)",
                         ok, log if not ok else ""))
 
+        # Phase 40 review: what the preprocessor cannot do stops the compile.
+        # `#if` was ignored (both branches compiled) and a missing header was
+        # a log line the compile went on past; neither may produce a binary.
+        pp_fail = []
+        for name, body, why in (
+                ("ppif", "#if 0\\nint x;\\n#endif\\nmain() { return 0; }\\n", "Unsupported directive"),
+                ("ppinc", '#include \\"nothere.h\\"\\nmain() { return 0; }\\n', "not found")):
+            session.send_and_expect(f'(write-file "/ram0/proj/{name}.c" "{body}")', r"#t", timeout=4.0)
+            _, out = session.send_and_expect(f"cc /ram0/proj/{name}.c /ram0/proj/{name}.elf",
+                                             r"=> #[tf]", timeout=20.0)
+            if why not in out or "=> #f" not in out:
+                pp_fail.append(f"{name}: expected '{why}' and a failed compile:\n{out[-300:]}")
+        results.append(("chibicc: an unsupported directive or a missing header fails the compile (40 review)",
+                        not pp_fail, "\n".join(pp_fail)))
+
         # 5a-ii. `ed` round-trips a file it did not create.
         #
         # The ed test above appends two lines to a *new* file and asserts on

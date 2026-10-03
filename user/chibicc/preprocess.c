@@ -22,6 +22,14 @@ typedef struct {
 static Macro *macros;
 static int macro_cnt = 0;
 
+/* Set by any error; preprocess() then returns NULL and the compile stops
+ * (phase 40 review). Every one of these used to print and carry on -- a
+ * missing header, a 300-character line split mid-token, a program past the
+ * 16 KB output silently cut off -- and the compile went ahead on text that
+ * was not the program, or, worse, succeeded. */
+static bool preproc_failed;
+#define PP_FAIL(...) do { printk(__VA_ARGS__); preproc_failed = true; } while (0)
+
 static const char *builtin_lugal_h =
     "#ifndef _LUGAL_H\n"
     "#define _LUGAL_H\n"
@@ -61,12 +69,23 @@ static void define_macro(const char *name, const char *val) {
             return;
         }
     }
-    if (macro_cnt < MAX_MACROS) {
-        strncpy(macros[macro_cnt].name, name, MACRO_NAME_LEN - 1);
-        macros[macro_cnt].name[MACRO_NAME_LEN - 1] = '\0';
-        strncpy(macros[macro_cnt].val, val, MACRO_VAL_LEN - 1);
-        macros[macro_cnt].val[MACRO_VAL_LEN - 1] = '\0';
-        macro_cnt++;
+    if (macro_cnt >= MAX_MACROS) {
+        PP_FAIL("[preproc Error] More than %d macros; '%s' not defined\n", MAX_MACROS, name);
+        return;
+    }
+    strncpy(macros[macro_cnt].name, name, MACRO_NAME_LEN - 1);
+    macros[macro_cnt].name[MACRO_NAME_LEN - 1] = '\0';
+    strncpy(macros[macro_cnt].val, val, MACRO_VAL_LEN - 1);
+    macros[macro_cnt].val[MACRO_VAL_LEN - 1] = '\0';
+    macro_cnt++;
+}
+
+static void undefine_macro(const char *name) {
+    for (int i = 0; i < macro_cnt; i++) {
+        if (strcmp(macros[i].name, name) == 0) {
+            macros[i] = macros[--macro_cnt];
+            return;
+        }
     }
 }
 
@@ -110,18 +129,18 @@ static uint32_t hdr_used;
 static char (*inc_dir)[INC_DIR_LEN];
 static int preproc_out_idx = 0;
 
-static void emit_str(const char *str) {
-    while (*str && preproc_out_idx < PREPROC_BUF_SIZE - 1) {
-        preproc_buf[preproc_out_idx++] = *str++;
+static void emit_char(char c) {
+    if (preproc_out_idx >= PREPROC_BUF_SIZE - 1) {
+        if (!preproc_failed)
+            PP_FAIL("[preproc Error] Preprocessed program exceeds %d bytes\n", PREPROC_BUF_SIZE - 1);
+        return;
     }
+    preproc_buf[preproc_out_idx++] = c;
     preproc_buf[preproc_out_idx] = '\0';
 }
 
-static void emit_char(char c) {
-    if (preproc_out_idx < PREPROC_BUF_SIZE - 1) {
-        preproc_buf[preproc_out_idx++] = c;
-        preproc_buf[preproc_out_idx] = '\0';
-    }
+static void emit_str(const char *str) {
+    while (*str) emit_char(*str++);
 }
 
 static void preprocess_internal(const char *src, int depth);
@@ -207,8 +226,13 @@ static void preprocess_internal(const char *src, int depth) {
         while (*p && *p != '\n' && lidx < 255) {
             line[lidx++] = *p++;
         }
-        if (*p == '\n') p++;
         line[lidx] = '\0';
+        if (*p && *p != '\n') {
+            /* Splitting it would cut a token or a string in two. */
+            PP_FAIL("[preproc Error] A line longer than 255 characters: '%.40s...'\n", line);
+            return;
+        }
+        if (*p == '\n') p++;
 
         /* Trim leading whitespace */
         char *ptr = line;
@@ -237,7 +261,7 @@ static void preprocess_internal(const char *src, int depth) {
 
             if (strncmp(ptr, "else", 4) == 0 && (ptr[4] == '\0' || ptr[4] == ' ' || ptr[4] == '\t' || ptr[4] == '\r')) {
                 if (cond_depth == 0) {
-                    printk("[preproc Error] #else without #ifdef/#ifndef\n");
+                    PP_FAIL("[preproc Error] #else without #ifdef/#ifndef\n");
                     continue;
                 }
                 if (skip_level == cond_depth) skip_level = 0;
@@ -247,7 +271,7 @@ static void preprocess_internal(const char *src, int depth) {
 
             if (strncmp(ptr, "endif", 5) == 0) {
                 if (cond_depth == 0) {
-                    printk("[preproc Error] #endif without #ifdef/#ifndef\n");
+                    PP_FAIL("[preproc Error] #endif without #ifdef/#ifndef\n");
                     continue;
                 }
                 if (skip_level == cond_depth) skip_level = 0;
@@ -255,7 +279,13 @@ static void preprocess_internal(const char *src, int depth) {
                 continue;
             }
 
-            if (skip_level) continue;
+            if (skip_level) {
+                /* An #if this preprocessor cannot evaluate still opens a
+                 * level, so the #endif that closes it is not taken for the
+                 * skipped block's own. */
+                if (strncmp(ptr, "if", 2) == 0 && (ptr[2] == ' ' || ptr[2] == '\t')) cond_depth++;
+                continue;
+            }
 
             if (strncmp(ptr, "define", 6) == 0 && (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '\0')) {
                 ptr += 6;
@@ -267,19 +297,40 @@ static void preprocess_internal(const char *src, int depth) {
                     name[nlen++] = *ptr++;
                 }
                 name[nlen] = '\0';
+                if (nlen == 0 || is_ident_body(*ptr)) {
+                    PP_FAIL("[preproc Error] #define needs a name of 1..%d characters\n", MACRO_NAME_LEN - 1);
+                    continue;
+                }
 
                 while (*ptr == ' ' || *ptr == '\t') ptr++;
 
                 char val[MACRO_VAL_LEN];
                 int vlen = 0;
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
                 while (*ptr && *ptr != '\r' && *ptr != '\n' && vlen < MACRO_VAL_LEN - 1) {
                     val[vlen++] = *ptr++;
                 }
                 val[vlen] = '\0';
+                if (*ptr && *ptr != '\r' && *ptr != '\n') {
+                    PP_FAIL("[preproc Error] The value of '%s' is longer than %d characters\n",
+                            name, MACRO_VAL_LEN - 1);
+                    continue;
+                }
                 if (vlen == 0) { val[0] = '1'; val[1] = '\0'; }
 
                 define_macro(name, val);
+                continue;
+            }
+
+            if (strncmp(ptr, "undef", 5) == 0 && (ptr[5] == ' ' || ptr[5] == '\t')) {
+                ptr += 5;
+                while (*ptr == ' ' || *ptr == '\t') ptr++;
+                char name[MACRO_NAME_LEN];
+                int nlen = 0;
+                while (*ptr && is_ident_body(*ptr) && nlen < MACRO_NAME_LEN - 1) {
+                    name[nlen++] = *ptr++;
+                }
+                name[nlen] = '\0';
+                undefine_macro(name);
                 continue;
             }
 
@@ -321,22 +372,29 @@ static void preprocess_internal(const char *src, int depth) {
                 }
 
                 if (text && depth >= MAX_INCLUDE_DEPTH) {
-                    printk("[preproc Error] Include depth exceeded %d at '%s'\n",
+                    PP_FAIL("[preproc Error] Include depth exceeded %d at '%s'\n",
                            MAX_INCLUDE_DEPTH, vfs_path);
                 } else if (text) {
                     set_dir_of(inc_dir[depth + 1], vfs_path);
                     preprocess_internal(text, depth + 1);
                 } else if (too_big) {
-                    printk("[preproc Error] Header '%s' does not fit the %u bytes "
+                    PP_FAIL("[preproc Error] Header '%s' does not fit the %u bytes "
                            "left for headers\n", vfs_path, (unsigned)(HDR_BUF_SIZE - mark));
                 } else if (strcmp(hdr_path, "lugal.h") == 0 || strcmp(hdr_path, "include/lugal.h") == 0) {
                     preprocess_internal(builtin_lugal_h, depth + 1);
                 } else {
-                    printk("[preproc Error] Header file '%s' not found on VFS!\n", hdr_path);
+                    PP_FAIL("[preproc Error] Header file '%s' not found on VFS!\n", hdr_path);
                 }
                 hdr_used = mark;
                 continue;
             }
+
+            /* A null directive is C; #pragma may be ignored. Anything else
+             * (#if, #elif, #error, ...) is not understood, and ignoring it
+             * would compile both sides of a conditional. */
+            if (*ptr == '\0' || *ptr == '\r' || strncmp(ptr, "pragma", 6) == 0) continue;
+            PP_FAIL("[preproc Error] Unsupported directive '#%.16s'\n", ptr);
+            if (strncmp(ptr, "if", 2) == 0) cond_depth++;   /* its #endif is not a stray */
             continue;
         }
 
@@ -345,6 +403,8 @@ static void preprocess_internal(const char *src, int depth) {
             emit_char('\n');
         }
     }
+    if (cond_depth != 0)
+        PP_FAIL("[preproc Error] %d #ifdef/#ifndef without #endif\n", cond_depth);
 }
 
 char *preprocess(const char *src, const char *src_path) {
@@ -352,10 +412,11 @@ char *preprocess(const char *src, const char *src_path) {
     preproc_out_idx = 0;
     preproc_buf[0] = '\0';
     hdr_used = 0;
+    preproc_failed = false;
     set_dir_of(inc_dir[0], src_path ? src_path : "");
 
     preprocess_internal(src, 0);
-    return preproc_buf;
+    return preproc_failed ? NULL : preproc_buf;
 }
 
 /* Arena-backed (C6): see user/chibicc/pools.c. hdr_buf was a function-scope
