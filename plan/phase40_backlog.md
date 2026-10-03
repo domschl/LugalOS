@@ -20,12 +20,12 @@ original description stays in git history of `plan/open_issues.md`.
 | 3 | Pulling the SD card out of a running board hangs it | **Open — needs the bench.** One candidate fixed on the way (`3ca5b4e`, a cyclic chain looped forever); the real pull is still to be done on the LCD-7 | — |
 | 4 | A trailing slash breaks path resolution below a mount root | **Done** | `fd77381` |
 | 5 | `cc` searches only /ram0 for a relative `#include` | **Done**, and the shared header buffer it exposed | `1b6a1d6` |
-| 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build) | `64eb2f4` |
+| 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build, same-id decoy) | `64eb2f4` + persona fix |
 | 7 | C6/C7's exact heap comparison disturbed by background allocation | **Done** — settled readings, two compiles; 3/3 on the LCD-7 | `601160e` |
 | 8 | The clock display flickers while the radio comes up | **Closed** — already solved, per the owner (2026-10-03) | — |
 | 9 | No clean way to leave a BSS before re-joining | **Open — needs a Pico 2 W** | — |
 | 10 | `mqttd` has no file-backed source | **Done** (`mqttd file`, `(mqttd-file ...)`) | `bf44055` |
-| 11 | Pressure is published as station pressure | **Open — needs the owner's decision** (publish both?) | — |
+| 11 | Pressure is published as station pressure | **Done** — both published (owner's decision); not yet run on a BME280 node | `40.11` commit |
 | 12 | An identity write reboots the board | **Open — needs a write on a board with a stored record** | — |
 
 ## 2. The review
@@ -96,15 +96,44 @@ established and fuzzed, valgrind clean). Recorded so that "not looked at" and
   it. Not reproduced in six further runs; kernel tasks only, not the syscall
   path changed that day. Belongs in `open_issues.md` part B if it recurs.
 
-## 4. What is left, and what it needs
+## 4. Where this stopped (2026-10-03), and how to continue
 
-* **Item 2** — run `wifi probe`/`wifi join` on a Pico 2 W and the gateway
-  suite on the ENC28J60; any `[Lock BUG]` names a caller under a spinlock.
-* **Item 3** — pull the card from the LCD-7 with the console attached, on the
-  current build.
-* **Item 9** — a Pico 2 W.
-* **Item 11** — the owner's decision on point 3 (publish `pressure` and
-  `pressure_msl`, or replace).
-* **Item 12** — one identity write on a board whose record is stored, console
-  attached; drop the reboot if the console survives.
-* The current build has not yet been run through `tests/hw/` on a board.
+**State.** QEMU suite 452/452 at the last full run (before 40.11, which
+added a test that passes on rv64; both architecture suites 182/182 after
+it). `make -C tests/host check` clean. The RP2350-LCD-7 (ttyACM0) runs
+HEAD (`687.aff00f57`); its hardware suite ran 30/32 on `684.a67aa3ea`:
+
+* K3 failed from a bug in its own first version (matched build/rv32 by
+  build id); fixed and re-verified with a same-id decoy build.
+* PSRAM 38.2, "read cached cold": 21.1-23.6 MB/s on HEAD against a
+  26.1 reference (fails the 15 % band about one run in three). The
+  session-start firmware (b0f6c01) measured 23.7-23.9 on the same board
+  minutes later, also below the reference. So the reference is stale
+  for this board, and HEAD may be slightly lower and noisier -- most
+  likely code layout, the effect part C of open_issues records for the
+  chess search. **Next:** re-run `test_psram` several times on HEAD and
+  b0f6c01 and either re-baseline the reference or find the layout cause.
+  Not yet logged in open_issues.
+
+**Continue with, in this order** (the owner has the boards):
+
+1. Re-run `tests/hw/test_rp2350.py` on the LCD-7 at HEAD (40.11 and the K3
+   fix landed after the last run).
+2. **Item 12** -- approved: one `identity name <its current name>` on the
+   LCD-7, console attached; if the console survives without the reboot,
+   drop the reboot in `drivers/idstore_rp2350.c`, else keep it with one
+   reason.
+3. **Item 3** -- the owner will pull the SD card on the LCD-7 when asked:
+   run `ls /sd0`, `cat` a file, then ask for the pull and watch; find the
+   loop that does not end (cluster walks are now bounded, `3ca5b4e`).
+4. **Item 2** -- clock board / Pico 2 W (`wifi probe`, `wifi join`) and the
+   ENC28J60 gateway (`tests/hw/test_gateway.py`); watch for `[Lock BUG]`.
+5. **Item 9** -- Pico 2 W: find the disassociate the firmware accepts.
+6. **Item 11 on hardware** -- a BME280 node (the P4 on ttyACM2 or a sensor
+   persona): `identity altitude <m>`, then `sensor` and the MQTT topics.
+   Flashing the P4 was not yet approved.
+7. Review: a Lisp host harness (reader, bignums) is the obvious next one
+   (see "Not covered").
+
+Scratch builds used this session lived in the Claude scratchpad and are
+gone; `cmake --preset` recreates every build directory.
