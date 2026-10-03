@@ -212,6 +212,9 @@ bool sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
 int task_set_domain(int pid, mem_domain_t *domain) {
     if (pid < 0 || pid >= MAX_TASKS) return -1;
     if (g_tasks[pid].state == TASK_UNUSED) return -1;
+    /* Built here, not at the first switch into the task: that switch runs
+     * under g_sched_lock, and building allocates (mem_domain_prepare()). */
+    if (mem_domain_prepare(domain) != 0) return -1;
     g_tasks[pid].domain = domain;
     /* If the task is the one running, the change takes effect now rather than
      * at the next switch. */

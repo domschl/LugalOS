@@ -3614,6 +3614,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                                           r"UPROG_TEXT_OK", timeout=8.0)
         results.append(("A Full Path Bypasses The Search Path (C1)", ok, log if not ok else ""))
 
+        # Phase 40 review: starting a U-mode program takes no lock out of
+        # order. On rv64 the first switch into a new program built its Sv39
+        # page tables inside sched_yield(), allocating under g_sched_lock --
+        # "[Lock BUG] took &g_palloc_lock ... while holding &g_sched_lock" on
+        # every exec and spawn, which no test looked for.
+        ok1, ex = session.send_and_expect("exec /flash0/system/bin/uhello.elf", r"returned", timeout=8.0)
+        ok2, sp = session.send_and_expect('(spawn "/flash0/system/bin/uhello.elf")', r"exited", timeout=8.0)
+        clean = ok1 and ok2 and "Lock BUG" not in ex + sp
+        results.append(("exec And spawn Take No Lock Out Of Order (40 review)",
+                        clean, (ex + sp)[-1500:] if not clean else ""))
+
         # Phase 40, item 4: a trailing slash below a mount root. `ls
         # /flash0/system/` used to answer "path 'system/' not found" while
         # the same path without the slash worked -- the FAT32 walker left an

@@ -100,6 +100,13 @@ int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perm
  * not been verified. */
 int mem_domain_activate(const mem_domain_t *d);
 
+/* Does whatever activating `d` needs allocated -- the Sv39 page tables --
+ * ahead of time, so that the activation the scheduler performs inside a
+ * context switch, under its own lock, never allocates. Called by
+ * task_set_domain(); `d`'s regions must be complete by then. Returns 0, or
+ * -1 if there is no memory for it. */
+int mem_domain_prepare(mem_domain_t *d);
+
 /* True if `base..base+len` lies entirely within one region of `d` that grants
  * every bit of `perms`. A NULL domain (an unrestricted kernel task) permits
  * everything.

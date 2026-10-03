@@ -292,6 +292,9 @@ bool mem_domain_enforced(void) { return true; }
 
 const char *mem_domain_backend_name(void) { return "PMP"; }
 
+/* PMP regions are written at activation; there is nothing to build ahead. */
+int mem_domain_prepare(mem_domain_t *d) { (void)d; return 0; }
+
 /* Nothing cached: a PMP domain is the region list itself, reprogrammed on
  * every context switch. Present so the loader can release a domain without
  * asking which memory model it is on (Rule 0, §5.1). */
@@ -420,16 +423,13 @@ int mem_domain_activate(const mem_domain_t *d) {
         return 0;
     }
 
-    mem_domain_t *m = (mem_domain_t *)d; /* the cache below is the only write */
-    if (!m->arch_priv) {
-        m->arch_priv = build_space(d);
-        if (!m->arch_priv) {
-            printk("[MemDomain] Could not build an address space for this domain\n");
-            return -1;
-        }
-    }
+    /* Normally built already, by mem_domain_prepare() from task_set_domain().
+     * Building here is the fallback for a domain activated without being
+     * attached to a task -- never one the scheduler switches to, which calls
+     * this under g_sched_lock where allocating is not allowed (see there). */
+    if (mem_domain_prepare((mem_domain_t *)d) != 0) return -1;
 
-    vmm_space_t space = { .page_table_root = (uintptr_t *)m->arch_priv };
+    vmm_space_t space = { .page_table_root = (uintptr_t *)d->arch_priv };
     vmm_switch_space(&space);
     return 0;
 }
@@ -437,6 +437,24 @@ int mem_domain_activate(const mem_domain_t *d) {
 bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
 
 const char *mem_domain_backend_name(void) { return "Sv39"; }
+
+/* Builds the domain's page tables now, if they are not built yet (phase 40
+ * review). They used to be built at the domain's first *activation* -- and
+ * the first activation of a new program's domain is the context switch into
+ * it, inside sched_yield() under g_sched_lock. Every page-table page was
+ * then allocated with the scheduler lock held: the sched -> palloc nesting
+ * the scheduler goes out of its way to avoid (sched_reap()), reported as
+ * "[Lock BUG] took &g_palloc_lock ... while holding &g_sched_lock" on every
+ * exec and spawn on rv64. task_set_domain() calls this, outside the lock. */
+int mem_domain_prepare(mem_domain_t *d) {
+    if (!d || !vmm_paging_enabled() || d->arch_priv) return 0;
+    d->arch_priv = build_space(d);
+    if (!d->arch_priv) {
+        printk("[MemDomain] Could not build an address space for this domain\n");
+        return -1;
+    }
+    return 0;
+}
 
 /* Returns the page table built by build_space(). See the header on why this
  * must not run while the domain is active -- the hart would be translating
