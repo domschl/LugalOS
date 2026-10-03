@@ -261,25 +261,35 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.7: Mathematical Plotting on LugalOS Canvas (`cas/plot.lisp`)
+### Milestone 43.7: Mathematical Plotting on LugalOS Canvas (`cas/plot.lisp`) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** Provide visual graphing of mathematical functions and curves on the LCD-7, ST7735, and virtual panel.
 * **Deliverables:**
   1. **Screen Layout Integration:**
-     - Automatically requests split window via `(canvas-window 'split)` or full canvas.
-     - Detects canvas dimensions via `(canvas-size)`.
+     - Automatically requests split window via `(canvas-window 'split)` and hooks redraw callback with `canvas-on-redraw`.
+     - Detects canvas dimensions dynamically via `(canvas-size)`.
   2. **2D Function Plotter (`plot`):**
      - `(plot expr (var min max) [options])`:
-       Example: `(plot '(- (^ x 3) (* 3 x)) (x -3 3))`
-     - Evaluates function across $N$ sample points along the canvas width.
+       Example: `(plot "x^2" '(x -3 3))` or `(plot '(- (^ x 3) (* 3 x)) '(x -3 3))`
+     - Evaluates function across $N$ sample points along domain using 100% exact rational & fixed-point arithmetic (`plot-floor`).
      - Auto-scales or sets custom $[y_{min}, y_{max}]$ range.
-     - Renders background, coordinate grid, origin axes $(x=0, y=0)$, and tick labels using `canvas-line` and `canvas-text`.
+     - Renders background, coordinate grid, origin axes $(x=0, y=0)$, and tick labels using `canvas-line`, `canvas-frame`, and `canvas-text`.
      - Draws smooth connected curve segments using `(canvas-line x0 y0 x1 y1 color)`.
   3. **Calculus Visualizer (`plot-diff`):**
-     - Graphs $f(x)$ and its symbolic derivative $f'(x) = \frac{d}{dx}f(x)$ on the same axes in distinct colors (e.g. blue for $f(x)$, amber/red for $f'(x)$), demonstrating symbolic calculus visually.
+     - Graphs $f(x)$ and its symbolic derivative $f'(x) = \frac{d}{dx}f(x)$ on the same axes with automatic dual auto-scaling and combined formula titles.
+     - Example: `(plot-diff "x*sin(x)" '(x -6 6))`.
   4. **Parametric & Multi-Function Plotting:**
-     - `(plot-multi '(sin cos) (x -3.14 3.14))`
-     - `(plot-parametric x-expr y-expr (t tmin tmax))` (e.g. circles, ellipses, Lissajous curves).
+     - `(plot-multi '(expr1 expr2 ...) (var min max) [options])`
+     - `(plot-parametric x-expr y-expr (t tmin tmax) [options])`:
+       Example: `(plot-parametric '(cos t) '(sin t) '(t 0 7))` (unit circle).
+* **Verification:**
+  - `tests/test_cas_plot.py`: 20/20 unit tests passing on RV32 and RV64 QEMU.
+  - Verified live on physical RP2350-LCD-7 silicon:
+    - `(plot "x^2" '(x -3 3))` $\rightarrow$ verified with screenshot `shot-002.png`
+    - `(plot-diff "x*sin(x)" '(x -6 6))` $\rightarrow$ verified with screenshot `shot-003.png`
+    - `(plot-parametric '(cos t) '(sin t) '(t 0 7))` $\rightarrow$ verified with screenshot `shot-004.png`
+  - Transferred screenshots over 9P (`tools/p9sync.py` / `lugal9p get`).
 
 ---
 

@@ -4,3 +4,4 @@
 (load "/sd0/cas/calculus.lisp")
 (load "/sd0/cas/solve.lisp")
 (load "/sd0/cas/format.lisp")
+(load "/sd0/cas/plot.lisp")
