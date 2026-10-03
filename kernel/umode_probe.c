@@ -162,6 +162,15 @@ UPROBE_UATTR static void uprobe_umode_body(void) {
 static void uprobe_task_body(void *arg) {
     (void)arg;
 
+    /* A static domain reused by every run: the previous run's page tables
+     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
+     * over four `usertest`s. Refused if a live task is still in it. */
+    if (sched_domain_in_use(&g_uprobe_domain)) {
+        printk("[UProbe] Refusing: the previous probe's task is still running\n");
+        return;
+    }
+    mem_domain_destroy(&g_uprobe_domain);
     mem_domain_init(&g_uprobe_domain);
     mem_domain_add(&g_uprobe_domain, (uintptr_t)g_uprobe_stack,
                    sizeof(g_uprobe_stack), MEM_R | MEM_W);

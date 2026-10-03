@@ -2133,6 +2133,15 @@ static volatile bool g_user_entered;
 static volatile int g_user_hart = -1;
 
 static void user_task_common(void (*entry)(void)) {
+    /* A static domain reused by every run: the previous run's page tables
+     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
+     * over four `usertest`s. Refused if a live task is still in it. */
+    if (sched_domain_in_use(&g_user_domain)) {
+        printk("[UserTest] Refusing: the previous probe's task is still running\n");
+        return;
+    }
+    mem_domain_destroy(&g_user_domain);
     mem_domain_init(&g_user_domain);
 
     /* Order matters: PMP resolves against the lowest-numbered matching
@@ -2342,6 +2351,15 @@ static void echo_task_body(void *arg) {
      * SYS_CHAN_SERVE_WAIT would find nothing yet. */
     while (!g_echo_ep) sched_yield();
 
+    /* A static domain reused by every run: the previous run's page tables
+     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
+     * over four `usertest`s. Refused if a live task is still in it. */
+    if (sched_domain_in_use(&g_echo_domain)) {
+        printk("[ChanEcho] Refusing: the previous echo task is still running\n");
+        return;
+    }
+    mem_domain_destroy(&g_echo_domain);
     mem_domain_init(&g_echo_domain);
     mem_domain_add(&g_echo_domain, (uintptr_t)g_echo_ustack, 4096,
                    MEM_R | MEM_W);

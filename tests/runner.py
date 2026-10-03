@@ -2218,6 +2218,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             timeout=10.0)
         results.append(("U-mode Task Runs And Syscalls Back (B3)", ok, log if not ok else ""))
 
+        # Phase 40 review: running it again costs nothing. Its domain is a
+        # static reused by every run, and mem_domain_init() zeroed it -- on
+        # rv64 dropping the previous run's page tables, four pages a time.
+        def pages_used() -> "int | None":
+            _, out = session.send_and_expect("cat /proc/meminfo", r"Pages Used: \d+", timeout=5.0)
+            m = re.search(r"Pages Used: (\d+)", out)
+            return int(m.group(1)) if m else None
+        before = pages_used()
+        for _ in range(3):
+            session.send_and_expect("usertest", r"ended cleanly", timeout=10.0)
+        after = pages_used()
+        results.append(("usertest Run Again Leaks No Page Tables (40 review)",
+                        before is not None and before == after,
+                        f"pages used {before} before three more runs, {after} after"))
+
         # B3+B5: per-task memory domains enforce, on BOTH memory models.
         #
         # This used to branch by target: RV32 asserted isolation while RV64
