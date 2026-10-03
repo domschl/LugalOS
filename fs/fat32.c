@@ -474,7 +474,11 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
     fs->dev = dev;
 
     uint8_t sector[512];
-    dev->read_blocks(dev, sector, 0, 1);
+    if (dev->read_blocks(dev, sector, 0, 1) != 0) {
+        if (!quiet) printk("[FAT32] Device '%s': boot sector unreadable (not mounted)\n",
+                           dev->name ? dev->name : "unknown");
+        return -1;
+    }
 
     uint32_t partition_lba = 0;
 
@@ -487,7 +491,11 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
 
         if ((part_type == 0x0B || part_type == 0x0C || part_type == 0x07 || part_type == 0x0E) && start_lba > 0 && start_lba < 0x0FFFFFFF) {
             partition_lba = start_lba;
-            dev->read_blocks(dev, sector, partition_lba, 1);
+            if (dev->read_blocks(dev, sector, partition_lba, 1) != 0) {
+                if (!quiet) printk("[FAT32] Device '%s': partition boot sector unreadable\n",
+                                   dev->name ? dev->name : "unknown");
+                return -1;
+            }
             printk("[FAT32] Device '%s': Parsed MBR Partition 1 at LBA %u (Type 0x%02X)\n",
                    dev->name ? dev->name : "unknown", (unsigned int)partition_lba, part_type);
         }
@@ -530,6 +538,29 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
      * let the allocator index past the FAT on its say-so. */
     uint32_t fat_entries = fs->bpb.fat_sz32 * 128u;
     if (fat_entries >= 2 && fs->total_clusters > fat_entries - 2) fs->total_clusters = fat_entries - 2;
+
+    /* A boot sector this driver cannot use is refused, with the reason
+     * (phase 40 review). Everything here assumes 512-byte sectors and walks
+     * the FAT from fat_sz32, so a card with 4 KB sectors, or a FAT16 volume,
+     * used to mount and then read the wrong bytes everywhere; a cluster size
+     * of 0, no FAT, or a root directory outside the volume mounted a
+     * filesystem on which nothing worked. tests/host/fat32_host.c mounts
+     * corrupted images to keep this honest. */
+    const char *why = NULL;
+    uint8_t spc = fs->bpb.sec_per_clus;
+    if (fs->bpb.bytes_per_sec != 512)              why = "sector size is not 512 bytes";
+    else if (spc == 0 || (spc & (spc - 1)) != 0)   why = "cluster size is not a power of two";
+    else if (fs->bpb.fat_sz32 == 0)                why = "not FAT32 (FAT12/16, or no FAT size)";
+    else if (fs->bpb.num_fats == 0)                why = "no FAT copy";
+    else if (fs->bpb.reserved_sec_cnt == 0)        why = "no reserved sectors";
+    else if (fs->total_clusters == 0)              why = "no data clusters";
+    else if (fs->root_dir_cluster < 2 || fs->root_dir_cluster >= fs->total_clusters + 2)
+                                                   why = "root directory cluster outside the volume";
+    if (why) {
+        if (!quiet) printk("[FAT32] Device '%s': not mounted: %s\n",
+                           dev->name ? dev->name : "unknown", why);
+        return -1;
+    }
     fs->free_count = FAT32_FREE_UNKNOWN;
     fs->next_free = 2;
     fs->fsinfo_lba = 0;
