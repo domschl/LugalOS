@@ -3229,9 +3229,9 @@ static void cmd_vterm(const char *cmd_line) {
             return;
         }
         cprintf("Switched to vterm %d\n", id);
-        vterm_set_active(id);
         uint8_t req[2] = { 'V', (uint8_t)id }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 2, reply);
+        vterm_set_active(id);
         return;
     }
 

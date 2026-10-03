@@ -19,6 +19,48 @@ LCDTERM_UTEXT static uint32_t cstr_len(const char *s) {
     return n;
 }
 
+LCDTERM_UTEXT static void shadow_clear(uint16_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) p[i] = 0;
+}
+
+LCDTERM_UTEXT static int screen_find_term(const screen_t *scr, uint8_t vterm_id) {
+    for (uint32_t i = 0; i < SCREEN_MAX_TERMS; i++) {
+        if (scr->terms[i].in_use && scr->terms[i].vterm_id == vterm_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT static int screen_alloc_term(screen_t *scr, uint8_t vterm_id) {
+    int idx = screen_find_term(scr, vterm_id);
+    if (idx >= 0) return idx;
+    for (uint32_t i = 0; i < SCREEN_MAX_TERMS; i++) {
+        if (!scr->terms[i].in_use) {
+            scr->terms[i].in_use = true;
+            scr->terms[i].vterm_id = vterm_id;
+            uint32_t term_cells = (uint32_t)scr->full_cols * (uint32_t)SCREEN_TEXT_ROWS(scr->cv.h);
+            uint16_t *t_shadow = scr->shadow + i * term_cells;
+            shadow_clear(t_shadow, term_cells);
+            fbtext_t text;
+            fbtext_init(&text, 0, 0, scr->full_cols, SCREEN_TEXT_ROWS(scr->cv.h));
+            vtterm_init(&scr->terms[i].vt, &text, t_shadow);
+            vtterm_set_hidden(&scr->terms[i].vt, true);
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT static void screen_free_term(screen_t *scr, uint8_t vterm_id) {
+    int idx = screen_find_term(scr, vterm_id);
+    if (idx > 0) { /* never free root terminal 0 */
+        scr->terms[idx].in_use = false;
+        scr->terms[idx].vterm_id = 0;
+        vtterm_set_hidden(&scr->terms[idx].vt, true);
+    }
+}
+
 /* The menu bar: white, the rule, the system name in bold on the left, and
  * the indicators ending 16 px from the right edge. The indicators win when
  * the two do not fit. Glyph rows 0..15 from y 2. */
@@ -71,18 +113,23 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
  * white rows above and three below (the owner's adjustment of the C2
  * mockup). */
 LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t) {
-    canvas1_fill(cv, x0 + 1, y0 + 1, x1 - 1, y0 + 15, CANVAS1_WHITE);
-    canvas1_hline(cv, x0, x1, y0, CANVAS1_BLACK);
-    canvas1_hline(cv, x0, x1, y0 + 16, CANVAS1_BLACK);
-    for (int y = y0 + 3; y <= y0 + 13; y += 2) canvas1_hline(cv, x0 + 2, x1 - 2, y, CANVAS1_BLACK);
+    int vx0 = x0 < 0 ? 0 : x0;
+    int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
+    if (vx0 >= vx1) return;
+
+    canvas1_fill(cv, vx0 + 1, y0 + 1, vx1 - 1, y0 + 15, CANVAS1_WHITE);
+    canvas1_hline(cv, vx0, vx1, y0, CANVAS1_BLACK);
+    canvas1_hline(cv, vx0, vx1, y0 + 16, CANVAS1_BLACK);
+    for (int y = y0 + 3; y <= y0 + 13; y += 2) canvas1_hline(cv, vx0 + 2, vx1 - 2, y, CANVAS1_BLACK);
     uint32_t n = cstr_len(t);
     unsigned len = canvas1_text_len(t, n);
-    int max = (x1 - x0 - 1 - 40) / 8;        /* leave some stripes either side */
+    int max = (vx1 - vx0 - 1 - 40) / 8;        /* leave some stripes either side */
     if (max < 0) max = 0;
     if (len > (unsigned)max) len = (unsigned)max;
     if (len > 0) {
         int bw = 8 * (int)len + 12;
-        int cx = (x0 + x1 + 1) / 2 - bw / 2;
+        int cx = (vx0 + vx1 + 1) / 2 - bw / 2;
+        if (cx < vx0 + 2) cx = vx0 + 2;
         canvas1_fill(cv, cx, y0 + 1, cx + bw - 1, y0 + 15, CANVAS1_WHITE);
         canvas1_text(cv, cx + 6, y0 + 1, t, n, len, 1, 15, true);
     }
@@ -90,12 +137,18 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
 
 /* A tile: its frame and shadow, its interior white, and its title bar. */
 LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1, int y1, const char *t) {
-    canvas1_fill(cv, x0, y0, x1, y1, CANVAS1_WHITE);
-    canvas1_hline(cv, x0, x1, y1, CANVAS1_BLACK);
-    canvas1_vline(cv, x0, y0, y1, CANVAS1_BLACK);
-    canvas1_vline(cv, x1, y0, y1, CANVAS1_BLACK);
-    canvas1_hline(cv, x0 + 1, x1 + 1, y1 + 1, CANVAS1_BLACK);   /* the shadow */
-    canvas1_vline(cv, x1 + 1, y0 + 1, y1 + 1, CANVAS1_BLACK);
+    int vx0 = x0 < 0 ? 0 : x0;
+    int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
+    if (vx0 >= vx1) return;
+
+    canvas1_fill(cv, vx0, y0, vx1, y1, CANVAS1_WHITE);
+    canvas1_hline(cv, vx0, vx1, y1, CANVAS1_BLACK);
+    if (x0 >= 0) canvas1_vline(cv, x0, y0, y1, CANVAS1_BLACK);
+    if (x1 < (int)cv->w) canvas1_vline(cv, x1, y0, y1, CANVAS1_BLACK);
+    if (x1 + 1 < (int)cv->w) {
+        canvas1_hline(cv, vx0 + 1, x1 + 1, y1 + 1, CANVAS1_BLACK);   /* the shadow */
+        canvas1_vline(cv, x1 + 1, y0 + 1, y1 + 1, CANVAS1_BLACK);
+    }
     draw_titlebar(cv, x0, y0, x1, t);
 }
 
@@ -109,9 +162,19 @@ LCDTERM_UTEXT static bool has_canvas(const screen_t *scr) {
     return scr->layout != SCREEN_LAYOUT_TEXT;
 }
 
+LCDTERM_UTEXT static vtterm_t *active_vt(screen_t *scr) {
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
+        int t = screen_find_term(scr, scr->ribbon.wins[scr->ribbon.active_idx].vterm_id);
+        if (t >= 0) return &scr->terms[t].vt;
+    }
+    return &scr->terms[0].vt;
+}
+
 LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
-    if (has_text(scr)) draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, scr->vt.title);
-    scr->title_drawn = scr->vt.title_seq;
+    vtterm_t *avt = active_vt(scr);
+    if (has_text(scr)) draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title);
+    scr->title_drawn = avt->title_seq;
 }
 
 /* --- 38.8: the canvas stores ----------------------------------------------
@@ -193,9 +256,15 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
             int32_t x0 = w->rx0 - xv;
             int32_t x1 = w->rx1 - xv;
             if (x1 + 1 >= 0 && x0 < (int32_t)cv->w) {
-                const char *title = (w->type == RIBBON_WIN_TERM && i == scr->ribbon.active_idx)
-                                  ? scr->vt.title
-                                  : (w->type == RIBBON_WIN_CANVAS ? scr->ctitle : w->title);
+                const char *title = w->title;
+                if (w->type == RIBBON_WIN_CANVAS) {
+                    title = scr->ctitle;
+                } else if (w->type == RIBBON_WIN_TERM) {
+                    int t = screen_find_term(scr, w->vterm_id);
+                    if (t >= 0 && scr->terms[t].vt.title[0]) {
+                        title = scr->terms[t].vt.title;
+                    }
+                }
                 draw_tile(cv, (int)x0, SCREEN_TILE_Y, (int)x1, (int)scr->fy1, title);
             }
         }
@@ -209,9 +278,18 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
             if (!restore || !store_restore(scr)) scr->damage++;
         }
     }
-    scr->title_drawn = scr->vt.title_seq;
+    vtterm_t *avt = active_vt(scr);
+    scr->title_drawn = avt->title_seq;
     draw_menu(scr);
-    vtterm_repaint(&scr->vt);
+    if (scr->ribbon.count > 0) {
+        for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
+            if (scr->terms[t].in_use && !scr->terms[t].vt.hidden) {
+                vtterm_repaint(&scr->terms[t].vt);
+            }
+        }
+    } else {
+        vtterm_repaint(&scr->vt);
+    }
 }
 
 LCDTERM_UTEXT static void draw_all(screen_t *scr) {
@@ -230,49 +308,61 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     if (scr->ribbon.count > 2 || scr->ribbon.x_view != 0 ||
         (scr->ribbon.count == 2 && ribbon_find_canvas(&scr->ribbon) < 0)) {
         scr->layout = (uint8_t)layout;
-        /* Position active terminal */
-        int term_idx = -1;
-        if (scr->ribbon.active_idx < scr->ribbon.count &&
-            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
-            term_idx = (int)scr->ribbon.active_idx;
-        } else {
-            term_idx = ribbon_find_term(&scr->ribbon);
-        }
-        if (term_idx >= 0) {
-            const ribbon_win_t *tw = &scr->ribbon.wins[term_idx];
-            int32_t x0 = tw->rx0 - scr->ribbon.x_view;
+        int32_t xv = scr->ribbon.x_view;
+
+        /* Position all terminal windows in the ribbon */
+        for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+            ribbon_win_t *w = &scr->ribbon.wins[i];
+            if (w->type != RIBBON_WIN_TERM) continue;
+
+            int t = screen_find_term(scr, w->vterm_id);
+            if (t < 0) t = screen_alloc_term(scr, w->vterm_id);
+            if (t < 0) continue;
+
+            int32_t x0 = w->rx0 - xv;
+            int32_t x1 = w->rx1 - xv;
+            bool visible = (x1 >= 0 && x0 < (int32_t)scr->cv.w);
+            if (!visible) {
+                vtterm_set_hidden(&scr->terms[t].vt, true);
+                continue;
+            }
+
             int c0 = (int)((x0 + 4) / 8);
             if (c0 < 1) c0 = 1;
             if (c0 > C - 2) c0 = C - 2;
             int max_c = C - 1 - c0;
-            int win_c = (int)tw->cols;
+            int win_c = (int)w->cols;
             if (win_c > max_c) win_c = max_c;
             if (win_c < 1) win_c = 1;
-            col0 = c0;
-            cols = win_c;
-            scr->fx0 = (int16_t)x0;
-            scr->fx1 = (int16_t)(x0 + 8 * tw->cols + 6);
-            scr->fy0 = SCREEN_TILE_Y;
-            scr->fy1 = (int16_t)y1;
-        } else {
-            scr->fx0 = scr->fx1 = 0;
-            scr->fy0 = scr->fy1 = 0;
+
+            fbtext_t text;
+            fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)c0, scr->cv.stride,
+                        (unsigned)win_c, rows);
+            text.xbyte = (uint16_t)c0;
+            text.whole_rows = (win_c == scr->full_cols && c0 == 1);
+            vtterm_resize(&scr->terms[t].vt, &text);
+            vtterm_set_hidden(&scr->terms[t].vt, false);
+
+            if (i == scr->ribbon.active_idx) {
+                scr->fx0 = (int16_t)x0;
+                scr->fx1 = (int16_t)(x0 + 8 * w->cols + 6);
+                scr->fy0 = SCREEN_TILE_Y;
+                scr->fy1 = (int16_t)y1;
+            }
         }
 
         /* Position canvas if present in ribbon */
         int c_idx = ribbon_find_canvas(&scr->ribbon);
         if (c_idx >= 0) {
             const ribbon_win_t *cw = &scr->ribbon.wins[c_idx];
-            int32_t cx0 = cw->rx0 - scr->ribbon.x_view;
-            int32_t cx1 = cw->rx1 - scr->ribbon.x_view;
+            int32_t cx0 = cw->rx0 - xv;
+            int32_t cx1 = cw->rx1 - xv;
             scr->cx0 = (int16_t)cx0;
             scr->cx1 = (int16_t)cx1;
             scr->cy0 = SCREEN_TILE_Y;
             scr->cy1 = (int16_t)y1;
             int cw_w = (int)(scr->cx1 - scr->cx0 - 1);
             int cw_h = (int)(scr->cy1 - scr->cy0 - 17);
-            /* canvas1_t's origin is unsigned: a tile that is not wholly on
-             * the panel gets no drawable area until it slides into view. */
             if (cw_w < 0 || cx0 < 0 || cx1 >= (int32_t)scr->cv.w) cw_w = 0;
             if (cw_h < 0) cw_h = 0;
             if (cw_w == 0 || cw_h == 0) {
@@ -287,16 +377,6 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
         }
 
-        bool term_visible = (term_idx >= 0 && scr->fx0 >= 0 &&
-                             scr->fx1 < (int16_t)scr->cv.w);
-        if (!term_visible) { col0 = 1; cols = 1; }
-        fbtext_t text;
-        fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)col0, scr->cv.stride,
-                    (unsigned)cols, rows);
-        text.xbyte = (uint16_t)col0;
-        text.whole_rows = (term_idx >= 0 && cols == scr->full_cols && col0 == 1);
-        vtterm_resize(&scr->vt, &text);
-        vtterm_set_hidden(&scr->vt, !term_visible);
         return true;
     }
 
@@ -333,6 +413,8 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     text.whole_rows = (layout == SCREEN_LAYOUT_TEXT && cols == scr->full_cols && col0 == 1);
     vtterm_resize(&scr->vt, &text);
     vtterm_set_hidden(&scr->vt, !has_text(scr));
+    vtterm_resize(&scr->terms[0].vt, &text);
+    vtterm_set_hidden(&scr->terms[0].vt, !has_text(scr));
 
     /* Sync ribbon geometry when ribbon has <= 2 windows (standard layout sync) */
     if (scr->ribbon.count <= 2) {
@@ -409,25 +491,62 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     for (i = 0; ct[i] && i < SCREEN_CTITLE_MAX - 1u; i++) scr->ctitle[i] = ct[i];
     scr->ctitle[i] = '\0';
     scr->right[0] = '\0';
+
+    uint32_t term_cells = (uint32_t)SCREEN_TEXT_COLS(w) * (uint32_t)SCREEN_TEXT_ROWS(h);
+    for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
+        uint16_t *t_shadow = scr->shadow + t * term_cells;
+        for (uint32_t j = 0; j < term_cells; j++) t_shadow[j] = 0;
+        fbtext_t t_text;
+        fbtext_init(&t_text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
+                    SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
+        vtterm_init(&scr->terms[t].vt, &t_text, t_shadow);
+        scr->terms[t].in_use = (t == 0);
+        scr->terms[t].vterm_id = (uint8_t)t;
+    }
+    vtterm_set_title(&scr->terms[0].vt, name, 7);
+
     fbtext_t text;
     fbtext_init(&text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
                 SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
     vtterm_init(&scr->vt, &text, scr->shadow);
     vtterm_set_title(&scr->vt, name, 7);
+
     ribbon_init(&scr->ribbon, (uint16_t)w, (uint16_t)h);
     ribbon_insert(&scr->ribbon, 0, RIBBON_WIN_TERM, 0, (uint8_t)SCREEN_TEXT_COLS(w), name);
     (void)place(scr, SCREEN_LAYOUT_TEXT);
     draw_all(scr);
 }
 
+LCDTERM_UTEXT void screen_write_vterm(screen_t *scr, uint8_t vterm_id, const char *s, uint32_t n) {
+    int t = screen_find_term(scr, vterm_id);
+    if (t < 0) t = screen_alloc_term(scr, vterm_id);
+    if (t < 0) t = 0;
+
+    for (uint32_t i = 0; i < n; i++) {
+        vtterm_putc(&scr->terms[t].vt, s[i]);
+    }
+
+    vtterm_t *avt = active_vt(scr);
+    if (avt && avt->title_seq != scr->title_drawn) draw_text_title(scr);
+}
+
 LCDTERM_UTEXT void screen_write(screen_t *scr, const char *s, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) vtterm_putc(&scr->vt, s[i]);
-    if (scr->vt.title_seq != scr->title_drawn) draw_text_title(scr);
+    uint8_t vid = 0;
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
+        vid = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    }
+    screen_write_vterm(scr, vid, s, n);
 }
 
 LCDTERM_UTEXT void screen_set_title(screen_t *scr, const char *s, uint32_t n) {
+    vtterm_t *avt = active_vt(scr);
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+        ribbon_set_title(&scr->ribbon, scr->ribbon.active_idx, s);
+    }
+    vtterm_set_title(avt, s, n);
     vtterm_set_title(&scr->vt, s, n);
-    if (scr->vt.title_seq != scr->title_drawn) draw_text_title(scr);
+    if (avt->title_seq != scr->title_drawn) draw_text_title(scr);
 }
 
 LCDTERM_UTEXT void screen_set_right(screen_t *scr, const char *s, uint32_t n) {
@@ -459,8 +578,9 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
 }
 
 LCDTERM_UTEXT void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows) {
-    *cols = scr->vt.text.cols;
-    *rows = scr->vt.text.rows;
+    const vtterm_t *avt = ((screen_t *)scr)->ribbon.count > 0 ? active_vt((screen_t *)scr) : &scr->vt;
+    *cols = avt->text.cols;
+    *rows = avt->text.rows;
 }
 
 /* --- The canvas protocol (37.3b) ------------------------------------------ */
@@ -547,9 +667,25 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         uint8_t vid = (n >= 2) ? req[1] : 0;
         uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
         const char *title = (n > 3 && req[3]) ? (const char *)(req + 3) : 0;
+        char def_title[16];
+        if (!title) {
+            def_title[0] = 'l'; def_title[1] = 's'; def_title[2] = 'h';
+            def_title[3] = ' '; def_title[4] = '[';
+            def_title[5] = (char)('0' + (vid % 10));
+            def_title[6] = ']'; def_title[7] = '\0';
+            title = def_title;
+        }
+        if (scr->ribbon.count == 1 && scr->ribbon.wins[0].cols > 48) {
+            scr->ribbon.wins[0].cols = 48;
+        }
         int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
                                 RIBBON_WIN_TERM, vid, cols, title);
         if (idx >= 0) {
+            int t = screen_alloc_term(scr, vid);
+            if (t >= 0 && title) {
+                uint32_t tlen = cstr_len(title);
+                vtterm_set_title(&scr->terms[t].vt, title, tlen);
+            }
             while (ribbon_step_scroll(&scr->ribbon, 0)) {
                 draw_all_from(scr, true);
             }
@@ -654,6 +790,9 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         uint8_t closed_vid = (scr->ribbon.active_idx < scr->ribbon.count)
                            ? scr->ribbon.wins[scr->ribbon.active_idx].vterm_id : 0;
         if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, scr->ribbon.active_idx)) {
+            if (closed_type == RIBBON_WIN_TERM && closed_vid > 0) {
+                screen_free_term(scr, closed_vid);
+            }
             if (closed_type == RIBBON_WIN_CANVAS || ribbon_find_canvas(&scr->ribbon) < 0) {
                 scr->layout = SCREEN_LAYOUT_TEXT;
             }

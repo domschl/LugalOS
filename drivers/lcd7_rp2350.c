@@ -82,6 +82,7 @@
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
+#include "kernel/vterm.h"
 #include "lugalos_config.h"
 
 #include <stdbool.h>
@@ -459,7 +460,7 @@ _Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
  * framebuffer's 1 152-byte spare tail, where 36.6a kept the terminal, is too
  * small for a shadow. Five regions in all (stack, text, framebuffer as two,
  * this), which is exactly what a domain may have (kernel/mem_domain.h). */
-#define STATE_PAGES          2u
+#define STATE_PAGES          8u
 #define STATE_BYTES          (STATE_PAGES * 4096u)
 _Static_assert(SCREEN_BYTES(LCD_H_ACTIVE, LCD_V_ACTIVE) <= STATE_BYTES,
                "lcd7: the screen's state and its shadow must fit their block");
@@ -510,7 +511,7 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_CANVAS 'C'       /* 37.3b: a canvas request; the reply comes back */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
-static uint8_t          g_lcdterm_req[1u + LCDTERM_BATCH];
+static uint8_t          g_lcdterm_req[2u + LCDTERM_BATCH];
 static uint8_t          g_lcdterm_resp[SCREEN_REPLY_LEN];
 static chan_endpoint_t *g_lcdterm_ep;
 static int              g_lcdterm_pid = -1;
@@ -552,7 +553,7 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
     name[0] = 'l'; name[1] = 'c'; name[2] = 'd'; name[3] = 't';
     name[4] = 'e'; name[5] = 'r'; name[6] = 'm'; name[7] = '\0';
     for (;;) {
-        uint8_t req[1u + LCDTERM_BATCH];
+        uint8_t req[2u + LCDTERM_BATCH];
         uint8_t reply[SCREEN_REPLY_LEN];
         long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
         if (n >= 1 && req[0] == LCDTERM_OP_CANVAS) {
@@ -563,7 +564,12 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
         if (n >= 1) {
             const char *p = (const char *)req + 1;
             uint32_t len = (uint32_t)(n - 1);
-            if (req[0] == LCDTERM_OP_WRITE) screen_write(scr, p, len);
+            if (req[0] == LCDTERM_OP_WRITE) {
+                uint8_t vid = (n >= 2) ? req[1] : 0;
+                const char *wp = (const char *)req + 2;
+                uint32_t wlen = (n >= 2) ? (uint32_t)(n - 2) : 0;
+                screen_write_vterm(scr, vid, wp, wlen);
+            }
             else if (req[0] == LCDTERM_OP_TITLE) screen_set_title(scr, p, len);
             else if (req[0] == LCDTERM_OP_RIGHT) screen_set_right(scr, p, len);
             else if (req[0] == LCDTERM_OP_REPAINT) screen_repaint(scr);
@@ -621,8 +627,8 @@ uint32_t lcd7_task_call_count(void) { return g_lcdterm_calls; }
  * there to take it (it died, or never started), and the caller draws. */
 static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
     if (!lcdterm_alive()) return false;
-    uint8_t req[1u + LCDTERM_BATCH];
-    if (len > LCDTERM_BATCH) len = LCDTERM_BATCH;
+    uint8_t req[2u + LCDTERM_BATCH];
+    if (len > 1u + LCDTERM_BATCH) len = 1u + LCDTERM_BATCH;
     req[0] = op;
     for (uint32_t i = 0; i < len; i++) req[1u + i] = (uint8_t)p[i];
     for (int attempt = 0; attempt < 8; attempt++) {
@@ -635,6 +641,8 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
     return false;
 }
 
+static uint8_t g_batch_vid;
+
 /* Called with the batch full, from console_flush(), and before input waits.
  * Takes console_lock itself (re-entrant) because writers append under it. */
 void lcd7_screen_flush(void) {
@@ -642,22 +650,35 @@ void lcd7_screen_flush(void) {
     console_lock();
     if (g_batch_len > 0) {
         uint32_t len = g_batch_len;
+        uint8_t vid = g_batch_vid;
         g_batch_len = 0;
         /* The task died or never answered: draw it here rather than lose it. */
-        if (!lcdterm_send(LCDTERM_OP_WRITE, (const char *)g_batch, len))
-            screen_write(g_scr, (const char *)g_batch, len);
+        uint8_t req[1u + 1u + LCDTERM_BATCH];
+        req[0] = LCDTERM_OP_WRITE;
+        req[1] = vid;
+        for (uint32_t i = 0; i < len; i++) req[2u + i] = g_batch[i];
+        if (!lcdterm_send(LCDTERM_OP_WRITE, (const char *)req + 1, 1u + len))
+            screen_write_vterm(g_scr, vid, (const char *)g_batch, len);
     }
     console_unlock();
 }
 
-void lcd7_screen_putc(char c) {
+void lcd7_screen_putc_vterm(int vid, char c) {
     if (!g_vt_ready) return;
+    if (g_batch_len > 0 && g_batch_vid != (uint8_t)vid) {
+        lcd7_screen_flush();
+    }
+    g_batch_vid = (uint8_t)vid;
     if (!lcdterm_alive()) {
-        screen_write(g_scr, &c, 1);
+        screen_write_vterm(g_scr, (uint8_t)vid, &c, 1);
         return;
     }
     g_batch[g_batch_len++] = (uint8_t)c;
     if (g_batch_len == LCDTERM_BATCH) lcd7_screen_flush();
+}
+
+void lcd7_screen_putc(char c) {
+    lcd7_screen_putc_vterm(vterm_current_id(), c);
 }
 
 /* The batch goes first, so a title and the output before it arrive in the
@@ -1099,6 +1120,7 @@ void lcd7_set_colour(uint16_t rgb565) { (void)rgb565; }
 void lcd7_set_colours(uint16_t fg, uint16_t bg) { (void)fg; (void)bg; }
 uint32_t *lcd7_framebuffer(void) { return 0; }
 void lcd7_screen_putc(char c) { (void)c; }
+void lcd7_screen_putc_vterm(int vid, char c) { (void)vid; (void)c; }
 void lcd7_console_putc(char c) { (void)c; }
 void lcd7_set_tee(unsigned mode) { (void)mode; }
 unsigned lcd7_tee(void) { return LCD_TEE_OFF; }

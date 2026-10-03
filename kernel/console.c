@@ -10,6 +10,7 @@
 #include "kernel/lock.h"
 #include "kernel/sched.h"
 #include "kernel/vterm.h"
+#include "drivers/lcd7.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -202,10 +203,12 @@ void console_putc(char c) {
         return;
     }
     vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
-        vterm_write(vt, &c, 1);
+    if (vt) {
+        if (vt->id > 0) vterm_write(vt, &c, 1);
         if (vt->active) {
             console_emit(g_console_putc, c);
+        } else {
+            lcd7_screen_putc_vterm(vt->id, c);
         }
         return;
     }

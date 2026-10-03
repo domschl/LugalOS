@@ -35,6 +35,7 @@ uint32_t *lcd7_framebuffer(void);
  * path (the `lcd` console device). No-ops until the panel is running.
  * lcd7_unknown_sequences(): escape sequences swallowed without effect. */
 void lcd7_screen_putc(char c);
+void lcd7_screen_putc_vterm(int vid, char c);
 void lcd7_console_putc(char c);
 
 /* Where the `lcd` console also writes: UART (UART0 and its USB mirror, paced

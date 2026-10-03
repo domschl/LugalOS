@@ -94,9 +94,16 @@ typedef struct {
     char      right[SCREEN_RIGHT_MAX];  /* its indicators */
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
     ribbon_t  ribbon;                   /* Phase 44: 1D horizontal window ribbon */
-    vtterm_t  vt;
-    uint16_t  shadow[];                 /* the text window's cells, full width */
+    vtterm_t  vt;                       /* legacy reference to active terminal */
+    struct {
+        vtterm_t vt;
+        uint8_t  vterm_id;
+        bool     in_use;
+    } terms[4];                         /* Phase 44: up to 4 concurrent terminal window instances */
+    uint16_t  shadow[];                 /* shadow buffers for all 4 terminals (4 * cols * rows) */
 } screen_t;
+
+#define SCREEN_MAX_TERMS 4u
 
 /* 38.8: the canvas stores -- one per layout with a canvas (CANVAS and the
  * three splits), each room for a whole frame of w x h, packed tile-local:
@@ -104,9 +111,9 @@ typedef struct {
 #define SCREEN_STORES 4u
 #define SCREEN_STORE_BYTES(w, h) (SCREEN_STORES * ((uint32_t)(w) / 8u) * (uint32_t)(h))
 
-/* What a screen of w x h pixels needs, shadow included. */
+/* What a screen of w x h pixels needs, shadow included for all 4 terminals. */
 #define SCREEN_BYTES(w, h) \
-    (sizeof(screen_t) + SCREEN_TEXT_COLS(w) * SCREEN_TEXT_ROWS(h) * sizeof(uint16_t))
+    (sizeof(screen_t) + SCREEN_MAX_TERMS * SCREEN_TEXT_COLS(w) * SCREEN_TEXT_ROWS(h) * sizeof(uint16_t))
 
 /* Takes over the whole buffer and draws everything: the TEXT layout, the
  * terminal empty, the tile titled `LugalOS` until something says otherwise.
@@ -119,6 +126,7 @@ void screen_set_store(screen_t *scr, void *mem, uint32_t bytes);
 
 /* Terminal output; redraws the title bar if it changed the title. */
 void screen_write(screen_t *scr, const char *s, uint32_t n);
+void screen_write_vterm(screen_t *scr, uint8_t vterm_id, const char *s, uint32_t n);
 
 void screen_set_title(screen_t *scr, const char *s, uint32_t n);
 void screen_set_right(screen_t *scr, const char *s, uint32_t n);
