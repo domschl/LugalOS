@@ -281,17 +281,28 @@ typedef bool (*fat32_dir_scan_fn)(fat32_fs_t *fs, uint32_t sector_lba,
  * through this shared helper fixes that too, as a natural consequence of
  * using one correct implementation everywhere instead of seven hand-rolled
  * ones. */
+/*
+ * A damaged chain ends the scan (phase 40 review, found by
+ * tests/host/fat32_host.c on corrupted images). The walk used to stop only
+ * at an end-of-chain marker, so a FAT entry pointing back into its own chain
+ * -- one flipped bit on a card -- looped forever: the shape of "pulling the
+ * SD card hangs the board". A chain can hold no more clusters than the
+ * volume has, a cluster outside 2..total_clusters+1 is not one, and a sector
+ * that does not read is not handed to the callback as whatever the stack
+ * held. */
 static void fat32_scan_dir(fat32_fs_t *fs, uint32_t start_clus, fat32_dir_scan_fn fn, void *ctx) {
     if (!fs || !fs->dev || !fs->dev->read_blocks || !fn) return;
     uint32_t clus_iter = start_clus;
-    while (clus_iter < 0x0FFFFFF8) {
+    for (uint32_t steps = 0; steps <= fs->total_clusters; steps++) {
+        if (clus_iter < 2 || clus_iter >= fs->total_clusters + 2) return;
         for (uint32_t s = 0; s < fs->bpb.sec_per_clus; s++) {
             fat32_sector_t sector;
             uint32_t lba = cluster_to_lba(fs, clus_iter) + s;
-            fs->dev->read_blocks(fs->dev, sector.raw, lba, 1);
+            if (fs->dev->read_blocks(fs->dev, sector.raw, lba, 1) != 0) return;
             if (fn(fs, lba, sector.entries, 16, ctx)) return;
         }
         clus_iter = fat_get_entry(fs, clus_iter);
+        if (clus_iter >= 0x0FFFFFF8) return;
     }
 }
 
