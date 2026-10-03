@@ -596,6 +596,7 @@ static void cmd_help(void) {
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
     cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
+    cprintf("  fmtselftest     - printk/ksnprintf formatting against fixed strings\n");
     cprintf("  zonetest        - The bulk page zone: placement, alignment, free by address, fallback\n");
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
@@ -3207,6 +3208,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* 38.3, plan/phase38_psram.md: libc's word loops. */
         extern void mem_selftest(void);
         mem_selftest();
+        return;
+    } else if (strcmp(cmd_line, "fmtselftest") == 0) {
+        /* Phase 40 review: the printf engine. */
+        extern void fmt_selftest(void);
+        fmt_selftest();
         return;
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "emac linktest") == 0) {

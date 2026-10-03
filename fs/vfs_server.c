@@ -778,11 +778,9 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * "unset" would claim more than is known, so this says "none". */
         uint8_t uid[NODE_UID_LEN];
         if (node_uid(uid)) {
-            /* Hand-rolled, not "%02x": this custom printf's %x reads a
-             * va_arg(unsigned long), and a uint8_t argument only gets
-             * promoted to int -- correct on rv32 where int and long are
-             * both 32 bits, wrong on rv64 where long is 64. netif_mac_str()
-             * above hits the same trap and hand-rolls for the same reason. */
+            /* Hand-rolled because printk's %x used to read every argument
+             * as a long, which printed an int wrongly on rv64. That is fixed
+             * (`fmtselftest`); this stays because it is correct anyway. */
             static const char hex[] = "0123456789abcdef";
             char uidhex[NODE_UID_LEN * 2 + 1];
             for (unsigned i = 0; i < NODE_UID_LEN; i++) {

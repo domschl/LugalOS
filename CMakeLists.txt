@@ -686,6 +686,8 @@ set(SOURCES
     libc/string.c
     # 38.3: the exhaustive check behind libc's word loops (`memselftest`).
     kernel/memselftest.c
+    # Phase 40 review: the printf engine's integer and string forms.
+    kernel/fmtselftest.c
     # 38.4: the bulk page zone's checks (`zonetest`).
     kernel/zonetest.c
     user/lisp/lisp.c

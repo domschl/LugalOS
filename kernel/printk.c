@@ -338,7 +338,14 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
                 p++;
             }
         }
-        if (*p == 'l') p++; // Handle %ld / %lx / %lu
+        /* Without 'l' the argument was an int (phase 40 review). It is
+         * still fetched as a long -- the capture blob stores every integer
+         * that way -- so it is narrowed back here. On RV64 the ABI passes a
+         * 32-bit value sign-extended in a 64-bit register, so an unsigned
+         * 0x80000000 used to print as ffffffff80000000 with %x and as
+         * 18446744071562067968 with %u; callers hand-rolled hex to avoid it. */
+        bool is_long = (*p == 'l');
+        if (is_long) p++;
 
         switch (*p) {
             case 'c': {
@@ -361,18 +368,21 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
             case 'd':
             case 'i': {
                 long val = argsrc_long(src);
-                long temp = (val < 0) ? -val : val;
+                if (!is_long) val = (int)val;
+                /* The magnitude in unsigned arithmetic: -LONG_MIN overflows. */
+                unsigned long mag = (val < 0) ? 0UL - (unsigned long)val : (unsigned long)val;
+                unsigned long temp = mag;
                 int digits = (val <= 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
+                /* The sign goes before zero padding ("-0042"), after space
+                 * padding ("  -42"); it used to come after both ("00-42"). */
+                if (val < 0 && zero_pad) pc(ctx, '-');
                 if (width > digits && !left_pad) {
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
-                if (val < 0) {
-                    pc(ctx, '-');
-                    val = -val;
-                }
-                print_num(pc, ctx, (unsigned long)val, 10);
+                if (val < 0 && !zero_pad) pc(ctx, '-');
+                print_num(pc, ctx, mag, 10);
                 if (width > digits && left_pad) {
                     for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
@@ -380,6 +390,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
             }
             case 'u': {
                 unsigned long val = (unsigned long)argsrc_long(src);
+                if (!is_long) val = (unsigned int)val;
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 10; }
@@ -397,6 +408,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
             case 'X':
             case 'p': {
                 unsigned long val = (unsigned long)argsrc_long(src);
+                if (!is_long && *p != 'p') val = (unsigned int)val;
                 unsigned long temp = val;
                 int digits = (val == 0) ? 1 : 0;
                 while (temp != 0) { digits++; temp /= 16; }

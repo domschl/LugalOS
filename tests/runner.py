@@ -1011,6 +1011,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("libc Word Loops Match A Byte Reference At Every Alignment (38.3 memselftest)",
                         mem_ok, log if not mem_ok else ""))
 
+        # Phase 40 review: the printf engine. On rv64 an unsigned int with its
+        # top bit set printed sign-extended (%x of 0x80000000 gave
+        # ffffffff80000000), and %ld of LONG_MIN was a UBSan halt.
+        ok, log = session.send_and_expect("fmtselftest", r"FMTSELFTEST_(OK|FAIL)", timeout=5.0)
+        ok = ok and "FMTSELFTEST_OK" in log
+        results.append(("printk Formats Integers And Strings Correctly (40 review fmtselftest)",
+                        ok, log if not ok else ""))
+
         # 38.4 (plan/phase38_psram.md §3.1): the bulk page zone. QEMU has no
         # PSRAM, so its stand-in is 2 MB of ordinary RAM above the fast zone
         # -- everything but the memory type: placement, NAPOT alignment, free
