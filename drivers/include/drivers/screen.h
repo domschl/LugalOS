@@ -6,6 +6,7 @@
 
 #include "drivers/canvas1.h"
 #include "drivers/vtterm.h"
+#include "drivers/ribbon.h"
 
 /* The whole 1-bpp screen as the terminal sees it -- 37.1/37.1a/37.3b,
  * plan/phase37_screen_layouts_and_apps.md §1: a menu bar, the grey

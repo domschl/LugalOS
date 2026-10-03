@@ -602,6 +602,7 @@ set(SOURCES
     # extends in 37.3.
     drivers/screen.c
     drivers/canvas1.c
+    drivers/ribbon.c
     # 37.3b: the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c
     # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
@@ -939,6 +940,7 @@ set_source_files_properties(
     drivers/fbtext.c
     drivers/screen.c
     drivers/canvas1.c
+    drivers/ribbon.c
     # 36.7: not U-mode, but the same hazard from the other side -- the USB
     # engine runs on core 1 from RAM and must never read flash, where a jump
     # table's .rodata would be.

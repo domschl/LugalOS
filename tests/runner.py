@@ -3499,6 +3499,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Editor: Wrap, Rows, UTF-8, Undo, Search, Safe Save (37.5b editselftest)",
                         ok and "EDITOR_SELFTEST_OK" in log, log if not (ok and "EDITOR_SELFTEST_OK" in log) else ""))
 
+        # Phase 44.1: Virtual Terminal Subsystem (vtermselftest)
+        ok, log = session.send_and_expect("vtermselftest", r"vterm selftest: (PASSED|FAILED)[^\n]*\n", timeout=10.0)
+        results.append(("Virtual Terminal Subsystem (44.1 vtermselftest)",
+                        ok and "vterm selftest: PASSED" in log, log if not (ok and "vterm selftest: PASSED" in log) else ""))
+
+        # Phase 44.2: Ribbon Geometry Manager (ribbonselftest)
+        ok, log = session.send_and_expect("ribbonselftest", r"ribbon geometry selftest: (PASSED|FAILED)[^\n]*\n", timeout=10.0)
+        results.append(("Ribbon Window Geometry Manager (44.2 ribbonselftest)",
+                        ok and "ribbon geometry selftest: PASSED" in log, log if not (ok and "ribbon geometry selftest: PASSED" in log) else ""))
+
         # 38.7: `edbench` -- the editor's buffer from the bulk zone, a 16 KB
         # document saved to and loaded from /ram0, typed into and searched.
         # Timings are the hardware suite's business; here it must finish and

@@ -32,6 +32,7 @@
 #include "drivers/usbkbd.h"
 #include "drivers/usbkbd_task.h"
 #include "drivers/vtterm.h"
+#include "drivers/ribbon.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -562,6 +563,7 @@ static void cmd_help(void) {
     cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
     cprintf("  vterm [list|new|switch|close|selftest] - Virtual terminals & multi-console subsystem\n");
+    cprintf("  ribbon [selftest]           - Window ribbon geometry manager & tests\n");
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
     cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
     cprintf("  priotest        - Prove a high-priority task wins the next reschedule over hogs\n");
@@ -3212,11 +3214,12 @@ static void cmd_vterm(const char *cmd_line) {
         while (*p >= '0' && *p <= '9') {
             id = id * 10 + (*p++ - '0');
         }
-        if (vterm_set_active(id)) {
-            cprintf("Switched to vterm %d\n", id);
-        } else {
+        if (!vterm_get(id)) {
             cprintf("vterm switch: invalid or unallocated vterm %d\n", id);
+            return;
         }
+        cprintf("Switched to vterm %d\n", id);
+        vterm_set_active(id);
         return;
     }
 
@@ -3242,6 +3245,16 @@ static void cmd_vterm(const char *cmd_line) {
     }
 
     cprintf("Usage: vterm [list | new [title] | switch <id> | close <id> | selftest]\n");
+}
+
+static void cmd_ribbon(const char *cmd_line) {
+    const char *args = cmd_line + 6;
+    while (*args == ' ') args++;
+    if (*args == '\0' || strcmp(args, "selftest") == 0 || strcmp(args, "test") == 0) {
+        ribbon_selftest();
+        return;
+    }
+    cprintf("Usage: ribbon [selftest]\n");
 }
 
 static void shell_run_editor(const char *filename) {
@@ -3303,6 +3316,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "vtermselftest") == 0) {
         int fails = vterm_selftest();
         cprintf("vterm selftest: %s\n", fails == 0 ? "PASSED" : "FAILED");
+        return;
+    } else if (strncmp(cmd_line, "ribbon", 6) == 0 && (cmd_line[6] == '\0' || cmd_line[6] == ' ')) {
+        cmd_ribbon(cmd_line);
+        return;
+    } else if (strcmp(cmd_line, "ribbonselftest") == 0) {
+        ribbon_selftest();
         return;
     } else if (strcmp(cmd_line, "editselftest") == 0) {
         (void)editor_selftest();
