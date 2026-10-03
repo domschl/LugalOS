@@ -89,18 +89,6 @@ attached, find the loop, make it fail the operation; the FAT32 read path now
 returns an end-of-chain on a read error (38.0), which is the shape the rest
 should have.
 
-## `cc` searches only /ram0 for a relative `#include`
-
-**Destination: phase 40, item 5.**
-
-`#include "myhdr.h"` in `/sd0/prog.c` does not find `/sd0/myhdr.h`:
-`user/chibicc/preprocess.c` tries only `/ram0/<name>` and
-`/ram0/include/<name>`. An absolute include works.
-
-**Fix:** try the including file's directory first. `preprocess_internal()`
-gets a buffer, not a path, so the directory has to be threaded down, or kept
-in a small include stack next to `depth`.
-
 ## `K3` checks pin values from a table, not from the build
 
 **Destination: phase 40, item 6.**

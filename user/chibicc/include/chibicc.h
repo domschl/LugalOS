@@ -166,7 +166,7 @@ extern Obj *globals;
 extern bool chibicc_pool_exhausted;
 
 /* Function Prototypes */
-char *preprocess(const char *input);
+char *preprocess(const char *input, const char *src_path);
 Token *tokenize(char *input);
 Function *parse(Token *tok);
 int codegen(Function *prog, uint8_t *code_buf, int max_size);

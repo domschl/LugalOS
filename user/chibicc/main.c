@@ -54,7 +54,7 @@ static int compile_inner(const char *src_path, const char *dst_elf_path) {
     src_buf[bytes] = '\0';
 
     printk("[chibicc] Preprocessing '%s'...\n", src_path);
-    char *preprocessed_src = preprocess(src_buf);
+    char *preprocessed_src = preprocess(src_buf, src_path);
 
     printk("[chibicc] Tokenizing '%s'...\n", src_path);
     Token *tok = tokenize(preprocessed_src);

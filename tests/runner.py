@@ -1410,6 +1410,28 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc: several functions, (void) and multi-arg params, a real #include",
                         ok, log if not ok else ""))
 
+        # Phase 40, item 5: a quoted #include is looked for beside the file
+        # that includes it. It used to be tried only in /ram0/ and
+        # /ram0/include/, so a project in its own directory could not include
+        # its own headers. outer.h includes inner.h *before* its own #define,
+        # which is the other half: every include level used to be read into
+        # one shared buffer, so the inner header overwrote the rest of the
+        # outer one and OUTER was never defined.
+        session.send_and_expect("mkdir /ram0/proj", r"=> ", timeout=4.0)
+        session.send_and_expect('(write-file "/ram0/proj/inner.h" "#define INNER 40\\n")',
+                                r"#t", timeout=4.0)
+        session.send_and_expect('(write-file "/ram0/proj/outer.h" '
+                                '"#include \\"inner.h\\"\\n#define OUTER 2\\n")',
+                                r"#t", timeout=4.0)
+        session.send_and_expect('(write-file "/ram0/proj/p.c" "#include <lugal.h>\\n'
+                                '#include \\"outer.h\\"\\n'
+                                'main() { putnum(INNER * 1000 + OUTER * 7); printf(\\"\\\\n\\"); }\\n")',
+                                r"#t", timeout=4.0)
+        ok, log = session.send_and_expect("cc /ram0/proj/p.c /ram0/proj/p.elf\nexec /ram0/proj/p.elf",
+                                          r"40014.*returned 0", timeout=20.0)
+        results.append(("chibicc: a quoted #include is found beside its includer, nested (40.5)",
+                        ok, log if not ok else ""))
+
         # 5a-ii. `ed` round-trips a file it did not create.
         #
         # The ed test above appends two lines to a *new* file and asserts on
