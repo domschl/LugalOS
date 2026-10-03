@@ -5455,6 +5455,92 @@ def test_mqttd_publish_rules(elf_path: Path, img_path: Path, arch_name: str) -> 
         broker.close()
 
 
+def test_mqttd_file_source(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Phase 40, item 10: an mqttd source read from a file.
+
+    A gateway that has mounted a sensor node's namespace republishes what the
+    node measures by reading its /proc/sensors -- key=value lines -- through
+    the VFS. A local file stands in for the mount here: the VFS path is the
+    same code whichever kind of volume answers, and the 9P mount itself is
+    tested elsewhere.
+
+    Asserted: the field's integer published with the decimals given
+    (negative, so the sign and the point both have to be right); a file that
+    says `valid=no` publishes nothing; one whose `age_s` is past the limit
+    publishes nothing; and once it is fresh again the new value goes out.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+
+    name = "MQTT Appliance: A Source Read From A File (40.10)"
+    broker = MqttBroker()
+    session = QemuSession(elf_path, img_path, arch_name)
+
+    def put(body: str) -> bool:
+        ok, _ = session.send_and_expect(f'(write-file "/ram0/node.txt" "{body}")', r"#t", timeout=5.0)
+        return ok
+
+    def temps() -> list[bytes]:
+        return [p.payload for p in broker.publishes if p.topic.endswith("/temp")]
+
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit',
+            r"10\.0\.2\.15", timeout=8.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-500:]}")
+        if not put("part=BME280\\nvalid=yes\\nage_s=3\\ntemperature_c100=-1234\\n"):
+            return (name, False, "could not write the stand-in file")
+        ok, log = session.send_and_expect("mqttd file temp /ram0/node.txt temperature_c100 2 60",
+                                          r'"temp" reads', timeout=6.0)
+        if not ok:
+            return (name, False, f"`mqttd file` was not accepted: {log[-400:]}")
+        # Unfiltered and published on any change at most once a second, so
+        # what arrives is the file's value, not an average of it.
+        session.send_and_expect("mqttd rule temp 1 600 0 0", r"publishes on a move of", timeout=6.0)
+        ok, log = session.send_and_expect("(mqttd-file \"temp\" \"/x\" \"y\")", r"=> #f", timeout=6.0)
+        if not ok:
+            return (name, False, f"a second source with the same name was not refused: {log[-300:]}")
+        ok, log = session.send_and_expect(f"mqttd start 10.0.2.2:{broker.port} 1",
+                                          r"mqttd: started as pid \d+", timeout=10.0)
+        if not ok:
+            return (name, False, f"mqttd did not start: {log[-500:]}")
+        if not broker.wait_for_connect(timeout=25.0):
+            return (name, False, "mqttd never connected")
+        deadline = time.time() + 10.0
+        while time.time() < deadline and not temps():
+            time.sleep(0.2)
+        if temps()[:1] != [b"-12.34"]:
+            return (name, False, f"expected -12.34 first, got {temps()}")
+
+        put("valid=no\\nage_s=3\\ntemperature_c100=2000\\n")
+        time.sleep(4.0)
+        put("valid=yes\\nage_s=999\\ntemperature_c100=2100\\n")
+        time.sleep(4.0)
+        stale = [v for v in temps() if v != b"-12.34"]
+        if stale:
+            return (name, False, f"published a value the file marked invalid or stale: {temps()}")
+
+        put("valid=yes\\nage_s=1\\ntemperature_c100=2200\\n")
+        deadline = time.time() + 10.0
+        while time.time() < deadline and b"22.00" not in temps():
+            time.sleep(0.2)
+        if b"22.00" not in temps():
+            return (name, False, f"the fresh value never went out: {temps()}")
+        return (name, True, f"published {temps()}")
+    finally:
+        session.close()
+        broker.close()
+
+
 def test_mqtt_config_roundtrip(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """Q6, plan/phase26_mqtt_and_environment_sensors.md: the broker lives in
     the identity record, and a stored broker is the intent to publish.
@@ -8021,6 +8107,7 @@ def main() -> int:
         _run_single(test_mqtt_client(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqttd_appliance(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqttd_publish_rules(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqttd_file_source(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_config_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_mqtt_subscribe(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tcp_under_impairment(rv64_elf, img_for("rv64"), "rv64"))

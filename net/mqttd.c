@@ -6,6 +6,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "fs/vfs.h"
 #include <string.h>
 
 /* See net/include/net/mqttd.h for what this is for. This file is the loop.
@@ -94,10 +95,13 @@ static const mqttd_rule_t g_default_rule = {
     .alpha_shift    = MQTTD_DEFAULT_ALPHA_SHIFT,
 };
 
+static mqttd_source_state_t *find_source(const char *name);
+
 int mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
                      uint8_t decimals, const mqttd_rule_t *rule) {
     if (!name || !*name || !fn) return -1;
     if (g_src_count >= MQTTD_MAX_SOURCES) return -1;
+    if (find_source(name)) return -1;   /* two sources, one topic: neither readable */
     mqttd_source_state_t *st = &g_src[g_src_count];
     memset(st, 0, sizeof(*st));
     st->name = name;
@@ -197,7 +201,98 @@ static bool due(const mqttd_source_state_t *st, uint64_t now) {
            since >= (uint64_t)st->rule.max_interval_s * 1000u;   /* heartbeat */
 }
 
-void mqttd_clear_sources(void) { g_src_count = 0; }
+/* --- File-backed sources (phase 40, item 10) --- */
+
+typedef struct {
+    bool     in_use;
+    char     name[MQTTD_NAME_MAX];
+    char     path[MQTTD_FILE_PATH_MAX];
+    char     field[MQTTD_FILE_FIELD_MAX];
+    uint16_t max_age_s;
+} mqttd_file_src_t;
+
+static mqttd_file_src_t g_file_src[MQTTD_MAX_SOURCES];
+
+/* The text after `key=` at the start of a line of `buf`, or NULL. */
+static const char *kv_find(const char *buf, const char *key) {
+    size_t klen = strlen(key);
+    for (const char *line = buf; *line; ) {
+        if (strncmp(line, key, klen) == 0 && line[klen] == '=') return line + klen + 1;
+        while (*line && *line != '\n') line++;
+        if (*line) line++;
+    }
+    return NULL;
+}
+
+/* A signed decimal integer that fits int32_t and ends the line. */
+static bool parse_i32_line(const char *p, int32_t *out) {
+    bool neg = (*p == '-');
+    if (*p == '-' || *p == '+') p++;
+    if (*p < '0' || *p > '9') return false;
+    int64_t v = 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (*p++ - '0');
+        if (v > (int64_t)INT32_MAX + 1) return false;
+    }
+    if (neg) v = -v;
+    if (v > INT32_MAX || v < INT32_MIN) return false;
+    while (*p == ' ' || *p == '\r') p++;
+    if (*p && *p != '\n') return false;   /* "12.5" or "12 C": not this format */
+    *out = (int32_t)v;
+    return true;
+}
+
+static bool file_source_sample(int32_t *out, void *ctx) {
+    const mqttd_file_src_t *fs = (const mqttd_file_src_t *)ctx;
+    char buf[512];
+    int n = vfs_read(fs->path, buf, sizeof(buf));
+    if (n <= 0) return false;
+    buf[n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1] = '\0';
+
+    const char *valid = kv_find(buf, "valid");
+    if (valid && strncmp(valid, "yes", 3) != 0) return false;
+    if (fs->max_age_s) {
+        int32_t age;
+        const char *a = kv_find(buf, "age_s");
+        if (a && (!parse_i32_line(a, &age) || age > (int32_t)fs->max_age_s)) return false;
+    }
+    const char *v = kv_find(buf, fs->field);
+    return v && parse_i32_line(v, out);
+}
+
+static bool copy_fits(char *dst, size_t cap, const char *src) {
+    if (!src || !*src || strlen(src) >= cap) return false;
+    memcpy(dst, src, strlen(src) + 1);
+    return true;
+}
+
+int mqttd_add_file_source(const char *name, const char *path, const char *field,
+                          uint8_t decimals, uint16_t max_age_s,
+                          const mqttd_rule_t *rule) {
+    mqttd_file_src_t *fs = NULL;
+    for (uint32_t i = 0; i < MQTTD_MAX_SOURCES && !fs; i++)
+        if (!g_file_src[i].in_use) fs = &g_file_src[i];
+    if (!fs) return -1;
+    mqttd_file_src_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    if (!copy_fits(tmp.name, sizeof(tmp.name), name) ||
+        !copy_fits(tmp.path, sizeof(tmp.path), path) ||
+        !copy_fits(tmp.field, sizeof(tmp.field), field))
+        return -1;
+    tmp.max_age_s = max_age_s;
+    tmp.in_use = true;
+    *fs = tmp;
+    if (mqttd_add_source(fs->name, file_source_sample, fs, decimals, rule) != 0) {
+        fs->in_use = false;
+        return -1;
+    }
+    return 0;
+}
+
+void mqttd_clear_sources(void) {
+    g_src_count = 0;
+    for (uint32_t i = 0; i < MQTTD_MAX_SOURCES; i++) g_file_src[i].in_use = false;
+}
 uint32_t mqttd_source_count(void) { return g_src_count; }
 bool mqttd_running(void) { return g.running; }
 

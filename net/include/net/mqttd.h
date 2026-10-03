@@ -115,6 +115,28 @@ typedef struct {
 int  mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
                       uint8_t decimals, const mqttd_rule_t *rule);
 
+/* A source read from a file (phase 40, item 10): a gateway that has mounted
+ * a sensor node's namespace can republish what the node measures, with no
+ * code for that sensor on the gateway. Each sample reads `path` through the
+ * VFS -- so a 9P mount is no different from a local file -- and takes the
+ * integer on the line `field=<value>`, the key=value format of /proc/sensors.
+ *
+ * Two lines the file may carry are honoured, because they are how a node
+ * tells a reader its value is not worth publishing: `valid=` anything but
+ * "yes" is no reading, and with `max_age_s` non-zero, an `age_s=` above it is
+ * no reading either -- a frozen value republished looks exactly like a live
+ * one. A read that fails (the mount gone, the field missing) is no reading,
+ * which publishes nothing, like any source.
+ *
+ * `name`, `path` and `field` are copied. Returns 0, or -1 if the table is
+ * full, the name is taken, or a string does not fit. */
+#define MQTTD_FILE_PATH_MAX  96
+#define MQTTD_FILE_FIELD_MAX 24
+#define MQTTD_NAME_MAX       24
+int  mqttd_add_file_source(const char *name, const char *path, const char *field,
+                           uint8_t decimals, uint16_t max_age_s,
+                           const mqttd_rule_t *rule);
+
 /* Changes a registered source's rule, by name. Returns 0, or -1 if there is
  * no such source. Takes effect on the next sample. */
 int  mqttd_set_rule(const char *name, const mqttd_rule_t *rule);

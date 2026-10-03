@@ -25,6 +25,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/ntp.h"
+#include "net/mqttd.h"
 #include <limits.h>
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
@@ -4551,6 +4552,24 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
             ip[0], ip[1], ip[2], ip[3], mask[0], mask[1], mask[2], mask[3],
             gw[0], gw[1], gw[2], gw[3]);
     return &true_val;
+}
+
+/* `(mqttd-file "name" "path" "field" [decimals [max-age-s]])` -- phase 40,
+ * item 10: publish a value read from a file, typically a mounted node's
+ * /proc/sensors, so a gateway's usr_init.lisp can republish its nodes. The
+ * same as the shell's `mqttd file`; see mqttd_add_file_source(). */
+static lisp_val_t *prim_mqttd_file(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *name = lisp_list_ref(args, 0), *path = lisp_list_ref(args, 1);
+    lisp_val_t *field = lisp_list_ref(args, 2);
+    if (!name || !path || !field || name->type != LISP_STRING ||
+        path->type != LISP_STRING || field->type != LISP_STRING)
+        return &false_val;
+    long decimals = arg_int(args, 3, 0), max_age = arg_int(args, 4, 0);
+    if (decimals < 0 || decimals > 9 || max_age < 0 || max_age > 65535) return &false_val;
+    return mqttd_add_file_source(get_str_val(name), get_str_val(path), get_str_val(field),
+                                 (uint8_t)decimals, (uint16_t)max_age, NULL) == 0
+        ? &true_val : &false_val;
 }
 
 /* `(ntp-sync ["server"])` -- R6: set this board's clock from the segment.

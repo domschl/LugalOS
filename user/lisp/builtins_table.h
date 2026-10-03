@@ -219,6 +219,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("mount-ramdisk", prim_mount_ramdisk),
     BUILTIN_PRIM("mount-remote", prim_mount_remote),
     BUILTIN_PRIM("mounted?", prim_mounted),
+    BUILTIN_PRIM("mqttd-file", prim_mqttd_file),
     BUILTIN_PRIM("net-config", prim_net_config),
     BUILTIN_PRIM("net-identity", prim_net_identity),
     BUILTIN_PRIM("net-mount", prim_net_mount),

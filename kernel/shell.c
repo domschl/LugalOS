@@ -542,7 +542,8 @@ static void cmd_help(void) {
     cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>\n");
     cprintf("       |sub <filter>|unsub <filter>|disconnect]\n");
     cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
-    cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>]\n");
+    cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>\n");
+    cprintf("        |file <n> <path> <field> [dec] [max_age]]\n");
     cprintf("  mqttcfg [<ip>[:port] [sample_s] [user [pass]]|clear] - broker kept in the record\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
@@ -1209,6 +1210,9 @@ static void cmd_sensor(const char *arg) {
  *   mqttd stop
  *   mqttd fake                     register a synthetic source (see below)
  *   mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]
+ *   mqttd file <name> <path> <field> [decimals] [max_age_s]
+ *                                  a source read from a file, e.g. a mounted
+ *                                  node's /proc/sensors (phase 40, item 10)
  *
  * `sample_s` is how often a source is *read*; how often it is published is
  * the source's own rule, which is the point of having one.
@@ -1265,6 +1269,42 @@ static void cmd_mqttd(const char *arg) {
             return;
         }
         cprintf("mqttd: registered a synthetic source \"fake\"\n");
+        return;
+    }
+
+    if (strncmp(arg, "file ", 5) == 0) {
+        /* mqttd file <name> <path> <field> [decimals] [max_age_s] */
+        const char *a = arg + 5;
+        char name[MQTTD_NAME_MAX], path[MQTTD_FILE_PATH_MAX], field[MQTTD_FILE_FIELD_MAX];
+        char *words[3] = { name, path, field };
+        const uint32_t caps[3] = { sizeof(name), sizeof(path), sizeof(field) };
+        for (uint32_t w = 0; w < 3u; w++) {
+            while (*a == ' ') a++;
+            uint32_t n = 0;
+            while (*a && *a != ' ') {
+                if (n + 1u >= caps[w]) { cprintf("mqttd: argument %lu is too long\n", (unsigned long)w + 1u); return; }
+                words[w][n++] = *a++;
+            }
+            words[w][n] = '\0';
+        }
+        if (!field[0]) {
+            cprintf("usage: mqttd file <name> <path> <field> [decimals] [max_age_s]\n");
+            return;
+        }
+        while (*a == ' ') a++;
+        unsigned decimals = 0, max_age = 0;
+        while (*a >= '0' && *a <= '9') decimals = decimals * 10u + (unsigned)(*a++ - '0');
+        while (*a == ' ') a++;
+        while (*a >= '0' && *a <= '9' && max_age < 100000u) max_age = max_age * 10u + (unsigned)(*a++ - '0');
+        if (decimals > 9u || max_age > 65535u) {
+            cprintf("mqttd: decimals at most 9, max_age_s at most 65535\n");
+            return;
+        }
+        if (mqttd_add_file_source(name, path, field, (uint8_t)decimals, (uint16_t)max_age, NULL) != 0) {
+            cprintf("mqttd: could not add \"%s\" (table full, or the name is taken)\n", name);
+            return;
+        }
+        cprintf("mqttd: \"%s\" reads %s from %s\n", name, field, path);
         return;
     }
 
@@ -1359,7 +1399,8 @@ static void cmd_mqttd(const char *arg) {
     }
 
     cprintf("usage: mqttd [start <ip>[:port] [sample_s] [user [pass]] | stop | fake\n");
-    cprintf("             | rule <name> <min_s> <max_s> <delta> [alpha_shift]]\n");
+    cprintf("             | rule <name> <min_s> <max_s> <delta> [alpha_shift]\n");
+    cprintf("             | file <name> <path> <field> [decimals] [max_age_s]]\n");
 }
 
 /* Parses a trailing unsigned decimal argument, or 0 if there is none. */

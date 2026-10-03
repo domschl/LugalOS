@@ -122,16 +122,6 @@ ioctl framing byte for byte, or a `bsscfg:` iovar), then leave before every
 manual join. Any other setup iovar refused while associated needs `mfp`'s
 judgement meanwhile.
 
-## `mqttd` has no file-backed source, so a gateway cannot republish a mounted node
-
-**Destination: phase 40, item 10.**
-
-`mqttd_add_source()` takes a function; every source is compiled in beside its
-driver. A gateway that has mounted a sensor node's namespace cannot publish a
-value out of it. **Fix:** `mqttd_add_file_source(name, path, field, rule)`
-whose sample function reads through the VFS; rate limiting, will and
-reconnect work unchanged.
-
 ## Pressure is published as station pressure, not reduced to sea level
 
 **Destination: phase 40, item 11** -- needs the owner's decision on point 3.
