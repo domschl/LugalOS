@@ -9,6 +9,7 @@
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/sched.h"
+#include "kernel/vterm.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -145,6 +146,14 @@ void console_putc(char c) {
             g_cap_len = g_cap_max - h;
         }
         g_cap[g_cap_len++] = c;
+        return;
+    }
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        vterm_write(vt, &c, 1);
+        if (vt->active) {
+            console_emit(g_console_putc, c);
+        }
         return;
     }
     console_emit(g_console_putc, c);
@@ -404,13 +413,22 @@ static void console_pump(void) {
      * allows. There is no fairness to arrange: a person types on one of
      * them at a time, and a script sending a block on another is exactly
      * what the ring bound above already handles. */
+    vterm_t *act = vterm_active();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        while (!pushback_full() && src->has_char()) {
-            int c = src->getc();
-            if (c < 0) break;
-            if (c == 0x03) g_interrupt_pending = true;
-            pushback_put((char)c);
+        if (act && act->id > 0) {
+            while (src->has_char()) {
+                int c = src->getc();
+                if (c < 0) break;
+                if (!vterm_feed_char(act, (char)c)) break;
+            }
+        } else {
+            while (!pushback_full() && src->has_char()) {
+                int c = src->getc();
+                if (c < 0) break;
+                if (c == 0x03) g_interrupt_pending = true;
+                pushback_put((char)c);
+            }
         }
     }
     ylock_release(&g_input_lock);
@@ -422,6 +440,10 @@ bool console_has_char(void) {
     screen_flush();
     console_pump();
     run_hotkey();
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        return vterm_has_char(vt);
+    }
     uintptr_t f = irq_save();
     bool queued = (g_pb_head != g_pb_tail);
     irq_restore(f);
@@ -438,6 +460,17 @@ char console_getc(void) {
      * The screen is flushed on every turn, not only on the way in (see
      * console_has_char()): an empty flush is one comparison, and the turns
      * of a wait are when the status bar's clock gets to move (37.1). */
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        for (;;) {
+            screen_flush();
+            console_pump();
+            run_hotkey();
+            int c = vterm_getc_nonblock(vt);
+            if (c >= 0) return (char)c;
+            sched_yield();
+        }
+    }
     for (;;) {
         screen_flush();
         console_pump();
@@ -449,15 +482,28 @@ char console_getc(void) {
 }
 
 void console_ungetc(char c) {
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        vterm_ungetc(vt, c);
+        return;
+    }
     pushback_put(c);
 }
 
 
 bool console_interrupt_requested(void) {
     console_pump();
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        return vterm_check_interrupt(vt);
+    }
     return g_interrupt_pending;
 }
 
 void console_interrupt_clear(void) {
+    vterm_t *vt = vterm_current();
+    if (vt && vt->id > 0) {
+        (void)vterm_check_interrupt(vt);
+    }
     g_interrupt_pending = false;
 }

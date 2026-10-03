@@ -535,6 +535,7 @@ set(SOURCES
     kernel/klog.c
     kernel/klogd.c
     kernel/console.c
+    kernel/vterm.c
     kernel/device.c
     kernel/board.c
     kernel/chan.c

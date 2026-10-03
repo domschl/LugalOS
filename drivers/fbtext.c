@@ -80,7 +80,7 @@ LCDTERM_UTEXT const uint8_t *fbtext_glyph(uint32_t cp) {
 }
 
 LCDTERM_UTEXT void fbtext_putcode(fbtext_t *t, unsigned col, unsigned row, uint8_t code, bool inverse) {
-    if (col >= t->cols || row >= t->rows) return;
+    if (!t || !t->fb || col >= t->cols || row >= t->rows) return;
     if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
     const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
@@ -96,7 +96,7 @@ LCDTERM_UTEXT void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_
 }
 
 LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, unsigned col1) {
-    if (row >= t->rows) return;
+    if (!t || !t->fb || row >= t->rows) return;
     if (col1 > t->cols) col1 = t->cols;
     if (col0 >= col1) return;
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col0;
@@ -113,7 +113,7 @@ LCDTERM_UTEXT void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, 
 }
 
 LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
-    if (row >= t->rows) return;
+    if (!t || !t->fb || row >= t->rows) return;
     if (n > (unsigned)t->rows - row) n = t->rows - row;
     uint32_t px_rows = (uint32_t)n * FONT8X16_H;
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride;
@@ -130,7 +130,7 @@ LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
 }
 
 LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
-    if (n == 0) return;
+    if (!t || !t->fb || n == 0) return;
     if (n >= t->rows) {
         fbtext_clear_rows(t, 0, t->rows);
         return;
@@ -168,7 +168,7 @@ LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
  * by pixel row, in the order that never reads a row already overwritten;
  * one pixel row's bytes never overlap another's, so each is a forward copy. */
 LCDTERM_UTEXT void fbtext_move_rows(fbtext_t *t, unsigned dst, unsigned src, unsigned n) {
-    if (n == 0 || dst == src || dst >= t->rows || src >= t->rows) return;
+    if (!t || !t->fb || n == 0 || dst == src || dst >= t->rows || src >= t->rows) return;
     unsigned far = dst > src ? dst : src;
     if (n > (unsigned)t->rows - far) n = t->rows - far;
     uint32_t px = (uint32_t)n * FONT8X16_H;
@@ -182,7 +182,7 @@ LCDTERM_UTEXT void fbtext_move_rows(fbtext_t *t, unsigned dst, unsigned src, uns
 }
 
 LCDTERM_UTEXT void fbtext_cursor_xor(fbtext_t *t, unsigned col, unsigned row) {
-    if (col >= t->cols || row >= t->rows) return;
+    if (!t || !t->fb || col >= t->cols || row >= t->rows) return;
     uint8_t *p = t->fb + ((uint32_t)row * FONT8X16_H + FONT8X16_H - 2u) * t->stride + col;
     p[0] ^= 0xffu;
     p[t->stride] ^= 0xffu;

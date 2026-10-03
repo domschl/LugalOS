@@ -122,11 +122,17 @@ typedef struct task {
      * from the start so that doing so is a call to task_set_affinity() and
      * not a second mechanism. */
     int          hart_affinity;
+    /* Phase 44: virtual terminal ID (0 = root/default console). */
+    int          vterm_id;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
  * always a valid "current task" to switch away from. */
 void sched_init(void);
+
+/* Phase 44: Virtual terminal association. */
+int  task_get_vterm(int pid);
+void task_set_vterm(int pid, int vterm_id);
 
 /* Creates a READY task with its own kernel stack of `stack_pages` pages.
  * Returns the pid, or -1 if the table is full, `stack_pages` is 0, or no

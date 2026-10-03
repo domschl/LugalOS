@@ -256,6 +256,16 @@ int task_set_affinity(int pid, int hart) {
     return 0;
 }
 
+int task_get_vterm(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return 0;
+    return g_tasks[pid].vterm_id;
+}
+
+void task_set_vterm(int pid, int vterm_id) {
+    if (pid < 0 || pid >= MAX_TASKS) return;
+    g_tasks[pid].vterm_id = vterm_id;
+}
+
 /* A secondary hart's boot context becomes a task, the same way sched_init()
  * does it for the primary -- there must always be something to switch away
  * from, and set_cur() must name a real slot before this hart calls
@@ -454,6 +464,8 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;
+    int cpid = cur();
+    t->vterm_id = (cpid >= 0 && cpid < MAX_TASKS) ? g_tasks[cpid].vterm_id : 0;
 
     /* Paint it before priming, so a high-water mark can be recovered later
      * (§6, plan/phase15_memory_reclamation.md).

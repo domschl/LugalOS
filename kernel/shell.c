@@ -18,6 +18,7 @@
 #include "kernel/hart.h"
 #include "kernel/time.h"
 #include "kernel/discipline.h"
+#include "kernel/vterm.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
@@ -560,6 +561,7 @@ static void cmd_help(void) {
     cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
     cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
     cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
+    cprintf("  vterm [list|new|switch|close|selftest] - Virtual terminals & multi-console subsystem\n");
     cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
     cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
     cprintf("  priotest        - Prove a high-priority task wins the next reschedule over hogs\n");
@@ -3171,6 +3173,77 @@ static void shell_editor_eval(const char *src, char *msg, uint32_t cap) {
 
 static const editor_hooks_t g_shell_editor = { shell_editor_eval };
 
+static void cmd_vterm(const char *cmd_line) {
+    const char *args = cmd_line + 5;
+    while (*args == ' ') args++;
+
+    if (*args == '\0' || strcmp(args, "list") == 0) {
+        cprintf("Virtual Terminals (%d allocated):\n", vterm_count());
+        cprintf("  ID  PID  Active  Title\n");
+        for (int i = 0; i < (int)MAX_VTERMS; i++) {
+            vterm_t *vt = vterm_get(i);
+            if (vt) {
+                cprintf("  %2d  %3d    %s     %s\n",
+                        vt->id, vt->owner_pid,
+                        vt->active ? "YES" : " no",
+                        vt->title);
+            }
+        }
+        cprintf("Current task is on vterm %d; active foreground is vterm %d.\n",
+                vterm_current_id(), vterm_active_id());
+        return;
+    }
+
+    if (strncmp(args, "new", 3) == 0) {
+        const char *t = args + 3;
+        while (*t == ' ') t++;
+        int vid = shell_spawn_terminal(*t ? t : NULL);
+        if (vid >= 0) {
+            cprintf("Spawned terminal on vterm %d\n", vid);
+        } else {
+            cprintf("vterm: failed to spawn terminal\n");
+        }
+        return;
+    }
+
+    if (strncmp(args, "switch ", 7) == 0) {
+        int id = 0;
+        const char *p = args + 7;
+        while (*p >= '0' && *p <= '9') {
+            id = id * 10 + (*p++ - '0');
+        }
+        if (vterm_set_active(id)) {
+            cprintf("Switched to vterm %d\n", id);
+        } else {
+            cprintf("vterm switch: invalid or unallocated vterm %d\n", id);
+        }
+        return;
+    }
+
+    if (strncmp(args, "close ", 6) == 0) {
+        int id = 0;
+        const char *p = args + 6;
+        while (*p >= '0' && *p <= '9') {
+            id = id * 10 + (*p++ - '0');
+        }
+        if (id == 0) {
+            cprintf("vterm: cannot close root vterm 0\n");
+            return;
+        }
+        vterm_destroy(id);
+        cprintf("Closed vterm %d\n", id);
+        return;
+    }
+
+    if (strcmp(args, "selftest") == 0 || strcmp(args, "test") == 0) {
+        int fails = vterm_selftest();
+        cprintf("vterm selftest: %s\n", fails == 0 ? "PASSED" : "FAILED");
+        return;
+    }
+
+    cprintf("Usage: vterm [list | new [title] | switch <id> | close <id> | selftest]\n");
+}
+
 static void shell_run_editor(const char *filename) {
     (void)editor_run(filename, &g_shell_editor, NULL, 0);
 }
@@ -3224,6 +3297,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*a >= '0' && *a <= '9') kb = kb * 10u + (unsigned)(*a++ - '0');
         while (*a == ' ') a++;
         (void)editor_bench(kb, a);
+    } else if (strncmp(cmd_line, "vterm", 5) == 0 && (cmd_line[5] == '\0' || cmd_line[5] == ' ')) {
+        cmd_vterm(cmd_line);
+        return;
+    } else if (strcmp(cmd_line, "vtermselftest") == 0) {
+        int fails = vterm_selftest();
+        cprintf("vterm selftest: %s\n", fails == 0 ? "PASSED" : "FAILED");
         return;
     } else if (strcmp(cmd_line, "editselftest") == 0) {
         (void)editor_selftest();
@@ -4371,6 +4450,33 @@ void shell_run(void) {
         lisp_gc_safepoint();
         parse_and_eval_cmd(buf);
     }
+}
+
+void shell_worker_task_entry(void *arg) {
+    int vid = (int)(intptr_t)arg;
+    task_set_vterm(sched_current_pid(), vid);
+
+    char buf[512];
+    cprintf("\nLugalOS Interactive Console Shell (`lsh`) [terminal %d]\n", vid);
+    cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'exit' to close.\n");
+
+    while (1) {
+        vterm_t *vt = vterm_get(vid);
+        if (!vt) break;
+        console_set_title(vt->title);
+        lisp_canvas_poll();
+        int idx = readline_interactive("lsh> ", buf, sizeof(buf));
+        if (idx == 0) continue;
+        lisp_gc_safepoint();
+        if (strcmp(buf, "exit") == 0) {
+            cprintf("[lsh] exiting terminal %d\n", vid);
+            break;
+        }
+        parse_and_eval_cmd(buf);
+    }
+
+    vterm_destroy(vid);
+    task_exit();
 }
 
 
