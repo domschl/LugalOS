@@ -1030,7 +1030,8 @@ static lisp_val_t *env_binding_sym(lisp_val_t *env, const lisp_val_t *sym) {
 }
 
 /* The innermost (name . value) pair for `sym`, or NULL. `set!` writes its
- * cdr; env_get() reads it. */
+ * cdr; env_get() reads it. Built out with env_get() (see there). */
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
     for (lisp_val_t *curr = env; curr && curr->type == LISP_PAIR; curr = curr->u.pair.cdr) {
         lisp_val_t *binding = curr->u.pair.car;
@@ -1043,25 +1044,32 @@ static lisp_val_t *env_binding(lisp_val_t *env, const char *sym) {
     }
     return NULL;
 }
+#endif
 
 static lisp_val_t *env_get_sym(lisp_val_t *env, const lisp_val_t *sym) {
     lisp_val_t *binding = env_binding_sym(env, sym);
     return binding ? binding->u.pair.cdr : NULL;
 }
 
+/* By name, for the canvas redraw hook only -- which the ST7735 build does
+ * not have (its #else branch below), so these two are built out with it. */
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
     lisp_val_t *binding = env_binding(env, sym);
     return binding ? binding->u.pair.cdr : NULL;
 }
+#endif
 
 static void env_set_sym(lisp_val_t **env, lisp_val_t *sym, lisp_val_t *val) {
     lisp_val_t *binding = make_pair(sym, val);
     *env = make_pair(binding, *env);
 }
 
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 static void env_set(lisp_val_t **env, const char *sym, lisp_val_t *val) {
     env_set_sym(env, make_sym(sym), val);
 }
+#endif
 
 /* 37.3a: the built-in names, outside the node pool. They used to be ordinary
  * global_env bindings, four nodes and a string slot each -- some 680 of the
