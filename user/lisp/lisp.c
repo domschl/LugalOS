@@ -2457,6 +2457,360 @@ static lisp_val_t *prim_max(lisp_val_t *args, lisp_val_t *env) {
     return best;
 }
 
+/* --- Milestone 43.1: Engine Mathematical Foundations --- */
+
+static lisp_val_t *num_expt_pos(lisp_val_t *base, long p) {
+    if (p == 0) return make_int(1);
+    if (p == 1) return base;
+    if (num_is_zero(base)) return make_int(0);
+    if (base->type == LISP_RATIO) {
+        lisp_val_t *n = num_expt_pos(base->u.ratio.num, p);
+        if (n == &nil_val) return &nil_val;
+        lisp_val_t *d = num_expt_pos(base->u.ratio.den, p);
+        if (d == &nil_val) return &nil_val;
+        return make_ratio(n, d);
+    }
+    lisp_val_t *acc = make_int(1);
+    lisp_val_t *cur = base;
+    while (p > 0) {
+        if (p & 1) {
+            acc = num_mul(acc, cur);
+            if (acc == &nil_val) return &nil_val;
+        }
+        p >>= 1;
+        if (p > 0) {
+            cur = num_mul(cur, cur);
+            if (cur == &nil_val) return &nil_val;
+        }
+    }
+    return acc;
+}
+
+static lisp_val_t *prim_expt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *base = lisp_list_ref(args, 0);
+    lisp_val_t *pow_val = lisp_list_ref(args, 1);
+    if (!base || !pow_val || lisp_list_ref(args, 2) != NULL) {
+        printk("[Lisp Error] expt requires exactly 2 arguments\n");
+        return &nil_val;
+    }
+    if (!is_number_val(base)) {
+        printk("[Lisp Error] expt: base must be a number\n");
+        return &nil_val;
+    }
+    if (pow_val->type == LISP_BIGNUM) {
+        printk("[Lisp Error] expt: exponent too large\n");
+        return &nil_val;
+    }
+    if (pow_val->type != LISP_INT) {
+        printk("[Lisp Error] expt: exponent must be an integer\n");
+        return &nil_val;
+    }
+    long p = pow_val->u.i;
+    if (p < -2048 || p > 2048) {
+        printk("[Lisp Error] expt: exponent %ld out of range [-2048, 2048]\n", p);
+        return &nil_val;
+    }
+    if (p == 0) return make_int(1);
+    if (num_is_zero(base)) {
+        if (p < 0) {
+            printk("[Lisp Error] expt: division by zero (0 ^ negative)\n");
+            return &nil_val;
+        }
+        return make_int(0);
+    }
+    if (p < 0) {
+        lisp_val_t *pos_res = num_expt_pos(base, -p);
+        if (pos_res == &nil_val) return &nil_val;
+        return num_div(make_int(1), pos_res);
+    }
+    return num_expt_pos(base, p);
+}
+
+static lisp_val_t *num_isqrt(lisp_val_t *v) {
+    if (!v || !is_number_val(v) || v->type == LISP_RATIO) {
+        printk("[Lisp Error] isqrt: argument must be an integer\n");
+        return &nil_val;
+    }
+    if (num_is_negative(v)) {
+        printk("[Lisp Error] isqrt: argument must be non-negative\n");
+        return &nil_val;
+    }
+    if (num_is_zero(v)) return make_int(0);
+    if (v->type == LISP_INT) {
+        long n = v->u.i;
+        if (n == 1) return make_int(1);
+        uint64_t val = (uint64_t)n;
+        uint64_t x = val;
+        uint64_t y = (x + 1) / 2;
+        while (y < x) {
+            x = y;
+            y = (x + val / x) / 2;
+        }
+        return make_int((long)x);
+    }
+
+    int sign, len;
+    const uint32_t *limbs;
+    uint32_t temp[2];
+    get_num_limbs(v, &sign, &len, &limbs, temp);
+    if (len == 0) return make_int(0);
+    uint32_t top = limbs[len - 1];
+    int top_bits = 0;
+    while (top > 0) {
+        top >>= 1;
+        top_bits++;
+    }
+    int total_bits = (len - 1) * 32 + top_bits;
+    int half_bits = (total_bits + 1) / 2;
+
+    lisp_val_t *x = num_expt_pos(make_int(2), half_bits);
+    if (x == &nil_val) return &nil_val;
+
+    int guard = 0;
+    while (guard++ < 200) {
+        lisp_val_t *q = NULL;
+        bn_div_rem(v, x, &q, NULL);
+        if (!q || q == &nil_val) return &nil_val;
+        lisp_val_t *sum = num_add(x, q);
+        if (sum == &nil_val) return &nil_val;
+        lisp_val_t *y = NULL;
+        bn_div_rem(sum, make_int(2), &y, NULL);
+        if (!y || y == &nil_val) return &nil_val;
+        if (num_cmp(y, x) >= 0) {
+            break;
+        }
+        x = y;
+    }
+    return x;
+}
+
+static lisp_val_t *prim_isqrt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    if (!v || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] isqrt requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    return num_isqrt(v);
+}
+
+static int64_t trig_sin_micro(int64_t theta_micro) {
+    int64_t t = theta_micro;
+    int sign = 1;
+    if (t > 3141593) {
+        t -= 3141593;
+        sign = -sign;
+    }
+    if (t > 1570796) {
+        t = 3141593 - t;
+    }
+    int64_t u2 = (t * t) / 1000000;
+    int64_t t0 = t;
+    int64_t t1 = (t0 * u2) / 6000000;
+    int64_t t2 = (t1 * u2) / 20000000;
+    int64_t t3 = (t2 * u2) / 42000000;
+    int64_t t4 = (t3 * u2) / 72000000;
+    int64_t t5 = (t4 * u2) / 110000000;
+    int64_t res = t0 - t1 + t2 - t3 + t4 - t5;
+    return sign * res;
+}
+
+static bool num_to_micro_radians(lisp_val_t *x, int64_t *out_micro) {
+    if (!x || !is_number_val(x)) return false;
+    lisp_val_t *two_pi = make_int(6283185);
+    lisp_val_t *scaled = num_mul(x, make_int(1000000));
+    if (scaled == &nil_val) return false;
+    lisp_val_t *int_part = NULL;
+    if (scaled->type == LISP_RATIO) {
+        bn_div_rem(scaled->u.ratio.num, scaled->u.ratio.den, &int_part, NULL);
+    } else {
+        int_part = scaled;
+    }
+    if (!int_part || int_part == &nil_val) return false;
+    lisp_val_t *rem = NULL;
+    bn_div_rem(int_part, two_pi, NULL, &rem);
+    if (!rem || rem == &nil_val) return false;
+    long val = (rem->type == LISP_INT) ? rem->u.i : 0;
+    if (val < 0) val += 6283185;
+    *out_micro = (int64_t)val;
+    return true;
+}
+
+static lisp_val_t *prim_math_sin(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-sin requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    int64_t theta_micro = 0;
+    if (!num_to_micro_radians(x, &theta_micro)) {
+        printk("[Lisp Error] math-sin: argument must be a number\n");
+        return &nil_val;
+    }
+    int64_t s = trig_sin_micro(theta_micro);
+    return make_ratio(make_int((long)s), make_int(1000000));
+}
+
+static lisp_val_t *prim_math_cos(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-cos requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    int64_t theta_micro = 0;
+    if (!num_to_micro_radians(x, &theta_micro)) {
+        printk("[Lisp Error] math-cos: argument must be a number\n");
+        return &nil_val;
+    }
+    int64_t c_theta = (theta_micro + 1570796) % 6283185;
+    int64_t c = trig_sin_micro(c_theta);
+    return make_ratio(make_int((long)c), make_int(1000000));
+}
+
+static lisp_val_t *prim_math_tan(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-tan requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    int64_t theta_micro = 0;
+    if (!num_to_micro_radians(x, &theta_micro)) {
+        printk("[Lisp Error] math-tan: argument must be a number\n");
+        return &nil_val;
+    }
+    int64_t s = trig_sin_micro(theta_micro);
+    int64_t c = trig_sin_micro((theta_micro + 1570796) % 6283185);
+    if (c == 0) {
+        printk("[Lisp Error] math-tan: division by zero (undefined)\n");
+        return &nil_val;
+    }
+    return make_ratio(make_int((long)s), make_int((long)c));
+}
+
+static lisp_val_t *prim_math_sqrt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-sqrt requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    if (!is_number_val(x)) {
+        printk("[Lisp Error] math-sqrt: argument must be a number\n");
+        return &nil_val;
+    }
+    if (num_is_negative(x)) {
+        printk("[Lisp Error] math-sqrt: negative argument\n");
+        return &nil_val;
+    }
+    if (num_is_zero(x)) return make_int(0);
+
+    lisp_val_t *scale = num_expt_pos(make_int(10), 12);
+    lisp_val_t *scaled = num_mul(x, scale);
+    if (scaled == &nil_val) return &nil_val;
+    lisp_val_t *int_part = NULL;
+    if (scaled->type == LISP_RATIO) {
+        bn_div_rem(scaled->u.ratio.num, scaled->u.ratio.den, &int_part, NULL);
+    } else {
+        int_part = scaled;
+    }
+    if (!int_part || int_part == &nil_val) return &nil_val;
+    lisp_val_t *root = num_isqrt(int_part);
+    if (root == &nil_val) return &nil_val;
+    return make_ratio(root, make_int(1000000));
+}
+
+static lisp_val_t *prim_math_exp(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-exp requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    if (!is_number_val(x)) {
+        printk("[Lisp Error] math-exp: argument must be a number\n");
+        return &nil_val;
+    }
+    lisp_val_t *scaled = num_mul(x, make_int(1000000));
+    if (scaled == &nil_val) return &nil_val;
+    lisp_val_t *int_part = NULL;
+    if (scaled->type == LISP_RATIO) {
+        bn_div_rem(scaled->u.ratio.num, scaled->u.ratio.den, &int_part, NULL);
+    } else {
+        int_part = scaled;
+    }
+    if (!int_part || int_part->type != LISP_INT) {
+        if (num_is_negative(scaled)) return make_int(0);
+        printk("[Lisp Error] math-exp: overflow\n");
+        return &nil_val;
+    }
+    long xm = int_part->u.i;
+    if (xm < -14000000) return make_int(0);
+    if (xm > 14000000) {
+        printk("[Lisp Error] math-exp: overflow\n");
+        return &nil_val;
+    }
+    long ln2 = 693147;
+    long k = xm / ln2;
+    long r = xm % ln2;
+    if (r < 0) { r += ln2; k--; }
+    int64_t t0 = 1000000;
+    int64_t t1 = r;
+    int64_t t2 = (t1 * r) / 2000000;
+    int64_t t3 = (t2 * r) / 3000000;
+    int64_t t4 = (t3 * r) / 4000000;
+    int64_t t5 = (t4 * r) / 5000000;
+    int64_t t6 = (t5 * r) / 6000000;
+    int64_t t7 = (t6 * r) / 7000000;
+    int64_t e_r = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7;
+    int64_t val = (k >= 0) ? (e_r << k) : (e_r >> (-k));
+    return make_ratio(make_int((long)val), make_int(1000000));
+}
+
+static lisp_val_t *prim_math_log(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *x = lisp_list_ref(args, 0);
+    if (!x || lisp_list_ref(args, 1) != NULL) {
+        printk("[Lisp Error] math-log requires exactly 1 argument\n");
+        return &nil_val;
+    }
+    if (!is_number_val(x) || num_is_negative(x) || num_is_zero(x)) {
+        printk("[Lisp Error] math-log: argument must be positive\n");
+        return &nil_val;
+    }
+    lisp_val_t *scaled = num_mul(x, make_int(1000000));
+    if (scaled == &nil_val) return &nil_val;
+    lisp_val_t *int_part = NULL;
+    if (scaled->type == LISP_RATIO) {
+        bn_div_rem(scaled->u.ratio.num, scaled->u.ratio.den, &int_part, NULL);
+    } else {
+        int_part = scaled;
+    }
+    if (!int_part || int_part->type != LISP_INT || int_part->u.i <= 0) {
+        printk("[Lisp Error] math-log: argument out of range\n");
+        return &nil_val;
+    }
+    int64_t val = int_part->u.i;
+    int64_t k = 0;
+    while (val >= 2000000) { val >>= 1; k++; }
+    while (val < 1000000) { val <<= 1; k--; }
+    int64_t num = val - 1000000;
+    int64_t den = val + 1000000;
+    int64_t z = (num * 1000000) / den;
+    int64_t z2 = (z * z) / 1000000;
+    int64_t term1 = z;
+    int64_t term3 = (term1 * z2) / 1000000;
+    int64_t term5 = (term3 * z2) / 1000000;
+    int64_t term7 = (term5 * z2) / 1000000;
+    int64_t term9 = (term7 * z2) / 1000000;
+    int64_t ln_m = 2 * (term1 + term3 / 3 + term5 / 5 + term7 / 7 + term9 / 9);
+    int64_t total = k * 693147 + ln_m;
+    return make_ratio(make_int((long)total), make_int(1000000));
+}
+
 /* --- Predicates & Numeric Introspection --- */
 
 static lisp_val_t *prim_null_p(lisp_val_t *args, lisp_val_t *env) {
@@ -2475,6 +2829,50 @@ static lisp_val_t *prim_symbol_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
     return (a && a->type == LISP_SYMBOL) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_symbol_lt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &true_val;
+    lisp_val_t *c = args;
+    if (!c->u.pair.car || c->u.pair.car->type != LISP_SYMBOL) {
+        printk("[Lisp Error] symbol<?: expected symbol\n");
+        return &nil_val;
+    }
+    const char *prev = c->u.pair.car->u.sym;
+    int guard = 0;
+    for (c = c->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *elem = c->u.pair.car;
+        if (!elem || elem->type != LISP_SYMBOL) {
+            printk("[Lisp Error] symbol<?: expected symbol\n");
+            return &nil_val;
+        }
+        if (strcmp(prev, elem->u.sym) >= 0) return &false_val;
+        prev = elem->u.sym;
+    }
+    return &true_val;
+}
+
+static lisp_val_t *prim_symbol_gt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &true_val;
+    lisp_val_t *c = args;
+    if (!c->u.pair.car || c->u.pair.car->type != LISP_SYMBOL) {
+        printk("[Lisp Error] symbol>?: expected symbol\n");
+        return &nil_val;
+    }
+    const char *prev = c->u.pair.car->u.sym;
+    int guard = 0;
+    for (c = c->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *elem = c->u.pair.car;
+        if (!elem || elem->type != LISP_SYMBOL) {
+            printk("[Lisp Error] symbol>?: expected symbol\n");
+            return &nil_val;
+        }
+        if (strcmp(prev, elem->u.sym) <= 0) return &false_val;
+        prev = elem->u.sym;
+    }
+    return &true_val;
 }
 
 static lisp_val_t *prim_string_p(lisp_val_t *args, lisp_val_t *env) {
@@ -3079,12 +3477,195 @@ static lisp_val_t *prim_number_to_string(lisp_val_t *args, lisp_val_t *env) {
     return make_str("");
 }
 
+static lisp_val_t *prim_to_decimal(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    lisp_val_t *p_arg = lisp_list_ref(args, 1);
+    if (!v || lisp_list_ref(args, 2) != NULL) {
+        printk("[Lisp Error] to-decimal requires 1 or 2 arguments\n");
+        return &nil_val;
+    }
+    if (!is_number_val(v)) {
+        printk("[Lisp Error] to-decimal: argument must be a number\n");
+        return &nil_val;
+    }
+    long prec = 6;
+    if (p_arg) {
+        if (p_arg->type != LISP_INT) {
+            printk("[Lisp Error] to-decimal: precision must be an integer\n");
+            return &nil_val;
+        }
+        prec = p_arg->u.i;
+        if (prec < 0) prec = 0;
+        if (prec > 80) prec = 80;
+    }
+
+    char buf[800];
+    char *p = buf;
+    char *end = buf + sizeof(buf) - 1;
+
+    if (v->type == LISP_INT || v->type == LISP_BIGNUM) {
+        if (v->type == LISP_INT) {
+            long n = v->u.i;
+            bool neg = n < 0;
+            unsigned long uv = neg ? (unsigned long)(-(n + 1)) + 1UL : (unsigned long)n;
+            if (neg && p < end) *p++ = '-';
+            format_uint_digits(&p, end, (uint32_t)uv, 0);
+        } else {
+            bn_to_string(v, p, (size_t)(end - p + 1));
+            while (*p) p++;
+        }
+        if (prec > 0) {
+            if (p < end) *p++ = '.';
+            for (int i = 0; i < prec && p < end; i++) *p++ = '0';
+        }
+        *p = '\0';
+        return make_str(buf);
+    }
+
+    if (v->type == LISP_RATIO) {
+        lisp_val_t *N = v->u.ratio.num;
+        lisp_val_t *D = v->u.ratio.den;
+        bool is_neg = num_is_negative(N);
+        lisp_val_t *abs_N = is_neg ? num_neg(N) : N;
+
+        if (prec == 0) {
+            lisp_val_t *Q = NULL, *R = NULL;
+            bn_div_rem(abs_N, D, &Q, &R);
+            if (!Q || !R) return &nil_val;
+            lisp_val_t *two_R = num_mul(make_int(2), R);
+            if (two_R != &nil_val && num_cmp(two_R, D) >= 0) {
+                Q = num_add(Q, make_int(1));
+            }
+            if (is_neg && !num_is_zero(Q) && p < end) *p++ = '-';
+            if (Q->type == LISP_INT) {
+                long qn = Q->u.i;
+                unsigned long uqv = (unsigned long)qn;
+                format_uint_digits(&p, end, (uint32_t)uqv, 0);
+            } else {
+                bn_to_string(Q, p, (size_t)(end - p + 1));
+                while (*p) p++;
+            }
+            *p = '\0';
+            return make_str(buf);
+        }
+
+        lisp_val_t *Q = NULL, *R = NULL;
+        bn_div_rem(abs_N, D, &Q, &R);
+        if (!Q || !R) return &nil_val;
+
+        lisp_val_t *scale = num_expt_pos(make_int(10), prec + 1);
+        if (scale == &nil_val) return &nil_val;
+        lisp_val_t *scaled_R = num_mul(R, scale);
+        if (scaled_R == &nil_val) return &nil_val;
+        lisp_val_t *F = NULL;
+        bn_div_rem(scaled_R, D, &F, NULL);
+        if (!F || F == &nil_val) return &nil_val;
+
+        lisp_val_t *F_prime = NULL, *d_val = NULL;
+        bn_div_rem(F, make_int(10), &F_prime, &d_val);
+        if (!F_prime || !d_val) return &nil_val;
+        long d = (d_val->type == LISP_INT) ? d_val->u.i : 0;
+        if (d >= 5) {
+            F_prime = num_add(F_prime, make_int(1));
+            if (F_prime == &nil_val) return &nil_val;
+        }
+
+        lisp_val_t *ten_pow_prec = num_expt_pos(make_int(10), prec);
+        if (ten_pow_prec == &nil_val) return &nil_val;
+        if (num_cmp(F_prime, ten_pow_prec) >= 0) {
+            Q = num_add(Q, make_int(1));
+            F_prime = make_int(0);
+        }
+
+        if (is_neg && (!num_is_zero(Q) || !num_is_zero(F_prime)) && p < end) {
+            *p++ = '-';
+        }
+        if (Q->type == LISP_INT) {
+            long qn = Q->u.i;
+            unsigned long uqv = (unsigned long)qn;
+            format_uint_digits(&p, end, (uint32_t)uqv, 0);
+        } else {
+            bn_to_string(Q, p, (size_t)(end - p + 1));
+            while (*p) p++;
+        }
+        if (p < end) *p++ = '.';
+
+        char f_buf[100];
+        if (F_prime->type == LISP_INT) {
+            char *fp = f_buf;
+            char *f_end = f_buf + sizeof(f_buf) - 1;
+            format_uint_digits(&fp, f_end, (uint32_t)F_prime->u.i, 0);
+            *fp = '\0';
+        } else {
+            bn_to_string(F_prime, f_buf, sizeof(f_buf));
+        }
+        int f_len = (int)strlen(f_buf);
+        int pad = (int)prec - f_len;
+        while (pad > 0 && p < end) {
+            *p++ = '0';
+            pad--;
+        }
+        for (int i = 0; i < f_len && p < end; i++) {
+            *p++ = f_buf[i];
+        }
+        *p = '\0';
+        return make_str(buf);
+    }
+
+    return make_str("");
+}
+
 static lisp_val_t *prim_string_eq(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
     lisp_val_t *b = lisp_list_ref(args, 1);
     if (!a || !b) return &false_val;
     return (strcmp(get_str_val(a), get_str_val(b)) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_string_lt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &true_val;
+    lisp_val_t *c = args;
+    if (!c->u.pair.car || c->u.pair.car->type != LISP_STRING) {
+        printk("[Lisp Error] string<?: expected string\n");
+        return &nil_val;
+    }
+    const char *prev = c->u.pair.car->u.str;
+    int guard = 0;
+    for (c = c->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *elem = c->u.pair.car;
+        if (!elem || elem->type != LISP_STRING) {
+            printk("[Lisp Error] string<?: expected string\n");
+            return &nil_val;
+        }
+        if (strcmp(prev, elem->u.str) >= 0) return &false_val;
+        prev = elem->u.str;
+    }
+    return &true_val;
+}
+
+static lisp_val_t *prim_string_gt(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &true_val;
+    lisp_val_t *c = args;
+    if (!c->u.pair.car || c->u.pair.car->type != LISP_STRING) {
+        printk("[Lisp Error] string>?: expected string\n");
+        return &nil_val;
+    }
+    const char *prev = c->u.pair.car->u.str;
+    int guard = 0;
+    for (c = c->u.pair.cdr; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+        lisp_val_t *elem = c->u.pair.car;
+        if (!elem || elem->type != LISP_STRING) {
+            printk("[Lisp Error] string>?: expected string\n");
+            return &nil_val;
+        }
+        if (strcmp(prev, elem->u.str) <= 0) return &false_val;
+        prev = elem->u.str;
+    }
+    return &true_val;
 }
 
 /* --- Procedure invocation --- */

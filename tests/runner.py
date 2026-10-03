@@ -3043,6 +3043,72 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp AST Rewriting Primitives subst and match (Phase 42.8)",
                         ok, log if not ok else ""))
 
+        # Phase 43.1: Engine Mathematical Foundations (expt, isqrt, to-decimal, math-*, orderings)
+        cmd_p43_math = (
+            "lisp\n"
+            "(expt 2 10)\n"
+            "(^ 3 4)\n"
+            "(expt 2 -3)\n"
+            "(expt 2/3 2)\n"
+            "(expt 2/3 -2)\n"
+            "(expt 10 20)\n"
+            "(expt -2 3)\n"
+            "(expt -2 4)\n"
+            "(isqrt 0)\n"
+            "(isqrt 25)\n"
+            "(isqrt 26)\n"
+            "(isqrt 100000000000000000000)\n"
+            "(to-decimal 1/2 2)\n"
+            "(to-decimal 1/3 4)\n"
+            "(to-decimal 2/3 4)\n"
+            "(to-decimal 5 2)\n"
+            "(number->decimal 22/7 6)\n"
+            "(symbol<? 'a 'b 'c)\n"
+            "(symbol<? 'b 'a)\n"
+            "(symbol>? 'c 'b 'a)\n"
+            "(string<? \"apple\" \"banana\")\n"
+            "(string>? \"banana\" \"apple\")\n"
+            "(to-decimal (math-sin 0) 4)\n"
+            "(to-decimal (math-sin (/ 3141593 2000000)) 4)\n"
+            "(to-decimal (math-cos 0) 4)\n"
+            "(to-decimal (math-tan 0) 4)\n"
+            "(math-sqrt 4)\n"
+            "(math-sqrt 1/4)\n"
+            "(to-decimal (math-sqrt 2) 4)\n"
+            "(to-decimal (math-exp 0) 4)\n"
+            "(to-decimal (math-log 1) 4)\n"
+            "(display \"P43_MATH_OK\\n\")\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p43_math, r"P43_MATH_OK", timeout=8.0)
+        p43_math_correct = (
+            "=> 1024" in log and
+            "=> 81" in log and
+            "=> 1/8" in log and
+            "=> 4/9" in log and
+            "=> 9/4" in log and
+            "100000000000000000000" in log and
+            "=> -8" in log and
+            "=> 16" in log and
+            "=> 5" in log and
+            "10000000000" in log and
+            '"0.50"' in log and
+            '"0.3333"' in log and
+            '"0.6667"' in log and
+            '"5.00"' in log and
+            '"3.142857"' in log and
+            "=> #t" in log and
+            "=> #f" in log and
+            '"0.0000"' in log and
+            '"1.0000"' in log and
+            "=> 2" in log and
+            "=> 1/2" in log and
+            '"1.4142"' in log
+        )
+        ok = ok and p43_math_correct
+        results.append(("Lisp Mathematical Foundations expt, isqrt, to-decimal, math-*, orderings (Phase 43.1)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"
