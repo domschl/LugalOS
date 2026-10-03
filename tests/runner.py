@@ -4595,6 +4595,27 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
         session.close()
 
 
+def test_host_sanitizer_harnesses() -> tuple[bool, str]:
+    """Phase 40: tests/host/ -- FAT32, the C compiler and the 9P server built
+    for the host and driven with valid and corrupted input under ASan and
+    UBSan (see tests/host/README.md). A short pass here; `make -C tests/host
+    check` is the long one, with valgrind. Skipped -- reported as passing with
+    the reason -- where there is no host compiler."""
+    import shutil
+    if not shutil.which("make") or not shutil.which("gcc"):
+        return True, "skipped: no host gcc/make"
+    host_dir = Path(__file__).resolve().parent / "host"
+    try:
+        r = subprocess.run(["make", "-s", "-C", str(host_dir), "asan", "ITER=300"],
+                           capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return False, "tests/host did not finish in 600 s"
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        return False, out[-3000:]
+    return True, "; ".join(ln for ln in out.splitlines() if "no fault" in ln)
+
+
 def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
     """I6's host-side verify point: "a known passphrase and SSID derive
     the PSK the standard gives." No QEMU -- tools/provision.py's
@@ -8103,6 +8124,15 @@ def main() -> int:
     ok, info = test_host_wpa2_psk_derivation()
     total_tests += 1
     name = "WPA2 PSK Derivation Against The IEEE 802.11i Worked Example (I6)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_host_sanitizer_harnesses()
+    total_tests += 1
+    name = "Host Harnesses: FAT32, cc And 9P Under ASan/UBSan (tests/host)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")
