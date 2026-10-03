@@ -114,6 +114,14 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     r->wins[idx].flags = 0;
     if (title && title[0]) {
         cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
+    } else if (type == RIBBON_WIN_CANVAS) {
+        r->wins[idx].title[0] = 'C';
+        r->wins[idx].title[1] = 'a';
+        r->wins[idx].title[2] = 'n';
+        r->wins[idx].title[3] = 'v';
+        r->wins[idx].title[4] = 'a';
+        r->wins[idx].title[5] = 's';
+        r->wins[idx].title[6] = '\0';
     } else {
         r->wins[idx].title[0] = 'T';
         r->wins[idx].title[1] = 'e';
@@ -224,6 +232,26 @@ LCDTERM_UTEXT int ribbon_find_vterm(const ribbon_t *r, uint8_t vterm_id) {
     if (!r) return -1;
     for (uint8_t i = 0; i < r->count; i++) {
         if (r->wins[i].type == RIBBON_WIN_TERM && r->wins[i].vterm_id == vterm_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT int ribbon_find_term(const ribbon_t *r) {
+    if (!r) return -1;
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_TERM) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT int ribbon_find_canvas(const ribbon_t *r) {
+    if (!r) return -1;
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_CANVAS) {
             return (int)i;
         }
     }

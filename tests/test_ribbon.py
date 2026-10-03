@@ -93,6 +93,33 @@ def run_tests() -> int:
             print(f"    [FAIL] usbkbdselftest:\n{log}")
             all_passed = False
 
+        # 5. Test Canvas & Ribbon integration (Milestone 44.5)
+        print("  Testing Canvas & Ribbon integration (Lisp canvas-window)...")
+        ok, log = session.send_and_expect("lisp", r"lisp> ", timeout=5.0)
+        if not ok:
+            print(f"    [FAIL] Entering lisp:\n{log}")
+            all_passed = False
+        else:
+            steps = [
+                ("(canvas-window 'split-narrow)", r"=> #t"),
+                ("(canvas-size)", r"=> \(261 434\)"),
+                ("(canvas-line 10 10 100 100 1)", r"=> #t"),
+                ("(canvas-window 'split-half)", r"=> #t"),
+                ("(canvas-window 'ribbon)", r"=> #t"),
+                ("(canvas-window 'text)", r"=> #t"),
+                ("exit", r"lsh> "),
+            ]
+            canvas_ok = True
+            for expr, expected in steps:
+                ok, log = session.send_and_expect(expr, expected, timeout=5.0)
+                if not ok:
+                    print(f"    [FAIL] {expr} expected {expected}, got:\n{log}")
+                    canvas_ok = False
+                    all_passed = False
+                    break
+            if canvas_ok:
+                print("    [PASS] Canvas & Ribbon integration (split, split-narrow, ribbon, line, text)")
+
     finally:
         session.close()
         if arch_img.exists():

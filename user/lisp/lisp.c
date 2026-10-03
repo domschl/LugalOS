@@ -3956,7 +3956,7 @@ static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     if (streq(w, "text")) req[1] = SCREEN_LAYOUT_TEXT;
     else if (streq(w, "canvas")) req[1] = SCREEN_LAYOUT_CANVAS;
     else if (streq(w, "split") || streq(w, "split-wide")) req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
-    else if (streq(w, "split-half")) req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    else if (streq(w, "split-half") || streq(w, "ribbon")) req[1] = SCREEN_LAYOUT_SPLIT_HALF;
     else if (streq(w, "split-narrow")) req[1] = SCREEN_LAYOUT_SPLIT_NARROW;   /* 37.5a */
     return canvas_call(req, sizeof(req), reply, false) ? &true_val : &false_val;
 }

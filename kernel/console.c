@@ -117,13 +117,14 @@ static void run_hotkey(void) {
         return;
     }
     if (hk == CONSOLE_HOTKEY_CLOSE) {
-        int cur_vid = vterm_active_id();
-        if (cur_vid > 0) {
-            uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 1, reply) && reply[0] == 0) {
-                vterm_destroy(cur_vid);
-                vterm_set_active(reply[1]);
+        uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            uint8_t closed_type = reply[10];
+            uint8_t closed_vid = reply[11];
+            if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
+                vterm_destroy(closed_vid);
             }
+            vterm_set_active(reply[1]);
         }
         return;
     }

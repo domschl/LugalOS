@@ -187,7 +187,7 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
  * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout; [9] 1 if
  * the panes are swapped. */
-#define SCREEN_REPLY_LEN 10u
+#define SCREEN_REPLY_LEN 12u
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
 
