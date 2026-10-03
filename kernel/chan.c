@@ -3,6 +3,7 @@
 #include "kernel/sched.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
+#include "kernel/uaccess.h"
 #include <string.h>
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
@@ -187,9 +188,12 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
     return ep->reply_len;
 }
 
-int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
-              uint8_t *resp, uint32_t resp_max) {
-    if (!ep || !ep->in_use || !req || req_len == 0) return -1;
+/* One call, copying in and out either with memcpy() or -- `user` -- from and
+ * to the calling U-mode task's own memory, validated against its domain. */
+static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
+                          uint32_t req_len, void *resp, uintptr_t uresp,
+                          uint32_t resp_max, bool user) {
+    if (!ep || !ep->in_use || (!user && !req) || req_len == 0) return -1;
     if (req_len > ep->req_cap) return -1;
 
     /* Y2, plan/phase31_concurrency_hierarchy.md: this call blocks until the
@@ -240,30 +244,57 @@ int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
      * Rule 1, and it is what keeps this identical to the MMU case (where the
      * caller's address is meaningless here) and to the remote case (where it
      * is on another machine entirely). */
-    memcpy(ep->req_buf, req, req_len);
+    if (user) {
+        if (copy_from_user(ep->req_buf, ureq, req_len) < 0) {
+            flags = spin_lock_irqsave(&ep->lock);
+            ep->busy = false;
+            spin_unlock_irqrestore(&ep->lock, flags);
+            return -1;
+        }
+    } else {
+        memcpy(ep->req_buf, req, req_len);
+    }
 
     int resp_len = ep->owner_pid >= 0
         ? chan_call_task(ep, req_len)
         : ep->handler(ep->ctx, ep->req_buf, req_len, ep->resp_buf, ep->resp_cap);
 
-    /* Released under the same lock as the claim. The store is a single byte
-     * and would not tear, but going through the lock is what gives the next
-     * hart to take this endpoint release ordering over everything the call
-     * above wrote into its buffers. */
+    /* The response is copied out while the endpoint is still claimed (phase
+     * 40 review). It used to be released first and copied after, which on two
+     * harts let a second caller claim the endpoint and have the reply buffer
+     * overwritten before this one had read it.
+     *
+     * A truncated response is a failure, not a short read: every protocol
+     * carried over a channel so far is message-oriented (9P frames), where
+     * half a message is not a partial success. */
+    int ret = resp_len;
+    if (resp_len < 0 || (uint32_t)resp_len > ep->resp_cap ||   /* handler overran its contract */
+        (uint32_t)resp_len > resp_max) {
+        ret = -1;
+    } else if (resp_len > 0) {
+        if (user) {
+            if (copy_to_user(uresp, ep->resp_buf, (uint32_t)resp_len) < 0) ret = -1;
+        } else if (resp) {
+            memcpy(resp, ep->resp_buf, (uint32_t)resp_len);
+        }
+    }
+
+    /* Released under the same lock as the claim, which gives the next hart
+     * to take this endpoint release ordering over everything above. */
     flags = spin_lock_irqsave(&ep->lock);
     ep->busy = false;
     spin_unlock_irqrestore(&ep->lock, flags);
+    return ret;
+}
 
-    if (resp_len < 0) return -1;
-    if ((uint32_t)resp_len > ep->resp_cap) return -1; /* handler overran its contract */
+int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
+              uint8_t *resp, uint32_t resp_max) {
+    return chan_call_impl(ep, req, 0, req_len, resp, 0, resp_max, false);
+}
 
-    /* Copy OUT, bounded by what the caller can actually accept. A truncated
-     * response is a failure, not a short read: every protocol carried over a
-     * channel so far is message-oriented (9P frames), where half a message is
-     * not a partial success. */
-    if ((uint32_t)resp_len > resp_max) return -1;
-    if (resp && resp_len > 0) memcpy(resp, ep->resp_buf, (uint32_t)resp_len);
-    return resp_len;
+int chan_call_user(chan_endpoint_t *ep, uintptr_t ureq, uint32_t req_len,
+                   uintptr_t uresp, uint32_t resp_max) {
+    return chan_call_impl(ep, NULL, ureq, req_len, NULL, uresp, resp_max, true);
 }
 
 uint32_t chan_serve_wait(chan_endpoint_t *ep) {
@@ -311,6 +342,21 @@ void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp
     uint32_t n = resp_len < ep->resp_cap ? resp_len : ep->resp_cap;
     if (n && in) memcpy(ep->resp_buf, in, n);
     chan_serve_reply(ep, n);
+}
+
+uint32_t chan_serve_wait_user(chan_endpoint_t *ep, uintptr_t uout, uint32_t out_max, int *err) {
+    uint32_t len = chan_serve_wait(ep);
+    *err = 0;
+    if (len > out_max) return len;                 /* the caller refuses a truncation */
+    if (len && copy_to_user(uout, ep->req_buf, len) < 0) *err = -1;
+    return len;
+}
+
+int chan_serve_reply_user(chan_endpoint_t *ep, uintptr_t uin, uint32_t resp_len) {
+    if (resp_len > ep->resp_cap) return -1;
+    if (resp_len && copy_from_user(ep->resp_buf, uin, resp_len) < 0) return -1;
+    chan_serve_reply(ep, resp_len);
+    return 0;
 }
 
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out) {

@@ -1728,6 +1728,22 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc: syntax errors, nesting, constants and read_file (40 review)",
                         not cc_fail, "\n".join(cc_fail)))
 
+        # Phase 40 review: unary minus had no code generated for it (`-5` was
+        # whatever a0 held), constants at the top of the int range did not
+        # load, and SYS_PUTNUM negated its argument as a signed long --
+        # putnum(LONG_MIN) from any program was undefined behaviour in the
+        # kernel, a UBSan halt. LONG_MIN is INT_MIN on rv32 and is reached by
+        # multiplying on rv64.
+        session.send_and_expect('(write-file "/ram0/proj/lm.c" "main(){long x;x=-2147483647-1;'
+                                'putnum(x);putchar(32);x=x*65536;x=x*65536;putnum(x);putchar(32);'
+                                'putnum(-5);putchar(32);putnum(2147483647);putchar(10);return 0;}\\n")',
+                                r"#t", timeout=4.0)
+        ok, log = session.send_and_expect("cc /ram0/proj/lm.c /ram0/proj/lm.elf\nexec /ram0/proj/lm.elf",
+                                          r"-2147483648 (0|-9223372036854775808) -5 2147483647.*returned 0",
+                                          timeout=20.0)
+        results.append(("cc Negates, Loads INT_MAX, And putnum(LONG_MIN) Does Not Halt (40 review)",
+                        ok, log if not ok else ""))
+
         # 5a-ii. `ed` round-trips a file it did not create.
         #
         # The ed test above appends two lines to a *new* file and asserts on

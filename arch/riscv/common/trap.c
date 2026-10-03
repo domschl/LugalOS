@@ -11,6 +11,7 @@
 #include "kernel/ticker.h"
 #include "kernel/devirq.h"
 #include "kernel/time.h"
+#include "kernel/palloc.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 
@@ -44,6 +45,9 @@
  * transfer, since drivers/spisd_rp2350.c's own chunking keeps every wire
  * message capped at one sector regardless of caller-requested count. */
 #define CHAN_SERVE_KBUF_CAP 576
+/* SYS_READ_FILE / SYS_WRITE_FILE's limit per call, unchanged since the data
+ * was staged in a 512-byte static buffer. */
+#define SYS_FILE_DATA_MAX 512u
 
 /* M2, plan/phase12_microkernel_migration.md: identifying which external IRQ
  * fired is genuinely different hardware on each target -- there is no Rule 0
@@ -953,8 +957,6 @@ void trap_handler(trap_frame_t *frame) {
                      * caller's buffer changing under it, while these are what
                      * stop the kernel dereferencing a user address at all. */
                     char kname[32];
-                    static uint8_t kreq[256];
-                    static uint8_t kresp[256];
                     uint32_t req_len = (uint32_t)frame->a3;
                     uint32_t resp_max = (uint32_t)frame->a5;
 
@@ -962,22 +964,17 @@ void trap_handler(trap_frame_t *frame) {
                         ret = -1;
                         break;
                     }
-                    if (req_len > sizeof(kreq)) { ret = -1; break; }
-                    if (resp_max > sizeof(kresp)) resp_max = sizeof(kresp);
-                    if (req_len && copy_from_user(kreq, frame->a2, req_len) < 0) {
-                        ret = -1;
-                        break;
-                    }
-
                     chan_endpoint_t *ep = chan_lookup(kname);
                     if (!ep) { ret = -1; break; }
 
-                    int n = chan_call(ep, kreq, req_len, kresp, resp_max);
-                    if (n < 0) { ret = n; break; }
-                    /* Copied out only after the call succeeded, and only as
-                     * many bytes as the service actually produced. */
-                    ret = (resp_max && copy_to_user(frame->a4, kresp, (uint32_t)n) < 0)
-                              ? -1 : n;
+                    /* Straight between the caller's memory and the endpoint's
+                     * own buffers, while the endpoint is claimed (phase 40
+                     * review). This staged through static kreq/kresp buffers,
+                     * which two harts could fill at once -- and a caller that
+                     * blocked here could resume on the other hart. Copied out
+                     * only after the call succeeded, and only as many bytes as
+                     * the service produced. */
+                    ret = chan_call_user(ep, frame->a2, req_len, frame->a4, resp_max);
                     break;
                 }
                 case 10: { /* SYS_PRINT(const char *) */
@@ -1029,9 +1026,14 @@ void trap_handler(trap_frame_t *frame) {
                      * whichever wire is actually bound as the console,
                      * without touching the log ring. */
                     {
-                        long val = (long)frame->a1;
-                        if (val < 0) { console_putc('-'); val = -val; }
-                        char digits[20];
+                        /* The magnitude in unsigned arithmetic: negating
+                         * LONG_MIN, which any program can pass, is undefined
+                         * -- under UBSan a halt of the whole kernel by an
+                         * unprivileged program (phase 40 review). */
+                        long sval = (long)frame->a1;
+                        unsigned long val = (unsigned long)sval;
+                        if (sval < 0) { console_putc('-'); val = 0UL - val; }
+                        char digits[24];
                         int n = 0;
                         do { digits[n++] = (char)('0' + (val % 10)); val /= 10; } while (val > 0);
                         while (n > 0) console_putc(digits[--n]);
@@ -1142,7 +1144,7 @@ void trap_handler(trap_frame_t *frame) {
                      * channel API SYS_CHAN_CALL's client half has had since
                      * C3 -- what a U-mode *driver* task needs to receive the
                      * request a chan_call() sent it. Blocks (via
-                     * chan_serve_wait_copy()'s task_block()) exactly as a
+                     * chan_serve_wait()'s task_block()) exactly as a
                      * kernel-mode driver task's own chan_serve_wait() call
                      * already does; SYS_CHAN_CALL calling into a task-owned
                      * endpoint already blocks its caller inside a syscall
@@ -1152,11 +1154,9 @@ void trap_handler(trap_frame_t *frame) {
                      * The endpoint's own request buffer is kernel memory
                      * (chan_register_task()'s req_buf) -- never directly
                      * readable from U-mode, so the request is copied out
-                     * through a kernel-owned scratch buffer, validated
-                     * against this task's domain the same way SYS_CHAN_CALL
-                     * validates its own buffers. */
+                     * of it, validated against this task's domain the same
+                     * way SYS_CHAN_CALL validates its own buffers. */
                     char kname[32];
-                    static uint8_t kbuf[CHAN_SERVE_KBUF_CAP];
                     if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
                         ret = -1;
                         break;
@@ -1164,25 +1164,27 @@ void trap_handler(trap_frame_t *frame) {
                     chan_endpoint_t *ep = chan_lookup(kname);
                     if (!ep) { ret = -1; break; }
                     uint32_t buf_max = (uint32_t)frame->a3;
-                    if (buf_max > sizeof(kbuf)) buf_max = sizeof(kbuf);
-                    uint32_t len = chan_serve_wait_copy(ep, kbuf, buf_max);
+                    if (buf_max > CHAN_SERVE_KBUF_CAP) buf_max = CHAN_SERVE_KBUF_CAP;
+                    /* Copied straight from the endpoint's request buffer, not
+                     * through a static one shared by every server (phase 40
+                     * review, as SYS_CHAN_CALL). */
+                    int err;
+                    uint32_t len = chan_serve_wait_user(ep, frame->a2, buf_max, &err);
                     /* Truncation is a failure, not a short read -- same
                      * discipline chan_call()'s resp_max enforces on the
                      * client side. */
-                    if (len > buf_max) { ret = -1; break; }
-                    ret = (len && copy_to_user(frame->a2, kbuf, len) < 0)
-                              ? -1 : (long)len;
+                    if (len > buf_max || err) { ret = -1; break; }
+                    ret = (long)len;
                     break;
                 }
                 case SYS_CHAN_SERVE_REPLY: {
                     /* SYS_CHAN_SERVE_REPLY(name, buf, len) -> 0, or -1. The
-                     * response is copied in through a kernel-owned scratch
-                     * buffer and written into the endpoint's own response
-                     * buffer by chan_serve_reply_copy(), which also wakes
+                     * response is copied from the task's memory straight
+                     * into the endpoint's own response buffer by
+                     * chan_serve_reply_user(), which also wakes
                      * the blocked caller -- mirrors SYS_CHAN_CALL's own
                      * copy-in-then-hand-to-the-endpoint shape. */
                     char kname[32];
-                    static uint8_t kbuf[CHAN_SERVE_KBUF_CAP];
                     if (strncpy_from_user(kname, frame->a1, sizeof(kname)) < 0) {
                         ret = -1;
                         break;
@@ -1190,13 +1192,8 @@ void trap_handler(trap_frame_t *frame) {
                     chan_endpoint_t *ep = chan_lookup(kname);
                     if (!ep) { ret = -1; break; }
                     uint32_t resp_len = (uint32_t)frame->a3;
-                    if (resp_len > sizeof(kbuf)) { ret = -1; break; }
-                    if (resp_len && copy_from_user(kbuf, frame->a2, resp_len) < 0) {
-                        ret = -1;
-                        break;
-                    }
-                    chan_serve_reply_copy(ep, kbuf, resp_len);
-                    ret = 0;
+                    if (resp_len > CHAN_SERVE_KBUF_CAP) { ret = -1; break; }
+                    ret = chan_serve_reply_user(ep, frame->a2, resp_len);
                     break;
                 }
                 case SYS_UEXIT:
@@ -1244,33 +1241,44 @@ void trap_handler(trap_frame_t *frame) {
                     ret = -1;
 #endif
                     break;
+                /* SYS_READ_FILE/SYS_WRITE_FILE stage the data through a page
+                 * of this call's own (phase 40 review). It was a static
+                 * buffer per syscall -- too big for the trap stack -- shared
+                 * by every caller: two harts could fill it at once, and on
+                 * one hart a read that blocked in a driver task (the SD card)
+                 * let another task's read into the same buffer before this
+                 * one had copied it out. */
                 case 13: { /* SYS_READ_FILE: vfs_read(path, buf, max_len) */
                     char kpath[128];
-                    static char kdata[512]; /* static: too big for the trap stack */
                     uint32_t want = (uint32_t)frame->a3;
-                    if (want > sizeof(kdata)) want = sizeof(kdata);
+                    if (want > SYS_FILE_DATA_MAX) want = SYS_FILE_DATA_MAX;
                     if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
                         ret = -1;
                         break;
                     }
+                    char *kdata = (char *)palloc_pages(1);
+                    if (!kdata) { ret = -1; break; }
                     int n = vfs_read(kpath, kdata, want);
-                    if (n < 0) { ret = n; break; }
                     /* Copied out only after the read succeeded, and only as
                      * many bytes as were actually produced. */
-                    ret = (copy_to_user(frame->a2, kdata, (uint32_t)n) < 0) ? -1 : n;
+                    if (n < 0) ret = n;
+                    else ret = (copy_to_user(frame->a2, kdata, (uint32_t)n) < 0) ? -1 : n;
+                    palloc_free(kdata, 1);
                     break;
                 }
                 case 14: { /* SYS_WRITE_FILE: vfs_write(path, buf, len) */
                     char kpath[128];
-                    static char kdata[512];
                     uint32_t len = (uint32_t)frame->a3;
-                    if (len > sizeof(kdata)) { ret = -1; break; }
+                    if (len > SYS_FILE_DATA_MAX) { ret = -1; break; }
                     if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
                         ret = -1;
                         break;
                     }
-                    if (copy_from_user(kdata, frame->a2, len) < 0) { ret = -1; break; }
-                    ret = vfs_write(kpath, kdata, len);
+                    char *kdata = (char *)palloc_pages(1);
+                    if (!kdata) { ret = -1; break; }
+                    if (copy_from_user(kdata, frame->a2, len) < 0) ret = -1;
+                    else ret = vfs_write(kpath, kdata, len);
+                    palloc_free(kdata, 1);
                     break;
                 }
                 default:

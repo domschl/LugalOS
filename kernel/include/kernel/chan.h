@@ -175,6 +175,22 @@ uint32_t chan_serve_wait_copy(chan_endpoint_t *ep, uint8_t *out, uint32_t out_ma
  * chan_serve_reply() does. */
 void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp_len);
 
+/* The syscall forms (phase 40 review): the same three operations, copying
+ * straight between the calling U-mode task's memory -- validated against its
+ * domain -- and the endpoint's own buffers, while the endpoint is claimed.
+ * They replace staging through static kernel buffers in the trap handler,
+ * which two harts could use at once, and which a task blocked in
+ * SYS_CHAN_CALL could resume from on the other hart.
+ *
+ * chan_serve_wait_user() returns the request length like
+ * chan_serve_wait_copy(), copies nothing when it exceeds `out_max`, and sets
+ * *err to -1 if the copy faulted. chan_serve_reply_user() refuses a reply
+ * larger than the endpoint's buffer instead of truncating it. */
+int      chan_call_user(chan_endpoint_t *ep, uintptr_t ureq, uint32_t req_len,
+                        uintptr_t uresp, uint32_t resp_max);
+uint32_t chan_serve_wait_user(chan_endpoint_t *ep, uintptr_t uout, uint32_t out_max, int *err);
+int      chan_serve_reply_user(chan_endpoint_t *ep, uintptr_t uin, uint32_t resp_len);
+
 /* Enumeration for /proc and the /srv/ namespace. Returns false once
  * exhausted. */
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
