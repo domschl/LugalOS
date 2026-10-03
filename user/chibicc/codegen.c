@@ -17,12 +17,46 @@
 
 static int code_idx = 0;
 
+/* Phase 40 review: codegen checks what it emits. It used to ignore the size
+ * of its output buffer -- `(void)max_size` -- so a program whose code passed
+ * 4 KB was written on past the end, into the kernel heap; and every constant,
+ * stack offset and branch was cast to its instruction field whatever its
+ * value, so `return 5000;` returned 904. Each such case now fails the
+ * compile, and nothing is written outside the buffer. */
+static int  g_cg_max;       /* bytes code_buf holds */
+static bool g_cg_failed;
+static int  g_cg_depth;     /* gen_expr()/gen_stmt() recursion */
+
+static void cg_fail(const char *what) {
+    if (!g_cg_failed) printk("[chibicc Error] %s\n", what);
+    g_cg_failed = true;
+}
+
+static bool fits12(long v) { return v >= -2048 && v <= 2047; }
+
+/* `v` as a 12-bit immediate, or a failed compile saying `what`. */
+static int16_t imm12(long v, const char *what) {
+    if (!fits12(v)) { cg_fail(what); return 0; }
+    return (int16_t)v;
+}
+
+#define FRAME_ERR "a stack frame or variable offset beyond 2 KB (cc addresses locals with 12-bit offsets)"
+
 static int emit_word(uint8_t *buf, int offset, uint32_t word) {
+    if (offset < 0 || offset > g_cg_max - 4) {
+        cg_fail("program too large: its code does not fit cc's output buffer");
+        return offset + 4;   /* sizes stay right, so the passes still agree */
+    }
     buf[offset + 0] = (uint8_t)(word & 0xFF);
     buf[offset + 1] = (uint8_t)((word >> 8) & 0xFF);
     buf[offset + 2] = (uint8_t)((word >> 16) & 0xFF);
     buf[offset + 3] = (uint8_t)((word >> 24) & 0xFF);
     return offset + 4;
+}
+
+static uint32_t encode_lui(int rd, int32_t imm20) {
+    uint32_t uimm = (uint32_t)imm20 & 0xFFFFF;
+    return (uimm << 12) | (rd << 7) | 0x37;
 }
 
 static uint32_t encode_auipc(int rd, int32_t imm20) {
@@ -106,7 +140,8 @@ static uint32_t encode_xori(int rd, int rs1, int16_t imm) {
     return (uimm << 20) | (rs1 << 15) | (0x4 << 12) | (rd << 7) | 0x13;
 }
 
-static uint32_t encode_beqz(int rs1, int16_t offset) {
+static uint32_t encode_beqz(int rs1, int offset) {
+    if (offset < -4096 || offset > 4094) cg_fail("a branch farther than 4 KB");
     uint32_t uoff = (uint32_t)offset;
     uint32_t b12   = (uoff >> 12) & 0x1;
     uint32_t b11   = (uoff >> 11) & 0x1;
@@ -129,7 +164,7 @@ static void gen_stmt(Node *node, uint8_t *code_buf);
 
 static void gen_addr(Node *node, uint8_t *code_buf) {
     if (node->kind == ND_VAR) {
-        code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, (int16_t)node->var->offset));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, imm12(node->var->offset, FRAME_ERR)));
         return;
     }
     if (node->kind == ND_DEREF) {
@@ -139,11 +174,11 @@ static void gen_addr(Node *node, uint8_t *code_buf) {
     if (node->kind == ND_MEMBER) {
         gen_addr(node->lhs, code_buf);
         if (node->member) {
-            code_idx = emit_word(code_buf, code_idx, encode_addi(10, 10, (int16_t)node->member->offset));
+            code_idx = emit_word(code_buf, code_idx, encode_addi(10, 10, imm12(node->member->offset, "a struct member beyond 2 KB")));
         }
         return;
     }
-    printk("[chibicc Error] Not an lvalue for address-of operator\n");
+    cg_fail("not an lvalue: cannot take its address or assign to it");
 }
 
 static Function *global_prog = NULL;
@@ -157,19 +192,44 @@ static int break_jals[16];
 static int break_cnt = 0;
 static int loop_depth = 0;
 
+static void gen_expr_inner(Node *node, uint8_t *code_buf);
+
+/* The AST is walked recursively on the kernel stack. The parser bounds how
+ * deeply it nests calls, but a left-associative chain -- 1+1+...+1 -- is
+ * parsed by a loop and still builds a tree as deep as it is long. */
 static void gen_expr(Node *node, uint8_t *code_buf) {
+    if (g_cg_depth >= 2 * CHIBICC_MAX_NEST) { cg_fail("expression nested too deeply"); return; }
+    g_cg_depth++;
+    gen_expr_inner(node, code_buf);
+    g_cg_depth--;
+}
+
+static void gen_expr_inner(Node *node, uint8_t *code_buf) {
     if (!node) return;
 
     switch (node->kind) {
-        case ND_NUM:
-            code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, (int16_t)node->val));
+        case ND_NUM: {
+            long v = node->val;
+            if (fits12(v)) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, (int16_t)v));
+            } else if (v >= -2147483647L - 1 && v <= 2147483647L - 2048) {
+                /* lui + addi. The upper bound keeps lui's 20 bits clear of
+                 * the sign bit, which RV64 would extend. */
+                int32_t hi = (int32_t)((v + 0x800) >> 12);
+                int16_t lo = (int16_t)(v - (long)hi * 4096);
+                code_idx = emit_word(code_buf, code_idx, encode_lui(10, hi));
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 10, lo));
+            } else {
+                cg_fail("a constant outside cc's 32-bit range");
+            }
             return;
+        }
         case ND_STR: {
             int pc = code_idx;
             int target = node->var->offset;
             int diff = target - pc;
             int32_t hi = (diff + 0x800) >> 12;
-            int16_t lo = diff - (hi << 12);
+            int16_t lo = (int16_t)(diff - hi * 4096);
             code_idx = emit_word(code_buf, code_idx, encode_auipc(10, hi));
             code_idx = emit_word(code_buf, code_idx, encode_addi(10, 10, lo));
             return;
@@ -180,9 +240,9 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 sz = REG_SZ;
             }
             if (node->var && node->var->ty && (node->var->ty->kind == TY_ARRAY || node->var->ty->kind == TY_STRUCT)) {
-                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, (int16_t)node->var->offset));
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 8, imm12(node->var->offset, FRAME_ERR)));
             } else {
-                code_idx = emit_word(code_buf, code_idx, encode_load(10, 8, (int16_t)node->var->offset, sz));
+                code_idx = emit_word(code_buf, code_idx, encode_load(10, 8, imm12(node->var->offset, FRAME_ERR), sz));
             }
             return;
         }
@@ -213,7 +273,7 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 int sz = (node->lhs->var && node->lhs->var->ty) ? node->lhs->var->ty->size : 4;
                 if (node->lhs->var && node->lhs->var->ty && node->lhs->var->ty->kind == TY_PTR) sz = REG_SZ;
                 gen_expr(node->rhs, code_buf);
-                code_idx = emit_word(code_buf, code_idx, encode_store(10, 8, (int16_t)node->lhs->var->offset, sz));
+                code_idx = emit_word(code_buf, code_idx, encode_store(10, 8, imm12(node->lhs->var->offset, FRAME_ERR), sz));
             } else if (node->lhs->kind == ND_DEREF || node->lhs->kind == ND_MEMBER) {
                 int sz = 4;
                 if (node->lhs->kind == ND_MEMBER && node->lhs->member && node->lhs->member->ty) {
@@ -241,7 +301,8 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, encode_store(10, 2, 0, REG_SZ));
                 arg_cnt++;
             }
-            for (int i = arg_cnt - 1; i >= 0; i--) {
+            if (arg_cnt > 8) cg_fail("a call with more than 8 arguments");
+            for (int i = arg_cnt - 1; i >= 0 && i < 8; i--) {
                 code_idx = emit_word(code_buf, code_idx, encode_load(10 + i, 2, 0, REG_SZ));
                 code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, 16));
             }
@@ -301,8 +362,11 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
                     break;
                 }
             }
+            /* A call to nothing used to compile to a jal to itself -- a
+             * program that spun forever. It is an error now. */
             if (!target && g_final_pass) {
-                printk("[chibicc Warning] Unresolved function call '%s'\n", node->funcname);
+                printk("[chibicc Error] call to undefined function '%s'\n", node->funcname);
+                g_cg_failed = true;
             }
             int jal_pc = code_idx;
             int diff = target ? (target->code_offset - jal_pc) : 0;
@@ -354,14 +418,23 @@ static void gen_expr(Node *node, uint8_t *code_buf) {
 
 static int current_stack_sz = 64;
 
+static void gen_stmt_inner(Node *node, uint8_t *code_buf);
+
 static void gen_stmt(Node *node, uint8_t *code_buf) {
+    if (g_cg_depth >= 2 * CHIBICC_MAX_NEST) { cg_fail("statements nested too deeply"); return; }
+    g_cg_depth++;
+    gen_stmt_inner(node, code_buf);
+    g_cg_depth--;
+}
+
+static void gen_stmt_inner(Node *node, uint8_t *code_buf) {
     if (!node) return;
 
     if (node->kind == ND_RETURN) {
         gen_expr(node->lhs, code_buf);
-        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(current_stack_sz - 2 * REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(current_stack_sz - REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)current_stack_sz));
+        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, imm12(current_stack_sz - 2 * REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, imm12(current_stack_sz - REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, imm12(current_stack_sz, FRAME_ERR)));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
         return;
     }
@@ -380,7 +453,7 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
             code_idx = emit_word(code_buf, code_idx, 0x00000013); // NOP placeholder
 
             int else_offset = code_idx - beqz_idx;
-            emit_word(code_buf, beqz_idx, encode_beqz(10, (int16_t)else_offset));
+            emit_word(code_buf, beqz_idx, encode_beqz(10, else_offset));
 
             gen_stmt(node->els, code_buf);
             code_idx = (code_idx + 3) & ~3;
@@ -389,16 +462,18 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
             emit_word(code_buf, j_idx, encode_jal(0, end_offset));
         } else {
             int end_offset = code_idx - beqz_idx;
-            emit_word(code_buf, beqz_idx, encode_beqz(10, (int16_t)end_offset));
+            emit_word(code_buf, beqz_idx, encode_beqz(10, end_offset));
         }
         return;
     }
 
     if (node->kind == ND_BREAK) {
-        if (loop_depth > 0 && break_cnt < 16) {
-            break_jals[break_cnt++] = code_idx;
-            code_idx = emit_word(code_buf, code_idx, 0x00000013); // NOP placeholder for JAL to loop end
-        }
+        /* A break that did not fit the table used to be dropped -- and the
+         * loop then did not break. */
+        if (loop_depth == 0) { cg_fail("break outside a loop"); return; }
+        if (break_cnt >= 16) { cg_fail("more than 16 breaks in one loop nest"); return; }
+        break_jals[break_cnt++] = code_idx;
+        code_idx = emit_word(code_buf, code_idx, 0x00000013); // NOP placeholder for JAL to loop end
         return;
     }
 
@@ -427,7 +502,7 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
 
         if (beqz_idx != -1) {
             int loop_end = code_idx - beqz_idx;
-            emit_word(code_buf, beqz_idx, encode_beqz(10, (int16_t)loop_end));
+            emit_word(code_buf, beqz_idx, encode_beqz(10, loop_end));
         }
 
         /* Patch break statements to jump to loop_end */
@@ -453,7 +528,9 @@ static void gen_stmt(Node *node, uint8_t *code_buf) {
 }
 
 int codegen(Function *prog, uint8_t *code_buf, int max_size) {
-    (void)max_size;
+    g_cg_max = max_size;
+    g_cg_failed = false;
+    g_cg_depth = 0;
     global_prog = prog;
 
     Function *main_fn = NULL;
@@ -468,9 +545,11 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
     int fn_cnt = 0;
     if (main_fn) order[fn_cnt++] = main_fn;
     for (Function *fn = prog; fn; fn = fn->next) {
-        if (fn != main_fn && fn_cnt < 16) {
-            order[fn_cnt++] = fn;
-        }
+        if (fn == main_fn) continue;
+        /* The 17th function used to be left out, and calls to it went
+         * nowhere. */
+        if (fn_cnt >= 16) { cg_fail("more than 16 functions"); return -1; }
+        order[fn_cnt++] = fn;
     }
 
     // 1. Pass 1: Run dry runs to converge function offsets and calculate .rodata section
@@ -488,23 +567,23 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
             stack_sz = (stack_sz + 15) & ~15;
             current_stack_sz = stack_sz;
 
-            code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)-stack_sz));
-            code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
-            code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
-            code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
+            code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, imm12(-stack_sz, FRAME_ERR)));
+            code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, imm12(stack_sz - REG_SZ, FRAME_ERR), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, imm12(stack_sz - 2 * REG_SZ, FRAME_ERR), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, imm12(stack_sz, FRAME_ERR)));
 
             int param_idx = 0;
             for (Obj *param = fn->params; param; param = param->param_next) {
                 int sz = param->ty ? param->ty->size : 4;
-                code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, (int16_t)param->offset, sz));
+                code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, imm12(param->offset, FRAME_ERR), sz));
                 param_idx++;
             }
 
             gen_stmt(fn->body, code_buf);
 
-            code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
-            code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
-            code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
+            code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, imm12(stack_sz - 2 * REG_SZ, FRAME_ERR), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, imm12(stack_sz - REG_SZ, FRAME_ERR), REG_SZ));
+            code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, imm12(stack_sz, FRAME_ERR)));
             code_idx = emit_word(code_buf, code_idx, encode_ret());
         }
 
@@ -532,23 +611,23 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         stack_sz = (stack_sz + 15) & ~15;
         current_stack_sz = stack_sz;
 
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)-stack_sz));
-        code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, (int16_t)stack_sz));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, imm12(-stack_sz, FRAME_ERR)));
+        code_idx = emit_word(code_buf, code_idx, encode_store(1, 2, imm12(stack_sz - REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_store(8, 2, imm12(stack_sz - 2 * REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(8, 2, imm12(stack_sz, FRAME_ERR)));
 
         int param_idx = 0;
         for (Obj *param = fn->params; param; param = param->param_next) {
             int sz = param->ty ? param->ty->size : 4;
-            code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, (int16_t)param->offset, sz));
+            code_idx = emit_word(code_buf, code_idx, encode_store(10 + param_idx, 8, imm12(param->offset, FRAME_ERR), sz));
             param_idx++;
         }
 
         gen_stmt(fn->body, code_buf);
 
-        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, (int16_t)(stack_sz - 2 * REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, (int16_t)(stack_sz - REG_SZ), REG_SZ));
-        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, (int16_t)stack_sz));
+        code_idx = emit_word(code_buf, code_idx, encode_load(8, 2, imm12(stack_sz - 2 * REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_load(1, 2, imm12(stack_sz - REG_SZ, FRAME_ERR), REG_SZ));
+        code_idx = emit_word(code_buf, code_idx, encode_addi(2, 2, imm12(stack_sz, FRAME_ERR)));
         code_idx = emit_word(code_buf, code_idx, encode_ret());
     }
 
@@ -557,6 +636,10 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
         if (var->is_global && var->init_data) {
             int len = strlen(var->init_data) + 1;
             int pad_len = (len + 3) & ~3;
+            if (var->offset < 0 || var->offset > g_cg_max - pad_len) {
+                cg_fail("program too large: its strings do not fit cc's output buffer");
+                break;
+            }
             memset(code_buf + var->offset, 0, pad_len);
             memcpy(code_buf + var->offset, var->init_data, len);
             if (var->offset + pad_len > code_idx) {
@@ -567,5 +650,6 @@ int codegen(Function *prog, uint8_t *code_buf, int max_size) {
 
     // Align total size to 8 bytes
     code_idx = (code_idx + 7) & ~7;
-    return code_idx;
+    if (code_idx > g_cg_max) cg_fail("program too large: its code does not fit cc's output buffer");
+    return g_cg_failed ? -1 : code_idx;
 }

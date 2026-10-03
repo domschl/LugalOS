@@ -136,6 +136,10 @@ static int compile_inner(const char *src_path, const char *dst_elf_path) {
 
     printk("[chibicc] Generating RISC-V Machine Code...\n");
     int code_len = codegen(prog, elf_buf + code_start, CHIBICC_BUF_SIZE - code_start);
+    if (code_len < 0) {
+        printk("[chibicc Error] Code generation for '%s' failed; no binary written\n", src_path);
+        return -1;
+    }
     int total_elf_size = code_start + code_len;
 
     phdr->p_filesz = code_len;
