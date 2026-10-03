@@ -165,6 +165,25 @@ extern Obj *globals;
  * out a binary if it's set. Reset at the start of every tokenize() call. */
 extern bool chibicc_pool_exhausted;
 
+/* Set by the first syntax error, or by nesting deeper than
+ * CHIBICC_MAX_NEST (phase 40 review). The parser used to print an error and
+ * carry on -- `cc` then wrote a binary for whatever it had made of the rest,
+ * or walked off the end of the token list -- so a typo could produce a
+ * program, or a kernel fault. Now the rest of the parse is cut short and
+ * chibicc_compile() emits nothing. Reset by parse(). */
+extern bool chibicc_parse_failed;
+
+/* How deep expressions and statements may nest, in the parser's recursion
+ * (and twice this in the AST codegen walks). Both recurse on the kernel stack
+ * of whoever typed `cc` -- the 16 KB boot stack on the RP2350 and the P4,
+ * below the Lisp evaluator that called it -- so the bound is what keeps a
+ * program from overflowing it. Measured with -fstack-usage on the rp2350
+ * build: about 320 bytes per level of parenthesis in the parser (unary 144,
+ * assign 48, three binary levels at 32), 48-64 per AST level in codegen. 24
+ * levels is under 8 KB; the QEMU builds' frames are larger under UBSan but
+ * their boot stack is 64 KB. */
+#define CHIBICC_MAX_NEST 24
+
 /* Function Prototypes */
 char *preprocess(const char *input, const char *src_path);
 Token *tokenize(char *input);

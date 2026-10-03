@@ -178,11 +178,35 @@ static bool equal(Token *tok, const char *op) {
     return tok->len == (int)strlen(op) && strncmp(tok->loc, op, tok->len) == 0;
 }
 
+bool chibicc_parse_failed;
+static Token *g_eof;     /* the stream's EOF token, where an error sends the parse */
+static int g_nest;       /* unary()/stmt() recursion depth */
+
+/* Reports the first error and ends the parse: every caller's loop stops at
+ * EOF, so what follows is unwound without being read. */
+static Token *parse_error(Token *tok, const char *what) {
+    if (!chibicc_parse_failed) {
+        /* The token's text, bounded: printk has no %.*s. */
+        char at[25];
+        int n = tok->len < 24 ? tok->len : 24;
+        memcpy(at, tok->loc, (size_t)n);
+        at[n] = '\0';
+        if (tok->kind == TK_EOF) printk("[chibicc Error] %s at end of file\n", what);
+        else printk("[chibicc Error] %s at '%s'\n", what, at);
+    }
+    chibicc_parse_failed = true;
+    return g_eof;
+}
+
 static Token *skip(Token *tok, const char *op) {
     if (equal(tok, op)) {
         return tok->next;
     }
-    return tok;
+    /* A missing token used to be stepped over in silence, so `return 1`
+     * without its ';' compiled. */
+    char what[24];
+    ksnprintf(what, sizeof(what), "expected '%s'", op);
+    return parse_error(tok, what);
 }
 
 /* Forward declarations */
@@ -253,7 +277,7 @@ static Type *struct_decl(Token **rest, Token *tok) {
     Member *cur = &head;
     int offset = 0;
 
-    while (!equal(tok, "}")) {
+    while (!equal(tok, "}") && tok->kind != TK_EOF) {
         Type *m_ty = typespec(&tok, tok);
         Token *m_tok = tok;
         tok = tok->next;
@@ -462,12 +486,26 @@ static Node *primary(Token **rest, Token *tok) {
         return node;
     }
 
-    printk("[chibicc Error] Expected expression\n");
-    *rest = tok->next;
+    *rest = parse_error(tok, "expected an expression");
     return new_num(0);
 }
 
+static Node *unary_inner(Token **rest, Token *tok);
+
+/* Every level of expression nesting -- a parenthesis, a prefix operator --
+ * passes through here, so this is where its depth is bounded. */
 static Node *unary(Token **rest, Token *tok) {
+    if (g_nest >= CHIBICC_MAX_NEST) {
+        *rest = parse_error(tok, "expression nested too deeply");
+        return new_num(0);
+    }
+    g_nest++;
+    Node *node = unary_inner(rest, tok);
+    g_nest--;
+    return node;
+}
+
+static Node *unary_inner(Token **rest, Token *tok) {
     if (equal(tok, "++")) {
         Node *target = unary(rest, tok->next);
         Node *one = new_num(1);
@@ -582,7 +620,21 @@ static bool is_typename(Token *tok) {
            equal(tok, "struct");
 }
 
+static Node *stmt_inner(Token **rest, Token *tok);
+
+/* Blocks, ifs and loops nest through here; bounded like unary(). */
 static Node *stmt(Token **rest, Token *tok) {
+    if (g_nest >= CHIBICC_MAX_NEST) {
+        *rest = parse_error(tok, "statements nested too deeply");
+        return new_node(ND_EXPR_STMT);
+    }
+    g_nest++;
+    Node *node = stmt_inner(rest, tok);
+    g_nest--;
+    return node;
+}
+
+static Node *stmt_inner(Token **rest, Token *tok) {
     if (equal(tok, "return")) {
         Node *node = new_node(ND_RETURN);
         node->lhs = expr(&tok, tok->next);
@@ -824,6 +876,10 @@ Function *parse(Token *tok) {
     member_pool_idx = 0;
     globals = NULL;
     str_label_idx = 0;
+    chibicc_parse_failed = false;
+    g_nest = 0;
+    g_eof = tok;
+    while (g_eof->kind != TK_EOF) g_eof = g_eof->next;
 
     Function head = {0};
     Function *cur = &head;

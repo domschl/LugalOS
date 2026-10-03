@@ -230,11 +230,16 @@ Token *tokenize(char *p) {
             continue;
         }
 
+        /* An unknown character used to be skipped with a message, and the
+         * program compiled without it. */
         printk("[chibicc Error] Cannot tokenize character '%c'\n", *p);
-        p++;
+        return NULL;
     }
 
     cur->next = new_token(TK_EOF, p, p);
+    /* Past the end is still the end: a parser that steps over EOF stays on
+     * it rather than following a NULL. */
+    cur->next->next = cur->next;
     return head.next;
 }
 

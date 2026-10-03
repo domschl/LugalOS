@@ -73,6 +73,10 @@ static int compile_inner(const char *src_path, const char *dst_elf_path) {
         printk("[chibicc Error] Parsing failed\n");
         return -1;
     }
+    if (chibicc_parse_failed) {
+        printk("[chibicc Error] '%s' did not parse; no binary written\n", src_path);
+        return -1;
+    }
     if (chibicc_pool_exhausted) {
         printk("[chibicc Error] Compiler pool exhausted while compiling '%s'; "
                "refusing to emit a possibly-corrupted binary\n", src_path);
