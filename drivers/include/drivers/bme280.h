@@ -90,6 +90,19 @@ const bme280_calib_t *bme280_calibration(void);
  * prints each when `report` is true. Needs no sensor and no bus. */
 uint32_t bme280_selftest(bool report);
 
+/* Station pressure reduced to sea level (phase 40, item 11): the barometric
+ * formula p0 = p * (1 - 0.0065 h / (T + 0.0065 h + 273.15)) ** -5.257, with
+ * the measured temperature, in integer arithmetic -- the kernel has neither
+ * an FPU nor libm. `pa` in pascals, `t_c100` in hundredths of a degree,
+ * `alt_m` in metres (-500..9000); returns pascals, rounded, within 1 Pa of
+ * the formula in floating point (tools/bme280_reference.py, `sensor
+ * selftest`). */
+int32_t bme280_sea_level_pa(int32_t pa, int32_t t_c100, int32_t alt_m);
+
+/* The installation altitude the sea-level figures use, from the identity
+ * record; false when none is stored. */
+bool bme280_altitude(int32_t *alt_m);
+
 /* Q5: registers this part's measurements with `mqttd`, one topic each, but
  * only if a part was actually found. Called after bme280_init(). */
 void bme280_register_sources(void);

@@ -89,22 +89,6 @@ ioctl framing byte for byte, or a `bsscfg:` iovar), then leave before every
 manual join. Any other setup iovar refused while associated needs `mfp`'s
 judgement meanwhile.
 
-## Pressure is published as station pressure, not reduced to sea level
-
-**Destination: phase 40, item 11** -- needs the owner's decision on point 3.
-
-`drivers/bme280.c` publishes the pressure where the sensor sits: `963.69` at
-520 m, where every weather service says about `1025`. Both are correct; they
-are different quantities, and the difference (~60 hPa) looks like a permanent
-storm.
-
-**Fix:** (1) an installation altitude in metres in the identity record,
-settable like the broker; (2) the barometric reduction
-`p0 = p * (1 - 0.0065 h / (T + 0.0065 h + 273.15)) ** -5.257` with the
-measured temperature -- no FPU and no libm in the kernel, so an interpolation
-table over 0-3000 m; (3) publish both `pressure` and `pressure_msl` (one more
-source slot) rather than replace the honest measurement.
-
 ## An identity write reboots the board
 
 **Destination: phase 40, item 12.**

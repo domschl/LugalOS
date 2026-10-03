@@ -309,6 +309,9 @@ typedef struct {
     /* Q6: the MQTT broker blob, same carry-forward/explicit-clear pair. */
     const uint8_t *mqtt;    uint32_t mqtt_len;
     bool           clear_mqtt;
+    /* Phase 40, item 11: the altitude, two bytes big-endian; same pair. */
+    const uint8_t *altitude;
+    bool           clear_altitude;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -462,7 +465,18 @@ static int identity_store_write(const identity_patch_t *patch) {
         if (n > 0) final_mqtt_len = (uint32_t)n;
     }
 
+    uint8_t  final_alt[2];
+    bool     have_alt = false;
+    if (patch->altitude) {
+        memcpy(final_alt, patch->altitude, sizeof(final_alt));
+        have_alt = true;
+    } else if (old_valid && !patch->clear_altitude) {
+        have_alt = idstore_get_field(oldp, IDSTORE_FIELD_ALTITUDE, final_alt,
+                                     sizeof(final_alt)) == (int)sizeof(final_alt);
+    }
+
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (have_alt)            rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_ALTITUDE, final_alt, sizeof(final_alt));
     if (final_mqtt_len)      rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MQTT, final_mqtt, (uint16_t)final_mqtt_len);
     if (final_grants_len)    rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
     memset(final_key, 0, sizeof(final_key));
@@ -774,6 +788,31 @@ node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg) {
     int rc = identity_store_write(&patch);
     memset(blob, 0, sizeof(blob));       /* it held a password */
     return rc != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+bool node_altitude(int32_t *metres_out) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev || !metres_out) return false;
+    idstore_t rec;
+    if (idstore_read(dev, &rec) != IDSTORE_VALID) return false;
+    uint8_t b[2];
+    if (idstore_get_field(&rec, IDSTORE_FIELD_ALTITUDE, b, sizeof(b)) != (int)sizeof(b)) return false;
+    *metres_out = (int16_t)((uint16_t)b[0] << 8 | b[1]);
+    return true;
+}
+
+node_id_result_t node_identity_set_altitude(int32_t metres) {
+    if (metres < NODE_ALTITUDE_MIN || metres > NODE_ALTITUDE_MAX) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    uint8_t b[2] = { (uint8_t)((uint16_t)metres >> 8), (uint8_t)metres };
+    identity_patch_t patch = { .altitude = b };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+node_id_result_t node_identity_clear_altitude(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .clear_altitude = true };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
 }
 
 node_id_result_t node_identity_clear_mqtt(void) {

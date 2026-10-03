@@ -121,6 +121,10 @@ typedef enum {
                                     * same password crosses the LAN in the clear anyway -- so
                                     * the record is not the weak link. `mqttcfg` and
                                     * /proc/node print it as `set`, never as its value. */
+    IDSTORE_FIELD_ALTITUDE  = 9,  /* instance scope (phase 40, item 11): the installation's
+                                    * height above sea level in whole metres, int16 big-endian.
+                                    * What the BME280's sea-level pressure is reduced with; a
+                                    * board without it publishes station pressure only. */
 } idstore_field_type_t;
 
 typedef struct {

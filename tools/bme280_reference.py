@@ -83,7 +83,25 @@ VECTOR_CAL = {
 VECTOR_RAW = {"adc_T": 519888, "adc_P": 343040, "adc_H": 32768}
 
 
+def sea_level_pa(pa: int, t_c100: int, alt_m: int) -> int:
+    """Station pressure reduced to sea level (phase 40, item 11), in floating
+    point: the barometric formula drivers/bme280.c evaluates in integers."""
+    t = t_c100 / 100.0
+    x = 0.0065 * alt_m / (t + 0.0065 * alt_m + 273.15)
+    return round(pa * (1.0 - x) ** -5.257)
+
+
+# (station Pa, 0.01 C, metres): sea level, the 520 m installation the open
+# issue was found at, a cold kilometre, high and colder, below sea level.
+SEA_LEVEL_VECTORS = [(101325, 1500, 0), (96369, 2050, 520), (89875, -1000, 1000),
+                     (70121, -2000, 3000), (100000, 3000, -100)]
+
+
 if __name__ == "__main__":
+    print("sea-level vectors for drivers/bme280.c's selftest (pa, t_c100, alt_m, want):")
+    for pa, t, h in SEA_LEVEL_VECTORS:
+        print(f"  {{ {pa}, {t}, {h}, {sea_level_pa(pa, t, h)} }},")
+    print()
     T, P, H = compensate(VECTOR_CAL, **VECTOR_RAW)
     print("expected results for the selftest vector:")
     print(f"  temperature_c100  = {T}        ({T / 100:.2f} C)")

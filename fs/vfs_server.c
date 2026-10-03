@@ -1282,6 +1282,15 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\n",
                 (unsigned long)age_s, (long)r.temperature_c100,
                 (unsigned long)(r.pressure_pa256 >> 8));
+            /* Phase 40, item 11: reduced to sea level, where the node knows
+             * its altitude -- so a gateway republishing this file
+             * (`mqttd file`) can publish what weather services quote. */
+            int32_t alt;
+            if (bme280_altitude(&alt))
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "altitude_m=%ld\npressure_msl_pa=%ld\n", (long)alt,
+                    (long)bme280_sea_level_pa((int32_t)(r.pressure_pa256 >> 8),
+                                              r.temperature_c100, alt));
             if (r.have_humidity)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "humidity_rh1000=%lu\n",

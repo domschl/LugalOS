@@ -53,6 +53,7 @@ FIELD_WLAN_PSK = 5
 FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
 FIELD_GRANTS = 7    # the peer grants list, as the text fs/9p.c parses
 FIELD_MQTT = 8      # where this node publishes; see build_mqtt_blob() below
+FIELD_ALTITUDE = 9  # metres above sea level, int16 big-endian (phase 40, item 11)
 
 WLAN_PSK_LEN = 32  # WPA2's PSK is always 256 bits -- kernel/identity.h's NODE_WLAN_PSK_LEN
 
@@ -250,6 +251,10 @@ def main() -> int:
                          "The password is stored in the clear, like the WLAN PSK -- and it "
                          "crosses the LAN in the clear too, so give each node its own and "
                          "one that means nothing elsewhere.")
+    ap.add_argument("--altitude", metavar="METRES", type=int,
+                    help="the installation's height above sea level (-500..9000), which a "
+                         "BME280 node reduces its pressure with to publish pressure_msl -- "
+                         "what weather services quote -- beside the measured value")
     ap.add_argument("--mqtt-sample", metavar="SECONDS", type=int, default=0,
                     help="how often each measurement is sampled (default 5). Publishing is "
                          "governed by each measurement's own rule, not by this.")
@@ -393,6 +398,11 @@ def main() -> int:
 
     if args.mqtt:
         fields.append((FIELD_MQTT, build_mqtt_blob(args.mqtt, args.mqtt_sample)))
+
+    if args.altitude is not None:
+        if not -500 <= args.altitude <= 9000:
+            sys.exit("--altitude: expected -500..9000 metres")
+        fields.append((FIELD_ALTITUDE, args.altitude.to_bytes(2, "big", signed=True)))
 
     record = build_record(fields)
     with open(args.output, "wb") as f:

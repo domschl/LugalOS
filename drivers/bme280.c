@@ -5,6 +5,7 @@
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "net/mqttd.h"
+#include "kernel/identity.h"
 #include <string.h>
 
 /* See drivers/include/drivers/bme280.h for the part-vs-part story and why
@@ -324,6 +325,42 @@ uint32_t bme280_read_count(void) { return g.read_count; }
 uint32_t bme280_fail_count(void) { return g.fail_count; }
 const char *bme280_last_failure(void) { return g.last_fail; }
 
+/* --- Sea-level pressure (phase 40, item 11) ---
+ *
+ * p0 / p = (1 - x) ** -5.257, x = L h / (T + L h + 273.15), L = 0.0065 K/m.
+ *
+ * Evaluated as exp(5.257 * -ln(1 - x)) with both series in Q30: x is at most
+ * 0.13 for anything up to 9 km, where ln's seventh term and exp's ninth are
+ * below one part in 10^7 of the result -- under 0.01 Pa at sea-level
+ * pressures. Every product is of two Q30 values below 2^31, so under 2^62,
+ * which a 64-bit integer holds; no 128-bit arithmetic, which RV32 lacks.
+ * Temperatures are those of the air at the station, as the formula wants. */
+int32_t bme280_sea_level_pa(int32_t pa, int32_t t_c100, int32_t alt_m) {
+    if (alt_m == 0 || pa <= 0) return pa;
+    /* In units of 10^-4 K: L h = 65 h, T + 273.15 = 100 t_c100 + 2 731 500. */
+    int64_t num = 65LL * alt_m;
+    int64_t den = 100LL * t_c100 + 2731500LL + num;
+    if (den <= 0) return pa;                       /* below absolute zero: not air */
+    const int64_t ONE = 1LL << 30;
+    int64_t x = (num * ONE) / den;                 /* Q30, |x| < 0.15 */
+
+    /* s = -ln(1 - x) = x + x^2/2 + x^3/3 + ... */
+    int64_t s = 0, xk = x;
+    for (int k = 1; k <= 7; k++) {
+        s += xk / k;
+        xk = (xk * x) / ONE;
+    }
+    int64_t y = (s * 5257) / 1000;                 /* Q30, < 0.8 */
+
+    /* e^y = 1 + y + y^2/2! + ... */
+    int64_t e = ONE, term = ONE;
+    for (int k = 1; k <= 9; k++) {
+        term = (term * y) / ONE / k;
+        e += term;
+    }
+    return (int32_t)(((int64_t)pa * e + (ONE / 2)) / ONE);
+}
+
 /* --- The vector ---
  *
  * The calibration block and raw values are tools/bme280_reference.py's
@@ -381,6 +418,27 @@ uint32_t bme280_selftest(bool report) {
         if (report) cprintf("  temperature changed when humidity was disabled\n");
     }
 
+    /* Sea-level reduction (phase 40, item 11) against the floating-point
+     * formula in tools/bme280_reference.py, to within the 1 Pa its rounding
+     * can differ by. */
+    static const struct { int32_t pa, t_c100, alt_m, want; } msl[] = {
+        { 101325, 1500, 0, 101325 },
+        { 96369, 2050, 520, 102345 },
+        { 89875, -1000, 1000, 102176 },
+        { 70121, -2000, 3000, 103578 },
+        { 100000, 3000, -100, 98878 },
+    };
+    for (unsigned i = 0; i < sizeof(msl) / sizeof(msl[0]); i++) {
+        int32_t got = bme280_sea_level_pa(msl[i].pa, msl[i].t_c100, msl[i].alt_m);
+        int32_t d = got - msl[i].want;
+        if (d < -1 || d > 1) {
+            failed++;
+            if (report) cprintf("  sea level %ld Pa at %ld m, %ld c: got %ld, want %ld\n",
+                                (long)msl[i].pa, (long)msl[i].alt_m, (long)msl[i].t_c100,
+                                (long)got, (long)msl[i].want);
+        }
+    }
+
     if (report) cprintf("bme280 selftest: %lu case%s failed\n",
                         (unsigned long)failed, failed == 1u ? "" : "s");
     return failed;
@@ -435,6 +493,25 @@ static bool src_humidity(int32_t *out, void *ctx) {
     return true;
 }
 
+/* The installation altitude, read once when the sources are registered
+ * (identity writes reboot the board, so it does not change under a running
+ * one). Only meaningful while g_have_alt. */
+static int32_t g_alt_m;
+static bool    g_have_alt;
+
+/* Phase 40, item 11: the same pressure reduced to sea level, which is what
+ * every weather service quotes -- 963.69 hPa measured at 520 m is 1023.45 at
+ * sea level, and the difference looked like a permanent storm. Published
+ * beside the measurement, not instead of it: `pressure` stays what the sensor
+ * measured. */
+static bool src_pressure_msl(int32_t *out, void *ctx) {
+    (void)ctx;
+    if (!g_have_alt || !cached_read()) return false;
+    *out = bme280_sea_level_pa((int32_t)(g_cached.pressure_pa256 >> 8),
+                               g_cached.temperature_c100, g_alt_m);
+    return true;
+}
+
 /* Per-measurement rules, because the three do not behave alike and a single
  * rule would be wrong for at least two of them.
  *
@@ -469,6 +546,17 @@ void bme280_register_sources(void) {
     mqttd_add_source("pressure", src_pressure, NULL, 2, &press_rule);
     if (g.part == BME280_PART_BME280)
         mqttd_add_source("humidity", src_humidity, NULL, 2, &hum_rule);
+    /* A stored altitude is the intent to publish sea-level pressure, as a
+     * stored broker is the intent to publish at all. Same rule as pressure. */
+    g_have_alt = node_altitude(&g_alt_m);
+    if (g_have_alt)
+        mqttd_add_source("pressure_msl", src_pressure_msl, NULL, 2, &press_rule);
+}
+
+bool bme280_altitude(int32_t *alt_m) {
+    if (!g_have_alt) g_have_alt = node_altitude(&g_alt_m);
+    if (g_have_alt && alt_m) *alt_m = g_alt_m;
+    return g_have_alt;
 }
 
 /* --- The sampler (E7, plan/phase27_esp32p4_bringup.md) ---
@@ -566,6 +654,12 @@ void bme280_print_status(void) {
     }
     cprintf("  (forced mode, x1 oversampling, %lu status poll%s)\n",
             (unsigned long)polls, polls == 1u ? "" : "s");
+    int32_t alt;
+    if (bme280_altitude(&alt)) {
+        int32_t msl = bme280_sea_level_pa((int32_t)pa, r.temperature_c100, alt);
+        cprintf("  sea level: %ld.%02ld hPa (installed at %ld m)\n",
+                (long)(msl / 100), (long)(msl % 100), (long)alt);
+    }
 
     /* What a *remote* reader sees, said next to what the console just took.
      * `sensor` reads the bus; /proc/sensors cannot, and is only as fresh as

@@ -278,6 +278,17 @@ bool node_mqtt(node_mqtt_t *out);
  * of 0.0.0.0 is refused: it is not an address, and storing it would make a
  * board retry forever against nothing. */
 node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg);
+
+/* Phase 40, item 11: the installation altitude in metres, which turns the
+ * pressure a sensor measures into the sea-level pressure every weather
+ * service quotes. node_altitude() is false when none is stored; the setter
+ * takes -500..9000 m (the Dead Sea to above any station a board would sit
+ * at) and refuses anything else. */
+#define NODE_ALTITUDE_MIN (-500)
+#define NODE_ALTITUDE_MAX 9000
+bool node_altitude(int32_t *metres_out);
+node_id_result_t node_identity_set_altitude(int32_t metres);
+node_id_result_t node_identity_clear_altitude(void);
 node_id_result_t node_identity_clear_mqtt(void);
 
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],

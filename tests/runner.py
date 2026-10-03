@@ -4322,6 +4322,50 @@ def test_grants_in_record(elf_path: Path, img_path: Path, arch_name: str) -> tup
         id_img.unlink(missing_ok=True)
 
 
+def test_identity_altitude(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """Phase 40, item 11: the installation altitude lives in the identity
+    record, which the BME280's sea-level pressure is reduced with (`sensor
+    selftest` checks the reduction itself against tools/bme280_reference.py).
+
+    Asserted against a real identity disk: an altitude is stored and read
+    back; it survives a write of another field (the record is rewritten whole,
+    and every field has to be carried forward by hand -- forgetting one is the
+    bug this guards); an altitude out of range is refused; and `clear`
+    removes it."""
+    import shutil
+    name = "Identity: Altitude Stored, Carried Forward, Range-Checked, Cleared (40.11)"
+    arch_img = img_path.with_name(f"test_{arch_name}_alt_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_alt_id.img")
+    id_img.write_bytes(b"\x00" * 4096)
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        session.send_and_expect("identity provision", r"key fingerprint", timeout=6.0)
+        ok, log = session.send_and_expect("identity altitude 520", r"altitude 520 m \(persisted\)", timeout=6.0)
+        if not ok:
+            return (name, False, f"the altitude was not stored:\n{log[-400:]}")
+        ok, log = session.send_and_expect("identity name alt-test", r"renamed to", timeout=6.0)
+        ok, log = session.send_and_expect("identity", r"altitude: 520 m", timeout=6.0)
+        if not ok:
+            return (name, False, f"a rename dropped the altitude:\n{log[-400:]}")
+        ok, log = session.send_and_expect("identity altitude 9001", r"identity altitude: rejected", timeout=6.0)
+        if not ok:
+            return (name, False, f"an altitude out of range was accepted:\n{log[-400:]}")
+        ok, log = session.send_and_expect("identity altitude -20", r"altitude -20 m", timeout=6.0)
+        if not ok:
+            return (name, False, f"a negative altitude was not stored:\n{log[-400:]}")
+        ok, log = session.send_and_expect("identity altitude clear", r"no altitude stored", timeout=6.0)
+        if not ok:
+            return (name, False, f"clear did not remove it:\n{log[-400:]}")
+        return (name, True, "520 m stored, kept across a rename; 9001 refused; -20 stored; cleared")
+    finally:
+        session.close()
+
+
 def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """I3, plan/phase21_identity_and_authentication.md: the `identity`
     command family against a real (fresh) identity disk -- I3's own verify
@@ -8203,6 +8247,7 @@ def main() -> int:
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_altitude(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))

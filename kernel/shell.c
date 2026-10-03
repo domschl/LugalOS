@@ -1491,6 +1491,10 @@ static void identity_print_report(void) {
         cprintf("key fingerprint: none\n");
     }
     memset(key, 0, sizeof(key));
+
+    int32_t alt;
+    if (node_altitude(&alt)) cprintf("altitude: %ld m\n", (long)alt);
+    else                     cprintf("altitude: none\n");
 }
 
 /* Parses a run of hex pairs into `out`, the same shape cmd_p9key() already
@@ -1569,7 +1573,35 @@ static void cmd_identity(const char *arg) {
         return;
     }
 
-    cprintf("usage: identity [name <name> | provision [--force] | key <hex>|--generate]\n");
+    if (strcmp(sub, "altitude") == 0) {
+        /* Phase 40, item 11: metres above sea level, for the BME280's
+         * sea-level pressure. Read when the sensor's sources are registered,
+         * at boot. */
+        node_id_result_t rc;
+        if (strcmp(rest, "clear") == 0) {
+            rc = node_identity_clear_altitude();
+        } else {
+            const char *p = rest;
+            bool neg = (*p == '-');
+            if (neg) p++;
+            long m = 0;
+            while (*p >= '0' && *p <= '9' && m < 100000) m = m * 10 + (*p++ - '0');
+            if (p == rest + (neg ? 1 : 0) || *p) {
+                cprintf("usage: identity altitude <metres>|clear  (%d..%d)\n",
+                        NODE_ALTITUDE_MIN, NODE_ALTITUDE_MAX);
+                return;
+            }
+            rc = node_identity_set_altitude((int32_t)(neg ? -m : m));
+        }
+        if (rc != NODE_ID_OK) { cprintf("identity altitude: %s\n", node_id_result_str(rc)); return; }
+        int32_t alt;
+        if (node_altitude(&alt)) cprintf("identity: altitude %ld m (persisted)\n", (long)alt);
+        else                     cprintf("identity: no altitude stored\n");
+        return;
+    }
+
+    cprintf("usage: identity [name <name> | provision [--force] | key <hex>|--generate\n"
+            "                | altitude <metres>|clear]\n");
 }
 
 /* --- `peers`: I5, plan/phase21_identity_and_authentication.md §5.2/§6 ---
