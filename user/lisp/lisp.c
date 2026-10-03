@@ -196,6 +196,8 @@ static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
 static const lisp_val_t sym_quote = { .type = LISP_SYMBOL, .u.sym = "quote" };
 static const lisp_val_t sym_lambda = { .type = LISP_SYMBOL, .u.sym = "lambda" };
 static const lisp_val_t sym_if = { .type = LISP_SYMBOL, .u.sym = "if" };
+static const lisp_val_t sym_and = { .type = LISP_SYMBOL, .u.sym = "and" };
+static const lisp_val_t sym_or = { .type = LISP_SYMBOL, .u.sym = "or" };
 static const lisp_val_t sym_begin = { .type = LISP_SYMBOL, .u.sym = "begin" };
 static const lisp_val_t sym_let = { .type = LISP_SYMBOL, .u.sym = "let" };
 static const lisp_val_t sym_let_star = { .type = LISP_SYMBOL, .u.sym = "let*" };
@@ -970,6 +972,8 @@ lisp_val_t *make_sym(const char *sym) {
             if (streq(sym, "let")) return (lisp_val_t *)&sym_let;
             if (streq(sym, "let*")) return (lisp_val_t *)&sym_let_star;
             break;
+        case 'a': if (streq(sym, "and")) return (lisp_val_t *)&sym_and; break;
+        case 'o': if (streq(sym, "or")) return (lisp_val_t *)&sym_or; break;
         case 'i': if (streq(sym, "if")) return (lisp_val_t *)&sym_if; break;
         case 'b': if (streq(sym, "begin")) return (lisp_val_t *)&sym_begin; break;
         case 'w': if (streq(sym, "while")) return (lisp_val_t *)&sym_while; break;
@@ -2812,6 +2816,12 @@ static lisp_val_t *prim_math_log(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* --- Predicates & Numeric Introspection --- */
+
+static lisp_val_t *prim_not(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    return lisp_truthy(args->u.pair.car) ? &false_val : &true_val;
+}
 
 static lisp_val_t *prim_null_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -4663,13 +4673,19 @@ static lisp_val_t *prim_load(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *path = get_str_val(args->u.pair.car);
+    vfs_stat_t st;
+    uint32_t needed = 8192;
+    if (vfs_stat(path, &st) == 0 && st.size > 0) {
+        needed = st.size + 1;
+        if (needed < 8192) needed = 8192;
+    }
     scratch_t sc;
-    if (!scratch_acquire(&sc, 8192)) {
-        cprintf("load: out of memory\n");
+    if (!scratch_acquire(&sc, needed)) {
+        cprintf("load: out of memory (needed %u bytes)\n", (unsigned)needed);
         return &false_val;
     }
     char *buf = (char *)sc.base;
-    int len = vfs_read(path, buf, 8192 - 1);
+    int len = vfs_read(path, buf, needed - 1);
     if (len < 0) {
         cprintf("load: cannot open file '%s'\n", path);
         scratch_release(&sc);
@@ -4706,10 +4722,16 @@ static lisp_val_t *prim_read_file(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return make_str("");
     const char *path = get_str_val(args->u.pair.car);
+    vfs_stat_t st;
+    uint32_t needed = 4096;
+    if (vfs_stat(path, &st) == 0 && st.size > 0) {
+        needed = st.size + 1;
+        if (needed < 4096) needed = 4096;
+    }
     scratch_t sc;
-    if (!scratch_acquire(&sc, 4096)) return make_str("");
+    if (!scratch_acquire(&sc, needed)) return make_str("");
     char *buf = (char *)sc.base;
-    int len = vfs_read(path, buf, 4096 - 1);
+    int len = vfs_read(path, buf, needed - 1);
     lisp_val_t *out = &nil_val;
     if (len < 0) {
         out = make_str("");
@@ -6420,6 +6442,48 @@ tail_call:
                         op == &sym_unquote_splicing || streq(op->u.sym, "unquote-splicing")) {
                         printk("[Lisp Error] %s: unquote outside quasiquote\n", op->u.sym);
                         return &nil_val;
+                    }
+                    break;
+
+                case 'a':
+                    /* Special form: and -- (and e1 e2 ...) */
+                    if (op == &sym_and || streq(op->u.sym, "and")) {
+                        if (!args || args->type != LISP_PAIR) return &true_val;
+                        while (args && args->type == LISP_PAIR) {
+                            lisp_val_t *expr = args->u.pair.car;
+                            lisp_val_t *next = args->u.pair.cdr;
+                            if (!next || next->type != LISP_PAIR) {
+                                val = expr;
+                                env = refresh_global_tail(env, env, was_global);
+                                goto tail_call;
+                            }
+                            lisp_val_t *v = lisp_eval(expr, refresh_global_tail(env, env, was_global));
+                            if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+                            if (!lisp_truthy(v)) return &false_val;
+                            args = next;
+                        }
+                        return &true_val;
+                    }
+                    break;
+
+                case 'o':
+                    /* Special form: or -- (or e1 e2 ...) */
+                    if (op == &sym_or || streq(op->u.sym, "or")) {
+                        if (!args || args->type != LISP_PAIR) return &false_val;
+                        while (args && args->type == LISP_PAIR) {
+                            lisp_val_t *expr = args->u.pair.car;
+                            lisp_val_t *next = args->u.pair.cdr;
+                            if (!next || next->type != LISP_PAIR) {
+                                val = expr;
+                                env = refresh_global_tail(env, env, was_global);
+                                goto tail_call;
+                            }
+                            lisp_val_t *v = lisp_eval(expr, refresh_global_tail(env, env, was_global));
+                            if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+                            if (lisp_truthy(v)) return v;
+                            args = next;
+                        }
+                        return &false_val;
                     }
                     break;
 

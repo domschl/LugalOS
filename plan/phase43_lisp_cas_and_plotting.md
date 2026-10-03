@@ -1,6 +1,6 @@
 # Phase 43 — Symbolic Computer Algebra System (CAS) & Mathematical Visualization
 
-**Status: PLANNED (2026-10-03).**  
+**Status: IN PROGRESS (Milestones 43.1 & 43.2 COMPLETE, Verified on Hardware; 2026-10-03).**  
 Branch: `lisp_symbolic`  
 Follows Phase 42 (Lisp Symbolic Foundations & Engine Optimizations) and Phase 37/38 (Screen Layouts, Canvas API & PSRAM).
 
@@ -76,8 +76,9 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.1: Engine Mathematical Foundations (Flash C Builtins)
+### Milestone 43.1: Engine Mathematical Foundations (Flash C Builtins) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** Equip the C interpreter with critical operations that are inefficient or impractical to write in interpreted Lisp.
 * **Deliverables:**
   1. **Integer & Rational Exponentiation (`expt`, `^`):**
@@ -97,11 +98,15 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 * **SRAM & Storage Footprint:**
   - Placed in `static const builtin_t builtins[]` in `.rodata`.
   - SRAM impact: **0 bytes**. Flash impact: $\approx 800$ bytes.
+* **Verification:**
+  - `tests/test_lisp_cas.py`: 46/46 unit tests passing on QEMU.
+  - Verified on live RP2350 silicon via interactive console.
 
 ---
 
-### Milestone 43.2: Symbolic Expression Canonicalization & Pattern Simplifier (`cas/simplify.lisp`)
+### Milestone 43.2: Symbolic Expression Canonicalization & Pattern Simplifier (`cas/simplify.lisp`) — [COMPLETE]
 
+* **Status:** Complete (2026-10-03).
 * **Goal:** Transform arbitrary mathematical expressions into canonical, minimal algebraic forms.
 * **Deliverables:**
   1. **Canonical Expression Representation:**
@@ -119,6 +124,16 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
   4. **Constant Folding:**
      - Automatic exact simplification of all constant subexpressions via Phase 42.7 bignum/rational arithmetic:
        `(+ 1/2 (* 3 1/4))` $\rightarrow$ `5/4`.
+  5. **Radical & Transcendental Simplification:**
+     - Exact square roots and radical factorization ($\sqrt{18} = 3\sqrt{2}$, $\sqrt{72} = 6\sqrt{2}$, $\sqrt{1/4} = 1/2$, $\sqrt{x^2} = x$).
+     - Elementary transcendental identities ($\ln(e^x) = x$, $\sin(0) = 0$, $\cos(0) = 1$).
+  6. **Tooling & Storage Synchronization:**
+     - Created `tools/p9sync.py` to synchronize staged SD cards over 9P.
+     - Synchronized `cas/simplify.lisp` and system binaries to `/sd0/cas` on physical RP2350-terminal.
+* **Verification:**
+  - `tests/test_cas_simplify.py`: 65/65 unit tests passing on QEMU.
+  - Integrated into `tests/runner.py` regression suite.
+  - Verified live on physical RP2350-terminal silicon via interactive console (`/dev/ttyACM1`).
 
 ---
 

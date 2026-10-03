@@ -3109,6 +3109,53 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Lisp Mathematical Foundations expt, isqrt, to-decimal, math-*, orderings (Phase 43.1)",
                         ok, log if not ok else ""))
 
+        # Phase 43.2: Symbolic Expression Canonicalization & Pattern Simplifier (cas/simplify.lisp)
+        cmd_p43_simplify = (
+            "lisp\n"
+            '(load "/sd0/cas/simplify.lisp")\n'
+            "(simplify '(+ (* 3 x) (* 2 x)))\n"
+            "(simplify '(+ x x))\n"
+            "(simplify '(- (* 4 x) x))\n"
+            "(simplify '(+ y x 3))\n"
+            "(simplify '(+ 1/2 (* 3 1/4)))\n"
+            "(simplify '(* 1 x))\n"
+            "(simplify '(* 0 x))\n"
+            "(simplify '(- x x))\n"
+            "(simplify '(/ x x))\n"
+            "(simplify '(- (- x)))\n"
+            "(simplify '(^ (+ x 1) 0))\n"
+            "(simplify '(^ x 1))\n"
+            "(simplify '(+ (* 2 x (^ y 2)) (* 5 x (^ y 2))))\n"
+            "(simplify '(+ (* 2 (^ y 2) x) (* 5 x (^ y 2))))\n"
+            "(simplify '(sqrt 18))\n"
+            "(simplify '(sqrt 1/4))\n"
+            "(simplify '(* (^ x 2) (^ x 3)))\n"
+            "(simplify '(^ (^ x 2) 3))\n"
+            "(simplify '(^ (* 2 x) 2))\n"
+            '(display "P43_SIMPLIFY_OK\\n")\n'
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_p43_simplify, r"P43_SIMPLIFY_OK", timeout=12.0)
+        p43_simplify_correct = (
+            "=> (* 5 x)" in log and
+            "=> (* 2 x)" in log and
+            "=> (* 3 x)" in log and
+            "=> (+ 3 x y)" in log and
+            "=> 5/4" in log and
+            "=> x" in log and
+            "=> 0" in log and
+            "=> 1" in log and
+            "=> (* 7 x (^ y 2))" in log and
+            "=> (* 3 (sqrt 2))" in log and
+            "=> 1/2" in log and
+            "=> (^ x 5)" in log and
+            "=> (^ x 6)" in log and
+            "=> (* 4 (^ x 2))" in log
+        )
+        ok = ok and p43_simplify_correct
+        results.append(("CAS Symbolic Expression Simplifier & Canonicalizer (Phase 43.2)",
+                        ok, log if not ok else ""))
+
         cmd_s4_strings = (
             "lisp\n"
             "(string-append \"foo\" \"bar\" \"baz\")\n"

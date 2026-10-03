@@ -293,6 +293,10 @@ foreach(uprog ${USER_PROG_STAGED})
                 ${SD_STAGE}/system/bin/${uprog}.elf)
 endforeach()
 
+# Phase 43: Symbolic Computer Algebra System (CAS) library
+list(APPEND SD_STAGE_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/cas ${SD_STAGE}/cas)
+
 # The staged files are inputs, so editing one has to rebuild the image.
 # Without this, changing init.lisp left the flash image holding the previous
 # copy and no build step disagreed -- which surfaces as unrelated 9P transport
@@ -301,6 +305,8 @@ endforeach()
 # adding a file re-runs the glob rather than needing a manual re-configure.
 file(GLOB_RECURSE SD_ROOT_FILES CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/*)
+file(GLOB_RECURSE CAS_FILES CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/cas/*)
 
 # I7a, plan/phase21_identity_and_authentication.md §3.3: two forms of the same
 # image, and which one is built is the whole point of the milestone.
@@ -344,6 +350,7 @@ add_custom_command(
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${FLASH_FS_OUTPUT} ${SD_STAGE}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
             ${SD_ROOT_FILES}
+            ${CAS_FILES}
             uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )

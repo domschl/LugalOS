@@ -234,6 +234,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("net-mount", prim_net_mount),
     BUILTIN_PRIM("net-status", prim_net_status),
     BUILTIN_PRIM("newline", prim_newline),
+    BUILTIN_PRIM("not", prim_not),
     BUILTIN_PRIM("nth", prim_list_ref),
     BUILTIN_PRIM("ntp-sync", prim_ntp_sync),
     BUILTIN_PRIM("null?", prim_null_p),
