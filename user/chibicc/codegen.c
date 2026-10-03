@@ -34,6 +34,16 @@ static void cg_fail(const char *what) {
 
 static bool fits12(long v) { return v >= -2048 && v <= 2047; }
 
+/* A constant lui+addi(w) can load: any long on RV32, an int on RV64. */
+static bool fits32(long v) {
+#if defined(CONFIG_TARGET_RV64)
+    return v >= -2147483647L - 1 && v <= 2147483647L;
+#else
+    (void)v;
+    return true;
+#endif
+}
+
 /* `v` as a 12-bit immediate, or a failed compile saying `what`. */
 static int16_t imm12(long v, const char *what) {
     if (!fits12(v)) { cg_fail(what); return 0; }
@@ -212,13 +222,21 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
             long v = node->val;
             if (fits12(v)) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, (int16_t)v));
-            } else if (v >= -2147483647L - 1 && v <= 2147483647L - 2048) {
-                /* lui + addi. The upper bound keeps lui's 20 bits clear of
-                 * the sign bit, which RV64 would extend. */
-                int32_t hi = (int32_t)((v + 0x800) >> 12);
-                int16_t lo = (int16_t)(v - (long)hi * 4096);
+            } else if (fits32(v)) {
+                /* lui + addi, in 32-bit arithmetic: on RV32 a literal up to
+                 * 0xFFFFFFFF is that bit pattern; on RV64 addiw sign-extends
+                 * the 32-bit sum, which is what makes lui's own sign
+                 * extension come out right at the top of the int range. */
+                int32_t v32 = (int32_t)(uint32_t)(unsigned long)v;
+                int32_t hi = (int32_t)(((int64_t)v32 + 0x800) >> 12);
+                int16_t lo = (int16_t)((int64_t)v32 - (int64_t)hi * 4096);
                 code_idx = emit_word(code_buf, code_idx, encode_lui(10, hi));
+#if defined(CONFIG_TARGET_RV64)
+                code_idx = emit_word(code_buf, code_idx,
+                                     encode_addi(10, 10, lo) ^ 0x13u ^ 0x1Bu);   /* addiw */
+#else
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 10, lo));
+#endif
             } else {
                 cg_fail("a constant outside cc's 32-bit range");
             }
@@ -388,6 +406,13 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
             code_idx = emit_word(code_buf, code_idx, encode_jal(1, diff));
             return;
         }
+        case ND_NEG:
+            /* Unary minus had no case at all: `-x` emitted nothing and
+             * evaluated to whatever a0 held -- `x = -5;` stored the previous
+             * value (phase 40 review). */
+            gen_expr(node->lhs, code_buf);
+            code_idx = emit_word(code_buf, code_idx, encode_sub(10, 0, 10));
+            return;
         case ND_ADD:
         case ND_SUB:
         case ND_MUL:
@@ -427,6 +452,9 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
             return;
         }
         default:
+            /* An expression this backend does not generate: nothing emitted
+             * would mean a value nobody computed. */
+            cg_fail("an expression cc cannot generate code for");
             break;
     }
 }
