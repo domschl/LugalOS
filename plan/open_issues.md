@@ -74,16 +74,6 @@ attached, find the loop, make it fail the operation; the FAT32 read path now
 returns an end-of-chain on a read error (38.0), which is the shape the rest
 should have.
 
-## The clock display flickers while the radio comes up
-
-**Destination: phase 40, item 8.**
-
-On `rp2350-clock` with stored credentials, the software-multiplexed display
-flickers once a second for ~15 s while the CYW43439's 231 KB firmware is
-bit-banged over gSPI. Parked in phase 19 until there was a second core;
-phases 22/23 provided it. **Fix:** run the firmware upload (or the display
-refresh) pinned to the other core.
-
 ## No clean way to leave a BSS before re-joining
 
 **Destination: phase 40, item 9.**

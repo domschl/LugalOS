@@ -22,7 +22,7 @@ original description stays in git history of `plan/open_issues.md`.
 | 5 | `cc` searches only /ram0 for a relative `#include` | **Done**, and the shared header buffer it exposed | `1b6a1d6` |
 | 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build) | `64eb2f4` |
 | 7 | C6/C7's exact heap comparison disturbed by background allocation | **Done** — settled readings, two compiles; 3/3 on the LCD-7 | `601160e` |
-| 8 | The clock display flickers while the radio comes up | **Open — needs the clock board** | — |
+| 8 | The clock display flickers while the radio comes up | **Closed** — already solved, per the owner (2026-10-03) | — |
 | 9 | No clean way to leave a BSS before re-joining | **Open — needs a Pico 2 W** | — |
 | 10 | `mqttd` has no file-backed source | **Done** (`mqttd file`, `(mqttd-file ...)`) | `bf44055` |
 | 11 | Pressure is published as station pressure | **Open — needs the owner's decision** (publish both?) | — |
@@ -102,7 +102,7 @@ established and fuzzed, valgrind clean). Recorded so that "not looked at" and
   suite on the ENC28J60; any `[Lock BUG]` names a caller under a spinlock.
 * **Item 3** — pull the card from the LCD-7 with the console attached, on the
   current build.
-* **Item 8**, **item 9** — the clock board and a Pico 2 W.
+* **Item 9** — a Pico 2 W.
 * **Item 11** — the owner's decision on point 3 (publish `pressure` and
   `pressure_msl`, or replace).
 * **Item 12** — one identity write on a board whose record is stored, console
