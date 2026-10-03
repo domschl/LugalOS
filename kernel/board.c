@@ -69,11 +69,11 @@ void board_st7735_text_region(uintptr_t *base, uintptr_t *size) {
 
 extern char _lcdtermtext_start[];
 
-/* 36.6a: the screen terminal's region, linker/rp2350.ld's .lcdtermtext. 16 KB
- * since 37.1a, a NAPOT size, and the linker asserts the code and font fit. */
+/* 36.6a: the screen terminal's region, linker/rp2350.ld's .lcdtermtext. 32 KB
+ * since Phase 44 (16 KB in 37.1a), a NAPOT size, and the linker asserts the code and font fit. */
 void board_lcdterm_text_region(uintptr_t *base, uintptr_t *size) {
     *base = (uintptr_t)_lcdtermtext_start;
-    *size = 16384;
+    *size = 32768;
 }
 
 extern char _kbdtext_start[];

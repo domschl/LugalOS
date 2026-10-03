@@ -176,18 +176,34 @@ void screen_set_store(screen_t *scr, void *mem, uint32_t bytes) {
     scr->store_slot = need / SCREEN_STORES;
 }
 
+LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
+
 /* Every pixel again. The canvas comes back blank, so its damage moves on --
  * unless `restore` and its layout's store has it (38.8). */
 LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     canvas1_fill(cv, 0, SCREEN_MENU_H, cv->w - 1, cv->h - 1, CANVAS1_GREY);
-    if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title);
-    if (has_canvas(scr)) {
-        draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle);
-        if (!restore || !store_restore(scr)) scr->damage++;
+    if (scr->ribbon.count > 0) {
+        int32_t xv = scr->ribbon.x_view;
+        for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+            const ribbon_win_t *w = &scr->ribbon.wins[i];
+            int32_t x0 = w->rx0 - xv;
+            int32_t x1 = w->rx1 - xv;
+            if (x1 + 1 >= 0 && x0 < (int32_t)cv->w) {
+                const char *title = (i == scr->ribbon.active_idx) ? scr->vt.title : w->title;
+                draw_tile(cv, (int)x0, SCREEN_TILE_Y, (int)x1, (int)scr->fy1, title);
+            }
+        }
+    } else {
+        if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title);
+        if (has_canvas(scr)) {
+            draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle);
+            if (!restore || !store_restore(scr)) scr->damage++;
+        }
     }
     scr->title_drawn = scr->vt.title_seq;
     draw_menu(scr);
+    (void)place(scr, scr->layout);
     vtterm_repaint(&scr->vt);
 }
 
@@ -203,19 +219,41 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     unsigned rows = SCREEN_TEXT_ROWS(scr->cv.h);
     int y1 = SCREEN_TEXT_Y + 16 * (int)rows + 1;
     int col0 = 1, cols = scr->full_cols;
-    if (layout == SCREEN_LAYOUT_SPLIT_WIDE || layout == SCREEN_LAYOUT_SPLIT_HALF ||
+
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+        const ribbon_win_t *act = &scr->ribbon.wins[scr->ribbon.active_idx];
+        int32_t x0 = act->rx0 - scr->ribbon.x_view;
+        int c0 = (int)((x0 + 4) / 8);
+        if (c0 < 1) c0 = 1;
+        if (c0 > C - 2) c0 = C - 2;
+        int max_c = C - 1 - c0;
+        int win_c = (int)act->cols;
+        if (win_c > max_c) win_c = max_c;
+        if (win_c < 1) win_c = 1;
+        col0 = c0;
+        cols = win_c;
+        scr->fx0 = (int16_t)x0;
+        scr->fx1 = (int16_t)(x0 + 8 * act->cols + 6);
+        scr->fy0 = SCREEN_TILE_Y;
+        scr->fy1 = (int16_t)y1;
+    } else if (layout == SCREEN_LAYOUT_SPLIT_WIDE || layout == SCREEN_LAYOUT_SPLIT_HALF ||
         layout == SCREEN_LAYOUT_SPLIT_NARROW) {
         cols = layout == SCREEN_LAYOUT_SPLIT_WIDE ? 38 : layout == SCREEN_LAYOUT_SPLIT_HALF ? 48 : 64;
         col0 = scr->swapped ? 1 : C - 1 - cols;
         if (8 * (C - 1 - cols) - 14 < 4 + 24) return false;   /* no room for a canvas */
-    } else if (layout != SCREEN_LAYOUT_TEXT && layout != SCREEN_LAYOUT_CANVAS) {
+        scr->fx0 = (int16_t)(8 * col0 - 4);
+        scr->fx1 = (int16_t)(8 * (col0 + cols) + 2);
+        scr->fy0 = SCREEN_TILE_Y;
+        scr->fy1 = (int16_t)y1;
+    } else if (layout == SCREEN_LAYOUT_TEXT || layout == SCREEN_LAYOUT_CANVAS) {
+        scr->fx0 = (int16_t)(8 * col0 - 4);
+        scr->fx1 = (int16_t)(8 * (col0 + cols) + 2);
+        scr->fy0 = SCREEN_TILE_Y;
+        scr->fy1 = (int16_t)y1;
+    } else {
         return false;
     }
     scr->layout = (uint8_t)layout;
-    scr->fx0 = (int16_t)(8 * col0 - 4);
-    scr->fx1 = (int16_t)(8 * (col0 + cols) + 2);
-    scr->fy0 = SCREEN_TILE_Y;
-    scr->fy1 = (int16_t)y1;
     bool split = layout != SCREEN_LAYOUT_TEXT && layout != SCREEN_LAYOUT_CANVAS;
     if (split && scr->swapped) {                 /* 37.5a: text left, canvas right */
         scr->cx0 = (int16_t)(scr->fx1 + 10);
@@ -236,7 +274,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
      * beside its text, which repeat every two rows: a scroll moves whole
      * rows (37.1a). Beside a canvas it must not. */
     text.xbyte = (uint16_t)col0;
-    text.whole_rows = layout == SCREEN_LAYOUT_TEXT;
+    text.whole_rows = (layout == SCREEN_LAYOUT_TEXT && cols == scr->full_cols && col0 == 1);
     vtterm_resize(&scr->vt, &text);
     vtterm_set_hidden(&scr->vt, !has_text(scr));
     return true;
@@ -348,18 +386,36 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
          * Computed, not a table: a const table is .rodata, outside the
          * lcdterm task's domain. */
         int dir = n >= 2 ? (int)(int8_t)req[1] : 0;
-        int at = scr->layout == SCREEN_LAYOUT_TEXT ? 0
-               : scr->layout == SCREEN_LAYOUT_SPLIT_NARROW ? 1
-               : scr->layout == SCREEN_LAYOUT_SPLIT_HALF ? 2
-               : scr->layout == SCREEN_LAYOUT_SPLIT_WIDE ? 3 : 4;
-        int to = at + (scr->swapped ? -dir : dir);
-        unsigned next = to == 0 ? SCREEN_LAYOUT_TEXT : to == 1 ? SCREEN_LAYOUT_SPLIT_NARROW
-                      : to == 2 ? SCREEN_LAYOUT_SPLIT_HALF : to == 3 ? SCREEN_LAYOUT_SPLIT_WIDE
-                      : SCREEN_LAYOUT_CANVAS;
-        status = (scr->locked || dir == 0 || to < 0 || to > 4 || !screen_set_layout(scr, next)) ? 1 : 0;
+        if (scr->ribbon.count > 1) {
+            if (ribbon_resize_active(&scr->ribbon, dir > 0)) {
+                draw_all_from(scr, true);
+                status = 0;
+            } else {
+                status = 1;
+            }
+        } else {
+            int at = scr->layout == SCREEN_LAYOUT_TEXT ? 0
+                   : scr->layout == SCREEN_LAYOUT_SPLIT_NARROW ? 1
+                   : scr->layout == SCREEN_LAYOUT_SPLIT_HALF ? 2
+                   : scr->layout == SCREEN_LAYOUT_SPLIT_WIDE ? 3 : 4;
+            int to = at + (scr->swapped ? -dir : dir);
+            unsigned next = to == 0 ? SCREEN_LAYOUT_TEXT : to == 1 ? SCREEN_LAYOUT_SPLIT_NARROW
+                          : to == 2 ? SCREEN_LAYOUT_SPLIT_HALF : to == 3 ? SCREEN_LAYOUT_SPLIT_WIDE
+                          : SCREEN_LAYOUT_CANVAS;
+            status = (scr->locked || dir == 0 || to < 0 || to > 4 || !screen_set_layout(scr, next)) ? 1 : 0;
+        }
     } else if (op == 'X') {
         if (scr->locked) {
             status = 1;
+        } else if (scr->ribbon.count > 1) {
+            uint8_t a = scr->ribbon.active_idx;
+            uint8_t b = (a + 1 < scr->ribbon.count) ? (a + 1) : (a > 0 ? a - 1 : 0);
+            if (ribbon_swap(&scr->ribbon, a, b)) {
+                draw_all_from(scr, true);
+                status = 0;
+            } else {
+                status = 1;
+            }
         } else if (scr->layout == SCREEN_LAYOUT_TEXT || scr->layout == SCREEN_LAYOUT_CANVAS) {
             /* One pane full: show the other one full (the owner's call). */
             status = screen_set_layout(scr, scr->layout == SCREEN_LAYOUT_TEXT ? SCREEN_LAYOUT_CANVAS
@@ -379,7 +435,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
                                 RIBBON_WIN_TERM, vid, cols, 0);
         if (idx >= 0) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -387,7 +446,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '<') {
         /* Phase 44: Focus left window (Cmd+Left) */
         if (ribbon_focus_step(&scr->ribbon, -1)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -395,7 +457,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '>') {
         /* Phase 44: Focus right window (Cmd+Right) */
         if (ribbon_focus_step(&scr->ribbon, 1)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -403,7 +468,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '[') {
         /* Phase 44: Move active window left (Cmd+Ctrl+Left) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, -1)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -411,7 +479,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == ']') {
         /* Phase 44: Move active window right (Cmd+Ctrl+Right) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, 1)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -420,7 +491,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         /* Phase 44: Jump directly to window N (Cmd+1..9) */
         uint8_t target = (n >= 2) ? req[1] : 0;
         if (ribbon_focus(&scr->ribbon, target)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
@@ -428,7 +502,10 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == 'C') {
         /* Phase 44: Close active window (Cmd+W) */
         if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, scr->ribbon.active_idx)) {
-            draw_menu(scr);
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
             status = 0;
         } else {
             status = 1;
