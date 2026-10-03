@@ -93,6 +93,7 @@ typedef struct {
     char      name[SCREEN_NAME_MAX];    /* the menu bar's left */
     char      right[SCREEN_RIGHT_MAX];  /* its indicators */
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
+    ribbon_t  ribbon;                   /* Phase 44: 1D horizontal window ribbon */
     vtterm_t  vt;
     uint16_t  shadow[];                 /* the text window's cells, full width */
 } screen_t;

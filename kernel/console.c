@@ -83,12 +83,64 @@ static void run_hotkey(void) {
         (void)screenshot_save(NULL, path, sizeof(path));
         return;
     }
-    uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
-    if (hk == CONSOLE_HOTKEY_SWAP) {
-        req[0] = 'X';
+    if (hk == CONSOLE_HOTKEY_NEW_TERM) {
+        int vid = shell_spawn_terminal(NULL);
+        if (vid >= 0) {
+            uint8_t req[3] = { 'N', (uint8_t)vid, 48 }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 3, reply);
+            vterm_set_active(vid);
+        }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_FOCUS_LEFT) {
+        uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            vterm_set_active(reply[1]);
+        }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
+        uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            vterm_set_active(reply[1]);
+        }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_MOVE_LEFT) {
+        uint8_t req[1] = { '[' }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 1, reply);
         return;
     }
+    if (hk == CONSOLE_HOTKEY_MOVE_RIGHT) {
+        uint8_t req[1] = { ']' }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 1, reply);
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_CLOSE) {
+        int cur_vid = vterm_active_id();
+        if (cur_vid > 0) {
+            uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) {
+                vterm_destroy(cur_vid);
+                vterm_set_active(reply[1]);
+            }
+        }
+        return;
+    }
+    if (hk >= CONSOLE_HOTKEY_JUMP_BASE && hk <= CONSOLE_HOTKEY_JUMP_BASE + 8) {
+        uint8_t target_idx = (uint8_t)(hk - CONSOLE_HOTKEY_JUMP_BASE);
+        uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 2, reply) && reply[0] == 0) {
+            vterm_set_active(reply[1]);
+        }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_SWAP) {
+        uint8_t req[1] = { 'X' }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 1, reply);
+        return;
+    }
+    uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2, reply);
 }
 

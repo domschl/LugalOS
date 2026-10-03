@@ -82,8 +82,16 @@ All window management shortcuts use the **`Cmd` / `Super`** modifier (decoded in
 | **`Cmd + [`** | **Shrink Column** | Cycles width preset narrower (98 cols $\rightarrow$ 64 cols $\rightarrow$ 48 cols $\rightarrow$ 38 cols). |
 | **`Cmd + ]`** | **Expand Column** | Cycles width preset wider (38 cols $\rightarrow$ 48 cols $\rightarrow$ 64 cols $\rightarrow$ 98 cols). |
 | **`Cmd + \`** | **Quick Swap** | Swaps active window with the adjacent visible window. |
+| **`Cmd + 1` .. `9`** | **Direct Focus Window** | Jumps focus directly to window $N$ on the ribbon; scrolls viewport into view. |
 | **`Cmd + W`** | **Close Window** | Closes active window and terminates its task (cannot close the last root shell). |
 | **`Cmd + Shift + 3`** | **Screenshot** | Captures current visible viewport to `/sd0/` as PNG (existing feature preserved). |
+
+### 2.1 Menu Bar Ribbon Indicator
+In the top menu bar, right of the system title (`LugalOS`) and left of the indicators, an icon stripe represents the ribbon:
+- Each window in the ribbon is rendered as a miniature block.
+- Block width reflects proportional column thickness (e.g. 38, 48, 64, or 98 cols).
+- The active/focused window is filled solid black; inactive windows are rendered in outline (1-px border).
+- A viewport bracket or highlight indicates which windows are currently visible on the physical screen.
 
 ---
 

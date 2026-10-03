@@ -132,10 +132,19 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
  * over here while it is being drained (under the input lock); the console
  * runs it from its next input wait, outside every lock, where it may draw
  * and write files. */
-#define CONSOLE_HOTKEY_LEFT       1u    /* the split's divider one step left */
-#define CONSOLE_HOTKEY_RIGHT      2u    /* one step right */
-#define CONSOLE_HOTKEY_SCREENSHOT 3u
-#define CONSOLE_HOTKEY_SWAP       4u    /* canvas and text change sides */
+#define CONSOLE_HOTKEY_NONE         0u
+#define CONSOLE_HOTKEY_LEFT         1u  /* Super+[ : shrink window column / divider left */
+#define CONSOLE_HOTKEY_RIGHT        2u  /* Super+] : expand window column / divider right */
+#define CONSOLE_HOTKEY_SCREENSHOT   3u  /* Super+Shift+3 : save screenshot */
+#define CONSOLE_HOTKEY_SWAP         4u  /* Super+\ : swap active window with neighbor */
+#define CONSOLE_HOTKEY_NEW_TERM     5u  /* Super+Enter : spawn new terminal window */
+#define CONSOLE_HOTKEY_FOCUS_LEFT   6u  /* Super+Left : focus left window */
+#define CONSOLE_HOTKEY_FOCUS_RIGHT  7u  /* Super+Right : focus right window */
+#define CONSOLE_HOTKEY_MOVE_LEFT    8u  /* Super+Ctrl+Left : move window left in ribbon */
+#define CONSOLE_HOTKEY_MOVE_RIGHT   9u  /* Super+Ctrl+Right : move window right in ribbon */
+#define CONSOLE_HOTKEY_CLOSE        10u /* Super+W : close active window */
+#define CONSOLE_HOTKEY_JUMP_BASE    11u /* Super+1 .. Super+9 (codes 11..19) */
+#define CONSOLE_HOTKEY_JUMP(n)      (CONSOLE_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
 void console_hotkey(unsigned code);
 
 /* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes

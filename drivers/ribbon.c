@@ -21,6 +21,14 @@ LCDTERM_UTEXT static void cstr_copy(char *dst, const char *src, unsigned max_len
     dst[i] = '\0';
 }
 
+LCDTERM_UTEXT static void win_copy(ribbon_win_t *dst, const ribbon_win_t *src) {
+    uint32_t *d = (uint32_t *)(void *)dst;
+    const uint32_t *s = (const uint32_t *)(const void *)src;
+    for (unsigned i = 0; i < sizeof(ribbon_win_t) / sizeof(uint32_t); i++) {
+        d[i] = s[i];
+    }
+}
+
 LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h) {
     if (!r) return;
     r->count = 0;
@@ -98,13 +106,21 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     if (idx > r->count) idx = r->count;
 
     for (int i = (int)r->count - 1; i >= (int)idx; i--) {
-        r->wins[i + 1] = r->wins[i];
+        win_copy(&r->wins[i + 1], &r->wins[i]);
     }
     r->wins[idx].type = type;
     r->wins[idx].vterm_id = vterm_id;
     r->wins[idx].cols = cols ? cols : (uint8_t)(r->screen_w / 8u - 2u);
     r->wins[idx].flags = 0;
-    cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
+    if (title && title[0]) {
+        cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
+    } else {
+        r->wins[idx].title[0] = 'T';
+        r->wins[idx].title[1] = 'e';
+        r->wins[idx].title[2] = 'r';
+        r->wins[idx].title[3] = 'm';
+        r->wins[idx].title[4] = '\0';
+    }
 
     r->count++;
     r->active_idx = idx;
@@ -117,7 +133,7 @@ LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
     if (!r || r->count == 0 || idx >= r->count) return false;
 
     for (uint8_t i = idx; i + 1 < r->count; i++) {
-        r->wins[i] = r->wins[i + 1];
+        win_copy(&r->wins[i], &r->wins[i + 1]);
     }
     r->count--;
     if (r->active_idx >= r->count && r->count > 0) {
@@ -134,9 +150,10 @@ LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
 
 LCDTERM_UTEXT bool ribbon_swap(ribbon_t *r, uint8_t idx_a, uint8_t idx_b) {
     if (!r || idx_a >= r->count || idx_b >= r->count || idx_a == idx_b) return false;
-    ribbon_win_t tmp = r->wins[idx_a];
-    r->wins[idx_a] = r->wins[idx_b];
-    r->wins[idx_b] = tmp;
+    ribbon_win_t tmp;
+    win_copy(&tmp, &r->wins[idx_a]);
+    win_copy(&r->wins[idx_a], &r->wins[idx_b]);
+    win_copy(&r->wins[idx_b], &tmp);
 
     if (r->active_idx == idx_a) r->active_idx = idx_b;
     else if (r->active_idx == idx_b) r->active_idx = idx_a;

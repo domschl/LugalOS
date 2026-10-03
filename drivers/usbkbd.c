@@ -320,20 +320,38 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
         if (u == x->repeat_usage) x->repeat_usage = 0;
         return 0;
     }
-    /* 37.5a: the screen's keys, before anything else sees them. */
-    if ((x->mods & MOD_GUI) && !(x->mods & (MOD_CTRL | MOD_ALT))) {
+    /* 37.5a & Phase 44: the window manager / screen's keys, before anything else sees them. */
+    if (x->mods & MOD_GUI) {
         bool sh = (x->mods & MOD_SHIFT) != 0;
-        /* [ and ] move the split's divider left and right (the owner's
-         * reading on the panel -- the first version made them "text
-         * narrower/wider", which reverses when the panes swap); \ swaps. */
-        uint8_t hk = (!sh && u == 0x2f) ? USBKBD_HOTKEY_LEFT
-                   : (!sh && u == 0x30) ? USBKBD_HOTKEY_RIGHT
-                   : (!sh && u == 0x31) ? USBKBD_HOTKEY_SWAP
-                   : (sh && u == 0x20)  ? USBKBD_HOTKEY_SCREENSHOT : USBKBD_HOTKEY_NONE;
-        if (hk) {
-            x->hotkey = hk;
-            x->repeat_usage = 0;
-            return 0;
+        bool ct = (x->mods & MOD_CTRL) != 0;
+        bool alt = (x->mods & MOD_ALT) != 0;
+        if (!alt) {
+            uint8_t hk = USBKBD_HOTKEY_NONE;
+            if (ct) {
+                /* Cmd + Ctrl + Left / Right: move window left / right */
+                if (u == 0x50) hk = USBKBD_HOTKEY_MOVE_LEFT;
+                else if (u == 0x4f) hk = USBKBD_HOTKEY_MOVE_RIGHT;
+            } else if (sh) {
+                /* Cmd + Shift + 3: screenshot */
+                if (u == 0x20) hk = USBKBD_HOTKEY_SCREENSHOT;
+            } else {
+                /* Cmd without Shift / Ctrl / Alt */
+                if (u == 0x28) hk = USBKBD_HOTKEY_NEW_TERM;         /* Enter: new terminal */
+                else if (u == 0x50) hk = USBKBD_HOTKEY_FOCUS_LEFT;  /* Left: focus left */
+                else if (u == 0x4f) hk = USBKBD_HOTKEY_FOCUS_RIGHT; /* Right: focus right */
+                else if (u == 0x1a) hk = USBKBD_HOTKEY_CLOSE;       /* 'w' / 'W': close window */
+                else if (u == 0x2f) hk = USBKBD_HOTKEY_LEFT;        /* '[': shrink column */
+                else if (u == 0x30) hk = USBKBD_HOTKEY_RIGHT;       /* ']': expand column */
+                else if (u == 0x31) hk = USBKBD_HOTKEY_SWAP;        /* '\': swap */
+                else if (u >= 0x1e && u <= 0x26) {                  /* '1' .. '9': direct jump */
+                    hk = (uint8_t)(USBKBD_HOTKEY_JUMP_BASE + (u - 0x1e));
+                }
+            }
+            if (hk) {
+                x->hotkey = hk;
+                x->repeat_usage = 0;
+                return 0;
+            }
         }
     }
     if (u == 0x39) {                            /* Caps Lock: compose, or cancel it */
@@ -526,9 +544,28 @@ int usbkbd_selftest(void) {
     uint32_t m2 = KEY(0x30, 0x08);
     uint8_t hk2 = c.hotkey; c.hotkey = 0;
     uint32_t m6 = KEY(0x20, 0x0a);              /* Super-Shift-3 */
-    CHECK("Super+[ / ] / Shift+3 are the screen's: no bytes, a hotkey each",
+    uint8_t hk6 = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x28, 0x08);                      /* Super-Enter */
+    uint8_t hk_ent = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x50, 0x08);                      /* Super-Left */
+    uint8_t hk_l = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x4f, 0x08);                      /* Super-Right */
+    uint8_t hk_r = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x50, 0x09);                      /* Super-Ctrl-Left */
+    uint8_t hk_cl = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x4f, 0x09);                      /* Super-Ctrl-Right */
+    uint8_t hk_cr = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x1a, 0x08);                      /* Super-w */
+    uint8_t hk_w = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x1e, 0x08);                      /* Super-1 */
+    uint8_t hk_1 = c.hotkey; c.hotkey = 0;
+    CHECK("Super window hotkeys: Enter/Left/Right/Ctrl-Left/Right/w/1/screenshot",
           m == 0 && m2 == 0 && m6 == 0 && hk1 == USBKBD_HOTKEY_LEFT &&
-          hk2 == USBKBD_HOTKEY_RIGHT && c.hotkey == USBKBD_HOTKEY_SCREENSHOT);
+          hk2 == USBKBD_HOTKEY_RIGHT && hk6 == USBKBD_HOTKEY_SCREENSHOT &&
+          hk_ent == USBKBD_HOTKEY_NEW_TERM && hk_l == USBKBD_HOTKEY_FOCUS_LEFT &&
+          hk_r == USBKBD_HOTKEY_FOCUS_RIGHT && hk_cl == USBKBD_HOTKEY_MOVE_LEFT &&
+          hk_cr == USBKBD_HOTKEY_MOVE_RIGHT && hk_w == USBKBD_HOTKEY_CLOSE &&
+          hk_1 == USBKBD_HOTKEY_JUMP(1));
 #undef SEQ_IS
 #undef KEY
 #undef CHECK

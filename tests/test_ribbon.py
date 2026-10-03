@@ -84,6 +84,15 @@ def run_tests() -> int:
             print(f"    [FAIL] ribbonselftest:\n{log}")
             all_passed = False
 
+        # 4. Test usbkbd hotkeys
+        print("  Running usbkbdselftest (Phase 44 hotkeys)...")
+        ok, log = session.send_and_expect("usbkbdselftest", r"USBKBD_SELFTEST_(OK|FAIL)", timeout=5.0)
+        if ok and "USBKBD_SELFTEST_OK" in log:
+            print("    [PASS] usbkbdselftest (Phase 44 hotkeys: Enter, Arrows, Ctrl-Arrows, W, 1..9)")
+        else:
+            print(f"    [FAIL] usbkbdselftest:\n{log}")
+            all_passed = False
+
     finally:
         session.close()
         if arch_img.exists():

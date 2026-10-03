@@ -401,6 +401,15 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         else if (key == 'x') { clip_copy(st, out_buf); (void)sel_delete(st, out_buf); }
         else if (key == 'v') clip_paste(st, out_buf, max_len);
         else if (key == 'a') { st->mark = 0; st->mark_sticky = true; st->pos = st->len; }
+        else if (key == '\r' || key == '\n') console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+        else if (key == KEY_LEFT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_FOCUS_LEFT);
+        else if (key == KEY_RIGHT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_RIGHT : CONSOLE_HOTKEY_FOCUS_RIGHT);
+        else if (key == 'w' || key == 'W') console_hotkey(CONSOLE_HOTKEY_CLOSE);
+        else if (key == '[') console_hotkey(CONSOLE_HOTKEY_LEFT);
+        else if (key == ']') console_hotkey(CONSOLE_HOTKEY_RIGHT);
+        else if (key == '\\') console_hotkey(CONSOLE_HOTKEY_SWAP);
+        else if (key >= '1' && key <= '9') console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(key - '0')));
+        else if (shift && key == '3') console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);
         else return LINE_INCOMPLETE;            /* other Super keys: not ours */
         line_show(st, prompt, out_buf);
         return LINE_INCOMPLETE;

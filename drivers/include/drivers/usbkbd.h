@@ -80,11 +80,19 @@ typedef struct {
 
 /* 37.5a: keys the screen takes before any program sees them -- they
  * produce no bytes, only `hotkey`, which the caller hands to the console. */
-#define USBKBD_HOTKEY_NONE       0u
-#define USBKBD_HOTKEY_LEFT       1u     /* Super+[ : the split's divider one step left */
-#define USBKBD_HOTKEY_RIGHT      2u     /* Super+] : one step right */
-#define USBKBD_HOTKEY_SCREENSHOT 3u     /* Super+Shift+3, as on the Mac */
-#define USBKBD_HOTKEY_SWAP       4u     /* Super+\\ : canvas and text change sides */
+#define USBKBD_HOTKEY_NONE         0u
+#define USBKBD_HOTKEY_LEFT         1u   /* Super+[ : shrink window column / divider left */
+#define USBKBD_HOTKEY_RIGHT        2u   /* Super+] : expand window column / divider right */
+#define USBKBD_HOTKEY_SCREENSHOT   3u   /* Super+Shift+3, as on the Mac */
+#define USBKBD_HOTKEY_SWAP         4u   /* Super+\\ : swap active window with neighbor */
+#define USBKBD_HOTKEY_NEW_TERM     5u   /* Super+Enter : spawn new terminal window */
+#define USBKBD_HOTKEY_FOCUS_LEFT   6u   /* Super+Left : focus left window */
+#define USBKBD_HOTKEY_FOCUS_RIGHT  7u   /* Super+Right : focus right window */
+#define USBKBD_HOTKEY_MOVE_LEFT    8u   /* Super+Ctrl+Left : move window left in ribbon */
+#define USBKBD_HOTKEY_MOVE_RIGHT   9u   /* Super+Ctrl+Right : move window right in ribbon */
+#define USBKBD_HOTKEY_CLOSE        10u  /* Super+W : close active window */
+#define USBKBD_HOTKEY_JUMP_BASE    11u  /* Super+1 .. Super+9 (codes 11..19) */
+#define USBKBD_HOTKEY_JUMP(n)      (USBKBD_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
 /* The same numbers as kernel/console.h's CONSOLE_HOTKEY_*, which the
  * keyboard source hands them to unchanged. */
 

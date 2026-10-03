@@ -35,6 +35,33 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     int room = (rx - 16 - 8) / 8;
     if (room > 0)
         canvas1_text(cv, 8, 2, scr->name, cstr_len(scr->name), (unsigned)room, 0, FONT8X16_H, true);
+
+    /* Phase 44: Ribbon visualization stripe in the menu bar */
+    if (scr->ribbon.count > 0) {
+        int sx = 8 + 8 * (int)cstr_len(scr->name) + 16;
+        int max_w = rx - 16 - sx;
+        if (max_w > 20) {
+            int cur_bx = sx;
+            for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+                const ribbon_win_t *win = &scr->ribbon.wins[i];
+                int bw = (win->cols >= 90) ? 22 :
+                         (win->cols >= 60) ? 15 :
+                         (win->cols >= 45) ? 11 : 8;
+                if (cur_bx + bw > rx - 16) break;
+                if (i == scr->ribbon.active_idx) {
+                    /* Focused window: solid black mini-block */
+                    canvas1_fill(cv, cur_bx, 4, cur_bx + bw - 1, 14, CANVAS1_BLACK);
+                } else {
+                    /* Inactive window: 1-px outline */
+                    canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 4, CANVAS1_BLACK);
+                    canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 14, CANVAS1_BLACK);
+                    canvas1_vline(cv, cur_bx, 4, 14, CANVAS1_BLACK);
+                    canvas1_vline(cv, cur_bx + bw - 1, 4, 14, CANVAS1_BLACK);
+                }
+                cur_bx += bw + 3;
+            }
+        }
+    }
 }
 
 /* A title bar over x0..x1 from y0: the frame's top border, a white row, six
@@ -239,6 +266,8 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
                 SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
     vtterm_init(&scr->vt, &text, scr->shadow);
     vtterm_set_title(&scr->vt, name, 7);
+    ribbon_init(&scr->ribbon, (uint16_t)w, (uint16_t)h);
+    ribbon_insert(&scr->ribbon, 0, RIBBON_WIN_TERM, 0, (uint8_t)SCREEN_TEXT_COLS(w), name);
     (void)place(scr, SCREEN_LAYOUT_TEXT);
     draw_all(scr);
 }
@@ -343,6 +372,67 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
                 draw_all_from(scr, true);
             }
         }
+    } else if (op == 'N') {
+        /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
+        uint8_t vid = (n >= 2) ? req[1] : 0;
+        uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
+        int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
+                                RIBBON_WIN_TERM, vid, cols, 0);
+        if (idx >= 0) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == '<') {
+        /* Phase 44: Focus left window (Cmd+Left) */
+        if (ribbon_focus_step(&scr->ribbon, -1)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == '>') {
+        /* Phase 44: Focus right window (Cmd+Right) */
+        if (ribbon_focus_step(&scr->ribbon, 1)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == '[') {
+        /* Phase 44: Move active window left (Cmd+Ctrl+Left) */
+        if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, -1)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == ']') {
+        /* Phase 44: Move active window right (Cmd+Ctrl+Right) */
+        if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, 1)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == 'J') {
+        /* Phase 44: Jump directly to window N (Cmd+1..9) */
+        uint8_t target = (n >= 2) ? req[1] : 0;
+        if (ribbon_focus(&scr->ribbon, target)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == 'C') {
+        /* Phase 44: Close active window (Cmd+W) */
+        if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, scr->ribbon.active_idx)) {
+            draw_menu(scr);
+            status = 0;
+        } else {
+            status = 1;
+        }
     } else if (op == 'K') {
         scr->locked = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'Z') {
@@ -391,7 +481,11 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
     }
     reply[0] = status;
-    reply[1] = pixel;
+    if (op != 'g' && scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+        reply[1] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    } else {
+        reply[1] = pixel;
+    }
     reply[2] = (uint8_t)cc->w; reply[3] = (uint8_t)(cc->w >> 8);
     reply[4] = (uint8_t)cc->h; reply[5] = (uint8_t)(cc->h >> 8);
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
