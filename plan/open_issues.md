@@ -17,8 +17,10 @@ grown two different kinds of entry under one heading:
   not reproduced on demand, no proven cause. Each entry says **what evidence
   would settle it**. These are not scheduled: they are worked on when they
   come back, and the job until then is to make sure that next time they leave
-  evidence. Phase 40's first item (the runner records a stuck guest) exists
-  for exactly that.
+  evidence. Since 40.1 the runner does that for a stuck QEMU guest: a
+  `[Stuck Guest]` report with every hart's pc/ra/sp (from the QEMU monitor,
+  named against the build) and, if the guest still reads its console,
+  `/proc/ps` and the tail of `/proc/kmsg`.
 * **[C. Deliberate limits that look like faults](#c-deliberate-limits-that-look-like-faults)**
   -- by design, listed only because each has cost an investigation once.
 * **[D. Lessons kept from closed entries](#d-lessons-kept-from-closed-entries)**.
@@ -37,26 +39,6 @@ history.
 ---
 
 # A. Actionable
-
-## The runner cannot see inside a stuck guest
-
-**Destination: phase 40, item 1.** The instrument for most of part B.
-
-Three shapes in part B end the same way: the guest stops, and the runner
-either blocks or times out without recording what the guest was doing.
-
-* A guest that stops reading its UART makes `send_and_expect()` block in
-  `stdin.flush()` forever (a pipe write has no timeout): 20 minutes on
-  2026-09-30, ended by hand. Pre-commit runs use `timeout 1200` meanwhile.
-* A per-test timeout does not capture the guest's `[Sched Table]` or trap
-  state, so "silent after `usertest 1`" carries no evidence.
-* The whole-architecture retry for a suspected host-stdio stall can spend
-  the entire soak budget and report `NO RESULT`, with no per-attempt timing.
-
-**Fix:** bounded writes (non-blocking, or a watchdog thread that kills the
-guest and files a FAIL with its log); on any timeout, ask the guest for its
-scheduler table and klog over the console before tearing it down; record
-per-attempt durations and which test each attempt stalled in.
 
 ## Two hand-rolled yielding locks are outside the wait-for graph
 
@@ -196,8 +178,10 @@ missing or not contacting, only a meter says.
 # B. Unexplained intermittents
 
 Each: what was seen, how often, what is already armed to catch it, and **what
-evidence would settle it**. "Phase 40, item 1" means the runner change that
-makes the next occurrence leave that evidence.
+evidence would settle it**. "Phase 40, item 1" (40.1) is the runner change
+that makes the next occurrence leave that evidence: a `[Stuck Guest]` block in
+the run log, and an `[Attempt]` line per architecture attempt with its
+duration and first failure.
 
 ## A kernel wild jump into `.rodata` during `exec` (QEMU, once)
 
@@ -240,7 +224,7 @@ defect as the next entry; kept apart until a capture says so.
 **Seen:** 2026-09-30, one run in four that day: the guest stopped right after
 `(spawn "/flash0/system/bin/uhello.elf")` created its task; 376/376 on every
 other run. The harness half (the runner then blocked for 20 minutes) is
-phase 40, item 1, in part A.
+fixed by 40.1: an undrained console write gives up after 15 s with a report.
 
 **What would settle it:** the same capture as above. Single-hart RV32 and a
 just-created U-mode task, like the entry before it.

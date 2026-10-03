@@ -50,6 +50,58 @@ def expected_init_lisp() -> bytes:
     return src.read_bytes()
 
 
+# Phase 40, item 1: what a stuck guest was doing, kept for the run's summary.
+# QemuSession.close() appends one entry per session that ended stuck or
+# silent; test_qemu_architecture_with_retry() reads the entries its attempt
+# added, so a retried run says where each attempt stopped.
+STUCK_REPORTS: list[str] = []
+
+_SYMBOLS: dict[Path, list[tuple[int, str]]] = {}
+
+
+def _elf_symbols(elf_path: Path) -> list[tuple[int, str]]:
+    """The ELF's text symbols, sorted by address -- for naming a stuck pc."""
+    if elf_path in _SYMBOLS:
+        return _SYMBOLS[elf_path]
+    import shutil
+    syms: list[tuple[int, str]] = []
+    nm = next((n for n in ("riscv64-elf-nm", "riscv64-unknown-elf-nm", "nm") if shutil.which(n)), None)
+    if nm:
+        try:
+            out = subprocess.run([nm, "-n", str(elf_path)], capture_output=True,
+                                 text=True, timeout=10).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) == 3 and parts[1] in "tTwW":
+                    syms.append((int(parts[0], 16), parts[2]))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            syms = []
+    _SYMBOLS[elf_path] = syms
+    return syms
+
+
+def _symbolize(elf_path: Path, addr: int) -> str:
+    """`function+offset`, and `file:line` when addr2line is installed."""
+    import bisect
+    import shutil
+    syms = _elf_symbols(elf_path)
+    i = bisect.bisect_right(syms, (addr, "\uffff")) - 1
+    if i < 0 or addr - syms[i][0] > 0x10000:
+        return "?"
+    name = f"{syms[i][1]}+0x{addr - syms[i][0]:x}"
+    a2l = next((n for n in ("riscv64-elf-addr2line", "riscv64-unknown-elf-addr2line")
+                if shutil.which(n)), None)
+    if a2l:
+        try:
+            out = subprocess.run([a2l, "-e", str(elf_path), hex(addr)], capture_output=True,
+                                 text=True, timeout=10).stdout.strip()
+            if out and not out.startswith("??"):
+                name += " " + out.rsplit("/", 1)[-1]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return name
+
+
 class QemuSession:
     """Manages an interactive QEMU session for testing LugalOS serial I/O."""
 
@@ -70,6 +122,12 @@ class QemuSession:
         # session. A number rather than a symbol, because every distinct symbol
         # would be interned in the guest's Lisp heap for good.
         self._sentinel_seq: int = 700000
+        # Phase 40, item 1 (see _capture_stuck_state()).
+        self._monitor_path: Path | None = None
+        self._stuck_reason: str | None = None   # set once input stopped draining
+        self._silent_timeouts: int = 0          # consecutive timeouts with no output at all
+        self._last_command: str = ""
+        self._last_command_at: float = 0.0
 
     def start(self, extra_qemu_args: list[str] | None = None, identity_img_path: "Path | None" = None) -> None:
 
@@ -131,6 +189,15 @@ class QemuSession:
         ]
         if extra_qemu_args:
             cmd.extend(extra_qemu_args)
+        # Phase 40, item 1: the QEMU monitor on a socket of its own, so a
+        # guest that has stopped answering can still be asked where every
+        # hart is (`info registers -a`) without its cooperation. A caller that
+        # chose its own monitor keeps it. Moving the monitor off stdio also
+        # stops QEMU's mux from eating a Ctrl-A meant for the guest.
+        if not extra_qemu_args or "-monitor" not in extra_qemu_args:
+            self._monitor_path = Path(tempfile.gettempdir()) / (
+                "lugalos-mon-%s-%d-%d.sock" % (self.arch, os.getpid(), id(self)))
+            cmd += ["-monitor", f"unix:{self._monitor_path},server=on,wait=off"]
 
         # QEMU's '-nographic' stdio chardev sets O_NONBLOCK on its console
         # fd(s), and a write() that returns EAGAIN because the reading side
@@ -178,6 +245,147 @@ class QemuSession:
         # separate read-mode handle below.
         os.close(log_fd)
         self._log_file = open(self._log_path, "rb")
+        # Writes are bounded (_write()): a guest that stops reading its UART
+        # fills the pipe, and a blocking write then never returns -- 20
+        # minutes on 2026-09-30, ended by hand.
+        assert self.process.stdin is not None
+        os.set_blocking(self.process.stdin.fileno(), False)
+
+    # How long a write to the guest's console may wait for the pipe to drain.
+    # The pipe holds 64 KB; a guest that has not taken any of it for this long
+    # is not reading its console.
+    STDIN_WRITE_TIMEOUT_S = 15.0
+
+    def _write(self, data: bytes) -> bool:
+        """Writes `data` to the guest's console within STDIN_WRITE_TIMEOUT_S.
+        On a timeout the guest is recorded as stuck, its state captured, and
+        QEMU stopped; every later call fails at once instead of timing out."""
+        if self.process is None or self.process.stdin is None:
+            return False
+        fd = self.process.stdin.fileno()
+        view = memoryview(data)
+        deadline = time.time() + self.STDIN_WRITE_TIMEOUT_S
+        while view:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            _, writable, _ = select.select([], [fd], [], remaining)
+            if not writable:
+                continue
+            try:
+                view = view[os.write(fd, view):]
+            except BlockingIOError:
+                continue
+            except (BrokenPipeError, OSError):
+                self._stuck_reason = "QEMU's stdin closed (QEMU exited?)"
+                return False
+        if not view:
+            return True
+        self._stuck_reason = (f"the guest did not read its console for "
+                              f"{self.STDIN_WRITE_TIMEOUT_S:.0f} s")
+        report = self._capture_stuck_state(ask_console=False)
+        STUCK_REPORTS.append(report)
+        print(report)
+        try:
+            self.process.kill()
+        except OSError:
+            pass
+        return False
+
+    def _monitor(self, command: str, timeout: float = 3.0) -> str:
+        """One HMP command on the monitor socket; "" if there is none."""
+        if self._monitor_path is None or not self._monitor_path.exists():
+            return ""
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                sock.connect(str(self._monitor_path))
+                buf = b""
+                deadline = time.time() + timeout
+                while b"(qemu)" not in buf and time.time() < deadline:
+                    buf += sock.recv(65536)
+                sock.sendall(command.encode() + b"\n")
+                buf = b""
+                # The answer ends at the next prompt; the first one echoes
+                # the command line back.
+                while buf.count(b"(qemu)") < 1 and time.time() < deadline:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                return buf.decode("utf-8", "replace")
+        except OSError:
+            return ""
+
+    def _hart_summary(self) -> str:
+        """Per hart: privilege, pc, ra, sp and the trap registers, with pc and
+        ra named against this build's symbols."""
+        text = self._monitor("info registers -a")
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+        if "CPU#" not in text:
+            return "  (no answer from the QEMU monitor)"
+        lines = []
+        for block in re.split(r"(?=CPU#\d+)", text)[1:]:
+            regs = dict(re.findall(r"\b([a-z][a-z0-9/]*)\s+([0-9a-f]+)\b", block))
+            def reg(*names: str) -> int | None:
+                for n in names:
+                    for key in (n, *[k for k in regs if k.endswith("/" + n) or k.startswith(n + "/")]):
+                        if key in regs:
+                            return int(regs[key], 16)
+                return None
+            cpu = re.match(r"CPU#(\d+)", block).group(1)
+            priv = re.search(r"priv\s+(\w)", block)
+            pc, ra, sp = reg("pc"), reg("ra", "x1"), reg("sp", "x2")
+            parts = [f"hart {cpu}", f"priv={priv.group(1) if priv else '?'}"]
+            for name, val in (("pc", pc), ("ra", ra)):
+                if val is not None:
+                    parts.append(f"{name}=0x{val:x} <{_symbolize(self.elf_path, val)}>")
+            if sp is not None:
+                parts.append(f"sp=0x{sp:x}")
+            for name in ("mcause", "mepc", "scause", "sepc"):
+                val = reg(name)
+                if val:
+                    parts.append(f"{name}=0x{val:x}")
+            lines.append("  " + " ".join(parts))
+        return "\n".join(lines)
+
+    def _ask_console(self, command: str, wait: float) -> str:
+        """Best effort: `command` on the console, whatever comes back in
+        `wait` seconds. Only for a guest that still reads its input."""
+        if self._log_file is None or not self._write((command + "\n").encode()):
+            return ""
+        out = b""
+        end = time.time() + wait
+        while time.time() < end:
+            chunk = self._log_file.read()
+            if chunk:
+                out += chunk
+            else:
+                time.sleep(0.05)
+        return out.decode("utf-8", "replace")
+
+    def _capture_stuck_state(self, ask_console: bool = True) -> str:
+        """What the guest was doing when it stopped answering (phase 40,
+        item 1): every hart's registers from the QEMU monitor, which needs
+        nothing from the guest, then -- if the guest still reads its input --
+        its task table and the tail of its kernel log. This is the evidence
+        plan/open_issues.md part B keeps asking for."""
+        head = (f"  [Stuck Guest] {self.arch}: {self._stuck_reason or 'silent at a timeout'}; "
+                f"last command {self._last_command[:80]!r}, "
+                f"{time.time() - self._last_command_at:.1f} s ago")
+        out = [head, self._hart_summary()]
+        if ask_console and self._stuck_reason is None:
+            ps = self._ask_console("cat /proc/ps", 3.0)
+            kmsg = self._ask_console("cat /proc/kmsg", 3.0)
+            if ps.strip():
+                out.append("  [Stuck Guest] /proc/ps:")
+                out += ["    " + ln for ln in ps.splitlines()[-24:]]
+            if kmsg.strip():
+                out.append("  [Stuck Guest] /proc/kmsg (tail):")
+                out += ["    " + ln for ln in kmsg.splitlines()[-30:]]
+            if not ps.strip() and not kmsg.strip():
+                out.append("  [Stuck Guest] no answer on the console to /proc/ps or /proc/kmsg")
+        return "\n".join(out)
 
     def _drain(self) -> None:
         """Discard any output left over from a previous call by seeking
@@ -305,6 +513,8 @@ class QemuSession:
         platforms and every I/O transport tried, stopped reproducing once
         that one change landed -- the file-based read stayed in as
         legitimate hardening, not as the fix that actually mattered. """
+        if self._stuck_reason is not None:
+            return False, f"[Stuck Guest] not sent: {self._stuck_reason} (see the report above)"
         if not self.process or self.process.stdin is None or self._log_file is None:
             return False, "Process not running"
 
@@ -320,8 +530,9 @@ class QemuSession:
             marker_re = re.compile(rf"=> {n}\r*\n")
             echo_re = re.compile(rf"\(\+ {n} 0\)\r*\n")
         if command:
-            self.process.stdin.write((command + "\n").encode())
-            self.process.stdin.flush()
+            self._last_command, self._last_command_at = command, time.time()
+            if not self._write((command + "\n").encode()):
+                return False, f"[Stuck Guest] {self._stuck_reason}"
         sentinel_sent = False
 
         def without_sentinel(text: str) -> str:
@@ -347,6 +558,7 @@ class QemuSession:
                 continue
             accumulated += chunk
             last_new = time.time()
+            self._silent_timeouts = 0
 
             if any(marker.encode() in accumulated for marker in self.FAULT_MARKERS):
                 return False, accumulated.decode("utf-8", "replace")
@@ -376,8 +588,8 @@ class QemuSession:
                 # two-hart target and failed it 2 times in 12 (2026-09-30).
                 # Queued now, it still lands behind anything the command has
                 # yet to print, so completeness holds.
-                self.process.stdin.write(sentinel_line)
-                self.process.stdin.flush()
+                if not self._write(sentinel_line):
+                    return False, f"[Stuck Guest] {self._stuck_reason}"
                 sentinel_sent = True
                 last_new = time.time()
             if matched and marker_re is not None and marker_re.search(raw):
@@ -387,6 +599,10 @@ class QemuSession:
         if matched_waiting:
             self._sentinel_trace("timeout-matched", command)
             return True, without_sentinel(accumulated.decode("utf-8", "replace"))
+        # Not even an echo: a guest that is not answering, as opposed to one
+        # answering something else. close() captures its state if the session
+        # ends that way (phase 40, item 1).
+        self._silent_timeouts = self._silent_timeouts + 1 if not accumulated else 0
         return False, accumulated.decode("utf-8", "replace")
 
     @staticmethod
@@ -437,6 +653,14 @@ class QemuSession:
             print("  [qemu]   ... and %d more distinct line(s)" % (len(counts) - 10))
 
     def close(self) -> None:
+        # A session that ended with the guest silent -- its last command not
+        # even echoed -- is a stuck guest; record where it is before QEMU goes.
+        # (One stuck by an undrained write was captured when it happened.)
+        if self.process and self.process.poll() is None and \
+                self._stuck_reason is None and self._silent_timeouts > 0:
+            report = self._capture_stuck_state()
+            STUCK_REPORTS.append(report)
+            print(report)
         if self.process:
             try:
                 self.process.terminate()
@@ -462,6 +686,12 @@ class QemuSession:
             except OSError:
                 pass
             self._log_path = None
+        if self._monitor_path is not None:
+            try:
+                self._monitor_path.unlink()
+            except OSError:
+                pass
+            self._monitor_path = None
 
 
 def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> list[tuple[str, bool, str]]:
@@ -3512,7 +3742,24 @@ def test_qemu_architecture_with_retry(
     it already assumed. Bounded at max_attempts (3): a flake this suite
     cannot shake after that many full fresh boots is worth seeing as a real
     failure, not retried away indefinitely. """
-    results = test_qemu_architecture(elf_path, img_path, arch_name)
+    def attempt_once(n: int) -> list[tuple[str, bool, str]]:
+        # Phase 40, item 1: every attempt says how long it took, where it
+        # first failed, and whether its guest ended stuck -- so a run that
+        # spends its budget on retries leaves evidence instead of NO RESULT.
+        # A stall pinned to one test is a guest bug; one that moves with host
+        # load is the chardev.
+        reports_before = len(STUCK_REPORTS)
+        t0 = time.time()
+        res = test_qemu_architecture(elf_path, img_path, arch_name)
+        failed = [name for name, ok, _ in res if not ok]
+        stuck = len(STUCK_REPORTS) - reports_before
+        print(f"  [Attempt] {arch_name} #{n}: {time.time() - t0:.0f} s, "
+              f"{len(res)} results, {len(failed)} failed"
+              + (f", first failure: {failed[0]!r}" if failed else "")
+              + (f", guest stuck ({stuck} report(s) above)" if stuck else ""))
+        return res
+
+    results = attempt_once(1)
     for attempt in range(2, max_attempts + 1):
         failed = [(name, log) for name, ok, log in results if not ok]
         if not failed:
@@ -3527,7 +3774,7 @@ def test_qemu_architecture_with_retry(
               f"marker (possible QEMU host-stdio stall, not a guest crash) -- "
               f"retrying the whole run from a fresh boot "
               f"(attempt {attempt}/{max_attempts}) before treating as real.")
-        results = test_qemu_architecture(elf_path, img_path, arch_name)
+        results = attempt_once(attempt)
     return results
 
 
