@@ -3445,6 +3445,23 @@ static lisp_val_t *prim_substring(lisp_val_t *args, lisp_val_t *env) {
     return make_str(buf);
 }
 
+/* (string->symbol str) / (symbol->string sym): the pair the CAS infix
+ * parser (cas/format.lisp) needs to turn identifier text into symbols and
+ * back. Both reuse the existing symbol/string representations. */
+static lisp_val_t *prim_string_to_symbol(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_STRING || !a->u.str[0]) return &false_val;
+    return make_sym(a->u.str);
+}
+
+static lisp_val_t *prim_symbol_to_string(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (!a || a->type != LISP_SYMBOL) return &false_val;
+    return make_str(a->u.sym);
+}
+
 static lisp_val_t *prim_string_to_number(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *s = get_str_val(lisp_list_ref(args, 0));

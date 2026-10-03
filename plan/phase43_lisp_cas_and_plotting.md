@@ -227,20 +227,37 @@ To provide an industrial-strength Computer Algebra System without penalizing pre
 
 ---
 
-### Milestone 43.6: Infix Formatting & Mathematical Pretty-Printing (`cas/format.lisp`)
+### Milestone 43.6: Infix Formatting & Mathematical Pretty-Printing (`cas/format.lisp`) — [COMPLETE]
 
-* **Goal:** Present mathematical expressions cleanly to human users.
+* **Status:** Complete (2026-10-03).
+* **Goal:** Present mathematical expressions cleanly to human users and provide bidirectional infix conversion so users can use natural mathematical notation.
 * **Deliverables:**
   1. **Infix String Formatter (`to-infix`):**
      - Converts internal prefix ASTs to standard algebraic notation with operator precedence:
        `(+ (* 3 (^ x 2)) (* 2 x) 1)` $\rightarrow$ `"3*x^2 + 2*x + 1"`.
-     - Handles parentheses minimally based on precedence rules ($*$, $/$ bind tighter than $+$, $-$).
-  2. **Interactive CAS REPL Mode:**
-     - `(cas-repl)`: Dedicated prompt (`cas> `) where typing `(diff '(* x (sin x)) 'x)` automatically simplifies and displays results in infix format:
-       ```lsh
-       cas> (diff '(* x (sin x)) 'x)
-       => sin(x) + x*cos(x)
-       ```
+     - Handles parentheses minimally based on operator precedence ($*$, $/$ bind tighter than $+$, $-$).
+     - Formats quotients with negative exponents naturally: `(* 3 (^ (+ x 1) -1))` $\rightarrow$ `"3/(1 + x)"`.
+     - Formats solution pairs and solution lists: `((x . 2) (x . 3))` $\rightarrow$ `"[x = 2, x = 3]"`.
+  2. **Bidirectional Infix Parser (`from-infix`):**
+     - Full recursive-descent parser with precedence climbing ($=$, $+/-$, $*//$, unary $-$, power `^`/`**` right-associative).
+     - Implicit multiplication: `2x`, `3sin(x)`, `(x+1)(x-1)`.
+     - Multi-letter juxtaposition splitting: `xy` $\rightarrow$ `(* x y)`.
+     - Exact decimal parsing: `0.25` $\rightarrow$ `1/4`, `.5` $\rightarrow$ `1/2`.
+     - List parsing: `[a, b, c]` $\rightarrow$ `(cas-list a b c)`.
+  3. **High-Level Front-Ends (`calc`, `math`):**
+     - `(calc str)` parses infix expression, evaluates CAS commands (`diff`, `integrate`, `expand`, `simplify`, `solve`), and returns the simplified prefix AST or solution.
+     - `(math str)` parses, computes, and prints the result back in clean infix math notation.
+  4. **CAS Entrypoint (`cas/cas.lisp`):**
+     - Single loader that loads `simplify.lisp`, `poly.lisp`, `calculus.lisp`, `solve.lisp`, and `format.lisp`.
+  5. **New Lisp Primitives:**
+     - Added `string->symbol` and `symbol->string` to `user/lisp/lisp.c` and registered in `builtins_table.h`.
+* **Verification:**
+  - `tests/test_cas_format.py`: 43/43 unit tests passing on RV32 and RV64 QEMU.
+  - Verified live on physical RP2350-terminal silicon via interactive console (`/dev/ttyACM1`):
+    - `(math "diff(x*sin(x), x)")` $\rightarrow$ `sin(x) + x*cos(x)`
+    - `(math "solve(x^2 - 5x + 6 = 0, x)")` $\rightarrow$ `[x = 2, x = 3]`
+    - `(math "integrate(3x^2 + 4x + 5, x)")` $\rightarrow$ `x^3 + 2*x^2 + 5*x`
+  - Synchronized `cas/cas.lisp` and `cas/format.lisp` to physical SD card via `tools/p9sync.py`.
 
 ---
 
