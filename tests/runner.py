@@ -1662,6 +1662,21 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc: a quoted #include is found beside its includer, nested (40.5)",
                         ok, log if not ok else ""))
 
+        # Phase 40 review: conditionals nest. A true #ifdef inside a skipped
+        # region used to end the skip at its own #endif, so the rest of the
+        # outer block -- here a line that does not parse -- was compiled; and
+        # #else was ignored, so both branches were.
+        session.send_and_expect('(write-file "/ram0/proj/cond.c" "#include <lugal.h>\\n'
+                                '#define A\\n#ifdef UNDEFINED_X\\n#ifdef A\\nint inner;\\n#endif\\n'
+                                'this does not parse\\n#else\\n#define V 7\\n#endif\\n'
+                                '#ifndef A\\n#define V 9\\n#endif\\n'
+                                'main() { putnum(V * 1000 + 3); printf(\\"\\\\n\\"); }\\n")',
+                                r"#t", timeout=4.0)
+        ok, log = session.send_and_expect("cc /ram0/proj/cond.c /ram0/proj/cond.elf\nexec /ram0/proj/cond.elf",
+                                          r"7003.*returned 0", timeout=20.0)
+        results.append(("chibicc: #ifdef nests inside a skipped region, and #else works (40 review)",
+                        ok, log if not ok else ""))
+
         # 5a-ii. `ed` round-trips a file it did not create.
         #
         # The ed test above appends two lines to a *new* file and asserts on

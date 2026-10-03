@@ -190,8 +190,15 @@ static void expand_macros_and_emit(const char *line) {
 static void preprocess_internal(const char *src, int depth) {
 
     const char *p = src;
-    bool skipping = false;
-    int skip_depth = 0;
+    /* Conditionals (phase 40 review): `cond_depth` counts the open #if*
+     * blocks of this file, `skip_level` is the depth at which skipping
+     * started (0 = not skipping). A skip used to be a counter that only
+     * conditions *false* at the time pushed, so a true #ifdef nested in a
+     * skipped region closed the skip at its own #endif, and the rest of the
+     * outer block was compiled. #else was not understood at all: both
+     * branches were compiled. */
+    int cond_depth = 0;
+    int skip_level = 0;
 
     while (*p) {
         /* Read line */
@@ -211,8 +218,10 @@ static void preprocess_internal(const char *src, int depth) {
             ptr++;
             while (*ptr == ' ' || *ptr == '\t') ptr++;
 
-            if (strncmp(ptr, "ifndef", 6) == 0 && (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '\0')) {
-                ptr += 6;
+            bool is_ifndef = strncmp(ptr, "ifndef", 6) == 0 && (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '\0');
+            bool is_ifdef = strncmp(ptr, "ifdef", 5) == 0 && (ptr[5] == ' ' || ptr[5] == '\t' || ptr[5] == '\0');
+            if (is_ifndef || is_ifdef) {
+                ptr += is_ifndef ? 6 : 5;
                 while (*ptr == ' ' || *ptr == '\t') ptr++;
                 char name[MACRO_NAME_LEN];
                 int nlen = 0;
@@ -221,39 +230,32 @@ static void preprocess_internal(const char *src, int depth) {
                 }
                 name[nlen] = '\0';
 
-                if (is_defined(name)) {
-                    skipping = true;
-                    skip_depth++;
-                }
+                cond_depth++;
+                if (skip_level == 0 && is_defined(name) == is_ifndef) skip_level = cond_depth;
                 continue;
             }
 
-            if (strncmp(ptr, "ifdef", 5) == 0 && (ptr[5] == ' ' || ptr[5] == '\t' || ptr[5] == '\0')) {
-                ptr += 5;
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
-                char name[MACRO_NAME_LEN];
-                int nlen = 0;
-                while (*ptr && is_ident_body(*ptr) && nlen < MACRO_NAME_LEN - 1) {
-                    name[nlen++] = *ptr++;
+            if (strncmp(ptr, "else", 4) == 0 && (ptr[4] == '\0' || ptr[4] == ' ' || ptr[4] == '\t' || ptr[4] == '\r')) {
+                if (cond_depth == 0) {
+                    printk("[preproc Error] #else without #ifdef/#ifndef\n");
+                    continue;
                 }
-                name[nlen] = '\0';
-
-                if (!is_defined(name)) {
-                    skipping = true;
-                    skip_depth++;
-                }
+                if (skip_level == cond_depth) skip_level = 0;
+                else if (skip_level == 0) skip_level = cond_depth;
                 continue;
             }
 
             if (strncmp(ptr, "endif", 5) == 0) {
-                if (skipping) {
-                    skip_depth--;
-                    if (skip_depth == 0) skipping = false;
+                if (cond_depth == 0) {
+                    printk("[preproc Error] #endif without #ifdef/#ifndef\n");
+                    continue;
                 }
+                if (skip_level == cond_depth) skip_level = 0;
+                cond_depth--;
                 continue;
             }
 
-            if (skipping) continue;
+            if (skip_level) continue;
 
             if (strncmp(ptr, "define", 6) == 0 && (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '\0')) {
                 ptr += 6;
@@ -338,7 +340,7 @@ static void preprocess_internal(const char *src, int depth) {
             continue;
         }
 
-        if (!skipping) {
+        if (!skip_level) {
             expand_macros_and_emit(line);
             emit_char('\n');
         }
