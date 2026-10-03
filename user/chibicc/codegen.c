@@ -323,6 +323,21 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
                 return;
             }
+            /* read_file(path, buf, max) and write_file(path, buf, len),
+             * which lugal.h declares: SYS_READ_FILE (13) / SYS_WRITE_FILE
+             * (14) with the three arguments one register up. They used to
+             * fall through to the general call below, find no such function
+             * and become a jal to itself -- tools/sd_root/cat.c never
+             * returned. */
+            if (strcmp(node->funcname, "read_file") == 0 || strcmp(node->funcname, "write_file") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(13, 12, 0)); // a3 = a2
+                code_idx = emit_word(code_buf, code_idx, encode_addi(12, 11, 0)); // a2 = a1
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
+                code_idx = emit_word(code_buf, code_idx,
+                                     encode_addi(10, 0, node->funcname[0] == 'r' ? 13 : 14));
+                code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
             if (strcmp(node->funcname, "putchar") == 0) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 12)); // a0 = 12 (SYS_PUTCHAR)

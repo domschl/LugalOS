@@ -1700,6 +1700,34 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("chibicc: an unsupported directive or a missing header fails the compile (40 review)",
                         not pp_fail, "\n".join(pp_fail)))
 
+        # Phase 40 review, the parser and codegen (found by tests/host/
+        # chibicc_host.c): a syntax error used to be printed and compiled
+        # anyway; nesting was unbounded on the kernel stack -- 234 open
+        # parentheses halted the guest; a constant over 2047 was cut to 12
+        # bits (`return 5000` returned 904); and read_file() compiled to a
+        # jal to itself, so cat.c never returned.
+        cc_fail = []
+        session.send_and_expect('(write-file "/ram0/proj/x.txt" "hello")', r"#t", timeout=4.0)
+        for name, body, want in (
+                ("big", "main() { return 5000; }\\n", r"returned 5000"),
+                ("rf", '#include <lugal.h>\\nmain() { char b[16]; return read_file(\\"/ram0/proj/x.txt\\", b, 16); }\\n',
+                 r"returned 5\b")):
+            session.send_and_expect(f'(write-file "/ram0/proj/{name}.c" "{body}")', r"#t", timeout=4.0)
+            ok, out = session.send_and_expect(f"cc /ram0/proj/{name}.c /ram0/proj/{name}.elf\n"
+                                              f"exec /ram0/proj/{name}.elf", want, timeout=20.0)
+            if not ok:
+                cc_fail.append(f"{name}: expected /{want}/:\n{out[-400:]}")
+        deep = "main() { return " + "(" * 30 + "1" + ")" * 30 + "; }\\n"
+        for name, body, why in (("syn", "main() { return 1 }\\n", "did not parse"),
+                                ("deep", deep, "nested too deeply")):
+            session.send_and_expect(f'(write-file "/ram0/proj/{name}.c" "{body}")', r"#t", timeout=4.0)
+            _, out = session.send_and_expect(f"cc /ram0/proj/{name}.c /ram0/proj/{name}.elf",
+                                             r"=> #[tf]", timeout=20.0)
+            if why not in out or "=> #f" not in out:
+                cc_fail.append(f"{name}: expected '{why}' and a failed compile:\n{out[-400:]}")
+        results.append(("chibicc: syntax errors, nesting, constants and read_file (40 review)",
+                        not cc_fail, "\n".join(cc_fail)))
+
         # 5a-ii. `ed` round-trips a file it did not create.
         #
         # The ed test above appends two lines to a *new* file and asserts on
