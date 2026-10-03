@@ -4623,7 +4623,7 @@ def test_wlan_credential_roundtrip(elf_path: Path, img_path: Path, arch_name: st
 
 
 def test_host_sanitizer_harnesses() -> tuple[bool, str]:
-    """Phase 40: tests/host/ -- FAT32, the C compiler and the 9P server built
+    """Phase 40: tests/host/ -- FAT32, the C compiler, the 9P server and the IP stack built
     for the host and driven with valid and corrupted input under ASan and
     UBSan (see tests/host/README.md). A short pass here; `make -C tests/host
     check` is the long one, with valgrind. Skipped -- reported as passing with
@@ -8159,7 +8159,7 @@ def main() -> int:
 
     ok, info = test_host_sanitizer_harnesses()
     total_tests += 1
-    name = "Host Harnesses: FAT32, cc And 9P Under ASan/UBSan (tests/host)"
+    name = "Host Harnesses: FAT32, cc, 9P And IP Under ASan/UBSan (tests/host)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")

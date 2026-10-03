@@ -49,6 +49,7 @@ present.
 | `fat32_host` | `fs/fat32.c` | A functional pass against an in-memory model (sizes 0..70 KB, writes past EOF, appends, truncation, removal, a directory grown past one cluster, a remount, a free count that must come back exactly), then the populated image corrupted — bytes in the boot sector, FATs and directories, and the geometry fields — and mounted, walked, read, written, deleted. |
 | `chibicc_host` | `user/chibicc/*` | The SD image's sample programs (each must compile), then mutated copies — bytes changed, tokens inserted, spans deleted or repeated, the text cut short — and limit probes: deep nesting, a small source with a lot of code. |
 | `p9_host` | `fs/9p.c` | A scripted client session (version, auth, attach, walk, open, read, write, create, stat, remove, flush) against the real server over a fake namespace, under both auth policies; then the session's frames mutated, and frames of random bytes. |
+| `net_host` | `net/{arp,ipv4,icmp,udp,tcp}.c` | A peer: ARP, ping, UDP to a bound and an unbound port, a TCP connection to the 9P listener carrying data and closing -- with valid checksums, so frames get past the first checks. Then those frames mutated (checksums recomputed half the time, so the mutation reaches the protocol code), cut short or replaced by random bytes; and, every other input, a fresh TCP connection whose segments carry the right sequence numbers and a mutated header or payload. Time moves, so retransmission, TIME_WAIT and ARP ageing run. `net/stack.c`'s plumbing is stood in for in the harness. |
 
 Every harness also arms an alarm per input: a call that does not return is
 a failure (a cyclic cluster chain, say), not a slow test.
@@ -60,7 +61,8 @@ looped forever on a cyclic chain; a boot sector accepted whatever its
 geometry; a C parser that dereferenced NULL after a syntax error, recursed
 without bound on the kernel stack, and wrote binaries for programs it had
 not understood; and a code generator that wrote past its 4 KB output buffer
-into the kernel heap. See the commits that mention `tests/host`.
+into the kernel heap. The 9P server and the IP stack came through clean. See
+the commits that mention `tests/host`.
 
 ## Adding a harness
 

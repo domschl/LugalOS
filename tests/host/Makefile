@@ -16,19 +16,29 @@ ITER    ?= 2000
 SEED    ?= 0x40c0ffee
 
 INC     := -I. -I$(ROOT)/kernel/include -I$(ROOT)/fs/include -I$(ROOT)/drivers/include \
-           -I$(ROOT)/net/include -I$(ROOT)/user/chibicc/include -I$(ROOT)/arch/riscv/include -I$(ROOT)
+           -I$(ROOT)/net/include -I$(ROOT)/net -I$(ROOT)/user/chibicc/include -I$(ROOT)/arch/riscv/include -I$(ROOT)
 WARN    := -Wall -Wextra -Wno-unused-parameter -Wno-format
 BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_TEST=1
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host
+HARNESSES := fat32_host chibicc_host p9_host net_host
 
 fat32_host_SRC   := fat32_host.c $(ROOT)/fs/fat32.c
 chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)
 p9_host_SRC      := p9_host.c $(ROOT)/fs/9p.c $(ROOT)/kernel/sha256.c
+net_host_SRC     := net_host.c $(ROOT)/net/arp.c $(ROOT)/net/ipv4.c $(ROOT)/net/icmp.c \
+                    $(ROOT)/net/udp.c $(OUT)/gen/tcp.c
+
+# net/tcp.c orders its buffer writes with RISC-V fences; the host gets the
+# equivalent C11 fence, in a copy, so the source itself stays as it is.
+$(OUT)/gen/tcp.c: $(ROOT)/net/tcp.c
+	@mkdir -p $(dir $@)
+	sed 's/__asm__ __volatile__("fence [rw], [rw]" ::: "memory")/__atomic_thread_fence(__ATOMIC_SEQ_CST)/' $< > $@
 
 all: $(addprefix $(OUT)/asan/,$(HARNESSES)) $(addprefix $(OUT)/plain/,$(HARNESSES))
+
+$(OUT)/asan/net_host $(OUT)/plain/net_host: $(OUT)/gen/tcp.c
 
 $(OUT)/asan/%: shim.c shim.h %.c FORCE
 	@mkdir -p $(dir $@)

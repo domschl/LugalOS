@@ -119,4 +119,5 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return 0;
 }
 
-uint64_t time_get_ms(void) { return 0; }
+/* Weak: a harness whose module runs timers supplies a clock it can move. */
+__attribute__((weak)) uint64_t time_get_ms(void) { return 0; }
