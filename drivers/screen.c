@@ -227,7 +227,8 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     int y1 = SCREEN_TEXT_Y + 16 * (int)rows + 1;
     int col0 = 1, cols = scr->full_cols;
 
-    if (scr->ribbon.count > 2) {
+    if (scr->ribbon.count > 2 || scr->ribbon.x_view != 0 ||
+        (scr->ribbon.count == 2 && ribbon_find_canvas(&scr->ribbon) < 0)) {
         scr->layout = (uint8_t)layout;
         /* Position active terminal */
         int term_idx = -1;
@@ -339,37 +340,49 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             scr->ribbon.count = 2;
             if (scr->swapped) {
                 scr->ribbon.wins[0].type = RIBBON_WIN_TERM;
+                scr->ribbon.wins[0].vterm_id = 0;
                 scr->ribbon.wins[0].cols = (uint8_t)cols;
                 scr->ribbon.wins[0].rx0 = scr->fx0;
                 scr->ribbon.wins[0].rx1 = scr->fx1;
+                ribbon_set_title(&scr->ribbon, 0, scr->vt.title);
                 scr->ribbon.wins[1].type = RIBBON_WIN_CANVAS;
+                scr->ribbon.wins[1].vterm_id = 0;
                 scr->ribbon.wins[1].cols = (uint8_t)((scr->cx1 - scr->cx0 - 6) / 8);
                 scr->ribbon.wins[1].rx0 = scr->cx0;
                 scr->ribbon.wins[1].rx1 = scr->cx1;
+                ribbon_set_title(&scr->ribbon, 1, scr->ctitle);
             } else {
+                scr->ribbon.wins[0].type = RIBBON_WIN_CANVAS;
+                scr->ribbon.wins[0].vterm_id = 0;
+                scr->ribbon.wins[0].cols = (uint8_t)((scr->cx1 - scr->cx0 - 6) / 8);
+                scr->ribbon.wins[0].rx0 = scr->cx0;
+                scr->ribbon.wins[0].rx1 = scr->cx1;
+                ribbon_set_title(&scr->ribbon, 0, scr->ctitle);
+                scr->ribbon.wins[1].type = RIBBON_WIN_TERM;
+                scr->ribbon.wins[1].vterm_id = 0;
+                scr->ribbon.wins[1].cols = (uint8_t)cols;
+                scr->ribbon.wins[1].rx0 = scr->fx0;
+                scr->ribbon.wins[1].rx1 = scr->fx1;
+                ribbon_set_title(&scr->ribbon, 1, scr->vt.title);
+            }
+        } else if (layout == SCREEN_LAYOUT_TEXT) {
+            if (scr->ribbon.count <= 1 || ribbon_find_canvas(&scr->ribbon) >= 0) {
+                scr->ribbon.count = 1;
+                scr->ribbon.active_idx = 0;
+                scr->ribbon.wins[0].type = RIBBON_WIN_TERM;
+                scr->ribbon.wins[0].cols = (uint8_t)cols;
+                scr->ribbon.wins[0].rx0 = scr->fx0;
+                scr->ribbon.wins[0].rx1 = scr->fx1;
+            }
+        } else if (layout == SCREEN_LAYOUT_CANVAS) {
+            if (scr->ribbon.count <= 1 || ribbon_find_term(&scr->ribbon) >= 0) {
+                scr->ribbon.count = 1;
+                scr->ribbon.active_idx = 0;
                 scr->ribbon.wins[0].type = RIBBON_WIN_CANVAS;
                 scr->ribbon.wins[0].cols = (uint8_t)((scr->cx1 - scr->cx0 - 6) / 8);
                 scr->ribbon.wins[0].rx0 = scr->cx0;
                 scr->ribbon.wins[0].rx1 = scr->cx1;
-                scr->ribbon.wins[1].type = RIBBON_WIN_TERM;
-                scr->ribbon.wins[1].cols = (uint8_t)cols;
-                scr->ribbon.wins[1].rx0 = scr->fx0;
-                scr->ribbon.wins[1].rx1 = scr->fx1;
             }
-        } else if (layout == SCREEN_LAYOUT_TEXT) {
-            scr->ribbon.count = 1;
-            scr->ribbon.active_idx = 0;
-            scr->ribbon.wins[0].type = RIBBON_WIN_TERM;
-            scr->ribbon.wins[0].cols = (uint8_t)cols;
-            scr->ribbon.wins[0].rx0 = scr->fx0;
-            scr->ribbon.wins[0].rx1 = scr->fx1;
-        } else if (layout == SCREEN_LAYOUT_CANVAS) {
-            scr->ribbon.count = 1;
-            scr->ribbon.active_idx = 0;
-            scr->ribbon.wins[0].type = RIBBON_WIN_CANVAS;
-            scr->ribbon.wins[0].cols = (uint8_t)((scr->cx1 - scr->cx0 - 6) / 8);
-            scr->ribbon.wins[0].rx0 = scr->cx0;
-            scr->ribbon.wins[0].rx1 = scr->cx1;
         }
         scr->ribbon.x_view = 0;
         scr->ribbon.x_target = 0;
@@ -533,8 +546,9 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
         uint8_t vid = (n >= 2) ? req[1] : 0;
         uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
+        const char *title = (n > 3 && req[3]) ? (const char *)(req + 3) : 0;
         int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
-                                RIBBON_WIN_TERM, vid, cols, 0);
+                                RIBBON_WIN_TERM, vid, cols, title);
         if (idx >= 0) {
             while (ribbon_step_scroll(&scr->ribbon, 0)) {
                 draw_all_from(scr, true);
@@ -599,6 +613,39 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
             status = 0;
         } else {
             status = 1;
+        }
+    } else if (op == 'V') {
+        /* Phase 44: Focus window by vterm ID */
+        uint8_t vid = (n >= 2) ? req[1] : 0;
+        int idx = ribbon_find_vterm(&scr->ribbon, vid);
+        if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
+            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                draw_all_from(scr, true);
+            }
+            draw_all_from(scr, true);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == 'R') {
+        /* Phase 44: Query ribbon status */
+        status = 0;
+        reply[1] = scr->ribbon.count;
+        reply[2] = scr->ribbon.active_idx;
+        reply[3] = (uint8_t)(scr->ribbon.x_view & 0xff);
+        reply[4] = (uint8_t)((scr->ribbon.x_view >> 8) & 0xff);
+        reply[5] = (uint8_t)(scr->ribbon.x_target & 0xff);
+        reply[6] = (uint8_t)((scr->ribbon.x_target >> 8) & 0xff);
+        uint32_t off = 7;
+        for (uint8_t i = 0; i < scr->ribbon.count && off + 7 <= SCREEN_REPLY_LEN; i++) {
+            const ribbon_win_t *w = &scr->ribbon.wins[i];
+            reply[off++] = w->type;
+            reply[off++] = w->vterm_id;
+            reply[off++] = w->cols;
+            reply[off++] = (uint8_t)(w->rx0 & 0xff);
+            reply[off++] = (uint8_t)((w->rx0 >> 8) & 0xff);
+            reply[off++] = (uint8_t)(w->rx1 & 0xff);
+            reply[off++] = (uint8_t)((w->rx1 >> 8) & 0xff);
         }
     } else if (op == 'C') {
         /* Phase 44: Close active window (Cmd+W) */
@@ -667,6 +714,7 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
          * unless this is a redraw of the same picture ('D'). */
         if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
     }
+    if (op == 'R') return;
     reply[0] = status;
     if (op != 'g' && scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
         reply[1] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;

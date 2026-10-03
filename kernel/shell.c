@@ -3202,8 +3202,14 @@ static void cmd_vterm(const char *cmd_line) {
         while (*t == ' ') t++;
         int vid = shell_spawn_terminal(*t ? t : NULL);
         if (vid >= 0) {
-            uint8_t req[3] = { 'N', (uint8_t)vid, 48 }, reply[SCREEN_REPLY_LEN];
-            (void)console_canvas(req, 3, reply);
+            uint8_t req[32] = { 'N', (uint8_t)vid, 48 };
+            uint32_t req_len = 3;
+            if (*t) {
+                while (*t && req_len < 31) req[req_len++] = (uint8_t)*t++;
+                req[req_len] = '\0';
+            }
+            uint8_t reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, req_len, reply);
             vterm_set_active(vid);
             cprintf("Spawned terminal on vterm %d\n", vid);
         } else {
@@ -3224,7 +3230,7 @@ static void cmd_vterm(const char *cmd_line) {
         }
         cprintf("Switched to vterm %d\n", id);
         vterm_set_active(id);
-        uint8_t req[2] = { 'J', (uint8_t)id }, reply[SCREEN_REPLY_LEN];
+        uint8_t req[2] = { 'V', (uint8_t)id }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 2, reply);
         return;
     }
@@ -3256,11 +3262,60 @@ static void cmd_vterm(const char *cmd_line) {
 static void cmd_ribbon(const char *cmd_line) {
     const char *args = cmd_line + 6;
     while (*args == ' ') args++;
-    if (*args == '\0' || strcmp(args, "selftest") == 0 || strcmp(args, "test") == 0) {
+    if (strcmp(args, "selftest") == 0 || strcmp(args, "test") == 0) {
         ribbon_selftest();
         return;
     }
-    cprintf("Usage: ribbon [selftest]\n");
+    if (strncmp(args, "focus ", 6) == 0) {
+        int idx = args[6] - '0';
+        uint8_t req[2] = { 'J', (uint8_t)idx }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
+        if (reply[0] == 0) vterm_set_active(reply[1]);
+        return;
+    }
+    if (strcmp(args, "left") == 0) {
+        uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        return;
+    }
+    if (strcmp(args, "right") == 0) {
+        uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        return;
+    }
+    if (strcmp(args, "move left") == 0) {
+        uint8_t req[1] = { '[' }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 1, reply);
+        return;
+    }
+    if (strcmp(args, "move right") == 0) {
+        uint8_t req[1] = { ']' }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 1, reply);
+        return;
+    }
+    /* Query and print ribbon status */
+    uint8_t req[1] = { 'R' }, reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 1, reply) && reply[0] == 0) {
+        uint8_t count = reply[1];
+        uint8_t active = reply[2];
+        int32_t x_view = (int32_t)(reply[3] | (reply[4] << 8));
+        int32_t x_target = (int32_t)(reply[5] | (reply[6] << 8));
+        cprintf("Ribbon Status: %d windows, active idx %d, x_view %ld, x_target %ld\n",
+                count, active, (long)x_view, (long)x_target);
+        uint32_t off = 7;
+        for (uint8_t i = 0; i < count && off + 7 <= SCREEN_REPLY_LEN; i++) {
+            uint8_t type = reply[off++];
+            uint8_t vid = reply[off++];
+            uint8_t cols = reply[off++];
+            int32_t rx0 = (int32_t)(reply[off] | (reply[off + 1] << 8)); off += 2;
+            int32_t rx1 = (int32_t)(reply[off] | (reply[off + 1] << 8)); off += 2;
+            cprintf("  [%d] %-6s (vterm %d, %d cols, rx %ld..%ld)%s\n",
+                    i, type == 2 ? "Canvas" : "Term", vid, cols,
+                    (long)rx0, (long)rx1, (i == active) ? " *" : "");
+        }
+        return;
+    }
+    cprintf("Usage: ribbon [list | focus <idx> | left | right | move left | move right | selftest]\n");
 }
 
 static void shell_run_editor(const char *filename) {
