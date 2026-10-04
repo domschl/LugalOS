@@ -4,6 +4,7 @@
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
+#include "drivers/screen.h"
 #include <string.h>
 
 static vterm_t g_vterms[MAX_VTERMS];
@@ -161,6 +162,7 @@ void vterm_destroy(int id) {
 
     char reset_title[VTERM_TITLE_MAX];
     bool title_change = false;
+    bool was_active = (g_active_vterm == id);
 
     /* If closing the active foreground terminal, switch focus to root vterm 0 */
     if (g_active_vterm == id) {
@@ -189,6 +191,18 @@ void vterm_destroy(int id) {
     task_orphan_vterm(id);
 
     ylock_release(&g_vterm_mgr_lock);
+
+    /* Its window goes too, however the terminal ended -- `exit`, `vterm
+     * close` -- and the focus with it to whatever the screen focuses next.
+     * Only Super+W used to remove the window; the others left one behind
+     * for a terminal that no longer existed, and the next terminal to get
+     * this slot a second window with the same number. After Super+W this
+     * finds no window and changes nothing. Outside the manager's lock: the
+     * screen takes console_lock(). */
+    uint8_t req[2] = { 'Q', (uint8_t)id }, reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 2, reply) && reply[0] == 0 && was_active) {
+        if (vterm_set_active(reply[1])) title_change = false;
+    }
     if (title_change) {
         console_set_title(reset_title);
     }

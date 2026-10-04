@@ -3271,9 +3271,12 @@ static void cmd_ribbon(const char *cmd_line) {
     }
     if (strncmp(args, "focus ", 6) == 0) {
         int idx = args[6] - '0';
+        if (idx < 0 || idx >= (int)RIBBON_MAX_WINDOWS) {
+            cprintf("ribbon focus: window index 0..%u\n", RIBBON_MAX_WINDOWS - 1u);
+            return;
+        }
         uint8_t req[2] = { 'J', (uint8_t)idx }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 2, reply);
-        if (reply[0] == 0) vterm_set_active(reply[1]);
+        if (console_canvas(req, 2, reply) && reply[0] == 0) vterm_set_active(reply[1]);
         return;
     }
     if (strcmp(args, "left") == 0) {
@@ -3297,7 +3300,8 @@ static void cmd_ribbon(const char *cmd_line) {
         return;
     }
     /* Query and print ribbon status */
-    uint8_t req[1] = { 'R' }, reply[SCREEN_REPLY_LEN];
+    /* One window per request: a reply is SCREEN_REPLY_LEN bytes. */
+    uint8_t req[2] = { 'R', 0 }, reply[SCREEN_REPLY_LEN];
     if (console_canvas(req, 1, reply) && reply[0] == 0) {
         uint8_t count = reply[1];
         uint8_t active = reply[2];
@@ -3305,16 +3309,18 @@ static void cmd_ribbon(const char *cmd_line) {
         int32_t x_target = (int32_t)(reply[5] | (reply[6] << 8));
         cprintf("Ribbon Status: %d windows, active idx %d, x_view %ld, x_target %ld\n",
                 count, active, (long)x_view, (long)x_target);
-        uint32_t off = 7;
-        for (uint8_t i = 0; i < count && off + 7 <= SCREEN_REPLY_LEN; i++) {
-            uint8_t type = reply[off++];
-            uint8_t vid = reply[off++];
-            uint8_t cols = reply[off++];
-            int32_t rx0 = (int32_t)(reply[off] | (reply[off + 1] << 8)); off += 2;
-            int32_t rx1 = (int32_t)(reply[off] | (reply[off + 1] << 8)); off += 2;
-            cprintf("  [%d] %-6s (vterm %d, %d cols, rx %ld..%ld)%s\n",
-                    i, type == 2 ? "Canvas" : "Term", vid, cols,
-                    (long)rx0, (long)rx1, (i == active) ? " *" : "");
+        for (uint8_t i = 0; i < count; i++) {
+            req[1] = i;
+            if (!console_canvas(req, 2, reply) || reply[0] != 0) break;
+            uint8_t type = reply[1], id = reply[2], cols = reply[3];
+            int32_t rx0 = (int32_t)(reply[4] | (reply[5] << 8));
+            int32_t rx1 = (int32_t)(reply[6] | (reply[7] << 8));
+            if (type == RIBBON_WIN_CANVAS)
+                cprintf("  [%d] Canvas (slot %d of vterm %d, %d cols, rx %ld..%ld)%s\n",
+                        i, id, reply[8], cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+            else
+                cprintf("  [%d] Term   (vterm %d, %d cols, rx %ld..%ld)%s\n",
+                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
         }
         return;
     }

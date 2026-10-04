@@ -81,6 +81,7 @@ typedef struct {
     uint8_t   vterm_id;                 /* owner terminal ID */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
+    uint16_t  drawn_w;                  /* the window width `backing` was drawn at; 0: none */
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
 } screen_canvas_slot_t;
 

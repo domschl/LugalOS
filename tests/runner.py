@@ -3533,6 +3533,34 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("A Second Terminal: Its Shell's Stack, And Closing It From Inside (44)", t2_ok, t2_log))
 
+        # Phase 44's windows, on the RAM screen. `ribbon` lists every window
+        # (it listed none: the reply had no room); a canvas scrolled out of
+        # view and back keeps its picture (it came back blank); a new width
+        # still blanks it (38.8); `exit` takes the terminal's window with it
+        # (it stayed, for a terminal that no longer existed).
+        steps = [("(canvas-window 'split-half)", r"=> #t"),
+                 ("(canvas-line 0 0 50 50 1)", r"=> #t"),
+                 ("vterm new W", r"Spawned terminal on vterm (\d)"),
+                 ("ribbon", r"\[2\] Canvas \(slot 0 of vterm 0"),
+                 ("vterm switch 0", r"Switched to vterm 0"),
+                 ("ribbon focus 2", r"lsh>"),
+                 ("ribbon focus 0", r"lsh>"),
+                 ("(canvas-get 10 10)", r"=> 1"),
+                 ("(canvas-window 'split-wide)", r"=> #t"),
+                 ("(canvas-get 10 10)", r"=> 0"),
+                 ("vterm switch 1", r"Switched to vterm 1"),
+                 ("exit", r"exited"),
+                 ("ribbon", r"Ribbon Status: 2 windows"),
+                 ("(canvas-window 'text)", r"=> #t")]
+        rb_ok, rb_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=8.0)
+            if not ok or "[Lock BUG]" in log:
+                rb_ok, rb_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Windows: The Ribbon Listed, A Canvas Kept Across Scrolling, Exit Closes Its Window (44)",
+                        rb_ok, rb_log))
+
         # 38.7: `edbench` -- the editor's buffer from the bulk zone, a 16 KB
         # document saved to and loaded from /ram0, typed into and searched.
         # Timings are the hardware suite's business; here it must finish and

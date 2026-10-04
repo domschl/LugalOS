@@ -805,11 +805,16 @@ int vtterm_selftest(void) {
         REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
         unsigned c, r;
         screen_text_size(scr, &c, &r);
+        /* Phase 44: the canvas opens to the right of its terminal, a
+         * ribbon gap after the text's frame (4 + 8 * 38 + 6 = 314, then
+         * 324..394); 37.5a had it on the left. */
         bool split = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE && RW == 69 && RH == 66 &&
-                     RD == d0 + 1 && c == 38 && r == 4 && scr->cx1 == 74 && scr->fx0 == 84 &&
+                     rp[1] == 0 && scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM &&
+                     RD == d0 + 1 && c == 38 && r == 4 && scr->fx0 == 4 && scr->fx1 == 314 &&
+                     scr->cx0 == 324 && scr->cx1 == 394 &&
                      grid_cell_is(&scr->vt.text, 0, 0, '0', false) &&
                      grid_cell_is(&scr->vt.text, 37, 0, '7', false) &&
-                     scr->vt.text.fb == cx.buf + 40u * (ST_LW / 8u) + 11u;
+                     scr->vt.text.fb == cx.buf + 40u * (ST_LW / 8u) + 1u;
         REQ('L', 9);
         bool bad = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE;
         st_check(&cx, "37.3b: the wide split: canvas size, text 38 wide keeping each row's left part, damage moves",
@@ -833,10 +838,11 @@ int vtterm_selftest(void) {
         REQ('t', I16(40), I16(0), I16(0), 0, 'H');
         bool text = GET(40, 2) && GET(41, 6);                      /* 'H''s left stem */
         /* Clipping: a line across the whole buffer stays inside the tile --
-         * the frame, its shadow and the desktop beside it are untouched. */
+         * the frame, its shadow, the desktop beside it and the text tile
+         * are untouched. */
         REQ('l', I16(-100), I16(-50), I16(500), I16(200), I16(1));
-        bool clip = PXL(4, 60) && !PXL(5, 22 + 17 + 1) && PXL(75, 60) &&
-                    PXL(76, 60) == ((76 + 60) & 1u) && PXL(4, 22) && !PXL(84 + 2, 60 + 40);
+        bool clip = PXL(324, 60) && !PXL(325, 22 + 17 + 1) && PXL(395, 60) &&
+                    PXL(396, 60) == ((396 + 60) & 1u) && PXL(324, 22) && !PXL(4 + 2, 60 + 40);
         st_check(&cx, "37.3b: canvas line, circle, row (and scaled), rectangle, invert, text; all clipped to the tile",
                  line && circle && row && scaled && inv && text && clip);
 
@@ -864,57 +870,59 @@ int vtterm_selftest(void) {
                       "back to text with the line past the narrow split's edge intact (37.5a)",
                  full && cleared && back && titled);
 
-        /* 37.5a: the divider's five places, stepped left and right, the
-         * swap, and the lock -- on a 72-cell screen, where all three splits
-         * leave a canvas. Canvas on the left: left means more text. */
+        /* Phase 44: Super+[ and ] ('w') step the focused window through
+         * the column presets -- 38, 48, 64, the screen's width -- and stop
+         * at either end; the canvas beside it keeps its width. (37.5a's
+         * divider stepped the split through five layouts instead.) On a
+         * 72-cell screen: 70 columns at most. */
         screen_init(scr, cx.buf, ST_WW / 8u, ST_WW, ST_LH);
         REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
         unsigned wide_w = RW;
-        REQ('w', -1);
-        screen_text_size(scr, &c, &r);
-        bool to_half = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && c == 48;
-        REQ('w', -1);
-        screen_text_size(scr, &c, &r);
-        bool to_narrow = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_NARROW && c == 64;
-        REQ('w', -1);
-        bool closed = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && RW == 0;
-        REQ('w', -1);
-        bool left_end = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_TEXT;
-        REQ('w', 1);
-        bool reopened = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_NARROW;
-        REQ('w', 1); REQ('w', 1); REQ('w', 1);
-        bool all_canvas = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_CANVAS && scr->vt.hidden;
-        REQ('w', 1);
-        bool right_end = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_CANVAS;
-        st_check(&cx, "37.5a: the divider steps through text only, three splits and canvas only, and stops",
-                 to_half && to_narrow && closed && left_end && reopened && all_canvas && right_end);
+        unsigned cols[8];
+        uint8_t st[8];
+        for (unsigned k = 0; k < 4; k++) {
+            REQ('w', 1);
+            screen_text_size(scr, &c, &r);
+            st[k] = rp[0];
+            cols[k] = c;
+        }
+        bool wider = st[0] == 0 && cols[0] == 48 && st[1] == 0 && cols[1] == 64 &&
+                     st[2] == 0 && cols[2] == 70 && st[3] == 1 && cols[3] == 70 && RW == wide_w;
+        for (unsigned k = 0; k < 4; k++) {
+            REQ('w', -1);
+            screen_text_size(scr, &c, &r);
+            st[4 + k] = rp[0];
+            cols[4 + k] = c;
+        }
+        bool narrower = st[4] == 0 && cols[4] == 64 && st[5] == 0 && cols[5] == 48 &&
+                        st[6] == 0 && cols[6] == 38 && st[7] == 1 && cols[7] == 38 && RW == wide_w;
+        st_check(&cx, "44: Super+[ and ] step the focused window through 38/48/64/full columns, and stop",
+                 wider && narrower);
 
-        /* Swapped: text left, the canvas right and exactly as wide; left
-         * now means less text. */
-        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        /* Phase 44's swap: the terminal and its canvas trade places, and
+         * back; a locked canvas holds its place and its layout until text
+         * releases it; with no canvas the swap opens the half split. */
         REQ('X');
-        bool swapped = rp[0] == 0 && rp[9] == 1 && scr->fx0 == 4 && scr->cx0 > scr->fx1 &&
-                       RW == wide_w && scr->vt.text.fb == cx.buf + 40u * (ST_WW / 8u) + 1u;
-        REQ('w', 1);
-        screen_text_size(scr, &c, &r);
-        bool mirrored = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && c == 48;
+        bool swapped = rp[0] == 0 && rp[9] == 1 && scr->cx1 < scr->fx0 && RW == wide_w &&
+                       scr->vt.text.fb == cx.buf + 40u * (ST_WW / 8u) + (uint32_t)((scr->fx0 + 4) / 8);
+        REQ('X');
+        bool unswapped = rp[0] == 0 && rp[9] == 0 && scr->fx0 == 4 && scr->cx0 > scr->fx1 && RW == wide_w;
         REQ('K', 1);
-        REQ('w', 1);
-        bool lk1 = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF;
         REQ('X');
-        bool lk2 = rp[0] == 1 && rp[9] == 1;
+        bool lk1 = rp[0] == 1 && rp[9] == 0;
+        REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
+        bool lk2 = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE;
         REQ('L', SCREEN_LAYOUT_TEXT);           /* releases the lock */
-        REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
+        bool released = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && RW == 0 && !scr->vt.hidden;
         REQ('X');
-        bool unlocked = rp[0] == 0 && rp[9] == 0;
+        screen_text_size(scr, &c, &r);
+        bool opened = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && RW > 0 && c == 48;
+        REQ('X');
+        bool unlocked = rp[0] == 0 && rp[9] == 1;
         REQ('L', SCREEN_LAYOUT_TEXT);
-        REQ('X');
-        bool to_canvas = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_CANVAS && scr->vt.hidden;
-        REQ('X');
-        bool to_text = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && !scr->vt.hidden;
-        st_check(&cx, "37.5a: swapped panes mirror the divider; a lock holds both until text; "
-                      "with one pane full, the swap shows the other one full",
-                 swapped && mirrored && lk1 && lk2 && unlocked && to_canvas && to_text);
+        st_check(&cx, "44: the swap trades the terminal and its canvas and back; a lock holds both until text; "
+                      "with no canvas it opens the half split",
+                 swapped && unswapped && lk1 && lk2 && released && opened && unlocked);
 
         /* 38.8: the canvas stores. Leaving a layout keeps its canvas, and
          * coming back shows it with no damage -- also swapped, at the other

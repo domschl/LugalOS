@@ -15,6 +15,7 @@
 #define RIBBON_MAX_WINDOWS   8u
 #define RIBBON_GAP           10  /* 10 px gap between adjacent window frames */
 #define RIBBON_BORDER_PAD    4   /* 4 px margin before first window */
+#define RIBBON_TITLE_MAX     32u /* a window title's bytes, with the NUL */
 
 /* Preset column widths */
 #define RIBBON_COLS_38       38u
@@ -40,7 +41,7 @@ typedef struct {
     uint8_t  flags;      /* RIBBON_FLAG_* */
     int32_t  rx0;        /* ribbon horizontal left frame coordinate (px) */
     int32_t  rx1;        /* ribbon horizontal right frame coordinate (px) */
-    char     title[32];  /* window title */
+    char     title[RIBBON_TITLE_MAX];  /* window title */
 } ribbon_win_t;
 
 typedef struct {

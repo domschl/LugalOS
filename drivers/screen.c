@@ -83,12 +83,20 @@ LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *scr, uint8_t vterm_id) {
         if (!scr->canvases[i].in_use) {
             scr->canvases[i].in_use = true;
             scr->canvases[i].locked = false;
+            scr->canvases[i].drawn_w = 0;
             scr->canvases[i].vterm_id = vterm_id;
             scr->canvases[i].title[0] = '\0';
             if (scr->store) {
                 canvas1_init(&scr->canvases[i].backing,
                              scr->store + i * scr->store_slot,
                              scr->cv.w / 8u, scr->cv.w, scr->cv.h);
+                /* Slots past 0 double as layout stores (stores_usable()):
+                 * what is there is canvas 0 in some split, not this canvas,
+                 * and the stores are not good any more. */
+                if (i > 0) {
+                    canvas1_fill(&scr->canvases[i].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+                    scr->store_ok = 0;
+                }
             }
             return (int)i;
         }
@@ -287,7 +295,12 @@ LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1,
     if (x1 + 1 < (int)cv->w) {
         canvas1_hline(cv, vx0 + 1, x1 + 1, y1 + 1, CANVAS1_BLACK);   /* the shadow */
         canvas1_vline(cv, x1 + 1, y0 + 1, y1 + 1, CANVAS1_BLACK);
+        /* The two corners the shadow leaves out are desktop. Painted here:
+         * clear_ribbon_background() counts the shadow's column and row as
+         * the window's, so a repaint left whatever those pixels held. */
+        canvas1_fill(cv, x1 + 1, y0, x1 + 1, y0, CANVAS1_GREY);
     }
+    if (x0 >= 0) canvas1_fill(cv, x0, y1 + 1, x0, y1 + 1, CANVAS1_GREY);
     draw_titlebar(cv, x0, y0, x1, t, active);
 }
 
@@ -303,18 +316,35 @@ LCDTERM_UTEXT static bool has_canvas(const screen_t *scr) {
     return true;
 }
 
+LCDTERM_UTEXT static uint8_t window_vterm(const screen_t *scr, uint8_t idx);
+
+/* The terminal the keyboard is at: the focused window's, or its canvas's
+ * owner's. */
 LCDTERM_UTEXT static vtterm_t *active_vt(screen_t *scr) {
-    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
-        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
-        int t = screen_find_term(scr, scr->ribbon.wins[scr->ribbon.active_idx].vterm_id);
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+        int t = screen_find_term(scr, window_vterm(scr, scr->ribbon.active_idx));
         if (t >= 0) return &scr->terms[t].vt;
     }
     return &scr->terms[0].vt;
 }
 
+/* That terminal's title bar, at its own window -- which is not the focused
+ * one when a canvas is: drawn at the text frame regardless, it striped a
+ * second bar across whatever was there. */
 LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
     vtterm_t *avt = active_vt(scr);
-    if (has_text(scr)) draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title, true);
+    if (has_text(scr)) {
+        uint8_t act = scr->ribbon.active_idx;
+        int idx = ribbon_find_vterm(&scr->ribbon, window_vterm(scr, act));
+        if (idx >= 0) {
+            int32_t x0 = scr->ribbon.wins[idx].rx0 - scr->ribbon.x_view;
+            int32_t x1 = scr->ribbon.wins[idx].rx1 - scr->ribbon.x_view;
+            if (x1 >= 0 && x0 < (int32_t)scr->cv.w)
+                draw_titlebar(&scr->cv, (int)x0, SCREEN_TILE_Y, (int)x1, avt->title, idx == (int)act);
+        } else if (scr->ribbon.count == 0) {
+            draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title, true);
+        }
+    }
     scr->title_drawn = avt->title_seq;
 }
 
@@ -324,6 +354,20 @@ LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
  * bytes a row, pixel x of a row in bit x % 8 of byte x / 8 -- the
  * framebuffer's own order, but from the tile's left edge rather than the
  * screen's, so the same slot restores a split at either side. */
+
+/* Phase 44: the layout stores and the canvases' backings share these four
+ * slots -- layout L's store is slot L - 1, canvas i's backing is slot i --
+ * so the two can only both be right while canvas 0 is the only canvas.
+ * With a second one, saving canvas 0 in a split wrote it over the other
+ * canvas's backing, and restoring copied a layout's slot into whichever
+ * canvas came first. The stores step aside then; a canvas comes back from
+ * its backing, or blank with damage, as without a store. */
+LCDTERM_UTEXT static bool stores_usable(const screen_t *scr, unsigned cid) {
+    if (!scr->store || cid != 0) return false;
+    for (uint32_t i = 1; i < SCREEN_MAX_CANVASES; i++)
+        if (scr->canvases[i].in_use) return false;
+    return true;
+}
 
 LCDTERM_UTEXT static uint8_t *store_slot(const screen_t *scr) {
     unsigned l = scr->layout;
@@ -338,6 +382,7 @@ LCDTERM_UTEXT static void store_save(screen_t *scr) {
     const canvas1_t *cc = &scr->cc;
     int c_idx = (scr->ribbon.count > 0) ? ribbon_find_canvas(&scr->ribbon) : -1;
     uint8_t cid = (c_idx >= 0) ? scr->ribbon.wins[c_idx].vterm_id : 0;
+    if (scr->store && !stores_usable(scr, cid)) return;
     canvas1_t *cc_back = (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) ? &scr->canvases[cid].backing : 0;
 
     unsigned rb = ((unsigned)cc->w + 7u) / 8u;
@@ -376,6 +421,7 @@ LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
 
     int c_idx = (scr->ribbon.count > 0) ? ribbon_find_canvas(&scr->ribbon) : -1;
     uint8_t cid = (c_idx >= 0) ? scr->ribbon.wins[c_idx].vterm_id : 0;
+    if (scr->store && !stores_usable(scr, cid)) return false;
     canvas1_t *cc_back = (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) ? &scr->canvases[cid].backing : 0;
 
     for (unsigned y = 0; y < cc->h; y++) {
@@ -581,17 +627,27 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                     int cw_h = (int)(tile_y1 - (SCREEN_TILE_Y + 17));
                     if (cw_w > 0 && cw_h > 0) {
                         bool restored = false;
+                        bool backed = cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store;
                         if (restore) {
                             restored = store_restore(scr);
                         }
-                        if (restored) {
+                        /* A canvas the same width as when its backing was
+                         * drawn comes back from it, without damage: moving
+                         * the focus, scrolling the ribbon or opening a
+                         * terminal is not a reason to lose the picture. It
+                         * used to be blanked whenever the layout's store was
+                         * stale -- after any drawing at all -- so a plot
+                         * from a program with no redraw hook was gone once
+                         * scrolled out of view and back. A new width still
+                         * blanks it and moves the damage on (38.8). */
+                        if (restored || (backed && (!restore || scr->canvases[cid].drawn_w == (uint16_t)cw_w))) {
                             blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
-                        } else if (!restore && cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
-                            blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
+                            if (backed) scr->canvases[cid].drawn_w = (uint16_t)cw_w;
                         } else {
                             canvas1_fill(cv, (int)cx0 + 1, SCREEN_TILE_Y + 17, (int)cx1 - 1, tile_y1 - 1, CANVAS1_WHITE);
-                            if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
+                            if (backed) {
                                 canvas1_fill(&scr->canvases[cid].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+                                scr->canvases[cid].drawn_w = (uint16_t)cw_w;
                             }
                             scr->damage++;
                         }
@@ -637,6 +693,15 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     int32_t xv = scr->ribbon.x_view;
     scr->layout = (uint8_t)layout;
 
+    /* A terminal without a window draws nowhere. Its vt still pointed at
+     * the place its window had last been, and wrote over whatever window
+     * was there now -- the root terminal's, after Super+W closed its window
+     * (now refused), and any whose window a closed vterm left behind. */
+    for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
+        if (scr->terms[t].in_use && ribbon_find_vterm(&scr->ribbon, scr->terms[t].vterm_id) < 0)
+            vtterm_set_hidden(&scr->terms[t].vt, true);
+    }
+
     /* Position all terminal windows in the ribbon */
     for (uint8_t i = 0; i < scr->ribbon.count; i++) {
         ribbon_win_t *w = &scr->ribbon.wins[i];
@@ -662,6 +727,10 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             c0 = (int)((x0 + 4) / 8);
             col_off = 0;
             int max_c = C - 1 - c0;
+            if (max_c < 1) {                /* only its frame is on screen */
+                vtterm_set_hidden(&scr->terms[t].vt, true);
+                continue;
+            }
             if (win_c > max_c) win_c = max_c;
         } else {
             c0 = 1;
@@ -688,7 +757,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         vtterm_resize(&scr->terms[t].vt, &text);
         vtterm_set_hidden(&scr->terms[t].vt, false);
 
-        if (i == scr->ribbon.active_idx) {
+        if (w->vterm_id == window_vterm(scr, scr->ribbon.active_idx)) {
             scr->fx0 = (int16_t)x0;
             scr->fx1 = (int16_t)(x0 + 8 * w->cols + 6);
             scr->fy0 = SCREEN_TILE_Y;
@@ -761,6 +830,7 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
         scr->canvases[c].vterm_id = 0;
         scr->canvases[c].in_use = false;
         scr->canvases[c].locked = false;
+        scr->canvases[c].drawn_w = 0;
         scr->canvases[c].title[0] = '\0';
     }
 
@@ -942,10 +1012,13 @@ LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned 
         const char *ctitle = scr->canvases[cid].title[0] ? scr->canvases[cid].title : def_ctitle;
         int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_CANVAS, (uint8_t)cid, canvas_cols, ctitle);
         if (idx >= 0) {
+            /* A split keeps the terminal focused, wherever the canvas went:
+             * ribbon_insert() focuses what it inserts, and only the canvas
+             * opened before the terminal used to be corrected for. */
             if (layout == SCREEN_LAYOUT_CANVAS) {
                 scr->ribbon.active_idx = (uint8_t)idx;
-            } else if (insert_idx <= act) {
-                scr->ribbon.active_idx = (uint8_t)(act + 1u);
+            } else {
+                scr->ribbon.active_idx = (insert_idx <= act) ? (uint8_t)(act + 1u) : act;
             }
             ribbon_layout(&scr->ribbon);
             scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
@@ -990,21 +1063,77 @@ LCDTERM_UTEXT static unsigned colour(int c) {
     return c == 0 ? CANVAS1_WHITE : c == 2 ? CANVAS1_GREY : CANVAS1_BLACK;
 }
 
+/* The canvas a request from terminal `vid` means: its own, else the focused
+ * window's, else the first in the ribbon; -1 for none. */
+LCDTERM_UTEXT static int canvas_for(const screen_t *scr, uint8_t vid) {
+    int cid = screen_find_canvas_by_vterm(scr, vid);
+    if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
+        cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    }
+    if (cid < 0) {
+        int c_any = ribbon_find_canvas(&scr->ribbon);
+        if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
+    }
+    return (cid >= 0 && cid < (int)SCREEN_MAX_CANVASES) ? cid : -1;
+}
+
+/* Canvas `cid`'s drawable size in its window; 0 x 0 without one. */
+LCDTERM_UTEXT static void canvas_size(const screen_t *scr, int cid, int *w, int *h) {
+    *w = *h = 0;
+    if (cid < 0 || !scr->canvases[cid].in_use) return;
+    int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+    if (c_win < 0) return;
+    const ribbon_win_t *win = &scr->ribbon.wins[c_win];
+    *w = (int)(win->rx1 - win->rx0 - 1);
+    *h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+    if (*w < 0 || *h < 0) *w = *h = 0;
+}
+
+/* The terminal keyboard input belongs to while window `idx` has the focus:
+ * a terminal's own, a canvas's owner's. A canvas window's vterm_id field is
+ * its canvas slot, and handing that on as a terminal sent the keys of a
+ * focused canvas to whichever terminal had the slot's number. */
+LCDTERM_UTEXT static uint8_t window_vterm(const screen_t *scr, uint8_t idx) {
+    if (idx >= scr->ribbon.count) return 0;
+    const ribbon_win_t *w = &scr->ribbon.wins[idx];
+    if (w->type == RIBBON_WIN_CANVAS)
+        return (w->vterm_id < SCREEN_MAX_CANVASES) ? scr->canvases[w->vterm_id].vterm_id : 0;
+    return w->vterm_id;
+}
+
+/* Closes window `idx` ('C', 'Q'). The root terminal's window stays: its
+ * shell is the boot shell, and without a window it had nowhere to draw.
+ * Neither does the last window go. */
+LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *reply) {
+    if (idx >= scr->ribbon.count || scr->ribbon.count <= 1) return false;
+    uint8_t closed_type = scr->ribbon.wins[idx].type;
+    uint8_t closed_id = scr->ribbon.wins[idx].vterm_id;
+    if (closed_type == RIBBON_WIN_TERM && closed_id == 0) return false;
+    if (!ribbon_remove(&scr->ribbon, idx)) return false;
+    if (closed_type == RIBBON_WIN_TERM) screen_free_term(scr, closed_id);
+    else if (closed_type == RIBBON_WIN_CANVAS) screen_free_canvas(scr, closed_id);
+    if (ribbon_find_canvas(&scr->ribbon) < 0) scr->layout = SCREEN_LAYOUT_TEXT;
+    if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
+        scr->ribbon.wins[0].cols = scr->full_cols;
+    }
+    ribbon_layout(&scr->ribbon);
+    scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
+    scr->ribbon.x_view = scr->ribbon.x_target;
+    (void)place(scr, scr->layout);
+    draw_all_from(scr, true);
+    reply[10] = closed_type;
+    reply[11] = closed_id;
+    return true;
+}
+
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
     if (op == 'L') {
         status = (n >= 2 && screen_set_layout_vterm(scr, vid, req[1])) ? 0 : 1;
     } else if (op == 'T') {
-        int cid = screen_find_canvas_by_vterm(scr, vid);
-        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
-            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
-            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
-        }
-        if (cid < 0) {
-            int c_any = ribbon_find_canvas(&scr->ribbon);
-            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
-        }
+        int cid = canvas_for(scr, vid);
         if (cid < 0) cid = 0;
 
         uint32_t len = n - 1u;
@@ -1073,7 +1202,18 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
         uint8_t n_vid = (n >= 2) ? req[1] : 0;
         uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
-        const char *title = (n > 3 && req[3]) ? (const char *)(req + 3) : 0;
+        /* The title is the request's tail, n - 3 bytes with no NUL of its
+         * own: in the lcdterm task it was read on into whatever the
+         * buffer held from the request before -- usually a terminal's
+         * output, which then became the title. */
+        char tbuf[RIBBON_TITLE_MAX];
+        uint32_t tl = 0;
+        while (3u + tl < n && tl + 1u < sizeof(tbuf) && req[3u + tl]) {
+            tbuf[tl] = (char)req[3u + tl];
+            tl++;
+        }
+        tbuf[tl] = '\0';
+        const char *title = tl ? tbuf : 0;
         char def_title[16];
         if (!title) {
             def_title[0] = 'l'; def_title[1] = 's'; def_title[2] = 'h';
@@ -1164,57 +1304,44 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'R') {
-        /* Phase 44: Query ribbon status */
-        status = 0;
+        /* Phase 44: the ribbon. Bare: the window count, the focus and the
+         * viewport. With an index: that window -- one per request, because
+         * the reply is SCREEN_REPLY_LEN bytes and seven of them after the
+         * header left no room for even one window, so `ribbon` listed none. */
+        if (n >= 2) {
+            uint8_t i = req[1];
+            if (i >= scr->ribbon.count) {
+                reply[0] = 1;
+                return;
+            }
+            const ribbon_win_t *w = &scr->ribbon.wins[i];
+            reply[0] = 0;
+            reply[1] = w->type;
+            reply[2] = w->vterm_id;
+            reply[3] = w->cols;
+            reply[4] = (uint8_t)(w->rx0 & 0xff);
+            reply[5] = (uint8_t)((w->rx0 >> 8) & 0xff);
+            reply[6] = (uint8_t)(w->rx1 & 0xff);
+            reply[7] = (uint8_t)((w->rx1 >> 8) & 0xff);
+            reply[8] = window_vterm(scr, i);
+            return;
+        }
+        reply[0] = 0;
         reply[1] = scr->ribbon.count;
         reply[2] = scr->ribbon.active_idx;
         reply[3] = (uint8_t)(scr->ribbon.x_view & 0xff);
         reply[4] = (uint8_t)((scr->ribbon.x_view >> 8) & 0xff);
         reply[5] = (uint8_t)(scr->ribbon.x_target & 0xff);
         reply[6] = (uint8_t)((scr->ribbon.x_target >> 8) & 0xff);
-        uint32_t off = 7;
-        for (uint8_t i = 0; i < scr->ribbon.count && off + 7 <= SCREEN_REPLY_LEN; i++) {
-            const ribbon_win_t *w = &scr->ribbon.wins[i];
-            reply[off++] = w->type;
-            reply[off++] = w->vterm_id;
-            reply[off++] = w->cols;
-            reply[off++] = (uint8_t)(w->rx0 & 0xff);
-            reply[off++] = (uint8_t)((w->rx0 >> 8) & 0xff);
-            reply[off++] = (uint8_t)(w->rx1 & 0xff);
-            reply[off++] = (uint8_t)((w->rx1 >> 8) & 0xff);
-        }
+        return;
     } else if (op == 'C') {
         /* Phase 44: Close active window (Cmd+W) */
-        uint8_t act = scr->ribbon.active_idx;
-        if (act < scr->ribbon.count) {
-            uint8_t closed_type = scr->ribbon.wins[act].type;
-            uint8_t closed_id = scr->ribbon.wins[act].vterm_id;
-            if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, act)) {
-                if (closed_type == RIBBON_WIN_TERM && closed_id > 0) {
-                    screen_free_term(scr, closed_id);
-                } else if (closed_type == RIBBON_WIN_CANVAS) {
-                    screen_free_canvas(scr, closed_id);
-                }
-                if (ribbon_find_canvas(&scr->ribbon) < 0) {
-                    scr->layout = SCREEN_LAYOUT_TEXT;
-                }
-                if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
-                    scr->ribbon.wins[0].cols = scr->full_cols;
-                }
-                ribbon_layout(&scr->ribbon);
-                scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
-                scr->ribbon.x_view = scr->ribbon.x_target;
-                (void)place(scr, scr->layout);
-                draw_all_from(scr, true);
-                status = 0;
-                reply[10] = closed_type;
-                reply[11] = closed_id;
-            } else {
-                status = 1;
-            }
-        } else {
-            status = 1;
-        }
+        status = close_window(scr, scr->ribbon.active_idx, reply) ? 0 : 1;
+    } else if (op == 'Q') {
+        /* Phase 44: close terminal `vid`'s window -- its vterm is gone
+         * (vterm_destroy()), however it went: `exit`, `vterm close`. */
+        int idx = (n >= 2) ? ribbon_find_vterm(&scr->ribbon, req[1]) : -1;
+        status = (idx >= 0 && close_window(scr, (uint8_t)idx, reply)) ? 0 : 1;
     } else if (op == 'K') {
         int cid = screen_find_canvas_by_vterm(scr, vid);
         if (cid >= 0) {
@@ -1224,43 +1351,17 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (op == 'Z') {
         scr->store_ok = 0;              /* 38.8 */
         scr->redrawing = 0;
+        for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) scr->canvases[i].drawn_w = 0;
     } else if (op == 'D') {
         scr->redrawing = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'S' || op == 0) {
-        int cid = screen_find_canvas_by_vterm(scr, vid);
-        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
-            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
-            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
-        }
-        if (cid < 0) {
-            int c_any = ribbon_find_canvas(&scr->ribbon);
-            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
-        }
-        int cw_w = 0, cw_h = 0;
-        if (cid >= 0 && scr->canvases[cid].in_use) {
-            int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
-            if (c_win >= 0) {
-                const ribbon_win_t *w = &scr->ribbon.wins[c_win];
-                cw_w = (int)(w->rx1 - w->rx0 - 1);
-                cw_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
-            }
-        }
-        reply[2] = (uint8_t)cw_w; reply[3] = (uint8_t)(cw_w >> 8);
-        reply[4] = (uint8_t)cw_h; reply[5] = (uint8_t)(cw_h >> 8);
+        /* The size, which every reply carries (below). */
     } else if (!has_canvas(scr)) {
         status = 1;
     } else {
-        int cid = screen_find_canvas_by_vterm(scr, vid);
-        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
-            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
-            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
-        }
-        if (cid < 0) {
-            int c_any = ribbon_find_canvas(&scr->ribbon);
-            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
-        }
+        int cid = canvas_for(scr, vid);
 
-        if (cid < 0 || cid >= (int)SCREEN_MAX_CANVASES || !scr->canvases[cid].in_use) {
+        if (cid < 0 || !scr->canvases[cid].in_use) {
             status = 1;
         } else {
             canvas1_t *cc_back = scr->store ? &scr->canvases[cid].backing : 0;
@@ -1349,18 +1450,24 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             }
 
             if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
-
-            reply[2] = (uint8_t)cw_w; reply[3] = (uint8_t)(cw_w >> 8);
-            reply[4] = (uint8_t)cw_h; reply[5] = (uint8_t)(cw_h >> 8);
+            if (op != 'g' && status == 0 && cc_back) scr->canvases[cid].drawn_w = (uint16_t)cw_w;
         }
     }
-    if (op == 'R') return;
     reply[0] = status;
     if (op != 'g' && scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
-        reply[1] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        reply[1] = window_vterm(scr, scr->ribbon.active_idx);
     } else {
         reply[1] = pixel;
     }
+    /* The canvas's size, after whatever this request did to it. Every
+     * reply, as screen.h promises: only 'S' and the drawing requests used
+     * to fill it, so a layout change answered with the size the previous
+     * reply had left in the caller's buffer, and a request with no canvas
+     * with whatever was there. */
+    int sw, sh;
+    canvas_size(scr, canvas_for(scr, vid), &sw, &sh);
+    reply[2] = (uint8_t)sw; reply[3] = (uint8_t)(sw >> 8);
+    reply[4] = (uint8_t)sh; reply[5] = (uint8_t)(sh >> 8);
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
     reply[8] = scr->layout;
     reply[9] = scr->swapped;
