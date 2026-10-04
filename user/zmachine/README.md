@@ -104,6 +104,23 @@ so the same sources build for RV32 firmware.
   (default `zork1`); an explicit path works too.  `QUIT` or Ctrl-C
   (polled between instructions, the chess J2 mechanism) ends the
   session.  `save`/`restore` write `<story>.lzs` next to the story file.
+* **Lisp at the game prompt (chess's convention):** input starting with
+  `(` is collected by the front, evaluated by Lisp, and its value
+  printed — the game's `aread` receives an empty line (rooms re-describe,
+  harmless in every v3 game).  `(screenshot)` at the prompt is the
+  working end-to-end test.
+* **Terminal semantics (fixed 2026-10-04):** the session runs *without*
+  `lisp_lock` (the chess-console contract — another terminal's commands
+  must not park behind a game), and it is *pinned to its terminal* the
+  way `shell_spawn_terminal()` binds workers.  Before both fixes, a
+  `vterm new`/Cmd+Enter while playing silently moved the root task's
+  input to the new terminal's queue — two readers, one queue, and the
+  second terminal's first command froze the system.  Switching away now
+  parks the game; `vterm switch <id>` back resumes it exactly where it
+  stopped.  The debug builtin `(console-hotkey n)` injects a console
+  hotkey (5 = new terminal, 6/7 focus, 10 close, 11..19 jump) the same
+  way the USB keyboard's Super chords do — scripted reproduction for
+  exactly that sequence.
 * **Memory contract (chess's discipline, plan/phase38_psram.md):**
   idle cost is **zero** — nothing in `.bss`, nothing allocated at boot
   (verified: `-DLUGALOS_ENABLE_ZMACHINE=OFF` differs only in `.text`,

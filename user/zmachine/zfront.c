@@ -32,6 +32,9 @@
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
+#include "kernel/vterm.h"
+#include "lisp.h"
 
 #include <string.h>
 
@@ -50,6 +53,16 @@
 struct zfront_ctx {
     char story_path[96];
     char save_path[104];
+
+    /* Lisp-line interception (the chess console's convention, chess_ui.c's
+     * `else if (line[0] == '(')`): a game-prompt line that starts with
+     * '(' is collected here, evaluated by Lisp, and the game's aread is
+     * handed an empty line -- 'look again', harmless in every v3 game.
+     * The interpreter owns the echo, so in lisp mode this front echoes
+     * for it. */
+    bool lisp_mode;
+    uint32_t lisp_len;
+    char lisp_line[256];
 };
 
 /* ------------------------------------------------------------------ */
@@ -64,8 +77,51 @@ static void zfront_putc(void *user, uint8_t ch)
 
 static int zfront_getc(void *user)
 {
-    (void)user;
-    return (int)(uint8_t)console_getc();
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    for (;;) {
+        int c = (int)(uint8_t)console_getc();
+        if (ctx->lisp_mode) {
+            if (c == '\r' || c == '\n') {
+                char line[256];
+                uint32_t n = ctx->lisp_len < sizeof(line) - 1
+                           ? ctx->lisp_len : sizeof(line) - 1;
+                console_putc('\n');
+                memcpy(line, ctx->lisp_line, n);
+                line[n] = '\0';
+                ctx->lisp_mode = false;
+                ctx->lisp_len = 0;
+                lisp_lock();
+                lisp_val_t *res = lisp_eval_string(line);
+                if (res && res->type != LISP_NIL) {
+                    cprintf("=> ");
+                    lisp_print(res);
+                    cprintf("\n");
+                }
+                lisp_unlock();
+                return '\n';       /* end the game's aread on empty input */
+            }
+            if (c == 0x7f || c == 0x08) {
+                if (ctx->lisp_len > 0) {
+                    ctx->lisp_len--;
+                    console_puts("\b \b");
+                }
+                continue;
+            }
+            if (ctx->lisp_len < sizeof(ctx->lisp_line) - 1) {
+                ctx->lisp_line[ctx->lisp_len++] = (char)c;
+                console_putc((char)c);
+            }
+            continue;
+        }
+        if (c == '(') {
+            ctx->lisp_mode = true;
+            ctx->lisp_len = 0;
+            ctx->lisp_line[ctx->lisp_len++] = '(';
+            console_putc('(');
+            continue;
+        }
+        return c;
+    }
 }
 
 static int zfront_save(void *user, const uint8_t *data, uint32_t len)
@@ -156,6 +212,23 @@ int zmachine_run(const char *name)
     struct z_vm *vm = NULL;
     uint32_t fsize = 0;       /* story bytes; doubles as image size   */
     uint32_t space_pages = Z_PAGES(Z_SPACE_BYTES);
+
+    /* Pin the session to the terminal it started on.  The root console
+     * task follows the active foreground terminal (task_get_vterm()==0),
+     * and opening or switching terminals re-points that follower -- which
+     * silently moves the game's input to the new terminal's queue while
+     * its own worker task reads the very same queue (two readers, bytes
+     * split at random) -- the freeze sequence reported 2026-10-04: game
+     * running, Cmd+Enter opens a second terminal, the next command typed
+     * there lands half in the game and half in the new shell.  Binding
+     * the task the way shell_spawn_terminal() binds workers pins the
+     * game to one terminal for its duration; the follow is restored on
+     * the way out. */
+    int mypid = sched_current_pid();
+    int prev_vid = task_get_vterm(mypid);
+    if (mypid >= 0 && prev_vid == 0) {
+        task_set_vterm(mypid, vterm_current_id());
+    }
     int reason = ZVM_OK;
     int rc = 1;               /* until a clean exit rewrites it        */
 
@@ -201,7 +274,10 @@ int zmachine_run(const char *name)
     vm->m.mem_size = Z_SPACE_BYTES;
 
     struct z_io io;
-    io.user = &ctx;
+    io.user = &ctx;   /* lisp_mode/line start zeroed: ctx is a stack local
+                       * cleared by resolve + explicit init below */
+    ctx.lisp_mode = false;
+    ctx.lisp_len = 0;
     io.putc = zfront_putc;
     io.getc = zfront_getc;
     io.save = zfront_save;
@@ -245,6 +321,9 @@ int zmachine_run(const char *name)
     }
 
 done:
+    if (mypid >= 0 && prev_vid == 0) {
+        task_set_vterm(mypid, prev_vid);   /* resume following foreground */
+    }
     if (space != NULL) {
         palloc_free(space, space_pages);
     }

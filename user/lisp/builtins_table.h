@@ -133,6 +133,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("cons", prim_cons),
     BUILTIN_PRIM("console-bind", prim_console_bind),
     BUILTIN_PRIM("console-device", prim_console_device),
+    BUILTIN_PRIM("console-hotkey", prim_console_hotkey),
     BUILTIN_PRIM("cp", prim_cp),
     BUILTIN_PRIM("date", prim_date),
     BUILTIN_PRIM("date-utc", prim_date_utc),

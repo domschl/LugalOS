@@ -4224,7 +4224,18 @@ static lisp_val_t *prim_zmachine(lisp_val_t *args, lisp_val_t *env) {
     if (lisp_list_ref(args, 0) != NULL) {
         story = get_str_val(lisp_list_ref(args, 0));
     }
-    if (zmachine_run(story) != 0) {
+    /* The session runs WITHOUT the Lisp lock -- the calling shell holds it
+     * around eval, and an interactive session outliving that critical
+     * section is the whole point: another terminal's command must not
+     * park on g_lisp_lock for the duration of the game.  This is the
+     * contract chess_console_run() has always documented with its own
+     * lock-around-eval bursts (chess_ui.c); taking it here by name.
+     * Re-acquired on every exit path so the shell's matching unlock
+     * balances. */
+    lisp_unlock();
+    int rc = zmachine_run(story);
+    lisp_lock();
+    if (rc != 0) {
         return &nil_val;
     }
     return &true_val;
@@ -5848,6 +5859,19 @@ static lisp_val_t *prim_console_bind(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_console_device(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     return make_str(console_bound_device());
+}
+
+/* (console-hotkey n) -- debug: set a console hotkey exactly as the USB
+ * keyboard's Super-chord would (kernel/console.c's CONSOLE_HOTKEY_*: 5 =
+ * NEW_TERM, 6/7 = focus left/right, 12..20 = jump-to-window ...).  It is
+ * consumed by run_hotkey() in whichever task is next waiting for input --
+ * which is precisely what makes it the scripted stand-in for Super+Enter
+ * while a game or a search owns the console.  Codes: 5 = NEW_TERM, 6/7 =
+ * focus left/right, 10 = close, 11..19 = Super+1..9 window jumps. */
+static lisp_val_t *prim_console_hotkey(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    console_hotkey((unsigned)arg_int(args, 0, 0));
+    return &true_val;
 }
 
 static lisp_val_t *prim_spawn_pump(lisp_val_t *args, lisp_val_t *env) {
