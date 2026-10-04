@@ -389,6 +389,7 @@ bool heartbeat_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 // to drivers/uart_net.c's A3b demux here in uart_init() so it needs a
 // forward declaration.
 static bool hw_uart_has_char(void);
+static int hw_uart_read(void);
 static uint8_t hw_uart_getc(void);
 
 /* M2, revised M2.5 (plan/phase12_microkernel_migration.md): PL011 UART0's
@@ -628,8 +629,17 @@ static bool hw_uart_has_char(void) {
     return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0; // physical UART RX FIFO not empty
 }
 
+/* Raw, for the p9share demux, whose SLIP framing resyncs on noise. */
 static uint8_t hw_uart_getc(void) {
     return (uint8_t)(REG(UART0_BASE + 0x00) & 0xFF);
+}
+
+/* As u_uart_read(): -1 for nothing, or for a byte that arrived as a break or
+ * a framing error. */
+static int hw_uart_read(void) {
+    if (!hw_uart_has_char()) return -1;
+    uint32_t dr = REG(UART0_BASE + 0x00);
+    return (dr & ((1u << 8) | (1u << 10))) ? -1 : (int)(dr & 0xFFu);
 }
 
 /* --- M4.5/M5, plan/phase12_microkernel_migration.md: the uart task ---
@@ -735,8 +745,19 @@ UART_UATTR static bool u_uart_has_char(void) {
     return (REG(UART0_BASE + 0x18) & (1u << 4)) == 0; /* RX FIFO not empty */
 }
 
-UART_UATTR static uint8_t u_uart_getc(void) {
-    return (uint8_t)(REG(UART0_BASE + 0x00) & 0xFF);
+/* The data register with its error bits: 8 framing, 9 parity, 10 break,
+ * 11 overrun. */
+#define UART_DR_JUNK ((1u << 8) | (1u << 10))
+
+/* The next received byte, or -1 for one that arrived as line noise. A break
+ * or a framing error is not a keystroke: the RX pin settling at boot, or an
+ * adapter being plugged in, reads as a NUL with the break bit set -- and NUL
+ * is Ctrl-Space to the line editor, which set the mark, so the first
+ * character typed after every reboot was selected and replaced by the second
+ * (2026-10-04, the RP2350-LCD-7). Masked to 8 bits, the error never showed. */
+UART_UATTR static int u_uart_read(void) {
+    uint32_t dr = REG(UART0_BASE + 0x00);
+    return (dr & UART_DR_JUNK) ? -1 : (int)(dr & 0xFFu);
 }
 
 /* Hand-rolled per translation unit, not shared with any other driver's own
@@ -788,12 +809,9 @@ UART_UATTR static void uart_umode_body(void) {
             resp[0] = u_uart_has_char() ? 1 : 0;
             uart_usys_chan_serve_reply((const char *)name, resp, 1);
         } else if (op == UART_REQ_READ) {
-            if (u_uart_has_char()) {
-                resp[0] = 1;
-                resp[1] = u_uart_getc();
-            } else {
-                resp[0] = 0;
-            }
+            int c = u_uart_has_char() ? u_uart_read() : -1;
+            resp[0] = c >= 0 ? 1 : 0;
+            resp[1] = (uint8_t)(c >= 0 ? c : 0);
             uart_usys_chan_serve_reply((const char *)name, resp, 2);
         } else if (op == UART_REQ_WRITE) {
             for (long i = 1; i < req_len; i++) u_uart_putc((char)req[i]);
@@ -1170,7 +1188,7 @@ int uart_serial_getc(void) {
         int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
         return (n >= 2 && resp[0]) ? (int)resp[1] : -1;
     }
-    return hw_uart_has_char() ? (int)(unsigned char)hw_uart_getc() : -1;
+    return hw_uart_read();
 }
 
 /* Both halves together, for anything that still asks the UART driver for
@@ -1206,8 +1224,9 @@ char uart_getc(void) {
             uint8_t resp[2];
             int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
             if (n >= 2 && resp[0]) return (char)resp[1];
-        } else if (hw_uart_has_char()) {
-            return (char)hw_uart_getc();
+        } else {
+            int c = hw_uart_read();
+            if (c >= 0) return (char)c;
         }
         if (usb_cdc_has_char()) return usb_cdc_getc();
         sched_yield();
