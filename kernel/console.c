@@ -180,10 +180,12 @@ void console_emit(console_putc_fn out, char c) {
  * of shown. */
 static char    *g_cap;
 static uint32_t g_cap_max, g_cap_len;
+static int      g_cap_pid = -1;     /* phase 44: only its writes are kept */
 
 void console_capture(char *buf, uint32_t cap) {
     g_cap_len = 0;
     g_cap_max = cap;
+    g_cap_pid = sched_current_pid();
     g_cap = cap ? buf : NULL;
 }
 
@@ -219,7 +221,7 @@ static char closed_terminal_wait(void) {
 }
 
 void console_putc(char c) {
-    if (g_cap) {
+    if (g_cap && sched_current_pid() == g_cap_pid) {
         if (g_cap_len == g_cap_max) {           /* full: keep the newer half */
             uint32_t h = g_cap_max / 2u;
             memmove(g_cap, g_cap + h, g_cap_max - h);

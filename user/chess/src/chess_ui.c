@@ -1358,12 +1358,14 @@ static ChessCmdResult console_dispatch_line(const char *line) {
     } else if (strcmp(line, "quit") == 0) {
         return CHESS_CMD_QUIT;
     } else if (line[0] == '(') {
+        lisp_lock();
         lisp_val_t *res = lisp_eval_string(line);
         if (res && res->type != LISP_NIL) {
             cprintf("=> ");
             lisp_print(res);
             cprintf("\n");
         }
+        lisp_unlock();
         lisp_gc_safepoint();
     } else if (strcmp(line, "screenshot") == 0 || strncmp(line, "screenshot ", 11) == 0) {
         const char *arg = line[10] ? &line[11] : NULL;

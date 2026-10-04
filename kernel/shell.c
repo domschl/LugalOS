@@ -3136,12 +3136,14 @@ static void shell_editor_eval(const char *src, char *msg, uint32_t cap) {
     }
     char *printed = (char *)sc.base, *val = printed + 256, *logged = val + 128, *line = logged + 512;
     uint64_t k0 = klog_total();
+    lisp_lock();
     console_capture(printed, 256);
     lisp_val_t *res = lisp_eval_string(src);
     uint32_t pn = console_capture_end();
     console_capture(val, 127);
     lisp_print(res);
     uint32_t vn = console_capture_end();
+    lisp_unlock();
     val[vn] = '\0';
     lisp_gc_safepoint();
 
@@ -4305,6 +4307,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 
     /* Direct S-Expression evaluation if line starts with '(' */
     if (*cmd_line == '(') {
+        lisp_lock();
         lisp_val_t *res = lisp_eval_string(cmd_line);
         if (res) {
             if (res->type != LISP_NIL) {
@@ -4315,6 +4318,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
                 cprintf("\n");
             }
         }
+        lisp_unlock();
         return;
     }
 
@@ -4389,6 +4393,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         strcmp(cmd_line, "date") != 0 &&
         strcmp(cmd_line, "time") != 0 &&
         strcmp(cmd_line, "i2c") != 0) {
+        lisp_lock();
         lisp_val_t *res = lisp_eval_string(cmd_line);
         /* A bare name that resolves to something callable (a primitive
          * or a user-defined lambda) rather than a plain value -- found
@@ -4421,8 +4426,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("=> ");
             lisp_print(res);
             cprintf("\n");
+            lisp_unlock();
             return;
         }
+        lisp_unlock();
     }
 
 
@@ -4508,6 +4515,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     }
 
     /* Evaluate translated S-Expression in Lisp engine */
+    lisp_lock();
     lisp_val_t *res = lisp_eval_string(sexpr);
     if (res) {
         if (res->type != LISP_NIL) {
@@ -4518,6 +4526,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("\n");
         }
     }
+    lisp_unlock();
 }
 
 

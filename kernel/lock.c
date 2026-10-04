@@ -474,6 +474,23 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
     }
 }
 
+bool ylock_try_acquire(ylock_t *l) {
+    int me = sched_context_id();
+    uintptr_t f = irq_save();
+    bool got = false;
+    if (l->depth > 0 && l->owner == me) {
+        l->depth++;
+        got = true;
+    } else if (arch_lock_try_acquire(&l->word)) {
+        l->owner = me;
+        l->depth = 1;
+        if (me >= 0 && me < MAX_TASKS) g_ylocks_held[me]++;
+        got = true;
+    }
+    irq_restore(f);
+    return got;
+}
+
 void ylock_release(ylock_t *l) {
     uintptr_t f = irq_save();
     if (l->depth > 0 && --l->depth == 0) {

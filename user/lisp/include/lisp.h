@@ -105,5 +105,12 @@ void lisp_repl(void);
  * collection is only exact right here and nowhere mid-expression. */
 void lisp_gc_safepoint(void);
 
+/* Phase 44: held around every evaluation from outside the engine, from
+ * lisp_eval_string() to the lisp_print() of its value -- the value is
+ * garbage to the next collection until printed. Re-entrant per task. See
+ * g_lisp_lock in user/lisp/lisp.c. */
+void lisp_lock(void);
+void lisp_unlock(void);
+
 
 #endif /* LUGALOS_USER_LISP_H */

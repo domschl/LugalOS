@@ -1,5 +1,6 @@
 #include "lisp.h"
 #include "kernel/printk.h"
+#include "kernel/lock.h"
 #include "kernel/scratch.h"
 #include "kernel/path.h"
 #include "kernel/console.h"
@@ -884,7 +885,22 @@ static bool gc_headroom_low(void) {
  * The flags are still tested, and first: they mean a form has *already*
  * failed, which is worth a collection whatever the headroom arithmetic
  * says. */
+/* Phase 44: one engine, a shell in every terminal. The heap, the
+ * environment and the evaluator's globals are shared, and a collection
+ * scans only the stack of the task that runs it -- so a shell collecting
+ * while another terminal's form was half evaluated freed that form's
+ * nodes under it. Every evaluation from outside holds this, from reading
+ * the form to printing its value (lisp_lock()); the collection and the
+ * canvas redraw, which run at a shell's prompt, only try it and skip their
+ * turn while another terminal evaluates. Re-entrant: a primitive that runs
+ * a shell command that evaluates is one task going deeper. */
+static ylock_t g_lisp_lock;
+
+void lisp_lock(void) { ylock_acquire(&g_lisp_lock); }
+void lisp_unlock(void) { ylock_release(&g_lisp_lock); }
+
 void lisp_gc_safepoint(void) {
+    if (!ylock_try_acquire(&g_lisp_lock)) return;
     /* Between two commands is also where a Ctrl-C ends: it stops the
      * command it was pressed during, not every one after it. lisp_eval()
      * cannot decide that by itself at eval_depth 0, because inside lsh the
@@ -896,6 +912,7 @@ void lisp_gc_safepoint(void) {
         gc_headroom_low()) {
         gc_collect();
     }
+    ylock_release(&g_lisp_lock);
 }
 
 /* 37.3a: the integers -16..255 are shared constant nodes (in flash on the
@@ -4020,7 +4037,15 @@ static lisp_val_t *prim_canvas_on_redraw(lisp_val_t *args, lisp_val_t *env) {
  * A redraw cut short (Ctrl-C, an error) is closed at the next prompt. */
 static bool g_canvas_redrawing;
 
+static void canvas_poll_locked(void);
+
 void lisp_canvas_poll(void) {
+    if (!ylock_try_acquire(&g_lisp_lock)) return;   /* next prompt's turn */
+    canvas_poll_locked();
+    ylock_release(&g_lisp_lock);
+}
+
+static void canvas_poll_locked(void) {
     uint8_t reply[SCREEN_REPLY_LEN];
     if (g_canvas_redrawing) {
         uint8_t end[2] = { 'D', 0 };
@@ -7031,12 +7056,14 @@ void lisp_repl(void) {
          * today, not enforced structurally. */
         lisp_gc_safepoint();
 
+        lisp_lock();
         const char *ptr = buf;
         lisp_val_t *ast = lisp_read(&ptr);
         lisp_val_t *result = lisp_eval(ast, global_env);
         cprintf("=> ");
         lisp_print(result);
         cprintf("\n");
+        lisp_unlock();
     }
     scratch_release(&sc);
 }

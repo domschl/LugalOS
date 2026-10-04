@@ -123,6 +123,10 @@ void ylock_init(ylock_t *l);
 /* ylock_acquire() is a macro further down, for the same reason. */
 void ylock_release(ylock_t *l);
 
+/* Takes `l` if it is free or already this task's, and says so; never waits,
+ * so it records no wait-for edge and is legal anywhere ylock_acquire() is. */
+bool ylock_try_acquire(ylock_t *l);
+
 /* The pid holding `l`, or -1 when it is free -- which is decided by depth,
  * not by the owner field, so an all-zero lock reports -1 rather than pid 0.
  * Diagnostics and selftests; see spin_is_locked() on why a caller must not
