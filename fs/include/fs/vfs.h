@@ -27,6 +27,7 @@ int vfs_mount_ramdisk(int size_kb);
  * init.lisp actually needs in order to decide whether a RAM disk is worth its
  * memory (C5). */
 bool vfs_volume_writable(const char *name);
+bool vfs_volume_mounted(const char *name);
 int vfs_register_service(const char *service_name, int target_pid);
 
 /* Mounts this node's own 9P server at /<name>/ over a local channel (B1).

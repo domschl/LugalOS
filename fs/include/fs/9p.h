@@ -46,6 +46,7 @@
 /* The iounit for the connection as currently negotiated -- at most
  * P9_MAX_IOUNIT, less if the peer asked for a smaller msize. */
 uint32_t p9_negotiated_iounit(void);
+bool     p9_is_connected(void);
 
 /* Whether an attach on a given transport must authenticate first. */
 typedef enum {

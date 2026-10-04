@@ -397,6 +397,25 @@ bool vfs_volume_writable(const char *name) {
     return false;
 }
 
+bool vfs_volume_mounted(const char *name) {
+    if (!name) return false;
+    while (*name == '/') name++;
+
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        mount_entry_t *m = &g_mounts[i];
+        if (!m->in_use || !m->name[0]) continue;
+
+        const char *a = name;
+        const char *b = m->name;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*b != '\0') continue;
+        if (*a != '\0' && *a != '/') continue;
+
+        return mount_is_active(m);
+    }
+    return false;
+}
+
 int vfs_mount_ramdisk(int size_kb) {
     block_dev_t *ram_dev = ramdisk_get_device();
     if (ram_dev) {

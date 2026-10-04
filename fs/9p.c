@@ -6,6 +6,7 @@
 #include "kernel/random.h"
 #include "kernel/idstore.h"
 #include "kernel/identity.h"
+#include "kernel/time.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -1692,8 +1693,21 @@ uint32_t p9_negotiated_iounit(void) {
     return (g_negotiated_msize > P9_IOHDRSZ) ? (g_negotiated_msize - P9_IOHDRSZ) : 0;
 }
 
+static uint64_t g_p9_last_activity_us = 0;
+
+bool p9_is_connected(void) {
+    for (int i = 0; i < P9_MAX_FIDS; i++) {
+        if (g_fid_table[i].in_use) return true;
+    }
+    if (g_p9_last_activity_us != 0 && (time_get_us() - g_p9_last_activity_us < 3000000ULL)) {
+        return true;
+    }
+    return false;
+}
+
 int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf,
                       uint32_t resp_max, p9_auth_policy_t policy) {
+    g_p9_last_activity_us = time_get_us();
     g_auth_policy = policy;
     p9_msg_t req;
     if (p9_deserialize(req_buf, req_len, &req) < 0) {

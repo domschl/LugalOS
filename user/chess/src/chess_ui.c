@@ -55,6 +55,7 @@
 #include "drivers/screen.h"
 #include "kernel/screenshot.h"
 #include "lisp.h"
+#include "chess_pieces_data.h"
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -1432,12 +1433,10 @@ void chess_console_run(void) {
     }
 }
 
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* 16x16 monochrome chess piece bitmaps, vendored from
- * ~/gith/domschl/LugalChess (firmware/st7735.c) -- presentation data, not
- * logic, and specific to this UI (H1's canvas driver deliberately doesn't
- * carry chess content). Indexed PAWN..KING (defs.h's piece enum). Bit 15 of
- * a row is its leftmost pixel. Outside the ST7735 guard since 37.4: the
- * RP2350-LCD-7's canvas board draws them too, scaled. */
+ * ~/gith/domschl/LugalChess (firmware/st7735.c) -- presentation data for ST7735.
+ * Indexed PAWN..KING (defs.h's piece enum). Bit 15 of a row is its leftmost pixel. */
 static const uint16_t piece_bitmaps[6][16] = {
     // Pawn
     { 0x0000, 0x0000, 0x03c0, 0x07e0, 0x07e0, 0x03c0, 0x0180, 0x03c0,
@@ -1458,6 +1457,7 @@ static const uint16_t piece_bitmaps[6][16] = {
     { 0x0180, 0x07e0, 0x0180, 0x0ff0, 0x1ff8, 0x3ffe, 0x3c3c, 0x3c3c,
       0x3ffe, 0x1ff8, 0x1e78, 0x0ff0, 0x0ff0, 0x1ff8, 0x3ffc, 0x0000 }
 };
+#endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
 /* Light square darkened from the vendored value (0xEF7B, a near-white
@@ -2727,12 +2727,6 @@ static void cb_put16(uint8_t *b, int v) {
     b[1] = (uint8_t)(((unsigned)v >> 8) & 0xffu);
 }
 
-/* Is (bx, by) of the 48 x 48 scaled piece inside its shape? */
-static bool cb_in(int piece, int bx, int by) {
-    if (bx < 0 || by < 0 || bx >= 48 || by >= 48) return false;
-    return (piece_bitmaps[piece][by / 3] >> (15 - bx / 3)) & 1u;
-}
-
 /* The canvas, if there is one this board should be drawn on: its size in
  * *w, *h. */
 static bool cb_canvas(int *w, int *h) {
@@ -2761,17 +2755,24 @@ static void canvas_board_draw(const Position *pos) {
             bool dark = ((rank + file) % 2) == 0;
             int on = dark ? ((x0 + px + y0 + py) & 1) : 0;
             int piece = pos->board[sq];
-            if (piece != NO_PIECE) {
+            if (piece != NO_PIECE && (unsigned)piece < 6u) {
                 bool white = (pos->color_bbs[WHITE] & (1ULL << sq)) != 0;
                 int bx = sx - 2, by = sy - 2;
-                if (cb_in(piece, bx, by)) {
-                    on = white ? 0 : 1;
-                } else {
-                    bool rim = false;
-                    for (int dy = -1; dy <= 1 && !rim; dy++)
-                        for (int dx = -1; dx <= 1 && !rim; dx++)
-                            if (cb_in(piece, bx + dx, by + dy)) rim = true;
-                    if (rim) on = white ? 1 : 0;
+                if (bx >= 0 && bx < 48 && by >= 0 && by < 48) {
+                    uint64_t bit = 1ULL << (47 - bx);
+                    if (white) {
+                        if (canvas_white_strokes[piece][by] & bit) {
+                            on = 1;
+                        } else if (canvas_white_body[piece][by] & bit) {
+                            on = 0;
+                        }
+                    } else {
+                        if (canvas_black_fg[piece][by] & bit) {
+                            on = 1;
+                        } else if (canvas_black_halo[piece][by] & bit) {
+                            on = 0;
+                        }
+                    }
                 }
             }
             if (on) req[9 + px / 8] |= (uint8_t)(1u << (px % 8));
@@ -2836,13 +2837,13 @@ int chess_canvas_selftest(void) {
     bool light = !PIX(e4x + 10, e4y + 10) && !PIX(e4x + 30, e4y + 31);
     bool grey = PIX(a3x + 10, a3y + 10) != PIX(a3x + 11, a3y + 10);
     /* The kings: e1 (white, on a dark square) and e8 (black, on a light one).
-     * Inside the king's body -- bitmap row 8, 0x3ffe -- white is white and
-     * black black; just left of the body's edge is the rim, the other way. */
+     * Inside the king's body, white is white and black is black; at the piece's
+     * outer edge (rim), white has a black outline and black has a white halo. */
     int k1x = x0 + 4 * CB_SQ, k1y = y0 + 7 * CB_SQ, k8x = x0 + 4 * CB_SQ, k8y = y0;
-    int bodyx = 2 + 3 * 7, bodyy = 2 + 3 * 8 + 1;          /* bit 8 of 0x3ffe, row 8 */
-    int rimx = 2 + 3 * 2 - 1;                                 /* left of bit 13, 0x3ffe's top bit */
-    bool wking = !PIX(k1x + bodyx, k1y + bodyy) && PIX(k1x + rimx, k1y + bodyy);
-    bool bking = PIX(k8x + bodyx, k8y + bodyy) && !PIX(k8x + rimx, k8y + bodyy);
+    int bodyx = 18, bodyy = 27;
+    int wrimx = 7, brimx = 6;
+    bool wking = !PIX(k1x + bodyx, k1y + bodyy) && PIX(k1x + wrimx, k1y + bodyy);
+    bool bking = PIX(k8x + bodyx, k8y + bodyy) && !PIX(k8x + brimx, k8y + bodyy);
     bool frame = PIX(x0 - 1, y0 + 100) && PIX(x0 + CB_N, y0 + 100);
 #undef PIX
     cprintf("  [%s] empty light square is white\n", light ? "ok" : "FAIL"); fails += !light;

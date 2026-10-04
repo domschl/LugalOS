@@ -89,7 +89,6 @@ LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *scr, uint8_t vterm_id) {
                 canvas1_init(&scr->canvases[i].backing,
                              scr->store + i * scr->store_slot,
                              scr->cv.w / 8u, scr->cv.w, scr->cv.h);
-                canvas1_fill(&scr->canvases[i].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
             }
             return (int)i;
         }
@@ -103,8 +102,27 @@ LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
         scr->canvases[cid].locked = false;
         scr->canvases[cid].vterm_id = 0;
         scr->canvases[cid].title[0] = '\0';
-        if (scr->store) {
-            canvas1_fill(&scr->canvases[cid].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+    }
+}
+
+/* Top bar indicator icons: SD card (11x12) and 9P network badge (14x10) */
+LCDTERM_URODATA static const uint16_t icon_sd[12] = {
+    0xff80, 0x80c0, 0xaa60, 0xaa20, 0x8020, 0x9b20,
+    0x92a0, 0x9aa0, 0x8aa0, 0x9b20, 0x8020, 0xffe0
+};
+
+LCDTERM_URODATA static const uint16_t icon_p9[10] = {
+    0x7ff8, 0xfffc, 0xce7c, 0xd14c, 0xd17c,
+    0xcf4c, 0xc14c, 0xce4c, 0xfffc, 0x7ff8
+};
+
+LCDTERM_UTEXT static void draw_icon16(const canvas1_t *cv, int x, int y, int w, int h, const uint16_t *rows) {
+    for (int r = 0; r < h; r++) {
+        uint16_t row = rows[r];
+        for (int c = 0; c < w; c++) {
+            if ((row >> (15 - c)) & 1u) {
+                canvas1_fill(cv, x + c, y + r, x + c, y + r, CANVAS1_BLACK);
+            }
         }
     }
 }
@@ -122,14 +140,26 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     int rx = w - 16 - 8 * (int)rlen;
     if (rx < 8) rx = 8;
     canvas1_text(cv, rx, 2, scr->right, rn, rlen, 0, FONT8X16_H, false);
-    int room = (rx - 16 - 8) / 8;
+
+    /* Draw indicator icons left of the clock */
+    int icon_left = rx;
+    if (scr->status_flags & SCREEN_STATUS_P9) {
+        icon_left -= (14 + 6);
+        draw_icon16(cv, icon_left, 4, 14, 10, icon_p9);
+    }
+    if (scr->status_flags & SCREEN_STATUS_SD) {
+        icon_left -= (11 + 6);
+        draw_icon16(cv, icon_left, 3, 11, 12, icon_sd);
+    }
+
+    int room = (icon_left - 16 - 8) / 8;
     if (room > 0)
         canvas1_text(cv, 8, 2, scr->name, cstr_len(scr->name), (unsigned)room, 0, FONT8X16_H, true);
 
     /* Phase 44: Ribbon visualization stripe in the menu bar */
     if (scr->ribbon.count > 0) {
         int sx = 8 + 8 * (int)cstr_len(scr->name) + 16;
-        int max_w = rx - 16 - sx;
+        int max_w = icon_left - 16 - sx;
         if (max_w > 20) {
             int cur_bx = sx;
             int min_vis_bx = -1;
@@ -301,6 +331,37 @@ LCDTERM_UTEXT static uint8_t *store_slot(const screen_t *scr) {
     return scr->store + (uint32_t)(l - 1u) * scr->store_slot;
 }
 
+/* The canvas as it is now, into its layout's slot. */
+LCDTERM_UTEXT static void store_save(screen_t *scr) {
+    uint8_t *d = store_slot(scr);
+    if (!d) return;
+    const canvas1_t *cc = &scr->cc;
+    int c_idx = (scr->ribbon.count > 0) ? ribbon_find_canvas(&scr->ribbon) : -1;
+    uint8_t cid = (c_idx >= 0) ? scr->ribbon.wins[c_idx].vterm_id : 0;
+    canvas1_t *cc_back = (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) ? &scr->canvases[cid].backing : 0;
+
+    unsigned rb = ((unsigned)cc->w + 7u) / 8u;
+    if (cc_back && cc_back->fb) {
+        for (unsigned y = 0; y < cc->h && y < cc_back->h; y++) {
+            const uint8_t *src = cc_back->fb + (uint32_t)y * cc_back->stride;
+            for (unsigned i = 0; i < rb; i++) d[i] = src[i];
+            d += rb;
+        }
+    } else {
+        if (cc->ox < 0 || cc->oy < 0 || (int)cc->ox + (int)cc->w > (int)scr->cv.w) return;
+        unsigned s = (unsigned)cc->ox & 7u;
+        for (unsigned y = 0; y < cc->h; y++) {
+            const uint8_t *src = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (uint32_t)(cc->ox >> 3);
+            for (unsigned i = 0; i < rb; i++)
+                d[i] = s ? (uint8_t)((src[i] >> s) | (src[i + 1u] << (8u - s))) : src[i];
+            d += rb;
+        }
+    }
+    unsigned bit = 1u << (scr->layout - 1u);
+    scr->store_gen[scr->layout - 1u] = scr->draw_gen;
+    scr->store_ok = (uint8_t)(scr->store_ok | bit);
+}
+
 /* The layout's slot back onto the canvas, if it holds what was there when
  * nothing has been drawn since; false (and nothing done) otherwise. */
 LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
@@ -312,8 +373,17 @@ LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
     if (cc->ox < 0 || cc->oy < 0 || (int)cc->ox + (int)cc->w > (int)scr->cv.w) return false;
     unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = (unsigned)cc->ox & 7u;
     unsigned tail = (unsigned)cc->w & 7u;
+
+    int c_idx = (scr->ribbon.count > 0) ? ribbon_find_canvas(&scr->ribbon) : -1;
+    uint8_t cid = (c_idx >= 0) ? scr->ribbon.wins[c_idx].vterm_id : 0;
+    canvas1_t *cc_back = (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) ? &scr->canvases[cid].backing : 0;
+
     for (unsigned y = 0; y < cc->h; y++) {
         uint8_t *dst = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (uint32_t)(cc->ox >> 3);
+        if (cc_back && cc_back->fb && y < cc_back->h) {
+            uint8_t *bdst = cc_back->fb + (uint32_t)y * cc_back->stride;
+            for (unsigned i = 0; i < rb; i++) bdst[i] = d[i];
+        }
         for (unsigned i = 0; i < rb; i++) {
             unsigned vm = (i + 1u == rb && tail) ? (1u << tail) - 1u : 0xffu;
             unsigned v = d[i] & vm;
@@ -510,10 +580,19 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                     int cw_w = (int)(w->rx1 - w->rx0 - 1);
                     int cw_h = (int)(tile_y1 - (SCREEN_TILE_Y + 17));
                     if (cw_w > 0 && cw_h > 0) {
-                        if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
+                        bool restored = false;
+                        if (restore) {
+                            restored = store_restore(scr);
+                        }
+                        if (restored) {
                             blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
-                        } else if (!restore || !store_restore(scr)) {
+                        } else if (!restore && cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
+                            blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
+                        } else {
                             canvas1_fill(cv, (int)cx0 + 1, SCREEN_TILE_Y + 17, (int)cx1 - 1, tile_y1 - 1, CANVAS1_WHITE);
+                            if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
+                                canvas1_fill(&scr->canvases[cid].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+                            }
                             scr->damage++;
                         }
                     }
@@ -524,7 +603,10 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
         if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title, true);
         if (has_canvas(scr)) {
             draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle, false);
-            if (!restore || !store_restore(scr)) scr->damage++;
+            if (!restore || !store_restore(scr)) {
+                canvas1_fill(cv, scr->cx0 + 1, scr->cy0 + 17, scr->cx1 - 1, scr->cy1 - 1, CANVAS1_WHITE);
+                scr->damage++;
+            }
         }
     }
     vtterm_t *avt = active_vt(scr);
@@ -663,6 +745,8 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     scr->redrawing = 0;
     scr->locked = 0;
     scr->swapped = 0;
+    scr->status_flags = 0;
+    scr->store_gen[0] = scr->store_gen[1] = scr->store_gen[2] = scr->store_gen[3] = 0;
     const char *name = "LugalOS";
     unsigned i = 0;
     for (; name[i] && i < SCREEN_NAME_MAX - 1u; i++) scr->name[i] = name[i];
@@ -737,7 +821,8 @@ LCDTERM_UTEXT void screen_set_title(screen_t *scr, const char *s, uint32_t n) {
     if (avt->title_seq != scr->title_drawn) draw_text_title(scr);
 }
 
-LCDTERM_UTEXT void screen_set_right(screen_t *scr, const char *s, uint32_t n) {
+LCDTERM_UTEXT void screen_set_right(screen_t *scr, uint8_t flags, const char *s, uint32_t n) {
+    scr->status_flags = flags;
     if (n > SCREEN_RIGHT_MAX - 1u) {
         n = SCREEN_RIGHT_MAX - 1u;
         while (n > 0 && ((unsigned char)s[n] & 0xc0u) == 0x80u) n--;   /* not mid-character */
@@ -754,6 +839,8 @@ LCDTERM_UTEXT void screen_repaint(screen_t *scr) {
 LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned layout) {
     int cid_check = screen_find_canvas_by_vterm(scr, vid);
     if (cid_check >= 0 && scr->canvases[cid_check].locked && layout != scr->layout && layout != SCREEN_LAYOUT_TEXT) return false;
+
+    if (has_canvas(scr)) store_save(scr);
 
     if (layout == SCREEN_LAYOUT_TEXT) {
         int cid = screen_find_canvas_by_vterm(scr, vid);
@@ -970,6 +1057,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 status = screen_set_layout_vterm(scr, vid, SCREEN_LAYOUT_SPLIT_HALF) ? 0 : 1;
             } else if (t_win >= 0 && c_win >= 0) {
                 /* Swap position of terminal and canvas */
+                store_save(scr);
                 ribbon_swap(&scr->ribbon, (uint8_t)t_win, (uint8_t)c_win);
                 scr->swapped = (uint8_t)!scr->swapped;
                 scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);

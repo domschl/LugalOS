@@ -765,7 +765,7 @@ int vtterm_selftest(void) {
         bool initial = geometry && rule && menu_blank && desktop && frame && stripes && title;
 
         screen_write(scr, "\033]2;Lisp\007", 9);
-        screen_set_right(scr, "12:34", 5);
+        screen_set_right(scr, 0, "12:34", 5);
         screen_write(scr, "1\r\n2\r\n3\r\n4\r\n5", 14);
         fbtext_t clock;                       /* the clock: at x = 192 - 16 - 40 = 136, y = 2 */
         fbtext_init(&clock, cx.buf + 2u * stride, stride, ST_SW / 8u, 1);

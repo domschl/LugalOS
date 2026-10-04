@@ -83,6 +83,8 @@
 #include "kernel/printk.h"
 #include "kernel/time.h"
 #include "kernel/vterm.h"
+#include "fs/vfs.h"
+#include "fs/9p.h"
 #include "lugalos_config.h"
 
 #include <stdbool.h>
@@ -574,7 +576,12 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
                 screen_write_vterm(scr, vid, wp, wlen);
             }
             else if (req[0] == LCDTERM_OP_TITLE) screen_set_title(scr, p, len);
-            else if (req[0] == LCDTERM_OP_RIGHT) screen_set_right(scr, p, len);
+            else if (req[0] == LCDTERM_OP_RIGHT) {
+                uint8_t flags = (len >= 1) ? (uint8_t)p[0] : 0;
+                const char *tp = p + 1;
+                uint32_t tlen = (len >= 1) ? (len - 1) : 0;
+                screen_set_right(scr, flags, tp, tlen);
+            }
             else if (req[0] == LCDTERM_OP_REPAINT) screen_repaint(scr);
         }
         lcdterm_usys_serve_reply((const char *)name, 0, 0);
@@ -691,7 +698,12 @@ static void lcdterm_op(uint8_t op, const char *p, uint32_t len) {
     lcd7_screen_flush();
     if (!lcdterm_send(op, p, len)) {
         if (op == LCDTERM_OP_TITLE) screen_set_title(g_scr, p, len);
-        else if (op == LCDTERM_OP_RIGHT) screen_set_right(g_scr, p, len);
+        else if (op == LCDTERM_OP_RIGHT) {
+            uint8_t flags = (len >= 1) ? (uint8_t)p[0] : 0;
+            const char *tp = (len >= 1) ? (p + 1) : "";
+            uint32_t tlen = (len >= 1) ? (len - 1) : 0;
+            screen_set_right(g_scr, flags, tp, tlen);
+        }
         else screen_repaint(g_scr);
     }
     console_unlock();
@@ -771,7 +783,15 @@ static void status_tick(void) {
     if (n > 0 && g_clock[0] && n + 2u < sizeof(right)) { right[n++] = ' '; right[n++] = ' '; }
     for (uint32_t i = 0; g_clock[i] && n + 1u < sizeof(right); i++) right[n++] = g_clock[i];
     right[n] = '\0';
-    if (strcmp(right, g_scr->right) != 0) lcdterm_op(LCDTERM_OP_RIGHT, right, n);
+    uint8_t flags = 0;
+    if (vfs_volume_mounted("sd0")) flags |= SCREEN_STATUS_SD;
+    if (p9_is_connected()) flags |= SCREEN_STATUS_P9;
+    if (strcmp(right, g_scr->right) != 0 || flags != g_scr->status_flags) {
+        char payload[1 + SCREEN_RIGHT_MAX];
+        payload[0] = (char)flags;
+        for (uint32_t i = 0; i <= n; i++) payload[1 + i] = right[i];
+        lcdterm_op(LCDTERM_OP_RIGHT, payload, 1 + n);
+    }
 }
 
 static void lcd7_console_flush(void) {
