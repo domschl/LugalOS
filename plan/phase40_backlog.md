@@ -170,3 +170,11 @@ What remained at the close, in `plan/open_issues.md`:
 The review's obvious next harness is still Lisp (reader, bignums) on the
 host, and the second pass adds one: the screen protocol (`screen_canvas_vterm()`)
 driven by mutated requests, as `vtselftest` already does by hand.
+
+**Closed by the owner, 2026-10-04.** The bench then ran 0.16.0 on every
+board it had: the RP2350-LCD-7 (`rp2350-terminal`), the Pico 2 W sensor
+node (`rp2350-sensor`), the chess computer (`rp2350`: SD, ST7735 and TM1638
+tasks up) and the Pico-Clock-Green (`rp2350-clock`: WiFi joined, RTC time,
+NTP serving, no `[Lock BUG]` -- the CYW43 bus lock's second board). Each
+now reports its silicon id as its USB serial instead of `0001`. Open from
+this phase: item 2's ENC28J60 half (`plan/open_issues.md`).
