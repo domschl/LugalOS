@@ -95,6 +95,7 @@ typedef struct {
     uint32_t total_clusters;   /* data clusters, numbered 2 .. total_clusters + 1 */
     uint32_t free_count;       /* FAT32_FREE_UNKNOWN until counted or read from FSInfo */
     uint32_t next_free;        /* where the allocator starts looking */
+    bool     alloc_io_error;   /* the last failed allocation could not read the FAT */
     uint32_t fsinfo_lba;       /* 0: the volume has no usable FSInfo sector */
     bool     fsinfo_valid;     /* the on-disk FSInfo holds a count we stand behind */
     bool     modified;         /* the FAT changed since mount; only then is FSInfo written */

@@ -163,17 +163,25 @@ static const uint32_t *fat_sector_words(fat32_fs_t *fs, uint32_t fat_sector, fat
     return tmp->words;
 }
 
-/* Read a 32-bit FAT entry for the given cluster */
-static uint32_t fat_get_entry(fat32_fs_t *fs, uint32_t cluster) {
-    if (!fs || !fs->dev || !fs->dev->read_blocks) return 0x0FFFFFFF;
+/* Reads the FAT entry for `cluster` into *out; false if its sector cannot be
+ * read. */
+static bool fat_read_entry(fat32_fs_t *fs, uint32_t cluster, uint32_t *out) {
+    if (!fs || !fs->dev || !fs->dev->read_blocks) return false;
     uint32_t fat_sector = fs->fat_start_sector + (cluster * 4) / 512;
     uint32_t fat_offset = (cluster * 4) % 512;
     fat32_sector_t tmp;
     const uint32_t *w = fat_sector_words(fs, fat_sector, &tmp);
+    if (!w) return false;
+    *out = w[fat_offset / 4] & 0x0FFFFFFF;
+    return true;
+}
+
+/* Read a 32-bit FAT entry for the given cluster */
+static uint32_t fat_get_entry(fat32_fs_t *fs, uint32_t cluster) {
+    uint32_t v;
     /* An unreadable FAT sector ends the chain: the old code returned
      * whatever the stack buffer held, which could be followed anywhere. */
-    if (!w) return 0x0FFFFFFF;
-    return w[fat_offset / 4] & 0x0FFFFFFF;
+    return fat_read_entry(fs, cluster, &v) ? v : 0x0FFFFFFF;
 }
 
 /* Write a 32-bit FAT entry for the given cluster (both FAT1 and FAT2) */
@@ -243,8 +251,19 @@ static uint32_t fat_alloc_cluster(fat32_fs_t *fs) {
     uint32_t end = fs->total_clusters + 2;   /* exclusive */
     uint32_t start = (fs->next_free >= 2 && fs->next_free < end) ? fs->next_free : 2;
     uint32_t c = start;
+    fs->alloc_io_error = false;
     do {
-        if (fat_get_entry(fs, c) == 0x00000000) {
+        /* An unreadable FAT ends the search; it does not mean "in use, try
+         * the next one". A failed read empties the FAT cache, so with the
+         * card pulled every cluster of the volume cost its own failed SD
+         * read: the shell's history mkdir after the pull spun for the best
+         * part of an hour on the LCD-7 (phase 40 item 3, 2026-10-04). */
+        uint32_t v;
+        if (!fat_read_entry(fs, c, &v)) {
+            fs->alloc_io_error = true;
+            return 0;
+        }
+        if (v == 0x00000000) {
             fat_set_entry(fs, c, 0x0FFFFFFF);
             if (fs->free_count == 0) fs->free_count = FAT32_FREE_UNKNOWN;   /* it was wrong */
             else if (fs->free_count != FAT32_FREE_UNKNOWN) fs->free_count--;
@@ -889,9 +908,13 @@ static int dir_claim_slot(fat32_fs_t *fs, uint32_t dir_clus, write_slot_ctx_t *c
         return -1;
     }
     if (clus == 0) {
-        printk("[FAT32] Device '%s': directory is full and the volume has no "
-               "free cluster to extend it with\n",
-               fs->dev->name ? fs->dev->name : "unknown");
+        if (fs->alloc_io_error)
+            printk("[FAT32] Device '%s': cannot extend a directory, the FAT does not "
+                   "read (card removed?)\n", fs->dev->name ? fs->dev->name : "unknown");
+        else
+            printk("[FAT32] Device '%s': directory is full and the volume has no "
+                   "free cluster to extend it with\n",
+                   fs->dev->name ? fs->dev->name : "unknown");
         return -1;
     }
 

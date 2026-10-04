@@ -27,6 +27,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -36,8 +37,12 @@
 static uint8_t *g_disk;
 static uint32_t g_disk_blocks;
 
+static bool     g_pulled;      /* the card is gone: every access fails */
+static uint32_t g_pulled_calls;
+
 static int dev_read(block_dev_t *d, void *buf, uint32_t lba, uint32_t n) {
     (void)d;
+    if (g_pulled) { g_pulled_calls++; return -1; }
     if (lba >= g_disk_blocks || n > g_disk_blocks - lba) return -1;
     memcpy(buf, g_disk + (size_t)lba * SECTOR, (size_t)n * SECTOR);
     return 0;
@@ -45,6 +50,7 @@ static int dev_read(block_dev_t *d, void *buf, uint32_t lba, uint32_t n) {
 
 static int dev_write(block_dev_t *d, const void *buf, uint32_t lba, uint32_t n) {
     (void)d;
+    if (g_pulled) { g_pulled_calls++; return -1; }
     if (lba >= g_disk_blocks || n > g_disk_blocks - lba) return -1;
     memcpy(g_disk + (size_t)lba * SECTOR, buf, (size_t)n * SECTOR);
     return 0;
@@ -336,11 +342,37 @@ static void corrupt_images(int iterations, uint64_t seed) {
            iterations, (unsigned long long)seed, mounted);
 }
 
+/* --- Part 3: the card pulled from a mounted volume (phase 40 item 3) ---
+ * Every access fails from then on. What the shell does next -- its history
+ * append, and the mkdir that follows when that fails -- must fail after a
+ * handful of device calls, not one per cluster: a failed read empties the
+ * FAT cache, and the allocator used to take each unreadable entry for "in
+ * use" and try the next, which on the LCD-7's card was most of an hour. */
+static void pulled_card(void) {
+    memset(g_disk, 0, (size_t)g_disk_blocks * SECTOR);
+    CHECK(fat32_format_quiet(&g_dev, true) == 0, "format");
+    fat32_fs_t fs;
+    memset(&fs, 0, sizeof(fs));
+    CHECK(fat32_init_quiet(&fs, &g_dev, true) == 0, "init");
+    CHECK(fat32_mkdir(&fs, "SYSTEM") == 0, "mkdir before the pull");
+    g_pulled = true;
+    g_pulled_calls = 0;
+    CHECK(fat32_append_file(&fs, "SYSTEM/HIST.TXT", "x\n", 2) < 0, "append with no card succeeded");
+    CHECK(fat32_mkdir(&fs, "NEW") != 0, "mkdir with no card succeeded");
+    CHECK(fat32_write_file(&fs, "F.TXT", "abc", 3) < 0, "write with no card succeeded");
+    CHECK(g_pulled_calls < 64, "%u device calls with no card -- one per cluster?", g_pulled_calls);
+    printf("fat32_host: pulled card, %u device calls for an append, a mkdir and a write, %s\n",
+           g_pulled_calls, g_failures ? "FAILED" : "ok");
+    g_pulled = false;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   /* in order with sanitizer reports on stderr */
     int iterations = argc > 1 ? atoi(argv[1]) : 2000;
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 0) : 0x40c0ffee;
     functional();
+    if (g_failures) return 1;
+    pulled_card();
     if (g_failures) return 1;
     corrupt_images(iterations, seed);
     free(g_disk);

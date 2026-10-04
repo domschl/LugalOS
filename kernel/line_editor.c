@@ -171,10 +171,19 @@ static void add_history(const char *line) {
      * at all: vfs_mkdir() on an inactive mount fails silently, and so does
      * this -- history is a convenience, not something to warn about. */
     static bool history_dir_ready = false;
+    static bool history_given_up = false;
+    if (history_given_up) return;
     if (!history_dir_ready) {
         vfs_stat_t st;
         if (vfs_stat("/sd0/system", &st) != 0 || !st.is_dir) {
-            if (vfs_mkdir("/sd0/system") != 0) return;
+            /* A mkdir that fails on a mounted card means the card is gone
+             * or broken, and this boot will not see it come back (a card is
+             * mounted at boot only). Trying again after every command made
+             * each one log the failure -- after a card pull, forever. */
+            if (vfs_mkdir("/sd0/system") != 0) {
+                if (vfs_volume_mounted("sd0")) history_given_up = true;
+                return;
+            }
             printk("[LineEditor] created /sd0/system for the command history\n");
         }
         history_dir_ready = true;
