@@ -174,6 +174,12 @@ static int string_large_free_count;
 /* Guards against unbounded C-stack recursion in lisp_eval() (see its
  * definition near the bottom of this file for the full rationale). */
 #define LISP_MAX_EVAL_DEPTH 256
+/* What lisp_eval() leaves below itself when it refuses to go deeper: the
+ * refusal's printk(), the primitive the last level was about to call, and a
+ * trap frame if the timer lands there. In words, not bytes -- 2 KB flat left
+ * 536 bytes of a 16 KB stack unused on rv64 (phase 44's second terminal,
+ * measured 2026-10-04), where every frame is twice as wide. */
+#define LISP_STACK_MARGIN (512u * sizeof(void *))
 static int eval_depth = 0;
 static bool eval_depth_exceeded_warned = false;
 
@@ -6954,7 +6960,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
     uintptr_t stack_lo, stack_hi;
     uintptr_t stack_here = (uintptr_t)__builtin_frame_address(0);
     if (sched_current_stack(&stack_lo, &stack_hi)) {
-        if (stack_here < stack_lo + 2048) {
+        if (stack_here < stack_lo + LISP_STACK_MARGIN) {
             if (!eval_depth_exceeded_warned) {
                 printk("[Lisp Error] Stack limit reached (near stack bottom) -- "
                        "aborting recursion to prevent crash\n");
