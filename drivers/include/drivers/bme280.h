@@ -106,6 +106,10 @@ bool bme280_altitude(int32_t *alt_m);
 /* Q5: registers this part's measurements with `mqttd`, one topic each, but
  * only if a part was actually found. Called after bme280_init(). */
 void bme280_register_sources(void);
+/* Re-reads the stored altitude: `identity altitude` calls it, so a new or
+ * cleared altitude takes effect at once, and the first one starts the
+ * pressure_msl topic. */
+void bme280_altitude_reload(void);
 
 /* --- The cache, and the task that fills it (E7,
  * plan/phase27_esp32p4_bringup.md) ---

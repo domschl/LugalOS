@@ -1601,6 +1601,7 @@ static void cmd_identity(const char *arg) {
             rc = node_identity_set_altitude((int32_t)(neg ? -m : m));
         }
         if (rc != NODE_ID_OK) { cprintf("identity altitude: %s\n", node_id_result_str(rc)); return; }
+        bme280_altitude_reload();
         int32_t alt;
         if (node_altitude(&alt)) cprintf("identity: altitude %ld m (persisted)\n", (long)alt);
         else                     cprintf("identity: no altitude stored\n");

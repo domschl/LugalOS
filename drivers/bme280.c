@@ -529,6 +529,8 @@ static bool src_pressure_msl(int32_t *out, void *ctx) {
  * All three filter at 1/8, which at a 5 s sample period settles a step change
  * in well under a minute while removing most of the per-reading jitter.
  */
+static bool g_sources_registered, g_msl_registered;
+
 void bme280_register_sources(void) {
     if (g.part == BME280_PART_NONE) return;
 
@@ -548,9 +550,27 @@ void bme280_register_sources(void) {
         mqttd_add_source("humidity", src_humidity, NULL, 2, &hum_rule);
     /* A stored altitude is the intent to publish sea-level pressure, as a
      * stored broker is the intent to publish at all. Same rule as pressure. */
-    g_have_alt = node_altitude(&g_alt_m);
-    if (g_have_alt)
-        mqttd_add_source("pressure_msl", src_pressure_msl, NULL, 2, &press_rule);
+    g_sources_registered = true;
+    bme280_altitude_reload();
+}
+
+void bme280_altitude_reload(void) {
+    static const mqttd_rule_t msl_rule = {
+        .min_interval_s = 5, .max_interval_s = 300, .delta = 10, .alpha_shift = 3,
+    };
+    int32_t alt;
+    bool have = node_altitude(&alt);
+    g_alt_m = have ? alt : 0;
+    g_have_alt = have;
+    /* Registered once, the first time there is an altitude; a cleared one
+     * leaves the source in place answering "no reading". Until 2026-10-04
+     * this ran at boot only, and an identity write on the RP2350 rebooted,
+     * so `identity altitude` took effect by accident; without the reboot
+     * (40.12) it is told. */
+    if (have && g_sources_registered && !g_msl_registered) {
+        if (mqttd_add_source("pressure_msl", src_pressure_msl, NULL, 2, &msl_rule) == 0)
+            g_msl_registered = true;
+    }
 }
 
 bool bme280_altitude(int32_t *alt_m) {
