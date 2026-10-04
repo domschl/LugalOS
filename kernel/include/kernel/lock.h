@@ -130,6 +130,11 @@ void ylock_release(ylock_t *l);
 int  ylock_owner(const ylock_t *l);
 int  ylock_depth(const ylock_t *l);
 
+/* How many ylocks task `pid` holds right now, each counted once however
+ * deeply it re-entered. Phase 44: whether a task whose terminal was closed
+ * can be ended at an input wait without taking a lock down with it. */
+int  ylock_held_by(int pid);
+
 /* --- The hierarchy, and the check that keeps it honest (Y2,
  * plan/phase31_concurrency_hierarchy.md) -----------------------------------
  *

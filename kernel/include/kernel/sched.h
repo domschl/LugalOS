@@ -133,6 +133,9 @@ void sched_init(void);
 /* Phase 44: Virtual terminal association. */
 int  task_get_vterm(int pid);
 void task_set_vterm(int pid, int vterm_id);
+/* Every task on terminal `vterm_id` (> 0) is told it is gone: its vterm
+ * becomes -1, which kernel/console.c reads as "closed" (vterm_destroy()). */
+void task_orphan_vterm(int vterm_id);
 
 /* Creates a READY task with its own kernel stack of `stack_pages` pages.
  * Returns the pid, or -1 if the table is full, `stack_pages` is 0, or no

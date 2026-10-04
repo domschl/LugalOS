@@ -4579,9 +4579,12 @@ void shell_worker_task_entry(void *arg) {
     cprintf("\nLugalOS Interactive Console Shell (`lsh`) [terminal %d]\n", vid);
     cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'exit' to close.\n");
 
+    int me = sched_current_pid();
     while (1) {
+        /* Closed under us: the vterm is gone, or the slot already belongs to
+         * a new terminal and this task was orphaned (vterm_destroy()). */
         vterm_t *vt = vterm_get(vid);
-        if (!vt) break;
+        if (!vt || task_get_vterm(me) != vid) break;
         console_set_title(vt->title);
         lisp_canvas_poll();
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
@@ -4594,7 +4597,7 @@ void shell_worker_task_entry(void *arg) {
         parse_and_eval_cmd(buf);
     }
 
-    vterm_destroy(vid);
+    if (task_get_vterm(me) == vid) vterm_destroy(vid);
     task_exit();
 }
 

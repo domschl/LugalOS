@@ -192,6 +192,32 @@ uint32_t console_capture_end(void) {
     return g_cap_len;
 }
 
+/* Phase 44: the terminal the running task writes to and reads from. Its
+ * vterm for any terminal but the root console; NULL for the root console
+ * (vterm 0: the boot shell and what it started) -- and NULL with *closed set
+ * for a task whose terminal was closed under it (task_orphan_vterm()). */
+static vterm_t *task_terminal(bool *closed) {
+    *closed = false;
+    int pid = sched_current_pid();
+    int vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (vid == 0) return NULL;
+    vterm_t *vt = (vid > 0) ? vterm_get(vid) : NULL;
+    if (!vt) *closed = true;
+    return vt;
+}
+
+/* A task of a closed terminal, waiting for input that cannot come. It ends
+ * here if it holds no ylock -- this is a wait, so by contract not the
+ * console's -- and otherwise is handed a Ctrl-C to unwind on, ending at a
+ * later wait. Never from the output side: cprintf() writes with
+ * console_lock() held, and a task ended there took the console with it --
+ * `vterm close 1` typed in terminal 1 hung every shell (2026-10-04). */
+static char closed_terminal_wait(void) {
+    if (ylock_held_by(sched_current_pid()) == 0) task_exit();
+    sched_yield();
+    return 0x03;
+}
+
 void console_putc(char c) {
     if (g_cap) {
         if (g_cap_len == g_cap_max) {           /* full: keep the newer half */
@@ -202,31 +228,15 @@ void console_putc(char c) {
         g_cap[g_cap_len++] = c;
         return;
     }
-    int pid = sched_current_pid();
-    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
-    if (my_vid > 0) {
-        vterm_t *vt = vterm_get(my_vid);
-        if (!vt) task_exit();
-        vterm_write(vt, &c, 1);
-        if (vt->active) {
-            console_emit(g_console_putc, c);
-        } else {
+    bool closed;
+    vterm_t *vt = task_terminal(&closed);
+    if (closed) return;                         /* nobody to show it to */
+    if (vt) vterm_write(vt, &c, 1);
+    else vt = vterm_get(0);
+    if (vt && !vt->active) {
 #if defined(CONFIG_LCD_PCLK_GPIO)
-            lcd7_screen_putc_vterm(vt->id, c);
+        lcd7_screen_putc_vterm(vt->id, c);
 #endif
-        }
-        return;
-    }
-    vterm_t *vt = vterm_current();
-    if (vt) {
-        if (vt->id > 0) vterm_write(vt, &c, 1);
-        if (vt->active) {
-            console_emit(g_console_putc, c);
-        } else {
-#if defined(CONFIG_LCD_PCLK_GPIO)
-            lcd7_screen_putc_vterm(vt->id, c);
-#endif
-        }
         return;
     }
     console_emit(g_console_putc, c);
@@ -455,8 +465,15 @@ static void console_pump(void) {
      * uart_peek_interrupt() answers without consuming, so this neither eats
      * input nor depends on having room to store it. Where a device cannot be
      * inspected that way it answers false, and the old behaviour stands. */
-    for (unsigned i = 0; i < g_ninputs; i++)
-        if (g_inputs[i]->peek_interrupt && g_inputs[i]->peek_interrupt()) g_interrupt_pending = true;
+    /* Phase 44: the latch belongs to the terminal being typed into. */
+    vterm_t *act = vterm_active();
+    if (act && act->id <= 0) act = NULL;
+    for (unsigned i = 0; i < g_ninputs; i++) {
+        if (g_inputs[i]->peek_interrupt && g_inputs[i]->peek_interrupt()) {
+            if (act) act->interrupt_pending = true;
+            else g_interrupt_pending = true;
+        }
+    }
 
     /* Moves device bytes into the ring, latching Ctrl-C on the way past.
      *
@@ -486,11 +503,12 @@ static void console_pump(void) {
      * allows. There is no fairness to arrange: a person types on one of
      * them at a time, and a script sending a block on another is exactly
      * what the ring bound above already handles. */
-    vterm_t *act = vterm_active();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (act && act->id > 0) {
-            while (src->has_char()) {
+        if (act) {
+            /* Room first, as for the ring: a byte taken from the device and
+             * then refused by a full queue was lost. */
+            while (vterm_has_room(act) && src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;
                 if (!vterm_feed_char(act, (char)c)) break;
@@ -513,17 +531,10 @@ bool console_has_char(void) {
     screen_flush();
     console_pump();
     run_hotkey();
-    int pid = sched_current_pid();
-    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
-    if (my_vid > 0) {
-        vterm_t *vt = vterm_get(my_vid);
-        if (!vt) task_exit();
-        return vterm_has_char(vt);
-    }
-    vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
-        return vterm_has_char(vt);
-    }
+    bool closed;
+    vterm_t *vt = task_terminal(&closed);
+    if (closed) return true;                    /* console_getc() ends it */
+    if (vt) return vterm_has_char(vt);
     uintptr_t f = irq_save();
     bool queued = (g_pb_head != g_pb_tail);
     irq_restore(f);
@@ -540,12 +551,11 @@ char console_getc(void) {
      * The screen is flushed on every turn, not only on the way in (see
      * console_has_char()): an empty flush is one comparison, and the turns
      * of a wait are when the status bar's clock gets to move (37.1). */
-    int pid = sched_current_pid();
-    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
-    if (my_vid > 0) {
+    bool closed;
+    if (task_terminal(&closed) || closed) {
         for (;;) {
-            vterm_t *vt = vterm_get(my_vid);
-            if (!vt) task_exit();
+            vterm_t *vt = task_terminal(&closed);
+            if (closed) return closed_terminal_wait();
             screen_flush();
             console_pump();
             run_hotkey();
@@ -565,42 +575,27 @@ char console_getc(void) {
 }
 
 void console_ungetc(char c) {
-    int pid = sched_current_pid();
-    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
-    if (my_vid > 0) {
-        vterm_t *vt = vterm_get(my_vid);
-        if (vt) vterm_ungetc(vt, c);
-        return;
-    }
-    vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
-        vterm_ungetc(vt, c);
-        return;
-    }
-    pushback_put(c);
+    bool closed;
+    vterm_t *vt = task_terminal(&closed);
+    if (vt) vterm_ungetc(vt, c);
+    else if (!closed) pushback_put(c);
 }
 
 
 bool console_interrupt_requested(void) {
     console_pump();
-    int pid = sched_current_pid();
-    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
-    if (my_vid > 0) {
-        vterm_t *vt = vterm_get(my_vid);
-        if (!vt) task_exit();
-        return vterm_check_interrupt(vt);
-    }
-    vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
-        return vterm_check_interrupt(vt);
-    }
+    bool closed;
+    vterm_t *vt = task_terminal(&closed);
+    if (closed) return true;                    /* stop: nobody is watching */
+    /* Read, not cleared, as for the root console: the latch stays up until
+     * console_interrupt_clear(), so two pollers of one command both see it. */
+    if (vt) return vt->interrupt_pending;
     return g_interrupt_pending;
 }
 
 void console_interrupt_clear(void) {
-    vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
-        (void)vterm_check_interrupt(vt);
-    }
-    g_interrupt_pending = false;
+    bool closed;
+    vterm_t *vt = task_terminal(&closed);
+    if (vt) (void)vterm_check_interrupt(vt);
+    else if (!closed) g_interrupt_pending = false;
 }

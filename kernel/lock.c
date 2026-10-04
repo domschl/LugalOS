@@ -372,6 +372,10 @@ void ylock_init(ylock_t *l) {
     l->depth = 0;
 }
 
+/* How many distinct ylocks each task holds (re-entry counts once), for
+ * ylock_held_by(). Written with interrupts masked, by the holder only. */
+static uint8_t g_ylocks_held[MAX_TASKS];
+
 void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
     (void)name; (void)site;
     /* A ylock may be held across a block -- that is what it is for -- but it
@@ -413,6 +417,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
         if (arch_lock_try_acquire(&l->word)) {
             l->owner = me;
             l->depth = 1;
+            if (me >= 0 && me < MAX_TASKS) g_ylocks_held[me]++;
             waitfor_leave(me);
             irq_restore(f);
             return;
@@ -472,6 +477,8 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
 void ylock_release(ylock_t *l) {
     uintptr_t f = irq_save();
     if (l->depth > 0 && --l->depth == 0) {
+        int o = l->owner;
+        if (o >= 0 && o < MAX_TASKS && g_ylocks_held[o] > 0) g_ylocks_held[o]--;
         l->owner = -1;
         /* Released last, after the bookkeeping: another hart that sees the
          * gate free must not then read an owner this hart has not cleared
@@ -489,6 +496,10 @@ int ylock_owner(const ylock_t *l) {
     return (l && l->depth > 0) ? l->owner : -1;
 }
 int ylock_depth(const ylock_t *l) { return l ? l->depth : 0; }
+
+int ylock_held_by(int pid) {
+    return (pid >= 0 && pid < MAX_TASKS) ? g_ylocks_held[pid] : 0;
+}
 
 /* --- selftest --------------------------------------------------------- */
 

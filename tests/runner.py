@@ -3509,6 +3509,30 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Ribbon Window Geometry Manager (44.2 ribbonselftest)",
                         ok and "ribbon geometry selftest: PASSED" in log, log if not (ok and "ribbon geometry selftest: PASSED" in log) else ""))
 
+        # Phase 44: a second terminal's shell. Input follows the newest
+        # terminal, so everything below until `vterm close` runs in it. A
+        # recursion the first shell's stack holds must fit in this one's
+        # (it stopped at a third of the depth on 8 KB), the selftest must not
+        # assume it runs in the only terminal, and closing the terminal from
+        # inside itself must take nothing with it: its shell wrote "Closed"
+        # with the console lock held and exited there, and no shell answered
+        # again. The root shell has the console back afterwards.
+        steps = [("vterm new T2", r"Spawned terminal on vterm (\d)"),
+                 ("(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1)))))", r"=> deep"),
+                 ("(deep 80)", r"=> 80"),
+                 ("vtermselftest", r"vterm selftest: (PASSED|FAILED)"),
+                 ("vterm list", r"Current task is on vterm [1-9]"),
+                 ("vterm close 1", r"exited"),
+                 ("(+ 40 2)", r"=> 42"),
+                 ("vterm list", r"Current task is on vterm 0; active foreground is vterm 0")]
+        t2_ok, t2_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=8.0)
+            if not ok or "FAILED" in log or "[Lock BUG]" in log:
+                t2_ok, t2_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("A Second Terminal: Its Shell's Stack, And Closing It From Inside (44)", t2_ok, t2_log))
+
         # 38.7: `edbench` -- the editor's buffer from the bulk zone, a 16 KB
         # document saved to and loaded from /ram0, typed into and searched.
         # Timings are the hardware suite's business; here it must finish and

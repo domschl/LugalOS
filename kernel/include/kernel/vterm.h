@@ -23,6 +23,9 @@
 #define MAX_VTERMS          8u
 #define VTERM_RX_BUF_SIZE   128u
 #define VTERM_TITLE_MAX     32u
+/* A terminal's shell stack: the RP2350's 16 KB boot stack on RV32, and twice
+ * that on RV64, whose frames are twice as wide (kernel/vterm.c). */
+#define VTERM_SHELL_STACK_PAGES (sizeof(void *) == 8 ? 8u : 4u)
 
 typedef struct vterm {
     int       id;
@@ -81,6 +84,9 @@ int      vterm_count(void);
 
 /* Feeds a character into a vterm's input queue. Returns false if full. */
 bool     vterm_feed_char(vterm_t *vt, char c);
+
+/* Whether vterm_feed_char() would take one more byte. */
+bool     vterm_has_room(vterm_t *vt);
 
 /* Feeds a sequence of bytes into a vterm's input queue. Returns bytes queued. */
 uint32_t vterm_feed_bytes(vterm_t *vt, const char *s, uint32_t n);

@@ -266,6 +266,14 @@ void task_set_vterm(int pid, int vterm_id) {
     g_tasks[pid].vterm_id = vterm_id;
 }
 
+void task_orphan_vterm(int vterm_id) {
+    if (vterm_id <= 0) return;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state != TASK_UNUSED && g_tasks[i].vterm_id == vterm_id)
+            g_tasks[i].vterm_id = -1;
+    }
+}
+
 /* A secondary hart's boot context becomes a task, the same way sched_init()
  * does it for the primary -- there must always be something to switch away
  * from, and set_cur() must name a real slot before this hart calls

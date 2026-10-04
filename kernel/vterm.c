@@ -112,12 +112,17 @@ vterm_t *vterm_create(const char *title) {
     uint32_t shadow_bytes = cols * rows * sizeof(uint16_t);
     uint32_t pages = (shadow_bytes + 4095u) / 4096u;
 
-    void *shadow = NULL;
+    /* A slot keeps its shadow once it has one: vterm_destroy() does not free
+     * it, because a task of the closed terminal can still be inside
+     * vterm_write() -- preempted, or on the other hart -- and nothing here
+     * makes it stop first. Reused, a late write lands in a live buffer of
+     * the same size; freed, it landed in whatever palloc handed out next. */
+    void *shadow = vt->shadow;
 #if defined(CONFIG_PSRAM_BYTES)
-    shadow = palloc_pages_bulk(pages);
+    if (!shadow) shadow = palloc_pages_bulk(pages);
     if (!shadow) shadow = palloc_pages(pages);
 #else
-    shadow = palloc_pages(pages);
+    if (!shadow) shadow = palloc_pages(pages);
 #endif
 
     if (!shadow) {
@@ -170,23 +175,20 @@ void vterm_destroy(int id) {
         title_change = true;
     }
 
-    if (vt->shadow) {
-        uint32_t shadow_bytes = (uint32_t)vt->shadow_cols * (uint32_t)vt->shadow_rows * sizeof(uint16_t);
-        uint32_t pages = (shadow_bytes + 4095u) / 4096u;
-        palloc_free(vt->shadow, pages);
-        vt->shadow = NULL;
-    }
-
-    int owner = vt->owner_pid;
+    /* The shadow stays with the slot (see vterm_create()). */
     vt->in_use = false;
     vt->active = false;
     vt->has_vt = false;
     vt->owner_pid = -1;
 
+    /* Its shell, and whatever it started, learn the terminal is gone the next
+     * time they write or read (kernel/console.c). The shell used to be woken
+     * with task_unblock() as well, which it never needed -- it polls -- and
+     * which, landing on a task blocked in a chan_call(), ended that call
+     * before its reply. */
+    task_orphan_vterm(id);
+
     ylock_release(&g_vterm_mgr_lock);
-    if (owner >= 0) {
-        task_unblock(owner);
-    }
     if (title_change) {
         console_set_title(reset_title);
     }
@@ -253,6 +255,14 @@ bool vterm_feed_char(vterm_t *vt, char c) {
     vt->rx_head = next;
     ylock_release(&vt->input_lock);
     return true;
+}
+
+bool vterm_has_room(vterm_t *vt) {
+    if (!vt || !vt->in_use) return false;
+    ylock_acquire(&vt->input_lock);
+    bool room = (uint8_t)((vt->rx_head + 1u) % VTERM_RX_BUF_SIZE) != vt->rx_tail;
+    ylock_release(&vt->input_lock);
+    return room;
 }
 
 uint32_t vterm_feed_bytes(vterm_t *vt, const char *s, uint32_t n) {
@@ -337,7 +347,13 @@ int shell_spawn_terminal(const char *title) {
     vterm_t *vt = vterm_create(title);
     if (!vt) return -1;
 
-    int pid = task_create("lsh-worker", shell_worker_task_entry, (void *)(intptr_t)vt->id);
+    /* VTERM_SHELL_STACK_PAGES, not TASK_STACK_PAGES: the bounds that keep a
+     * command off the end of its stack -- cc's CHIBICC_MAX_NEST, Lisp's
+     * stack guard -- were measured on the RP2350's 16 KB boot stack, and on
+     * 8 KB a Lisp recursion that runs in the first terminal stopped at a
+     * third of the depth in any other. */
+    int pid = task_create_sized("lsh-worker", shell_worker_task_entry, (void *)(intptr_t)vt->id,
+                                VTERM_SHELL_STACK_PAGES);
     if (pid < 0) {
         vterm_destroy(vt->id);
         return -1;
@@ -363,12 +379,20 @@ int vterm_selftest(void) {
 
     /* 1. Root terminal exists */
     vterm_t *v0 = vterm_get(0);
-    CHECK("vterm[0] initialized as active root", v0 != NULL && v0->in_use && v0->active && v0->id == 0);
+    CHECK("vterm[0] is the root console", v0 != NULL && v0->in_use && v0->id == 0);
 
-    /* 2. Create secondary vterm */
+    /* 2. Create secondary vterm -- whichever slot is free: the test may run
+     * in a terminal of its own, and must not assume it is the only one. */
+    int base = vterm_count();
+    int prev_active = vterm_active_id();
     vterm_t *v1 = vterm_create("test-vterm-1");
-    CHECK("vterm_create allocates slot 1", v1 != NULL && v1->id == 1 && v1->in_use && !v1->active);
-    CHECK("vterm_count reports 2", vterm_count() == 2);
+    if (!v1) {
+        CHECK("vterm_create allocates a free slot", false);
+        return fails;
+    }
+    int id1 = v1->id;
+    CHECK("vterm_create allocates a free slot", id1 > 0 && v1->in_use && !v1->active);
+    CHECK("vterm_count grows by one", vterm_count() == base + 1);
 
     /* 3. Input queue feed and read */
     const char *test_str = "hello\n";
@@ -395,14 +419,15 @@ int vterm_selftest(void) {
     CHECK("vterm_write executes into vtterm", v1->has_vt && v1->vt.row >= 1);
 
     /* 6. Active focus switching */
-    bool sw1 = vterm_set_active(1);
-    CHECK("vterm_set_active(1) switches active ID", sw1 && vterm_active_id() == 1 && v1->active && !v0->active);
+    bool sw1 = vterm_set_active(id1);
+    CHECK("vterm_set_active switches to the new vterm", sw1 && vterm_active_id() == id1 && v1->active && !v0->active);
     bool sw0 = vterm_set_active(0);
     CHECK("vterm_set_active(0) restores root", sw0 && vterm_active_id() == 0 && v0->active && !v1->active);
+    (void)vterm_set_active(prev_active);
 
     /* 7. Destroy secondary vterm */
-    vterm_destroy(1);
-    CHECK("vterm_destroy frees slot 1", vterm_get(1) == NULL && vterm_count() == 1);
+    vterm_destroy(id1);
+    CHECK("vterm_destroy frees its slot", vterm_get(id1) == NULL && vterm_count() == base);
 
 #undef CHECK
     return fails;
