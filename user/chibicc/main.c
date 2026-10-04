@@ -9,6 +9,7 @@
 #include "arch/elf.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
+#include "kernel/lock.h"
 #include <string.h>
 
 #define CHIBICC_BUF_SIZE 4096
@@ -35,11 +36,23 @@ static int compile_inner(const char *src_path, const char *dst_elf_path);
  * than released at each `return` inside: compile_inner() has half a dozen
  * failure exits, and one of them forgetting would leak 112 KB on a 160 KB
  * heap -- a bug that only shows up on the *next* command. */
+/* One compile at a time (phase 44). The compiler is its globals and one
+ * arena, and with a shell in every terminal two of them can run `cc` at
+ * once: the second used to find the arena held, take it for a nested
+ * compile and share it -- and whichever finished first freed it under the
+ * other. A ylock is re-entrant for its task, so a nested compile still
+ * passes. */
+static ylock_t g_cc_lock;
+
 int chibicc_compile(const char *src_path, const char *dst_elf_path) {
     if (!src_path || !dst_elf_path) return -1;
-    if (!chibicc_pools_acquire()) return -1;
-    int rc = compile_inner(src_path, dst_elf_path);
-    chibicc_pools_release();
+    ylock_acquire(&g_cc_lock);
+    int rc = -1;
+    if (chibicc_pools_acquire()) {
+        rc = compile_inner(src_path, dst_elf_path);
+        chibicc_pools_release();
+    }
+    ylock_release(&g_cc_lock);
     return rc;
 }
 
