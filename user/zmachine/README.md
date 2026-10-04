@@ -61,6 +61,7 @@ prose/behavior-level.
 | `host_main.c` | Host test harness (the only libc-dependent file)  |
 | `games/`      | MIT-source games: `src/`, `build.sh`, committed `.z3` (see `games/README.md`) |
 | `pkgbuild/`   | Fixed AUR PKGBUILD for the ZILF/ZAPF toolchain        |
+| `zfront.c/h`  | LugalOS kernel front (lsh/Lisp command, bulk memory)  |
 | `z-data/`     | Fetched retail binaries — test oracles only, git-ignored |
 
 ## Reference Documents — EXTERNAL
@@ -96,10 +97,23 @@ so the same sources build for RV32 firmware.
 
 * **Kernel sources:** the `LUGALOS_ENABLE_ZMACHINE` option (default ON)
   adds the freestanding core (`zmem.c`, `zvm.c`, `ztext.c`, `zparse.c`,
-  `zsave.c`) to `lugalos.elf` on every target.  `host_main.c` is never
-  part of a firmware build.  Until the shell command entry point lands,
-  nothing references the core and `--gc-sections` drops it — the image
-  stays byte-identical at zero cost.
+  `zsave.c`) plus the kernel front `zfront.c` to `lugalos.elf` on every
+  target.  `host_main.c` is never part of a firmware build.
+* **Commands:** `zmachine` at the `lsh` prompt, or `(zmachine "name")`
+  in Lisp.  A bare name resolves against `/sd0/games/<name>.z3`
+  (default `zork1`); an explicit path works too.  `QUIT` or Ctrl-C
+  (polled between instructions, the chess J2 mechanism) ends the
+  session.  `save`/`restore` write `<story>.lzs` next to the story file.
+* **Memory contract (chess's discipline, plan/phase38_psram.md):**
+  idle cost is **zero** — nothing in `.bss`, nothing allocated at boot
+  (verified: `-DLUGALOS_ENABLE_ZMACHINE=OFF` differs only in `.text`,
+  `bss` is byte-identical).  While a game runs, the 128 KB address
+  space, the resident story image (for `RESTART` without re-reading
+  the SD), and the ~52 KB VM struct all come from
+  `palloc_pages_bulk()` — PSRAM on boards that have it, with the SRAM
+  fallback counted in `/proc/meminfo` — and every block is released on
+  every exit path (verified on QEMU: bulk returns to its idle free
+  count after `Ctrl-C`, `SRAM fallbacks 0`).
 * **SD layout:** the top-level CMake stages `games/zork1/zork1-mit.z3`
   to `/sd0/games/` under the plain-8.3 name **`ZORK1.Z3`** (the volume
   carries no long-filename entries).  It lands in `flashfs.bin` /

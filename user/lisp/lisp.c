@@ -42,6 +42,9 @@
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 #include "drivers/tm1638.h"
 #endif
+#if CONFIG_ENABLE_ZMACHINE
+#include "zfront.h"
+#endif
 #if CONFIG_ENABLE_CHESS
 #include "chess_ui.h"
 #include "search.h"
@@ -4202,6 +4205,28 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
 #endif
     g_search_cores = 1;
     lisp_canvas_reset();    /* 37.3b */
+    return &true_val;
+}
+#endif
+
+#if CONFIG_ENABLE_ZMACHINE
+/* `zmachine` / `(zmachine "zork1")`: one interactive Z-machine v3 game
+ * session, chess's shape rather than the editor's -- an interpreter
+ * command, not an editor mode.  The name resolves against /sd0/games/
+ * (the staged MIT-built zork1-mit.z3 ships as ZORK1.Z3); an explicit
+ * path works too.  Ctrl-C between instructions ends the session.  All
+ * of the VM's memory is claimed from the bulk pool (PSRAM where the
+ * board has it) for the duration and given back on exit -- idle cost
+ * zero, see user/zmachine/zfront.h. */
+static lisp_val_t *prim_zmachine(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *story = NULL;
+    if (lisp_list_ref(args, 0) != NULL) {
+        story = get_str_val(lisp_list_ref(args, 0));
+    }
+    if (zmachine_run(story) != 0) {
+        return &nil_val;
+    }
     return &true_val;
 }
 #endif

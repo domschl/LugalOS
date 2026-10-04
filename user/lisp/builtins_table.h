@@ -314,6 +314,9 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("write", prim_write),
     BUILTIN_PRIM("write-file", prim_write_file),
     BUILTIN_PRIM("zero?", prim_zero_p),
+#if CONFIG_ENABLE_ZMACHINE
+    BUILTIN_PRIM("zmachine", prim_zmachine),   /* keeps ASCII order */
+#endif
 };
 
 #undef BUILTIN_PRIM
