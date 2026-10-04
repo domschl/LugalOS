@@ -24,7 +24,6 @@
 
 #include "drivers/block.h"
 #include "drivers/flash_rp2350.h"
-#include "arch/rp2350_bootrom.h"
 #include "kernel/identity.h"
 #include "kernel/idstore.h"
 #include "kernel/printk.h"
@@ -102,13 +101,10 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
         return -1;
     }
 
-    /* Said *before* the write, because it cannot be said after: see the
-     * reboot at the end of this function for why the console does not
-     * survive. The short delay is what actually gets these bytes onto the
-     * wire -- USB CDC output is pumped by a task, and the next thing this
-     * function does is stop scheduling for a tenth of a second. */
-    printk("[IdStore] writing the identity sector; the board will reboot when "
-           "it is done (drivers/idstore_rp2350.c explains why)\n");
+    /* The short delay gets this onto the wire before the write stops
+     * scheduling for a tenth of a second: USB CDC output is pumped by a
+     * task. */
+    printk("[IdStore] writing the identity sector\n");
     time_delay_us(50000);
 
     uint32_t offs = (uint32_t)LUGALOS_IDENTITY_BASE - FLASH_XIP_BASE;
@@ -125,39 +121,22 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
         return -1;
     }
 
-    /* The write worked; the board is nonetheless not in a state to carry on,
-     * and this reboot is the honest completion of the operation rather than a
-     * workaround bolted onto it.
+    /* No reboot after the write, since 2026-10-04 (phase 40 item 12).
      *
-     * **The USB console does not survive the write.** Erasing and programming
-     * a sector takes on the order of 100 ms with interrupts off, and this
-     * board's CDC console is serviced by a task and its interrupts. Starved
-     * that long, the device controller stops answering the host and does not
-     * come back: tests/hw/README.md already records that this driver's framing
-     * needs a real USB bus reset to recover, not a close-and-reopen. Measured
-     * here the hard way, 2026-09-01 -- the first `identity provision` on
-     * hardware wrote its record perfectly and then went silent, and the board
-     * needed a physical BOOTSEL. The record was intact and valid on the next
-     * boot, which is what identified the console rather than the flash write
-     * as the casualty.
+     * There used to be one, for two reasons. flash_rp2350_write_sector()
+     * left XIP in the bootrom's generic 03h read mode until a reset -- fixed
+     * by 38.1 (plan/phase38_psram.md), which puts the QSPI interface back as
+     * it found it. And the USB console did not survive the ~100 ms with
+     * interrupts off: the first `identity provision` on hardware (2026-09-01)
+     * wrote its record and went silent until a physical BOOTSEL.
      *
-     * There used to be a second reason: flash_rp2350_write_sector() left XIP
-     * in the bootrom's generic 03h read mode until a reset. Since 38.1
-     * (plan/phase38_psram.md) it puts the QSPI interface back as it found
-     * it, so the console is the one reason left -- and the one to measure
-     * before this reboot can go.
-     *
-     * So: reboot. Nothing after this line runs -- including the caller's
-     * "provisioned" report, which is why the message above is printed before
-     * the write rather than after it. Provisioning is a rare, deliberate act
-     * whose result is checked on the next boot (`identity`), so this costs
-     * nothing a user wanted. */
-    rp2350_reboot();
-
-    /* Only reached if the bootrom refused the reset. Say so plainly: the
-     * record is written and correct, but the console may already be gone. */
-    printk("[IdStore] identity written, but the reboot request was refused -- "
-           "power-cycle the board\n");
+     * The second was measured again on the RP2350-LCD-7 at 7844345 with the
+     * reboot taken out: two `identity name` writes (114 ms each), the
+     * console answering straight after each, the record read back as
+     * stored, and the 9P link on the second CDC port, the QSPI windows and
+     * PSRAM's pattern tests all passing after them. Whatever starved the
+     * controller in September -- the CDC task and the USB stack have both
+     * been reworked since -- does not any more. */
     return 0;
 }
 
