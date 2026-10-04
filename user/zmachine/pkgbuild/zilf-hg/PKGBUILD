@@ -1,0 +1,48 @@
+# maintainer: libele <libele@disroot.org>
+
+pkgname=zilf-hg
+_hgname=zilf
+pkgver=r1694.428d9a205a73
+pkgrel=2
+pkgdesc="A set of tools for working with the ZIL interactive fiction language, including a compiler, assembler, disassembler, and game library. (mercurial version)"
+arch=('x86_64')
+url="https://foss.heptapod.net/zilf/zilf"
+license=('GPL')
+options=('!strip')
+provides=('zilf')
+conflicts=('zilf')
+makedepends=('dotnet-sdk' 'clang')
+source=("hg+https://foss.heptapod.net/zilf/zilf")
+md5sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/${_hgname}"
+  printf "r%s.%s" "$(hg identify -n)" "$(hg identify -i)"
+}
+
+build() {
+  cd "${srcdir}/${_hgname}"
+  # Upstream Build.proj now stages self-contained AOT single-file
+  # binaries and requires an explicit RuntimeIdentifier.
+  dotnet msbuild Build.proj -t:Stage \
+    -p:Configuration=Release -p:RuntimeIdentifier=linux-x64
+}
+
+package() {
+  # Staged tree: Package/Release/Stage/zilf-<ver>-linux-x64/{bin,zillib,sample}
+  local stage
+  stage=$(echo "${srcdir}/${_hgname}"/Package/Release/Stage/zilf-*-linux-x64)
+
+  install -dm755 "${pkgdir}/usr/bin"
+  install -dm755 "${pkgdir}/usr/share/${_hgname}"
+
+  # Self-contained AOT executables — install directly, no dotnet runtime needed
+  install -m755 "${stage}/bin/zilf"     "${pkgdir}/usr/bin/zilf"
+  install -m755 "${stage}/bin/zapf"     "${pkgdir}/usr/bin/zapf"
+  install -m755 "${stage}/bin/zilfpub"  "${pkgdir}/usr/bin/zilfpub"
+
+  cp -a "${stage}/zillib" "${pkgdir}/usr/share/${_hgname}/zillib"
+  cp -a "${stage}/sample" "${pkgdir}/usr/share/${_hgname}/sample"
+
+  install -Dm644 "${stage}/COPYING.txt" "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.txt"
+}

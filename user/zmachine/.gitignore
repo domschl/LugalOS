@@ -1,0 +1,8 @@
+# Downloaded story files (see fetch-games.sh) — keep the README,
+# ignore everything else in z-data/.
+z-data/*
+!z-data/README.md
+
+# Host development build artifact
+zork-host
+*.lzs
