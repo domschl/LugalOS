@@ -58,19 +58,6 @@ traffic; on the gateway with the ENC28J60, `net txtest`/`net rxtest` and the
 gateway suite (`tests/hw/test_gateway.py`). Any `[Lock BUG]` on the console is
 a caller taking the bus under a spinlock, which the flag never reported.
 
-## Sea-level pressure: which temperature?
-
-**Destination: the owner's decision.** Run on the Pico 2 W sensor node
-(2026-10-04) next to a reference BME280 on the same broker: station
-pressure agrees to 0.3 hPa, the reduced values differ by 3.5 hPa (ours
-1025.0, the reference 1028.5, at 520 m). The reference uses the standard
-atmosphere, p0 = p / (1 - h/44330)^5.255 -- what QNH and most weather apps
-show. `bme280_sea_level_pa()` uses the barometric formula with the
-sensor's temperature, correct for outdoor air and too small a correction
-for an indoor sensor at 28 C. **To close:** choose -- the standard
-atmosphere, or the sensor's temperature, or an outdoor temperature from
-elsewhere -- and the shell/MQTT wording to match.
-
 ## The LCD-7's PSRAM reference rate is stale
 
 **Destination: the owner's bench.** tests/hw's 38.2 "read cached cold"

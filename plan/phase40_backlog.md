@@ -25,7 +25,7 @@ original description stays in git history of `plan/open_issues.md`.
 | 8 | The clock display flickers while the radio comes up | **Closed** — already solved, per the owner (2026-10-03) | — |
 | 9 | No clean way to leave a BSS before re-joining | **Done**, on a Pico 2 W -- the plain disassociate works on today's driver; a join now leaves first | `e7c1ce0` |
 | 10 | `mqttd` has no file-backed source | **Done** (`mqttd file`, `(mqttd-file ...)`) | `bf44055` |
-| 11 | Pressure is published as station pressure | **Done**, run on a Pico 2 W sensor node; the altitude now takes effect without a reboot. Station pressure agrees with a reference BME280 within 0.3 hPa; the sea-level value is 3.5 hPa below the reference's -- see the conclusion | `aff00f5`, `f888c0a` |
+| 11 | Pressure is published as station pressure | **Done**, run on a Pico 2 W sensor node; the altitude now takes effect without a reboot. Station pressure agrees with a reference BME280 within 0.3 hPa; the sea-level value is 3.5 hPa below the reference's, accepted by the owner | `aff00f5`, `f888c0a` |
 | 12 | An identity write reboots the board | **Done** -- the console, the 9P link, QSPI and PSRAM survive the write on the LCD-7; the reboot is gone | `337cf3c` |
 
 ## 2. The review
@@ -155,7 +155,9 @@ What it showed beyond the items:
   reference uses the standard atmosphere, p0 = p / (1 - h/44330)^5.255,
   and `bme280_sea_level_pa()` the barometric formula with the sensor's own
   temperature -- 28 C for this indoor node, where the formula wants the
-  outdoor air column. Which convention to publish is the owner's call.
+  outdoor air column. **Decided by the owner (2026-10-04): kept as is** --
+  the difference is within what the sensors can resolve, and the results
+  are fine.
 
 What remained at the close, in `plan/open_issues.md`:
 
@@ -163,8 +165,7 @@ What remained at the close, in `plan/open_issues.md`:
   half passed later the same day; the ENC28J60 gateway
   (`tests/hw/test_gateway.py`) remains, watching for `[Lock BUG]`.
 * ~~Item 9~~ -- done later the same day.
-* ~~Item 11 on hardware~~ -- run later the same day; the temperature
-  question above remains.
+* ~~Item 11 on hardware~~ -- run later the same day; the formula kept.
 
 The review's obvious next harness is still Lisp (reader, bignums) on the
 host, and the second pass adds one: the screen protocol (`screen_canvas_vterm()`)
