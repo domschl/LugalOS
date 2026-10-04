@@ -1,6 +1,6 @@
 # Phase 40 — The actionable backlog, and a review for C's failure modes
 
-**Status: in progress (2026-10-03).** Two objectives:
+**Status: CONCLUDED, 2026-10-04**, shipped as 0.16.0. Two objectives:
 
 1. **Bring the actionable bugs to zero** — the list phase 38's 38.0b sorted
    out of `plan/open_issues.md` part A, below in its original order.
@@ -17,16 +17,16 @@ original description stays in git history of `plan/open_issues.md`.
 |---|---|---|---|
 | 1 | The runner cannot see inside a stuck guest | **Done.** Monitor socket, per-hart registers symbolised, bounded writes, `[Attempt]` lines | `902d6dc` |
 | 2 | Two hand-rolled yielding locks outside the wait-for graph | **Code done, bench pending** — both `ylock_t`, three personas build; needs a Pico 2 W and the ENC28J60 gateway | `83f0507` |
-| 3 | Pulling the SD card out of a running board hangs it | **Open — needs the bench.** One candidate fixed on the way (`3ca5b4e`, a cyclic chain looped forever); the real pull is still to be done on the LCD-7 | — |
+| 3 | Pulling the SD card out of a running board hangs it | **Done**, on the LCD-7 -- the allocator spun once per cluster on failed reads; a pulled card is now *lost* until reboot, and the SD icon follows it | `1531895`, `6b8339c` |
 | 4 | A trailing slash breaks path resolution below a mount root | **Done** | `fd77381` |
 | 5 | `cc` searches only /ram0 for a relative `#include` | **Done**, and the shared header buffer it exposed | `1b6a1d6` |
-| 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build, same-id decoy) | `64eb2f4` + persona fix |
+| 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build, same-id decoy); its `/proc/node` read exposed an 8 KB identity stack cost, fixed | `64eb2f4` + persona fix, `7844345` |
 | 7 | C6/C7's exact heap comparison disturbed by background allocation | **Done** — settled readings, two compiles; 3/3 on the LCD-7 | `601160e` |
 | 8 | The clock display flickers while the radio comes up | **Closed** — already solved, per the owner (2026-10-03) | — |
 | 9 | No clean way to leave a BSS before re-joining | **Open — needs a Pico 2 W** | — |
 | 10 | `mqttd` has no file-backed source | **Done** (`mqttd file`, `(mqttd-file ...)`) | `bf44055` |
 | 11 | Pressure is published as station pressure | **Done** — both published (owner's decision); not yet run on a BME280 node | `40.11` commit |
-| 12 | An identity write reboots the board | **Open — needs a write on a board with a stored record** | — |
+| 12 | An identity write reboots the board | **Done** -- the console, the 9P link, QSPI and PSRAM survive the write on the LCD-7; the reboot is gone | `337cf3c` |
 
 ## 2. The review
 
@@ -89,51 +89,67 @@ established and fuzzed, valgrind clean). Recorded so that "not looked at" and
   above came from reading.
 * **RV32 type sizes**: the host is LP64 like RV64.
 
+### Second pass (2026-10-04): phase 44's window system, and the bench
+
+Phase 44 (terminals, the ribbon, per-terminal canvases) landed between the
+two passes and made the kernel concurrent in a way it had not been: a shell
+in every terminal. Most of what it turned up is that -- state that had one
+user and now has several. Found at the start: the QEMU suite at 465/467
+(`vtselftest` failing six of 36 since phase 44, on both architectures).
+
+| Commit | What | How found |
+|---|---|---|
+| `3bf9fff` | lock: a ylock's wait-for edge outlived its acquisition by one interrupt window -- "[Lock BUG]" every few commands with two shells | recorded where each edge was set |
+| `9c45070` | vterm: a closed terminal's task called `task_exit()` from `console_putc()` with the console lock held -- `vterm close 1` in terminal 1 hung every shell; its shadow freed under a writer; a spurious `task_unblock()`; a reused slot's old shell; Ctrl-C latched the root console too; a byte lost on a full queue | reproduced in QEMU, then reading |
+| `9c45070`, `58f8ed3` | a terminal's shell ran on 8 KB (Lisp recursion stopped at a third of the root shell's depth); on rv64 the Lisp guard left 536 bytes of 16 KB | QEMU, stack high-water |
+| `9c499b0` | cc: two terminals compiling shared, then freed, one arena | reading |
+| `c678b7e` | lisp: a collection in one terminal freed another terminal's half-evaluated form -- one engine lock now, the prompt-side hooks only try it | reading (needs a person to reproduce) |
+| `e47dd0b` | screen: replies carried a stale canvas size; a split focused the canvas (title bar drawn over it); a focused canvas sent keys to the terminal with its slot number; 'N' read its title past the request; `ribbon` listed no windows; Super+W closed the root terminal's window; `exit` left windows behind; layout stores overwrote a second canvas; any canvas came back blank after scrolling; two repaint pixels; Super+Shift+3 | `vtselftest`, then QEMU sessions |
+| `7844345` | idstore: 8 KB of stack per identity read; `cat /proc/node` took the RP2350 boot stack to 15 096 of 16 384 | hardware suite's margin check, tests one at a time |
+| `337cf3c` | item 12 (the identity-write reboot) | the bench |
+| `1531895`, `6b8339c` | item 3: the FAT allocator spun once per cluster on a pulled card; the SD icon and the mount now follow the card | the bench, then fat32_host |
+| `9ff29bb` | the first character after every reboot was lost: a break NUL at boot read as Ctrl-Space | owner report, reproduced |
+
+`vtselftest`'s 37.5a divider and swap checks tested the layout model phase
+44 replaced; they now test the ribbon's (canvas right of its terminal,
+`'w'` stepping the focused window through 38/48/64/full). That is the one
+place a test was changed to match the code rather than the other way round.
+
+**End state.** QEMU suite 471/471 (467 tests, 465 passing, at the start);
+`make -C tests/host check` clean, fat32_host now with a pulled card; the
+RP2350-LCD-7 hardware suite 32/32 on `7844345`, the SD pull and the identity
+write verified on it afterwards.
+
+**Not changed, written down.** Shared by every terminal and not worth a
+lock yet: the line editor's history ring, the chess engine's game state,
+`console_capture()`'s single slot (now per task, still one at a time), and
+`run_hotkey()`'s read-and-clear of `g_hotkey` (two harts can both take
+one keypress). The kernel-side vterm keeps a 98x27 shadow per terminal
+that nothing displays -- the screen's own terms are what is drawn.
+
 ## 3. Observed, not explained
 
 * Once in seven rv64 runs of the architecture suite on 2026-10-03, `taskdemo`
   failed its interleaving check and the C2 page count read 4 high right after
-  it. Not reproduced in six further runs; kernel tasks only, not the syscall
-  path changed that day. Belongs in `open_issues.md` part B if it recurs.
+  it. Not reproduced since (four full suites on 2026-10-04).
+* PSRAM 38.2 "read cached cold" on the LCD-7: 21.1-23.8 MB/s against a 26.1
+  reference, inside the 15 % band most runs and outside it about one in
+  three -- on both the phase's first and last firmware. The reference is
+  stale for this board; re-baselining it is in `plan/open_issues.md`.
 
-## 4. Where this stopped (2026-10-03), and how to continue
+## 4. Conclusion
 
-**State.** QEMU suite 452/452 at the last full run (before 40.11, which
-added a test that passes on rv64; both architecture suites 182/182 after
-it). `make -C tests/host check` clean. The RP2350-LCD-7 (ttyACM0) runs
-HEAD (`687.aff00f57`); its hardware suite ran 30/32 on `684.a67aa3ea`:
+Phase 40 closed on 2026-10-04 as 0.16.0. Of the twelve backlog items, nine
+are done, one closed by the owner, and three need boards that were not on
+the bench; they move to `plan/open_issues.md` with what each needs:
 
-* K3 failed from a bug in its own first version (matched build/rv32 by
-  build id); fixed and re-verified with a same-id decoy build.
-* PSRAM 38.2, "read cached cold": 21.1-23.6 MB/s on HEAD against a
-  26.1 reference (fails the 15 % band about one run in three). The
-  session-start firmware (b0f6c01) measured 23.7-23.9 on the same board
-  minutes later, also below the reference. So the reference is stale
-  for this board, and HEAD may be slightly lower and noisier -- most
-  likely code layout, the effect part C of open_issues records for the
-  chess search. **Next:** re-run `test_psram` several times on HEAD and
-  b0f6c01 and either re-baseline the reference or find the layout cause.
-  Not yet logged in open_issues.
+* **Item 2** -- the CYW43 and ENC28J60 bus locks are ylocks; needs a run on
+  a Pico 2 W (`wifi probe`, `wifi join`) and the ENC28J60 gateway
+  (`tests/hw/test_gateway.py`), watching for `[Lock BUG]`.
+* **Item 9** -- leaving a BSS cleanly; needs a Pico 2 W.
+* **Item 11 on hardware** -- sea-level pressure; needs a BME280 node
+  (`identity altitude <m>`, then `sensor` and the MQTT topics).
 
-**Continue with, in this order** (the owner has the boards):
-
-1. Re-run `tests/hw/test_rp2350.py` on the LCD-7 at HEAD (40.11 and the K3
-   fix landed after the last run).
-2. **Item 12** -- approved: one `identity name <its current name>` on the
-   LCD-7, console attached; if the console survives without the reboot,
-   drop the reboot in `drivers/idstore_rp2350.c`, else keep it with one
-   reason.
-3. **Item 3** -- the owner will pull the SD card on the LCD-7 when asked:
-   run `ls /sd0`, `cat` a file, then ask for the pull and watch; find the
-   loop that does not end (cluster walks are now bounded, `3ca5b4e`).
-4. **Item 2** -- clock board / Pico 2 W (`wifi probe`, `wifi join`) and the
-   ENC28J60 gateway (`tests/hw/test_gateway.py`); watch for `[Lock BUG]`.
-5. **Item 9** -- Pico 2 W: find the disassociate the firmware accepts.
-6. **Item 11 on hardware** -- a BME280 node (the P4 on ttyACM2 or a sensor
-   persona): `identity altitude <m>`, then `sensor` and the MQTT topics.
-   Flashing the P4 was not yet approved.
-7. Review: a Lisp host harness (reader, bignums) is the obvious next one
-   (see "Not covered").
-
-Scratch builds used this session lived in the Claude scratchpad and are
-gone; `cmake --preset` recreates every build directory.
+The review's obvious next harness is still Lisp (reader, bignums) on the
+host, and the second pass adds one: the screen protocol (`screen_canvas_vterm()`)
+driven by mutated requests, as `vtselftest` already does by hand.

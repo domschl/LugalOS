@@ -1845,6 +1845,33 @@ matched on the first attempt for the wrong reason.
 
 ## History
 
+- **2026-10-04: Release 0.16.0 — The backlog to zero, and a review for C's failure modes.**
+  Closes phase 40 (`plan/phase40_backlog.md`), and with it everything since 0.15.0: the ESP32-P4
+  bring-up, the RP2350-LCD-7 terminal, PSRAM, the computer-algebra system and phase 44's window
+  system all ship in this release.
+
+  **The review looked with tools, not only by reading.** There is no valgrind for a kernel, so the
+  modules that parse what someone else controls — FAT32 images, C programs, 9P sessions, Ethernet
+  frames — are built for the host under ASan, UBSan and valgrind and fed corrupted input
+  (`make -C tests/host check`). It found a kernel heap overflow in `cc`'s code generator, a
+  directory scan that a cyclic cluster chain hung forever, and twenty-odd more, each written up with
+  how it showed itself.
+
+  **The second pass met phase 44's terminals, and most of what it found is one theme: state that
+  had one user and now had several.** A shell in every terminal shared the Lisp heap (a collection
+  in one terminal could free another's half-evaluated form — now one engine lock), `cc`'s arena,
+  and the console lock — which a closed terminal's task took with it when it exited inside a
+  `cprintf()`, hanging every shell. The screen protocol answered with stale canvas sizes, sent the
+  keys of a focused canvas to the wrong terminal, and blanked a canvas whenever it scrolled back
+  into view.
+
+  **And the bench.** Pulling the SD card from a running board no longer hangs it — the FAT
+  allocator spent most of an hour retrying each cluster of a card that was gone — and the top bar's
+  SD icon now follows the card. An identity write no longer reboots the board, the first character
+  typed after a reboot is no longer lost to a NUL from the UART's break, and `cat /proc/node` no
+  longer takes 15 KB of a 16 KB boot stack. Three backlog items wait for boards that were not on
+  the bench (`plan/open_issues.md`).
+
 - **2026-09-05: Release 0.15.0 — A node that measures something, and says so: MQTT and
   environment sensors.** A Pico 2 W with a BME280 on four wires, told its broker once, joins its
   WiFi and publishes temperature, pressure and humidity from a phone charger with nothing typed —

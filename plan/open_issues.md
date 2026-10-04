@@ -42,7 +42,8 @@ history.
 
 ## Two bus locks became ylocks -- not yet run on their hardware
 
-**Destination: phase 40, item 2** -- code done 2026-10-03, awaiting the bench.
+**Destination: the owner's bench** (phase 40's item 2, carried when the
+phase closed on 2026-10-04) -- code done 2026-10-03.
 
 `drivers/cyw43_rp2350.c`'s `g_bus_busy` and `drivers/enc28j60_rp2350.c`'s
 `g_busy` were a flag and a yield loop: no owner, so no edge in phase 31's
@@ -56,27 +57,9 @@ traffic; on the gateway with the ENC28J60, `net txtest`/`net rxtest` and the
 gateway suite (`tests/hw/test_gateway.py`). Any `[Lock BUG]` on the console is
 a caller taking the bus under a spinlock, which the flag never reported.
 
-## Pulling the SD card out of a running board hangs it
-
-**Destination: phase 40, item 3.** The trigger is deterministic, so this is
-work, not waiting.
-
-Seen 2026-08-31 on `rp2350-wifi`: card pulled while mounted, console frozen,
-1200-baud touch ineffective, power cycle needed. Booting *without* a card is
-fine.
-
-The entry used to blame unbounded waits in `drivers/spisd_rp2350.c`; the
-driver's loops are bounded today (token wait 10 000, busy wait 100 000,
-ACMD41 by deadline), so the hang is somewhere else -- the VFS or FAT32 retrying
-a failing read forever, or a timeout that returns garbage the caller then
-follows. **Fix:** pull the card on purpose on the LCD-7 with the console
-attached, find the loop, make it fail the operation; the FAT32 read path now
-returns an end-of-chain on a read error (38.0), which is the shape the rest
-should have.
-
 ## No clean way to leave a BSS before re-joining
 
-**Destination: phase 40, item 9.**
+**Destination: the owner's bench, a Pico 2 W** (phase 40's item 9, carried).
 
 `wifi join` over a live association: `mfp` is now stepped over (a capability
 hint), so the re-join works, but `CYW43_IOCTL_SET_DISASSOC` issued exactly as
@@ -89,19 +72,22 @@ ioctl framing byte for byte, or a `bsscfg:` iovar), then leave before every
 manual join. Any other setup iovar refused while associated needs `mfp`'s
 judgement meanwhile.
 
-## An identity write reboots the board
+## Sea-level pressure has not run on a BME280 node
 
-**Destination: phase 40, item 12.**
+**Destination: the owner's bench** (phase 40's item 11, carried). Both
+pressures are published since 40.11; the reduction is checked only against
+the host's own arithmetic. **To close:** on a sensor node, `identity altitude
+<m>`, then `sensor` and the two MQTT topics against a nearby weather
+station's reduced value.
 
-`drivers/idstore_rp2350.c` reboots after every write -- `identity name`,
-`provision`, `key` -- for two reasons it records: the USB console did not
-survive ~60 ms of erase/program with interrupts off (measured once,
-2026-09-01, on a USB driver that has changed since), and XIP was left slow.
-38.1 removed the second. **Fix:** measure the first again on today's driver
--- one write on a board whose record is already stored, console attached --
-and drop the reboot if the console survives, or keep it with one reason
-instead of two. A rename that does not reboot also stops dropping 9P and
-MQTT sessions.
+## The LCD-7's PSRAM reference rate is stale
+
+**Destination: the owner's bench.** tests/hw's 38.2 "read cached cold"
+measures 21.1-23.8 MB/s on the RP2350-LCD-7 against a 26.1 reference, and
+fails its 15 % band about one run in three -- on phase 40's first firmware
+(`b0f6c01`) as on its last. Likely code layout (the effect part C records for
+the chess search), not a regression. **To close:** a handful of runs on one
+firmware, then re-baseline the reference, or find the layout cause.
 
 ## The clock board's DS3231 does not survive a power cut
 
