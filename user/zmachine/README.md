@@ -161,7 +161,12 @@ so the same sources build for RV32 firmware.
   *after the SAVE instruction* of the saved game. `RESTART` reinitial
  izes from the story image (XIP-friendly: the firmware path reloads
   from flash).
-* **M5b — console callbacks + build preset: play Zork on RP2350.
+* **M5b — console callbacks + build preset: DONE.** Zork plays on the
+  rp2350-terminal board: `zmachine` boots `/sd0/games/zork1.z3` (the
+  MIT build, p9sync'd to the card) with the bulk zone on the real 8 MB
+  QPI PSRAM (`PSRAM: yes`, `SRAM fallbacks 0`); move/look/read work,
+  `save` writes `ZORK1.Z3LZS` to the card, `restore` reads it back,
+  Ctrl-C returns to `lsh`.  Verified on hardware 2026-10-04.
 
 ## Field Notes (spec traps found the hard way)
 
