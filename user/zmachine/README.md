@@ -92,6 +92,25 @@ make -f Makefile run     # play with the fetched retail r119 oracle
 Only `host_main.c` uses libc; the interpreter core is freestanding C
 so the same sources build for RV32 firmware.
 
+## LugalOS Build Integration
+
+* **Kernel sources:** the `LUGALOS_ENABLE_ZMACHINE` option (default ON)
+  adds the freestanding core (`zmem.c`, `zvm.c`, `ztext.c`, `zparse.c`,
+  `zsave.c`) to `lugalos.elf` on every target.  `host_main.c` is never
+  part of a firmware build.  Until the shell command entry point lands,
+  nothing references the core and `--gc-sections` drops it — the image
+  stays byte-identical at zero cost.
+* **SD layout:** the top-level CMake stages `games/zork1/zork1-mit.z3`
+  to `/sd0/games/` under the plain-8.3 name **`ZORK1.Z3`** (the volume
+  carries no long-filename entries).  It lands in `flashfs.bin` /
+  `flashfs.uf2` (RP2350 flashfs segment), in `lugalos_sd.img` (QEMU),
+  and in `build/<preset>/sd_root/` for the `tools/p9sync.py` card-
+  update flow.  Story-file edits are build dependencies: they re-run
+  the flash-image rule.
+* **Verified:** rp2350-terminal and rv32 presets compile the core
+  clean; the full `tests/runner.py` suite passes with the new `/sd0`
+  directory (membership-style assertions only).
+
 ## Status
 
 * **M1 — memory & header model: DONE.** `zmem.c` loads `zork1.z3`,

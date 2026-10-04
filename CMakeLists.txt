@@ -184,6 +184,13 @@ option(LUGALOS_ENABLE_ST7735 "Build the ST7735 TFT canvas driver (RP2350 only)" 
 option(LUGALOS_ENABLE_TM1638 "Build the TM1638 7-segment/keypad/LED driver (RP2350 only)" ON)
 option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet implemented)" ON)
 
+# user/zmachine: Z-machine v3 interpreter (zmem/zvm/ztext/zparse/zsave).
+# Freestanding core, same leaf shape as the chess engine; nothing outside
+# references it until the shell command lands, and --gc-sections keeps the
+# image flat until then. The game itself is data: games/zork1/zork1-mit.z3
+# is staged to /sd0/games/ (MIT-built from in-tree ZIL source).
+option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachine)" ON)
+
 # Same mechanism again (L1, plan/phase11_pico_clock_green.md): the
 # Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
 # other RP2350 persona) to its own display hardware instead, so that persona
@@ -297,6 +304,19 @@ endforeach()
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/cas ${SD_STAGE}/cas)
 
+# user/zmachine: shippable story file, built from the MIT ZIL source in
+# user/zmachine/games/zork1/src (see that directory's README for the
+# provenance chain; rebuild with games/zork1/build.sh). /sd0/games/ is
+# the directory for future titles the same way.  On-card name is plain
+# 8.3 (ZORK1.Z3): the volume carries no long-filename entries, and a
+# name like zork1-mit.z3 would arrive truncated to ZORK1-MI.Z3 anyway
+# -- worse, silently, since the truncation happens in the image writer.
+list(APPEND SD_STAGE_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SD_STAGE}/games
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork1/zork1-mit.z3
+            ${SD_STAGE}/games/zork1.z3)
+
 # The staged files are inputs, so editing one has to rebuild the image.
 # Without this, changing init.lisp left the flash image holding the previous
 # copy and no build step disagreed -- which surfaces as unrelated 9P transport
@@ -307,6 +327,8 @@ file(GLOB_RECURSE SD_ROOT_FILES CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/*)
 file(GLOB_RECURSE CAS_FILES CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/cas/*)
+set(STORY_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork1/zork1-mit.z3)
 
 # I7a, plan/phase21_identity_and_authentication.md §3.3: two forms of the same
 # image, and which one is built is the whole point of the milestone.
@@ -351,6 +373,7 @@ add_custom_command(
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
             ${SD_ROOT_FILES}
             ${CAS_FILES}
+            ${STORY_FILES}
             uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )
@@ -736,6 +759,16 @@ if(LUGALOS_ENABLE_CHESS)
         user/chess/src/perft.c
         user/chess/src/pgn.c
         user/chess/src/chess_ui.c)
+endif()
+if(LUGALOS_ENABLE_ZMACHINE)
+    # Interpreter core only -- host_main.c is the host harness's libc entry
+    # point and never belongs in a firmware build.
+    list(APPEND SOURCES
+        user/zmachine/zmem.c
+        user/zmachine/zvm.c
+        user/zmachine/ztext.c
+        user/zmachine/zparse.c
+        user/zmachine/zsave.c)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
