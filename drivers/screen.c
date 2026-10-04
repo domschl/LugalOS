@@ -46,6 +46,8 @@ LCDTERM_UTEXT static int screen_alloc_term(screen_t *scr, uint8_t vterm_id) {
             fbtext_init(&text, 0, 0, scr->full_cols, SCREEN_TEXT_ROWS(scr->cv.h));
             vtterm_init(&scr->terms[i].vt, &text, t_shadow);
             vtterm_set_hidden(&scr->terms[i].vt, true);
+            scr->terms[i].vt.title[0] = '\0';
+            scr->terms[i].vt.title_seq = 0;
             return (int)i;
         }
     }
@@ -57,7 +59,53 @@ LCDTERM_UTEXT static void screen_free_term(screen_t *scr, uint8_t vterm_id) {
     if (idx > 0) { /* never free root terminal 0 */
         scr->terms[idx].in_use = false;
         scr->terms[idx].vterm_id = 0;
+        scr->terms[idx].vt.title[0] = '\0';
+        scr->terms[idx].vt.title_seq = 0;
         vtterm_set_hidden(&scr->terms[idx].vt, true);
+        uint32_t term_cells = (uint32_t)scr->full_cols * (uint32_t)SCREEN_TEXT_ROWS(scr->cv.h);
+        shadow_clear(scr->shadow + idx * term_cells, term_cells);
+    }
+}
+
+LCDTERM_UTEXT static int screen_find_canvas_by_vterm(const screen_t *scr, uint8_t vterm_id) {
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+        if (scr->canvases[i].in_use && scr->canvases[i].vterm_id == vterm_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *scr, uint8_t vterm_id) {
+    int idx = screen_find_canvas_by_vterm(scr, vterm_id);
+    if (idx >= 0) return idx;
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+        if (!scr->canvases[i].in_use) {
+            scr->canvases[i].in_use = true;
+            scr->canvases[i].locked = false;
+            scr->canvases[i].vterm_id = vterm_id;
+            scr->canvases[i].title[0] = '\0';
+            if (scr->store) {
+                canvas1_init(&scr->canvases[i].backing,
+                             scr->store + i * scr->store_slot,
+                             scr->cv.w / 8u, scr->cv.w, scr->cv.h);
+                canvas1_fill(&scr->canvases[i].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+            }
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
+    if (cid < SCREEN_MAX_CANVASES) {
+        scr->canvases[cid].in_use = false;
+        scr->canvases[cid].locked = false;
+        scr->canvases[cid].vterm_id = 0;
+        scr->canvases[cid].title[0] = '\0';
+        if (scr->store) {
+            canvas1_fill(&scr->canvases[cid].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+        }
     }
 }
 
@@ -84,35 +132,94 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
         int max_w = rx - 16 - sx;
         if (max_w > 20) {
             int cur_bx = sx;
+            int min_vis_bx = -1;
+            int max_vis_bx = -1;
+            bool cut_left = false;
+            bool cut_right = false;
+            int cut_vis_x0 = -1;
+            int cut_vis_x1 = -1;
+
             for (uint8_t i = 0; i < scr->ribbon.count; i++) {
                 const ribbon_win_t *win = &scr->ribbon.wins[i];
                 int bw = (win->cols >= 90) ? 22 :
                          (win->cols >= 60) ? 15 :
                          (win->cols >= 45) ? 11 : 8;
                 if (cur_bx + bw > rx - 16) break;
+
+                int32_t x0 = win->rx0 - scr->ribbon.x_view;
+                int32_t x1 = win->rx1 - scr->ribbon.x_view;
+                bool is_vis = (x1 >= 0 && x0 < (int32_t)cv->w);
+                if (is_vis) {
+                    int win_w = (int)(win->rx1 - win->rx0 + 1);
+                    if (win_w < 1) win_w = 1;
+
+                    if (min_vis_bx < 0) {
+                        min_vis_bx = cur_bx;
+                        if (x0 < 0) {
+                            cut_left = true;
+                            int cut_px = (int)(((-x0) * (int32_t)bw) / win_w);
+                            if (cut_px >= bw) cut_px = bw - 1;
+                            cut_vis_x0 = cur_bx + cut_px;
+                        } else {
+                            cut_vis_x0 = cur_bx;
+                        }
+                    }
+
+                    if (x1 >= (int32_t)cv->w) {
+                        cut_right = true;
+                        int vis_px = (int)((((int32_t)cv->w - x0) * (int32_t)bw) / win_w);
+                        if (vis_px < 1) vis_px = 1;
+                        if (vis_px > bw) vis_px = bw;
+                        cut_vis_x1 = cur_bx + vis_px - 1;
+                    } else {
+                        cut_right = false;
+                        cut_vis_x1 = cur_bx + bw - 1;
+                    }
+                    max_vis_bx = cur_bx + bw - 1;
+                }
+
+                /* Block outline */
+                canvas1_fill(cv, cur_bx, 4, cur_bx + bw - 1, 14, CANVAS1_WHITE);
+                canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 4, CANVAS1_BLACK);
+                canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 14, CANVAS1_BLACK);
+                canvas1_vline(cv, cur_bx, 4, 14, CANVAS1_BLACK);
+                canvas1_vline(cv, cur_bx + bw - 1, 4, 14, CANVAS1_BLACK);
+
+                if (win->type == RIBBON_WIN_CANVAS && i != scr->ribbon.active_idx) {
+                    /* Small graphic mark in center of inactive canvas block */
+                    canvas1_fill(cv, cur_bx + bw / 2 - 1, 8, cur_bx + bw / 2 + 1, 10, CANVAS1_BLACK);
+                }
+
                 if (i == scr->ribbon.active_idx) {
-                    /* Focused window: solid black mini-block */
-                    canvas1_fill(cv, cur_bx, 4, cur_bx + bw - 1, 14, CANVAS1_BLACK);
-                } else {
-                    /* Inactive window: 1-px outline */
-                    canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 4, CANVAS1_BLACK);
-                    canvas1_hline(cv, cur_bx, cur_bx + bw - 1, 14, CANVAS1_BLACK);
-                    canvas1_vline(cv, cur_bx, 4, 14, CANVAS1_BLACK);
-                    canvas1_vline(cv, cur_bx + bw - 1, 4, 14, CANVAS1_BLACK);
+                    /* Active window: zebra stripes inside mini-block */
+                    for (int y = 6; y <= 12; y += 2) {
+                        canvas1_hline(cv, cur_bx + 1, cur_bx + bw - 2, y, CANVAS1_BLACK);
+                    }
                 }
                 cur_bx += bw + 3;
+            }
+
+            if (min_vis_bx >= 0 && max_vis_bx >= min_vis_bx) {
+                int vx0 = cut_left ? cut_vis_x0 : (min_vis_bx - 2);
+                int vx1 = cut_right ? cut_vis_x1 : (max_vis_bx + 2);
+                if (vx0 < sx - 2) vx0 = sx - 2;
+                if (vx1 > rx - 14) vx1 = rx - 14;
+                if (vx1 >= vx0) {
+                    canvas1_hline(cv, vx0, vx1, 2, CANVAS1_GREY);
+                    canvas1_hline(cv, vx0, vx1, 16, CANVAS1_GREY);
+                    canvas1_vline(cv, vx0, 2, 16, CANVAS1_GREY);
+                    canvas1_vline(cv, vx1, 2, 16, CANVAS1_GREY);
+                }
             }
         }
     }
 }
 
 /* A title bar over x0..x1 from y0: the frame's top border, a white row, six
- * stripes with white rows between, a white row, a border -- 17 rows -- and
- * the title in bold, centred to the pixel in a white box. The glyph's rows
- * 1..14 are drawn from one pixel below the border, which leaves capitals two
- * white rows above and three below (the owner's adjustment of the C2
- * mockup). */
-LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t) {
+ * stripes with white rows between (if active), a white row, a border -- 17 rows -- and
+ * the title in bold, centred to the pixel in a white box. Inactive windows
+ * remain plain white inside with the title (original classic Macintosh style). */
+LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t, bool active) {
     int vx0 = x0 < 0 ? 0 : x0;
     int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
     if (vx0 >= vx1) return;
@@ -120,7 +227,9 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
     canvas1_fill(cv, vx0 + 1, y0 + 1, vx1 - 1, y0 + 15, CANVAS1_WHITE);
     canvas1_hline(cv, vx0, vx1, y0, CANVAS1_BLACK);
     canvas1_hline(cv, vx0, vx1, y0 + 16, CANVAS1_BLACK);
-    for (int y = y0 + 3; y <= y0 + 13; y += 2) canvas1_hline(cv, vx0 + 2, vx1 - 2, y, CANVAS1_BLACK);
+    if (active) {
+        for (int y = y0 + 3; y <= y0 + 13; y += 2) canvas1_hline(cv, vx0 + 2, vx1 - 2, y, CANVAS1_BLACK);
+    }
     uint32_t n = cstr_len(t);
     unsigned len = canvas1_text_len(t, n);
     int max = (vx1 - vx0 - 1 - 40) / 8;        /* leave some stripes either side */
@@ -136,7 +245,7 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
 }
 
 /* A tile: its frame and shadow, its interior white, and its title bar. */
-LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1, int y1, const char *t) {
+LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1, int y1, const char *t, bool active) {
     int vx0 = x0 < 0 ? 0 : x0;
     int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
     if (vx0 >= vx1) return;
@@ -149,7 +258,7 @@ LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1,
         canvas1_hline(cv, vx0 + 1, x1 + 1, y1 + 1, CANVAS1_BLACK);   /* the shadow */
         canvas1_vline(cv, x1 + 1, y0 + 1, y1 + 1, CANVAS1_BLACK);
     }
-    draw_titlebar(cv, x0, y0, x1, t);
+    draw_titlebar(cv, x0, y0, x1, t, active);
 }
 
 LCDTERM_UTEXT static bool has_text(const screen_t *scr) {
@@ -175,7 +284,7 @@ LCDTERM_UTEXT static vtterm_t *active_vt(screen_t *scr) {
 
 LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
     vtterm_t *avt = active_vt(scr);
-    if (has_text(scr)) draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title);
+    if (has_text(scr)) draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title, true);
     scr->title_drawn = avt->title_seq;
 }
 
@@ -192,23 +301,6 @@ LCDTERM_UTEXT static uint8_t *store_slot(const screen_t *scr) {
     return scr->store + (uint32_t)(l - 1u) * scr->store_slot;
 }
 
-/* The canvas as it is now, into its layout's slot. */
-LCDTERM_UTEXT static void store_save(screen_t *scr) {
-    uint8_t *d = store_slot(scr);
-    if (!d) return;
-    const canvas1_t *cc = &scr->cc;
-    unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = cc->ox & 7u;
-    for (unsigned y = 0; y < cc->h; y++) {
-        const uint8_t *src = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (cc->ox >> 3);
-        for (unsigned i = 0; i < rb; i++)
-            d[i] = s ? (uint8_t)((src[i] >> s) | (src[i + 1u] << (8u - s))) : src[i];
-        d += rb;
-    }
-    unsigned bit = 1u << (scr->layout - 1u);
-    scr->store_gen[scr->layout - 1u] = scr->draw_gen;
-    scr->store_ok = (uint8_t)(scr->store_ok | bit);
-}
-
 /* The layout's slot back onto the canvas, if it holds what was there when
  * nothing has been drawn since; false (and nothing done) otherwise. */
 LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
@@ -217,10 +309,11 @@ LCDTERM_UTEXT static bool store_restore(screen_t *scr) {
     unsigned l = scr->layout - 1u;
     if (!(scr->store_ok & (1u << l)) || scr->store_gen[l] != scr->draw_gen) return false;
     const canvas1_t *cc = &scr->cc;
-    unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = cc->ox & 7u;
+    if (cc->ox < 0 || cc->oy < 0 || (int)cc->ox + (int)cc->w > (int)scr->cv.w) return false;
+    unsigned rb = ((unsigned)cc->w + 7u) / 8u, s = (unsigned)cc->ox & 7u;
     unsigned tail = (unsigned)cc->w & 7u;
     for (unsigned y = 0; y < cc->h; y++) {
-        uint8_t *dst = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (cc->ox >> 3);
+        uint8_t *dst = cc->fb + (uint32_t)(cc->oy + y) * cc->stride + (uint32_t)(cc->ox >> 3);
         for (unsigned i = 0; i < rb; i++) {
             unsigned vm = (i + 1u == rb && tail) ? (1u << tail) - 1u : 0xffu;
             unsigned v = d[i] & vm;
@@ -241,6 +334,132 @@ void screen_set_store(screen_t *scr, void *mem, uint32_t bytes) {
     scr->store_ok = 0;
     scr->store = (mem && bytes >= need) ? (uint8_t *)mem : 0;
     scr->store_slot = need / SCREEN_STORES;
+    if (scr->store) {
+        canvas1_init(&scr->c_backing, scr->store, scr->cv.w / 8u, scr->cv.w, scr->cv.h);
+        canvas1_fill(&scr->c_backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+        for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+            canvas1_init(&scr->canvases[i].backing, scr->store + i * scr->store_slot, scr->cv.w / 8u, scr->cv.w, scr->cv.h);
+            canvas1_fill(&scr->canvases[i].backing, 0, 0, scr->cv.w - 1, scr->cv.h - 1, CANVAS1_WHITE);
+        }
+    }
+}
+
+LCDTERM_UTEXT static void blit_canvas_backing(screen_t *scr, uint8_t slot,
+                                              int tile_screen_x, int tile_screen_y,
+                                              int tile_w, int tile_h) {
+    if (!scr->store || slot >= SCREEN_STORES) return;
+    int W = tile_w;
+    int H = tile_h;
+    if (W <= 0 || H <= 0) return;
+
+    int X = tile_screen_x;
+    int Y = tile_screen_y;
+    int cv_w = (int)scr->cv.w;
+    int cv_h = (int)scr->cv.h;
+
+    int x0 = (X < 0) ? -X : 0;
+    int x1 = (X + W > cv_w) ? (cv_w - X - 1) : (W - 1);
+    if (x0 > x1) return;
+
+    int y0 = (Y < 0) ? -Y : 0;
+    int y1 = (Y + H > cv_h) ? (cv_h - Y - 1) : (H - 1);
+    if (y0 > y1) return;
+
+    const uint8_t *src_fb = scr->store + (uint32_t)slot * scr->store_slot;
+    uint32_t src_stride = scr->cv.w / 8u;
+    int len = x1 - x0 + 1;
+
+    for (int y = y0; y <= y1; y++) {
+        int sy = Y + y;
+        int sx0 = X + x0;
+        const uint8_t *srow = src_fb + (uint32_t)y * src_stride;
+        uint8_t *drow = scr->cv.fb + (uint32_t)sy * scr->cv.stride;
+        int k = 0;
+
+        /* Align destination to byte boundary */
+        while (((sx0 + k) & 7) != 0 && k < len) {
+            int tx = x0 + k;
+            int sx = sx0 + k;
+            uint8_t bit = (uint8_t)((srow[tx >> 3] >> (tx & 7)) & 1u);
+            uint8_t mask = (uint8_t)(1u << (sx & 7));
+            if (bit) drow[sx >> 3] |= mask;
+            else drow[sx >> 3] &= (uint8_t)~mask;
+            k++;
+        }
+
+        /* Fast byte transfers */
+        int tx_shift = (x0 + k) & 7;
+        if (tx_shift == 0) {
+            while (k + 8 <= len) {
+                drow[(sx0 + k) >> 3] = srow[(x0 + k) >> 3];
+                k += 8;
+            }
+        } else {
+            while (k + 8 <= len) {
+                int sb = (x0 + k) >> 3;
+                uint8_t v = (uint8_t)((srow[sb] >> tx_shift) | (srow[sb + 1] << (8 - tx_shift)));
+                drow[(sx0 + k) >> 3] = v;
+                k += 8;
+            }
+        }
+
+        /* Trailing bits */
+        while (k < len) {
+            int tx = x0 + k;
+            int sx = sx0 + k;
+            uint8_t bit = (uint8_t)((srow[tx >> 3] >> (tx & 7)) & 1u);
+            uint8_t mask = (uint8_t)(1u << (sx & 7));
+            if (bit) drow[sx >> 3] |= mask;
+            else drow[sx >> 3] &= (uint8_t)~mask;
+            k++;
+        }
+    }
+}
+
+LCDTERM_UTEXT static void clear_ribbon_background(const screen_t *scr) {
+    const canvas1_t *cv = &scr->cv;
+    int w = (int)cv->w;
+    int h = (int)cv->h;
+    int tile_y0 = SCREEN_TILE_Y;
+    unsigned rows = SCREEN_TEXT_ROWS(cv->h);
+    int tile_y1 = SCREEN_TEXT_Y + 16 * (int)rows + 1;
+
+    /* Top and bottom margin stripes */
+    if (tile_y0 > SCREEN_MENU_H) {
+        canvas1_fill(cv, 0, SCREEN_MENU_H, w - 1, tile_y0 - 1, CANVAS1_GREY);
+    }
+    if (tile_y1 + 2 < h) {
+        canvas1_fill(cv, 0, tile_y1 + 2, w - 1, h - 1, CANVAS1_GREY);
+    }
+
+    if (scr->ribbon.count == 0) {
+        canvas1_fill(cv, 0, tile_y0, w - 1, tile_y1 + 1, CANVAS1_GREY);
+        return;
+    }
+
+    int32_t xv = scr->ribbon.x_view;
+    int cur_x = 0;
+
+    for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+        const ribbon_win_t *win = &scr->ribbon.wins[i];
+        int32_t x0 = win->rx0 - xv;
+        int32_t x1 = win->rx1 - xv;
+
+        if (x1 + 1 < 0) continue;          /* completely to the left */
+        if (x0 >= w) break;                /* completely to the right */
+
+        int wx0 = (x0 < 0) ? 0 : (int)x0;
+        int wx1 = (x1 + 1 >= w) ? (w - 1) : (int)(x1 + 1); /* +1 for shadow */
+
+        if (wx0 > cur_x) {
+            canvas1_fill(cv, cur_x, tile_y0, wx0 - 1, tile_y1 + 1, CANVAS1_GREY);
+        }
+        cur_x = wx1 + 1;
+    }
+
+    if (cur_x < w) {
+        canvas1_fill(cv, cur_x, tile_y0, w - 1, tile_y1 + 1, CANVAS1_GREY);
+    }
 }
 
 LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
@@ -250,9 +469,12 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
 LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     (void)place(scr, scr->layout);
-    canvas1_fill(cv, 0, SCREEN_MENU_H, cv->w - 1, cv->h - 1, CANVAS1_GREY);
+    clear_ribbon_background(scr);
+
     if (scr->ribbon.count > 0) {
         int32_t xv = scr->ribbon.x_view;
+        int tile_y1 = SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
+
         for (uint8_t i = 0; i < scr->ribbon.count; i++) {
             const ribbon_win_t *w = &scr->ribbon.wins[i];
             int32_t x0 = w->rx0 - xv;
@@ -260,29 +482,48 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
             if (x1 + 1 >= 0 && x0 < (int32_t)cv->w) {
                 const char *title = w->title;
                 if (w->type == RIBBON_WIN_CANVAS) {
-                    title = scr->ctitle;
+                    uint8_t cid = w->vterm_id;
+                    if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].title[0]) {
+                        title = scr->canvases[cid].title;
+                    } else if (scr->ctitle[0]) {
+                        title = scr->ctitle;
+                    }
                 } else if (w->type == RIBBON_WIN_TERM) {
                     int t = screen_find_term(scr, w->vterm_id);
                     if (t >= 0 && scr->terms[t].vt.title[0]) {
                         title = scr->terms[t].vt.title;
                     }
                 }
-                int tile_y1 = SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
-                draw_tile(cv, (int)x0, SCREEN_TILE_Y, (int)x1, tile_y1, title);
+                bool active = (i == scr->ribbon.active_idx);
+                draw_tile(cv, (int)x0, SCREEN_TILE_Y, (int)x1, tile_y1, title, active);
             }
         }
-        if (has_canvas(scr)) {
-            if (!restore || !store_restore(scr)) {
-                if (scr->cc.w && scr->cc.h) {
-                    canvas1_fill(&scr->cc, 0, 0, (int)scr->cc.w - 1, (int)scr->cc.h - 1, CANVAS1_WHITE);
+
+        /* Blit backing stores for all visible canvas windows */
+        for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+            const ribbon_win_t *w = &scr->ribbon.wins[i];
+            if (w->type == RIBBON_WIN_CANVAS) {
+                uint8_t cid = w->vterm_id;
+                int32_t cx0 = w->rx0 - xv;
+                int32_t cx1 = w->rx1 - xv;
+                if (cx1 >= 0 && cx0 < (int32_t)cv->w) {
+                    int cw_w = (int)(w->rx1 - w->rx0 - 1);
+                    int cw_h = (int)(tile_y1 - (SCREEN_TILE_Y + 17));
+                    if (cw_w > 0 && cw_h > 0) {
+                        if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store) {
+                            blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
+                        } else if (!restore || !store_restore(scr)) {
+                            canvas1_fill(cv, (int)cx0 + 1, SCREEN_TILE_Y + 17, (int)cx1 - 1, tile_y1 - 1, CANVAS1_WHITE);
+                            scr->damage++;
+                        }
+                    }
                 }
-                scr->damage++;
             }
         }
     } else {
-        if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title);
+        if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title, true);
         if (has_canvas(scr)) {
-            draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle);
+            draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle, false);
             if (!restore || !store_restore(scr)) scr->damage++;
         }
     }
@@ -331,13 +572,31 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             continue;
         }
 
-        int c0 = (int)((x0 + 4) / 8);
-        if (c0 < 1) c0 = 1;
-        if (c0 > C - 2) c0 = C - 2;
-        int max_c = C - 1 - c0;
+        int col_off = 0;
+        int c0 = 1;
         int win_c = (int)w->cols;
-        if (win_c > max_c) win_c = max_c;
+
+        if (x0 >= 4) {
+            c0 = (int)((x0 + 4) / 8);
+            col_off = 0;
+            int max_c = C - 1 - c0;
+            if (win_c > max_c) win_c = max_c;
+        } else {
+            c0 = 1;
+            col_off = (int)((4 - x0) / 8);
+            if (col_off < 0) col_off = 0;
+            if (col_off >= (int)w->cols) {
+                vtterm_set_hidden(&scr->terms[t].vt, true);
+                continue;
+            }
+            win_c = (int)w->cols - col_off;
+            int max_c = C - 1 - c0;
+            if (win_c > max_c) win_c = max_c;
+        }
         if (win_c < 1) win_c = 1;
+
+        vtterm_set_logical_cols(&scr->terms[t].vt, w->cols);
+        vtterm_set_col_offset(&scr->terms[t].vt, (uint16_t)col_off);
 
         fbtext_t text;
         fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)c0, scr->cv.stride,
@@ -365,14 +624,14 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         scr->cx1 = (int16_t)cx1;
         scr->cy0 = SCREEN_TILE_Y;
         scr->cy1 = (int16_t)y1;
-        int cw_w = (int)(scr->cx1 - scr->cx0 - 1);
+        int cw_w = (int)(cw->rx1 - cw->rx0 - 1);
         int cw_h = (int)(scr->cy1 - scr->cy0 - 17);
         if (cw_w < 0) cw_w = 0;
         if (cw_h < 0) cw_h = 0;
         if (cw_w == 0 || cw_h == 0) {
             canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
         } else {
-            canvas1_window(&scr->cc, &scr->cv, scr->cx0 + 1, scr->cy0 + 17,
+            canvas1_window(&scr->cc, &scr->cv, (int)scr->cx0 + 1, (int)scr->cy0 + 17,
                            (unsigned)cw_w, (unsigned)cw_h);
         }
     } else {
@@ -394,6 +653,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
 
 void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h) {
     canvas1_init(&scr->cv, fb, stride, w, h);
+    canvas1_init(&scr->c_backing, 0, 0, 0, 0);
     scr->full_cols = (uint8_t)SCREEN_TEXT_COLS(w);
     scr->damage = 0;
     scr->store = 0;
@@ -411,6 +671,14 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     for (i = 0; ct[i] && i < SCREEN_CTITLE_MAX - 1u; i++) scr->ctitle[i] = ct[i];
     scr->ctitle[i] = '\0';
     scr->right[0] = '\0';
+
+    for (uint32_t c = 0; c < SCREEN_MAX_CANVASES; c++) {
+        canvas1_init(&scr->canvases[c].backing, 0, 0, 0, 0);
+        scr->canvases[c].vterm_id = 0;
+        scr->canvases[c].in_use = false;
+        scr->canvases[c].locked = false;
+        scr->canvases[c].title[0] = '\0';
+    }
 
     uint32_t term_cells = (uint32_t)SCREEN_TEXT_COLS(w) * (uint32_t)SCREEN_TEXT_ROWS(h);
     for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
@@ -483,31 +751,40 @@ LCDTERM_UTEXT void screen_repaint(screen_t *scr) {
     draw_all(scr);
 }
 
-LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
-    if (scr->locked && layout != scr->layout && layout != SCREEN_LAYOUT_TEXT) return false;
-    if (layout == scr->layout && (layout == SCREEN_LAYOUT_TEXT || ribbon_find_canvas(&scr->ribbon) >= 0)) {
-        return true;
-    }
-
-    if (has_canvas(scr)) store_save(scr);
+LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned layout) {
+    int cid_check = screen_find_canvas_by_vterm(scr, vid);
+    if (cid_check >= 0 && scr->canvases[cid_check].locked && layout != scr->layout && layout != SCREEN_LAYOUT_TEXT) return false;
 
     if (layout == SCREEN_LAYOUT_TEXT) {
-        int c_idx = ribbon_find_canvas(&scr->ribbon);
-        if (c_idx >= 0) {
-            ribbon_remove(&scr->ribbon, (uint8_t)c_idx);
-            if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
-                scr->ribbon.wins[0].cols = scr->full_cols;
-            }
-            ribbon_layout(&scr->ribbon);
-            scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
+            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        }
+        if (cid < 0) {
+            int c_any = ribbon_find_canvas(&scr->ribbon);
+            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
+        }
+
+        if (cid >= 0) {
+            int c_idx = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+            if (c_idx >= 0) {
+                ribbon_remove(&scr->ribbon, (uint8_t)c_idx);
+                screen_free_canvas(scr, (uint8_t)cid);
+                if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
+                    scr->ribbon.wins[0].cols = scr->full_cols;
+                }
+                ribbon_layout(&scr->ribbon);
+                scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
+                scr->ribbon.x_view = scr->ribbon.x_target;
             }
         }
-        scr->layout = SCREEN_LAYOUT_TEXT;
-        scr->locked = 0;
-        scr->redrawing = 0;
-        (void)place(scr, SCREEN_LAYOUT_TEXT);
+        if (ribbon_find_canvas(&scr->ribbon) < 0) {
+            scr->layout = SCREEN_LAYOUT_TEXT;
+            scr->locked = 0;
+            scr->redrawing = 0;
+        }
+        (void)place(scr, scr->layout);
         draw_all_from(scr, true);
         return true;
     }
@@ -532,55 +809,63 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
 
     uint8_t canvas_cols = (layout == SCREEN_LAYOUT_CANVAS) ? scr->full_cols : (uint8_t)(scr->full_cols - text_cols - 2u);
 
-    int c_idx = ribbon_find_canvas(&scr->ribbon);
-    int t_idx = ribbon_find_term(&scr->ribbon);
-    if (c_idx >= 0) {
-        /* Canvas already in ribbon: update column widths */
-        scr->ribbon.wins[c_idx].cols = canvas_cols;
-        if (text_cols > 0 && t_idx >= 0) {
-            scr->ribbon.wins[t_idx].cols = text_cols;
+    int cid = screen_find_canvas_by_vterm(scr, vid);
+    int c_win = (cid >= 0) ? ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid) : -1;
+    int t_win = ribbon_find_vterm(&scr->ribbon, vid);
+
+    if (c_win >= 0) {
+        /* Canvas already in ribbon for this vterm: update column widths */
+        scr->ribbon.wins[c_win].cols = canvas_cols;
+        if (t_win >= 0 && text_cols > 0) {
+            scr->ribbon.wins[t_win].cols = text_cols;
         }
         if (layout == SCREEN_LAYOUT_CANVAS) {
-            scr->ribbon.active_idx = (uint8_t)c_idx;
-        } else if (t_idx >= 0) {
-            scr->ribbon.active_idx = (uint8_t)t_idx;
+            scr->ribbon.active_idx = (uint8_t)c_win;
+        } else if (t_win >= 0) {
+            scr->ribbon.active_idx = (uint8_t)t_win;
         }
         ribbon_layout(&scr->ribbon);
         scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
-        if (scr->ribbon.count <= 2) scr->ribbon.x_view = scr->ribbon.x_target;
-        while (ribbon_step_scroll(&scr->ribbon, 0)) {
-            draw_all_from(scr, true);
-        }
+        scr->ribbon.x_view = scr->ribbon.x_target;
     } else {
-        /* Canvas not in ribbon: insert it */
-        uint8_t act = scr->ribbon.active_idx;
-        if (act < scr->ribbon.count && scr->ribbon.wins[act].type == RIBBON_WIN_TERM && text_cols > 0) {
-            scr->ribbon.wins[act].cols = text_cols;
+        /* Allocate a canvas slot */
+        cid = screen_alloc_canvas(scr, vid);
+        if (cid < 0) return false; /* out of canvas slots */
+
+        if (t_win >= 0 && text_cols > 0) {
+            scr->ribbon.wins[t_win].cols = text_cols;
+        } else if (t_win < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+                   scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM && text_cols > 0) {
+            scr->ribbon.wins[scr->ribbon.active_idx].cols = text_cols;
+            t_win = (int)scr->ribbon.active_idx;
         }
+
+        uint8_t act = (t_win >= 0) ? (uint8_t)t_win : scr->ribbon.active_idx;
         uint8_t insert_idx;
         if (scr->swapped) {
-            insert_idx = (uint8_t)(act + 1u);
-        } else {
             insert_idx = act;
+        } else {
+            insert_idx = (uint8_t)(act + 1u);
         }
+
         char def_ctitle[8];
         def_ctitle[0] = 'C'; def_ctitle[1] = 'a'; def_ctitle[2] = 'n';
         def_ctitle[3] = 'v'; def_ctitle[4] = 'a'; def_ctitle[5] = 's';
         def_ctitle[6] = '\0';
-        const char *ctitle = scr->ctitle[0] ? scr->ctitle : def_ctitle;
-        int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_CANVAS, 0, canvas_cols, ctitle);
+        const char *ctitle = scr->canvases[cid].title[0] ? scr->canvases[cid].title : def_ctitle;
+        int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_CANVAS, (uint8_t)cid, canvas_cols, ctitle);
         if (idx >= 0) {
             if (layout == SCREEN_LAYOUT_CANVAS) {
                 scr->ribbon.active_idx = (uint8_t)idx;
-            } else if (insert_idx == act) {
+            } else if (insert_idx <= act) {
                 scr->ribbon.active_idx = (uint8_t)(act + 1u);
             }
             ribbon_layout(&scr->ribbon);
             scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
-            if (scr->ribbon.count <= 2) scr->ribbon.x_view = scr->ribbon.x_target;
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+        } else {
+            screen_free_canvas(scr, (uint8_t)cid);
+            return false;
         }
     }
 
@@ -589,6 +874,15 @@ LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
     (void)place(scr, layout);
     draw_all_from(scr, true);
     return true;
+}
+
+LCDTERM_UTEXT bool screen_set_layout(screen_t *scr, unsigned layout) {
+    uint8_t vid = 0;
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
+        vid = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    }
+    return screen_set_layout_vterm(scr, vid, layout);
 }
 
 LCDTERM_UTEXT void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows) {
@@ -609,95 +903,94 @@ LCDTERM_UTEXT static unsigned colour(int c) {
     return c == 0 ? CANVAS1_WHITE : c == 2 ? CANVAS1_GREY : CANVAS1_BLACK;
 }
 
-LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply) {
-    const canvas1_t *cc = &scr->cc;
+LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
     if (op == 'L') {
-        status = (n >= 2 && screen_set_layout(scr, req[1])) ? 0 : 1;
+        status = (n >= 2 && screen_set_layout_vterm(scr, vid, req[1])) ? 0 : 1;
     } else if (op == 'T') {
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
+            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        }
+        if (cid < 0) {
+            int c_any = ribbon_find_canvas(&scr->ribbon);
+            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
+        }
+        if (cid < 0) cid = 0;
+
         uint32_t len = n - 1u;
         if (len > SCREEN_CTITLE_MAX - 1u) {
             len = SCREEN_CTITLE_MAX - 1u;
             while (len > 0 && (req[1u + len] & 0xc0u) == 0x80u) len--;
         }
-        for (uint32_t i = 0; i < len; i++) scr->ctitle[i] = (char)req[1u + i];
-        scr->ctitle[len] = '\0';
-        int c_idx = ribbon_find_canvas(&scr->ribbon);
-        if (c_idx >= 0) {
-            ribbon_set_title(&scr->ribbon, (uint8_t)c_idx, scr->ctitle);
+        for (uint32_t i = 0; i < len; i++) {
+            scr->canvases[cid].title[i] = (char)req[1u + i];
+            scr->ctitle[i] = (char)req[1u + i];
         }
-        if (has_canvas(scr)) draw_titlebar(&scr->cv, scr->cx0, scr->cy0, scr->cx1, scr->ctitle);
+        scr->canvases[cid].title[len] = '\0';
+        scr->ctitle[len] = '\0';
+
+        int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+        if (c_win >= 0) {
+            ribbon_set_title(&scr->ribbon, (uint8_t)c_win, scr->canvases[cid].title);
+            int32_t cx0 = scr->ribbon.wins[c_win].rx0 - scr->ribbon.x_view;
+            int32_t cx1 = scr->ribbon.wins[c_win].rx1 - scr->ribbon.x_view;
+            if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w) {
+                bool active = (c_win == (int)scr->ribbon.active_idx);
+                draw_titlebar(&scr->cv, (int)cx0, SCREEN_TILE_Y, (int)cx1, scr->canvases[cid].title, active);
+            }
+        }
+        status = 0;
     } else if (op == 'w') {
         int dir = n >= 2 ? (int)(int8_t)req[1] : 0;
-        if (scr->ribbon.count > 2 || (scr->ribbon.count > 1 && ribbon_find_canvas(&scr->ribbon) < 0)) {
-            if (ribbon_resize_active(&scr->ribbon, dir > 0)) {
-                while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                    draw_all_from(scr, true);
-                }
-                draw_all_from(scr, true);
-                status = 0;
-            } else {
-                status = 1;
-            }
+        if (ribbon_resize_active(&scr->ribbon, dir > 0)) {
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
+            draw_all_from(scr, true);
+            status = 0;
         } else {
-            int at = scr->layout == SCREEN_LAYOUT_TEXT ? 0
-                   : scr->layout == SCREEN_LAYOUT_SPLIT_NARROW ? 1
-                   : scr->layout == SCREEN_LAYOUT_SPLIT_HALF ? 2
-                   : scr->layout == SCREEN_LAYOUT_SPLIT_WIDE ? 3 : 4;
-            int to = at + (scr->swapped ? -dir : dir);
-            unsigned next = to == 0 ? SCREEN_LAYOUT_TEXT : to == 1 ? SCREEN_LAYOUT_SPLIT_NARROW
-                          : to == 2 ? SCREEN_LAYOUT_SPLIT_HALF : to == 3 ? SCREEN_LAYOUT_SPLIT_WIDE
-                          : SCREEN_LAYOUT_CANVAS;
-            status = (scr->locked || dir == 0 || to < 0 || to > 4 || !screen_set_layout(scr, next)) ? 1 : 0;
+            status = 1;
         }
     } else if (op == 'X') {
-        if (scr->locked) {
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid >= 0 && scr->canvases[cid].locked) {
             status = 1;
-        } else if (scr->ribbon.count > 2 || (scr->ribbon.count > 1 && ribbon_find_canvas(&scr->ribbon) < 0)) {
-            uint8_t a = scr->ribbon.active_idx;
-            uint8_t b = (a + 1 < scr->ribbon.count) ? (a + 1) : (a > 0 ? a - 1 : 0);
-            if (ribbon_swap(&scr->ribbon, a, b)) {
+        } else {
+            int c_win = (cid >= 0) ? ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid) : -1;
+            int t_win = ribbon_find_vterm(&scr->ribbon, vid);
+            if (t_win < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+                scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
+                t_win = (int)scr->ribbon.active_idx;
+            }
+
+            if (c_win < 0) {
+                /* No canvas for this terminal: open split canvas! */
+                status = screen_set_layout_vterm(scr, vid, SCREEN_LAYOUT_SPLIT_HALF) ? 0 : 1;
+            } else if (t_win >= 0 && c_win >= 0) {
+                /* Swap position of terminal and canvas */
+                ribbon_swap(&scr->ribbon, (uint8_t)t_win, (uint8_t)c_win);
                 scr->swapped = (uint8_t)!scr->swapped;
-                while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                    draw_all_from(scr, true);
-                }
+                scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
+                scr->ribbon.x_view = scr->ribbon.x_target;
+                (void)place(scr, scr->layout);
                 draw_all_from(scr, true);
                 status = 0;
             } else {
                 status = 1;
             }
-        } else if (scr->layout == SCREEN_LAYOUT_TEXT || scr->layout == SCREEN_LAYOUT_CANVAS) {
-            /* One pane full: show the other one full (the owner's call). */
-            status = screen_set_layout(scr, scr->layout == SCREEN_LAYOUT_TEXT ? SCREEN_LAYOUT_CANVAS
-                                                                          : SCREEN_LAYOUT_TEXT) ? 0 : 1;
-        } else {
-            store_save(scr);            /* 38.8: the same canvas, other side */
-            scr->swapped = (uint8_t)!scr->swapped;
-            int c_idx = ribbon_find_canvas(&scr->ribbon);
-            int t_idx = ribbon_find_term(&scr->ribbon);
-            if (c_idx >= 0 && t_idx >= 0 && c_idx != t_idx) {
-                ribbon_swap(&scr->ribbon, (uint8_t)c_idx, (uint8_t)t_idx);
-            }
-            if (scr->layout != SCREEN_LAYOUT_TEXT && scr->layout != SCREEN_LAYOUT_CANVAS) {
-                (void)place(scr, scr->layout);
-                while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                    draw_all_from(scr, true);
-                }
-                draw_all_from(scr, true);
-            }
-            status = 0;
         }
     } else if (op == 'N') {
         /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
-        uint8_t vid = (n >= 2) ? req[1] : 0;
+        uint8_t n_vid = (n >= 2) ? req[1] : 0;
         uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
         const char *title = (n > 3 && req[3]) ? (const char *)(req + 3) : 0;
         char def_title[16];
         if (!title) {
             def_title[0] = 'l'; def_title[1] = 's'; def_title[2] = 'h';
             def_title[3] = ' '; def_title[4] = '[';
-            def_title[5] = (char)('0' + (vid % 10));
+            def_title[5] = (char)('0' + (n_vid % 10));
             def_title[6] = ']'; def_title[7] = '\0';
             title = def_title;
         }
@@ -705,16 +998,15 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
             scr->ribbon.wins[0].cols = 48;
         }
         int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
-                                RIBBON_WIN_TERM, vid, cols, title);
+                                RIBBON_WIN_TERM, n_vid, cols, title);
         if (idx >= 0) {
-            int t = screen_alloc_term(scr, vid);
+            int t = screen_alloc_term(scr, n_vid);
             if (t >= 0 && title) {
                 uint32_t tlen = cstr_len(title);
                 vtterm_set_title(&scr->terms[t].vt, title, tlen);
             }
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -723,9 +1015,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '<') {
         /* Phase 44: Focus left window (Cmd+Left) */
         if (ribbon_focus_step(&scr->ribbon, -1)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -734,9 +1025,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '>') {
         /* Phase 44: Focus right window (Cmd+Right) */
         if (ribbon_focus_step(&scr->ribbon, 1)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -745,9 +1035,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == '[') {
         /* Phase 44: Move active window left (Cmd+Ctrl+Left) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, -1)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -756,9 +1045,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == ']') {
         /* Phase 44: Move active window right (Cmd+Ctrl+Right) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, 1)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -768,9 +1056,8 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         /* Phase 44: Jump directly to window N (Cmd+1..9) */
         uint8_t target = (n >= 2) ? req[1] : 0;
         if (ribbon_focus(&scr->ribbon, target)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -778,12 +1065,11 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         }
     } else if (op == 'V') {
         /* Phase 44: Focus window by vterm ID */
-        uint8_t vid = (n >= 2) ? req[1] : 0;
-        int idx = ribbon_find_vterm(&scr->ribbon, vid);
+        uint8_t f_vid = (n >= 2) ? req[1] : 0;
+        int idx = ribbon_find_vterm(&scr->ribbon, f_vid);
         if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
-                draw_all_from(scr, true);
-            }
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
             draw_all_from(scr, true);
             status = 0;
         } else {
@@ -811,33 +1097,41 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
         }
     } else if (op == 'C') {
         /* Phase 44: Close active window (Cmd+W) */
-        uint8_t closed_type = (scr->ribbon.active_idx < scr->ribbon.count)
-                            ? scr->ribbon.wins[scr->ribbon.active_idx].type : 0;
-        uint8_t closed_vid = (scr->ribbon.active_idx < scr->ribbon.count)
-                           ? scr->ribbon.wins[scr->ribbon.active_idx].vterm_id : 0;
-        if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, scr->ribbon.active_idx)) {
-            if (closed_type == RIBBON_WIN_TERM && closed_vid > 0) {
-                screen_free_term(scr, closed_vid);
-            }
-            if (closed_type == RIBBON_WIN_CANVAS || ribbon_find_canvas(&scr->ribbon) < 0) {
-                scr->layout = SCREEN_LAYOUT_TEXT;
-            }
-            if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
-                scr->ribbon.wins[0].cols = scr->full_cols;
+        uint8_t act = scr->ribbon.active_idx;
+        if (act < scr->ribbon.count) {
+            uint8_t closed_type = scr->ribbon.wins[act].type;
+            uint8_t closed_id = scr->ribbon.wins[act].vterm_id;
+            if (scr->ribbon.count > 1 && ribbon_remove(&scr->ribbon, act)) {
+                if (closed_type == RIBBON_WIN_TERM && closed_id > 0) {
+                    screen_free_term(scr, closed_id);
+                } else if (closed_type == RIBBON_WIN_CANVAS) {
+                    screen_free_canvas(scr, closed_id);
+                }
+                if (ribbon_find_canvas(&scr->ribbon) < 0) {
+                    scr->layout = SCREEN_LAYOUT_TEXT;
+                }
+                if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
+                    scr->ribbon.wins[0].cols = scr->full_cols;
+                }
                 ribbon_layout(&scr->ribbon);
-                scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, 0, scr->ribbon.x_view);
-            }
-            while (ribbon_step_scroll(&scr->ribbon, 0)) {
+                scr->ribbon.x_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.x_view);
+                scr->ribbon.x_view = scr->ribbon.x_target;
+                (void)place(scr, scr->layout);
                 draw_all_from(scr, true);
+                status = 0;
+                reply[10] = closed_type;
+                reply[11] = closed_id;
+            } else {
+                status = 1;
             }
-            draw_all_from(scr, true);
-            status = 0;
-            reply[10] = closed_type;
-            reply[11] = closed_vid;
         } else {
             status = 1;
         }
     } else if (op == 'K') {
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid >= 0) {
+            scr->canvases[cid].locked = (n >= 2 && req[1]) ? true : false;
+        }
         scr->locked = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'Z') {
         scr->store_ok = 0;              /* 38.8 */
@@ -845,44 +1139,132 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else if (op == 'D') {
         scr->redrawing = (n >= 2 && req[1]) ? 1 : 0;
     } else if (op == 'S' || op == 0) {
-        /* the reply is all */
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
+            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        }
+        if (cid < 0) {
+            int c_any = ribbon_find_canvas(&scr->ribbon);
+            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
+        }
+        int cw_w = 0, cw_h = 0;
+        if (cid >= 0 && scr->canvases[cid].in_use) {
+            int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+            if (c_win >= 0) {
+                const ribbon_win_t *w = &scr->ribbon.wins[c_win];
+                cw_w = (int)(w->rx1 - w->rx0 - 1);
+                cw_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+            }
+        }
+        reply[2] = (uint8_t)cw_w; reply[3] = (uint8_t)(cw_w >> 8);
+        reply[4] = (uint8_t)cw_h; reply[5] = (uint8_t)(cw_h >> 8);
     } else if (!has_canvas(scr)) {
         status = 1;
     } else {
-        int a = arg16(req, n, 0), b = arg16(req, n, 1), c = arg16(req, n, 2);
-        int d = arg16(req, n, 3), e = arg16(req, n, 4);
-        if (op == 'F')      canvas1_fill(cc, 0, 0, cc->w - 1, cc->h - 1, colour(a));
-        else if (op == 'p') canvas1_fill(cc, a, b, a, b, colour(c));
-        else if (op == 'l') canvas1_line(cc, a, b, c, d, colour(e));
-        else if (op == 'r') { if (c > 0 && d > 0) canvas1_fill(cc, a, b, a + c - 1, b + d - 1, colour(e)); }
-        else if (op == 'o') {
-            if (c > 0 && d > 0) {
-                unsigned k = colour(e);
-                canvas1_hline(cc, a, a + c - 1, b, k);
-                canvas1_hline(cc, a, a + c - 1, b + d - 1, k);
-                canvas1_vline(cc, a, b, b + d - 1, k);
-                canvas1_vline(cc, a + c - 1, b, b + d - 1, k);
+        int cid = screen_find_canvas_by_vterm(scr, vid);
+        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
+            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        }
+        if (cid < 0) {
+            int c_any = ribbon_find_canvas(&scr->ribbon);
+            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
+        }
+
+        if (cid < 0 || cid >= (int)SCREEN_MAX_CANVASES || !scr->canvases[cid].in_use) {
+            status = 1;
+        } else {
+            canvas1_t *cc_back = scr->store ? &scr->canvases[cid].backing : 0;
+            canvas1_t cc_screen;
+            canvas1_t *cc_scr = 0;
+            int cw_w = 0, cw_h = 0;
+
+            int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+            if (c_win >= 0) {
+                const ribbon_win_t *w = &scr->ribbon.wins[c_win];
+                int32_t cx0 = w->rx0 - scr->ribbon.x_view;
+                int32_t cx1 = w->rx1 - scr->ribbon.x_view;
+                cw_w = (int)(w->rx1 - w->rx0 - 1);
+                cw_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0) {
+                    canvas1_window(&cc_screen, &scr->cv, (int)cx0 + 1, SCREEN_TILE_Y + 17,
+                                   (unsigned)cw_w, (unsigned)cw_h);
+                    cc_scr = &cc_screen;
+                }
             }
-        }
-        else if (op == 'c') canvas1_circle(cc, a, b, c, colour(d));
-        else if (op == 'i') { if (c > 0 && d > 0) canvas1_invert(cc, a, b, a + c - 1, b + d - 1); }
-        else if (op == 't') {
-            if (n >= 6) {
-                const char *s = (const char *)req + 6;
-                uint32_t len = n - 6u;
-                canvas1_text(cc, a, b, s, len, canvas1_text_len(s, len), 0, FONT8X16_H, req[5] != 0);
+            if (cw_w <= 0) cw_w = (int)scr->cc.w;
+            if (cw_h <= 0) cw_h = (int)scr->cc.h;
+
+            int a = arg16(req, n, 0), b = arg16(req, n, 1), c = arg16(req, n, 2);
+            int d = arg16(req, n, 3), e = arg16(req, n, 4);
+            if (op == 'F') {
+                if (cc_back) canvas1_fill(cc_back, 0, 0, cw_w - 1, cw_h - 1, colour(a));
+                if (cc_scr) canvas1_fill(cc_scr, 0, 0, cw_w - 1, cw_h - 1, colour(a));
+            } else if (op == 'p') {
+                if (cc_back) canvas1_fill(cc_back, a, b, a, b, colour(c));
+                if (cc_scr) canvas1_fill(cc_scr, a, b, a, b, colour(c));
+            } else if (op == 'l') {
+                if (cc_back) canvas1_line(cc_back, a, b, c, d, colour(e));
+                if (cc_scr) canvas1_line(cc_scr, a, b, c, d, colour(e));
+            } else if (op == 'r') {
+                if (c > 0 && d > 0) {
+                    if (cc_back) canvas1_fill(cc_back, a, b, a + c - 1, b + d - 1, colour(e));
+                    if (cc_scr) canvas1_fill(cc_scr, a, b, a + c - 1, b + d - 1, colour(e));
+                }
+            } else if (op == 'o') {
+                if (c > 0 && d > 0) {
+                    unsigned k = colour(e);
+                    if (cc_back) {
+                        canvas1_hline(cc_back, a, a + c - 1, b, k);
+                        canvas1_hline(cc_back, a, a + c - 1, b + d - 1, k);
+                        canvas1_vline(cc_back, a, b, b + d - 1, k);
+                        canvas1_vline(cc_back, a + c - 1, b, b + d - 1, k);
+                    }
+                    if (cc_scr) {
+                        canvas1_hline(cc_scr, a, a + c - 1, b, k);
+                        canvas1_hline(cc_scr, a, a + c - 1, b + d - 1, k);
+                        canvas1_vline(cc_scr, a, b, b + d - 1, k);
+                        canvas1_vline(cc_scr, a + c - 1, b, b + d - 1, k);
+                    }
+                }
+            } else if (op == 'c') {
+                if (cc_back) canvas1_circle(cc_back, a, b, c, colour(d));
+                if (cc_scr) canvas1_circle(cc_scr, a, b, c, colour(d));
+            } else if (op == 'i') {
+                if (c > 0 && d > 0) {
+                    if (cc_back) canvas1_invert(cc_back, a, b, a + c - 1, b + d - 1);
+                    if (cc_scr) canvas1_invert(cc_scr, a, b, a + c - 1, b + d - 1);
+                }
+            } else if (op == 't') {
+                if (n >= 6) {
+                    const char *s = (const char *)req + 6;
+                    uint32_t len = n - 6u;
+                    unsigned tlen = canvas1_text_len(s, len);
+                    if (cc_back) canvas1_text(cc_back, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                    if (cc_scr) canvas1_text(cc_scr, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                }
+            } else if (op == 'b') {
+                unsigned cnt = (unsigned)(c < 0 ? 0 : c);
+                if (n >= 9u + (cnt + 7u) / 8u) {
+                    unsigned sc = (unsigned)(d < 1 ? 1 : d);
+                    if (cc_back) canvas1_row(cc_back, a, b, req + 9, cnt, sc);
+                    if (cc_scr) canvas1_row(cc_scr, a, b, req + 9, cnt, sc);
+                } else {
+                    status = 1;
+                }
+            } else if (op == 'g') {
+                if (cc_back) pixel = (uint8_t)canvas1_get(cc_back, a, b);
+                else if (cc_scr) pixel = (uint8_t)canvas1_get(cc_scr, a, b);
+            } else {
+                status = 1;
             }
+
+            if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
+
+            reply[2] = (uint8_t)cw_w; reply[3] = (uint8_t)(cw_w >> 8);
+            reply[4] = (uint8_t)cw_h; reply[5] = (uint8_t)(cw_h >> 8);
         }
-        else if (op == 'b') {
-            unsigned cnt = (unsigned)(c < 0 ? 0 : c);
-            if (n >= 9u + (cnt + 7u) / 8u) canvas1_row(cc, a, b, req + 9, cnt, (unsigned)(d < 1 ? 1 : d));
-            else status = 1;
-        }
-        else if (op == 'g') pixel = (uint8_t)canvas1_get(cc, a, b);
-        else status = 1;
-        /* 38.8: drawn on -- every other layout's store is now out of date,
-         * unless this is a redraw of the same picture ('D'). */
-        if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;
     }
     if (op == 'R') return;
     reply[0] = status;
@@ -891,9 +1273,16 @@ LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, 
     } else {
         reply[1] = pixel;
     }
-    reply[2] = (uint8_t)cc->w; reply[3] = (uint8_t)(cc->w >> 8);
-    reply[4] = (uint8_t)cc->h; reply[5] = (uint8_t)(cc->h >> 8);
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
     reply[8] = scr->layout;
     reply[9] = scr->swapped;
+}
+
+LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply) {
+    uint8_t vid = 0;
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+        scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM) {
+        vid = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    }
+    screen_canvas_vterm(scr, vid, req, n, reply);
 }

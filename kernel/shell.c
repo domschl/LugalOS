@@ -607,6 +607,7 @@ static void cmd_help(void) {
     cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
     cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
     cprintf("  screenshot [file] - The screen as a PBM, to /sd0/screenshots/ (or Super+Shift+3)\n");
+    cprintf("  canvas [split|half|wide|narrow|full|close] - Manage graphics canvas window layout\n");
     cprintf("  usbselftest     - USB CRC5/CRC16 against known packets (36.7)\n");
     cprintf("  usbkbdselftest  - USB descriptor parsing and keyboard report diffing (36.8)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
@@ -3318,6 +3319,41 @@ static void cmd_ribbon(const char *cmd_line) {
     cprintf("Usage: ribbon [list | focus <idx> | left | right | move left | move right | selftest]\n");
 }
 
+static void cmd_canvas(const char *cmd_line) {
+    const char *args = cmd_line + 6;
+    while (*args == ' ' || *args == '\t') args++;
+    if (*args == '\0') {
+        cprintf("Usage: canvas [split|half|wide|narrow|full|close]\n");
+        return;
+    }
+    uint8_t layout = SCREEN_LAYOUT_TEXT;
+    if (strcmp(args, "split") == 0 || strcmp(args, "half") == 0) {
+        layout = SCREEN_LAYOUT_SPLIT_HALF;
+    } else if (strcmp(args, "wide") == 0) {
+        layout = SCREEN_LAYOUT_SPLIT_WIDE;
+    } else if (strcmp(args, "narrow") == 0) {
+        layout = SCREEN_LAYOUT_SPLIT_NARROW;
+    } else if (strcmp(args, "full") == 0) {
+        layout = SCREEN_LAYOUT_CANVAS;
+    } else if (strcmp(args, "close") == 0) {
+        layout = SCREEN_LAYOUT_TEXT;
+    } else {
+        cprintf("canvas: unknown layout '%s' (choose split, half, wide, narrow, full, close)\n", args);
+        return;
+    }
+    uint8_t req[2] = { 'L', layout };
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 2, reply)) {
+        if (reply[0] == 0) {
+            cprintf("canvas layout set to %s\n", args);
+        } else {
+            cprintf("canvas layout failed (status %d)\n", reply[0]);
+        }
+    } else {
+        cprintf("canvas: no screen canvas available\n");
+    }
+}
+
 static void shell_run_editor(const char *filename) {
     (void)editor_run(filename, &g_shell_editor, NULL, 0);
 }
@@ -3383,6 +3419,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "ribbonselftest") == 0) {
         ribbon_selftest();
+        return;
+    } else if (strncmp(cmd_line, "canvas", 6) == 0 && (cmd_line[6] == '\0' || cmd_line[6] == ' ')) {
+        cmd_canvas(cmd_line);
         return;
     } else if (strcmp(cmd_line, "editselftest") == 0) {
         (void)editor_selftest();

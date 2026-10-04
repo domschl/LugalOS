@@ -310,10 +310,30 @@ static bool dir_entry_is_free(const fat32_dir_entry_t *e) {
     return e->name[0] == 0x00 || (uint8_t)e->name[0] == 0xE5;
 }
 
+static inline bool dir_entry_is_corrupt(const fat32_dir_entry_t *e) {
+    if ((e->attr & 0x0F) == 0x0F) return false;                  // VFAT LFN metadata
+    if ((e->attr & 0xC0) != 0) return true;                      // FAT32 reserved attr bits 6/7 must be 0
+    if ((e->attr & FAT32_ATTR_DIRECTORY) && e->file_size != 0) return true; // FAT32: directory size must be 0
+    uint8_t c0 = (uint8_t)e->name[0];
+    if (c0 != 0x00 && c0 != 0xE5 && c0 != 0x05 && c0 < 0x20) return true; // invalid control char in 8.3 name
+    /* Check for illegal characters in short 8.3 name per FAT specification */
+    for (int i = 0; i < 11; i++) {
+        uint8_t c = (uint8_t)e->name[i];
+        if (c < 0x20 && c != 0x00 && c != 0x05) return true;
+        if (c == '"' || c == '*' || c == '+' || c == ',' || c == '/' ||
+            c == ':' || c == ';' || c == '<' || c == '=' || c == '>' ||
+            c == '?' || c == '[' || c == '\\' || c == ']' || c == '|') {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool dir_entry_is_skippable(const fat32_dir_entry_t *e) {
     if ((uint8_t)e->name[0] == 0xE5) return true;               // deleted
     if ((e->attr & 0x0F) == 0x0F) return true;                  // VFAT LFN metadata
     if (e->attr & FAT32_ATTR_VOLUME_ID) return true;             // volume label
+    if (dir_entry_is_corrupt(e)) return true;                    // corrupted / uninitialized
     return false;
 }
 
@@ -798,14 +818,15 @@ static bool write_slot_cb(fat32_fs_t *fs, uint32_t sector_lba,
     (void)fs;
     write_slot_ctx_t *ctx = (write_slot_ctx_t *)vctx;
     for (int i = 0; i < count; i++) {
-        if (memcmp(entries[i].name, ctx->name83, 11) == 0 && !dir_entry_is_free(&entries[i])) {
+        if (!dir_entry_is_corrupt(&entries[i]) &&
+            memcmp(entries[i].name, ctx->name83, 11) == 0 && !dir_entry_is_free(&entries[i])) {
             ctx->name_matched = true;
             ctx->existing = entries[i];
             ctx->free_sector_lba = (int)sector_lba;
             ctx->free_slot = i;
             return true; // Overwrite this exact entry
         }
-        if (dir_entry_is_free(&entries[i]) && ctx->free_sector_lba < 0) {
+        if ((dir_entry_is_free(&entries[i]) || dir_entry_is_corrupt(&entries[i])) && ctx->free_sector_lba < 0) {
             ctx->free_sector_lba = (int)sector_lba;
             ctx->free_slot = i;
         }
@@ -1228,7 +1249,21 @@ static int fat32_mkdir_nolock(fat32_fs_t *fs, const char *path) {
     dotdot->fst_clus_hi = (uint16_t)(up_clus >> 16);
     dotdot->fst_clus_lo = (uint16_t)(up_clus & 0xFFFF);
 
-    fs->dev->write_blocks(fs->dev, dir_sec.raw, cluster_to_lba(fs, new_clus), 1);
+    uint32_t base_lba = cluster_to_lba(fs, new_clus);
+    if (fs->dev->write_blocks(fs->dev, dir_sec.raw, base_lba, 1) != 0) {
+        fat32_free_chain(fs, new_clus);
+        return -1;
+    }
+
+    /* Zero all subsequent sectors of the cluster so stale card data is not parsed as directory entries */
+    fat32_sector_t zero_sec;
+    memset(&zero_sec, 0, sizeof(zero_sec));
+    for (uint32_t sec = 1; sec < fs->bpb.sec_per_clus; sec++) {
+        if (fs->dev->write_blocks(fs->dev, zero_sec.raw, base_lba + sec, 1) != 0) {
+            fat32_free_chain(fs, new_clus);
+            return -1;
+        }
+    }
 
     fat32_sector_t sector;
     fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
@@ -1326,6 +1361,7 @@ static bool dir_empty_check_cb(fat32_fs_t *fs, uint32_t sector_lba,
     for (int i = 0; i < count; i++) {
         if (entries[i].name[0] == 0x00) return true;
         if ((uint8_t)entries[i].name[0] == 0xE5) continue;
+        if (dir_entry_is_corrupt(&entries[i])) continue;
         if (memcmp(entries[i].name, ".          ", 11) == 0 ||
             memcmp(entries[i].name, "..         ", 11) == 0) {
             continue;
@@ -1459,6 +1495,7 @@ static bool list_dir_cb(fat32_fs_t *fs, uint32_t sector_lba,
         if ((uint8_t)entries[i].name[0] == 0xE5) continue;
         if ((entries[i].attr & 0x0F) == 0x0F) continue; // Skip VFAT Long File Name (LFN) metadata
         if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue; // Skip Volume Label entry
+        if (dir_entry_is_corrupt(&entries[i])) continue; // Skip corrupted / uninitialized
 
         char namebuf[13];
         memcpy(namebuf, entries[i].name, 11);
@@ -1532,6 +1569,7 @@ static bool readdir_cb(fat32_fs_t *fs, uint32_t sector_lba,
         if ((uint8_t)entries[i].name[0] == 0xE5) continue; // deleted
         if ((entries[i].attr & 0x0F) == 0x0F) continue;    // VFAT LFN metadata
         if (entries[i].attr & FAT32_ATTR_VOLUME_ID) continue;
+        if (dir_entry_is_corrupt(&entries[i])) continue; // Skip corrupted / uninitialized
 
         if (ctx->current_index == ctx->target_index) {
             if (ctx->out_entry) *ctx->out_entry = entries[i];

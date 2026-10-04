@@ -77,6 +77,8 @@ typedef struct {
     char      osc[VT_OSC_MAX];
     char      title[VT_TITLE_MAX];  /* the last OSC 0/2, NUL-terminated */
     uint32_t  title_seq;        /* bumped whenever `title` changes */
+    uint16_t  col_offset;       /* Phase 44: horizontal scroll offset into shadow */
+    uint16_t  logical_cols;     /* Phase 44: text column wrapping width */
 } vtterm_t;
 
 /* Takes over `text`'s grid: clears it and homes the cursor. `shadow` holds
@@ -85,6 +87,12 @@ void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *shadow);
 
 /* Redraws every cell from the shadow (a no-op without one), and the cursor. */
 void vtterm_repaint(vtterm_t *vt);
+
+/* Sets the horizontal column scroll offset for viewing/clipping into shadow. */
+void vtterm_set_col_offset(vtterm_t *vt, uint16_t offset);
+
+/* Sets the logical wrapping column width (e.g. ribbon window width). */
+void vtterm_set_logical_cols(vtterm_t *vt, uint16_t logical_cols);
 
 /* 37.3b: the window moves and changes width (a layout change). Since 37.5a
  * the shadow keeps the width vtterm_init() gave it and the window shows its

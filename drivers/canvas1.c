@@ -22,8 +22,8 @@ LCDTERM_UTEXT void canvas1_init(canvas1_t *c, void *fb, uint32_t stride, unsigne
 LCDTERM_UTEXT void canvas1_window(canvas1_t *c, const canvas1_t *parent, int x, int y, unsigned w, unsigned h) {
     c->fb = parent->fb;
     c->stride = parent->stride;
-    c->ox = (uint16_t)(parent->ox + x);
-    c->oy = (uint16_t)(parent->oy + y);
+    c->ox = (int16_t)(parent->ox + x);
+    c->oy = (int16_t)(parent->oy + y);
     c->w = (uint16_t)w;
     c->h = (uint16_t)h;
 }
@@ -31,7 +31,8 @@ LCDTERM_UTEXT void canvas1_window(canvas1_t *c, const canvas1_t *parent, int x, 
 /* One pixel, tile coordinates, clipped. */
 LCDTERM_UTEXT static void put_px(const canvas1_t *c, int x, int y, unsigned pattern) {
     if (x < 0 || y < 0 || x >= (int)c->w || y >= (int)c->h) return;
-    int px = x + c->ox, py = y + c->oy;
+    int px = x + (int)c->ox, py = y + (int)c->oy;
+    if (px < 0 || py < 0 || px >= (int)c->stride * 8) return;
     uint8_t *p = c->fb + (uint32_t)py * c->stride + (uint32_t)(px >> 3);
     uint8_t bit = (uint8_t)(1u << (px & 7));
     bool on = pattern == CANVAS1_BLACK || (pattern == CANVAS1_GREY && ((px + py) & 1));
@@ -54,7 +55,12 @@ LCDTERM_UTEXT void canvas1_fill(const canvas1_t *c, int x0, int y0, int x1, int 
     if (x1 >= (int)c->w) x1 = (int)c->w - 1;
     if (y1 >= (int)c->h) y1 = (int)c->h - 1;
     if (x0 > x1 || y0 > y1) return;
-    x0 += c->ox; x1 += c->ox; y0 += c->oy; y1 += c->oy;
+    x0 += (int)c->ox; x1 += (int)c->ox; y0 += (int)c->oy; y1 += (int)c->oy;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    int max_x = (int)c->stride * 8 - 1;
+    if (x1 > max_x) x1 = max_x;
+    if (x0 > x1 || y0 > y1) return;
     int b0 = x0 >> 3, b1 = x1 >> 3;
     uint8_t m0 = (uint8_t)(0xffu << (x0 & 7));
     uint8_t m1 = (uint8_t)(0xffu >> (7 - (x1 & 7)));
@@ -81,16 +87,18 @@ LCDTERM_UTEXT void canvas1_glyph(const canvas1_t *c, int x, int y, uint8_t code,
     if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
     const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
     if (row1 > FONT8X16_H) row1 = FONT8X16_H;
-    /* Whole glyph inside: two OR-stores a row. Near an edge: pixel by pixel. */
-    bool inside = x >= 0 && x + 9 <= (int)c->w;
-    int ax = x + c->ox;
+    int ax = x + (int)c->ox;
+    int max_x = (int)c->stride * 8;
+    bool inside = x >= 0 && x + 9 <= (int)c->w && ax >= 0 && ax + 9 <= max_x;
     for (unsigned r = row0; r < row1; r++) {
         int py = y + (int)r;
         if (py < 0 || py >= (int)c->h) continue;
+        int spy = py + (int)c->oy;
+        if (spy < 0) continue;
         uint32_t bits = g[r];
         if (bold) bits |= bits << 1;
         if (!bits) continue;
-        uint8_t *p = c->fb + (uint32_t)(py + c->oy) * c->stride;
+        uint8_t *p = c->fb + (uint32_t)spy * c->stride;
         if (inside) {
             uint32_t v = bits << (ax & 7);
             p[ax >> 3] |= (uint8_t)v;
@@ -98,8 +106,9 @@ LCDTERM_UTEXT void canvas1_glyph(const canvas1_t *c, int x, int y, uint8_t code,
             continue;
         }
         for (int b = 0; b < 9; b++) {
-            if ((bits >> b) & 1u && x + b >= 0 && x + b < (int)c->w)
-                p[(ax + b) >> 3] |= (uint8_t)(1u << ((ax + b) & 7));
+            int spx = ax + b;
+            if ((bits >> b) & 1u && x + b >= 0 && x + b < (int)c->w && spx >= 0 && spx < max_x)
+                p[spx >> 3] |= (uint8_t)(1u << (spx & 7));
         }
     }
 }
@@ -141,7 +150,12 @@ LCDTERM_UTEXT void canvas1_invert(const canvas1_t *c, int x0, int y0, int x1, in
     if (x1 >= (int)c->w) x1 = (int)c->w - 1;
     if (y1 >= (int)c->h) y1 = (int)c->h - 1;
     if (x0 > x1 || y0 > y1) return;
-    x0 += c->ox; x1 += c->ox; y0 += c->oy; y1 += c->oy;
+    x0 += (int)c->ox; x1 += (int)c->ox; y0 += (int)c->oy; y1 += (int)c->oy;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    int max_x = (int)c->stride * 8 - 1;
+    if (x1 > max_x) x1 = max_x;
+    if (x0 > x1 || y0 > y1) return;
     int b0 = x0 >> 3, b1 = x1 >> 3;
     uint8_t m0 = (uint8_t)(0xffu << (x0 & 7));
     uint8_t m1 = (uint8_t)(0xffu >> (7 - (x1 & 7)));
@@ -166,7 +180,8 @@ LCDTERM_UTEXT void canvas1_row(const canvas1_t *c, int x, int y, const uint8_t *
 
 LCDTERM_UTEXT unsigned canvas1_get(const canvas1_t *c, int x, int y) {
     if (x < 0 || y < 0 || x >= (int)c->w || y >= (int)c->h) return 0;
-    int px = x + c->ox, py = y + c->oy;
+    int px = x + (int)c->ox, py = y + (int)c->oy;
+    if (px < 0 || py < 0 || px >= (int)c->stride * 8) return 0;
     return (c->fb[(uint32_t)py * c->stride + (uint32_t)(px >> 3)] >> (px & 7)) & 1u;
 }
 

@@ -202,6 +202,21 @@ void console_putc(char c) {
         g_cap[g_cap_len++] = c;
         return;
     }
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid > 0) {
+        vterm_t *vt = vterm_get(my_vid);
+        if (!vt) task_exit();
+        vterm_write(vt, &c, 1);
+        if (vt->active) {
+            console_emit(g_console_putc, c);
+        } else {
+#if defined(CONFIG_LCD_PCLK_GPIO)
+            lcd7_screen_putc_vterm(vt->id, c);
+#endif
+        }
+        return;
+    }
     vterm_t *vt = vterm_current();
     if (vt) {
         if (vt->id > 0) vterm_write(vt, &c, 1);
@@ -498,6 +513,13 @@ bool console_has_char(void) {
     screen_flush();
     console_pump();
     run_hotkey();
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid > 0) {
+        vterm_t *vt = vterm_get(my_vid);
+        if (!vt) task_exit();
+        return vterm_has_char(vt);
+    }
     vterm_t *vt = vterm_current();
     if (vt && vt->id > 0) {
         return vterm_has_char(vt);
@@ -518,9 +540,12 @@ char console_getc(void) {
      * The screen is flushed on every turn, not only on the way in (see
      * console_has_char()): an empty flush is one comparison, and the turns
      * of a wait are when the status bar's clock gets to move (37.1). */
-    vterm_t *vt = vterm_current();
-    if (vt && vt->id > 0) {
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid > 0) {
         for (;;) {
+            vterm_t *vt = vterm_get(my_vid);
+            if (!vt) task_exit();
             screen_flush();
             console_pump();
             run_hotkey();
@@ -540,6 +565,13 @@ char console_getc(void) {
 }
 
 void console_ungetc(char c) {
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid > 0) {
+        vterm_t *vt = vterm_get(my_vid);
+        if (vt) vterm_ungetc(vt, c);
+        return;
+    }
     vterm_t *vt = vterm_current();
     if (vt && vt->id > 0) {
         vterm_ungetc(vt, c);
@@ -551,6 +583,13 @@ void console_ungetc(char c) {
 
 bool console_interrupt_requested(void) {
     console_pump();
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid > 0) {
+        vterm_t *vt = vterm_get(my_vid);
+        if (!vt) task_exit();
+        return vterm_check_interrupt(vt);
+    }
     vterm_t *vt = vterm_current();
     if (vt && vt->id > 0) {
         return vterm_check_interrupt(vt);

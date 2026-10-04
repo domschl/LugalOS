@@ -29,6 +29,13 @@ LCDTERM_UTEXT static void win_copy(ribbon_win_t *dst, const ribbon_win_t *src) {
     }
 }
 
+LCDTERM_UTEXT static void win_zero(ribbon_win_t *dst) {
+    uint32_t *d = (uint32_t *)(void *)dst;
+    for (unsigned i = 0; i < sizeof(ribbon_win_t) / sizeof(uint32_t); i++) {
+        d[i] = 0;
+    }
+}
+
 LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h) {
     if (!r) return;
     r->count = 0;
@@ -145,7 +152,11 @@ LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
         win_copy(&r->wins[i], &r->wins[i + 1]);
     }
     r->count--;
-    if (r->active_idx >= r->count && r->count > 0) {
+    win_zero(&r->wins[r->count]);
+
+    if (r->active_idx > idx) {
+        r->active_idx--;
+    } else if (r->active_idx >= r->count && r->count > 0) {
         r->active_idx = (uint8_t)(r->count - 1u);
     }
     ribbon_layout(r);
@@ -250,9 +261,22 @@ LCDTERM_UTEXT int ribbon_find_term(const ribbon_t *r) {
 }
 
 LCDTERM_UTEXT int ribbon_find_canvas(const ribbon_t *r) {
-    if (!r) return -1;
+    if (!r || r->count == 0) return -1;
+    if (r->active_idx < r->count && r->wins[r->active_idx].type == RIBBON_WIN_CANVAS) {
+        return (int)r->active_idx;
+    }
     for (uint8_t i = 0; i < r->count; i++) {
         if (r->wins[i].type == RIBBON_WIN_CANVAS) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id) {
+    if (!r) return -1;
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_CANVAS && r->wins[i].vterm_id == canvas_id) {
             return (int)i;
         }
     }

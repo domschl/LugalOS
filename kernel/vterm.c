@@ -177,12 +177,16 @@ void vterm_destroy(int id) {
         vt->shadow = NULL;
     }
 
+    int owner = vt->owner_pid;
     vt->in_use = false;
     vt->active = false;
     vt->has_vt = false;
     vt->owner_pid = -1;
 
     ylock_release(&g_vterm_mgr_lock);
+    if (owner >= 0) {
+        task_unblock(owner);
+    }
     if (title_change) {
         console_set_title(reset_title);
     }

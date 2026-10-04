@@ -53,6 +53,8 @@
 #include "kernel/scratch.h"
 #include "kernel/console.h"
 #include "drivers/screen.h"
+#include "kernel/screenshot.h"
+#include "lisp.h"
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -210,6 +212,8 @@ static void chess_session_end(void) {
     g_chess_ready = false;
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     uint8_t req[2] = { 'K', 0 }, reply[SCREEN_REPLY_LEN];
+    (void)console_canvas(req, 2, reply);
+    req[0] = 'L'; req[1] = SCREEN_LAYOUT_TEXT;
     (void)console_canvas(req, 2, reply);
 #endif
 }
@@ -995,6 +999,8 @@ static void console_print_help(void) {
     cprintf("  redo              - Re-apply 1 half-move\n");
     cprintf("  eval              - Print the static evaluation of the current position\n");
     cprintf("  moves             - List all legal moves in the current position\n");
+    cprintf("  screenshot [path] - Capture the screen to a .pbm file (default: /sd0/screenshots/shot-XXX.pbm)\n");
+    cprintf("  (<lisp-expr>)     - Evaluate a Lisp expression directly (e.g. (screenshot))\n");
     cprintf("  quit              - Leave the chess console, back to the shell\n");
     cprintf("  <move>            - Play a move in UCI format (e.g. e2e4, g1f3, e7e8q)\n\n");
 }
@@ -1350,6 +1356,22 @@ static ChessCmdResult console_dispatch_line(const char *line) {
         cprintf("Engine is not currently thinking.\n");
     } else if (strcmp(line, "quit") == 0) {
         return CHESS_CMD_QUIT;
+    } else if (line[0] == '(') {
+        lisp_val_t *res = lisp_eval_string(line);
+        if (res && res->type != LISP_NIL) {
+            cprintf("=> ");
+            lisp_print(res);
+            cprintf("\n");
+        }
+        lisp_gc_safepoint();
+    } else if (strcmp(line, "screenshot") == 0 || strncmp(line, "screenshot ", 11) == 0) {
+        const char *arg = line[10] ? &line[11] : NULL;
+        while (arg && *arg == ' ') arg++;
+        char saved[48];
+        if (screenshot_save(arg && *arg ? arg : NULL, saved, sizeof(saved)) == 0)
+            cprintf("screenshot: %s\n", saved);
+        else
+            cprintf("screenshot: nothing saved (no screen yet, or no card)\n");
     } else if (console_execute_move(&g_chess_pos, line)) {
         g_console_max_history_ply = g_chess_pos.history_ply;
         chess_show(&g_chess_pos);

@@ -100,6 +100,9 @@ int ribbon_find_term(const ribbon_t *r);
 /* Find first window index of type RIBBON_WIN_CANVAS, or -1 if none. */
 int ribbon_find_canvas(const ribbon_t *r);
 
+/* Find window index of type RIBBON_WIN_CANVAS matching canvas_id slot, or -1 if none. */
+int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id);
+
 /* Identify range of windows intersecting visible screen viewport [x_view, x_view + screen_w].
  * Returns count of visible windows, writing indices to *first_idx and *last_idx if found. */
 int ribbon_visible_range(const ribbon_t *r, int32_t x_view, uint8_t *first_idx, uint8_t *last_idx);

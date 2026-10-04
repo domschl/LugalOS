@@ -24,7 +24,7 @@ typedef struct {
     uint8_t *fb;
     uint32_t stride;            /* bytes per pixel row */
     uint16_t w, h;              /* pixels: the drawable area, from the origin */
-    uint16_t ox, oy;            /* 37.3b: the origin's place in the buffer */
+    int16_t  ox, oy;            /* 37.3b: the origin's place in the buffer */
 } canvas1_t;
 
 enum {

@@ -73,9 +73,21 @@ enum {
     SCREEN_LAYOUT_SPLIT_NARROW = 4,     /* 37.5a: a narrow canvas, 64 text columns */
 };
 
+#define SCREEN_MAX_TERMS 8u
+#define SCREEN_MAX_CANVASES 4u
+
+typedef struct {
+    canvas1_t backing;                  /* persistent backing store in PSRAM */
+    uint8_t   vterm_id;                 /* owner terminal ID */
+    bool      in_use;
+    bool      locked;                   /* canvas layout locked for this slot */
+    char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
+} screen_canvas_slot_t;
+
 typedef struct {
     canvas1_t cv;                       /* the whole buffer */
     canvas1_t cc;                       /* the canvas tile's drawable area */
+    canvas1_t c_backing;                /* Phase 44: persistent backing store for primary canvas */
     uint8_t   layout;
     uint8_t   full_cols;                /* the text window's width in TEXT */
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
@@ -94,16 +106,15 @@ typedef struct {
     char      right[SCREEN_RIGHT_MAX];  /* its indicators */
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
     ribbon_t  ribbon;                   /* Phase 44: 1D horizontal window ribbon */
+    screen_canvas_slot_t canvases[SCREEN_MAX_CANVASES]; /* Phase 44.2: concurrent canvas backing stores */
     vtterm_t  vt;                       /* legacy reference to active terminal */
     struct {
         vtterm_t vt;
         uint8_t  vterm_id;
         bool     in_use;
-    } terms[4];                         /* Phase 44: up to 4 concurrent terminal window instances */
-    uint16_t  shadow[];                 /* shadow buffers for all 4 terminals (4 * cols * rows) */
+    } terms[SCREEN_MAX_TERMS];          /* Phase 44: up to 8 concurrent terminal window instances */
+    uint16_t  shadow[];                 /* shadow buffers for all 8 terminals (8 * cols * rows) */
 } screen_t;
-
-#define SCREEN_MAX_TERMS 4u
 
 /* 38.8: the canvas stores -- one per layout with a canvas (CANVAS and the
  * three splits), each room for a whole frame of w x h, packed tile-local:
@@ -139,6 +150,7 @@ void screen_repaint(screen_t *scr);
  * for an unknown layout or a split the screen is too narrow for. Asking for
  * the layout already showing changes nothing, the canvas included. */
 bool screen_set_layout(screen_t *scr, unsigned layout);
+bool screen_set_layout_vterm(screen_t *scr, uint8_t vterm_id, unsigned layout);
 
 /* The text window's size, which is what a program may use. */
 void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
@@ -198,5 +210,6 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
 #define SCREEN_REPLY_LEN 12u
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
+void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

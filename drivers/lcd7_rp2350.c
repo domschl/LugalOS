@@ -460,7 +460,7 @@ _Static_assert(LCD_H_ACTIVE % FONT8X16_W == 0 && LCD_V_ACTIVE % FONT8X16_H == 0,
  * framebuffer's 1 152-byte spare tail, where 36.6a kept the terminal, is too
  * small for a shadow. Five regions in all (stack, text, framebuffer as two,
  * this), which is exactly what a domain may have (kernel/mem_domain.h). */
-#define STATE_PAGES          8u
+#define STATE_PAGES          16u
 #define STATE_BYTES          (STATE_PAGES * 4096u)
 _Static_assert(SCREEN_BYTES(LCD_H_ACTIVE, LCD_V_ACTIVE) <= STATE_BYTES,
                "lcd7: the screen's state and its shadow must fit their block");
@@ -557,7 +557,10 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
         uint8_t reply[SCREEN_REPLY_LEN];
         long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
         if (n >= 1 && req[0] == LCDTERM_OP_CANVAS) {
-            screen_canvas(scr, req + 1, (uint32_t)(n - 1), reply);
+            uint8_t vid = (n >= 2) ? req[1] : 0;
+            const uint8_t *creq = (n >= 2) ? (req + 2) : (req + 1);
+            uint32_t clen = (n >= 2) ? (uint32_t)(n - 2) : (uint32_t)(n - 1);
+            screen_canvas_vterm(scr, vid, creq, clen, reply);
             lcdterm_usys_serve_reply((const char *)name, reply, (long)sizeof(reply));
             continue;
         }
@@ -702,12 +705,17 @@ static bool lcd7_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     console_lock();
     lcd7_screen_flush();
     bool sent = false;
+    int pid = sched_current_pid();
+    int my_vid = (pid >= 0) ? task_get_vterm(pid) : 0;
+    if (my_vid < 0) my_vid = 0;
+
     if (lcdterm_alive()) {
-        uint8_t buf[1u + LCDTERM_BATCH];
+        uint8_t buf[2u + LCDTERM_BATCH];
         buf[0] = LCDTERM_OP_CANVAS;
-        for (uint32_t i = 0; i < n; i++) buf[1u + i] = req[i];
+        buf[1] = (uint8_t)my_vid;
+        for (uint32_t i = 0; i < n; i++) buf[2u + i] = req[i];
         for (int attempt = 0; attempt < 8 && !sent; attempt++) {
-            if (chan_call(g_lcdterm_ep, buf, 1u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
+            if (chan_call(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
                 g_lcdterm_calls++;
                 for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
                 sent = true;
@@ -716,7 +724,7 @@ static bool lcd7_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
             }
         }
     }
-    if (!sent) screen_canvas(g_scr, req, n, reply);
+    if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply);
     console_unlock();
     return true;
 }

@@ -24,8 +24,12 @@ enum { ST_GROUND, ST_ESC, ST_CSI, ST_OSC };
  * the pixels: each does the fbtext operation and then the same thing to the
  * shadow, with the same bounds. */
 LCDTERM_UTEXT static void cell_put(vtterm_t *vt, unsigned col, unsigned row, uint8_t code, bool inverse) {
-    if (!vt->hidden) fbtext_putcode(&vt->text, col, row, code, inverse);
-    if (vt->shadow && col < vt->text.cols && row < vt->text.rows)
+    if (!vt->hidden) {
+        if (col >= (unsigned)vt->col_offset && (col - (unsigned)vt->col_offset) < (unsigned)vt->text.cols) {
+            fbtext_putcode(&vt->text, col - (unsigned)vt->col_offset, row, code, inverse);
+        }
+    }
+    if (vt->shadow && col < vt->shadow_cols && row < vt->text.rows)
         vt->shadow[row * vt->shadow_cols + col] = (uint16_t)(code | (inverse ? VT_CELL_INVERSE : 0u));
 }
 
@@ -37,9 +41,15 @@ LCDTERM_UTEXT static void shadow_blank(vtterm_t *vt, unsigned from, unsigned n) 
  * whole row: a line cleared "to the end" must not bring back text that sat
  * past a narrower window's edge when the window widens again. */
 LCDTERM_UTEXT static void span_clear(vtterm_t *vt, unsigned row, unsigned col0, unsigned col1) {
-    if (!vt->hidden) fbtext_clear_span(&vt->text, row, col0, col1);
+    if (!vt->hidden) {
+        int sc0 = (int)col0 - (int)vt->col_offset;
+        int sc1 = (int)col1 - (int)vt->col_offset;
+        if (sc0 < 0) sc0 = 0;
+        if (sc1 > (int)vt->text.cols) sc1 = (int)vt->text.cols;
+        if (sc0 < sc1) fbtext_clear_span(&vt->text, row, (unsigned)sc0, (unsigned)sc1);
+    }
     if (!vt->shadow || row >= vt->text.rows) return;
-    if (col1 >= vt->text.cols) col1 = vt->shadow_cols;
+    if (col1 >= vt->shadow_cols) col1 = vt->shadow_cols;
     if (col0 < col1) shadow_blank(vt, row * vt->shadow_cols + col0, col1 - col0);
 }
 
@@ -86,15 +96,19 @@ LCDTERM_UTEXT static void region_scroll(vtterm_t *vt, unsigned top, unsigned bot
 
 LCDTERM_UTEXT static void cursor_hide(vtterm_t *vt) {
     if (vt->cursor_drawn) {
-        fbtext_cursor_xor(&vt->text, vt->col, vt->row);
+        if (vt->col >= vt->col_offset && (vt->col - vt->col_offset) < vt->text.cols) {
+            fbtext_cursor_xor(&vt->text, vt->col - vt->col_offset, vt->row);
+        }
         vt->cursor_drawn = false;
     }
 }
 
 LCDTERM_UTEXT static void cursor_show(vtterm_t *vt) {
     if (vt->cursor_on && !vt->cursor_drawn && !vt->hidden) {
-        fbtext_cursor_xor(&vt->text, vt->col, vt->row);
-        vt->cursor_drawn = true;
+        if (vt->col >= vt->col_offset && (vt->col - vt->col_offset) < vt->text.cols) {
+            fbtext_cursor_xor(&vt->text, vt->col - vt->col_offset, vt->row);
+            vt->cursor_drawn = true;
+        }
     }
 }
 
@@ -109,6 +123,8 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
     vt->shadow_cols = text->cols;           /* 37.5a: fixed from here on */
+    vt->col_offset = 0;
+    vt->logical_cols = text->cols;
     vt->hidden = false;
     vt->col = vt->row = 0;
     vt->top = 0;
@@ -131,13 +147,33 @@ LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
     if (!vt->shadow || vt->hidden) return;
     vt->cursor_drawn = false;              /* its pixels are about to be redrawn */
     unsigned cols = vt->text.cols;
+    unsigned off = vt->col_offset;
     for (unsigned row = 0; row < vt->text.rows; row++) {
         for (unsigned col = 0; col < cols; col++) {
-            uint16_t v = vt->shadow[row * vt->shadow_cols + col];
-            fbtext_putcode(&vt->text, col, row, (uint8_t)v, (v & VT_CELL_INVERSE) != 0);
+            unsigned sh_col = col + off;
+            if (sh_col < vt->shadow_cols) {
+                uint16_t v = vt->shadow[row * vt->shadow_cols + sh_col];
+                fbtext_putcode(&vt->text, col, row, (uint8_t)v, (v & VT_CELL_INVERSE) != 0);
+            } else {
+                fbtext_putcode(&vt->text, col, row, ' ', false);
+            }
         }
     }
     cursor_show(vt);
+}
+
+LCDTERM_UTEXT void vtterm_set_col_offset(vtterm_t *vt, uint16_t offset) {
+    if (vt->col_offset != offset) {
+        if (vt->cursor_drawn) cursor_hide(vt);
+        vt->col_offset = offset;
+    }
+}
+
+LCDTERM_UTEXT void vtterm_set_logical_cols(vtterm_t *vt, uint16_t logical_cols) {
+    if (logical_cols > vt->shadow_cols) logical_cols = vt->shadow_cols;
+    if (logical_cols < 1) logical_cols = 1;
+    vt->logical_cols = logical_cols;
+    if (vt->col >= logical_cols) vt->col = (uint16_t)(logical_cols - 1u);
 }
 
 LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
@@ -149,7 +185,8 @@ LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
     vt->text.rows = text->rows;
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
-    if (vt->col >= nc) vt->col = (uint16_t)(nc - 1u);
+    if (vt->logical_cols == 0) vt->logical_cols = (uint16_t)nc;
+    if (vt->col >= vt->logical_cols) vt->col = (uint16_t)(vt->logical_cols - 1u);
     if (vt->row >= rows) vt->row = (uint16_t)(rows - 1u);
     if (vt->bot >= rows || vt->top >= vt->bot) {    /* 37.5b: a region that no longer fits */
         vt->top = 0;
@@ -194,7 +231,8 @@ LCDTERM_UTEXT static void put_cp(vtterm_t *vt, uint32_t cp) {
     if (rev && code >= FONT8X16_FIG_WHITE && code < FONT8X16_FIG_BLACK + 6u)   /* 37.4 */
         code = (uint8_t)(code < FONT8X16_FIG_BLACK ? code + 6u : code - 6u);
     cell_put(vt, vt->col, vt->row, code, rev);
-    if (vt->col + 1u < vt->text.cols) vt->col++;
+    unsigned wrap_at = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+    if (vt->col + 1u < wrap_at) vt->col++;
     else vt->pending_wrap = true;
 }
 
@@ -264,7 +302,8 @@ LCDTERM_UTEXT static void sgr(vtterm_t *vt) {
 }
 
 LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
-    unsigned cols = vt->text.cols, rows = vt->text.rows;
+    unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+    unsigned rows = vt->text.rows;
     if (vt->private_mode) {
         if ((f == 'h' || f == 'l') && vt->nparams >= 1 && vt->params[0] == 25) vt->cursor_on = (f == 'h');
         else vt->unknown++;
@@ -346,10 +385,12 @@ LCDTERM_UTEXT static void ground(vtterm_t *vt, unsigned char c) {
     case '\r': vt->col = 0; vt->pending_wrap = false; return;
     case '\n': line_feed(vt); vt->pending_wrap = false; return;
     case '\b': if (vt->col > 0) vt->col--; vt->pending_wrap = false; return;
-    case '\t':
-        vt->col = (uint16_t)clampu((vt->col / 8u + 1u) * 8u, vt->text.cols - 1u);
+    case '\t': {
+        unsigned wrap_at = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+        vt->col = (uint16_t)clampu((vt->col / 8u + 1u) * 8u, wrap_at - 1u);
         vt->pending_wrap = false;
         return;
+    }
     case 0x1b: vt->state = ST_ESC; return;
     default:
         if (c < 0x20u || c == 0x7fu) return;   /* BEL and other controls: nothing */
