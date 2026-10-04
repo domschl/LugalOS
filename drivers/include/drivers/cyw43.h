@@ -47,6 +47,7 @@ bool cyw43_led_set(bool on);
  * with one less secret at rest. Blocks until associated or the attempt
  * times out. */
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]);
+bool cyw43_leave(void);
 
 /* True once the firmware is uploaded and answering ioctls -- i.e. once
  * cyw43_gspi_probe() has succeeded. Everything else here (join, the LED,

@@ -2229,8 +2229,46 @@ void cyw43_service_pending(void) {
     cyw43_unlock();
 }
 
+/* Whether the firmware holds an association: GET_BSSID answers, or it says
+ * BCME_NOTASSOCIATED. Caller holds the bus. */
+static bool cyw43_associated_locked(uint8_t bssid[6]) {
+    uint32_t got = 0;
+    g_ioctl_quiet = true;
+    bool assoc = cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_BSSID, 0, bssid, 6, &got) && got >= 6;
+    g_ioctl_quiet = false;
+    return assoc;
+}
+
+/* Leaves the BSS, if the firmware holds one (phase 40 item 9). The plain
+ * WLC_DISASSOC the reference sends; checked by asking again, since a join
+ * over a live association is what failed -- `mfp` refused, then an AUTH
+ * failure the join reported as a wrong PSK. Measured on a Pico 2 W
+ * (2026-10-04): the ioctl succeeds, DISASSOC (reason 8, leaving) and
+ * link-down follow, and GET_BSSID says not associated. The BADARG the
+ * earlier note recorded did not reproduce on this driver. */
+static bool cyw43_leave_locked(void) {
+    uint8_t bssid[6];
+    if (!cyw43_associated_locked(bssid)) return true;
+    bool ok = cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DISASSOC, 0, NULL, 0, NULL);
+    for (int i = 0; i < 10; i++) {               /* up to a second */
+        time_delay_us(100000);
+        if (!cyw43_associated_locked(bssid)) return true;
+    }
+    printk("cyw43: disassociate %s, but the firmware is still associated\n",
+           ok ? "accepted" : "refused");
+    return false;
+}
+
+bool cyw43_leave(void) {
+    cyw43_lock();
+    bool r = cyw43_leave_locked();
+    cyw43_unlock();
+    return r;
+}
+
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]) {
     cyw43_lock();
+    (void)cyw43_leave_locked();   /* a join over a live association fails */
     bool r = cyw43_join_wpa2_locked(ssid, psk);
     cyw43_unlock();
     return r;

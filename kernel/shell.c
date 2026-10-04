@@ -555,6 +555,7 @@ static void cmd_help(void) {
     cprintf("  wifi probe      - CYW43439: bus, firmware upload and CLM -- brings the chip up\n");
     cprintf("  wifi led [on|off] - Blink the user LED (on the wireless chip's own GPIO 0)\n");
     cprintf("  wifi join [<ssid> <psk-hex>] - Join a WPA2 network; no args uses the stored record\n");
+    cprintf("  wifi leave      - Leave the network (the supervisor rejoins it)\n");
     cprintf("  wifi stats      - CYW43439: RX ring high-water mark and drops\n");
     cprintf("  wifi trace [on|off] - Print every decoded firmware event (link, auth, handshake)\n");
 #endif
@@ -4044,6 +4045,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * with a bus-level timeout the reader then has to interpret. */
         cprintf("wifi: the radio is not up yet -- run `wifi probe` first "
                 "(it resets the chip and uploads its firmware)\n");
+        return;
+    } else if (strcmp(cmd_line, "wifi leave") == 0) {
+        cprintf(cyw43_leave() ? "wifi: left\n" : "wifi: still associated\n");
         return;
     } else if (strncmp(cmd_line, "wifi join ", 10) == 0) {
         /* Explicit form: `wifi join <ssid> <64-hex-psk>`. Takes the
