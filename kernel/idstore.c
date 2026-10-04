@@ -72,9 +72,13 @@ bool idstore_path_is_secret(const char *path) {
 }
 
 idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out) {
-    uint8_t buf[IDSTORE_SIZE_BYTES];
-
     if (!out) return IDSTORE_CORRUPT;
+    /* Read in place. A 4 KB copy on the stack, on top of the caller's own
+     * 4 KB record, made one `cat /proc/node` take the RP2350's 16 KB boot
+     * stack to 15 096 bytes (2026-10-04, measured on the LCD-7). Nothing
+     * reads the buffer of a record that did not validate: its fields_len,
+     * cleared below, is what every lookup goes by. */
+    uint8_t *buf = out->buf;
     /* Anything but IDSTORE_VALID leaves a record with no fields, so a lookup
      * on it finds nothing rather than walking whatever was on the caller's
      * stack (idstore_selftest() did exactly that; found by -fanalyzer). */
@@ -98,7 +102,6 @@ idstore_state_t idstore_read(block_dev_t *dev, idstore_t *out) {
     uint32_t fields_len = (uint32_t)length - IDSTORE_HEADER_LEN;
     if (record_crc(buf, fields_len) != crc_stored) return IDSTORE_CORRUPT;
 
-    memcpy(out->buf, buf, IDSTORE_SIZE_BYTES);
     out->fields_len = fields_len;
 
     /* Walk the TLV stream once, at read time, so a caller doing repeated
