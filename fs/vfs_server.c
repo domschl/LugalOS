@@ -115,6 +115,7 @@ typedef struct {
     fat32_fs_t *fs;               /* MOUNT_FAT32 */
     bool *mounted_ptr;            /* MOUNT_FAT32; NULL = always considered mounted */
     p9_remote_mount_t *remote;    /* MOUNT_REMOTE9P */
+    uint8_t probe_misses;         /* vfs_volume_probe()'s failures in a row */
 } mount_entry_t;
 
 #define MAX_MOUNTS 10
@@ -206,7 +207,10 @@ static mount_entry_t *mount_alloc(const char *name) {
 
 static bool mount_is_active(const mount_entry_t *m) {
     if (!m->in_use) return false;
-    if (m->kind == MOUNT_FAT32) return m->mounted_ptr ? *m->mounted_ptr : true;
+    if (m->kind == MOUNT_FAT32) {
+        if (m->fs && m->fs->dev && m->fs->dev->lost) return false;   /* card pulled */
+        return m->mounted_ptr ? *m->mounted_ptr : true;
+    }
     return true; // proc/dev/srv/remote9p are always "active" once registered
 }
 
@@ -414,6 +418,24 @@ bool vfs_volume_mounted(const char *name) {
         return mount_is_active(m);
     }
     return false;
+}
+
+void vfs_volume_probe(const char *name) {
+    if (!name) return;
+    while (*name == '/') name++;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        mount_entry_t *m = &g_mounts[i];
+        if (!m->in_use || m->kind != MOUNT_FAT32 || strcmp(m->name, name) != 0) continue;
+        if (!mount_is_active(m) || !m->fs->dev->probe) return;
+        /* Two misses in a row: one could be a card mid-write. */
+        if (m->fs->dev->probe(m->fs->dev) == 0) {
+            m->probe_misses = 0;
+        } else if (++m->probe_misses >= 2) {
+            m->fs->dev->lost = true;
+            printk("[VFS Server] /%s/: the card is gone; unmounted until a reboot\n", m->name);
+        }
+        return;
+    }
 }
 
 int vfs_mount_ramdisk(int size_kb) {

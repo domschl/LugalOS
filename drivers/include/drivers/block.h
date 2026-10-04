@@ -1,6 +1,7 @@
 #ifndef LUGALOS_DRIVERS_BLOCK_H
 #define LUGALOS_DRIVERS_BLOCK_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct block_dev {
@@ -9,6 +10,15 @@ typedef struct block_dev {
     uint32_t num_blocks;   // e.g., 1024 blocks = 512 KB
     int (*read_blocks)(struct block_dev *dev, void *buf, uint32_t lba, uint32_t count);
     int (*write_blocks)(struct block_dev *dev, const void *buf, uint32_t lba, uint32_t count);
+    /* Phase 40 item 3, a card pulled from under its mount. Optional: 0 when
+     * the medium answers, -1 when it does not; NULL means always there. */
+    int (*probe)(struct block_dev *dev);
+    /* The medium went away while mounted. Set by its driver after repeated
+     * failed requests, or by the VFS after failed probes; nothing clears it
+     * but a reboot -- the volume's cached state belongs to the card that
+     * left, and a card put back may not be that one. Every request then
+     * fails at once, and the mount reads as not mounted. */
+    bool lost;
 } block_dev_t;
 
 block_dev_t *ramdisk_get_device(void);

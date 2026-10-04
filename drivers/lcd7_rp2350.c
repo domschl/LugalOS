@@ -768,6 +768,7 @@ static void status_tick(void) {
     uint64_t now = time_get_us();
     if (now >= g_clock_next_us) {
         g_clock_next_us = now + 1000000u;
+        vfs_volume_probe("sd0");       /* the SD icon is the card, not the boot */
         g_clock[0] = '\0';
         if (time_is_set()) {
             rtc_time_t tm;

@@ -451,6 +451,7 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
  * just costs more IPC round trips. */
 #define BLK_REQ_READ  ((uint8_t)'R')
 #define BLK_REQ_WRITE ((uint8_t)'W')
+#define BLK_REQ_STATUS ((uint8_t)'S')   /* CMD13: is the card still there? */
 #define BLK_MAX_COUNT 1u
 #define BLK_HDR_LEN   9u /* opcode + lba(4) + count(4) */
 #define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
@@ -664,6 +665,14 @@ BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
             int rc = u_write_blocks(lba, count, &req[BLK_HDR_LEN], (int)is_sdhc);
             resp[0] = (rc == 0) ? 0 : 1;
             blk_usys_chan_serve_reply((const char *)name, resp, 1);
+        } else if (op == BLK_REQ_STATUS) {
+            /* SEND_STATUS. A card answers R1 0x00 and a second byte; an
+             * empty slot reads as MISO idling high, 0xFF. */
+            uint8_t r1 = u_sd_send_cmd(13, 0, 0xFF);
+            (void)u_spi_transfer(0xFF);
+            u_cs_deselect();
+            resp[0] = (r1 == 0x00) ? 0 : 1;
+            blk_usys_chan_serve_reply((const char *)name, resp, 1);
         } else {
             resp[0] = 1;
             blk_usys_chan_serve_reply((const char *)name, resp, 1);
@@ -774,7 +783,52 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
     return -1;
 }
 
+/* Phase 40 item 3: consecutive requests the card did not serve. Three in a
+ * row and the card is taken for gone (block_dev_t's `lost`): with it pulled,
+ * every request failed after its full SPI timeout, forever. */
+#define SPISD_LOST_AFTER 3u
+static uint32_t g_spisd_fail_run;
+
+static int spisd_note(block_dev_t *dev, int rc) {
+    if (rc == 0) {
+        g_spisd_fail_run = 0;
+    } else if (++g_spisd_fail_run >= SPISD_LOST_AFTER && !dev->lost) {
+        dev->lost = true;
+        printk("[SPI SD] the card stopped answering; /sd0 is gone until a reboot\n");
+    }
+    return rc;
+}
+
+static int spisd_read_blocks_raw(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count);
+static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count);
+
 static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
+    if (dev->lost) return -1;
+    return spisd_note(dev, spisd_read_blocks_raw(dev, buf, lba, count));
+}
+
+static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
+    if (dev->lost) return -1;
+    return spisd_note(dev, spisd_write_blocks_raw(dev, buf, lba, count));
+}
+
+static int spisd_probe(block_dev_t *dev) {
+    if (dev->lost) return -1;
+    if (blk_task_alive()) {
+        uint8_t req[BLK_HDR_LEN] = { BLK_REQ_STATUS };
+        uint8_t resp[1];
+        /* One attempt: an endpoint busy with a transfer is a card answering. */
+        int n = chan_call(g_blk_ep, req, sizeof(req), resp, sizeof(resp));
+        if (n < 1) return 0;
+        return resp[0] == 0 ? 0 : -1;
+    }
+    uint8_t r1 = sd_send_cmd(13, 0, 0xFF);
+    (void)spi_transfer(0xFF);
+    cs_deselect();
+    return r1 == 0x00 ? 0 : -1;
+}
+
+static int spisd_read_blocks_raw(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
     /* Unlike virtio_blk/flashdisk/ramdisk, this driver sends whatever LBA
      * it's given straight to the card over SPI with no bound check of its
      * own. On real hardware that's confined to the SD card's own address
@@ -798,7 +852,7 @@ static int spisd_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
     return spisd_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
 }
 
-static int spisd_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
+static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
     if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
     uint32_t done = 0;
@@ -894,6 +948,7 @@ static block_dev_t g_spisd_dev = {
     .num_blocks = 2097152, // Default 1 GB capacity estimate
     .read_blocks = spisd_read_blocks,
     .write_blocks = spisd_write_blocks,
+    .probe = spisd_probe,
 };
 
 block_dev_t *spisd_get_device(void) {

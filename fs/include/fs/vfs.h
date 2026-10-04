@@ -28,6 +28,10 @@ int vfs_mount_ramdisk(int size_kb);
  * memory (C5). */
 bool vfs_volume_writable(const char *name);
 bool vfs_volume_mounted(const char *name);
+/* Asks a mounted volume's device whether its medium is still there, and
+ * unmounts it until a reboot after two misses in a row (block_dev_t's
+ * `lost`). For a caller that polls anyway -- the status bar, once a second. */
+void vfs_volume_probe(const char *name);
 int vfs_register_service(const char *service_name, int target_pid);
 
 /* Mounts this node's own 9P server at /<name>/ over a local channel (B1).
