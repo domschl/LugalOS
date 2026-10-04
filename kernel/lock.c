@@ -397,16 +397,24 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
          * a non-zero depth means the lock is actually held. */
         if (l->depth > 0 && l->owner == me) {
             l->depth++;
-            irq_restore(f);
             waitfor_leave(me);
+            irq_restore(f);
             return;
         }
 
+        /* The edge from the previous turn of this loop is dropped *before*
+         * interrupts come back, not after (2026-10-04). In between, this task
+         * holds the lock and still says it waits for the last holder: a timer
+         * tick there let that holder run, find the lock taken, and see a cycle
+         * that was already over -- "[Lock BUG] task 0 waiting for task 6", on
+         * every few commands once two shells polled g_input_lock (phase 44's
+         * terminals). waitfor_leave() takes a leaf spinlock with its own
+         * irqsave, so it nests here. */
         if (arch_lock_try_acquire(&l->word)) {
             l->owner = me;
             l->depth = 1;
-            irq_restore(f);
             waitfor_leave(me);
+            irq_restore(f);
             return;
         }
 
