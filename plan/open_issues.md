@@ -40,10 +40,11 @@ history.
 
 # A. Actionable
 
-## Two bus locks became ylocks -- not yet run on their hardware
+## Two bus locks became ylocks -- the gateway half not yet run
 
-**Destination: the owner's bench** (phase 40's item 2, carried when the
-phase closed on 2026-10-04) -- code done 2026-10-03.
+**Destination: the owner's bench, the ENC28J60 gateway** (phase 40's item
+2). The Pico 2 W half passed on 2026-10-04: `wifi probe` under live
+traffic, rejoins, 120 pings, no `[Lock BUG]`. Code done 2026-10-03.
 
 `drivers/cyw43_rp2350.c`'s `g_bus_busy` and `drivers/enc28j60_rp2350.c`'s
 `g_busy` were a flag and a yield loop: no owner, so no edge in phase 31's
@@ -57,28 +58,18 @@ traffic; on the gateway with the ENC28J60, `net txtest`/`net rxtest` and the
 gateway suite (`tests/hw/test_gateway.py`). Any `[Lock BUG]` on the console is
 a caller taking the bus under a spinlock, which the flag never reported.
 
-## No clean way to leave a BSS before re-joining
+## Sea-level pressure: which temperature?
 
-**Destination: the owner's bench, a Pico 2 W** (phase 40's item 9, carried).
-
-`wifi join` over a live association: `mfp` is now stepped over (a capability
-hint), so the re-join works, but `CYW43_IOCTL_SET_DISASSOC` issued exactly as
-the reference does (`cyw43_wifi_leave()`: length 0, NULL, `CYW43_ITF_STA`)
-answers BADARG and the firmware stays associated. Boot joins and the
-supervisor's re-join after link loss are unaffected.
-
-**Fix:** find the leave the firmware accepts (compare the reference's
-ioctl framing byte for byte, or a `bsscfg:` iovar), then leave before every
-manual join. Any other setup iovar refused while associated needs `mfp`'s
-judgement meanwhile.
-
-## Sea-level pressure has not run on a BME280 node
-
-**Destination: the owner's bench** (phase 40's item 11, carried). Both
-pressures are published since 40.11; the reduction is checked only against
-the host's own arithmetic. **To close:** on a sensor node, `identity altitude
-<m>`, then `sensor` and the two MQTT topics against a nearby weather
-station's reduced value.
+**Destination: the owner's decision.** Run on the Pico 2 W sensor node
+(2026-10-04) next to a reference BME280 on the same broker: station
+pressure agrees to 0.3 hPa, the reduced values differ by 3.5 hPa (ours
+1025.0, the reference 1028.5, at 520 m). The reference uses the standard
+atmosphere, p0 = p / (1 - h/44330)^5.255 -- what QNH and most weather apps
+show. `bme280_sea_level_pa()` uses the barometric formula with the
+sensor's temperature, correct for outdoor air and too small a correction
+for an indoor sensor at 28 C. **To close:** choose -- the standard
+atmosphere, or the sensor's temperature, or an outdoor temperature from
+elsewhere -- and the shell/MQTT wording to match.
 
 ## The LCD-7's PSRAM reference rate is stale
 

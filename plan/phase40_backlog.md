@@ -16,16 +16,16 @@ original description stays in git history of `plan/open_issues.md`.
 | # | Item | Status | Commit |
 |---|---|---|---|
 | 1 | The runner cannot see inside a stuck guest | **Done.** Monitor socket, per-hart registers symbolised, bounded writes, `[Attempt]` lines | `902d6dc` |
-| 2 | Two hand-rolled yielding locks outside the wait-for graph | **Code done, bench pending** — both `ylock_t`, three personas build; needs a Pico 2 W and the ENC28J60 gateway | `83f0507` |
+| 2 | Two hand-rolled yielding locks outside the wait-for graph | **Half verified** -- on a Pico 2 W, `wifi probe` under live traffic, rejoins, 120 pings: no `[Lock BUG]` (2026-10-04); the ENC28J60 gateway half still needs that board | `83f0507` |
 | 3 | Pulling the SD card out of a running board hangs it | **Done**, on the LCD-7 -- the allocator spun once per cluster on failed reads; a pulled card is now *lost* until reboot, and the SD icon follows it | `1531895`, `6b8339c` |
 | 4 | A trailing slash breaks path resolution below a mount root | **Done** | `fd77381` |
 | 5 | `cc` searches only /ram0 for a relative `#include` | **Done**, and the shared header buffer it exposed | `1b6a1d6` |
 | 6 | `K3` checks pin values from a table, not from the build | **Done**, verified on the LCD-7 (match, mismatch, unknown build, same-id decoy); its `/proc/node` read exposed an 8 KB identity stack cost, fixed | `64eb2f4` + persona fix, `7844345` |
 | 7 | C6/C7's exact heap comparison disturbed by background allocation | **Done** — settled readings, two compiles; 3/3 on the LCD-7 | `601160e` |
 | 8 | The clock display flickers while the radio comes up | **Closed** — already solved, per the owner (2026-10-03) | — |
-| 9 | No clean way to leave a BSS before re-joining | **Open — needs a Pico 2 W** | — |
+| 9 | No clean way to leave a BSS before re-joining | **Done**, on a Pico 2 W -- the plain disassociate works on today's driver; a join now leaves first | `e7c1ce0` |
 | 10 | `mqttd` has no file-backed source | **Done** (`mqttd file`, `(mqttd-file ...)`) | `bf44055` |
-| 11 | Pressure is published as station pressure | **Done** — both published (owner's decision); not yet run on a BME280 node | `40.11` commit |
+| 11 | Pressure is published as station pressure | **Done**, run on a Pico 2 W sensor node; the altitude now takes effect without a reboot. Station pressure agrees with a reference BME280 within 0.3 hPa; the sea-level value is 3.5 hPa below the reference's -- see the conclusion | `aff00f5`, `f888c0a` |
 | 12 | An identity write reboots the board | **Done** -- the console, the 9P link, QSPI and PSRAM survive the write on the LCD-7; the reboot is gone | `337cf3c` |
 
 ## 2. The review
@@ -140,15 +140,31 @@ that nothing displays -- the screen's own terms are what is drawn.
 ## 4. Conclusion
 
 Phase 40 closed on 2026-10-04 as 0.16.0. Of the twelve backlog items, nine
-are done, one closed by the owner, and three need boards that were not on
-the bench; they move to `plan/open_issues.md` with what each needs:
+were done then, one closed by the owner, and three needed boards that were
+not on the bench. **Later the same day** a Pico 2 W sensor node arrived:
+item 9 is done (`e7c1ce0`), item 11 ran on it, and item 2 is half verified.
+What it showed beyond the items:
 
-* **Item 2** -- the CYW43 and ENC28J60 bus locks are ylocks; needs a run on
-  a Pico 2 W (`wifi probe`, `wifi join`) and the ENC28J60 gateway
-  (`tests/hw/test_gateway.py`), watching for `[Lock BUG]`.
-* **Item 9** -- leaving a BSS cleanly; needs a Pico 2 W.
-* **Item 11 on hardware** -- sea-level pressure; needs a BME280 node
-  (`identity altitude <m>`, then `sensor` and the MQTT topics).
+* The identity-write reboot (gone since 40.12) had been applying the
+  altitude for us: `pressure_msl` was registered at boot only. Fixed
+  (`f888c0a`); the other identity settings were checked and are live or
+  documented as boot-time.
+* **The sea-level formula's temperature is an open decision.** Station
+  pressure agrees with the owner's reference BME280 to 0.3 hPa (966.6 vs
+  966.9), but the reduced values differ by 3.5 hPa (1025.0 vs 1028.5): the
+  reference uses the standard atmosphere, p0 = p / (1 - h/44330)^5.255,
+  and `bme280_sea_level_pa()` the barometric formula with the sensor's own
+  temperature -- 28 C for this indoor node, where the formula wants the
+  outdoor air column. Which convention to publish is the owner's call.
+
+What remained at the close, in `plan/open_issues.md`:
+
+* **Item 2** -- the CYW43 and ENC28J60 bus locks are ylocks; the Pico 2 W
+  half passed later the same day; the ENC28J60 gateway
+  (`tests/hw/test_gateway.py`) remains, watching for `[Lock BUG]`.
+* ~~Item 9~~ -- done later the same day.
+* ~~Item 11 on hardware~~ -- run later the same day; the temperature
+  question above remains.
 
 The review's obvious next harness is still Lisp (reader, bignums) on the
 host, and the second pass adds one: the screen protocol (`screen_canvas_vterm()`)
