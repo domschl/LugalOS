@@ -18,6 +18,11 @@
 #include "kernel/sched.h"
 #include "kernel/uaccess.h"
 #include "kernel/time.h"
+#include "kernel/mem_domain.h"
+#include "kernel/random.h"
+#include "kernel/identity.h"
+#include "kernel/printk.h"
+#include "arch/umode.h"
 #include <stddef.h>
 
 static inline uintptr_t caller_domain(void) {
@@ -45,6 +50,59 @@ static kh_t crit_mutex(uintptr_t owner, bool create) {
         return m;
     }
     return 0;
+}
+
+/* ---- threads in the caller's domain -------------------------------------- *
+ *
+ * The radio is several tasks sharing one memory domain: the blob creates its own
+ * (the pp task), and the shim adds a timer thread and an interrupt thread. A
+ * thread is a kernel task whose body drops straight into U-mode at the entry
+ * point it was given, under the *same* domain object as its creator -- so a
+ * stack and a heap it shares with its siblings, and nothing of the kernel's.
+ * Nothing about the new task is taken on trust: the entry and the stack are
+ * checked against the creator's own regions before the task exists. */
+
+#define KTHREAD_MAX 8
+typedef struct {
+    bool          used;
+    mem_domain_t *domain;
+    uintptr_t     entry, arg, stack_top;
+} kthread_t;
+static kthread_t g_thr[KTHREAD_MAX];
+
+static void kthread_body(void *argp) {
+    kthread_t t = *(kthread_t *)argp;       /* copied: the slot is free to be reused at once */
+    ((kthread_t *)argp)->used = false;
+    if (task_set_domain(sched_current_pid(), t.domain) != 0) {
+        printk("[kobj] A thread refused to enter U-mode: its domain is not enforceable\n");
+        return;
+    }
+    arch_enter_user((void (*)(void))t.entry, t.stack_top, 0, t.arg, 0);
+}
+
+static int tier_for(uintptr_t prio) {
+    if (prio >= 20) return TASK_PRIO_INTERRUPT;
+    if (prio >= 10) return TASK_PRIO_NORMAL;
+    return TASK_PRIO_BACKGROUND;
+}
+
+static long thread_create(uintptr_t entry, uintptr_t arg, uintptr_t stack_base,
+                          uintptr_t stack_size, uintptr_t prio) {
+    mem_domain_t *dom = sched_current_domain();
+    if (!dom) return KO_FAIL;               /* a kernel task has no domain to share */
+    if (stack_size < 256 || (stack_base & 7u) || (stack_size & 7u)) return KO_FAIL;
+    if (!mem_domain_permits(dom, entry, 2, MEM_X)) return KO_FAIL;
+    if (!mem_domain_permits(dom, stack_base, stack_size, MEM_R | MEM_W)) return KO_FAIL;
+
+    int slot = -1;
+    for (int i = 0; i < KTHREAD_MAX; i++)
+        if (!g_thr[i].used) { slot = i; break; }
+    if (slot < 0) return KO_FAIL;
+    g_thr[slot] = (kthread_t){ true, dom, entry, arg, stack_base + stack_size };
+    int pid = task_create("uthread", kthread_body, &g_thr[slot]);
+    if (pid < 0) { g_thr[slot].used = false; return KO_FAIL; }
+    task_set_priority(pid, tier_for(prio));
+    return pid;
 }
 
 /* A handle that is not this caller's behaves exactly like one that does not
@@ -132,6 +190,30 @@ long kobj_syscall(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3,
     case KOBJ_OP_CRIT_LEAVE: {
         kh_t m = crit_mutex(owner, false);
         return m ? kos_mutex_unlock(m) : KO_FAIL;
+    }
+    case KOBJ_OP_THREAD_CREATE: return thread_create(a1, a2, a3, a4, a5);
+    case KOBJ_OP_THREAD_SELF:   return sched_current_pid();
+    case KOBJ_OP_RANDOM: {
+        uint32_t n = (uint32_t)a2;
+        if (n > sizeof item) n = sizeof item;           /* a long request is served in pieces by the caller */
+        random_bytes(item, n);
+        return copy_to_user(a1, item, n) < 0 ? KO_FAIL : (long)n;
+    }
+    case KOBJ_OP_MAC: {
+        uint8_t mac[6];
+        const uint8_t *base = node_mac();
+        for (int i = 0; i < 6; i++) mac[i] = base[i];
+        mac[5] = (uint8_t)(mac[5] + (uint8_t)(a1 == 0 ? 0 : a1 == 1 ? 1 : a1 == 2 ? 2 : 3));
+        return copy_to_user(a2, mac, 6) < 0 ? KO_FAIL : KO_OK;
+    }
+    case KOBJ_OP_LOG: {
+        char line[160];
+        uint32_t n = (uint32_t)a3;
+        if (n >= sizeof line) n = sizeof line - 1;
+        if (copy_from_user(line, a2, n) < 0) return KO_FAIL;
+        line[n] = 0;
+        printk("[radio%u] %s\n", (unsigned)a1, line);
+        return KO_OK;
     }
     default:
         return KO_FAIL;

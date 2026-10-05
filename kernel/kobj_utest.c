@@ -39,7 +39,7 @@
 #define KU __attribute__((section(".utext_kobj"), noinline, no_sanitize("undefined")))
 extern char _utext_kobj_start[];
 
-#define NCHECK 24
+#define NCHECK 29
 
 /* The shared block at the bottom of the task's page. The U half writes it, the
  * kernel half reads it after the task is dead. */
@@ -50,6 +50,8 @@ typedef struct {
     volatile uintptr_t kernel_ptr;      /* an address outside the domain */
     volatile uint32_t  handoff;         /* the semaphore U is about to block on */
     volatile uint32_t  finished;
+    volatile uint32_t  thread_sem_a, thread_sem_b;   /* main -> thread, thread -> main */
+    volatile uint32_t  thread_pid, thread_ran;
 } kctx_t;
 
 #define UCHECK(i, cond, obs) do { ctx->detail[i] = (int32_t)(obs); ctx->result[i] = (cond) ? 1u : 2u; } while (0)
@@ -69,6 +71,19 @@ long ksys(long nr, long a1, long a2, long a3, long a4, long a5) {
 #define KS(op, a1, a2, a3, a4, a5) ksys(SYS_KOBJ(op), (long)(a1), (long)(a2), (long)(a3), (long)(a4), (long)(a5))
 #define SYS_UEXIT_NR  20
 #define SYS_TIME_MS_NR 23
+
+/* A second thread in the same domain: waits for the main thread, runs, and
+ * answers. Entered as `void entry(uintptr_t arg)` by kthread_body(). */
+KU static void kobj_utest_thread(uintptr_t arg) {
+    kctx_t *ctx = (kctx_t *)arg;
+    ctx->thread_pid = (uint32_t)KS(KOBJ_OP_THREAD_SELF, 0, 0, 0, 0, 0);
+    if (KS(KOBJ_OP_SEM_TAKE, ctx->thread_sem_a, 1000, 0, 0, 0) == KO_OK) {
+        ctx->thread_ran = 1;
+        KS(KOBJ_OP_SEM_GIVE, ctx->thread_sem_b, 0, 0, 0, 0);
+    }
+    ksys(SYS_UEXIT_NR, 0, 0, 0, 0, 0);
+    for (;;) { }
+}
 
 KU static void kobj_utest_body(uintptr_t arg) {
     kctx_t *ctx = (kctx_t *)arg;
@@ -170,6 +185,39 @@ KU static void kobj_utest_body(uintptr_t arg) {
     r += KS(KOBJ_OP_CRIT_LEAVE, 0, 0, 0, 0, 0) + KS(KOBJ_OP_CRIT_LEAVE, 0, 0, 0, 0, 0);
     UCHECK(23, r == KO_OK, r);
 
+    /* 24-25: the kernel's random bytes and the node's MAC, through pointers in the domain. */
+    volatile uint8_t rb[16];
+    for (int i = 0; i < 16; i++) rb[i] = 0;
+    r = KS(KOBJ_OP_RANDOM, rb, 16, 0, 0, 0);
+    long nz = 0;
+    for (int i = 0; i < 16; i++) nz |= rb[i];
+    UCHECK(24, r == 16 && nz != 0, r);
+    volatile uint8_t ma[6], mb[6];
+    long m1 = KS(KOBJ_OP_MAC, 0, ma, 0, 0, 0), m2 = KS(KOBJ_OP_MAC, 1, mb, 0, 0, 0);
+    UCHECK(25, m1 == KO_OK && m2 == KO_OK && ma[0] == mb[0] && (uint8_t)(ma[5] + 1) == mb[5], ma[5]);
+
+    /* 26: a log line, rendered by the kernel. The text is built on the stack:
+     * a literal would land in .rodata, outside the domain. */
+    volatile char text[8];
+    text[0] = 'u'; text[1] = '-'; text[2] = 'm'; text[3] = 'o'; text[4] = 'd'; text[5] = 'e'; text[6] = 0;
+    r = KS(KOBJ_OP_LOG, 1, text, 6, 0, 0);
+    UCHECK(26, r == KO_OK, r);
+
+    /* 27: a second thread in this domain, woken and answering. */
+    long sa = KS(KOBJ_OP_SEM_CREATE, 1, 0, 0, 0, 0), sb = KS(KOBJ_OP_SEM_CREATE, 1, 0, 0, 0, 0);
+    ctx->thread_sem_a = (uint32_t)sa; ctx->thread_sem_b = (uint32_t)sb;
+    uintptr_t tstack = (uintptr_t)ctx + 1024;
+    long tpid = KS(KOBJ_OP_THREAD_CREATE, kobj_utest_thread, ctx, tstack, 1024, 23);
+    KS(KOBJ_OP_SEM_GIVE, sa, 0, 0, 0, 0);
+    r = KS(KOBJ_OP_SEM_TAKE, sb, 1000, 0, 0, 0);
+    long self = KS(KOBJ_OP_THREAD_SELF, 0, 0, 0, 0, 0);
+    UCHECK(27, tpid > 0 && r == KO_OK && ctx->thread_ran == 1 && ctx->thread_pid == (uint32_t)tpid && tpid != self, tpid);
+
+    /* 28: a thread may not be given memory it does not own, nor code it may not run. */
+    long b1 = KS(KOBJ_OP_THREAD_CREATE, kobj_utest_thread, ctx, ctx->kernel_ptr & ~7u, 1024, 23);     /* a kernel stack */
+    long b2 = KS(KOBJ_OP_THREAD_CREATE, ctx->kernel_ptr, ctx, tstack, 1024, 23);                      /* entry in kernel data */
+    UCHECK(28, b1 == KO_FAIL && b2 == KO_FAIL, b1 * 10 + b2);
+
     ctx->finished = 1;
     ksys(SYS_UEXIT_NR, 0, 0, 0, 0, 0);
     for (;;) { }
@@ -234,6 +282,8 @@ int kobj_utest(void) {
         "event set", "event wait all+clear", "event timed wait",
         "timer one-shot with setfn callback", "periodic timer x3", "timer disarm", "time_us into own buffer",
         "kernel pointer for time_us refused", "block in the kernel, woken from outside", "critical section x2",
+        "kernel random bytes", "node MAC by type", "a log line", "a second thread in the domain",
+        "threads refuse foreign stack/entry",
     };
     int fails = 0;
     for (int i = 0; i < NCHECK; i++) {

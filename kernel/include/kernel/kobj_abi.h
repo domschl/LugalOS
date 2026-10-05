@@ -53,6 +53,17 @@ enum {
     KOBJ_OP_TIME_US,           /* (uint64_t *out)                   -> rc */
     KOBJ_OP_CRIT_ENTER,        /* ()  critical section: excludes this domain's other tasks, recursive */
     KOBJ_OP_CRIT_LEAVE,        /* () */
+    KOBJ_OP_THREAD_CREATE,     /* (entry, arg, stack_base, stack_size, prio) -> pid, or KO_FAIL.
+                                  A new task in the *caller's own domain*: entry must be executable and the
+                                  stack readable+writable in it, both validated against the domain's regions.
+                                  The entry is called as `void entry(uintptr_t arg)`; returning ends the thread.
+                                  prio is a runtime's own number (the radio's pp task is 23 of 25): >= 20 is
+                                  the kernel's interrupt tier, >= 10 normal, below that background. */
+    KOBJ_OP_THREAD_SELF,       /* ()                                -> this task's pid */
+    KOBJ_OP_RANDOM,            /* (buf*, len)                       -> rc  (kernel/random.c) */
+    KOBJ_OP_MAC,               /* (type, uint8_t out[6])            -> rc  (the node's MAC; type = IDF's
+                                  esp_mac_type_t: 0 STA, 1 AP, 2 BT, 3 ETH -- last octet offset by type) */
+    KOBJ_OP_LOG,               /* (level, text*, len)               -> rc  one line, rendered by the runtime */
     KOBJ_OP_COUNT
 };
 
