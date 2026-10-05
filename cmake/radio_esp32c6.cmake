@@ -129,7 +129,7 @@ typedef struct { int dummy; } portMUX_TYPE;
         "${_C}/newlib/platform_include" "${_C}/esp_netif/include" "${_C}/esp_phy/include"
         "${_C}/riscv/include" "${_C}/esp_hal_gpio/include" "${_C}/esp_hal_gpio/esp32c6/include"
         "${_C}/esp_hw_support/port/esp32c6/include" "${_C}/esp_wifi/include/esp_private"
-        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory")
+        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include")
     set(LUGALOS_RADIO_DEFS CONFIG_IDF_TARGET_ESP32C6=1 CONFIG_SOC_WIFI_HE_SUPPORT=1 ESP_PLATFORM=1)
     set(LUGALOS_RADIO_IDF_SOURCES
         "${_C}/esp_wifi/regulatory/esp_wifi_regulatory.c"
