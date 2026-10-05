@@ -159,8 +159,9 @@ int  kev_delete(kh_t h, kwake_t *wk);
 
 /* ---- timers --------------------------------------------------------------
  *
- * Keyed by an address the runtime owns (the blob's own ETSTimer): the table
- * stores that key, the callback and its argument, and a deadline, and never
+ * Keyed by (owner, address): the address is one the runtime owns (the blob's
+ * own ETSTimer), and the owner is its domain, so two runtimes cannot see each
+ * other's timers or be handed each other's callbacks. The table stores that key, the callback and its argument, and a deadline, and never
  * dereferences any of them. Calling the callback is the U-mode timer thread's
  * job (kernel/kobj_sched.c hands it expired entries).
  *
@@ -168,19 +169,31 @@ int  kev_delete(kh_t h, kwake_t *wk);
  * that has fallen behind fires once and reschedules from `now`: skipped
  * periods are dropped, not queued as a burst. */
 
-int  ktimer_arm(uintptr_t key, uintptr_t fn, uintptr_t arg,
+int  ktimer_arm(uintptr_t owner, uintptr_t key, uintptr_t fn, uintptr_t arg,
                 uint64_t now_us, uint64_t delay_us, bool periodic);
 /* Sets the callback without arming. Creates the slot. */
-int  ktimer_setfn(uintptr_t key, uintptr_t fn, uintptr_t arg);
-int  ktimer_disarm(uintptr_t key);          /* keeps the slot */
-int  ktimer_done(uintptr_t key);            /* frees it */
-bool ktimer_armed(uintptr_t key);
+int  ktimer_setfn(uintptr_t owner, uintptr_t key, uintptr_t fn, uintptr_t arg);
+int  ktimer_disarm(uintptr_t owner, uintptr_t key);          /* keeps the slot */
+int  ktimer_done(uintptr_t owner, uintptr_t key);            /* frees it */
+bool ktimer_armed(uintptr_t owner, uintptr_t key);
 /* Pops one expired timer (earliest first). Returns true and fills fn/arg/key,
  * or false if none is due. */
-bool ktimer_pop_due(uint64_t now_us, uintptr_t *key, uintptr_t *fn, uintptr_t *arg);
+bool ktimer_pop_due(uintptr_t owner, uint64_t now_us, uintptr_t *key, uintptr_t *fn, uintptr_t *arg);
 /* The earliest armed deadline, or false if none. */
-bool ktimer_next(uint64_t *deadline_us);
+bool ktimer_next(uintptr_t owner, uint64_t *deadline_us);
 uint32_t ktimer_count(void);
+
+/* ---- ownership -----------------------------------------------------------
+ *
+ * Every object, and every timer, belongs to whatever created it: the syscall
+ * layer passes the calling task's memory domain as the owner and refuses a
+ * handle that is not the caller's. Without that, any U-mode task could
+ * operate on the radio's semaphores by guessing a handle -- and handles are
+ * small, structured numbers. Kernel-internal callers use owner 0. */
+int  kobj_set_owner(kh_t h, uintptr_t owner);
+bool kobj_owned_by(kh_t h, uintptr_t owner);
+/* How many bytes one queue item is, so the syscall layer can size its copy. */
+uint32_t kq_item_size(kh_t h);
 
 /* Diagnostics for `ps`-style reporting and the tests. */
 uint32_t kobj_live(int type);

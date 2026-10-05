@@ -66,18 +66,18 @@ static kobj_env_t g_env;
 
 /* ---- tables -------------------------------------------------------------- */
 
-typedef struct { bool used; uint16_t gen; uint32_t count, max; wlist_t w; } sem_t_;
-typedef struct { bool used; uint16_t gen; bool rec; int owner; uint32_t depth; wlist_t w; } mutex_t_;
+typedef struct { bool used; uint16_t gen; uintptr_t owner; uint32_t count, max; wlist_t w; } sem_t_;
+typedef struct { bool used; uint16_t gen; uintptr_t dom; bool rec; int owner; uint32_t depth; wlist_t w; } mutex_t_;
 typedef struct {
-    bool used; uint16_t gen;
+    bool used; uint16_t gen; uintptr_t owner;
     uint32_t len, isz, head, count;
     uint8_t *buf;
     wlist_t rx, tx;
 } queue_t_;
-typedef struct { bool used; uint16_t gen; uint32_t bits; wlist_t w; } evt_t_;
+typedef struct { bool used; uint16_t gen; uintptr_t owner; uint32_t bits; wlist_t w; } evt_t_;
 typedef struct {
     bool used, armed, periodic;
-    uintptr_t key, fn, arg;
+    uintptr_t owner, key, fn, arg;
     uint64_t deadline, period, seq;
 } timer_t_;
 
@@ -138,6 +138,39 @@ static int cancel_finish(wlist_t *l, kwaiter_t *w, bool found_obj) {
     wl_remove(l, w);
     w->state = KW_IDLE;
     return KO_TIMEOUT;
+}
+
+/* ---- ownership ----------------------------------------------------------- */
+
+static uintptr_t *owner_slot(kh_t h) {
+    int i = H_IDX(h);
+    if (h == 0 || i < 0) return NULL;
+    switch (H_TYPE(h)) {
+    case KOBJ_SEM:   if (i < KSEM_MAX   && g_sem[i].used && g_sem[i].gen == H_GEN(h)) return &g_sem[i].owner; break;
+    case KOBJ_MUTEX: if (i < KMUTEX_MAX && g_mtx[i].used && g_mtx[i].gen == H_GEN(h)) return &g_mtx[i].dom; break;
+    case KOBJ_QUEUE: if (i < KQUEUE_MAX && g_q[i].used   && g_q[i].gen   == H_GEN(h)) return &g_q[i].owner; break;
+    case KOBJ_EVENT: if (i < KEVT_MAX   && g_ev[i].used  && g_ev[i].gen  == H_GEN(h)) return &g_ev[i].owner; break;
+    }
+    return NULL;
+}
+
+int kobj_set_owner(kh_t h, uintptr_t owner) {
+    uintptr_t *o = owner_slot(h);
+    if (!o) return KO_FAIL;
+    *o = owner;
+    return KO_OK;
+}
+
+bool kobj_owned_by(kh_t h, uintptr_t owner) {
+    uintptr_t *o = owner_slot(h);
+    return o && *o == owner;
+}
+
+uint32_t kq_item_size(kh_t h) {
+    int i = H_IDX(h);
+    if (h == 0 || H_TYPE(h) != KOBJ_QUEUE || i < 0 || i >= KQUEUE_MAX ||
+        !g_q[i].used || g_q[i].gen != H_GEN(h)) return 0;
+    return g_q[i].isz;
 }
 
 /* ---- semaphores ---------------------------------------------------------- */
@@ -443,34 +476,34 @@ int kev_delete(kh_t h, kwake_t *wk) {
 
 /* ---- timers -------------------------------------------------------------- */
 
-static timer_t_ *tm_find(uintptr_t key) {
+static timer_t_ *tm_find(uintptr_t owner, uintptr_t key) {
     for (int i = 0; i < KTIMER_MAX; i++)
-        if (g_tm[i].used && g_tm[i].key == key) return &g_tm[i];
+        if (g_tm[i].used && g_tm[i].key == key && g_tm[i].owner == owner) return &g_tm[i];
     return NULL;
 }
 
-static timer_t_ *tm_get(uintptr_t key) {
-    timer_t_ *t = tm_find(key);
+static timer_t_ *tm_get(uintptr_t owner, uintptr_t key) {
+    timer_t_ *t = tm_find(owner, key);
     if (t) return t;
     for (int i = 0; i < KTIMER_MAX; i++) {
         if (g_tm[i].used) continue;
         memset(&g_tm[i], 0, sizeof g_tm[i]);
-        g_tm[i].used = true; g_tm[i].key = key;
+        g_tm[i].used = true; g_tm[i].key = key; g_tm[i].owner = owner;
         return &g_tm[i];
     }
     return NULL;
 }
 
-int ktimer_setfn(uintptr_t key, uintptr_t fn, uintptr_t arg) {
-    timer_t_ *t = tm_get(key);
+int ktimer_setfn(uintptr_t owner, uintptr_t key, uintptr_t fn, uintptr_t arg) {
+    timer_t_ *t = tm_get(owner, key);
     if (!t) return KO_FAIL;
     t->fn = fn; t->arg = arg;
     return KO_OK;
 }
 
-int ktimer_arm(uintptr_t key, uintptr_t fn, uintptr_t arg,
+int ktimer_arm(uintptr_t owner, uintptr_t key, uintptr_t fn, uintptr_t arg,
                uint64_t now_us, uint64_t delay_us, bool periodic) {
-    timer_t_ *t = tm_get(key);
+    timer_t_ *t = tm_get(owner, key);
     if (!t) return KO_FAIL;
     if (fn) { t->fn = fn; t->arg = arg; }
     if (periodic && delay_us == 0) delay_us = 1;    /* a zero period would spin the thread */
@@ -481,30 +514,30 @@ int ktimer_arm(uintptr_t key, uintptr_t fn, uintptr_t arg,
     return KO_OK;
 }
 
-int ktimer_disarm(uintptr_t key) {
-    timer_t_ *t = tm_find(key);
+int ktimer_disarm(uintptr_t owner, uintptr_t key) {
+    timer_t_ *t = tm_find(owner, key);
     if (!t) return KO_FAIL;
     t->armed = false;
     return KO_OK;
 }
 
-int ktimer_done(uintptr_t key) {
-    timer_t_ *t = tm_find(key);
+int ktimer_done(uintptr_t owner, uintptr_t key) {
+    timer_t_ *t = tm_find(owner, key);
     if (!t) return KO_FAIL;
     memset(t, 0, sizeof *t);
     return KO_OK;
 }
 
-bool ktimer_armed(uintptr_t key) {
-    timer_t_ *t = tm_find(key);
+bool ktimer_armed(uintptr_t owner, uintptr_t key) {
+    timer_t_ *t = tm_find(owner, key);
     return t && t->armed;
 }
 
-bool ktimer_pop_due(uint64_t now_us, uintptr_t *key, uintptr_t *fn, uintptr_t *arg) {
+bool ktimer_pop_due(uintptr_t owner, uint64_t now_us, uintptr_t *key, uintptr_t *fn, uintptr_t *arg) {
     timer_t_ *best = NULL;
     for (int i = 0; i < KTIMER_MAX; i++) {
         timer_t_ *t = &g_tm[i];
-        if (!t->used || !t->armed || t->deadline > now_us) continue;
+        if (!t->used || !t->armed || t->owner != owner || t->deadline > now_us) continue;
         if (!best || t->deadline < best->deadline ||
             (t->deadline == best->deadline && t->seq < best->seq)) best = t;
     }
@@ -521,11 +554,11 @@ bool ktimer_pop_due(uint64_t now_us, uintptr_t *key, uintptr_t *fn, uintptr_t *a
     return true;
 }
 
-bool ktimer_next(uint64_t *deadline_us) {
+bool ktimer_next(uintptr_t owner, uint64_t *deadline_us) {
     bool any = false;
     for (int i = 0; i < KTIMER_MAX; i++) {
         timer_t_ *t = &g_tm[i];
-        if (!t->used || !t->armed) continue;
+        if (!t->used || !t->armed || t->owner != owner) continue;
         if (!any || t->deadline < *deadline_us) { *deadline_us = t->deadline; any = true; }
     }
     return any;

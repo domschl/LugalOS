@@ -25,6 +25,7 @@
 #include <string.h>
 
 static int g_failures;
+#define OWN 0     /* the kernel's own timers; test_ownership() uses real domains */
 #define CHECK(cond, ...) do { if (!(cond)) { \
     fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); \
     fprintf(stderr, "\n"); g_failures++; abort(); } } while (0)
@@ -212,47 +213,73 @@ static void test_event_group(void) {
     CHECK(kev_delete(e, &wk) == KO_OK && d.state == KW_FAILED && wk.n == 1, "delete under a waiter");
 }
 
+static void test_ownership(void) {
+    kobj_init(&ENV);
+    const uintptr_t A = 0xA000, B = 0xB000;
+    kh_t s = ksem_create(1, 1), q = kq_create(4, 8), m = kmutex_create(false), e = kev_create();
+    CHECK(kobj_owned_by(s, 0) && kobj_owned_by(q, 0), "objects start kernel-owned");
+    CHECK(kobj_set_owner(s, A) == KO_OK && kobj_set_owner(q, A) == KO_OK, "assign to domain A");
+    CHECK(kobj_owned_by(s, A) && !kobj_owned_by(s, B) && !kobj_owned_by(s, 0), "A owns it, nobody else does");
+    CHECK(kq_item_size(q) == 8 && kq_item_size(s) == 0 && kq_item_size(0) == 0, "item size, 0 for non-queues");
+    CHECK(kobj_set_owner(0xdeadbeef, A) == KO_FAIL && !kobj_owned_by(0, 0), "no owner for a forged handle");
+    ksem_delete(s, NULL);
+    CHECK(!kobj_owned_by(s, A), "a deleted object has no owner");
+    (void)m; (void)e;
+
+    /* Timers: the same key in two domains is two timers, and each domain sees
+     * only its own. */
+    CHECK(ktimer_arm(A, 0x1000, 0xfa, 0xaa, 0, 100, false) == KO_OK, "A arms 0x1000");
+    CHECK(ktimer_arm(B, 0x1000, 0xfb, 0xab, 0, 50, false) == KO_OK, "B arms the same key");
+    uintptr_t key, fn, arg; uint64_t dl;
+    CHECK(ktimer_next(A, &dl) && dl == 100 && ktimer_next(B, &dl) && dl == 50, "each sees its own deadline");
+    CHECK(!ktimer_next(0, &dl), "the kernel's owner sees neither");
+    CHECK(!ktimer_pop_due(A, 60, &key, &fn, &arg), "B's timer is not A's to pop");
+    CHECK(ktimer_pop_due(B, 60, &key, &fn, &arg) && fn == 0xfb, "B pops its own");
+    CHECK(ktimer_disarm(B, 0x1000) == KO_OK && ktimer_armed(A, 0x1000), "B disarming leaves A's armed");
+    CHECK(ktimer_done(B, 0x1000) == KO_OK && ktimer_armed(A, 0x1000) && ktimer_done(B, 0x1000) == KO_FAIL, "done is per owner");
+}
+
 static void test_timers(void) {
     kobj_init(&ENV);
     uintptr_t key, fn, arg;
 
-    CHECK(ktimer_setfn(0x1000, 0xf1, 0xa1) == KO_OK, "setfn creates the slot");
-    CHECK(!ktimer_armed(0x1000), "setfn does not arm");
-    CHECK(ktimer_arm(0x1000, 0, 0, 1000, 500, false) == KO_OK, "arm one-shot; keeps the stored callback");
-    CHECK(ktimer_arm(0x2000, 0xf2, 0xa2, 1000, 200, false) == KO_OK, "arm another");
-    CHECK(ktimer_arm(0x3000, 0xf3, 0xa3, 1000, 200, false) == KO_OK, "and a third, same deadline");
+    CHECK(ktimer_setfn(OWN, 0x1000, 0xf1, 0xa1) == KO_OK, "setfn creates the slot");
+    CHECK(!ktimer_armed(OWN, 0x1000), "setfn does not arm");
+    CHECK(ktimer_arm(OWN, 0x1000, 0, 0, 1000, 500, false) == KO_OK, "arm one-shot; keeps the stored callback");
+    CHECK(ktimer_arm(OWN, 0x2000, 0xf2, 0xa2, 1000, 200, false) == KO_OK, "arm another");
+    CHECK(ktimer_arm(OWN, 0x3000, 0xf3, 0xa3, 1000, 200, false) == KO_OK, "and a third, same deadline");
 
     uint64_t next;
-    CHECK(ktimer_next(&next) && next == 1200, "earliest deadline");
-    CHECK(!ktimer_pop_due(1199, &key, &fn, &arg), "nothing due yet");
-    CHECK(ktimer_pop_due(1200, &key, &fn, &arg) && key == 0x2000 && fn == 0xf2 && arg == 0xa2, "ties go in arming order");
-    CHECK(ktimer_pop_due(1200, &key, &fn, &arg) && key == 0x3000, "then the third");
-    CHECK(!ktimer_pop_due(1200, &key, &fn, &arg), "the one-shots are spent");
-    CHECK(!ktimer_armed(0x2000) && ktimer_count() == 3, "a fired one-shot is disarmed but keeps its slot");
-    CHECK(ktimer_pop_due(1500, &key, &fn, &arg) && key == 0x1000 && fn == 0xf1 && arg == 0xa1, "setfn's callback survived the arm");
+    CHECK(ktimer_next(OWN, &next) && next == 1200, "earliest deadline");
+    CHECK(!ktimer_pop_due(OWN, 1199, &key, &fn, &arg), "nothing due yet");
+    CHECK(ktimer_pop_due(OWN, 1200, &key, &fn, &arg) && key == 0x2000 && fn == 0xf2 && arg == 0xa2, "ties go in arming order");
+    CHECK(ktimer_pop_due(OWN, 1200, &key, &fn, &arg) && key == 0x3000, "then the third");
+    CHECK(!ktimer_pop_due(OWN, 1200, &key, &fn, &arg), "the one-shots are spent");
+    CHECK(!ktimer_armed(OWN, 0x2000) && ktimer_count() == 3, "a fired one-shot is disarmed but keeps its slot");
+    CHECK(ktimer_pop_due(OWN, 1500, &key, &fn, &arg) && key == 0x1000 && fn == 0xf1 && arg == 0xa1, "setfn's callback survived the arm");
 
     /* Periodic: reschedules from the previous deadline; if it fell behind,
      * from `now` -- one firing, not a burst. */
-    ktimer_arm(0x4000, 0xf4, 0xa4, 0, 100, true);
-    CHECK(ktimer_pop_due(100, &key, &fn, &arg) && key == 0x4000, "first period");
-    CHECK(ktimer_next(&next) && next == 200, "next period from the old deadline, not from now");
-    CHECK(ktimer_pop_due(1000, &key, &fn, &arg) && key == 0x4000, "late by nine periods: fires once");
-    CHECK(!ktimer_pop_due(1000, &key, &fn, &arg), "...not nine times");
-    CHECK(ktimer_next(&next) && next == 1100, "rescheduled from now");
+    ktimer_arm(OWN, 0x4000, 0xf4, 0xa4, 0, 100, true);
+    CHECK(ktimer_pop_due(OWN, 100, &key, &fn, &arg) && key == 0x4000, "first period");
+    CHECK(ktimer_next(OWN, &next) && next == 200, "next period from the old deadline, not from now");
+    CHECK(ktimer_pop_due(OWN, 1000, &key, &fn, &arg) && key == 0x4000, "late by nine periods: fires once");
+    CHECK(!ktimer_pop_due(OWN, 1000, &key, &fn, &arg), "...not nine times");
+    CHECK(ktimer_next(OWN, &next) && next == 1100, "rescheduled from now");
 
     /* Re-arm replaces; disarm keeps; done frees. */
-    ktimer_arm(0x4000, 0, 0, 1000, 50, false);
-    CHECK(ktimer_next(&next) && next == 1050, "re-arm replaced the periodic");
-    CHECK(ktimer_disarm(0x4000) == KO_OK && !ktimer_armed(0x4000), "disarm");
-    CHECK(!ktimer_next(&next), "nothing armed");
+    ktimer_arm(OWN, 0x4000, 0, 0, 1000, 50, false);
+    CHECK(ktimer_next(OWN, &next) && next == 1050, "re-arm replaced the periodic");
+    CHECK(ktimer_disarm(OWN, 0x4000) == KO_OK && !ktimer_armed(OWN, 0x4000), "disarm");
+    CHECK(!ktimer_next(OWN, &next), "nothing armed");
     uint32_t before = ktimer_count();
-    CHECK(ktimer_done(0x4000) == KO_OK && ktimer_count() == before - 1, "done frees the slot");
-    CHECK(ktimer_done(0x4000) == KO_FAIL && ktimer_disarm(0x9999) == KO_FAIL, "unknown keys");
-    CHECK(ktimer_arm(0x5000, 1, 1, 0, 0, true) == KO_OK && ktimer_next(&next) && next == 1, "a zero period is clamped, not spun on");
+    CHECK(ktimer_done(OWN, 0x4000) == KO_OK && ktimer_count() == before - 1, "done frees the slot");
+    CHECK(ktimer_done(OWN, 0x4000) == KO_FAIL && ktimer_disarm(OWN, 0x9999) == KO_FAIL, "unknown keys");
+    CHECK(ktimer_arm(OWN, 0x5000, 1, 1, 0, 0, true) == KO_OK && ktimer_next(OWN, &next) && next == 1, "a zero period is clamped, not spun on");
 
     /* Exhaustion. */
     kobj_init(&ENV);
-    int n = 0; while (ktimer_setfn(0x10000 + 16 * (uintptr_t)n, 1, 1) == KO_OK) n++;
+    int n = 0; while (ktimer_setfn(OWN, 0x10000 + 16 * (uintptr_t)n, 1, 1) == KO_OK) n++;
     CHECK(n == KTIMER_MAX, "table holds %d", n);
 }
 
@@ -424,12 +451,12 @@ static void fuzz_timers(int iters) {
         switch (rnd(5)) {
         case 0: case 1: {
             uint64_t d = rnd(300); bool per = rnd(2);
-            CHECK(ktimer_arm(key, 1, 1, now, d, per) == KO_OK, "arm");
+            CHECK(ktimer_arm(OWN, key, 1, 1, now, d, per) == KO_OK, "arm");
             if (per && d == 0) d = 1;
             m[k].used = m[k].armed = true; m[k].periodic = per; m[k].dl = now + d; m[k].per = d; m[k].seq = ++seq;
             break; }
-        case 2: if (m[k].used) { CHECK(ktimer_disarm(key) == KO_OK, "disarm"); m[k].armed = false; } break;
-        case 3: if (m[k].used) { CHECK(ktimer_done(key) == KO_OK, "done"); m[k].used = m[k].armed = false; } break;
+        case 2: if (m[k].used) { CHECK(ktimer_disarm(OWN, key) == KO_OK, "disarm"); m[k].armed = false; } break;
+        case 3: if (m[k].used) { CHECK(ktimer_done(OWN, key) == KO_OK, "done"); m[k].used = m[k].armed = false; } break;
         case 4: {
             now += rnd(250);
             for (;;) {
@@ -438,7 +465,7 @@ static void fuzz_timers(int iters) {
                     if (m[i].used && m[i].armed && m[i].dl <= now &&
                         (best < 0 || m[i].dl < m[best].dl || (m[i].dl == m[best].dl && m[i].seq < m[best].seq))) best = i;
                 uintptr_t kk, f, a;
-                bool got = ktimer_pop_due(now, &kk, &f, &a);
+                bool got = ktimer_pop_due(OWN, now, &kk, &f, &a);
                 CHECK(got == (best >= 0), "pop at %llu: got %d, model %d", (unsigned long long)now, got, best >= 0);
                 if (!got) break;
                 CHECK(kk == 0x100 + 16u * (uintptr_t)best, "which timer: %zx vs %d", kk, best);
@@ -449,7 +476,7 @@ static void fuzz_timers(int iters) {
             }
             break; }
         }
-        uint64_t nd = 0; bool any = ktimer_next(&nd);
+        uint64_t nd = 0; bool any = ktimer_next(OWN, &nd);
         uint64_t mdl = 0; bool many = false;
         for (int i = 0; i < 6; i++) if (m[i].used && m[i].armed && (!many || m[i].dl < mdl)) { mdl = m[i].dl; many = true; }
         CHECK(any == many && (!any || nd == mdl), "next deadline");
@@ -467,6 +494,7 @@ int main(int argc, char **argv) {
     test_queue();
     test_event_group();
     test_timers();
+    test_ownership();
     printf("kobj_host: scenarios pass\n");
 
     g_rs = seed | 1;
