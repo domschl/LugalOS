@@ -2113,7 +2113,11 @@ def main() -> int:
     #
     # Done once here rather than in each test: this is a property of the
     # session, not of any one assertion, and a Ctrl-C per test would be
-    # sixteen chances to get it subtly wrong instead of one.
+    # sixteen chances to get it subtly wrong instead of one. wake_shell()
+    # keeps sending Ctrl-C until a prompt answers: right after a reboot one
+    # Ctrl-C can arrive before the appliance has started (rp2350.py).
+    if not rp2350.wake_shell(ports.console):
+        print("[!] the console never showed a shell prompt -- expect failures")
     cfg = rp2350.board_config(ports.console)
     if cfg:
         off = sorted(k[len("ENABLE_"):] for k, v in cfg.items() if v == 0)

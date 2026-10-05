@@ -307,6 +307,38 @@ def discover_ports(console: str | None = None, net: str | None = None,
 _config_cache: "dict[str, int] | None" = None
 
 
+def wake_shell(console_port: str, deadline: float = 30.0) -> bool:
+    """Gets the shell's prompt, sending Ctrl-C until it answers.
+
+    On the clock persona the boot ends in the clock appliance, which owns the
+    console until a Ctrl-C. One Ctrl-C at the start of a run is not enough
+    right after a reboot -- and the node-pool test, which has to run last,
+    reboots the board: a Ctrl-C that arrives while init.lisp is still loading
+    is gone before the appliance starts, and the appliance then holds the
+    console for the whole run. A back-to-back run on rp2350-clock passed 4 of
+    32 that way (2026-10-05). Repeating until a prompt appears covers the
+    boot, however long it takes. Returns whether the prompt was seen."""
+    end = time.time() + deadline
+    while time.time() < end:
+        try:
+            with serial.Serial(console_port, 115200, timeout=0.5) as ser:
+                ser.dtr = True
+                time.sleep(0.3)
+                ser.write(b"\x03")
+                ser.flush()
+                time.sleep(0.8)
+                ser.reset_input_buffer()
+                ser.write(_CLEAR_LINE + b"\r\n")
+                ser.flush()
+                data = drain(ser, quiet=0.5, deadline=2.0)
+                if b"lsh>" in data or b"\x1b[?25l" in data:
+                    return True
+        except (OSError, serial.SerialException):
+            pass                        # re-enumerating after the reboot
+        time.sleep(1.0)
+    return False
+
+
 def board_config(console_port: str) -> "dict[str, int]":
     """The ENABLE_* flags the attached board was actually built with, read
     from /proc/config.

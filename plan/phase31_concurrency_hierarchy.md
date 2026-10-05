@@ -1682,6 +1682,25 @@ which is how this one stayed hidden.)
   * ESP32-P4: the same round trip passed with `(chess 2)` searching on both
     harts. `test_esp32p4.py` 25/25 (the three EMAC tests skip without a
     cable).
+  * rp2350-clock (Pico 2 W on the Pico-Clock-Green). The board boots into the
+    parked `(clock)` from init.lisp, and `(let ((x (list 1 2 3))) (clock) x)`
+    returns `(1 2 3)` after Ctrl-C. The terminal scenario itself cannot be
+    produced there: the appliance never waits for input, so no hotkey runs,
+    and the board has no keyboard. Two flaky tests surfaced, and neither is a
+    finding of this section. **`xipcycle`** failed 6 of 20 runs on the firmware
+    before §7 (3 of 20 after): a ~0.7 ms preemption inside its single timed
+    read made "after" look 20 % slower with every register identical. It now
+    takes the fastest of three passes, and passed 20 of 20.
+  * **Open: one boot hang on rp2350-clock.** After the node-pool test's
+    `reboot` (a full bootrom reset), the board re-enumerated on USB and then
+    answered nothing: no console echo, no 9P on the second port, and no
+    reaction to the 1200-baud touch. That touch is serviced by the U-mode USB
+    task, so tasks had stopped being scheduled. Two other reboots of the same
+    firmware came back healthy. Whether it predates §7 is not yet known; the
+    next step is a reboot loop on the old and new firmware. The harness now
+    calls `rp2350.wake_shell()`, which repeats Ctrl-C until a prompt answers
+    and says so when none does, so a silent board is reported up front
+    rather than as 28 unrelated failures.
 * Not a concurrency finding, but found by the same run: `test_psram`'s
   cold-cache read fell from a steady 23.8 MB/s to 20.5–23.2 MB/s. Nothing
   in these changes touches PSRAM. They moved the bench's own loop

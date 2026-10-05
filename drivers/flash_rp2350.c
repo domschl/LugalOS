@@ -290,15 +290,27 @@ void flash_rp2350_qmi_report(void) {
 }
 
 /* 64 KB of the image through the uncached alias, so every word is a real
- * QSPI transfer at whatever M0 says. */
+ * QSPI transfer at whatever M0 says.
+ *
+ * The fastest of three passes (2026-10-05): one pass is 3.3 ms of a 10 ms
+ * tick, and on the clock persona a ~0.7 ms preemption landed inside it a
+ * third of the time -- on whichever side it hit, "after" read 20 % slower
+ * than "before" and the verdict said NOT RESTORED with all 17 registers
+ * identical (6 of 20 runs, the same on the firmware before phase31 §7).
+ * A preemption only ever adds time, and a mode left slow is slow on every
+ * pass, so the minimum measures the flash and not the scheduler. */
 static uint32_t timed_flash_read_us(void) {
     const volatile uint32_t *p = (const volatile uint32_t *)FLASH_UNCACHED;
-    uint32_t sum = 0;
-    uint64_t t0 = time_get_us();
-    for (uint32_t i = 0; i < 16384u; i++) sum += p[i];
-    uint64_t t1 = time_get_us();
-    __asm__ __volatile__("" :: "r"(sum));
-    return (uint32_t)(t1 - t0);
+    uint32_t best = UINT32_MAX;
+    for (int pass = 0; pass < 3; pass++) {
+        uint32_t sum = 0;
+        uint64_t t0 = time_get_us();
+        for (uint32_t i = 0; i < 16384u; i++) sum += p[i];
+        uint64_t t1 = time_get_us();
+        __asm__ __volatile__("" :: "r"(sum));
+        if ((uint32_t)(t1 - t0) < best) best = (uint32_t)(t1 - t0);
+    }
+    return best;
 }
 
 int flash_rp2350_xip_cycle(void) {
