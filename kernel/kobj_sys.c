@@ -22,6 +22,7 @@
 #include "kernel/random.h"
 #include "kernel/identity.h"
 #include "kernel/printk.h"
+#include "kernel/console.h"
 #include "arch/umode.h"
 #include <stddef.h>
 
@@ -241,7 +242,8 @@ static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t
         if (n >= sizeof line) n = sizeof line - 1;
         if (copy_from_user(line, a2, n) < 0) return KO_FAIL;
         line[n] = 0;
-        printk("[radio%u] %s\n", (unsigned)a1, line);
+        if (g_kobj_trace) cprintf("[radio%u] %s\n", (unsigned)a1, line);   /* direct: survives a hang */
+        else printk("[radio%u] %s\n", (unsigned)a1, line);
         return KO_OK;
     }
     default:

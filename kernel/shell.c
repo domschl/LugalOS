@@ -3582,6 +3582,25 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("led: the pulse generator never finished a frame\n");
         }
         return;
+    } else if (strncmp(cmd_line, "peek ", 5) == 0 || strncmp(cmd_line, "poke ", 5) == 0) {
+        /* 45.6 bring-up aid, C6 only: `peek ADDR [COUNT]` reads words, `poke ADDR VALUE` writes one.
+         * Hex, no 0x needed. M-mode and unrestricted: a stray poke can hang the chip. */
+        const char *q = cmd_line + 5;
+        unsigned long a = 0, v = 0;
+        while (*q == ' ') q++;
+        if (q[0] == '0' && q[1] == 'x') q += 2;
+        for (; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); q++) a = a * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
+        while (*q == ' ') q++;
+        if (q[0] == '0' && q[1] == 'x') q += 2;
+        for (; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); q++) v = v * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
+        if (cmd_line[1] == 'o') {
+            *(volatile uint32_t *)a = (uint32_t)v;
+            cprintf("%08lx <- %08lx, reads back %08lx\n", a, v, (unsigned long)*(volatile uint32_t *)a);
+        } else {
+            unsigned long n = v ? v : 1;
+            for (unsigned long i = 0; i < n; i++) cprintf("%08lx: %08lx\n", a + 4 * i, (unsigned long)*(volatile uint32_t *)(a + 4 * i));
+        }
+        return;
     } else if (strcmp(cmd_line, "radio trace on") == 0 || strcmp(cmd_line, "radio trace off") == 0) {
         radio_c6_trace(cmd_line[12] == 'o' && cmd_line[13] == 'n');
         return;

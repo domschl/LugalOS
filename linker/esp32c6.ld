@@ -88,6 +88,7 @@ SECTIONS
         *plat_esp32c6.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *esp_wifi_regulatory.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *ftm_load_calibration.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *phy_init_data.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         . = ALIGN(4);
         _radio_text_end = .;
     } > XIP
@@ -167,6 +168,7 @@ SECTIONS
         *plat_esp32c6.c.obj(.data .data.* .sdata .sdata.*)
         *esp_wifi_regulatory.c.obj(.data .data.* .sdata .sdata.*)
         *ftm_load_calibration.c.obj(.data .data.* .sdata .sdata.*)
+        *phy_init_data.c.obj(.data .data.* .sdata .sdata.*)
         *radio_libc.c.obj(.data .data.* .sdata .sdata.*)
         . = ALIGN(4);
     } > RAM
@@ -186,6 +188,7 @@ SECTIONS
         *plat_esp32c6.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *esp_wifi_regulatory.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *ftm_load_calibration.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *phy_init_data.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *radio_libc.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         . = ALIGN(4);
         _radio_bss_end = .;

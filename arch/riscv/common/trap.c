@@ -927,6 +927,15 @@ void trap_handler(trap_frame_t *frame) {
         if (code == 7 || code == 5) {
 #endif
             ticker_count_tick();
+#if defined(CONFIG_BOARD_ESP32C6)
+            { /* 45.6 hang finder: with `radio trace on`, once a second report where the
+               * interrupted code was. A spinning loop shows up here; a bus stall shows nothing. */
+              extern volatile int g_kobj_trace;
+              static unsigned n;
+              if (g_kobj_trace && ++n % 100 == 0)
+                  cprintf("[tick] epc=%08lx ra=%08lx\n", (unsigned long)frame->epc, (unsigned long)frame->ra);
+            }
+#endif
             /* Rearm FIRST. A RISC-V timer interrupt is level-triggered off
              * mtime >= mtimecmp, so it stays pending until the comparator
              * moves -- returning without rearming does not drop a tick, it

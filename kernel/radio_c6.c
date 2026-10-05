@@ -48,6 +48,15 @@ static void *g_rstack;
 static void *g_rarena;
 static int g_rpid = -1;
 
+/* The C6 has a second fence in front of its peripherals besides the PMP: the HP APM
+ * (access permission management, TRM ch. 16), whose reset state (region 0 = the whole
+ * address space, attribute 0) denies every REE mode -- which is U-mode -- *by returning
+ * zeros to reads and dropping writes*, silently. The radio's first reads of the modem
+ * block showed it: M-mode saw 0x7e600000 where U-mode saw 0. The PMP is the finer fence
+ * and the one that is ours (it grants the radio exactly three peripheral windows), so
+ * the APM is opened for all three REE modes (R/W/X each); the PMP still decides. */
+#define HP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x6009900cu)
+
 static void radio_task(void *arg) {
     (void)arg;
     radio_ctx_t *ctx = (radio_ctx_t *)g_rstack;
@@ -55,6 +64,7 @@ static void radio_task(void *arg) {
     ctx->arena_bytes = ARENA_PAGES * 4096u;
     ctx->stage = RADIO_STAGE_NONE;
 
+    HP_APM_REGION0_PMS_ATTR = 0x777u;
     for (volatile char *p = _radio_bss_start; p < _radio_bss_end; p++) *p = 0;   /* not in the image */
     mem_domain_init(&g_rdomain);
     int bad = 0;

@@ -53,6 +53,8 @@ typedef struct { int dummy; } portMUX_TYPE;
     foreach(_h task semphr queue event_groups portmacro timers)
         file(WRITE "${_STUB}/freertos/${_h}.h" "#include \"freertos/FreeRTOS.h\"\n")
     endforeach()
+    file(MAKE_DIRECTORY "${_STUB}/sys")
+    file(WRITE "${_STUB}/sys/lock.h" "#pragma once\n#include_next <sys/lock.h>\n#ifndef _LOCK_T_DEFINED_BY_RADIO\n#define _LOCK_T_DEFINED_BY_RADIO\ntypedef int _lock_t;\n#endif\n")
     file(WRITE "${_STUB}/sdkconfig.h" [=[
 #pragma once
 #define CONFIG_IDF_TARGET_ESP32C6 1
@@ -129,11 +131,12 @@ typedef struct { int dummy; } portMUX_TYPE;
         "${_C}/newlib/platform_include" "${_C}/esp_netif/include" "${_C}/esp_phy/include"
         "${_C}/riscv/include" "${_C}/esp_hal_gpio/include" "${_C}/esp_hal_gpio/esp32c6/include"
         "${_C}/esp_hw_support/port/esp32c6/include" "${_C}/esp_wifi/include/esp_private"
-        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include")
+        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include" "${_C}/esp_phy/esp32c6/include" "${_C}/esp_hal_pmu/esp32c6/include" "${_C}/esp_hal_pmu/include")
     set(LUGALOS_RADIO_DEFS CONFIG_IDF_TARGET_ESP32C6=1 CONFIG_SOC_WIFI_HE_SUPPORT=1 ESP_PLATFORM=1)
     set(LUGALOS_RADIO_IDF_SOURCES
         "${_C}/esp_wifi/regulatory/esp_wifi_regulatory.c"
-        "${_C}/esp_wifi/src/ftm_load_calibration.c")
+        "${_C}/esp_wifi/src/ftm_load_calibration.c"
+        "${_C}/esp_phy/esp32c6/phy_init_data.c")
     message(STATUS "C6 radio: ESP-IDF at ${LUGALOS_IDF_ROOT}")
 else()
     message(STATUS "C6 radio: no ESP-IDF tree found (set IDF_ROOT) -- building without the Wi-Fi blob")
