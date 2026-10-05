@@ -15,18 +15,20 @@ CC      ?= gcc
 ITER    ?= 2000
 SEED    ?= 0x40c0ffee
 
-INC     := -I. -I$(ROOT)/kernel/include -I$(ROOT)/fs/include -I$(ROOT)/drivers/include \
+INC     := -I. -I$(ROOT)/drivers -I$(ROOT)/kernel/include -I$(ROOT)/fs/include -I$(ROOT)/drivers/include \
            -I$(ROOT)/net/include -I$(ROOT)/net -I$(ROOT)/user/chibicc/include -I$(ROOT)/arch/riscv/include -I$(ROOT)
 WARN    := -Wall -Wextra -Wno-unused-parameter -Wno-format
 BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_TEST=1
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host
+HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host
 
 fat32_host_SRC   := fat32_host.c $(ROOT)/fs/fat32.c
 chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)
 p9_host_SRC      := p9_host.c $(ROOT)/fs/9p.c $(ROOT)/kernel/sha256.c
+nvs_host_SRC     := nvs_host.c $(ROOT)/drivers/radio/nvs_ram.c
+uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c
 kobj_host_SRC    := kobj_host.c $(ROOT)/kernel/kobj.c
 net_host_SRC     := net_host.c $(ROOT)/net/arp.c $(ROOT)/net/ipv4.c $(ROOT)/net/icmp.c \
