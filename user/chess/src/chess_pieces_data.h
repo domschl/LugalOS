@@ -47,7 +47,7 @@ static const uint64_t canvas_white_strokes[6][48] = {
         0x00e000000780ULL,
         0x01c000000380ULL,
         0x01c000000380ULL,
-        0x01ffffffff80ULL,
+        0x01c000000380ULL,
         0x01ffffffff80ULL,
         0x01ffffffff80ULL,
         0x01ffffffff80ULL,
