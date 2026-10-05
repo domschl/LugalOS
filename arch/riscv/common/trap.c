@@ -14,6 +14,9 @@
 #include "kernel/palloc.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
+#if defined(CONFIG_KOBJ)
+#include "kernel/kobj_sys.h"
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
@@ -1293,6 +1296,15 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 }
                 default:
+#if defined(CONFIG_KOBJ)
+                    /* 45.3b: the kernel objects a confined runtime uses
+                     * (kernel/kobj_sys.c). One number per operation. */
+                    if (sys_nr >= SYS_KOBJ_BASE && sys_nr < SYS_KOBJ_BASE + KOBJ_OP_COUNT) {
+                        ret = kobj_syscall((unsigned)(sys_nr - SYS_KOBJ_BASE), frame->a1, frame->a2,
+                                           frame->a3, frame->a4, frame->a5);
+                        break;
+                    }
+#endif
                     printk("[Syscall] Unknown syscall nr %ld requested\n", (long)sys_nr);
                     ret = -1;
                     break;

@@ -17,6 +17,7 @@
 #include "kernel/lock.h"
 #if defined(CONFIG_KOBJ)
 #include "kernel/kobj_sched.h"
+#include "kernel/kobj_sys.h"
 #endif
 #include "kernel/hart.h"
 #include "kernel/time.h"
@@ -607,6 +608,7 @@ static void cmd_help(void) {
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
 #if defined(CONFIG_KOBJ)
     cprintf("  kobjselftest    - Kernel semaphores/mutexes/queues/events/timers under real tasks (45.3b)\n");
+    cprintf("  kobjutest       - The same objects from a U-mode task in a PMP/Sv39 domain (45.3b)\n");
 #endif
     cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
     cprintf("  fmtselftest     - printk/ksnprintf formatting against fixed strings\n");
@@ -3509,6 +3511,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_KOBJ)
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();
+    } else if (strcmp(cmd_line, "kobjutest") == 0) {
+        kobj_utest();
 #endif
         return;
     } else if (strcmp(cmd_line, "zonetest") == 0) {

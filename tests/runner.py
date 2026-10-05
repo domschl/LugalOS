@@ -1013,6 +1013,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Kernel Objects For A Confined Runtime: Sync, Queues, Events, Timers (45.3b kobjselftest)",
                         kobj_ok, log if not kobj_ok else ""))
 
+        # 45.3b: the same objects from a U-mode task confined to its own domain
+        # (PMP on rv32, Sv39 on rv64): every operation through an ecall, a
+        # handle the kernel made and a forged one both refused, a kernel pointer
+        # refused rather than dereferenced or faulted on, and the task blocked in
+        # the kernel until a task outside its domain wakes it.
+        ok, log = session.send_and_expect("kobjutest\n",
+                                          r"KOBJUTEST_(OK|FAIL)", timeout=60.0)
+        kobju_ok = ok and "KOBJUTEST_OK" in log
+        results.append(("Kernel Objects From A Confined U-mode Task: Boundary Checks (45.3b kobjutest)",
+                        kobju_ok, log if not kobju_ok else ""))
+
         # 38.3 (plan/phase38_psram.md): libc's memcpy/memmove/memset are word
         # loops now, and every line of the kernel links against them. Every
         # offset pair within two words, every length to 67, memmove at every

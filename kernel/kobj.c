@@ -62,8 +62,6 @@ static void wl_fail_all(wlist_t *l, kwake_t *wk) {
 #define H_GEN(h)  ((uint16_t)(((h) >> 16) & 0xfffu))
 #define H_IDX(h)  ((int)((h) & 0xffffu) - 1)
 
-static kobj_env_t g_env;
-
 /* ---- tables -------------------------------------------------------------- */
 
 typedef struct { bool used; uint16_t gen; uintptr_t owner; uint32_t count, max; wlist_t w; } sem_t_;
@@ -88,18 +86,18 @@ static evt_t_   g_ev[KEVT_MAX];
 static timer_t_ g_tm[KTIMER_MAX];
 static uint64_t g_tm_seq;
 
-void kobj_init(const kobj_env_t *env) {
+void kobj_reset(void (*release)(void *storage)) {
+    for (int i = 0; i < KQUEUE_MAX; i++)
+        if (g_q[i].used && g_q[i].buf && release) release(g_q[i].buf);
     memset(g_sem, 0, sizeof g_sem);
     memset(g_mtx, 0, sizeof g_mtx);
     memset(g_ev, 0, sizeof g_ev);
     memset(g_tm, 0, sizeof g_tm);
-    for (int i = 0; i < KQUEUE_MAX; i++) {
-        if (g_q[i].used && g_q[i].buf && g_env.free) g_env.free(g_q[i].buf);
-    }
     memset(g_q, 0, sizeof g_q);
     g_tm_seq = 0;
-    g_env = *env;
 }
+
+void kobj_init(void) { kobj_reset(NULL); }
 
 uint32_t kobj_live(int type) {
     uint32_t n = 0;
@@ -294,17 +292,15 @@ int kmutex_owner(kh_t h) {
 
 /* ---- queues -------------------------------------------------------------- */
 
-kh_t kq_create(uint32_t len, uint32_t item_size) {
+kh_t kq_create(uint32_t len, uint32_t item_size, void *storage) {
     if (len == 0 || len > KQUEUE_MAX_LEN || item_size == 0 || item_size > KQUEUE_MAX_ITEM) return 0;
-    if (!g_env.alloc) return 0;
+    if (!storage) return 0;
     for (int i = 0; i < KQUEUE_MAX; i++) {
         if (g_q[i].used) continue;
         queue_t_ *q = &g_q[i];
         uint16_t gen = q->gen;
-        uint8_t *buf = g_env.alloc(len * item_size);
-        if (!buf) return 0;
         memset(q, 0, sizeof *q);
-        q->used = true; q->gen = gen; q->len = len; q->isz = item_size; q->buf = buf;
+        q->used = true; q->gen = gen; q->len = len; q->isz = item_size; q->buf = storage;
         return H_MAKE(KOBJ_QUEUE, gen, i);
     }
     return 0;
@@ -380,11 +376,12 @@ uint32_t kq_waiting(kh_t h) {
     return q->count;
 }
 
-int kq_delete(kh_t h, kwake_t *wk) {
+int kq_delete(kh_t h, kwake_t *wk, void **storage, uint32_t *bytes) {
     queue_t_ *q; LOOKUP(g_q, KQUEUE_MAX, KOBJ_QUEUE, h, q);
     wl_fail_all(&q->rx, wk);
     wl_fail_all(&q->tx, wk);
-    if (q->buf && g_env.free) g_env.free(q->buf);
+    if (storage) *storage = q->buf;
+    if (bytes) *bytes = q->len * q->isz;
     q->buf = NULL;
     q->used = false; q->gen++;
     return KO_OK;

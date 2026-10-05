@@ -54,6 +54,16 @@ SECTIONS
         . = _utext_start + 4096;
     } > RAM
 
+    /* 45.3b: U-mode code that is not a driver -- the `kobjutest` task. One page
+     * of its own, because the shared .utext above is exactly full and a
+     * driver's page is not the place for a test. Same shape: one page, so the
+     * grant is a single power-of-two region. */
+    .utext_kobj : ALIGN(4096) {
+        _utext_kobj_start = .;
+        *(.utext_kobj .utext_kobj.*)
+        . = _utext_kobj_start + 4096;
+    } > RAM
+
     .data : ALIGN(2M) {
         . = ALIGN(8);
         _data_start = .;

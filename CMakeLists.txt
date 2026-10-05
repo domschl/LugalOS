@@ -38,7 +38,7 @@ set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
 
 set(KOBJ_SOURCES "")
 if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
-    set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_selftest.c)
+    set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_sys.c kernel/kobj_selftest.c kernel/kobj_utest.c)
     add_compile_definitions(CONFIG_KOBJ=1)
 endif()
 if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
@@ -986,6 +986,7 @@ set_source_files_properties(
     drivers/pico_clock_green_rp2350.c
     drivers/pico_clock_font.c
     kernel/umode_probe.c
+    kernel/kobj_utest.c
     # 36.6a: the screen terminal's U-mode path (drivers/lcdterm_attr.h).
     # vtterm.c's parser is exactly the switch-heavy code this list exists for.
     drivers/lcd7_rp2350.c

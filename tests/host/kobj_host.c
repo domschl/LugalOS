@@ -30,9 +30,23 @@ static int g_failures;
     fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); \
     fprintf(stderr, "\n"); g_failures++; abort(); } } while (0)
 
-static void *host_alloc(uint32_t n) { return calloc(1, n); }
+/* The module owns no memory: queue storage is the caller's, so the harness is
+ * the caller. */
 static void host_free(void *p) { free(p); }
-static const kobj_env_t ENV = { host_alloc, host_free };
+static void kobj_init_(void) { kobj_reset(host_free); }
+static kh_t kq_create_(uint32_t len, uint32_t isz) {
+    if (len == 0 || len > KQUEUE_MAX_LEN || isz == 0 || isz > KQUEUE_MAX_ITEM) return kq_create(len, isz, (void *)1);
+    void *m = calloc(len, isz);
+    kh_t h = kq_create(len, isz, m);
+    if (!h) free(m);
+    return h;
+}
+static int kq_delete_(kh_t h, kwake_t *wk) {
+    void *m = NULL; uint32_t n = 0;
+    int r = kq_delete(h, wk, &m, &n);
+    free(m);
+    return r;
+}
 
 static bool woke(const kwake_t *k, int who) {
     for (int i = 0; i < k->n; i++) if (k->who[i] == who) return true;
@@ -42,7 +56,7 @@ static bool woke(const kwake_t *k, int who) {
 /* ===================== deterministic scenarios ============================ */
 
 static void test_semaphore(void) {
-    kobj_init(&ENV);
+    kobj_init_();
     kh_t s = ksem_create(3, 1);
     CHECK(s != 0, "create");
     CHECK(ksem_create(0, 0) == 0 && ksem_create(2, 3) == 0, "bad create args accepted");
@@ -100,13 +114,13 @@ static void test_semaphore(void) {
     CHECK(ksem_take(kmutex_create(false), NULL, 1) == KO_FAIL, "a mutex handle is not a semaphore");
 
     /* Exhaustion. */
-    kobj_init(&ENV);
+    kobj_init_();
     int n = 0; while (ksem_create(1, 0) != 0) n++;
     CHECK(n == KSEM_MAX, "table holds exactly %d, got %d", KSEM_MAX, n);
 }
 
 static void test_mutex(void) {
-    kobj_init(&ENV);
+    kobj_init_();
     kh_t m = kmutex_create(true), p = kmutex_create(false);
     kwake_t wk; kwaiter_t a, b;
 
@@ -129,9 +143,9 @@ static void test_mutex(void) {
 }
 
 static void test_queue(void) {
-    kobj_init(&ENV);
-    CHECK(kq_create(0, 4) == 0 && kq_create(4, 0) == 0 && kq_create(4, 4096) == 0, "bad create args");
-    kh_t q = kq_create(3, sizeof(uint32_t));
+    kobj_init_();
+    CHECK(kq_create_(0, 4) == 0 && kq_create_(4, 0) == 0 && kq_create_(4, 4096) == 0, "bad create args");
+    kh_t q = kq_create_(3, sizeof(uint32_t));
     kwake_t wk; kwaiter_t r, s;
     uint32_t v, got;
 
@@ -174,13 +188,13 @@ static void test_queue(void) {
     CHECK(kq_cancel(q, &t) == KO_TIMEOUT, "timeout");
     kq_recv(q, &slot, &t, 9, &wk);
     kwake_init(&wk);
-    CHECK(kq_delete(q, &wk) == KO_OK && wk.n == 1 && t.state == KW_FAILED, "delete fails the waiter");
+    CHECK(kq_delete_(q, &wk) == KO_OK && wk.n == 1 && t.state == KW_FAILED, "delete fails the waiter");
     CHECK(kq_cancel(q, &t) == KO_DELETED, "and the cancel says so");
     CHECK(kq_send(q, &v, false, NULL, 1, NULL) == KO_FAIL, "stale queue handle");
 }
 
 static void test_event_group(void) {
-    kobj_init(&ENV);
+    kobj_init_();
     kh_t e = kev_create();
     kwake_t wk; kwaiter_t a, b, c;
     uint32_t out;
@@ -214,9 +228,9 @@ static void test_event_group(void) {
 }
 
 static void test_ownership(void) {
-    kobj_init(&ENV);
+    kobj_init_();
     const uintptr_t A = 0xA000, B = 0xB000;
-    kh_t s = ksem_create(1, 1), q = kq_create(4, 8), m = kmutex_create(false), e = kev_create();
+    kh_t s = ksem_create(1, 1), q = kq_create_(4, 8), m = kmutex_create(false), e = kev_create();
     CHECK(kobj_owned_by(s, 0) && kobj_owned_by(q, 0), "objects start kernel-owned");
     CHECK(kobj_set_owner(s, A) == KO_OK && kobj_set_owner(q, A) == KO_OK, "assign to domain A");
     CHECK(kobj_owned_by(s, A) && !kobj_owned_by(s, B) && !kobj_owned_by(s, 0), "A owns it, nobody else does");
@@ -240,7 +254,7 @@ static void test_ownership(void) {
 }
 
 static void test_timers(void) {
-    kobj_init(&ENV);
+    kobj_init_();
     uintptr_t key, fn, arg;
 
     CHECK(ktimer_setfn(OWN, 0x1000, 0xf1, 0xa1) == KO_OK, "setfn creates the slot");
@@ -278,7 +292,7 @@ static void test_timers(void) {
     CHECK(ktimer_arm(OWN, 0x5000, 1, 1, 0, 0, true) == KO_OK && ktimer_next(OWN, &next) && next == 1, "a zero period is clamped, not spun on");
 
     /* Exhaustion. */
-    kobj_init(&ENV);
+    kobj_init_();
     int n = 0; while (ktimer_setfn(OWN, 0x10000 + 16 * (uintptr_t)n, 1, 1) == KO_OK) n++;
     CHECK(n == KTIMER_MAX, "table holds %d", n);
 }
@@ -294,7 +308,7 @@ static uint32_t rnd(uint32_t n) { return host_rand(&g_rs) % n; }
 
 /* ---- semaphore against (count, FIFO of task numbers) ---- */
 static void fuzz_semaphore(int iters) {
-    kobj_init(&ENV);
+    kobj_init_();
     const uint32_t max = 1 + rnd(4);
     uint32_t mcount = rnd(max + 1);
     kh_t s = ksem_create(max, mcount);
@@ -341,7 +355,7 @@ static void fuzz_semaphore(int iters) {
 
 /* ---- mutex against (owner, depth, FIFO) ---- */
 static void fuzz_mutex(int iters) {
-    kobj_init(&ENV);
+    kobj_init_();
     bool rec = rnd(2);
     kh_t m = kmutex_create(rec);
     ftask_t t[NT] = {0};
@@ -374,9 +388,9 @@ static void fuzz_mutex(int iters) {
 
 /* ---- queue against a plain array ---- */
 static void fuzz_queue(int iters) {
-    kobj_init(&ENV);
+    kobj_init_();
     const uint32_t len = 1 + rnd(5);
-    kh_t q = kq_create(len, sizeof(uint32_t));
+    kh_t q = kq_create_(len, sizeof(uint32_t));
     uint32_t model[8]; uint32_t mn = 0;           /* model[0] is the next out */
     ftask_t rx[NT] = {0}, tx[NT] = {0};
     int rfifo[NT], nr = 0;                        /* waiting receivers */
@@ -437,13 +451,13 @@ static void fuzz_queue(int iters) {
         CHECK(kq_waiting(q) == mn, "depth %u vs model %u", kq_waiting(q), mn);
     }
     kwake_t wk; kwake_init(&wk);
-    kq_delete(q, &wk);
+    kq_delete_(q, &wk);
     CHECK(wk.n == nr + ns, "delete wakes every waiter");
 }
 
 /* ---- timers against a sorted model ---- */
 static void fuzz_timers(int iters) {
-    kobj_init(&ENV);
+    kobj_init_();
     struct { bool used, armed, periodic; uint64_t dl, per, seq; } m[6] = {{0}};
     uint64_t now = 0, seq = 0;
     for (int it = 0; it < iters; it++) {
@@ -504,7 +518,7 @@ int main(int argc, char **argv) {
         fuzz_queue(iterations);
         fuzz_timers(iterations);
     }
-    kobj_init(&ENV);                  /* frees the last run's queue storage */
+    kobj_init_();                  /* frees the last run's queue storage */
     printf("kobj_host: randomized runs agree with the models (40 x 4 x %d steps)\n", iterations);
     return g_failures ? 1 : 0;
 }

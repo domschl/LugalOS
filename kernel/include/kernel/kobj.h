@@ -92,15 +92,15 @@ typedef struct {
 
 static inline void kwake_init(kwake_t *k) { k->n = 0; }
 
-/* The only thing this module asks of its environment: memory for queue
- * storage. A kernel build passes balloc/palloc-backed functions; the host
- * harness passes malloc/free. */
-typedef struct {
-    void *(*alloc)(uint32_t bytes);
-    void  (*free)(void *p);
-} kobj_env_t;
-
-void kobj_init(const kobj_env_t *env);
+/* This module allocates nothing. A queue's storage is the caller's: handed in
+ * at creation, handed back at deletion, so that no allocator is ever reached
+ * from under the lock that serialises these state machines (spinlock_t is a
+ * leaf; the kernel's lock checker faults on a spinlock held across palloc,
+ * and did, the first time this was written the other way). */
+void kobj_init(void);
+/* Forgets every object. `release`, if given, is called with the storage of each
+ * live queue first (the host harness frees its heap there). */
+void kobj_reset(void (*release)(void *storage));
 
 /* Table capacities, i.e. how many of each the radio may hold at once. */
 #define KSEM_MAX    32
@@ -136,14 +136,19 @@ int  kmutex_owner(kh_t h);                 /* -1 when free or invalid */
 
 /* ---- queues of fixed-size items ----------------------------------------- */
 
-kh_t kq_create(uint32_t len, uint32_t item_size);
+/* `storage` is len * item_size bytes the queue owns until kq_delete() returns
+ * it. Returns 0 if an argument is bad or the table is full; the caller then
+ * still owns `storage`. */
+kh_t kq_create(uint32_t len, uint32_t item_size, void *storage);
 /* `front` pushes ahead of everything queued. A send that finds a waiting
  * receiver copies straight into its `item` and grants it. */
 int  kq_send(kh_t h, const void *item, bool front, kwaiter_t *w, int who, kwake_t *wk);
 int  kq_recv(kh_t h, void *item, kwaiter_t *w, int who, kwake_t *wk);
 int  kq_cancel(kh_t h, kwaiter_t *w);
 uint32_t kq_waiting(kh_t h);               /* items queued */
-int  kq_delete(kh_t h, kwake_t *wk);
+/* Hands the storage back through *storage (and its size in *bytes) for the
+ * caller to free once it has left its critical section. */
+int  kq_delete(kh_t h, kwake_t *wk, void **storage, uint32_t *bytes);
 
 /* ---- event groups -------------------------------------------------------- */
 

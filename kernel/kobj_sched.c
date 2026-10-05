@@ -16,37 +16,9 @@
 static spinlock_t g_kobj_lock;
 static bool g_inited;
 
-/* Queue storage. A queue holds at most KQUEUE_MAX_LEN * KQUEUE_MAX_ITEM bytes
- * (16 KB); palloc is page-granular, so each queue costs whole pages, and the
- * page count is remembered here because the core does not keep it. The radio
- * holds a handful of queues, so a small table suffices. */
-static struct { void *p; uint32_t pages; } g_qmem[KQUEUE_MAX];
-
-static void *env_alloc(uint32_t bytes) {
-    uint32_t pages = (bytes + 4095u) / 4096u;
-    for (int i = 0; i < KQUEUE_MAX; i++) {
-        if (g_qmem[i].p) continue;
-        void *p = palloc_pages(pages);
-        if (!p) return NULL;
-        g_qmem[i].p = p; g_qmem[i].pages = pages;
-        return p;
-    }
-    return NULL;
-}
-
-static void env_free(void *p) {
-    for (int i = 0; i < KQUEUE_MAX; i++) {
-        if (g_qmem[i].p != p) continue;
-        palloc_free(p, g_qmem[i].pages);
-        g_qmem[i].p = NULL;
-        return;
-    }
-}
-
 void kos_init(void) {
     if (g_inited) return;
-    kobj_env_t env = { env_alloc, env_free };
-    kobj_init(&env);
+    kobj_init();
     spinlock_init(&g_kobj_lock);
     g_inited = true;
 }
@@ -145,9 +117,17 @@ int kos_mutex_delete(kh_t h) {
 
 /* ---- queues -------------------------------------------------------------- */
 
+/* A queue's storage is whole pages (palloc is page-granular; the largest queue
+ * is 16 KB), allocated here, *before* the lock is taken: an allocator reached
+ * from under a spinlock is exactly what the kernel's lock checker faults on. */
 kh_t kos_q_create(uint32_t len, uint32_t item_size, uintptr_t owner) {
+    if (len == 0 || len > KQUEUE_MAX_LEN || item_size == 0 || item_size > KQUEUE_MAX_ITEM) return 0;
+    uint32_t pages = (len * item_size + 4095u) / 4096u;
+    void *mem = palloc_pages(pages);
+    if (!mem) return 0;
     kh_t h;
-    LOCKED(h = kq_create(len, item_size); if (h) kobj_set_owner(h, owner));
+    LOCKED(h = kq_create(len, item_size, mem); if (h) kobj_set_owner(h, owner));
+    if (!h) palloc_free(mem, pages);
     return h;
 }
 
@@ -177,9 +157,11 @@ int kos_q_recv(kh_t h, void *item, uint32_t timeout_ms) {
 
 int kos_q_delete(kh_t h) {
     kwake_t wk; kwake_init(&wk);
+    void *mem = NULL; uint32_t bytes = 0;
     int r;
-    LOCKED(r = kq_delete(h, &wk));
+    LOCKED(r = kq_delete(h, &wk, &mem, &bytes));
     wake_all(&wk);
+    if (r == KO_OK && mem) palloc_free(mem, (bytes + 4095u) / 4096u);
     return r;
 }
 
