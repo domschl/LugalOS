@@ -992,12 +992,22 @@ void task_block(void) {
     /* Nothing else could run here. A waiter that prepared waits for its wake
      * or for work, reading plain words rather than taking g_sched_lock on
      * every turn -- the bus-sharing reason sched_peek_runnable() exists. One
-     * that did not prepare returns at once, as task_block() always has. */
+     * that did not prepare returns at once, as task_block() always has.
+     *
+     * With interrupts enabled, whatever the caller masked them for: the wake
+     * may be an interrupt on this very hart (a driver's ISR), and the tick
+     * must still preempt. The token, not the mask, is what keeps the wake
+     * from being lost; the caller gets its mask back on return. */
     volatile const bool *woken = &g_tasks[cur()].wake_pending;
     volatile const bool *armed = &g_tasks[cur()].wait_armed;
+    if (!*armed || *woken) return;
+    uintptr_t was = irq_save();
+    irq_restore(IRQ_ENABLE_BIT);
     while (*armed && !*woken && !sched_peek_runnable()) {
         __asm__ volatile("" ::: "memory");
     }
+    (void)irq_save();
+    irq_restore(was);
 }
 
 void task_prepare_block(void) {

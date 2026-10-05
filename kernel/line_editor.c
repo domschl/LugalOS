@@ -494,7 +494,9 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         }
         break;
     case 0x0C:                                                                      /* Ctrl-L */
+        console_lock();
         console_puts("\033[2J\033[H");
+        console_unlock();
         break;
     case 0x18: {                                                                    /* Ctrl-X */
         if (o->no_history) return LINE_INCOMPLETE;
@@ -508,7 +510,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         return LINE_INCOMPLETE;
     }
     case '\r': case '\n':
-        if (!o->no_newline) console_puts("\n");
+        if (!o->no_newline) { console_lock(); console_puts("\n"); console_unlock(); }
         if (st->dropped > 0) {
             /* Silently cut, the tail of a program used to be read as
              * whatever was left: Lisp saw `()p4(m)` at the end of an
@@ -544,7 +546,13 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
                 /* The common case, typing at the end: echo, no redraw --
                  * and nothing for a key that found no room, or the screen
                  * would show a line the buffer does not hold. */
-                if (st->len > before) for (int i = 0; i < n; i++) console_putc(enc[i]);
+                if (st->len > before) {
+                    /* Locked like a redraw (phase31 §7 R4): the echo goes
+                     * into the LCD batch every terminal's writers share. */
+                    console_lock();
+                    for (int i = 0; i < n; i++) console_putc(enc[i]);
+                    console_unlock();
+                }
                 return LINE_INCOMPLETE;
             }
             break;

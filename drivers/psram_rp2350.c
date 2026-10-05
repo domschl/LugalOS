@@ -381,7 +381,13 @@ static void psram_test(void) {
 
 static volatile uint32_t g_sink;
 
-__attribute__((noinline)) static uint32_t rd_words(uintptr_t base, uint32_t bytes) {
+/* In SRAM, not flash (2026-10-05): the "cached (cold)" pass reads 64 KB
+ * through the XIP cache this loop's own code would be fetched through, so
+ * from flash its result depended on which cache set the loop happened to
+ * land in. An unrelated kernel change moved it 0x338 bytes and the figure
+ * fell from a steady 23.8 MB/s to 20.5-23.2, failing test_psram's 15 %
+ * band; from SRAM it is 24.0 MB/s whatever the layout. */
+__attribute__((section(".ramfunc"), noinline)) static uint32_t rd_words(uintptr_t base, uint32_t bytes) {
     const volatile uint32_t *p = (const volatile uint32_t *)base;
     uint32_t acc = 0;
     for (uint32_t i = 0; i < bytes / 4; i += 4) acc += p[i] + p[i + 1] + p[i + 2] + p[i + 3];

@@ -149,10 +149,22 @@ static void uart_hw_putc_blocking(char c) {
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
         if (g_tx_waiter < 0 && sched_has_task()) {
-            g_tx_waiter = sched_current_pid();
-            g_uart_irq_tx_arms++;
-            uart_base[UART_IER] |= UART_IER_ETBEI;
-            task_block();
+            /* Prepared, and looped on the condition: on two harts the ISR
+             * can run on the other one and wake this task before it has
+             * blocked (phase31 §7 T11; sched.h's task_prepare_block()). */
+            int me = sched_current_pid();
+            do {
+                task_prepare_block();
+                g_tx_waiter = me;
+                g_uart_irq_tx_arms++;
+                uart_base[UART_IER] |= UART_IER_ETBEI;
+                task_block();
+            } while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
+            task_wait_done();
+            if (g_tx_waiter == me) {               /* woken by something else */
+                g_tx_waiter = -1;
+                uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
+            }
         } else {
             irq_restore(flags);
             while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0) sched_yield();
@@ -172,9 +184,18 @@ static uint8_t uart_hw_getc_blocking(void) {
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
         if (g_rx_waiter < 0 && sched_has_task()) {
-            g_rx_waiter = sched_current_pid();
-            uart_base[UART_IER] |= UART_IER_ERBFI;
-            task_block();
+            int me = sched_current_pid();          /* as for TX above */
+            do {
+                task_prepare_block();
+                g_rx_waiter = me;
+                uart_base[UART_IER] |= UART_IER_ERBFI;
+                task_block();
+            } while (!hw_uart_has_char());
+            task_wait_done();
+            if (g_rx_waiter == me) {
+                g_rx_waiter = -1;
+                uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
+            }
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();

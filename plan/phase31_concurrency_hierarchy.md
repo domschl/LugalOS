@@ -1529,18 +1529,21 @@ push-back ring) is fed only while vterm 0 is active. `task_set_vterm(pid,
 vterm_current_id())` therefore wrote 0 over 0. A game on the root console
 pauses when the focus leaves and resumes when it returns, without any pin.
 
-**T5 — unlocked writers of the LCD batch. Fixed for zmachine; open for two
-others.** `lcd7_screen_putc_vterm()` appends to one shared `g_batch` and
-relies on its callers holding `g_console_lock`. The zmachine front wrote per
-character with a bare `console_putc()`. A writer preempted between
-`g_batch_len++` and the `== LCDTERM_BATCH` flush test lets the next append
-step past 256 and off the end of the buffer. zfront now writes under the
-lock. **Still unlocked:** `SYS_PRINT` (arch/riscv/common/trap.c, a U-mode
-program's output) and `console_chan_handler()` (`/srv/console`).
-Recommended: take `console_lock()` around the append in
-`lcd7_screen_putc_vterm()` itself. It is not done here because that function
-is also the klog `lcd` sink, reached from boot-time inline fan-out, and the
-change needs the rp2350-terminal to verify. **Rule R4.**
+**T5 — unlocked writers of the LCD batch. Fixed.** `lcd7_screen_putc_vterm()`
+appends to one shared `g_batch` and relies on its callers holding
+`g_console_lock`. A writer preempted between `g_batch_len++` and the `==
+LCDTERM_BATCH` flush test lets the next append step past 256 and off the end
+of the buffer. The unlocked writers were the zmachine front, `SYS_PRINT`,
+`SYS_PUTNUM` and `SYS_PUTCHAR` (arch/riscv/common/trap.c),
+`console_chan_handler()` (`/srv/console`), lsh's `clear`, and, found only by
+the check below on the rp2350-terminal, **the line editor's echo of every
+typed character**, its Enter newline and its Ctrl-L. All now write under the
+lock. The lock is taken by the callers, not inside the append: every klog
+sink write already holds it, and the hot path stays one comparison.
+`lcd7_screen_putc_vterm()` now names, once, the first writer that arrives
+without it (`[LCD BUG] console write without console_lock() from task N`,
+via `console_lock_held()`). That check is what found the line editor, and
+it stays silent on a full hardware suite. **Rule R4.**
 
 **T6 — `run_hotkey()` read then cleared `g_hotkey`. Fixed.** Two tasks in
 input waits on two harts could both take one Super+Enter and open two
@@ -1577,13 +1580,13 @@ else to run and returned with the caller still marked `BLOCKED`. **Fix:**
 `g_sched_lock` that is handed off across `ctx_switch()`. When there is
 nothing else to run, the task is put back to `RUNNING` before it returns.
 
-**T9 — the root push-back ring is guarded by `irq_save()`. Open, low.** One
-producer (`console_pump()`, under `g_input_lock`) and one consumer (the root
-shell), so it is single-producer, single-consumer. But on two harts the
-`irq_save()` is no fence: the consumer can see `g_pb_head` advance before
-the byte it covers. Fix if ESP32-P4 terminals ever drop or garble a key: a
-release fence before the head store and an acquire fence after the head
-load.
+**T9 — the root push-back ring was guarded by `irq_save()`. Fixed.** One
+producer (`console_pump()`, under `g_input_lock`) and one consumer (vterm
+0's reader), so it is single-producer, single-consumer. But on two harts
+`irq_save()` is no fence: the consumer could see `g_pb_head` advance before
+the byte it covers. The indices are now published with release stores and
+read with acquire loads. `console_ungetc()`, the only other producer,
+takes `g_input_lock`.
 
 **T10 — one Lisp lock for every terminal. By design; noted.** A long
 primitive that is not a session (`(sleep 60)`, a long `perft`, an
@@ -1592,12 +1595,26 @@ duration. It is bounded and Ctrl-C ends it, so it is a latency, not a
 deadlock. Shell builtins that do not go through Lisp are unaffected. Making
 such a primitive a parked session is the remedy wherever it matters.
 
-**T11 — the uart ISR waiters close the lost-wakeup window with
-`irq_save()`. Open, check on ESP32-P4.** `uart_16550.c`, `uart_esp32p4.c` and
-`uart_rp2350.c` arm an interrupt and `task_block()` under `irq_save()`. That
-is correct only if the interrupt is delivered to the waiter's own hart. On
-the ESP32-P4 (SMP) that is a question of interrupt routing. If it is not
-guaranteed, `task_prepare_block()` before arming is the one-line fix.
+**T11 — the uart ISR waiters closed the lost-wakeup window with
+`irq_save()`. Fixed on the two-hart targets.** The waiters arm an interrupt
+and `task_block()` under `irq_save()`, which is correct only if the
+interrupt arrives on the waiter's own hart. On the ESP32-P4 the UART is
+routed to core 0 (`esp32p4_intmtx_route()` writes the calling core's
+matrix), where the driver tasks are pinned (X2). But `uart_debug_putc()`
+and the `uart_getc()` fallback reach the same waiters from any task on
+either hart. `uart_esp32p4.c` and `uart_16550.c` (rv64-smp) now prepare,
+arm, block and re-test in a loop, and clear a waiter slot that some other
+wake left armed. `uart_rp2350.c` is unchanged: no RP2350 persona runs two
+harts.
+
+**The idle wait must take interrupts.** `task_block()` for a prepared waiter
+with nothing else to run waits for its token without taking `g_sched_lock`.
+It first spun with the caller's interrupts still masked. `chan_call_task()`
+and the uart waiters block under `irq_save()`, so a wake that only an
+interrupt on that same hart can deliver would never have arrived. The wait
+now enables interrupts and restores the caller's mask on return. Trap entry
+saves `EPC`/`STATUS` in the frame, so a nested trap there is safe;
+uart_16550.c's polling branch already relied on the same.
 
 **T12 — `ylock_acquire()` reported cycles that were already over. Fixed.** Once
 T7 and T8 were fixed, rv64-smp still printed `[Lock BUG] task 7 waiting for
@@ -1656,5 +1673,20 @@ which is how this one stayed hidden.)
   `[Lock BUG]`/`[Sched BUG]` reports and dead input within seconds. After
   T7, T8, T12 and T13, all reports are gone and every command answers, with
   the parked `let` intact.
-* Hardware still to do: the rp2350-terminal session round trip for
-  chess/clock (T1), and T5/T11 on the boards they concern.
+* Hardware, 2026-10-05.
+  * rp2350-terminal: the chess and zmachine round trips (T1/T2) passed. The
+    sequence was a game in a `let`, `(console-hotkey 5)`, `ls` and a
+    20 000-iteration churn in the new terminal, `vterm switch 0`, then
+    `quit` or Ctrl-C. The `let` came back intact and Zork's `save` answered
+    `Ok.`. `test_rp2350.py` 32/32, with no `[LCD BUG]`.
+  * ESP32-P4: the same round trip passed with `(chess 2)` searching on both
+    harts. `test_esp32p4.py` 25/25 (the three EMAC tests skip without a
+    cable).
+* Not a concurrency finding, but found by the same run: `test_psram`'s
+  cold-cache read fell from a steady 23.8 MB/s to 20.5–23.2 MB/s. Nothing
+  in these changes touches PSRAM. They moved the bench's own loop
+  (`rd_words`) 0x338 bytes in flash, and that loop is fetched through the
+  XIP cache the pass is thrashing. A baseline firmware built from the
+  pre-change commit measured 23.8 again on the same board. The loop now
+  runs from SRAM (`.ramfunc`), which gives 24.0 MB/s regardless of
+  layout.

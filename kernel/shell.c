@@ -3390,7 +3390,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
     } else if (strcmp(cmd_line, "clear") == 0) {
+        console_lock();
         console_puts("\033[2J\033[H");   /* the console, so the screen clears too */
+        console_unlock();
         console_flush();
         return;
 #if CONFIG_ENABLE_ED

@@ -1009,8 +1009,14 @@ void trap_handler(trap_frame_t *frame) {
                      * the boundary has to be named rather than inherited. The
                      * comment above measured what it is worth: 353/363 with
                      * the sync on printk(), 361/363 with it here. */
+                    /* Under console_lock(), as every console writer is
+                     * (phase31 §7 R4): the LCD's output batch is shared by
+                     * all terminals' writers on the strength of it, and an
+                     * unlocked append can step past its flush check. */
+                    console_lock();
                     console_sync();
                     console_puts(kbuf);
+                    console_unlock();
                     console_flush();   /* one syscall, one whole string */
                     ret = 0;
                     break;
@@ -1032,11 +1038,14 @@ void trap_handler(trap_frame_t *frame) {
                          * unprivileged program (phase 40 review). */
                         long sval = (long)frame->a1;
                         unsigned long val = (unsigned long)sval;
-                        if (sval < 0) { console_putc('-'); val = 0UL - val; }
+                        if (sval < 0) val = 0UL - val;
                         char digits[24];
                         int n = 0;
                         do { digits[n++] = (char)('0' + (val % 10)); val /= 10; } while (val > 0);
+                        console_lock();             /* see SYS_PRINT */
+                        if (sval < 0) { console_putc('-'); }
                         while (n > 0) console_putc(digits[--n]);
+                        console_unlock();
                     }
                     ret = 0;
                     break;
@@ -1053,7 +1062,9 @@ void trap_handler(trap_frame_t *frame) {
                      * actually bound to (C8 port binding), and also bypassed
                      * the kernel log ring inconsistently with SYS_PUTNUM
                      * above. */
+                    console_lock();             /* see SYS_PRINT */
                     console_putc((char)frame->a1);
+                    console_unlock();
                     /* Flush at the end of a line, not of a character (Y5d,
                      * plan/phase31_concurrency_hierarchy.md).
                      *

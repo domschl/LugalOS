@@ -423,10 +423,25 @@ static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
     if (!hw_uart_tx_room()) {
         if (may_block && g_tx_waiter < 0 && sched_has_task()) {
-            g_tx_waiter = sched_current_pid();
-            g_uart_irq_tx_arms++;
-            REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
-            task_block();
+            /* Prepared, and looped on the condition (phase31 §7 T11): the
+             * ISR is routed to core 0, and a caller on the other hart --
+             * uart_debug_putc(), say -- was woken before it had blocked and
+             * then slept for good. The token keeps that wake; the loop
+             * covers a return that was not this interrupt's. */
+            int me = sched_current_pid();
+            do {
+                task_prepare_block();
+                g_tx_waiter = me;
+                g_uart_irq_tx_arms++;
+                REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
+                task_block();
+                REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;   /* clear first, test second */
+            } while (!hw_uart_tx_room());
+            task_wait_done();
+            if (g_tx_waiter == me) {               /* woken by something else */
+                g_tx_waiter = -1;
+                REG(UART_INT_ENA(g_uart_base)) &= ~UART_TXFIFO_EMPTY_INT;
+            }
         } else {
             irq_restore(flags);
             while (!hw_uart_tx_room()) sched_yield();
@@ -450,9 +465,20 @@ static uint8_t uart_hw_getc_blocking(void) {
     REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
     if (!hw_uart_has_char()) {
         if (g_rx_waiter < 0 && sched_has_task()) {
-            g_rx_waiter = sched_current_pid();
-            REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
-            task_block();
+            /* As for TX above (T11): prepared, and looped on the data. */
+            int me = sched_current_pid();
+            do {
+                task_prepare_block();
+                g_rx_waiter = me;
+                REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
+                task_block();
+                REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
+            } while (!hw_uart_has_char());
+            task_wait_done();
+            if (g_rx_waiter == me) {
+                g_rx_waiter = -1;
+                REG(UART_INT_ENA(g_uart_base)) &= ~UART_RX_INTS;
+            }
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();

@@ -675,6 +675,16 @@ void lcd7_screen_flush(void) {
 
 void lcd7_screen_putc_vterm(int vid, char c) {
     if (!g_vt_ready) return;
+    /* The batch below is shared by every terminal's writers, and only
+     * console_lock() makes that safe: an unlocked append preempted between
+     * the increment and the flush test lets the next one run off the end
+     * (phase31 §7 T5). Named once rather than assumed. */
+    static bool s_unlocked_reported;
+    if (!s_unlocked_reported && !console_lock_held()) {
+        s_unlocked_reported = true;
+        printk("[LCD BUG] console write without console_lock() from task %d\n",
+               sched_current_pid());
+    }
     if (g_batch_len > 0 && g_batch_vid != (uint8_t)vid) {
         lcd7_screen_flush();
     }

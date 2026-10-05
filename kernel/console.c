@@ -36,6 +36,10 @@ void console_unlock(void) {
     ylock_release(&g_console_lock);
 }
 
+bool console_lock_held(void) {
+    return ylock_owner(&g_console_lock) == sched_context_id();
+}
+
 static const console_screen_t *g_screen;
 
 void console_set_screen(const console_screen_t *screen) {
@@ -303,7 +307,10 @@ static int console_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
     /* `req` is endpoint-owned memory that chan_call() copied into -- never
      * the caller's buffer. Rule 1 (§5.1), and the reason a remote node can
      * drive this endpoint over 9P without the console knowing the difference. */
+    /* One request, one locked write (phase31 §7 R4), like cprintf(). */
+    console_lock();
     for (uint32_t i = 0; i < req_len; i++) console_putc((char)req[i]);
+    console_unlock();
     if (resp_max >= 1) { resp[0] = 0; return 1; }
     return 0;
 }
@@ -354,46 +361,41 @@ static volatile bool g_interrupt_pending = false;
 
 /* Push-back ring. See kernel/console.h for why this exists and what it is
  * not. 128 bytes: enough for a few typed-ahead commands, small enough that
- * it can never be mistaken for a real input queue.
- *
- * Guarded with irq_save()/irq_restore() rather than left bare. The producer
- * (console_interrupt_requested(), from whichever task is running a long
- * command) and the consumer (console_getc(), from whichever task is
- * reading a line) are the same task in every path today, but preemption is
- * on -- and the whole point of this ring is to be written from inside a
- * hot loop that can be interrupted at any instruction. */
+ * it can never be mistaken for a real input queue. How it is shared between
+ * its producer and its consumer: see pushback_full() below. */
 #define CONSOLE_PUSHBACK_SIZE 128u
 
 static char     g_pushback[CONSOLE_PUSHBACK_SIZE];
 static uint32_t g_pb_head;   /* next slot to write */
 static uint32_t g_pb_tail;   /* next slot to read */
 
+/* Single producer (console_pump(), under g_input_lock) and single consumer
+ * (vterm 0's reader), so the indices are published, not locked: the byte is
+ * written before the head that covers it is released, and read only after
+ * that head is acquired (phase31 §7 T9). irq_save() alone ordered nothing
+ * between two harts -- the reader on one could see the head move before
+ * the byte it covers. */
 static bool pushback_full(void) {
-    uintptr_t f = irq_save();
-    bool full = (((g_pb_head + 1u) % CONSOLE_PUSHBACK_SIZE) == g_pb_tail);
-    irq_restore(f);
-    return full;
+    uint32_t head = __atomic_load_n(&g_pb_head, __ATOMIC_RELAXED);
+    uint32_t tail = __atomic_load_n(&g_pb_tail, __ATOMIC_ACQUIRE);
+    return ((head + 1u) % CONSOLE_PUSHBACK_SIZE) == tail;
 }
 
 static void pushback_put(char c) {
-    uintptr_t f = irq_save();
-    uint32_t next = (g_pb_head + 1u) % CONSOLE_PUSHBACK_SIZE;
-    if (next != g_pb_tail) {          /* full: drop, but see console_pump() */
-        g_pushback[g_pb_head] = c;
-        g_pb_head = next;
+    uint32_t head = __atomic_load_n(&g_pb_head, __ATOMIC_RELAXED);
+    uint32_t next = (head + 1u) % CONSOLE_PUSHBACK_SIZE;
+    if (next != __atomic_load_n(&g_pb_tail, __ATOMIC_ACQUIRE)) {   /* full: drop, but see console_pump() */
+        g_pushback[head] = c;
+        __atomic_store_n(&g_pb_head, next, __ATOMIC_RELEASE);
     }
-    irq_restore(f);
 }
 
 /* -1 when empty. */
 static int pushback_get(void) {
-    uintptr_t f = irq_save();
-    int c = -1;
-    if (g_pb_head != g_pb_tail) {
-        c = (unsigned char)g_pushback[g_pb_tail];
-        g_pb_tail = (g_pb_tail + 1u) % CONSOLE_PUSHBACK_SIZE;
-    }
-    irq_restore(f);
+    uint32_t tail = __atomic_load_n(&g_pb_tail, __ATOMIC_RELAXED);
+    if (tail == __atomic_load_n(&g_pb_head, __ATOMIC_ACQUIRE)) return -1;
+    int c = (unsigned char)g_pushback[tail];
+    __atomic_store_n(&g_pb_tail, (tail + 1u) % CONSOLE_PUSHBACK_SIZE, __ATOMIC_RELEASE);
     return c;
 }
 
@@ -539,10 +541,7 @@ bool console_has_char(void) {
     vterm_t *vt = task_terminal(&closed);
     if (closed) return true;                    /* console_getc() ends it */
     if (vt) return vterm_has_char(vt);
-    uintptr_t f = irq_save();
-    bool queued = (g_pb_head != g_pb_tail);
-    irq_restore(f);
-    return queued;
+    return __atomic_load_n(&g_pb_head, __ATOMIC_ACQUIRE) != __atomic_load_n(&g_pb_tail, __ATOMIC_RELAXED);
 }
 
 char console_getc(void) {
@@ -582,7 +581,11 @@ void console_ungetc(char c) {
     bool closed;
     vterm_t *vt = task_terminal(&closed);
     if (vt) vterm_ungetc(vt, c);
-    else if (!closed) pushback_put(c);
+    else if (!closed) {
+        ylock_acquire(&g_input_lock);   /* the ring's one producer is the pump */
+        pushback_put(c);
+        ylock_release(&g_input_lock);
+    }
 }
 
 

@@ -63,6 +63,9 @@ void console_bind(console_putc_fn putc);
  * does not take it at all any more; that is the whole of Y5. */
 void console_lock(void);
 void console_unlock(void);
+/* Whether the calling context holds console_lock() -- for a writer that
+ * relies on it to check that it is really there (phase31 §7 R4). */
+bool console_lock_held(void);
 
 /* Ends a write: pushes whatever the UART driver has batched.
  *
