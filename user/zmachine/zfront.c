@@ -16,13 +16,13 @@
  *
  * Idle cost: zero.  Nothing here is .bss, no constructor, no pool.
  *
- * Console: putc -> console_putc(); getc -> console_getc() (blocking,
- * yields).  The interpreter echoes typed characters itself (aread does
+ * Console: putc -> console_puts() under console_lock(); getc ->
+ * console_getc() (blocking, yields).  The interpreter echoes typed characters itself (aread does
  * the echoing per the Z-machine spec — same model as the host harness's
  * raw-mode terminal), so the front must not echo.  Ctrl-C is polled
- * between instructions via console_interrupt_requested(); a Ctrl-C that
- * arrives while aread() blocks for a keystroke is caught by the next
- * poll once input resumes.
+ * between instructions via console_interrupt_requested(); one typed while
+ * aread() waits for a keystroke ends that read (zfront_getc()), so the
+ * next poll sees it without the player having to press Enter first.
  */
 #include "zfront.h"
 
@@ -32,8 +32,6 @@
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
-#include "kernel/sched.h"
-#include "kernel/vterm.h"
 #include "lisp.h"
 
 #include <string.h>
@@ -59,8 +57,10 @@ struct zfront_ctx {
      * '(' is collected here, evaluated by Lisp, and the game's aread is
      * handed an empty line -- 'look again', harmless in every v3 game.
      * The interpreter owns the echo, so in lisp mode this front echoes
-     * for it. */
+     * for it.  Only at the start of a line: `col` counts what the game's
+     * aread holds so far, so a '(' typed mid-command stays the game's. */
     bool lisp_mode;
+    uint32_t col;
     uint32_t lisp_len;
     char lisp_line[256];
 };
@@ -69,10 +69,23 @@ struct zfront_ctx {
 /* io callbacks (struct z_io) — no libc, no heap                       */
 /* ------------------------------------------------------------------ */
 
+/* Every write under console_lock(), as cprintf() and the line editor do:
+ * console_putc() alone does not take it, and the LCD's output batch
+ * (lcd7_screen_putc_vterm()) is shared by every terminal's writers on the
+ * strength of that lock -- an unlocked writer racing a locked one can step
+ * its length past the flush check and off the end of the batch. */
+static void zout(const char *s)
+{
+    console_lock();
+    console_puts(s);
+    console_unlock();
+}
+
 static void zfront_putc(void *user, uint8_t ch)
 {
+    char s[2] = { (char)ch, '\0' };
     (void)user;
-    console_putc((char)ch);
+    zout(s);
 }
 
 static int zfront_getc(void *user)
@@ -80,16 +93,26 @@ static int zfront_getc(void *user)
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
     for (;;) {
         int c = (int)(uint8_t)console_getc();
+        if (c == 0x03) {
+            /* Ctrl-C: the console has latched it as an interrupt as well.
+             * End the read (and any Lisp line), so the step loop's next
+             * poll ends the session without waiting for an Enter. */
+            ctx->lisp_mode = false;
+            ctx->lisp_len = 0;
+            ctx->col = 0;
+            return '\n';
+        }
         if (ctx->lisp_mode) {
             if (c == '\r' || c == '\n') {
                 char line[256];
                 uint32_t n = ctx->lisp_len < sizeof(line) - 1
                            ? ctx->lisp_len : sizeof(line) - 1;
-                console_putc('\n');
+                zout("\n");
                 memcpy(line, ctx->lisp_line, n);
                 line[n] = '\0';
                 ctx->lisp_mode = false;
                 ctx->lisp_len = 0;
+                ctx->col = 0;
                 lisp_lock();
                 lisp_val_t *res = lisp_eval_string(line);
                 if (res && res->type != LISP_NIL) {
@@ -103,22 +126,35 @@ static int zfront_getc(void *user)
             if (c == 0x7f || c == 0x08) {
                 if (ctx->lisp_len > 0) {
                     ctx->lisp_len--;
-                    console_puts("\b \b");
+                    zout("\b \b");
+                }
+                if (ctx->lisp_len == 0) {
+                    ctx->lisp_mode = false;   /* the '(' itself was erased */
                 }
                 continue;
             }
             if (ctx->lisp_len < sizeof(ctx->lisp_line) - 1) {
+                char e[2] = { (char)c, '\0' };
                 ctx->lisp_line[ctx->lisp_len++] = (char)c;
-                console_putc((char)c);
+                zout(e);
             }
             continue;
         }
-        if (c == '(') {
+        if (c == '(' && ctx->col == 0) {
             ctx->lisp_mode = true;
             ctx->lisp_len = 0;
             ctx->lisp_line[ctx->lisp_len++] = '(';
-            console_putc('(');
+            zout("(");
             continue;
+        }
+        if (c == '\r' || c == '\n') {
+            ctx->col = 0;
+        } else if (c == 0x7f || c == 0x08) {
+            if (ctx->col > 0) {
+                ctx->col--;
+            }
+        } else {
+            ctx->col++;
         }
         return c;
     }
@@ -192,8 +228,19 @@ static void resolve_path(struct zfront_ctx *ctx, const char *name)
         ksnprintf(ctx->story_path, sizeof(ctx->story_path), "%s%s.z3",
                   Z_DIR_DEFAULT, name);
     }
-    ksnprintf(ctx->save_path, sizeof(ctx->save_path), "%s.lzs",
-              ctx->story_path);
+    /* The story's name with its extension replaced, never appended to:
+     * "zork1.z3.lzs" has two dots, and the FAT driver's 8.3 conversion
+     * keeps the first one inside the base name (ZORK1.Z3 + LZS), a short
+     * name no other FAT implementation accepts. */
+    size_t n = strlen(ctx->story_path), dot = n;
+    for (size_t i = n; i > 0 && ctx->story_path[i - 1] != '/'; i--) {
+        if (ctx->story_path[i - 1] == '.') {
+            dot = i - 1;
+            break;
+        }
+    }
+    memcpy(ctx->save_path, ctx->story_path, dot);   /* 96 < 104 - 4 */
+    memcpy(ctx->save_path + dot, ".sav", 5);
 }
 
 /* ------------------------------------------------------------------ */
@@ -213,22 +260,6 @@ int zmachine_run(const char *name)
     uint32_t fsize = 0;       /* story bytes; doubles as image size   */
     uint32_t space_pages = Z_PAGES(Z_SPACE_BYTES);
 
-    /* Pin the session to the terminal it started on.  The root console
-     * task follows the active foreground terminal (task_get_vterm()==0),
-     * and opening or switching terminals re-points that follower -- which
-     * silently moves the game's input to the new terminal's queue while
-     * its own worker task reads the very same queue (two readers, bytes
-     * split at random) -- the freeze sequence reported 2026-10-04: game
-     * running, Cmd+Enter opens a second terminal, the next command typed
-     * there lands half in the game and half in the new shell.  Binding
-     * the task the way shell_spawn_terminal() binds workers pins the
-     * game to one terminal for its duration; the follow is restored on
-     * the way out. */
-    int mypid = sched_current_pid();
-    int prev_vid = task_get_vterm(mypid);
-    if (mypid >= 0 && prev_vid == 0) {
-        task_set_vterm(mypid, vterm_current_id());
-    }
     int reason = ZVM_OK;
     int rc = 1;               /* until a clean exit rewrites it        */
 
@@ -274,9 +305,9 @@ int zmachine_run(const char *name)
     vm->m.mem_size = Z_SPACE_BYTES;
 
     struct z_io io;
-    io.user = &ctx;   /* lisp_mode/line start zeroed: ctx is a stack local
-                       * cleared by resolve + explicit init below */
+    io.user = &ctx;
     ctx.lisp_mode = false;
+    ctx.col = 0;
     ctx.lisp_len = 0;
     io.putc = zfront_putc;
     io.getc = zfront_getc;
@@ -312,18 +343,13 @@ int zmachine_run(const char *name)
     }
 
     if (reason == ZVM_STOP_ERROR || reason == ZVM_STOP_UNIMPL) {
-        cprintf("zmachine: %s%s%s\n",
-                vm->msg ? vm->msg : "run error",
-                "", "");
+        cprintf("zmachine: %s\n", vm->msg ? vm->msg : "run error");
         rc = 2;
     } else {
         rc = 0;                 /* QUIT, RESTART-to-nothing, Ctrl-C */
     }
 
 done:
-    if (mypid >= 0 && prev_vid == 0) {
-        task_set_vterm(mypid, prev_vid);   /* resume following foreground */
-    }
     if (space != NULL) {
         palloc_free(space, space_pages);
     }

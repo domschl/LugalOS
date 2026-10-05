@@ -164,7 +164,11 @@ int zvm_deserialize(struct z_vm *vm, const uint8_t *buf, uint32_t len)
             f->base_sp = g32(&p);
             f->nlocals = *p++;
             f->pending_dest = *p++;
-            if (f->nlocals > Z_MAX_LOCALS) {
+            /* Each frame's stack base within the restored stack, and no
+             * lower than its caller's: a return sets sp to it, and the
+             * pop that follows indexes stack[] with no other check. */
+            if (f->nlocals > Z_MAX_LOCALS || f->base_sp > sp
+                || (i > 0u && f->base_sp < vm->frames[i - 1u].base_sp)) {
                 return -1;
             }
             for (l = 0; l < Z_MAX_LOCALS; l++) {

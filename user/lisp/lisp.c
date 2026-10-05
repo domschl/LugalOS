@@ -638,28 +638,48 @@ static void gc_push_word(int *sp, uintptr_t w) {
 #else
 #define GC_STORE "sw"
 #endif
+/* Stores s0..s11 into regs[0..11]. A macro, not a function: a callee's own
+ * prologue could already have moved them. */
+#define GC_SAVE_REGS(regs) \
+    __asm__ volatile( \
+        GC_STORE " s0, %c[w0](%[r])\n" GC_STORE " s1, %c[w1](%[r])\n" \
+        GC_STORE " s2, %c[w2](%[r])\n" GC_STORE " s3, %c[w3](%[r])\n" \
+        GC_STORE " s4, %c[w4](%[r])\n" GC_STORE " s5, %c[w5](%[r])\n" \
+        GC_STORE " s6, %c[w6](%[r])\n" GC_STORE " s7, %c[w7](%[r])\n" \
+        GC_STORE " s8, %c[w8](%[r])\n" GC_STORE " s9, %c[w9](%[r])\n" \
+        GC_STORE " s10, %c[w10](%[r])\n" GC_STORE " s11, %c[w11](%[r])\n" \
+        : : [r] "r"(regs), \
+            [w0] "i"(0 * sizeof(uintptr_t)), [w1] "i"(1 * sizeof(uintptr_t)), \
+            [w2] "i"(2 * sizeof(uintptr_t)), [w3] "i"(3 * sizeof(uintptr_t)), \
+            [w4] "i"(4 * sizeof(uintptr_t)), [w5] "i"(5 * sizeof(uintptr_t)), \
+            [w6] "i"(6 * sizeof(uintptr_t)), [w7] "i"(7 * sizeof(uintptr_t)), \
+            [w8] "i"(8 * sizeof(uintptr_t)), [w9] "i"(9 * sizeof(uintptr_t)), \
+            [w10] "i"(10 * sizeof(uintptr_t)), [w11] "i"(11 * sizeof(uintptr_t)) \
+        : "memory")
+
 __attribute__((noinline)) static void gc_push_stack(int *sp, uintptr_t top) {
     volatile uintptr_t regs[12];
-    __asm__ volatile(
-        GC_STORE " s0, %c[w0](%[r])\n" GC_STORE " s1, %c[w1](%[r])\n"
-        GC_STORE " s2, %c[w2](%[r])\n" GC_STORE " s3, %c[w3](%[r])\n"
-        GC_STORE " s4, %c[w4](%[r])\n" GC_STORE " s5, %c[w5](%[r])\n"
-        GC_STORE " s6, %c[w6](%[r])\n" GC_STORE " s7, %c[w7](%[r])\n"
-        GC_STORE " s8, %c[w8](%[r])\n" GC_STORE " s9, %c[w9](%[r])\n"
-        GC_STORE " s10, %c[w10](%[r])\n" GC_STORE " s11, %c[w11](%[r])\n"
-        : : [r] "r"(regs),
-            [w0] "i"(0 * sizeof(uintptr_t)), [w1] "i"(1 * sizeof(uintptr_t)),
-            [w2] "i"(2 * sizeof(uintptr_t)), [w3] "i"(3 * sizeof(uintptr_t)),
-            [w4] "i"(4 * sizeof(uintptr_t)), [w5] "i"(5 * sizeof(uintptr_t)),
-            [w6] "i"(6 * sizeof(uintptr_t)), [w7] "i"(7 * sizeof(uintptr_t)),
-            [w8] "i"(8 * sizeof(uintptr_t)), [w9] "i"(9 * sizeof(uintptr_t)),
-            [w10] "i"(10 * sizeof(uintptr_t)), [w11] "i"(11 * sizeof(uintptr_t))
-        : "memory");
+    GC_SAVE_REGS(regs);
     for (unsigned i = 0; i < 12u; i++) gc_push_word(sp, regs[i]);
     uintptr_t here;
     __asm__ volatile("mv %0, sp" : "=r"(here));
     here &= ~(uintptr_t)(sizeof(uintptr_t) - 1u);
     for (const uintptr_t *p = (const uintptr_t *)here; (uintptr_t)p < top; p++) gc_push_word(sp, *p);
+}
+
+/* Sessions parked by lisp_park() (lisp.h). Read by a collection and written
+ * by lisp_park()/lisp_unpark(), all three under g_lisp_lock. */
+static lisp_park_t *g_parked;
+
+/* Every parked session's registers and stack range, as for gc_push_stack():
+ * the stack above a parked frame belongs to callers that cannot run until
+ * the session returns, so it holds still while it is scanned. */
+static void gc_push_parked(int *sp) {
+    for (const lisp_park_t *p = g_parked; p; p = p->next) {
+        for (unsigned i = 0; i < 12u; i++) gc_push_word(sp, p->regs[i]);
+        for (const uintptr_t *w = (const uintptr_t *)p->lo; (uintptr_t)w < p->hi; w++)
+            gc_push_word(sp, *w);
+    }
 }
 
 /* Runs one full stop-the-world mark-sweep pass. Safe to call ONLY from
@@ -745,6 +765,7 @@ static void gc_collect_from_timed(uintptr_t stack_top) {
     int sp = 0;
     gc_push(&sp, global_env);
     if (stack_top) gc_push_stack(&sp, stack_top);
+    gc_push_parked(&sp);
     gc_drain(&sp);
 
     /* Weak symbol pruning: unlink any unmarked symbol from the hash table */
@@ -901,6 +922,37 @@ static ylock_t g_lisp_lock;
 
 void lisp_lock(void) { ylock_acquire(&g_lisp_lock); }
 void lisp_unlock(void) { ylock_release(&g_lisp_lock); }
+
+/* See lisp.h. Taken once more here even by a caller that does not hold it
+ * (init.lisp's forms are evaluated without it, so a boot-time `(clock)`
+ * arrives here at depth 0): the record goes on the list under the lock
+ * every collection holds. noinline, so `lo` is a real frame below every
+ * caller's, as for gc_push_stack(). */
+__attribute__((noinline)) void lisp_park(lisp_park_t *p) {
+    ylock_acquire(&g_lisp_lock);
+    p->depth = ylock_depth(&g_lisp_lock) - 1;
+    GC_SAVE_REGS(p->regs);
+    uintptr_t lo, hi, here;
+    __asm__ volatile("mv %0, sp" : "=r"(here));
+    if (sched_current_stack(&lo, &hi) && here >= lo && here < hi) {
+        p->lo = here & ~(uintptr_t)(sizeof(uintptr_t) - 1u);
+        p->hi = hi;
+    } else {
+        p->lo = p->hi = 0;      /* no known stack: the registers only */
+    }
+    p->next = g_parked;
+    g_parked = p;
+    for (int d = ylock_depth(&g_lisp_lock); d > 0; d--) ylock_release(&g_lisp_lock);
+}
+
+void lisp_unpark(lisp_park_t *p) {
+    ylock_acquire(&g_lisp_lock);
+    for (lisp_park_t **pp = &g_parked; *pp; pp = &(*pp)->next) {
+        if (*pp == p) { *pp = p->next; break; }
+    }
+    if (p->depth == 0) ylock_release(&g_lisp_lock);
+    for (int d = 1; d < p->depth; d++) ylock_acquire(&g_lisp_lock);
+}
 
 void lisp_gc_safepoint(void) {
     if (!ylock_try_acquire(&g_lisp_lock)) return;
@@ -4161,7 +4213,10 @@ static lisp_val_t *prim_perft(lisp_val_t *args, lisp_val_t *env) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
 static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
+    lisp_park_t park;           /* a session: see lisp_park() in lisp.h */
+    lisp_park(&park);
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
+    lisp_unpark(&park);
     return &true_val;
 }
 #endif
@@ -4176,7 +4231,10 @@ static lisp_val_t *prim_chess_run(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     console_set_title("Chess");
+    lisp_park_t park;           /* a session: see lisp_park() in lisp.h */
+    lisp_park(&park);
     chess_console_run(); /* returns on 'quit' */
+    lisp_unpark(&park);
     lisp_canvas_reset();    /* 37.3b */
     return &true_val;
 }
@@ -4198,11 +4256,16 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     g_search_cores = (int)arg_int(args, 0, 1);
     if (g_search_cores < 1) g_search_cores = 1;
     console_set_title("Chess");
+    /* A session for as long as the game lasts, so the other terminals keep
+     * their Lisp meanwhile: see lisp_park() in lisp.h. */
+    lisp_park_t park;
+    lisp_park(&park);
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
     chess_run(); /* returns on Ctrl-C or the TM1638 STOP key (J2) */
 #else
     chess_console_run(); /* returns on 'quit' */
 #endif
+    lisp_unpark(&park);
     g_search_cores = 1;
     lisp_canvas_reset();    /* 37.3b */
     return &true_val;
@@ -4224,17 +4287,12 @@ static lisp_val_t *prim_zmachine(lisp_val_t *args, lisp_val_t *env) {
     if (lisp_list_ref(args, 0) != NULL) {
         story = get_str_val(lisp_list_ref(args, 0));
     }
-    /* The session runs WITHOUT the Lisp lock -- the calling shell holds it
-     * around eval, and an interactive session outliving that critical
-     * section is the whole point: another terminal's command must not
-     * park on g_lisp_lock for the duration of the game.  This is the
-     * contract chess_console_run() has always documented with its own
-     * lock-around-eval bursts (chess_ui.c); taking it here by name.
-     * Re-acquired on every exit path so the shell's matching unlock
-     * balances. */
-    lisp_unlock();
+    /* A session, not a form: see lisp_park() in lisp.h. `story` points
+     * into a string slot, which the parked roots keep alive. */
+    lisp_park_t park;
+    lisp_park(&park);
     int rc = zmachine_run(story);
-    lisp_lock();
+    lisp_unpark(&park);
     if (rc != 0) {
         return &nil_val;
     }
@@ -4251,7 +4309,10 @@ static lisp_val_t *prim_zmachine(lisp_val_t *args, lisp_val_t *env) {
  * SD-card override (user's own distinction, 2026-08-13). */
 static lisp_val_t *prim_clock(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
+    lisp_park_t park;           /* a session: see lisp_park() in lisp.h */
+    lisp_park(&park);
     pico_clock_green_run(); /* returns on Ctrl-C */
+    lisp_unpark(&park);
     return &true_val;
 }
 
@@ -5937,7 +5998,14 @@ static lisp_val_t *prim_usb_status(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
+    /* A session like any game (lisp_park(), lisp.h): `lsh` typed at a
+     * prompt is a nested shell that would otherwise hold the lock for as
+     * long as it runs, and init.lisp's own (lsh) gets its form rooted for
+     * the life of the boot. */
+    lisp_park_t park;
+    lisp_park(&park);
     shell_run();
+    lisp_unpark(&park);
     return &nil_val;
 }
 

@@ -102,25 +102,30 @@ so the same sources build for RV32 firmware.
 * **Commands:** `zmachine` at the `lsh` prompt, or `(zmachine "name")`
   in Lisp.  A bare name resolves against `/sd0/games/<name>.z3`
   (default `zork1`); an explicit path works too.  `QUIT` or Ctrl-C
-  (polled between instructions, the chess J2 mechanism) ends the
-  session.  `save`/`restore` write `<story>.lzs` next to the story file.
-* **Lisp at the game prompt (chess's convention):** input starting with
+  (polled between instructions, the chess J2 mechanism; one typed at
+  the game prompt ends the pending read) ends the session.
+  `save`/`restore` use `<story-name>.sav` next to the story file
+  (`ZORK1.SAV`) -- the story's extension replaced, not appended to,
+  because a two-dot name is not a valid FAT short name.  (The host
+  harness keeps `<story>.lzs`.)
+* **Lisp at the game prompt (chess's convention):** a line starting with
   `(` is collected by the front, evaluated by Lisp, and its value
   printed — the game's `aread` receives an empty line (rooms re-describe,
   harmless in every v3 game).  `(screenshot)` at the prompt is the
   working end-to-end test.
-* **Terminal semantics (fixed 2026-10-04):** the session runs *without*
-  `lisp_lock` (the chess-console contract — another terminal's commands
-  must not park behind a game), and it is *pinned to its terminal* the
-  way `shell_spawn_terminal()` binds workers.  Before both fixes, a
-  `vterm new`/Cmd+Enter while playing silently moved the root task's
-  input to the new terminal's queue — two readers, one queue, and the
-  second terminal's first command froze the system.  Switching away now
-  parks the game; `vterm switch <id>` back resumes it exactly where it
-  stopped.  The debug builtin `(console-hotkey n)` injects a console
-  hotkey (5 = new terminal, 6/7 focus, 10 close, 11..19 jump) the same
-  way the USB keyboard's Super chords do — scripted reproduction for
-  exactly that sequence.
+* **Terminal semantics (fixed 2026-10-04/05):** the session is
+  *parked* (`lisp_park()`, user/lisp/include/lisp.h): it releases
+  `g_lisp_lock` for its duration, so another terminal's commands do not
+  wait behind a game, and it registers its stack as collection roots, so
+  another terminal's collection cannot free the half-evaluated
+  `(zmachine)` form under it.  chess and clock are parked the same way.
+  A game on the root console reads vterm 0's queue only, so switching
+  to another terminal parks the game, and switching back resumes it
+  exactly where it stopped.  The debug builtin `(console-hotkey n)`
+  injects a console hotkey (5 = new terminal, 6/7 focus, 10 close,
+  11..19 jump) the same way the USB keyboard's Super chords do, which
+  makes this sequence scriptable.  See
+  plan/phase31_concurrency_hierarchy.md, "Terminals".
 * **Memory contract (chess's discipline, plan/phase38_psram.md):**
   idle cost is **zero** — nothing in `.bss`, nothing allocated at boot
   (verified: `-DLUGALOS_ENABLE_ZMACHINE=OFF` differs only in `.text`,
@@ -182,7 +187,8 @@ so the same sources build for RV32 firmware.
   rp2350-terminal board: `zmachine` boots `/sd0/games/zork1.z3` (the
   MIT build, p9sync'd to the card) with the bulk zone on the real 8 MB
   QPI PSRAM (`PSRAM: yes`, `SRAM fallbacks 0`); move/look/read work,
-  `save` writes `ZORK1.Z3LZS` to the card, `restore` reads it back,
+  `save` writes the save file to the card (then `ZORK1.Z3LZS`, now
+  `ZORK1.SAV`), `restore` reads it back,
   Ctrl-C returns to `lsh`.  Verified on hardware 2026-10-04.
 
 ## Field Notes (spec traps found the hard way)

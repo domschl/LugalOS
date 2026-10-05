@@ -1446,3 +1446,215 @@ showed up on real silicon.
 The measure of success is that the twenty comments become redundant, and that
 the next instance of §0.4's failure class is a named refusal at the moment of
 the mistake rather than a crash three milestones later.
+
+## 7. Terminals — the same analysis for phase 44's vterms, 2026-10-05
+
+Phase 44 gave every terminal its own shell task, and with that, for the first
+time, several tasks that *each* evaluate Lisp, read input and write the
+console concurrently. This section is Y0's inventory and Y4's audit, repeated
+for that construct. It was prompted by a freeze found while bringing up the
+Z-machine (user/zmachine): `chess` started on the root console, a second
+terminal opened (Super+Enter), and the first command typed there stopped
+input in **every** terminal for good. The zmachine branch had fixed its own
+copy of that freeze; `chess` and `clock` still had it.
+
+### 7.1 Inventory: what terminals share, and what guards it
+
+| level | lock / state | kind | guards | held across |
+|---|---|---|---|---|
+| 1 | `g_lisp_lock` (user/lisp/lisp.c) | ylock, re-entrant | heap, `global_env`, evaluator globals (`eval_depth`, `lisp_interrupted`), `console_capture()` | a whole evaluation — every primitive's I/O, chan_calls, and (before T1) entire interactive sessions |
+| 2 | `g_vterm_mgr_lock` (kernel/vterm.c) | ylock | the vterm table, `g_active_vterm` | `palloc`, `vtterm_repaint()` (pure: shadow only) — released before any console call |
+| 2 | `g_console_lock` (kernel/console.c) | ylock | the console stream, the LCD's output batch (`g_batch`) | `chan_call("lcdterm")`, the uart TX path |
+| 2 | `g_input_lock` (kernel/console.c) | ylock | every device read (`console_pump()`) | `src->has_char()/getc()` — a `chan_call("uart")` on QEMU — and level 3 |
+| 3 | `vt->input_lock` ×8 | ylock, leaf | one terminal's rx ring | nothing |
+| — | `g_sched_lock`, `ep->lock`, allocators | spinlock, leaf (§Y0) | | nothing |
+| — | root's push-back ring | `irq_save()` | vterm 0's input queue | — |
+| — | `g_hotkey` | one word | a pending Super-chord | — |
+| — | `task_t::vterm_id` | one word per task | a task's terminal; -1 = closed | — |
+| — | `vt->interrupt_pending`, `g_interrupt_pending` | bool latches | Ctrl-C per terminal | — |
+
+Read from the code, not assumed: the three level-2 locks are **siblings** —
+none is ever acquired while another is held. `vterm_set_active()` and
+`vterm_destroy()` release `g_vterm_mgr_lock` before `console_set_title()` /
+`console_canvas()` (both take `g_console_lock`); nothing under
+`g_console_lock` touches the vterm table or the input path; nothing under
+`g_input_lock` writes the console. `g_lisp_lock` sits above all three.
+
+Not locks, but edges in the wait-for graph all the same:
+
+* **An input wait** (`console_getc()`) waits for a *person*, through a queue
+  that is only fed while its terminal has the focus. It has no bound, and
+  whether it ends depends on where the focus is.
+* **A hotkey** (`run_hotkey()`) runs in whichever task is next in an input
+  wait, and from there takes `g_vterm_mgr_lock`, creates tasks, and takes
+  `g_console_lock` — sequentially, never nested.
+* **chan_call** to the uart and lcdterm tasks, under `g_input_lock` and
+  `g_console_lock` respectively.
+
+### 7.2 Findings
+
+**T1 — interactive sessions held `g_lisp_lock` across input waits (the
+freeze). Fixed.** lsh evaluates every command under `g_lisp_lock`, so
+`chess`, `chess-console`, `chess-run`, `clock` — and `lsh` itself, typed at a
+prompt — held it for the whole session. The cycle closes through the focus:
+the session waits for input on vterm 0; input reaches vterm 0 only while it
+has the focus; the focus is on the new terminal, whose shell waits for
+`g_lisp_lock`; and on QEMU (no Super chords) the only way back, `vterm switch
+0`, is a line that blocked shell would have to read. Reproduced on rv32 QEMU
+(`chess`, `(console-hotkey 5)`, `ls`: no further echo anywhere). **Rule R1.**
+
+**T2 — releasing the lock alone is a use-after-free. Fixed.** zmachine's own
+fix was `lisp_unlock()` around the session. A collection scans `global_env`
+and the stack of the task that runs it — never another task's — so the first
+collection in another terminal freed the session's half-evaluated form.
+Demonstrated: `(let ((x (list 1000 2000 3000))) (zmachine) (list x x))` with
+nine collections forced in a second terminal returned `=> 1`. **Fix:**
+`lisp_park()` / `lisp_unpark()` (user/lisp/include/lisp.h). Park records the
+task's stack from its own frame up and its callee-saved registers as roots,
+then releases the lock to depth 0; unpark retakes it to the same depth. Every
+collection, precise or in-form, now also scans each parked range. Applied to
+`zmachine`, `chess`, `chess-console`, `chess-run`, `clock` and `lsh`. Same
+script after: `=> ((1000 2000 3000) (1000 2000 3000))`, for chess and
+zmachine both. **Rule R2.**
+
+**T3 — chess ran the precise collector inside its own session. Fixed by T2.**
+chess_ui.c calls `lisp_gc_safepoint()` after a Lisp line at the chess
+prompt. Under the outer lock that was a re-entrant `try_acquire`, so it ran
+the precise collection while `(chess)`'s calling form was still in flight. That
+form is now a parked root.
+
+**T4 — the zmachine "pin" was a no-op. Removed.** The root task never
+follows the focus: `task_get_vterm()` is 0 for it, and vterm 0's queue (the
+push-back ring) is fed only while vterm 0 is active. `task_set_vterm(pid,
+vterm_current_id())` therefore wrote 0 over 0. A game on the root console
+pauses when the focus leaves and resumes when it returns, without any pin.
+
+**T5 — unlocked writers of the LCD batch. Fixed for zmachine; open for two
+others.** `lcd7_screen_putc_vterm()` appends to one shared `g_batch` and
+relies on its callers holding `g_console_lock`. The zmachine front wrote per
+character with a bare `console_putc()`. A writer preempted between
+`g_batch_len++` and the `== LCDTERM_BATCH` flush test lets the next append
+step past 256 and off the end of the buffer. zfront now writes under the
+lock. **Still unlocked:** `SYS_PRINT` (arch/riscv/common/trap.c, a U-mode
+program's output) and `console_chan_handler()` (`/srv/console`).
+Recommended: take `console_lock()` around the append in
+`lcd7_screen_putc_vterm()` itself. It is not done here because that function
+is also the klog `lcd` sink, reached from boot-time inline fan-out, and the
+change needs the rp2350-terminal to verify. **Rule R4.**
+
+**T6 — `run_hotkey()` read then cleared `g_hotkey`. Fixed.** Two tasks in
+input waits on two harts could both take one Super+Enter and open two
+terminals. Now an atomic exchange.
+
+**T7 — SMP lost wakeup in `chan_call()`. Fixed.** The caller sets up the
+request, `task_unblock()`s the owner, then `task_block()`s, all under
+`irq_save()`. That closes the window on one hart only. On two, the owner
+serves and replies from the other hart before the caller has blocked; the
+reply's `task_unblock()` finds the caller `RUNNING`, does nothing, and the
+caller then blocks forever. Reached through terminals: a worker's
+`console_pump()` blocked inside `chan_call("uart")` **holding
+`g_input_lock`**, and all input stopped. Reproduced on rv64-smp with no game
+at all (`vterm new`, then type; within seconds `[DBG] 0 stuck on
+&g_input_lock, owner 7`, task 7 `BLOCKED` in `uart_has_char()` →
+`driver_task_call()`). **Fix:** `task_prepare_block()` (kernel/sched.h) arms a
+per-task wake token before the waiter publishes what it waits for. A
+`task_unblock()` that finds the task not yet `BLOCKED` sets the token, and
+the next `task_block()` consumes it and returns at once. A block with no
+prepare behaves exactly as before, so the uart ISR waiters are unaffected.
+`chan_call_task()` and `chan_serve_wait()` now prepare, test and block in a
+loop until the reply or request is actually there. **Rule R5.**
+
+**T8 — SMP double schedule in `task_block()`. Fixed.** `task_block()` marked
+the task `BLOCKED` in a lock section of its own, released `g_sched_lock`, and
+then called `sched_yield()`. Its comment argued that `BLOCKED` "cannot race
+into a double-schedule". It can: a `task_unblock()` from the other hart in
+that gap makes the task `READY` while it is still running here, and the
+other hart resumes it from its previous, stale frame. Seen as `[Sched BUG]
+switching 5 'p9srv' -> 7 'lsh-worker': parked sp=... has ra=0x2`, with
+`next: state=RUNNING`. The same happened when `sched_yield()` found nothing
+else to run and returned with the caller still marked `BLOCKED`. **Fix:**
+`sched_switch(block)`. The `BLOCKED` mark is now made under the same hold of
+`g_sched_lock` that is handed off across `ctx_switch()`. When there is
+nothing else to run, the task is put back to `RUNNING` before it returns.
+
+**T9 — the root push-back ring is guarded by `irq_save()`. Open, low.** One
+producer (`console_pump()`, under `g_input_lock`) and one consumer (the root
+shell), so it is single-producer, single-consumer. But on two harts the
+`irq_save()` is no fence: the consumer can see `g_pb_head` advance before
+the byte it covers. Fix if ESP32-P4 terminals ever drop or garble a key: a
+release fence before the head store and an acquire fence after the head
+load.
+
+**T10 — one Lisp lock for every terminal. By design; noted.** A long
+primitive that is not a session (`(sleep 60)`, a long `perft`, an
+`fsbench` reached through Lisp) stalls Lisp in every other terminal for its
+duration. It is bounded and Ctrl-C ends it, so it is a latency, not a
+deadlock. Shell builtins that do not go through Lisp are unaffected. Making
+such a primitive a parked session is the remedy wherever it matters.
+
+**T11 — the uart ISR waiters close the lost-wakeup window with
+`irq_save()`. Open, check on ESP32-P4.** `uart_16550.c`, `uart_esp32p4.c` and
+`uart_rp2350.c` arm an interrupt and `task_block()` under `irq_save()`. That
+is correct only if the interrupt is delivered to the waiter's own hart. On
+the ESP32-P4 (SMP) that is a question of interrupt routing. If it is not
+guaranteed, `task_prepare_block()` before arming is the one-line fix.
+
+**T12 — `ylock_acquire()` reported cycles that were already over. Fixed.** Once
+T7 and T8 were fixed, rv64-smp still printed `[Lock BUG] task 7 waiting for
+task 0 closes a wait-for cycle` sixteen times a session, and nothing hung.
+The waiter's edge deliberately stays up across its yield (Y3's
+anti-blinking rule), so it outlives the lock it was for. Task 0, in
+`console_pump()` holding `g_input_lock`, waits for a terminal's
+`input_lock`. Task 7 releases that lock and then wants `g_input_lock`, and
+it sees 0 → 7 before task 0 has run again to drop its edge. A real ylock
+cycle never clears, so the report now waits until the cycle has lasted
+`YLOCK_CYCLE_TURNS` (2048) turns: a deadlock is still named, a few
+milliseconds later, and a cycle that resolves is not reported.
+
+**T13 — the leaf check read another hart's spinlock depth. Fixed.** With
+T12's noise gone, a different report surfaced: `called chan_call() while
+holding ?, taken in ?()`, depth 0. `lock_check_may_block_named()` read
+`hart_id()` and then that hart's depth with interrupts enabled. A task
+preempted between the two reads and resumed on the other hart read the
+other hart's depth. The two reads now happen with interrupts masked. A
+caller that really holds a spinlock has interrupts masked already, so
+real reports are unchanged. (Reports are capped at
+`LOCK_FAULT_REPORT_MAX`, and T12's sixteen lines had used up the cap,
+which is how this one stayed hidden.)
+
+### 7.3 The rules
+
+* **R1. No ylock that another terminal needs is held across an input wait.**
+  For `g_lisp_lock`, a primitive that becomes an interactive session parks:
+  `lisp_park()` before the session, `lisp_unpark()` after. Inside it, the
+  session takes `lisp_lock()` only around its own evaluations (chess's and
+  zmachine's Lisp lines).
+* **R2. A Lisp value must stay reachable while the lock is released.** That
+  is what park's roots provide. A bare `lisp_unlock()` mid-form is always a
+  bug.
+* **R3. The level-2 locks are siblings.** `g_vterm_mgr_lock`,
+  `g_console_lock` and `g_input_lock` are never nested in each other, and
+  `vt->input_lock` is a leaf. Code that needs two of them does them one
+  after the other, as `vterm_set_active()` already does.
+* **R4. Console output goes under `g_console_lock`.** `console_putc()` does
+  not take it (Y5d); its callers do.
+* **R5. A wait on a wake from another task is prepare, test, block, in a
+  loop.** `irq_save()` is not a substitute on two harts.
+* **R6. Hotkeys run only from input waits,** which hold neither
+  `g_console_lock` (the line editor never holds it across `console_getc()`)
+  nor `g_input_lock` (`console_pump()` has released it).
+
+### 7.4 How it is tested
+
+* `tests/runner.py`, "A Game In One Terminal, Commands In Another" (rv32 and
+  rv64). The test: `chess` inside a `let`, Super+Enter via `(console-hotkey
+  5)`, `ls` and forced collections in the new terminal, `vterm switch 0`,
+  `quit`. The `let` must return its list intact, and at least one collection
+  must have run while the game was parked.
+* rv64-smp, by hand: `vterm new` (or Super+Enter from inside a game), then
+  typing and a 60 000-iteration churn. Before T7/T8 this produced
+  `[Lock BUG]`/`[Sched BUG]` reports and dead input within seconds. After
+  T7, T8, T12 and T13, all reports are gone and every command answers, with
+  the parked `let` intact.
+* Hardware still to do: the rp2350-terminal session round trip for
+  chess/clock (T1), and T5/T11 on the boards they concern.

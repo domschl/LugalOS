@@ -3533,6 +3533,51 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("A Second Terminal: Its Shell's Stack, And Closing It From Inside (44)", t2_ok, t2_log))
 
+        # A session in one terminal, commands in another (lisp_park(),
+        # user/lisp/include/lisp.h). `chess` held g_lisp_lock for the whole
+        # game, so the second terminal's first command waited on it forever
+        # and no terminal took input again. Dropping the lock alone is not
+        # enough either: the collections the churn below forces in the second
+        # terminal used to free the parked form's `x` (the zmachine version
+        # of this returned `=> 1`). (console-hotkey 5) is Super+Enter, taken
+        # by chess's own input wait; the line sent after it goes to the new
+        # terminal, so no sentinel there.
+        def gc_count() -> int | None:
+            ok, log = session.send_and_expect("(gc-stats)", r"=> \((\d+) ", timeout=8.0)
+            m = re.search(r"=> \((\d+) ", log) if ok else None
+            return int(m.group(1)) if m else None
+        steps = [("(let ((x (list 1000 2000 3000))) (chess) (list x x))", r"chess> ", None),
+                 ("(console-hotkey 5)", r"\[terminal \d\]", False),
+                 ("ls", r"Directory Listing", None),
+                 ("gc", "", None),
+                 ("(let ((i 0)) (while (< i 60000) (set! i (+ i 1)) (list i i i i)) i)", r"=> 60000", None),
+                 ("gc", "", None),
+                 ("vterm switch 0", r"Switched to vterm 0", None),
+                 ("quit", r"=> \(\(1000 2000 3000\) \(1000 2000 3000\)\)", None),
+                 ("(+ 40 2)", r"=> 42", None)]
+        pk_ok, pk_log, counts, term = True, "", [], None
+        for cmd, pat, sentinel in steps:
+            if cmd == "gc":
+                counts.append(gc_count())
+                continue
+            ok, log = session.send_and_expect(cmd, pat, timeout=30.0, sentinel=sentinel)
+            if not ok or "[Lock BUG]" in log or "[Sched BUG]" in log:
+                pk_ok, pk_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+            m = re.search(r"\[terminal (\d)\]", log)
+            if m:
+                term = m.group(1)
+        # The terminal goes again, so the window tests below count from the
+        # same ribbon as before.
+        if term is not None:
+            ok, log = session.send_and_expect(f"vterm close {term}", r"Closed vterm \d", timeout=8.0)
+            if pk_ok and not ok:
+                pk_ok, pk_log = False, f"'vterm close {term}' did not return:\n{log}"
+        if pk_ok and (None in counts or counts[1] <= counts[0]):
+            pk_ok, pk_log = False, f"no collection while the game was parked: (gc-stats) counts {counts}"
+        results.append(("A Game In One Terminal, Commands In Another: No Freeze, Its Form Survives (44)",
+                        pk_ok, pk_log))
+
         # Phase 44's windows, on the RAM screen. `ribbon` lists every window
         # (it listed none: the reply had no room); a canvas scrolled out of
         # view and back keeps its picture (it came back blank); a new width

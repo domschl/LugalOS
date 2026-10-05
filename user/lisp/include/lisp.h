@@ -112,5 +112,30 @@ void lisp_gc_safepoint(void);
 void lisp_lock(void);
 void lisp_unlock(void);
 
+/* A primitive that becomes an interactive session -- a game, the chess
+ * console, an appliance loop -- runs for minutes inside the form that
+ * called it. Holding g_lisp_lock that long parks every other terminal's
+ * next command behind it (the vterm freeze: `chess` in one terminal, `ls`
+ * in a second, and no terminal takes input again). Dropping the lock with
+ * a bare lisp_unlock() is no better: the session's own half-evaluated
+ * form lives only on its task's stack, which no other task's collection
+ * scans, so the first collection elsewhere frees it.
+ *
+ * lisp_park() does both halves: it records the caller's stack, from its
+ * own frame up, and its callee-saved registers as collection roots, then
+ * releases the lock entirely, however deep this task holds it.
+ * lisp_unpark() takes the lock back to that same depth and drops the
+ * roots. The record lives in the caller's frame, between the two calls;
+ * the session may take lisp_lock() around its own evaluations meanwhile. */
+typedef struct lisp_park {
+    struct lisp_park *next;
+    uintptr_t lo, hi;          /* the parked stack range, [lo, hi) */
+    uintptr_t regs[12];        /* s0..s11 at the moment of parking */
+    int depth;                 /* g_lisp_lock depth to restore */
+} lisp_park_t;
+
+void lisp_park(lisp_park_t *p);
+void lisp_unpark(lisp_park_t *p);
+
 
 #endif /* LUGALOS_USER_LISP_H */
