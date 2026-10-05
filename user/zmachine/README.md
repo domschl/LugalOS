@@ -101,7 +101,9 @@ so the same sources build for RV32 firmware.
   target.  `host_main.c` is never part of a firmware build.
 * **Commands:** `zmachine` at the `lsh` prompt, or `(zmachine "name")`
   in Lisp.  A bare name resolves against `/sd0/games/<name>.z3`
-  (default `zork1`); an explicit path works too.  `QUIT` or Ctrl-C
+  (default `zork1`); an explicit path works too.  The shipped card
+  carries all three MIT titles: `(zmachine "zork2")`,
+  `(zmachine "zork3")`.  `QUIT` or Ctrl-C
   (polled between instructions, the chess J2 mechanism; one typed at
   the game prompt ends the pending read) ends the session.
   `save`/`restore` use `<story-name>.sav` next to the story file
@@ -136,9 +138,10 @@ so the same sources build for RV32 firmware.
   fallback counted in `/proc/meminfo` — and every block is released on
   every exit path (verified on QEMU: bulk returns to its idle free
   count after `Ctrl-C`, `SRAM fallbacks 0`).
-* **SD layout:** the top-level CMake stages `games/zork1/zork1-mit.z3`
-  to `/sd0/games/` under the plain-8.3 name **`ZORK1.Z3`** (the volume
-  carries no long-filename entries).  It lands in `flashfs.bin` /
+* **SD layout:** the top-level CMake stages the three MIT story files
+  (`games/zork1/zork1-mit.z3` … `games/zork3/zork3-mit.z3`) to
+  `/sd0/games/` under the plain-8.3 names **`ZORK1.Z3` … `ZORK3.Z3`**
+  (the volume carries no long-filename entries).  It lands in `flashfs.bin` /
   `flashfs.uf2` (RP2350 flashfs segment), in `lugalos_sd.img` (QEMU),
   and in `build/<preset>/sd_root/` for the `tools/p9sync.py` card-
   update flow.  Story-file edits are build dependencies: they re-run

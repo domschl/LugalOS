@@ -32,6 +32,8 @@ games/
 | Slug    | Game          | Source license | Story file |
 | ------- | ------------- | -------------- | ---------- |
 | `zork1` | Zork I (MIT release) | MIT (Microsoft, 2025-11-20) | `zork1/zork1-mit.z3` |
+| `zork2` | Zork II (MIT release) | MIT (Microsoft, 2025-11-20) | `zork2/zork2-mit.z3` |
+| `zork3` | Zork III (MIT release) | MIT (Microsoft, 2025-11-20) | `zork3/zork3-mit.z3` |
 
 ## Adding a game
 
@@ -42,5 +44,7 @@ games/
 3. Run it, play-test with `zork-host`, commit the `.z3` artifact.
 4. Add the provenance record to `<slug>/README.md` and the table above.
 
-Zork II and III are natural candidates: Microsoft released their
-sources under MIT as well (Zork I–III announcement, 2025-11-20).
+Zork II (2026-10) needed one one-character source fix
+(`zork2/patches/0001-dreary-room-cond.patch` — an upstream COND-paren
+typo ZILCH tolerated and ZILF does not); Zork III compiles clean.
+Both records are in the respective `README.md` files.

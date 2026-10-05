@@ -305,18 +305,25 @@ endforeach()
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/cas ${SD_STAGE}/cas)
 
-# user/zmachine: shippable story file, built from the MIT ZIL source in
-# user/zmachine/games/zork1/src (see that directory's README for the
-# provenance chain; rebuild with games/zork1/build.sh). /sd0/games/ is
-# the directory for future titles the same way.  On-card name is plain
-# 8.3 (ZORK1.Z3): the volume carries no long-filename entries, and a
-# name like zork1-mit.z3 would arrive truncated to ZORK1-MI.Z3 anyway
-# -- worse, silently, since the truncation happens in the image writer.
+# user/zmachine: shippable story files, built from the MIT ZIL sources in
+# user/zmachine/games/<slug>/src (see each directory's README for the
+# provenance chain; rebuild with games/<slug>/build.sh). /sd0/games/ is
+# the directory for future titles the same way.  On-card names are plain
+# 8.3 (ZORK1.Z3 ... ZORK3.Z3): the volume carries no long-filename
+# entries, and a name like zork1-mit.z3 would arrive truncated to
+# ZORK1-MI.Z3 anyway -- worse, silently, since the truncation happens in
+# the image writer.
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SD_STAGE}/games
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork1/zork1-mit.z3
-            ${SD_STAGE}/games/zork1.z3)
+            ${SD_STAGE}/games/zork1.z3
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork2/zork2-mit.z3
+            ${SD_STAGE}/games/zork2.z3
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork3/zork3-mit.z3
+            ${SD_STAGE}/games/zork3.z3)
 
 # The staged files are inputs, so editing one has to rebuild the image.
 # Without this, changing init.lisp left the flash image holding the previous
@@ -329,7 +336,9 @@ file(GLOB_RECURSE SD_ROOT_FILES CONFIGURE_DEPENDS
 file(GLOB_RECURSE CAS_FILES CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/cas/*)
 set(STORY_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork1/zork1-mit.z3)
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork1/zork1-mit.z3
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork2/zork2-mit.z3
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork3/zork3-mit.z3)
 
 # I7a, plan/phase21_identity_and_authentication.md §3.3: two forms of the same
 # image, and which one is built is the whole point of the milestone.
