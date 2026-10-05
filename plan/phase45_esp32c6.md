@@ -49,13 +49,15 @@ does with `/proc/sys/kernel/tainted`.
   entitled to weigh that — e.g. a future auth policy may refuse to hand key
   material to a tainted node. Phase 21's identity work is the place that
   would consume it; this phase only produces the flag.
-* **Containment (best effort, not a security claim):** the blob shares our
-  address space and runs in M-mode. PMP (16 regions) can at least keep the
-  blob's *data* non-executable and our kernel's data out of its reach only if
-  the blob is run in U-mode, which it was not written for. 45.3 decides
-  whether the shim runs the radio tasks in U-mode with PMP windows; if it
-  cannot be done cheaply the taint label stays the honest statement and the
-  isolation is explicitly *not* claimed.
+* **Containment: the radio runs in U-mode under a PMP domain** (decided in
+  45.3a, §4.5): the blob, the chip-ROM code it calls and the supplicant execute
+  as one U-mode task confined to a handful of PMP regions, reaching the kernel
+  only through `ecall`. What that buys is **fault containment**: a wild store
+  or jump in 400 KB of closed code faults the radio task instead of corrupting
+  the kernel, and the node can restart the radio. What it does *not* buy is
+  protection against a hostile blob: the radio's MAC is a bus master doing its
+  own DMA, and PMP governs the CPU only (§4.5). The taint label stays the
+  honest statement about trust; the domain is a robustness measure.
 * The Ethernet-only P4 builds and all RP2350 builds stay untainted. On the
   P4-NANO the C6 *die* is tainted while the P4 is not (§7) — taint is a
   property of a node, and each die is its own node.
@@ -245,6 +247,123 @@ the blob runs under our scheduler's blocking and interrupt semantics, that the
 radio's power and clock domains can be brought up without IDF's startup, and
 whether the radio ISR path is happy executing from flash.
 
+### 4.5 Can the radio run in U-mode? (45.3a, 2026-10-05) — yes
+
+A standalone probe (`tools/build_umode_probe_esp32c6.sh run`, loaded to RAM, no
+flash written) sets up PMP on the C6, drops to U-mode, and provokes both the
+things that must work and the things that must fault. **16 of 16 pass.**
+
+**On the silicon:**
+
+* **PMP: 16 entries, 4-byte granularity, none locked, and the ROM leaves it
+  empty.** (After a reset nothing restricts anything; M-mode is unrestricted.)
+  NAPOT regions of any power of two ≥ 8 bytes work. `MEM_DOMAIN_MAX_REGIONS`
+  is 5 because RP2350 has 8 entries and 3 are spoken for; **it must become a
+  per-target figure** for the C6 (the radio domain below needs 8–9).
+* **A confined U-mode task behaves as the kernel's domains promise:** runs with
+  text + stack granted; instruction access fault (cause 1) with no text grant,
+  on a jump into M-mode text, and on a ROM call without a ROM grant; load
+  fault (5) and store fault (7) against kernel data; MMIO faults without a
+  grant and works with one (a system-timer write + read from U-mode).
+* **U-mode can call chip-ROM code and use the ROM's own data.** `ets_delay_us`
+  (a ROM trampoline into real ROM code) runs from U-mode once ROM code
+  (`0x40000000`, 512 KB NAPOT) and **the ROM's working data (`0x4087c000`,
+  16 KB)** are granted. The first attempt granted only the top 1 KB of SRAM,
+  where the blob's exported ROM data lives, and faulted at `0x4087faa0`: the ROM
+  keeps more state than it exports. The ROM data region is the whole
+  `0x4087c000–0x4087ffff`, not a window around `g_osi_funcs_p`.
+* **CSRs:** the cycle counter's **user alias `0x802` works from U-mode** (it is
+  what the ROM reads); the machine one (`0x7e2`) and `mstatus` trap as illegal
+  instruction (cause 2). The counters must be enabled from M-mode first
+  (`0x7e0`/`0x7e1`, as in 45.1).
+* **`mtvec` is forced to vectored mode, and its base must be 256-byte
+  aligned:** writing `0x40800200` reads back `0x40800201`; a handler at an
+  unaligned address is silently rounded down and the first trap executes
+  whatever is there (this restarted the probe from `_start` until aligned).
+  Synchronous exceptions go to BASE; interrupt `n` goes to `BASE + 4n`, so 45.4
+  needs a vector table, as IDF's does.
+* **The cost of the boundary is small.** A fast-path `ecall` round trip
+  (U → M → U, saving two registers and stepping `mepc`) is **34 cycles
+  (0.21 µs at 160 MHz)**, against 8 for a plain call/return. A real syscall
+  with dispatch and pointer validation will cost several times that; at an
+  assumed 300 cycles and 50 000 shim calls a second (a busy link) the radio's
+  boundary overhead is under 10 % of one 160 MHz core. Measured floor, not a
+  measured system.
+* **`ets_delay_us` runs fast on this chip until told the CPU frequency:**
+  1000 µs measured as 53 000 cycles (≈ 330 µs at 160 MHz). The ROM keeps its
+  own CPU-frequency variable; IDF calls `ets_update_cpu_frequency()` at start.
+  45.6 must too — the PHY uses `ets_delay_us`.
+
+**In the code the blob runs:**
+
+* **The blob contains no CSR, `wfi`, `mret` or `fence` instruction at all.**
+* **Following the control flow of the ROM code it calls** (`rom_scan.py`, over
+  a dump of this chip's ROM: 304 entry points, 13 495 instructions reached,
+  580 indirect jumps not followable) finds **no privileged instruction except
+  two reads of `0x802`** — the user-accessible cycle counter — in
+  `write_chan_freq`. A privileged instruction the scan could not see would
+  trap as cause 2 with the offending `mepc`: loud, not silent.
+* **What the radio domain must be granted** (peripheral pages addressed by the
+  blob and by the reachable ROM code): `0x600A0000–0x600AFFFF` (MAC, baseband,
+  PHY and modem registers; one 64 KB region), `0x600B0000–0x600B1FFF` (PMU and
+  LP_AON; 8 KB), `0x60096000` (**PCR**, the clock/reset control of every
+  peripheral; 4 KB, touched by the PHY's temperature-sensor setup),
+  `0x6000E000` (SAR-ADC, same code). Plus ROM code (1 region), ROM data (1),
+  the blob's text/rodata window in flash (1; linked at a 512 KB-aligned virtual
+  address so one NAPOT region covers it), and its RAM (1). **≈ 9 regions of 16.**
+  Granting PCR and PMU to a task that can then gate clocks and power is a real
+  exposure; it is the price of not rewriting the PHY, and it is smaller than the
+  exposure of running those 400 KB in M-mode.
+
+**What U-mode does not give — stated plainly:**
+
+* **PMP restricts the CPU, not bus masters.** The Wi-Fi MAC does DMA on its own;
+  the TRM's permission controller (APM/TEE, ch. 16) can confine masters by
+  address range, but the masters it lists are the CPUs, SDIO slave, the memory
+  monitor, trace and the GDMA channels — **not the Wi-Fi MAC**. So a blob that
+  *wants* to corrupt the kernel can program its DMA to do it. U-mode contains
+  *bugs*; the `tainted` label covers *trust*. (Whether the MAC's DMA is
+  confinable some other way is not established; it is not needed for the
+  fault-containment goal.)
+
+**What it means for the design (45.3b):**
+
+* **The radio is a U-mode driver task**, in the shape phases 12/30 already
+  gave every RP2350 driver: one domain, one message channel to the kernel. The
+  IP stack's `netif` driver (kernel side, M-mode) sends frames and control
+  messages down the channel; the radio task calls `esp_wifi_internal_tx` and the
+  scan/connect API, and sends received frames and events up. Frames are copied,
+  as every channel in this kernel does.
+* **Every `wifi_osi_funcs_t` entry becomes an `ecall`.** The table is ABI-fixed
+  and md5-checked against IDF's headers, so the U-mode side is *generated* from
+  it (stub per entry, one syscall number each, arguments in registers, pointers
+  validated against the domain by `mem_domain_permits`). Blocking entries
+  (`semphr_take`, `queue_recv`, `task_delay`) block the calling U-mode task in
+  the kernel, as `SYS_CHAN_CALL` already does.
+* **Callbacks need threads in the domain.** The blob hands us function pointers
+  to run: timers (`_timer_setfn/_arm`) and interrupt handlers (`_set_isr`). The
+  kernel cannot call into U-mode from an interrupt, so each gets a small U-mode
+  thread in the radio domain that waits on a kernel queue and calls the
+  pointer: a *timer thread*, and an *ISR thread* that the kernel interrupt stub
+  wakes after masking the source (the MAC and PWR lines are level-triggered; the
+  thread unmasks through a syscall). **ISR latency is the new risk** — a
+  context switch where IDF has a direct call — and is a 45.6 measurement against
+  the radio's deadlines, with M-mode ISRs (taint-only for just that path) as the
+  fallback.
+* **`_wifi_int_disable/_restore`** (the blob's critical sections, 4 call sites)
+  become "no preemption by the ISR thread and the timer thread" syscalls. They
+  guard blob state shared between its task and its ISR, so they must be correct
+  before anything else is.
+* **Kernel work this implies, small and known:** a per-target region budget
+  (above), `mtvec` vector table (45.4), and the generated syscall table. None of
+  it is blob-specific.
+
+**Not yet tested, deliberately:** interrupt delivery into M-mode while U-mode
+runs (45.4 builds the PLIC/matrix driver), execution of the blob's text from
+the flash window under a U-mode grant (a PMP region is a physical-address
+check; nothing about it is flash-specific), and any real radio register
+access from U-mode (the radio clocks are not up; 45.6).
+
 ## 5. Milestones
 
 Each milestone ends with a verification that can be repeated and a commit
@@ -302,9 +421,18 @@ by flashing*.
   it (§4.4) and would have made this a 45.6 in miniature. The reachability
   question is answered statically instead (a lower bound), and 45.3's host
   tests plus 45.6's first run give the dynamic answer.
-* **45.3 The OSAL shim.** The table in §4.3, with a host-side unit test of the
-  queue/semaphore semantics (pure C, built for every target). Decides
-  U-mode-versus-taint-only for the radio tasks (§2).
+* **45.3a Can the radio run in U-mode? — DONE 2026-10-05, yes.** Measured
+  on the silicon and in the blob/ROM code; §4.5 has the results and the
+  consequences for the design. Tools: `tools/umode_probe_esp32c6.{c,ld}`,
+  `umode_probe_esp32c6_entry.S`, `tools/build_umode_probe_esp32c6.sh`,
+  `tools/c6_blob_spike/rom_scan.py`, and the shared `tools/c6_standalone.h`.
+* **45.3b The OSAL shim, in two halves.** The table in §4.3 as a *kernel side*
+  (the services: semaphores, mutexes, queues, tasks, timers, memory, time,
+  NVS, coexistence — with host-side unit tests of the queue/semaphore
+  semantics, pure C, built for every target) and a *U-mode side* (the ABI-checked
+  `wifi_osi_funcs_t` whose entries are generated `ecall` stubs, plus the
+  callback threads of §4.5: timers, ISR upcalls). Built against IDF's own
+  headers (§4.4, ABI md5s).
 * **45.4 C6 kernel bring-up.** Interrupt matrix and controller, trap
   vector, the system tick, PMP setup, the kernel's scheduler, the VFS and
   the existing `lsh` console on USB-JTAG. This is the "LugalOS runs on the C6"
@@ -405,6 +533,7 @@ Not a design yet, but the properties that §7's constraints demand:
 | Risk | Why | What we do |
 |---|---|---|
 | **Shim bugs are timing bugs** | The blob assumes FreeRTOS scheduling and ISR semantics | 45.2 enumerates what's reachable; 45.3 tests the primitives in isolation on the host before any flash |
+| **ISR latency in U-mode** | The radio's MAC/PWR interrupts become a kernel stub + a U-mode thread wake-up (§4.5) | Measure in 45.6; fallback is M-mode handlers for that path only |
 | **RAM** | 512 KB total, with the kernel, stacks, the IP stack and the blob's buffers | 45.2 measures *before* 45.3 starts; pool sizes are a config knob |
 | **WPA supplicant + crypto** | Open; sized in 45.2 at ≈ 46 KB (§4.4) | Port in 45.7; the 11-entry crypto table is the interface |
 | **Radio power/clock bring-up** | The 5 000 open lines around the blob (§4.4); a ROM-booted chip has not had IDF's `pmu_init()` | First thing 45.6 does, with the Waveshare demo (which works on this board) as the control |
@@ -417,7 +546,7 @@ Not a design yet, but the properties that §7's constraints demand:
 * Which memory ranges the blob must live in (IRAM-pinned hot paths per IDF's
   `linker.lf`) — answered by 45.2's link map.
 * WS2812 timing with interrupts enabled, RMT versus a tight loop — 45.5.
-* U-mode radio tasks with PMP windows, or taint-only — 45.3.
+* ~~U-mode radio tasks with PMP windows, or taint-only — 45.3.~~ U-mode (§4.5). Open: ISR-thread latency (45.6).
 * Which serial channel to use for the first modem (45.13) — likely UART via
   the RP2350's UART1, to be settled once the RP2350-terminal side is read.
 

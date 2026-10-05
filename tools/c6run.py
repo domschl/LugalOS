@@ -118,6 +118,7 @@ def main():
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
     ap.add_argument("--listen-secs", type=float, default=8.0)
     ap.add_argument("--ports", action="store_true")
+    ap.add_argument("--expect", default="[C6_MINIMAL]", help="text the program must print (default: %(default)s)")
     a = ap.parse_args()
 
     if a.ports:
@@ -130,7 +131,7 @@ def main():
     elif not a.listen:
         ap.error("give an IMAGE, or --listen")
     text = listen(port, a.listen_secs)
-    if a.image and "[C6_MINIMAL]" not in text:
+    if a.image and a.expect not in text:
         sys.exit("\nloaded, but the program's banner never appeared")
 
 
