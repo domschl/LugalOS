@@ -80,6 +80,14 @@ ESP32-P4-NANO connects via **two separate serial bridges**:
   > Opening the CP2102 or CH34x adapter with naive terminal utilities (such as `cu`, `screen`, or raw serial open without careful modem control) can inadvertently assert RTS/DTR and hold the ESP32-P4 in permanent reset.
   > **ALWAYS use `tools/p4run.py` or `tools/p4flash.py`** to communicate with or flash the ESP32-P4.
 
+#### 3. ESP32-C6-Zero (`esp32c6`, phase 45)
+One USB-C cable, one port: the chip's native USB-Serial/JTAG (VID:PID `303a:1001`),
+console, loading and reset all on it.
+* Symlink: `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00`
+* Use `tools/c6run.py` (RAM load + console; never writes flash) — it opens the port with
+  DTR high / RTS low, because opening with DTR low resets the chip (see plan/phase45 §45.1).
+  Quick check: `tools/build_minimal_esp32c6.sh run`.
+
 ---
 
 ## 4. Hardware Presets & Agent Requests

@@ -152,13 +152,43 @@ by flashing*.
 
 ### Stand-alone node
 
-* **45.1 Boot and a heartbeat.** `cmake/board-esp32c6-zero.cmake`,
-  `cmake/toolchain-esp32c6.cmake` (a copy of the P4 one with `-march=rv32imac`),
-  preset `esp32c6`, linker script, ROM-bootloader image format
-  (reuse or extend `tools/p4flash.py`'s image tooling; `esptool` is at
-  `~/Source/gith/esp/esptool/`), `tools/c6flash.py`, `tools/c6run.py`.
-  Verifies: `ninja -C build/esp32c6` builds; flashed board prints a banner
-  and `misa` over USB-JTAG. *Not* yet any kernel service.
+* **45.1 Boot and a heartbeat — DONE 2026-10-05** (standalone, as the P4's
+  E1 was; the CMake preset and kernel linker script moved to 45.4, where the
+  kernel first needs them). `tools/minimal_esp32c6.{c,ld}` +
+  `minimal_esp32c6_entry.S`, `tools/build_minimal_esp32c6.sh`,
+  `tools/c6run.py` (esptool `load-ram` into HP SRAM, then watches the
+  USB-Serial/JTAG console; never writes flash), `cmake/toolchain-esp32c6.cmake`.
+  Verified on the C6-Zero (`tools/build_minimal_esp32c6.sh run`): the image
+  loads with the installed `riscv64-elf-gcc -march=rv32imac_zicsr_zifencei`,
+  prints over USB-Serial/JTAG, heartbeats.
+
+  Findings, from the silicon:
+
+  * `misa = 0x40903105`: A, C, I, M, **U** (and N, X) — M+U, atomics present,
+    no S-mode, as the datasheet said. `mhartid = 0`, `mtvec = 0x40001501`
+    (the ROM's vector table, mode 1), `mstatus = 1` after clearing MIE (to be
+    understood in 45.4).
+  * **CPU 160 MHz** out of ROM boot, measured (cycle counter against the
+    16 MHz system timer), so no PLL bring-up is needed to run at full speed.
+  * **`csrr mcycle` is an illegal instruction on this core.** The cycle
+    counter is Espressif's custom CSRs: `0x7e0` PCER (bit 0 = count cycles),
+    `0x7e1` PCMR (bit 0 = enable), `0x7e2` PCCR (the count). The kernel's
+    timing code must use these, not `rdcycle`.
+  * **Console:** USB-Serial/JTAG (`0x6000F000`) works from RAM with no setup;
+    EP1 writes need `WR_DONE` to hand bytes to the host, and every wait must be
+    bounded (nobody may be listening).
+  * **Host-side trap, fixed in `c6run.py`:** opening the console with DTR low
+    resets the chip (`rst:0x15 USB_UART_HPSYS`), because Linux raises DTR+RTS on
+    open and pyserial then drops DTR first, passing through DTR=0/RTS=1, which
+    is the chip's reset line. DTR high / RTS low opens without a reset. Any later
+    tool (`c6flash.py`, the tests) must open the port the same way.
+  * **The board is not blank and not 4 MB:** 8 MB flash (Winbond-class
+    `0x20/0x4017`), chip revision v0.2, MAC `ac:eb:e6:1e:3a:ac`, and a
+    Waveshare demo in flash (`ESP32-C6-Zero-DemoTest`, IDF 5.4.3: Wi-Fi scan,
+    BLE, WS2812 on RMT, BOOT button on GPIO9). Its Wi-Fi scan ran and found 19
+    access points, so the antenna and radio are good — a useful control for
+    45.6. *Flash layout (45.4) should assume 8 MB; the demo will be overwritten
+    when we flash LugalOS and need not be backed up (same stance as §7.4).*
 * **45.2 Spike: what does the blob cost?** Link `libnet80211`, `libpp`,
   `libphy`, `libcoexist` against a stub OSAL (every entry traps with its
   name), `--gc-sections`, map the result. Report: text/data/bss, how many OSAL
